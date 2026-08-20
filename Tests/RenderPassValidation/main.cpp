@@ -529,7 +529,8 @@ namespace
         fs::path cursor = fs::current_path();
         for (uint32 i = 0; i < 8; ++i)
         {
-            fs::path candidate = cursor / "Render" / "Shaders";
+            fs::path candidate =
+                cursor / "Source" / "Runtime" / "Render" / "Shaders";
             if (fs::exists(candidate / "DefaultLit.hlsl"))
             {
                 return candidate;
@@ -2854,7 +2855,7 @@ namespace
             const fs::path shaderDir = FindShaderDirectory();
             if (shaderDir.empty())
             {
-                GTEST_SKIP() << "Render/Shaders directory not found";
+                GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
             }
 
             device.bufferMapSucceeds = bufferMapSucceeds;
@@ -3234,7 +3235,7 @@ TEST_F(RenderPassValidationFixture,
     const fs::path shaderDir = FindShaderDirectory();
     if (shaderDir.empty())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     D4b2ResidentGPUScene resident;
@@ -3387,7 +3388,7 @@ TEST_F(RenderPassValidationFixture,
     const fs::path shaderDir = FindShaderDirectory();
     if (shaderDir.empty())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     struct FailureInjectionCase
@@ -3506,7 +3507,7 @@ TEST_F(RenderPassValidationFixture,
     const fs::path shaderDir = FindShaderDirectory();
     if (shaderDir.empty())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     D4b2ResidentGPUScene resident;
@@ -3578,7 +3579,7 @@ TEST_F(RenderPassValidationFixture,
     const fs::path shaderDir = FindShaderDirectory();
     if (shaderDir.empty())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     auto scenePipelineCache = MakeD4b2PipelineCache(device, shaderDir);
@@ -3646,7 +3647,7 @@ TEST_F(RenderPassValidationFixture,
     const fs::path shaderDir = FindShaderDirectory();
     if (shaderDir.empty())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice testDevice;
@@ -3802,7 +3803,7 @@ TEST_F(RenderPassValidationFixture,
     const fs::path shaderDir = FindShaderDirectory();
     if (shaderDir.empty())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice testDevice;
@@ -11947,7 +11948,7 @@ TEST(RenderPostProcessStackValidation, SceneRendererWiresLDREffectsWithoutFlippi
     const fs::path shaderDir = FindShaderDirectory();
     if (shaderDir.empty())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path sceneRendererPath = shaderDir.parent_path() /
@@ -20926,7 +20927,7 @@ TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposePostPr
     const fs::path shaderDir = FindShaderDirectory();
     if (shaderDir.empty())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path renderRoot = shaderDir.parent_path();
@@ -20969,7 +20970,7 @@ TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeRayTra
     const fs::path shaderDir = FindShaderDirectory();
     if (shaderDir.empty())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path renderRoot = shaderDir.parent_path();
@@ -20989,7 +20990,7 @@ TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeGPURes
     const fs::path shaderDir = FindShaderDirectory();
     if (shaderDir.empty())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path renderRoot = shaderDir.parent_path();
@@ -21009,7 +21010,7 @@ TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeFeatur
     const fs::path shaderDir = FindShaderDirectory();
     if (shaderDir.empty())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path renderRoot = shaderDir.parent_path();

@@ -164,7 +164,7 @@ def validate_receipt(receipt_path: Path) -> tuple[dict[str, Any], list[str]]:
         raise GateInputError("receipt.sourceModel is not the hermetic R7Triangle fixture")
     _sha256(receipt["sourceModelSha256"], "receipt.sourceModelSha256")
     shader_catalog = _string(receipt["shaderCatalog"], "receipt.shaderCatalog")
-    if shader_catalog != "Render/Shaders/Programs.rvxshadercatalog.json":
+    if shader_catalog != "Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json":
         raise GateInputError("receipt.shaderCatalog is not the repository shader catalog")
     _sha256(receipt["shaderCatalogSha256"], "receipt.shaderCatalogSha256")
     _sha256(receipt["cookExecutableSha256"], "receipt.cookExecutableSha256")

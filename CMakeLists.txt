@@ -338,8 +338,8 @@ add_subdirectory(Source/Runtime/AnimationSceneAdapters) # Animation runtime to S
 add_subdirectory(Source/Runtime/Audio) # Audio subsystem
 add_subdirectory(Source/Runtime/World)      # World owns the single Scene ECS runtime
 add_subdirectory(Source/Runtime/RenderExtraction) # Frozen ECS values to render contracts
-add_subdirectory(Render)       # Render module (includes RenderGraph)
-add_subdirectory(Engine)
+add_subdirectory(Source/Runtime/Render)       # Render module (includes RenderGraph)
+add_subdirectory(Source/Runtime/Engine)
 if(RVX_BUILD_DEVELOPER)
     add_subdirectory(EngineDevelopmentComposition)
 else()

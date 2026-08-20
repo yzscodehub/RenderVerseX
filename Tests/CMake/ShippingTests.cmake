@@ -49,7 +49,7 @@ rvx_add_validation_test(
     REQUIRED_FILES
         "${RVX_SHIPPING_HOST_COOK_EXECUTABLE}"
         "${CMAKE_SOURCE_DIR}/Tests/Fixtures/ModelViewer/R7Triangle.gltf"
-        "${CMAKE_SOURCE_DIR}/Render/Shaders/Programs.rvxshadercatalog.json"
+        "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
     FIXTURES_SETUP ShippingCookedArtifacts
     TIMEOUT 900
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"

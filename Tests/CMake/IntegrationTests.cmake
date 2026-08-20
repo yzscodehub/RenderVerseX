@@ -26,7 +26,7 @@ rvx_add_gtest(
         RVX::RenderExtraction
         RVX::ResourceSceneAdapters
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/Engine/Private/ECS
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Engine/Private/ECS
     TAGS subsystem.engine subsystem.render subsystem.resource subsystem.scene subsystem.ecs
     TIMEOUT 30
 )
@@ -40,7 +40,7 @@ rvx_add_gtest(
         RVX::RenderExtraction
         RVX::ResourceSceneAdapters
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/Engine/Private/ECS
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Engine/Private/ECS
     TAGS subsystem.engine subsystem.render subsystem.resource subsystem.scene subsystem.ecs
     TIMEOUT 30
 )
@@ -54,7 +54,7 @@ rvx_add_gtest(
         RVX::RenderExtraction
         RVX::ResourceSceneAdapters
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/Engine/Private/ECS
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Engine/Private/ECS
     TAGS subsystem.engine subsystem.render subsystem.resource subsystem.scene subsystem.ecs
     TIMEOUT 30
 )
@@ -72,7 +72,7 @@ rvx_add_gtest(
         RVX::ResourceSceneAdapters
         RVX::Scripting
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/Engine/Private/ECS
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Engine/Private/ECS
     TAGS subsystem.engine subsystem.world subsystem.render subsystem.resource subsystem.scene subsystem.ecs
     TIMEOUT 30
 )
@@ -86,7 +86,7 @@ rvx_add_gtest(
         RVX::ResourceSceneAdapters
         RVX::Scene
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/Engine/Private/ECS
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Engine/Private/ECS
     TAGS subsystem.engine subsystem.render subsystem.resource subsystem.scene subsystem.ecs suite.retirement
     TIMEOUT 30
 )
@@ -100,7 +100,7 @@ if(RVX_ENABLE_TSAN)
             RVX::Core
             RVX::RenderContracts
             RVX_RenderRuntimeCore
-        INCLUDES ${CMAKE_SOURCE_DIR}/Render/Private
+        INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
         TAGS trait.tsan
         TIMEOUT 180
     )
@@ -193,7 +193,7 @@ rvx_add_gtest(
         ${RVX_ALL_BACKENDS}
     INCLUDES
         ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_SOURCE_DIR}/Render/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
     DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     TIMEOUT 60
 )
@@ -217,7 +217,7 @@ rvx_add_gtest(
     INCLUDES
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Particle/Private
-        ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/ResourceRuntime/Include
         ${CMAKE_SOURCE_DIR}/ShaderCompiler/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Terrain/Private
@@ -242,11 +242,11 @@ rvx_add_gtest(
         RVX::RHI
         RVX_RenderRuntimeCore
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/Render/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RenderExtraction/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
-        ${CMAKE_SOURCE_DIR}/Render/Include
-        ${CMAKE_SOURCE_DIR}/Render/Private/Renderer
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private/Renderer
         ${CMAKE_SOURCE_DIR}/Source/Runtime/ResourceRuntime/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Scene/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/World/Include
@@ -269,8 +269,8 @@ rvx_add_gtest(
         RVX::Scene
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Tests
-        ${CMAKE_SOURCE_DIR}/Render/Include
-        ${CMAKE_SOURCE_DIR}/Render/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
         ${CMAKE_SOURCE_DIR}/Source/Runtime/ResourceRuntime/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Scene/Include

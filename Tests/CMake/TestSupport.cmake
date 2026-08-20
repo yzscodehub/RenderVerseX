@@ -34,7 +34,7 @@ target_link_libraries(RVX_TestCommon PUBLIC RVX::Core)
 add_library(RVX_RenderTestSupport STATIC Common/RenderRuntimeTestSupport.cpp)
 rvx_register_module_target(TARGET RVX_RenderTestSupport MODULE Tests)
 target_include_directories(RVX_RenderTestSupport PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_include_directories(RVX_RenderTestSupport PRIVATE ${CMAKE_SOURCE_DIR}/Render/Private)
+target_include_directories(RVX_RenderTestSupport PRIVATE ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private)
 target_link_libraries(RVX_RenderTestSupport PUBLIC RVX::RHI RVX_RenderRuntimeCore)
 
 add_executable(VisualGoldenValidation VisualGoldenValidation/main.cpp)

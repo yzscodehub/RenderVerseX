@@ -346,7 +346,8 @@ namespace
         fs::path cursor = fs::current_path();
         for (uint32_t i = 0; i < 8; ++i)
         {
-            if (fs::exists(cursor / "Render" / "Include" / "Render" / "Renderer" / "SceneRenderer.h"))
+            if (fs::exists(cursor / "Source" / "Runtime" / "Render" / "Include" /
+                           "Render" / "Renderer" / "SceneRenderer.h"))
             {
                 return cursor;
             }
@@ -3662,11 +3663,13 @@ TEST_F(RenderHonestyValidationFixture,
     ASSERT_FALSE(repoRoot.empty());
 
     const std::string header =
-        ReadTextFile(repoRoot / "Render" / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "Render" / "Include" /
+                     "Render" / "Renderer" / "SceneRenderer.h");
     const std::string source =
-        ReadTextFile(repoRoot / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "Render" / "Private" /
+                     "Renderer" / "SceneRenderer.cpp");
     const std::string runtimeSource =
-        ReadTextFile(repoRoot / "Render" / "Private" / "Runtime" /
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "Render" / "Private" / "Runtime" /
                      "RenderThreadRuntime.cpp");
     const std::string renderContractsCMake =
         ReadTextFile(repoRoot / "Source" / "Runtime" / "RenderContracts" / "CMakeLists.txt");

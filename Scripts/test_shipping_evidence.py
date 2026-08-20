@@ -30,7 +30,7 @@ class EvidenceFixture:
         self.receipt_path = root / "shipping-fixture-receipt.json"
         self.report_path = root / "shipping-evidence.json"
         source_model = root / "Tests/Fixtures/ModelViewer/R7Triangle.gltf"
-        shader_catalog = root / "Render/Shaders/Programs.rvxshadercatalog.json"
+        shader_catalog = root / "Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
         source_model.parent.mkdir(parents=True, exist_ok=True)
         shader_catalog.parent.mkdir(parents=True, exist_ok=True)
         source_model.write_bytes(b"hermetic-r7-triangle\n")
@@ -59,7 +59,7 @@ class EvidenceFixture:
             "backend": BACKEND,
             "sourceModel": "Tests/Fixtures/ModelViewer/R7Triangle.gltf",
             "sourceModelSha256": hashlib.sha256(source_model.read_bytes()).hexdigest(),
-            "shaderCatalog": "Render/Shaders/Programs.rvxshadercatalog.json",
+            "shaderCatalog": "Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json",
             "shaderCatalogSha256": hashlib.sha256(shader_catalog.read_bytes()).hexdigest(),
             "cookExecutableSha256": "2" * 64,
             "resourceManifest": "Cooked/Resources/CookManifest.rvxmanifest",

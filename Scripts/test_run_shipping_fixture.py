@@ -84,7 +84,7 @@ class ShippingFixtureScriptTests(unittest.TestCase):
         model = self.root / "Tests/Fixtures/ModelViewer/R7Triangle.gltf"
         model.parent.mkdir(parents=True)
         model.write_text("{\"asset\":{\"version\":\"2.0\"}}\n", encoding="utf-8")
-        shader_root = self.root / "Render/Shaders"
+        shader_root = self.root / "Source/Runtime/Render/Shaders"
         shader_root.mkdir(parents=True)
         catalog = {
             "schema": "RVX_SHADER_PROGRAM_CATALOG",

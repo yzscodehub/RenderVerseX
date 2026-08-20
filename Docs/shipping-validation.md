@@ -63,7 +63,7 @@ build tree. The script copies the hermetic
 `Tests/Fixtures/ModelViewer/R7Triangle.gltf` input into a private staging
 directory, cooks `Cooked/Resources/R7Triangle.rva` and its v2 manifest, then
 cooks every program selected for the requested backend by
-`Render/Shaders/Programs.rvxshadercatalog.json`. The source input is removed
+`Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json`. The source input is removed
 before publication. A previous valid fixture is kept in place until every
 output has been checked and the staged directory can be atomically renamed.
 

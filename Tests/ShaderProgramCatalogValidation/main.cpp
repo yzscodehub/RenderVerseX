@@ -102,12 +102,12 @@ namespace
     fs::path RepositoryCatalogPath()
     {
         return fs::path(RVX_SOURCE_DIR) /
-            "Render/Shaders/Programs.rvxshadercatalog.json";
+            "Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json";
     }
 
     fs::path RepositoryShaderRoot()
     {
-        return fs::path(RVX_SOURCE_DIR) / "Render/Shaders";
+        return fs::path(RVX_SOURCE_DIR) / "Source/Runtime/Render/Shaders";
     }
 } // namespace
 

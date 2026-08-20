@@ -3524,7 +3524,7 @@ namespace
     {
         const std::filesystem::path sourcePath{RVX_SOURCE_DIR};
         const std::string source =
-            ReadSourceFile(sourcePath / "Render" / "Private" /
+            ReadSourceFile(sourcePath / "Source" / "Runtime" / "Render" / "Private" /
                            "RenderSubsystem.cpp");
         ASSERT_FALSE(source.empty());
 
@@ -3559,7 +3559,7 @@ namespace
     {
         const std::filesystem::path sourcePath{RVX_SOURCE_DIR};
         const std::string source =
-            ReadSourceFile(sourcePath / "Render" / "Private" /
+            ReadSourceFile(sourcePath / "Source" / "Runtime" / "Render" / "Private" /
                            "RenderSubsystem.cpp");
         ASSERT_FALSE(source.empty());
 

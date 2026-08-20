@@ -133,7 +133,7 @@ rvx_add_gtest(
         RVX::ResourceSceneAdapters
         RVX::Scripting
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/Engine/Private/ECS
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Engine/Private/ECS
     TAGS subsystem.resource subsystem.scene subsystem.ecs subsystem.animation
     TIMEOUT 30
 )
@@ -384,7 +384,7 @@ rvx_add_gtest(
     LANE unit
     SOURCES RenderPolicyValidation/main.cpp
     LIBS RVX::Core RVX::RenderContracts RVX::RHI RVX::Render
-    INCLUDES ${CMAKE_SOURCE_DIR}/Render/Include
+    INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
     TAGS suite.render-policy
     TIMEOUT 30
 )
@@ -394,7 +394,7 @@ rvx_add_gtest(
     LANE unit
     SOURCES RenderVisibilityValidation/main.cpp
     LIBS RVX::Core RVX::Render
-    INCLUDES ${CMAKE_SOURCE_DIR}/Render/Include
+    INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
     TAGS suite.visibility
     TIMEOUT 30
 )
@@ -405,8 +405,8 @@ rvx_add_gtest(
     SOURCES GPUSceneValidation/main.cpp
     LIBS RVX::Render RVX_RenderRuntimeCore
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/Render/Include
-        ${CMAKE_SOURCE_DIR}/Render/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
     TAGS suite.gpu-scene
     TIMEOUT 30
 )
@@ -416,7 +416,7 @@ rvx_add_gtest(
     LANE unit
     SOURCES GPUSceneSchemaValidation/main.cpp
     LIBS RVX::Render
-    INCLUDES ${CMAKE_SOURCE_DIR}/Render/Include
+    INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
     DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     TAGS suite.gpu-scene
     TIMEOUT 30
@@ -428,8 +428,8 @@ rvx_add_gtest(
     SOURCES GPUSceneUploadValidation/main.cpp
     LIBS RVX::Render RVX_RenderRuntimeCore
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/Render/Include
-        ${CMAKE_SOURCE_DIR}/Render/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
     TAGS suite.gpu-scene
     TIMEOUT 30
 )
@@ -439,7 +439,7 @@ rvx_add_gtest(
     LANE unit
     SOURCES RenderDrawPacketValidation/main.cpp
     LIBS RVX::Render
-    INCLUDES ${CMAKE_SOURCE_DIR}/Render/Include
+    INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
     TIMEOUT 30
 )
 
@@ -448,7 +448,7 @@ rvx_add_gtest(
     LANE unit
     SOURCES RenderDrawPacketCacheValidation/main.cpp
     LIBS RVX::Render
-    INCLUDES ${CMAKE_SOURCE_DIR}/Render/Include
+    INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
     TIMEOUT 30
 )
 
@@ -460,7 +460,7 @@ rvx_add_gtest(
         RVX::Core
         RVX::RenderContracts
         RVX_RenderRuntimeCore
-    INCLUDES ${CMAKE_SOURCE_DIR}/Render/Private
+    INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
     TIMEOUT 60
 )
 
@@ -473,7 +473,7 @@ rvx_add_gtest(
         RVX_RenderRuntimeCore
     INCLUDES
         ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_SOURCE_DIR}/Render/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
     TIMEOUT 60
 )
 
@@ -499,7 +499,7 @@ rvx_add_gtest(
     LANE unit
     SOURCES MeshPassProcessorValidation/main.cpp
     LIBS RVX::Render
-    INCLUDES ${CMAKE_SOURCE_DIR}/Render/Include
+    INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
     TIMEOUT 30
 )
 
@@ -508,7 +508,7 @@ rvx_add_gtest(
     LANE unit
     SOURCES RenderInstanceBatchPlanValidation/main.cpp
     LIBS RVX::Render
-    INCLUDES ${CMAKE_SOURCE_DIR}/Render/Include
+    INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
     TIMEOUT 60
 )
 
@@ -538,7 +538,7 @@ rvx_add_gtest(
         RVX::RHI
         RVX_RenderRuntimeCore
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/Render/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
     DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     TIMEOUT 30
 )
@@ -552,7 +552,7 @@ rvx_add_gtest(
         RVX::RHI
         RVX_RenderRuntimeCore
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/Render/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
     TIMEOUT 30
 )
 
@@ -607,8 +607,8 @@ rvx_add_gtest(
     SOURCES RenderGraphValidation/main.cpp
     LIBS RVX::RenderGraph
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/Render/Include
-        ${CMAKE_SOURCE_DIR}/Render/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
     TIMEOUT 120
 )
 
@@ -622,8 +622,8 @@ rvx_add_gtest(
         RVX::RenderContracts
         RVX_RenderRuntimeCore
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/Render/Include
-        ${CMAKE_SOURCE_DIR}/Render/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RenderContracts/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
     TIMEOUT 120
@@ -708,8 +708,8 @@ rvx_add_gtest(
         RVX::AssetPipeline
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Tests
-        ${CMAKE_SOURCE_DIR}/Render/Include
-        ${CMAKE_SOURCE_DIR}/Render/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
     DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     TIMEOUT 120
@@ -726,8 +726,8 @@ rvx_add_gtest(
         RVX::Render
         RVX_RenderRuntimeCore
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/Render/Include
-        ${CMAKE_SOURCE_DIR}/Render/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RenderContracts/Include
     TIMEOUT 120
 )
@@ -746,8 +746,8 @@ rvx_add_gtest(
         RVX_RenderRuntimeCore
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Tests
-        ${CMAKE_SOURCE_DIR}/Render/Include
-        ${CMAKE_SOURCE_DIR}/Render/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RenderContracts/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
         ${CMAKE_SOURCE_DIR}/ShaderCompiler/Include
@@ -802,7 +802,7 @@ rvx_add_gtest(
         RVX::RenderContracts
         RVX_RenderRuntimeCore
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/Render/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RenderContracts/Include
     TAGS subsystem.render subsystem.resource
     TIMEOUT 30
@@ -814,8 +814,8 @@ rvx_add_gtest(
     SOURCES RenderIncrementalSceneScaleValidation/main.cpp
     LIBS RVX::Render RVX_RenderRuntimeCore
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/Render/Include
-        ${CMAKE_SOURCE_DIR}/Render/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
     TAGS trait.performance
     TIMEOUT 180
 )
@@ -829,7 +829,7 @@ rvx_add_gtest(
         RVX::RenderContracts
         RVX_RenderRuntimeCore
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RenderContracts/Include
     TIMEOUT 30
 )
@@ -843,7 +843,7 @@ rvx_add_gtest(
         RVX::RenderContracts
         RVX::Render
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RenderContracts/Include
     TIMEOUT 30
 )
@@ -862,8 +862,8 @@ rvx_add_gtest(
         RVX::Scene
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Tests
-        ${CMAKE_SOURCE_DIR}/Render/Include
-        ${CMAKE_SOURCE_DIR}/Render/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
         ${CMAKE_SOURCE_DIR}/Source/Runtime/ResourceRuntime/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
     TIMEOUT 120
@@ -878,7 +878,7 @@ rvx_add_gtest(
         RVX::Render
         RVX::RHI
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
     TIMEOUT 120
 )
@@ -1073,8 +1073,8 @@ rvx_add_gtest(
         RVX::Render
         RVX_RenderRuntimeCore
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/Render/Include
-        ${CMAKE_SOURCE_DIR}/Render/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
     TIMEOUT 120
 )

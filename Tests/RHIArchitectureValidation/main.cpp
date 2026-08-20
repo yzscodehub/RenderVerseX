@@ -79,17 +79,17 @@ namespace RVX::Tests
     TEST(RHIContractValidation, LifetimeOwnersCommitScopedSnapshots)
     {
         const std::string poolHeader = ReadSource(
-            "Render/Include/Render/Graph/TransientResourcePool.h");
+            "Source/Runtime/Render/Include/Render/Graph/TransientResourcePool.h");
         const std::string poolSource = ReadSource(
-            "Render/Private/Graph/TransientResourcePool.cpp");
+            "Source/Runtime/Render/Private/Graph/TransientResourcePool.cpp");
         const std::string sceneRenderer = ReadSource(
-            "Render/Private/Renderer/SceneRenderer.cpp");
+            "Source/Runtime/Render/Private/Renderer/SceneRenderer.cpp");
         const std::string uploadTypes = ReadSource(
-            "Render/Include/Render/GPUUploadTypes.h");
+            "Source/Runtime/Render/Include/Render/GPUUploadTypes.h");
         const std::string uploadProcessor = ReadSource(
-            "Render/Private/Resources/RenderUploadProcessor.cpp");
+            "Source/Runtime/Render/Private/Resources/RenderUploadProcessor.cpp");
         const std::string resourceRegistry = ReadSource(
-            "Render/Private/Resources/RenderResourceRegistry.h");
+            "Source/Runtime/Render/Private/Resources/RenderResourceRegistry.h");
 
         EXPECT_NE(poolHeader.find("TransientTextureLease"), std::string::npos);
         EXPECT_NE(poolHeader.find("RHITextureAccessSnapshot accessSnapshot"), std::string::npos);
@@ -140,11 +140,11 @@ namespace RVX::Tests
          SoftwareAdapterFallbackImplementationIsExplicit)
     {
         const std::string runtimeTypes =
-            ReadSource("Render/Include/Render/RenderRuntimeTypes.h");
+            ReadSource("Source/Runtime/Render/Include/Render/RenderRuntimeTypes.h");
         const std::string renderContext =
-            ReadSource("Render/Private/Context/RenderContext.cpp");
+            ReadSource("Source/Runtime/Render/Private/Context/RenderContext.cpp");
         const std::string renderSubsystem =
-            ReadSource("Render/Private/RenderSubsystem.cpp");
+            ReadSource("Source/Runtime/Render/Private/RenderSubsystem.cpp");
         const std::string dx12Device =
             ReadSource("Source/Runtime/RHI_DX12/Private/DX12Device.cpp");
         const std::string vulkanDevice =
@@ -176,11 +176,11 @@ namespace RVX::Tests
     TEST(RHIContractValidation, RenderSubsystemRoutesCompleteSurfaceUpdates)
     {
         const std::string renderHeader =
-            ReadSource("Render/Include/Render/RenderSubsystem.h");
+            ReadSource("Source/Runtime/Render/Include/Render/RenderSubsystem.h");
         const std::string contextHeader =
-            ReadSource("Render/Include/Render/Context/RenderContext.h");
+            ReadSource("Source/Runtime/Render/Include/Render/Context/RenderContext.h");
         const std::string renderSubsystem =
-            ReadSource("Render/Private/RenderSubsystem.cpp");
+            ReadSource("Source/Runtime/Render/Private/RenderSubsystem.cpp");
 
         EXPECT_NE(renderHeader.find(
                       "RenderResizeResult RequestResize(const HAL::NativeSurfaceDesc& surface)"),
@@ -264,9 +264,9 @@ namespace RVX::Tests
          RenderSubsystemReadinessDelegatesWithoutPublicTestPrivilege)
     {
         const std::string renderHeader =
-            ReadSource("Render/Include/Render/RenderSubsystem.h");
+            ReadSource("Source/Runtime/Render/Include/Render/RenderSubsystem.h");
         const std::string renderSubsystem =
-            ReadSource("Render/Private/RenderSubsystem.cpp");
+            ReadSource("Source/Runtime/Render/Private/RenderSubsystem.cpp");
 
         EXPECT_EQ(renderHeader.find("friend struct RenderSubsystemTestAccess"),
                   std::string::npos);
@@ -286,9 +286,9 @@ namespace RVX::Tests
         const std::string sampleRunner =
             ReadSource(root / "Samples/Common/Private/SampleRunner.cpp");
         const std::string renderContextHeader =
-            ReadSource(root / "Render/Include/Render/Context/RenderContext.h");
+            ReadSource(root / "Source/Runtime/Render/Include/Render/Context/RenderContext.h");
         const std::string renderSubsystem =
-            ReadSource(root / "Render/Private/RenderSubsystem.cpp");
+            ReadSource(root / "Source/Runtime/Render/Private/RenderSubsystem.cpp");
         const std::string windowSubsystem =
             ReadSource(root / "Source/Runtime/RuntimeServices/Private/Window/WindowSubsystem.cpp");
         const std::string editorSwapChain =
@@ -318,10 +318,10 @@ namespace RVX::Tests
     TEST(RHIContractValidation, StandardEngineInjectsWindowBeforeRenderInitialization)
     {
         const std::string renderHeader =
-            ReadSource("Render/Include/Render/RenderSubsystem.h");
-        const std::string engine = ReadSource("Engine/Private/Engine.cpp");
+            ReadSource("Source/Runtime/Render/Include/Render/RenderSubsystem.h");
+        const std::string engine = ReadSource("Source/Runtime/Engine/Private/Engine.cpp");
         const std::string renderComposition =
-            ReadSource("Engine/Private/ECS/EcsRenderRuntimeComposition.cpp");
+            ReadSource("Source/Runtime/Engine/Private/ECS/EcsRenderRuntimeComposition.cpp");
         const std::string showcase =
             ReadSource("Samples/RenderVerseSamples/main.cpp");
 
@@ -411,9 +411,9 @@ namespace RVX::Tests
         const std::string openGLDevice =
             ReadSource("Source/Runtime/RHI_OpenGL/Private/OpenGLDevice.cpp");
         const std::string renderSubsystem =
-            ReadSource("Render/Private/RenderSubsystem.cpp");
+            ReadSource("Source/Runtime/Render/Private/RenderSubsystem.cpp");
         const std::string renderContext =
-            ReadSource("Render/Private/Context/RenderContext.cpp");
+            ReadSource("Source/Runtime/Render/Private/Context/RenderContext.cpp");
 
         EXPECT_NE(deviceInterface.find("virtual bool SupportsSurfaceRebind("),
                   std::string::npos);
@@ -688,7 +688,7 @@ namespace RVX::Tests
     TEST(RHIContractValidation, RenderSubmissionTrackerRemainsPrivateAndBackendAgnostic)
     {
         const std::string frameSynchronizer =
-            ReadSource("Render/Include/Render/Context/FrameSynchronizer.h");
+            ReadSource("Source/Runtime/Render/Include/Render/Context/FrameSynchronizer.h");
         EXPECT_EQ(frameSynchronizer.find("RHIFence"), std::string::npos);
         EXPECT_EQ(frameSynchronizer.find("GetFrameFenceValue"), std::string::npos);
         EXPECT_NE(frameSynchronizer.find("GPUCompletionPoint"), std::string::npos);
@@ -696,14 +696,14 @@ namespace RVX::Tests
                   std::string::npos);
 
         const std::string renderContext =
-            ReadSource("Render/Include/Render/Context/RenderContext.h");
+            ReadSource("Source/Runtime/Render/Include/Render/Context/RenderContext.h");
         EXPECT_NE(renderContext.find("GPUCompletionPoint EndFrame();"), std::string::npos);
         EXPECT_EQ(renderContext.find("RenderSubmissionTracker"), std::string::npos);
         EXPECT_EQ(renderContext.find("m_computeFences"), std::string::npos);
         EXPECT_EQ(renderContext.find("m_computeFenceValues"), std::string::npos);
 
         const std::string renderContextSource =
-            ReadSource("Render/Private/Context/RenderContext.cpp");
+            ReadSource("Source/Runtime/Render/Private/Context/RenderContext.cpp");
         EXPECT_NE(renderContextSource.find(
                       "submittedPoint = m_frameSynchronizer.SubmitGraphics(ctx)"),
                   std::string::npos);
@@ -713,10 +713,10 @@ namespace RVX::Tests
         EXPECT_NE(renderContextSource.find("return submittedPoint"), std::string::npos);
 
         const std::string frameSynchronizerSource =
-            ReadSource("Render/Private/Context/FrameSynchronizer.cpp");
+            ReadSource("Source/Runtime/Render/Private/Context/FrameSynchronizer.cpp");
         EXPECT_EQ(frameSynchronizerSource.find("CreateFence("), std::string::npos);
 
-        const std::string renderCmake = ReadSource("Render/CMakeLists.txt");
+        const std::string renderCmake = ReadSource("Source/Runtime/Render/CMakeLists.txt");
         EXPECT_NE(renderCmake.find("Private/Resources/RenderSubmissionTracker.cpp"),
                   std::string::npos);
         EXPECT_NE(renderCmake.find("RVX::RHI"), std::string::npos);

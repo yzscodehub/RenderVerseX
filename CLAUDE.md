@@ -228,13 +228,13 @@ RVX_ASSERT(handle != RVX_INVALID_INDEX);
 ## Shader Development
 
 ### Shader Compilation Pipeline
-1. Write HLSL shaders in `Render/Shaders/`, `Particle/Shaders/`, etc.
+1. Write HLSL shaders in `Source/Runtime/Render/Shaders/`, `Source/Runtime/Particle/Shaders/`, etc.
 2. ShaderCompiler compiles HLSL to SPIR-V using DXC
 3. SPIRV-Cross translates SPIR-V to MSL (Metal) and GLSL (OpenGL)
 4. Caching system stores compiled bytecode and reflection data
 
 ### Shader File Locations
-- Render shaders: `Render/Shaders/`
+- Render shaders: `Source/Runtime/Render/Shaders/`
 - Particle shaders: `Particle/Shaders/`
 - Water shaders: `Water/Shaders/`
 - Terrain shaders: `Terrain/Shaders/`
@@ -244,7 +244,7 @@ RVX_ASSERT(handle != RVX_INVALID_INDEX);
 ### Adding New Modules
 1. Create module directory with `Include/` and `Private/` subdirectories
 2. Add CMakeLists.txt with proper target dependencies
-3. Register with Engine in `Engine/Engine.cpp`
+3. Register with Engine in `Source/Runtime/Engine/Private/Engine.cpp`
 4. Follow naming conventions and documentation style
 
 ### Working with Subsystems

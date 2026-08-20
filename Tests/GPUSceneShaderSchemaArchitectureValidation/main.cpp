@@ -36,9 +36,9 @@ TEST(GPUSceneSchemaValidation, ShaderDeclarationsMirrorCpuFieldOrder)
 {
     const std::filesystem::path sourceRoot(RVX_SOURCE_DIR);
     const std::string gpuScene = ReadSource(
-        sourceRoot / "Render/Shaders/GPUDriven/GPUSceneCulling.hlsli");
+        sourceRoot / "Source/Runtime/Render/Shaders/GPUDriven/GPUSceneCulling.hlsli");
     const std::string instance = ReadSource(
-        sourceRoot / "Render/Shaders/Include/GPUInstanceData.hlsli");
+        sourceRoot / "Source/Runtime/Render/Shaders/Include/GPUInstanceData.hlsli");
 
     EXPECT_NE(gpuScene.find("#define RVX_GPU_SCENE_SCHEMA_VERSION 1u"),
               std::string::npos);

@@ -67,7 +67,8 @@ namespace
         std::filesystem::path current = std::filesystem::current_path();
         for (uint32 i = 0; i < 8; ++i)
         {
-            const std::filesystem::path candidate = current / "Render" / "Shaders";
+            const std::filesystem::path candidate =
+                current / "Source" / "Runtime" / "Render" / "Shaders";
             if (std::filesystem::exists(candidate / "DefaultLit.hlsl"))
             {
                 return candidate;
@@ -3361,7 +3362,7 @@ TEST(DX12Validation, RayTracedShadowPipelineCacheResources)
     }
 
     const std::filesystem::path shaderDir = FindRenderShaderDirectory();
-    ASSERT_FALSE(shaderDir.empty()) << "Render/Shaders directory not found";
+    ASSERT_FALSE(shaderDir.empty()) << "Source/Runtime/Render/Shaders directory not found";
 
     ShaderProgramProviderFactory providerFactory =
         CreateDevelopmentShaderProgramProviderFactory(shaderDir);
@@ -4195,7 +4196,7 @@ TEST(DX12Validation, RayTracedShadowProductionShaderTracesTriangleAndWritesMask)
                   "RayTracedShadowTestConstants must match RayTracedShadow.hlsl cbuffer layout");
 
     const std::filesystem::path shaderDir = FindRenderShaderDirectory();
-    ASSERT_FALSE(shaderDir.empty()) << "Render/Shaders directory not found";
+    ASSERT_FALSE(shaderDir.empty()) << "Source/Runtime/Render/Shaders directory not found";
 
     ShaderProgramProviderFactory providerFactory =
         CreateDevelopmentShaderProgramProviderFactory(shaderDir);
@@ -4835,7 +4836,7 @@ TEST(DX12Validation, RayTracedReflectionProductionShaderTracesTriangleAndWritesM
                   "RayTracedReflectionTestConstants must match RayTracedReflection.hlsl cbuffer layout");
 
     const std::filesystem::path shaderDir = FindRenderShaderDirectory();
-    ASSERT_FALSE(shaderDir.empty()) << "Render/Shaders directory not found";
+    ASSERT_FALSE(shaderDir.empty()) << "Source/Runtime/Render/Shaders directory not found";
 
     ShaderProgramProviderFactory providerFactory =
         CreateDevelopmentShaderProgramProviderFactory(shaderDir);

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "entries": [
     {
-      "path": "Render/Include/Render/Context/RenderContext.h",
+      "path": "Source/Runtime/Render/Include/Render/Context/RenderContext.h",
       "owner": "RenderContext",
       "symbol": "m_computeContexts",
       "policy": "ShutdownAfterDrain",
@@ -11,7 +11,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Context/RenderContext.h",
+      "path": "Source/Runtime/Render/Include/Render/Context/RenderContext.h",
       "owner": "RenderContext",
       "symbol": "m_graphicsContexts",
       "policy": "ShutdownAfterDrain",
@@ -20,7 +20,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Context/RenderContext.h",
+      "path": "Source/Runtime/Render/Include/Render/Context/RenderContext.h",
       "owner": "RenderContext",
       "symbol": "m_swapChain",
       "policy": "SurfaceGeneration",
@@ -29,7 +29,7 @@
       "deviceLostRelease": "surface explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Debug/DebugRenderer.h",
+      "path": "Source/Runtime/Render/Include/Render/Debug/DebugRenderer.h",
       "owner": "DebugRenderer",
       "symbol": "m_vertexBuffer",
       "policy": "ShutdownAfterDrain",
@@ -38,7 +38,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Debug/GPUProfiler.h",
+      "path": "Source/Runtime/Render/Include/Render/Debug/GPUProfiler.h",
       "owner": "GPUProfiler",
       "symbol": "m_queryPool",
       "policy": "ShutdownAfterDrain",
@@ -47,7 +47,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Decal/DecalRenderer.h",
+      "path": "Source/Runtime/Render/Include/Render/Decal/DecalRenderer.h",
       "owner": "DecalRenderer",
       "symbol": "m_constantBuffer",
       "policy": "OwnerSnapshot",
@@ -56,7 +56,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Decal/DecalRenderer.h",
+      "path": "Source/Runtime/Render/Include/Render/Decal/DecalRenderer.h",
       "owner": "DecalRenderer",
       "symbol": "m_decalBuffer",
       "policy": "OwnerSnapshot",
@@ -65,7 +65,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Decal/DecalRenderer.h",
+      "path": "Source/Runtime/Render/Include/Render/Decal/DecalRenderer.h",
       "owner": "DecalRenderer",
       "symbol": "m_decalNormalPipeline",
       "policy": "OwnerSnapshot",
@@ -74,7 +74,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Decal/DecalRenderer.h",
+      "path": "Source/Runtime/Render/Include/Render/Decal/DecalRenderer.h",
       "owner": "DecalRenderer",
       "symbol": "m_decalPipeline",
       "policy": "OwnerSnapshot",
@@ -83,7 +83,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Decal/DecalRenderer.h",
+      "path": "Source/Runtime/Render/Include/Render/Decal/DecalRenderer.h",
       "owner": "DecalRenderer",
       "symbol": "m_decalStainPipeline",
       "policy": "OwnerSnapshot",
@@ -92,7 +92,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_compactPipeline",
       "policy": "OwnerSnapshot",
@@ -101,7 +101,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_compactShader",
       "policy": "OwnerSnapshot",
@@ -110,7 +110,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_cullingDescriptorSetLayout",
       "policy": "OwnerSnapshot",
@@ -119,7 +119,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_cullingPipelineLayout",
       "policy": "OwnerSnapshot",
@@ -128,7 +128,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_drawCountBuffer",
       "policy": "OwnerSnapshot",
@@ -137,7 +137,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_frustumCullPipeline",
       "policy": "OwnerSnapshot",
@@ -146,7 +146,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_frustumCullShader",
       "policy": "OwnerSnapshot",
@@ -155,7 +155,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_indirectBuffer",
       "policy": "OwnerSnapshot",
@@ -164,7 +164,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_occlusionCullPipeline",
       "policy": "OwnerSnapshot",
@@ -173,7 +173,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_statsBuffer",
       "policy": "OwnerSnapshot",
@@ -182,7 +182,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_transientUploadBuffers",
       "policy": "SubmissionBatch",
@@ -191,7 +191,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_visibilityBuffer",
       "policy": "OwnerSnapshot",
@@ -200,7 +200,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_visibleInstanceBuffer",
       "policy": "OwnerSnapshot",
@@ -209,7 +209,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "MeshletRenderer",
       "symbol": "m_indexBuffer",
       "policy": "OwnerSnapshot",
@@ -218,7 +218,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "MeshletRenderer",
       "symbol": "m_meshletBuffer",
       "policy": "OwnerSnapshot",
@@ -227,7 +227,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "MeshletRenderer",
       "symbol": "m_meshletCullPipeline",
       "policy": "OwnerSnapshot",
@@ -236,7 +236,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "MeshletRenderer",
       "symbol": "m_meshletDrawPipeline",
       "policy": "OwnerSnapshot",
@@ -245,7 +245,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "MeshletRenderer",
       "symbol": "m_vertexBuffer",
       "policy": "OwnerSnapshot",
@@ -254,7 +254,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "MeshletRenderer",
       "symbol": "m_visibleMeshletBuffer",
       "policy": "OwnerSnapshot",
@@ -263,7 +263,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Graph/ResourceViewCache.cpp",
+      "path": "Source/Runtime/Render/Private/Graph/ResourceViewCache.cpp",
       "owner": "CachedTextureView",
       "symbol": "view",
       "policy": "PoolAvailability",
@@ -272,7 +272,7 @@
       "deviceLostRelease": "pool explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Graph/TransientResourcePool.cpp",
+      "path": "Source/Runtime/Render/Private/Graph/TransientResourcePool.cpp",
       "owner": "PooledBuffer",
       "symbol": "buffer",
       "policy": "PoolAvailability",
@@ -281,7 +281,7 @@
       "deviceLostRelease": "pool explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Graph/TransientResourcePool.cpp",
+      "path": "Source/Runtime/Render/Private/Graph/TransientResourcePool.cpp",
       "owner": "PooledTexture",
       "symbol": "texture",
       "policy": "PoolAvailability",
@@ -290,7 +290,7 @@
       "deviceLostRelease": "pool explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Lighting/ClusteredLighting.h",
+      "path": "Source/Runtime/Render/Include/Render/Lighting/ClusteredLighting.h",
       "owner": "ClusteredLighting",
       "symbol": "m_clusterAABBBuffer",
       "policy": "OwnerSnapshot",
@@ -299,7 +299,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Lighting/ClusteredLighting.h",
+      "path": "Source/Runtime/Render/Include/Render/Lighting/ClusteredLighting.h",
       "owner": "ClusteredLighting",
       "symbol": "m_clusterBuffer",
       "policy": "OwnerSnapshot",
@@ -308,7 +308,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Lighting/ClusteredLighting.h",
+      "path": "Source/Runtime/Render/Include/Render/Lighting/ClusteredLighting.h",
       "owner": "ClusteredLighting",
       "symbol": "m_clusterConstantsBuffer",
       "policy": "OwnerSnapshot",
@@ -317,7 +317,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Lighting/ClusteredLighting.h",
+      "path": "Source/Runtime/Render/Include/Render/Lighting/ClusteredLighting.h",
       "owner": "ClusteredLighting",
       "symbol": "m_lightIndexBuffer",
       "policy": "OwnerSnapshot",
@@ -326,7 +326,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Lighting/LightManager.h",
+      "path": "Source/Runtime/Render/Include/Render/Lighting/LightManager.h",
       "owner": "LightManager",
       "symbol": "m_lightConstantsBuffer",
       "policy": "OwnerSnapshot",
@@ -335,7 +335,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Lighting/LightManager.h",
+      "path": "Source/Runtime/Render/Include/Render/Lighting/LightManager.h",
       "owner": "LightManager",
       "symbol": "m_pointLightsBuffer",
       "policy": "OwnerSnapshot",
@@ -344,7 +344,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Lighting/LightManager.h",
+      "path": "Source/Runtime/Render/Include/Render/Lighting/LightManager.h",
       "owner": "LightManager",
       "symbol": "m_spotLightsBuffer",
       "policy": "OwnerSnapshot",
@@ -353,7 +353,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialBinder.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialBinder.h",
       "owner": "MaterialBinder",
       "symbol": "m_constantBuffer",
       "policy": "OwnerSnapshot",
@@ -362,7 +362,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialSystem",
       "symbol": "m_defaultBlackTexture",
       "policy": "OwnerSnapshot",
@@ -371,7 +371,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialSystem",
       "symbol": "m_defaultBlackTextureView",
       "policy": "OwnerSnapshot",
@@ -380,7 +380,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialSystem",
       "symbol": "m_defaultMaterialSet",
       "policy": "OwnerSnapshot",
@@ -389,7 +389,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialSystem",
       "symbol": "m_defaultNormalTexture",
       "policy": "OwnerSnapshot",
@@ -398,7 +398,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialSystem",
       "symbol": "m_defaultNormalTextureView",
       "policy": "OwnerSnapshot",
@@ -407,7 +407,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialSystem",
       "symbol": "m_defaultSampler",
       "policy": "OwnerSnapshot",
@@ -416,7 +416,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialSystem",
       "symbol": "m_defaultWhiteTexture",
       "policy": "OwnerSnapshot",
@@ -425,7 +425,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialSystem",
       "symbol": "m_defaultWhiteTextureView",
       "policy": "OwnerSnapshot",
@@ -434,7 +434,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialSystem",
       "symbol": "m_materialConstantBuffer",
       "policy": "OwnerSnapshot",
@@ -443,7 +443,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialTemplate.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialTemplate.h",
       "owner": "MaterialTemplate",
       "symbol": "m_pipeline",
       "policy": "OwnerSnapshot",
@@ -452,7 +452,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/CameraVelocityPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/CameraVelocityPass.h",
       "owner": "CameraVelocityPass",
       "symbol": "m_constantBuffer",
       "policy": "OwnerSnapshot",
@@ -461,7 +461,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/CameraVelocityPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/CameraVelocityPass.h",
       "owner": "CameraVelocityPass",
       "symbol": "m_sampler",
       "policy": "OwnerSnapshot",
@@ -470,7 +470,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/RayTracedReflectionCompositePass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/RayTracedReflectionCompositePass.h",
       "owner": "RayTracedReflectionCompositePass",
       "symbol": "m_constantBuffer",
       "policy": "OwnerSnapshot",
@@ -479,7 +479,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/RayTracedReflectionCompositePass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/RayTracedReflectionCompositePass.h",
       "owner": "RayTracedReflectionCompositePass",
       "symbol": "m_sampler",
       "policy": "OwnerSnapshot",
@@ -488,7 +488,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/RayTracedReflectionDenoisePass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/RayTracedReflectionDenoisePass.h",
       "owner": "RayTracedReflectionDenoisePass",
       "symbol": "m_constantBuffer",
       "policy": "OwnerSnapshot",
@@ -497,7 +497,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/RayTracedReflectionPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/RayTracedReflectionPass.h",
       "owner": "RayTracedReflectionPass",
       "symbol": "m_constantBuffer",
       "policy": "OwnerSnapshot",
@@ -506,7 +506,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/RayTracedReflectionPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/RayTracedReflectionPass.h",
       "owner": "RayTracedReflectionPass",
       "symbol": "m_fallbackVelocityTexture",
       "policy": "OwnerSnapshot",
@@ -515,7 +515,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/RayTracedReflectionPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/RayTracedReflectionPass.h",
       "owner": "RayTracedReflectionPass",
       "symbol": "m_historyDepthTextures",
       "policy": "OwnerSnapshot",
@@ -524,7 +524,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/RayTracedReflectionPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/RayTracedReflectionPass.h",
       "owner": "RayTracedReflectionPass",
       "symbol": "m_historyNormalTextures",
       "policy": "OwnerSnapshot",
@@ -533,7 +533,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/RayTracedReflectionPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/RayTracedReflectionPass.h",
       "owner": "RayTracedReflectionPass",
       "symbol": "m_historyTextures",
       "policy": "OwnerSnapshot",
@@ -542,7 +542,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/RayTracedReflectionPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/RayTracedReflectionPass.h",
       "owner": "RayTracedReflectionPass",
       "symbol": "m_reflectionTexture",
       "policy": "OwnerSnapshot",
@@ -551,7 +551,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/RayTracedReflectionPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/RayTracedReflectionPass.h",
       "owner": "RayTracedReflectionPass",
       "symbol": "m_timingQueryPool",
       "policy": "OwnerSnapshot",
@@ -560,7 +560,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/RayTracedReflectionPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/RayTracedReflectionPass.h",
       "owner": "RayTracedReflectionPass",
       "symbol": "m_timingReadbackBuffers",
       "policy": "SurfaceGeneration",
@@ -569,7 +569,7 @@
       "deviceLostRelease": "surface explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/SkyboxPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/SkyboxPass.h",
       "owner": "SkyboxPass",
       "symbol": "m_fallbackCubemap",
       "policy": "OwnerSnapshot",
@@ -578,7 +578,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/SkyboxPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/SkyboxPass.h",
       "owner": "SkyboxPass",
       "symbol": "m_sampler",
       "policy": "OwnerSnapshot",
@@ -587,7 +587,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/UIPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/UIPass.h",
       "owner": "TextureDescriptorEntry",
       "symbol": "descriptorSet",
       "policy": "ShutdownAfterDrain",
@@ -596,7 +596,7 @@
       "deviceLostRelease": "ordered Render device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/UIPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/UIPass.h",
       "owner": "UIPass",
       "symbol": "m_vertexBuffer",
       "policy": "ShutdownAfterDrain",
@@ -605,7 +605,7 @@
       "deviceLostRelease": "ordered Render device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/UIPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/UIPass.h",
       "owner": "UIPass",
       "symbol": "m_indexBuffer",
       "policy": "ShutdownAfterDrain",
@@ -614,7 +614,7 @@
       "deviceLostRelease": "ordered Render device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/UIPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/UIPass.h",
       "owner": "UIPass",
       "symbol": "m_fontAtlasTexture",
       "policy": "ShutdownAfterDrain",
@@ -623,7 +623,7 @@
       "deviceLostRelease": "ordered Render device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/UIPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/UIPass.h",
       "owner": "UIPass",
       "symbol": "m_fontAtlasTextureView",
       "policy": "ShutdownAfterDrain",
@@ -632,7 +632,7 @@
       "deviceLostRelease": "ordered Render device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/UIPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/UIPass.h",
       "owner": "UIPass",
       "symbol": "m_fontAtlasStagingBuffer",
       "policy": "ShutdownAfterDrain",
@@ -641,7 +641,7 @@
       "deviceLostRelease": "ordered Render device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/UIPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/UIPass.h",
       "owner": "UIPass",
       "symbol": "m_fontAtlasDescriptorSet",
       "policy": "ShutdownAfterDrain",
@@ -650,7 +650,7 @@
       "deviceLostRelease": "ordered Render device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/UIPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/UIPass.h",
       "owner": "UIPass",
       "symbol": "m_whiteTexture",
       "policy": "ShutdownAfterDrain",
@@ -659,7 +659,7 @@
       "deviceLostRelease": "ordered Render device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/UIPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/UIPass.h",
       "owner": "UIPass",
       "symbol": "m_whiteTextureView",
       "policy": "ShutdownAfterDrain",
@@ -668,7 +668,7 @@
       "deviceLostRelease": "ordered Render device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/UIPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/UIPass.h",
       "owner": "UIPass",
       "symbol": "m_whiteTextureStagingBuffer",
       "policy": "ShutdownAfterDrain",
@@ -677,7 +677,7 @@
       "deviceLostRelease": "ordered Render device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/UIPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/UIPass.h",
       "owner": "UIPass",
       "symbol": "m_whiteDescriptorSet",
       "policy": "ShutdownAfterDrain",
@@ -686,7 +686,7 @@
       "deviceLostRelease": "ordered Render device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/UIPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/UIPass.h",
       "owner": "UIPass",
       "symbol": "m_textureSampler",
       "policy": "ShutdownAfterDrain",
@@ -695,7 +695,7 @@
       "deviceLostRelease": "ordered Render device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/UIPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/UIPass.h",
       "owner": "UIPass",
       "symbol": "m_fontSampler",
       "policy": "ShutdownAfterDrain",
@@ -704,7 +704,7 @@
       "deviceLostRelease": "ordered Render device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/UIPass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/UIPass.h",
       "owner": "UIPass",
       "symbol": "m_textureSetLayout",
       "policy": "ShutdownAfterDrain",
@@ -713,7 +713,7 @@
       "deviceLostRelease": "ordered Render device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_bloomAdditivePipeline",
       "policy": "OwnerSnapshot",
@@ -722,7 +722,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_bloomPipeline",
       "policy": "OwnerSnapshot",
@@ -731,7 +731,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_bloomPixelShader",
       "policy": "OwnerSnapshot",
@@ -740,7 +740,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_bloomVertexShader",
       "policy": "OwnerSnapshot",
@@ -749,7 +749,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_cameraVelocityPipeline",
       "policy": "OwnerSnapshot",
@@ -758,7 +758,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_cameraVelocityPixelShader",
       "policy": "OwnerSnapshot",
@@ -767,7 +767,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_chromaticAberrationPipeline",
       "policy": "OwnerSnapshot",
@@ -776,7 +776,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_chromaticAberrationPixelShader",
       "policy": "OwnerSnapshot",
@@ -785,7 +785,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_chromaticAberrationVertexShader",
       "policy": "OwnerSnapshot",
@@ -794,7 +794,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_colorGradingPipeline",
       "policy": "OwnerSnapshot",
@@ -803,7 +803,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_colorGradingPixelShader",
       "policy": "OwnerSnapshot",
@@ -812,7 +812,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_colorGradingVertexShader",
       "policy": "OwnerSnapshot",
@@ -821,7 +821,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_depthOnlyPipeline",
       "policy": "OwnerSnapshot",
@@ -830,7 +830,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_depthOnlyVertexShader",
       "policy": "OwnerSnapshot",
@@ -839,7 +839,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_directionalShadowSampler",
       "policy": "OwnerSnapshot",
@@ -848,7 +848,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_fallbackClusterBuffer",
       "policy": "OwnerSnapshot",
@@ -857,7 +857,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_fallbackClusterConstantsBuffer",
       "policy": "OwnerSnapshot",
@@ -866,7 +866,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_fallbackClusterLightIndexBuffer",
       "policy": "OwnerSnapshot",
@@ -875,7 +875,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_fallbackDirectionalShadowTexture",
       "policy": "OwnerSnapshot",
@@ -884,7 +884,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_fallbackDirectionalShadowView",
       "policy": "OwnerSnapshot",
@@ -893,7 +893,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_fallbackLightConstantsBuffer",
       "policy": "OwnerSnapshot",
@@ -902,7 +902,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_fallbackPointLightsBuffer",
       "policy": "OwnerSnapshot",
@@ -911,7 +911,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_fallbackRayTracedShadowMaskTexture",
       "policy": "OwnerSnapshot",
@@ -920,7 +920,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_fallbackRayTracedShadowMaskView",
       "policy": "OwnerSnapshot",
@@ -929,7 +929,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_fallbackSpotLightsBuffer",
       "policy": "OwnerSnapshot",
@@ -938,7 +938,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_filmGrainPipeline",
       "policy": "OwnerSnapshot",
@@ -947,7 +947,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_filmGrainPixelShader",
       "policy": "OwnerSnapshot",
@@ -956,7 +956,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_filmGrainVertexShader",
       "policy": "OwnerSnapshot",
@@ -965,7 +965,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_frameDescriptorSet",
       "policy": "OwnerSnapshot",
@@ -974,7 +974,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_fxaaPipeline",
       "policy": "OwnerSnapshot",
@@ -983,7 +983,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_fxaaPixelShader",
       "policy": "OwnerSnapshot",
@@ -992,7 +992,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_fxaaVertexShader",
       "policy": "OwnerSnapshot",
@@ -1001,7 +1001,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_gpuDrivenDepthOnlyPipeline",
       "policy": "OwnerSnapshot",
@@ -1010,7 +1010,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_gpuDrivenDepthOnlyVertexShader",
       "policy": "OwnerSnapshot",
@@ -1019,7 +1019,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_gpuDrivenVertexShader",
       "policy": "OwnerSnapshot",
@@ -1028,7 +1028,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_maskedObjectVelocityPipeline",
       "policy": "OwnerSnapshot",
@@ -1037,7 +1037,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_maskedObjectVelocityPixelShader",
       "policy": "OwnerSnapshot",
@@ -1046,7 +1046,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_maskedObjectVelocityVertexShader",
       "policy": "OwnerSnapshot",
@@ -1055,7 +1055,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_maskedPipeline",
       "policy": "OwnerSnapshot",
@@ -1064,7 +1064,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_objectConstantBuffer",
       "policy": "OwnerSnapshot",
@@ -1073,7 +1073,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_objectDescriptorSet",
       "policy": "OwnerSnapshot",
@@ -1082,7 +1082,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_objectInstanceFallbackBuffer",
       "policy": "SurfaceGeneration",
@@ -1091,7 +1091,7 @@
       "deviceLostRelease": "surface explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_objectVelocityPipeline",
       "policy": "OwnerSnapshot",
@@ -1100,7 +1100,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_objectVelocityPixelShader",
       "policy": "OwnerSnapshot",
@@ -1109,7 +1109,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_objectVelocityVertexShader",
       "policy": "OwnerSnapshot",
@@ -1118,7 +1118,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_opaquePipeline",
       "policy": "OwnerSnapshot",
@@ -1127,7 +1127,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_pipelineCache",
       "policy": "OwnerSnapshot",
@@ -1136,7 +1136,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_pipelineLayout",
       "policy": "OwnerSnapshot",
@@ -1145,7 +1145,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_pixelShader",
       "policy": "OwnerSnapshot",
@@ -1154,7 +1154,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_postProcessPipelineLayout",
       "policy": "OwnerSnapshot",
@@ -1163,7 +1163,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_postProcessSetLayout",
       "policy": "OwnerSnapshot",
@@ -1172,7 +1172,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedReflectionAnyHitShader",
       "policy": "OwnerSnapshot",
@@ -1181,7 +1181,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedReflectionClosestHitShader",
       "policy": "OwnerSnapshot",
@@ -1190,7 +1190,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedReflectionCompositePipeline",
       "policy": "OwnerSnapshot",
@@ -1199,7 +1199,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedReflectionCompositePixelShader",
       "policy": "OwnerSnapshot",
@@ -1208,7 +1208,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedReflectionCompositeVertexShader",
       "policy": "OwnerSnapshot",
@@ -1217,7 +1217,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedReflectionDenoisePipeline",
       "policy": "OwnerSnapshot",
@@ -1226,7 +1226,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedReflectionDenoisePipelineLayout",
       "policy": "OwnerSnapshot",
@@ -1235,7 +1235,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedReflectionDenoisePixelShader",
       "policy": "OwnerSnapshot",
@@ -1244,7 +1244,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedReflectionDenoiseSetLayout",
       "policy": "OwnerSnapshot",
@@ -1253,7 +1253,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedReflectionDenoiseVertexShader",
       "policy": "OwnerSnapshot",
@@ -1262,7 +1262,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedReflectionMissShader",
       "policy": "OwnerSnapshot",
@@ -1271,7 +1271,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedReflectionPipeline",
       "policy": "OwnerSnapshot",
@@ -1280,7 +1280,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedReflectionPipelineLayout",
       "policy": "OwnerSnapshot",
@@ -1289,7 +1289,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedReflectionRayGenShader",
       "policy": "OwnerSnapshot",
@@ -1298,7 +1298,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedReflectionSetLayout",
       "policy": "OwnerSnapshot",
@@ -1307,7 +1307,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedReflectionShaderTable",
       "policy": "OwnerSnapshot",
@@ -1316,7 +1316,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedShadowAnyHitShader",
       "policy": "OwnerSnapshot",
@@ -1325,7 +1325,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedShadowClosestHitShader",
       "policy": "OwnerSnapshot",
@@ -1334,7 +1334,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedShadowMissShader",
       "policy": "OwnerSnapshot",
@@ -1343,7 +1343,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedShadowPipeline",
       "policy": "OwnerSnapshot",
@@ -1352,7 +1352,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedShadowPipelineLayout",
       "policy": "OwnerSnapshot",
@@ -1361,7 +1361,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedShadowRayGenShader",
       "policy": "OwnerSnapshot",
@@ -1370,7 +1370,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedShadowSetLayout",
       "policy": "OwnerSnapshot",
@@ -1379,7 +1379,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rayTracedShadowShaderTable",
       "policy": "OwnerSnapshot",
@@ -1388,7 +1388,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_setLayouts",
       "policy": "OwnerSnapshot",
@@ -1397,7 +1397,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_skyboxPipeline",
       "policy": "OwnerSnapshot",
@@ -1406,7 +1406,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_skyboxPipelineLayout",
       "policy": "OwnerSnapshot",
@@ -1415,7 +1415,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_skyboxPixelShader",
       "policy": "OwnerSnapshot",
@@ -1424,7 +1424,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_skyboxSetLayout",
       "policy": "OwnerSnapshot",
@@ -1433,7 +1433,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_skyboxVertexShader",
       "policy": "OwnerSnapshot",
@@ -1442,7 +1442,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_ssaoPipeline",
       "policy": "OwnerSnapshot",
@@ -1451,7 +1451,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_ssaoPixelShader",
       "policy": "OwnerSnapshot",
@@ -1460,7 +1460,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_ssaoVertexShader",
       "policy": "OwnerSnapshot",
@@ -1469,7 +1469,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_toneMappingPipeline",
       "policy": "OwnerSnapshot",
@@ -1478,7 +1478,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_toneMappingPixelShader",
       "policy": "OwnerSnapshot",
@@ -1487,7 +1487,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_toneMappingVertexShader",
       "policy": "OwnerSnapshot",
@@ -1496,7 +1496,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_transparentPipeline",
       "policy": "OwnerSnapshot",
@@ -1505,7 +1505,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_uiPipeline",
       "policy": "OwnerSnapshot",
@@ -1514,7 +1514,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_uiPipelineLayout",
       "policy": "OwnerSnapshot",
@@ -1523,7 +1523,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_uiPixelShader",
       "policy": "OwnerSnapshot",
@@ -1532,7 +1532,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_uiTextureSetLayout",
       "policy": "OwnerSnapshot",
@@ -1541,7 +1541,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_uiVertexShader",
       "policy": "OwnerSnapshot",
@@ -1550,7 +1550,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_vertexShader",
       "policy": "OwnerSnapshot",
@@ -1559,7 +1559,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_viewConstantBuffer",
       "policy": "OwnerSnapshot",
@@ -1568,7 +1568,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_vignettePipeline",
       "policy": "OwnerSnapshot",
@@ -1577,7 +1577,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_vignettePixelShader",
       "policy": "OwnerSnapshot",
@@ -1586,7 +1586,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_vignetteVertexShader",
       "policy": "OwnerSnapshot",
@@ -1595,7 +1595,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/Bloom.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/Bloom.h",
       "owner": "BloomPass",
       "symbol": "m_sampler",
       "policy": "OwnerSnapshot",
@@ -1604,7 +1604,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/ChromaticAberration.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/ChromaticAberration.h",
       "owner": "ChromaticAberrationPass",
       "symbol": "m_constantBuffer",
       "policy": "OwnerSnapshot",
@@ -1613,7 +1613,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/ChromaticAberration.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/ChromaticAberration.h",
       "owner": "ChromaticAberrationPass",
       "symbol": "m_sampler",
       "policy": "OwnerSnapshot",
@@ -1622,7 +1622,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/ColorGrading.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/ColorGrading.h",
       "owner": "ColorGradingPass",
       "symbol": "m_constantBuffer",
       "policy": "OwnerSnapshot",
@@ -1631,7 +1631,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/ColorGrading.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/ColorGrading.h",
       "owner": "ColorGradingPass",
       "symbol": "m_sampler",
       "policy": "OwnerSnapshot",
@@ -1640,7 +1640,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/FilmGrain.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/FilmGrain.h",
       "owner": "FilmGrainPass",
       "symbol": "m_constantBuffer",
       "policy": "OwnerSnapshot",
@@ -1649,7 +1649,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/FilmGrain.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/FilmGrain.h",
       "owner": "FilmGrainPass",
       "symbol": "m_sampler",
       "policy": "OwnerSnapshot",
@@ -1658,7 +1658,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/FXAA.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/FXAA.h",
       "owner": "FXAAPass",
       "symbol": "m_constantBuffer",
       "policy": "OwnerSnapshot",
@@ -1667,7 +1667,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/FXAA.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/FXAA.h",
       "owner": "FXAAPass",
       "symbol": "m_sampler",
       "policy": "OwnerSnapshot",
@@ -1676,7 +1676,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSAO.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSAO.h",
       "owner": "SSAO",
       "symbol": "m_aoBlurred",
       "policy": "OwnerSnapshot",
@@ -1685,7 +1685,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSAO.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSAO.h",
       "owner": "SSAO",
       "symbol": "m_aoBlurredRTV",
       "policy": "OwnerSnapshot",
@@ -1694,7 +1694,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSAO.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSAO.h",
       "owner": "SSAO",
       "symbol": "m_aoHistory",
       "policy": "OwnerSnapshot",
@@ -1703,7 +1703,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSAO.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSAO.h",
       "owner": "SSAO",
       "symbol": "m_aoResult",
       "policy": "OwnerSnapshot",
@@ -1712,7 +1712,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSAO.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSAO.h",
       "owner": "SSAO",
       "symbol": "m_aoResultRTV",
       "policy": "OwnerSnapshot",
@@ -1721,7 +1721,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSAO.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSAO.h",
       "owner": "SSAO",
       "symbol": "m_blurHPipeline",
       "policy": "OwnerSnapshot",
@@ -1730,7 +1730,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSAO.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSAO.h",
       "owner": "SSAO",
       "symbol": "m_blurVPipeline",
       "policy": "OwnerSnapshot",
@@ -1739,7 +1739,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSAO.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSAO.h",
       "owner": "SSAO",
       "symbol": "m_constantBuffer",
       "policy": "OwnerSnapshot",
@@ -1748,7 +1748,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSAO.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSAO.h",
       "owner": "SSAO",
       "symbol": "m_noiseTexture",
       "policy": "OwnerSnapshot",
@@ -1757,7 +1757,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSAO.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSAO.h",
       "owner": "SSAO",
       "symbol": "m_sampleKernelBuffer",
       "policy": "OwnerSnapshot",
@@ -1766,7 +1766,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSAO.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSAO.h",
       "owner": "SSAO",
       "symbol": "m_ssaoPipeline",
       "policy": "OwnerSnapshot",
@@ -1775,7 +1775,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSAO.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSAO.h",
       "owner": "SSAO",
       "symbol": "m_temporalPipeline",
       "policy": "OwnerSnapshot",
@@ -1784,7 +1784,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSAO.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSAO.h",
       "owner": "SSAOPass",
       "symbol": "m_constantBuffer",
       "policy": "OwnerSnapshot",
@@ -1793,7 +1793,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSAO.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSAO.h",
       "owner": "SSAOPass",
       "symbol": "m_sampler",
       "policy": "OwnerSnapshot",
@@ -1802,7 +1802,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSR.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
       "owner": "SSR",
       "symbol": "m_constantBuffer",
       "policy": "OwnerSnapshot",
@@ -1811,7 +1811,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSR.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
       "owner": "SSR",
       "symbol": "m_history",
       "policy": "OwnerSnapshot",
@@ -1820,7 +1820,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSR.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
       "owner": "SSR",
       "symbol": "m_hitMask",
       "policy": "OwnerSnapshot",
@@ -1829,7 +1829,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSR.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
       "owner": "SSR",
       "symbol": "m_hiZMips",
       "policy": "OwnerSnapshot",
@@ -1838,7 +1838,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSR.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
       "owner": "SSR",
       "symbol": "m_hiZPipeline",
       "policy": "OwnerSnapshot",
@@ -1847,7 +1847,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSR.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
       "owner": "SSR",
       "symbol": "m_hiZPyramid",
       "policy": "OwnerSnapshot",
@@ -1856,7 +1856,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSR.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
       "owner": "SSR",
       "symbol": "m_rayHitUV",
       "policy": "OwnerSnapshot",
@@ -1865,7 +1865,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSR.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
       "owner": "SSR",
       "symbol": "m_rayMarchPipeline",
       "policy": "OwnerSnapshot",
@@ -1874,7 +1874,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSR.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
       "owner": "SSR",
       "symbol": "m_reflectionResult",
       "policy": "OwnerSnapshot",
@@ -1883,7 +1883,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSR.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
       "owner": "SSR",
       "symbol": "m_resolvePipeline",
       "policy": "OwnerSnapshot",
@@ -1892,7 +1892,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/SSR.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
       "owner": "SSR",
       "symbol": "m_temporalPipeline",
       "policy": "OwnerSnapshot",
@@ -1901,7 +1901,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/TAA.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/TAA.h",
       "owner": "TAA",
       "symbol": "m_constantBuffer",
       "policy": "OwnerSnapshot",
@@ -1910,7 +1910,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/TAA.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/TAA.h",
       "owner": "TAA",
       "symbol": "m_copyPipeline",
       "policy": "OwnerSnapshot",
@@ -1919,7 +1919,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/TAA.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/TAA.h",
       "owner": "TAA",
       "symbol": "m_history",
       "policy": "OwnerSnapshot",
@@ -1928,7 +1928,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/TAA.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/TAA.h",
       "owner": "TAA",
       "symbol": "m_result",
       "policy": "OwnerSnapshot",
@@ -1937,7 +1937,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/TAA.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/TAA.h",
       "owner": "TAA",
       "symbol": "m_sharpenPipeline",
       "policy": "OwnerSnapshot",
@@ -1946,7 +1946,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/TAA.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/TAA.h",
       "owner": "TAA",
       "symbol": "m_taaPipeline",
       "policy": "OwnerSnapshot",
@@ -1955,7 +1955,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/ToneMapping.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/ToneMapping.h",
       "owner": "ToneMappingPass",
       "symbol": "m_constantBuffer",
       "policy": "OwnerSnapshot",
@@ -1964,7 +1964,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/ToneMapping.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/ToneMapping.h",
       "owner": "ToneMappingPass",
       "symbol": "m_sampler",
       "policy": "OwnerSnapshot",
@@ -1973,7 +1973,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/Vignette.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/Vignette.h",
       "owner": "VignettePass",
       "symbol": "m_constantBuffer",
       "policy": "OwnerSnapshot",
@@ -1982,7 +1982,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/Vignette.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/Vignette.h",
       "owner": "VignettePass",
       "symbol": "m_sampler",
       "policy": "OwnerSnapshot",
@@ -1991,7 +1991,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/RayTracing/RayTracingSceneManager.h",
+      "path": "Source/Runtime/Render/Include/Render/RayTracing/RayTracingSceneManager.h",
       "owner": "BLASCacheEntry",
       "symbol": "accelerationStructure",
       "policy": "OwnerSnapshot",
@@ -2000,7 +2000,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/RayTracing/RayTracingSceneManager.h",
+      "path": "Source/Runtime/Render/Include/Render/RayTracing/RayTracingSceneManager.h",
       "owner": "BLASCacheEntry",
       "symbol": "scratchBuffer",
       "policy": "OwnerSnapshot",
@@ -2009,7 +2009,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/RayTracing/RayTracingSceneManager.h",
+      "path": "Source/Runtime/Render/Include/Render/RayTracing/RayTracingSceneManager.h",
       "owner": "RayTracingSceneManager",
       "symbol": "m_instanceAlphaMetadataBuffer",
       "policy": "OwnerSnapshot",
@@ -2018,7 +2018,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/RayTracing/RayTracingSceneManager.h",
+      "path": "Source/Runtime/Render/Include/Render/RayTracing/RayTracingSceneManager.h",
       "owner": "RayTracingSceneManager",
       "symbol": "m_instanceBuffer",
       "policy": "OwnerSnapshot",
@@ -2027,7 +2027,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/RayTracing/RayTracingSceneManager.h",
+      "path": "Source/Runtime/Render/Include/Render/RayTracing/RayTracingSceneManager.h",
       "owner": "RayTracingSceneManager",
       "symbol": "m_instanceMaterialMetadataBuffer",
       "policy": "OwnerSnapshot",
@@ -2036,7 +2036,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/RayTracing/RayTracingSceneManager.h",
+      "path": "Source/Runtime/Render/Include/Render/RayTracing/RayTracingSceneManager.h",
       "owner": "RayTracingSceneManager",
       "symbol": "m_topLevelAS",
       "policy": "OwnerSnapshot",
@@ -2045,7 +2045,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/RayTracing/RayTracingSceneManager.h",
+      "path": "Source/Runtime/Render/Include/Render/RayTracing/RayTracingSceneManager.h",
       "owner": "RayTracingSceneManager",
       "symbol": "m_topLevelScratchBuffer",
       "policy": "OwnerSnapshot",
@@ -2054,7 +2054,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Renderer/SceneRenderer.h",
+      "path": "Source/Runtime/Render/Include/Render/Renderer/SceneRenderer.h",
       "owner": "SceneRenderer",
       "symbol": "m_depthTexture",
       "policy": "OwnerSnapshot",
@@ -2063,7 +2063,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Renderer/SceneRenderer.h",
+      "path": "Source/Runtime/Render/Include/Render/Renderer/SceneRenderer.h",
       "owner": "SceneRenderer",
       "symbol": "m_depthTextureView",
       "policy": "OwnerSnapshot",
@@ -2072,7 +2072,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Sky/AtmosphericScattering.h",
+      "path": "Source/Runtime/Render/Include/Render/Sky/AtmosphericScattering.h",
       "owner": "AtmosphericScattering",
       "symbol": "m_aerialPerspectiveLut",
       "policy": "OwnerSnapshot",
@@ -2081,7 +2081,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Sky/AtmosphericScattering.h",
+      "path": "Source/Runtime/Render/Include/Render/Sky/AtmosphericScattering.h",
       "owner": "AtmosphericScattering",
       "symbol": "m_aerialPerspectivePipeline",
       "policy": "OwnerSnapshot",
@@ -2090,7 +2090,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Sky/AtmosphericScattering.h",
+      "path": "Source/Runtime/Render/Include/Render/Sky/AtmosphericScattering.h",
       "owner": "AtmosphericScattering",
       "symbol": "m_constantBuffer",
       "policy": "OwnerSnapshot",
@@ -2099,7 +2099,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Sky/AtmosphericScattering.h",
+      "path": "Source/Runtime/Render/Include/Render/Sky/AtmosphericScattering.h",
       "owner": "AtmosphericScattering",
       "symbol": "m_multiScatteringLut",
       "policy": "OwnerSnapshot",
@@ -2108,7 +2108,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Sky/AtmosphericScattering.h",
+      "path": "Source/Runtime/Render/Include/Render/Sky/AtmosphericScattering.h",
       "owner": "AtmosphericScattering",
       "symbol": "m_multiScatteringPipeline",
       "policy": "OwnerSnapshot",
@@ -2117,7 +2117,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Sky/AtmosphericScattering.h",
+      "path": "Source/Runtime/Render/Include/Render/Sky/AtmosphericScattering.h",
       "owner": "AtmosphericScattering",
       "symbol": "m_skyRenderPipeline",
       "policy": "OwnerSnapshot",
@@ -2126,7 +2126,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Sky/AtmosphericScattering.h",
+      "path": "Source/Runtime/Render/Include/Render/Sky/AtmosphericScattering.h",
       "owner": "AtmosphericScattering",
       "symbol": "m_skyViewLut",
       "policy": "OwnerSnapshot",
@@ -2135,7 +2135,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Sky/AtmosphericScattering.h",
+      "path": "Source/Runtime/Render/Include/Render/Sky/AtmosphericScattering.h",
       "owner": "AtmosphericScattering",
       "symbol": "m_skyViewPipeline",
       "policy": "OwnerSnapshot",
@@ -2144,7 +2144,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Sky/AtmosphericScattering.h",
+      "path": "Source/Runtime/Render/Include/Render/Sky/AtmosphericScattering.h",
       "owner": "AtmosphericScattering",
       "symbol": "m_transmittanceLut",
       "policy": "OwnerSnapshot",
@@ -2153,7 +2153,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Sky/AtmosphericScattering.h",
+      "path": "Source/Runtime/Render/Include/Render/Sky/AtmosphericScattering.h",
       "owner": "AtmosphericScattering",
       "symbol": "m_transmittancePipeline",
       "policy": "OwnerSnapshot",
@@ -2162,7 +2162,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Graph/RenderGraphInternal.h",
+      "path": "Source/Runtime/Render/Private/Graph/RenderGraphInternal.h",
       "owner": "TransientHeap",
       "symbol": "heap",
       "policy": "OwnerSnapshot",
@@ -2171,7 +2171,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Material/MaterialSystem.cpp",
+      "path": "Source/Runtime/Render/Private/Material/MaterialSystem.cpp",
       "owner": "DefaultTexture",
       "symbol": "texture",
       "policy": "OwnerSnapshot",
@@ -2180,7 +2180,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Material/MaterialSystem.cpp",
+      "path": "Source/Runtime/Render/Private/Material/MaterialSystem.cpp",
       "owner": "DefaultTexture",
       "symbol": "view",
       "policy": "OwnerSnapshot",
@@ -2189,7 +2189,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/TerrainPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/TerrainPass.cpp",
       "owner": "TerrainPass",
       "symbol": "m_pipeline",
       "policy": "OwnerSnapshot",
@@ -2198,7 +2198,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/WaterPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/WaterPass.cpp",
       "owner": "WaterPass",
       "symbol": "m_surfacePipeline",
       "policy": "SurfaceGeneration",
@@ -2207,7 +2207,7 @@
       "deviceLostRelease": "surface explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/WaterPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/WaterPass.cpp",
       "owner": "WaterPass",
       "symbol": "m_underwaterPipeline",
       "policy": "OwnerSnapshot",
@@ -2216,7 +2216,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Resources/RenderResourceRegistry.h",
+      "path": "Source/Runtime/Render/Private/Resources/RenderResourceRegistry.h",
       "owner": "RenderMaterialResourceData",
       "symbol": "constants",
       "policy": "RegistryExactGeneration",
@@ -2225,7 +2225,7 @@
       "deviceLostRelease": "registry explicit device-lost teardown without reporting completion"
     },
     {
-      "path": "Render/Private/Resources/RenderResourceRegistry.h",
+      "path": "Source/Runtime/Render/Private/Resources/RenderResourceRegistry.h",
       "owner": "RenderMaterialResourceData",
       "symbol": "samplers",
       "policy": "RegistryExactGeneration",
@@ -2234,7 +2234,7 @@
       "deviceLostRelease": "registry explicit device-lost teardown without reporting completion"
     },
     {
-      "path": "Render/Private/Resources/RenderResourceRegistry.h",
+      "path": "Source/Runtime/Render/Private/Resources/RenderResourceRegistry.h",
       "owner": "RenderOwnedBuffer",
       "symbol": "buffer",
       "policy": "RegistryExactGeneration",
@@ -2243,7 +2243,7 @@
       "deviceLostRelease": "registry explicit device-lost teardown without reporting completion"
     },
     {
-      "path": "Render/Private/Resources/RenderResourceRegistry.h",
+      "path": "Source/Runtime/Render/Private/Resources/RenderResourceRegistry.h",
       "owner": "RenderTextureResourceData",
       "symbol": "texture",
       "policy": "RegistryExactGeneration",
@@ -2252,7 +2252,7 @@
       "deviceLostRelease": "registry explicit device-lost teardown without reporting completion"
     },
     {
-      "path": "Render/Private/RenderSubsystem.cpp",
+      "path": "Source/Runtime/Render/Private/RenderSubsystem.cpp",
       "owner": "CaptureReadback",
       "symbol": "buffer",
       "policy": "SubmissionBatch",
@@ -2261,7 +2261,7 @@
       "deviceLostRelease": "local capture ownership releases without mapping when the runtime loses completion"
     },
     {
-      "path": "Render/Private/Resources/RenderSubmissionTracker.h",
+      "path": "Source/Runtime/Render/Private/Resources/RenderSubmissionTracker.h",
       "owner": "DomainState",
       "symbol": "fence",
       "policy": "ShutdownAfterDrain",
@@ -2270,7 +2270,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Resources/RenderUploadProcessor.cpp",
+      "path": "Source/Runtime/Render/Private/Resources/RenderUploadProcessor.cpp",
       "owner": "PendingUpload",
       "symbol": "commandContext",
       "policy": "SubmissionBatch",
@@ -2279,7 +2279,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Resources/RenderUploadProcessor.cpp",
+      "path": "Source/Runtime/Render/Private/Resources/RenderUploadProcessor.cpp",
       "owner": "PendingUpload",
       "symbol": "stagingBuffer",
       "policy": "SubmissionBatch",
@@ -2288,7 +2288,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Resources/RenderUploadProcessor.cpp",
+      "path": "Source/Runtime/Render/Private/Resources/RenderUploadProcessor.cpp",
       "owner": "RenderUploadProcessor",
       "symbol": "batchCommandContext",
       "policy": "SubmissionBatch",
@@ -2297,7 +2297,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Resources/RenderUploadProcessor.h",
+      "path": "Source/Runtime/Render/Private/Resources/RenderUploadProcessor.h",
       "owner": "InFlightUpload",
       "symbol": "commandContext",
       "policy": "SubmissionBatch",
@@ -2306,7 +2306,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Resources/RenderUploadProcessor.h",
+      "path": "Source/Runtime/Render/Private/Resources/RenderUploadProcessor.h",
       "owner": "InFlightUpload",
       "symbol": "stagingBuffers",
       "policy": "SubmissionBatch",
@@ -3899,7 +3899,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Context/RenderContext.h",
+      "path": "Source/Runtime/Render/Include/Render/Context/RenderContext.h",
       "owner": "RenderContext",
       "symbol": "m_inFlightQueueContexts",
       "policy": "ShutdownAfterDrain",
@@ -3908,7 +3908,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Context/RenderContext.h",
+      "path": "Source/Runtime/Render/Include/Render/Context/RenderContext.h",
       "owner": "RenderContext",
       "symbol": "m_pendingGraphicsGateway",
       "policy": "ShutdownAfterDrain",
@@ -3917,7 +3917,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Context/RenderContext.h",
+      "path": "Source/Runtime/Render/Include/Render/Context/RenderContext.h",
       "owner": "RenderContext",
       "symbol": "m_pendingQueueContexts",
       "policy": "ShutdownAfterDrain",
@@ -3926,7 +3926,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_finalizePipeline",
       "policy": "OwnerSnapshot",
@@ -3935,7 +3935,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_finalizeShader",
       "policy": "OwnerSnapshot",
@@ -3944,7 +3944,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_gpuSceneCompactPipeline",
       "policy": "OwnerSnapshot",
@@ -3953,7 +3953,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_gpuSceneCompactShader",
       "policy": "OwnerSnapshot",
@@ -3962,7 +3962,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_gpuSceneDescriptorSet",
       "policy": "OwnerSnapshot",
@@ -3971,7 +3971,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_gpuSceneDescriptorSetLayout",
       "policy": "OwnerSnapshot",
@@ -3980,7 +3980,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_gpuSceneFinalizePipeline",
       "policy": "OwnerSnapshot",
@@ -3989,7 +3989,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_gpuSceneFinalizeShader",
       "policy": "OwnerSnapshot",
@@ -3998,7 +3998,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_gpuSceneFrustumCullPipeline",
       "policy": "OwnerSnapshot",
@@ -4007,7 +4007,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_gpuSceneFrustumCullShader",
       "policy": "OwnerSnapshot",
@@ -4016,7 +4016,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_gpuScenePipelineLayout",
       "policy": "OwnerSnapshot",
@@ -4025,7 +4025,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_gpuSceneTableBuffers",
       "policy": "OwnerSnapshot",
@@ -4034,7 +4034,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCulling",
       "symbol": "m_instanceIndexBuffer",
       "policy": "OwnerSnapshot",
@@ -4043,7 +4043,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCullingFrameInputs",
       "symbol": "constantsBuffer",
       "policy": "SubmissionBatch",
@@ -4052,7 +4052,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCullingFrameInputs",
       "symbol": "descriptorSet",
       "policy": "SubmissionBatch",
@@ -4061,7 +4061,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCullingFrameInputs",
       "symbol": "drawCountBuffer",
       "policy": "SubmissionBatch",
@@ -4070,7 +4070,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCullingFrameInputs",
       "symbol": "gpuSceneCandidateBuffer",
       "policy": "SubmissionBatch",
@@ -4079,7 +4079,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCullingFrameInputs",
       "symbol": "gpuSceneDescriptorSet",
       "policy": "SubmissionBatch",
@@ -4088,7 +4088,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCullingFrameInputs",
       "symbol": "gpuSceneTableBuffers",
       "policy": "SubmissionBatch",
@@ -4097,7 +4097,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCullingFrameInputs",
       "symbol": "indirectBuffer",
       "policy": "SubmissionBatch",
@@ -4106,7 +4106,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCullingFrameInputs",
       "symbol": "instanceBuffer",
       "policy": "SubmissionBatch",
@@ -4115,7 +4115,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCullingFrameInputs",
       "symbol": "instanceIndexBuffer",
       "policy": "SubmissionBatch",
@@ -4124,7 +4124,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCullingFrameInputs",
       "symbol": "statsBuffer",
       "policy": "SubmissionBatch",
@@ -4133,7 +4133,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCullingFrameInputs",
       "symbol": "visibilityBuffer",
       "policy": "SubmissionBatch",
@@ -4142,7 +4142,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUCullingFrameInputs",
       "symbol": "visibleInstanceBuffer",
       "policy": "SubmissionBatch",
@@ -4151,7 +4151,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUSceneQualificationCapture",
       "symbol": "drawCountsReadback",
       "policy": "SubmissionBatch",
@@ -4160,7 +4160,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUSceneQualificationCapture",
       "symbol": "indirectCommandsReadback",
       "policy": "SubmissionBatch",
@@ -4169,7 +4169,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUSceneQualificationCapture",
       "symbol": "rasterInstanceReadback",
       "policy": "SubmissionBatch",
@@ -4178,7 +4178,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUSceneQualificationCapture",
       "symbol": "visibilityReadback",
       "policy": "SubmissionBatch",
@@ -4187,7 +4187,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUSceneQualificationCapture",
       "symbol": "visibleRowsReadback",
       "policy": "SubmissionBatch",
@@ -4196,7 +4196,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUSceneRasterResourceSnapshot",
       "symbol": "m_candidates",
       "policy": "SubmissionBatch",
@@ -4205,7 +4205,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUSceneRasterResourceSnapshot",
       "symbol": "m_primitives",
       "policy": "SubmissionBatch",
@@ -4214,7 +4214,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/GPUDriven/GPUCulling.h",
+      "path": "Source/Runtime/Render/Include/Render/GPUDriven/GPUCulling.h",
       "owner": "GPUSceneRasterResourceSnapshot",
       "symbol": "m_transforms",
       "policy": "SubmissionBatch",
@@ -4223,7 +4223,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Graph/RenderGraph.h",
+      "path": "Source/Runtime/Render/Include/Render/Graph/RenderGraph.h",
       "owner": "RecordedQueueSubmission",
       "symbol": "ownedContexts",
       "policy": "SubmissionBatch",
@@ -4232,7 +4232,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialBindingResult",
       "symbol": "constantBuffer",
       "policy": "SubmissionBatch",
@@ -4241,7 +4241,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialBindingResult",
       "symbol": "descriptorSetRef",
       "policy": "SubmissionBatch",
@@ -4250,7 +4250,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialBindingSnapshot",
       "symbol": "constantBuffer",
       "policy": "SubmissionBatch",
@@ -4259,7 +4259,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialBindingSnapshot",
       "symbol": "descriptorSet",
       "policy": "SubmissionBatch",
@@ -4268,7 +4268,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialBindingSnapshot",
       "symbol": "layout",
       "policy": "SubmissionBatch",
@@ -4277,7 +4277,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialBindingSnapshot",
       "symbol": "samplers",
       "policy": "SubmissionBatch",
@@ -4286,7 +4286,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialBindingSnapshot",
       "symbol": "textureViews",
       "policy": "SubmissionBatch",
@@ -4295,7 +4295,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialBindingSnapshot",
       "symbol": "textures",
       "policy": "SubmissionBatch",
@@ -4304,7 +4304,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialDescriptorCacheEntry",
       "symbol": "descriptorSet",
       "policy": "OwnerSnapshot",
@@ -4313,7 +4313,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialDescriptorCacheEntry",
       "symbol": "materialParameterTable",
       "policy": "OwnerSnapshot",
@@ -4322,7 +4322,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialDescriptorCacheEntry",
       "symbol": "samplers",
       "policy": "OwnerSnapshot",
@@ -4331,7 +4331,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialParameterTableSnapshot",
       "symbol": "buffer",
       "policy": "SubmissionBatch",
@@ -4340,7 +4340,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialSetResolveResult",
       "symbol": "descriptorSetRef",
       "policy": "SubmissionBatch",
@@ -4349,7 +4349,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Material/MaterialSystem.h",
+      "path": "Source/Runtime/Render/Include/Render/Material/MaterialSystem.h",
       "owner": "MaterialSystem",
       "symbol": "m_defaultMaterialParameterTable",
       "policy": "OwnerSnapshot",
@@ -4358,7 +4358,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/OpaquePass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/OpaquePass.h",
       "owner": "OpaquePass",
       "symbol": "m_directMaterialParameterTable",
       "policy": "OwnerSnapshot",
@@ -4367,7 +4367,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Passes/OpaquePass.h",
+      "path": "Source/Runtime/Render/Include/Render/Passes/OpaquePass.h",
       "owner": "OpaquePass",
       "symbol": "m_gpuMaterialParameterTable",
       "policy": "OwnerSnapshot",
@@ -4376,7 +4376,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "DirectionalShadowCascadeBindingSnapshot",
       "symbol": "frameDescriptorSets",
       "policy": "SubmissionBatch",
@@ -4385,7 +4385,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "DirectionalShadowCascadeBindingSnapshot",
       "symbol": "viewConstantPageBuffer",
       "policy": "SubmissionBatch",
@@ -4394,7 +4394,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "FrameDescriptorBindingOwners",
       "symbol": "clusterBuffer",
       "policy": "OwnerSnapshot",
@@ -4403,7 +4403,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "FrameDescriptorBindingOwners",
       "symbol": "clusterConstantsBuffer",
       "policy": "OwnerSnapshot",
@@ -4412,7 +4412,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "FrameDescriptorBindingOwners",
       "symbol": "clusterLightIndexBuffer",
       "policy": "OwnerSnapshot",
@@ -4421,7 +4421,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "FrameDescriptorBindingOwners",
       "symbol": "directionalShadowSampler",
       "policy": "OwnerSnapshot",
@@ -4430,7 +4430,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "FrameDescriptorBindingOwners",
       "symbol": "directionalShadowView",
       "policy": "OwnerSnapshot",
@@ -4439,7 +4439,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "FrameDescriptorBindingOwners",
       "symbol": "environmentIBLBRDFLUTView",
       "policy": "OwnerSnapshot",
@@ -4448,7 +4448,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "FrameDescriptorBindingOwners",
       "symbol": "environmentIBLIrradianceView",
       "policy": "OwnerSnapshot",
@@ -4457,7 +4457,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "FrameDescriptorBindingOwners",
       "symbol": "environmentIBLPrefilteredView",
       "policy": "OwnerSnapshot",
@@ -4466,7 +4466,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "FrameDescriptorBindingOwners",
       "symbol": "environmentIBLSampler",
       "policy": "OwnerSnapshot",
@@ -4475,7 +4475,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "FrameDescriptorBindingOwners",
       "symbol": "lightConstantsBuffer",
       "policy": "OwnerSnapshot",
@@ -4484,7 +4484,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "FrameDescriptorBindingOwners",
       "symbol": "pointLightsBuffer",
       "policy": "OwnerSnapshot",
@@ -4493,7 +4493,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "FrameDescriptorBindingOwners",
       "symbol": "rayTracedShadowMaskView",
       "policy": "OwnerSnapshot",
@@ -4502,7 +4502,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "FrameDescriptorBindingOwners",
       "symbol": "spotLightsBuffer",
       "policy": "OwnerSnapshot",
@@ -4511,7 +4511,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "FrameDescriptorBindingOwners",
       "symbol": "viewConstantBuffer",
       "policy": "OwnerSnapshot",
@@ -4520,7 +4520,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "GPUSceneRasterBindingSnapshot",
       "symbol": "candidateBuffer",
       "policy": "SubmissionBatch",
@@ -4529,7 +4529,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "GPUSceneRasterBindingSnapshot",
       "symbol": "depthPipeline",
       "policy": "SubmissionBatch",
@@ -4538,7 +4538,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "GPUSceneRasterBindingSnapshot",
       "symbol": "frameSetLayout",
       "policy": "SubmissionBatch",
@@ -4547,7 +4547,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "GPUSceneRasterBindingSnapshot",
       "symbol": "instancedMaterialOpaquePipeline",
       "policy": "SubmissionBatch",
@@ -4556,7 +4556,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "GPUSceneRasterBindingSnapshot",
       "symbol": "maskedPipeline",
       "policy": "SubmissionBatch",
@@ -4565,7 +4565,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "GPUSceneRasterBindingSnapshot",
       "symbol": "materialSetLayout",
       "policy": "SubmissionBatch",
@@ -4574,7 +4574,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "GPUSceneRasterBindingSnapshot",
       "symbol": "objectConstantBuffer",
       "policy": "SubmissionBatch",
@@ -4583,7 +4583,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "GPUSceneRasterBindingSnapshot",
       "symbol": "objectDescriptorSet",
       "policy": "SubmissionBatch",
@@ -4592,7 +4592,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "GPUSceneRasterBindingSnapshot",
       "symbol": "objectSetLayout",
       "policy": "SubmissionBatch",
@@ -4601,7 +4601,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "GPUSceneRasterBindingSnapshot",
       "symbol": "opaquePipeline",
       "policy": "SubmissionBatch",
@@ -4610,7 +4610,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "GPUSceneRasterBindingSnapshot",
       "symbol": "pipelineLayout",
       "policy": "SubmissionBatch",
@@ -4619,7 +4619,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "GPUSceneRasterBindingSnapshot",
       "symbol": "primitiveBuffer",
       "policy": "SubmissionBatch",
@@ -4628,7 +4628,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "GPUSceneRasterBindingSnapshot",
       "symbol": "transformBuffer",
       "policy": "SubmissionBatch",
@@ -4637,7 +4637,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "ObjectConstantBinding",
       "symbol": "constantBuffer",
       "policy": "SubmissionBatch",
@@ -4646,7 +4646,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "ObjectConstantBinding",
       "symbol": "descriptorSet",
       "policy": "SubmissionBatch",
@@ -4655,7 +4655,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "ObjectConstantBinding",
       "symbol": "instanceBuffer",
       "policy": "SubmissionBatch",
@@ -4664,7 +4664,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_currentClusterBuffer",
       "policy": "OwnerSnapshot",
@@ -4673,7 +4673,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_currentClusterConstantsBuffer",
       "policy": "OwnerSnapshot",
@@ -4682,7 +4682,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_currentClusterLightIndexBuffer",
       "policy": "OwnerSnapshot",
@@ -4691,7 +4691,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_currentDirectionalShadowSampler",
       "policy": "OwnerSnapshot",
@@ -4700,7 +4700,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_currentDirectionalShadowView",
       "policy": "OwnerSnapshot",
@@ -4709,7 +4709,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_currentEnvironmentIBLBRDFLUTView",
       "policy": "OwnerSnapshot",
@@ -4718,7 +4718,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_currentEnvironmentIBLIrradianceView",
       "policy": "OwnerSnapshot",
@@ -4727,7 +4727,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_currentEnvironmentIBLPrefilteredView",
       "policy": "OwnerSnapshot",
@@ -4736,7 +4736,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_currentLightConstantsBuffer",
       "policy": "OwnerSnapshot",
@@ -4745,7 +4745,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_currentPointLightsBuffer",
       "policy": "OwnerSnapshot",
@@ -4754,7 +4754,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_currentRayTracedShadowMaskView",
       "policy": "OwnerSnapshot",
@@ -4763,7 +4763,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_currentSpotLightsBuffer",
       "policy": "OwnerSnapshot",
@@ -4772,7 +4772,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_environmentIBLSampler",
       "policy": "OwnerSnapshot",
@@ -4781,7 +4781,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_fallbackEnvironmentIBLBRDFLUTTexture",
       "policy": "OwnerSnapshot",
@@ -4790,7 +4790,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_fallbackEnvironmentIBLBRDFLUTView",
       "policy": "OwnerSnapshot",
@@ -4799,7 +4799,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_fallbackEnvironmentIBLCubemapTexture",
       "policy": "OwnerSnapshot",
@@ -4808,7 +4808,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_fallbackEnvironmentIBLCubemapView",
       "policy": "OwnerSnapshot",
@@ -4817,7 +4817,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_gpuSceneDepthOnlyPipeline",
       "policy": "OwnerSnapshot",
@@ -4826,7 +4826,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_gpuSceneDepthOnlyVertexShader",
       "policy": "OwnerSnapshot",
@@ -4835,7 +4835,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_gpuSceneInstancedMaterialOpaquePipeline",
       "policy": "OwnerSnapshot",
@@ -4844,7 +4844,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_gpuSceneInstancedMaterialVertexShader",
       "policy": "OwnerSnapshot",
@@ -4853,7 +4853,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_gpuSceneMaskedPipeline",
       "policy": "OwnerSnapshot",
@@ -4862,7 +4862,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_gpuSceneOpaquePipeline",
       "policy": "OwnerSnapshot",
@@ -4871,7 +4871,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_gpuSceneRasterObjectSetLayout",
       "policy": "OwnerSnapshot",
@@ -4880,7 +4880,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_gpuSceneRasterPipelineLayout",
       "policy": "OwnerSnapshot",
@@ -4889,7 +4889,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_gpuSceneVertexShader",
       "policy": "OwnerSnapshot",
@@ -4898,7 +4898,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_instancedMaterialVertexShader",
       "policy": "OwnerSnapshot",
@@ -4907,7 +4907,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_maskedDepthOnlyPipeline",
       "policy": "OwnerSnapshot",
@@ -4916,7 +4916,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_maskedDepthOnlyPixelShader",
       "policy": "OwnerSnapshot",
@@ -4925,7 +4925,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_maskedDepthOnlyVertexShader",
       "policy": "OwnerSnapshot",
@@ -4934,7 +4934,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_objectPageDescriptorCache",
       "policy": "OwnerSnapshot",
@@ -4943,7 +4943,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rigidDepthOnlyPipeline",
       "policy": "OwnerSnapshot",
@@ -4952,7 +4952,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rigidDepthOnlyVertexShader",
       "policy": "OwnerSnapshot",
@@ -4961,7 +4961,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rigidMaskedDepthOnlyPipeline",
       "policy": "OwnerSnapshot",
@@ -4970,7 +4970,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rigidMaskedDepthOnlyVertexShader",
       "policy": "OwnerSnapshot",
@@ -4979,7 +4979,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rigidMaskedObjectVelocityPipeline",
       "policy": "OwnerSnapshot",
@@ -4988,7 +4988,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rigidMaskedObjectVelocityVertexShader",
       "policy": "OwnerSnapshot",
@@ -4997,7 +4997,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rigidObjectVelocityPipeline",
       "policy": "OwnerSnapshot",
@@ -5006,7 +5006,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rigidObjectVelocityVertexShader",
       "policy": "OwnerSnapshot",
@@ -5015,7 +5015,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_rigidVertexShader",
       "policy": "OwnerSnapshot",
@@ -5024,7 +5024,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "RasterDrawBindingSnapshot",
       "symbol": "frameDescriptorSet",
       "policy": "SubmissionBatch",
@@ -5033,7 +5033,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "RasterDrawBindingSnapshot",
       "symbol": "objectConstantBuffer",
       "policy": "SubmissionBatch",
@@ -5042,7 +5042,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "RasterDrawBindingSnapshot",
       "symbol": "objectDescriptorSet",
       "policy": "SubmissionBatch",
@@ -5051,7 +5051,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PipelineCache.h",
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "RasterDrawBindingSnapshot",
       "symbol": "viewConstantBuffer",
       "policy": "SubmissionBatch",
@@ -5060,7 +5060,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/PostProcess/ToneMapping.h",
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/ToneMapping.h",
       "owner": "PixelProbeReadback",
       "symbol": "buffer",
       "policy": "SubmissionBatch",
@@ -5069,7 +5069,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Renderer/SceneRenderer.h",
+      "path": "Source/Runtime/Render/Include/Render/Renderer/SceneRenderer.h",
       "owner": "SceneRendererExternalTargetDesc",
       "symbol": "colorTarget",
       "policy": "OwnerSnapshot",
@@ -5078,7 +5078,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Renderer/SceneRenderer.h",
+      "path": "Source/Runtime/Render/Include/Render/Renderer/SceneRenderer.h",
       "owner": "SceneRendererExternalTargetDesc",
       "symbol": "depthTarget",
       "policy": "OwnerSnapshot",
@@ -5087,7 +5087,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Submission/DirectRasterReadbackQualification.h",
+      "path": "Source/Runtime/Render/Include/Render/Submission/DirectRasterReadbackQualification.h",
       "owner": "Capture",
       "symbol": "indexReadback",
       "policy": "SubmissionBatch",
@@ -5096,7 +5096,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Submission/DirectRasterReadbackQualification.h",
+      "path": "Source/Runtime/Render/Include/Render/Submission/DirectRasterReadbackQualification.h",
       "owner": "Capture",
       "symbol": "instanceReadback",
       "policy": "SubmissionBatch",
@@ -5105,7 +5105,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Submission/DirectRasterReadbackQualification.h",
+      "path": "Source/Runtime/Render/Include/Render/Submission/DirectRasterReadbackQualification.h",
       "owner": "Capture",
       "symbol": "sourceIndices",
       "policy": "SubmissionBatch",
@@ -5114,7 +5114,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Submission/DirectRasterReadbackQualification.h",
+      "path": "Source/Runtime/Render/Include/Render/Submission/DirectRasterReadbackQualification.h",
       "owner": "Capture",
       "symbol": "sourceInstances",
       "policy": "SubmissionBatch",
@@ -5123,7 +5123,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Submission/RasterInstanceStream.h",
+      "path": "Source/Runtime/Render/Include/Render/Submission/RasterInstanceStream.h",
       "owner": "RasterInstanceStream",
       "symbol": "instanceIndices",
       "policy": "OwnerSnapshot",
@@ -5132,7 +5132,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Submission/RasterInstanceStream.h",
+      "path": "Source/Runtime/Render/Include/Render/Submission/RasterInstanceStream.h",
       "owner": "RasterInstanceStream",
       "symbol": "instances",
       "policy": "OwnerSnapshot",
@@ -5141,7 +5141,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Submission/RasterInstanceStream.h",
+      "path": "Source/Runtime/Render/Include/Render/Submission/RasterInstanceStream.h",
       "owner": "RasterInstanceStreamFrameSlot",
       "symbol": "instanceIndices",
       "policy": "PoolAvailability",
@@ -5150,7 +5150,7 @@
       "deviceLostRelease": "pool entry explicit device-lost teardown"
     },
     {
-      "path": "Render/Include/Render/Submission/RasterInstanceStream.h",
+      "path": "Source/Runtime/Render/Include/Render/Submission/RasterInstanceStream.h",
       "owner": "RasterInstanceStreamFrameSlot",
       "symbol": "instances",
       "policy": "PoolAvailability",
@@ -5159,7 +5159,7 @@
       "deviceLostRelease": "pool entry explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Context/RenderFrameTimingOwner.h",
+      "path": "Source/Runtime/Render/Private/Context/RenderFrameTimingOwner.h",
       "owner": "RenderFrameTimingOwner",
       "symbol": "m_queryPool",
       "policy": "ShutdownAfterDrain",
@@ -5168,7 +5168,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Context/RenderFrameTimingOwner.h",
+      "path": "Source/Runtime/Render/Private/Context/RenderFrameTimingOwner.h",
       "owner": "Slot",
       "symbol": "readbackBuffer",
       "policy": "PoolAvailability",
@@ -5177,7 +5177,7 @@
       "deviceLostRelease": "pool entry explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/GPUScene/GPUSceneUploader.cpp",
+      "path": "Source/Runtime/Render/Private/GPUScene/GPUSceneUploader.cpp",
       "owner": "TableState",
       "symbol": "buffer",
       "policy": "PoolAvailability",
@@ -5186,7 +5186,7 @@
       "deviceLostRelease": "pool entry explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/GPUScene/GPUSceneUploader.cpp",
+      "path": "Source/Runtime/Render/Private/GPUScene/GPUSceneUploader.cpp",
       "owner": "TableUploadPlan",
       "symbol": "staging",
       "policy": "SubmissionBatch",
@@ -5195,7 +5195,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/GPUScene/GPUSceneUploader.cpp",
+      "path": "Source/Runtime/Render/Private/GPUScene/GPUSceneUploader.cpp",
       "owner": "TableUploadPlan",
       "symbol": "target",
       "policy": "SubmissionBatch",
@@ -5204,7 +5204,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/GPUScene/GPUSceneUploader.h",
+      "path": "Source/Runtime/Render/Private/GPUScene/GPUSceneUploader.h",
       "owner": "GPUSceneResidentGraphLease",
       "symbol": "buffers",
       "policy": "SubmissionBatch",
@@ -5213,7 +5213,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Graph/RenderGraphExecution.cpp",
+      "path": "Source/Runtime/Render/Private/Graph/RenderGraphExecution.cpp",
       "owner": "RenderGraphExecution",
       "symbol": "buffers",
       "policy": "SubmissionBatch",
@@ -5222,7 +5222,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Graph/RenderGraphExecution.cpp",
+      "path": "Source/Runtime/Render/Private/Graph/RenderGraphExecution.cpp",
       "owner": "RenderGraphExecution",
       "symbol": "heaps",
       "policy": "SubmissionBatch",
@@ -5231,7 +5231,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Graph/RenderGraphExecution.cpp",
+      "path": "Source/Runtime/Render/Private/Graph/RenderGraphExecution.cpp",
       "owner": "RenderGraphExecution",
       "symbol": "ownedContexts",
       "policy": "SubmissionBatch",
@@ -5240,7 +5240,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Graph/RenderGraphExecution.cpp",
+      "path": "Source/Runtime/Render/Private/Graph/RenderGraphExecution.cpp",
       "owner": "RenderGraphExecution",
       "symbol": "textures",
       "policy": "SubmissionBatch",
@@ -5249,7 +5249,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Graph/RenderGraphInternal.h",
+      "path": "Source/Runtime/Render/Private/Graph/RenderGraphInternal.h",
       "owner": "BufferResource",
       "symbol": "strongBinding",
       "policy": "OwnerSnapshot",
@@ -5258,7 +5258,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Graph/RenderGraphInternal.h",
+      "path": "Source/Runtime/Render/Private/Graph/RenderGraphInternal.h",
       "owner": "TextureResource",
       "symbol": "strongBinding",
       "policy": "OwnerSnapshot",
@@ -5267,7 +5267,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Graph/RenderGraphInternal.h",
+      "path": "Source/Runtime/Render/Private/Graph/RenderGraphInternal.h",
       "owner": "TextureViewResource",
       "symbol": "realizedView",
       "policy": "OwnerSnapshot",
@@ -5276,7 +5276,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Graph/TransientResourcePool.cpp",
+      "path": "Source/Runtime/Render/Private/Graph/TransientResourcePool.cpp",
       "owner": "PooledTexture",
       "symbol": "views",
       "policy": "PoolAvailability",
@@ -5285,7 +5285,7 @@
       "deviceLostRelease": "pool entry explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/DepthPrepass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/DepthPrepass.cpp",
       "owner": "DepthPrepass",
       "symbol": "instanceIndexBuffer",
       "policy": "OwnerSnapshot",
@@ -5294,7 +5294,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/ObjectVelocityPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/ObjectVelocityPass.cpp",
       "owner": "GraphPassData",
       "symbol": "maskedPipeline",
       "policy": "SubmissionBatch",
@@ -5303,7 +5303,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/ObjectVelocityPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/ObjectVelocityPass.cpp",
       "owner": "GraphPassData",
       "symbol": "opaquePipeline",
       "policy": "SubmissionBatch",
@@ -5312,7 +5312,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/ObjectVelocityPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/ObjectVelocityPass.cpp",
       "owner": "GraphPassData",
       "symbol": "rigidMaskedPipeline",
       "policy": "SubmissionBatch",
@@ -5321,7 +5321,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/ObjectVelocityPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/ObjectVelocityPass.cpp",
       "owner": "GraphPassData",
       "symbol": "rigidOpaquePipeline",
       "policy": "SubmissionBatch",
@@ -5330,7 +5330,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/OpaquePass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/OpaquePass.cpp",
       "owner": "OpaquePass",
       "symbol": "instanceIndexBuffer",
       "policy": "OwnerSnapshot",
@@ -5339,7 +5339,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "HistorySlot",
       "symbol": "depth",
       "policy": "OwnerSnapshot",
@@ -5348,7 +5348,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "HistorySlot",
       "symbol": "mask",
       "policy": "OwnerSnapshot",
@@ -5357,7 +5357,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "HistorySlot",
       "symbol": "normal",
       "policy": "OwnerSnapshot",
@@ -5366,7 +5366,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "PendingTimingSample",
       "symbol": "queryPool",
       "policy": "SubmissionBatch",
@@ -5375,7 +5375,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "PendingTimingSample",
       "symbol": "readbackBuffer",
       "policy": "SubmissionBatch",
@@ -5384,7 +5384,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "alphaIndexBuffers",
       "policy": "SubmissionBatch",
@@ -5393,7 +5393,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "alphaMetadata",
       "policy": "SubmissionBatch",
@@ -5402,7 +5402,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "alphaTextureViews",
       "policy": "SubmissionBatch",
@@ -5411,7 +5411,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "alphaUVBuffers",
       "policy": "SubmissionBatch",
@@ -5420,7 +5420,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "constantBuffer",
       "policy": "SubmissionBatch",
@@ -5429,7 +5429,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "depthTexture",
       "policy": "SubmissionBatch",
@@ -5438,7 +5438,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "descriptorSet",
       "policy": "SubmissionBatch",
@@ -5447,7 +5447,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "fallbackHistoryDepthTexture",
       "policy": "SubmissionBatch",
@@ -5456,7 +5456,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "fallbackHistoryMaskTexture",
       "policy": "SubmissionBatch",
@@ -5465,7 +5465,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "fallbackHistoryNormalTexture",
       "policy": "SubmissionBatch",
@@ -5474,7 +5474,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "fallbackVelocityTexture",
       "policy": "SubmissionBatch",
@@ -5483,7 +5483,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "historyDepthReadTexture",
       "policy": "SubmissionBatch",
@@ -5492,7 +5492,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "historyDepthWriteTexture",
       "policy": "SubmissionBatch",
@@ -5501,7 +5501,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "historyNormalReadTexture",
       "policy": "SubmissionBatch",
@@ -5510,7 +5510,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "historyNormalWriteTexture",
       "policy": "SubmissionBatch",
@@ -5519,7 +5519,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "historyReadTexture",
       "policy": "SubmissionBatch",
@@ -5528,7 +5528,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "materialMetadata",
       "policy": "SubmissionBatch",
@@ -5537,7 +5537,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "materialTextureViews",
       "policy": "SubmissionBatch",
@@ -5546,7 +5546,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "pipeline",
       "policy": "SubmissionBatch",
@@ -5555,7 +5555,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "setLayout",
       "policy": "SubmissionBatch",
@@ -5564,7 +5564,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "shaderTable",
       "policy": "SubmissionBatch",
@@ -5573,7 +5573,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "shadowMaskTexture",
       "policy": "SubmissionBatch",
@@ -5582,7 +5582,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "timingQueryPool",
       "policy": "SubmissionBatch",
@@ -5591,7 +5591,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "timingReadbackBuffer",
       "policy": "SubmissionBatch",
@@ -5600,7 +5600,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "tlas",
       "policy": "SubmissionBatch",
@@ -5609,7 +5609,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowFrameState",
       "symbol": "velocityTexture",
       "policy": "SubmissionBatch",
@@ -5618,7 +5618,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowHistoryReservation",
       "symbol": "timingQueryPool",
       "policy": "SubmissionBatch",
@@ -5627,7 +5627,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/RayTracedShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedShadowPass.cpp",
       "owner": "RayTracedShadowHistoryReservation",
       "symbol": "timingReadbackBuffer",
       "policy": "SubmissionBatch",
@@ -5636,7 +5636,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/ShadowPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/ShadowPass.cpp",
       "owner": "ShadowPass",
       "symbol": "instanceIndexBuffer",
       "policy": "OwnerSnapshot",
@@ -5645,7 +5645,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/SkyboxPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/SkyboxPass.cpp",
       "owner": "GraphPassData",
       "symbol": "constantBuffer",
       "policy": "SubmissionBatch",
@@ -5654,7 +5654,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/SkyboxPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/SkyboxPass.cpp",
       "owner": "GraphPassData",
       "symbol": "cubemapTexture",
       "policy": "SubmissionBatch",
@@ -5663,7 +5663,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/SkyboxPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/SkyboxPass.cpp",
       "owner": "GraphPassData",
       "symbol": "fallbackCubemap",
       "policy": "SubmissionBatch",
@@ -5672,7 +5672,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/SkyboxPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/SkyboxPass.cpp",
       "owner": "GraphPassData",
       "symbol": "pipeline",
       "policy": "SubmissionBatch",
@@ -5681,7 +5681,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/SkyboxPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/SkyboxPass.cpp",
       "owner": "GraphPassData",
       "symbol": "pipelineLayout",
       "policy": "SubmissionBatch",
@@ -5690,7 +5690,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/SkyboxPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/SkyboxPass.cpp",
       "owner": "GraphPassData",
       "symbol": "sampler",
       "policy": "SubmissionBatch",
@@ -5699,7 +5699,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/SkyboxPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/SkyboxPass.cpp",
       "owner": "GraphPassData",
       "symbol": "setLayout",
       "policy": "SubmissionBatch",
@@ -5708,7 +5708,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/TransparentPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/TransparentPass.cpp",
       "owner": "GraphPassData",
       "symbol": "rigidPipeline",
       "policy": "SubmissionBatch",
@@ -5717,7 +5717,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Passes/TransparentPass.cpp",
+      "path": "Source/Runtime/Render/Private/Passes/TransparentPass.cpp",
       "owner": "GraphPassData",
       "symbol": "skinnedPipeline",
       "policy": "SubmissionBatch",
@@ -5726,7 +5726,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Resources/FrameConstantUploadArena.h",
+      "path": "Source/Runtime/Render/Private/Resources/FrameConstantUploadArena.h",
       "owner": "FrameConstantUploadAllocation",
       "symbol": "buffer",
       "policy": "SubmissionBatch",
@@ -5735,7 +5735,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Resources/FrameConstantUploadArena.h",
+      "path": "Source/Runtime/Render/Private/Resources/FrameConstantUploadArena.h",
       "owner": "Page",
       "symbol": "buffer",
       "policy": "PoolAvailability",
@@ -5744,7 +5744,7 @@
       "deviceLostRelease": "pool entry explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Resources/RenderUploadProcessor.cpp",
+      "path": "Source/Runtime/Render/Private/Resources/RenderUploadProcessor.cpp",
       "owner": "PendingUpload",
       "symbol": "acquireCommandContext",
       "policy": "SubmissionBatch",
@@ -5753,7 +5753,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/Resources/RenderUploadProcessor.h",
+      "path": "Source/Runtime/Render/Private/Resources/RenderUploadProcessor.h",
       "owner": "InFlightUpload",
       "symbol": "acquireCommandContext",
       "policy": "SubmissionBatch",
@@ -5762,7 +5762,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Render/Private/PipelineCache.cpp",
+      "path": "Source/Runtime/Render/Private/PipelineCache.cpp",
       "owner": "RenderShaderLoadResult",
       "symbol": "shader",
       "policy": "OwnerSnapshot",

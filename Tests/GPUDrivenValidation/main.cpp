@@ -1363,7 +1363,7 @@ namespace
         std::filesystem::path path = std::filesystem::current_path();
         for (int i = 0; i < 8; ++i)
         {
-            if (std::filesystem::exists(path / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp"))
+            if (std::filesystem::exists(path / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp"))
             {
                 return path;
             }
@@ -2504,12 +2504,12 @@ TEST_F(GPUDrivenValidationFixture,
     const std::filesystem::path root = FindWorkspaceRoot();
     ASSERT_FALSE(root.empty());
     const std::string renderer = ReadTextFile(
-        root / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+        root / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
     const std::string recordContext = ReadTextFile(
-        root / "Render" / "Include" / "Render" / "Passes" /
+        root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Passes" /
         "RenderPassRecordContext.h");
     const std::string opaque = ReadTextFile(
-        root / "Render" / "Private" / "Passes" / "OpaquePass.cpp");
+        root / "Source" / "Runtime" / "Render" / "Private" / "Passes" / "OpaquePass.cpp");
     ASSERT_FALSE(renderer.empty());
     ASSERT_FALSE(recordContext.empty());
     ASSERT_FALSE(opaque.empty());
@@ -5118,25 +5118,25 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
     ASSERT_FALSE(root.empty());
 
     const std::string header =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
     const std::string source =
-        ReadTextFile(root / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
     const std::string depthHeader =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "Passes" / "DepthPrepass.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Passes" / "DepthPrepass.h");
     const std::string depthSource =
-        ReadTextFile(root / "Render" / "Private" / "Passes" / "DepthPrepass.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Passes" / "DepthPrepass.cpp");
     const std::string subsystemSource =
-        ReadTextFile(root / "Render" / "Private" / "RenderSubsystem.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "RenderSubsystem.cpp");
     const std::string renderCMake =
-        ReadTextFile(root / "Render" / "CMakeLists.txt");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "CMakeLists.txt");
     const std::string skyboxHeader =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "Passes" / "SkyboxPass.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Passes" / "SkyboxPass.h");
     const std::string skyboxSource =
-        ReadTextFile(root / "Render" / "Private" / "Passes" / "SkyboxPass.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Passes" / "SkyboxPass.cpp");
     const std::string transparentHeader =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "Passes" / "TransparentPass.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Passes" / "TransparentPass.h");
     const std::string transparentSource =
-        ReadTextFile(root / "Render" / "Private" / "Passes" / "TransparentPass.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Passes" / "TransparentPass.cpp");
     ASSERT_FALSE(header.empty());
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(depthHeader.empty());
@@ -5188,9 +5188,9 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
     EXPECT_EQ(buildMaterialSegment.find("m_objectVelocityPass->SetDrawItems"), std::string::npos);
 
     EXPECT_FALSE(std::filesystem::exists(
-        root / "Render" / "Private" / "Renderer" / "RenderFrameResourceBinder.h"));
+        root / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "RenderFrameResourceBinder.h"));
     EXPECT_FALSE(std::filesystem::exists(
-        root / "Render" / "Private" / "Renderer" / "RenderFrameResourceBinder.cpp"));
+        root / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "RenderFrameResourceBinder.cpp"));
     EXPECT_EQ(header.find("UpdatePassResources"), std::string::npos);
     EXPECT_EQ(header.find("ExecutePasses"), std::string::npos);
     EXPECT_EQ(source.find("RenderFrameResourceBinder"), std::string::npos);
@@ -5307,9 +5307,9 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
     EXPECT_NE(source.find("key.pipeline.materialVariant"), std::string::npos);
 
     const std::string opaqueHeader =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "Passes" / "OpaquePass.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Passes" / "OpaquePass.h");
     const std::string opaqueSource =
-        ReadTextFile(root / "Render" / "Private" / "Passes" / "OpaquePass.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Passes" / "OpaquePass.cpp");
     EXPECT_EQ(opaqueHeader.find("FindGPUDrivenGroupRepresentative"), std::string::npos);
     EXPECT_EQ(opaqueSource.find("FindGPUDrivenGroupRepresentative"), std::string::npos);
     EXPECT_EQ(opaqueSource.find("GetBackendType"), std::string::npos);
@@ -5374,7 +5374,7 @@ TEST_F(GPUDrivenValidationFixture,
     const std::filesystem::path root = FindWorkspaceRoot();
     ASSERT_FALSE(root.empty());
     const std::string source = ReadTextFile(
-        root / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+        root / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t buildInputs = source.find(
@@ -5407,15 +5407,15 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererFrameDiagnosticsExposeGPUDrivenE
     ASSERT_FALSE(root.empty());
 
     const std::string header =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
     const std::string source =
-        ReadTextFile(root / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
     const std::string diagnosticsHeader =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "RenderDiagnostics.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "RenderDiagnostics.h");
     const std::string subsystemSource =
-        ReadTextFile(root / "Render" / "Private" / "RenderSubsystem.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "RenderSubsystem.cpp");
     const std::string artifactSource =
-        ReadTextFile(root / "Render" / "Private" / "Diagnostics" / "RenderToolArtifacts.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Diagnostics" / "RenderToolArtifacts.cpp");
     ASSERT_FALSE(header.empty());
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(diagnosticsHeader.empty());
@@ -5626,14 +5626,14 @@ TEST_F(GPUDrivenValidationFixture,
     ASSERT_FALSE(root.empty());
 
     const std::string rendererHeader = ReadTextFile(
-        root / "Render" / "Include" / "Render" / "Renderer" /
+        root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Renderer" /
         "SceneRenderer.h");
     const std::string rendererSource = ReadTextFile(
-        root / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+        root / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
     const std::string diagnosticsHeader = ReadTextFile(
-        root / "Render" / "Include" / "Render" / "RenderDiagnostics.h");
+        root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "RenderDiagnostics.h");
     const std::string subsystemSource = ReadTextFile(
-        root / "Render" / "Private" / "RenderSubsystem.cpp");
+        root / "Source" / "Runtime" / "Render" / "Private" / "RenderSubsystem.cpp");
 
     EXPECT_NE(rendererHeader.find("bool hzbRequested = false;"),
               std::string::npos);
@@ -6444,14 +6444,14 @@ TEST_F(GPUDrivenValidationFixture, GPUCullingDeclaresComputeCompactionAndIndirec
     ASSERT_FALSE(root.empty());
 
     const std::string header =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "GPUDriven" / "GPUCulling.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "GPUDriven" / "GPUCulling.h");
     const std::string source =
-        ReadTextFile(root / "Render" / "Private" / "GPUDriven" / "GPUCulling.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "GPUDriven" / "GPUCulling.cpp");
     const std::string rhiCommandContext =
         ReadTextFile(root / "Source" / "Runtime" / "RHI" / "Include" / "RHI" /
                      "RHICommandContext.h");
     const std::string shader =
-        ReadTextFile(root / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl");
     ASSERT_FALSE(header.empty());
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(rhiCommandContext.empty());
@@ -6549,26 +6549,26 @@ TEST_F(GPUDrivenValidationFixture, OpaquePassDeclaresGPUDrivenDefaultLitIndirect
     ASSERT_FALSE(root.empty());
 
     const std::string defaultLit =
-        ReadTextFile(root / "Render" / "Shaders" / "DefaultLit.hlsl");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Shaders" / "DefaultLit.hlsl");
     const std::string depthOnly =
-        ReadTextFile(root / "Render" / "Shaders" / "DepthOnly.hlsl");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Shaders" / "DepthOnly.hlsl");
     const std::string cullingShader =
-        ReadTextFile(root / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl");
     const std::string sharedInstance =
-        ReadTextFile(root / "Render" / "Shaders" / "Include" / "GPUInstanceData.hlsli");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Shaders" / "Include" / "GPUInstanceData.hlsli");
     const std::string cullingHeader =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "GPUDriven" / "GPUCulling.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "GPUDriven" / "GPUCulling.h");
     const std::string rasterInstanceHeader = ReadTextFile(
-        root / "Render" / "Include" / "Render" / "Submission" /
+        root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Submission" /
         "RasterInstanceStream.h");
     const std::string pipelineHeader =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "PipelineCache.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "PipelineCache.h");
     const std::string pipelineSource =
-        ReadTextFile(root / "Render" / "Private" / "PipelineCache.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "PipelineCache.cpp");
     const std::string opaqueHeader =
-        ReadTextFile(root / "Render" / "Include" / "Render" / "Passes" / "OpaquePass.h");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Passes" / "OpaquePass.h");
     const std::string opaqueSource =
-        ReadTextFile(root / "Render" / "Private" / "Passes" / "OpaquePass.cpp");
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Passes" / "OpaquePass.cpp");
     // The GPU-driven showcase is the current pure-ECS production sample.  Keep
     // this source contract tied to the engine-owned policy/readiness path so a
     // deleted legacy ModelViewer entry point cannot become a hidden dependency.
@@ -6711,7 +6711,7 @@ TEST_F(GPUDrivenValidationFixture, GPUCullingComputeShaderEntriesCompileForDX12)
     ASSERT_FALSE(root.empty());
 
     const std::filesystem::path shaderPath =
-        root / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl";
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl";
     const std::string shader = ReadTextFile(shaderPath);
     ASSERT_FALSE(shader.empty());
 
@@ -6757,7 +6757,7 @@ TEST_F(GPUDrivenValidationFixture,
     ASSERT_FALSE(root.empty());
 
     const std::filesystem::path shaderPath =
-        root / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl";
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl";
     const std::string shader = ReadTextFile(shaderPath);
     ASSERT_FALSE(shader.empty());
 
@@ -7923,11 +7923,11 @@ TEST_F(GPUDrivenValidationFixture,
     const std::filesystem::path root = FindWorkspaceRoot();
     ASSERT_FALSE(root.empty());
     const std::string source = ReadTextFile(
-        root / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+        root / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
     const std::string uploaderHeader = ReadTextFile(
-        root / "Render" / "Private" / "GPUScene" / "GPUSceneUploader.h");
+        root / "Source" / "Runtime" / "Render" / "Private" / "GPUScene" / "GPUSceneUploader.h");
     const std::string subsystemSource = ReadTextFile(
-        root / "Render" / "Private" / "RenderSubsystem.cpp");
+        root / "Source" / "Runtime" / "Render" / "Private" / "RenderSubsystem.cpp");
     const std::string sampleRunnerSource = ReadTextFile(
         root / "Samples" / "Common" / "Private" / "SampleRunner.cpp");
     ASSERT_FALSE(source.empty());
@@ -8086,14 +8086,14 @@ TEST_F(GPUDrivenValidationFixture,
     const std::filesystem::path root = FindWorkspaceRoot();
     ASSERT_FALSE(root.empty());
     const std::string renderer = ReadTextFile(
-        root / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+        root / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
     const std::string recordContext = ReadTextFile(
-        root / "Render" / "Include" / "Render" / "Passes" /
+        root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Passes" /
         "RenderPassRecordContext.h");
     const std::string depthPass = ReadTextFile(
-        root / "Render" / "Private" / "Passes" / "DepthPrepass.cpp");
+        root / "Source" / "Runtime" / "Render" / "Private" / "Passes" / "DepthPrepass.cpp");
     const std::string opaquePass = ReadTextFile(
-        root / "Render" / "Private" / "Passes" / "OpaquePass.cpp");
+        root / "Source" / "Runtime" / "Render" / "Private" / "Passes" / "OpaquePass.cpp");
     ASSERT_FALSE(renderer.empty());
     ASSERT_FALSE(recordContext.empty());
     ASSERT_FALSE(depthPass.empty());
@@ -8147,15 +8147,15 @@ TEST_F(GPUDrivenValidationFixture,
     ASSERT_FALSE(root.empty());
 
     const std::string header = ReadTextFile(
-        root / "Render" / "Include" / "Render" / "GPUDriven" / "GPUCulling.h");
+        root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "GPUDriven" / "GPUCulling.h");
     const std::string source = ReadTextFile(
-        root / "Render" / "Private" / "GPUDriven" / "GPUCulling.cpp");
+        root / "Source" / "Runtime" / "Render" / "Private" / "GPUDriven" / "GPUCulling.cpp");
     const std::string sharedShader = ReadTextFile(
-        root / "Render" / "Shaders" / "GPUDriven" / "GPUSceneCulling.hlsli");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "GPUDriven" / "GPUSceneCulling.hlsli");
     const std::string shader = ReadTextFile(
-        root / "Render" / "Shaders" / "GPUDriven" / "GPUSceneCulling.hlsl");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "GPUDriven" / "GPUSceneCulling.hlsl");
     const std::string normalShader = ReadTextFile(
-        root / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl");
     ASSERT_FALSE(header.empty());
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(sharedShader.empty());
@@ -8266,7 +8266,7 @@ TEST_F(GPUDrivenValidationFixture, GPUSceneCullingShaderEntriesCompileForDX12)
     ASSERT_FALSE(root.empty());
 
     const std::filesystem::path shaderPath =
-        root / "Render" / "Shaders" / "GPUDriven" / "GPUSceneCulling.hlsl";
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "GPUDriven" / "GPUSceneCulling.hlsl";
     const std::string shader = ReadTextFile(shaderPath);
     ASSERT_FALSE(shader.empty());
 
@@ -8342,13 +8342,13 @@ TEST_F(GPUDrivenValidationFixture, GPUDrivenVertexShaderEntriesCompileForDX12SM6
     };
 
     compileVertexEntry(
-        root / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainRigid");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainRigid");
     compileVertexEntry(
-        root / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainGPUDriven");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainGPUDriven");
     compileVertexEntry(
-        root / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainRigid");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainRigid");
     compileVertexEntry(
-        root / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainGPUDriven");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainGPUDriven");
 
     const auto compileGPUSceneVertexEntry = [&compiler](
         const std::filesystem::path& shaderPath,
@@ -8394,12 +8394,12 @@ TEST_F(GPUDrivenValidationFixture, GPUDrivenVertexShaderEntriesCompileForDX12SM6
     };
 
     compileGPUSceneVertexEntry(
-        root / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainGPUScene");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainGPUScene");
     compileGPUSceneVertexEntry(
-        root / "Render" / "Shaders" / "DefaultLit.hlsl",
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DefaultLit.hlsl",
         "VSMainGPUSceneInstancedMaterial");
     compileGPUSceneVertexEntry(
-        root / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainGPUScene");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainGPUScene");
 }
 
 TEST_F(GPUDrivenValidationFixture,
@@ -8445,13 +8445,13 @@ TEST_F(GPUDrivenValidationFixture,
     };
 
     compileVertexEntry(
-        root / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainRigid", false);
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainRigid", false);
     compileVertexEntry(
-        root / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainGPUScene", true);
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainGPUScene", true);
     compileVertexEntry(
-        root / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainRigid", false);
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainRigid", false);
     compileVertexEntry(
-        root / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainGPUScene", true);
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainGPUScene", true);
 }
 
 TEST_F(GPUDrivenValidationFixture,
@@ -8460,16 +8460,16 @@ TEST_F(GPUDrivenValidationFixture,
     const std::filesystem::path root = FindWorkspaceRoot();
     ASSERT_FALSE(root.empty());
     const std::string rasterInclude = ReadTextFile(
-        root / "Render" / "Shaders" / "GPUDriven" / "GPUSceneRaster.hlsli");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "GPUDriven" / "GPUSceneRaster.hlsli");
     const std::string sharedSchema = ReadTextFile(
-        root / "Render" / "Shaders" / "GPUDriven" / "GPUSceneCulling.hlsli");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "GPUDriven" / "GPUSceneCulling.hlsli");
     const std::string cpuSchema = ReadTextFile(
-        root / "Render" / "Include" / "Render" / "GPUScene" /
+        root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "GPUScene" /
         "GPUSceneSchema.h");
     const std::string defaultLit = ReadTextFile(
-        root / "Render" / "Shaders" / "DefaultLit.hlsl");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DefaultLit.hlsl");
     const std::string depthOnly = ReadTextFile(
-        root / "Render" / "Shaders" / "DepthOnly.hlsl");
+        root / "Source" / "Runtime" / "Render" / "Shaders" / "DepthOnly.hlsl");
     ASSERT_FALSE(rasterInclude.empty());
     ASSERT_FALSE(sharedSchema.empty());
     ASSERT_FALSE(cpuSchema.empty());

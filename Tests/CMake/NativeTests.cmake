@@ -60,7 +60,7 @@ if(RVX_ENABLE_DX12)
         INCLUDES
             ${CMAKE_CURRENT_SOURCE_DIR}
             ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI_DX12/Private
-            ${CMAKE_SOURCE_DIR}/Render/Private
+            ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
         TAGS backend.dx12 trait.gpu ${RVX_NATIVE_DX12_PRIMARY_TAGS}
         TIMEOUT 120
         RESOURCE_LOCK rvx_gpu

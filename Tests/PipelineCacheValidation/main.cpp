@@ -53,7 +53,8 @@ namespace
         fs::path cursor = fs::current_path();
         for (uint32_t i = 0; i < 8; ++i)
         {
-            fs::path candidate = cursor / "Render" / "Shaders";
+            fs::path candidate =
+                cursor / "Source" / "Runtime" / "Render" / "Shaders";
             if (fs::exists(candidate / "DefaultLit.hlsl"))
             {
                 return candidate;
@@ -67,6 +68,14 @@ namespace
         }
 
         return {};
+    }
+
+    fs::path RepositoryRootFromShaderDirectory(const fs::path& shaderDirectory)
+    {
+        return shaderDirectory.parent_path()
+            .parent_path()
+            .parent_path()
+            .parent_path();
     }
 
     class TempDirectory
@@ -918,7 +927,7 @@ namespace
             return {};
         }
 
-        const fs::path repoRoot = shaderDir.parent_path().parent_path();
+        const fs::path repoRoot = RepositoryRootFromShaderDirectory(shaderDir);
         const fs::path showcasePath =
             repoRoot / "Samples" / "Showcase" / "ModelViewer" / "main.cpp";
         if (fs::exists(showcasePath))
@@ -939,7 +948,7 @@ namespace
             return {};
         }
 
-        const fs::path repoRoot = shaderDir.parent_path().parent_path();
+        const fs::path repoRoot = RepositoryRootFromShaderDirectory(shaderDir);
         const fs::path scenePath = repoRoot / "Samples" / "RenderVerseSamples" /
                                    "Scenes" / fileName;
         return fs::exists(scenePath) ? scenePath : fs::path{};
@@ -953,7 +962,7 @@ namespace
             return {};
         }
 
-        const fs::path repoRoot = shaderDir.parent_path().parent_path();
+        const fs::path repoRoot = RepositoryRootFromShaderDirectory(shaderDir);
         const fs::path testsCMakePath =
             repoRoot / "Tests" / "CMake" / "QualificationTests.cmake";
         return fs::exists(testsCMakePath) ? testsCMakePath : fs::path{};
@@ -1043,7 +1052,7 @@ TEST_F(PipelineCacheValidationFixture, FailedShaderCreationFailsWithVisibleError
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -1058,7 +1067,7 @@ TEST_F(PipelineCacheValidationFixture, MissingToneMappingShaderFailsWithVisibleE
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path sourceDir = FindShaderDirectory();
@@ -1080,7 +1089,7 @@ TEST_F(PipelineCacheValidationFixture, MissingBloomShaderFailsWithVisibleError)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path sourceDir = FindShaderDirectory();
@@ -1104,7 +1113,7 @@ TEST_F(PipelineCacheValidationFixture, MissingSSAOShaderFailsWithVisibleError)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path sourceDir = FindShaderDirectory();
@@ -1130,7 +1139,7 @@ TEST_F(PipelineCacheValidationFixture, MissingCameraVelocityShaderFailsWithVisib
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_missing_camera_velocity_shader");
@@ -1149,7 +1158,7 @@ TEST_F(PipelineCacheValidationFixture, MissingObjectVelocityShaderFailsWithVisib
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_missing_object_velocity_shader");
@@ -1167,7 +1176,7 @@ TEST_F(PipelineCacheValidationFixture, MissingFXAAShaderFailsWithVisibleError)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path sourceDir = FindShaderDirectory();
@@ -1204,7 +1213,7 @@ TEST_F(PipelineCacheValidationFixture, MissingFilmGrainShaderFailsWithVisibleErr
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path sourceDir = FindShaderDirectory();
@@ -1239,7 +1248,7 @@ TEST_F(PipelineCacheValidationFixture, MissingChromaticAberrationShaderFailsWith
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path sourceDir = FindShaderDirectory();
@@ -1272,7 +1281,7 @@ TEST_F(PipelineCacheValidationFixture, MissingColorGradingShaderFailsWithVisible
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path sourceDir = FindShaderDirectory();
@@ -1303,7 +1312,7 @@ TEST_F(PipelineCacheValidationFixture, MissingVignetteShaderFailsWithVisibleErro
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path sourceDir = FindShaderDirectory();
@@ -1342,7 +1351,7 @@ TEST_F(PipelineCacheValidationFixture, MissingSkyboxShaderFailsWithVisibleError)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path sourceDir = FindShaderDirectory();
@@ -1384,7 +1393,7 @@ TEST_F(PipelineCacheValidationFixture, MissingUIShaderFailsWithVisibleError)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path sourceDir = FindShaderDirectory();
@@ -1425,7 +1434,7 @@ TEST_F(PipelineCacheValidationFixture, MissingRayTracedReflectionCompositeShader
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_missing_rt_reflection_composite_shader");
@@ -1445,7 +1454,7 @@ TEST_F(PipelineCacheValidationFixture, MissingRayTracedReflectionDenoiseShaderFa
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_missing_rt_reflection_denoise_shader");
@@ -1465,7 +1474,7 @@ TEST_F(PipelineCacheValidationFixture, SkyboxShaderUsesFullscreenTriangleAndProc
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const std::string shaderSource = ReadTextFile(FindShaderDirectory() / "Skybox.hlsl");
@@ -1484,7 +1493,7 @@ TEST_F(PipelineCacheValidationFixture, ToneMappingShaderUsesSingleDisplayConvers
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const std::string shaderSource =
@@ -1517,7 +1526,7 @@ TEST_F(PipelineCacheValidationFixture, FullscreenTrianglePassesPreserveUpperLeft
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path shaderDirectory = FindShaderDirectory();
@@ -1612,7 +1621,7 @@ TEST_F(PipelineCacheValidationFixture, BloomShaderUsesMipChainCompositeModes)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const std::string shaderSource =
@@ -1656,7 +1665,7 @@ TEST_F(PipelineCacheValidationFixture, FXAAShaderUsesPostProcessDescriptorLayout
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const std::string shaderSource =
@@ -1671,7 +1680,7 @@ TEST_F(PipelineCacheValidationFixture, VignetteShaderUsesPostProcessDescriptorLa
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const std::string shaderSource =
@@ -1686,7 +1695,7 @@ TEST_F(PipelineCacheValidationFixture, FilmGrainShaderUsesPostProcessDescriptorL
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const std::string shaderSource =
@@ -1704,7 +1713,7 @@ TEST_F(PipelineCacheValidationFixture, SSAOShaderUsesPostProcessDescriptorLayout
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const std::string shaderSource =
@@ -1723,7 +1732,7 @@ TEST_F(PipelineCacheValidationFixture, ColorGradingShaderUsesPostProcessDescript
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const std::string shaderSource =
@@ -1739,7 +1748,7 @@ TEST_F(PipelineCacheValidationFixture, ChromaticAberrationShaderUsesPostProcessD
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const std::string shaderSource =
@@ -1758,7 +1767,7 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -2029,14 +2038,14 @@ TEST_F(PipelineCacheValidationFixture,
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     std::vector<RVX::Tools::ShaderProgramCatalogEntry> catalogEntries;
     std::string error;
     ASSERT_TRUE(RVX::Tools::LoadShaderProgramCatalog(
         fs::path(RVX_SOURCE_DIR) /
-            "Render/Shaders/Programs.rvxshadercatalog.json",
+            "Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json",
         catalogEntries, error)) << error;
 
     std::set<std::string> cookedPrograms;
@@ -2089,10 +2098,10 @@ TEST_F(PipelineCacheValidationFixture, OpenGLDescriptorBindingsUseStableGLSLBind
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
-    const fs::path repoRoot = FindShaderDirectory().parent_path().parent_path();
+    const fs::path repoRoot = RepositoryRootFromShaderDirectory(FindShaderDirectory());
     const std::string translatorSource =
         ReadTextFile(repoRoot / "ShaderCompiler" / "Private" / "SPIRVCrossTranslator.cpp");
     const std::string descriptorSource =
@@ -2127,7 +2136,7 @@ TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCove
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path testsCMakePath = FindQualificationTestsCMakePath();
@@ -2226,7 +2235,7 @@ TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCove
             hasMetalPbrWorkflow, hasMetalPbrResponse, hasMetalPbrTextureSmoke);
     }
 
-    const fs::path repoRoot = FindShaderDirectory().parent_path().parent_path();
+    const fs::path repoRoot = RepositoryRootFromShaderDirectory(FindShaderDirectory());
     const fs::path sampleMainPath = repoRoot / "Samples" / "RenderVerseSamples" / "main.cpp";
     const fs::path sampleRegisterPath =
         repoRoot / "Samples" / "RenderVerseSamples" / "RegisterSamples.cpp";
@@ -2240,7 +2249,8 @@ TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCove
     EXPECT_NE(sampleRegisterSource.find("PBRMaterialsSample"), std::string::npos);
 
     const std::string renderRuntimeComposition =
-        ReadTextFile(repoRoot / "Engine" / "Private" / "ECS" / "EcsRenderRuntimeComposition.cpp");
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "Engine" / "Private" /
+                     "ECS" / "EcsRenderRuntimeComposition.cpp");
     const std::string windowSubsystem =
         ReadTextFile(repoRoot / "Source" / "Runtime" / "RuntimeServices" / "Private" /
                      "Window" / "WindowSubsystem.cpp");
@@ -2263,11 +2273,12 @@ TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCove
         ReadTextFile(repoRoot / "Source" / "Runtime" / "RHI_OpenGL" / "Private" /
                      "OpenGLUpload.cpp");
     const std::string particleCMake =
-        ReadTextFile(repoRoot / "Particle" / "CMakeLists.txt");
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "Particle" / "CMakeLists.txt");
     const std::string renderCMake =
-        ReadTextFile(repoRoot / "Render" / "CMakeLists.txt");
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "Render" / "CMakeLists.txt");
     const std::string particleFeaturePass =
-        ReadTextFile(repoRoot / "Render" / "Private" / "Passes" / "ParticleFeaturePass.cpp");
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "Render" / "Private" /
+                     "Passes" / "ParticleFeaturePass.cpp");
     EXPECT_NE(openGLCommandContext.find("srcGL->GetHandle() == 0"), std::string::npos);
     EXPECT_NE(openGLCommandContext.find("glReadPixels"), std::string::npos);
     EXPECT_NE(openGLCommandContext.find("GL_PIXEL_PACK_BUFFER"), std::string::npos);
@@ -2291,10 +2302,10 @@ TEST_F(PipelineCacheValidationFixture, RVXCookWorkflowDocumentationCoversCurrent
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
-    const fs::path repoRoot = FindShaderDirectory().parent_path().parent_path();
+    const fs::path repoRoot = RepositoryRootFromShaderDirectory(FindShaderDirectory());
     const fs::path docPath = repoRoot / "Docs" / "rvxcook-workflow.md";
     ASSERT_TRUE(fs::exists(docPath));
 
@@ -2334,10 +2345,10 @@ TEST_F(PipelineCacheValidationFixture, OpenGLRenderPassClearsIgnorePreviousWrite
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
-    const fs::path repoRoot = FindShaderDirectory().parent_path().parent_path();
+    const fs::path repoRoot = RepositoryRootFromShaderDirectory(FindShaderDirectory());
     const std::string openGLCommandContext =
         ReadTextFile(repoRoot / "Source" / "Runtime" / "RHI_OpenGL" / "Private" /
                      "OpenGLCommandContext.cpp");
@@ -2381,10 +2392,10 @@ TEST_F(PipelineCacheValidationFixture, ShaderCacheKeyIncludesCompilerAbiVersion)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
-    const fs::path repoRoot = FindShaderDirectory().parent_path().parent_path();
+    const fs::path repoRoot = RepositoryRootFromShaderDirectory(FindShaderDirectory());
     const std::string formatHeader =
         ReadTextFile(repoRoot / "ShaderCompiler" / "Include" / "ShaderCompiler" / "ShaderCacheFormat.h");
     const std::string managerSource =
@@ -2405,7 +2416,7 @@ TEST_F(PipelineCacheValidationFixture, DX11DefaultLitContractBuildsLocalLightBin
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device(RVX::RHIBackendType::DX11);
@@ -2491,7 +2502,7 @@ TEST_F(PipelineCacheValidationFixture, ObjectConstantBufferUsesAlignedObjectCons
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -2526,7 +2537,7 @@ TEST_F(PipelineCacheValidationFixture,
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -2565,7 +2576,7 @@ TEST_F(PipelineCacheValidationFixture,
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -2646,7 +2657,7 @@ TEST_F(PipelineCacheValidationFixture,
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -2672,7 +2683,7 @@ TEST_F(PipelineCacheValidationFixture,
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -2768,7 +2779,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateObjectConstantsUploadsWorldAndNorma
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -2824,7 +2835,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateObjectConstantsUploadsSkinningMatri
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -2902,7 +2913,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDefaultIBLAmbie
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -2957,7 +2968,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsCustomAndDisabl
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -3028,7 +3039,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsZeroAmbientFloo
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -3055,7 +3066,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsSanitizesTextureIBLInt
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -3084,7 +3095,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShad
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     RVX::ViewData view;
@@ -3205,7 +3216,7 @@ TEST_F(PipelineCacheValidationFixture, DirectionalShadowFrameResourcesReportFall
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -3256,7 +3267,7 @@ TEST_F(PipelineCacheValidationFixture, EnvironmentIBLUsesFrameBindingsAndLinearC
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -3351,7 +3362,7 @@ TEST_F(PipelineCacheValidationFixture, FrameLightResourcesUseFallbacksAndSurvive
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -3470,7 +3481,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsSanitizesInvalidLighti
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -3571,7 +3582,7 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const std::string shader = ReadTextFile(FindShaderDirectory() / "DefaultLit.hlsl");
@@ -3680,7 +3691,7 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesOneGGXAlphaRoughnessContrac
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const std::string brdf =
@@ -3726,7 +3737,7 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitConsumesMaterialWorkflowAndDoub
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const std::string shader = ReadTextFile(FindShaderDirectory() / "DefaultLit.hlsl");
@@ -3753,7 +3764,7 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesFrameLocalLightResources)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const std::string shader = ReadTextFile(FindShaderDirectory() / "DefaultLit.hlsl");
@@ -3780,7 +3791,7 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresLightManagerIntoDefault
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path rendererPath = FindShaderDirectory().parent_path() / "Private" / "Renderer" / "SceneRenderer.cpp";
@@ -3811,7 +3822,7 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererBuildsClusteredLightingFrame
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
@@ -3839,7 +3850,7 @@ TEST_F(PipelineCacheValidationFixture, LightManagerCreatesStructuredLocalLightBu
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path lightManagerPath = FindShaderDirectory().parent_path() / "Private" / "Lighting" / "LightManager.cpp";
@@ -3925,7 +3936,7 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererClearsAmbientFloorWhenTextur
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path sceneRendererPath = FindShaderDirectory().parent_path() /
@@ -3941,7 +3952,7 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererUsesSamePrimaryDirectionalLi
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path sceneRendererPath = FindShaderDirectory().parent_path() /
@@ -3979,7 +3990,7 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererAppliesShadowQualityConfigTo
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
@@ -4004,7 +4015,7 @@ TEST_F(PipelineCacheValidationFixture,
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
@@ -4057,7 +4068,7 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracingSceneBuildBef
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
@@ -4106,7 +4117,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracingSceneManagerInvalidatesFrameOut
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
@@ -4273,7 +4284,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracingSceneManagerRetriesIncompleteBL
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
@@ -4316,10 +4327,10 @@ TEST_F(PipelineCacheValidationFixture, RayTracingValidationRejectsNonFiniteTLASI
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
-    const fs::path rhiRoot = FindShaderDirectory().parent_path().parent_path() /
+    const fs::path rhiRoot = RepositoryRootFromShaderDirectory(FindShaderDirectory()) /
                              "Source" / "Runtime" / "RHI";
     const std::string rhiHeader = ReadTextFile(rhiRoot / "Include" / "RHI" / "RHIRayTracing.h");
     const std::string descriptorHeader = ReadTextFile(rhiRoot / "Include" / "RHI" / "RHIDescriptor.h");
@@ -4426,7 +4437,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracingSceneBuildPlanSkipsZeroInstance
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
@@ -4462,7 +4473,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracingSceneBuildPassTransitionsScratc
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
@@ -4501,7 +4512,7 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracedShadowPassAfte
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
@@ -5046,7 +5057,7 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracedShadowPassAfte
 TEST_F(PipelineCacheValidationFixture, RayTracingResourceBindingsMatchBetweenCppAndHlsl)
 {
     const fs::path shaderDir = FindShaderDirectory();
-    ASSERT_FALSE(shaderDir.empty()) << "Render/Shaders directory not found";
+    ASSERT_FALSE(shaderDir.empty()) << "Source/Runtime/Render/Shaders directory not found";
 
     const fs::path renderRoot = shaderDir.parent_path();
     const std::string cppBindings = ReadTextFile(renderRoot / "Include" / "Render" / "RayTracing" / "RayTracingResourceBindings.h");
@@ -5128,7 +5139,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracingResourceBindingsMatchBetweenCpp
 TEST_F(PipelineCacheValidationFixture, RayTracingSceneMetadataConstantsMatchBetweenCppAndHlsl)
 {
     const fs::path shaderDir = FindShaderDirectory();
-    ASSERT_FALSE(shaderDir.empty()) << "Render/Shaders directory not found";
+    ASSERT_FALSE(shaderDir.empty()) << "Source/Runtime/Render/Shaders directory not found";
 
     const fs::path renderRoot = shaderDir.parent_path();
     const std::string sceneHeader = ReadTextFile(renderRoot / "Include" / "Render" / "RayTracing" / "RayTracingScene.h");
@@ -5206,7 +5217,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracedShadowPassCreatesDescriptorSetAn
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
@@ -5676,7 +5687,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionPipelineCacheResources
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
@@ -6384,7 +6395,7 @@ TEST_F(PipelineCacheValidationFixture, OpaquePassConsumesRayTracedShadowMask)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
@@ -6470,10 +6481,10 @@ TEST_F(PipelineCacheValidationFixture, DX12BackendImplementsRayTracingPipelineSh
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
-    const fs::path repoRoot = FindShaderDirectory().parent_path().parent_path();
+    const fs::path repoRoot = RepositoryRootFromShaderDirectory(FindShaderDirectory());
     const fs::path dx12Dir = repoRoot / "Source" / "Runtime" / "RHI_DX12" / "Private";
     const std::string pipelineHeader = ReadTextFile(dx12Dir / "DX12Pipeline.h");
     const std::string pipelineSource = ReadTextFile(dx12Dir / "DX12Pipeline.cpp");
@@ -6876,10 +6887,10 @@ TEST_F(PipelineCacheValidationFixture, VulkanBackendDoesNotAdvertiseRayTracingBe
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
-    const fs::path repoRoot = FindShaderDirectory().parent_path().parent_path();
+    const fs::path repoRoot = RepositoryRootFromShaderDirectory(FindShaderDirectory());
     const fs::path vulkanDir = repoRoot / "Source" / "Runtime" / "RHI_Vulkan" / "Private";
     const std::string deviceHeader = ReadTextFile(vulkanDir / "VulkanDevice.h");
     const std::string deviceSource = ReadTextFile(vulkanDir / "VulkanDevice.cpp");
@@ -6914,7 +6925,7 @@ TEST_F(PipelineCacheValidationFixture, ToneMappingOperatorUsesSharedRuntimeSetti
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
@@ -7020,7 +7031,7 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesShadowQualityPresets)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path modelViewerPath = FindModelViewerSourcePath();
@@ -7070,7 +7081,7 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesTonemapOperatorSelectio
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path modelViewerPath = FindModelViewerSourcePath();
@@ -7222,7 +7233,7 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerRayTracingSmokeGatesAreObserva
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path modelViewerPath = FindModelViewerSourcePath();
@@ -7230,7 +7241,7 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerRayTracingSmokeGatesAreObserva
     {
         const fs::path shaderDir = FindShaderDirectory();
         ASSERT_FALSE(shaderDir.empty());
-        const fs::path repoRoot = shaderDir.parent_path().parent_path();
+        const fs::path repoRoot = RepositoryRootFromShaderDirectory(shaderDir);
         const std::string frameTypes = ReadTextFile(
             repoRoot / "Source" / "Runtime" / "RenderContracts" / "Include" / "RenderContracts" /
             "RenderFrameTypes.h");
@@ -7484,7 +7495,7 @@ TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAwa
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice firstDevice;
@@ -7527,7 +7538,7 @@ TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
@@ -7615,7 +7626,7 @@ TEST_F(PipelineCacheValidationFixture, CameraVelocityPipelineIsLazyAndUsesRG16F)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -7648,7 +7659,7 @@ TEST_F(PipelineCacheValidationFixture, ObjectVelocityPipelineIsLazyAndUsesRG16FD
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -7730,7 +7741,7 @@ TEST_F(PipelineCacheValidationFixture, RenderTargetFormatChangesPipelineHash)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice firstDevice;
@@ -7763,7 +7774,7 @@ TEST_F(PipelineCacheValidationFixture, SplitRenderTargetFormatsRouteSceneBloomAn
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -7820,7 +7831,7 @@ TEST_F(PipelineCacheValidationFixture, BloomAdditivePipelineUsesAdditiveColorAnd
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -7857,7 +7868,7 @@ TEST_F(PipelineCacheValidationFixture, RuntimeOutputFormatRequestsCreateMatching
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -7906,7 +7917,7 @@ TEST_F(PipelineCacheValidationFixture, RuntimeRenderTargetFormatSwitchRefreshesC
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -7945,7 +7956,7 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -8211,7 +8222,7 @@ TEST_F(PipelineCacheValidationFixture,
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -8309,7 +8320,7 @@ TEST_F(PipelineCacheValidationFixture,
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -8330,7 +8341,7 @@ TEST_F(PipelineCacheValidationFixture,
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -8361,7 +8372,7 @@ TEST_F(PipelineCacheValidationFixture, ReverseZOptInChangesDepthCompareAndClearC
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -8420,7 +8431,7 @@ TEST_F(PipelineCacheValidationFixture, ShadowDepthPipelineUsesPurposeKeyAndSanit
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -8471,10 +8482,10 @@ TEST_F(PipelineCacheValidationFixture, VulkanRasterizerEnablesDepthBiasForSlopeA
     const fs::path shaderDir = FindShaderDirectory();
     if (shaderDir.empty())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
-    const fs::path vulkanPipelinePath = shaderDir.parent_path().parent_path() /
+    const fs::path vulkanPipelinePath = RepositoryRootFromShaderDirectory(shaderDir) /
                                         "Source" / "Runtime" / "RHI_Vulkan" / "Private" /
                                         "VulkanPipeline.cpp";
     const std::string source = ReadTextFile(vulkanPipelinePath);
@@ -8488,7 +8499,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestMissingIsColdInitAndSavesMetadata
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_cold");
@@ -8534,7 +8545,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestReloadsAsValidForSameInputs)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_reload");
@@ -8560,7 +8571,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenConfigChanges)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_stale");
@@ -8589,7 +8600,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenToneMappingOutputF
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_tonemapping_format_stale");
@@ -8618,7 +8629,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenToneMappingPipelin
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_tonemapping_stale");
@@ -8651,7 +8662,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenBloomPipelineHashC
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_bloom_stale");
@@ -8684,7 +8695,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenSSAOPipelineHashCh
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_ssao_stale");
@@ -8717,7 +8728,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenColorGradingPipeli
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_colorgrading_stale");
@@ -8750,7 +8761,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenChromaticAberratio
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_chromatic_aberration_stale");
@@ -8785,7 +8796,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenVignettePipelineHa
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_vignette_stale");
@@ -8818,7 +8829,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenFXAAPipelineHashCh
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_fxaa_stale");
@@ -8851,7 +8862,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenUIPipelineHashChan
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_ui_stale");
@@ -8884,7 +8895,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenSkyboxPipelineHash
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_skybox_stale");
@@ -8917,7 +8928,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenSkyboxShaderChange
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_skybox_shader");
@@ -8955,7 +8966,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenFXAAShaderChanges)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_fxaa_shader");
@@ -8993,7 +9004,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenColorGradingShader
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_colorgrading_shader");
@@ -9031,7 +9042,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenChromaticAberratio
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_chromatic_aberration_shader");
@@ -9069,7 +9080,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenVignetteShaderChan
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_vignette_shader");
@@ -9107,7 +9118,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenUIShaderChanges)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_ui_shader");
@@ -9145,7 +9156,7 @@ TEST_F(PipelineCacheValidationFixture, CorruptManifestInvalidatesWithoutFailingI
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_corrupt");
@@ -9165,7 +9176,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestRejectsInvalidReverseZValue)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_reversez");
@@ -9194,7 +9205,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestWriteFailureDoesNotFailInitializa
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_write_failure");
@@ -9216,7 +9227,7 @@ TEST_F(PipelineCacheValidationFixture, BackendPipelineCreationFailureIsVisible)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -9231,7 +9242,7 @@ TEST_F(PipelineCacheValidationFixture, ToneMappingPipelineCreationFailureIsVisib
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -9246,7 +9257,7 @@ TEST_F(PipelineCacheValidationFixture, SkyboxPipelineCreationFailureIsVisible)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -9261,7 +9272,7 @@ TEST_F(PipelineCacheValidationFixture, BloomPipelineCreationFailureIsVisible)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -9276,7 +9287,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionCompositePipelineCreat
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -9291,7 +9302,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionDenoisePipelineCreatio
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -9306,7 +9317,7 @@ TEST_F(PipelineCacheValidationFixture, VignettePipelineCreationFailureIsVisible)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -9321,7 +9332,7 @@ TEST_F(PipelineCacheValidationFixture, SSAOPipelineCreationFailureIsVisible)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -9336,7 +9347,7 @@ TEST_F(PipelineCacheValidationFixture, FXAAPipelineCreationFailureIsVisible)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -9351,7 +9362,7 @@ TEST_F(PipelineCacheValidationFixture, FilmGrainPipelineCreationFailureIsVisible
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -9366,7 +9377,7 @@ TEST_F(PipelineCacheValidationFixture, ColorGradingPipelineCreationFailureIsVisi
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -9381,7 +9392,7 @@ TEST_F(PipelineCacheValidationFixture, ChromaticAberrationPipelineCreationFailur
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -9396,7 +9407,7 @@ TEST_F(PipelineCacheValidationFixture, UIPipelineCreationFailureIsVisible)
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -9418,7 +9429,7 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitDirectVertexInputModesUseDistin
 
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -9522,7 +9533,7 @@ TEST_F(PipelineCacheValidationFixture,
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -9539,7 +9550,7 @@ TEST_F(PipelineCacheValidationFixture,
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
@@ -9608,7 +9619,7 @@ TEST_F(PipelineCacheValidationFixture,
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -9671,7 +9682,7 @@ TEST_F(PipelineCacheValidationFixture,
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -9699,7 +9710,7 @@ TEST_F(PipelineCacheValidationFixture,
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;
@@ -9784,7 +9795,7 @@ TEST_F(PipelineCacheValidationFixture,
 {
     if (!HasShaderFixtures())
     {
-        GTEST_SKIP() << "Render/Shaders directory not found";
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
     FakeDevice device;

@@ -97,7 +97,6 @@ file(COPY_FILE "${_model_source}"
      "${_staging_root}/Input/Model/R7Triangle.gltf" ONLY_IF_DIFFERENT)
 
 set(_shader_roots
-    "${_source_root}/Render/Shaders"
     "${_source_root}/Source/Runtime/Render/Shaders")
 set(_shader_root "")
 foreach(_candidate IN LISTS _shader_roots)
@@ -308,7 +307,7 @@ string(APPEND _receipt "  \"preset\":\"${_preset_json}\",\n")
 string(APPEND _receipt "  \"backend\":\"${RVX_BACKEND}\",\n")
 string(APPEND _receipt "  \"sourceModel\":\"Tests/Fixtures/ModelViewer/R7Triangle.gltf\",\n")
 string(APPEND _receipt "  \"sourceModelSha256\":\"${_model_source_hash}\",\n")
-string(APPEND _receipt "  \"shaderCatalog\":\"Render/Shaders/Programs.rvxshadercatalog.json\",\n")
+string(APPEND _receipt "  \"shaderCatalog\":\"Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json\",\n")
 string(APPEND _receipt "  \"shaderCatalogSha256\":\"${_shader_catalog_hash}\",\n")
 string(APPEND _receipt "  \"cookExecutableSha256\":\"${_cook_executable_hash}\",\n")
 string(APPEND _receipt "  \"resourceManifest\":\"Cooked/Resources/CookManifest.rvxmanifest\",\n")

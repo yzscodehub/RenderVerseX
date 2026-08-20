@@ -55,12 +55,12 @@ namespace
         }
 
         const std::array<std::filesystem::path, 7> roots = {
-            std::filesystem::path("Render") / "Shaders",
-            std::filesystem::path("..") / "Render" / "Shaders",
-            std::filesystem::path("../..") / "Render" / "Shaders",
-            std::filesystem::path("../../..") / "Render" / "Shaders",
-            std::filesystem::path("../../../..") / "Render" / "Shaders",
-            std::filesystem::path("../../../../..") / "Render" / "Shaders",
+            std::filesystem::path("Source") / "Runtime" / "Render" / "Shaders",
+            std::filesystem::path("..") / "Source" / "Runtime" / "Render" / "Shaders",
+            std::filesystem::path("../..") / "Source" / "Runtime" / "Render" / "Shaders",
+            std::filesystem::path("../../..") / "Source" / "Runtime" / "Render" / "Shaders",
+            std::filesystem::path("../../../..") / "Source" / "Runtime" / "Render" / "Shaders",
+            std::filesystem::path("../../../../..") / "Source" / "Runtime" / "Render" / "Shaders",
             std::filesystem::current_path(),
         };
         for (const std::filesystem::path& root : roots)
