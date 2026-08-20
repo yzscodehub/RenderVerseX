@@ -134,6 +134,7 @@ target_sources(RVX_Render PRIVATE
     Private/Passes/RayTracedReflectionCompositePass.cpp
     Private/Passes/GBufferPass.cpp
     Private/Passes/WaterPass.cpp
+    Private/Passes/UIPass.cpp
     # Graph (merged from RenderGraph module)
     Private/Graph/RenderGraph.cpp
     Private/Graph/RenderGraphCompiler.cpp

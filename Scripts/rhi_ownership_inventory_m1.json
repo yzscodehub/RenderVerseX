@@ -587,6 +587,132 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
+      "path": "Render/Include/Render/Passes/UIPass.h",
+      "owner": "TextureDescriptorEntry",
+      "symbol": "descriptorSet",
+      "policy": "ShutdownAfterDrain",
+      "completionSource": "UIPass calls IRHIDevice::WaitIdle before replacement or shutdown",
+      "normalRelease": "owner replacement releases only after the explicit device drain",
+      "deviceLostRelease": "ordered Render device-lost teardown"
+    },
+    {
+      "path": "Render/Include/Render/Passes/UIPass.h",
+      "owner": "UIPass",
+      "symbol": "m_vertexBuffer",
+      "policy": "ShutdownAfterDrain",
+      "completionSource": "UIPass calls IRHIDevice::WaitIdle before replacement or shutdown",
+      "normalRelease": "owner replacement releases only after the explicit device drain",
+      "deviceLostRelease": "ordered Render device-lost teardown"
+    },
+    {
+      "path": "Render/Include/Render/Passes/UIPass.h",
+      "owner": "UIPass",
+      "symbol": "m_indexBuffer",
+      "policy": "ShutdownAfterDrain",
+      "completionSource": "UIPass calls IRHIDevice::WaitIdle before replacement or shutdown",
+      "normalRelease": "owner replacement releases only after the explicit device drain",
+      "deviceLostRelease": "ordered Render device-lost teardown"
+    },
+    {
+      "path": "Render/Include/Render/Passes/UIPass.h",
+      "owner": "UIPass",
+      "symbol": "m_fontAtlasTexture",
+      "policy": "ShutdownAfterDrain",
+      "completionSource": "UIPass calls IRHIDevice::WaitIdle before replacement or shutdown",
+      "normalRelease": "owner replacement releases only after the explicit device drain",
+      "deviceLostRelease": "ordered Render device-lost teardown"
+    },
+    {
+      "path": "Render/Include/Render/Passes/UIPass.h",
+      "owner": "UIPass",
+      "symbol": "m_fontAtlasTextureView",
+      "policy": "ShutdownAfterDrain",
+      "completionSource": "UIPass calls IRHIDevice::WaitIdle before replacement or shutdown",
+      "normalRelease": "owner replacement releases only after the explicit device drain",
+      "deviceLostRelease": "ordered Render device-lost teardown"
+    },
+    {
+      "path": "Render/Include/Render/Passes/UIPass.h",
+      "owner": "UIPass",
+      "symbol": "m_fontAtlasStagingBuffer",
+      "policy": "ShutdownAfterDrain",
+      "completionSource": "UIPass calls IRHIDevice::WaitIdle before replacement or shutdown",
+      "normalRelease": "owner replacement releases only after the explicit device drain",
+      "deviceLostRelease": "ordered Render device-lost teardown"
+    },
+    {
+      "path": "Render/Include/Render/Passes/UIPass.h",
+      "owner": "UIPass",
+      "symbol": "m_fontAtlasDescriptorSet",
+      "policy": "ShutdownAfterDrain",
+      "completionSource": "UIPass calls IRHIDevice::WaitIdle before replacement or shutdown",
+      "normalRelease": "owner replacement releases only after the explicit device drain",
+      "deviceLostRelease": "ordered Render device-lost teardown"
+    },
+    {
+      "path": "Render/Include/Render/Passes/UIPass.h",
+      "owner": "UIPass",
+      "symbol": "m_whiteTexture",
+      "policy": "ShutdownAfterDrain",
+      "completionSource": "UIPass calls IRHIDevice::WaitIdle before replacement or shutdown",
+      "normalRelease": "owner replacement releases only after the explicit device drain",
+      "deviceLostRelease": "ordered Render device-lost teardown"
+    },
+    {
+      "path": "Render/Include/Render/Passes/UIPass.h",
+      "owner": "UIPass",
+      "symbol": "m_whiteTextureView",
+      "policy": "ShutdownAfterDrain",
+      "completionSource": "UIPass calls IRHIDevice::WaitIdle before replacement or shutdown",
+      "normalRelease": "owner replacement releases only after the explicit device drain",
+      "deviceLostRelease": "ordered Render device-lost teardown"
+    },
+    {
+      "path": "Render/Include/Render/Passes/UIPass.h",
+      "owner": "UIPass",
+      "symbol": "m_whiteTextureStagingBuffer",
+      "policy": "ShutdownAfterDrain",
+      "completionSource": "UIPass calls IRHIDevice::WaitIdle before replacement or shutdown",
+      "normalRelease": "owner replacement releases only after the explicit device drain",
+      "deviceLostRelease": "ordered Render device-lost teardown"
+    },
+    {
+      "path": "Render/Include/Render/Passes/UIPass.h",
+      "owner": "UIPass",
+      "symbol": "m_whiteDescriptorSet",
+      "policy": "ShutdownAfterDrain",
+      "completionSource": "UIPass calls IRHIDevice::WaitIdle before replacement or shutdown",
+      "normalRelease": "owner replacement releases only after the explicit device drain",
+      "deviceLostRelease": "ordered Render device-lost teardown"
+    },
+    {
+      "path": "Render/Include/Render/Passes/UIPass.h",
+      "owner": "UIPass",
+      "symbol": "m_textureSampler",
+      "policy": "ShutdownAfterDrain",
+      "completionSource": "UIPass calls IRHIDevice::WaitIdle before replacement or shutdown",
+      "normalRelease": "owner replacement releases only after the explicit device drain",
+      "deviceLostRelease": "ordered Render device-lost teardown"
+    },
+    {
+      "path": "Render/Include/Render/Passes/UIPass.h",
+      "owner": "UIPass",
+      "symbol": "m_fontSampler",
+      "policy": "ShutdownAfterDrain",
+      "completionSource": "UIPass calls IRHIDevice::WaitIdle before replacement or shutdown",
+      "normalRelease": "owner replacement releases only after the explicit device drain",
+      "deviceLostRelease": "ordered Render device-lost teardown"
+    },
+    {
+      "path": "Render/Include/Render/Passes/UIPass.h",
+      "owner": "UIPass",
+      "symbol": "m_textureSetLayout",
+      "policy": "ShutdownAfterDrain",
+      "completionSource": "UIPass calls IRHIDevice::WaitIdle before replacement or shutdown",
+      "normalRelease": "owner replacement releases only after the explicit device drain",
+      "deviceLostRelease": "ordered Render device-lost teardown"
+    },
+    {
       "path": "Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
       "symbol": "m_bloomAdditivePipeline",

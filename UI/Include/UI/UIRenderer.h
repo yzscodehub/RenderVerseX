@@ -1,37 +1,16 @@
 /**
  * @file UIRenderer.h
- * @brief Runtime RHI-backed UI draw command generation
+ * @brief Backend-neutral UI draw command generation
  */
 
 #pragma once
 
-#include "RHI/RHIBuffer.h"
-#include "RHI/RHIDescriptor.h"
-#include "RHI/RHIDefinitions.h"
-#include "RHI/RHIResources.h"
-#include "RHI/RHISampler.h"
-#include "RHI/RHITexture.h"
-#include "RHI/RHIUpload.h"
+#include "RenderContracts/UIRenderPacket.h"
 #include "UI/UITypes.h"
 
 #include <memory>
 #include <string>
-#include <utility>
 #include <vector>
-
-namespace RVX
-{
-    class RHIBuffer;
-    class RHICommandContext;
-    class RHIDescriptorSet;
-    class RHIDescriptorSetLayout;
-    class IRHIDevice;
-    class RHIPipeline;
-    class RHISampler;
-    class RHIStagingBuffer;
-    class RHITexture;
-    class RHITextureView;
-}
 
 namespace RVX::UI
 {
@@ -39,7 +18,7 @@ namespace RVX::UI
 enum class UIRenderBackend : uint8
 {
     None = 0,
-    RuntimeRHI
+    CPURecorder
 };
 
 enum class UIDrawCommandType : uint8
@@ -234,8 +213,6 @@ struct UIRenderTargetDesc
 {
     uint32 width = 0;
     uint32 height = 0;
-    RHIFormat format = RHIFormat::Unknown;
-    RHITextureView* colorTarget = nullptr;
 };
 
 struct UIDrawCommand
@@ -245,7 +222,7 @@ struct UIDrawCommand
     Rect clipRect;
     Rect uvRect = Rect(0.0f, 0.0f, 1.0f, 1.0f);
     UIColor color = UIColor::White();
-    RHITextureView* textureView = nullptr;
+    RenderResourceHandle texture{};
     std::string text;
     float fontSize = 0.0f;
     uint32 firstVertex = 0;
@@ -274,50 +251,21 @@ struct UIFontAtlasRuntimeStats
     uint32 rebuildCount = 0;
 };
 
-struct UIRenderSubmitDesc
-{
-    RHICommandContext* commandContext = nullptr;
-    RHIPipeline* pipeline = nullptr;
-    RHIDescriptorSetLayout* textureSetLayout = nullptr;
-    bool allowDefaultFramebufferTarget = false;
-    bool beginRenderPass = true;
-    RHILoadOp colorLoadOp = RHILoadOp::Load;
-    RHIStoreOp colorStoreOp = RHIStoreOp::Store;
-    RHIClearColor clearColor = {0.0f, 0.0f, 0.0f, 1.0f};
-};
-
-struct UIRenderSubmitStats
-{
-    bool submitted = false;
-    bool defaultFramebufferTarget = false;
-    bool atlasUploaded = false;
-    bool whiteTextureUploaded = false;
-    uint32 drawCallCount = 0;
-    uint64 vertexBytesUploaded = 0;
-    uint64 indexBytesUploaded = 0;
-    uint64 atlasBytesUploaded = 0;
-    uint64 whiteTextureBytesUploaded = 0;
-};
-
 class UIRenderer
 {
 public:
-    bool Initialize(IRHIDevice* device);
+    bool Initialize();
     void Shutdown();
 
-    bool IsInitialized() const { return m_device != nullptr; }
+    bool IsInitialized() const { return m_initialized; }
     bool IsRecording() const { return m_recording; }
     UIRenderBackend GetBackend() const { return m_backend; }
-    IRHIDevice* GetDevice() const { return m_device; }
 
     void SetFontAtlas(const UIFontAtlas* atlas);
     const UIFontAtlas* GetFontAtlas() const { return m_fontAtlas; }
 
     void BeginFrame(const UIRenderTargetDesc& target);
-    void BeginRecordOnlyFrame(uint32 width,
-                              uint32 height,
-                              RHIFormat format = RHIFormat::RGBA8_UNORM);
-    bool BindRecordedFrameTarget(const UIRenderTargetDesc& target);
+    void BeginRecordOnlyFrame(uint32 width, uint32 height);
     void EndFrame();
 
     void DrawRect(const Rect& rect, const UIColor& color);
@@ -332,7 +280,7 @@ public:
                   const UIColor& color,
                   TextAlign horizontalAlign = TextAlign::Left,
                   VerticalAlign verticalAlign = VerticalAlign::Top);
-    void DrawImage(RHITextureView* textureView,
+    void DrawImage(RenderResourceHandle texture,
                    const Rect& rect,
                    const Rect& uvRect = Rect(0.0f, 0.0f, 1.0f, 1.0f),
                    const UIColor& color = UIColor::White());
@@ -342,27 +290,19 @@ public:
 
     UITextMetrics MeasureText(const std::string& text, float fontSize) const;
 
-    bool Submit(const UIRenderSubmitDesc& desc);
-
     const UIRenderTargetDesc& GetCurrentTarget() const { return m_target; }
     const std::vector<UIDrawCommand>& GetCommands() const { return m_commands; }
     const std::vector<UIVertex>& GetVertices() const { return m_vertices; }
     const std::vector<uint32>& GetIndices() const { return m_indices; }
     const UIRenderStats& GetStats() const { return m_stats; }
-    const UIRenderSubmitStats& GetSubmitStats() const { return m_submitStats; }
+    const UIRenderPacket& GetRenderPacket() const { return m_renderPacket; }
     const UIFontAtlasRuntimeStats& GetFontAtlasRuntimeStats() const
     {
         return m_fontAtlasRuntimeStats;
     }
 
-    RHITextureView* GetFontAtlasTextureView() const { return m_fontAtlasTextureView.Get(); }
-    RHITextureView* GetWhiteTextureView() const { return m_whiteTextureView.Get(); }
-    RHIBuffer* GetVertexBuffer() const { return m_vertexBuffer.Get(); }
-    RHIBuffer* GetIndexBuffer() const { return m_indexBuffer.Get(); }
-
 private:
     void ResetFrameData();
-    void ResetGPUResources();
     void InitializeClipStack();
     void EmitQuad(const Rect& rect, const Rect& uvRect, const UIColor& color, UIDrawCommand& command);
     void EmitQuad(const Vec2& topLeft,
@@ -372,25 +312,11 @@ private:
                   const Rect& uvRect,
                   const UIColor& color,
                   UIDrawCommand& command);
-    bool EnsureDynamicBuffers();
-    bool EnsureBuffer(RHIBufferRef& buffer,
-                      uint64& capacity,
-                      uint64 requiredSize,
-                      RHIBufferUsage usage,
-                      const char* debugName,
-                      uint32 stride);
-    bool UploadBuffer(RHIBuffer* buffer, const void* data, uint64 size);
-    bool EnsureTextureDescriptorResources();
-    bool EnsureWhiteTexture(RHICommandContext& context);
-    bool EnsureFontAtlasTexture(RHICommandContext& context);
-    RHIDescriptorSet* GetOrCreateTextureDescriptor(RHITextureView* textureView);
-    RHIDescriptorSet* GetDescriptorSetForCommand(const UIDrawCommand& command);
-    RHIDescriptorSetLayout* GetActiveTextureSetLayout() const;
-    void ApplyTextureSetLayoutOverride(RHIDescriptorSetLayout* layout);
+    void BuildRenderPacket();
     void QueueMissingFontCodepoint(uint32 codepoint);
     bool RebuildRuntimeFontAtlasIfNeeded();
 
-    IRHIDevice* m_device = nullptr;
+    bool m_initialized = false;
     UIRenderBackend m_backend = UIRenderBackend::None;
     UIRenderTargetDesc m_target;
     bool m_recording = false;
@@ -401,35 +327,17 @@ private:
     UIFontAtlasRuntimeStats m_fontAtlasRuntimeStats;
     std::vector<uint32> m_runtimeFontAtlasCodepoints;
     std::vector<uint32> m_pendingFontAtlasCodepoints;
-
-    RHIBufferRef m_vertexBuffer;
-    RHIBufferRef m_indexBuffer;
-    uint64 m_vertexBufferCapacity = 0;
-    uint64 m_indexBufferCapacity = 0;
-
-    RHITextureRef m_fontAtlasTexture;
-    RHITextureViewRef m_fontAtlasTextureView;
-    RHIStagingBufferRef m_fontAtlasStagingBuffer;
-    RHIDescriptorSetRef m_fontAtlasDescriptorSet;
-    const UIFontAtlas* m_uploadedFontAtlas = nullptr;
-
-    RHITextureRef m_whiteTexture;
-    RHITextureViewRef m_whiteTextureView;
-    RHIStagingBufferRef m_whiteTextureStagingBuffer;
-    RHIDescriptorSetRef m_whiteDescriptorSet;
-
-    RHISamplerRef m_textureSampler;
-    RHISamplerRef m_fontSampler;
-    RHIDescriptorSetLayoutRef m_textureSetLayout;
-    RHIDescriptorSetLayout* m_textureSetLayoutOverride = nullptr;
-    std::vector<std::pair<RHITextureView*, RHIDescriptorSetRef>> m_textureDescriptorSets;
+    uint64 m_fontAtlasRevision = 1;
+    uint64 m_cachedPacketFontAtlasRevision = 0;
+    std::shared_ptr<const std::vector<uint8>> m_packetFontAtlasPixels;
+    uint64 m_packetGeneration = 0;
 
     std::vector<UIDrawCommand> m_commands;
     std::vector<UIVertex> m_vertices;
     std::vector<uint32> m_indices;
     std::vector<Rect> m_clipStack;
     UIRenderStats m_stats;
-    UIRenderSubmitStats m_submitStats;
+    UIRenderPacket m_renderPacket;
 };
 
 } // namespace RVX::UI

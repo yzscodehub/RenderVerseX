@@ -33,3 +33,10 @@ HAL. HAL owns the backend-neutral native-surface value (platform, handles,
 extent, scale, and generation). RHI owns format, present-mode, and vsync policy
 through `RHISwapChainConfig`; those policy fields must not be added to the HAL
 surface contract.
+
+`RVX::UI` is a CPU-only producer. It records layout results into
+`RenderContracts/UIRenderPacket.h` using backend-neutral vertices, indices,
+draw commands, generational texture handles, and an owned font-atlas payload.
+It must not expose or link RHI objects. `Render/Passes/UIPass.h` is the sole
+GPU consumer: Render resolves texture handles and owns buffers, textures,
+descriptors, pipelines, command contexts, and render-target policy.

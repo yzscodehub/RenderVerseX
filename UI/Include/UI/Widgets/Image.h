@@ -5,14 +5,10 @@
 
 #pragma once
 
+#include "RenderContracts/RenderIdentity.h"
 #include "UI/Widget.h"
 
 #include <algorithm>
-
-namespace RVX
-{
-    class RHITextureView;
-}
 
 namespace RVX::UI
 {
@@ -56,11 +52,8 @@ public:
     // Texture
     // =========================================================================
 
-    void SetTextureView(RHITextureView* textureView) { m_textureView = textureView; }
-    RHITextureView* GetTextureView() const { return m_textureView; }
-
-    void SetTexture(RHITextureView* textureView) { SetTextureView(textureView); }
-    RHITextureView* GetTexture() const { return GetTextureView(); }
+    void SetTexture(RenderResourceHandle texture) { m_texture = texture; }
+    RenderResourceHandle GetTexture() const { return m_texture; }
 
     // =========================================================================
     // Display Mode
@@ -120,7 +113,7 @@ protected:
     void OnRender(UIRenderer& renderer) override;
 
 private:
-    RHITextureView* m_textureView = nullptr;
+    RenderResourceHandle m_texture{};
     ImageMode m_mode = ImageMode::Simple;
     UIColor m_color = UIColor::White();
     Rect m_uvRect = Rect(0, 0, 1, 1);

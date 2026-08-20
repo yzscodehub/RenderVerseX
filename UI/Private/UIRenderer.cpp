@@ -5,16 +5,6 @@
 
 #include "UI/UIRenderer.h"
 
-#include "RHI/RHIBuffer.h"
-#include "RHI/RHICommandContext.h"
-#include "RHI/RHIDescriptor.h"
-#include "RHI/RHIDevice.h"
-#include "RHI/RHIPipeline.h"
-#include "RHI/RHIRenderPass.h"
-#include "RHI/RHISampler.h"
-#include "RHI/RHITexture.h"
-#include "RHI/RHIUpload.h"
-
 #define STBTT_STATIC
 #define STB_TRUETYPE_IMPLEMENTATION
 #include <stb_truetype.h>
@@ -285,16 +275,6 @@ namespace
         return true;
     }
 
-    uint64 GrowCapacity(uint64 current, uint64 required)
-    {
-        uint64 capacity = std::max<uint64>(current, 4096);
-        while (capacity < required)
-        {
-            capacity *= 2;
-        }
-        return capacity;
-    }
-
     Rect IntersectRect(const Rect& lhs, const Rect& rhs)
     {
         const float left = std::max(lhs.Left(), rhs.Left());
@@ -313,55 +293,6 @@ namespace
         return lhs.width > 0.0f && lhs.height > 0.0f && rhs.width > 0.0f &&
                rhs.height > 0.0f && lhs.Overlaps(rhs);
     }
-
-    RHIRect ToScissorRect(const Rect& rect, uint32 targetWidth, uint32 targetHeight)
-    {
-        const int32 left = std::clamp(static_cast<int32>(std::floor(rect.Left())),
-                                      0,
-                                      static_cast<int32>(targetWidth));
-        const int32 top = std::clamp(static_cast<int32>(std::floor(rect.Top())),
-                                     0,
-                                     static_cast<int32>(targetHeight));
-        const int32 right = std::clamp(static_cast<int32>(std::ceil(rect.Right())),
-                                       0,
-                                       static_cast<int32>(targetWidth));
-        const int32 bottom = std::clamp(static_cast<int32>(std::ceil(rect.Bottom())),
-                                        0,
-                                        static_cast<int32>(targetHeight));
-
-        RHIRect scissor;
-        scissor.x = left;
-        scissor.y = top;
-        scissor.width = static_cast<uint32>(std::max(0, right - left));
-        scissor.height = static_cast<uint32>(std::max(0, bottom - top));
-        return scissor;
-    }
-
-    bool SameScissor(const RHIRect& lhs, const RHIRect& rhs)
-    {
-        return lhs.x == rhs.x && lhs.y == rhs.y &&
-               lhs.width == rhs.width && lhs.height == rhs.height;
-    }
-
-    std::vector<uint8> ExpandAlphaAtlasToRGBA(const UIFontAtlas& atlas)
-    {
-        const std::vector<uint8>& alphaPixels = atlas.GetPixels();
-        std::vector<uint8> rgbaPixels(alphaPixels.size() * 4u, 255u);
-        for (size_t i = 0; i < alphaPixels.size(); ++i)
-        {
-            rgbaPixels[i * 4u + 0u] = 255u;
-            rgbaPixels[i * 4u + 1u] = 255u;
-            rgbaPixels[i * 4u + 2u] = 255u;
-            rgbaPixels[i * 4u + 3u] = alphaPixels[i];
-        }
-        return rgbaPixels;
-    }
-
-    struct UIPushConstants
-    {
-        float targetSize[2] = {0.0f, 0.0f};
-        float inverseTargetSize[2] = {0.0f, 0.0f};
-    };
 
     std::vector<uint32> BuildAtlasCodepointList(const UIFontAtlasDesc& desc)
     {
@@ -1424,17 +1355,15 @@ void UIRenderer::SetFontAtlas(const UIFontAtlas* atlas)
     m_runtimeFontAtlasCodepoints.clear();
     m_pendingFontAtlasCodepoints.clear();
     m_fontAtlasRuntimeStats = {};
-    m_fontAtlasTexture.Reset();
-    m_fontAtlasTextureView.Reset();
-    m_fontAtlasStagingBuffer.Reset();
-    m_fontAtlasDescriptorSet.Reset();
-    m_uploadedFontAtlas = nullptr;
+    ++m_fontAtlasRevision;
+    m_cachedPacketFontAtlasRevision = 0;
+    m_packetFontAtlasPixels.reset();
 }
 
-bool UIRenderer::Initialize(IRHIDevice* device)
+bool UIRenderer::Initialize()
 {
-    m_device = device;
-    m_backend = device ? UIRenderBackend::RuntimeRHI : UIRenderBackend::None;
+    m_initialized = true;
+    m_backend = UIRenderBackend::CPURecorder;
     m_fontAtlas = GetDefaultFontAtlas();
     m_runtimeFontAtlasExpansionEnabled = true;
     if (m_fontAtlas && m_fontAtlas->IsBuilt())
@@ -1445,13 +1374,13 @@ bool UIRenderer::Initialize(IRHIDevice* device)
             static_cast<uint32>(m_runtimeFontAtlasCodepoints.size());
     }
     ResetFrameData();
-    return m_device != nullptr;
+    return true;
 }
 
 void UIRenderer::Shutdown()
 {
     m_recording = false;
-    m_device = nullptr;
+    m_initialized = false;
     m_backend = UIRenderBackend::None;
     m_target = {};
     m_fontAtlas = nullptr;
@@ -1461,56 +1390,32 @@ void UIRenderer::Shutdown()
     m_runtimeFontAtlasCodepoints.clear();
     m_pendingFontAtlasCodepoints.clear();
     m_fontAtlasRuntimeStats = {};
-    ResetGPUResources();
+    m_fontAtlasRevision = 1;
+    m_cachedPacketFontAtlasRevision = 0;
+    m_packetFontAtlasPixels.reset();
+    m_packetGeneration = 0;
+    m_renderPacket = {};
     ResetFrameData();
 }
 
 void UIRenderer::BeginFrame(const UIRenderTargetDesc& target)
 {
     ResetFrameData();
-    m_submitStats = {};
     m_target = target;
-    m_recording = m_device != nullptr &&
-                  target.colorTarget != nullptr &&
-                  target.width > 0 &&
-                  target.height > 0 &&
-                  target.format != RHIFormat::Unknown;
+    m_recording = m_initialized && target.width > 0 && target.height > 0;
     InitializeClipStack();
 }
 
-void UIRenderer::BeginRecordOnlyFrame(uint32 width, uint32 height, RHIFormat format)
+void UIRenderer::BeginRecordOnlyFrame(uint32 width, uint32 height)
 {
-    ResetFrameData();
-    m_submitStats = {};
-    m_target = {};
-    m_target.width = width;
-    m_target.height = height;
-    m_target.format = format;
-    m_recording = width > 0 && height > 0 && format != RHIFormat::Unknown;
-    InitializeClipStack();
-}
-
-bool UIRenderer::BindRecordedFrameTarget(const UIRenderTargetDesc& target)
-{
-    if (m_recording ||
-        target.width == 0 ||
-        target.height == 0 ||
-        target.format == RHIFormat::Unknown ||
-        target.width != m_target.width ||
-        target.height != m_target.height)
-    {
-        return false;
-    }
-
-    m_target.colorTarget = target.colorTarget;
-    m_target.format = target.format;
-    return true;
+    BeginFrame(UIRenderTargetDesc{width, height});
 }
 
 void UIRenderer::EndFrame()
 {
     m_recording = false;
     RebuildRuntimeFontAtlasIfNeeded();
+    BuildRenderPacket();
 }
 
 void UIRenderer::QueueMissingFontCodepoint(uint32 codepoint)
@@ -1599,11 +1504,9 @@ bool UIRenderer::RebuildRuntimeFontAtlasIfNeeded()
     m_runtimeFontAtlasDesc = m_runtimeFontAtlas.GetDesc();
     m_runtimeFontAtlasCodepoints = m_runtimeFontAtlasDesc.codepoints;
     m_fontAtlas = &m_runtimeFontAtlas;
-    m_fontAtlasTexture.Reset();
-    m_fontAtlasTextureView.Reset();
-    m_fontAtlasStagingBuffer.Reset();
-    m_fontAtlasDescriptorSet.Reset();
-    m_uploadedFontAtlas = nullptr;
+    ++m_fontAtlasRevision;
+    m_cachedPacketFontAtlasRevision = 0;
+    m_packetFontAtlasPixels.reset();
     m_pendingFontAtlasCodepoints.clear();
 
     m_fontAtlasRuntimeStats.usesRuntimeAtlas = true;
@@ -1889,12 +1792,12 @@ void UIRenderer::DrawText(const std::string& text,
     m_stats.indexCount = static_cast<uint32>(m_indices.size());
 }
 
-void UIRenderer::DrawImage(RHITextureView* textureView,
+void UIRenderer::DrawImage(RenderResourceHandle texture,
                            const Rect& rect,
                            const Rect& uvRect,
                            const UIColor& color)
 {
-    if (!m_recording || textureView == nullptr ||
+    if (!m_recording || !texture.IsValid() ||
         rect.width <= 0.0f || rect.height <= 0.0f || color.a <= 0.0f)
     {
         return;
@@ -1911,7 +1814,7 @@ void UIRenderer::DrawImage(RHITextureView* textureView,
     command.clipRect = clipRect;
     command.uvRect = uvRect;
     command.color = color;
-    command.textureView = textureView;
+    command.texture = texture;
     EmitQuad(rect, uvRect, color, command);
     m_commands.push_back(command);
     ++m_stats.imageCount;
@@ -1957,130 +1860,67 @@ UITextMetrics UIRenderer::MeasureText(const std::string& text, float fontSize) c
                                fontSize);
 }
 
-bool UIRenderer::Submit(const UIRenderSubmitDesc& desc)
+void UIRenderer::BuildRenderPacket()
 {
-    m_submitStats = {};
-    const bool useDefaultFramebufferTarget =
-        desc.allowDefaultFramebufferTarget && m_target.colorTarget == nullptr;
-    if (!m_device ||
-        !desc.commandContext ||
-        !desc.pipeline ||
-        (!m_target.colorTarget && !useDefaultFramebufferTarget) ||
-        m_target.width == 0 ||
-        m_target.height == 0 ||
-        m_target.format == RHIFormat::Unknown ||
-        m_commands.empty() ||
-        m_vertices.empty() ||
-        m_indices.empty())
-    {
-        return false;
-    }
+    m_renderPacket = {};
+    m_renderPacket.targetWidth = m_target.width;
+    m_renderPacket.targetHeight = m_target.height;
+    m_renderPacket.generation = ++m_packetGeneration;
 
-    RHICommandContext& context = *desc.commandContext;
-    ApplyTextureSetLayoutOverride(desc.textureSetLayout);
-    if (!EnsureTextureDescriptorResources() ||
-        !EnsureWhiteTexture(context) ||
-        !EnsureFontAtlasTexture(context) ||
-        !EnsureDynamicBuffers())
+    m_renderPacket.vertices.reserve(m_vertices.size());
+    for (const UIVertex& vertex : m_vertices)
     {
-        return false;
+        m_renderPacket.vertices.push_back(
+            {vertex.position,
+             vertex.uv,
+             Vec4(vertex.color.r,
+                  vertex.color.g,
+                  vertex.color.b,
+                  vertex.color.a)});
     }
-
+    m_renderPacket.indices = m_indices;
+    m_renderPacket.commands.reserve(m_commands.size());
     for (const UIDrawCommand& command : m_commands)
     {
-        if (!GetDescriptorSetForCommand(command))
-        {
-            return false;
-        }
+        UIRenderDrawCommand packetCommand;
+        packetCommand.primitive =
+            command.type == UIDrawCommandType::Text
+                ? UIRenderPrimitive::Text
+                : command.type == UIDrawCommandType::Image
+                      ? UIRenderPrimitive::Image
+                      : UIRenderPrimitive::Rect;
+        packetCommand.clipRect = {command.clipRect.x,
+                                  command.clipRect.y,
+                                  command.clipRect.width,
+                                  command.clipRect.height};
+        packetCommand.resourceKind =
+            command.type == UIDrawCommandType::Text && m_fontAtlas &&
+                    m_fontAtlas->IsBuilt()
+                ? UIRenderResourceKind::FontAtlas
+                : command.type == UIDrawCommandType::Image
+                      ? UIRenderResourceKind::Texture
+                      : UIRenderResourceKind::White;
+        packetCommand.texture = command.texture;
+        packetCommand.firstIndex = command.firstIndex;
+        packetCommand.indexCount = command.indexCount;
+        m_renderPacket.commands.push_back(packetCommand);
     }
 
-    const uint64 vertexBytes = static_cast<uint64>(m_vertices.size() * sizeof(UIVertex));
-    const uint64 indexBytes = static_cast<uint64>(m_indices.size() * sizeof(uint32));
-
-    std::vector<UIVertex> submitVertices = m_vertices;
-    const float invTargetWidth = 1.0f / static_cast<float>(m_target.width);
-    const float invTargetHeight = 1.0f / static_cast<float>(m_target.height);
-    for (UIVertex& vertex : submitVertices)
+    if (m_fontAtlas && m_fontAtlas->IsBuilt())
     {
-        vertex.position.x = vertex.position.x * invTargetWidth * 2.0f - 1.0f;
-        vertex.position.y = 1.0f - vertex.position.y * invTargetHeight * 2.0f;
-    }
-    if (!UploadBuffer(m_vertexBuffer.Get(), submitVertices.data(), vertexBytes) ||
-        !UploadBuffer(m_indexBuffer.Get(), m_indices.data(), indexBytes))
-    {
-        return false;
-    }
-
-    context.BufferBarrier(m_vertexBuffer.Get(), RHIResourceState::Common, RHIResourceState::VertexBuffer);
-    context.BufferBarrier(m_indexBuffer.Get(), RHIResourceState::Common, RHIResourceState::IndexBuffer);
-
-    if (desc.beginRenderPass)
-    {
-        RHIRenderPassDesc renderPass;
-        if (!useDefaultFramebufferTarget)
+        if (m_cachedPacketFontAtlasRevision != m_fontAtlasRevision ||
+            !m_packetFontAtlasPixels)
         {
-            renderPass.AddColorAttachment(m_target.colorTarget,
-                                          desc.colorLoadOp,
-                                          desc.colorStoreOp,
-                                          desc.clearColor);
+            m_packetFontAtlasPixels =
+                std::make_shared<const std::vector<uint8>>(
+                    m_fontAtlas->GetPixels());
+            m_cachedPacketFontAtlasRevision = m_fontAtlasRevision;
         }
-        renderPass.SetRenderArea(0, 0, m_target.width, m_target.height);
-        context.BeginRenderPass(renderPass);
+        m_renderPacket.fontAtlas.width = m_fontAtlas->GetWidth();
+        m_renderPacket.fontAtlas.height = m_fontAtlas->GetHeight();
+        m_renderPacket.fontAtlas.revision = m_fontAtlasRevision;
+        m_renderPacket.fontAtlas.alphaPixels = m_packetFontAtlasPixels;
     }
-
-    RHIViewport viewport;
-    viewport.width = static_cast<float>(m_target.width);
-    viewport.height = static_cast<float>(m_target.height);
-    context.SetViewport(viewport);
-    RHIRect currentScissor{0, 0, m_target.width, m_target.height};
-    context.SetScissor(currentScissor);
-    context.SetPipeline(desc.pipeline);
-    context.SetVertexBuffer(0, m_vertexBuffer.Get());
-    context.SetIndexBuffer(m_indexBuffer.Get(), RHIFormat::R32_UINT);
-
-    UIPushConstants pushConstants;
-    pushConstants.targetSize[0] = static_cast<float>(m_target.width);
-    pushConstants.targetSize[1] = static_cast<float>(m_target.height);
-    pushConstants.inverseTargetSize[0] = m_target.width > 0 ? 1.0f / static_cast<float>(m_target.width) : 0.0f;
-    pushConstants.inverseTargetSize[1] = m_target.height > 0 ? 1.0f / static_cast<float>(m_target.height) : 0.0f;
-    context.SetPushConstants(&pushConstants, sizeof(pushConstants));
-
-    RHIDescriptorSet* currentDescriptorSet = nullptr;
-    for (const UIDrawCommand& command : m_commands)
-    {
-        const RHIRect commandScissor =
-            ToScissorRect(command.clipRect, m_target.width, m_target.height);
-        if (commandScissor.width == 0u || commandScissor.height == 0u)
-        {
-            continue;
-        }
-        if (!SameScissor(commandScissor, currentScissor))
-        {
-            context.SetScissor(commandScissor);
-            currentScissor = commandScissor;
-        }
-
-        RHIDescriptorSet* descriptorSet = GetDescriptorSetForCommand(command);
-        if (descriptorSet && descriptorSet != currentDescriptorSet)
-        {
-            context.SetDescriptorSet(0, descriptorSet);
-            currentDescriptorSet = descriptorSet;
-        }
-
-        context.DrawIndexed(command.indexCount, 1, command.firstIndex, 0, 0);
-        ++m_submitStats.drawCallCount;
-    }
-
-    if (desc.beginRenderPass)
-    {
-        context.EndRenderPass();
-    }
-
-    m_submitStats.submitted = m_submitStats.drawCallCount > 0;
-    m_submitStats.defaultFramebufferTarget = useDefaultFramebufferTarget;
-    m_submitStats.vertexBytesUploaded = vertexBytes;
-    m_submitStats.indexBytesUploaded = indexBytes;
-    return m_submitStats.submitted;
 }
 
 void UIRenderer::ResetFrameData()
@@ -2102,383 +1942,6 @@ void UIRenderer::InitializeClipStack()
                                    static_cast<float>(m_target.width),
                                    static_cast<float>(m_target.height)));
     }
-}
-
-void UIRenderer::ResetGPUResources()
-{
-    m_vertexBuffer.Reset();
-    m_indexBuffer.Reset();
-    m_vertexBufferCapacity = 0;
-    m_indexBufferCapacity = 0;
-
-    m_fontAtlasTexture.Reset();
-    m_fontAtlasTextureView.Reset();
-    m_fontAtlasStagingBuffer.Reset();
-    m_fontAtlasDescriptorSet.Reset();
-    m_uploadedFontAtlas = nullptr;
-
-    m_whiteTexture.Reset();
-    m_whiteTextureView.Reset();
-    m_whiteTextureStagingBuffer.Reset();
-    m_whiteDescriptorSet.Reset();
-
-    m_textureSampler.Reset();
-    m_fontSampler.Reset();
-    m_textureSetLayout.Reset();
-    m_textureSetLayoutOverride = nullptr;
-    m_textureDescriptorSets.clear();
-    m_submitStats = {};
-}
-
-bool UIRenderer::EnsureDynamicBuffers()
-{
-    const uint64 vertexBytes = static_cast<uint64>(m_vertices.size() * sizeof(UIVertex));
-    const uint64 indexBytes = static_cast<uint64>(m_indices.size() * sizeof(uint32));
-    return EnsureBuffer(m_vertexBuffer,
-                        m_vertexBufferCapacity,
-                        vertexBytes,
-                        RHIBufferUsage::Vertex,
-                        "UI.VertexBuffer",
-                        sizeof(UIVertex)) &&
-           EnsureBuffer(m_indexBuffer,
-                        m_indexBufferCapacity,
-                        indexBytes,
-                        RHIBufferUsage::Index,
-                        "UI.IndexBuffer",
-                        0);
-}
-
-bool UIRenderer::EnsureBuffer(RHIBufferRef& buffer,
-                              uint64& capacity,
-                              uint64 requiredSize,
-                              RHIBufferUsage usage,
-                              const char* debugName,
-                              uint32 stride)
-{
-    if (requiredSize == 0)
-    {
-        return true;
-    }
-    if (buffer && capacity >= requiredSize)
-    {
-        return true;
-    }
-    if (!m_device)
-    {
-        return false;
-    }
-
-    const uint64 newCapacity = GrowCapacity(capacity, requiredSize);
-    RHIBufferDesc desc;
-    desc.size = newCapacity;
-    desc.usage = usage;
-    desc.memoryType = RHIMemoryType::Upload;
-    desc.stride = stride;
-    desc.debugName = debugName;
-
-    RHIBufferRef newBuffer = m_device->CreateBuffer(desc);
-    if (!newBuffer)
-    {
-        return false;
-    }
-
-    buffer = std::move(newBuffer);
-    capacity = newCapacity;
-    return true;
-}
-
-bool UIRenderer::UploadBuffer(RHIBuffer* buffer, const void* data, uint64 size)
-{
-    if (!buffer || !data || size == 0)
-    {
-        return false;
-    }
-
-    void* mapped = buffer->Map();
-    if (!mapped)
-    {
-        return false;
-    }
-
-    std::memcpy(mapped, data, static_cast<size_t>(size));
-    buffer->Unmap();
-    return true;
-}
-
-bool UIRenderer::EnsureTextureDescriptorResources()
-{
-    if (!m_device)
-    {
-        return false;
-    }
-
-    if (!m_textureSampler)
-    {
-        RHISamplerDesc samplerDesc = RHISamplerDesc::LinearClamp();
-        samplerDesc.mipFilter = RHIFilterMode::Nearest;
-        samplerDesc.maxLod = 0.0f;
-        samplerDesc.debugName = "UI.LinearClampSampler";
-        m_textureSampler = m_device->CreateSampler(samplerDesc);
-    }
-
-    if (!m_fontSampler)
-    {
-        RHISamplerDesc samplerDesc = RHISamplerDesc::LinearClamp();
-        samplerDesc.mipFilter = RHIFilterMode::Nearest;
-        samplerDesc.maxLod = 0.0f;
-        samplerDesc.debugName = "UI.FontAtlasLinearSampler";
-        m_fontSampler = m_device->CreateSampler(samplerDesc);
-    }
-
-    if (!m_textureSetLayoutOverride && !m_textureSetLayout)
-    {
-        RHIDescriptorSetLayoutDesc layoutDesc;
-        layoutDesc.debugName = "UI.TextureSetLayout";
-        layoutDesc.AddBinding(
-            0,
-            RHIBindingType::SampledTexture,
-            RHIShaderStage::Pixel);
-        layoutDesc.AddBinding(
-            1,
-            RHIBindingType::Sampler,
-            RHIShaderStage::Pixel);
-        m_textureSetLayout = m_device->CreateDescriptorSetLayout(layoutDesc);
-    }
-
-    return m_textureSampler && m_fontSampler && GetActiveTextureSetLayout();
-}
-
-bool UIRenderer::EnsureWhiteTexture(RHICommandContext& context)
-{
-    if (m_whiteTexture && m_whiteTextureView && m_whiteDescriptorSet)
-    {
-        return true;
-    }
-    RHIDescriptorSetLayout* textureSetLayout = GetActiveTextureSetLayout();
-    if (!m_device || !textureSetLayout || !m_fontSampler)
-    {
-        return false;
-    }
-
-    constexpr std::array<uint8, 4> whitePixel = {255u, 255u, 255u, 255u};
-
-    RHITextureDesc textureDesc = RHITextureDesc::Texture2D(1,
-                                                          1,
-                                                          RHIFormat::RGBA8_UNORM,
-                                                          RHITextureUsage::ShaderResource |
-                                                              RHITextureUsage::CopyDst);
-    textureDesc.debugName = "UI.WhiteTexture";
-    m_whiteTexture = m_device->CreateTexture(textureDesc);
-    if (!m_whiteTexture)
-    {
-        return false;
-    }
-
-    RHITextureViewDesc viewDesc;
-    viewDesc.type = RHITextureViewType::ShaderResource;
-    viewDesc.format = RHIFormat::RGBA8_UNORM;
-    viewDesc.debugName = "UI.WhiteTextureView";
-    m_whiteTextureView = m_device->CreateTextureView(m_whiteTexture.Get(), viewDesc);
-    if (!m_whiteTextureView)
-    {
-        return false;
-    }
-
-    RHIStagingBufferDesc stagingDesc;
-    stagingDesc.size = whitePixel.size();
-    stagingDesc.debugName = "UI.WhiteTextureUpload";
-    m_whiteTextureStagingBuffer = m_device->CreateStagingBuffer(stagingDesc);
-    if (!m_whiteTextureStagingBuffer)
-    {
-        return false;
-    }
-
-    void* mapped = m_whiteTextureStagingBuffer->Map(0, whitePixel.size());
-    if (!mapped)
-    {
-        return false;
-    }
-    std::memcpy(mapped, whitePixel.data(), whitePixel.size());
-    m_whiteTextureStagingBuffer->Unmap();
-
-    context.TextureBarrier(m_whiteTexture.Get(), RHIResourceState::Common, RHIResourceState::CopyDest);
-
-    RHIBufferTextureCopyDesc copyDesc;
-    copyDesc.bufferRowPitch = 4;
-    copyDesc.bufferImageHeight = 1;
-    copyDesc.textureRegion = {0, 0, 1, 1};
-    context.CopyBufferToTexture(m_whiteTextureStagingBuffer->GetBuffer(), m_whiteTexture.Get(), copyDesc);
-    context.TextureBarrier(m_whiteTexture.Get(), RHIResourceState::CopyDest, RHIResourceState::ShaderResource);
-
-    RHIDescriptorSetDesc descriptorDesc;
-    descriptorDesc.debugName = "UI.WhiteTextureSet";
-    descriptorDesc.SetLayout(textureSetLayout)
-                  .BindTexture(0, m_whiteTextureView.Get())
-                  .BindSampler(1, m_textureSampler.Get());
-    m_whiteDescriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
-    if (!m_whiteDescriptorSet)
-    {
-        return false;
-    }
-
-    m_submitStats.whiteTextureUploaded = true;
-    m_submitStats.whiteTextureBytesUploaded = whitePixel.size();
-    return true;
-}
-
-bool UIRenderer::EnsureFontAtlasTexture(RHICommandContext& context)
-{
-    if (!m_fontAtlas || !m_fontAtlas->IsBuilt())
-    {
-        return true;
-    }
-    if (m_uploadedFontAtlas == m_fontAtlas &&
-        m_fontAtlasTexture &&
-        m_fontAtlasTextureView &&
-        m_fontAtlasDescriptorSet)
-    {
-        return true;
-    }
-    RHIDescriptorSetLayout* textureSetLayout = GetActiveTextureSetLayout();
-    if (!m_device || !textureSetLayout || !m_textureSampler)
-    {
-        return false;
-    }
-
-    const std::vector<uint8> rgbaPixels = ExpandAlphaAtlasToRGBA(*m_fontAtlas);
-    if (rgbaPixels.empty())
-    {
-        return false;
-    }
-
-    RHITextureDesc textureDesc = RHITextureDesc::Texture2D(m_fontAtlas->GetWidth(),
-                                                          m_fontAtlas->GetHeight(),
-                                                          RHIFormat::RGBA8_UNORM,
-                                                          RHITextureUsage::ShaderResource |
-                                                              RHITextureUsage::CopyDst);
-    textureDesc.debugName = "UI.FontAtlasTexture";
-    m_fontAtlasTexture = m_device->CreateTexture(textureDesc);
-    if (!m_fontAtlasTexture)
-    {
-        return false;
-    }
-
-    RHITextureViewDesc viewDesc;
-    viewDesc.type = RHITextureViewType::ShaderResource;
-    viewDesc.format = RHIFormat::RGBA8_UNORM;
-    viewDesc.debugName = "UI.FontAtlasTextureView";
-    m_fontAtlasTextureView = m_device->CreateTextureView(m_fontAtlasTexture.Get(), viewDesc);
-    if (!m_fontAtlasTextureView)
-    {
-        return false;
-    }
-
-    RHIStagingBufferDesc stagingDesc;
-    stagingDesc.size = static_cast<uint64>(rgbaPixels.size());
-    stagingDesc.debugName = "UI.FontAtlasUpload";
-    m_fontAtlasStagingBuffer = m_device->CreateStagingBuffer(stagingDesc);
-    if (!m_fontAtlasStagingBuffer)
-    {
-        return false;
-    }
-
-    void* mapped = m_fontAtlasStagingBuffer->Map(0, stagingDesc.size);
-    if (!mapped)
-    {
-        return false;
-    }
-    std::memcpy(mapped, rgbaPixels.data(), rgbaPixels.size());
-    m_fontAtlasStagingBuffer->Unmap();
-
-    context.TextureBarrier(m_fontAtlasTexture.Get(), RHIResourceState::Common, RHIResourceState::CopyDest);
-
-    RHIBufferTextureCopyDesc copyDesc;
-    copyDesc.bufferRowPitch = m_fontAtlas->GetWidth() * 4u;
-    copyDesc.bufferImageHeight = m_fontAtlas->GetHeight();
-    copyDesc.textureRegion = {0, 0, m_fontAtlas->GetWidth(), m_fontAtlas->GetHeight()};
-    context.CopyBufferToTexture(m_fontAtlasStagingBuffer->GetBuffer(), m_fontAtlasTexture.Get(), copyDesc);
-    context.TextureBarrier(m_fontAtlasTexture.Get(), RHIResourceState::CopyDest, RHIResourceState::ShaderResource);
-
-    RHIDescriptorSetDesc descriptorDesc;
-    descriptorDesc.debugName = "UI.FontAtlasTextureSet";
-    descriptorDesc.SetLayout(textureSetLayout)
-                  .BindTexture(0, m_fontAtlasTextureView.Get())
-                  .BindSampler(1, m_fontSampler.Get());
-    m_fontAtlasDescriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
-    if (!m_fontAtlasDescriptorSet)
-    {
-        return false;
-    }
-
-    m_uploadedFontAtlas = m_fontAtlas;
-    m_submitStats.atlasUploaded = true;
-    m_submitStats.atlasBytesUploaded = static_cast<uint64>(rgbaPixels.size());
-    return true;
-}
-
-RHIDescriptorSet* UIRenderer::GetOrCreateTextureDescriptor(RHITextureView* textureView)
-{
-    RHIDescriptorSetLayout* textureSetLayout = GetActiveTextureSetLayout();
-    if (!textureView || !m_device || !textureSetLayout || !m_textureSampler)
-    {
-        return nullptr;
-    }
-
-    const auto it = std::find_if(m_textureDescriptorSets.begin(),
-                                 m_textureDescriptorSets.end(),
-                                 [textureView](const auto& entry) {
-                                     return entry.first == textureView;
-                                 });
-    if (it != m_textureDescriptorSets.end())
-    {
-        return it->second.Get();
-    }
-
-    RHIDescriptorSetDesc descriptorDesc;
-    descriptorDesc.debugName = "UI.ImageTextureSet";
-    descriptorDesc.SetLayout(textureSetLayout)
-                  .BindTexture(0, textureView)
-                  .BindSampler(1, m_textureSampler.Get());
-    RHIDescriptorSetRef descriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
-    if (!descriptorSet)
-    {
-        return nullptr;
-    }
-
-    RHIDescriptorSet* rawDescriptorSet = descriptorSet.Get();
-    m_textureDescriptorSets.emplace_back(textureView, std::move(descriptorSet));
-    return rawDescriptorSet;
-}
-
-RHIDescriptorSet* UIRenderer::GetDescriptorSetForCommand(const UIDrawCommand& command)
-{
-    if (command.type == UIDrawCommandType::Text)
-    {
-        return m_fontAtlasDescriptorSet ? m_fontAtlasDescriptorSet.Get() : m_whiteDescriptorSet.Get();
-    }
-    if (command.type == UIDrawCommandType::Image)
-    {
-        return GetOrCreateTextureDescriptor(command.textureView);
-    }
-    return m_whiteDescriptorSet.Get();
-}
-
-RHIDescriptorSetLayout* UIRenderer::GetActiveTextureSetLayout() const
-{
-    return m_textureSetLayoutOverride ? m_textureSetLayoutOverride : m_textureSetLayout.Get();
-}
-
-void UIRenderer::ApplyTextureSetLayoutOverride(RHIDescriptorSetLayout* layout)
-{
-    if (m_textureSetLayoutOverride == layout)
-    {
-        return;
-    }
-
-    m_textureSetLayoutOverride = layout;
-    m_whiteDescriptorSet.Reset();
-    m_fontAtlasDescriptorSet.Reset();
-    m_textureDescriptorSets.clear();
 }
 
 void UIRenderer::EmitQuad(const Rect& rect,

@@ -857,8 +857,17 @@ rvx_add_gtest(
     LIBS
         RVX::Core
         RVX::RHI
+        RVX::Render
         RVX::UI
     TIMEOUT 120
+)
+
+rvx_add_gtest(
+    NAME UIRenderPacketValidation
+    LANE unit
+    SOURCES UIRenderPacketValidation/main.cpp
+    LIBS RVX::RenderContracts
+    TIMEOUT 30
 )
 
 rvx_add_gtest(
