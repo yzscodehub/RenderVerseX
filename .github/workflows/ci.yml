@@ -11,184 +11,320 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
+
 jobs:
-  windows:
-    name: Windows (DX11/DX12/Vulkan)
+  architecture:
+    name: Ubuntu Architecture
+    runs-on: ubuntu-24.04
+    env:
+      VCPKG_ROOT: /usr/local/share/vcpkg
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - name: Install configure dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang pkg-config libvulkan1 mesa-vulkan-drivers \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev libgl1-mesa-dev autoconf libtool
+      - name: Prepare vcpkg cache
+        run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: vcpkg-architecture-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
+          restore-keys: vcpkg-architecture-
+      - name: Configure architecture graph
+        run: cmake --preset linux_x64_debug
+      - name: Build architecture gates
+        run: cmake --build build/linux_x64_debug --target RVXValidationArchitecture --parallel 4
+      - name: Run architecture gates
+        run: ctest --preset linux_x64_debug_architecture
+      - name: Run policy self-tests
+        run: python3 -m unittest discover -s Scripts -p "test_*.py" -v
+      - name: Verify diff hygiene
+        run: git diff --check
+      - name: Upload architecture evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: architecture-linux
+          path: build/linux_x64_debug/BuildTruth
+
+  windows-debug:
+    name: Windows Debug
     runs-on: windows-2022
     env:
       VCPKG_ROOT: C:/vcpkg
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
+      RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER: "1"
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          lfs: true
-
-      - name: Prepare vcpkg binary cache dir
-        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+        with: {fetch-depth: 0, lfs: true}
+      - name: Prepare vcpkg cache
         shell: pwsh
-
-      - name: Cache vcpkg installed packages
-        uses: actions/cache@v4
+        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+      - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.vcpkg-cache
           key: vcpkg-windows-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
           restore-keys: vcpkg-windows-
-
-      - name: Build truth (Windows Debug)
+      - name: Build truth
         shell: pwsh
-        env:
-          RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER: "1"
         run: >-
           ./Scripts/run_build_truth.ps1
           -ConfigurePreset win_x64_debug
           -BuildPreset win_x64_debug
-          -LaneTestPresets "win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native"
+          -LaneTestPresets "win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native"
           -BuildDir build/win_x64_debug
           -Configuration Debug
           -BaseRef origin/master
           -RequiredNativeBackend DX12
           -Fresh
-
-      - name: Upload build-truth evidence
+      - name: Configure fixed PR smoke
+        run: cmake --preset win_x64_pr_debug
+      - name: Build fixed PR smoke
+        run: cmake --build --preset win_x64_pr_debug --parallel 4
+      - name: Run fixed SceneLifecycle smoke
+        run: ctest --preset win_x64_pr_debug_smoke
+      - name: Upload Windows evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-truth-windows-debug
-          path: build/win_x64_debug/BuildTruth
+          path: |
+            build/win_x64_debug/BuildTruth
+            build/win_x64_pr_debug/BuildTruth
+            build/win_x64_pr_debug/Tests/VisualArtifacts
+            build/win_x64_pr_debug/Tests/SampleReports
 
-  linux:
-    name: Linux (Vulkan/OpenGL configure)
+  linux-debug:
+    name: Linux Debug
     runs-on: ubuntu-24.04
     env:
-      LIBGL_ALWAYS_SOFTWARE: "1"
       VCPKG_ROOT: /usr/local/share/vcpkg
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER: "1"
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          lfs: true
-
-      - name: Install system deps for vcpkg ports
+        with: {fetch-depth: 0, lfs: true}
+      - name: Install runtime dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build clang pkg-config xvfb libvulkan1 mesa-vulkan-drivers vulkan-tools \
             libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
             libwayland-dev libxkbcommon-dev libgl1-mesa-dev autoconf libtool \
             fonts-dejavu-core fonts-noto-cjk
-
-      - name: Select Lavapipe Vulkan ICD
+      - name: Select and verify Lavapipe
         shell: bash
         run: |
-          mapfile -t lavapipe_icds < <(
-            dpkg-query -L mesa-vulkan-drivers |
-              awk '/\/lvp_icd[^/]*\.json$/ { print }' |
-              sort -u
-          )
-          if [[ "${#lavapipe_icds[@]}" -ne 1 || ! -f "${lavapipe_icds[0]}" ]]; then
-            echo "::error::mesa-vulkan-drivers did not install exactly one usable Lavapipe ICD manifest"
-            dpkg-query -L mesa-vulkan-drivers | sort
+          mapfile -t manifests < <(dpkg-query -L mesa-vulkan-drivers | awk '/\/lvp_icd[^/]*\.json$/ { print }' | sort -u)
+          if [[ "${#manifests[@]}" -ne 1 || ! -f "${manifests[0]}" ]]; then
+            echo "::error::Expected exactly one Lavapipe ICD manifest"
             exit 1
           fi
-          lavapipe_icd="${lavapipe_icds[0]}"
-          echo "VK_DRIVER_FILES=$lavapipe_icd" >> "$GITHUB_ENV"
-          echo "VK_ICD_FILENAMES=$lavapipe_icd" >> "$GITHUB_ENV"
-          echo "Using Lavapipe ICD: $lavapipe_icd"
-
-      - name: Verify Lavapipe Vulkan ICD
-        run: |
-          test -f "$VK_DRIVER_FILES"
+          echo "VK_DRIVER_FILES=${manifests[0]}" >> "$GITHUB_ENV"
+          echo "VK_ICD_FILENAMES=${manifests[0]}" >> "$GITHUB_ENV"
           xvfb-run -a vulkaninfo --summary
-
-      - name: Prepare vcpkg binary cache dir
+      - name: Prepare vcpkg cache
         run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
-
-      - name: Cache vcpkg installed packages
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.vcpkg-cache
           key: vcpkg-linux-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
           restore-keys: vcpkg-linux-
-
-      - name: Build truth (Linux Debug)
+      - name: Build truth
         shell: bash
-        env:
-          RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER: "1"
         run: |
           xvfb-run -a pwsh -NoProfile -File ./Scripts/run_build_truth.ps1 \
             -ConfigurePreset linux_x64_debug \
             -BuildPreset linux_x64_debug \
-            -LaneTestPresets 'linux_x64_debug_architecture,linux_x64_debug_unit,linux_x64_debug_integration,linux_x64_debug_native' \
+            -LaneTestPresets 'linux_x64_debug_unit,linux_x64_debug_integration,linux_x64_debug_native' \
             -BuildDir build/linux_x64_debug \
             -Configuration Debug \
             -BaseRef origin/master \
             -RequiredNativeBackend Vulkan \
             -Fresh
-
-      - name: Configure ThreadSanitizer
-        run: cmake --preset linux_x64_tsan
-
-      - name: Build ThreadSanitizer stress target
-        run: cmake --build --preset linux_x64_tsan --target RenderConcurrencyTSAN
-
-      - name: Run ThreadSanitizer stress
-        env:
-          TSAN_OPTIONS: halt_on_error=1:abort_on_error=1
-        run: |
-          mkdir -p build/linux_x64_tsan/BuildTruth
-          ctest --preset linux_x64_tsan \
-            --output-junit build/linux_x64_tsan/BuildTruth/RenderConcurrencyTSAN.junit.xml
-
-      - name: Upload build-truth evidence
+      - name: Configure fixed PR smoke
+        run: cmake --preset linux_x64_pr_debug
+      - name: Build fixed PR smoke
+        run: cmake --build --preset linux_x64_pr_debug --parallel 4
+      - name: Run fixed SceneLifecycle smoke
+        run: xvfb-run -a ctest --preset linux_x64_pr_debug_smoke
+      - name: Upload Linux evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-truth-linux-debug
           path: |
             build/linux_x64_debug/BuildTruth
-            build/linux_x64_tsan/BuildTruth
+            build/linux_x64_pr_debug/BuildTruth
+            build/linux_x64_pr_debug/Tests/VisualArtifacts
+            build/linux_x64_pr_debug/Tests/SampleReports
 
-  macos:
-    name: macOS ARM64 (Metal)
-    runs-on: macos-15
+  linux-tsan:
+    name: Linux TSAN
+    runs-on: ubuntu-24.04
     env:
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
+      VCPKG_ROOT: /usr/local/share/vcpkg
     steps:
       - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang pkg-config libvulkan1 mesa-vulkan-drivers \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev libgl1-mesa-dev autoconf libtool
+      - name: Prepare vcpkg cache
+        run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+      - uses: actions/cache@v4
         with:
-          fetch-depth: 0
-          lfs: true
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: vcpkg-linux-tsan-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
+          restore-keys: vcpkg-linux-tsan-
+      - name: Configure TSAN
+        run: cmake --preset linux_x64_tsan
+      - name: Build focused concurrency validation
+        run: cmake --build --preset linux_x64_tsan --target RenderConcurrencyTSAN --parallel 4
+      - name: Run focused concurrency validation
+        env:
+          TSAN_OPTIONS: halt_on_error=1:abort_on_error=1
+        run: ctest --preset linux_x64_tsan
+      - name: Upload TSAN evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-tsan
+          path: build/linux_x64_tsan/BuildTruth
 
+  macos-arm64:
+    name: macOS ARM64
+    runs-on: macos-15
+    env:
+      VCPKG_ROOT: /usr/local/share/vcpkg
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
       - name: Resolve vcpkg root
         run: echo "VCPKG_ROOT=${VCPKG_INSTALLATION_ROOT:-/usr/local/share/vcpkg}" >> "$GITHUB_ENV"
-
-      - name: Prepare vcpkg binary cache dir
+      - name: Prepare vcpkg cache
         run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
-
-      - name: Cache vcpkg installed packages
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.vcpkg-cache
           key: vcpkg-macos-arm64-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
           restore-keys: vcpkg-macos-arm64-
-
-      - name: Build truth (macOS ARM64 Debug)
+      - name: Build truth
         shell: pwsh
         run: >-
           ./Scripts/run_build_truth.ps1
           -ConfigurePreset mac_arm64_debug
           -BuildPreset mac_arm64_debug
-          -LaneTestPresets "mac_arm64_debug_architecture,mac_arm64_debug_unit,mac_arm64_debug_integration,mac_arm64_debug_native"
+          -LaneTestPresets "mac_arm64_debug_unit,mac_arm64_debug_integration,mac_arm64_debug_native"
           -BuildDir build/mac_arm64_debug
           -Configuration Debug
           -BaseRef origin/master
           -RequiredNativeBackend Metal
           -Fresh
-
-      - name: Upload build-truth evidence
+      - name: Configure fixed PR smoke
+        run: cmake --preset mac_arm64_pr_debug
+      - name: Build fixed PR smoke
+        run: cmake --build --preset mac_arm64_pr_debug --parallel 3
+      - name: Run fixed SceneLifecycle smoke
+        run: ctest --preset mac_arm64_pr_debug_smoke
+      - name: Upload macOS evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-truth-macos-arm64-debug
-          path: build/mac_arm64_debug/BuildTruth
+          path: |
+            build/mac_arm64_debug/BuildTruth
+            build/mac_arm64_pr_debug/BuildTruth
+            build/mac_arm64_pr_debug/Tests/VisualArtifacts
+            build/mac_arm64_pr_debug/Tests/SampleReports
+
+  shipping:
+    name: Shipping (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {platform: Windows, runner: windows-2022, vcpkg_root: 'C:/vcpkg', host_preset: win_x64_shipping_host_release, shipping_preset: win_x64_shipping_release, test_preset: win_x64_shipping_release_shipping}
+          - {platform: Linux, runner: ubuntu-24.04, vcpkg_root: /usr/local/share/vcpkg, host_preset: linux_x64_shipping_host_release, shipping_preset: linux_x64_shipping_release, test_preset: linux_x64_shipping_release_shipping}
+          - {platform: macOS, runner: macos-15, vcpkg_root: /usr/local/share/vcpkg, host_preset: mac_arm64_shipping_host_release, shipping_preset: mac_arm64_shipping_release, test_preset: mac_arm64_shipping_release_shipping}
+    runs-on: ${{ matrix.runner }}
+    env:
+      VCPKG_ROOT: ${{ matrix.vcpkg_root }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - name: Resolve macOS vcpkg root
+        if: runner.os == 'macOS'
+        run: echo "VCPKG_ROOT=${VCPKG_INSTALLATION_ROOT:-/usr/local/share/vcpkg}" >> "$GITHUB_ENV"
+      - name: Install Linux runtime dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang pkg-config xvfb libvulkan1 mesa-vulkan-drivers vulkan-tools \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev libgl1-mesa-dev autoconf libtool fonts-dejavu-core fonts-noto-cjk
+          mapfile -t manifests < <(dpkg-query -L mesa-vulkan-drivers | awk '/\/lvp_icd[^/]*\.json$/ { print }' | sort -u)
+          test "${#manifests[@]}" -eq 1
+          echo "VK_DRIVER_FILES=${manifests[0]}" >> "$GITHUB_ENV"
+          echo "VK_ICD_FILENAMES=${manifests[0]}" >> "$GITHUB_ENV"
+          echo "RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER=1" >> "$GITHUB_ENV"
+      - name: Enable explicit Windows software-adapter fallback
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value 'RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER=1'
+      - name: Prepare vcpkg cache
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: vcpkg-shipping-${{ matrix.platform }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
+          restore-keys: vcpkg-shipping-${{ matrix.platform }}-
+      - name: Configure host cooker
+        run: cmake --preset ${{ matrix.host_preset }}
+      - name: Build host cooker
+        run: cmake --build --preset ${{ matrix.host_preset }} --parallel 3
+      - name: Configure Shipping product
+        run: cmake --preset ${{ matrix.shipping_preset }}
+      - name: Build Shipping validation
+        run: cmake --build --preset ${{ matrix.shipping_preset }} --parallel 3
+      - name: Run Shipping validation
+        if: runner.os != 'Linux'
+        run: ctest --preset ${{ matrix.test_preset }}
+      - name: Run Linux Shipping validation
+        if: runner.os == 'Linux'
+        run: xvfb-run -a ctest --preset ${{ matrix.test_preset }}
+      - name: Upload Shipping evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shipping-${{ matrix.platform }}
+          path: |
+            build/*shipping_release/BuildTruth
+            build/*shipping_release/ShippingFixtures
+
+  pr-verdict:
+    name: PR Verdict
+    if: always()
+    needs: [architecture, windows-debug, linux-debug, linux-tsan, macos-arm64, shipping]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every PR gate
+        env:
+          ARCHITECTURE: ${{ needs.architecture.result }}
+          WINDOWS_DEBUG: ${{ needs.windows-debug.result }}
+          LINUX_DEBUG: ${{ needs.linux-debug.result }}
+          LINUX_TSAN: ${{ needs.linux-tsan.result }}
+          MACOS_ARM64: ${{ needs.macos-arm64.result }}
+          SHIPPING: ${{ needs.shipping.result }}
+        run: |
+          for result in "$ARCHITECTURE" "$WINDOWS_DEBUG" "$LINUX_DEBUG" "$LINUX_TSAN" "$MACOS_ARM64" "$SHIPPING"; do
+            test "$result" = success || exit 1
+          done

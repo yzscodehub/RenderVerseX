@@ -57,6 +57,9 @@ REPORT_FIELDS = frozenset({
     "actualBackend",
     "fallbackUsed",
     "fallbackReason",
+    "softwareAdapterAllowed",
+    "softwareAdapter",
+    "adapterName",
     "cookedLoadSucceeded",
     "sourceLoadRejected",
     "shutdownClean",
@@ -278,9 +281,9 @@ def validate_shipping_evidence(
         raise GateInputError(
             f"Shipping evidence report fields are invalid; missing={missing}, unknown={unknown}"
         )
-    if report["schema"] != REPORT_SCHEMA or report["schemaVersion"] != 1:
+    if report["schema"] != REPORT_SCHEMA or report["schemaVersion"] != 2:
         raise GateInputError(
-            f"Shipping evidence report must use {REPORT_SCHEMA} schemaVersion 1"
+            f"Shipping evidence report must use {REPORT_SCHEMA} schemaVersion 2"
         )
 
     commit = _string(report["commit"], "report.commit")
@@ -289,6 +292,15 @@ def validate_shipping_evidence(
         report["requestedBackend"], "report.requestedBackend"
     )
     actual_backend = _string(report["actualBackend"], "report.actualBackend")
+    adapter_name = _string(report["adapterName"], "report.adapterName")
+    software_adapter_allowed = _boolean(
+        report["softwareAdapterAllowed"],
+        "report.softwareAdapterAllowed",
+    )
+    software_adapter = _boolean(
+        report["softwareAdapter"],
+        "report.softwareAdapter",
+    )
     receipt_sha256 = _sha256(
         report["fixtureReceiptSha256"], "report.fixtureReceiptSha256"
     )
@@ -328,6 +340,10 @@ def validate_shipping_evidence(
     if actual_backend != requested_backend:
         findings.append(
             f"backend fallback is forbidden: requested={requested_backend}, actual={actual_backend}"
+        )
+    if software_adapter and not software_adapter_allowed:
+        findings.append(
+            f"software adapter {adapter_name!r} was used without explicit opt-in"
         )
     comparisons = (
         ("commit", commit, receipt["commit"]),

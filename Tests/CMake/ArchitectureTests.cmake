@@ -95,6 +95,31 @@ rvx_add_validation_test(
 
 rvx_add_validation_test(
     LANE architecture
+    NAME Architecture.CIWorkflowChecker
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/test_ci_workflows.py
+        -v
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.CIWorkflows
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/check_ci_workflows.py
+        --root ${CMAKE_SOURCE_DIR}
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    REQUIRED_FILES
+        "${CMAKE_SOURCE_DIR}/.github/workflows/ci.yml"
+        "${CMAKE_SOURCE_DIR}/.github/workflows/nightly.yml"
+        "${CMAKE_SOURCE_DIR}/.github/workflows/weekly.yml"
+        "${CMAKE_SOURCE_DIR}/CMakePresets.json"
+)
+
+rvx_add_validation_test(
+    LANE architecture
     NAME Architecture.ModuleInventoryCMake
     COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_SOURCE_DIR}/Scripts/test_module_inventory_cmake.py

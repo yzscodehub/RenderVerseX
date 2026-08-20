@@ -12,7 +12,9 @@
 #include "World/World.h"
 
 #include <charconv>
+#include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -80,6 +82,51 @@ namespace
         if (value == "Metal")
             return RVX::RHIBackendType::Metal;
         return std::nullopt;
+    }
+
+    [[nodiscard]] bool EnvironmentFlagEnabled(const char* name)
+    {
+#if defined(_WIN32)
+        char* allocatedValue = nullptr;
+        size_t valueLength = 0;
+        if (_dupenv_s(&allocatedValue, &valueLength, name) != 0 ||
+            allocatedValue == nullptr)
+        {
+            return false;
+        }
+        const std::string text = allocatedValue;
+        std::free(allocatedValue);
+#else
+        const char* const value = std::getenv(name);
+        if (value == nullptr)
+            return false;
+        const std::string_view text = value;
+#endif
+        return text == "1" || text == "true" || text == "TRUE" ||
+               text == "on" || text == "ON";
+    }
+
+    [[nodiscard]] bool IsSoftwareAdapterName(std::string adapterName)
+    {
+        for (char& character : adapterName)
+        {
+            character = static_cast<char>(
+                std::tolower(static_cast<unsigned char>(character)));
+        }
+        constexpr const char* softwareTokens[] = {
+            "software",
+            "warp",
+            "swiftshader",
+            "lavapipe",
+            "llvmpipe",
+            "microsoft basic",
+        };
+        for (const char* token : softwareTokens)
+        {
+            if (adapterName.find(token) != std::string::npos)
+                return true;
+        }
+        return false;
     }
 
     [[nodiscard]] const char* BackendName(RVX::RHIBackendType backend)
@@ -265,6 +312,9 @@ namespace
     [[nodiscard]] bool WriteEvidence(
         const Options& options,
         std::string_view actualBackend,
+        std::string_view adapterName,
+        bool softwareAdapterAllowed,
+        bool softwareAdapter,
         bool cookedLoadSucceeded,
         bool sourceLoadRejected,
         bool shutdownClean,
@@ -294,7 +344,7 @@ namespace
         const bool fallbackUsed = actualBackend != options.backendName;
         stream << "{\n"
                << "  \"schema\": \"RVX_SHIPPING_EVIDENCE\",\n"
-               << "  \"schemaVersion\": 1,\n"
+               << "  \"schemaVersion\": 2,\n"
                << "  \"commit\": \"" << JsonEscape(options.commit) << "\",\n"
                << "  \"preset\": \"" << JsonEscape(options.preset) << "\",\n"
                << "  \"frames\": " << verifiedFrames << ",\n"
@@ -309,6 +359,12 @@ namespace
                << "  \"fallbackUsed\": "
                << (fallbackUsed ? "true" : "false") << ",\n"
                << "  \"fallbackReason\": \"\",\n"
+               << "  \"softwareAdapterAllowed\": "
+               << (softwareAdapterAllowed ? "true" : "false") << ",\n"
+               << "  \"softwareAdapter\": "
+               << (softwareAdapter ? "true" : "false") << ",\n"
+               << "  \"adapterName\": \""
+               << JsonEscape(adapterName) << "\",\n"
                << "  \"cookedLoadSucceeded\": "
                << (cookedLoadSucceeded ? "true" : "false") << ",\n"
                << "  \"sourceLoadRejected\": "
@@ -406,7 +462,9 @@ namespace
         engineConfig.renderRuntime.swapChain.vsync = false;
         engineConfig.renderRuntime.enableValidation = false;
         engineConfig.renderRuntime.enableGPUValidation = false;
-        engineConfig.renderRuntime.allowSoftwareAdapter = false;
+        const bool softwareAdapterAllowed =
+            EnvironmentFlagEnabled("RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER");
+        engineConfig.renderRuntime.allowSoftwareAdapter = softwareAdapterAllowed;
         engineConfig.initialRenderFrameSettings.gpuCulling.mode =
             RVX::RenderGPUDrivenMode::ForceDisabled;
         engineConfig.initialRenderFrameSettings.shadows.enabled = false;
@@ -558,6 +616,8 @@ namespace
         const RVX::RenderDiagnosticsSnapshot renderDiagnostics =
             render->GetDiagnosticsSnapshot();
         const std::string actualBackend = BackendName(renderDiagnostics.backend);
+        const bool softwareAdapter =
+            IsSoftwareAdapterName(renderDiagnostics.adapterName);
         sourceProbe.Reset();
         model.Reset();
         const bool shutdownClean = DrainEngine(engine, "ShippingSmoke");
@@ -568,6 +628,9 @@ namespace
         }
         if (!WriteEvidence(options,
                            actualBackend,
+                           renderDiagnostics.adapterName,
+                           softwareAdapterAllowed,
+                           softwareAdapter,
                            cookedLoadSucceeded,
                            sourceLoadRejected,
                            shutdownClean,
@@ -581,6 +644,11 @@ namespace
         if (actualBackend != options.backendName)
         {
             error = "Shipping backend fallback is forbidden";
+            return 1;
+        }
+        if (softwareAdapter && !softwareAdapterAllowed)
+        {
+            error = "Shipping software adapter use requires explicit opt-in";
             return 1;
         }
         return 0;

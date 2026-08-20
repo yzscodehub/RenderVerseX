@@ -2722,6 +2722,24 @@
     {
       "path": "RHI_DX11/Private/DX11SwapChain.h",
       "owner": "DX11SwapChain",
+      "symbol": "m_backBuffers",
+      "policy": "SurfaceGeneration",
+      "completionSource": "surface generation last Graphics completion point",
+      "normalRelease": "old surface generation releases after Graphics completion or one compatibility WaitIdle",
+      "deviceLostRelease": "surface explicit device-lost teardown"
+    },
+    {
+      "path": "RHI_DX11/Private/DX11SwapChain.h",
+      "owner": "DX11SwapChain",
+      "symbol": "m_backBufferViews",
+      "policy": "SurfaceGeneration",
+      "completionSource": "surface generation last Graphics completion point",
+      "normalRelease": "old surface generation releases after Graphics completion or one compatibility WaitIdle",
+      "deviceLostRelease": "surface explicit device-lost teardown"
+    },
+    {
+      "path": "RHI_DX11/Private/DX11SwapChain.h",
+      "owner": "DX11SwapChain",
       "symbol": "m_swapChain",
       "policy": "SurfaceGeneration",
       "completionSource": "surface generation last Graphics completion point",

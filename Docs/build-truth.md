@@ -69,3 +69,29 @@ ctest --preset linux_x64_tsan --output-on-failure
 Exit code `0` means every requested lane and evidence check passed. Build Truth
 does not replace Nightly qualification, broad compatibility-backend runtime
 coverage, visual parity, soak testing, or the later Shipping product gate.
+
+## Required PR and Scheduled Validation
+
+The required PR graph deliberately executes Architecture once on Ubuntu. The
+Windows, Linux, and macOS Debug jobs then run only Unit, Integration, and the
+platform-primary Native lane. Each platform also configures a separate PR-smoke
+tree that registers exactly the fixed `SceneLifecycle` Direct capture, image
+validator, and JSON report validator at 320x180, Low quality, and eight frames.
+
+Linux TSAN and the three-platform Shipping matrix are independent required
+jobs. `PR Verdict` depends on every required job and fails when any result is
+missing, cancelled, skipped, or unsuccessful. Shipping software adapters are
+permitted only through the explicit `RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER` opt-in;
+the actual adapter and opt-in verdict remain part of the evidence.
+
+Nightly runs full three-platform validation, Windows qualification/parity,
+dedicated DX11/OpenGL compatibility smokes, a hash-pinned external real-asset
+library, and the complete TSAN Integration lane. The scheduled repository must
+provide `RVX_EXTERNAL_ASSET_URL` and `RVX_EXTERNAL_ASSET_SHA256` secrets; a
+missing secret, bad hash, or incomplete archive fails the Nightly run.
+
+Weekly uses a hermetic `R7Triangle` ModelViewer fixture and runs the
+`suite.weekly-soak` contract for DX12, Vulkan, and Metal. That contract requires
+120 warm-up plus 9,880 observation frames and at least 300,000 ms.
+`Scripts/check_ci_workflows.py` and its self-tests keep the workflow, preset,
+and runtime soak contracts synchronized and fail closed on missing jobs.

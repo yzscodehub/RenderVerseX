@@ -3,7 +3,6 @@
 #include "DX11Common.h"
 #include "RHI/RHISwapChain.h"
 
-#include <memory>
 #include <vector>
 
 namespace RVX
@@ -47,8 +46,11 @@ namespace RVX
         DX11Device* m_device = nullptr;
 
         ComPtr<IDXGISwapChain1> m_swapChain;
-        std::vector<std::unique_ptr<DX11Texture>> m_backBuffers;
-        std::vector<std::unique_ptr<DX11TextureView>> m_backBufferViews;
+        // Imported render-graph resources retain intrusive references to swap-chain
+        // images. The swap chain must therefore participate in that ownership
+        // model instead of deleting a still-referenced back buffer directly.
+        std::vector<RHITextureRef> m_backBuffers;
+        std::vector<RHITextureViewRef> m_backBufferViews;
 
         uint32 m_width = 0;
         uint32 m_height = 0;

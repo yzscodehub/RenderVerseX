@@ -1,0 +1,210 @@
+name: Nightly Validation
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 18 * * *"
+
+concurrency:
+  group: nightly-validation
+  cancel-in-progress: false
+
+env:
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
+
+jobs:
+  windows-qualification:
+    name: Windows Full Qualification
+    runs-on: windows-2022
+    env:
+      VCPKG_ROOT: C:/vcpkg
+      RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: nightly-vcpkg-windows-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
+          restore-keys: nightly-vcpkg-windows-
+      - name: Full Windows validation
+        shell: pwsh
+        run: >-
+          ./Scripts/run_build_truth.ps1
+          -ConfigurePreset win_x64_debug
+          -BuildPreset win_x64_debug
+          -LaneTestPresets "win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native"
+          -BuildDir build/win_x64_debug
+          -Configuration Debug
+          -BaseRef origin/master
+          -RequiredNativeBackend DX12
+          -Fresh
+      - name: Configure DX11/OpenGL compatibility smoke
+        run: cmake --preset win_x64_nightly_compatibility_debug
+      - name: Build DX11/OpenGL compatibility smoke
+        run: cmake --build --preset win_x64_nightly_compatibility_debug --parallel 4
+      - name: Run DX11/OpenGL compatibility smoke
+        run: ctest --preset win_x64_nightly_compatibility_debug
+      - name: Stage hash-pinned external asset library
+        shell: pwsh
+        env:
+          RVX_EXTERNAL_ASSET_URL: ${{ secrets.RVX_EXTERNAL_ASSET_URL }}
+          RVX_EXTERNAL_ASSET_SHA256: ${{ secrets.RVX_EXTERNAL_ASSET_SHA256 }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:RVX_EXTERNAL_ASSET_URL) -or
+              $env:RVX_EXTERNAL_ASSET_SHA256 -notmatch '^[0-9A-Fa-f]{64}$') {
+            throw 'Nightly external asset URL and SHA-256 secrets are required'
+          }
+          $archive = Join-Path $env:GITHUB_WORKSPACE 'build/nightly-external-assets.zip'
+          $assetRoot = Join-Path $env:GITHUB_WORKSPACE 'build/nightly-external-assets'
+          New-Item -ItemType Directory -Force -Path (Split-Path $archive) | Out-Null
+          Invoke-WebRequest -Uri $env:RVX_EXTERNAL_ASSET_URL -OutFile $archive
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:RVX_EXTERNAL_ASSET_SHA256.ToLowerInvariant()) {
+            throw "External asset archive SHA-256 mismatch: $actual"
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $assetRoot -Force
+          foreach ($required in @('catalog.json', 'models/free_1975_porsche_911_930_turbo/scene.gltf', 'models/free_1975_porsche_911_930_turbo/license.txt')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $assetRoot $required) -PathType Leaf)) {
+              throw "External asset archive is missing $required"
+            }
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "RVX_NIGHTLY_EXTERNAL_ASSET_ROOT=$assetRoot"
+      - name: Configure full qualification
+        shell: pwsh
+        run: >-
+          cmake --preset win_x64_qualification_debug
+          -DRVX_ENABLE_EXTERNAL_ASSET_TESTS=ON
+          "-DRVX_EXTERNAL_TEST_ASSET_ROOT=$env:RVX_NIGHTLY_EXTERNAL_ASSET_ROOT"
+      - name: Build full qualification
+        run: cmake --build build/win_x64_qualification_debug --config Debug --target RVXValidationQualification --parallel 4
+      - name: Run full qualification and parity
+        run: ctest --preset win_x64_qualification_debug_qualification
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-windows
+          path: |
+            build/win_x64_debug/BuildTruth
+            build/win_x64_nightly_compatibility_debug/BuildTruth
+            build/win_x64_qualification_debug/BuildTruth
+            build/win_x64_qualification_debug/Tests/VisualArtifacts
+            build/win_x64_qualification_debug/Tests/SampleReports
+
+  linux-full:
+    name: Linux Full Validation
+    runs-on: ubuntu-24.04
+    env:
+      VCPKG_ROOT: /usr/local/share/vcpkg
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang pkg-config xvfb libvulkan1 mesa-vulkan-drivers vulkan-tools \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev libgl1-mesa-dev autoconf libtool fonts-dejavu-core fonts-noto-cjk
+          mapfile -t manifests < <(dpkg-query -L mesa-vulkan-drivers | awk '/\/lvp_icd[^/]*\.json$/ { print }' | sort -u)
+          test "${#manifests[@]}" -eq 1
+          echo "VK_DRIVER_FILES=${manifests[0]}" >> "$GITHUB_ENV"
+          echo "VK_ICD_FILENAMES=${manifests[0]}" >> "$GITHUB_ENV"
+          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: nightly-vcpkg-linux-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
+          restore-keys: nightly-vcpkg-linux-
+      - name: Full Linux validation
+        run: |
+          xvfb-run -a pwsh -NoProfile -File ./Scripts/run_build_truth.ps1 \
+            -ConfigurePreset linux_x64_debug \
+            -BuildPreset linux_x64_debug \
+            -LaneTestPresets 'linux_x64_debug_architecture,linux_x64_debug_unit,linux_x64_debug_integration,linux_x64_debug_native' \
+            -BuildDir build/linux_x64_debug \
+            -Configuration Debug \
+            -BaseRef origin/master \
+            -RequiredNativeBackend Vulkan \
+            -Fresh
+      - name: Configure OpenGL compatibility smoke
+        run: cmake --preset linux_x64_nightly_compatibility_debug
+      - name: Build OpenGL compatibility smoke
+        run: cmake --build --preset linux_x64_nightly_compatibility_debug --parallel 4
+      - name: Run OpenGL compatibility smoke
+        run: xvfb-run -a ctest --preset linux_x64_nightly_compatibility_debug
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-linux
+          path: |
+            build/linux_x64_debug/BuildTruth
+            build/linux_x64_nightly_compatibility_debug/BuildTruth
+
+  linux-tsan-full:
+    name: Linux Full TSAN Integration
+    runs-on: ubuntu-24.04
+    env:
+      VCPKG_ROOT: /usr/local/share/vcpkg
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang pkg-config libvulkan1 mesa-vulkan-drivers \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev libgl1-mesa-dev autoconf libtool
+          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: nightly-vcpkg-linux-tsan-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
+          restore-keys: nightly-vcpkg-linux-tsan-
+      - run: cmake --preset linux_x64_tsan
+      - run: cmake --build build/linux_x64_tsan --target RVXValidationIntegration --parallel 4
+      - name: Run full integration under TSAN
+        env:
+          TSAN_OPTIONS: halt_on_error=1:abort_on_error=1
+        run: ctest --preset linux_x64_tsan_integration
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-linux-tsan
+          path: build/linux_x64_tsan/BuildTruth
+
+  macos-full:
+    name: macOS ARM64 Full Validation
+    runs-on: macos-15
+    env:
+      VCPKG_ROOT: /usr/local/share/vcpkg
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - name: Resolve vcpkg root
+        run: echo "VCPKG_ROOT=${VCPKG_INSTALLATION_ROOT:-/usr/local/share/vcpkg}" >> "$GITHUB_ENV"
+      - run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: nightly-vcpkg-macos-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
+          restore-keys: nightly-vcpkg-macos-
+      - name: Full macOS validation
+        shell: pwsh
+        run: >-
+          ./Scripts/run_build_truth.ps1
+          -ConfigurePreset mac_arm64_debug
+          -BuildPreset mac_arm64_debug
+          -LaneTestPresets "mac_arm64_debug_architecture,mac_arm64_debug_unit,mac_arm64_debug_integration,mac_arm64_debug_native"
+          -BuildDir build/mac_arm64_debug
+          -Configuration Debug
+          -BaseRef origin/master
+          -RequiredNativeBackend Metal
+          -Fresh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-macos
+          path: build/mac_arm64_debug/BuildTruth

@@ -20,7 +20,7 @@ from check_shipping_evidence import (
 
 
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
-PRESET = "win-x64-shipping-release"
+PRESET = "win_x64_shipping_release"
 BACKEND = "DX12"
 
 
@@ -72,7 +72,7 @@ class EvidenceFixture:
         self.write_receipt()
         self.report: dict[str, object] = {
             "schema": REPORT_SCHEMA,
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "commit": COMMIT,
             "preset": PRESET,
             "frames": 8,
@@ -84,6 +84,9 @@ class EvidenceFixture:
             "actualBackend": BACKEND,
             "fallbackUsed": False,
             "fallbackReason": "",
+            "softwareAdapterAllowed": False,
+            "softwareAdapter": False,
+            "adapterName": "Fixture GPU",
             "cookedLoadSucceeded": True,
             "sourceLoadRejected": True,
             "shutdownClean": True,
@@ -161,6 +164,17 @@ class ShippingEvidenceTests(unittest.TestCase):
         self.fixture.write_report()
         findings = self.validate()
         self.assertTrue(any("backend fallback is forbidden" in item for item in findings))
+
+    def test_software_adapter_requires_explicit_opt_in(self) -> None:
+        self.fixture.report["softwareAdapter"] = True
+        self.fixture.report["adapterName"] = "Microsoft WARP"
+        self.fixture.write_report()
+        findings = self.validate()
+        self.assertTrue(any("without explicit opt-in" in item for item in findings))
+
+        self.fixture.report["softwareAdapterAllowed"] = True
+        self.fixture.write_report()
+        self.assertEqual(self.validate(), [])
 
     def test_rejects_tampered_artifact(self) -> None:
         (self.fixture.root / "Cooked/Resources/R7Triangle.rva").write_bytes(

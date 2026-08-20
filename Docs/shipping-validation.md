@@ -87,12 +87,14 @@ must never be committed.
 
 ## Runtime evidence
 
-The Shipping consumer writes one `RVX_SHIPPING_EVIDENCE` version 1 JSON report.
+The Shipping consumer writes one `RVX_SHIPPING_EVIDENCE` version 2 JSON report.
 It is deliberately a closed schema: unknown and missing fields fail. The
 required run is exactly eight frames at 320x180, Low quality, Direct rendering.
 The requested and actual backend must match, fallback must be false with an
 empty reason, cooked loading must succeed, a Source-domain request must be
-rejected, and shutdown must be clean.
+rejected, and shutdown must be clean. Software adapters are recorded by name
+and are accepted only when `RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER` was explicitly
+enabled by the validation environment.
 
 ```text
 python Scripts/check_shipping_evidence.py \

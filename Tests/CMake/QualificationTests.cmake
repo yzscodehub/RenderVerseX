@@ -18,6 +18,28 @@ if(RVX_ENABLE_P1_QUALIFICATION_MATRIX)
 elseif(NOT WIN32)
     message(STATUS "P1 qualification matrix: Unavailable (requires Windows DX12 and Vulkan backends)")
 endif()
+option(RVX_ENABLE_PR_SMOKE
+    "Register only the fixed primary-backend SceneLifecycle PR smoke" OFF)
+option(RVX_ENABLE_COMPATIBILITY_SMOKE
+    "Register fixed DX11/OpenGL SceneLifecycle compatibility smokes" OFF)
+option(RVX_ENABLE_WEEKLY_SOAK
+    "Register the hermetic 10,000-frame / five-minute primary-backend soak" OFF)
+set(RVX_DEDICATED_QUALIFICATION_MODES)
+foreach(mode PR_SMOKE COMPATIBILITY_SMOKE WEEKLY_SOAK)
+    if(RVX_ENABLE_${mode})
+        list(APPEND RVX_DEDICATED_QUALIFICATION_MODES ${mode})
+    endif()
+endforeach()
+list(LENGTH RVX_DEDICATED_QUALIFICATION_MODES RVX_DEDICATED_QUALIFICATION_MODE_COUNT)
+if(RVX_DEDICATED_QUALIFICATION_MODE_COUNT GREATER 1)
+    message(FATAL_ERROR
+        "PR, compatibility, and weekly soak modes require separate build trees")
+endif()
+if(RVX_DEDICATED_QUALIFICATION_MODE_COUNT GREATER 0 AND
+   (RVX_ENABLE_P0_QUALIFICATION_MATRIX OR RVX_ENABLE_P1_QUALIFICATION_MATRIX))
+    message(FATAL_ERROR
+        "Dedicated PR/compatibility/soak modes require P0/P1 matrices disabled")
+endif()
 
 if((RVX_ENABLE_P0_QUALIFICATION_MATRIX OR RVX_ENABLE_P1_QUALIFICATION_MATRIX)
    AND (NOT TARGET VisualGoldenValidation OR NOT TARGET ImageContentValidation OR NOT TARGET SampleReportContentValidation))
@@ -28,7 +50,7 @@ function(rvx_add_renderverse_primary_smoke SAMPLE_ID SAMPLE_LABEL ASSET_ID BACKE
     cmake_parse_arguments(
         RVX_SAMPLE
         "WAIT_READY;ASSESSMENT"
-        "READY_TIMEOUT_MS;READY_MAX_FRAMES;TIMEOUT;ASSESSMENT_PROFILE;ASSET_LICENSE"
+        "READY_TIMEOUT_MS;READY_MAX_FRAMES;TIMEOUT;ASSESSMENT_PROFILE;ASSET_LICENSE;SUITE"
         "SAMPLE_ARGS;REPORT_ARGS"
         ${ARGN})
     if(RVX_SAMPLE_UNPARSED_ARGUMENTS)
@@ -103,6 +125,9 @@ function(rvx_add_renderverse_primary_smoke SAMPLE_ID SAMPLE_LABEL ASSET_ID BACKE
         set(RVX_SAMPLE_ASSET_LICENSE
             LicenseRef-RenderVerseX-Generated-Fixture)
     endif()
+    if(NOT RVX_SAMPLE_SUITE)
+        set(RVX_SAMPLE_SUITE primary)
+    endif()
 
     rvx_add_validation_test(
         LANE qualification
@@ -124,7 +149,8 @@ function(rvx_add_renderverse_primary_smoke SAMPLE_ID SAMPLE_LABEL ASSET_ID BACKE
             ${smoke_assessment_args}
             ${RVX_SAMPLE_SAMPLE_ARGS}
         BUILD_TARGETS RenderVerseSamples ImageContentValidation SampleReportContentValidation
-        TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary
+        TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME}
+            suite.${RVX_SAMPLE_SUITE}
         TIMEOUT ${RVX_SAMPLE_TIMEOUT}
         WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
         RESOURCE_LOCK rvx_gpu
@@ -144,7 +170,8 @@ function(rvx_add_renderverse_primary_smoke SAMPLE_ID SAMPLE_LABEL ASSET_ID BACKE
             --max-near-black-ratio 0.95
             --sample-step 2
         BUILD_TARGETS ImageContentValidation
-        TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary
+        TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME}
+            suite.${RVX_SAMPLE_SUITE}
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         FIXTURES_REQUIRED "${test_prefix}FreshCapture"
@@ -172,10 +199,90 @@ function(rvx_add_renderverse_primary_smoke SAMPLE_ID SAMPLE_LABEL ASSET_ID BACKE
             ${smoke_assessment_report_args}
             ${RVX_SAMPLE_REPORT_ARGS}
         BUILD_TARGETS SampleReportContentValidation
-        TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary
+        TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME}
+            suite.${RVX_SAMPLE_SUITE}
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+function(rvx_add_renderverse_pr_smoke BACKEND_NAME BACKEND_LABEL)
+    rvx_add_renderverse_primary_smoke(
+        scene-lifecycle SceneLifecycleDirect water-bottle
+        ${BACKEND_NAME} ${BACKEND_LABEL}
+        SUITE pr-smoke
+        ASSET_LICENSE CC0-1.0
+        SAMPLE_ARGS
+            --render-path direct
+        REPORT_ARGS
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-direct-execution
+            --require-asset-entry water-bottle
+            --require-supported-feature SceneLifecycleProbe
+            --require-supported-feature DeferredEcsCommands
+            --require-supported-feature GenerationSafeEntityIdentity)
+endfunction()
+
+function(rvx_add_renderverse_compatibility_smoke BACKEND_NAME BACKEND_LABEL)
+    rvx_add_renderverse_primary_smoke(
+        scene-lifecycle SceneLifecycleCompatibility water-bottle
+        ${BACKEND_NAME} ${BACKEND_LABEL}
+        SUITE compatibility-smoke
+        ASSET_LICENSE CC0-1.0
+        SAMPLE_ARGS
+            --render-path direct
+        REPORT_ARGS
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-direct-execution
+            --require-asset-entry water-bottle
+            --require-supported-feature SceneLifecycleProbe)
+endfunction()
+
+function(rvx_add_renderverse_weekly_soak BACKEND_NAME BACKEND_LABEL)
+    if(NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "Weekly soak requires RenderVerseSamples")
+    endif()
+    set(test_prefix "RenderVerseSamples${BACKEND_LABEL}WeeklySoak")
+    set(lifetime_root
+        "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/WeeklySoak/${BACKEND_LABEL}")
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${test_prefix}
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample model-viewer
+            --asset r7-triangle
+            --backend ${BACKEND_NAME}
+            --render-path direct
+            --smoke
+            --frames 1
+            --wait-ready
+            --ready-timeout-ms 180000
+            --ready-max-frames 4096
+            --width 320
+            --height 180
+            --quality low
+            --deterministic-orbit
+            --startup-report "${lifetime_root}/startup.json"
+            --lifetime-warmup-frames 120
+            --lifetime-observation-frames 9880
+            --lifetime-min-duration-ms 300000
+            --lifetime-resize-interval 2400
+            --lifetime-resize-settle-frames 60
+            --lifetime-report "${lifetime_root}/lifetime.json"
+            --report "${lifetime_root}/sample.json"
+            --diagnostics
+            --validation
+        BUILD_TARGETS RenderVerseSamples
+        TAGS product.samples trait.gpu backend.${BACKEND_NAME}
+            suite.model-viewer suite.lifetime suite.soak suite.weekly-soak
+        TIMEOUT 3600
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
     )
 endfunction()
 
@@ -1542,7 +1649,49 @@ function(rvx_add_renderverse_gpu_driven_parity BACKEND_NAME BACKEND_LABEL)
     )
 endfunction()
 
-if(WIN32 AND RVX_ENABLE_DX12)
+if(RVX_ENABLE_PR_SMOKE)
+    if(WIN32 AND RVX_ENABLE_DX12)
+        rvx_add_renderverse_pr_smoke(dx12 DX12)
+    elseif(APPLE AND RVX_ENABLE_METAL)
+        rvx_add_renderverse_pr_smoke(metal Metal)
+    elseif(UNIX AND RVX_ENABLE_VULKAN)
+        rvx_add_renderverse_pr_smoke(vulkan Vulkan)
+    else()
+        message(FATAL_ERROR
+            "RVX_ENABLE_PR_SMOKE requires the platform primary backend (DX12, Vulkan, or Metal)")
+    endif()
+endif()
+
+if(RVX_ENABLE_COMPATIBILITY_SMOKE)
+    set(RVX_COMPATIBILITY_SMOKE_COUNT 0)
+    if(WIN32 AND RVX_ENABLE_DX11)
+        rvx_add_renderverse_compatibility_smoke(dx11 DX11)
+        math(EXPR RVX_COMPATIBILITY_SMOKE_COUNT "${RVX_COMPATIBILITY_SMOKE_COUNT} + 1")
+    endif()
+    if(RVX_ENABLE_OPENGL)
+        rvx_add_renderverse_compatibility_smoke(opengl OpenGL)
+        math(EXPR RVX_COMPATIBILITY_SMOKE_COUNT "${RVX_COMPATIBILITY_SMOKE_COUNT} + 1")
+    endif()
+    if(RVX_COMPATIBILITY_SMOKE_COUNT EQUAL 0)
+        message(FATAL_ERROR
+            "RVX_ENABLE_COMPATIBILITY_SMOKE requires DX11 or OpenGL")
+    endif()
+endif()
+
+if(RVX_ENABLE_WEEKLY_SOAK)
+    if(WIN32 AND RVX_ENABLE_DX12)
+        rvx_add_renderverse_weekly_soak(dx12 DX12)
+    elseif(APPLE AND RVX_ENABLE_METAL)
+        rvx_add_renderverse_weekly_soak(metal Metal)
+    elseif(UNIX AND RVX_ENABLE_VULKAN)
+        rvx_add_renderverse_weekly_soak(vulkan Vulkan)
+    else()
+        message(FATAL_ERROR
+            "RVX_ENABLE_WEEKLY_SOAK requires the platform primary backend")
+    endif()
+endif()
+
+if(WIN32 AND RVX_ENABLE_DX12 AND NOT RVX_ENABLE_PR_SMOKE)
     if(RVX_ENABLE_P0_QUALIFICATION_MATRIX)
     rvx_add_renderverse_scene_lifecycle_matrix(dx12 DX12)
     rvx_add_renderverse_asset_streaming_matrix(dx12 DX12)
@@ -1739,7 +1888,7 @@ if(WIN32 AND RVX_ENABLE_DX12)
     rvx_add_renderverse_readiness_smoke(dx12 DX12)
     rvx_add_renderverse_gpu_driven_parity(dx12 DX12)
 endif()
-if(RVX_ENABLE_VULKAN)
+if(RVX_ENABLE_VULKAN AND NOT RVX_ENABLE_PR_SMOKE)
     if(RVX_ENABLE_P0_QUALIFICATION_MATRIX)
     rvx_add_renderverse_scene_lifecycle_matrix(vulkan Vulkan)
     rvx_add_renderverse_asset_streaming_matrix(vulkan Vulkan)
@@ -1936,7 +2085,7 @@ if(RVX_ENABLE_VULKAN)
     rvx_add_renderverse_readiness_smoke(vulkan Vulkan)
     rvx_add_renderverse_gpu_driven_parity(vulkan Vulkan)
 endif()
-if(APPLE AND RVX_ENABLE_METAL)
+if(APPLE AND RVX_ENABLE_METAL AND NOT RVX_ENABLE_PR_SMOKE)
     rvx_add_renderverse_primary_smoke(
         model-rendering ModelRendering shadow-plane-caster metal Metal)
     rvx_add_renderverse_primary_smoke(

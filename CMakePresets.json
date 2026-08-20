@@ -103,7 +103,8 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
-        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF"
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
       }
     },
     {
@@ -114,7 +115,8 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
-        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF"
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
       }
     },
     {
@@ -125,7 +127,48 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "ON",
-        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "ON"
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "ON",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
+      }
+    },
+    {
+      "name": "win_x64_pr_debug",
+      "displayName": "Windows x64 Debug PR Smoke",
+      "inherits": "win_x64_base",
+      "binaryDir": "${sourceDir}/build/win_x64_pr_debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "ON"
+      }
+    },
+    {
+      "name": "win_x64_nightly_compatibility_debug",
+      "displayName": "Windows x64 Nightly Compatibility Smoke",
+      "inherits": "win_x64_base",
+      "binaryDir": "${sourceDir}/build/win_x64_nightly_compatibility_debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "OFF",
+        "RVX_ENABLE_COMPATIBILITY_SMOKE": "ON",
+        "RVX_ENABLE_WEEKLY_SOAK": "OFF"
+      }
+    },
+    {
+      "name": "win_x64_weekly_soak_debug",
+      "displayName": "Windows x64 Weekly DX12 Soak",
+      "inherits": "win_x64_base",
+      "binaryDir": "${sourceDir}/build/win_x64_weekly_soak_debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "OFF",
+        "RVX_ENABLE_COMPATIBILITY_SMOKE": "OFF",
+        "RVX_ENABLE_WEEKLY_SOAK": "ON"
       }
     },
     {
@@ -134,7 +177,48 @@
       "inherits": "linux_x64_base",
       "binaryDir": "${sourceDir}/build/linux_x64_debug",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
+      }
+    },
+    {
+      "name": "linux_x64_pr_debug",
+      "displayName": "Linux x64 Debug PR Smoke",
+      "inherits": "linux_x64_base",
+      "binaryDir": "${sourceDir}/build/linux_x64_pr_debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "ON"
+      }
+    },
+    {
+      "name": "linux_x64_nightly_compatibility_debug",
+      "displayName": "Linux x64 Nightly OpenGL Smoke",
+      "inherits": "linux_x64_base",
+      "binaryDir": "${sourceDir}/build/linux_x64_nightly_compatibility_debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "OFF",
+        "RVX_ENABLE_COMPATIBILITY_SMOKE": "ON",
+        "RVX_ENABLE_WEEKLY_SOAK": "OFF"
+      }
+    },
+    {
+      "name": "linux_x64_weekly_soak_debug",
+      "displayName": "Linux x64 Weekly Vulkan Soak",
+      "inherits": "linux_x64_base",
+      "binaryDir": "${sourceDir}/build/linux_x64_weekly_soak_debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "OFF",
+        "RVX_ENABLE_COMPATIBILITY_SMOKE": "OFF",
+        "RVX_ENABLE_WEEKLY_SOAK": "ON"
       }
     },
     {
@@ -165,7 +249,34 @@
       "inherits": "mac_arm64_base",
       "binaryDir": "${sourceDir}/build/mac_arm64_debug",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_PR_SMOKE": "OFF"
+      }
+    },
+    {
+      "name": "mac_arm64_pr_debug",
+      "displayName": "macOS arm64 Debug PR Smoke",
+      "inherits": "mac_arm64_base",
+      "binaryDir": "${sourceDir}/build/mac_arm64_pr_debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "ON"
+      }
+    },
+    {
+      "name": "mac_arm64_weekly_soak_debug",
+      "displayName": "macOS arm64 Weekly Metal Soak",
+      "inherits": "mac_arm64_base",
+      "binaryDir": "${sourceDir}/build/mac_arm64_weekly_soak_debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "OFF",
+        "RVX_ENABLE_PR_SMOKE": "OFF",
+        "RVX_ENABLE_COMPATIBILITY_SMOKE": "OFF",
+        "RVX_ENABLE_WEEKLY_SOAK": "ON"
       }
     },
     {
@@ -339,8 +450,41 @@
       "configuration": "Debug"
     },
     {
+      "name": "win_x64_pr_debug",
+      "configurePreset": "win_x64_pr_debug",
+      "configuration": "Debug",
+      "targets": ["RenderVerseSamples", "ImageContentValidation", "SampleReportContentValidation"]
+    },
+    {
+      "name": "win_x64_nightly_compatibility_debug",
+      "configurePreset": "win_x64_nightly_compatibility_debug",
+      "configuration": "Debug",
+      "targets": ["RenderVerseSamples", "ImageContentValidation", "SampleReportContentValidation"]
+    },
+    {
+      "name": "win_x64_weekly_soak_debug",
+      "configurePreset": "win_x64_weekly_soak_debug",
+      "configuration": "Debug",
+      "targets": ["RenderVerseSamples"]
+    },
+    {
       "name": "linux_x64_debug",
       "configurePreset": "linux_x64_debug"
+    },
+    {
+      "name": "linux_x64_pr_debug",
+      "configurePreset": "linux_x64_pr_debug",
+      "targets": ["RenderVerseSamples", "ImageContentValidation", "SampleReportContentValidation"]
+    },
+    {
+      "name": "linux_x64_nightly_compatibility_debug",
+      "configurePreset": "linux_x64_nightly_compatibility_debug",
+      "targets": ["RenderVerseSamples", "ImageContentValidation", "SampleReportContentValidation"]
+    },
+    {
+      "name": "linux_x64_weekly_soak_debug",
+      "configurePreset": "linux_x64_weekly_soak_debug",
+      "targets": ["RenderVerseSamples"]
     },
     {
       "name": "linux_x64_release",
@@ -353,6 +497,16 @@
     {
       "name": "mac_arm64_debug",
       "configurePreset": "mac_arm64_debug"
+    },
+    {
+      "name": "mac_arm64_pr_debug",
+      "configurePreset": "mac_arm64_pr_debug",
+      "targets": ["RenderVerseSamples", "ImageContentValidation", "SampleReportContentValidation"]
+    },
+    {
+      "name": "mac_arm64_weekly_soak_debug",
+      "configurePreset": "mac_arm64_weekly_soak_debug",
+      "targets": ["RenderVerseSamples"]
     },
     {
       "name": "mac_arm64_release",
@@ -392,6 +546,83 @@
     }
   ],
   "testPresets": [
+    {
+      "name": "win_x64_nightly_compatibility_debug",
+      "configurePreset": "win_x64_nightly_compatibility_debug",
+      "configuration": "Debug",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true, "outputJUnitFile": "${sourceDir}/build/win_x64_nightly_compatibility_debug/BuildTruth/junit-compatibility-smoke.xml" },
+      "filter": { "include": { "label": "^suite\\.compatibility-smoke$" } }
+    },
+    {
+      "name": "linux_x64_nightly_compatibility_debug",
+      "configurePreset": "linux_x64_nightly_compatibility_debug",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true, "outputJUnitFile": "${sourceDir}/build/linux_x64_nightly_compatibility_debug/BuildTruth/junit-compatibility-smoke.xml" },
+      "filter": { "include": { "label": "^suite\\.compatibility-smoke$" } }
+    },
+    {
+      "name": "win_x64_weekly_soak_debug",
+      "configurePreset": "win_x64_weekly_soak_debug",
+      "configuration": "Debug",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true, "outputJUnitFile": "${sourceDir}/build/win_x64_weekly_soak_debug/BuildTruth/junit-soak.xml" },
+      "filter": { "include": { "label": "^suite\\.weekly-soak$" } }
+    },
+    {
+      "name": "linux_x64_weekly_soak_debug",
+      "configurePreset": "linux_x64_weekly_soak_debug",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true, "outputJUnitFile": "${sourceDir}/build/linux_x64_weekly_soak_debug/BuildTruth/junit-soak.xml" },
+      "filter": { "include": { "label": "^suite\\.weekly-soak$" } }
+    },
+    {
+      "name": "mac_arm64_weekly_soak_debug",
+      "configurePreset": "mac_arm64_weekly_soak_debug",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true, "outputJUnitFile": "${sourceDir}/build/mac_arm64_weekly_soak_debug/BuildTruth/junit-soak.xml" },
+      "filter": { "include": { "label": "^suite\\.weekly-soak$" } }
+    },
+    {
+      "name": "win_x64_pr_debug_lane_base",
+      "hidden": true,
+      "configurePreset": "win_x64_pr_debug",
+      "configuration": "Debug",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "win_x64_pr_debug_smoke",
+      "inherits": "win_x64_pr_debug_lane_base",
+      "output": { "outputOnFailure": true, "outputJUnitFile": "${sourceDir}/build/win_x64_pr_debug/BuildTruth/junit-pr-smoke.xml" },
+      "filter": { "include": { "label": "^suite\\.pr-smoke$" } }
+    },
+    {
+      "name": "linux_x64_pr_debug_lane_base",
+      "hidden": true,
+      "configurePreset": "linux_x64_pr_debug",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux_x64_pr_debug_smoke",
+      "inherits": "linux_x64_pr_debug_lane_base",
+      "output": { "outputOnFailure": true, "outputJUnitFile": "${sourceDir}/build/linux_x64_pr_debug/BuildTruth/junit-pr-smoke.xml" },
+      "filter": { "include": { "label": "^suite\\.pr-smoke$" } }
+    },
+    {
+      "name": "mac_arm64_pr_debug_lane_base",
+      "hidden": true,
+      "configurePreset": "mac_arm64_pr_debug",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "mac_arm64_pr_debug_smoke",
+      "inherits": "mac_arm64_pr_debug_lane_base",
+      "output": { "outputOnFailure": true, "outputJUnitFile": "${sourceDir}/build/mac_arm64_pr_debug/BuildTruth/junit-pr-smoke.xml" },
+      "filter": { "include": { "label": "^suite\\.pr-smoke$" } }
+    },
     {
       "name": "win_x64_shipping_release_lane_base",
       "hidden": true,

@@ -207,14 +207,15 @@ namespace RVX
         texDesc.dimension = RHITextureDimension::Texture2D;
         texDesc.debugName = "SwapChainBackBuffer";
 
-        m_backBuffers[0] = std::make_unique<DX11Texture>(m_device, backBuffer, texDesc);
+        m_backBuffers[0] = MakeRef<DX11Texture>(m_device, backBuffer, texDesc);
 
         // Create view with the originally requested format (may be SRGB)
         // This allows SRGB gamma correction when rendering to the swap chain
         RHITextureViewDesc viewDesc = {};
         viewDesc.format = m_requestedFormat;  // Use requested format (SRGB if requested)
         viewDesc.type = RHITextureViewType::RenderTarget;
-        m_backBufferViews[0] = std::make_unique<DX11TextureView>(m_device, m_backBuffers[0].get(), viewDesc);
+        m_backBufferViews[0] = MakeRef<DX11TextureView>(
+            m_device, m_backBuffers[0].Get(), viewDesc);
     }
 
     void DX11SwapChain::ReleaseBackBuffers()
@@ -268,7 +269,7 @@ namespace RVX
         // DX11 FLIP swap chains only expose buffer 0
         if (!m_backBuffers.empty())
         {
-            return m_backBuffers[0].get();
+            return m_backBuffers[0].Get();
         }
         return nullptr;
     }
@@ -278,7 +279,7 @@ namespace RVX
         // DX11 FLIP swap chains only expose buffer 0
         if (!m_backBufferViews.empty())
         {
-            return m_backBufferViews[0].get();
+            return m_backBufferViews[0].Get();
         }
         return nullptr;
     }

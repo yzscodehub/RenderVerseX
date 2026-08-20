@@ -1,0 +1,70 @@
+name: Weekly Soak
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 17 * * 6"
+
+concurrency:
+  group: weekly-soak
+  cancel-in-progress: false
+
+env:
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
+
+jobs:
+  soak:
+    name: ${{ matrix.platform }} Primary Backend Soak
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {platform: Windows-DX12, runner: windows-2022, vcpkg_root: 'C:/vcpkg', preset: win_x64_weekly_soak_debug, build_dir: build/win_x64_weekly_soak_debug}
+          - {platform: Linux-Vulkan, runner: ubuntu-24.04, vcpkg_root: /usr/local/share/vcpkg, preset: linux_x64_weekly_soak_debug, build_dir: build/linux_x64_weekly_soak_debug}
+          - {platform: macOS-Metal, runner: macos-15, vcpkg_root: /usr/local/share/vcpkg, preset: mac_arm64_weekly_soak_debug, build_dir: build/mac_arm64_weekly_soak_debug}
+    runs-on: ${{ matrix.runner }}
+    env:
+      VCPKG_ROOT: ${{ matrix.vcpkg_root }}
+      RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, lfs: true}
+      - name: Resolve macOS vcpkg root
+        if: runner.os == 'macOS'
+        run: echo "VCPKG_ROOT=${VCPKG_INSTALLATION_ROOT:-/usr/local/share/vcpkg}" >> "$GITHUB_ENV"
+      - name: Install Linux runtime dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang pkg-config xvfb libvulkan1 mesa-vulkan-drivers \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev libgl1-mesa-dev autoconf libtool fonts-dejavu-core fonts-noto-cjk
+          mapfile -t manifests < <(dpkg-query -L mesa-vulkan-drivers | awk '/\/lvp_icd[^/]*\.json$/ { print }' | sort -u)
+          test "${#manifests[@]}" -eq 1
+          echo "VK_DRIVER_FILES=${manifests[0]}" >> "$GITHUB_ENV"
+          echo "VK_ICD_FILENAMES=${manifests[0]}" >> "$GITHUB_ENV"
+      - name: Prepare vcpkg cache
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: weekly-vcpkg-${{ matrix.platform }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
+          restore-keys: weekly-vcpkg-${{ matrix.platform }}-
+      - name: Configure soak tree
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Build qualification targets
+        run: cmake --build --preset ${{ matrix.preset }} --parallel 3
+      - name: Run 10,000-frame / five-minute soak
+        if: runner.os != 'Linux'
+        run: ctest --preset ${{ matrix.preset }}
+      - name: Run Linux 10,000-frame / five-minute soak
+        if: runner.os == 'Linux'
+        run: xvfb-run -a ctest --preset ${{ matrix.preset }}
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-soak-${{ matrix.platform }}
+          path: |
+            ${{ matrix.build_dir }}/BuildTruth
+            ${{ matrix.build_dir }}/artifacts
