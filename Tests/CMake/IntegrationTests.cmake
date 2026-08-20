@@ -222,7 +222,7 @@ rvx_add_gtest(
         ${CMAKE_SOURCE_DIR}/ShaderCompiler/Include
         ${CMAKE_SOURCE_DIR}/Terrain/Private
         ${CMAKE_SOURCE_DIR}/Tools/Include
-        ${CMAKE_SOURCE_DIR}/RHI/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
     TIMEOUT 120
 )
 
@@ -244,7 +244,7 @@ rvx_add_gtest(
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Render/Private
         ${CMAKE_SOURCE_DIR}/RenderExtraction/Include
-        ${CMAKE_SOURCE_DIR}/RHI/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
         ${CMAKE_SOURCE_DIR}/Render/Include
         ${CMAKE_SOURCE_DIR}/Render/Private/Renderer
         ${CMAKE_SOURCE_DIR}/Resource/Include
@@ -272,7 +272,7 @@ rvx_add_gtest(
         ${CMAKE_SOURCE_DIR}/Render/Include
         ${CMAKE_SOURCE_DIR}/Render/Private
         ${CMAKE_SOURCE_DIR}/Resource/Include
-        ${CMAKE_SOURCE_DIR}/RHI/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
         ${CMAKE_SOURCE_DIR}/Scene/Include
     TIMEOUT 120
 )

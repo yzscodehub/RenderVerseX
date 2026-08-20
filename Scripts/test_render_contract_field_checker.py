@@ -491,11 +491,11 @@ class RenderContractFieldCheckerTests(unittest.TestCase):
     def test_real_render_contract_roots_are_owned_values(self) -> None:
         result = run_checker(
             REPO_ROOT,
-            "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderFrameSettings",
-            "RenderContracts/Include/RenderContracts/RenderFramePacketV5.h:RenderFrameHeaderV5",
-            "RenderContracts/Include/RenderContracts/RenderFramePacketV5.h:RenderFramePacketV5",
-            "RenderContracts/Include/RenderContracts/RenderSceneUpdate.h:RenderSceneUpdateBatch",
-            "RenderContracts/Include/RenderContracts/ResourceUploadRequest.h:ResourceUploadRequest",
+            "Source/Runtime/RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderFrameSettings",
+            "Source/Runtime/RenderContracts/Include/RenderContracts/RenderFramePacketV5.h:RenderFrameHeaderV5",
+            "Source/Runtime/RenderContracts/Include/RenderContracts/RenderFramePacketV5.h:RenderFramePacketV5",
+            "Source/Runtime/RenderContracts/Include/RenderContracts/RenderSceneUpdate.h:RenderSceneUpdateBatch",
+            "Source/Runtime/RenderContracts/Include/RenderContracts/ResourceUploadRequest.h:ResourceUploadRequest",
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         counts = [

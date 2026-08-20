@@ -26,7 +26,7 @@ if(RVX_NATIVE_LIFECYCLE_BACKEND)
             ${RVX_ALL_BACKENDS}
         INCLUDES
             ${CMAKE_CURRENT_SOURCE_DIR}
-            ${CMAKE_SOURCE_DIR}/HAL/Private
+            ${CMAKE_SOURCE_DIR}/Source/Runtime/HAL/Private
         DEFINES
             ${RVX_NATIVE_LIFECYCLE_DEFINE}
             RVX_NATIVE_REQUIRED_BACKEND="${RVX_NATIVE_LIFECYCLE_BACKEND}"

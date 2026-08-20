@@ -28,7 +28,7 @@ namespace RVX::Tests
 
     TEST(RHIContractValidation, PrimaryBackendsConsumeTheSharedDescriptorSnapshotContract)
     {
-        const std::string descriptorHeader = ReadSource("RHI/Include/RHI/RHIDescriptor.h");
+        const std::string descriptorHeader = ReadSource("Source/Runtime/RHI/Include/RHI/RHIDescriptor.h");
         const std::string dx12Pipeline = ReadSource("RHI_DX12/Private/DX12Pipeline.cpp");
         const std::string vulkanPipeline = ReadSource("RHI_Vulkan/Private/VulkanPipeline.cpp");
         const std::string metalResources = ReadSource("RHI_Metal/Private/MetalResources.mm");
@@ -46,7 +46,7 @@ namespace RVX::Tests
 
     TEST(RHIContractValidation, PrimaryBackendsTranslateScopedDependenciesStructurally)
     {
-        const std::string accessHeader = ReadSource("RHI/Include/RHI/RHIAccess.h");
+        const std::string accessHeader = ReadSource("Source/Runtime/RHI/Include/RHI/RHIAccess.h");
         const std::string dx12 = ReadSource("RHI_DX12/Private/DX12CommandContext.cpp");
         const std::string vulkanCommon = ReadSource("RHI_Vulkan/Private/VulkanCommon.h");
         const std::string vulkan = ReadSource("RHI_Vulkan/Private/VulkanCommandContext.cpp");
@@ -405,7 +405,7 @@ namespace RVX::Tests
     TEST(RHIContractValidation, OpenGLSurfaceRebindIsRejectedBeforeActiveSwapChainMutation)
     {
         const std::string deviceInterface =
-            ReadSource("RHI/Include/RHI/RHIDevice.h");
+            ReadSource("Source/Runtime/RHI/Include/RHI/RHIDevice.h");
         const std::string openGLHeader =
             ReadSource("RHI_OpenGL/Private/OpenGLDevice.h");
         const std::string openGLDevice =
@@ -553,7 +553,7 @@ namespace RVX::Tests
                   std::string::npos);
 
         const std::string appleBridge =
-            ReadSource("HAL/Private/Apple/GLFWMetalLayerBridge.mm");
+            ReadSource("Source/Runtime/HAL/Private/Apple/GLFWMetalLayerBridge.mm");
         EXPECT_EQ(appleBridge.find("static_cast<CAMetalLayer*>"),
                   std::string::npos);
         EXPECT_NE(appleBridge.find("(CAMetalLayer*)view.layer"),

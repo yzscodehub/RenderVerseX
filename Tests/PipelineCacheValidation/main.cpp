@@ -4312,7 +4312,8 @@ TEST_F(PipelineCacheValidationFixture, RayTracingValidationRejectsNonFiniteTLASI
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
-    const fs::path rhiRoot = FindShaderDirectory().parent_path().parent_path() / "RHI";
+    const fs::path rhiRoot = FindShaderDirectory().parent_path().parent_path() /
+                             "Source" / "Runtime" / "RHI";
     const std::string rhiHeader = ReadTextFile(rhiRoot / "Include" / "RHI" / "RHIRayTracing.h");
     const std::string descriptorHeader = ReadTextFile(rhiRoot / "Include" / "RHI" / "RHIDescriptor.h");
 
@@ -7224,7 +7225,7 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerRayTracingSmokeGatesAreObserva
         ASSERT_FALSE(shaderDir.empty());
         const fs::path repoRoot = shaderDir.parent_path().parent_path();
         const std::string frameTypes = ReadTextFile(
-            repoRoot / "RenderContracts" / "Include" / "RenderContracts" /
+            repoRoot / "Source" / "Runtime" / "RenderContracts" / "Include" / "RenderContracts" /
             "RenderFrameTypes.h");
         EXPECT_NE(frameTypes.find("struct RenderRayTracingSettings"),
                   std::string::npos);

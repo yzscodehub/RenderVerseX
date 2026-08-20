@@ -3668,9 +3668,9 @@ TEST_F(RenderHonestyValidationFixture,
         ReadTextFile(repoRoot / "Render" / "Private" / "Runtime" /
                      "RenderThreadRuntime.cpp");
     const std::string renderContractsCMake =
-        ReadTextFile(repoRoot / "RenderContracts" / "CMakeLists.txt");
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "RenderContracts" / "CMakeLists.txt");
     const std::string renderFrameValidation =
-        ReadTextFile(repoRoot / "RenderContracts" / "Include" /
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "RenderContracts" / "Include" /
                      "RenderContracts" / "RenderFrameValidation.h");
     const std::string renderExtractionCMake =
         ReadTextFile(repoRoot / "RenderExtraction" / "CMakeLists.txt");
@@ -3701,9 +3701,9 @@ TEST_F(RenderHonestyValidationFixture,
                   "#include \"RenderContracts/RenderFramePacket.h\""));
     EXPECT_EQ(std::string::npos,
               renderExtractionCMake.find("Private/RenderFramePacketBuilder.cpp"));
-    EXPECT_FALSE(fs::exists(repoRoot / "RenderContracts" / "Include" /
+    EXPECT_FALSE(fs::exists(repoRoot / "Source" / "Runtime" / "RenderContracts" / "Include" /
                             "RenderContracts" / "RenderFramePacket.h"));
-    EXPECT_FALSE(fs::exists(repoRoot / "RenderContracts" / "Private" /
+    EXPECT_FALSE(fs::exists(repoRoot / "Source" / "Runtime" / "RenderContracts" / "Private" /
                             "RenderFramePacket.cpp"));
     EXPECT_FALSE(fs::exists(repoRoot / "RenderExtraction" / "Include" /
                             "RenderExtraction" / "RenderFramePacketBuilder.h"));

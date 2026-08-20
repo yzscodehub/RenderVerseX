@@ -3836,7 +3836,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI/Include/RHI/RHIRayTracing.h",
+      "path": "Source/Runtime/RHI/Include/RHI/RHIRayTracing.h",
       "owner": "RHIShaderTableDesc",
       "symbol": "rayTracingPipelineOwner",
       "policy": "OwnerSnapshot",
@@ -3845,7 +3845,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI/Include/RHI/RHITexture.h",
+      "path": "Source/Runtime/RHI/Include/RHI/RHITexture.h",
       "owner": "RHITextureView",
       "symbol": "m_sourceTexture",
       "policy": "OwnerSnapshot",

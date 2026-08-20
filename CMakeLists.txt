@@ -259,14 +259,14 @@ endif()
 # =============================================================================
 add_subdirectory(Source/Runtime/Core)
 add_subdirectory(AssetContracts)
-add_subdirectory(RenderContracts) # Render-only extraction data contracts
-add_subdirectory(Geometry)     # Geometry module (primitives, queries, algorithms)
-add_subdirectory(HAL)          # Hardware Abstraction Layer (Window, Input)
-add_subdirectory(ECS)          # Runtime sparse-set entity/fragment kernel
+add_subdirectory(Source/Runtime/RenderContracts) # Render-only extraction data contracts
+add_subdirectory(Source/Runtime/Geometry)     # Geometry module (primitives, queries, algorithms)
+add_subdirectory(Source/Runtime/HAL)          # Hardware Abstraction Layer (Window, Input)
+add_subdirectory(Source/Runtime/ECS)          # Runtime sparse-set entity/fragment kernel
 add_subdirectory(Scene)
-add_subdirectory(Animation)
+add_subdirectory(Source/Runtime/Animation)
 add_subdirectory(Runtime)      # Runtime subsystems (includes Camera)
-add_subdirectory(RHI)
+add_subdirectory(Source/Runtime/RHI)
 add_subdirectory(ShaderContracts)
 add_subdirectory(ShaderRuntime)
 if(RVX_BUILD_DEVELOPER)
@@ -332,7 +332,7 @@ else()
         REASON "Developer components are disabled for this configuration")
 endif()
 add_subdirectory(ResourceSceneAdapters) # Resource data to pure ECS scene adapters
-add_subdirectory(Physics)    # Physics subsystem
+add_subdirectory(Source/Runtime/Physics)    # Physics subsystem
 add_subdirectory(PhysicsSceneAdapters) # Pure ECS to Built-in Physics composition
 add_subdirectory(AnimationSceneAdapters) # Animation runtime to Scene ECS adapters
 add_subdirectory(Audio)      # Audio subsystem
@@ -349,7 +349,7 @@ else()
 endif()
 add_subdirectory(Particle)   # GPU-driven particle system
 add_subdirectory(AI)         # AI module (Navigation, BehaviorTree, Perception)
-add_subdirectory(Networking) # Network communication and replication
+add_subdirectory(Source/Runtime/Networking) # Network communication and replication
 if(RVX_BUILD_DEVELOPER)
     add_subdirectory(Debug)      # Debug module (profiling, console, stats)
 else()

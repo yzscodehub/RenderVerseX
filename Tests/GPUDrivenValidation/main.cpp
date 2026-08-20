@@ -6448,7 +6448,8 @@ TEST_F(GPUDrivenValidationFixture, GPUCullingDeclaresComputeCompactionAndIndirec
     const std::string source =
         ReadTextFile(root / "Render" / "Private" / "GPUDriven" / "GPUCulling.cpp");
     const std::string rhiCommandContext =
-        ReadTextFile(root / "RHI" / "Include" / "RHI" / "RHICommandContext.h");
+        ReadTextFile(root / "Source" / "Runtime" / "RHI" / "Include" / "RHI" /
+                     "RHICommandContext.h");
     const std::string shader =
         ReadTextFile(root / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl");
     ASSERT_FALSE(header.empty());
