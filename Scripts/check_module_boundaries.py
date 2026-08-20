@@ -12,7 +12,20 @@ INCLUDE_RE = re.compile(r'^\s*#\s*include\s+[<"]([^">]+)[">]')
 
 def module_include_roots(policy, module_id: str, *, public_only: bool) -> list[Path]:
     module = policy.modules[module_id]
-    roots = [policy.root / module.path / "Include"]
+    module_root = policy.root / module.path
+    roots = [module_root / "Include"]
+    # Disabled production modules are deliberately source-scanned as policy
+    # truth, but they have no configured targets from which to recover nested
+    # public include roots (for example Samples/Common/Include/Samples).  Keep
+    # discovery manifest-scoped and admit only Include directories that own a
+    # declared public prefix.
+    if module_root.is_dir():
+        for candidate in module_root.rglob("Include"):
+            if candidate.is_dir() and any(
+                (candidate / prefix).is_dir()
+                for prefix in module.public_include_prefixes
+            ):
+                roots.append(candidate)
     for target in policy.targets:
         if target.module != module_id:
             continue

@@ -152,13 +152,25 @@ try
     Add-BuildTruthCommand -Commands $commands -Name "configure" -FailureCategory "Configure" -Action {
         cmake --preset $ConfigurePreset
     } | Out-Null
-    $editorSetting = Select-String `
-        -LiteralPath (Join-Path $buildPath "CMakeCache.txt") `
-        -Pattern "^RVX_BUILD_EDITOR:BOOL=OFF$"
-    if (-not $editorSetting)
+    $cachePath = Join-Path $buildPath "CMakeCache.txt"
+    $requiredValidationSettings = @(
+        "RVX_BUILD_DEVELOPER:BOOL=ON",
+        "RVX_BUILD_PROGRAMS:BOOL=ON",
+        "RVX_BUILD_SHIPPING_PRODUCTS:BOOL=OFF",
+        "RVX_BUILD_EDITOR:BOOL=OFF",
+        "RVX_BUILD_SAMPLES:BOOL=ON",
+        "RVX_BUILD_TESTS:BOOL=ON"
+    )
+    foreach ($requiredSetting in $requiredValidationSettings)
     {
-        Throw-BuildTruthFailure -Category "Configuration" -Message (
-            "Build Truth requires RVX_BUILD_EDITOR=OFF")
+        $setting = Select-String `
+            -LiteralPath $cachePath `
+            -Pattern "^$([regex]::Escape($requiredSetting))$"
+        if (-not $setting)
+        {
+            Throw-BuildTruthFailure -Category "Configuration" -Message (
+                "Build Truth validation profile requires $requiredSetting")
+        }
     }
     Add-BuildTruthCommand -Commands $commands -Name "build-validation-all" -FailureCategory "Build" -Action {
         cmake --build --preset $BuildPreset --target RVXValidationAll

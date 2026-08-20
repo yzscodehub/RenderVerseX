@@ -413,6 +413,34 @@ class ModulePolicyTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("forbidden include RHI_Metal->Core", result.stdout)
 
+    def test_disabled_module_resolves_manifest_scoped_nested_public_include_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest, inventory = write_fixture(root)
+            samples_root = root / "Samples"
+            public_header = samples_root / "Common/Include/Samples/Contract.h"
+            source = samples_root / "Private/Sample.cpp"
+            public_header.parent.mkdir(parents=True)
+            source.parent.mkdir(parents=True)
+            public_header.write_text("#pragma once\n", encoding="utf-8")
+            source.write_text('#include "Samples/Contract.h"\n', encoding="utf-8")
+
+            manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
+            samples = module("Samples", "Samples", "Samples", allowed=["Samples"])
+            samples["domain"] = "samples"
+            samples["layer"] = "product"
+            manifest_data["modules"].append(samples)
+            manifest.write_text(json.dumps(manifest_data), encoding="utf-8")
+
+            inventory_data = json.loads(inventory.read_text(encoding="utf-8"))
+            inventory_data["disabledModules"].append(
+                {"module": "Samples", "reason": "shipping fixture"}
+            )
+            inventory.write_text(json.dumps(inventory_data), encoding="utf-8")
+
+            result = run_gate("check_module_boundaries.py", root, manifest, inventory)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_source_include_resolves_local_private_before_prefix_and_rejects_collision(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -71,3 +71,29 @@ rvx_register_module_target(
     MODULE Engine
     ALIASES RVX::Engine
 )
+
+if(RVX_BUILD_SHIPPING_PRODUCTS)
+    add_library(RVXShippingProduct STATIC
+        Private/ShippingRuntimeComposition.cpp
+    )
+
+    target_include_directories(RVXShippingProduct PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Include>
+        $<INSTALL_INTERFACE:include>
+    )
+
+    target_link_libraries(RVXShippingProduct
+        PUBLIC
+            RVX::Engine
+        PRIVATE
+            RVX::ResourceRuntime
+            RVX::ShaderRuntime
+    )
+
+    target_compile_features(RVXShippingProduct PUBLIC cxx_std_20)
+
+    rvx_register_module_target(
+        TARGET RVXShippingProduct
+        MODULE Engine
+    )
+endif()

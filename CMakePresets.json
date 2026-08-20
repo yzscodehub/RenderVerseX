@@ -23,6 +23,9 @@
         "RVX_BUILD_EDITOR": "OFF",
         "RVX_BUILD_SAMPLES": "ON",
         "RVX_BUILD_TESTS": "ON",
+        "RVX_BUILD_DEVELOPER": "ON",
+        "RVX_BUILD_PROGRAMS": "ON",
+        "RVX_BUILD_SHIPPING_PRODUCTS": "OFF",
         "VCPKG_TARGET_TRIPLET": "x64-windows"
       },
       "condition": {
@@ -49,6 +52,9 @@
         "RVX_BUILD_EDITOR": "OFF",
         "RVX_BUILD_SAMPLES": "ON",
         "RVX_BUILD_TESTS": "ON",
+        "RVX_BUILD_DEVELOPER": "ON",
+        "RVX_BUILD_PROGRAMS": "ON",
+        "RVX_BUILD_SHIPPING_PRODUCTS": "OFF",
         "VCPKG_TARGET_TRIPLET": "x64-linux"
       },
       "condition": {
@@ -75,7 +81,10 @@
         "CMAKE_OSX_ARCHITECTURES": "arm64",
         "VCPKG_TARGET_TRIPLET": "arm64-osx",
         "RVX_BUILD_SAMPLES": "ON",
-        "RVX_BUILD_TESTS": "ON"
+        "RVX_BUILD_TESTS": "ON",
+        "RVX_BUILD_DEVELOPER": "ON",
+        "RVX_BUILD_PROGRAMS": "ON",
+        "RVX_BUILD_SHIPPING_PRODUCTS": "OFF"
       },
       "condition": {
         "type": "equals",
@@ -164,6 +173,69 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
+    },
+    {
+      "name": "win_x64_shipping_release",
+      "displayName": "Windows x64 Shipping Release",
+      "inherits": "win_x64_base",
+      "binaryDir": "${sourceDir}/build/win_x64_shipping_release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_DX11": "OFF",
+        "RVX_ENABLE_DX12": "ON",
+        "RVX_ENABLE_VULKAN": "OFF",
+        "RVX_ENABLE_METAL": "OFF",
+        "RVX_ENABLE_OPENGL": "OFF",
+        "RVX_BUILD_DEVELOPER": "OFF",
+        "RVX_BUILD_PROGRAMS": "OFF",
+        "RVX_BUILD_SHIPPING_PRODUCTS": "ON",
+        "RVX_BUILD_EDITOR": "OFF",
+        "RVX_BUILD_SAMPLES": "OFF",
+        "RVX_BUILD_TESTS": "OFF",
+        "RVX_ENABLE_FBX": "OFF"
+      }
+    },
+    {
+      "name": "linux_x64_shipping_release",
+      "displayName": "Linux x64 Shipping Release",
+      "inherits": "linux_x64_base",
+      "binaryDir": "${sourceDir}/build/linux_x64_shipping_release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_DX11": "OFF",
+        "RVX_ENABLE_DX12": "OFF",
+        "RVX_ENABLE_VULKAN": "ON",
+        "RVX_ENABLE_METAL": "OFF",
+        "RVX_ENABLE_OPENGL": "OFF",
+        "RVX_BUILD_DEVELOPER": "OFF",
+        "RVX_BUILD_PROGRAMS": "OFF",
+        "RVX_BUILD_SHIPPING_PRODUCTS": "ON",
+        "RVX_BUILD_EDITOR": "OFF",
+        "RVX_BUILD_SAMPLES": "OFF",
+        "RVX_BUILD_TESTS": "OFF",
+        "RVX_ENABLE_FBX": "OFF"
+      }
+    },
+    {
+      "name": "mac_arm64_shipping_release",
+      "displayName": "macOS arm64 Shipping Release",
+      "inherits": "mac_arm64_base",
+      "binaryDir": "${sourceDir}/build/mac_arm64_shipping_release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_DX11": "OFF",
+        "RVX_ENABLE_DX12": "OFF",
+        "RVX_ENABLE_VULKAN": "OFF",
+        "RVX_ENABLE_METAL": "ON",
+        "RVX_ENABLE_OPENGL": "OFF",
+        "RVX_BUILD_DEVELOPER": "OFF",
+        "RVX_BUILD_PROGRAMS": "OFF",
+        "RVX_BUILD_SHIPPING_PRODUCTS": "ON",
+        "RVX_BUILD_EDITOR": "OFF",
+        "RVX_BUILD_SAMPLES": "OFF",
+        "RVX_BUILD_TESTS": "OFF",
+        "RVX_ENABLE_FBX": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -201,6 +273,22 @@
     {
       "name": "mac_arm64_release",
       "configurePreset": "mac_arm64_release"
+    },
+    {
+      "name": "win_x64_shipping_release",
+      "configurePreset": "win_x64_shipping_release",
+      "configuration": "Release",
+      "targets": ["RVXShippingProduct", "RVXShippingConsumer"]
+    },
+    {
+      "name": "linux_x64_shipping_release",
+      "configurePreset": "linux_x64_shipping_release",
+      "targets": ["RVXShippingProduct", "RVXShippingConsumer"]
+    },
+    {
+      "name": "mac_arm64_shipping_release",
+      "configurePreset": "mac_arm64_shipping_release",
+      "targets": ["RVXShippingProduct", "RVXShippingConsumer"]
     }
   ],
   "testPresets": [
