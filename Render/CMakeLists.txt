@@ -187,6 +187,7 @@ target_include_directories(RVX_Render PRIVATE
 
 target_link_libraries(RVX_Render PUBLIC
     RVX_Core
+    RVX::HAL
     RVX::RenderContracts
     RVX_RHI
     RVX::ShaderCompiler

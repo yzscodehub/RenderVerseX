@@ -25,6 +25,9 @@
 
 namespace RVX
 {
+    using HAL::NativeSurfaceDesc;
+    using HAL::NativeSurfacePlatform;
+
     void RenderThreadRuntimeTestAccess::ReportTransportFatal(
         RenderThreadRuntime& runtime,
         const char* message) noexcept
@@ -2845,6 +2848,23 @@ namespace
             ASSERT_EQ(runtime.Start().code,
                       RenderRuntimeCode::InvalidConfiguration);
             ExpectTerminalPublicationSealed(runtime, work, 5202);
+        }
+        {
+            auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+            RenderRuntimeConfig config;
+            config.backendType = RHIBackendType::DX11;
+            config.swapChain.format = RHIFormat::Unknown;
+            RenderThreadRuntime runtime(
+                config,
+                MakeSurface(),
+                RenderExecutorKind::InlineTest,
+                CreateInlineRenderExecutor(),
+                CreateRecordingRenderFrameConsumer(probe));
+            const PendingGatewayWork work =
+                PrepareGatewayWork(runtime, 5251);
+            ASSERT_EQ(runtime.Start().code,
+                      RenderRuntimeCode::InvalidConfiguration);
+            ExpectTerminalPublicationSealed(runtime, work, 5252);
         }
         {
             auto probe = std::make_shared<RenderFrameConsumerTestProbe>();

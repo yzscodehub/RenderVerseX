@@ -255,9 +255,6 @@ add_subdirectory(PhysicsSceneAdapters) # Pure ECS to Built-in Physics compositio
 add_subdirectory(AnimationSceneAdapters) # Animation runtime to Scene ECS adapters
 add_subdirectory(Audio)      # Audio subsystem
 add_subdirectory(World)      # World owns the single Scene ECS runtime
-target_link_libraries(RVX_World
-    PUBLIC RVX::ResourceSceneAdapters
-    PRIVATE RVX::AnimationSceneAdapters)
 add_subdirectory(RenderExtraction) # Frozen ECS values to render contracts
 add_subdirectory(Render)       # Render module (includes RenderGraph)
 add_subdirectory(Engine)

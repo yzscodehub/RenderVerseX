@@ -3,7 +3,7 @@
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHIDevice.h"
 #include "RHI/RHIDeviceStatus.h"
-#include "RHI/RHINativeSurface.h"
+#include "RHI/RHIPresentation.h"
 #include "RHI/RHITexture.h"
 #include "RHI/RHIUpload.h"
 
@@ -21,6 +21,10 @@
 
 namespace RVX::Tests
 {
+    using HAL::NativeSurfaceDesc;
+    using HAL::NativeSurfacePlatform;
+    using HAL::NativeSurfaceUpdateKind;
+
     static_assert(static_cast<uint8>(RHIDeviceRuntimeStatus::Ready) == 0);
     static_assert(static_cast<uint8>(RHIDeviceRuntimeStatus::DeviceLost) == 1);
     static_assert(static_cast<uint8>(RHIDeviceRuntimeStatus::FatalError) == 2);
@@ -477,6 +481,14 @@ namespace RVX::Tests
         template <typename T>
         concept HasVsyncField = requires(T value) { value.vsync; };
 
+        template <typename T>
+        concept HasPreferredFormatField = requires(T value) {
+            value.preferredFormat;
+        };
+
+        template <typename T>
+        concept HasBackendField = requires(T value) { value.backend; };
+
         NativeSurfaceDesc MakeSurface(NativeSurfacePlatform platform)
         {
             NativeSurfaceDesc surface;
@@ -752,30 +764,30 @@ namespace RVX::Tests
 
     TEST(RHIContractValidation, NativeSurfaceRequiresBackendSpecificHandles)
     {
-        EXPECT_TRUE(MakeSurface(NativeSurfacePlatform::Win32).IsValidFor(RHIBackendType::DX11));
-        EXPECT_TRUE(MakeSurface(NativeSurfacePlatform::Win32).IsValidFor(RHIBackendType::DX12));
-        EXPECT_TRUE(MakeSurface(NativeSurfacePlatform::Win32).IsValidFor(RHIBackendType::Vulkan));
-        EXPECT_TRUE(MakeSurface(NativeSurfacePlatform::X11).IsValidFor(RHIBackendType::Vulkan));
-        EXPECT_TRUE(MakeSurface(NativeSurfacePlatform::Wayland).IsValidFor(RHIBackendType::Vulkan));
-        EXPECT_TRUE(MakeSurface(NativeSurfacePlatform::Cocoa).IsValidFor(RHIBackendType::Metal));
-        EXPECT_TRUE(MakeSurface(NativeSurfacePlatform::UIKit).IsValidFor(RHIBackendType::Metal));
-        EXPECT_TRUE(MakeSurface(NativeSurfacePlatform::GLFW).IsValidFor(RHIBackendType::OpenGL));
+        EXPECT_TRUE(IsNativeSurfaceValidFor(MakeSurface(NativeSurfacePlatform::Win32), RHIBackendType::DX11));
+        EXPECT_TRUE(IsNativeSurfaceValidFor(MakeSurface(NativeSurfacePlatform::Win32), RHIBackendType::DX12));
+        EXPECT_TRUE(IsNativeSurfaceValidFor(MakeSurface(NativeSurfacePlatform::Win32), RHIBackendType::Vulkan));
+        EXPECT_TRUE(IsNativeSurfaceValidFor(MakeSurface(NativeSurfacePlatform::X11), RHIBackendType::Vulkan));
+        EXPECT_TRUE(IsNativeSurfaceValidFor(MakeSurface(NativeSurfacePlatform::Wayland), RHIBackendType::Vulkan));
+        EXPECT_TRUE(IsNativeSurfaceValidFor(MakeSurface(NativeSurfacePlatform::Cocoa), RHIBackendType::Metal));
+        EXPECT_TRUE(IsNativeSurfaceValidFor(MakeSurface(NativeSurfacePlatform::UIKit), RHIBackendType::Metal));
+        EXPECT_TRUE(IsNativeSurfaceValidFor(MakeSurface(NativeSurfacePlatform::GLFW), RHIBackendType::OpenGL));
 
         NativeSurfaceDesc surface = MakeSurface(NativeSurfacePlatform::Win32);
         surface.nativeWindow = 0;
-        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::DX12));
+        EXPECT_FALSE(IsNativeSurfaceValidFor(surface, RHIBackendType::DX12));
 
         surface = MakeSurface(NativeSurfacePlatform::X11);
         surface.backendWindow = 0;
-        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::Vulkan));
+        EXPECT_FALSE(IsNativeSurfaceValidFor(surface, RHIBackendType::Vulkan));
 
         surface = MakeSurface(NativeSurfacePlatform::Cocoa);
         surface.nativeLayer = 0;
-        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::Metal));
+        EXPECT_FALSE(IsNativeSurfaceValidFor(surface, RHIBackendType::Metal));
 
         surface = MakeSurface(NativeSurfacePlatform::GLFW);
         surface.backendWindow = 0;
-        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::OpenGL));
+        EXPECT_FALSE(IsNativeSurfaceValidFor(surface, RHIBackendType::OpenGL));
     }
 
     TEST(RHIContractValidation, DescriptorSetsRequireCompleteImmutableSnapshots)
@@ -997,22 +1009,22 @@ namespace RVX::Tests
         NativeSurfaceDesc surface = MakeSurface(NativeSurfacePlatform::Win32);
 
         surface.width = 0;
-        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::DX12));
+        EXPECT_FALSE(IsNativeSurfaceValidFor(surface, RHIBackendType::DX12));
         surface = MakeSurface(NativeSurfacePlatform::Win32);
         surface.height = 0;
-        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::DX12));
+        EXPECT_FALSE(IsNativeSurfaceValidFor(surface, RHIBackendType::DX12));
         surface = MakeSurface(NativeSurfacePlatform::Win32);
         surface.generation = 0;
-        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::DX12));
+        EXPECT_FALSE(IsNativeSurfaceValidFor(surface, RHIBackendType::DX12));
         surface = MakeSurface(NativeSurfacePlatform::Win32);
         surface.contentScale = 0.0f;
-        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::DX12));
+        EXPECT_FALSE(IsNativeSurfaceValidFor(surface, RHIBackendType::DX12));
         surface.contentScale = -1.0f;
-        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::DX12));
+        EXPECT_FALSE(IsNativeSurfaceValidFor(surface, RHIBackendType::DX12));
         surface.contentScale = std::numeric_limits<float32>::infinity();
-        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::DX12));
+        EXPECT_FALSE(IsNativeSurfaceValidFor(surface, RHIBackendType::DX12));
         surface.contentScale = std::numeric_limits<float32>::quiet_NaN();
-        EXPECT_FALSE(surface.IsValidFor(RHIBackendType::DX12));
+        EXPECT_FALSE(IsNativeSurfaceValidFor(surface, RHIBackendType::DX12));
     }
 
     TEST(RHIContractValidation, NativeSurfaceUpdateClassificationUsesProductionLifecycleRules)
@@ -1023,23 +1035,23 @@ namespace RVX::Tests
 
         update.generation = 42;
         EXPECT_EQ(NativeSurfaceUpdateKind::Reject,
-                  ClassifyNativeSurfaceUpdate(current, update));
+                  HAL::ClassifyNativeSurfaceUpdate(current, update));
         update.generation = 41;
         EXPECT_EQ(NativeSurfaceUpdateKind::Reject,
-                  ClassifyNativeSurfaceUpdate(current, update));
+                  HAL::ClassifyNativeSurfaceUpdate(current, update));
 
         update = current;
         update.generation = 43;
         update.width = 1920;
         update.height = 1080;
         EXPECT_EQ(NativeSurfaceUpdateKind::Resize,
-                  ClassifyNativeSurfaceUpdate(current, update));
+                  HAL::ClassifyNativeSurfaceUpdate(current, update));
 
         const auto expectReplacement = [&](NativeSurfaceDesc replacement) {
             replacement.generation = 43;
             replacement.width = 1920;
             EXPECT_EQ(NativeSurfaceUpdateKind::Replace,
-                      ClassifyNativeSurfaceUpdate(current, replacement));
+                      HAL::ClassifyNativeSurfaceUpdate(current, replacement));
         };
 
         update = current;
@@ -1058,29 +1070,47 @@ namespace RVX::Tests
         update.platform = NativeSurfacePlatform::GLFW;
         expectReplacement(update);
         update = current;
-        update.preferredFormat = RHIFormat::RGBA8_UNORM;
-        expectReplacement(update);
-        update = current;
         update.contentScale = 2.0f;
-        expectReplacement(update);
-        update = current;
-        update.vsync = false;
         expectReplacement(update);
 
         update = current;
         update.generation = 43;
         EXPECT_EQ(NativeSurfaceUpdateKind::Replace,
-                  ClassifyNativeSurfaceUpdate(current, update));
+                  HAL::ClassifyNativeSurfaceUpdate(current, update));
     }
 
-    TEST(RHIContractValidation, SwapChainDescriptionHasSingleSurfaceSourceOfTruth)
+    TEST(RHIContractValidation, NativeSurfaceContainsNoRhiPresentationPolicy)
     {
-        static_assert(std::is_same_v<decltype(RHISwapChainDesc::surface), NativeSurfaceDesc>);
+        static_assert(!HasFormatField<NativeSurfaceDesc>);
+        static_assert(!HasPreferredFormatField<NativeSurfaceDesc>);
+        static_assert(!HasVsyncField<NativeSurfaceDesc>);
+        static_assert(!HasBackendField<NativeSurfaceDesc>);
+    }
+
+    TEST(RHIContractValidation, SwapChainConfigurationOwnsPresentationPolicy)
+    {
+        static_assert(std::is_same_v<decltype(RHISwapChainDesc::surface),
+                                     HAL::NativeSurfaceDesc>);
+        static_assert(std::is_same_v<decltype(RHISwapChainDesc::config),
+                                     RHISwapChainConfig>);
         static_assert(!HasWindowHandleField<RHISwapChainDesc>);
         static_assert(!HasWidthField<RHISwapChainDesc>);
         static_assert(!HasHeightField<RHISwapChainDesc>);
         static_assert(!HasFormatField<RHISwapChainDesc>);
         static_assert(!HasVsyncField<RHISwapChainDesc>);
+
+        RHISwapChainConfig config;
+        EXPECT_TRUE(IsSwapChainConfigValid(config));
+        config.presentMode = RHIPresentMode::Immediate;
+        EXPECT_FALSE(IsSwapChainConfigValid(config));
+        config.vsync = false;
+        EXPECT_TRUE(IsSwapChainConfigValid(config));
+        config.presentMode = RHIPresentMode::Fifo;
+        EXPECT_FALSE(IsSwapChainConfigValid(config));
+        config.vsync = true;
+        EXPECT_TRUE(IsSwapChainConfigValid(config));
+        config.format = RHIFormat::Unknown;
+        EXPECT_FALSE(IsSwapChainConfigValid(config));
     }
 
     TEST(RHIContractValidation, SurfaceRebindPolicyDoesNotDisableVulkanReplacement)

@@ -297,7 +297,7 @@ namespace
 
     RenderThreadRuntime::RenderThreadRuntime(
         RenderRuntimeConfig config,
-        NativeSurfaceDesc surface,
+        HAL::NativeSurfaceDesc surface,
         RenderExecutorKind executorKind,
         std::unique_ptr<IRenderExecutor> executor,
         std::unique_ptr<IRenderFrameConsumer> consumer,
@@ -374,7 +374,7 @@ namespace
 
     RenderThreadRuntime::RenderThreadRuntime(
         RenderRuntimeConfig config,
-        NativeSurfaceDesc surface,
+        HAL::NativeSurfaceDesc surface,
         RenderExecutorKind executorKind,
         std::unique_ptr<IRenderExecutor> executor,
         std::unique_ptr<IRenderRuntimeFactory> factory,
@@ -635,7 +635,7 @@ namespace
                          "stop requested");
             const RHIBackendType backend = GetLastRuntimeResult().backend;
             SealPublication();
-            const NativeSurfaceDesc currentSurface =
+            const HAL::NativeSurfaceDesc currentSurface =
                 GetCurrentSurfaceSnapshot();
             StoreRuntimeResult(MakeRuntimeResult(
                 RenderRuntimeCode::StopRequested,
@@ -646,7 +646,7 @@ namespace
             NotifyExecutor();
         }
 
-        const NativeSurfaceDesc currentSurface = GetCurrentSurfaceSnapshot();
+        const HAL::NativeSurfaceDesc currentSurface = GetCurrentSurfaceSnapshot();
 
         const RenderExecutorJoinResult join = m_executor->JoinUntil(
             m_clock->Now() + m_config.shutdownWatchdog);
@@ -813,7 +813,7 @@ namespace
     }
 
     RenderResizeResult RenderThreadRuntime::RequestResize(
-        const NativeSurfaceDesc& surface)
+        const HAL::NativeSurfaceDesc& surface)
     {
         RenderResizeResult result;
         result.generation = surface.generation;
@@ -1250,7 +1250,8 @@ namespace
                 progressed = true;
             }
             uint64 resizeFrameSequenceCutoff = 0;
-            BasicRenderControlBatch<NativeSurfaceDesc, NativeSurfaceDesc>
+            BasicRenderControlBatch<HAL::NativeSurfaceDesc,
+                                    HAL::NativeSurfaceDesc>
                 controls;
             {
                 std::lock_guard lock(m_publicationMutex);
@@ -1269,7 +1270,7 @@ namespace
             }
             if (controls.resize.has_value())
             {
-                const NativeSurfaceDesc& surface = controls.resize->value;
+                const HAL::NativeSurfaceDesc& surface = controls.resize->value;
                 RenderRuntimeResult surfaceResult = NormalizeRuntimeResult(
                     m_consumer->ApplySurface(surface),
                     m_executorKind,
@@ -1762,6 +1763,7 @@ namespace
     bool RenderThreadRuntime::IsConfigurationValid() const noexcept
     {
         return m_config.backendType != RHIBackendType::None &&
+               IsSwapChainConfigValid(m_config.swapChain) &&
                m_config.frameBuffering >= 2U &&
                m_config.frameBuffering <= 4U &&
                m_config.transports.IsValid() &&
@@ -1781,7 +1783,7 @@ namespace
     }
 
     bool RenderThreadRuntime::IsSurfaceValid(
-        const NativeSurfaceDesc& surface) const noexcept
+        const HAL::NativeSurfaceDesc& surface) const noexcept
     {
         RHIBackendType backend = GetLastRuntimeResult().backend;
         if (backend == RHIBackendType::None)
@@ -1790,12 +1792,9 @@ namespace
         }
         if (backend != RHIBackendType::Auto)
         {
-            return surface.IsValidFor(backend);
+            return IsNativeSurfaceValidFor(surface, backend);
         }
-        return surface.platform != NativeSurfacePlatform::None &&
-               surface.width != 0U && surface.height != 0U &&
-               surface.generation != 0U && surface.contentScale > 0.0f &&
-               surface.preferredFormat != RHIFormat::Unknown;
+        return surface.IsValid();
     }
 
     bool RenderThreadRuntime::IsRunningForPublication() const noexcept
@@ -1816,7 +1815,7 @@ namespace
                lifecycle == RenderLifecycleState::Draining;
     }
 
-    NativeSurfaceDesc RenderThreadRuntime::GetCurrentSurfaceSnapshot() const
+    HAL::NativeSurfaceDesc RenderThreadRuntime::GetCurrentSurfaceSnapshot() const
     {
         std::lock_guard lock(m_publicationMutex);
         return m_currentSurface;
@@ -2283,7 +2282,7 @@ namespace
     {
         TransitionTo(RenderLifecycleState::Draining, "draining accepted work");
         const RenderRuntimeResult runtime = GetLastRuntimeResult();
-        const NativeSurfaceDesc currentSurface = GetCurrentSurfaceSnapshot();
+        const HAL::NativeSurfaceDesc currentSurface = GetCurrentSurfaceSnapshot();
         const RenderTeardownMode mode =
             runtime.terminalCause == RenderTerminalCause::DeviceLost
                 ? RenderTeardownMode::DeviceLostTeardown
@@ -2363,7 +2362,7 @@ namespace
     RenderPumpDecision RenderThreadRuntime::FailOnRenderThread(
         RenderRuntimeResult result)
     {
-        const NativeSurfaceDesc currentSurface = GetCurrentSurfaceSnapshot();
+        const HAL::NativeSurfaceDesc currentSurface = GetCurrentSurfaceSnapshot();
         (void)TryClaimTerminalResult(result);
         result = GetLastRuntimeResult();
         SealPublication();

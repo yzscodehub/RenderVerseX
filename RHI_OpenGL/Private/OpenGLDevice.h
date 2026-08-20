@@ -55,8 +55,8 @@ namespace RVX
 
         RHISwapChainRef CreateSwapChain(const RHISwapChainDesc& desc) override;
         bool SupportsSurfaceRebind(
-            const NativeSurfaceDesc& currentSurface,
-            const NativeSurfaceDesc& replacementSurface) const override;
+            const HAL::NativeSurfaceDesc& currentSurface,
+            const HAL::NativeSurfaceDesc& replacementSurface) const override;
 
         RHIFenceRef CreateFence(uint64 initialValue) override;
         void WaitForFence(RHIFence* fence, uint64 value) override;
@@ -104,7 +104,7 @@ namespace RVX
     private:
         bool InitializeContext();
         bool IsSurfaceContextCurrent(
-            const NativeSurfaceDesc& surface) const;
+            const HAL::NativeSurfaceDesc& surface) const;
         void QueryCapabilities();
         void LoadExtensions();
 

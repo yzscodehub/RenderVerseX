@@ -77,9 +77,9 @@ EditorRenderRuntimeAdapterStartResult EditorRenderRuntimeAdapter::Start(
         return result;
     }
 
-    m_surface = CaptureSurface(window, backend, config.vsync, 1);
+    m_surface = CaptureSurface(window, backend, 1);
     result.surface = m_surface;
-    if (!m_surface.IsValidFor(backend))
+    if (!IsNativeSurfaceValidFor(m_surface, backend))
     {
         result.runtime.code = RenderRuntimeCode::InvalidSurface;
         result.runtime.resultClass = RenderResultClass::RuntimeFatal;
@@ -96,6 +96,7 @@ EditorRenderRuntimeAdapterStartResult EditorRenderRuntimeAdapter::Start(
 
     RenderRuntimeConfig runtimeConfig;
     runtimeConfig.backendType = backend;
+    runtimeConfig.swapChain.vsync = config.vsync;
     runtimeConfig.enableValidation = config.enableValidation;
     runtimeConfig.enableGPUValidation = config.enableGPUValidation;
     runtimeConfig.frameBuffering = config.frameBuffering;
@@ -152,7 +153,7 @@ RenderResizeResult EditorRenderRuntimeAdapter::RequestResize(uint32 width,
         return result;
     }
 
-    NativeSurfaceDesc surface = m_surface;
+    HAL::NativeSurfaceDesc surface = m_surface;
     surface.width = width;
     surface.height = height;
     ++surface.generation;
@@ -213,13 +214,12 @@ EditorRenderFeatureStatus EditorRenderRuntimeAdapter::GetFeatureStatus(
     return EditorRenderFeatureStatus::UnavailableDuringM1ArchitectureCut;
 }
 
-NativeSurfaceDesc EditorRenderRuntimeAdapter::CaptureSurface(
+HAL::NativeSurfaceDesc EditorRenderRuntimeAdapter::CaptureSurface(
     GLFWwindow* window,
     RHIBackendType backend,
-    bool vsync,
     uint64 generation)
 {
-    NativeSurfaceDesc surface;
+    HAL::NativeSurfaceDesc surface;
     if (!window)
     {
         return surface;
@@ -233,15 +233,15 @@ NativeSurfaceDesc EditorRenderRuntimeAdapter::CaptureSurface(
     glfwGetWindowContentScale(window, &xScale, &yScale);
 
 #ifdef _WIN32
-    surface.platform = NativeSurfacePlatform::Win32;
+    surface.platform = HAL::NativeSurfacePlatform::Win32;
     surface.nativeWindow =
         reinterpret_cast<uintptr_t>(glfwGetWin32Window(window));
 #elif defined(__APPLE__)
-    surface.platform = NativeSurfacePlatform::Cocoa;
+    surface.platform = HAL::NativeSurfacePlatform::Cocoa;
     surface.nativeWindow =
         reinterpret_cast<uintptr_t>(glfwGetCocoaWindow(window));
 #else
-    surface.platform = NativeSurfacePlatform::GLFW;
+    surface.platform = HAL::NativeSurfacePlatform::GLFW;
 #endif
     surface.backendWindow = reinterpret_cast<uintptr_t>(window);
     surface.width = framebufferWidth > 0
@@ -251,10 +251,8 @@ NativeSurfaceDesc EditorRenderRuntimeAdapter::CaptureSurface(
                          ? static_cast<uint32>(framebufferHeight)
                          : 0;
     surface.contentScale = std::max(xScale, yScale);
-    surface.preferredFormat = RHIFormat::BGRA8_UNORM;
-    surface.vsync = vsync;
     surface.generation = generation;
-    if (!surface.IsValidFor(backend))
+    if (!IsNativeSurfaceValidFor(surface, backend))
     {
         return {};
     }

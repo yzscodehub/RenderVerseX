@@ -23,6 +23,7 @@ target_include_directories(RVX_RHI PUBLIC
 
 target_link_libraries(RVX_RHI PUBLIC
     RVX::Core
+    RVX::HAL
 )
 
 # Backend compile definitions

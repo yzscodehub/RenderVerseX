@@ -36,6 +36,9 @@ namespace RVX
 namespace
 {
     using namespace std::chrono_literals;
+    using HAL::NativeSurfaceDesc;
+    using HAL::NativeSurfacePlatform;
+    using HAL::NativeSurfaceUpdateKind;
 
     [[nodiscard]] constexpr RHIBackendType RequiredBackend() noexcept
     {
@@ -166,8 +169,6 @@ namespace
             surface.width = static_cast<uint32>(width);
             surface.height = static_cast<uint32>(height);
             surface.contentScale = 1.0f;
-            surface.preferredFormat = RHIFormat::BGRA8_UNORM;
-            surface.vsync = false;
             surface.generation = generation;
             surface.backendWindow =
                 reinterpret_cast<uintptr_t>(m_window);
@@ -408,10 +409,11 @@ namespace
         HiddenNativeWindow window;
         ASSERT_TRUE(window.Initialize(initialWidth, initialHeight));
         const NativeSurfaceDesc initialSurface = window.Capture(1);
-        ASSERT_TRUE(initialSurface.IsValidFor(RequiredBackend()));
+        ASSERT_TRUE(IsNativeSurfaceValidFor(initialSurface, RequiredBackend()));
 
         RenderRuntimeConfig config;
         config.backendType = RequiredBackend();
+        config.swapChain.vsync = false;
         config.enableValidation = false;
         config.enableGPUValidation = false;
         config.allowSoftwareAdapter =
@@ -449,8 +451,8 @@ namespace
                    (resizedSurface.width != initialSurface.width ||
                     resizedSurface.height != initialSurface.height);
         }));
-        ASSERT_TRUE(resizedSurface.IsValidFor(RequiredBackend()));
-        ASSERT_EQ(ClassifyNativeSurfaceUpdate(initialSurface, resizedSurface),
+        ASSERT_TRUE(IsNativeSurfaceValidFor(resizedSurface, RequiredBackend()));
+        ASSERT_EQ(HAL::ClassifyNativeSurfaceUpdate(initialSurface, resizedSurface),
                   NativeSurfaceUpdateKind::Resize);
         const RenderResizeResult resize =
             render.RequestResize(resizedSurface);

@@ -90,7 +90,7 @@ namespace RVX
         m_faultClaimed.store(false, std::memory_order_release);
         RVX_RHI_INFO("Creating OpenGL Device...");
 
-        if (!desc.initialSurface.IsValidFor(RHIBackendType::OpenGL))
+        if (!IsNativeSurfaceValidFor(desc.initialSurface, RHIBackendType::OpenGL))
         {
             RVX_RHI_ERROR("OpenGL requires a valid GLFW backend surface at device creation");
             return;
@@ -702,7 +702,7 @@ namespace RVX
     // SwapChain
     // =============================================================================
     bool OpenGLDevice::IsSurfaceContextCurrent(
-        const NativeSurfaceDesc& surface) const
+        const HAL::NativeSurfaceDesc& surface) const
     {
         auto* targetWindow =
             reinterpret_cast<GLFWwindow*>(surface.backendWindow);
@@ -730,8 +730,8 @@ namespace RVX
     }
 
     bool OpenGLDevice::SupportsSurfaceRebind(
-        const NativeSurfaceDesc& currentSurface,
-        const NativeSurfaceDesc& replacementSurface) const
+        const HAL::NativeSurfaceDesc& currentSurface,
+        const HAL::NativeSurfaceDesc& replacementSurface) const
     {
         const bool sameBackendWindow =
             currentSurface.backendWindow == replacementSurface.backendWindow;

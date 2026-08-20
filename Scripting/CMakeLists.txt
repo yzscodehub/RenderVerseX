@@ -28,7 +28,7 @@ find_path(SOL2_INCLUDE_DIRS "sol/sol.hpp" REQUIRED)
 
 target_link_libraries(RVX_Scripting PUBLIC
     RVX::Core
-    RVX::Runtime
+    RVX::RuntimeServices
     RVX::Scene
 )
 

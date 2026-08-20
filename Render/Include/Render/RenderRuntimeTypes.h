@@ -8,7 +8,7 @@
 #include "Core/Diagnostics/Trace.h"
 #include "Render/RenderTransportTypes.h"
 #include "RenderContracts/RenderIdentity.h"
-#include "RHI/RHIDefinitions.h"
+#include "RHI/RHIPresentation.h"
 
 #include <chrono>
 #include <stdexcept>
@@ -167,6 +167,7 @@ namespace RVX
     struct RenderRuntimeConfig
     {
         RHIBackendType backendType = RHIBackendType::Auto;
+        RHISwapChainConfig swapChain{};
         bool enableValidation = true;
         bool enableGPUValidation = false;
         bool allowSoftwareAdapter = false;

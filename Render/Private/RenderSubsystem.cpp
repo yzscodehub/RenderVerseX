@@ -34,7 +34,7 @@ namespace
     public:
         RenderRuntimeResult Initialize(
             const RenderRuntimeConfig& config,
-            const NativeSurfaceDesc& surface,
+            const HAL::NativeSurfaceDesc& surface,
             RenderResourceStatusTable& statusTable) override
         {
             m_startupTraceContext = config.startupTraceContext;
@@ -46,7 +46,7 @@ namespace
             }
             result.backend = backend;
             result.surfaceGeneration = surface.generation;
-            if (!surface.IsValidFor(backend))
+            if (!IsNativeSurfaceValidFor(surface, backend))
             {
                 result.code = RenderRuntimeCode::InvalidSurface;
                 result.message = "Initial surface is invalid for the selected backend";
@@ -60,7 +60,7 @@ namespace
             contextConfig.enableGPUValidation = config.enableGPUValidation;
             contextConfig.allowSoftwareAdapter =
                 config.allowSoftwareAdapter;
-            contextConfig.vsync = surface.vsync;
+            contextConfig.swapChain = config.swapChain;
             contextConfig.frameBuffering = config.frameBuffering;
             contextConfig.appName = "RenderVerseX";
             if (!m_context->Initialize(contextConfig, surface))
@@ -120,7 +120,7 @@ namespace
         }
 
         RenderRuntimeResult ApplySurface(
-            const NativeSurfaceDesc& surface) override
+            const HAL::NativeSurfaceDesc& surface) override
         {
             RenderRuntimeResult result;
             result.code = RenderRuntimeCode::Running;
@@ -129,17 +129,17 @@ namespace
                                  : RHIBackendType::None;
             result.surfaceGeneration = surface.generation;
             if (m_context == nullptr || m_context->GetDevice() == nullptr ||
-                !surface.IsValidFor(result.backend))
+                !IsNativeSurfaceValidFor(surface, result.backend))
             {
                 result.code = RenderRuntimeCode::InvalidSurface;
                 result.message = "Surface update is invalid";
                 return result;
             }
 
-            const NativeSurfaceUpdateKind updateKind =
-                ClassifyNativeSurfaceUpdate(m_context->GetSurface(), surface);
+            const HAL::NativeSurfaceUpdateKind updateKind =
+                HAL::ClassifyNativeSurfaceUpdate(m_context->GetSurface(), surface);
             bool applied = false;
-            if (updateKind == NativeSurfaceUpdateKind::Resize)
+            if (updateKind == HAL::NativeSurfaceUpdateKind::Resize)
             {
                 if (!m_context->WaitForSurfaceGeneration())
                 {
@@ -154,7 +154,7 @@ namespace
                 static_cast<void>(m_retirementQueue.Poll());
                 applied = m_context->ResizeSwapChain(surface);
             }
-            else if (updateKind == NativeSurfaceUpdateKind::Replace &&
+            else if (updateKind == HAL::NativeSurfaceUpdateKind::Replace &&
                      m_context->GetDevice()->SupportsSurfaceRebind(
                          m_context->GetSurface(), surface))
             {
@@ -1716,7 +1716,7 @@ void RenderSubsystem::Initialize()
 }
 
 void RenderSubsystem::Configure(const RenderRuntimeConfig& config,
-                                const NativeSurfaceDesc& surface)
+                                const HAL::NativeSurfaceDesc& surface)
 {
     if (m_initializeAttempted)
     {
@@ -1754,7 +1754,7 @@ RenderFramePublishResult RenderSubsystem::TryPublishFrameSet(
 }
 
 RenderResizeResult RenderSubsystem::RequestResize(
-    const NativeSurfaceDesc& surface)
+    const HAL::NativeSurfaceDesc& surface)
 {
     if (m_runtime == nullptr)
     {

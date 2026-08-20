@@ -8,11 +8,12 @@ namespace RVX
         : m_device(device)
         , m_width(desc.surface.width)
         , m_height(desc.surface.height)
-        , m_format(desc.surface.preferredFormat)
+        , m_format(desc.config.format)
         , m_bufferCount(desc.bufferCount)
-        , m_vsync(desc.surface.vsync)
+        , m_vsync(desc.config.vsync)
     {
-        if (!desc.surface.IsValidFor(RHIBackendType::OpenGL))
+        if (!IsNativeSurfaceValidFor(desc.surface, RHIBackendType::OpenGL) ||
+            !IsSwapChainConfigValid(desc.config))
         {
             RVX_RHI_ERROR("OpenGLSwapChain: Invalid GLFW backend surface");
             return;

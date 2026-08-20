@@ -70,7 +70,6 @@ EditorWindowLifecycleService::CreateWindow(
     if (desc.backendType == RHIBackendType::OpenGL)
     {
         glfwMakeContextCurrent(window);
-        glfwSwapInterval(desc.vsync ? 1 : 0);
         result.openGLContextCurrent = true;
     }
 

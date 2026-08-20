@@ -7,16 +7,17 @@ namespace RVX
         : m_device(device)
         , m_width(desc.surface.width)
         , m_height(desc.surface.height)
-        , m_format(desc.surface.preferredFormat)
+        , m_format(desc.config.format)
         , m_bufferCount(desc.bufferCount)
-        , m_vsync(desc.surface.vsync)
+        , m_vsync(desc.config.vsync)
     {
         if (desc.debugName)
         {
             SetDebugName(desc.debugName);
         }
 
-        if (!desc.surface.IsValidFor(RHIBackendType::DX12))
+        if (!IsNativeSurfaceValidFor(desc.surface, RHIBackendType::DX12) ||
+            !IsSwapChainConfigValid(desc.config))
         {
             RVX_RHI_ERROR("Invalid Win32 surface for DX12 swap chain");
             return;
@@ -40,7 +41,7 @@ namespace RVX
         DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
         swapChainDesc.Width = desc.surface.width;
         swapChainDesc.Height = desc.surface.height;
-        swapChainDesc.Format = ToDXGIFormat(desc.surface.preferredFormat);
+        swapChainDesc.Format = ToDXGIFormat(desc.config.format);
         swapChainDesc.Stereo = FALSE;
         swapChainDesc.SampleDesc.Count = 1;
         swapChainDesc.SampleDesc.Quality = 0;
@@ -63,7 +64,7 @@ namespace RVX
         if (FAILED(hr))
         {
             // Some drivers reject sRGB swapchains; fall back to UNORM.
-            if (desc.surface.preferredFormat == RHIFormat::BGRA8_UNORM_SRGB)
+            if (desc.config.format == RHIFormat::BGRA8_UNORM_SRGB)
             {
                 RVX_RHI_WARN("DX12 swapchain sRGB not supported (0x{:08X}), falling back to UNORM",
                     static_cast<uint32>(hr));
@@ -94,7 +95,7 @@ namespace RVX
 
         RVX_RHI_INFO("DX12 SwapChain created: {}x{}, {} buffers, format {}",
             desc.surface.width, desc.surface.height, desc.bufferCount,
-            static_cast<int>(desc.surface.preferredFormat));
+            static_cast<int>(desc.config.format));
     }
 
     DX12SwapChain::~DX12SwapChain()

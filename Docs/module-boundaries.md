@@ -25,3 +25,11 @@ must be declared in the inventory's `disabledModules` with a reason; Runtime
 targets may not link them. Backend module ids deliberately differ from their
 public prefixes: `RHI_DX12` exposes `DX12`, `RHI_Vulkan` exposes `Vulkan`, and
 so on. Prefixes are case-insensitively unique.
+
+`RuntimeServices` is the narrow application-runtime service module. Its
+canonical target is `RVX_RuntimeServices`, its public alias is
+`RVX::RuntimeServices`, and its only first-party dependencies are Core and
+HAL. HAL owns the backend-neutral native-surface value (platform, handles,
+extent, scale, and generation). RHI owns format, present-mode, and vsync policy
+through `RHISwapChainConfig`; those policy fields must not be added to the HAL
+surface contract.

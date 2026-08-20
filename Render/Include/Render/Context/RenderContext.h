@@ -26,7 +26,7 @@ namespace RVX
         bool enableValidation = true;
         bool enableGPUValidation = false;
         bool allowSoftwareAdapter = false;
-        bool vsync = true;
+        RHISwapChainConfig swapChain{};
         uint32_t frameBuffering = 2;  // Number of frames in flight
         const char* appName = "RenderVerseX";
     };
@@ -50,7 +50,7 @@ namespace RVX
      * config.enableValidation = true;
      *
      * RenderContext ctx;
-     * NativeSurfaceDesc surface;
+     * HAL::NativeSurfaceDesc surface;
      * ctx.Initialize(config, surface);
      * ctx.CreateSwapChain(surface);
      *
@@ -87,7 +87,7 @@ namespace RVX
          * @return true if initialization succeeded
          */
         bool Initialize(const RenderContextConfig& config,
-                        const NativeSurfaceDesc& initialSurface = {});
+                        const HAL::NativeSurfaceDesc& initialSurface = {});
 
         /**
          * @brief Shutdown and release all resources
@@ -110,10 +110,10 @@ namespace RVX
          * @param height Initial height
          * @return true if creation succeeded
          */
-        bool CreateSwapChain(const NativeSurfaceDesc& surface);
+        bool CreateSwapChain(const HAL::NativeSurfaceDesc& surface);
 
         /** @brief Apply a newer extent-only complete surface snapshot. */
-        bool ResizeSwapChain(const NativeSurfaceDesc& surface);
+        bool ResizeSwapChain(const HAL::NativeSurfaceDesc& surface);
 
         /**
          * @brief Resize the swap chain
@@ -202,7 +202,7 @@ namespace RVX
         RHISwapChain* GetSwapChain() const { return m_swapChain.Get(); }
 
         /// Get the complete snapshot backing the current swap chain.
-        const NativeSurfaceDesc& GetSurface() const { return m_surface; }
+        const HAL::NativeSurfaceDesc& GetSurface() const { return m_surface; }
 
         /// Get the current frame's graphics command context
         RHICommandContext* GetGraphicsContext() const;
@@ -266,7 +266,7 @@ namespace RVX
         uint32_t m_frameIndex = 0;
         uint64_t m_frameNumber = 0;
         bool m_supportsAsyncCompute = false;
-        NativeSurfaceDesc m_surface;
+        HAL::NativeSurfaceDesc m_surface;
     };
 
 } // namespace RVX

@@ -6,7 +6,8 @@
 #pragma once
 
 #include "Core/Types.h"
-#include "RHI/RHINativeSurface.h"
+#include "HAL/Window/NativeSurface.h"
+#include "RHI/RHIDefinitions.h"
 
 #include <string>
 
@@ -33,7 +34,7 @@ struct EditorMainSwapChainEnsureResult
     bool resized = false;
     uint32 width = 0;
     uint32 height = 0;
-    NativeSurfaceDesc surface;
+    HAL::NativeSurfaceDesc surface;
     std::string fallbackReason;
 };
 
@@ -45,10 +46,8 @@ public:
     // =========================================================================
     bool HasSwapChain(RenderContext* renderContext) const;
 
-    NativeSurfaceDesc CaptureSurface(GLFWwindow* window,
-                                     RHIBackendType backend,
-                                     RHIFormat preferredFormat,
-                                     bool vsync) const;
+    HAL::NativeSurfaceDesc CaptureSurface(GLFWwindow* window,
+                                          RHIBackendType backend) const;
 
     EditorMainSwapChainEnsureResult Ensure(
         const EditorMainSwapChainEnsureDesc& desc) const;

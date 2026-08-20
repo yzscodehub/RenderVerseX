@@ -10,7 +10,7 @@
 #include "Render/Runtime/RenderSceneUpdateQueue.h"
 #include "RenderContracts/IRenderResourceGateway.h"
 #include "RenderContracts/RenderFramePacketV5.h"
-#include "RHI/RHINativeSurface.h"
+#include "HAL/Window/NativeSurface.h"
 #include "Runtime/IRenderExecutor.h"
 #include "Runtime/RenderControlMailbox.h"
 #include "Runtime/RenderDiagnosticsPublisher.h"
@@ -57,10 +57,10 @@ namespace RenderRuntimeDetail
 
         virtual RenderRuntimeResult Initialize(
             const RenderRuntimeConfig& config,
-            const NativeSurfaceDesc& surface,
+            const HAL::NativeSurfaceDesc& surface,
             RenderResourceStatusTable& statusTable) = 0;
         virtual RenderRuntimeResult ApplySurface(
-            const NativeSurfaceDesc& surface) = 0;
+            const HAL::NativeSurfaceDesc& surface) = 0;
         virtual void ProcessRelease(RenderResourceHandle handle) = 0;
         virtual void ProcessUpload(ResourceUploadRequestRef request) = 0;
         /** @brief Consume a v5 frame against the already-applied persistent scene. */
@@ -211,7 +211,7 @@ namespace RenderRuntimeDetail
     {
     public:
         RenderThreadRuntime(RenderRuntimeConfig config,
-                            NativeSurfaceDesc surface,
+                            HAL::NativeSurfaceDesc surface,
                             RenderExecutorKind executorKind,
                             std::unique_ptr<IRenderExecutor> executor,
                             std::unique_ptr<IRenderFrameConsumer> consumer,
@@ -228,7 +228,7 @@ namespace RenderRuntimeDetail
                             std::shared_ptr<IRenderFrameAcquireHook>
                                 frameAcquireHook = nullptr);
         RenderThreadRuntime(RenderRuntimeConfig config,
-                            NativeSurfaceDesc surface,
+                            HAL::NativeSurfaceDesc surface,
                             RenderExecutorKind executorKind,
                             std::unique_ptr<IRenderExecutor> executor,
                             std::unique_ptr<IRenderRuntimeFactory> factory,
@@ -252,7 +252,7 @@ namespace RenderRuntimeDetail
         RenderFramePublishResult TryPublishFrameSet(
             std::unique_ptr<const RenderSceneUpdateBatch> sceneUpdate,
             std::unique_ptr<const RenderFramePacketV5> frameV5);
-        RenderResizeResult RequestResize(const NativeSurfaceDesc& surface);
+        RenderResizeResult RequestResize(const HAL::NativeSurfaceDesc& surface);
         [[nodiscard]] RenderDiagnosticsSnapshot
             GetDiagnosticsSnapshot() const;
         [[nodiscard]] RenderRuntimeResult GetLastRuntimeResult() const;
@@ -313,7 +313,8 @@ namespace RenderRuntimeDetail
         };
 
         using SurfaceControlMailbox =
-            BasicRenderControlMailbox<NativeSurfaceDesc, NativeSurfaceDesc>;
+            BasicRenderControlMailbox<HAL::NativeSurfaceDesc,
+                                      HAL::NativeSurfaceDesc>;
 
         static void GatewayPublicationThunk(
             void* context,
@@ -323,10 +324,10 @@ namespace RenderRuntimeDetail
 
         [[nodiscard]] bool IsConfigurationValid() const noexcept;
         [[nodiscard]] bool IsSurfaceValid(
-            const NativeSurfaceDesc& surface) const noexcept;
+            const HAL::NativeSurfaceDesc& surface) const noexcept;
         [[nodiscard]] bool IsRunningForPublication() const noexcept;
         [[nodiscard]] bool IsShuttingDownForPublication() const noexcept;
-        [[nodiscard]] NativeSurfaceDesc GetCurrentSurfaceSnapshot() const;
+        [[nodiscard]] HAL::NativeSurfaceDesc GetCurrentSurfaceSnapshot() const;
         void NotifyExecutor() noexcept;
         void TransitionTo(RenderLifecycleState lifecycle,
                           const char* message);
@@ -354,7 +355,7 @@ namespace RenderRuntimeDetail
             RenderTeardownMode mode) noexcept;
 
         RenderRuntimeConfig m_config;
-        NativeSurfaceDesc m_initialSurface;
+        HAL::NativeSurfaceDesc m_initialSurface;
         RenderExecutorKind m_executorKind = RenderExecutorKind::None;
         std::unique_ptr<IRenderExecutor> m_executor;
         std::unique_ptr<IRenderFrameConsumer> m_consumer;
@@ -409,7 +410,7 @@ namespace RenderRuntimeDetail
         // drop the queue lock before reaching state while publication remains
         // held. No state, wait, or transport owner may re-enter publication.
         mutable std::mutex m_publicationMutex;
-        NativeSurfaceDesc m_currentSurface;
+        HAL::NativeSurfaceDesc m_currentSurface;
         uint64 m_latestResizeGeneration = 0;
         uint64 m_pendingResizeGeneration = 0;
         // Serialized with frame publication. Frames at or below this sequence

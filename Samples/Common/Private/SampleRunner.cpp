@@ -3948,10 +3948,10 @@ namespace RVX
         engineConfig.appName = applicationName.c_str();
         engineConfig.windowWidth = options.common.width;
         engineConfig.windowHeight = options.common.height;
-        engineConfig.vsync = options.common.frames == 0;
         engineConfig.enableJobSystem = false;
         engineConfig.startupTraceContext = startupTraceContext;
         engineConfig.renderRuntime.backendType = options.common.backend;
+        engineConfig.renderRuntime.swapChain.vsync = options.common.frames == 0;
         engineConfig.renderRuntime.enableValidation =
             options.common.enableValidation;
         engineConfig.renderRuntime.startupTraceContext = startupTraceContext;
@@ -3964,7 +3964,6 @@ namespace RVX
         windowConfig.height = options.common.height;
         windowConfig.resizable = options.common.frames == 0 ||
                                  options.HasLifetimeQualification();
-        windowConfig.vsync = options.common.frames == 0;
         windowConfig.graphicsApi =
             options.common.backend == RHIBackendType::OpenGL
                 ? WindowGraphicsApi::OpenGL

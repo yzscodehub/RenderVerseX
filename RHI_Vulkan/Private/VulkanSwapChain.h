@@ -59,6 +59,7 @@ namespace RVX
         uint32 m_width = 0;
         uint32 m_height = 0;
         RHIFormat m_format = RHIFormat::BGRA8_UNORM;
+        RHIPresentMode m_presentMode = RHIPresentMode::Auto;
         bool m_vsync = false;
 
         std::vector<RHITextureRef> m_backBuffers;

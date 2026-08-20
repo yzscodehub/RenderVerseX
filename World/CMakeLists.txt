@@ -19,7 +19,12 @@ target_include_directories(RVX_World PUBLIC
 target_link_libraries(RVX_World PUBLIC
     RVX_Core
     RVX::Physics
+    RVX::ResourceSceneAdapters
     RVX_Scene
+)
+
+target_link_libraries(RVX_World PRIVATE
+    RVX::AnimationSceneAdapters
 )
 
 add_library(RVX::World ALIAS RVX_World)

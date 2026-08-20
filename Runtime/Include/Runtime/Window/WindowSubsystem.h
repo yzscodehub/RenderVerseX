@@ -8,8 +8,8 @@
 #include "Core/Subsystem/EngineSubsystem.h"
 #include "Core/Event/EventBus.h"
 #include "HAL/Window/IWindow.h"
+#include "HAL/Window/NativeSurface.h"
 #include "HAL/Window/WindowEvents.h"
-#include "RHI/RHINativeSurface.h"
 #include <memory>
 #include <functional>
 
@@ -25,7 +25,6 @@ namespace RVX
         const char* title = "RenderVerseX";
         bool resizable = true;
         bool fullscreen = false;
-        bool vsync = true;
         WindowGraphicsApi graphicsApi = WindowGraphicsApi::None;
     };
 
@@ -84,8 +83,7 @@ namespace RVX
         void* GetInternalHandle() const;
 
         /// Capture and tag the current non-owning rendering surface value.
-        NativeSurfaceDesc CaptureRenderSurface(
-            RHIFormat preferredFormat = RHIFormat::BGRA8_UNORM) const;
+        HAL::NativeSurfaceDesc CaptureRenderSurface() const;
 
         /** @brief Current monotonically increasing native-surface generation. */
         [[nodiscard]] uint64 GetRenderSurfaceGeneration() const noexcept

@@ -14,7 +14,7 @@
 #include "RHI/RHIHeap.h"
 #include "RHI/RHIQuery.h"
 #include "RHI/RHIUpload.h"
-#include "RHI/RHINativeSurface.h"
+#include "RHI/RHIPresentation.h"
 #include "RHI/RHIDeviceStatus.h"
 #include "RHI/RHIQueueSubmission.h"
 
@@ -77,7 +77,7 @@ namespace RVX
     // =============================================================================
     struct RHIDeviceDesc
     {
-        NativeSurfaceDesc initialSurface;
+        HAL::NativeSurfaceDesc initialSurface;
         bool enableDebugLayer = true;
         bool enableGPUValidation = false;
         bool allowSoftwareAdapter = false;
@@ -220,8 +220,8 @@ namespace RVX
          * @return True when replacement can proceed without recreating the device.
          */
         virtual bool SupportsSurfaceRebind(
-            const NativeSurfaceDesc& currentSurface,
-            const NativeSurfaceDesc& replacementSurface) const
+            const HAL::NativeSurfaceDesc& currentSurface,
+            const HAL::NativeSurfaceDesc& replacementSurface) const
         {
             (void)currentSurface;
             (void)replacementSurface;

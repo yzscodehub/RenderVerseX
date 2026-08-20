@@ -139,6 +139,7 @@
 
 using namespace RVX;
 using namespace RVX::Editor;
+using namespace RVX::HAL;
 
 namespace
 {
@@ -3254,9 +3255,7 @@ namespace
         EXPECT_FALSE(service.HasSwapChain(nullptr));
         const NativeSurfaceDesc missingSurface = service.CaptureSurface(
             nullptr,
-            RHIBackendType::DX12,
-            RHIFormat::BGRA8_UNORM,
-            true);
+            RHIBackendType::DX12);
         EXPECT_EQ(NativeSurfacePlatform::None, missingSurface.platform);
 
         const EditorMainSwapChainEnsureResult result = service.Ensure({});

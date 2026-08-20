@@ -1916,7 +1916,7 @@ namespace RVX
 
     RHISwapChainRef VulkanDevice::CreateSwapChain(const RHISwapChainDesc& desc)
     {
-        if (!desc.surface.IsValidFor(RHIBackendType::Vulkan))
+        if (!IsNativeSurfaceValidFor(desc.surface, RHIBackendType::Vulkan))
         {
             RVX_RHI_ERROR("Vulkan swap chain requires a valid GLFW-backed surface");
             return nullptr;

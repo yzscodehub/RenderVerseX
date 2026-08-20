@@ -8,6 +8,7 @@
 namespace
 {
 using namespace RVX;
+using namespace RVX::HAL;
 using namespace RVX::SceneECS;
 using namespace RVX::ResourceSceneAdapters;
 

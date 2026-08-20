@@ -10,10 +10,11 @@ namespace RVX
         , m_width(desc.surface.width)
         , m_height(desc.surface.height)
         , m_backBufferCount(desc.bufferCount)
-        , m_format(desc.surface.preferredFormat)
-        , m_vsyncEnabled(desc.surface.vsync)
+        , m_format(desc.config.format)
+        , m_vsyncEnabled(desc.config.vsync)
     {
-        if (!desc.surface.IsValidFor(RHIBackendType::DX11))
+        if (!IsNativeSurfaceValidFor(desc.surface, RHIBackendType::DX11) ||
+            !IsSwapChainConfigValid(desc.config))
         {
             RVX_RHI_ERROR("Invalid Win32 surface for DX11 swap chain");
             return;
@@ -57,7 +58,7 @@ namespace RVX
     bool DX11SwapChain::CreateSwapChain(const RHISwapChainDesc& desc)
     {
         // Store the requested format for RTV creation
-        m_requestedFormat = desc.surface.preferredFormat;
+        m_requestedFormat = desc.config.format;
 
         HWND hwnd = reinterpret_cast<HWND>(desc.surface.nativeWindow);
 
@@ -80,7 +81,7 @@ namespace RVX
         // Try FLIP_DISCARD model first (requires Windows 10, DXGI 1.4+)
         {
             // FLIP model requires non-SRGB format for the buffer
-            swapChainDesc.Format = GetSwapChainBufferFormat(desc.surface.preferredFormat);
+            swapChainDesc.Format = GetSwapChainBufferFormat(desc.config.format);
             swapChainDesc.BufferCount = std::max(2u, desc.bufferCount);  // FLIP requires at least 2 buffers
             swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
             swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
@@ -114,7 +115,7 @@ namespace RVX
         {
             RVX_RHI_DEBUG("FLIP_DISCARD not available, falling back to DISCARD mode");
 
-            swapChainDesc.Format = ToDXGIFormat(desc.surface.preferredFormat);  // DISCARD supports SRGB directly
+            swapChainDesc.Format = ToDXGIFormat(desc.config.format);  // DISCARD supports SRGB directly
             swapChainDesc.BufferCount = 1;  // DISCARD mode only needs 1 buffer
             swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
             swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;

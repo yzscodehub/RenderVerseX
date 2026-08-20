@@ -50,7 +50,7 @@ namespace
             return m_window.IsInitialized() && m_window.GetWindow() != nullptr;
         }
 
-        NativeSurfaceDesc CaptureRenderSurface() override
+        HAL::NativeSurfaceDesc CaptureRenderSurface() override
         {
             return m_window.CaptureRenderSurface();
         }
@@ -61,7 +61,7 @@ namespace
         }
 
         void ConfigureRender(const RenderRuntimeConfig& config,
-                             const NativeSurfaceDesc& surface) override
+                             const HAL::NativeSurfaceDesc& surface) override
         {
             m_render.Configure(config, surface);
         }
@@ -113,7 +113,7 @@ namespace
                        : RenderResourceHandle{};
         }
 
-        RenderResizeResult RequestResize(const NativeSurfaceDesc& surface) override
+        RenderResizeResult RequestResize(const HAL::NativeSurfaceDesc& surface) override
         {
             return m_render.RequestResize(surface);
         }
@@ -216,8 +216,8 @@ void EcsRenderRuntimeComposition::BeforeRenderSubsystemInitialize()
         throw std::runtime_error(
             "WindowSubsystem must be initialized before RenderSubsystem");
     }
-    const NativeSurfaceDesc surface = m_services->CaptureRenderSurface();
-    if (!surface.IsValidFor(ResolveBackend()))
+    const HAL::NativeSurfaceDesc surface = m_services->CaptureRenderSurface();
+    if (!IsNativeSurfaceValidFor(surface, ResolveBackend()))
     {
         throw std::runtime_error(
             "WindowSubsystem returned an invalid initial render surface");
@@ -541,8 +541,8 @@ bool EcsRenderRuntimeComposition::ObserveWindowSurface()
     {
         return false;
     }
-    const NativeSurfaceDesc observed = m_services->CaptureRenderSurface();
-    if (!observed.IsValidFor(ResolveBackend()) ||
+    const HAL::NativeSurfaceDesc observed = m_services->CaptureRenderSurface();
+    if (!IsNativeSurfaceValidFor(observed, ResolveBackend()) ||
         observed.generation < m_surface.generation)
     {
         return false;

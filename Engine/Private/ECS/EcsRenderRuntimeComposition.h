@@ -10,7 +10,7 @@
 #include "Render/RenderDiagnostics.h"
 #include "Render/RenderRuntimeTypes.h"
 #include "RenderContracts/RenderFrameTypes.h"
-#include "RHI/RHINativeSurface.h"
+#include "HAL/Window/NativeSurface.h"
 #include "Scene/ECS/FrozenSceneSnapshot.h"
 
 #include <functional>
@@ -99,10 +99,10 @@ namespace RVX
 
         virtual void InjectRenderResourceGateway() = 0;
         [[nodiscard]] virtual bool IsWindowInitialized() const noexcept = 0;
-        [[nodiscard]] virtual NativeSurfaceDesc CaptureRenderSurface() = 0;
+        [[nodiscard]] virtual HAL::NativeSurfaceDesc CaptureRenderSurface() = 0;
         virtual void ReleaseGraphicsContextFromUpdateThread() = 0;
         virtual void ConfigureRender(const RenderRuntimeConfig& config,
-                                     const NativeSurfaceDesc& surface) = 0;
+                                     const HAL::NativeSurfaceDesc& surface) = 0;
         [[nodiscard]] virtual bool IsRenderReady() const noexcept = 0;
         [[nodiscard]] virtual IEcsRenderFrameTransport& GetFrameTransport() noexcept = 0;
         [[nodiscard]] virtual EcsSceneRenderPublicationProgress
@@ -114,7 +114,7 @@ namespace RVX
             AssetId assetId,
             RenderResourceKind kind) const noexcept = 0;
         [[nodiscard]] virtual RenderResizeResult RequestResize(
-            const NativeSurfaceDesc& surface) = 0;
+            const HAL::NativeSurfaceDesc& surface) = 0;
         /** @brief Request a native resize; Window owns the resulting generation. */
         [[nodiscard]] virtual bool RequestWindowResize(uint32 width,
                                                         uint32 height) = 0;
@@ -228,7 +228,7 @@ namespace RVX
         RenderFrameCaptureRequest m_pendingCapture{};
         std::unique_ptr<IEcsRenderRuntimeCompositionServices> m_services;
         std::unique_ptr<EcsRenderFramePipeline> m_pipeline;
-        NativeSurfaceDesc m_surface{};
+        HAL::NativeSurfaceDesc m_surface{};
         EcsRenderRuntimeCompositionStats m_stats{};
         std::optional<CameraFingerprint> m_activeCamera;
         ECS::SceneRuntimeId m_activeSceneRuntimeId;

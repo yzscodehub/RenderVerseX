@@ -13,12 +13,15 @@ namespace RVX
         : m_device(device)
         , m_width(desc.surface.width)
         , m_height(desc.surface.height)
-        , m_format(desc.surface.preferredFormat)
-        , m_vsync(desc.surface.vsync)
+        , m_format(desc.config.format)
+        , m_presentMode(desc.config.presentMode)
+        , m_vsync(desc.config.vsync)
         , m_backendWindow(
               reinterpret_cast<GLFWwindow*>(desc.surface.backendWindow))
     {
-        if (!m_device || !desc.surface.IsValidFor(RHIBackendType::Vulkan))
+        if (!m_device ||
+            !IsNativeSurfaceValidFor(desc.surface, RHIBackendType::Vulkan) ||
+            !IsSwapChainConfigValid(desc.config))
         {
             RVX_RHI_ERROR("VulkanSwapChain: Invalid GLFW-backed native surface");
             return;
@@ -269,27 +272,35 @@ namespace RVX
 
     VkPresentModeKHR VulkanSwapChain::ChoosePresentMode(const std::vector<VkPresentModeKHR>& modes)
     {
-        if (m_vsync)
+        if (m_presentMode == RHIPresentMode::Fifo ||
+            (m_presentMode == RHIPresentMode::Auto && m_vsync))
         {
             return VK_PRESENT_MODE_FIFO_KHR;  // Guaranteed available, vsync
         }
 
-        // Prefer mailbox (triple buffering) for no vsync
-        for (const auto& mode : modes)
+        const auto contains = [&modes](VkPresentModeKHR requested) {
+            return std::find(modes.begin(), modes.end(), requested) != modes.end();
+        };
+        if (m_presentMode == RHIPresentMode::Mailbox &&
+            contains(VK_PRESENT_MODE_MAILBOX_KHR))
         {
-            if (mode == VK_PRESENT_MODE_MAILBOX_KHR)
-            {
-                return mode;
-            }
+            return VK_PRESENT_MODE_MAILBOX_KHR;
+        }
+        if (m_presentMode == RHIPresentMode::Immediate &&
+            contains(VK_PRESENT_MODE_IMMEDIATE_KHR))
+        {
+            return VK_PRESENT_MODE_IMMEDIATE_KHR;
         }
 
-        // Immediate mode for no vsync
-        for (const auto& mode : modes)
+        // Auto without vsync, or an unsupported explicit mode, uses the
+        // deterministic mailbox -> immediate -> FIFO fallback chain.
+        if (contains(VK_PRESENT_MODE_MAILBOX_KHR))
         {
-            if (mode == VK_PRESENT_MODE_IMMEDIATE_KHR)
-            {
-                return mode;
-            }
+            return VK_PRESENT_MODE_MAILBOX_KHR;
+        }
+        if (contains(VK_PRESENT_MODE_IMMEDIATE_KHR))
+        {
+            return VK_PRESENT_MODE_IMMEDIATE_KHR;
         }
 
         return VK_PRESENT_MODE_FIFO_KHR;

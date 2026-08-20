@@ -8,9 +8,9 @@
 # - Camera (to be migrated)
 # =============================================================================
 
-add_library(RVX_Runtime STATIC)
+add_library(RVX_RuntimeServices STATIC)
 
-target_sources(RVX_Runtime PRIVATE
+target_sources(RVX_RuntimeServices PRIVATE
     # Window
     Private/Window/WindowSubsystem.cpp
     # Input
@@ -28,26 +28,20 @@ target_sources(RVX_Runtime PRIVATE
     Private/Camera/CameraRegistry.cpp
 )
 
-target_include_directories(RVX_Runtime PUBLIC
+target_include_directories(RVX_RuntimeServices PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Include>
     $<INSTALL_INTERFACE:include>
 )
 
-target_link_libraries(RVX_Runtime PUBLIC
+target_link_libraries(RVX_RuntimeServices PUBLIC
     RVX_Core
     RVX_HAL
-    RVX::RHI
 )
 
-# Windows-specific: Link XInput for gamepad vibration
-if(WIN32)
-    target_link_libraries(RVX_Runtime PRIVATE xinput)
-endif()
-
-add_library(RVX::Runtime ALIAS RVX_Runtime)
+add_library(RVX::RuntimeServices ALIAS RVX_RuntimeServices)
 
 rvx_register_module_target(
-    TARGET RVX_Runtime
-    MODULE Runtime
-    ALIASES RVX::Runtime
+    TARGET RVX_RuntimeServices
+    MODULE RuntimeServices
+    ALIASES RVX::RuntimeServices
 )

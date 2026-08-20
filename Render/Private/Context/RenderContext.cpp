@@ -23,12 +23,17 @@ RenderContext::~RenderContext()
 }
 
 bool RenderContext::Initialize(const RenderContextConfig& config,
-                               const NativeSurfaceDesc& initialSurface)
+                               const HAL::NativeSurfaceDesc& initialSurface)
 {
     if (m_initialized)
     {
         RVX_CORE_WARN("RenderContext already initialized");
         return true;
+    }
+    if (!IsSwapChainConfigValid(config.swapChain))
+    {
+        RVX_CORE_ERROR("RenderContext: Invalid swap-chain presentation policy");
+        return false;
     }
 
     m_config = config;
@@ -152,7 +157,7 @@ void RenderContext::Shutdown(bool waitForIdle)
     RVX_CORE_INFO("RenderContext shutdown complete");
 }
 
-bool RenderContext::CreateSwapChain(const NativeSurfaceDesc& surface)
+bool RenderContext::CreateSwapChain(const HAL::NativeSurfaceDesc& surface)
 {
     if (!m_device)
     {
@@ -161,7 +166,8 @@ bool RenderContext::CreateSwapChain(const NativeSurfaceDesc& surface)
     }
 
     const RHIBackendType backend = m_device->GetBackendType();
-    if (!surface.IsValidFor(backend))
+    if (!IsNativeSurfaceValidFor(surface, backend) ||
+        !IsSwapChainConfigValid(m_config.swapChain))
     {
         RVX_CORE_ERROR("RenderContext: Invalid native surface for {}", ToString(backend));
         return false;
@@ -198,6 +204,7 @@ bool RenderContext::CreateSwapChain(const NativeSurfaceDesc& surface)
 
     RHISwapChainDesc swapChainDesc;
     swapChainDesc.surface = surface;
+    swapChainDesc.config = m_config.swapChain;
     swapChainDesc.bufferCount = m_config.frameBuffering + 1;  // One extra for presentation
     swapChainDesc.debugName = "MainSwapChain";
 
@@ -215,20 +222,20 @@ bool RenderContext::CreateSwapChain(const NativeSurfaceDesc& surface)
     return true;
 }
 
-bool RenderContext::ResizeSwapChain(const NativeSurfaceDesc& surface)
+bool RenderContext::ResizeSwapChain(const HAL::NativeSurfaceDesc& surface)
 {
     if (!m_swapChain || !m_device)
     {
         RVX_CORE_ERROR("RenderContext: Cannot update a missing swap chain");
         return false;
     }
-    if (!surface.IsValidFor(m_device->GetBackendType()))
+    if (!IsNativeSurfaceValidFor(surface, m_device->GetBackendType()))
     {
         RVX_CORE_ERROR("RenderContext: Invalid native surface resize update");
         return false;
     }
-    if (ClassifyNativeSurfaceUpdate(m_surface, surface) !=
-        NativeSurfaceUpdateKind::Resize)
+    if (HAL::ClassifyNativeSurfaceUpdate(m_surface, surface) !=
+        HAL::NativeSurfaceUpdateKind::Resize)
     {
         RVX_CORE_WARN("RenderContext: Surface update is not a newer extent-only change");
         return false;

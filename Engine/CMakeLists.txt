@@ -36,7 +36,7 @@ target_link_libraries(RVX_Engine PUBLIC
     RVX_RHI
     
     # Runtime Services
-    RVX_Runtime
+    RVX_RuntimeServices
     
     # World & Scene
     RVX::Physics

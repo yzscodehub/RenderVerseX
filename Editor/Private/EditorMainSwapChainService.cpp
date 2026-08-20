@@ -26,13 +26,11 @@ bool EditorMainSwapChainService::HasSwapChain(RenderContext* renderContext) cons
            renderContext->HasSwapChain();
 }
 
-NativeSurfaceDesc EditorMainSwapChainService::CaptureSurface(
+HAL::NativeSurfaceDesc EditorMainSwapChainService::CaptureSurface(
     GLFWwindow* window,
-    RHIBackendType backend,
-    RHIFormat preferredFormat,
-    bool vsync) const
+    RHIBackendType backend) const
 {
-    NativeSurfaceDesc surface;
+    HAL::NativeSurfaceDesc surface;
     if (!window)
     {
         return surface;
@@ -46,15 +44,15 @@ NativeSurfaceDesc EditorMainSwapChainService::CaptureSurface(
     glfwGetWindowContentScale(window, &xScale, &yScale);
 
 #ifdef _WIN32
-    surface.platform = NativeSurfacePlatform::Win32;
+    surface.platform = HAL::NativeSurfacePlatform::Win32;
     surface.nativeWindow =
         reinterpret_cast<uintptr_t>(glfwGetWin32Window(window));
 #elif defined(__APPLE__)
-    surface.platform = NativeSurfacePlatform::Cocoa;
+    surface.platform = HAL::NativeSurfacePlatform::Cocoa;
     surface.nativeWindow =
         reinterpret_cast<uintptr_t>(glfwGetCocoaWindow(window));
 #else
-    surface.platform = NativeSurfacePlatform::GLFW;
+    surface.platform = HAL::NativeSurfacePlatform::GLFW;
 #endif
     surface.backendWindow = reinterpret_cast<uintptr_t>(window);
     surface.width = framebufferWidth > 0
@@ -64,11 +62,9 @@ NativeSurfaceDesc EditorMainSwapChainService::CaptureSurface(
         ? static_cast<uint32>(framebufferHeight)
         : 0;
     surface.contentScale = xScale;
-    surface.preferredFormat = preferredFormat;
-    surface.vsync = vsync;
     surface.generation = 1;
 
-    if (!surface.IsValidFor(backend))
+    if (!IsNativeSurfaceValidFor(surface, backend))
     {
         return surface;
     }
@@ -118,11 +114,8 @@ EditorMainSwapChainEnsureResult EditorMainSwapChainService::Ensure(
 
     const RHIBackendType backend =
         desc.renderContext->GetDevice()->GetBackendType();
-    result.surface = CaptureSurface(desc.window,
-                                    backend,
-                                    RHIFormat::BGRA8_UNORM,
-                                    desc.renderContext->GetConfig().vsync);
-    if (!result.surface.IsValidFor(backend))
+    result.surface = CaptureSurface(desc.window, backend);
+    if (!IsNativeSurfaceValidFor(result.surface, backend))
     {
         result.fallbackReason =
             "Main window native handle is unavailable for the active RHI backend";

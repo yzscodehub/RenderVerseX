@@ -22,13 +22,13 @@ def main() -> int:
     if editor is None or not editor.deferred or editor.shipping_allowed:
         findings.append("manifest Editor must be deferred and shipping-ineligible")
     for target in policy.targets:
-        if target.module == "Runtime":
+        if target.module == "RuntimeServices":
             for value in (*target.link_libraries, *target.interface_link_libraries):
                 destination, unknown = resolve_target_reference(policy, value)
                 findings.extend(f"{target.name}: unknown project dependency {name}" for name in unknown)
                 if destination == "Editor":
                     findings.append(f"{target.name}: Runtime must not link Editor")
-    for module_id in ("Runtime", "Editor"):
+    for module_id in ("RuntimeServices", "Editor"):
         if policy.modules[module_id].deferred:
             continue
         for path in policy.source_files([module_id]):
@@ -41,7 +41,7 @@ def main() -> int:
                 if not match:
                     continue
                 destination = policy.module_for_prefix(match.group(1).replace("\\", "/").split("/", 1)[0])
-                if destination in {"Runtime", "Editor"} and destination != module_id:
+                if destination in {"RuntimeServices", "Editor"} and destination != module_id:
                     findings.append(f"{path.relative_to(policy.root)}:{number}: {module_id} must not include {destination}")
     if findings:
         print("Editor/runtime boundary violations:")

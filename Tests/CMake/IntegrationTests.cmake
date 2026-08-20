@@ -217,7 +217,7 @@ rvx_add_gtest(
     SOURCES RenderSceneValidation/main.cpp
     LIBS
         RVX::Core
-        RVX::Runtime
+        RVX::RuntimeServices
         RVX::World
         RVX::Resource
         RVX::RenderExtraction

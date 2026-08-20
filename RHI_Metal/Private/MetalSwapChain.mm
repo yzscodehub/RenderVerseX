@@ -12,11 +12,12 @@ namespace RVX
         : m_device(device)
         , m_width(desc.surface.width)
         , m_height(desc.surface.height)
-        , m_format(desc.surface.preferredFormat)
+        , m_format(desc.config.format)
         , m_bufferCount(std::clamp(desc.bufferCount, 2u, 3u))
-        , m_vsync(desc.surface.vsync)
+        , m_vsync(desc.config.vsync)
     {
-        if (!desc.surface.IsValidFor(RHIBackendType::Metal))
+        if (!IsNativeSurfaceValidFor(desc.surface, RHIBackendType::Metal) ||
+            !IsSwapChainConfigValid(desc.config))
         {
             RVX_RHI_ERROR("MetalSwapChain: Invalid HAL-owned presentation layer");
             return;
@@ -26,13 +27,13 @@ namespace RVX
             reinterpret_cast<void*>(desc.surface.nativeLayer);
         m_metalLayer.device = device->GetMTLDevice();
         m_metalLayer.pixelFormat =
-            ToMTLPixelFormat(desc.surface.preferredFormat);
+            ToMTLPixelFormat(desc.config.format);
         m_metalLayer.drawableSize =
             CGSizeMake(desc.surface.width, desc.surface.height);
         m_metalLayer.maximumDrawableCount = m_bufferCount;
         m_metalLayer.framebufferOnly = YES;
 #if RVX_PLATFORM_MACOS
-        m_metalLayer.displaySyncEnabled = desc.surface.vsync;
+        m_metalLayer.displaySyncEnabled = desc.config.vsync;
 #endif
 
         CreateBackBuffers();

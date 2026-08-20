@@ -11,6 +11,8 @@
 
 namespace RVX
 {
+using HAL::NativeSurfaceDesc;
+
 namespace
 {
     class InlineRenderExecutor final : public IRenderExecutor,

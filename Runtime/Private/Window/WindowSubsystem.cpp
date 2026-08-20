@@ -20,7 +20,6 @@ void WindowSubsystem::Initialize()
     desc.title = m_config.title;
     desc.resizable = m_config.resizable;
     desc.fullscreen = m_config.fullscreen;
-    desc.vsync = m_config.vsync;
     desc.graphicsApi = m_config.graphicsApi;
 
     m_window = HAL::CreateWindow(desc);
@@ -124,10 +123,9 @@ void* WindowSubsystem::GetInternalHandle() const
     return m_window ? m_window->GetInternalHandle() : nullptr;
 }
 
-NativeSurfaceDesc WindowSubsystem::CaptureRenderSurface(
-    RHIFormat preferredFormat) const
+HAL::NativeSurfaceDesc WindowSubsystem::CaptureRenderSurface() const
 {
-    NativeSurfaceDesc surface;
+    HAL::NativeSurfaceDesc surface;
     if (!m_window)
     {
         return surface;
@@ -136,11 +134,11 @@ NativeSurfaceDesc WindowSubsystem::CaptureRenderSurface(
     const HAL::WindowRenderSurfaceHandles handles =
         m_window->CaptureRenderSurfaceHandles();
 #if defined(_WIN32)
-    surface.platform = NativeSurfacePlatform::Win32;
+    surface.platform = HAL::NativeSurfacePlatform::Win32;
 #elif defined(__APPLE__)
-    surface.platform = NativeSurfacePlatform::Cocoa;
+    surface.platform = HAL::NativeSurfacePlatform::Cocoa;
 #else
-    surface.platform = NativeSurfacePlatform::GLFW;
+    surface.platform = HAL::NativeSurfacePlatform::GLFW;
 #endif
     surface.nativeWindow = handles.nativeWindow;
     surface.nativeDisplay = handles.nativeDisplay;
@@ -149,8 +147,6 @@ NativeSurfaceDesc WindowSubsystem::CaptureRenderSurface(
     surface.width = handles.width;
     surface.height = handles.height;
     surface.contentScale = handles.contentScale;
-    surface.preferredFormat = preferredFormat;
-    surface.vsync = m_config.vsync;
     surface.generation = m_surfaceGeneration;
     return surface;
 }

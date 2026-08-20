@@ -40,7 +40,7 @@ target_link_libraries(RenderVerseSamples PRIVATE
     RVX::ResourceSceneAdapters
     RVX::RHI
     RVX::RHI_BackendFactory
-    RVX::Runtime
+    RVX::RuntimeServices
     RVX::SampleCommon
     RVX::Scene
     RVX::ShaderCompiler

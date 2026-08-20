@@ -31,7 +31,7 @@ target_link_libraries(RVX_SampleCommon PUBLIC
     RVX::Resource
     RVX::ResourceSceneAdapters
     RVX::RHI
-    RVX::Runtime
+    RVX::RuntimeServices
     RVX::Scene
     RVX::World
 )

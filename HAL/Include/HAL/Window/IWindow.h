@@ -32,7 +32,6 @@ namespace RVX::HAL
         const char* title = "RenderVerseX";
         bool resizable = true;
         bool fullscreen = false;
-        bool vsync = true;
         WindowGraphicsApi graphicsApi = WindowGraphicsApi::None;
     };
 

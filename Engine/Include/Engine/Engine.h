@@ -46,7 +46,6 @@ namespace RVX
         const char* appName = "RenderVerseX";
         uint32_t windowWidth = 1280;
         uint32_t windowHeight = 720;
-        bool vsync = true;
         bool enableJobSystem = true;
         size_t jobWorkerCount = 0;  // 0 = auto (hardware concurrency)
         /** @brief Optional correlated diagnostics context; disabled by default. */

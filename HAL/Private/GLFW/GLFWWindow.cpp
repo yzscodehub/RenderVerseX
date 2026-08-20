@@ -82,7 +82,6 @@ namespace RVX::HAL
         if (desc.graphicsApi == WindowGraphicsApi::OpenGL)
         {
             glfwMakeContextCurrent(m_window);
-            glfwSwapInterval(desc.vsync ? 1 : 0);
         }
 
         // Set user pointer for callbacks

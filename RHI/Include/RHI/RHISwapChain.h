@@ -1,6 +1,6 @@
 #pragma once
 
-#include "RHI/RHINativeSurface.h"
+#include "RHI/RHIPresentation.h"
 #include "RHI/RHIResources.h"
 
 namespace RVX
@@ -10,7 +10,8 @@ namespace RVX
     // =============================================================================
     struct RHISwapChainDesc
     {
-        NativeSurfaceDesc surface;
+        HAL::NativeSurfaceDesc surface;
+        RHISwapChainConfig config;
         uint32 bufferCount = 3;
         const char* debugName = nullptr;
     };
