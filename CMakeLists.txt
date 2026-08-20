@@ -258,12 +258,12 @@ endif()
 # Subdirectories
 # =============================================================================
 add_subdirectory(Source/Runtime/Core)
-add_subdirectory(AssetContracts)
+add_subdirectory(Source/Runtime/AssetContracts)
 add_subdirectory(Source/Runtime/RenderContracts) # Render-only extraction data contracts
 add_subdirectory(Source/Runtime/Geometry)     # Geometry module (primitives, queries, algorithms)
 add_subdirectory(Source/Runtime/HAL)          # Hardware Abstraction Layer (Window, Input)
 add_subdirectory(Source/Runtime/ECS)          # Runtime sparse-set entity/fragment kernel
-add_subdirectory(Scene)
+add_subdirectory(Source/Runtime/Scene)
 add_subdirectory(Source/Runtime/Animation)
 add_subdirectory(Source/Runtime/RuntimeServices) # Runtime subsystems (includes Camera)
 add_subdirectory(Source/Runtime/RHI)
@@ -319,7 +319,7 @@ endif()
 
 add_subdirectory(Source/Runtime/RHI_BackendFactory) # Enabled RHI backend composition
 
-add_subdirectory(Resource)   # Resource runtime and cooked resource management
+add_subdirectory(Source/Runtime/ResourceRuntime) # Resource runtime and cooked resource management
 if(RVX_BUILD_DEVELOPER)
     add_subdirectory(AssetImport) # Development-only source importer adapters
     add_subdirectory(ResourceSource) # Development source loading and monitoring

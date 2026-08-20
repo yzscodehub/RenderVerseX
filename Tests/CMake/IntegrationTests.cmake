@@ -218,7 +218,7 @@ rvx_add_gtest(
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_SOURCE_DIR}/Particle/Private
         ${CMAKE_SOURCE_DIR}/Render/Include
-        ${CMAKE_SOURCE_DIR}/Resource/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/ResourceRuntime/Include
         ${CMAKE_SOURCE_DIR}/ShaderCompiler/Include
         ${CMAKE_SOURCE_DIR}/Terrain/Private
         ${CMAKE_SOURCE_DIR}/Tools/Include
@@ -247,8 +247,8 @@ rvx_add_gtest(
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
         ${CMAKE_SOURCE_DIR}/Render/Include
         ${CMAKE_SOURCE_DIR}/Render/Private/Renderer
-        ${CMAKE_SOURCE_DIR}/Resource/Include
-        ${CMAKE_SOURCE_DIR}/Scene/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/ResourceRuntime/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Scene/Include
         ${CMAKE_SOURCE_DIR}/World/Include
     TIMEOUT 120
 )
@@ -271,9 +271,9 @@ rvx_add_gtest(
         ${CMAKE_SOURCE_DIR}/Tests
         ${CMAKE_SOURCE_DIR}/Render/Include
         ${CMAKE_SOURCE_DIR}/Render/Private
-        ${CMAKE_SOURCE_DIR}/Resource/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/ResourceRuntime/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
-        ${CMAKE_SOURCE_DIR}/Scene/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Scene/Include
     TIMEOUT 120
 )
 

@@ -199,10 +199,10 @@ class ShippingTargetClosureTests(unittest.TestCase):
 
     def test_rejects_importer_and_legacy_mixed_loader_sources(self) -> None:
         policy = valid_policy(runtime_sources=(
-            "Resource/Private/Importer/GLTFImporter.cpp",
-            "Resource/Private/Loader/ModelLoader.cpp",
-            "Resource/Private/Loader/CookedModelLoader.cpp",
-            "Resource/Private/Parser/PackageParser.cpp",
+            "Source/Runtime/ResourceRuntime/Private/Importer/GLTFImporter.cpp",
+            "Source/Runtime/ResourceRuntime/Private/Loader/ModelLoader.cpp",
+            "Source/Runtime/ResourceRuntime/Private/Loader/CookedModelLoader.cpp",
+            "Source/Runtime/ResourceRuntime/Private/Parser/PackageParser.cpp",
         ))
         findings = validate_shipping_target_closure(policy)
         self.assertTrue(any("GLTFImporter.cpp" in item for item in findings))
@@ -212,7 +212,7 @@ class ShippingTargetClosureTests(unittest.TestCase):
 
     def test_resource_loader_catalog_is_not_misclassified_as_source_loader(self) -> None:
         policy = valid_policy(runtime_sources=(
-            "Resource/Private/ResourceRuntime/ResourceLoaderCatalog.cpp",
+            "Source/Runtime/ResourceRuntime/Private/ResourceRuntime/ResourceLoaderCatalog.cpp",
         ))
         self.assertEqual(validate_shipping_target_closure(policy), [])
 

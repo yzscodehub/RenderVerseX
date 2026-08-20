@@ -308,7 +308,8 @@ namespace
         for (uint32 i = 0; i < 8; ++i)
         {
             if (fs::exists(cursor / "CMakeLists.txt") &&
-                fs::exists(cursor / "Resource/Include/Resource/ResourceManager.h"))
+                fs::exists(cursor /
+                           "Source/Runtime/ResourceRuntime/Include/Resource/ResourceManager.h"))
             {
                 return cursor;
             }
@@ -1135,12 +1136,12 @@ TEST(ResourceRuntimePolicyValidation, PreparedAsyncPathStaysOnCoreJobSystemContr
     const fs::path repoRoot = FindRepositoryRoot();
     ASSERT_FALSE(repoRoot.empty());
 
-    const std::string managerHeader =
-        ReadTextFile(repoRoot / "Resource/Include/Resource/ResourceManager.h");
-    const std::string managerSource =
-        ReadTextFile(repoRoot / "Resource/Private/ResourceManager.cpp");
-    const std::string resourceSource =
-        ReadTextFile(repoRoot / "Resource/Private/IResource.cpp");
+    const std::string managerHeader = ReadTextFile(
+        repoRoot / "Source/Runtime/ResourceRuntime/Include/Resource/ResourceManager.h");
+    const std::string managerSource = ReadTextFile(
+        repoRoot / "Source/Runtime/ResourceRuntime/Private/ResourceManager.cpp");
+    const std::string resourceSource = ReadTextFile(
+        repoRoot / "Source/Runtime/ResourceRuntime/Private/IResource.cpp");
     ASSERT_FALSE(managerHeader.empty());
     ASSERT_FALSE(managerSource.empty());
     ASSERT_FALSE(resourceSource.empty());

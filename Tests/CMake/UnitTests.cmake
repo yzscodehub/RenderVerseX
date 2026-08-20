@@ -648,7 +648,7 @@ rvx_add_gtest(
         RVX::Core
         RVX::ResourceRuntime
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/Resource/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/ResourceRuntime/Include
     TIMEOUT 120
 )
 
@@ -864,7 +864,7 @@ rvx_add_gtest(
         ${CMAKE_SOURCE_DIR}/Tests
         ${CMAKE_SOURCE_DIR}/Render/Include
         ${CMAKE_SOURCE_DIR}/Render/Private
-        ${CMAKE_SOURCE_DIR}/Resource/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/ResourceRuntime/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
     TIMEOUT 120
 )
