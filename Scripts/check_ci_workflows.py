@@ -154,10 +154,16 @@ def validate(root: Path) -> list[str]:
         "RVXValidationArchitecture",
         "linux_x64_debug_architecture",
         'unittest discover -s Scripts -p "test_*.py"',
+        "Scripts/plan_validation.py",
+        "--mode observation",
+        "ValidationSelectionPlan.json",
         "git diff --check",
     ):
         if token not in architecture:
             findings.append(f"ci.yml architecture job is missing {token}")
+
+    if re.search(r"Scripts/plan_validation\.py(?:(?!\n\s*- name:).)*--mode\s+selective", architecture, re.DOTALL):
+        findings.append("ci.yml must keep dependency-aware selection in observation mode")
 
     debug_contracts = {
         "windows-debug": (
@@ -274,7 +280,7 @@ def main() -> int:
         for finding in findings:
             print(f"  - {finding}", file=sys.stderr)
         return 1
-    print("CI workflow policy passed: PR, Nightly, Weekly, Shipping, TSAN, and Verdict are complete")
+    print("CI workflow policy passed: required matrix is complete and dependency planning is observation-only")
     return 0
 
 

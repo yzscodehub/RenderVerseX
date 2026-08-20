@@ -38,6 +38,16 @@ jobs:
           restore-keys: vcpkg-architecture-
       - name: Configure architecture graph
         run: cmake --preset linux_x64_debug
+      - name: Record dependency-aware validation plan
+        run: >-
+          python3 Scripts/plan_validation.py
+          --root .
+          --manifest Docs/module-boundaries.json
+          --module-inventory build/linux_x64_debug/Architecture/RVXModuleInventory-Debug.json
+          --base-ref origin/master
+          --head-ref HEAD
+          --mode observation
+          --output build/linux_x64_debug/BuildTruth/ValidationSelectionPlan.json
       - name: Build architecture gates
         run: cmake --build build/linux_x64_debug --target RVXValidationArchitecture --parallel 4
       - name: Run architecture gates

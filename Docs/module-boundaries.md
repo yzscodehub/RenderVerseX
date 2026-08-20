@@ -61,3 +61,26 @@ draw commands, generational texture handles, and an owned font-atlas payload.
 It must not expose or link RHI objects. `Render/Passes/UIPass.h` is the sole
 GPU consumer: Render resolves texture handles and owns buffers, textures,
 descriptors, pipelines, command contexts, and render-target policy.
+
+## Dependency-aware validation planning
+
+`Scripts/plan_validation.py` consumes the Manifest plus the configured target
+inventory and computes a conservative reverse module closure for each change.
+It records recommendations for portable Unit coverage and the DX11/OpenGL
+compatibility compile closures. It never removes Architecture, Integration,
+DX12, Vulkan, Metal, Linux TSAN, or any platform's Shipping gate.
+
+PR CI runs the planner in `observation` mode and still executes the complete
+required matrix. Selection may only be enabled explicitly after evidence shows
+at least 10 consecutive code PRs and 3 consecutive Nightly runs with zero
+planner misses. The evidence document is strict and versioned; absent, stale,
+or malformed evidence cannot enable reduction. An empty change set, an unknown
+path, or a change to CMake, presets, CI, dependency metadata, the module
+Manifest, or architecture/build policy always falls back to the full matrix.
+
+The generated `RVX.ValidationSelectionPlan` JSON is uploaded with architecture
+evidence. It records changed and affected modules, proposed platform/backend
+coverage, the immutable required-job set, observation thresholds, the reason
+for the enforcement decision, and a deterministic plan hash. This makes future
+selection auditable without making the current PR gate dependent on the
+planner's recommendation.

@@ -67,6 +67,24 @@ class CIWorkflowPolicyTests(unittest.TestCase):
         findings = validate(self.root)
         self.assertTrue(any("exact Unit/Integration/Native" in item for item in findings))
 
+    def test_dependency_planner_must_remain_observation_only(self) -> None:
+        self.replace(
+            ".github/workflows/ci.yml",
+            "--mode observation",
+            "--mode selective",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("observation" in item for item in findings))
+
+    def test_dependency_planner_evidence_must_be_uploaded(self) -> None:
+        self.replace(
+            ".github/workflows/ci.yml",
+            "ValidationSelectionPlan.json",
+            "SelectionPlan.removed.json",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("ValidationSelectionPlan.json" in item for item in findings))
+
     def test_missing_preset_fails_closed(self) -> None:
         path = self.root / "CMakePresets.json"
         data = json.loads(path.read_text(encoding="utf-8"))

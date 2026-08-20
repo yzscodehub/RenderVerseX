@@ -143,6 +143,34 @@ rvx_add_validation_test(
 
 rvx_add_validation_test(
     LANE architecture
+    NAME Architecture.ValidationPlannerChecker
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/test_validation_planner.py
+        -v
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.ValidationPlannerObservation
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/plan_validation.py
+        --root ${CMAKE_SOURCE_DIR}
+        --manifest ${RVX_ARCH_MANIFEST}
+        --module-inventory ${RVX_ARCH_MODULE_INVENTORY}
+        --base-ref architecture-self-test
+        --head-ref current
+        --changed-file Source/Runtime/Core/Include/Core/Types.h
+        --mode observation
+        --output ${CMAKE_BINARY_DIR}/BuildTruth/ValidationSelectionPlan.architecture.json
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    REQUIRED_FILES ${RVX_ARCH_POLICY_REQUIRED_FILES}
+)
+
+rvx_add_validation_test(
+    LANE architecture
     NAME Architecture.ModuleInventoryCMake
     COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_SOURCE_DIR}/Scripts/test_module_inventory_cmake.py
