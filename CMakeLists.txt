@@ -257,7 +257,7 @@ endif()
 # =============================================================================
 # Subdirectories
 # =============================================================================
-add_subdirectory(Core)
+add_subdirectory(Source/Runtime/Core)
 add_subdirectory(AssetContracts)
 add_subdirectory(RenderContracts) # Render-only extraction data contracts
 add_subdirectory(Geometry)     # Geometry module (primitives, queries, algorithms)

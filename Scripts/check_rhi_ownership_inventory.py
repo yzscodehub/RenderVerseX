@@ -54,7 +54,7 @@ FIXED_FRAME_PATTERNS = (
 )
 GLOBAL_SYMBOL = re.compile(r"\b(?:DeferredDeleterRegistry|IDeferredDeleter|FrameResourceManager)\b")
 PRE_DELETE_DEFINITION_PATHS = {
-    "Core/Include/Core/RefCounted.h",
+    "Source/Runtime/Core/Include/Core/RefCounted.h",
     "Render/Private/Graph/FrameResourceManager.cpp",
 }
 ACTIVE_GLOBAL_USE = re.compile(
