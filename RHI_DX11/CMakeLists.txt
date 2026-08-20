@@ -98,3 +98,9 @@ source_group("Private\\Sources" FILES
     Private/DX11SwapChain.cpp
     Private/DX11Upload.cpp
 )
+
+rvx_register_module_target(
+    TARGET RVX_RHI_DX11
+    MODULE RHI_DX11
+    ALIASES RVX::RHI_DX11
+)

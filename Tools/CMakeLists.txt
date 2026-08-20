@@ -53,3 +53,17 @@ target_link_libraries(RVXAnimationDerive PRIVATE
 )
 
 target_compile_features(RVXAnimationDerive PRIVATE cxx_std_20)
+
+rvx_register_module_target(
+    TARGET RVX_Tools
+    MODULE Tools
+    ALIASES RVX::Tools
+)
+rvx_register_module_target(
+    TARGET RVXCook
+    MODULE Tools
+)
+rvx_register_module_target(
+    TARGET RVXAnimationDerive
+    MODULE Tools
+)

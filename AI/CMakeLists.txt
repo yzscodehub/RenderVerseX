@@ -49,3 +49,9 @@ else()
 endif()
 
 add_library(RVX::AI ALIAS RVX_AI)
+
+rvx_register_module_target(
+    TARGET RVX_AI
+    MODULE AI
+    ALIASES RVX::AI
+)

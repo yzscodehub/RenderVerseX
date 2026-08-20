@@ -26,3 +26,9 @@ target_link_libraries(RVX_AnimationSceneAdapters PUBLIC
 target_compile_features(RVX_AnimationSceneAdapters PUBLIC cxx_std_20)
 
 add_library(RVX::AnimationSceneAdapters ALIAS RVX_AnimationSceneAdapters)
+
+rvx_register_module_target(
+    TARGET RVX_AnimationSceneAdapters
+    MODULE AnimationSceneAdapters
+    ALIASES RVX::AnimationSceneAdapters
+)

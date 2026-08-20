@@ -276,3 +276,9 @@ if(RVX_USE_PCH)
 endif()
 
 message(STATUS "Configured module: ${MODULE_NAME}")
+
+rvx_register_module_target(
+    TARGET Particle
+    MODULE Particle
+    ALIASES RVX::Particle
+)

@@ -35,3 +35,9 @@ target_compile_definitions(RVX_Debug PRIVATE
 
 # Alias for cleaner target names
 add_library(RVX::Debug ALIAS RVX_Debug)
+
+rvx_register_module_target(
+    TARGET RVX_Debug
+    MODULE Debug
+    ALIASES RVX::Debug
+)

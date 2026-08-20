@@ -37,3 +37,9 @@ if(RVX_ENABLE_OPENGL)
 endif()
 
 add_library(RVX::RHI_BackendFactory ALIAS RVX_RHI_BackendFactory)
+
+rvx_register_module_target(
+    TARGET RVX_RHI_BackendFactory
+    MODULE RHI_BackendFactory
+    ALIASES RVX::RHI_BackendFactory
+)

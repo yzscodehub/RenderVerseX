@@ -1,202 +1,121 @@
 #!/usr/bin/env python3
-"""Validate RenderVerseX project include boundaries."""
-
+"""Validate project include edges using manifest prefixes and inventory sources."""
 from __future__ import annotations
-
 import argparse
-import json
 import re
-import sys
-from dataclasses import dataclass
 from pathlib import Path
-
-from architecture_gate_common import resolve_repo_root, resolve_required_file, run_gate
-
+from architecture_gate_common import GateInputError, resolve_repo_root, run_gate
+from module_policy import add_policy_arguments, edge_allowed, load_policy, resolve_inventory_path
 
 INCLUDE_RE = re.compile(r'^\s*#\s*include\s+[<"]([^">]+)[">]')
-SOURCE_SUFFIXES = {
-    ".c",
-    ".cc",
-    ".cpp",
-    ".cxx",
-    ".h",
-    ".hh",
-    ".hpp",
-    ".hxx",
-    ".inl",
-}
 
 
-@dataclass(frozen=True)
-class IncludeUse:
-    from_module: str
-    to_module: str
-    include: str
-    path: Path
-    line: int
+def module_include_roots(policy, module_id: str, *, public_only: bool) -> list[Path]:
+    module = policy.modules[module_id]
+    roots = [policy.root / module.path / "Include"]
+    for target in policy.targets:
+        if target.module != module_id:
+            continue
+        values = target.interface_include_directories
+        if not public_only:
+            values = (*target.include_directories, *values)
+        for value in values:
+            path = resolve_inventory_path(policy, value)
+            if path is not None and path.is_dir():
+                roots.append(path)
+    return list(dict.fromkeys(root.resolve() for root in roots if root.is_dir()))
 
-    def edge(self) -> str:
-        return f"{self.from_module}->{self.to_module}"
 
+def exact_include_prefix_module(policy, prefix: str) -> str | None:
+    for module in policy.modules.values():
+        if prefix in module.public_include_prefixes:
+            return module.id
+    return None
+
+
+def resolve_include_module(policy, source: str, including, include: str) -> tuple[str | None, str | None]:
+    """Resolve project includes through real local/private/public candidates.
+
+    A basename such as ``Runtime/Foo.h`` may be a local Render private include
+    rather than the public Runtime module.  A prefix alone is therefore never
+    considered authoritative; conflicting existing candidates are rejected.
+    """
+    module = policy.modules[source]
+    include_path = Path(include)
+    candidates = [including.parent / include_path, policy.root / module.path / "Private" / include_path]
+    candidates.extend(root / include_path for root in module_include_roots(policy, source, public_only=False))
+    parts = include_path.parts
+    public_module = None
+    if parts:
+        public_module = exact_include_prefix_module(policy, parts[0])
+        if public_module is not None:
+            candidates.extend(
+                root / include_path
+                for root in module_include_roots(policy, public_module, public_only=True)
+            )
+    resolved_modules: set[str] = set()
+    for candidate in candidates:
+        if candidate.is_file():
+            owner = policy.module_for_path(candidate)
+            if owner is not None:
+                resolved_modules.add(owner)
+    if len(resolved_modules) > 1:
+        return None, f"ambiguous project include: {include} resolves to {', '.join(sorted(resolved_modules))}"
+    if not resolved_modules and public_module is not None:
+        return None, f"unresolved project include: {include}"
+    return (next(iter(resolved_modules)) if resolved_modules else None), None
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default=".", help="Repository root.")
-    parser.add_argument(
-        "--config",
-        default="Docs/module-boundaries.json",
-        help="Boundary configuration file.",
-    )
-    parser.add_argument(
-        "--fail-on-legacy",
-        action="store_true",
-        help="Treat tolerated legacy edges as failures.",
-    )
+    add_policy_arguments(parser)
     return parser.parse_args()
-
-
-def load_config(root: Path, config_path: str) -> dict:
-    path = Path(config_path)
-    if not path.is_absolute():
-        path = root / path
-    with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
-
-
-def iter_source_files(module_root: Path):
-    if not module_root.exists():
-        return
-    for path in module_root.rglob("*"):
-        if path.is_file() and path.suffix in SOURCE_SUFFIXES:
-            yield path
-
-
-def include_prefix(include: str) -> str:
-    normalized = include.replace("\\", "/")
-    return normalized.split("/", 1)[0]
-
-
-def scan(root: Path, config: dict) -> tuple[list[IncludeUse], int]:
-    project_prefixes = set(config["projectIncludePrefixes"])
-    uses: list[IncludeUse] = []
-    file_count = 0
-
-    for module_name, module in config["modules"].items():
-        module_root = root / module["path"]
-        for path in iter_source_files(module_root):
-            file_count += 1
-            try:
-                lines = path.read_text(encoding="utf-8").splitlines()
-            except UnicodeDecodeError:
-                lines = path.read_text(encoding="utf-8-sig").splitlines()
-
-            for line_number, line in enumerate(lines, start=1):
-                match = INCLUDE_RE.match(line)
-                if not match:
-                    continue
-
-                include = match.group(1)
-                prefix = include_prefix(include)
-                if prefix not in project_prefixes:
-                    continue
-                local_private_include = module_root / "Private" / include
-                to_module = (
-                    module_name
-                    if local_private_include.is_file()
-                    else prefix
-                )
-
-                uses.append(
-                    IncludeUse(
-                        from_module=module_name,
-                        to_module=to_module,
-                        include=include,
-                        path=path.relative_to(root),
-                        line=line_number,
-                    )
-                )
-
-    return uses, file_count
-
-
-def edge_allowed(use: IncludeUse, config: dict) -> bool:
-    allowed = set(config["modules"][use.from_module].get("allowed", []))
-    return "*" in allowed or use.to_module in allowed
-
-
-def group_counts(uses: list[IncludeUse]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for use in uses:
-        counts[use.edge()] = counts.get(use.edge(), 0) + 1
-    return dict(sorted(counts.items()))
-
-
-def print_use(use: IncludeUse) -> None:
-    print(f"  {use.path}:{use.line}: {use.edge()} includes {use.include}")
-
 
 def main() -> int:
     args = parse_args()
-    root = resolve_repo_root(args.root)
-    config_path = resolve_required_file(root, args.config, "module boundary configuration")
-    config = load_config(root, str(config_path))
-    legacy_edges = set(config.get("legacyEdges", {}).keys())
-    legacy_budgets = config.get("legacyBudgets", {})
-
-    uses, file_count = scan(root, config)
-    violations = [
-        use
-        for use in uses
-        if not edge_allowed(use, config) and use.edge() not in legacy_edges
+    policy = load_policy(resolve_repo_root(args.root), args)
+    findings: list[str] = []
+    count = 0
+    production_modules = [
+        module.id for module in policy.modules.values()
+        if not module.deferred and module.domain != "tests"
     ]
-    legacy_uses = [use for use in uses if use.edge() in legacy_edges]
-
-    print(f"Scanned {file_count} source files.")
-    print(f"Found {len(uses)} project include directives.")
-
-    if violations:
-        print("")
+    # Test sources are scoped to concrete registered targets.  This keeps
+    # deferred/removed Editor test scaffolding out of the runtime policy scan
+    # while still checking every actually configured test source.
+    sources = sorted(set(policy.source_files(production_modules)) | set(policy.target_source_files(["Tests"])))
+    if not sources:
+        raise GateInputError("manifest source scan is empty")
+    for path in sources:
+        source = policy.module_for_path(path)
+        if source is None:
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except UnicodeDecodeError:
+            lines = path.read_text(encoding="utf-8-sig").splitlines()
+        for line_number, line in enumerate(lines, 1):
+            match = INCLUDE_RE.match(line)
+            if not match:
+                continue
+            include = match.group(1).replace("\\", "/")
+            destination, error = resolve_include_module(policy, source, path, include)
+            if error is not None:
+                findings.append(f"{path.relative_to(policy.root)}:{line_number}: {error}")
+                continue
+            if destination is None:
+                continue
+            count += 1
+            if not edge_allowed(policy, source, destination):
+                findings.append(f"{path.relative_to(policy.root)}:{line_number}: forbidden include {source}->{destination}: {include}")
+    print(f"Scanned {len(sources)} manifest-owned source files and {count} project includes.")
+    if findings:
         print("Module boundary violations:")
-        for use in violations[:100]:
-            print_use(use)
-        if len(violations) > 100:
-            print(f"  ... {len(violations) - 100} more")
+        for finding in findings[:100]:
+            print("  " + finding)
         return 1
-
-    print("No module boundary violations.")
-
-    if legacy_uses:
-        print("")
-        print("Tolerated legacy edges:")
-        legacy_counts = group_counts(legacy_uses)
-        notes = config.get("legacyEdges", {})
-        for edge, count in legacy_counts.items():
-            note = notes.get(edge, "")
-            if note:
-                print(f"  {edge}: {count} include(s) - {note}")
-            else:
-                print(f"  {edge}: {count} include(s)")
-
-        budget_violations = []
-        for edge, count in legacy_counts.items():
-            budget = legacy_budgets.get(edge)
-            if budget is not None and count > int(budget):
-                budget_violations.append((edge, count, int(budget)))
-
-        if budget_violations:
-            print("")
-            print("Legacy edge budget violations:")
-            for edge, count, budget in budget_violations:
-                print(f"  {edge}: {count} include(s), budget is {budget}")
-            return 1
-
-        if args.fail_on_legacy:
-            print("")
-            print("Legacy edges are present and --fail-on-legacy was set.")
-            return 1
-
+    print("Module boundaries passed.")
     return 0
 
-
 if __name__ == "__main__":
-    sys.exit(run_gate(main))
+    raise SystemExit(run_gate(main))

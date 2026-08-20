@@ -54,3 +54,9 @@ elseif(UNIX)
 endif()
 
 add_library(RVX::Networking ALIAS RVX_Networking)
+
+rvx_register_module_target(
+    TARGET RVX_Networking
+    MODULE Networking
+    ALIASES RVX::Networking
+)

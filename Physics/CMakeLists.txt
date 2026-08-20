@@ -56,3 +56,9 @@ else()
 endif()
 
 add_library(RVX::Physics ALIAS RVX_Physics)
+
+rvx_register_module_target(
+    TARGET RVX_Physics
+    MODULE Physics
+    ALIASES RVX::Physics
+)

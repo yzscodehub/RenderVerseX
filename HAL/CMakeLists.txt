@@ -55,3 +55,9 @@ if(WIN32)
 endif()
 
 add_library(RVX::HAL ALIAS RVX_HAL)
+
+rvx_register_module_target(
+    TARGET RVX_HAL
+    MODULE HAL
+    ALIASES RVX::HAL
+)

@@ -20,3 +20,9 @@ target_link_libraries(RVX_ECS PUBLIC
 )
 
 add_library(RVX::ECS ALIAS RVX_ECS)
+
+rvx_register_module_target(
+    TARGET RVX_ECS
+    MODULE ECS
+    ALIASES RVX::ECS
+)

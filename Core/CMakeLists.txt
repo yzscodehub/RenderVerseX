@@ -52,3 +52,9 @@ target_link_libraries(RVX_Core PUBLIC
 
 # Alias for cleaner target names
 add_library(RVX::Core ALIAS RVX_Core)
+
+rvx_register_module_target(
+    TARGET RVX_Core
+    MODULE Core
+    ALIASES RVX::Core
+)

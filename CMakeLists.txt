@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.25)
 project(RenderVerseX VERSION 0.1.0 LANGUAGES CXX)
 
+include(${CMAKE_SOURCE_DIR}/cmake/RVXModuleInventory.cmake)
+set(RVX_MODULE_MANIFEST
+    "${CMAKE_SOURCE_DIR}/Docs/module-boundaries.json")
+set(RVX_MODULE_INVENTORY
+    "${CMAKE_BINARY_DIR}/Architecture/RVXModuleInventory-$<CONFIG>.json")
+
 # =============================================================================
 # C++ Standard
 # =============================================================================
@@ -11,6 +17,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_library(RVX_Options INTERFACE)
 add_library(RVX::Options ALIAS RVX_Options)
+rvx_register_module_target(
+    TARGET RVX_Options
+    MODULE Core
+    ALIASES RVX::Options
+    INFRASTRUCTURE
+)
 target_compile_features(RVX_Options INTERFACE cxx_std_20)
 target_compile_definitions(RVX_Options INTERFACE
     $<$<CONFIG:Debug>:RVX_DEBUG=1>
@@ -196,22 +208,42 @@ add_subdirectory(ShaderCompiler)
 
 if(RVX_ENABLE_DX11)
     add_subdirectory(RHI_DX11)
+else()
+    rvx_register_disabled_module(
+        MODULE RHI_DX11
+        REASON "DX11 backend is disabled for this configuration")
 endif()
 
 if(RVX_ENABLE_DX12)
     add_subdirectory(RHI_DX12)
+else()
+    rvx_register_disabled_module(
+        MODULE RHI_DX12
+        REASON "DX12 backend is disabled for this configuration")
 endif()
 
 if(RVX_ENABLE_VULKAN)
     add_subdirectory(RHI_Vulkan)
+else()
+    rvx_register_disabled_module(
+        MODULE RHI_Vulkan
+        REASON "Vulkan backend is disabled for this configuration")
 endif()
 
 if(RVX_ENABLE_METAL)
     add_subdirectory(RHI_Metal)
+else()
+    rvx_register_disabled_module(
+        MODULE RHI_Metal
+        REASON "Metal backend is disabled for this configuration")
 endif()
 
 if(RVX_ENABLE_OPENGL)
     add_subdirectory(RHI_OpenGL)
+else()
+    rvx_register_disabled_module(
+        MODULE RHI_OpenGL
+        REASON "OpenGL backend is disabled for this configuration")
 endif()
 
 add_subdirectory(RHI_BackendFactory) # Enabled RHI backend composition
@@ -241,16 +273,33 @@ add_subdirectory(Water)      # Water module (water surface and effects)
 
 if(RVX_BUILD_EDITOR)
     add_subdirectory(Editor)
+else()
+    rvx_register_disabled_module(
+        MODULE Editor
+        REASON "Editor is explicitly deferred during the runtime architecture migration")
 endif()
 
 if(RVX_BUILD_SAMPLES)
     add_subdirectory(Samples)
+else()
+    rvx_register_disabled_module(
+        MODULE Samples
+        REASON "Sample products are disabled for this configuration")
 endif()
 
 if(RVX_BUILD_TESTS)
     enable_testing()
     add_subdirectory(Tests)
+else()
+    rvx_register_disabled_module(
+        MODULE Tests
+        REASON "Validation targets are disabled for this configuration")
 endif()
+
+rvx_finalize_module_inventory(
+    MANIFEST "${RVX_MODULE_MANIFEST}"
+    OUTPUT "${RVX_MODULE_INVENTORY}"
+)
 
 # =============================================================================
 # Status Summary

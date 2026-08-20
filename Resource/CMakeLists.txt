@@ -178,3 +178,9 @@ else()
 endif()
 
 add_library(RVX::Resource ALIAS RVX_Resource)
+
+rvx_register_module_target(
+    TARGET RVX_Resource
+    MODULE Resource
+    ALIASES RVX::Resource
+)

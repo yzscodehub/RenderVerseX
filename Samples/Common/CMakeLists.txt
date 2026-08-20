@@ -55,3 +55,17 @@ add_executable(RVXSampleInteriorFixtureWriter
     Tools/SampleInteriorFixtureWriter.cpp
 )
 target_compile_features(RVXSampleInteriorFixtureWriter PRIVATE cxx_std_20)
+
+rvx_register_module_target(
+    TARGET RVX_SampleCommon
+    MODULE Samples
+    ALIASES RVX::SampleCommon
+)
+rvx_register_module_target(
+    TARGET RVXSampleHDRFixtureWriter
+    MODULE Samples
+)
+rvx_register_module_target(
+    TARGET RVXSampleInteriorFixtureWriter
+    MODULE Samples
+)

@@ -602,16 +602,11 @@ endif()
 rvx_add_gtest(
     NAME RenderGraphValidation
     LANE unit
-    SOURCES
-        RenderGraphValidation/main.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Graph/RenderGraph.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Graph/RenderGraphCompiler.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Graph/RenderGraphExecutor.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Graph/RenderGraphExecution.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Graph/TransientResourcePool.cpp
+    SOURCES RenderGraphValidation/main.cpp
     LIBS
         RVX::Core
         RVX::RHI
+        RVX::Render
         RVX_RenderRuntimeCore
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Render/Include
@@ -693,13 +688,12 @@ rvx_add_gtest(
 rvx_add_gtest(
     NAME GPUUploadServiceValidation
     LANE unit
-    SOURCES
-        GPUUploadServiceValidation/main.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/GPUUploadService.cpp
+    SOURCES GPUUploadServiceValidation/main.cpp
     LIBS
         RVX::Core
         RVX::RHI
         RVX::RenderContracts
+        RVX::Render
         RVX_RenderRuntimeCore
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Render/Include
@@ -711,19 +705,12 @@ rvx_add_gtest(
 rvx_add_gtest(
     NAME GPUDrivenValidation
     LANE unit
-    SOURCES
-        GPUDrivenValidation/main.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/GPUDriven/GPUCulling.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Passes/MeshPassProcessor.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderDrawPacket.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Submission/RasterInstanceStream.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Submission/DirectRasterReadbackQualification.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Submission/RenderSubmissionStrategy.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Visibility/RenderVisibility.cpp
+    SOURCES GPUDrivenValidation/main.cpp
     LIBS
         RVX::Core
         RVX::RHI
         RVX::RenderContracts
+        RVX::Render
         RVX::ShaderCompiler
         RVX_RenderRuntimeCore
     INCLUDES
@@ -1009,12 +996,11 @@ rvx_add_gtest(
 rvx_add_gtest(
     NAME ResourceViewCacheValidation
     LANE unit
-    SOURCES
-        ResourceViewCacheValidation/main.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Graph/ResourceViewCache.cpp
+    SOURCES ResourceViewCacheValidation/main.cpp
     LIBS
         RVX::Core
         RVX::RHI
+        RVX::Render
         RVX_RenderRuntimeCore
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Render/Include

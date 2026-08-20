@@ -38,3 +38,9 @@ target_link_libraries(RVX_UI PUBLIC
 )
 
 add_library(RVX::UI ALIAS RVX_UI)
+
+rvx_register_module_target(
+    TARGET RVX_UI
+    MODULE UI
+    ALIASES RVX::UI
+)

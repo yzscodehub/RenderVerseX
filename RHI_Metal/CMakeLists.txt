@@ -59,3 +59,9 @@ set_source_files_properties(
 )
 
 add_library(RVX::RHI_Metal ALIAS RVX_RHI_Metal)
+
+rvx_register_module_target(
+    TARGET RVX_RHI_Metal
+    MODULE RHI_Metal
+    ALIASES RVX::RHI_Metal
+)

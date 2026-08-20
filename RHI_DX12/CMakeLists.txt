@@ -48,3 +48,9 @@ elseif(TARGET D3D12MemoryAllocator)
 endif()
 
 add_library(RVX::RHI_DX12 ALIAS RVX_RHI_DX12)
+
+rvx_register_module_target(
+    TARGET RVX_RHI_DX12
+    MODULE RHI_DX12
+    ALIASES RVX::RHI_DX12
+)

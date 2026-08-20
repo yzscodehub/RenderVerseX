@@ -25,3 +25,9 @@ target_link_libraries(RVX_ResourceSceneAdapters PUBLIC
 target_compile_features(RVX_ResourceSceneAdapters PUBLIC cxx_std_20)
 
 add_library(RVX::ResourceSceneAdapters ALIAS RVX_ResourceSceneAdapters)
+
+rvx_register_module_target(
+    TARGET RVX_ResourceSceneAdapters
+    MODULE ResourceSceneAdapters
+    ALIASES RVX::ResourceSceneAdapters
+)

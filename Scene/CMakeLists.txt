@@ -26,3 +26,9 @@ target_link_libraries(RVX_Scene PUBLIC
 
 # Alias for cleaner target names
 add_library(RVX::Scene ALIAS RVX_Scene)
+
+rvx_register_module_target(
+    TARGET RVX_Scene
+    MODULE Scene
+    ALIASES RVX::Scene
+)

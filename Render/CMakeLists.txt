@@ -201,3 +201,13 @@ add_library(RVX::Render ALIAS RVX_Render)
 
 # Backward compatibility alias for code that still uses RVX::RenderGraph
 add_library(RVX::RenderGraph ALIAS RVX_Render)
+
+rvx_register_module_target(
+    TARGET RVX_RenderRuntimeCore
+    MODULE Render
+)
+rvx_register_module_target(
+    TARGET RVX_Render
+    MODULE Render
+    ALIASES RVX::Render RVX::RenderGraph
+)

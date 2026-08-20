@@ -23,3 +23,9 @@ target_link_libraries(RVX_World PUBLIC
 )
 
 add_library(RVX::World ALIAS RVX_World)
+
+rvx_register_module_target(
+    TARGET RVX_World
+    MODULE World
+    ALIASES RVX::World
+)

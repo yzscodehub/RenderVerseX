@@ -37,3 +37,9 @@ target_link_libraries(RVX_Water PUBLIC
 )
 
 add_library(RVX::Water ALIAS RVX_Water)
+
+rvx_register_module_target(
+    TARGET RVX_Water
+    MODULE Water
+    ALIASES RVX::Water
+)

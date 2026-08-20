@@ -50,3 +50,9 @@ target_include_directories(RVX_Scripting PUBLIC
 
 # Alias for cleaner target names
 add_library(RVX::Scripting ALIAS RVX_Scripting)
+
+rvx_register_module_target(
+    TARGET RVX_Scripting
+    MODULE Scripting
+    ALIASES RVX::Scripting
+)

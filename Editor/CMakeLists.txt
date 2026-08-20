@@ -209,3 +209,13 @@ target_link_libraries(RVXEditor PRIVATE
     RVX::Editor
     RVX::Engine
 )
+
+rvx_register_module_target(
+    TARGET RVX_Editor
+    MODULE Editor
+    ALIASES RVX::Editor
+)
+rvx_register_module_target(
+    TARGET RVXEditor
+    MODULE Editor
+)

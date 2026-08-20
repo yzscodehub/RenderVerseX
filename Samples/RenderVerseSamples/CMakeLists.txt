@@ -146,3 +146,8 @@ set_target_properties(RenderVerseSamples PROPERTIES
     FOLDER "Samples/Product"
     VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
 )
+
+rvx_register_module_target(
+    TARGET RenderVerseSamples
+    MODULE Samples
+)

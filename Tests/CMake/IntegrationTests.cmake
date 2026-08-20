@@ -214,13 +214,7 @@ rvx_add_gtest(
 rvx_add_gtest(
     NAME RenderSceneValidation
     LANE integration
-    SOURCES
-        RenderSceneValidation/main.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Material/MaterialClassification.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderDrawItem.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderDrawPacket.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderDrawPacketCache.cpp
-        ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderScene.cpp
+    SOURCES RenderSceneValidation/main.cpp
     LIBS
         RVX::Core
         RVX::Runtime

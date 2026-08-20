@@ -53,6 +53,39 @@ function(_rvx_validation_register_target target_name lane)
     )
 endfunction()
 
+function(_rvx_validation_register_test_module_target_if_needed target_name)
+    if(NOT COMMAND rvx_register_module_target)
+        message(FATAL_ERROR
+            "Validation registration requires RVXModuleInventory.cmake")
+    endif()
+    if(NOT TARGET "${target_name}")
+        message(FATAL_ERROR
+            "Cannot register missing validation build target '${target_name}'")
+    endif()
+
+    get_target_property(_rvx_validation_module_id
+        "${target_name}" RVX_MODULE_ID)
+    if(NOT "${_rvx_validation_module_id}" STREQUAL
+       "_rvx_validation_module_id-NOTFOUND")
+        return()
+    endif()
+
+    get_target_property(_rvx_validation_source_dir
+        "${target_name}" SOURCE_DIR)
+    file(RELATIVE_PATH _rvx_validation_source_relative
+        "${CMAKE_SOURCE_DIR}/Tests"
+        "${_rvx_validation_source_dir}")
+    if(_rvx_validation_source_relative MATCHES "^\\.\\.([/\\\\]|$)" OR
+       IS_ABSOLUTE "${_rvx_validation_source_relative}")
+        return()
+    endif()
+
+    rvx_register_module_target(
+        TARGET "${target_name}"
+        MODULE Tests
+    )
+endfunction()
+
 function(_rvx_validation_validate_metadata lane tags suite context)
     _rvx_validation_require_lane("${lane}" "${context}")
 
@@ -213,6 +246,10 @@ function(rvx_add_gtest)
     endif()
 
     add_executable(${RVX_GTEST_NAME} ${RVX_GTEST_SOURCES})
+    rvx_register_module_target(
+        TARGET "${RVX_GTEST_NAME}"
+        MODULE Tests
+    )
     target_link_libraries(${RVX_GTEST_NAME} PRIVATE
         GTest::gtest_main
         ${RVX_GTEST_LIBS}
@@ -368,6 +405,8 @@ function(rvx_add_validation_test)
     endif()
 
     foreach(_rvx_validation_target IN LISTS RVX_TEST_BUILD_TARGETS)
+        _rvx_validation_register_test_module_target_if_needed(
+            "${_rvx_validation_target}")
         _rvx_validation_register_target("${_rvx_validation_target}" "${RVX_TEST_LANE}")
     endforeach()
 endfunction()
@@ -407,12 +446,22 @@ function(rvx_finalize_validation)
         add_custom_target(${_rvx_validation_aggregate}
             DEPENDS ${_rvx_validation_lane_targets}
         )
+        rvx_register_module_target(
+            TARGET "${_rvx_validation_aggregate}"
+            MODULE Tests
+            INFRASTRUCTURE
+        )
     endforeach()
 
     if(TARGET RVXValidationAll)
         message(FATAL_ERROR "Validation aggregate 'RVXValidationAll' already exists")
     endif()
     add_custom_target(RVXValidationAll DEPENDS ${_rvx_validation_all_targets})
+    rvx_register_module_target(
+        TARGET RVXValidationAll
+        MODULE Tests
+        INFRASTRUCTURE
+    )
 
     set_property(GLOBAL PROPERTY RVX_VALIDATION_FINALIZED TRUE)
 endfunction()

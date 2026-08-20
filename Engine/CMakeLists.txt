@@ -64,3 +64,9 @@ target_link_libraries(RVX_Engine PRIVATE
 )
 
 add_library(RVX::Engine ALIAS RVX_Engine)
+
+rvx_register_module_target(
+    TARGET RVX_Engine
+    MODULE Engine
+    ALIASES RVX::Engine
+)

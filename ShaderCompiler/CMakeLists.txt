@@ -125,3 +125,9 @@ if(RVX_ENABLE_VULKAN)
 endif()
 
 add_library(RVX::ShaderCompiler ALIAS RVX_ShaderCompiler)
+
+rvx_register_module_target(
+    TARGET RVX_ShaderCompiler
+    MODULE ShaderCompiler
+    ALIASES RVX::ShaderCompiler
+)

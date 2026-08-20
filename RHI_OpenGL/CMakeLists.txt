@@ -71,3 +71,9 @@ target_compile_definitions(RVX_RHI_OpenGL PRIVATE
 )
 
 add_library(RVX::RHI_OpenGL ALIAS RVX_RHI_OpenGL)
+
+rvx_register_module_target(
+    TARGET RVX_RHI_OpenGL
+    MODULE RHI_OpenGL
+    ALIASES RVX::RHI_OpenGL
+)

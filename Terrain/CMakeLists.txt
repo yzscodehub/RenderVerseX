@@ -37,3 +37,9 @@ target_link_libraries(RVX_Terrain PUBLIC
 )
 
 add_library(RVX::Terrain ALIAS RVX_Terrain)
+
+rvx_register_module_target(
+    TARGET RVX_Terrain
+    MODULE Terrain
+    ALIASES RVX::Terrain
+)

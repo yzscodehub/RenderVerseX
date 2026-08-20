@@ -32,3 +32,9 @@ target_link_libraries(RVX_RHI_Vulkan PRIVATE
 )
 
 add_library(RVX::RHI_Vulkan ALIAS RVX_RHI_Vulkan)
+
+rvx_register_module_target(
+    TARGET RVX_RHI_Vulkan
+    MODULE RHI_Vulkan
+    ALIASES RVX::RHI_Vulkan
+)

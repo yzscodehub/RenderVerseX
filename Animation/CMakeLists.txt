@@ -44,3 +44,9 @@ target_link_libraries(RVX_Animation PUBLIC
 
 # Alias for cleaner target names
 add_library(RVX::Animation ALIAS RVX_Animation)
+
+rvx_register_module_target(
+    TARGET RVX_Animation
+    MODULE Animation
+    ALIASES RVX::Animation
+)

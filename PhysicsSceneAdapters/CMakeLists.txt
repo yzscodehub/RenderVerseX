@@ -21,3 +21,9 @@ target_link_libraries(RVX_PhysicsSceneAdapters PUBLIC
 target_compile_features(RVX_PhysicsSceneAdapters PUBLIC cxx_std_20)
 
 add_library(RVX::PhysicsSceneAdapters ALIAS RVX_PhysicsSceneAdapters)
+
+rvx_register_module_target(
+    TARGET RVX_PhysicsSceneAdapters
+    MODULE PhysicsSceneAdapters
+    ALIASES RVX::PhysicsSceneAdapters
+)

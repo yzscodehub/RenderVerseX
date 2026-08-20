@@ -74,3 +74,9 @@ elseif(UNIX)
 endif()
 
 add_library(RVX::Audio ALIAS RVX_Audio)
+
+rvx_register_module_target(
+    TARGET RVX_Audio
+    MODULE Audio
+    ALIASES RVX::Audio
+)

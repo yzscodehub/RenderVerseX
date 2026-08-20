@@ -51,3 +51,9 @@ endif()
 
 # Create alias for cleaner target names
 add_library(RVX::Geometry ALIAS RVX_Geometry)
+
+rvx_register_module_target(
+    TARGET RVX_Geometry
+    MODULE Geometry
+    ALIASES RVX::Geometry
+)

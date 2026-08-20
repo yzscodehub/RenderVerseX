@@ -21,3 +21,9 @@ target_link_libraries(RVX_RenderExtraction PUBLIC
 )
 
 add_library(RVX::RenderExtraction ALIAS RVX_RenderExtraction)
+
+rvx_register_module_target(
+    TARGET RVX_RenderExtraction
+    MODULE RenderExtraction
+    ALIASES RVX::RenderExtraction
+)

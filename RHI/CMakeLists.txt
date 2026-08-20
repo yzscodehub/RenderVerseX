@@ -47,3 +47,9 @@ if(RVX_ENABLE_OPENGL)
 endif()
 
 add_library(RVX::RHI ALIAS RVX_RHI)
+
+rvx_register_module_target(
+    TARGET RVX_RHI
+    MODULE RHI
+    ALIASES RVX::RHI
+)

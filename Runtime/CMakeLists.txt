@@ -45,3 +45,9 @@ if(WIN32)
 endif()
 
 add_library(RVX::Runtime ALIAS RVX_Runtime)
+
+rvx_register_module_target(
+    TARGET RVX_Runtime
+    MODULE Runtime
+    ALIASES RVX::Runtime
+)
