@@ -40,6 +40,21 @@ executable entry points and depend on the `AssetPipeline` developer library.
 They are disabled whenever `RVX_BUILD_PROGRAMS` is off and are never shipping
 dependencies.
 
+The physical source layout is final for this architecture release:
+
+```text
+Source/Runtime/     shipping-capable contracts, features, composition, and backends
+Source/Developer/   source import, shader compilation, diagnostics, and dev wiring
+Source/Programs/    developer command-line entry points
+Editor/             explicitly deferred authoring product
+Samples/ Tests/ Docs/ Scripts/ cmake/   repository-level products and infrastructure
+```
+
+The canonical developer diagnostics target is `RVX_DebugTools`, exposed as
+`RVX::DebugTools`. The old `RVX_Debug` / `RVX::Debug` identity is forbidden.
+Likewise, the retired monolith identities `RVX::Runtime`, `RVX::Resource`, and
+`RVX::Tools` must not reappear.
+
 `RVX::UI` is a CPU-only producer. It records layout results into
 `RenderContracts/UIRenderPacket.h` using backend-neutral vertices, indices,
 draw commands, generational texture handles, and an owned font-atlas payload.

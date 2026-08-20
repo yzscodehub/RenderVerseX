@@ -1,9 +1,9 @@
 # =============================================================================
-# Debug Module - Profiling, debugging, and development tools
+# DebugTools Module - Profiling, debugging, and development tools
 # =============================================================================
-add_library(RVX_Debug STATIC)
+add_library(RVX_DebugTools STATIC)
 
-target_sources(RVX_Debug PRIVATE
+target_sources(RVX_DebugTools PRIVATE
     # Core profiling
     Private/CPUProfiler.cpp
     Private/MemoryTracker.cpp
@@ -19,25 +19,25 @@ target_sources(RVX_Debug PRIVATE
     Private/DebugSubsystem.cpp
 )
 
-target_include_directories(RVX_Debug PUBLIC
+target_include_directories(RVX_DebugTools PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Include>
     $<INSTALL_INTERFACE:include>
 )
 
-target_link_libraries(RVX_Debug PUBLIC
+target_link_libraries(RVX_DebugTools PUBLIC
     RVX::Core
 )
 
 # Debug-only features
-target_compile_definitions(RVX_Debug PRIVATE
+target_compile_definitions(RVX_DebugTools PRIVATE
     $<$<CONFIG:Debug>:RVX_ENABLE_PROFILING=1>
 )
 
 # Alias for cleaner target names
-add_library(RVX::Debug ALIAS RVX_Debug)
+add_library(RVX::DebugTools ALIAS RVX_DebugTools)
 
 rvx_register_module_target(
-    TARGET RVX_Debug
-    MODULE Debug
-    ALIASES RVX::Debug
+    TARGET RVX_DebugTools
+    MODULE DebugTools
+    ALIASES RVX::DebugTools
 )

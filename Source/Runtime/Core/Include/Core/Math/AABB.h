@@ -277,7 +277,4 @@ private:
     Vec3 m_max;
 };
 
-// Backward compatibility alias
-using BoundingBox = AABB;
-
 } // namespace RVX

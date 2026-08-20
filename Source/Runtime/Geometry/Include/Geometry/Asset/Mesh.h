@@ -55,7 +55,7 @@ namespace RVX
         uint32_t indexCount = 0;       // Number of indices
         int32_t baseVertex = 0;        // Base vertex offset (for indexed drawing)
         uint32_t materialId = 0;       // Material ID reference
-        std::optional<BoundingBox> localBounds;
+        std::optional<AABB> localBounds;
         std::optional<PrimitiveType> primitive;
         std::string name;
     };
@@ -223,7 +223,7 @@ namespace RVX
         // =====================================================================
 
         void SetBoundingBox(const Vec3& min, const Vec3& max);
-        const std::optional<BoundingBox>& GetBoundingBox() const { return m_boundingBox; }
+        const std::optional<AABB>& GetBoundingBox() const { return m_boundingBox; }
         bool ComputeBoundingBox();
 
         // =====================================================================
@@ -269,7 +269,7 @@ namespace RVX
         PrimitiveType m_primitiveType = PrimitiveType::Triangles;
 
         // Bounding box
-        mutable std::optional<BoundingBox> m_boundingBox;
+        mutable std::optional<AABB> m_boundingBox;
 
         // SubMeshes
         std::vector<SubMesh> m_subMeshes;

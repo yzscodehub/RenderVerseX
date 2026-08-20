@@ -298,9 +298,6 @@ namespace RVX
         /// Get current frame number
         uint64_t GetFrameNumber() const { return m_frameNumber; }
 
-        /// Compatibility alias
-        bool Init() { return Initialize(); }
-
     private:
         struct WorldEntry;
 

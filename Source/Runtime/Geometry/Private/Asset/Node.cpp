@@ -412,9 +412,9 @@ namespace RVX
         return node && node->IsAncestorOf(this);
     }
 
-    std::optional<BoundingBox> Node::ComputeWorldBoundingBox() const
+    std::optional<AABB> Node::ComputeWorldBoundingBox() const
     {
-        BoundingBox result;
+        AABB result;
         bool hasAny = false;
 
         // A Node owns source topology and resource indices only. Model-aware

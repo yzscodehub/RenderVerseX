@@ -196,7 +196,7 @@ namespace RVX
         // Bounding Box
         // =====================================================================
 
-        std::optional<BoundingBox> ComputeWorldBoundingBox() const;
+        std::optional<AABB> ComputeWorldBoundingBox() const;
 
         // =====================================================================
         // Resource Indices (for Prefab/Instantiate pattern)

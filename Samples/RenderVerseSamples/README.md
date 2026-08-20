@@ -93,13 +93,7 @@ Direct success requires a Direct execution report and no indirect submission.
 DX12/Vulkan parity gates render the same `gpu-driven` scene twice and require
 zero differing pixels. Metal registers the same gates when built on Apple.
 
-## Legacy targets
-
-`Samples/Basic` contains low-level contract and diagnostic executables. Many
-targets share an implementation and are not product-level visual examples.
-
-`Samples/Showcase` contains legacy validation/report harnesses retained during
-incremental migration. Target names there must not be treated as evidence that
-the corresponding feature has a complete visual sample. New product-facing
-work belongs in an independent controller under `Scenes/` and is registered in
-`RegisterSamples.cpp`.
+All product-facing samples are independent controllers under `Scenes/` and are
+registered in `RegisterSamples.cpp`. Low-level backend and contract coverage
+belongs in `Tests`; removed `Samples/Basic` and `Samples/Showcase` layouts must
+not be restored.

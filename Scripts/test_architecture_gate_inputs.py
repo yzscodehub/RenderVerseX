@@ -68,15 +68,14 @@ class ArchitectureGateInputTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
                 self.assertIn("input error", result.stderr.lower())
 
-    def test_config_alias_must_not_disagree_with_manifest(self) -> None:
-        missing = REPO_ROOT / "Docs/missing-module-boundaries.json"
+    def test_removed_config_alias_is_rejected(self) -> None:
         result = run_gate(
             "check_module_boundary_manifest.py", "--root", str(REPO_ROOT),
-            "--manifest", str(MANIFEST), "--config", str(missing),
+            "--manifest", str(MANIFEST), "--config", str(MANIFEST),
             "--module-inventory", str(REPO_ROOT / "Docs/missing-module-inventory.json"),
         )
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn("disagree", result.stderr)
+        self.assertIn("unrecognized arguments: --config", result.stderr)
 
 
 if __name__ == "__main__":

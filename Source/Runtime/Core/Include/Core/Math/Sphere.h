@@ -205,7 +205,4 @@ private:
     float m_radius;
 };
 
-// Backward compatibility alias
-using BoundingSphere = Sphere;
-
 } // namespace RVX

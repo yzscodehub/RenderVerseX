@@ -127,7 +127,7 @@ namespace RVX
 
     void Mesh::SetBoundingBox(const Vec3& min, const Vec3& max)
     {
-        m_boundingBox = BoundingBox(min, max);
+        m_boundingBox = AABB(min, max);
     }
 
     bool Mesh::ComputeBoundingBox()
@@ -138,7 +138,7 @@ namespace RVX
             return false;
         }
 
-        BoundingBox bbox;
+        AABB bbox;
         const float* data = static_cast<const float*>(posAttr->GetData());
         size_t vertexCount = posAttr->GetVertexCount();
 
@@ -179,7 +179,7 @@ namespace RVX
                 continue;
             }
 
-            BoundingBox bounds;
+            AABB bounds;
             for (uint32_t i = 0; i < sm.indexCount; ++i)
             {
                 uint32_t idx = indices[sm.indexOffset + i];

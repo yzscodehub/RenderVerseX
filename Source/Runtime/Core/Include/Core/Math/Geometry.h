@@ -4,8 +4,8 @@
  * 
  * This header includes all geometric types in the Core/Math module:
  * - Ray (ray casting)
- * - AABB / BoundingBox (axis-aligned bounding box)
- * - Sphere / BoundingSphere (bounding sphere)
+ * - AABB (axis-aligned bounding box)
+ * - Sphere (bounding sphere)
  * - Plane (3D plane)
  * - Frustum (view frustum)
  * - Intersection tests

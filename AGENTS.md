@@ -1,10 +1,10 @@
 # AGENTS.md - RenderVerseX Development Guide
 
-This document provides guidelines for AI coding agents working on RenderVerseX, a cross-platform multi-backend graphics rendering engine written in C++20.
+This document provides guidelines for AI coding agents working on RenderVerseX, a cross-platform multi-backend game engine written in C++20.
 
 ## Project Overview
 
-- **Language**: C++20 | **Build System**: CMake 3.21+ | **Package Manager**: vcpkg
+- **Language**: C++20 | **Build System**: CMake 3.25+ | **Package Manager**: vcpkg
 - **Platforms**: Windows (DX11/DX12/Vulkan), Linux (Vulkan/OpenGL), macOS/iOS (Metal)
 
 ## Build Commands
@@ -35,7 +35,9 @@ cmake --build build --config Release --target ModelViewer
 
 ## Test Commands
 
-Tests are standalone executables (no GoogleTest framework).
+Validation is registered through CTest. Most unit, integration, architecture,
+and native cases use GoogleTest discovery; script and product checks are direct
+CTest entries. Every test has exactly one `lane.*` label.
 
 ```bash
 # Run a single validation test
@@ -169,12 +171,17 @@ namespace RVX { class GPUResourceManager; class PipelineCache; }
 ## Module Structure
 
 ```
-ModuleName/
+Source/Runtime/ModuleName/
   Include/ModuleName/     # Public headers
     ModuleName.h          # Main module header
   Private/                # Implementation files (.cpp)
   CMakeLists.txt
 ```
+
+Developer-only libraries use the same internal shape under `Source/Developer`.
+Command-line entry points live under `Source/Programs`. Public includes keep
+logical prefixes such as `Core/...` and `Render/...`; they never include the
+physical `Source/Runtime` or `Source/Developer` domain path.
 
 ### Key Modules
 
@@ -185,8 +192,11 @@ ModuleName/
 | `RHI_*` | Backend implementations (DX11, DX12, Vulkan, Metal, OpenGL) |
 | `Render` | High-level rendering (RenderGraph, Passes, SceneRenderer) |
 | `Scene` | Entity-Component system, mesh, materials |
-| `Resource` | Asset loading and resource management |
-| `ShaderCompiler` | HLSL compilation and cross-compilation |
+| `ResourceRuntime` | Cooked/package asset loading, caching, and residency |
+| `ShaderContracts` / `ShaderRuntime` | Runtime shader requests and cooked artifacts |
+| `AssetImport` / `ShaderCompiler` | Development-only source import and compilation |
+| `EngineDevelopmentComposition` | Development dependency composition |
+| `RVXCook` / `RVXAnimationDerive` | Command-line developer programs |
 
 ## Important Patterns
 

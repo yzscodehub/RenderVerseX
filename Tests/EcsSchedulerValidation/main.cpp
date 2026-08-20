@@ -32,21 +32,21 @@ TEST(EcsSchedulerValidation, SchedulerRunsSeriallyInPhaseOrderThenStableRegistra
 
     EXPECT_TRUE(scheduler.Register({
         .name = "update-second",
-        .phase = RVX::ECS::ProcessorPhase::Update,
+        .phase = RVX::ECS::ProcessorPhase::Gameplay,
         .order = 10,
         .access = {},
         .run = [&](RVX::ECS::Registry&) { order.emplace_back("update-second"); },
     }));
     EXPECT_TRUE(scheduler.Register({
         .name = "pre",
-        .phase = RVX::ECS::ProcessorPhase::PreUpdate,
+        .phase = RVX::ECS::ProcessorPhase::BeginSimulation,
         .order = 100,
         .access = {},
         .run = [&](RVX::ECS::Registry&) { order.emplace_back("pre"); },
     }));
     EXPECT_TRUE(scheduler.Register({
         .name = "update-first",
-        .phase = RVX::ECS::ProcessorPhase::Update,
+        .phase = RVX::ECS::ProcessorPhase::Gameplay,
         .order = 0,
         .access = {},
         .run = [&](RVX::ECS::Registry&) { order.emplace_back("update-first"); },

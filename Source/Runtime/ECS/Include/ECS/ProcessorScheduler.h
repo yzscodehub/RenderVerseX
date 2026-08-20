@@ -34,11 +34,6 @@ namespace RVX::ECS
         Feature,
         RenderExtraction,
         EndFrameCleanup,
-
-        // Compatibility aliases for the initial P1 scheduler API.
-        PreUpdate = BeginSimulation,
-        Update = Gameplay,
-        PostUpdate = PostSimulation,
     };
 
     /** @brief Selects the clock on which a processor may execute. */
@@ -142,7 +137,7 @@ namespace RVX::ECS
     struct ProcessorExecutionFailure
     {
         std::string processorName;
-        ProcessorPhase phase = ProcessorPhase::Update;
+        ProcessorPhase phase = ProcessorPhase::Gameplay;
         std::string group;
         ProcessorStepMode stepMode = ProcessorStepMode::Variable;
         float64 deltaSeconds = 0.0;
@@ -154,7 +149,7 @@ namespace RVX::ECS
     struct ProcessorDescriptor
     {
         std::string name;
-        ProcessorPhase phase = ProcessorPhase::Update;
+        ProcessorPhase phase = ProcessorPhase::Gameplay;
         /** Named sub-group within a phase; empty selects that phase's default group. */
         std::string group;
         /** Stable sub-group ordering before the group name is used as a tie breaker. */

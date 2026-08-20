@@ -23,7 +23,7 @@ namespace
     constexpr std::string_view PayloadEnd = "RVX_MODEL_PAYLOAD_END\n";
     constexpr uint32 MaxNodePrimitiveMappings = 65536u;
 
-    bool IsFiniteBounds(const BoundingBox& bounds)
+    bool IsFiniteBounds(const AABB& bounds)
     {
         if (!bounds.IsValid())
             return false;
@@ -646,7 +646,7 @@ bool DeserializeCookedModelArtifact(std::span<const uint8> bytes,
             outError = "Model artifact bounds are incomplete";
             return false;
         }
-        outArtifact.bounds = BoundingBox(minValue, maxValue);
+        outArtifact.bounds = AABB(minValue, maxValue);
         if (!IsFiniteBounds(outArtifact.bounds))
         {
             outError = "Model artifact bounds are non-finite or inverted";

@@ -31,7 +31,7 @@ namespace RVX
             return false;
         }
 
-        BoundingBox result;
+        AABB result;
         bool hasBounds = false;
         bool hasInvalidMeshReference = false;
         m_root->TraverseDepthFirst(

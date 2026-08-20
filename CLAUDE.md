@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build System & Commands
 
 ### Prerequisites
-- CMake 3.21+
+- CMake 3.25+
 - C++20 compatible compiler (VS2022, GCC11+, Clang13+)
 - vcpkg for dependency management
 
@@ -292,46 +292,16 @@ RVX_ASSERT(handle != RVX_INVALID_INDEX);
 
 ```
 RenderVerseX/
-├── Core/              # Core utilities (Types, Log, Assert, Math, Job System)
-├── Geometry/          # Geometry primitives, spatial queries
-├── HAL/               # Hardware Abstraction Layer (Window, Input)
-├── Spatial/           # Spatial partitioning and queries
-├── Scene/             # Entity-Component system, scene management
-├── Animation/         # Animation system
-├── Runtime/           # Runtime subsystems (Camera, etc.)
-├── Picking/           # Object picking and raycasting
-├── World/             # World management (integrates Scene, Spatial, Picking)
-├── Engine/            # Engine initialization and main loop
-├── RHI/               # Rendering Hardware Interface abstraction
-├── RHI_DX11/          # DirectX 11 backend
-├── RHI_DX12/          # DirectX 12 backend
-├── RHI_Vulkan/        # Vulkan backend
-├── RHI_Metal/         # Metal backend (macOS/iOS)
-├── RHI_OpenGL/        # OpenGL backend (Linux fallback)
-├── Source/Developer/ShaderCompiler/ # HLSL compilation and cross-compilation
-├── Render/            # High-level rendering (RenderGraph, Passes, SceneRenderer)
-├── Resource/          # Asset loading and resource management
-├── Particle/          # GPU-driven particle system
-├── AI/                # AI systems (Navigation, BehaviorTree, Perception)
-├── Networking/        # Network communication and replication
-├── Source/Developer/DebugTools/ # Debug tools (profiling, console, stats)
-├── Scripting/         # Lua scripting system with Sol2 bindings
-├── Audio/             # Audio subsystem (MiniAudio)
-├── Source/Developer/AssetImport/ # Development-only source importers
-├── Source/Developer/ResourceSource/ # Source loading and change observation
-├── Source/Developer/AssetPipeline/ # Asset pipeline and importers
-├── Source/Developer/EngineDevelopmentComposition/ # Development wiring
-├── Source/Programs/RVXCook/ # Asset cooking command-line program
-├── Source/Programs/RVXAnimationDerive/ # Animation derivation command-line program
-├── UI/                # UI framework with widgets
-├── Physics/           # Physics subsystem (Jolt Physics)
-├── Terrain/           # Heightmap terrain rendering
-├── Water/             # Water simulation and effects
-└── Editor/            # Editor application with ImGui
-
-Samples/               # Sample applications
-Tests/                 # Validation tests
-Docs/                 # Design documents and plans
+├── Source/
+│   ├── Runtime/       # Shipping-capable engine, features, RHI, and backends
+│   ├── Developer/     # Importers, compiler, debug tools, and dev composition
+│   └── Programs/      # RVXCook and RVXAnimationDerive entry points
+├── Editor/            # Explicitly deferred authoring product
+├── Samples/           # Sample applications
+├── Tests/             # Validation tests
+├── Docs/              # Architecture and workflow documentation
+├── Scripts/           # Architecture, Build Truth, and CI checks
+└── cmake/             # Module inventory and validation helpers
 ```
 
 ## Dependencies (vcpkg)

@@ -85,6 +85,29 @@ rvx_add_validation_test(
 
 rvx_add_validation_test(
     LANE architecture
+    NAME Architecture.LegacyArchitectureResidueChecker
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/test_legacy_architecture_residue.py
+        -v
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.LegacyArchitectureResidue
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/check_legacy_architecture_residue.py
+        --root ${CMAKE_SOURCE_DIR}
+        --manifest ${RVX_ARCH_MANIFEST}
+        --module-inventory ${RVX_ARCH_MODULE_INVENTORY}
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    REQUIRED_FILES ${RVX_ARCH_POLICY_REQUIRED_FILES}
+)
+
+rvx_add_validation_test(
+    LANE architecture
     NAME Architecture.RuntimeProductClosureChecker
     COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_SOURCE_DIR}/Scripts/test_runtime_product_closure.py

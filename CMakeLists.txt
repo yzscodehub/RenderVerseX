@@ -85,7 +85,7 @@ endif()
 
 if(RVX_BUILD_EDITOR)
     message(FATAL_ERROR
-        "RVX_BUILD_EDITOR is unavailable during the pure Runtime ECS migration; configure with RVX_BUILD_EDITOR=OFF")
+        "RVX_BUILD_EDITOR is explicitly deferred in this architecture release; configure with RVX_BUILD_EDITOR=OFF")
 endif()
 
 # =============================================================================
@@ -351,10 +351,10 @@ add_subdirectory(Source/Runtime/Particle) # GPU-driven particle system
 add_subdirectory(Source/Runtime/AI) # AI module (Navigation, BehaviorTree, Perception)
 add_subdirectory(Source/Runtime/Networking) # Network communication and replication
 if(RVX_BUILD_DEVELOPER)
-    add_subdirectory(Source/Developer/DebugTools) # Debug module (profiling, console, stats)
+    add_subdirectory(Source/Developer/DebugTools) # Debug tools (profiling, console, stats)
 else()
     rvx_register_disabled_module(
-        MODULE Debug
+        MODULE DebugTools
         REASON "Developer components are disabled for this configuration")
 endif()
 add_subdirectory(Source/Runtime/Scripting) # Lua scripting system
@@ -384,7 +384,7 @@ if(RVX_BUILD_EDITOR)
 else()
     rvx_register_disabled_module(
         MODULE Editor
-        REASON "Editor is explicitly deferred during the runtime architecture migration")
+        REASON "Editor is explicitly deferred in this architecture release")
 endif()
 
 if(RVX_BUILD_SAMPLES)

@@ -1019,7 +1019,7 @@ def main() -> int:
             except GateInputError as error:
                 raise InputError(str(error)) from error
             policy = IncludePolicy(modules=modules, prefixes=prefixes)
-        elif args.manifest or args.config:
+        elif args.manifest:
             raise InputError(f"module manifest does not exist: {manifest_path}")
     raw_entries = args.entries or list(DEFAULT_ENTRIES)
     entries = [parse_entry(root, raw_entry, policy) for raw_entry in raw_entries]

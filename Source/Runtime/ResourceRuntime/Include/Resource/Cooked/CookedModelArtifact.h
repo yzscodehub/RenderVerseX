@@ -38,7 +38,7 @@ namespace RVX::Resource
         std::vector<TextureReference> textures;
         std::vector<Material::Ptr> materials;
         Node::Ptr rootNode;
-        BoundingBox bounds;
+        AABB bounds;
     };
 
     /** @brief Serialize a deterministic model product including a content hash. */

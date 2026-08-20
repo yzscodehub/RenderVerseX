@@ -1,5 +1,11 @@
 # RenderVerseX Architecture Implementation Plan
 
+> Historical plan: this document records the pre-runtime-layout implementation
+> sequence and retains its original terminology. Current architecture truth is
+> `Docs/module-boundaries.json`, `Docs/module-boundaries.md`, and the generated
+> `RVXModuleInventory-<configuration>.json`; do not use paths below as current
+> source locations.
+
 Date: 2026-07-02
 Branch: `codex/architecture-implementation`
 Base: `engine-remediation` at `6b09c4d`

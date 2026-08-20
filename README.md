@@ -203,25 +203,20 @@ diagnostic, screenshot, and cleanup contracts.
 
 ```
 RenderVerseX/
-├── Core/                    # Core utilities, handles, math, jobs
-├── ECS/                     # Generic entity/fragment/query/processor kernel
-├── Scene/                   # ECS fragments, hierarchy, spatial index, snapshots
-├── World/                   # One SceneEcsRuntime and ECS camera service
-├── Engine/                  # Per-World ECS composition and render publication
-├── Resource/                # Asset loading, streaming, residency, retirement
-├── ResourceSceneAdapters/   # Prepared batches and ECS asset coordinators
-├── RenderExtraction/        # Frozen ECS snapshots to render contracts
-├── Render/                  # RenderGraph, passes, scene database, GPU-driven path
-├── Physics*/                # Physics runtime and pure ECS bridge
-├── Animation*/              # Animation runtime, evaluator, and pure ECS bridge
-├── Audio/                   # Audio runtime and pure ECS bridge
-├── Particle/                # Particle runtime and pure ECS bridge
-├── Terrain/                 # Terrain runtime and pure ECS bridge
-├── Water/                   # Water runtime and pure ECS bridge
-├── RHI*/                    # Backend-neutral RHI and platform backends
+├── Source/
+│   ├── Runtime/             # Shipping-capable engine modules and backends
+│   │   ├── Core, HAL, ECS, Geometry, Scene, World, Engine
+│   │   ├── ResourceRuntime, RenderContracts, RenderExtraction, Render
+│   │   ├── RHI, RHI_*, ShaderContracts, ShaderRuntime
+│   │   └── Animation, Physics, Audio, AI, UI, and gameplay features
+│   ├── Developer/           # Import, compilation, diagnostics, and dev composition
+│   └── Programs/            # RVXCook and RVXAnimationDerive entry points
+├── Editor/                  # Explicitly deferred authoring product
 ├── Samples/RenderVerseSamples/
 ├── Tests/
-└── Docs/
+├── Docs/
+├── Scripts/
+└── cmake/
 ```
 
 ## Code Style Guidelines

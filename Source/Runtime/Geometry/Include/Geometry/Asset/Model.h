@@ -82,8 +82,8 @@ namespace RVX
          *         and the model contains at least one indexed mesh bound.
          */
         [[nodiscard]] bool ComputeBoundingBox(const std::vector<Mesh::Ptr>& meshes);
-        void SetBoundingBox(const BoundingBox& bbox) { m_bbox = bbox; }
-        const BoundingBox& GetBoundingBox() const { return m_bbox; }
+        void SetBoundingBox(const AABB& bbox) { m_bbox = bbox; }
+        const AABB& GetBoundingBox() const { return m_bbox; }
 
         // =====================================================================
         // Animation (optional, requires Animation module)
@@ -97,7 +97,7 @@ namespace RVX
 
     private:
         Node::Ptr m_root;
-        BoundingBox m_bbox;
+        AABB m_bbox;
         std::vector<Material::Ptr> m_materials;
         bool m_hasAnimation = false;
 

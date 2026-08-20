@@ -162,7 +162,6 @@ class Policy:
 
 def add_policy_arguments(parser: Any, *, inventory_required: bool = True) -> None:
     parser.add_argument("--manifest", default=None, help="Manifest v2 JSON path.")
-    parser.add_argument("--config", default=None, help="Deprecated alias for --manifest.")
     parser.add_argument(
         "--module-inventory",
         required=inventory_required,
@@ -171,11 +170,7 @@ def add_policy_arguments(parser: Any, *, inventory_required: bool = True) -> Non
 
 
 def manifest_argument(args: Any) -> str:
-    manifest = getattr(args, "manifest", None)
-    config = getattr(args, "config", None)
-    if manifest and config and Path(manifest) != Path(config):
-        raise GateInputError("--manifest and deprecated --config disagree")
-    return manifest or config or "Docs/module-boundaries.json"
+    return getattr(args, "manifest", None) or "Docs/module-boundaries.json"
 
 
 def read_json(root: Path, raw_path: str, label: str) -> tuple[dict[str, Any], Path]:
