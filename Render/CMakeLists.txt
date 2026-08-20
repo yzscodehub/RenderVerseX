@@ -67,6 +67,37 @@ target_link_libraries(RVX_RenderRuntimeCore PRIVATE
     Threads::Threads
 )
 
+# =============================================================================
+# RenderGraph - frame graph compilation, execution, and transient resources
+# =============================================================================
+add_library(RVX_RenderGraph STATIC)
+
+target_sources(RVX_RenderGraph PRIVATE
+    Private/Graph/RenderGraph.cpp
+    Private/Graph/RenderGraphCompiler.cpp
+    Private/Graph/RenderGraphExecutor.cpp
+    Private/Graph/RenderGraphExecution.cpp
+    Private/Graph/TransientResourcePool.cpp
+    Private/Graph/ResourceViewCache.cpp
+)
+
+target_include_directories(RVX_RenderGraph PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Include>
+    $<INSTALL_INTERFACE:include>
+)
+
+target_include_directories(RVX_RenderGraph PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Private>
+)
+
+target_link_libraries(RVX_RenderGraph PUBLIC
+    RVX::Core
+    RVX::RHI
+    RVX_RenderRuntimeCore
+)
+
+add_library(RVX::RenderGraph ALIAS RVX_RenderGraph)
+
 add_library(RVX_Render STATIC)
 
 target_sources(RVX_Render PRIVATE
@@ -135,13 +166,6 @@ target_sources(RVX_Render PRIVATE
     Private/Passes/GBufferPass.cpp
     Private/Passes/WaterPass.cpp
     Private/Passes/UIPass.cpp
-    # Graph (merged from RenderGraph module)
-    Private/Graph/RenderGraph.cpp
-    Private/Graph/RenderGraphCompiler.cpp
-    Private/Graph/RenderGraphExecutor.cpp
-    Private/Graph/RenderGraphExecution.cpp
-    Private/Graph/TransientResourcePool.cpp
-    Private/Graph/ResourceViewCache.cpp
     # Material
     Private/Material/MaterialBinder.cpp
     Private/Material/MaterialClassification.cpp
@@ -190,6 +214,7 @@ target_link_libraries(RVX_Render PUBLIC
     RVX_Core
     RVX::HAL
     RVX::RenderContracts
+    RVX::RenderGraph
     RVX_RHI
     RVX::ShaderCompiler
 )
@@ -201,15 +226,17 @@ target_link_libraries(RVX_Render PRIVATE
 
 add_library(RVX::Render ALIAS RVX_Render)
 
-# Backward compatibility alias for code that still uses RVX::RenderGraph
-add_library(RVX::RenderGraph ALIAS RVX_Render)
-
 rvx_register_module_target(
     TARGET RVX_RenderRuntimeCore
     MODULE Render
 )
 rvx_register_module_target(
+    TARGET RVX_RenderGraph
+    MODULE Render
+    ALIASES RVX::RenderGraph
+)
+rvx_register_module_target(
     TARGET RVX_Render
     MODULE Render
-    ALIASES RVX::Render RVX::RenderGraph
+    ALIASES RVX::Render
 )

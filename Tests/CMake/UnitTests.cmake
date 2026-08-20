@@ -603,11 +603,7 @@ rvx_add_gtest(
     NAME RenderGraphValidation
     LANE unit
     SOURCES RenderGraphValidation/main.cpp
-    LIBS
-        RVX::Core
-        RVX::RHI
-        RVX::Render
-        RVX_RenderRuntimeCore
+    LIBS RVX::RenderGraph
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Render/Include
         ${CMAKE_SOURCE_DIR}/Render/Private
