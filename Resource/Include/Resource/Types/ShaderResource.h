@@ -13,10 +13,10 @@
 
 namespace RVX::Resource
 {
-    inline constexpr std::uint32_t RVX_SHADER_RESOURCE_METADATA_SCHEMA_VERSION = 1;
+    inline constexpr std::uint32_t RVX_SHADER_RESOURCE_METADATA_SCHEMA_VERSION = 2;
     inline constexpr const char* RVX_SHADER_RUNTIME_CONTRACT_SCHEMA_ID =
         "RVX.Resource.ShaderRuntimeContract";
-    inline constexpr std::uint32_t RVX_SHADER_RUNTIME_CONTRACT_SCHEMA_VERSION = 1;
+    inline constexpr std::uint32_t RVX_SHADER_RUNTIME_CONTRACT_SCHEMA_VERSION = 2;
 
     enum class ShaderBackendType : std::uint8_t
     {

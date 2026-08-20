@@ -14,7 +14,9 @@
 #include "Core/Assert.h"
 #include "Core/Diagnostics/JsonWriter.h"
 #include "Core/Log.h"
+#include "ShaderContracts/ShaderArtifact.h"
 #include <algorithm>
+#include <array>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -637,6 +639,16 @@ namespace
             return ResourceType::Unknown;
         }
 
+        std::array<char, RVX_SHADER_ARTIFACT_MAGIC_V2.size()> binaryMagic{};
+        file.read(binaryMagic.data(), binaryMagic.size());
+        if (file.gcount() == static_cast<std::streamsize>(binaryMagic.size()) &&
+            binaryMagic == RVX_SHADER_ARTIFACT_MAGIC_V2)
+        {
+            return ResourceType::Shader;
+        }
+        file.clear();
+        file.seekg(0, std::ios::beg);
+
         std::string firstLine;
         std::getline(file, firstLine);
 
@@ -653,11 +665,6 @@ namespace
         {
             return ResourceType::Model;
         }
-        if (firstLine == "RVX_SHADER_PREBAKE_V1")
-        {
-            return ResourceType::Shader;
-        }
-
         return ResourceType::Unknown;
     }
 
@@ -4606,7 +4613,8 @@ ResourceType ResourceManager::GetTypeFromExtension(const std::string& extension)
         return ResourceType::Material;
 
     // Shader
-    if (ext == ".hlsl" || ext == ".glsl" || ext == ".shader")
+    if (ext == ".hlsl" || ext == ".glsl" || ext == ".shader" ||
+        ext == ".rvxshader")
         return ResourceType::Shader;
 
     // Animation

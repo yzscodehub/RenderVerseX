@@ -197,6 +197,7 @@ rvx_add_gtest(
         RVX::Render
         RVX::Resource
         RVX::ShaderCompiler
+        RVX::ShaderContracts
         RVX::Tools
         RVX::RHI
         RVX::Terrain

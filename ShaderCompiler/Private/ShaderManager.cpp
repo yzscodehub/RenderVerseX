@@ -247,7 +247,10 @@ namespace RVX
         if (!result.compileResult.reflection.valid)
         {
             result.compileResult.reflection = ReflectShader(
-                desc.backend, desc.stage, result.compileResult.bytecode);
+                desc.backend,
+                desc.stage,
+                result.compileResult.bytecode,
+                desc.entryPoint.c_str());
         }
 
         // Create shader

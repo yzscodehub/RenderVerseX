@@ -560,7 +560,11 @@ namespace RVX
             result.success = true;
             result.bytecode.resize(shaderBlob->GetBufferSize());
             std::memcpy(result.bytecode.data(), shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize());
-            result.reflection = ReflectShader(RHIBackendType::DX11, options.stage, result.bytecode);
+            result.reflection = ReflectShader(
+                RHIBackendType::DX11,
+                options.stage,
+                result.bytecode,
+                options.entryPoint);
             RestoreDX11SetBindings(result.reflection);
             CaptureSourceInfo(result, nullptr, options);
             return result;
@@ -697,7 +701,11 @@ namespace RVX
             result.success = true;
             result.bytecode.resize(shaderBlob->GetBufferSize());
             std::memcpy(result.bytecode.data(), shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize());
-            result.reflection = ReflectShader(RHIBackendType::DX12, options.stage, result.bytecode);
+            result.reflection = ReflectShader(
+                RHIBackendType::DX12,
+                options.stage,
+                result.bytecode,
+                options.entryPoint);
             CaptureSourceInfo(result, trackingHandler, options);
 
             RVX_CORE_DEBUG("DXCShaderCompiler: Compiled DX12 shader with profile {}",
@@ -923,7 +931,11 @@ namespace RVX
             result.success = true;
             result.bytecode.resize(shaderBlob->GetBufferSize());
             std::memcpy(result.bytecode.data(), shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize());
-            result.reflection = ReflectShader(RHIBackendType::Vulkan, options.stage, result.bytecode);
+            result.reflection = ReflectShader(
+                RHIBackendType::Vulkan,
+                options.stage,
+                result.bytecode,
+                options.entryPoint);
             CaptureSourceInfo(result, trackingHandler, options);
             return result;
         }

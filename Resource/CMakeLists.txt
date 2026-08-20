@@ -89,6 +89,10 @@ target_link_libraries(RVX_Resource PUBLIC
     RVX::RenderContracts
 )
 
+target_link_libraries(RVX_Resource PRIVATE
+    RVX::ShaderContracts
+)
+
 # Link tinygltf if found
 if(unofficial-tinygltf_FOUND)
     target_link_libraries(RVX_Resource PRIVATE unofficial::tinygltf::tinygltf)

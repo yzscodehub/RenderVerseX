@@ -100,7 +100,7 @@ namespace RVX
                 return false;
             }
 
-            if (header.version > RVX_SHADER_CACHE_VERSION)
+            if (header.version != RVX_SHADER_CACHE_VERSION)
             {
                 RVX_CORE_WARN("ShaderCache: Version mismatch (file: {}, current: {})",
                     header.version, RVX_SHADER_CACHE_VERSION);

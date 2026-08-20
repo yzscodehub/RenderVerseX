@@ -10,8 +10,8 @@ namespace RVX
     // Cache File Magic and Version
     // =========================================================================
     constexpr uint32 RVX_SHADER_CACHE_MAGIC = 0x52565853; // "RVXS"
-    constexpr uint32 RVX_SHADER_CACHE_VERSION = 1;
-    constexpr uint64 RVX_SHADER_COMPILER_CACHE_ABI_VERSION = 13;
+    constexpr uint32 RVX_SHADER_CACHE_VERSION = 2;
+    constexpr uint64 RVX_SHADER_COMPILER_CACHE_ABI_VERSION = 14;
 
     // =========================================================================
     // Cache Flags
@@ -84,7 +84,7 @@ namespace RVX
         bool IsValid() const
         {
             return magic == RVX_SHADER_CACHE_MAGIC &&
-                   version <= RVX_SHADER_CACHE_VERSION;
+                   version == RVX_SHADER_CACHE_VERSION;
         }
     };
     #pragma pack(pop)

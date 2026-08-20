@@ -6,12 +6,7 @@ namespace RVX
 {
     ShaderReflection ReflectShader(RHIBackendType backend,
                                    RHIShaderStage stage,
-                                   const std::vector<uint8>& bytecode);
+                                   const std::vector<uint8>& bytecode,
+                                   const char* entryPoint = nullptr);
 
-    /**
-     * @brief Convert compiler reflection into the compact owned RHI contract.
-     */
-    RHIShaderInterface BuildRHIShaderInterface(
-        RHIShaderStage stage,
-        const ShaderReflection& reflection);
 } // namespace RVX

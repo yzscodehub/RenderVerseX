@@ -1,5 +1,6 @@
 #include "Core/Log.h"
 #include "ShaderContracts/GLSLBindingABI.h"
+#include "ShaderCompiler/ShaderCacheFormat.h"
 #include "ShaderCompiler/ShaderCacheManager.h"
 #include "ShaderCompiler/ShaderCompiler.h"
 #include "ShaderCompiler/ShaderCompileService.h"
@@ -302,6 +303,48 @@ TEST_F(ShaderCompilerValidationFixture, QuerySupportProvidesStructuredFailureFor
     EXPECT_EQ(result.errorMessage, support.reason);
 }
 
+#if defined(_WIN32)
+TEST_F(ShaderCompilerValidationFixture,
+       DX12RayLibraryReflectionSelectsTheRequestedEntryPoint)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    const std::string source = R"(
+RWTexture2D<float4> Output : register(u0, space2);
+
+[shader("raygeneration")]
+void RayGen()
+{
+    Output[DispatchRaysIndex().xy] = float4(1.0, 0.5, 0.25, 1.0);
+}
+)";
+    RVX::ShaderCompileOptions options;
+    options.stage = RVX::RHIShaderStage::RayGeneration;
+    options.sourceCode = source.c_str();
+    options.entryPoint = "RayGen";
+    options.sourcePath = "RayLibraryReflection.hlsl";
+    options.targetProfile = "lib_6_3";
+    options.targetBackend = RVX::RHIBackendType::DX12;
+
+    const RVX::ShaderCompileResult result = compiler->Compile(options);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    ASSERT_TRUE(result.reflection.valid);
+    const auto output = std::find_if(
+        result.reflection.resources.begin(),
+        result.reflection.resources.end(),
+        [](const RVX::ShaderReflection::ResourceBinding& resource)
+        {
+            return resource.name == "Output";
+        });
+    ASSERT_NE(output, result.reflection.resources.end());
+    EXPECT_EQ(output->set, 2u);
+    EXPECT_EQ(output->binding, 0u);
+    EXPECT_EQ(output->count, 1u);
+    EXPECT_EQ(output->type, RVX::RHIBindingType::StorageTexture);
+}
+#endif
+
 TEST_F(ShaderCompilerValidationFixture, ShaderManagerUsesInjectedCompiler)
 {
     RVX::ShaderCompileResult injectedResult;
@@ -426,6 +469,15 @@ TEST_F(ShaderCompilerValidationFixture, ShaderSourceInfoDetectsIncludeMutation)
 
     WriteTextFile(includePath, "static const float RVX_VALUE = 2.0;\n");
     EXPECT_TRUE(info.HasChanged());
+}
+
+TEST_F(ShaderCompilerValidationFixture, ShaderCacheHeaderRejectsLegacyVersions)
+{
+    RVX::ShaderCacheHeader header;
+    EXPECT_TRUE(header.IsValid());
+
+    header.version = 1;
+    EXPECT_FALSE(header.IsValid());
 }
 
 TEST_F(ShaderCompilerValidationFixture, MemoryShaderCacheInvalidatesOnIncludeMutation)

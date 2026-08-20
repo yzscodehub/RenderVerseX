@@ -205,6 +205,7 @@ add_subdirectory(Animation)
 add_subdirectory(Runtime)      # Runtime subsystems (includes Camera)
 add_subdirectory(RHI)
 add_subdirectory(ShaderContracts)
+add_subdirectory(ShaderRuntime)
 add_subdirectory(ShaderCompiler)
 
 if(RVX_ENABLE_DX11)

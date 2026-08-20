@@ -2,7 +2,9 @@
 # ShaderContracts - runtime shader program request and reflection contracts
 # =============================================================================
 add_library(RVX_ShaderContracts STATIC
+    Private/ShaderArtifact.cpp
     Private/ShaderLayout.cpp
+    Private/ShaderProgramProvider.cpp
 )
 
 target_include_directories(RVX_ShaderContracts PUBLIC

@@ -5,6 +5,7 @@ add_library(RVX_Tools STATIC)
 
 target_sources(RVX_Tools PRIVATE
     Private/AssetPipeline.cpp
+    Private/ShaderProgramCatalog.cpp
     Private/AssetDatabase.cpp
     Private/AnimationRootMotionDeriver.cpp
     Private/Importers/AudioImporter.cpp
@@ -19,6 +20,7 @@ target_link_libraries(RVX_Tools PUBLIC
     RVX::Audio
     RVX::Core
     RVX::RHI
+    RVX::ShaderContracts
 )
 
 target_link_libraries(RVX_Tools PRIVATE

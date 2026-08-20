@@ -34,6 +34,7 @@
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHI.h"
 #include "Geometry/Asset/Mesh.h"
+#include "ShaderContracts/ShaderArtifact.h"
 #include "Terrain/Heightmap.h"
 #include "Terrain/TerrainLOD.h"
 #include "Terrain/TerrainMaterial.h"
@@ -2599,15 +2600,19 @@ float4 main() : SV_Target
     ASSERT_EQ(1u, result.outputPaths.size());
     EXPECT_EQ(output.string(), result.outputPaths[0]);
 
-    const std::string artifact = ReadBinaryFile(output);
-    EXPECT_NE(artifact.find("RVX_SHADER_PREBAKE_V1"), std::string::npos);
-    EXPECT_NE(artifact.find("backend=DirectX 12"), std::string::npos);
-    EXPECT_NE(artifact.find("stage=Pixel"), std::string::npos);
-    EXPECT_NE(artifact.find("entry=main"), std::string::npos);
-    EXPECT_NE(artifact.find("bytecodeSize="), std::string::npos);
-    EXPECT_NE(artifact.find("reflectionResources="), std::string::npos);
-    EXPECT_NE(artifact.find("RVX_SHADER_BYTECODE_BEGIN"), std::string::npos);
-    EXPECT_NE(artifact.find("RVX_SHADER_PREBAKE_END"), std::string::npos);
+    RVX::ShaderArtifact artifact;
+    std::string artifactError;
+    ASSERT_TRUE(RVX::ReadShaderArtifactV2(
+        output, artifact, artifactError)) << artifactError;
+    EXPECT_EQ(artifact.request.logicalAssetId, "Fullscreen.ps.hlsl");
+    EXPECT_EQ(artifact.request.backend, RVX::RHIBackendType::DX12);
+    EXPECT_EQ(artifact.request.stage, RVX::RHIShaderStage::Pixel);
+    EXPECT_EQ(artifact.request.entryPoint, "main");
+    EXPECT_EQ(artifact.runtimeEntryPoint, "main");
+    EXPECT_EQ(artifact.targetProfile, "ps_6_0");
+    EXPECT_FALSE(artifact.code.empty());
+    EXPECT_TRUE(artifact.reflection.valid);
+    EXPECT_NE(artifact.contentHash, 0u);
 
     fs::remove_all(dir);
 }
@@ -2619,33 +2624,24 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerLoadsCookedShaderArtifactB
     fs::create_directories(dir);
 
     const std::vector<uint8_t> bytecode = {0x44, 0x58, 0x42, 0x43, 0x00, 0x01, 0x02, 0x03};
-    const std::string glsl = "#version 450\nvoid main() {}\n";
-    const std::string msl = "fragment float4 main0() { return float4(1.0); }\n";
-
-    {
-        std::ofstream file(output, std::ios::binary);
-        ASSERT_TRUE(file.is_open());
-        file << "RVX_SHADER_PREBAKE_V1\n";
-        file << "source=Shaders/Fullscreen.ps.hlsl\n";
-        file << "backend=DirectX 12\n";
-        file << "stage=Pixel\n";
-        file << "entry=main\n";
-        file << "targetProfile=ps_6_0\n";
-        file << "bytecodeSize=" << bytecode.size() << "\n";
-        file << "glslSize=" << glsl.size() << "\n";
-        file << "mslSize=" << msl.size() << "\n";
-        file << "reflectionResources=3\n";
-        file << "sourceHash=123456789\n";
-        file << "RVX_SHADER_BYTECODE_BEGIN\n";
-        file.write(reinterpret_cast<const char*>(bytecode.data()),
-                   static_cast<std::streamsize>(bytecode.size()));
-        file << "\nRVX_SHADER_GLSL_BEGIN\n";
-        file.write(glsl.data(), static_cast<std::streamsize>(glsl.size()));
-        file << "\nRVX_SHADER_MSL_BEGIN\n";
-        file.write(msl.data(), static_cast<std::streamsize>(msl.size()));
-        file << "\nRVX_SHADER_PREBAKE_END\n";
-        ASSERT_TRUE(file.good());
-    }
+    RVX::ShaderArtifact artifact;
+    artifact.request.logicalAssetId = "Shaders/Fullscreen.ps.hlsl";
+    artifact.request.backend = RVX::RHIBackendType::DX12;
+    artifact.request.stage = RVX::RHIShaderStage::Pixel;
+    artifact.request.entryPoint = "main";
+    artifact.targetProfile = "ps_6_0";
+    artifact.runtimeEntryPoint = "main";
+    artifact.contentHash = 123456789u;
+    artifact.code = bytecode;
+    artifact.reflection.valid = true;
+    artifact.reflection.resources = {
+        {"Frame", 0, 0, RVX::RHIBindingType::UniformBuffer, 1},
+        {"Texture", 0, 1, RVX::RHIBindingType::SampledTexture, 1},
+        {"Sampler", 0, 2, RVX::RHIBindingType::Sampler, 1},
+    };
+    std::string artifactError;
+    ASSERT_TRUE(RVX::WriteShaderArtifactV2(
+        output, artifact, artifactError)) << artifactError;
 
     RVX::Resource::ResourceManager manager;
     manager.Initialize();
@@ -2665,10 +2661,10 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerLoadsCookedShaderArtifactB
     EXPECT_EQ(shaderResource->GetReflectionResourceCount(), 3u);
     EXPECT_EQ(shaderResource->GetMetadata().sourcePath, "Shaders/Fullscreen.ps.hlsl");
     EXPECT_EQ(shaderResource->GetBytecode(), bytecode);
-    EXPECT_EQ(shaderResource->GetGLSLSource(), glsl);
-    EXPECT_EQ(shaderResource->GetMSLSource(), msl);
+    EXPECT_TRUE(shaderResource->GetGLSLSource().empty());
+    EXPECT_TRUE(shaderResource->GetMSLSource().empty());
     EXPECT_TRUE(shaderResource->HasBytecode());
-    EXPECT_TRUE(shaderResource->HasTranslatedSource());
+    EXPECT_FALSE(shaderResource->HasTranslatedSource());
 
     manager.Shutdown();
     fs::remove_all(dir);
@@ -2703,9 +2699,12 @@ float4 main() : SV_Target
     ASSERT_TRUE(imported);
     const fs::path importedPath = importedRoot / "Shaders" / "Fullscreen.ps.rva";
     ASSERT_TRUE(fs::exists(importedPath));
-    const std::string artifact = ReadBinaryFile(importedPath);
-    EXPECT_NE(artifact.find("RVX_SHADER_PREBAKE_V1"), std::string::npos);
-    EXPECT_NE(artifact.find("stage=Pixel"), std::string::npos);
+    RVX::ShaderArtifact artifact;
+    std::string artifactError;
+    ASSERT_TRUE(RVX::ReadShaderArtifactV2(
+        importedPath, artifact, artifactError)) << artifactError;
+    EXPECT_EQ(artifact.request.stage, RVX::RHIShaderStage::Pixel);
+    EXPECT_EQ(artifact.request.backend, RVX::RHIBackendType::DX12);
 
     const RVX::Tools::AssetEntry* afterImport = database.GetAsset(guid);
     ASSERT_NE(afterImport, nullptr);

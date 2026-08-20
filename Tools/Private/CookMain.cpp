@@ -1,4 +1,5 @@
 #include "Tools/AssetPipeline.h"
+#include "Tools/ShaderProgramCatalog.h"
 
 #include "Core/Log.h"
 
@@ -26,6 +27,8 @@ namespace
         std::filesystem::path outputRoot;
         std::filesystem::path manifestPath;
         std::filesystem::path profilePath;
+        std::filesystem::path shaderCatalogPath;
+        RVX::RHIBackendType shaderBackend = RVX::RHIBackendType::None;
         RVX::Tools::TextureImportOptions textureOptions;
         bool hasTextureOptions = false;
         bool recursive = true;
@@ -160,6 +163,38 @@ namespace
             return true;
         }
 
+        return false;
+    }
+
+    bool ParseShaderBackend(const std::string& value,
+                            RVX::RHIBackendType& outBackend)
+    {
+        const std::string backend = ToLower(value);
+        if (backend == "dx11")
+        {
+            outBackend = RVX::RHIBackendType::DX11;
+            return true;
+        }
+        if (backend == "dx12")
+        {
+            outBackend = RVX::RHIBackendType::DX12;
+            return true;
+        }
+        if (backend == "vulkan")
+        {
+            outBackend = RVX::RHIBackendType::Vulkan;
+            return true;
+        }
+        if (backend == "metal")
+        {
+            outBackend = RVX::RHIBackendType::Metal;
+            return true;
+        }
+        if (backend == "opengl")
+        {
+            outBackend = RVX::RHIBackendType::OpenGL;
+            return true;
+        }
         return false;
     }
 
@@ -1087,6 +1122,10 @@ namespace
             << "  --output <dir>        Cooked asset output directory\n"
             << "  --manifest <path>     Manifest path, defaults to <output>/CookManifest.rvxmanifest\n"
             << "  --profile <path>      Versioned cook profile with path-specific options\n"
+            << "  --shader-catalog <path>\n"
+            << "                        Cook the versioned shader program catalog instead of inferring programs from file names\n"
+            << "  --shader-backend <DX11|DX12|Vulkan|Metal|OpenGL>\n"
+            << "                        Concrete backend selected for --shader-catalog\n"
             << "  --texture-compression <auto|none|bc1|bc3|bc5|bc7>\n"
             << "                        Texture compression profile, defaults to auto\n"
             << "                        Profiles also support mesh.generateTangents,\n"
@@ -1142,6 +1181,22 @@ namespace
                 const char* value = requireValue("--profile");
                 if (!value) return false;
                 options.profilePath = value;
+            }
+            else if (arg == "--shader-catalog")
+            {
+                const char* value = requireValue("--shader-catalog");
+                if (!value) return false;
+                options.shaderCatalogPath = value;
+            }
+            else if (arg == "--shader-backend")
+            {
+                const char* value = requireValue("--shader-backend");
+                if (!value) return false;
+                if (!ParseShaderBackend(value, options.shaderBackend))
+                {
+                    std::cerr << "Unsupported shader backend: " << value << "\n";
+                    return false;
+                }
             }
             else if (arg == "--texture-compression")
             {
@@ -1199,6 +1254,22 @@ namespace
         if (options.modelOnly && options.rewriteGltfTextureUris)
         {
             std::cerr << "--model-only cannot be combined with --rewrite-gltf-texture-uris\n";
+            return false;
+        }
+        const bool hasShaderCatalog = !options.shaderCatalogPath.empty();
+        const bool hasShaderBackend =
+            options.shaderBackend != RVX::RHIBackendType::None;
+        if (hasShaderCatalog != hasShaderBackend)
+        {
+            std::cerr << "--shader-catalog and --shader-backend must be specified together\n";
+            return false;
+        }
+        if (hasShaderCatalog &&
+            (!options.profilePath.empty() || options.hasTextureOptions ||
+             options.rewriteGltfTextureUris || options.modelOnly ||
+             !options.recursive))
+        {
+            std::cerr << "Shader catalog mode cannot be combined with asset cook options\n";
             return false;
         }
         if (options.manifestPath.empty())
@@ -1260,6 +1331,39 @@ int main(int argc, char** argv)
 
     try
     {
+        if (!options.shaderCatalogPath.empty())
+        {
+            const RVX::Tools::ShaderProgramCatalogCookResult result =
+                RVX::Tools::CookShaderProgramCatalog({
+                    options.shaderCatalogPath,
+                    options.sourceRoot,
+                    options.outputRoot,
+                    options.shaderBackend,
+                });
+            if (!result.success)
+            {
+                std::cerr << "Shader catalog cook failed: "
+                          << result.error << "\n";
+                RVX::Log::Shutdown();
+                return 2;
+            }
+            std::cout << "Shader catalog cook complete\n"
+                      << "  Catalog: "
+                      << std::filesystem::absolute(options.shaderCatalogPath).generic_string()
+                      << "\n"
+                      << "  Source: "
+                      << std::filesystem::absolute(options.sourceRoot).generic_string()
+                      << "\n"
+                      << "  Output: "
+                      << std::filesystem::absolute(options.outputRoot).generic_string()
+                      << "\n"
+                      << "  Programs: " << result.catalogProgramCount << "\n"
+                      << "  Cooked: " << result.cookedProgramCount << "\n"
+                      << "  Skipped: " << result.skippedProgramCount << "\n";
+            RVX::Log::Shutdown();
+            return 0;
+        }
+
         RVX::Tools::AssetPipeline pipeline = CreateDefaultPipeline(options.modelOnly);
         RVX::Tools::AssetPipeline::ImportOptionsProvider optionsProvider;
         RVX::Tools::TextureImportOptions resolvedTextureOptions = options.textureOptions;

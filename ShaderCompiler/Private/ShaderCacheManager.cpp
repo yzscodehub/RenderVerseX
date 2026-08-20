@@ -486,7 +486,7 @@ namespace RVX
             return false;
         }
 
-        if (header.version > RVX_SHADER_CACHE_VERSION)
+        if (header.version != RVX_SHADER_CACHE_VERSION)
         {
             return false;
         }

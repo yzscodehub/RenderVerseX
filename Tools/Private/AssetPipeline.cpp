@@ -11,6 +11,7 @@
 #include "Resource/Importer/GLTFImporter.h"
 #include "Resource/Loader/TextureLoader.h"
 #include "Resource/Types/TextureResource.h"
+#include "ShaderContracts/ShaderArtifact.h"
 #include "ShaderCompiler/ShaderCompiler.h"
 
 #include <nlohmann/json.hpp>
@@ -87,6 +88,30 @@ namespace
             case RHIShaderStage::Pixel:   return "Pixel";
             case RHIShaderStage::Compute: return "Compute";
             default:                      return "None";
+        }
+    }
+
+    const char* ResolveShaderTargetProfile(
+        RHIBackendType backend,
+        RHIShaderStage stage)
+    {
+        const bool legacy = backend == RHIBackendType::DX11;
+        switch (stage)
+        {
+            case RHIShaderStage::Vertex: return legacy ? "vs_5_0" : "vs_6_0";
+            case RHIShaderStage::Pixel: return legacy ? "ps_5_0" : "ps_6_0";
+            case RHIShaderStage::Compute: return legacy ? "cs_5_0" : "cs_6_0";
+            case RHIShaderStage::Geometry: return legacy ? "gs_5_0" : "gs_6_0";
+            case RHIShaderStage::Hull: return legacy ? "hs_5_0" : "hs_6_0";
+            case RHIShaderStage::Domain: return legacy ? "ds_5_0" : "ds_6_0";
+            case RHIShaderStage::RayGeneration:
+            case RHIShaderStage::Miss:
+            case RHIShaderStage::ClosestHit:
+            case RHIShaderStage::AnyHit:
+            case RHIShaderStage::Intersection:
+                return legacy ? nullptr : "lib_6_3";
+            default:
+                return nullptr;
         }
     }
 
@@ -314,9 +339,52 @@ namespace
         return true;
     }
 
-    const std::vector<uint8>& SelectShaderBinaryPayload(const ShaderCompileResult& compileResult)
+    std::vector<uint8> SelectShaderRuntimeCode(
+        RHIBackendType backend,
+        const ShaderCompileResult& compileResult)
     {
+        if (backend == RHIBackendType::OpenGL)
+        {
+            return std::vector<uint8>(
+                compileResult.glslSource.begin(),
+                compileResult.glslSource.end());
+        }
+        if (backend == RHIBackendType::Metal)
+        {
+            return std::vector<uint8>(
+                compileResult.mslSource.begin(),
+                compileResult.mslSource.end());
+        }
         return compileResult.bytecode;
+    }
+
+    uint64 HashShaderProgramContent(
+        const ShaderCompileResult& compileResult,
+        const std::vector<uint8>& runtimeCode)
+    {
+        constexpr uint64 offset = 0xcbf29ce484222325ull;
+        constexpr uint64 prime = 0x100000001b3ull;
+        uint64 hash = offset;
+        const auto hashByte = [&hash](uint8 byte)
+        {
+            hash ^= byte;
+            hash *= prime;
+        };
+        const auto hashUint64 = [&hashByte](uint64 value)
+        {
+            for (uint32 byteIndex = 0; byteIndex < 8; ++byteIndex)
+            {
+                hashByte(static_cast<uint8>(value & 0xffu));
+                value >>= 8u;
+            }
+        };
+        hashUint64(compileResult.sourceInfo.combinedHash);
+        hashUint64(compileResult.permutationHash);
+        for (const uint8 byte : runtimeCode)
+        {
+            hashByte(byte);
+        }
+        return hash;
     }
 
     const char* ToTextureFormatString(Resource::TextureFormat format)
@@ -1493,65 +1561,39 @@ namespace
                              const ShaderCompileResult& compileResult,
                              std::string& outError)
     {
-        if (!outputPath.parent_path().empty())
+        ShaderArtifact artifact;
+        artifact.request.logicalAssetId = importOptions.logicalAssetId.empty()
+            ? sourcePath.filename().generic_string()
+            : importOptions.logicalAssetId;
+        artifact.request.stage = importOptions.stage;
+        artifact.request.entryPoint = importOptions.entryPoint;
+        artifact.request.backend = importOptions.targetBackend;
+        artifact.request.defines = importOptions.defines;
+        artifact.targetProfile = importOptions.targetProfile;
+        artifact.runtimeEntryPoint =
+            importOptions.targetBackend == RHIBackendType::Metal &&
+                !compileResult.mslEntryPoint.empty()
+            ? compileResult.mslEntryPoint
+            : importOptions.entryPoint;
+        artifact.code = SelectShaderRuntimeCode(
+            importOptions.targetBackend, compileResult);
+        artifact.reflection = compileResult.reflection;
+        artifact.contentHash = HashShaderProgramContent(
+            compileResult, artifact.code);
+        if (artifact.code.empty())
         {
-            std::error_code ec;
-            fs::create_directories(outputPath.parent_path(), ec);
-            if (ec)
-            {
-                outError = "Failed to create shader artifact directory: " + ec.message();
-                return false;
-            }
-        }
-
-        std::ofstream file(outputPath, std::ios::binary);
-        if (!file.is_open())
-        {
-            outError = "Failed to open shader artifact for writing: " + outputPath.string();
+            outError =
+                "Shader compiler did not produce backend-final runtime code";
             return false;
         }
-
-        const std::vector<uint8>& binaryPayload = SelectShaderBinaryPayload(compileResult);
-        file << "RVX_SHADER_PREBAKE_V1\n";
-        file << "source=" << sourcePath.generic_string() << "\n";
-        file << "backend=" << ToString(importOptions.targetBackend) << "\n";
-        file << "stage=" << ToShaderStageString(importOptions.stage) << "\n";
-        file << "entry=" << importOptions.entryPoint << "\n";
-        file << "targetProfile="
-             << (importOptions.targetProfile.empty() ? "auto" : importOptions.targetProfile)
-             << "\n";
-        file << "bytecodeSize=" << binaryPayload.size() << "\n";
-        file << "glslSize=" << compileResult.glslSource.size() << "\n";
-        file << "mslSize=" << compileResult.mslSource.size() << "\n";
-        file << "reflectionResources=" << compileResult.reflection.resources.size() << "\n";
-        file << "sourceHash=" << compileResult.sourceInfo.combinedHash << "\n";
-        file << "RVX_SHADER_BYTECODE_BEGIN\n";
-        if (!binaryPayload.empty())
+        if (!artifact.reflection.valid)
         {
-            file.write(reinterpret_cast<const char*>(binaryPayload.data()),
-                       static_cast<std::streamsize>(binaryPayload.size()));
-        }
-        file << "\nRVX_SHADER_GLSL_BEGIN\n";
-        if (!compileResult.glslSource.empty())
-        {
-            file.write(compileResult.glslSource.data(),
-                       static_cast<std::streamsize>(compileResult.glslSource.size()));
-        }
-        file << "\nRVX_SHADER_MSL_BEGIN\n";
-        if (!compileResult.mslSource.empty())
-        {
-            file.write(compileResult.mslSource.data(),
-                       static_cast<std::streamsize>(compileResult.mslSource.size()));
-        }
-        file << "\nRVX_SHADER_PREBAKE_END\n";
-
-        if (!file.good())
-        {
-            outError = "Failed while writing shader artifact: " + outputPath.string();
+            outError =
+                "Shader compiler did not produce complete reflection";
             return false;
         }
-
-        return true;
+        return WriteShaderArtifactV2(
+            outputPath, std::move(artifact), outError);
     }
 
     uint64 GetFileWriteTimeTicks(const fs::path& path)
@@ -2188,8 +2230,19 @@ namespace
                 settings += '\n';
                 settings += "shader.targetBackend=" +
                             std::to_string(static_cast<uint32>(resolved.targetBackend)) + '\n';
+                settings += "shader.logicalAssetId=" + resolved.logicalAssetId + '\n';
                 settings += "shader.entryPoint=" + resolved.entryPoint + '\n';
                 settings += "shader.targetProfile=" + resolved.targetProfile + '\n';
+                std::vector<ShaderMacro> defines = resolved.defines;
+                std::string macroError;
+                if (CanonicalizeShaderMacros(defines, macroError))
+                {
+                    for (const ShaderMacro& define : defines)
+                    {
+                        settings += "shader.define=" + define.name +
+                            '=' + define.value + '\n';
+                    }
+                }
                 AppendCanonicalBool(settings, "shader.enableDebugInfo", resolved.enableDebugInfo);
                 AppendCanonicalBool(settings, "shader.enableOptimization", resolved.enableOptimization);
                 break;
@@ -3472,6 +3525,7 @@ CookManifest AssetPipeline::CookDirectory(const fs::path& sourceDir,
                         const void* requestedImportOptions =
                             optionsProvider ? optionsProvider(filePath, assetType) : nullptr;
                         std::optional<ModelImportOptions> canonicalModelOptions;
+                        std::optional<ShaderImportOptions> canonicalShaderOptions;
                         const void* importOptions = requestedImportOptions;
                         if (assetType == AssetType::Model)
                         {
@@ -3481,6 +3535,15 @@ CookManifest AssetPipeline::CookDirectory(const fs::path& sourceDir,
                             canonicalModelOptions->artifactSourcePath =
                                 relativePath.generic_string();
                             importOptions = &*canonicalModelOptions;
+                        }
+                        else if (assetType == AssetType::Shader)
+                        {
+                            canonicalShaderOptions = requestedImportOptions
+                                ? *static_cast<const ShaderImportOptions*>(requestedImportOptions)
+                                : ShaderImportOptions{};
+                            canonicalShaderOptions->logicalAssetId =
+                                relativePath.generic_string();
+                            importOptions = &*canonicalShaderOptions;
                         }
                         const bool isExternalGltf =
                             ToLower(filePath.extension().string()) == ".gltf";
@@ -4359,7 +4422,29 @@ ImportResult ShaderImporter::Import(const fs::path& sourcePath,
                        sourcePath.filename().string();
         return result;
     }
-
+    const char* resolvedTargetProfile = ResolveShaderTargetProfile(
+        importOptions.targetBackend, importOptions.stage);
+    if (importOptions.targetProfile.empty())
+    {
+        if (resolvedTargetProfile == nullptr)
+        {
+            result.error =
+                "ShaderImporter does not support the requested backend/stage profile";
+            return result;
+        }
+        importOptions.targetProfile = resolvedTargetProfile;
+    }
+    if (importOptions.logicalAssetId.empty())
+    {
+        importOptions.logicalAssetId = sourcePath.filename().generic_string();
+    }
+    std::string permutationError;
+    if (!CanonicalizeShaderMacros(
+            importOptions.defines, permutationError))
+    {
+        result.error = permutationError;
+        return result;
+    }
     std::ifstream sourceFile(sourcePath, std::ios::binary);
     if (!sourceFile.is_open())
     {
@@ -4400,6 +4485,7 @@ ImportResult ShaderImporter::Import(const fs::path& sourcePath,
         ? nullptr
         : importOptions.targetProfile.c_str();
     compileOptions.targetBackend = importOptions.targetBackend;
+    compileOptions.defines = importOptions.defines;
     compileOptions.enableDebugInfo = importOptions.enableDebugInfo;
     compileOptions.enableOptimization = importOptions.enableOptimization;
 

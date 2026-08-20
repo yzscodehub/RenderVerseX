@@ -309,6 +309,128 @@ namespace RVX
                 reflection.outputs.push_back(std::move(attribute));
             }
         }
+
+        bool IsRayTracingStage(RHIShaderStage stage)
+        {
+            switch (stage)
+            {
+                case RHIShaderStage::RayGeneration:
+                case RHIShaderStage::AnyHit:
+                case RHIShaderStage::ClosestHit:
+                case RHIShaderStage::Miss:
+                case RHIShaderStage::Intersection:
+                case RHIShaderStage::Callable:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        bool AppendD3DResource(
+            const D3D12_SHADER_INPUT_BIND_DESC& bindDesc,
+            ShaderReflection& reflection)
+        {
+            ShaderReflection::ResourceBinding resource{};
+            resource.name = bindDesc.Name ? bindDesc.Name : "";
+            resource.binding = bindDesc.BindPoint;
+            resource.set = bindDesc.Space;
+            resource.count = bindDesc.BindCount;
+            if (!TryGetD3DBindingType(bindDesc, resource.type))
+            {
+                reflection.valid = false;
+                RVX_CORE_WARN(
+                    "D3D reflection found unsupported resource type {} for '{}'",
+                    static_cast<uint32>(bindDesc.Type),
+                    resource.name);
+                return false;
+            }
+            reflection.resources.push_back(std::move(resource));
+            return true;
+        }
+
+        ShaderReflection ReflectDxilLibrary(
+            IDxcContainerReflection* container,
+            uint32 dxilIndex,
+            const char* entryPoint)
+        {
+            ShaderReflection reflection;
+            using Microsoft::WRL::ComPtr;
+            ComPtr<ID3D12LibraryReflection> libraryReflection;
+            if (!container || FAILED(container->GetPartReflection(
+                    dxilIndex, IID_PPV_ARGS(&libraryReflection))) ||
+                !libraryReflection)
+            {
+                RVX_CORE_WARN("DXIL library reflection interface is unavailable");
+                return reflection;
+            }
+            D3D12_LIBRARY_DESC libraryDesc{};
+            if (FAILED(libraryReflection->GetDesc(&libraryDesc)))
+            {
+                RVX_CORE_WARN("DXIL library reflection descriptor is unavailable");
+                return reflection;
+            }
+
+            const std::string requestedEntry = entryPoint ? entryPoint : "";
+            const std::string decoratedEntry =
+                "?" + requestedEntry + "@@";
+            bool foundEntry = false;
+            for (uint32 index = 0; index < libraryDesc.FunctionCount; ++index)
+            {
+                ID3D12FunctionReflection* function =
+                    libraryReflection->GetFunctionByIndex(
+                        static_cast<int>(index));
+                if (!function)
+                {
+                    continue;
+                }
+                D3D12_FUNCTION_DESC functionDesc{};
+                if (FAILED(function->GetDesc(&functionDesc)))
+                {
+                    continue;
+                }
+                const std::string functionName =
+                    functionDesc.Name ? functionDesc.Name : "";
+                if (!requestedEntry.empty() &&
+                    functionName != requestedEntry &&
+                    functionName.rfind(requestedEntry + "(", 0) != 0 &&
+                    functionName.find(decoratedEntry) == std::string::npos)
+                {
+                    continue;
+                }
+
+                foundEntry = true;
+                reflection.valid = true;
+                for (uint32 resourceIndex = 0;
+                     resourceIndex < functionDesc.BoundResources;
+                     ++resourceIndex)
+                {
+                    D3D12_SHADER_INPUT_BIND_DESC bindDesc{};
+                    if (FAILED(function->GetResourceBindingDesc(
+                            resourceIndex, &bindDesc)))
+                    {
+                        reflection.valid = false;
+                        RVX_CORE_WARN(
+                            "DXIL library reflection failed to read resource {} for '{}'",
+                            resourceIndex,
+                            functionName);
+                        continue;
+                    }
+                    AppendD3DResource(bindDesc, reflection);
+                }
+                if (!requestedEntry.empty())
+                {
+                    break;
+                }
+            }
+            if (!foundEntry)
+            {
+                RVX_CORE_WARN(
+                    "DXIL library reflection did not find requested entry '{}'",
+                    requestedEntry);
+                reflection.valid = false;
+            }
+            return reflection;
+        }
 #endif
     }
 
@@ -475,7 +597,9 @@ namespace RVX
         return reflection;
     }
 
-    static ShaderReflection ReflectDxil(const std::vector<uint8>& bytecode)
+    static ShaderReflection ReflectDxil(const std::vector<uint8>& bytecode,
+                                        RHIShaderStage stage,
+                                        const char* entryPoint)
     {
         ShaderReflection reflection;
 
@@ -487,24 +611,33 @@ namespace RVX
         if (FAILED(DxcCreateInstance(CLSID_DxcContainerReflection, IID_PPV_ARGS(&container))) ||
             FAILED(DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(&utils))))
         {
+            RVX_CORE_WARN("DXIL reflection could not create DXC reflection services");
             return reflection;
         }
 
         if (FAILED(utils->CreateBlobFromPinned(bytecode.data(),
                 static_cast<uint32_t>(bytecode.size()), DXC_CP_ACP, &blob)))
         {
+            RVX_CORE_WARN("DXIL reflection could not create a bytecode blob");
             return reflection;
         }
 
         if (FAILED(container->Load(blob.Get())))
         {
+            RVX_CORE_WARN("DXIL reflection could not load the bytecode container");
             return reflection;
         }
 
         UINT32 dxilIndex = 0;
         if (FAILED(container->FindFirstPartKind(DXC_PART_DXIL, &dxilIndex)))
         {
+            RVX_CORE_WARN("DXIL reflection did not find a DXIL container part");
             return ReflectDxbc(bytecode);
+        }
+
+        if (IsRayTracingStage(stage))
+        {
+            return ReflectDxilLibrary(container.Get(), dxilIndex, entryPoint);
         }
 
         ComPtr<ID3D12ShaderReflection> shaderReflection;
@@ -555,9 +688,9 @@ namespace RVX
 
     ShaderReflection ReflectShader(RHIBackendType backend,
                                    RHIShaderStage stage,
-                                   const std::vector<uint8>& bytecode)
+                                   const std::vector<uint8>& bytecode,
+                                   const char* entryPoint)
     {
-        (void)stage;
         if (bytecode.empty())
         {
             return {};
@@ -569,7 +702,7 @@ namespace RVX
                 return ReflectSpirv(bytecode);
             case RHIBackendType::DX12:
 #if defined(_WIN32)
-                return ReflectDxil(bytecode);
+                return ReflectDxil(bytecode, stage, entryPoint);
 #else
                 return {};
 #endif
@@ -582,58 +715,6 @@ namespace RVX
             default:
                 return {};
         }
-    }
-
-    RHIShaderInterface BuildRHIShaderInterface(
-        RHIShaderStage stage,
-        const ShaderReflection& reflection)
-    {
-        RHIShaderInterface shaderInterface;
-        shaderInterface.available = reflection.valid;
-        shaderInterface.stage = stage;
-
-        auto appendVariables =
-            [](const std::vector<ShaderReflection::InputAttribute>& source,
-               std::vector<RHIShaderInterfaceVariable>& destination)
-        {
-            destination.reserve(source.size());
-            for (const ShaderReflection::InputAttribute& attribute : source)
-            {
-                RHIShaderInterfaceVariable variable;
-                variable.location = attribute.location;
-                variable.format = attribute.format;
-                variable.systemValue = attribute.systemValue;
-                variable.semanticName =
-                    UpperAscii(attribute.semantic);
-                variable.semanticIndex = attribute.semanticIndex;
-                destination.push_back(std::move(variable));
-            }
-        };
-        appendVariables(reflection.inputs, shaderInterface.inputs);
-        appendVariables(reflection.outputs, shaderInterface.outputs);
-
-        shaderInterface.bindings.reserve(
-            reflection.resources.size());
-        for (const ShaderReflection::ResourceBinding& resource :
-             reflection.resources)
-        {
-            shaderInterface.bindings.push_back(
-                {resource.set,
-                 resource.binding,
-                 resource.type,
-                 resource.count});
-        }
-        shaderInterface.pushConstants.reserve(
-            reflection.pushConstants.size());
-        for (const ShaderReflection::PushConstantRange& range :
-             reflection.pushConstants)
-        {
-            shaderInterface.pushConstants.push_back(
-                {range.offset, range.size});
-        }
-
-        return FinalizeRHIShaderInterface(
-            std::move(shaderInterface));
     }
 
 } // namespace RVX

@@ -60,6 +60,11 @@ namespace RVX
         std::vector<InputAttribute> outputs;
     };
 
+    /** @brief Convert reflection into the immutable RHI shader interface. */
+    [[nodiscard]] RHIShaderInterface BuildRHIShaderInterface(
+        RHIShaderStage stage,
+        const ShaderReflection& reflection);
+
     enum class ShaderProgramStatus : uint8
     {
         Success = 0,
@@ -68,6 +73,9 @@ namespace RVX
         Unsupported,
         CompileFailed,
         DeviceCreationFailed,
+        ArtifactInvalid,
+        BackendMismatch,
+        IncompatibleArtifact,
     };
 
     struct ShaderProgramRequest

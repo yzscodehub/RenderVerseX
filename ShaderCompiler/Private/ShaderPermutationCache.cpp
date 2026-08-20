@@ -17,7 +17,7 @@ namespace RVX
         // This stores the registered shader permutation spaces for quick reload
 
         constexpr uint32 PERMUTATION_CACHE_MAGIC = 0x52565850; // "RVXP"
-        constexpr uint32 PERMUTATION_CACHE_VERSION = 1;
+        constexpr uint32 PERMUTATION_CACHE_VERSION = 2;
 
         #pragma pack(push, 1)
         struct PermutationCacheHeader
@@ -199,7 +199,7 @@ namespace RVX
                 return false;
             }
 
-            if (header.version > PERMUTATION_CACHE_VERSION)
+            if (header.version != PERMUTATION_CACHE_VERSION)
             {
                 RVX_CORE_WARN("ShaderPermutationCache: Version mismatch");
                 return false;

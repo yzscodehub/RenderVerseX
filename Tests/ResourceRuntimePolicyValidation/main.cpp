@@ -12,6 +12,7 @@
 #include "Resource/Types/ModelResource.h"
 #include "Resource/Types/ShaderResource.h"
 #include "Resource/Types/TextureResource.h"
+#include "ShaderContracts/ShaderArtifact.h"
 
 #include <gtest/gtest.h>
 
@@ -278,29 +279,25 @@ namespace
                              const std::string& glsl,
                              const std::string& msl)
     {
-        fs::create_directories(path.parent_path());
-        std::ofstream file(path, std::ios::binary);
-        ASSERT_TRUE(file.is_open());
-        file << "RVX_SHADER_PREBAKE_V1\n";
-        file << "source=Shaders/Fullscreen.ps.hlsl\n";
-        file << "backend=DirectX 12\n";
-        file << "stage=Pixel\n";
-        file << "entry=main\n";
-        file << "targetProfile=ps_6_0\n";
-        file << "bytecodeSize=" << bytecode.size() << "\n";
-        file << "glslSize=" << glsl.size() << "\n";
-        file << "mslSize=" << msl.size() << "\n";
-        file << "reflectionResources=3\n";
-        file << "sourceHash=123456789\n";
-        file << "RVX_SHADER_BYTECODE_BEGIN\n";
-        file.write(reinterpret_cast<const char*>(bytecode.data()),
-                   static_cast<std::streamsize>(bytecode.size()));
-        file << "\nRVX_SHADER_GLSL_BEGIN\n";
-        file.write(glsl.data(), static_cast<std::streamsize>(glsl.size()));
-        file << "\nRVX_SHADER_MSL_BEGIN\n";
-        file.write(msl.data(), static_cast<std::streamsize>(msl.size()));
-        file << "\nRVX_SHADER_PREBAKE_END\n";
-        ASSERT_TRUE(file.good());
+        (void)glsl;
+        (void)msl;
+        ShaderArtifact artifact;
+        artifact.request.logicalAssetId = "Shaders/Fullscreen.ps.hlsl";
+        artifact.request.backend = RHIBackendType::DX12;
+        artifact.request.stage = RHIShaderStage::Pixel;
+        artifact.request.entryPoint = "main";
+        artifact.targetProfile = "ps_6_0";
+        artifact.runtimeEntryPoint = "main";
+        artifact.contentHash = 123456789u;
+        artifact.code = bytecode;
+        artifact.reflection.valid = true;
+        artifact.reflection.resources = {
+            {"Frame", 0, 0, RHIBindingType::UniformBuffer, 1},
+            {"Texture", 0, 1, RHIBindingType::SampledTexture, 1},
+            {"Sampler", 0, 2, RHIBindingType::Sampler, 1},
+        };
+        std::string error;
+        ASSERT_TRUE(WriteShaderArtifactV2(path, artifact, error)) << error;
     }
 } // namespace
 
@@ -486,7 +483,7 @@ TEST(ResourceRuntimePolicyValidation, MapsRuntimePackageEntriesThroughMountedPac
 {
     const fs::path root = MakeTempDirectory("PackageRoot");
     const fs::path packageEntryPath = root / "Base" / "shaders" / "basic.rva";
-    WriteTextFile(packageEntryPath, "RVX_SHADER_PREBAKE_V1\n");
+    WriteTextFile(packageEntryPath, "RVX_TEST_COOKED_ARTIFACT\n");
 
     ResourceManagerConfig config;
     config.asyncThreadCount = 0;
@@ -498,9 +495,9 @@ TEST(ResourceRuntimePolicyValidation, MapsRuntimePackageEntriesThroughMountedPac
     ResourceManagerTestGuard guard(config);
     auto& manager = ResourceManager::Get();
 
-    auto loader = std::make_unique<RecordingLoader>(ResourceType::Shader);
+    auto loader = std::make_unique<RecordingLoader>(ResourceType::Unknown);
     RecordingLoader* loaderPtr = loader.get();
-    manager.RegisterLoader(ResourceType::Shader, std::move(loader));
+    manager.RegisterLoader(ResourceType::Unknown, std::move(loader));
 
     IResource* resource = manager.LoadResource("package://Base/shaders/basic.rva");
     ASSERT_NE(resource, nullptr);
@@ -526,8 +523,8 @@ TEST(ResourceRuntimePolicyValidation, MapsRuntimePackageEntriesThroughMountTable
     const fs::path highRoot = MakeTempDirectory("PackageMountHigh");
     const fs::path lowArtifactPath = lowRoot / "compiled" / "basic.rva";
     const fs::path highArtifactPath = highRoot / "compiled" / "basic.rva";
-    WriteTextFile(lowArtifactPath, "RVX_SHADER_PREBAKE_V1\nlow\n");
-    WriteTextFile(highArtifactPath, "RVX_SHADER_PREBAKE_V1\nhigh\n");
+    WriteTextFile(lowArtifactPath, "RVX_TEST_COOKED_ARTIFACT\nlow\n");
+    WriteTextFile(highArtifactPath, "RVX_TEST_COOKED_ARTIFACT\nhigh\n");
     const std::string highHash = Diagnostics::ComputeFileContentHash(highArtifactPath);
 
     ResourceManagerConfig config;
@@ -551,9 +548,9 @@ TEST(ResourceRuntimePolicyValidation, MapsRuntimePackageEntriesThroughMountTable
     ResourceManagerTestGuard guard(config);
     auto& manager = ResourceManager::Get();
 
-    auto loader = std::make_unique<RecordingLoader>(ResourceType::Shader);
+    auto loader = std::make_unique<RecordingLoader>(ResourceType::Unknown);
     RecordingLoader* loaderPtr = loader.get();
-    manager.RegisterLoader(ResourceType::Shader, std::move(loader));
+    manager.RegisterLoader(ResourceType::Unknown, std::move(loader));
 
     IResource* resource = manager.LoadResource("package://Base/shaders/basic.rva");
     ASSERT_NE(resource, nullptr);
@@ -661,7 +658,7 @@ TEST(ResourceRuntimePolicyValidation, RejectsRuntimePackageArtifactHashMismatch)
 {
     const fs::path root = MakeTempDirectory("PackageArtifactHashMismatch");
     const fs::path artifactPath = root / "compiled" / "basic.rva";
-    WriteTextFile(artifactPath, "RVX_SHADER_PREBAKE_V1\nhash mismatch\n");
+    WriteTextFile(artifactPath, "RVX_TEST_COOKED_ARTIFACT\nhash mismatch\n");
 
     ResourceManagerConfig config;
     config.asyncThreadCount = 0;
@@ -861,8 +858,8 @@ TEST(ResourceRuntimePolicyValidation, CookedShaderArtifactExposesStableRuntimeCo
     EXPECT_EQ(contract.sourceHash, 123456789u);
     EXPECT_EQ(contract.reflectionResourceCount, 3u);
     EXPECT_EQ(contract.bytecodeSize, bytecode.size());
-    EXPECT_EQ(contract.glslSourceSize, glsl.size());
-    EXPECT_EQ(contract.mslSourceSize, msl.size());
+    EXPECT_EQ(contract.glslSourceSize, 0u);
+    EXPECT_EQ(contract.mslSourceSize, 0u);
     EXPECT_NE(contract.payloadHash, 0u);
     EXPECT_NE(contract.contractHash, 0u);
     EXPECT_EQ(shader->GetRuntimeContractHash(), contract.contractHash);
@@ -875,7 +872,7 @@ TEST(ResourceRuntimePolicyValidation, CookedShaderArtifactExposesStableRuntimeCo
     EXPECT_NE(contract.cacheKey.find("bytecodeSize=8"), std::string::npos);
 
     const std::string contractJson = shader->ExportRuntimeContractJson();
-    EXPECT_NE(contractJson.find("\"schemaVersion\": 1"), std::string::npos);
+    EXPECT_NE(contractJson.find("\"schemaVersion\": 2"), std::string::npos);
     EXPECT_NE(contractJson.find("\"schemaId\": \"RVX.Resource.ShaderRuntimeContract\""),
               std::string::npos);
     EXPECT_NE(contractJson.find("\"id\": \"shaderRuntimeContractJson\""), std::string::npos);
@@ -904,9 +901,9 @@ TEST(ResourceRuntimePolicyValidation, CookedShaderArtifactExposesStableRuntimeCo
     EXPECT_NE(contractJson.find("\"payloadHash\": " + std::to_string(contract.payloadHash)),
               std::string::npos);
     EXPECT_NE(contractJson.find("\"bytecodeSize\": 8"), std::string::npos);
-    EXPECT_NE(contractJson.find("\"glslSourceSize\": " + std::to_string(glsl.size())),
+    EXPECT_NE(contractJson.find("\"glslSourceSize\": 0"),
               std::string::npos);
-    EXPECT_NE(contractJson.find("\"mslSourceSize\": " + std::to_string(msl.size())),
+    EXPECT_NE(contractJson.find("\"mslSourceSize\": 0"),
               std::string::npos);
     EXPECT_FALSE(shader->SaveRuntimeContractJson(nullptr));
     EXPECT_FALSE(shader->SaveRuntimeContractJson(""));

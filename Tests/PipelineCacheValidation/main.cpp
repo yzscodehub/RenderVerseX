@@ -9,6 +9,8 @@
 #include "Resources/RenderRetirementQueue.h"
 #include "Resources/RenderSubmissionTracker.h"
 #include "RHI/RHI.h"
+#include "ShaderContracts/ShaderArtifact.h"
+#include "Tools/ShaderProgramCatalog.h"
 
 #include <gtest/gtest.h>
 
@@ -21,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -306,6 +309,21 @@ namespace
                 "Shader program not found: " + request.logicalAssetId;
             return result;
         }
+    };
+
+    class RecordingShaderProgramProvider final
+        : public RVX::Tests::DeterministicShaderProgramProvider
+    {
+    public:
+        RVX::ShaderProgramResult Load(
+            RVX::IRHIDevice& device,
+            const RVX::ShaderProgramRequest& request) override
+        {
+            requests.push_back(request);
+            return DeterministicShaderProgramProvider::Load(device, request);
+        }
+
+        std::vector<RVX::ShaderProgramRequest> requests;
     };
 
     class GPUSceneDepthPermutationRejectingPipelineCache final : public RVX::PipelineCache
@@ -2004,6 +2022,49 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     EXPECT_TRUE(RVX::HasFlag(skyboxSampler->visibility, RVX::RHIShaderStage::Pixel));
     EXPECT_NE(cache.GetSkyboxSetLayout(), nullptr);
     EXPECT_NE(cache.GetSkyboxLayout(), nullptr);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       RuntimeProgramRequestsAreCoveredByTheCookCatalog)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    std::vector<RVX::Tools::ShaderProgramCatalogEntry> catalogEntries;
+    std::string error;
+    ASSERT_TRUE(RVX::Tools::LoadShaderProgramCatalog(
+        fs::path(RVX_SOURCE_DIR) /
+            "Render/Shaders/Programs.rvxshadercatalog.json",
+        catalogEntries, error)) << error;
+
+    std::set<std::string> cookedPrograms;
+    for (const RVX::Tools::ShaderProgramCatalogEntry& entry : catalogEntries)
+    {
+        RVX::ShaderProgramRequest request;
+        if (RVX::Tools::ResolveShaderProgramCatalogEntry(
+                entry, RVX::RHIBackendType::DX12, request, error))
+        {
+            cookedPrograms.insert(
+                RVX::BuildShaderArtifactRelativePath(request).generic_string());
+        }
+    }
+
+    RecordingShaderProgramProvider provider;
+    FakeDevice device(RVX::RHIBackendType::DX12);
+    PipelineCacheForValidation cache(provider);
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+    ASSERT_GT(provider.requests.size(), 40u);
+    for (const RVX::ShaderProgramRequest& request : provider.requests)
+    {
+        const std::string artifactPath =
+            RVX::BuildShaderArtifactRelativePath(request).generic_string();
+        EXPECT_TRUE(cookedPrograms.contains(artifactPath))
+            << request.logicalAssetId << ':' << request.entryPoint
+            << " -> " << artifactPath;
+    }
 }
 
 TEST_F(PipelineCacheValidationFixture, OpenGLDescriptorBindingsUseStableGLSLBindingABIAndSingleSamplerPropagation)

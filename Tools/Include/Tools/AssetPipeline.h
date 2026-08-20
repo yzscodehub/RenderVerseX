@@ -7,6 +7,7 @@
 
 #include "Core/Types.h"
 #include "RHI/RHIDefinitions.h"
+#include "ShaderContracts/ShaderProgramProvider.h"
 
 #include <filesystem>
 #include <functional>
@@ -253,8 +254,10 @@ struct ShaderImportOptions
 {
     RHIShaderStage stage = RHIShaderStage::None;
     RHIBackendType targetBackend = RHIBackendType::DX12;
+    std::string logicalAssetId;
     std::string entryPoint = "main";
     std::string targetProfile;
+    std::vector<ShaderMacro> defines;
     bool enableDebugInfo = false;
     bool enableOptimization = true;
 };

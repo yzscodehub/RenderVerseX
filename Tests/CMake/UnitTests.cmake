@@ -665,6 +665,35 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME ShaderArtifactValidation
+    LANE unit
+    SOURCES ShaderArtifactValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::RHI
+        RVX::ShaderContracts
+        RVX::ShaderRuntime
+    TAGS subsystem.render suite.shader-artifact
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME ShaderProgramCatalogValidation
+    LANE unit
+    SOURCES ShaderProgramCatalogValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::ShaderCompiler
+        RVX::ShaderContracts
+        RVX::Tools
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Tests
+    DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    TAGS subsystem.render suite.shader-artifact
+    TIMEOUT 60
+)
+
+rvx_add_gtest(
     NAME PipelineCacheValidation
     LANE unit
     SOURCES PipelineCacheValidation/main.cpp
@@ -673,11 +702,13 @@ rvx_add_gtest(
         RVX::Render
         RVX::RHI
         RVX::ShaderContracts
+        RVX::Tools
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Tests
         ${CMAKE_SOURCE_DIR}/Render/Include
         ${CMAKE_SOURCE_DIR}/Render/Private
         ${CMAKE_SOURCE_DIR}/RHI/Include
+    DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     TIMEOUT 120
 )
 
@@ -897,6 +928,7 @@ rvx_add_gtest(
     LIBS
         RVX::Core
         RVX::Resource
+        RVX::ShaderContracts
     TIMEOUT 120
 )
 
