@@ -67,6 +67,8 @@ target_link_libraries(RVX_RenderRuntimeCore PRIVATE
     Threads::Threads
 )
 
+add_library(RVX::RenderRuntimeCore ALIAS RVX_RenderRuntimeCore)
+
 # =============================================================================
 # RenderGraph - frame graph compilation, execution, and transient resources
 # =============================================================================
@@ -229,6 +231,7 @@ add_library(RVX::Render ALIAS RVX_Render)
 rvx_register_module_target(
     TARGET RVX_RenderRuntimeCore
     MODULE Render
+    ALIASES RVX::RenderRuntimeCore
 )
 rvx_register_module_target(
     TARGET RVX_RenderGraph
