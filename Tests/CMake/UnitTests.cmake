@@ -254,7 +254,7 @@ rvx_add_gtest(
     SOURCES EcsSceneAssetLoadCoordinatorValidation/main.cpp
     LIBS
         RVX::Core
-        RVX::Resource
+        RVX::ResourceRuntime
         RVX::ResourceSceneAdapters
         RVX::Scene
     TAGS subsystem.resource subsystem.scene subsystem.ecs
@@ -280,7 +280,7 @@ rvx_add_gtest(
     SOURCES EcsEnvironmentLoadCoordinatorValidation/main.cpp
     LIBS
         RVX::Core
-        RVX::Resource
+        RVX::ResourceRuntime
         RVX::ResourceSceneAdapters
         RVX::Scene
     TAGS subsystem.resource subsystem.scene subsystem.ecs suite.environment
@@ -643,7 +643,7 @@ rvx_add_gtest(
     SOURCES HDRTextureLoaderValidation/main.cpp
     LIBS
         RVX::Core
-        RVX::Resource
+        RVX::ResourceRuntime
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Resource/Include
     TIMEOUT 120
@@ -685,7 +685,7 @@ rvx_add_gtest(
         RVX::Core
         RVX::ShaderCompiler
         RVX::ShaderContracts
-        RVX::Tools
+        RVX::AssetPipeline
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Tests
     DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -702,7 +702,7 @@ rvx_add_gtest(
         RVX::Render
         RVX::RHI
         RVX::ShaderContracts
-        RVX::Tools
+        RVX::AssetPipeline
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Tests
         ${CMAKE_SOURCE_DIR}/Render/Include
@@ -757,8 +757,8 @@ rvx_add_gtest(
     SOURCES SkeletalAssetPipelineValidation/main.cpp
     LIBS
         RVX::Core
-        RVX::Resource
-        RVX::Tools
+        RVX::ResourceRuntime
+        RVX::AssetPipeline
     TAGS subsystem.resource subsystem.animation suite.gltf
     TIMEOUT 120
 )
@@ -769,7 +769,7 @@ rvx_add_gtest(
     SOURCES AnimationResourceValidation/main.cpp
     LIBS
         RVX::Core
-        RVX::Resource
+        RVX::ResourceRuntime
     TAGS subsystem.resource subsystem.animation suite.cooked
     TIMEOUT 120
 )
@@ -780,8 +780,8 @@ rvx_add_gtest(
     SOURCES AnimationRootMotionDerivationValidation/main.cpp
     LIBS
         RVX::Core
-        RVX::Resource
-        RVX::Tools
+        RVX::ResourceRuntime
+        RVX::AssetPipeline
     DEFINES
         RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     TAGS product.tools subsystem.resource subsystem.animation suite.root-motion
@@ -853,7 +853,7 @@ rvx_add_gtest(
     LIBS
         RVX::Core
         RVX::Render
-        RVX::Resource
+        RVX::ResourceRuntime
         RVX::RHI
         RVX::Scene
     INCLUDES
@@ -906,7 +906,7 @@ rvx_add_gtest(
     LIBS
         RVX::AssetImport
         RVX::Core
-        RVX::Resource
+        RVX::ResourceRuntime
     TIMEOUT 120
 )
 
@@ -916,7 +916,7 @@ rvx_add_gtest(
     SOURCES ResourceDiagnosticsViewValidation/main.cpp
     LIBS
         RVX::Core
-        RVX::Resource
+        RVX::ResourceRuntime
     TAGS subsystem.resource trait.diagnostics
     TIMEOUT 30
 )
@@ -928,7 +928,7 @@ rvx_add_gtest(
     INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
     LIBS
         RVX::Core
-        RVX::Resource
+        RVX::ResourceRuntime
         RVX::ShaderContracts
     TIMEOUT 120
 )
@@ -939,7 +939,6 @@ rvx_add_gtest(
     SOURCES ResourceLoaderCatalogValidation/main.cpp
     LIBS
         RVX::AssetContracts
-        RVX::Resource
         RVX::ResourceRuntime
     TAGS subsystem.resource suite.loader-catalog
     TIMEOUT 30
@@ -952,7 +951,7 @@ rvx_add_gtest(
     LIBS
         RVX::AssetImport
         RVX::EngineDevelopmentComposition
-        RVX::Resource
+        RVX::ResourceRuntime
         RVX::ResourceSource
     TAGS subsystem.resource suite.source-composition
     TIMEOUT 60
@@ -964,7 +963,7 @@ rvx_add_gtest(
     SOURCES ResourceLoadOperationValidation/main.cpp
     LIBS
         RVX::Core
-        RVX::Resource
+        RVX::ResourceRuntime
     TAGS subsystem.resource trait.async
     TIMEOUT 30
 )
@@ -975,7 +974,7 @@ rvx_add_gtest(
     SOURCES ResourceLoadedAcquireValidation/main.cpp
     LIBS
         RVX::Core
-        RVX::Resource
+        RVX::ResourceRuntime
     TAGS subsystem.resource trait.concurrency
     TIMEOUT 30
 )
@@ -987,7 +986,7 @@ rvx_add_gtest(
     INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
     LIBS
         RVX::Core
-        RVX::Resource
+        RVX::ResourceRuntime
     TAGS subsystem.resource suite.cook
     TIMEOUT 30
 )
@@ -999,7 +998,7 @@ rvx_add_gtest(
     LIBS
         RVX::AssetImport
         RVX::Core
-        RVX::Resource
+        RVX::ResourceRuntime
     TAGS subsystem.resource trait.async
     TIMEOUT 60
 )
@@ -1010,7 +1009,7 @@ rvx_add_gtest(
     SOURCES ResourceRetirementLedgerValidation/main.cpp
     LIBS
         RVX::Core
-        RVX::Resource
+        RVX::ResourceRuntime
     TAGS subsystem.resource suite.retirement
     TIMEOUT 30
 )
@@ -1021,7 +1020,7 @@ rvx_add_gtest(
     SOURCES MaterialInstanceResourceValidation/main.cpp
     LIBS
         RVX::Core
-        RVX::Resource
+        RVX::ResourceRuntime
         RVX::Scene
     TAGS subsystem.resource suite.material
     TIMEOUT 30
@@ -1031,7 +1030,7 @@ rvx_add_gtest(
     NAME SceneAssetStreamingValidation
     LANE unit
     SOURCES SceneAssetStreamingValidation/main.cpp
-    LIBS RVX::Core RVX::Resource RVX::ResourceSource
+    LIBS RVX::Core RVX::ResourceRuntime RVX::ResourceSource
     DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     TAGS subsystem.resource suite.streaming
     TIMEOUT 30
@@ -1042,7 +1041,7 @@ rvx_add_gtest(
     LANE unit
     SOURCES CookedModelProductValidation/main.cpp
     INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
-    LIBS RVX::Core RVX::Resource RVX::Tools
+    LIBS RVX::Core RVX::ResourceRuntime RVX::AssetPipeline
     DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     TAGS subsystem.resource suite.cook suite.model
     TIMEOUT 120
@@ -1055,7 +1054,7 @@ rvx_add_gtest(
     LIBS
         RVX::Core
         RVX::AssetImport
-        RVX::Resource
+        RVX::ResourceRuntime
     TAGS subsystem.resource suite.environment trait.async
     TIMEOUT 120
 )

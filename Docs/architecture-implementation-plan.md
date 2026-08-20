@@ -1721,7 +1721,7 @@ Tasks:
 - Add the checker to the architecture baseline runner.
 - Promote `Tools -> Audio` to a public CMake dependency because
   `Tools/Importers/AudioImporter.h` exposes `Audio::AudioFormat`.
-- Remove the private Audio include-directory workaround from `RVX_Tools`.
+- Remove the private Audio include-directory workaround from `RVX_AssetPipeline`.
 
 Gate:
 

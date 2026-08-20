@@ -2,9 +2,10 @@
 
 #include "EngineDevelopmentComposition/EngineDevelopmentComposition.h"
 
-#include "ShaderCompiler/ShaderManager.h"
 #include "Core/Assert.h"
+#include "Resource/ResourceManager.h"
 #include "ResourceSource/ResourceSourceComposition.h"
+#include "ShaderCompiler/ShaderManager.h"
 
 #include <array>
 #include <filesystem>
@@ -207,15 +208,6 @@ ShaderProgramProviderFactory CreateDevelopmentShaderProgramProviderFactory(
     };
 }
 
-void ConfigureEngineDevelopmentShaders(
-    EngineConfig& config,
-    std::filesystem::path shaderSourceRoot)
-{
-    config.shaderProgramProviderFactory =
-        CreateDevelopmentShaderProgramProviderFactory(
-            std::move(shaderSourceRoot));
-}
-
 ResourceManagerDependencies CreateDevelopmentResourceManagerDependencies()
 {
     Resource::ResourceManager& manager = Resource::ResourceManager::Get();
@@ -231,12 +223,15 @@ ResourceManagerDependencies CreateDevelopmentResourceManagerDependencies()
     return dependencies;
 }
 
-bool ConfigureEngineDevelopmentResources(
-    Resource::ResourceSubsystem& subsystem,
-    Resource::ResourceManagerConfig config)
+EngineRuntimeDependencies CreateDevelopmentEngineRuntimeDependencies(
+    std::filesystem::path shaderSourceRoot)
 {
-    return subsystem.Configure(
-        config,
+    EngineRuntimeDependencies dependencies;
+    dependencies.resourceManager.emplace(
         CreateDevelopmentResourceManagerDependencies());
+    dependencies.shaderPrograms =
+        CreateDevelopmentShaderProgramProviderFactory(
+            std::move(shaderSourceRoot));
+    return dependencies;
 }
 } // namespace RVX

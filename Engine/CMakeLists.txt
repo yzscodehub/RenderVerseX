@@ -49,7 +49,7 @@ target_link_libraries(RVX_Engine PUBLIC
     RVX::ShaderContracts
     
     # Resources
-    RVX_Resource
+    RVX::ResourceRuntime
     RVX_ResourceSceneAdapters
     RVX::AnimationSceneAdapters
     

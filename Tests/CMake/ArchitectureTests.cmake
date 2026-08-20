@@ -85,6 +85,16 @@ rvx_add_validation_test(
 
 rvx_add_validation_test(
     LANE architecture
+    NAME Architecture.RuntimeProductClosureChecker
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/test_runtime_product_closure.py
+        -v
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+rvx_add_validation_test(
+    LANE architecture
     NAME Architecture.ModuleInventoryCMake
     COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_SOURCE_DIR}/Scripts/test_module_inventory_cmake.py
@@ -206,6 +216,19 @@ rvx_add_validation_test(
     NAME Architecture.CMakeModuleLinks
     COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_SOURCE_DIR}/Scripts/check_cmake_module_links.py
+        --root ${CMAKE_SOURCE_DIR}
+        --manifest ${RVX_ARCH_MANIFEST}
+        --module-inventory ${RVX_ARCH_MODULE_INVENTORY}
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    REQUIRED_FILES ${RVX_ARCH_POLICY_REQUIRED_FILES}
+)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.RuntimeProductClosure
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/check_runtime_product_closure.py
         --root ${CMAKE_SOURCE_DIR}
         --manifest ${RVX_ARCH_MANIFEST}
         --module-inventory ${RVX_ARCH_MODULE_INVENTORY}

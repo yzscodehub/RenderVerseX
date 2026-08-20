@@ -12,7 +12,6 @@ target_include_directories(RVX_AssetImport PUBLIC
 )
 
 target_link_libraries(RVX_AssetImport PUBLIC
-    RVX::Resource
     RVX::ResourceRuntime
 )
 

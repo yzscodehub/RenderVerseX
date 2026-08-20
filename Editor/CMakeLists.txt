@@ -149,9 +149,9 @@ target_link_libraries(RVX_Editor PUBLIC
     RVX::RHI
     RVX::Render
     RVX::RenderContracts
-    RVX::Resource
+    RVX::ResourceRuntime
     RVX::Scene
-    RVX::Tools
+    RVX::AssetPipeline
     RVX::UI
     RVX::Animation
     RVX::HAL

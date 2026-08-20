@@ -33,10 +33,11 @@ target_link_libraries(RenderVerseSamples PRIVATE
     RVX::AnimationSceneAdapters
     RVX::Core
     RVX::Engine
+    RVX::EngineDevelopmentComposition
     RVX::HAL
     RVX::Physics
     RVX::Render
-    RVX::Resource
+    RVX::ResourceRuntime
     RVX::ResourceSceneAdapters
     RVX::RHI
     RVX::RHI_BackendFactory

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <stdexcept>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
@@ -72,7 +73,20 @@ namespace
             return false;
         }
         m_config = config;
-        m_dependencies.reset();
+        return true;
+    }
+
+    bool ResourceSubsystem::SetRuntimeDependencies(
+        ResourceManagerDependencies dependencies)
+    {
+        if (m_initialized || m_dependencies.has_value())
+        {
+            RVX_VERIFY(
+                false,
+                "ResourceSubsystem runtime dependencies are single-assignment before initialization");
+            return false;
+        }
+        m_dependencies.emplace(std::move(dependencies));
         return true;
     }
 
@@ -80,10 +94,11 @@ namespace
         const ResourceManagerConfig& config,
         ResourceManagerDependencies dependencies)
     {
-        if (m_initialized)
+        if (m_initialized || m_dependencies.has_value())
         {
-            RVX_VERIFY(false,
-                       "ResourceSubsystem configuration is immutable after initialization");
+            RVX_VERIFY(
+                false,
+                "ResourceSubsystem runtime composition is single-assignment before initialization");
             return false;
         }
         m_config = config;
@@ -100,9 +115,12 @@ namespace
         m_renderShuttingDown = false;
         m_lastShutdownDiagnostics = {};
         ResourceManager& manager = ResourceManager::Get();
-        ResourceManagerDependencies dependencies = m_dependencies
-            ? std::move(*m_dependencies)
-            : CreateRuntimeResourceManagerDependencies(manager);
+        if (!m_dependencies.has_value())
+        {
+            throw std::logic_error(
+                "ResourceSubsystem requires explicit runtime dependencies");
+        }
+        ResourceManagerDependencies dependencies = std::move(*m_dependencies);
         m_dependencies.reset();
         manager.Initialize(m_config, std::move(dependencies));
         manager.SetLifecycleEventCallback(

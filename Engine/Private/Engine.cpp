@@ -62,7 +62,8 @@ namespace
     }
 } // namespace
 
-Engine::Engine()
+Engine::Engine(EngineRuntimeDependencies dependencies)
+    : m_runtimeDependencies(std::move(dependencies))
 {
     if (s_instance == nullptr)
     {
@@ -785,16 +786,30 @@ bool Engine::InitializeSubsystems()
         subsystem->SetEngine(this);
     }
 
+    auto* resources = GetSubsystem<Resource::ResourceSubsystem>();
     auto* render = GetSubsystem<RenderSubsystem>();
+    auto* window = GetSubsystem<WindowSubsystem>();
+    if (resources != nullptr && !m_runtimeDependencies.resourceManager.has_value())
+    {
+        RVX_CORE_ERROR(
+            "ResourceSubsystem requires an explicit Engine runtime dependency bundle");
+        subsystemsSpan.SetAttribute("result", "missing-resource-runtime-dependencies");
+        return false;
+    }
     if (render != nullptr)
     {
-        auto* resources = GetSubsystem<Resource::ResourceSubsystem>();
-        auto* window = GetSubsystem<WindowSubsystem>();
         if (resources == nullptr || window == nullptr)
         {
             RVX_CORE_ERROR(
                 "ECS render composition requires ResourceSubsystem and WindowSubsystem");
             subsystemsSpan.SetAttribute("result", "missing-required-subsystem");
+            return false;
+        }
+        if (!m_runtimeDependencies.shaderPrograms)
+        {
+            RVX_CORE_ERROR(
+                "RenderSubsystem requires an explicit shader program provider");
+            subsystemsSpan.SetAttribute("result", "missing-shader-program-provider");
             return false;
         }
 
@@ -809,12 +824,28 @@ bool Engine::InitializeSubsystems()
             subsystemsSpan.SetAttribute("result", "dependency-registration-failed");
             return false;
         }
+    }
 
+    if (resources != nullptr)
+    {
+        if (!resources->Configure(
+                m_config.resourceManager,
+                std::move(*m_runtimeDependencies.resourceManager)))
+        {
+            RVX_CORE_ERROR("Failed to install Engine resource runtime dependencies");
+            subsystemsSpan.SetAttribute("result", "resource-configuration-failed");
+            return false;
+        }
+        m_runtimeDependencies.resourceManager.reset();
+    }
+
+    if (render != nullptr)
+    {
         auto services = CreateEngineEcsRenderRuntimeCompositionServices(
             *resources,
             *render,
             *window,
-            m_config.shaderProgramProviderFactory,
+            std::move(m_runtimeDependencies.shaderPrograms),
             [this]() { return m_subsystems.DeinitializeSubsystem<RenderSubsystem>(); });
         m_ecsRenderComposition = std::make_unique<EcsRenderRuntimeComposition>(
             m_config.renderRuntime,

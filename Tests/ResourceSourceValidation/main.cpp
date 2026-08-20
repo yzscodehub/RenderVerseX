@@ -4,6 +4,7 @@
 #include "Resource/Loader/ModelLoader.h"
 #include "Resource/Loader/TextureLoader.h"
 #include "Resource/ResourceManager.h"
+#include "Resource/ResourceSubsystem.h"
 #include "ResourceSource/PollingResourceChangeMonitor.h"
 
 #include <gtest/gtest.h>
@@ -12,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <type_traits>
 
 namespace
 {
@@ -134,6 +136,26 @@ TEST(ResourceSourceValidation, DevelopmentCompositionAddsExactSourceLoaders)
     EXPECT_EQ(cookedModel.matchCount, 1u);
 }
 
+TEST(ResourceSourceValidation, DevelopmentEngineBundleIsCompleteAndMoveOnly)
+{
+    static_assert(!std::is_copy_constructible_v<RVX::EngineRuntimeDependencies>);
+    static_assert(
+        std::is_nothrow_move_constructible_v<RVX::EngineRuntimeDependencies>);
+
+    RVX::EngineRuntimeDependencies dependencies =
+        RVX::CreateDevelopmentEngineRuntimeDependencies();
+    ASSERT_TRUE(dependencies.resourceManager.has_value());
+    EXPECT_TRUE(dependencies.shaderPrograms);
+    EXPECT_NE(dependencies.resourceManager->changeMonitor, nullptr);
+
+    const auto sourceTexture = dependencies.resourceManager->loaderCatalog.Resolve({
+        RVX::ResourceType::Texture,
+        RVX::ResourceLoadDomain::Source,
+        "assets/albedo.png"});
+    EXPECT_TRUE(sourceTexture.Succeeded());
+    EXPECT_EQ(sourceTexture.matchCount, 1u);
+}
+
 TEST(ResourceSourceValidation, MonitorOnlyReportsObservedSourceChanges)
 {
     TemporaryDirectory root;
@@ -174,8 +196,9 @@ TEST(ResourceSourceValidation, DevelopmentSubsystemReceivesChangeMonitor)
     config.runtimePolicy.allowSourceAssetReads = true;
     config.runtimePolicy.sourceRoot = root.Get().string();
 
-    ASSERT_TRUE(RVX::ConfigureEngineDevelopmentResources(subsystem, config));
-    subsystem.Initialize();
+    subsystem.Initialize(
+        config,
+        RVX::CreateDevelopmentResourceManagerDependencies());
     EXPECT_TRUE(subsystem.GetManager().IsInitialized());
     EXPECT_TRUE(subsystem.GetManager().IsHotReloadEnabled());
     EXPECT_TRUE(

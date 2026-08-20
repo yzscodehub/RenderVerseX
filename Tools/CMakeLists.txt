@@ -1,9 +1,9 @@
 # =============================================================================
 # Tools Module - Asset pipeline and utilities
 # =============================================================================
-add_library(RVX_Tools STATIC)
+add_library(RVX_AssetPipeline STATIC)
 
-target_sources(RVX_Tools PRIVATE
+target_sources(RVX_AssetPipeline PRIVATE
     Private/AssetPipeline.cpp
     Private/ShaderProgramCatalog.cpp
     Private/AssetDatabase.cpp
@@ -11,38 +11,38 @@ target_sources(RVX_Tools PRIVATE
     Private/Importers/AudioImporter.cpp
 )
 
-target_include_directories(RVX_Tools PUBLIC
+target_include_directories(RVX_AssetPipeline PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Include>
     $<INSTALL_INTERFACE:include>
 )
 
-target_link_libraries(RVX_Tools PUBLIC
+target_link_libraries(RVX_AssetPipeline PUBLIC
     RVX::Audio
     RVX::Core
     RVX::RHI
     RVX::ShaderContracts
 )
 
-target_link_libraries(RVX_Tools PRIVATE
+target_link_libraries(RVX_AssetPipeline PRIVATE
     RVX::AssetImport
-    RVX::Resource
+    RVX::ResourceRuntime
     RVX::ShaderCompiler
 )
 
 # Optional: Link asset processing libraries when available
-# target_link_libraries(RVX_Tools PRIVATE
+# target_link_libraries(RVX_AssetPipeline PRIVATE
 #     assimp::assimp
 #     stb_image
 # )
 
-add_library(RVX::Tools ALIAS RVX_Tools)
+add_library(RVX::AssetPipeline ALIAS RVX_AssetPipeline)
 
 add_executable(RVXCook
     Private/CookMain.cpp
 )
 
 target_link_libraries(RVXCook PRIVATE
-    RVX::Tools
+    RVX::AssetPipeline
 )
 
 target_compile_features(RVXCook PRIVATE cxx_std_20)
@@ -52,21 +52,21 @@ add_executable(RVXAnimationDerive
 )
 
 target_link_libraries(RVXAnimationDerive PRIVATE
-    RVX::Tools
+    RVX::AssetPipeline
 )
 
 target_compile_features(RVXAnimationDerive PRIVATE cxx_std_20)
 
 rvx_register_module_target(
-    TARGET RVX_Tools
-    MODULE Tools
-    ALIASES RVX::Tools
+    TARGET RVX_AssetPipeline
+    MODULE AssetPipeline
+    ALIASES RVX::AssetPipeline
 )
 rvx_register_module_target(
     TARGET RVXCook
-    MODULE Tools
+    MODULE AssetPipeline
 )
 rvx_register_module_target(
     TARGET RVXAnimationDerive
-    MODULE Tools
+    MODULE AssetPipeline
 )

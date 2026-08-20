@@ -28,7 +28,7 @@ target_link_libraries(RVX_SampleCommon PUBLIC
     RVX::Core
     RVX::Engine
     RVX::Render
-    RVX::Resource
+    RVX::ResourceRuntime
     RVX::ResourceSceneAdapters
     RVX::RHI
     RVX::RuntimeServices

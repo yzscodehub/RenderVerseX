@@ -76,7 +76,7 @@
  * #include "Resource/Resource.h"
  * 
  * int main() {
- *     RVX::Engine engine;
+ *     RVX::Engine engine(RVX::EngineRuntimeDependencies{});
  *     
  *     // Add subsystems
  *     engine.AddSubsystem<RVX::WindowSubsystem>();

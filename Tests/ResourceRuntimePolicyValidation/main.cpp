@@ -2322,7 +2322,7 @@ TEST(ResourceRuntimePolicyValidation,
     FakeResourceGateway gateway;
     ResourceSubsystem subsystem;
     subsystem.SetRenderResourceGateway(&gateway);
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+    subsystem.Initialize(MakeRenderResourceTestConfig(root), {});
 
     auto* texture = new TextureResource();
     texture->SetId(311);
@@ -2417,7 +2417,7 @@ TEST(ResourceRuntimePolicyValidation,
     FakeResourceGateway gateway;
     ResourceSubsystem subsystem;
     subsystem.SetRenderResourceGateway(&gateway);
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+    subsystem.Initialize(MakeRenderResourceTestConfig(root), {});
 
     auto* texture = new TextureResource();
     texture->SetId(321);

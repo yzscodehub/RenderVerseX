@@ -18,6 +18,7 @@ POLICY_GATES = (
     "check_cmake_module_visibility.py",
     "check_cmake_module_include_edges.py",
     "check_cmake_module_links.py",
+    "check_runtime_product_closure.py",
     "check_public_header_linkage.py",
     "check_editor_runtime_boundary.py",
     "check_pure_ecs_runtime.py",

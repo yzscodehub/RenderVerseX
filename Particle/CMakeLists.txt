@@ -146,7 +146,7 @@ target_link_libraries(${MODULE_NAME}
         RVX_Core
         RVX::RenderContracts
         RVX_Scene
-        RVX_Resource
+        RVX::ResourceRuntime
 )
 
 # ==============================================================================

@@ -3942,7 +3942,7 @@ namespace RVX
                           sceneOptions.environmentPath.string());
         }
 
-        Engine engine;
+        Engine engine(CreateDevelopmentEngineRuntimeDependencies());
         const std::string applicationName =
             "RenderVerseX - " + registeredInfo->displayName;
         EngineConfig engineConfig;
@@ -3956,9 +3956,6 @@ namespace RVX
         engineConfig.renderRuntime.enableValidation =
             options.common.enableValidation;
         engineConfig.renderRuntime.startupTraceContext = startupTraceContext;
-        ConfigureEngineDevelopmentShaders(engineConfig);
-        engine.SetConfig(engineConfig);
-
         auto* window = engine.AddSubsystem<WindowSubsystem>();
         WindowConfig windowConfig;
         windowConfig.title = applicationName.c_str();
@@ -3978,24 +3975,8 @@ namespace RVX
         resourceConfig.asyncThreadCount =
             std::max(resourceConfig.asyncThreadCount, 1);
         resourceConfig.startupTraceContext = startupTraceContext;
-        if (!ConfigureEngineDevelopmentResources(
-                *resourceSubsystem, resourceConfig))
-        {
-            RVX_CORE_ERROR("Failed to configure ResourceSubsystem startup tracing");
-            static_cast<void>(WriteEarlyFailureAssessment(
-                options.assessmentReportPath,
-                sample.get(),
-                registeredInfo->id,
-                options.common.backend,
-                "RESOURCE.CONFIGURATION.FAILED",
-                "RESOURCE",
-                AssessmentCheckpoints::EngineBaseline,
-                "ResourceSubsystem configuration failed before Engine initialization.",
-                "ResourceSubsystem::Configure returned false."));
-            static_cast<void>(startupTimeline.Finalize());
-            Log::Shutdown();
-            return 1;
-        }
+        engineConfig.resourceManager = resourceConfig;
+        engine.SetConfig(engineConfig);
         auto* input = engine.AddSubsystem<InputSubsystem>();
         auto* render = engine.AddSubsystem<RenderSubsystem>();
 

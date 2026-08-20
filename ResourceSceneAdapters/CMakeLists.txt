@@ -18,7 +18,7 @@ target_link_libraries(RVX_ResourceSceneAdapters PUBLIC
     RVX::Core
     RVX::ECS
     RVX::Geometry
-    RVX::Resource
+    RVX::ResourceRuntime
     RVX::Scene
 )
 

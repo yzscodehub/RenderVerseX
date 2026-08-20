@@ -93,7 +93,7 @@ namespace
         {
             ResourceManagerConfig config;
             config.asyncThreadCount = 0;
-            m_subsystem.Initialize(config);
+            m_subsystem.Initialize(config, {});
         }
 
         ~ResourceSubsystemScope()

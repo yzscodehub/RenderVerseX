@@ -18,7 +18,6 @@ target_link_libraries(RVX_ResourceSource PUBLIC
 target_link_libraries(RVX_ResourceSource PRIVATE
     RVX::AssetImport
     RVX::Core
-    RVX::Resource
 )
 
 add_library(RVX::ResourceSource ALIAS RVX_ResourceSource)

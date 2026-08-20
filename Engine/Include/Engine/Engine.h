@@ -10,10 +10,11 @@
 #include "Core/Subsystem/EngineSubsystem.h"
 #include "Core/Subsystem/SubsystemCollection.h"
 #include "Engine/ECS/IWorldEcsRuntimeServices.h"
+#include "Engine/EngineRuntimeDependencies.h"
 #include "Engine/RenderRuntimeDiagnostics.h"
 #include "Render/RenderRuntimeTypes.h"
 #include "RenderContracts/RenderFrameTypes.h"
-#include "ShaderContracts/ShaderProgramProvider.h"
+#include "Resource/ResourceManager.h"
 
 #include <functional>
 #include <map>
@@ -53,7 +54,7 @@ namespace RVX
         Diagnostics::TraceContext startupTraceContext{};
         RenderRuntimeConfig renderRuntime{};
         RenderFrameSettings initialRenderFrameSettings{};
-        ShaderProgramProviderFactory shaderProgramProviderFactory{};
+        Resource::ResourceManagerConfig resourceManager{};
     };
 
     /** @brief Immutable evidence captured across the most recent shutdown. */
@@ -91,7 +92,7 @@ namespace RVX
      *
      * Usage:
      * @code
-     * Engine engine;
+     * Engine engine(EngineRuntimeDependencies{});
      * engine.SetConfig(config);
      *
      * // Add subsystems (order doesn't matter - dependencies are resolved automatically)
@@ -111,7 +112,7 @@ namespace RVX
     class Engine
     {
     public:
-        Engine();
+        explicit Engine(EngineRuntimeDependencies dependencies);
         ~Engine();
 
         // Non-copyable
@@ -328,6 +329,7 @@ namespace RVX
         };
 
         EngineConfig m_config;
+        EngineRuntimeDependencies m_runtimeDependencies;
         SubsystemCollection<EngineSubsystem> m_subsystems;
 
         // World management

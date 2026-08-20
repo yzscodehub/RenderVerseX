@@ -111,6 +111,9 @@ namespace RVX::Resource
         const char* GetName() const override { return "ResourceSubsystem"; }
         /** @brief Configure the manager before Engine initializes the subsystem. */
         [[nodiscard]] bool Configure(const ResourceManagerConfig& config);
+        /** @brief Install the explicit runtime composition before initialization. */
+        [[nodiscard]] bool SetRuntimeDependencies(
+            ResourceManagerDependencies dependencies);
         [[nodiscard]] bool Configure(
             const ResourceManagerConfig& config,
             ResourceManagerDependencies dependencies);

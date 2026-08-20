@@ -14,6 +14,7 @@
 #include <chrono>
 #include <memory>
 #include <thread>
+#include <utility>
 
 namespace
 {
@@ -440,9 +441,12 @@ TEST(EcsAnimationAssetServiceValidation, ResolvesLoadedModelContainedAnimationAs
 TEST(EcsAnimationAssetServiceValidation,
      EngineDestroysSharedAnimationOwnersBeforeResourceSubsystemShutdown)
 {
-    Engine engine;
+    EngineRuntimeDependencies dependencies;
+    dependencies.resourceManager.emplace();
+    Engine engine(std::move(dependencies));
     EngineConfig config;
     config.enableJobSystem = false;
+    config.resourceManager.asyncThreadCount = 0;
     engine.SetConfig(config);
     ASSERT_NE(engine.AddSubsystem<Resource::ResourceSubsystem>(), nullptr);
     ASSERT_TRUE(engine.Initialize());

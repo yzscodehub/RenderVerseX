@@ -3,7 +3,7 @@ rvx_add_gtest(
     NAME CookedEnvironmentAudioArtifactValidation
     LANE integration
     SOURCES CookedEnvironmentAudioArtifactValidation/main.cpp
-    LIBS RVX::Core RVX::Resource RVX::Tools
+    LIBS RVX::Core RVX::ResourceRuntime RVX::AssetPipeline
     TAGS subsystem.resource suite.cook
     TIMEOUT 120
 )
@@ -204,11 +204,11 @@ rvx_add_gtest(
     LIBS
         RVX::Core
         RVX::Render
-        RVX::Resource
+        RVX::ResourceRuntime
         RVX::ResourceSource
         RVX::ShaderCompiler
         RVX::ShaderContracts
-        RVX::Tools
+        RVX::AssetPipeline
         RVX::RHI
         RVX::Terrain
         Particle
@@ -232,7 +232,7 @@ rvx_add_gtest(
         RVX::Core
         RVX::RuntimeServices
         RVX::World
-        RVX::Resource
+        RVX::ResourceRuntime
         RVX::RenderExtraction
         RVX::Scene
         RVX::Render
@@ -260,7 +260,7 @@ rvx_add_gtest(
     LIBS
         RVX::Core
         RVX::Render
-        RVX::Resource
+        RVX::ResourceRuntime
         RVX::RHI
         RVX::RHI_BackendFactory
         ${RVX_ALL_BACKENDS}
@@ -349,7 +349,7 @@ rvx_add_gtest(
     LIBS
         RVX::Core
         RVX::RenderContracts
-        RVX::Resource
+        RVX::ResourceRuntime
         RVX::ResourceSceneAdapters
         RVX::SampleCommon
         RVX::Scene
@@ -372,7 +372,7 @@ rvx_add_gtest(
         RVX::Core
         RVX::Physics
         RVX::RenderContracts
-        RVX::Resource
+        RVX::ResourceRuntime
         RVX::ResourceSceneAdapters
         RVX::SampleCommon
         RVX::Scene
@@ -397,7 +397,7 @@ rvx_add_gtest(
         RVX::Core
         RVX::Physics
         RVX::RenderContracts
-        RVX::Resource
+        RVX::ResourceRuntime
         RVX::ResourceSceneAdapters
         RVX::SampleCommon
         RVX::Scene
@@ -419,7 +419,7 @@ rvx_add_gtest(
     LIBS
         RVX::Core
         RVX::RenderContracts
-        RVX::Resource
+        RVX::ResourceRuntime
         RVX::ResourceSceneAdapters
         RVX::SampleCommon
         RVX::Scene
@@ -442,7 +442,7 @@ rvx_add_gtest(
     LIBS
         RVX::Core
         RVX::RenderContracts
-        RVX::Resource
+        RVX::ResourceRuntime
         RVX::ResourceSceneAdapters
         RVX::SampleCommon
         RVX::Scene
@@ -465,7 +465,7 @@ rvx_add_gtest(
     LIBS
         RVX::Core
         RVX::RenderContracts
-        RVX::Resource
+        RVX::ResourceRuntime
         RVX::ResourceSceneAdapters
         RVX::SampleCommon
         RVX::Scene
