@@ -219,9 +219,9 @@ rvx_add_gtest(
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Particle/Private
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/ResourceRuntime/Include
-        ${CMAKE_SOURCE_DIR}/ShaderCompiler/Include
+        ${CMAKE_SOURCE_DIR}/Source/Developer/ShaderCompiler/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Terrain/Private
-        ${CMAKE_SOURCE_DIR}/Tools/Include
+        ${CMAKE_SOURCE_DIR}/Source/Developer/AssetPipeline/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
     TIMEOUT 120
 )

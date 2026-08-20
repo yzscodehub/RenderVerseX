@@ -661,7 +661,7 @@ rvx_add_gtest(
         RVX::ShaderCompiler
         RVX::RHI
     INCLUDES
-        ${CMAKE_SOURCE_DIR}/ShaderCompiler/Include
+        ${CMAKE_SOURCE_DIR}/Source/Developer/ShaderCompiler/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
     DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     TIMEOUT 120
@@ -750,7 +750,7 @@ rvx_add_gtest(
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RenderContracts/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
-        ${CMAKE_SOURCE_DIR}/ShaderCompiler/Include
+        ${CMAKE_SOURCE_DIR}/Source/Developer/ShaderCompiler/Include
     TIMEOUT 120
 )
 

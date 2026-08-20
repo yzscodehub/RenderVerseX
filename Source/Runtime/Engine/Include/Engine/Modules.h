@@ -43,8 +43,8 @@
  *
  * DEVELOPMENT COMPOSITION
  * -----------------------
- * - ShaderCompiler/: Source shader compilation (development only)
- * - EngineDevelopmentComposition/: Development-only Engine service wiring
+ * - Source/Developer/ShaderCompiler/: Source shader compilation (development only)
+ * - Source/Developer/EngineDevelopmentComposition/: Development-only Engine service wiring
  * 
  * SUPPORTING MODULES
  * ------------------

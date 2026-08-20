@@ -253,7 +253,7 @@ class ShippingTargetClosureTests(unittest.TestCase):
             "RuntimeCore",
             "Engine",
             links=("$<LINK_ONLY:unregistered::ShaderCompiler::headers>",),
-            interface_includes=(str(ROOT / "ShaderCompiler/Include"),),
+            interface_includes=(str(ROOT / "Source/Developer/ShaderCompiler/Include"),),
         )
         findings = validate_shipping_target_closure(
             make_policy((*policy.modules.values(), developer), tuple(targets))

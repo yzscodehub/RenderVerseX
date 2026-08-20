@@ -308,16 +308,19 @@ RenderVerseX/
 ├── RHI_Vulkan/        # Vulkan backend
 ├── RHI_Metal/         # Metal backend (macOS/iOS)
 ├── RHI_OpenGL/        # OpenGL backend (Linux fallback)
-├── ShaderCompiler/    # HLSL compilation and cross-compilation
+├── Source/Developer/ShaderCompiler/ # HLSL compilation and cross-compilation
 ├── Render/            # High-level rendering (RenderGraph, Passes, SceneRenderer)
 ├── Resource/          # Asset loading and resource management
 ├── Particle/          # GPU-driven particle system
 ├── AI/                # AI systems (Navigation, BehaviorTree, Perception)
 ├── Networking/        # Network communication and replication
-├── Debug/             # Debug tools (profiling, console, stats)
+├── Source/Developer/DebugTools/ # Debug tools (profiling, console, stats)
 ├── Scripting/         # Lua scripting system with Sol2 bindings
 ├── Audio/             # Audio subsystem (MiniAudio)
-├── Tools/             # Asset pipeline and importers
+├── Source/Developer/AssetImport/ # Development-only source importers
+├── Source/Developer/ResourceSource/ # Source loading and change observation
+├── Source/Developer/AssetPipeline/ # Asset pipeline and importers
+├── Source/Developer/EngineDevelopmentComposition/ # Development wiring
 ├── UI/                # UI framework with widgets
 ├── Physics/           # Physics subsystem (Jolt Physics)
 ├── Terrain/           # Heightmap terrain rendering

@@ -270,7 +270,7 @@ add_subdirectory(Source/Runtime/RHI)
 add_subdirectory(Source/Runtime/ShaderContracts)
 add_subdirectory(Source/Runtime/ShaderRuntime)
 if(RVX_BUILD_DEVELOPER)
-    add_subdirectory(ShaderCompiler)
+    add_subdirectory(Source/Developer/ShaderCompiler)
 else()
     rvx_register_disabled_module(
         MODULE ShaderCompiler
@@ -321,8 +321,8 @@ add_subdirectory(Source/Runtime/RHI_BackendFactory) # Enabled RHI backend compos
 
 add_subdirectory(Source/Runtime/ResourceRuntime) # Resource runtime and cooked resource management
 if(RVX_BUILD_DEVELOPER)
-    add_subdirectory(AssetImport) # Development-only source importer adapters
-    add_subdirectory(ResourceSource) # Development source loading and monitoring
+    add_subdirectory(Source/Developer/AssetImport) # Development-only source importer adapters
+    add_subdirectory(Source/Developer/ResourceSource) # Development source loading and monitoring
 else()
     rvx_register_disabled_module(
         MODULE AssetImport
@@ -341,7 +341,7 @@ add_subdirectory(Source/Runtime/RenderExtraction) # Frozen ECS values to render 
 add_subdirectory(Source/Runtime/Render)       # Render module (includes RenderGraph)
 add_subdirectory(Source/Runtime/Engine)
 if(RVX_BUILD_DEVELOPER)
-    add_subdirectory(EngineDevelopmentComposition)
+    add_subdirectory(Source/Developer/EngineDevelopmentComposition)
 else()
     rvx_register_disabled_module(
         MODULE EngineDevelopmentComposition
@@ -351,7 +351,7 @@ add_subdirectory(Source/Runtime/Particle) # GPU-driven particle system
 add_subdirectory(Source/Runtime/AI) # AI module (Navigation, BehaviorTree, Perception)
 add_subdirectory(Source/Runtime/Networking) # Network communication and replication
 if(RVX_BUILD_DEVELOPER)
-    add_subdirectory(Debug)      # Debug module (profiling, console, stats)
+    add_subdirectory(Source/Developer/DebugTools) # Debug module (profiling, console, stats)
 else()
     rvx_register_disabled_module(
         MODULE Debug
@@ -359,7 +359,7 @@ else()
 endif()
 add_subdirectory(Source/Runtime/Scripting) # Lua scripting system
 if(RVX_BUILD_DEVELOPER)
-    add_subdirectory(Tools)      # Asset pipeline and tools
+    add_subdirectory(Source/Developer/AssetPipeline) # Asset pipeline and tools
 else()
     rvx_register_disabled_module(
         MODULE AssetPipeline

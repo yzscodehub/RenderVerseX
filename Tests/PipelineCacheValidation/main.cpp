@@ -2103,7 +2103,8 @@ TEST_F(PipelineCacheValidationFixture, OpenGLDescriptorBindingsUseStableGLSLBind
 
     const fs::path repoRoot = RepositoryRootFromShaderDirectory(FindShaderDirectory());
     const std::string translatorSource =
-        ReadTextFile(repoRoot / "ShaderCompiler" / "Private" / "SPIRVCrossTranslator.cpp");
+        ReadTextFile(repoRoot / "Source" / "Developer" / "ShaderCompiler" / "Private" /
+                     "SPIRVCrossTranslator.cpp");
     const std::string descriptorSource =
         ReadTextFile(repoRoot / "Source" / "Runtime" / "RHI_OpenGL" / "Private" /
                      "OpenGLDescriptor.cpp");
@@ -2310,7 +2311,9 @@ TEST_F(PipelineCacheValidationFixture, RVXCookWorkflowDocumentationCoversCurrent
     ASSERT_TRUE(fs::exists(docPath));
 
     const std::string doc = ReadTextFile(docPath);
-    const std::string cookMain = ReadTextFile(repoRoot / "Tools" / "Private" / "CookMain.cpp");
+    const std::string cookMain =
+        ReadTextFile(repoRoot / "Source" / "Developer" / "AssetPipeline" / "Private" /
+                     "CookMain.cpp");
     const std::string testsCMake =
         ReadTextFile(repoRoot / "Tests" / "CMake" / "UnitTests.cmake");
 
@@ -2397,11 +2400,14 @@ TEST_F(PipelineCacheValidationFixture, ShaderCacheKeyIncludesCompilerAbiVersion)
 
     const fs::path repoRoot = RepositoryRootFromShaderDirectory(FindShaderDirectory());
     const std::string formatHeader =
-        ReadTextFile(repoRoot / "ShaderCompiler" / "Include" / "ShaderCompiler" / "ShaderCacheFormat.h");
+        ReadTextFile(repoRoot / "Source" / "Developer" / "ShaderCompiler" / "Include" /
+                     "ShaderCompiler" / "ShaderCacheFormat.h");
     const std::string managerSource =
-        ReadTextFile(repoRoot / "ShaderCompiler" / "Private" / "ShaderManager.cpp");
+        ReadTextFile(repoRoot / "Source" / "Developer" / "ShaderCompiler" / "Private" /
+                     "ShaderManager.cpp");
     const std::string cacheManagerSource =
-        ReadTextFile(repoRoot / "ShaderCompiler" / "Private" / "ShaderCacheManager.cpp");
+        ReadTextFile(repoRoot / "Source" / "Developer" / "ShaderCompiler" / "Private" /
+                     "ShaderCacheManager.cpp");
 
     EXPECT_NE(formatHeader.find("RVX_SHADER_COMPILER_CACHE_ABI_VERSION"), std::string::npos);
     EXPECT_NE(managerSource.find("hashCombine(hash, RVX_SHADER_COMPILER_CACHE_ABI_VERSION);"),

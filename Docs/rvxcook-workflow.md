@@ -7,7 +7,7 @@ This document describes the current RenderVerseX asset cook workflow for enginee
 `RVXCook` cooks importable source assets from a source directory into runtime `.rva` artifacts and writes a deterministic `RVX_COOK_MANIFEST_V2` manifest. Before publication, the Tools writer reopens the staged manifest through the Resource runtime reader; a manifest that runtime cannot admit is never published.
 
 ```powershell
-build\win_x64_debug\Tools\Debug\RVXCook.exe `
+build\win_x64_debug\Source\Developer\AssetPipeline\Debug\RVXCook.exe `
   --source Assets\Source `
   --output build\Cooked `
   --manifest build\Cooked\CookManifest.rvxmanifest `
