@@ -3674,7 +3674,7 @@ TEST_F(RenderHonestyValidationFixture,
         ReadTextFile(repoRoot / "Source" / "Runtime" / "RenderContracts" / "Include" /
                      "RenderContracts" / "RenderFrameValidation.h");
     const std::string renderExtractionCMake =
-        ReadTextFile(repoRoot / "RenderExtraction" / "CMakeLists.txt");
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "RenderExtraction" / "CMakeLists.txt");
 
     EXPECT_EQ(std::string::npos, header.find("SetLegacyCollectionFallbackEnabled"));
     EXPECT_EQ(std::string::npos, header.find("IsLegacyCollectionFallbackEnabled"));
@@ -3706,9 +3706,9 @@ TEST_F(RenderHonestyValidationFixture,
                             "RenderContracts" / "RenderFramePacket.h"));
     EXPECT_FALSE(fs::exists(repoRoot / "Source" / "Runtime" / "RenderContracts" / "Private" /
                             "RenderFramePacket.cpp"));
-    EXPECT_FALSE(fs::exists(repoRoot / "RenderExtraction" / "Include" /
+    EXPECT_FALSE(fs::exists(repoRoot / "Source" / "Runtime" / "RenderExtraction" / "Include" /
                             "RenderExtraction" / "RenderFramePacketBuilder.h"));
-    EXPECT_FALSE(fs::exists(repoRoot / "RenderExtraction" / "Private" /
+    EXPECT_FALSE(fs::exists(repoRoot / "Source" / "Runtime" / "RenderExtraction" / "Private" /
                             "RenderFramePacketBuilder.cpp"));
     EXPECT_NE(std::string::npos, source.find("m_viewData.SetupFromSnapshot("));
 }

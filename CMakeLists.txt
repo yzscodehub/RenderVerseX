@@ -331,13 +331,13 @@ else()
         MODULE ResourceSource
         REASON "Developer components are disabled for this configuration")
 endif()
-add_subdirectory(ResourceSceneAdapters) # Resource data to pure ECS scene adapters
+add_subdirectory(Source/Runtime/ResourceSceneAdapters) # Resource data to pure ECS scene adapters
 add_subdirectory(Source/Runtime/Physics)    # Physics subsystem
-add_subdirectory(PhysicsSceneAdapters) # Pure ECS to Built-in Physics composition
-add_subdirectory(AnimationSceneAdapters) # Animation runtime to Scene ECS adapters
+add_subdirectory(Source/Runtime/PhysicsSceneAdapters) # Pure ECS to Built-in Physics composition
+add_subdirectory(Source/Runtime/AnimationSceneAdapters) # Animation runtime to Scene ECS adapters
 add_subdirectory(Source/Runtime/Audio) # Audio subsystem
-add_subdirectory(World)      # World owns the single Scene ECS runtime
-add_subdirectory(RenderExtraction) # Frozen ECS values to render contracts
+add_subdirectory(Source/Runtime/World)      # World owns the single Scene ECS runtime
+add_subdirectory(Source/Runtime/RenderExtraction) # Frozen ECS values to render contracts
 add_subdirectory(Render)       # Render module (includes RenderGraph)
 add_subdirectory(Engine)
 if(RVX_BUILD_DEVELOPER)

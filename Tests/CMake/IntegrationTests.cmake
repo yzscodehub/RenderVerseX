@@ -243,13 +243,13 @@ rvx_add_gtest(
         RVX_RenderRuntimeCore
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Render/Private
-        ${CMAKE_SOURCE_DIR}/RenderExtraction/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/RenderExtraction/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
         ${CMAKE_SOURCE_DIR}/Render/Include
         ${CMAKE_SOURCE_DIR}/Render/Private/Renderer
         ${CMAKE_SOURCE_DIR}/Source/Runtime/ResourceRuntime/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Scene/Include
-        ${CMAKE_SOURCE_DIR}/World/Include
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/World/Include
     TIMEOUT 120
 )
 
