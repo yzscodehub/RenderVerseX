@@ -39,7 +39,12 @@
  * FOUNDATION
  * ----------
  * - Core/        : Math, Event, Job, Log, Subsystem base classes
- * - ShaderCompiler/: HLSL compilation
+ * - ShaderContracts/: Runtime shader loading contracts and layout metadata
+ *
+ * DEVELOPMENT COMPOSITION
+ * -----------------------
+ * - ShaderCompiler/: Source shader compilation (development only)
+ * - EngineDevelopmentComposition/: Development-only Engine service wiring
  * 
  * SUPPORTING MODULES
  * ------------------

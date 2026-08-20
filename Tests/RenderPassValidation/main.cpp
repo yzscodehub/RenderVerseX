@@ -24,7 +24,7 @@
 #include "Render/GPUDriven/GPUCulling.h"
 #undef private
 
-#include "Common/DeterministicShaderCompiler.h"
+#include "Common/DeterministicShaderProgramProvider.h"
 #include "Common/RenderGraphValidationAccess.h"
 #include "Common/RenderRuntimeTestHarness.h"
 #include "Render/Debug/DebugRenderer.h"
@@ -3070,7 +3070,7 @@ namespace
 
         FakeDevice device;
         PipelineCache pipelineCache{
-            RVX::Tests::CreateDeterministicShaderCompiler};
+            RVX::Tests::GetDeterministicShaderProgramProvider()};
         RenderRuntimeTestHarness gpuResources;
         ResourceViewCache viewCache;
         MaterialSystem materialSystem;
@@ -3159,7 +3159,8 @@ namespace
         config.enableOcclusionCulling = false;
         config.enableDistanceCulling = false;
 
-        auto owner = std::make_unique<GPUCulling>();
+        auto owner = std::make_unique<GPUCulling>(
+            &RVX::Tests::GetDeterministicShaderProgramProvider());
         owner->Initialize(&device, config);
         owner->BeginFrame();
         if (owner->BeginDrawGroup(1u, 1u) == RVX_INVALID_INDEX)
@@ -3204,7 +3205,7 @@ namespace
         const fs::path& shaderDir)
     {
         auto cache = std::make_unique<PipelineCache>(
-            RVX::Tests::CreateDeterministicShaderCompiler);
+            RVX::Tests::GetDeterministicShaderProgramProvider());
         if (!cache->Initialize(&device, shaderDir.string()) ||
             !cache->IsGPUSceneRasterReady())
         {
@@ -3649,7 +3650,8 @@ TEST_F(RenderPassValidationFixture,
     }
 
     FakeDevice testDevice;
-    PipelineCache cache{RVX::Tests::CreateDeterministicShaderCompiler};
+    PipelineCache cache{
+        RVX::Tests::GetDeterministicShaderProgramProvider()};
     ASSERT_TRUE(cache.Initialize(&testDevice, shaderDir.string())) << cache.GetLastError();
     RHIDescriptorSet* const directObjectSet = cache.GetObjectDescriptorSet();
     RHIDescriptorSetLayout* const directObjectLayout = cache.GetObjectSetLayout();
@@ -3804,7 +3806,8 @@ TEST_F(RenderPassValidationFixture,
     }
 
     FakeDevice testDevice;
-    PipelineCache cache{RVX::Tests::CreateDeterministicShaderCompiler};
+    PipelineCache cache{
+        RVX::Tests::GetDeterministicShaderProgramProvider()};
     ASSERT_TRUE(cache.Initialize(&testDevice, shaderDir.string())) << cache.GetLastError();
     ASSERT_TRUE(cache.IsGPUSceneRasterReady());
     ASSERT_TRUE(cache.GetLastError().empty());
@@ -7308,7 +7311,7 @@ TEST_F(RenderPassValidationFixture,
     SceneMeshPassPreparation preparation = PrepareOpaquePackets(
         opaqueItems, maskedItems);
 
-    GPUCulling culling;
+    GPUCulling culling(&RVX::Tests::GetDeterministicShaderProgramProvider());
     GPUCullingConfig cullingConfig;
     cullingConfig.maxInstances = 2;
     cullingConfig.enableOcclusionCulling = false;
@@ -13151,7 +13154,7 @@ TEST_F(RenderPassValidationFixture, DepthPrepassConsumesGPUDrivenMultiMeshIndire
     ASSERT_TRUE(compiled.succeeded);
     RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
 
-    GPUCulling culling;
+    GPUCulling culling(&RVX::Tests::GetDeterministicShaderProgramProvider());
     GPUCullingConfig cullingConfig;
     cullingConfig.maxInstances = 4;
     cullingConfig.enableOcclusionCulling = false;
@@ -13246,7 +13249,7 @@ TEST_F(RenderPassValidationFixture,
         depthPlan->gpuEligiblePackets.first].sourceOrdinal++;
     RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
 
-    GPUCulling culling;
+    GPUCulling culling(&RVX::Tests::GetDeterministicShaderProgramProvider());
     GPUCullingConfig cullingConfig;
     cullingConfig.maxInstances = 1;
     cullingConfig.enableOcclusionCulling = false;
@@ -13312,7 +13315,7 @@ TEST_F(RenderPassValidationFixture,
     preparation.opaque.packets.front().sourceOrdinal++;
     RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
 
-    GPUCulling culling;
+    GPUCulling culling(&RVX::Tests::GetDeterministicShaderProgramProvider());
     GPUCullingConfig cullingConfig;
     cullingConfig.maxInstances = 1;
     cullingConfig.enableOcclusionCulling = false;
@@ -13559,7 +13562,7 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_TRUE(depthPlan->identityAccounting.IsExactlyOnce());
     RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
 
-    GPUCulling culling;
+    GPUCulling culling(&RVX::Tests::GetDeterministicShaderProgramProvider());
     GPUCullingConfig cullingConfig;
     cullingConfig.maxInstances = 4;
     cullingConfig.enableOcclusionCulling = false;
@@ -13679,7 +13682,7 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_TRUE(compiled.succeeded);
     RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
 
-    GPUCulling culling;
+    GPUCulling culling(&RVX::Tests::GetDeterministicShaderProgramProvider());
     GPUCullingConfig cullingConfig;
     cullingConfig.maxInstances = 4;
     cullingConfig.enableOcclusionCulling = false;
@@ -13870,7 +13873,7 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_GT(depthPlan->partition.gpuDrivenPacketCount, 0u);
     RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
 
-    GPUCulling culling;
+    GPUCulling culling(&RVX::Tests::GetDeterministicShaderProgramProvider());
     GPUCullingConfig cullingConfig;
     cullingConfig.maxInstances = 4;
     cullingConfig.enableOcclusionCulling = false;
@@ -13960,7 +13963,7 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_EQ(1u, plannedDepth->partition.gpuDrivenPacketCount);
     RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
 
-    GPUCulling culling;
+    GPUCulling culling(&RVX::Tests::GetDeterministicShaderProgramProvider());
     GPUCullingConfig cullingConfig;
     cullingConfig.maxInstances = 4;
     cullingConfig.enableOcclusionCulling = false;
@@ -16289,7 +16292,7 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_TRUE(transparentPlan->identityAccounting.IsExactlyOnce());
     RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
 
-    GPUCulling culling;
+    GPUCulling culling(&RVX::Tests::GetDeterministicShaderProgramProvider());
     GPUCullingConfig cullingConfig;
     cullingConfig.maxInstances = 4;
     cullingConfig.enableOcclusionCulling = false;
@@ -16467,7 +16470,7 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_TRUE(opaquePlan.identityAccounting.IsExactlyOnce());
     RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
 
-    GPUCulling culling;
+    GPUCulling culling(&RVX::Tests::GetDeterministicShaderProgramProvider());
     GPUCullingConfig cullingConfig;
     cullingConfig.maxInstances = 4;
     cullingConfig.enableOcclusionCulling = false;
@@ -16945,7 +16948,7 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_GT(opaquePlan->partition.gpuDrivenPacketCount, 0u);
     RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
 
-    GPUCulling culling;
+    GPUCulling culling(&RVX::Tests::GetDeterministicShaderProgramProvider());
     GPUCullingConfig cullingConfig;
     cullingConfig.maxInstances = 4;
     cullingConfig.enableOcclusionCulling = false;
@@ -17022,7 +17025,7 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_TRUE(compiled.succeeded);
     RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
 
-    GPUCulling culling;
+    GPUCulling culling(&RVX::Tests::GetDeterministicShaderProgramProvider());
     GPUCullingConfig cullingConfig;
     cullingConfig.maxInstances = 4;
     cullingConfig.enableOcclusionCulling = false;
@@ -17106,7 +17109,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassRejectsMalformedTypedRecordWithout
     drawDesc.firstIndex = buffers.submeshes[0].indexOffset;
     drawDesc.vertexOffset = buffers.submeshes[0].baseVertex;
 
-    GPUCulling culling;
+    GPUCulling culling(&RVX::Tests::GetDeterministicShaderProgramProvider());
     GPUCullingConfig cullingConfig;
     cullingConfig.maxInstances = 4;
     cullingConfig.enableOcclusionCulling = false;
@@ -17202,7 +17205,7 @@ TEST_F(RenderPassValidationFixture,
     candidateDrawDesc.firstIndex = candidateBuffers.submeshes[0].indexOffset;
     candidateDrawDesc.vertexOffset = candidateBuffers.submeshes[0].baseVertex;
 
-    GPUCulling culling;
+    GPUCulling culling(&RVX::Tests::GetDeterministicShaderProgramProvider());
     GPUCullingConfig cullingConfig;
     cullingConfig.maxInstances = 4;
     cullingConfig.enableOcclusionCulling = false;
@@ -17287,7 +17290,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassConsumesGPUDrivenMaterialGroupedIn
     drawDesc.firstIndex = buffers.submeshes[0].indexOffset;
     drawDesc.vertexOffset = buffers.submeshes[0].baseVertex;
 
-    GPUCulling culling;
+    GPUCulling culling(&RVX::Tests::GetDeterministicShaderProgramProvider());
     GPUCullingConfig cullingConfig;
     cullingConfig.maxInstances = 4;
     cullingConfig.enableOcclusionCulling = false;

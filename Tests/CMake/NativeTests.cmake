@@ -18,6 +18,7 @@ if(RVX_NATIVE_LIFECYCLE_BACKEND)
         LANE native
         SOURCES NativeRenderLifecycleValidation/main.cpp
         LIBS
+            RVX::EngineDevelopmentComposition
             RVX::HAL
             RVX::Render
             RVX::RenderExtraction
@@ -48,9 +49,11 @@ if(RVX_ENABLE_DX12)
         SOURCES DX12Validation/main.cpp
         LIBS
             RVX::Core
+            RVX::EngineDevelopmentComposition
             RVX::Render
             RVX::RenderGraph
             RVX::RHI
+            RVX::ShaderCompiler
             RVX::RHI_BackendFactory
             ${RVX_ALL_BACKENDS}
             glfw
@@ -78,6 +81,7 @@ if(RVX_ENABLE_VULKAN)
             RVX::Render
             RVX::RenderGraph
             RVX::RHI
+            RVX::ShaderCompiler
             RVX::RHI_BackendFactory
             ${RVX_ALL_BACKENDS}
             glfw

@@ -4,6 +4,7 @@
  */
 
 #include "Common/GpuTestUtils.h"
+#include "EngineDevelopmentComposition/EngineDevelopmentComposition.h"
 #include "Render/RenderSubsystem.h"
 #include "RenderContracts/RenderFramePacketV5.h"
 #include "RenderContracts/RenderSceneUpdate.h"
@@ -421,7 +422,10 @@ namespace
                 "RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER");
 
         RenderSubsystem render;
-        render.Configure(config, initialSurface);
+        render.Configure(
+            config,
+            initialSurface,
+            CreateDevelopmentShaderProgramProviderFactory());
         const auto startupBegin = std::chrono::steady_clock::now();
         ASSERT_NO_THROW(render.Initialize());
         const uint64 startupDurationMs = static_cast<uint64>(

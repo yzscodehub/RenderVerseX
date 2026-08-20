@@ -1,3 +1,4 @@
+#include "Common/DeterministicShaderProgramProvider.h"
 #include "Core/Log.h"
 #include "Render/GPUScene/GPUSceneSchema.h"
 #include "GPUScene/GPUSceneUploader.h"
@@ -1557,7 +1558,7 @@ TEST_F(GPUDrivenValidationFixture,
 
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     const GPUCullingExecutionDecision decision = culling.GetExecutionDecision();
@@ -1732,7 +1733,7 @@ TEST_F(GPUDrivenValidationFixture, CpuFallbackCullsInstancesAndBuildsIndirectCom
     config.enableDistanceCulling = true;
     config.maxDrawDistance = 20.0f;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     ASSERT_TRUE(culling.IsInitialized());
 
@@ -1854,7 +1855,7 @@ TEST_F(GPUDrivenValidationFixture,
             AABB(Vec3(-0.08f, -0.08f, -0.101f),
                  Vec3(0.08f, 0.08f, -0.099f))};
 
-        GPUCulling culling;
+        GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
         culling.Initialize(&device, config);
         ASSERT_TRUE(culling.IsInitialized());
         culling.BeginFrame();
@@ -3058,7 +3059,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     const GPUInstanceData instance =
         MakeInstance(Vec3(0.0f, 0.0f, -5.0f), 1.0f, 36u);
@@ -3104,7 +3105,7 @@ TEST_F(GPUDrivenValidationFixture,
         captureDevice.EnableGPUScenePipelineObjects();
         RenderSubmissionTracker tracker;
         EXPECT_TRUE(tracker.Initialize(&captureDevice));
-        GPUCulling captureCulling;
+        GPUCulling captureCulling(&Tests::GetDeterministicShaderProgramProvider());
         captureCulling.Initialize(&captureDevice, config);
         captureCulling.BeginFrame();
         EXPECT_EQ(0u, captureCulling.AddInstance(
@@ -3382,7 +3383,7 @@ TEST_F(GPUDrivenValidationFixture,
     const RenderResourceHandle mesh{811u, 1u};
     ASSERT_TRUE(registry.AddReadyMesh(mesh, AssetId{0x8111u}));
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     culling.BeginFrame();
     ASSERT_EQ(0u, culling.BeginDrawGroup(
@@ -3422,7 +3423,7 @@ TEST_F(GPUDrivenValidationFixture,
               RVX::GPUCullingQualificationTestAccess::GetCanonicalVersions(
                   recorded->GetCulling()));
 
-    GPUCulling failingCulling;
+    GPUCulling failingCulling(&Tests::GetDeterministicShaderProgramProvider());
     failingCulling.Initialize(&device, config);
     failingCulling.BeginFrame();
     ASSERT_EQ(0u, failingCulling.BeginDrawGroup(
@@ -3556,7 +3557,7 @@ TEST_F(GPUDrivenValidationFixture,
     GPUCullingConfig config;
     config.maxInstances = 4;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config, 2);
     ASSERT_TRUE(culling.IsInitialized());
     ASSERT_EQ(2u, culling.GetFrameSlotCount());
@@ -3690,7 +3691,7 @@ TEST_F(GPUDrivenValidationFixture,
     GPUCullingConfig config;
     config.maxInstances = 4;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     culling.BeginFrame();
     ASSERT_EQ(0u, culling.BeginDrawGroup(11u, 21u));
@@ -3785,7 +3786,7 @@ TEST_F(GPUDrivenValidationFixture,
     GPUCullingConfig config;
     config.maxInstances = 4;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     const std::array<uint32, GPU_SCENE_RESIDENT_TABLE_COUNT> capacities{
         8u, 9u, 10u, 11u, 12u, 13u};
@@ -3895,7 +3896,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config, 2);
 
     const std::array<uint32, GPU_SCENE_RESIDENT_TABLE_COUNT> capacities{
@@ -3974,7 +3975,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     const std::array<uint32, GPU_SCENE_RESIDENT_TABLE_COUNT> capacities{
@@ -4062,7 +4063,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     GPUSceneCullingCandidate candidate{};
@@ -4147,7 +4148,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();
@@ -4178,7 +4179,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();
@@ -4210,7 +4211,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();
@@ -4241,7 +4242,7 @@ TEST_F(GPUDrivenValidationFixture,
     FakeDevice device;
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();
@@ -4275,7 +4276,7 @@ TEST_F(GPUDrivenValidationFixture,
     FakeDevice device;
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();
@@ -4315,7 +4316,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableTimelineRetirement();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();
@@ -4354,7 +4355,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableTimelineRetirement();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();
@@ -4393,7 +4394,7 @@ TEST_F(GPUDrivenValidationFixture,
     FakeDevice device;
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();
@@ -4419,7 +4420,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     GPUSceneCullingCandidate candidate{};
@@ -4466,7 +4467,7 @@ TEST_F(GPUDrivenValidationFixture,
     GPUCullingConfig config;
     config.maxInstances = 4;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config, 2);
     ASSERT_TRUE(culling.SetFrameSlot(1));
     culling.BeginFrame();
@@ -4538,7 +4539,7 @@ TEST_F(GPUDrivenValidationFixture,
 
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     culling.BeginFrame();
     ASSERT_EQ(0u, culling.AddInstance(
@@ -4599,7 +4600,7 @@ TEST_F(GPUDrivenValidationFixture, CpuFallbackBuffersAvoidDx11InvalidGpuOnlyFlag
     GPUCullingConfig config;
     config.maxInstances = 8;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     const FakeBuffer* visibilityBuffer = device.FindBuffer("GPUCulling.VisibilityBuffer");
@@ -4643,7 +4644,7 @@ TEST_F(GPUDrivenValidationFixture, GpuExecutionBuffersKeepStructuredUavFlags)
     GPUCullingConfig config;
     config.maxInstances = 8;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     const FakeBuffer* visibilityBuffer = device.FindBuffer("GPUCulling.VisibilityBuffer");
@@ -4678,7 +4679,7 @@ TEST_F(GPUDrivenValidationFixture, GpuExecutionDecisionReportsCapabilityAndPipel
         GPUCullingConfig config;
         config.maxInstances = 8;
 
-        GPUCulling culling;
+        GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
         culling.Initialize(&device, config);
 
         GPUCullingExecutionDecision decision = culling.GetExecutionDecision();
@@ -4697,7 +4698,7 @@ TEST_F(GPUDrivenValidationFixture, GpuExecutionDecisionReportsCapabilityAndPipel
         GPUCullingConfig config;
         config.maxInstances = 8;
 
-        GPUCulling culling;
+        GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
         culling.Initialize(&device, config);
 
         GPUCullingExecutionDecision decision = culling.GetExecutionDecision();
@@ -4740,7 +4741,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.capabilities.indexedIndirectExecution.supportsCountBuffer = true;
     device.capabilities.indexedIndirectExecution.supportsFirstInstance = false;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, GPUCullingConfig{});
 
     const GPUCullingExecutionDecision decision = culling.GetExecutionDecision();
@@ -4812,7 +4813,7 @@ TEST_F(GPUDrivenValidationFixture,
 TEST_F(GPUDrivenValidationFixture, DrawIndexedIndirectHonorsMaxDrawCount)
 {
     FakeDevice device;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, GPUCullingConfig{});
 
     culling.BeginFrame();
@@ -4848,7 +4849,7 @@ TEST_F(GPUDrivenValidationFixture, CpuFallbackBuildsMeshGroupedIndirectRanges)
     config.maxInstances = 8;
     config.enableDistanceCulling = false;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();
@@ -5062,7 +5063,7 @@ TEST_F(GPUDrivenValidationFixture, DrawItemsMapBackThroughVisibleSourceIndices)
     config.enableDistanceCulling = true;
     config.maxDrawDistance = 30.0f;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     RenderScene scene;
@@ -5487,8 +5488,8 @@ TEST_F(GPUDrivenValidationFixture,
     config.maxInstances = 8;
     config.enableDistanceCulling = false;
 
-    GPUCulling depthOwner;
-    GPUCulling opaqueOwner;
+    GPUCulling depthOwner(&Tests::GetDeterministicShaderProgramProvider());
+    GPUCulling opaqueOwner(&Tests::GetDeterministicShaderProgramProvider());
     depthOwner.Initialize(&device, config);
     opaqueOwner.Initialize(&device, config);
 
@@ -5538,7 +5539,7 @@ TEST_F(GPUDrivenValidationFixture,
     FakeDevice device;
     GPUCullingConfig config;
     config.maxInstances = 8;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     RenderObject object = MakeRenderObject(
@@ -5609,7 +5610,7 @@ TEST_F(GPUDrivenValidationFixture, OcclusionRequestRemainsExplicitlyUnavailable)
     GPUCullingConfig config;
     config.enableOcclusionCulling = true;
     config.twoPhaseOcclusion = true;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     EXPECT_TRUE(culling.WasOcclusionRequested());
@@ -5659,7 +5660,7 @@ TEST_F(GPUDrivenValidationFixture, ActiveRowIndirectionUsesStableComputeRowsAndD
     GPUCullingConfig config;
     config.maxInstances = 64;
 
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     const FakeBuffer* instanceIndexBuffer =
@@ -5694,7 +5695,7 @@ TEST_F(GPUDrivenValidationFixture,
     FakeDevice device;
     GPUCullingConfig config;
     config.maxInstances = 8;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config, 2);
 
     RenderScene scene;
@@ -5802,7 +5803,7 @@ TEST_F(GPUDrivenValidationFixture,
     FakeDevice device;
     GPUCullingConfig config;
     config.maxInstances = 8u;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     RenderScene scene;
@@ -5888,7 +5889,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = drawGroupCount;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     ASSERT_TRUE(culling.IsGPUSceneExecutionReady());
 
@@ -6000,7 +6001,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     RenderScene scene;
@@ -6073,7 +6074,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     RenderScene scene;
@@ -6163,7 +6164,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     RenderScene scene;
@@ -6260,7 +6261,7 @@ TEST_F(GPUDrivenValidationFixture,
     FakeDevice device;
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     RenderScene scene;
@@ -6334,7 +6335,7 @@ TEST_F(GPUDrivenValidationFixture,
     FakeDevice device;
     GPUCullingConfig config;
     config.maxInstances = 1;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     GPUCullingConfig grown = config;
@@ -6360,7 +6361,7 @@ TEST_F(GPUDrivenValidationFixture,
     FakeDevice device;
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config, 2);
 
     ASSERT_TRUE(culling.SetFrameSlot(0u));
@@ -6865,7 +6866,7 @@ TEST_F(GPUDrivenValidationFixture,
     ASSERT_TRUE(retirement.Initialize(&tracker));
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     EXPECT_EQ(nullptr, culling.GetGPUSceneCandidateBuffer());
     ASSERT_TRUE(culling.IsGPUSceneExecutionReady());
@@ -7068,7 +7069,7 @@ TEST_F(GPUDrivenValidationFixture,
     device.EnableGPUScenePipelineObjects();
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     ASSERT_TRUE(culling.IsGPUSceneExecutionReady());
 
@@ -7196,7 +7197,7 @@ TEST_F(GPUDrivenValidationFixture,
 
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config, 2u);
     ASSERT_TRUE(culling.SetFrameSlot(1u));
     ASSERT_TRUE(culling.IsGPUSceneExecutionReady());
@@ -7367,7 +7368,7 @@ TEST_F(GPUDrivenValidationFixture,
 
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();
@@ -7445,7 +7446,7 @@ TEST_F(GPUDrivenValidationFixture,
 
         GPUCullingConfig config;
         config.maxInstances = 4;
-        GPUCulling culling;
+        GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
         culling.Initialize(&device, config);
         culling.BeginFrame();
         ASSERT_EQ(0u, culling.AddInstance(
@@ -7525,7 +7526,7 @@ TEST_F(GPUDrivenValidationFixture,
 
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     culling.BeginFrame();
     ASSERT_EQ(0u, culling.AddInstance(
@@ -7603,7 +7604,7 @@ TEST_F(GPUDrivenValidationFixture,
 
         GPUCullingConfig config;
         config.maxInstances = 4;
-        GPUCulling culling;
+        GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
         culling.Initialize(&device, config);
         culling.BeginFrame();
         EXPECT_EQ(0u, culling.AddInstance(
@@ -7713,7 +7714,7 @@ TEST_F(GPUDrivenValidationFixture,
 
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     // Establish the stable resident row and upload its old canonical bytes.
@@ -7789,7 +7790,7 @@ TEST_F(GPUDrivenValidationFixture,
 
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
     culling.BeginFrame();
     ASSERT_EQ(0u, culling.AddInstance(
@@ -8166,7 +8167,10 @@ TEST_F(GPUDrivenValidationFixture,
               std::string::npos);
     EXPECT_NE(header.find("SealForGPUSceneGraph"), std::string::npos);
     EXPECT_NE(source.find("ConfigureGPUSceneRecording"), std::string::npos);
-    EXPECT_NE(source.find("FindGPUSceneCullingShaderPath"), std::string::npos);
+    EXPECT_NE(source.find("GPUDriven/GPUSceneCulling.hlsl"),
+              std::string::npos);
+    EXPECT_NE(source.find("m_shaderProgramProvider->Load"),
+              std::string::npos);
     EXPECT_NE(source.find("GPUCulling.GPUSceneFrameSlotDescriptorSet"),
               std::string::npos);
     EXPECT_NE(source.find("inputs->gpuSceneTableBuffers = lease.buffers"),
@@ -8226,7 +8230,7 @@ TEST_F(GPUDrivenValidationFixture,
     FakeDevice device;
     GPUCullingConfig config;
     config.maxInstances = 4;
-    GPUCulling culling;
+    GPUCulling culling(&Tests::GetDeterministicShaderProgramProvider());
     culling.Initialize(&device, config);
 
     culling.BeginFrame();

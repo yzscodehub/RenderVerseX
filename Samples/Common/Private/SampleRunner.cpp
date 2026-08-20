@@ -5,6 +5,7 @@
 #include "Core/Core.h"
 #include "Core/Diagnostics/Trace.h"
 #include "Engine/Engine.h"
+#include "EngineDevelopmentComposition/EngineDevelopmentComposition.h"
 #include "HAL/Input/KeyCodes.h"
 #include "Render/RenderSubsystem.h"
 #include "Resource/ResourceSubsystem.h"
@@ -3955,6 +3956,7 @@ namespace RVX
         engineConfig.renderRuntime.enableValidation =
             options.common.enableValidation;
         engineConfig.renderRuntime.startupTraceContext = startupTraceContext;
+        ConfigureEngineDevelopmentShaders(engineConfig);
         engine.SetConfig(engineConfig);
 
         auto* window = engine.AddSubsystem<WindowSubsystem>();

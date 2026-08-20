@@ -204,6 +204,7 @@ add_subdirectory(Scene)
 add_subdirectory(Animation)
 add_subdirectory(Runtime)      # Runtime subsystems (includes Camera)
 add_subdirectory(RHI)
+add_subdirectory(ShaderContracts)
 add_subdirectory(ShaderCompiler)
 
 if(RVX_ENABLE_DX11)
@@ -258,6 +259,7 @@ add_subdirectory(World)      # World owns the single Scene ECS runtime
 add_subdirectory(RenderExtraction) # Frozen ECS values to render contracts
 add_subdirectory(Render)       # Render module (includes RenderGraph)
 add_subdirectory(Engine)
+add_subdirectory(EngineDevelopmentComposition)
 add_subdirectory(Particle)   # GPU-driven particle system
 add_subdirectory(AI)         # AI module (Navigation, BehaviorTree, Perception)
 add_subdirectory(Networking) # Network communication and replication

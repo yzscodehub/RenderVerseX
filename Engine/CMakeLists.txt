@@ -46,6 +46,7 @@ target_link_libraries(RVX_Engine PUBLIC
     RVX_Render
     RVX_RenderContracts
     RVX_RenderExtraction
+    RVX::ShaderContracts
     
     # Resources
     RVX_Resource

@@ -15,9 +15,8 @@
 #include "Resources/RenderOwnerSnapshotRetirement.h"
 #include "Resources/RenderSubmissionResourceBatch.h"
 #include "Resources/RenderSubmissionTracker.h"
-#include "ShaderCompiler/ShaderCompiler.h"
-#include "ShaderCompiler/ShaderLayout.h"
-#include "ShaderCompiler/ShaderManager.h"
+#include "ShaderContracts/ShaderProgramProvider.h"
+#include "ShaderContracts/ShaderLayout.h"
 
 #include <algorithm>
 #include <cmath>
@@ -30,6 +29,82 @@
 
 namespace RVX
 {
+
+struct ShaderProgramMetadata
+{
+    bool success = false;
+    std::string errorMessage;
+    ShaderReflection reflection;
+    uint64 contentHash = 0;
+};
+
+struct RenderShaderLoadDesc
+{
+    std::string path;
+    std::string entryPoint;
+    RHIShaderStage stage = RHIShaderStage::None;
+    RHIBackendType backend = RHIBackendType::None;
+    std::string targetProfile;
+    std::vector<ShaderMacro> defines;
+    bool enableDebugInfo = false;
+    bool enableOptimization = true;
+};
+
+struct RenderShaderLoadResult
+{
+    RHIShaderRef shader;
+    ShaderProgramMetadata compileResult;
+};
+
+class ShaderProgramLoader final
+{
+public:
+    ShaderProgramLoader(
+        IShaderProgramProvider& provider,
+        std::filesystem::path shaderRoot)
+        : m_provider(provider),
+          m_shaderRoot(std::move(shaderRoot))
+    {
+    }
+
+    [[nodiscard]] RenderShaderLoadResult LoadFromFile(
+        IRHIDevice* device,
+        const RenderShaderLoadDesc& desc)
+    {
+        RenderShaderLoadResult loaded;
+        if (device == nullptr)
+        {
+            loaded.compileResult.errorMessage = "RHI device is unavailable";
+            return loaded;
+        }
+
+        ShaderProgramRequest request;
+        const std::filesystem::path requestedPath(desc.path);
+        std::error_code relativeError;
+        const std::filesystem::path relative = std::filesystem::relative(
+            requestedPath, m_shaderRoot, relativeError);
+        request.logicalAssetId = !relativeError && !relative.empty() &&
+                relative.begin()->generic_string() != ".."
+            ? relative.generic_string()
+            : requestedPath.generic_string();
+        request.stage = desc.stage;
+        request.entryPoint = desc.entryPoint;
+        request.backend = desc.backend;
+        request.defines = desc.defines;
+
+        ShaderProgramResult result = m_provider.Load(*device, request);
+        loaded.shader = result.shader;
+        loaded.compileResult.success = result.Succeeded();
+        loaded.compileResult.errorMessage = std::move(result.diagnostic);
+        loaded.compileResult.reflection = std::move(result.reflection);
+        loaded.compileResult.contentHash = result.contentHash;
+        return loaded;
+    }
+
+private:
+    IShaderProgramProvider& m_provider;
+    std::filesystem::path m_shaderRoot;
+};
 
 namespace
 {
@@ -764,8 +839,8 @@ bool GPUSceneRasterBindingSnapshot::RetainSubmissionResources(
 
 PipelineCache::PipelineCache() = default;
 
-PipelineCache::PipelineCache(ShaderCompilerFactory shaderCompilerFactory)
-    : m_shaderCompilerFactory(std::move(shaderCompilerFactory))
+PipelineCache::PipelineCache(IShaderProgramProvider& shaderProgramProvider)
+    : m_shaderProgramProvider(&shaderProgramProvider)
 {
 }
 
@@ -842,27 +917,13 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
     m_device = device;
     m_shaderDir = shaderDir;
 
-    ShaderManagerConfig shaderConfig;
-    shaderConfig.cacheDirectory = std::filesystem::current_path() / "ShaderCache";
-    shaderConfig.shaderDirectories.push_back(std::filesystem::path(shaderDir));
-    if (m_shaderCompilerFactory)
+    if (m_shaderProgramProvider == nullptr)
     {
-        std::unique_ptr<IShaderCompiler> compiler = m_shaderCompilerFactory();
-        if (!compiler)
-        {
-            SetLastError("Shader compiler factory returned no compiler");
-            return false;
-        }
-
-        shaderConfig.enableMemoryCache = false;
-        shaderConfig.enableDiskCache = false;
-        m_shaderManager = std::make_unique<ShaderManager>(
-            shaderConfig, std::move(compiler));
+        SetLastError("Shader program provider was not injected");
+        return false;
     }
-    else
-    {
-        m_shaderManager = std::make_unique<ShaderManager>(shaderConfig);
-    }
+    m_shaderProgramLoader = std::make_unique<ShaderProgramLoader>(
+        *m_shaderProgramProvider, std::filesystem::path(shaderDir));
 
     if (!CompileShaders())
     {
@@ -1199,7 +1260,7 @@ void PipelineCache::Shutdown()
     m_rayTracedReflectionShaderTable.Reset();
     m_rayTracedReflectionCompositePipeline.Reset();
     m_rayTracedReflectionDenoisePipeline.Reset();
-    m_shaderManager.reset();
+    m_shaderProgramLoader.reset();
     m_device = nullptr;
     m_initialized = false;
     m_gpuSceneRasterUnavailableReason.clear();
@@ -1242,18 +1303,6 @@ bool PipelineCache::CompileShaders()
     RVX_CORE_INFO("  Shader directory: {}", m_shaderDir);
     RVX_CORE_INFO("  Shader path: {}", shaderPath);
 
-    if (!std::filesystem::exists(shaderPath))
-    {
-        SetLastError("Shader file not found: " + shaderPath);
-
-        std::filesystem::path absPath = std::filesystem::absolute(shaderPath);
-        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
-        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
-        return false;
-    }
-
-    RVX_CORE_INFO("  Shader file found!");
-
     RHIBackendType backend = m_device->GetBackendType();
     const ShaderMacro fullscreenUVYMappingDefine{
         "RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y",
@@ -1264,7 +1313,7 @@ bool PipelineCache::CompileShaders()
         backend == RHIBackendType::DX12 && m_device->GetCapabilities().supportsRaytracingPipeline;
     RVX_CORE_INFO("  Backend type: {}", static_cast<int>(backend));
 
-    ShaderLoadDesc vsDesc;
+    RenderShaderLoadDesc vsDesc;
     vsDesc.path = shaderPath;
     vsDesc.entryPoint = "VSMain";
     vsDesc.stage = RHIShaderStage::Vertex;
@@ -1275,182 +1324,10 @@ bool PipelineCache::CompileShaders()
         vsDesc.targetProfile = "vs_5_0";
     }
 
-    auto vsResult = m_shaderManager->LoadFromFile(m_device, vsDesc);
+    auto vsResult = m_shaderProgramLoader->LoadFromFile(m_device, vsDesc);
     if (!vsResult.compileResult.success)
     {
         SetLastError("Failed to compile vertex shader: " + vsResult.compileResult.errorMessage);
-        return false;
-    }
-
-    if (!std::filesystem::exists(depthOnlyShaderPath))
-    {
-        SetLastError("Depth-only shader file not found: " + depthOnlyShaderPath);
-
-        std::filesystem::path absPath = std::filesystem::absolute(depthOnlyShaderPath);
-        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
-        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
-        return false;
-    }
-
-    if (!std::filesystem::exists(toneMappingShaderPath))
-    {
-        SetLastError("ToneMapping shader file not found: " + toneMappingShaderPath);
-
-        std::filesystem::path absPath = std::filesystem::absolute(toneMappingShaderPath);
-        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
-        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
-        return false;
-    }
-
-    if (!std::filesystem::exists(bloomShaderPath))
-    {
-        SetLastError("Bloom shader file not found: " + bloomShaderPath);
-
-        std::filesystem::path absPath = std::filesystem::absolute(bloomShaderPath);
-        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
-        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
-        return false;
-    }
-
-    if (!std::filesystem::exists(ssaoShaderPath))
-    {
-        SetLastError("SSAO shader file not found: " + ssaoShaderPath);
-
-        std::filesystem::path absPath = std::filesystem::absolute(ssaoShaderPath);
-        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
-        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
-        return false;
-    }
-
-    if (!std::filesystem::exists(cameraVelocityShaderPath))
-    {
-        SetLastError("CameraVelocity shader file not found: " + cameraVelocityShaderPath);
-
-        std::filesystem::path absPath = std::filesystem::absolute(cameraVelocityShaderPath);
-        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
-        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
-        return false;
-    }
-
-    if (!std::filesystem::exists(objectVelocityShaderPath))
-    {
-        SetLastError("ObjectVelocity shader file not found: " + objectVelocityShaderPath);
-
-        std::filesystem::path absPath = std::filesystem::absolute(objectVelocityShaderPath);
-        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
-        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
-        return false;
-    }
-
-    if (!std::filesystem::exists(colorGradingShaderPath))
-    {
-        SetLastError("ColorGrading shader file not found: " + colorGradingShaderPath);
-
-        std::filesystem::path absPath = std::filesystem::absolute(colorGradingShaderPath);
-        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
-        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
-        return false;
-    }
-
-    if (!std::filesystem::exists(chromaticAberrationShaderPath))
-    {
-        SetLastError("ChromaticAberration shader file not found: " + chromaticAberrationShaderPath);
-
-        std::filesystem::path absPath = std::filesystem::absolute(chromaticAberrationShaderPath);
-        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
-        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
-        return false;
-    }
-
-    if (!std::filesystem::exists(filmGrainShaderPath))
-    {
-        SetLastError("FilmGrain shader file not found: " + filmGrainShaderPath);
-
-        std::filesystem::path absPath = std::filesystem::absolute(filmGrainShaderPath);
-        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
-        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
-        return false;
-    }
-
-    if (!std::filesystem::exists(fxaaShaderPath))
-    {
-        SetLastError("FXAA shader file not found: " + fxaaShaderPath);
-
-        std::filesystem::path absPath = std::filesystem::absolute(fxaaShaderPath);
-        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
-        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
-        return false;
-    }
-
-    if (!std::filesystem::exists(vignetteShaderPath))
-    {
-        SetLastError("Vignette shader file not found: " + vignetteShaderPath);
-
-        std::filesystem::path absPath = std::filesystem::absolute(vignetteShaderPath);
-        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
-        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
-        return false;
-    }
-
-    if (!std::filesystem::exists(uiShaderPath))
-    {
-        SetLastError("UI shader file not found: " + uiShaderPath);
-
-        std::filesystem::path absPath = std::filesystem::absolute(uiShaderPath);
-        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
-        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
-        return false;
-    }
-
-    if (!std::filesystem::exists(skyboxShaderPath))
-    {
-        SetLastError("Skybox shader file not found: " + skyboxShaderPath);
-
-        std::filesystem::path absPath = std::filesystem::absolute(skyboxShaderPath);
-        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
-        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
-        return false;
-    }
-
-    if (!std::filesystem::exists(rayTracedReflectionCompositeShaderPath))
-    {
-        SetLastError("RayTracedReflectionComposite shader file not found: " +
-                     rayTracedReflectionCompositeShaderPath);
-
-        std::filesystem::path absPath = std::filesystem::absolute(rayTracedReflectionCompositeShaderPath);
-        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
-        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
-        return false;
-    }
-
-    if (!std::filesystem::exists(rayTracedReflectionDenoiseShaderPath))
-    {
-        SetLastError("RayTracedReflectionDenoise shader file not found: " +
-                     rayTracedReflectionDenoiseShaderPath);
-
-        std::filesystem::path absPath = std::filesystem::absolute(rayTracedReflectionDenoiseShaderPath);
-        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
-        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
-        return false;
-    }
-
-    if (compileRayTracingShaders && !std::filesystem::exists(rayTracedShadowShaderPath))
-    {
-        SetLastError("RayTracedShadow shader file not found: " + rayTracedShadowShaderPath);
-
-        std::filesystem::path absPath = std::filesystem::absolute(rayTracedShadowShaderPath);
-        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
-        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
-        return false;
-    }
-
-    if (compileRayTracingShaders && !std::filesystem::exists(rayTracedReflectionShaderPath))
-    {
-        SetLastError("RayTracedReflection shader file not found: " + rayTracedReflectionShaderPath);
-
-        std::filesystem::path absPath = std::filesystem::absolute(rayTracedReflectionShaderPath);
-        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
-        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
         return false;
     }
 
@@ -1460,11 +1337,11 @@ bool PipelineCache::CompileShaders()
         return false;
     }
     m_vertexShader = vsResult.shader;
-    m_vsCompileResult = std::make_unique<ShaderCompileResult>(std::move(vsResult.compileResult));
+    m_vsCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(vsResult.compileResult));
 
-    ShaderLoadDesc rigidVsDesc = vsDesc;
+    RenderShaderLoadDesc rigidVsDesc = vsDesc;
     rigidVsDesc.entryPoint = "VSMainRigid";
-    auto rigidVsResult = m_shaderManager->LoadFromFile(m_device, rigidVsDesc);
+    auto rigidVsResult = m_shaderProgramLoader->LoadFromFile(m_device, rigidVsDesc);
     if (!rigidVsResult.compileResult.success)
     {
         SetLastError("Failed to compile rigid direct vertex shader: " +
@@ -1478,11 +1355,11 @@ bool PipelineCache::CompileShaders()
     }
     m_rigidVertexShader = rigidVsResult.shader;
     m_rigidVsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(rigidVsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(rigidVsResult.compileResult));
 
-    ShaderLoadDesc gpuDrivenVsDesc = vsDesc;
+    RenderShaderLoadDesc gpuDrivenVsDesc = vsDesc;
     gpuDrivenVsDesc.entryPoint = "VSMainGPUDriven";
-    auto gpuDrivenVsResult = m_shaderManager->LoadFromFile(m_device, gpuDrivenVsDesc);
+    auto gpuDrivenVsResult = m_shaderProgramLoader->LoadFromFile(m_device, gpuDrivenVsDesc);
     if (!gpuDrivenVsResult.compileResult.success)
     {
         SetLastError("Failed to compile GPU-driven vertex shader: " +
@@ -1496,11 +1373,11 @@ bool PipelineCache::CompileShaders()
     }
     m_gpuDrivenVertexShader = gpuDrivenVsResult.shader;
     m_gpuDrivenVsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(gpuDrivenVsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(gpuDrivenVsResult.compileResult));
 
-    ShaderLoadDesc instancedMaterialVsDesc = vsDesc;
+    RenderShaderLoadDesc instancedMaterialVsDesc = vsDesc;
     instancedMaterialVsDesc.entryPoint = "VSMainInstancedMaterial";
-    auto instancedMaterialVsResult = m_shaderManager->LoadFromFile(
+    auto instancedMaterialVsResult = m_shaderProgramLoader->LoadFromFile(
         m_device, instancedMaterialVsDesc);
     if (!instancedMaterialVsResult.compileResult.success)
     {
@@ -1515,10 +1392,10 @@ bool PipelineCache::CompileShaders()
     }
     m_instancedMaterialVertexShader = instancedMaterialVsResult.shader;
     m_instancedMaterialVsCompileResult =
-        std::make_unique<ShaderCompileResult>(
+        std::make_unique<ShaderProgramMetadata>(
             std::move(instancedMaterialVsResult.compileResult));
 
-    ShaderLoadDesc psDesc = vsDesc;
+    RenderShaderLoadDesc psDesc = vsDesc;
     psDesc.entryPoint = "PSMain";
     psDesc.stage = RHIShaderStage::Pixel;
     if (backend == RHIBackendType::DX11)
@@ -1526,7 +1403,7 @@ bool PipelineCache::CompileShaders()
         psDesc.targetProfile = "ps_5_0";
     }
 
-    auto psResult = m_shaderManager->LoadFromFile(m_device, psDesc);
+    auto psResult = m_shaderProgramLoader->LoadFromFile(m_device, psDesc);
     if (!psResult.compileResult.success)
     {
         SetLastError("Failed to compile pixel shader: " + psResult.compileResult.errorMessage);
@@ -1538,9 +1415,9 @@ bool PipelineCache::CompileShaders()
         return false;
     }
     m_pixelShader = psResult.shader;
-    m_psCompileResult = std::make_unique<ShaderCompileResult>(std::move(psResult.compileResult));
+    m_psCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(psResult.compileResult));
 
-    ShaderLoadDesc depthVsDesc = vsDesc;
+    RenderShaderLoadDesc depthVsDesc = vsDesc;
     depthVsDesc.path = depthOnlyShaderPath;
     depthVsDesc.entryPoint = "VSMain";
     depthVsDesc.stage = RHIShaderStage::Vertex;
@@ -1549,7 +1426,7 @@ bool PipelineCache::CompileShaders()
         depthVsDesc.targetProfile = "vs_5_0";
     }
 
-    auto depthVsResult = m_shaderManager->LoadFromFile(m_device, depthVsDesc);
+    auto depthVsResult = m_shaderProgramLoader->LoadFromFile(m_device, depthVsDesc);
     if (!depthVsResult.compileResult.success)
     {
         SetLastError("Failed to compile depth-only vertex shader: " + depthVsResult.compileResult.errorMessage);
@@ -1561,12 +1438,12 @@ bool PipelineCache::CompileShaders()
         return false;
     }
     m_depthOnlyVertexShader = depthVsResult.shader;
-    m_depthOnlyVsCompileResult = std::make_unique<ShaderCompileResult>(std::move(depthVsResult.compileResult));
+    m_depthOnlyVsCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(depthVsResult.compileResult));
 
-    ShaderLoadDesc rigidDepthVsDesc = depthVsDesc;
+    RenderShaderLoadDesc rigidDepthVsDesc = depthVsDesc;
     rigidDepthVsDesc.entryPoint = "VSMainRigid";
     auto rigidDepthVsResult =
-        m_shaderManager->LoadFromFile(m_device, rigidDepthVsDesc);
+        m_shaderProgramLoader->LoadFromFile(m_device, rigidDepthVsDesc);
     if (!rigidDepthVsResult.compileResult.success)
     {
         SetLastError("Failed to compile rigid depth-only vertex shader: " +
@@ -1580,13 +1457,13 @@ bool PipelineCache::CompileShaders()
     }
     m_rigidDepthOnlyVertexShader = rigidDepthVsResult.shader;
     m_rigidDepthOnlyVsCompileResult =
-        std::make_unique<ShaderCompileResult>(
+        std::make_unique<ShaderProgramMetadata>(
             std::move(rigidDepthVsResult.compileResult));
 
-    ShaderLoadDesc maskedDepthVsDesc = depthVsDesc;
+    RenderShaderLoadDesc maskedDepthVsDesc = depthVsDesc;
     maskedDepthVsDesc.entryPoint = "VSMainMasked";
     auto maskedDepthVsResult =
-        m_shaderManager->LoadFromFile(m_device, maskedDepthVsDesc);
+        m_shaderProgramLoader->LoadFromFile(m_device, maskedDepthVsDesc);
     if (!maskedDepthVsResult.compileResult.success)
     {
         SetLastError("Failed to compile masked depth-only vertex shader: " +
@@ -1600,13 +1477,13 @@ bool PipelineCache::CompileShaders()
     }
     m_maskedDepthOnlyVertexShader = maskedDepthVsResult.shader;
     m_maskedDepthOnlyVsCompileResult =
-        std::make_unique<ShaderCompileResult>(
+        std::make_unique<ShaderProgramMetadata>(
             std::move(maskedDepthVsResult.compileResult));
 
-    ShaderLoadDesc rigidMaskedDepthVsDesc = depthVsDesc;
+    RenderShaderLoadDesc rigidMaskedDepthVsDesc = depthVsDesc;
     rigidMaskedDepthVsDesc.entryPoint = "VSMainMaskedRigid";
     auto rigidMaskedDepthVsResult =
-        m_shaderManager->LoadFromFile(m_device, rigidMaskedDepthVsDesc);
+        m_shaderProgramLoader->LoadFromFile(m_device, rigidMaskedDepthVsDesc);
     if (!rigidMaskedDepthVsResult.compileResult.success)
     {
         SetLastError(
@@ -1623,10 +1500,10 @@ bool PipelineCache::CompileShaders()
     m_rigidMaskedDepthOnlyVertexShader =
         rigidMaskedDepthVsResult.shader;
     m_rigidMaskedDepthOnlyVsCompileResult =
-        std::make_unique<ShaderCompileResult>(
+        std::make_unique<ShaderProgramMetadata>(
             std::move(rigidMaskedDepthVsResult.compileResult));
 
-    ShaderLoadDesc maskedDepthPsDesc = depthVsDesc;
+    RenderShaderLoadDesc maskedDepthPsDesc = depthVsDesc;
     maskedDepthPsDesc.entryPoint = "PSMainMasked";
     maskedDepthPsDesc.stage = RHIShaderStage::Pixel;
     if (backend == RHIBackendType::DX11)
@@ -1634,7 +1511,7 @@ bool PipelineCache::CompileShaders()
         maskedDepthPsDesc.targetProfile = "ps_5_0";
     }
     auto maskedDepthPsResult =
-        m_shaderManager->LoadFromFile(m_device, maskedDepthPsDesc);
+        m_shaderProgramLoader->LoadFromFile(m_device, maskedDepthPsDesc);
     if (!maskedDepthPsResult.compileResult.success)
     {
         SetLastError("Failed to compile masked depth-only pixel shader: " +
@@ -1648,12 +1525,12 @@ bool PipelineCache::CompileShaders()
     }
     m_maskedDepthOnlyPixelShader = maskedDepthPsResult.shader;
     m_maskedDepthOnlyPsCompileResult =
-        std::make_unique<ShaderCompileResult>(
+        std::make_unique<ShaderProgramMetadata>(
             std::move(maskedDepthPsResult.compileResult));
 
-    ShaderLoadDesc gpuDrivenDepthVsDesc = depthVsDesc;
+    RenderShaderLoadDesc gpuDrivenDepthVsDesc = depthVsDesc;
     gpuDrivenDepthVsDesc.entryPoint = "VSMainGPUDriven";
-    auto gpuDrivenDepthVsResult = m_shaderManager->LoadFromFile(m_device, gpuDrivenDepthVsDesc);
+    auto gpuDrivenDepthVsResult = m_shaderProgramLoader->LoadFromFile(m_device, gpuDrivenDepthVsDesc);
     if (!gpuDrivenDepthVsResult.compileResult.success)
     {
         SetLastError("Failed to compile GPU-driven depth-only vertex shader: " +
@@ -1667,7 +1544,7 @@ bool PipelineCache::CompileShaders()
     }
     m_gpuDrivenDepthOnlyVertexShader = gpuDrivenDepthVsResult.shader;
     m_gpuDrivenDepthOnlyVsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(gpuDrivenDepthVsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(gpuDrivenDepthVsResult.compileResult));
 
     const bool compileGPUSceneRasterShaders =
         backend == RHIBackendType::DX12 ||
@@ -1680,10 +1557,10 @@ bool PipelineCache::CompileShaders()
     }
     else
     {
-        ShaderLoadDesc gpuSceneVsDesc = vsDesc;
+        RenderShaderLoadDesc gpuSceneVsDesc = vsDesc;
         gpuSceneVsDesc.entryPoint = "VSMainGPUScene";
         gpuSceneVsDesc.defines.push_back({"RVX_GPU_SCENE_RASTER", "1"});
-        auto gpuSceneVsResult = m_shaderManager->LoadFromFile(m_device, gpuSceneVsDesc);
+        auto gpuSceneVsResult = m_shaderProgramLoader->LoadFromFile(m_device, gpuSceneVsDesc);
         if (!gpuSceneVsResult.compileResult.success)
         {
             DisableGPUSceneRaster("Failed to compile GPU-scene DefaultLit vertex shader: " +
@@ -1695,10 +1572,10 @@ bool PipelineCache::CompileShaders()
         }
         else
         {
-            ShaderLoadDesc gpuSceneInstancedMaterialVsDesc = gpuSceneVsDesc;
+            RenderShaderLoadDesc gpuSceneInstancedMaterialVsDesc = gpuSceneVsDesc;
             gpuSceneInstancedMaterialVsDesc.entryPoint =
                 "VSMainGPUSceneInstancedMaterial";
-            auto gpuSceneInstancedMaterialVsResult = m_shaderManager->LoadFromFile(
+            auto gpuSceneInstancedMaterialVsResult = m_shaderProgramLoader->LoadFromFile(
                 m_device, gpuSceneInstancedMaterialVsDesc);
             if (!gpuSceneInstancedMaterialVsResult.compileResult.success)
             {
@@ -1713,10 +1590,10 @@ bool PipelineCache::CompileShaders()
             }
             else
             {
-                ShaderLoadDesc gpuSceneDepthVsDesc = depthVsDesc;
+                RenderShaderLoadDesc gpuSceneDepthVsDesc = depthVsDesc;
                 gpuSceneDepthVsDesc.entryPoint = "VSMainGPUScene";
                 gpuSceneDepthVsDesc.defines.push_back({"RVX_GPU_SCENE_RASTER", "1"});
-                auto gpuSceneDepthVsResult = m_shaderManager->LoadFromFile(
+                auto gpuSceneDepthVsResult = m_shaderProgramLoader->LoadFromFile(
                     m_device, gpuSceneDepthVsDesc);
                 if (!gpuSceneDepthVsResult.compileResult.success)
                 {
@@ -1732,23 +1609,23 @@ bool PipelineCache::CompileShaders()
                 else
                 {
                     m_gpuSceneVertexShader = gpuSceneVsResult.shader;
-                    m_gpuSceneVsCompileResult = std::make_unique<ShaderCompileResult>(
+                    m_gpuSceneVsCompileResult = std::make_unique<ShaderProgramMetadata>(
                         std::move(gpuSceneVsResult.compileResult));
                     m_gpuSceneInstancedMaterialVertexShader =
                         gpuSceneInstancedMaterialVsResult.shader;
                     m_gpuSceneInstancedMaterialVsCompileResult =
-                        std::make_unique<ShaderCompileResult>(std::move(
+                        std::make_unique<ShaderProgramMetadata>(std::move(
                             gpuSceneInstancedMaterialVsResult.compileResult));
                     m_gpuSceneDepthOnlyVertexShader = gpuSceneDepthVsResult.shader;
                     m_gpuSceneDepthOnlyVsCompileResult =
-                        std::make_unique<ShaderCompileResult>(
+                        std::make_unique<ShaderProgramMetadata>(
                             std::move(gpuSceneDepthVsResult.compileResult));
                 }
             }
         }
     }
 
-    ShaderLoadDesc toneMappingVsDesc = vsDesc;
+    RenderShaderLoadDesc toneMappingVsDesc = vsDesc;
     toneMappingVsDesc.path = toneMappingShaderPath;
     toneMappingVsDesc.entryPoint = "VSMain";
     toneMappingVsDesc.stage = RHIShaderStage::Vertex;
@@ -1758,7 +1635,7 @@ bool PipelineCache::CompileShaders()
         toneMappingVsDesc.targetProfile = "vs_5_0";
     }
 
-    auto toneMappingVsResult = m_shaderManager->LoadFromFile(m_device, toneMappingVsDesc);
+    auto toneMappingVsResult = m_shaderProgramLoader->LoadFromFile(m_device, toneMappingVsDesc);
     if (!toneMappingVsResult.compileResult.success)
     {
         SetLastError("Failed to compile ToneMapping vertex shader: " + toneMappingVsResult.compileResult.errorMessage);
@@ -1771,9 +1648,9 @@ bool PipelineCache::CompileShaders()
     }
     m_toneMappingVertexShader = toneMappingVsResult.shader;
     m_toneMappingVsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(toneMappingVsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(toneMappingVsResult.compileResult));
 
-    ShaderLoadDesc toneMappingPsDesc = toneMappingVsDesc;
+    RenderShaderLoadDesc toneMappingPsDesc = toneMappingVsDesc;
     toneMappingPsDesc.entryPoint = "PSMain";
     toneMappingPsDesc.stage = RHIShaderStage::Pixel;
     if (backend == RHIBackendType::DX11)
@@ -1781,7 +1658,7 @@ bool PipelineCache::CompileShaders()
         toneMappingPsDesc.targetProfile = "ps_5_0";
     }
 
-    auto toneMappingPsResult = m_shaderManager->LoadFromFile(m_device, toneMappingPsDesc);
+    auto toneMappingPsResult = m_shaderProgramLoader->LoadFromFile(m_device, toneMappingPsDesc);
     if (!toneMappingPsResult.compileResult.success)
     {
         SetLastError("Failed to compile ToneMapping pixel shader: " + toneMappingPsResult.compileResult.errorMessage);
@@ -1794,9 +1671,9 @@ bool PipelineCache::CompileShaders()
     }
     m_toneMappingPixelShader = toneMappingPsResult.shader;
     m_toneMappingPsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(toneMappingPsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(toneMappingPsResult.compileResult));
 
-    ShaderLoadDesc bloomVsDesc = vsDesc;
+    RenderShaderLoadDesc bloomVsDesc = vsDesc;
     bloomVsDesc.path = bloomShaderPath;
     bloomVsDesc.entryPoint = "VSMain";
     bloomVsDesc.stage = RHIShaderStage::Vertex;
@@ -1806,7 +1683,7 @@ bool PipelineCache::CompileShaders()
         bloomVsDesc.targetProfile = "vs_5_0";
     }
 
-    auto bloomVsResult = m_shaderManager->LoadFromFile(m_device, bloomVsDesc);
+    auto bloomVsResult = m_shaderProgramLoader->LoadFromFile(m_device, bloomVsDesc);
     if (!bloomVsResult.compileResult.success)
     {
         SetLastError("Failed to compile Bloom vertex shader: " + bloomVsResult.compileResult.errorMessage);
@@ -1818,9 +1695,9 @@ bool PipelineCache::CompileShaders()
         return false;
     }
     m_bloomVertexShader = bloomVsResult.shader;
-    m_bloomVsCompileResult = std::make_unique<ShaderCompileResult>(std::move(bloomVsResult.compileResult));
+    m_bloomVsCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(bloomVsResult.compileResult));
 
-    ShaderLoadDesc bloomPsDesc = bloomVsDesc;
+    RenderShaderLoadDesc bloomPsDesc = bloomVsDesc;
     bloomPsDesc.entryPoint = "PSMain";
     bloomPsDesc.stage = RHIShaderStage::Pixel;
     if (backend == RHIBackendType::DX11)
@@ -1828,7 +1705,7 @@ bool PipelineCache::CompileShaders()
         bloomPsDesc.targetProfile = "ps_5_0";
     }
 
-    auto bloomPsResult = m_shaderManager->LoadFromFile(m_device, bloomPsDesc);
+    auto bloomPsResult = m_shaderProgramLoader->LoadFromFile(m_device, bloomPsDesc);
     if (!bloomPsResult.compileResult.success)
     {
         SetLastError("Failed to compile Bloom pixel shader: " + bloomPsResult.compileResult.errorMessage);
@@ -1840,9 +1717,9 @@ bool PipelineCache::CompileShaders()
         return false;
     }
     m_bloomPixelShader = bloomPsResult.shader;
-    m_bloomPsCompileResult = std::make_unique<ShaderCompileResult>(std::move(bloomPsResult.compileResult));
+    m_bloomPsCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(bloomPsResult.compileResult));
 
-    ShaderLoadDesc ssaoVsDesc = vsDesc;
+    RenderShaderLoadDesc ssaoVsDesc = vsDesc;
     ssaoVsDesc.path = ssaoShaderPath;
     ssaoVsDesc.entryPoint = "VSMain";
     ssaoVsDesc.stage = RHIShaderStage::Vertex;
@@ -1852,7 +1729,7 @@ bool PipelineCache::CompileShaders()
         ssaoVsDesc.targetProfile = "vs_5_0";
     }
 
-    auto ssaoVsResult = m_shaderManager->LoadFromFile(m_device, ssaoVsDesc);
+    auto ssaoVsResult = m_shaderProgramLoader->LoadFromFile(m_device, ssaoVsDesc);
     if (!ssaoVsResult.compileResult.success)
     {
         SetLastError("Failed to compile SSAO vertex shader: " + ssaoVsResult.compileResult.errorMessage);
@@ -1864,9 +1741,9 @@ bool PipelineCache::CompileShaders()
         return false;
     }
     m_ssaoVertexShader = ssaoVsResult.shader;
-    m_ssaoVsCompileResult = std::make_unique<ShaderCompileResult>(std::move(ssaoVsResult.compileResult));
+    m_ssaoVsCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(ssaoVsResult.compileResult));
 
-    ShaderLoadDesc ssaoPsDesc = ssaoVsDesc;
+    RenderShaderLoadDesc ssaoPsDesc = ssaoVsDesc;
     ssaoPsDesc.entryPoint = "PSMain";
     ssaoPsDesc.stage = RHIShaderStage::Pixel;
     if (backend == RHIBackendType::DX11)
@@ -1874,7 +1751,7 @@ bool PipelineCache::CompileShaders()
         ssaoPsDesc.targetProfile = "ps_5_0";
     }
 
-    auto ssaoPsResult = m_shaderManager->LoadFromFile(m_device, ssaoPsDesc);
+    auto ssaoPsResult = m_shaderProgramLoader->LoadFromFile(m_device, ssaoPsDesc);
     if (!ssaoPsResult.compileResult.success)
     {
         SetLastError("Failed to compile SSAO pixel shader: " + ssaoPsResult.compileResult.errorMessage);
@@ -1886,9 +1763,9 @@ bool PipelineCache::CompileShaders()
         return false;
     }
     m_ssaoPixelShader = ssaoPsResult.shader;
-    m_ssaoPsCompileResult = std::make_unique<ShaderCompileResult>(std::move(ssaoPsResult.compileResult));
+    m_ssaoPsCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(ssaoPsResult.compileResult));
 
-    ShaderLoadDesc cameraVelocityPsDesc = vsDesc;
+    RenderShaderLoadDesc cameraVelocityPsDesc = vsDesc;
     cameraVelocityPsDesc.path = cameraVelocityShaderPath;
     cameraVelocityPsDesc.entryPoint = "PSMain";
     cameraVelocityPsDesc.stage = RHIShaderStage::Pixel;
@@ -1897,7 +1774,7 @@ bool PipelineCache::CompileShaders()
         cameraVelocityPsDesc.targetProfile = "ps_5_0";
     }
 
-    auto cameraVelocityPsResult = m_shaderManager->LoadFromFile(m_device, cameraVelocityPsDesc);
+    auto cameraVelocityPsResult = m_shaderProgramLoader->LoadFromFile(m_device, cameraVelocityPsDesc);
     if (!cameraVelocityPsResult.compileResult.success)
     {
         SetLastError("Failed to compile CameraVelocity pixel shader: " +
@@ -1911,9 +1788,9 @@ bool PipelineCache::CompileShaders()
     }
     m_cameraVelocityPixelShader = cameraVelocityPsResult.shader;
     m_cameraVelocityPsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(cameraVelocityPsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(cameraVelocityPsResult.compileResult));
 
-    ShaderLoadDesc objectVelocityVsDesc = vsDesc;
+    RenderShaderLoadDesc objectVelocityVsDesc = vsDesc;
     objectVelocityVsDesc.path = objectVelocityShaderPath;
     objectVelocityVsDesc.entryPoint = "VSMain";
     objectVelocityVsDesc.stage = RHIShaderStage::Vertex;
@@ -1922,7 +1799,7 @@ bool PipelineCache::CompileShaders()
         objectVelocityVsDesc.targetProfile = "vs_5_0";
     }
 
-    auto objectVelocityVsResult = m_shaderManager->LoadFromFile(m_device, objectVelocityVsDesc);
+    auto objectVelocityVsResult = m_shaderProgramLoader->LoadFromFile(m_device, objectVelocityVsDesc);
     if (!objectVelocityVsResult.compileResult.success)
     {
         SetLastError("Failed to compile ObjectVelocity vertex shader: " +
@@ -1936,12 +1813,12 @@ bool PipelineCache::CompileShaders()
     }
     m_objectVelocityVertexShader = objectVelocityVsResult.shader;
     m_objectVelocityVsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(objectVelocityVsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(objectVelocityVsResult.compileResult));
 
-    ShaderLoadDesc rigidObjectVelocityVsDesc = objectVelocityVsDesc;
+    RenderShaderLoadDesc rigidObjectVelocityVsDesc = objectVelocityVsDesc;
     rigidObjectVelocityVsDesc.entryPoint = "VSMainRigid";
     auto rigidObjectVelocityVsResult =
-        m_shaderManager->LoadFromFile(m_device, rigidObjectVelocityVsDesc);
+        m_shaderProgramLoader->LoadFromFile(m_device, rigidObjectVelocityVsDesc);
     if (!rigidObjectVelocityVsResult.compileResult.success)
     {
         SetLastError("Failed to compile rigid ObjectVelocity vertex shader: " +
@@ -1955,10 +1832,10 @@ bool PipelineCache::CompileShaders()
     }
     m_rigidObjectVelocityVertexShader = rigidObjectVelocityVsResult.shader;
     m_rigidObjectVelocityVsCompileResult =
-        std::make_unique<ShaderCompileResult>(
+        std::make_unique<ShaderProgramMetadata>(
             std::move(rigidObjectVelocityVsResult.compileResult));
 
-    ShaderLoadDesc objectVelocityPsDesc = objectVelocityVsDesc;
+    RenderShaderLoadDesc objectVelocityPsDesc = objectVelocityVsDesc;
     objectVelocityPsDesc.entryPoint = "PSMain";
     objectVelocityPsDesc.stage = RHIShaderStage::Pixel;
     if (backend == RHIBackendType::DX11)
@@ -1966,7 +1843,7 @@ bool PipelineCache::CompileShaders()
         objectVelocityPsDesc.targetProfile = "ps_5_0";
     }
 
-    auto objectVelocityPsResult = m_shaderManager->LoadFromFile(m_device, objectVelocityPsDesc);
+    auto objectVelocityPsResult = m_shaderProgramLoader->LoadFromFile(m_device, objectVelocityPsDesc);
     if (!objectVelocityPsResult.compileResult.success)
     {
         SetLastError("Failed to compile ObjectVelocity pixel shader: " +
@@ -1980,11 +1857,11 @@ bool PipelineCache::CompileShaders()
     }
     m_objectVelocityPixelShader = objectVelocityPsResult.shader;
     m_objectVelocityPsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(objectVelocityPsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(objectVelocityPsResult.compileResult));
 
-    ShaderLoadDesc maskedObjectVelocityVsDesc = objectVelocityVsDesc;
+    RenderShaderLoadDesc maskedObjectVelocityVsDesc = objectVelocityVsDesc;
     maskedObjectVelocityVsDesc.entryPoint = "VSMainMasked";
-    auto maskedObjectVelocityVsResult = m_shaderManager->LoadFromFile(m_device, maskedObjectVelocityVsDesc);
+    auto maskedObjectVelocityVsResult = m_shaderProgramLoader->LoadFromFile(m_device, maskedObjectVelocityVsDesc);
     if (!maskedObjectVelocityVsResult.compileResult.success)
     {
         SetLastError("Failed to compile masked ObjectVelocity vertex shader: " +
@@ -1998,12 +1875,12 @@ bool PipelineCache::CompileShaders()
     }
     m_maskedObjectVelocityVertexShader = maskedObjectVelocityVsResult.shader;
     m_maskedObjectVelocityVsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(maskedObjectVelocityVsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(maskedObjectVelocityVsResult.compileResult));
 
-    ShaderLoadDesc rigidMaskedObjectVelocityVsDesc = objectVelocityVsDesc;
+    RenderShaderLoadDesc rigidMaskedObjectVelocityVsDesc = objectVelocityVsDesc;
     rigidMaskedObjectVelocityVsDesc.entryPoint = "VSMainMaskedRigid";
     auto rigidMaskedObjectVelocityVsResult =
-        m_shaderManager->LoadFromFile(
+        m_shaderProgramLoader->LoadFromFile(
             m_device, rigidMaskedObjectVelocityVsDesc);
     if (!rigidMaskedObjectVelocityVsResult.compileResult.success)
     {
@@ -2021,12 +1898,12 @@ bool PipelineCache::CompileShaders()
     m_rigidMaskedObjectVelocityVertexShader =
         rigidMaskedObjectVelocityVsResult.shader;
     m_rigidMaskedObjectVelocityVsCompileResult =
-        std::make_unique<ShaderCompileResult>(
+        std::make_unique<ShaderProgramMetadata>(
             std::move(rigidMaskedObjectVelocityVsResult.compileResult));
 
-    ShaderLoadDesc maskedObjectVelocityPsDesc = objectVelocityPsDesc;
+    RenderShaderLoadDesc maskedObjectVelocityPsDesc = objectVelocityPsDesc;
     maskedObjectVelocityPsDesc.entryPoint = "PSMainMasked";
-    auto maskedObjectVelocityPsResult = m_shaderManager->LoadFromFile(m_device, maskedObjectVelocityPsDesc);
+    auto maskedObjectVelocityPsResult = m_shaderProgramLoader->LoadFromFile(m_device, maskedObjectVelocityPsDesc);
     if (!maskedObjectVelocityPsResult.compileResult.success)
     {
         SetLastError("Failed to compile masked ObjectVelocity pixel shader: " +
@@ -2040,9 +1917,9 @@ bool PipelineCache::CompileShaders()
     }
     m_maskedObjectVelocityPixelShader = maskedObjectVelocityPsResult.shader;
     m_maskedObjectVelocityPsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(maskedObjectVelocityPsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(maskedObjectVelocityPsResult.compileResult));
 
-    ShaderLoadDesc reflectionCompositeVsDesc = vsDesc;
+    RenderShaderLoadDesc reflectionCompositeVsDesc = vsDesc;
     reflectionCompositeVsDesc.path = rayTracedReflectionCompositeShaderPath;
     reflectionCompositeVsDesc.entryPoint = "VSMain";
     reflectionCompositeVsDesc.stage = RHIShaderStage::Vertex;
@@ -2052,7 +1929,7 @@ bool PipelineCache::CompileShaders()
         reflectionCompositeVsDesc.targetProfile = "vs_5_0";
     }
 
-    auto reflectionCompositeVsResult = m_shaderManager->LoadFromFile(m_device, reflectionCompositeVsDesc);
+    auto reflectionCompositeVsResult = m_shaderProgramLoader->LoadFromFile(m_device, reflectionCompositeVsDesc);
     if (!reflectionCompositeVsResult.compileResult.success)
     {
         SetLastError("Failed to compile RayTracedReflectionComposite vertex shader: " +
@@ -2066,9 +1943,9 @@ bool PipelineCache::CompileShaders()
     }
     m_rayTracedReflectionCompositeVertexShader = reflectionCompositeVsResult.shader;
     m_rayTracedReflectionCompositeVsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(reflectionCompositeVsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(reflectionCompositeVsResult.compileResult));
 
-    ShaderLoadDesc reflectionCompositePsDesc = reflectionCompositeVsDesc;
+    RenderShaderLoadDesc reflectionCompositePsDesc = reflectionCompositeVsDesc;
     reflectionCompositePsDesc.entryPoint = "PSMain";
     reflectionCompositePsDesc.stage = RHIShaderStage::Pixel;
     if (backend == RHIBackendType::DX11)
@@ -2076,7 +1953,7 @@ bool PipelineCache::CompileShaders()
         reflectionCompositePsDesc.targetProfile = "ps_5_0";
     }
 
-    auto reflectionCompositePsResult = m_shaderManager->LoadFromFile(m_device, reflectionCompositePsDesc);
+    auto reflectionCompositePsResult = m_shaderProgramLoader->LoadFromFile(m_device, reflectionCompositePsDesc);
     if (!reflectionCompositePsResult.compileResult.success)
     {
         SetLastError("Failed to compile RayTracedReflectionComposite pixel shader: " +
@@ -2090,9 +1967,9 @@ bool PipelineCache::CompileShaders()
     }
     m_rayTracedReflectionCompositePixelShader = reflectionCompositePsResult.shader;
     m_rayTracedReflectionCompositePsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(reflectionCompositePsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(reflectionCompositePsResult.compileResult));
 
-    ShaderLoadDesc reflectionDenoiseVsDesc = vsDesc;
+    RenderShaderLoadDesc reflectionDenoiseVsDesc = vsDesc;
     reflectionDenoiseVsDesc.path = rayTracedReflectionDenoiseShaderPath;
     reflectionDenoiseVsDesc.entryPoint = "VSMain";
     reflectionDenoiseVsDesc.stage = RHIShaderStage::Vertex;
@@ -2102,7 +1979,7 @@ bool PipelineCache::CompileShaders()
         reflectionDenoiseVsDesc.targetProfile = "vs_5_0";
     }
 
-    auto reflectionDenoiseVsResult = m_shaderManager->LoadFromFile(m_device, reflectionDenoiseVsDesc);
+    auto reflectionDenoiseVsResult = m_shaderProgramLoader->LoadFromFile(m_device, reflectionDenoiseVsDesc);
     if (!reflectionDenoiseVsResult.compileResult.success)
     {
         SetLastError("Failed to compile RayTracedReflectionDenoise vertex shader: " +
@@ -2116,9 +1993,9 @@ bool PipelineCache::CompileShaders()
     }
     m_rayTracedReflectionDenoiseVertexShader = reflectionDenoiseVsResult.shader;
     m_rayTracedReflectionDenoiseVsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(reflectionDenoiseVsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(reflectionDenoiseVsResult.compileResult));
 
-    ShaderLoadDesc reflectionDenoisePsDesc = reflectionDenoiseVsDesc;
+    RenderShaderLoadDesc reflectionDenoisePsDesc = reflectionDenoiseVsDesc;
     reflectionDenoisePsDesc.entryPoint = "PSMain";
     reflectionDenoisePsDesc.stage = RHIShaderStage::Pixel;
     if (backend == RHIBackendType::DX11)
@@ -2126,7 +2003,7 @@ bool PipelineCache::CompileShaders()
         reflectionDenoisePsDesc.targetProfile = "ps_5_0";
     }
 
-    auto reflectionDenoisePsResult = m_shaderManager->LoadFromFile(m_device, reflectionDenoisePsDesc);
+    auto reflectionDenoisePsResult = m_shaderProgramLoader->LoadFromFile(m_device, reflectionDenoisePsDesc);
     if (!reflectionDenoisePsResult.compileResult.success)
     {
         SetLastError("Failed to compile RayTracedReflectionDenoise pixel shader: " +
@@ -2140,9 +2017,9 @@ bool PipelineCache::CompileShaders()
     }
     m_rayTracedReflectionDenoisePixelShader = reflectionDenoisePsResult.shader;
     m_rayTracedReflectionDenoisePsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(reflectionDenoisePsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(reflectionDenoisePsResult.compileResult));
 
-    ShaderLoadDesc colorGradingVsDesc = vsDesc;
+    RenderShaderLoadDesc colorGradingVsDesc = vsDesc;
     colorGradingVsDesc.path = colorGradingShaderPath;
     colorGradingVsDesc.entryPoint = "VSMain";
     colorGradingVsDesc.stage = RHIShaderStage::Vertex;
@@ -2152,7 +2029,7 @@ bool PipelineCache::CompileShaders()
         colorGradingVsDesc.targetProfile = "vs_5_0";
     }
 
-    auto colorGradingVsResult = m_shaderManager->LoadFromFile(m_device, colorGradingVsDesc);
+    auto colorGradingVsResult = m_shaderProgramLoader->LoadFromFile(m_device, colorGradingVsDesc);
     if (!colorGradingVsResult.compileResult.success)
     {
         SetLastError("Failed to compile ColorGrading vertex shader: " + colorGradingVsResult.compileResult.errorMessage);
@@ -2165,9 +2042,9 @@ bool PipelineCache::CompileShaders()
     }
     m_colorGradingVertexShader = colorGradingVsResult.shader;
     m_colorGradingVsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(colorGradingVsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(colorGradingVsResult.compileResult));
 
-    ShaderLoadDesc colorGradingPsDesc = colorGradingVsDesc;
+    RenderShaderLoadDesc colorGradingPsDesc = colorGradingVsDesc;
     colorGradingPsDesc.entryPoint = "PSMain";
     colorGradingPsDesc.stage = RHIShaderStage::Pixel;
     if (backend == RHIBackendType::DX11)
@@ -2175,7 +2052,7 @@ bool PipelineCache::CompileShaders()
         colorGradingPsDesc.targetProfile = "ps_5_0";
     }
 
-    auto colorGradingPsResult = m_shaderManager->LoadFromFile(m_device, colorGradingPsDesc);
+    auto colorGradingPsResult = m_shaderProgramLoader->LoadFromFile(m_device, colorGradingPsDesc);
     if (!colorGradingPsResult.compileResult.success)
     {
         SetLastError("Failed to compile ColorGrading pixel shader: " + colorGradingPsResult.compileResult.errorMessage);
@@ -2188,9 +2065,9 @@ bool PipelineCache::CompileShaders()
     }
     m_colorGradingPixelShader = colorGradingPsResult.shader;
     m_colorGradingPsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(colorGradingPsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(colorGradingPsResult.compileResult));
 
-    ShaderLoadDesc chromaticAberrationVsDesc = vsDesc;
+    RenderShaderLoadDesc chromaticAberrationVsDesc = vsDesc;
     chromaticAberrationVsDesc.path = chromaticAberrationShaderPath;
     chromaticAberrationVsDesc.entryPoint = "VSMain";
     chromaticAberrationVsDesc.stage = RHIShaderStage::Vertex;
@@ -2200,7 +2077,7 @@ bool PipelineCache::CompileShaders()
         chromaticAberrationVsDesc.targetProfile = "vs_5_0";
     }
 
-    auto chromaticAberrationVsResult = m_shaderManager->LoadFromFile(m_device, chromaticAberrationVsDesc);
+    auto chromaticAberrationVsResult = m_shaderProgramLoader->LoadFromFile(m_device, chromaticAberrationVsDesc);
     if (!chromaticAberrationVsResult.compileResult.success)
     {
         SetLastError("Failed to compile ChromaticAberration vertex shader: " +
@@ -2214,9 +2091,9 @@ bool PipelineCache::CompileShaders()
     }
     m_chromaticAberrationVertexShader = chromaticAberrationVsResult.shader;
     m_chromaticAberrationVsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(chromaticAberrationVsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(chromaticAberrationVsResult.compileResult));
 
-    ShaderLoadDesc chromaticAberrationPsDesc = chromaticAberrationVsDesc;
+    RenderShaderLoadDesc chromaticAberrationPsDesc = chromaticAberrationVsDesc;
     chromaticAberrationPsDesc.entryPoint = "PSMain";
     chromaticAberrationPsDesc.stage = RHIShaderStage::Pixel;
     if (backend == RHIBackendType::DX11)
@@ -2224,7 +2101,7 @@ bool PipelineCache::CompileShaders()
         chromaticAberrationPsDesc.targetProfile = "ps_5_0";
     }
 
-    auto chromaticAberrationPsResult = m_shaderManager->LoadFromFile(m_device, chromaticAberrationPsDesc);
+    auto chromaticAberrationPsResult = m_shaderProgramLoader->LoadFromFile(m_device, chromaticAberrationPsDesc);
     if (!chromaticAberrationPsResult.compileResult.success)
     {
         SetLastError("Failed to compile ChromaticAberration pixel shader: " +
@@ -2238,9 +2115,9 @@ bool PipelineCache::CompileShaders()
     }
     m_chromaticAberrationPixelShader = chromaticAberrationPsResult.shader;
     m_chromaticAberrationPsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(chromaticAberrationPsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(chromaticAberrationPsResult.compileResult));
 
-    ShaderLoadDesc filmGrainVsDesc = vsDesc;
+    RenderShaderLoadDesc filmGrainVsDesc = vsDesc;
     filmGrainVsDesc.path = filmGrainShaderPath;
     filmGrainVsDesc.entryPoint = "VSMain";
     filmGrainVsDesc.stage = RHIShaderStage::Vertex;
@@ -2250,7 +2127,7 @@ bool PipelineCache::CompileShaders()
         filmGrainVsDesc.targetProfile = "vs_5_0";
     }
 
-    auto filmGrainVsResult = m_shaderManager->LoadFromFile(m_device, filmGrainVsDesc);
+    auto filmGrainVsResult = m_shaderProgramLoader->LoadFromFile(m_device, filmGrainVsDesc);
     if (!filmGrainVsResult.compileResult.success)
     {
         SetLastError("Failed to compile FilmGrain vertex shader: " + filmGrainVsResult.compileResult.errorMessage);
@@ -2263,9 +2140,9 @@ bool PipelineCache::CompileShaders()
     }
     m_filmGrainVertexShader = filmGrainVsResult.shader;
     m_filmGrainVsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(filmGrainVsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(filmGrainVsResult.compileResult));
 
-    ShaderLoadDesc filmGrainPsDesc = filmGrainVsDesc;
+    RenderShaderLoadDesc filmGrainPsDesc = filmGrainVsDesc;
     filmGrainPsDesc.entryPoint = "PSMain";
     filmGrainPsDesc.stage = RHIShaderStage::Pixel;
     if (backend == RHIBackendType::DX11)
@@ -2273,7 +2150,7 @@ bool PipelineCache::CompileShaders()
         filmGrainPsDesc.targetProfile = "ps_5_0";
     }
 
-    auto filmGrainPsResult = m_shaderManager->LoadFromFile(m_device, filmGrainPsDesc);
+    auto filmGrainPsResult = m_shaderProgramLoader->LoadFromFile(m_device, filmGrainPsDesc);
     if (!filmGrainPsResult.compileResult.success)
     {
         SetLastError("Failed to compile FilmGrain pixel shader: " + filmGrainPsResult.compileResult.errorMessage);
@@ -2286,9 +2163,9 @@ bool PipelineCache::CompileShaders()
     }
     m_filmGrainPixelShader = filmGrainPsResult.shader;
     m_filmGrainPsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(filmGrainPsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(filmGrainPsResult.compileResult));
 
-    ShaderLoadDesc fxaaVsDesc = vsDesc;
+    RenderShaderLoadDesc fxaaVsDesc = vsDesc;
     fxaaVsDesc.path = fxaaShaderPath;
     fxaaVsDesc.entryPoint = "VSMain";
     fxaaVsDesc.stage = RHIShaderStage::Vertex;
@@ -2298,7 +2175,7 @@ bool PipelineCache::CompileShaders()
         fxaaVsDesc.targetProfile = "vs_5_0";
     }
 
-    auto fxaaVsResult = m_shaderManager->LoadFromFile(m_device, fxaaVsDesc);
+    auto fxaaVsResult = m_shaderProgramLoader->LoadFromFile(m_device, fxaaVsDesc);
     if (!fxaaVsResult.compileResult.success)
     {
         SetLastError("Failed to compile FXAA vertex shader: " + fxaaVsResult.compileResult.errorMessage);
@@ -2310,9 +2187,9 @@ bool PipelineCache::CompileShaders()
         return false;
     }
     m_fxaaVertexShader = fxaaVsResult.shader;
-    m_fxaaVsCompileResult = std::make_unique<ShaderCompileResult>(std::move(fxaaVsResult.compileResult));
+    m_fxaaVsCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(fxaaVsResult.compileResult));
 
-    ShaderLoadDesc fxaaPsDesc = fxaaVsDesc;
+    RenderShaderLoadDesc fxaaPsDesc = fxaaVsDesc;
     fxaaPsDesc.entryPoint = "PSMain";
     fxaaPsDesc.stage = RHIShaderStage::Pixel;
     if (backend == RHIBackendType::DX11)
@@ -2320,7 +2197,7 @@ bool PipelineCache::CompileShaders()
         fxaaPsDesc.targetProfile = "ps_5_0";
     }
 
-    auto fxaaPsResult = m_shaderManager->LoadFromFile(m_device, fxaaPsDesc);
+    auto fxaaPsResult = m_shaderProgramLoader->LoadFromFile(m_device, fxaaPsDesc);
     if (!fxaaPsResult.compileResult.success)
     {
         SetLastError("Failed to compile FXAA pixel shader: " + fxaaPsResult.compileResult.errorMessage);
@@ -2332,9 +2209,9 @@ bool PipelineCache::CompileShaders()
         return false;
     }
     m_fxaaPixelShader = fxaaPsResult.shader;
-    m_fxaaPsCompileResult = std::make_unique<ShaderCompileResult>(std::move(fxaaPsResult.compileResult));
+    m_fxaaPsCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(fxaaPsResult.compileResult));
 
-    ShaderLoadDesc vignetteVsDesc = vsDesc;
+    RenderShaderLoadDesc vignetteVsDesc = vsDesc;
     vignetteVsDesc.path = vignetteShaderPath;
     vignetteVsDesc.entryPoint = "VSMain";
     vignetteVsDesc.stage = RHIShaderStage::Vertex;
@@ -2344,7 +2221,7 @@ bool PipelineCache::CompileShaders()
         vignetteVsDesc.targetProfile = "vs_5_0";
     }
 
-    auto vignetteVsResult = m_shaderManager->LoadFromFile(m_device, vignetteVsDesc);
+    auto vignetteVsResult = m_shaderProgramLoader->LoadFromFile(m_device, vignetteVsDesc);
     if (!vignetteVsResult.compileResult.success)
     {
         SetLastError("Failed to compile Vignette vertex shader: " + vignetteVsResult.compileResult.errorMessage);
@@ -2357,9 +2234,9 @@ bool PipelineCache::CompileShaders()
     }
     m_vignetteVertexShader = vignetteVsResult.shader;
     m_vignetteVsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(vignetteVsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(vignetteVsResult.compileResult));
 
-    ShaderLoadDesc vignettePsDesc = vignetteVsDesc;
+    RenderShaderLoadDesc vignettePsDesc = vignetteVsDesc;
     vignettePsDesc.entryPoint = "PSMain";
     vignettePsDesc.stage = RHIShaderStage::Pixel;
     if (backend == RHIBackendType::DX11)
@@ -2367,7 +2244,7 @@ bool PipelineCache::CompileShaders()
         vignettePsDesc.targetProfile = "ps_5_0";
     }
 
-    auto vignettePsResult = m_shaderManager->LoadFromFile(m_device, vignettePsDesc);
+    auto vignettePsResult = m_shaderProgramLoader->LoadFromFile(m_device, vignettePsDesc);
     if (!vignettePsResult.compileResult.success)
     {
         SetLastError("Failed to compile Vignette pixel shader: " + vignettePsResult.compileResult.errorMessage);
@@ -2380,9 +2257,9 @@ bool PipelineCache::CompileShaders()
     }
     m_vignettePixelShader = vignettePsResult.shader;
     m_vignettePsCompileResult =
-        std::make_unique<ShaderCompileResult>(std::move(vignettePsResult.compileResult));
+        std::make_unique<ShaderProgramMetadata>(std::move(vignettePsResult.compileResult));
 
-    ShaderLoadDesc uiVsDesc = vsDesc;
+    RenderShaderLoadDesc uiVsDesc = vsDesc;
     uiVsDesc.path = uiShaderPath;
     uiVsDesc.entryPoint = "VSMain";
     uiVsDesc.stage = RHIShaderStage::Vertex;
@@ -2391,7 +2268,7 @@ bool PipelineCache::CompileShaders()
         uiVsDesc.targetProfile = "vs_5_0";
     }
 
-    auto uiVsResult = m_shaderManager->LoadFromFile(m_device, uiVsDesc);
+    auto uiVsResult = m_shaderProgramLoader->LoadFromFile(m_device, uiVsDesc);
     if (!uiVsResult.compileResult.success)
     {
         SetLastError("Failed to compile UI vertex shader: " + uiVsResult.compileResult.errorMessage);
@@ -2403,9 +2280,9 @@ bool PipelineCache::CompileShaders()
         return false;
     }
     m_uiVertexShader = uiVsResult.shader;
-    m_uiVsCompileResult = std::make_unique<ShaderCompileResult>(std::move(uiVsResult.compileResult));
+    m_uiVsCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(uiVsResult.compileResult));
 
-    ShaderLoadDesc uiPsDesc = uiVsDesc;
+    RenderShaderLoadDesc uiPsDesc = uiVsDesc;
     uiPsDesc.entryPoint = "PSMain";
     uiPsDesc.stage = RHIShaderStage::Pixel;
     if (backend == RHIBackendType::DX11)
@@ -2413,7 +2290,7 @@ bool PipelineCache::CompileShaders()
         uiPsDesc.targetProfile = "ps_5_0";
     }
 
-    auto uiPsResult = m_shaderManager->LoadFromFile(m_device, uiPsDesc);
+    auto uiPsResult = m_shaderProgramLoader->LoadFromFile(m_device, uiPsDesc);
     if (!uiPsResult.compileResult.success)
     {
         SetLastError("Failed to compile UI pixel shader: " + uiPsResult.compileResult.errorMessage);
@@ -2425,9 +2302,9 @@ bool PipelineCache::CompileShaders()
         return false;
     }
     m_uiPixelShader = uiPsResult.shader;
-    m_uiPsCompileResult = std::make_unique<ShaderCompileResult>(std::move(uiPsResult.compileResult));
+    m_uiPsCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(uiPsResult.compileResult));
 
-    ShaderLoadDesc skyboxVsDesc = vsDesc;
+    RenderShaderLoadDesc skyboxVsDesc = vsDesc;
     skyboxVsDesc.path = skyboxShaderPath;
     skyboxVsDesc.entryPoint = "VSMain";
     skyboxVsDesc.stage = RHIShaderStage::Vertex;
@@ -2437,7 +2314,7 @@ bool PipelineCache::CompileShaders()
         skyboxVsDesc.targetProfile = "vs_5_0";
     }
 
-    auto skyboxVsResult = m_shaderManager->LoadFromFile(m_device, skyboxVsDesc);
+    auto skyboxVsResult = m_shaderProgramLoader->LoadFromFile(m_device, skyboxVsDesc);
     if (!skyboxVsResult.compileResult.success)
     {
         SetLastError("Failed to compile Skybox vertex shader: " + skyboxVsResult.compileResult.errorMessage);
@@ -2449,9 +2326,9 @@ bool PipelineCache::CompileShaders()
         return false;
     }
     m_skyboxVertexShader = skyboxVsResult.shader;
-    m_skyboxVsCompileResult = std::make_unique<ShaderCompileResult>(std::move(skyboxVsResult.compileResult));
+    m_skyboxVsCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(skyboxVsResult.compileResult));
 
-    ShaderLoadDesc skyboxPsDesc = skyboxVsDesc;
+    RenderShaderLoadDesc skyboxPsDesc = skyboxVsDesc;
     skyboxPsDesc.entryPoint = "PSMain";
     skyboxPsDesc.stage = RHIShaderStage::Pixel;
     if (backend == RHIBackendType::DX11)
@@ -2459,7 +2336,7 @@ bool PipelineCache::CompileShaders()
         skyboxPsDesc.targetProfile = "ps_5_0";
     }
 
-    auto skyboxPsResult = m_shaderManager->LoadFromFile(m_device, skyboxPsDesc);
+    auto skyboxPsResult = m_shaderProgramLoader->LoadFromFile(m_device, skyboxPsDesc);
     if (!skyboxPsResult.compileResult.success)
     {
         SetLastError("Failed to compile Skybox pixel shader: " + skyboxPsResult.compileResult.errorMessage);
@@ -2471,11 +2348,11 @@ bool PipelineCache::CompileShaders()
         return false;
     }
     m_skyboxPixelShader = skyboxPsResult.shader;
-    m_skyboxPsCompileResult = std::make_unique<ShaderCompileResult>(std::move(skyboxPsResult.compileResult));
+    m_skyboxPsCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(skyboxPsResult.compileResult));
 
     if (compileRayTracingShaders)
     {
-        ShaderLoadDesc rayGenDesc;
+        RenderShaderLoadDesc rayGenDesc;
         rayGenDesc.path = rayTracedShadowShaderPath;
         rayGenDesc.entryPoint = "RayGen";
         rayGenDesc.stage = RHIShaderStage::RayGeneration;
@@ -2483,7 +2360,7 @@ bool PipelineCache::CompileShaders()
         rayGenDesc.targetProfile = "lib_6_3";
         rayGenDesc.enableDebugInfo = true;
 
-        auto rayGenResult = m_shaderManager->LoadFromFile(m_device, rayGenDesc);
+        auto rayGenResult = m_shaderProgramLoader->LoadFromFile(m_device, rayGenDesc);
         if (!rayGenResult.compileResult.success)
         {
             SetLastError("Failed to compile RayTracedShadow ray-generation shader: " +
@@ -2497,12 +2374,12 @@ bool PipelineCache::CompileShaders()
         }
         m_rayTracedShadowRayGenShader = rayGenResult.shader;
         m_rayTracedShadowRayGenCompileResult =
-            std::make_unique<ShaderCompileResult>(std::move(rayGenResult.compileResult));
+            std::make_unique<ShaderProgramMetadata>(std::move(rayGenResult.compileResult));
 
-        ShaderLoadDesc missDesc = rayGenDesc;
+        RenderShaderLoadDesc missDesc = rayGenDesc;
         missDesc.entryPoint = "ShadowMiss";
         missDesc.stage = RHIShaderStage::Miss;
-        auto missResult = m_shaderManager->LoadFromFile(m_device, missDesc);
+        auto missResult = m_shaderProgramLoader->LoadFromFile(m_device, missDesc);
         if (!missResult.compileResult.success)
         {
             SetLastError("Failed to compile RayTracedShadow miss shader: " + missResult.compileResult.errorMessage);
@@ -2515,12 +2392,12 @@ bool PipelineCache::CompileShaders()
         }
         m_rayTracedShadowMissShader = missResult.shader;
         m_rayTracedShadowMissCompileResult =
-            std::make_unique<ShaderCompileResult>(std::move(missResult.compileResult));
+            std::make_unique<ShaderProgramMetadata>(std::move(missResult.compileResult));
 
-        ShaderLoadDesc closestHitDesc = rayGenDesc;
+        RenderShaderLoadDesc closestHitDesc = rayGenDesc;
         closestHitDesc.entryPoint = "ShadowClosestHit";
         closestHitDesc.stage = RHIShaderStage::ClosestHit;
-        auto closestHitResult = m_shaderManager->LoadFromFile(m_device, closestHitDesc);
+        auto closestHitResult = m_shaderProgramLoader->LoadFromFile(m_device, closestHitDesc);
         if (!closestHitResult.compileResult.success)
         {
             SetLastError("Failed to compile RayTracedShadow closest-hit shader: " +
@@ -2534,12 +2411,12 @@ bool PipelineCache::CompileShaders()
         }
         m_rayTracedShadowClosestHitShader = closestHitResult.shader;
         m_rayTracedShadowClosestHitCompileResult =
-            std::make_unique<ShaderCompileResult>(std::move(closestHitResult.compileResult));
+            std::make_unique<ShaderProgramMetadata>(std::move(closestHitResult.compileResult));
 
-        ShaderLoadDesc anyHitDesc = rayGenDesc;
+        RenderShaderLoadDesc anyHitDesc = rayGenDesc;
         anyHitDesc.entryPoint = "ShadowAnyHit";
         anyHitDesc.stage = RHIShaderStage::AnyHit;
-        auto anyHitResult = m_shaderManager->LoadFromFile(m_device, anyHitDesc);
+        auto anyHitResult = m_shaderProgramLoader->LoadFromFile(m_device, anyHitDesc);
         if (!anyHitResult.compileResult.success)
         {
             SetLastError("Failed to compile RayTracedShadow any-hit shader: " +
@@ -2553,12 +2430,12 @@ bool PipelineCache::CompileShaders()
         }
         m_rayTracedShadowAnyHitShader = anyHitResult.shader;
         m_rayTracedShadowAnyHitCompileResult =
-            std::make_unique<ShaderCompileResult>(std::move(anyHitResult.compileResult));
+            std::make_unique<ShaderProgramMetadata>(std::move(anyHitResult.compileResult));
 
-        ShaderLoadDesc reflectionRayGenDesc = rayGenDesc;
+        RenderShaderLoadDesc reflectionRayGenDesc = rayGenDesc;
         reflectionRayGenDesc.path = rayTracedReflectionShaderPath;
         reflectionRayGenDesc.entryPoint = "ReflectionRayGen";
-        auto reflectionRayGenResult = m_shaderManager->LoadFromFile(m_device, reflectionRayGenDesc);
+        auto reflectionRayGenResult = m_shaderProgramLoader->LoadFromFile(m_device, reflectionRayGenDesc);
         if (!reflectionRayGenResult.compileResult.success)
         {
             SetLastError("Failed to compile RayTracedReflection ray-generation shader: " +
@@ -2572,12 +2449,12 @@ bool PipelineCache::CompileShaders()
         }
         m_rayTracedReflectionRayGenShader = reflectionRayGenResult.shader;
         m_rayTracedReflectionRayGenCompileResult =
-            std::make_unique<ShaderCompileResult>(std::move(reflectionRayGenResult.compileResult));
+            std::make_unique<ShaderProgramMetadata>(std::move(reflectionRayGenResult.compileResult));
 
-        ShaderLoadDesc reflectionMissDesc = reflectionRayGenDesc;
+        RenderShaderLoadDesc reflectionMissDesc = reflectionRayGenDesc;
         reflectionMissDesc.entryPoint = "ReflectionMiss";
         reflectionMissDesc.stage = RHIShaderStage::Miss;
-        auto reflectionMissResult = m_shaderManager->LoadFromFile(m_device, reflectionMissDesc);
+        auto reflectionMissResult = m_shaderProgramLoader->LoadFromFile(m_device, reflectionMissDesc);
         if (!reflectionMissResult.compileResult.success)
         {
             SetLastError("Failed to compile RayTracedReflection miss shader: " +
@@ -2591,12 +2468,12 @@ bool PipelineCache::CompileShaders()
         }
         m_rayTracedReflectionMissShader = reflectionMissResult.shader;
         m_rayTracedReflectionMissCompileResult =
-            std::make_unique<ShaderCompileResult>(std::move(reflectionMissResult.compileResult));
+            std::make_unique<ShaderProgramMetadata>(std::move(reflectionMissResult.compileResult));
 
-        ShaderLoadDesc reflectionClosestHitDesc = reflectionRayGenDesc;
+        RenderShaderLoadDesc reflectionClosestHitDesc = reflectionRayGenDesc;
         reflectionClosestHitDesc.entryPoint = "ReflectionClosestHit";
         reflectionClosestHitDesc.stage = RHIShaderStage::ClosestHit;
-        auto reflectionClosestHitResult = m_shaderManager->LoadFromFile(m_device, reflectionClosestHitDesc);
+        auto reflectionClosestHitResult = m_shaderProgramLoader->LoadFromFile(m_device, reflectionClosestHitDesc);
         if (!reflectionClosestHitResult.compileResult.success)
         {
             SetLastError("Failed to compile RayTracedReflection closest-hit shader: " +
@@ -2610,12 +2487,12 @@ bool PipelineCache::CompileShaders()
         }
         m_rayTracedReflectionClosestHitShader = reflectionClosestHitResult.shader;
         m_rayTracedReflectionClosestHitCompileResult =
-            std::make_unique<ShaderCompileResult>(std::move(reflectionClosestHitResult.compileResult));
+            std::make_unique<ShaderProgramMetadata>(std::move(reflectionClosestHitResult.compileResult));
 
-        ShaderLoadDesc reflectionAnyHitDesc = reflectionRayGenDesc;
+        RenderShaderLoadDesc reflectionAnyHitDesc = reflectionRayGenDesc;
         reflectionAnyHitDesc.entryPoint = "ReflectionAnyHit";
         reflectionAnyHitDesc.stage = RHIShaderStage::AnyHit;
-        auto reflectionAnyHitResult = m_shaderManager->LoadFromFile(m_device, reflectionAnyHitDesc);
+        auto reflectionAnyHitResult = m_shaderProgramLoader->LoadFromFile(m_device, reflectionAnyHitDesc);
         if (!reflectionAnyHitResult.compileResult.success)
         {
             SetLastError("Failed to compile RayTracedReflection any-hit shader: " +
@@ -2629,7 +2506,7 @@ bool PipelineCache::CompileShaders()
         }
         m_rayTracedReflectionAnyHitShader = reflectionAnyHitResult.shader;
         m_rayTracedReflectionAnyHitCompileResult =
-            std::make_unique<ShaderCompileResult>(std::move(reflectionAnyHitResult.compileResult));
+            std::make_unique<ShaderProgramMetadata>(std::move(reflectionAnyHitResult.compileResult));
     }
 
     RVX_CORE_DEBUG("PipelineCache: Compiled shaders successfully");
@@ -8018,7 +7895,8 @@ uint64 PipelineCache::StoreVariantHash(MaterialPipelineVariant variant, uint64 h
     return hash;
 }
 
-uint64 PipelineCache::ComputeShaderHash(const ShaderCompileResult* result) const
+uint64 PipelineCache::ComputeShaderHash(
+    const ShaderProgramMetadata* result) const
 {
     uint64 hash = RVX_PIPELINE_HASH_OFFSET_BASIS;
     if (!result)
@@ -8026,20 +7904,7 @@ uint64 PipelineCache::ComputeShaderHash(const ShaderCompileResult* result) const
         return hash;
     }
 
-    HashValue(hash, result->sourceInfo.combinedHash);
-    HashValue(hash, result->permutationHash);
-
-    const uint64 bytecodeSize = static_cast<uint64>(result->bytecode.size());
-    HashValue(hash, bytecodeSize);
-    if (!result->bytecode.empty())
-    {
-        HashBytes(hash, result->bytecode.data(), result->bytecode.size());
-    }
-
-    HashString(hash, result->glslSource.c_str());
-    HashString(hash, result->mslSource.c_str());
-    HashString(hash, result->mslEntryPoint.c_str());
-    HashValue(hash, result->glslVersion);
+    HashValue(hash, result->contentHash);
 
     return hash;
 }

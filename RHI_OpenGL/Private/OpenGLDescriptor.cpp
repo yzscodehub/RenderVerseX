@@ -4,7 +4,7 @@
 #include "OpenGLResources.h"
 #include "OpenGLStateCache.h"
 #include "Core/Log.h"
-#include "ShaderCompiler/GLSLBindingABI.h"
+#include "ShaderContracts/GLSLBindingABI.h"
 #include <algorithm>
 
 namespace RVX

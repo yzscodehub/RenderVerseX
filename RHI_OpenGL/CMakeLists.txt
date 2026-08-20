@@ -42,7 +42,10 @@ target_include_directories(RVX_RHI_OpenGL PRIVATE
 target_link_libraries(RVX_RHI_OpenGL PUBLIC
     RVX::RHI
     RVX::Core
-    RVX::ShaderCompiler
+)
+
+target_link_libraries(RVX_RHI_OpenGL PRIVATE
+    RVX::ShaderContracts
 )
 
 # OpenGL Loader (glad)

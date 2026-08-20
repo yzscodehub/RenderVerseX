@@ -30,6 +30,7 @@
 namespace RVX
 {
     class IRHIDevice;
+    class IShaderProgramProvider;
     class PipelineCache;
     class RHICommandContext;
     class RenderRetirementQueue;
@@ -399,7 +400,8 @@ namespace RVX
     class GPUCulling
     {
     public:
-        GPUCulling() = default;
+        explicit GPUCulling(
+            IShaderProgramProvider* shaderProgramProvider = nullptr) noexcept;
         ~GPUCulling();
 
         // Non-copyable
@@ -1069,6 +1071,7 @@ namespace RVX
         void FailDirtyJournalCheckpoint();
 
         IRHIDevice* m_device = nullptr;
+        IShaderProgramProvider* m_shaderProgramProvider = nullptr;
         GPUCullingConfig m_config;
         bool m_occlusionRequested = false;
         // CPU-side instance data

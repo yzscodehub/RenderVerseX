@@ -12,6 +12,7 @@
 #include "RenderContracts/RenderFrameTypes.h"
 #include "HAL/Window/NativeSurface.h"
 #include "Scene/ECS/FrozenSceneSnapshot.h"
+#include "ShaderContracts/ShaderProgramProvider.h"
 
 #include <functional>
 #include <memory>
@@ -251,5 +252,6 @@ namespace RVX
         Resource::ResourceSubsystem& resources,
         RenderSubsystem& render,
         WindowSubsystem& window,
+        ShaderProgramProviderFactory shaderProgramProviderFactory,
         std::function<bool()> stopRender);
 } // namespace RVX

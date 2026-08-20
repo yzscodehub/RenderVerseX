@@ -672,7 +672,7 @@ rvx_add_gtest(
         RVX::Core
         RVX::Render
         RVX::RHI
-        RVX::ShaderCompiler
+        RVX::ShaderContracts
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Tests
         ${CMAKE_SOURCE_DIR}/Render/Include
@@ -708,8 +708,10 @@ rvx_add_gtest(
         RVX::RenderContracts
         RVX::Render
         RVX::ShaderCompiler
+        RVX::ShaderContracts
         RVX_RenderRuntimeCore
     INCLUDES
+        ${CMAKE_SOURCE_DIR}/Tests
         ${CMAKE_SOURCE_DIR}/Render/Include
         ${CMAKE_SOURCE_DIR}/Render/Private
         ${CMAKE_SOURCE_DIR}/RenderContracts/Include

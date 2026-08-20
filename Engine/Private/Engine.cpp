@@ -814,6 +814,7 @@ bool Engine::InitializeSubsystems()
             *resources,
             *render,
             *window,
+            m_config.shaderProgramProviderFactory,
             [this]() { return m_subsystems.DeinitializeSubsystem<RenderSubsystem>(); });
         m_ecsRenderComposition = std::make_unique<EcsRenderRuntimeComposition>(
             m_config.renderRuntime,

@@ -216,7 +216,7 @@ target_link_libraries(RVX_Render PUBLIC
     RVX::RenderContracts
     RVX::RenderGraph
     RVX_RHI
-    RVX::ShaderCompiler
+    RVX::ShaderContracts
 )
 
 target_link_libraries(RVX_Render PRIVATE

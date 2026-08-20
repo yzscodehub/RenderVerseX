@@ -1,4 +1,4 @@
-#include "Common/DeterministicShaderCompiler.h"
+#include "Common/DeterministicShaderProgramProvider.h"
 #include "Core/Log.h"
 #include "Render/GPUDriven/GPUCulling.h"
 #include "Render/PipelineCache.h"
@@ -93,7 +93,13 @@ namespace
     public:
         PipelineCacheForValidation()
             : RVX::PipelineCache(
-                  RVX::Tests::CreateDeterministicShaderCompiler)
+                  RVX::Tests::GetDeterministicShaderProgramProvider())
+        {
+        }
+
+        explicit PipelineCacheForValidation(
+            RVX::IShaderProgramProvider& provider)
+            : RVX::PipelineCache(provider)
         {
         }
     };
@@ -249,55 +255,64 @@ namespace
         }
     };
 
-    class GPUSceneDepthPermutationRejectingCompiler final : public RVX::IShaderCompiler
+    class GPUSceneDepthPermutationRejectingProvider final
+        : public RVX::Tests::DeterministicShaderProgramProvider
     {
     public:
-        GPUSceneDepthPermutationRejectingCompiler()
-            : m_delegate(RVX::Tests::CreateDeterministicShaderCompiler())
+        RVX::ShaderProgramResult Load(
+            RVX::IRHIDevice& device,
+            const RVX::ShaderProgramRequest& request) override
         {
-        }
-
-        RVX::ShaderCompileSupport QuerySupport(
-            const RVX::ShaderCompileOptions& options) const override
-        {
-            return m_delegate->QuerySupport(options);
-        }
-
-        RVX::ShaderCompileResult Compile(
-            const RVX::ShaderCompileOptions& options) override
-        {
-            const bool gpuScenePermutation = options.entryPoint != nullptr &&
-                std::string(options.entryPoint) == "VSMainGPUScene" &&
-                std::any_of(options.defines.begin(), options.defines.end(),
+            const bool gpuScenePermutation =
+                request.entryPoint == "VSMainGPUScene" &&
+                std::any_of(request.defines.begin(), request.defines.end(),
                     [](const RVX::ShaderMacro& define)
                     {
                         return define.name == "RVX_GPU_SCENE_RASTER" &&
                                define.value == "1";
                     });
-            const bool depthOnlyShader = options.sourcePath != nullptr &&
-                std::filesystem::path(options.sourcePath).filename() == "DepthOnly.hlsl";
+            const bool depthOnlyShader =
+                request.logicalAssetId.find("DepthOnly.hlsl") !=
+                std::string::npos;
             if (gpuScenePermutation && depthOnlyShader)
             {
-                RVX::ShaderCompileResult rejected;
-                rejected.errorMessage = "GPU-scene DepthOnly permutation rejected by test compiler";
+                RVX::ShaderProgramResult rejected;
+                rejected.status = RVX::ShaderProgramStatus::CompileFailed;
+                rejected.diagnostic =
+                    "GPU-scene DepthOnly permutation rejected by test provider";
                 return rejected;
             }
-            return m_delegate->Compile(options);
+            return DeterministicShaderProgramProvider::Load(device, request);
         }
+    };
 
-    private:
-        std::unique_ptr<RVX::IShaderCompiler> m_delegate;
+    RVX::IShaderProgramProvider& GetGPUSceneDepthRejectingProvider()
+    {
+        static GPUSceneDepthPermutationRejectingProvider provider;
+        return provider;
+    }
+
+    class MissingShaderProgramProvider final
+        : public RVX::IShaderProgramProvider
+    {
+    public:
+        RVX::ShaderProgramResult Load(
+            RVX::IRHIDevice&,
+            const RVX::ShaderProgramRequest& request) override
+        {
+            RVX::ShaderProgramResult result;
+            result.status = RVX::ShaderProgramStatus::NotFound;
+            result.diagnostic =
+                "Shader program not found: " + request.logicalAssetId;
+            return result;
+        }
     };
 
     class GPUSceneDepthPermutationRejectingPipelineCache final : public RVX::PipelineCache
     {
     public:
         GPUSceneDepthPermutationRejectingPipelineCache()
-            : RVX::PipelineCache(
-                  []()
-                  {
-                      return std::make_unique<GPUSceneDepthPermutationRejectingCompiler>();
-                  })
+            : RVX::PipelineCache(GetGPUSceneDepthRejectingProvider())
         {
         }
     };
@@ -983,29 +998,27 @@ TEST_F(PipelineCacheValidationFixture, NullDeviceFailsWithVisibleError)
     EXPECT_NE(cache.GetLastError().find("Invalid device"), std::string::npos);
 }
 
-TEST_F(PipelineCacheValidationFixture, NullInjectedCompilerFailsWithVisibleError)
+TEST_F(PipelineCacheValidationFixture, MissingInjectedProviderFailsWithVisibleError)
 {
     FakeDevice device;
-    RVX::PipelineCache cache(
-        []() -> std::unique_ptr<RVX::IShaderCompiler>
-        {
-            return {};
-        });
+    RVX::PipelineCache cache;
 
     EXPECT_FALSE(cache.Initialize(&device, ""));
     EXPECT_NE(
-        cache.GetLastError().find("factory returned no compiler"),
+        cache.GetLastError().find("provider was not injected"),
         std::string::npos);
 }
 
-TEST_F(PipelineCacheValidationFixture, MissingShaderFileFailsWithVisibleError)
+TEST_F(PipelineCacheValidationFixture, MissingShaderProgramFailsWithVisibleError)
 {
-    TempDirectory temp("rvx_pipeline_missing_shader");
     FakeDevice device;
-    PipelineCacheForValidation cache;
+    MissingShaderProgramProvider provider;
+    RVX::PipelineCache cache(provider);
 
-    EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
-    EXPECT_NE(cache.GetLastError().find("Shader file not found"), std::string::npos);
+    EXPECT_FALSE(cache.Initialize(&device, ""));
+    EXPECT_NE(
+        cache.GetLastError().find("Shader program not found"),
+        std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, FailedShaderCreationFailsWithVisibleError)
@@ -1038,10 +1051,11 @@ TEST_F(PipelineCacheValidationFixture, MissingToneMappingShaderFailsWithVisibleE
     fs::create_directories(temp.Path() / "PostProcess");
 
     FakeDevice device;
-    PipelineCacheForValidation cache;
+    RVX::Tests::DeterministicShaderProgramProvider provider(temp.Path());
+    PipelineCacheForValidation cache(provider);
 
     EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
-    EXPECT_NE(cache.GetLastError().find("ToneMapping shader file not found"), std::string::npos);
+    EXPECT_NE(cache.GetLastError().find("not found"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, MissingBloomShaderFailsWithVisibleError)
@@ -1061,10 +1075,11 @@ TEST_F(PipelineCacheValidationFixture, MissingBloomShaderFailsWithVisibleError)
                   temp.Path() / "PostProcess" / "ToneMapping.hlsl");
 
     FakeDevice device;
-    PipelineCacheForValidation cache;
+    RVX::Tests::DeterministicShaderProgramProvider provider(temp.Path());
+    PipelineCacheForValidation cache(provider);
 
     EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
-    EXPECT_NE(cache.GetLastError().find("Bloom shader file not found"), std::string::npos);
+    EXPECT_NE(cache.GetLastError().find("not found"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, MissingSSAOShaderFailsWithVisibleError)
@@ -1086,10 +1101,11 @@ TEST_F(PipelineCacheValidationFixture, MissingSSAOShaderFailsWithVisibleError)
                   temp.Path() / "PostProcess" / "Bloom.hlsl");
 
     FakeDevice device;
-    PipelineCacheForValidation cache;
+    RVX::Tests::DeterministicShaderProgramProvider provider(temp.Path());
+    PipelineCacheForValidation cache(provider);
 
     EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
-    EXPECT_NE(cache.GetLastError().find("SSAO shader file not found"), std::string::npos);
+    EXPECT_NE(cache.GetLastError().find("not found"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, MissingCameraVelocityShaderFailsWithVisibleError)
@@ -1104,10 +1120,11 @@ TEST_F(PipelineCacheValidationFixture, MissingCameraVelocityShaderFailsWithVisib
     fs::remove(shaderDir / "PostProcess" / "CameraVelocity.hlsl");
 
     FakeDevice device;
-    PipelineCacheForValidation cache;
+    RVX::Tests::DeterministicShaderProgramProvider provider(shaderDir);
+    PipelineCacheForValidation cache(provider);
 
     EXPECT_FALSE(cache.Initialize(&device, shaderDir.string()));
-    EXPECT_NE(cache.GetLastError().find("CameraVelocity shader file not found"), std::string::npos);
+    EXPECT_NE(cache.GetLastError().find("not found"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, MissingObjectVelocityShaderFailsWithVisibleError)
@@ -1122,10 +1139,11 @@ TEST_F(PipelineCacheValidationFixture, MissingObjectVelocityShaderFailsWithVisib
     fs::remove(shaderDir / "ObjectVelocity.hlsl");
 
     FakeDevice device;
-    PipelineCacheForValidation cache;
+    RVX::Tests::DeterministicShaderProgramProvider provider(shaderDir);
+    PipelineCacheForValidation cache(provider);
 
     EXPECT_FALSE(cache.Initialize(&device, shaderDir.string()));
-    EXPECT_NE(cache.GetLastError().find("ObjectVelocity shader file not found"), std::string::npos);
+    EXPECT_NE(cache.GetLastError().find("not found"), std::string::npos);
 }
 TEST_F(PipelineCacheValidationFixture, MissingFXAAShaderFailsWithVisibleError)
 {
@@ -1157,10 +1175,11 @@ TEST_F(PipelineCacheValidationFixture, MissingFXAAShaderFailsWithVisibleError)
                   temp.Path() / "PostProcess" / "FilmGrain.hlsl");
 
     FakeDevice device;
-    PipelineCacheForValidation cache;
+    RVX::Tests::DeterministicShaderProgramProvider provider(temp.Path());
+    PipelineCacheForValidation cache(provider);
 
     EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
-    EXPECT_NE(cache.GetLastError().find("FXAA shader file not found"), std::string::npos);
+    EXPECT_NE(cache.GetLastError().find("not found"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, MissingFilmGrainShaderFailsWithVisibleError)
@@ -1191,10 +1210,11 @@ TEST_F(PipelineCacheValidationFixture, MissingFilmGrainShaderFailsWithVisibleErr
                   temp.Path() / "PostProcess" / "ChromaticAberration.hlsl");
 
     FakeDevice device;
-    PipelineCacheForValidation cache;
+    RVX::Tests::DeterministicShaderProgramProvider provider(temp.Path());
+    PipelineCacheForValidation cache(provider);
 
     EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
-    EXPECT_NE(cache.GetLastError().find("FilmGrain shader file not found"), std::string::npos);
+    EXPECT_NE(cache.GetLastError().find("not found"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, MissingChromaticAberrationShaderFailsWithVisibleError)
@@ -1223,10 +1243,11 @@ TEST_F(PipelineCacheValidationFixture, MissingChromaticAberrationShaderFailsWith
                   temp.Path() / "PostProcess" / "ColorGrading.hlsl");
 
     FakeDevice device;
-    PipelineCacheForValidation cache;
+    RVX::Tests::DeterministicShaderProgramProvider provider(temp.Path());
+    PipelineCacheForValidation cache(provider);
 
     EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
-    EXPECT_NE(cache.GetLastError().find("ChromaticAberration shader file not found"), std::string::npos);
+    EXPECT_NE(cache.GetLastError().find("not found"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, MissingColorGradingShaderFailsWithVisibleError)
@@ -1253,10 +1274,11 @@ TEST_F(PipelineCacheValidationFixture, MissingColorGradingShaderFailsWithVisible
     fs::copy_file(sourceDir / "ObjectVelocity.hlsl", temp.Path() / "ObjectVelocity.hlsl");
 
     FakeDevice device;
-    PipelineCacheForValidation cache;
+    RVX::Tests::DeterministicShaderProgramProvider provider(temp.Path());
+    PipelineCacheForValidation cache(provider);
 
     EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
-    EXPECT_NE(cache.GetLastError().find("ColorGrading shader file not found"), std::string::npos);
+    EXPECT_NE(cache.GetLastError().find("not found"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, MissingVignetteShaderFailsWithVisibleError)
@@ -1291,10 +1313,11 @@ TEST_F(PipelineCacheValidationFixture, MissingVignetteShaderFailsWithVisibleErro
                   temp.Path() / "PostProcess" / "FXAA.hlsl");
 
     FakeDevice device;
-    PipelineCacheForValidation cache;
+    RVX::Tests::DeterministicShaderProgramProvider provider(temp.Path());
+    PipelineCacheForValidation cache(provider);
 
     EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
-    EXPECT_NE(cache.GetLastError().find("Vignette shader file not found"), std::string::npos);
+    EXPECT_NE(cache.GetLastError().find("not found"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, MissingSkyboxShaderFailsWithVisibleError)
@@ -1332,10 +1355,11 @@ TEST_F(PipelineCacheValidationFixture, MissingSkyboxShaderFailsWithVisibleError)
     fs::copy_file(sourceDir / "UI.hlsl", temp.Path() / "UI.hlsl");
 
     FakeDevice device;
-    PipelineCacheForValidation cache;
+    RVX::Tests::DeterministicShaderProgramProvider provider(temp.Path());
+    PipelineCacheForValidation cache(provider);
 
     EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
-    EXPECT_NE(cache.GetLastError().find("Skybox shader file not found"), std::string::npos);
+    EXPECT_NE(cache.GetLastError().find("not found"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, MissingUIShaderFailsWithVisibleError)
@@ -1372,10 +1396,11 @@ TEST_F(PipelineCacheValidationFixture, MissingUIShaderFailsWithVisibleError)
                   temp.Path() / "PostProcess" / "Vignette.hlsl");
 
     FakeDevice device;
-    PipelineCacheForValidation cache;
+    RVX::Tests::DeterministicShaderProgramProvider provider(temp.Path());
+    PipelineCacheForValidation cache(provider);
 
     EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
-    EXPECT_NE(cache.GetLastError().find("UI shader file not found"), std::string::npos);
+    EXPECT_NE(cache.GetLastError().find("not found"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, MissingRayTracedReflectionCompositeShaderFailsWithVisibleError)
@@ -1390,10 +1415,11 @@ TEST_F(PipelineCacheValidationFixture, MissingRayTracedReflectionCompositeShader
     fs::remove(shaderDir / "PostProcess" / "RayTracedReflectionComposite.hlsl");
 
     FakeDevice device;
-    PipelineCacheForValidation cache;
+    RVX::Tests::DeterministicShaderProgramProvider provider(shaderDir);
+    PipelineCacheForValidation cache(provider);
 
     EXPECT_FALSE(cache.Initialize(&device, shaderDir.string()));
-    EXPECT_NE(cache.GetLastError().find("RayTracedReflectionComposite shader file not found"),
+    EXPECT_NE(cache.GetLastError().find("not found"),
               std::string::npos);
 }
 
@@ -1409,10 +1435,11 @@ TEST_F(PipelineCacheValidationFixture, MissingRayTracedReflectionDenoiseShaderFa
     fs::remove(shaderDir / "PostProcess" / "RayTracedReflectionDenoise.hlsl");
 
     FakeDevice device;
-    PipelineCacheForValidation cache;
+    RVX::Tests::DeterministicShaderProgramProvider provider(shaderDir);
+    PipelineCacheForValidation cache(provider);
 
     EXPECT_FALSE(cache.Initialize(&device, shaderDir.string()));
-    EXPECT_NE(cache.GetLastError().find("RayTracedReflectionDenoise shader file not found"),
+    EXPECT_NE(cache.GetLastError().find("not found"),
               std::string::npos);
 }
 
@@ -5631,7 +5658,9 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionPipelineCacheResources
     EXPECT_NE(pipelineSource.find("PostProcess/RayTracedReflectionComposite.hlsl"), std::string::npos);
     EXPECT_NE(pipelineSource.find("PostProcess/RayTracedReflectionDenoise.hlsl"), std::string::npos);
     EXPECT_NE(pipelineSource.find("PostProcess/CameraVelocity.hlsl"), std::string::npos);
-    EXPECT_NE(pipelineSource.find("CameraVelocity shader file not found"), std::string::npos);
+    EXPECT_EQ(
+        pipelineSource.find("std::filesystem::exists(cameraVelocityShaderPath)"),
+        std::string::npos);
     EXPECT_NE(pipelineSource.find("Failed to compile CameraVelocity pixel shader"), std::string::npos);
     EXPECT_NE(pipelineSource.find("GetCameraVelocityPipeline(RHIFormat outputFormat)"), std::string::npos);
     EXPECT_NE(pipelineSource.find("GetOrCreateCameraVelocityPipeline"), std::string::npos);
@@ -8806,11 +8835,12 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenSkyboxShaderChange
     TempDirectory temp("rvx_pipeline_manifest_skybox_shader");
     const fs::path shaderDir = CopyShaderDirectoryToTemp(temp.Path());
     const fs::path manifestDir = temp.Path() / "Manifest";
+    RVX::Tests::DeterministicShaderProgramProvider provider(shaderDir);
     RVX::uint64 firstSkyboxHash = 0;
 
     {
         FakeDevice device;
-        PipelineCacheForValidation cache;
+        PipelineCacheForValidation cache(provider);
         cache.SetConfig(ConfigWithManifest(manifestDir));
         ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
         firstSkyboxHash = cache.GetStats().skyboxPipelineHash;
@@ -8824,7 +8854,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenSkyboxShaderChange
     WriteTextFile(skyboxShader, source);
 
     FakeDevice device;
-    PipelineCacheForValidation cache;
+    PipelineCacheForValidation cache(provider);
     cache.SetConfig(ConfigWithManifest(manifestDir));
     ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
     EXPECT_TRUE(cache.GetStats().manifestLoaded);
@@ -8843,11 +8873,12 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenFXAAShaderChanges)
     TempDirectory temp("rvx_pipeline_manifest_fxaa_shader");
     const fs::path shaderDir = CopyShaderDirectoryToTemp(temp.Path());
     const fs::path manifestDir = temp.Path() / "Manifest";
+    RVX::Tests::DeterministicShaderProgramProvider provider(shaderDir);
     RVX::uint64 firstFXAAHash = 0;
 
     {
         FakeDevice device;
-        PipelineCacheForValidation cache;
+        PipelineCacheForValidation cache(provider);
         cache.SetConfig(ConfigWithManifest(manifestDir));
         ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
         firstFXAAHash = cache.GetStats().fxaaPipelineHash;
@@ -8861,7 +8892,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenFXAAShaderChanges)
     WriteTextFile(fxaaShader, source);
 
     FakeDevice device;
-    PipelineCacheForValidation cache;
+    PipelineCacheForValidation cache(provider);
     cache.SetConfig(ConfigWithManifest(manifestDir));
     ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
     EXPECT_TRUE(cache.GetStats().manifestLoaded);
@@ -8880,11 +8911,12 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenColorGradingShader
     TempDirectory temp("rvx_pipeline_manifest_colorgrading_shader");
     const fs::path shaderDir = CopyShaderDirectoryToTemp(temp.Path());
     const fs::path manifestDir = temp.Path() / "Manifest";
+    RVX::Tests::DeterministicShaderProgramProvider provider(shaderDir);
     RVX::uint64 firstColorGradingHash = 0;
 
     {
         FakeDevice device;
-        PipelineCacheForValidation cache;
+        PipelineCacheForValidation cache(provider);
         cache.SetConfig(ConfigWithManifest(manifestDir));
         ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
         firstColorGradingHash = cache.GetStats().colorGradingPipelineHash;
@@ -8898,7 +8930,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenColorGradingShader
     WriteTextFile(colorGradingShader, source);
 
     FakeDevice device;
-    PipelineCacheForValidation cache;
+    PipelineCacheForValidation cache(provider);
     cache.SetConfig(ConfigWithManifest(manifestDir));
     ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
     EXPECT_TRUE(cache.GetStats().manifestLoaded);
@@ -8917,11 +8949,12 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenChromaticAberratio
     TempDirectory temp("rvx_pipeline_manifest_chromatic_aberration_shader");
     const fs::path shaderDir = CopyShaderDirectoryToTemp(temp.Path());
     const fs::path manifestDir = temp.Path() / "Manifest";
+    RVX::Tests::DeterministicShaderProgramProvider provider(shaderDir);
     RVX::uint64 firstChromaticAberrationHash = 0;
 
     {
         FakeDevice device;
-        PipelineCacheForValidation cache;
+        PipelineCacheForValidation cache(provider);
         cache.SetConfig(ConfigWithManifest(manifestDir));
         ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
         firstChromaticAberrationHash = cache.GetStats().chromaticAberrationPipelineHash;
@@ -8935,7 +8968,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenChromaticAberratio
     WriteTextFile(shader, source);
 
     FakeDevice device;
-    PipelineCacheForValidation cache;
+    PipelineCacheForValidation cache(provider);
     cache.SetConfig(ConfigWithManifest(manifestDir));
     ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
     EXPECT_TRUE(cache.GetStats().manifestLoaded);
@@ -8954,11 +8987,12 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenVignetteShaderChan
     TempDirectory temp("rvx_pipeline_manifest_vignette_shader");
     const fs::path shaderDir = CopyShaderDirectoryToTemp(temp.Path());
     const fs::path manifestDir = temp.Path() / "Manifest";
+    RVX::Tests::DeterministicShaderProgramProvider provider(shaderDir);
     RVX::uint64 firstVignetteHash = 0;
 
     {
         FakeDevice device;
-        PipelineCacheForValidation cache;
+        PipelineCacheForValidation cache(provider);
         cache.SetConfig(ConfigWithManifest(manifestDir));
         ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
         firstVignetteHash = cache.GetStats().vignettePipelineHash;
@@ -8972,7 +9006,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenVignetteShaderChan
     WriteTextFile(vignetteShader, source);
 
     FakeDevice device;
-    PipelineCacheForValidation cache;
+    PipelineCacheForValidation cache(provider);
     cache.SetConfig(ConfigWithManifest(manifestDir));
     ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
     EXPECT_TRUE(cache.GetStats().manifestLoaded);
@@ -8991,11 +9025,12 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenUIShaderChanges)
     TempDirectory temp("rvx_pipeline_manifest_ui_shader");
     const fs::path shaderDir = CopyShaderDirectoryToTemp(temp.Path());
     const fs::path manifestDir = temp.Path() / "Manifest";
+    RVX::Tests::DeterministicShaderProgramProvider provider(shaderDir);
     RVX::uint64 firstUIHash = 0;
 
     {
         FakeDevice device;
-        PipelineCacheForValidation cache;
+        PipelineCacheForValidation cache(provider);
         cache.SetConfig(ConfigWithManifest(manifestDir));
         ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
         firstUIHash = cache.GetStats().uiPipelineHash;
@@ -9009,7 +9044,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenUIShaderChanges)
     WriteTextFile(uiShader, source);
 
     FakeDevice device;
-    PipelineCacheForValidation cache;
+    PipelineCacheForValidation cache(provider);
     cache.SetConfig(ConfigWithManifest(manifestDir));
     ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
     EXPECT_TRUE(cache.GetStats().manifestLoaded);

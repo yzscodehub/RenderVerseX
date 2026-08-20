@@ -4,6 +4,7 @@
  */
 
 #include "Render/Renderer/SceneRenderer.h"
+#include "ShaderContracts/ShaderProgramProvider.h"
 #include "Context/RenderContextInternal.h"
 #include "GPUScene/GPUSceneUpdate.h"
 #include "GPUScene/GPUSceneUploader.h"
@@ -823,6 +824,13 @@ SceneRenderer::SceneRenderer()
 {
 }
 
+SceneRenderer::SceneRenderer(
+    std::unique_ptr<IShaderProgramProvider> shaderProgramProvider)
+    : m_shaderProgramProvider(std::move(shaderProgramProvider)),
+      m_gpuSceneUpdate(std::make_unique<GPUSceneUpdate>())
+{
+}
+
 SceneRenderer::~SceneRenderer()
 {
     Shutdown();
@@ -925,6 +933,12 @@ void SceneRenderer::Initialize(
         RVX_CORE_ERROR("SceneRenderer: Invalid render-owned dependencies");
         return;
     }
+    if (!m_shaderProgramProvider)
+    {
+        RVX_CORE_ERROR(
+            "SceneRenderer: Shader program provider was not injected");
+        return;
+    }
 
     m_renderContext = renderContext;
     m_renderResourceRegistry = resourceRegistry;
@@ -957,17 +971,20 @@ void SceneRenderer::Initialize(
     const uint32 gpuCullingFrameSlotCount = frameSynchronizer != nullptr
         ? frameSynchronizer->GetFrameCount()
         : 1u;
-    m_depthGPUCulling = std::make_unique<GPUCulling>();
+    m_depthGPUCulling = std::make_unique<GPUCulling>(
+        m_shaderProgramProvider.get());
     m_depthGPUCulling->Initialize(
         m_renderContext->GetDevice(), gpuCullingConfig,
         gpuCullingFrameSlotCount);
-    m_opaqueGPUCulling = std::make_unique<GPUCulling>();
+    m_opaqueGPUCulling = std::make_unique<GPUCulling>(
+        m_shaderProgramProvider.get());
     m_opaqueGPUCulling->Initialize(
         m_renderContext->GetDevice(), gpuCullingConfig,
         gpuCullingFrameSlotCount);
 
     // Create pipeline cache with shader reflection
-    m_pipelineCache = std::make_unique<PipelineCache>();
+    m_pipelineCache = std::make_unique<PipelineCache>(
+        *m_shaderProgramProvider);
 
     // Create material system after pipeline layouts are available.
     m_materialSystem = std::make_unique<MaterialSystem>();
@@ -994,54 +1011,6 @@ void SceneRenderer::Initialize(
     m_resourceViewCache->Initialize(m_renderContext->GetDevice(),
                                     submissionTracker,
                                     m_retirementQueue);
-
-    RVX_CORE_INFO("SceneRenderer: Searching for shader directory...");
-    RVX_CORE_INFO("  Current working directory: {}", std::filesystem::current_path().string());
-
-    // Determine shader directory
-    std::string shaderDir = m_shaderDir;
-    if (shaderDir.empty())
-    {
-        const std::filesystem::path workspaceShaderDir =
-            ResolveWorkspaceRelativePath(
-                std::filesystem::path("Render") / "Shaders");
-        RVX_CORE_DEBUG("  Checking workspace shader directory: {} -> exists: {}",
-                       workspaceShaderDir.string(),
-                       std::filesystem::exists(workspaceShaderDir));
-        if (std::filesystem::exists(workspaceShaderDir))
-        {
-            shaderDir = workspaceShaderDir.string();
-            RVX_CORE_INFO("  Found shader directory: {}", shaderDir);
-        }
-    }
-    if (shaderDir.empty())
-    {
-        // Default shader directory - look for Render/Shaders in several locations
-        std::vector<std::string> searchPaths = {
-            "Render/Shaders",
-            "../Render/Shaders",
-            "../../Render/Shaders",
-            "../../../Render/Shaders",
-            "../../../../Render/Shaders",
-            "../../../../../Render/Shaders"
-        };
-
-        for (const auto& path : searchPaths)
-        {
-            RVX_CORE_DEBUG("  Checking: {} -> exists: {}", path, std::filesystem::exists(path));
-            if (std::filesystem::exists(path))
-            {
-                shaderDir = path;
-                RVX_CORE_INFO("  Found shader directory: {}", path);
-                break;
-            }
-        }
-    }
-
-    if (shaderDir.empty())
-    {
-        RVX_CORE_ERROR("SceneRenderer: Could not find shader directory!");
-    }
 
     // Get render target format from swap chain
     RHIFormat rtFormat = RHIFormat::BGRA8_UNORM;
@@ -1070,7 +1039,9 @@ void SceneRenderer::Initialize(
 
     // Initialize pipeline cache
     RVX_CORE_INFO("SceneRenderer: Initializing PipelineCache...");
-    if (!shaderDir.empty() && m_pipelineCache->Initialize(m_renderContext->GetDevice(), shaderDir))
+    // Render owns logical shader asset IDs only.  Development and shipping
+    // providers resolve those IDs to source or cooked artifacts respectively.
+    if (m_pipelineCache->Initialize(m_renderContext->GetDevice(), "."))
     {
         m_pipelineCache->SetObjectConstantSubmissionTracker(
             RenderContextInternalAccess::GetSubmissionTracker(*m_renderContext));
@@ -1080,7 +1051,6 @@ void SceneRenderer::Initialize(
     else
     {
         RVX_CORE_ERROR("SceneRenderer: PipelineCache failed to initialize - rendering will be limited");
-        RVX_CORE_ERROR("  shaderDir was: '{}'", shaderDir);
     }
 
     if (m_pipelineCache && m_pipelineCache->IsInitialized() && m_materialSystem)

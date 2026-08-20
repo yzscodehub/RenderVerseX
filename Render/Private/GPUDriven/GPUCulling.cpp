@@ -13,11 +13,10 @@
 #include "Resources/RenderResourceRegistry.h"
 #include "Resources/RenderSubmissionResourceBatch.h"
 #include "Resources/RenderSubmissionTracker.h"
-#include "ShaderCompiler/ShaderManager.h"
+#include "ShaderContracts/ShaderProgramProvider.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <filesystem>
 #include <limits>
 #include <new>
 #include <numeric>
@@ -156,49 +155,6 @@ namespace
             default:
                 return MaterialPipelineVariant::Opaque;
         }
-    }
-
-    std::filesystem::path FindGPUCullingShaderPath()
-    {
-        std::filesystem::path path = std::filesystem::current_path();
-        for (uint32 i = 0; i < 8; ++i)
-        {
-            std::filesystem::path candidate = path / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl";
-            if (std::filesystem::exists(candidate))
-            {
-                return candidate;
-            }
-
-            if (!path.has_parent_path())
-            {
-                break;
-            }
-            path = path.parent_path();
-        }
-
-        return {};
-    }
-
-    std::filesystem::path FindGPUSceneCullingShaderPath()
-    {
-        std::filesystem::path path = std::filesystem::current_path();
-        for (uint32 i = 0; i < 8; ++i)
-        {
-            std::filesystem::path candidate = path / "Render" / "Shaders" /
-                "GPUDriven" / "GPUSceneCulling.hlsl";
-            if (std::filesystem::exists(candidate))
-            {
-                return candidate;
-            }
-
-            if (!path.has_parent_path())
-            {
-                break;
-            }
-            path = path.parent_path();
-        }
-
-        return {};
     }
 
     GPUCullingConstants MakeDefaultGPUCullingConstants()
@@ -360,6 +316,12 @@ namespace
 // ============================================================================
 // GPUCulling
 // ============================================================================
+
+GPUCulling::GPUCulling(
+    IShaderProgramProvider* shaderProgramProvider) noexcept
+    : m_shaderProgramProvider(shaderProgramProvider)
+{
+}
 
 GPUCulling::~GPUCulling()
 {
@@ -1982,13 +1944,24 @@ void GPUCulling::CreatePipelineResources()
         return;
     }
 
-    const std::filesystem::path shaderPath = FindGPUCullingShaderPath();
-    if (shaderPath.empty())
+    if (m_shaderProgramProvider == nullptr)
     {
-        RVX_RENDER_WARN("GPUCulling: GPU shader file not found; CPU fallback remains active");
-        m_pipelineFallbackReason = GPUCullingFallbackReason::ShaderFileMissing;
+        RVX_RENDER_WARN("GPUCulling: shader program provider is unavailable; CPU fallback remains active");
+        m_pipelineFallbackReason = GPUCullingFallbackReason::ShaderCompilationFailed;
         return;
     }
+
+    const auto loadProgram = [this](
+        const char* logicalAssetId,
+        const char* entryPoint)
+    {
+        ShaderProgramRequest request;
+        request.logicalAssetId = logicalAssetId;
+        request.stage = RHIShaderStage::Compute;
+        request.entryPoint = entryPoint;
+        request.backend = m_device->GetBackendType();
+        return m_shaderProgramProvider->Load(*m_device, request);
+    };
 
     RHIDescriptorSetLayoutDesc setLayoutDesc;
     setLayoutDesc.debugName = "GPUCulling.DescriptorSetLayout";
@@ -2018,50 +1991,34 @@ void GPUCulling::CreatePipelineResources()
         return;
     }
 
-    ShaderManagerConfig shaderConfig;
-    shaderConfig.enableDiskCache = false;
-    shaderConfig.enableAsyncCompile = false;
-    shaderConfig.enableHotReload = false;
-    ShaderManager shaderManager(shaderConfig);
-
-    ShaderLoadDesc shaderDesc;
-    shaderDesc.path = shaderPath.string();
-    shaderDesc.stage = RHIShaderStage::Compute;
-    shaderDesc.backend = m_device->GetBackendType();
-    shaderDesc.enableDebugInfo = false;
-    shaderDesc.enableOptimization = true;
-    // HLSL shader-model selection is source-language metadata, not a DX12
-    // execution gate.  The compiler selects DXIL/SPIR-V from the backend.
-    shaderDesc.targetProfile = "cs_6_0";
-
-    shaderDesc.entryPoint = "CSFrustumCull";
-    ShaderLoadResult frustumResult = shaderManager.LoadFromFile(m_device, shaderDesc);
-    if (!frustumResult.compileResult.success || !frustumResult.shader)
+    ShaderProgramResult frustumResult = loadProgram(
+        "GPUDriven/GPUCulling.hlsl", "CSFrustumCull");
+    if (!frustumResult.Succeeded())
     {
         RVX_RENDER_WARN("GPUCulling: failed to compile frustum cull shader: {}",
-                        frustumResult.compileResult.errorMessage);
+                        frustumResult.diagnostic);
         m_pipelineFallbackReason = GPUCullingFallbackReason::ShaderCompilationFailed;
         return;
     }
     m_frustumCullShader = frustumResult.shader;
 
-    shaderDesc.entryPoint = "CSCompactDraws";
-    ShaderLoadResult compactResult = shaderManager.LoadFromFile(m_device, shaderDesc);
-    if (!compactResult.compileResult.success || !compactResult.shader)
+    ShaderProgramResult compactResult = loadProgram(
+        "GPUDriven/GPUCulling.hlsl", "CSCompactDraws");
+    if (!compactResult.Succeeded())
     {
         RVX_RENDER_WARN("GPUCulling: failed to compile compact shader: {}",
-                        compactResult.compileResult.errorMessage);
+                        compactResult.diagnostic);
         m_pipelineFallbackReason = GPUCullingFallbackReason::ShaderCompilationFailed;
         return;
     }
     m_compactShader = compactResult.shader;
 
-    shaderDesc.entryPoint = "CSFinalizeDrawGroups";
-    ShaderLoadResult finalizeResult = shaderManager.LoadFromFile(m_device, shaderDesc);
-    if (!finalizeResult.compileResult.success || !finalizeResult.shader)
+    ShaderProgramResult finalizeResult = loadProgram(
+        "GPUDriven/GPUCulling.hlsl", "CSFinalizeDrawGroups");
+    if (!finalizeResult.Succeeded())
     {
         RVX_RENDER_WARN("GPUCulling: failed to compile draw-group finalize shader: {}",
-                        finalizeResult.compileResult.errorMessage);
+                        finalizeResult.diagnostic);
         m_pipelineFallbackReason = GPUCullingFallbackReason::ShaderCompilationFailed;
         return;
     }
@@ -2122,13 +2079,6 @@ void GPUCulling::CreatePipelineResources()
     // indirection, while bindings 7..12 are the six rows retained by one
     // exact GPU-scene lease.  No normal culling
     // descriptor or execution path is changed here.
-    const std::filesystem::path gpuSceneShaderPath = FindGPUSceneCullingShaderPath();
-    if (gpuSceneShaderPath.empty())
-    {
-        RVX_RENDER_WARN("GPUCulling: GPU-scene shader file not found; GPU-scene recording remains disabled");
-        return;
-    }
-
     RHIDescriptorSetLayoutDesc gpuSceneSetLayoutDesc;
     gpuSceneSetLayoutDesc.debugName = "GPUCulling.GPUSceneDescriptorSetLayout";
     gpuSceneSetLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::Compute);
@@ -2161,28 +2111,24 @@ void GPUCulling::CreatePipelineResources()
         return;
     }
 
-    ShaderLoadDesc gpuSceneShaderDesc = shaderDesc;
-    gpuSceneShaderDesc.path = gpuSceneShaderPath.string();
-    gpuSceneShaderDesc.entryPoint = "CSGPUSceneFrustumCull";
-    ShaderLoadResult gpuSceneFrustumResult = shaderManager.LoadFromFile(
-        m_device, gpuSceneShaderDesc);
-    if (!gpuSceneFrustumResult.compileResult.success || !gpuSceneFrustumResult.shader)
+    ShaderProgramResult gpuSceneFrustumResult = loadProgram(
+        "GPUDriven/GPUSceneCulling.hlsl", "CSGPUSceneFrustumCull");
+    if (!gpuSceneFrustumResult.Succeeded())
     {
         RVX_RENDER_WARN("GPUCulling: failed to compile GPU-scene frustum shader: {}",
-                        gpuSceneFrustumResult.compileResult.errorMessage);
+                        gpuSceneFrustumResult.diagnostic);
         m_gpuSceneDescriptorSetLayout.Reset();
         m_gpuScenePipelineLayout.Reset();
         return;
     }
     m_gpuSceneFrustumCullShader = gpuSceneFrustumResult.shader;
 
-    gpuSceneShaderDesc.entryPoint = "CSGPUSceneCompactDraws";
-    ShaderLoadResult gpuSceneCompactResult = shaderManager.LoadFromFile(
-        m_device, gpuSceneShaderDesc);
-    if (!gpuSceneCompactResult.compileResult.success || !gpuSceneCompactResult.shader)
+    ShaderProgramResult gpuSceneCompactResult = loadProgram(
+        "GPUDriven/GPUSceneCulling.hlsl", "CSGPUSceneCompactDraws");
+    if (!gpuSceneCompactResult.Succeeded())
     {
         RVX_RENDER_WARN("GPUCulling: failed to compile GPU-scene compact shader: {}",
-                        gpuSceneCompactResult.compileResult.errorMessage);
+                        gpuSceneCompactResult.diagnostic);
         m_gpuSceneFrustumCullShader.Reset();
         m_gpuSceneDescriptorSetLayout.Reset();
         m_gpuScenePipelineLayout.Reset();
@@ -2190,14 +2136,12 @@ void GPUCulling::CreatePipelineResources()
     }
     m_gpuSceneCompactShader = gpuSceneCompactResult.shader;
 
-    gpuSceneShaderDesc.entryPoint = "CSGPUSceneFinalizeDrawGroups";
-    ShaderLoadResult gpuSceneFinalizeResult = shaderManager.LoadFromFile(
-        m_device, gpuSceneShaderDesc);
-    if (!gpuSceneFinalizeResult.compileResult.success ||
-        !gpuSceneFinalizeResult.shader)
+    ShaderProgramResult gpuSceneFinalizeResult = loadProgram(
+        "GPUDriven/GPUSceneCulling.hlsl", "CSGPUSceneFinalizeDrawGroups");
+    if (!gpuSceneFinalizeResult.Succeeded())
     {
         RVX_RENDER_WARN("GPUCulling: failed to compile GPU-scene draw-group finalize shader: {}",
-                        gpuSceneFinalizeResult.compileResult.errorMessage);
+                        gpuSceneFinalizeResult.diagnostic);
         m_gpuSceneFrustumCullShader.Reset();
         m_gpuSceneCompactShader.Reset();
         m_gpuSceneDescriptorSetLayout.Reset();

@@ -32,6 +32,13 @@ namespace
                                             public NonMovable
     {
     public:
+        explicit ClearPresentFrameConsumer(
+            ShaderProgramProviderFactory shaderProgramProviderFactory)
+            : m_shaderProgramProviderFactory(
+                  std::move(shaderProgramProviderFactory))
+        {
+        }
+
         RenderRuntimeResult Initialize(
             const RenderRuntimeConfig& config,
             const HAL::NativeSurfaceDesc& surface,
@@ -98,7 +105,24 @@ namespace
                 return result;
             }
 
-            m_sceneRenderer = std::make_unique<SceneRenderer>();
+            std::unique_ptr<IShaderProgramProvider> shaderProgramProvider =
+                m_shaderProgramProviderFactory
+                ? m_shaderProgramProviderFactory()
+                : nullptr;
+            if (!shaderProgramProvider)
+            {
+                m_uploadProcessor.Shutdown();
+                m_resourceRegistry.Shutdown();
+                m_context->Shutdown();
+                m_context.reset();
+                result.code = RenderRuntimeCode::DeviceCreationFailed;
+                result.message =
+                    "Render shader program provider is unavailable";
+                return result;
+            }
+
+            m_sceneRenderer = std::make_unique<SceneRenderer>(
+                std::move(shaderProgramProvider));
             m_sceneRenderer->Initialize(m_context.get(),
                                         &m_resourceRegistry,
                                         &m_retirementQueue);
@@ -1658,6 +1682,7 @@ namespace
         }
 
         std::unique_ptr<RenderContext> m_context;
+        ShaderProgramProviderFactory m_shaderProgramProviderFactory;
         std::unique_ptr<SceneRenderer> m_sceneRenderer;
         RenderRetirementQueue m_retirementQueue;
         RenderResourceRegistry m_resourceRegistry;
@@ -1675,11 +1700,22 @@ namespace
                                              public NonMovable
     {
     public:
+        explicit ClearPresentRuntimeFactory(
+            ShaderProgramProviderFactory shaderProgramProviderFactory)
+            : m_shaderProgramProviderFactory(
+                  std::move(shaderProgramProviderFactory))
+        {
+        }
+
         [[nodiscard]] std::unique_ptr<IRenderFrameConsumer>
             CreateFrameConsumer() override
         {
-            return std::make_unique<ClearPresentFrameConsumer>();
+            return std::make_unique<ClearPresentFrameConsumer>(
+                m_shaderProgramProviderFactory);
         }
+
+    private:
+        ShaderProgramProviderFactory m_shaderProgramProviderFactory;
     };
 } // namespace
 
@@ -1716,12 +1752,19 @@ void RenderSubsystem::Initialize()
 }
 
 void RenderSubsystem::Configure(const RenderRuntimeConfig& config,
-                                const HAL::NativeSurfaceDesc& surface)
+                                const HAL::NativeSurfaceDesc& surface,
+                                ShaderProgramProviderFactory
+                                    shaderProgramProviderFactory)
 {
     if (m_initializeAttempted)
     {
         throw std::logic_error(
             "RenderSubsystem::Configure is only valid before Initialize");
+    }
+    if (!shaderProgramProviderFactory)
+    {
+        throw std::invalid_argument(
+            "RenderSubsystem requires a shader program provider factory");
     }
 
     auto runtime = std::make_unique<RenderThreadRuntime>(
@@ -1729,7 +1772,8 @@ void RenderSubsystem::Configure(const RenderRuntimeConfig& config,
         surface,
         RenderExecutorKind::Dedicated,
         CreateDedicatedRenderExecutor(),
-        std::make_unique<ClearPresentRuntimeFactory>());
+        std::make_unique<ClearPresentRuntimeFactory>(
+            std::move(shaderProgramProviderFactory)));
     m_runtime = std::move(runtime);
     m_runtimeConfig = config;
     m_runtimeSurface = surface;

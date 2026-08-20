@@ -8,6 +8,7 @@
 #include "DX12Pipeline.h"
 #include "DX12Resources.h"
 #include "DX12SwapChain.h"
+#include "EngineDevelopmentComposition/EngineDevelopmentComposition.h"
 #include "GPUScene/GPUSceneDatabase.h"
 #include "GPUScene/GPUSceneUploader.h"
 #include "Render/Context/RenderContext.h"
@@ -3362,7 +3363,11 @@ TEST(DX12Validation, RayTracedShadowPipelineCacheResources)
     const std::filesystem::path shaderDir = FindRenderShaderDirectory();
     ASSERT_FALSE(shaderDir.empty()) << "Render/Shaders directory not found";
 
-    PipelineCache cache;
+    ShaderProgramProviderFactory providerFactory =
+        CreateDevelopmentShaderProgramProviderFactory(shaderDir);
+    std::unique_ptr<IShaderProgramProvider> shaderProvider = providerFactory();
+    ASSERT_NE(shaderProvider, nullptr);
+    PipelineCache cache(*shaderProvider);
     ASSERT_TRUE(cache.Initialize(device.get(), shaderDir.string())) << cache.GetLastError();
     EXPECT_NE(cache.GetRayTracedShadowSetLayout(), nullptr);
     EXPECT_NE(cache.GetRayTracedShadowLayout(), nullptr);
@@ -4192,7 +4197,11 @@ TEST(DX12Validation, RayTracedShadowProductionShaderTracesTriangleAndWritesMask)
     const std::filesystem::path shaderDir = FindRenderShaderDirectory();
     ASSERT_FALSE(shaderDir.empty()) << "Render/Shaders directory not found";
 
-    PipelineCache cache;
+    ShaderProgramProviderFactory providerFactory =
+        CreateDevelopmentShaderProgramProviderFactory(shaderDir);
+    std::unique_ptr<IShaderProgramProvider> shaderProvider = providerFactory();
+    ASSERT_NE(shaderProvider, nullptr);
+    PipelineCache cache(*shaderProvider);
     ASSERT_TRUE(cache.Initialize(device.get(), shaderDir.string())) << cache.GetLastError();
     RHIPipeline* pipeline = cache.GetRayTracedShadowPipeline();
     RHIShaderTable* shaderTable = cache.GetRayTracedShadowShaderTable();
@@ -4828,7 +4837,11 @@ TEST(DX12Validation, RayTracedReflectionProductionShaderTracesTriangleAndWritesM
     const std::filesystem::path shaderDir = FindRenderShaderDirectory();
     ASSERT_FALSE(shaderDir.empty()) << "Render/Shaders directory not found";
 
-    PipelineCache cache;
+    ShaderProgramProviderFactory providerFactory =
+        CreateDevelopmentShaderProgramProviderFactory(shaderDir);
+    std::unique_ptr<IShaderProgramProvider> shaderProvider = providerFactory();
+    ASSERT_NE(shaderProvider, nullptr);
+    PipelineCache cache(*shaderProvider);
     ASSERT_TRUE(cache.Initialize(device.get(), shaderDir.string())) << cache.GetLastError();
     RHIPipeline* pipeline = cache.GetRayTracedReflectionPipeline();
     RHIShaderTable* shaderTable = cache.GetRayTracedReflectionShaderTable();

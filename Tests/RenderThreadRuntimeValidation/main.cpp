@@ -1,3 +1,4 @@
+#include "Common/DeterministicShaderProgramProvider.h"
 #include "Common/RenderRuntimeTestSupport.h"
 #include "Render/RenderDiagnostics.h"
 #include "Render/RenderRuntimeTypes.h"
@@ -27,6 +28,15 @@ namespace RVX
 {
     using HAL::NativeSurfaceDesc;
     using HAL::NativeSurfacePlatform;
+
+    [[nodiscard]] ShaderProgramProviderFactory
+    MakeDeterministicShaderProviderFactory()
+    {
+        return []()
+        {
+            return Tests::CreateDeterministicShaderProgramProvider();
+        };
+    }
 
     void RenderThreadRuntimeTestAccess::ReportTransportFatal(
         RenderThreadRuntime& runtime,
@@ -3233,7 +3243,8 @@ namespace
         RenderSubsystem subsystem;
         RenderRuntimeConfig config;
         config.frameBuffering = 1;
-        subsystem.Configure(config, MakeSurface());
+        subsystem.Configure(
+            config, MakeSurface(), MakeDeterministicShaderProviderFactory());
 
         EXPECT_THROW(subsystem.Initialize(), RenderSubsystemInitializationError);
         const RenderRuntimeResult result = subsystem.GetLastRuntimeResult();
@@ -3242,7 +3253,10 @@ namespace
         EXPECT_EQ(result.lifecycle, RenderLifecycleState::Failed);
         EXPECT_EQ(result.terminalCause, RenderTerminalCause::StartupFailure);
         EXPECT_EQ(result.teardownMode, RenderTeardownMode::NormalDrain);
-        EXPECT_THROW(subsystem.Configure(RenderRuntimeConfig{}, MakeSurface()),
+        EXPECT_THROW(subsystem.Configure(
+                         RenderRuntimeConfig{},
+                         MakeSurface(),
+                         MakeDeterministicShaderProviderFactory()),
                      std::logic_error);
         EXPECT_FALSE(subsystem.IsReady());
     }
@@ -3253,7 +3267,10 @@ namespace
         RenderSubsystem subsystem;
         EXPECT_THROW(subsystem.Initialize(), std::logic_error);
         EXPECT_THROW(
-            subsystem.Configure(RenderRuntimeConfig{}, MakeSurface()),
+            subsystem.Configure(
+                RenderRuntimeConfig{},
+                MakeSurface(),
+                MakeDeterministicShaderProviderFactory()),
             std::logic_error);
         EXPECT_FALSE(subsystem.IsReady());
     }
@@ -3263,7 +3280,8 @@ namespace
         RenderSubsystem subsystem;
         RenderRuntimeConfig config;
         config.backendType = RHIBackendType::DX11;
-        subsystem.Configure(config, MakeSurface());
+        subsystem.Configure(
+            config, MakeSurface(), MakeDeterministicShaderProviderFactory());
         IRenderResourceGateway& gateway = subsystem;
         const RenderResourceReserveResult reserve =
             gateway.ReserveResource(AssetId{17}, RenderResourceKind::Material);

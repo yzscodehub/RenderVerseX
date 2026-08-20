@@ -5,7 +5,7 @@
  * @brief Pipeline cache for managing graphics pipelines and frame/object sets
  *
  * PipelineCache handles:
- * - Shader compilation with ShaderManager
+ * - Runtime shader-program loading through an injected provider
  * - Stable frame/object/material descriptor set layouts
  * - Graphics pipeline creation and caching
  * - Frame and object constant buffer management
@@ -33,12 +33,12 @@ namespace RVX
     // Forward declarations
     struct GPUCompletionToken;
     class FrameConstantUploadArena;
-    class IShaderCompiler;
+    class IShaderProgramProvider;
     class RenderSubmissionTracker;
     class RenderSubmissionResourceBatch;
     class RenderRetirementQueue;
-    class ShaderManager;
-    struct ShaderCompileResult;
+    class ShaderProgramLoader;
+    struct ShaderProgramMetadata;
     struct GPUSceneRasterResourceSnapshot;
     struct ViewData;
 
@@ -358,12 +358,9 @@ namespace RVX
     class PipelineCache
     {
     public:
-        using ShaderCompilerFactory =
-            std::function<std::unique_ptr<IShaderCompiler>()>;
-
         PipelineCache();
-        /** @brief Create a cache with an explicit compiler composition factory. */
-        explicit PipelineCache(ShaderCompilerFactory shaderCompilerFactory);
+        /** @brief Create a cache borrowing the renderer-owned program provider. */
+        explicit PipelineCache(IShaderProgramProvider& shaderProgramProvider);
         ~PipelineCache();
 
         PipelineCache(const PipelineCache&) = delete;
@@ -1168,7 +1165,7 @@ namespace RVX
         uint64 ComputePipelineStateHash(const RHIGraphicsPipelineDesc& desc,
                                         MaterialPipelineVariant variant,
                                         uint32 purposeSalt) const;
-        uint64 ComputeShaderHash(const ShaderCompileResult* result) const;
+        uint64 ComputeShaderHash(const ShaderProgramMetadata* result) const;
         uint64 StoreVariantHash(MaterialPipelineVariant variant, uint64 hash);
 
         IRHIDevice* m_device = nullptr;
@@ -1179,9 +1176,9 @@ namespace RVX
         std::string m_lastError;
         std::string m_gpuSceneRasterUnavailableReason;
 
-        // Shader manager
-        ShaderCompilerFactory m_shaderCompilerFactory;
-        std::unique_ptr<ShaderManager> m_shaderManager;
+        // Renderer-owned provider, borrowed for the cache lifetime.
+        IShaderProgramProvider* m_shaderProgramProvider = nullptr;
+        std::unique_ptr<ShaderProgramLoader> m_shaderProgramLoader;
 
         // Shaders
         RHIShaderRef m_vertexShader;
@@ -1237,59 +1234,59 @@ namespace RVX
         RHIShaderRef m_rayTracedReflectionMissShader;
         RHIShaderRef m_rayTracedReflectionClosestHitShader;
         RHIShaderRef m_rayTracedReflectionAnyHitShader;
-        std::unique_ptr<ShaderCompileResult> m_vsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_rigidVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_gpuDrivenVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_instancedMaterialVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_gpuSceneVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_gpuSceneInstancedMaterialVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_psCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_depthOnlyVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_rigidDepthOnlyVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_maskedDepthOnlyVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_rigidMaskedDepthOnlyVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_maskedDepthOnlyPsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_gpuDrivenDepthOnlyVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_gpuSceneDepthOnlyVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_skyboxVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_skyboxPsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_toneMappingVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_toneMappingPsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_bloomVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_bloomPsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_ssaoVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_ssaoPsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_cameraVelocityPsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_objectVelocityVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_rigidObjectVelocityVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_objectVelocityPsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_maskedObjectVelocityVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_rigidMaskedObjectVelocityVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_maskedObjectVelocityPsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_rayTracedReflectionCompositeVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_rayTracedReflectionCompositePsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_rayTracedReflectionDenoiseVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_rayTracedReflectionDenoisePsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_colorGradingVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_colorGradingPsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_chromaticAberrationVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_chromaticAberrationPsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_filmGrainVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_filmGrainPsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_fxaaVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_fxaaPsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_vignetteVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_vignettePsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_uiVsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_uiPsCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_rayTracedShadowRayGenCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_rayTracedShadowMissCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_rayTracedShadowClosestHitCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_rayTracedShadowAnyHitCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_rayTracedReflectionRayGenCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_rayTracedReflectionMissCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_rayTracedReflectionClosestHitCompileResult;
-        std::unique_ptr<ShaderCompileResult> m_rayTracedReflectionAnyHitCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_vsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_rigidVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_gpuDrivenVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_instancedMaterialVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_gpuSceneVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_gpuSceneInstancedMaterialVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_psCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_depthOnlyVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_rigidDepthOnlyVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_maskedDepthOnlyVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_rigidMaskedDepthOnlyVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_maskedDepthOnlyPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_gpuDrivenDepthOnlyVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_gpuSceneDepthOnlyVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_skyboxVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_skyboxPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_toneMappingVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_toneMappingPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_bloomVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_bloomPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_ssaoVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_ssaoPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_cameraVelocityPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_objectVelocityVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_rigidObjectVelocityVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_objectVelocityPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_maskedObjectVelocityVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_rigidMaskedObjectVelocityVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_maskedObjectVelocityPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_rayTracedReflectionCompositeVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_rayTracedReflectionCompositePsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_rayTracedReflectionDenoiseVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_rayTracedReflectionDenoisePsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_colorGradingVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_colorGradingPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_chromaticAberrationVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_chromaticAberrationPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_filmGrainVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_filmGrainPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_fxaaVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_fxaaPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_vignetteVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_vignettePsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_uiVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_uiPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_rayTracedShadowRayGenCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_rayTracedShadowMissCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_rayTracedShadowClosestHitCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_rayTracedShadowAnyHitCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_rayTracedReflectionRayGenCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_rayTracedReflectionMissCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_rayTracedReflectionClosestHitCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_rayTracedReflectionAnyHitCompileResult;
 
         // Descriptor set layouts and pipeline layout
         std::vector<RHIDescriptorSetLayoutRef> m_setLayouts;

@@ -5742,6 +5742,24 @@
       "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
       "normalRelease": "submission batch transfer to retirement after token completion",
       "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Render/Private/PipelineCache.cpp",
+      "owner": "RenderShaderLoadResult",
+      "symbol": "shader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "provider result is transferred into the PipelineCache owner before any GPU submission",
+      "normalRelease": "successful loads move ownership into PipelineCache; failed loads release before GPU use",
+      "deviceLostRelease": "pre-submission provider result releases without waiting for GPU completion"
+    },
+    {
+      "path": "ShaderContracts/Include/ShaderContracts/ShaderProgramProvider.h",
+      "owner": "ShaderProgramResult",
+      "symbol": "shader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "provider result is transferred into its runtime owner before any GPU submission",
+      "normalRelease": "consumer moves successful shader ownership into its completion-tracked runtime owner",
+      "deviceLostRelease": "untransferred provider results release before GPU use; transferred ownership follows the runtime owner"
     }
   ]
 }

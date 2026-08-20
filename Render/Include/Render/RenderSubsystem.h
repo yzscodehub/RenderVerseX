@@ -9,6 +9,7 @@
 #include "RenderContracts/RenderFramePacketV5.h"
 #include "RenderContracts/RenderSceneUpdate.h"
 #include "HAL/Window/NativeSurface.h"
+#include "ShaderContracts/ShaderProgramProvider.h"
 
 #include <memory>
 
@@ -37,7 +38,8 @@ namespace RVX
 
         /** @brief Configure the dedicated runtime before Initialize(). */
         void Configure(const RenderRuntimeConfig& config,
-                       const HAL::NativeSurfaceDesc& surface);
+                       const HAL::NativeSurfaceDesc& surface,
+                       ShaderProgramProviderFactory shaderProgramProviderFactory);
         RenderFramePublishResult TryPublishFrameSet(
             std::unique_ptr<const RenderSceneUpdateBatch> sceneUpdate,
             std::unique_ptr<const RenderFramePacketV5> frameV5);

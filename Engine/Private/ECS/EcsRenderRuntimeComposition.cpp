@@ -31,10 +31,13 @@ namespace
             Resource::ResourceSubsystem& resources,
             RenderSubsystem& render,
             WindowSubsystem& window,
+            ShaderProgramProviderFactory shaderProgramProviderFactory,
             std::function<bool()> stopRender)
             : m_resources(resources),
               m_render(render),
               m_window(window),
+              m_shaderProgramProviderFactory(
+                  std::move(shaderProgramProviderFactory)),
               m_stopRender(std::move(stopRender)),
               m_transport(render)
         {
@@ -63,7 +66,8 @@ namespace
         void ConfigureRender(const RenderRuntimeConfig& config,
                              const HAL::NativeSurfaceDesc& surface) override
         {
-            m_render.Configure(config, surface);
+            m_render.Configure(
+                config, surface, m_shaderProgramProviderFactory);
         }
 
         bool IsRenderReady() const noexcept override
@@ -146,6 +150,7 @@ namespace
         Resource::ResourceSubsystem& m_resources;
         RenderSubsystem& m_render;
         WindowSubsystem& m_window;
+        ShaderProgramProviderFactory m_shaderProgramProviderFactory;
         std::function<bool()> m_stopRender;
         EcsRenderSubsystemFrameTransport m_transport;
     };
@@ -673,9 +678,14 @@ CreateEngineEcsRenderRuntimeCompositionServices(
     Resource::ResourceSubsystem& resources,
     RenderSubsystem& render,
     WindowSubsystem& window,
+    ShaderProgramProviderFactory shaderProgramProviderFactory,
     std::function<bool()> stopRender)
 {
     return std::make_unique<EngineEcsRenderRuntimeCompositionServices>(
-        resources, render, window, std::move(stopRender));
+        resources,
+        render,
+        window,
+        std::move(shaderProgramProviderFactory),
+        std::move(stopRender));
 }
 } // namespace RVX

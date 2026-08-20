@@ -196,6 +196,7 @@ rvx_add_gtest(
         RVX::Core
         RVX::Render
         RVX::Resource
+        RVX::ShaderCompiler
         RVX::Tools
         RVX::RHI
         RVX::Terrain
@@ -205,6 +206,7 @@ rvx_add_gtest(
         ${CMAKE_SOURCE_DIR}/Particle/Private
         ${CMAKE_SOURCE_DIR}/Render/Include
         ${CMAKE_SOURCE_DIR}/Resource/Include
+        ${CMAKE_SOURCE_DIR}/ShaderCompiler/Include
         ${CMAKE_SOURCE_DIR}/Terrain/Private
         ${CMAKE_SOURCE_DIR}/Tools/Include
         ${CMAKE_SOURCE_DIR}/RHI/Include

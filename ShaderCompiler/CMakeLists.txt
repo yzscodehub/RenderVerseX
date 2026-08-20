@@ -8,12 +8,10 @@ set(SHADER_COMPILER_PUBLIC_HEADERS
     Include/ShaderCompiler/ShaderCompiler.h
     Include/ShaderCompiler/ShaderManager.h
     Include/ShaderCompiler/ShaderReflection.h
-    Include/ShaderCompiler/ShaderLayout.h
     Include/ShaderCompiler/ShaderTypes.h
     Include/ShaderCompiler/ShaderCompileService.h
     Include/ShaderCompiler/ShaderCacheManager.h
     Include/ShaderCompiler/ShaderCacheFormat.h
-    Include/ShaderCompiler/GLSLBindingABI.h
     Include/ShaderCompiler/ShaderSourceInfo.h
     Include/ShaderCompiler/ShaderPermutation.h
     Include/ShaderCompiler/ShaderHotReloader.h
@@ -24,7 +22,6 @@ target_sources(RVX_ShaderCompiler PRIVATE
     ${SHADER_COMPILER_PUBLIC_HEADERS}
     Private/ShaderCompiler.cpp
     Private/ShaderManager.cpp
-    Private/ShaderLayout.cpp
     Private/ShaderReflection.cpp
     Private/ShaderCache.cpp
     Private/ShaderPermutationCache.cpp
@@ -59,6 +56,7 @@ target_include_directories(RVX_ShaderCompiler PUBLIC
 target_link_libraries(RVX_ShaderCompiler PUBLIC
     RVX::RHI
     RVX::Core
+    RVX::ShaderContracts
 )
 
 # Windows: Link DirectX Shader Compiler, D3DCompiler, and SPIRV-Cross for OpenGL support

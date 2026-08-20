@@ -43,7 +43,6 @@ target_link_libraries(RenderVerseSamples PRIVATE
     RVX::RuntimeServices
     RVX::SampleCommon
     RVX::Scene
-    RVX::ShaderCompiler
     RVX::World
 )
 

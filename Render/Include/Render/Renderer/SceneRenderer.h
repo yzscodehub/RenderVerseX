@@ -66,6 +66,7 @@ namespace RVX
     class LightManager;
     class VignettePass;
     class IRenderPass;
+    class IShaderProgramProvider;
     class DepthPrepass;
     class OpaquePass;
     class ParticleFeaturePass;
@@ -976,6 +977,8 @@ namespace RVX
     {
     public:
         SceneRenderer();
+        explicit SceneRenderer(
+            std::unique_ptr<IShaderProgramProvider> shaderProgramProvider);
         ~SceneRenderer();
 
         // Non-copyable
@@ -1482,9 +1485,6 @@ namespace RVX
             return m_meshPassPreparation;
         }
 
-        /// Set shader directory (must be set before Initialize)
-        void SetShaderDirectory(const std::string& dir) { m_shaderDir = dir; }
-
     private:
         friend class SceneRendererTestAccess;
 
@@ -1588,6 +1588,7 @@ namespace RVX
         RenderRetirementQueue* m_retirementQueue = nullptr;
         std::unique_ptr<RenderSubmissionResourceBatch> m_submissionBatch;
         std::unique_ptr<RenderGraph> m_renderGraph;
+        std::unique_ptr<IShaderProgramProvider> m_shaderProgramProvider;
         std::unique_ptr<PipelineCache> m_pipelineCache;
         std::unique_ptr<MaterialSystem> m_materialSystem;
         std::unique_ptr<LightManager> m_lightManager;
@@ -1777,7 +1778,6 @@ namespace RVX
         std::vector<std::string> m_loggedUnsupportedPassNames;
         std::vector<PreGraphPrepareCallbackEntry> m_preGraphPrepareCallbacks;
 
-        std::string m_shaderDir;
         DepthPrepass* m_depthPrepass = nullptr;  // Cached pointer to optional depth prepass
         OpaquePass* m_opaquePass = nullptr;  // Cached pointer to opaque pass
         ShadowPass* m_shadowPass = nullptr;  // Cached pointer to shadow pass

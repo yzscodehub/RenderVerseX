@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RHI/RHIDefinitions.h"
+#include "ShaderContracts/ShaderProgramProvider.h"
 #include "ShaderCompiler/ShaderReflection.h"
 #include "ShaderCompiler/ShaderSourceInfo.h"
 
@@ -12,20 +13,6 @@
 
 namespace RVX
 {
-    // =============================================================================
-    // Shader Macro
-    // =============================================================================
-    struct ShaderMacro
-    {
-        std::string name;
-        std::string value;
-
-        bool operator==(const ShaderMacro& other) const
-        {
-            return name == other.name && value == other.value;
-        }
-    };
-
     // =============================================================================
     // Shader Compile Options
     // =============================================================================

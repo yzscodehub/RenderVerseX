@@ -1,44 +1,9 @@
 #pragma once
 
-#include "RHI/RHIShader.h"
-#include <string>
-#include <vector>
+#include "ShaderContracts/ShaderProgramProvider.h"
 
 namespace RVX
 {
-    struct ShaderReflection
-    {
-        struct ResourceBinding
-        {
-            std::string name;
-            uint32 set = 0;
-            uint32 binding = 0;
-            RHIBindingType type = RHIBindingType::UniformBuffer;
-            uint32 count = 1;
-        };
-
-        struct PushConstantRange
-        {
-            uint32 offset = 0;
-            uint32 size = 0;
-        };
-
-        struct InputAttribute
-        {
-            std::string semantic;
-            uint32 semanticIndex = 0;
-            uint32 location = RVX_INVALID_INDEX;
-            RHIFormat format = RHIFormat::Unknown;
-            bool systemValue = false;
-        };
-
-        bool valid = false;
-        std::vector<ResourceBinding> resources;
-        std::vector<PushConstantRange> pushConstants;
-        std::vector<InputAttribute> inputs;
-        std::vector<InputAttribute> outputs;
-    };
-
     ShaderReflection ReflectShader(RHIBackendType backend,
                                    RHIShaderStage stage,
                                    const std::vector<uint8>& bytecode);

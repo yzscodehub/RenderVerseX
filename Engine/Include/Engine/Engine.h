@@ -13,6 +13,7 @@
 #include "Engine/RenderRuntimeDiagnostics.h"
 #include "Render/RenderRuntimeTypes.h"
 #include "RenderContracts/RenderFrameTypes.h"
+#include "ShaderContracts/ShaderProgramProvider.h"
 
 #include <functional>
 #include <map>
@@ -52,6 +53,7 @@ namespace RVX
         Diagnostics::TraceContext startupTraceContext{};
         RenderRuntimeConfig renderRuntime{};
         RenderFrameSettings initialRenderFrameSettings{};
+        ShaderProgramProviderFactory shaderProgramProviderFactory{};
     };
 
     /** @brief Immutable evidence captured across the most recent shutdown. */

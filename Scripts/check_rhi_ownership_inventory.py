@@ -22,6 +22,7 @@ SOURCE_MODULES = (
     "RHI_Vulkan",
     "RHI_Metal",
     "RHI_OpenGL",
+    "ShaderContracts",
 )
 SOURCE_SUFFIXES = {".h", ".hpp", ".hh", ".cpp", ".cc", ".cxx", ".inl", ".mm"}
 VALID_PHASES = {"pre-delete", "final"}

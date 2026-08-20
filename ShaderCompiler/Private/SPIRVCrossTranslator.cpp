@@ -1,6 +1,6 @@
 #include "SPIRVCrossTranslator.h"
 #include "Core/Log.h"
-#include "ShaderCompiler/GLSLBindingABI.h"
+#include "ShaderContracts/GLSLBindingABI.h"
 
 #ifdef __APPLE__
 #include <spirv_cross/spirv_msl.hpp>
