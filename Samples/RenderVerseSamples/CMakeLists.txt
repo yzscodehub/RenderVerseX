@@ -64,13 +64,13 @@ if(RVX_ENABLE_OPENGL)
 endif()
 
 set(RVX_MODEL_RENDERING_FIXTURE
-    "${CMAKE_SOURCE_DIR}/Tests/Fixtures/ModelViewer/ShadowPlaneCaster.gltf")
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/models/shadow-plane-caster/scene.gltf")
 set(RVX_MODEL_VIEWER_FIXTURE
-    "${CMAKE_SOURCE_DIR}/Tests/Fixtures/ModelViewer/R7Triangle.gltf")
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/models/r7-triangle/scene.gltf")
 set(RVX_PBR_MATERIAL_GRID_FIXTURE
-    "${CMAKE_SOURCE_DIR}/Tests/Fixtures/Samples/PBRMaterialGrid.gltf")
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/models/pbr-material-grid/scene.gltf")
 set(RVX_PBR_MATERIAL_TEXTURE_CUBE_FIXTURE
-    "${CMAKE_SOURCE_DIR}/Tests/Fixtures/Samples/PBRMaterialTextureCube.gltf")
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/models/pbr-material-texture-cube/scene.gltf")
 add_custom_command(TARGET RenderVerseSamples POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
         "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/models/shadow-plane-caster"
