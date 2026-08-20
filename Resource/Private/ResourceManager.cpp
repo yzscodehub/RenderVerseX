@@ -26,6 +26,7 @@
 #include <string_view>
 #include <thread>
 #include <unordered_set>
+#include <utility>
 
 // Logging macros
 #ifndef RVX_RESOURCE_INFO
@@ -888,7 +889,9 @@ ResourceManager& ResourceManager::Get()
     return *s_instance;
 }
 
-void ResourceManager::Initialize(const ResourceManagerConfig& config)
+void ResourceManager::Initialize(
+    const ResourceManagerConfig& config,
+    ResourceManagerDependencies dependencies)
 {
     std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
     if (m_initialized || m_shuttingDown)
@@ -898,6 +901,7 @@ void ResourceManager::Initialize(const ResourceManagerConfig& config)
     }
 
     m_config = config;
+    m_loaderCatalog = std::move(dependencies.loaderCatalog);
     m_ownerThreadToken = GetCurrentThreadToken();
     m_cancelledLoadCount.store(0, std::memory_order_relaxed);
     m_closureUnloadRequestCount.store(0, std::memory_order_relaxed);
@@ -941,8 +945,6 @@ void ResourceManager::Initialize(const ResourceManagerConfig& config)
                                 resource);
         });
     m_dependencyGraph = std::make_unique<DependencyGraph>();
-    // Register default loaders
-    RegisterDefaultLoaders();
 
     m_initialized = true;
     ConfigureHotReload(config.enableHotReload);
@@ -958,31 +960,25 @@ void ResourceManager::Initialize(const ResourceManagerConfig& config)
     RVX_RESOURCE_INFO("ResourceManager initialized");
 }
 
-void ResourceManager::RegisterDefaultLoaders()
+ResourceManagerDependencies CreateBuiltinResourceManagerDependencies(
+    ResourceManager& manager)
 {
-    // Register TextureLoader
-    auto textureLoader = std::make_unique<TextureLoader>(this);
-    RegisterLoader(ResourceType::Texture, std::move(textureLoader));
-
-    // Register MeshLoader
-    auto meshLoader = std::make_unique<MeshLoader>(this);
-    RegisterLoader(ResourceType::Mesh, std::move(meshLoader));
-
-    // Register ShaderLoader
-    auto shaderLoader = std::make_unique<ShaderLoader>(this);
-    RegisterLoader(ResourceType::Shader, std::move(shaderLoader));
-
-    // Register ModelLoader
-    auto modelLoader = std::make_unique<ModelLoader>(this);
-    RegisterLoader(ResourceType::Model, std::move(modelLoader));
-
-    auto animationLoader = std::make_unique<AnimationLoader>();
-    RegisterLoader(ResourceType::Animation, std::move(animationLoader));
-
-    auto environmentLoader = std::make_unique<EnvironmentLoader>();
-    RegisterLoader(ResourceType::Environment, std::move(environmentLoader));
-
-    RVX_RESOURCE_INFO("Registered default resource loaders");
+    ResourceManagerDependencies dependencies;
+    std::string error;
+    const auto add = [&dependencies, &error](
+        std::unique_ptr<IResourceLoader> loader)
+    {
+        const bool added = dependencies.loaderCatalog.Add(
+            std::move(loader), error);
+        RVX_ASSERT_MSG(added, "Built-in resource loader catalog is invalid: {}", error);
+    };
+    add(std::make_unique<TextureLoader>(&manager));
+    add(std::make_unique<MeshLoader>(&manager));
+    add(std::make_unique<ShaderLoader>(&manager));
+    add(std::make_unique<ModelLoader>(&manager));
+    add(std::make_unique<AnimationLoader>());
+    add(std::make_unique<EnvironmentLoader>());
+    return dependencies;
 }
 
 void ResourceManager::Shutdown()
@@ -1055,7 +1051,7 @@ void ResourceManager::Shutdown()
     ProcessCompletedLoads();
 
     std::lock_guard<std::recursive_mutex> shutdownLock(m_loadMutex);
-    m_loaders.clear();
+    m_loaderCatalog.Clear();
     m_cache->ClearInternal(true);
     m_registry->Clear();
     m_dependencyGraph->Clear();
@@ -1127,19 +1123,25 @@ IResource* ResourceManager::LoadResource(const std::string& path,
     // contribute their immutable import profile to synchronous cache lookup as
     // well, otherwise sync and prepared paths would create two root meanings.
     std::shared_ptr<IResourceLoader> loader;
+    ResourceLoaderResolveResult loaderResult;
     uint64 canonicalImportOptionsHash = 0;
     {
         std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
-        const auto loaderIt = m_loaders.find(type);
-        if (loaderIt != m_loaders.end())
-        {
-            loader = loaderIt->second;
-        }
+        loaderResult = m_loaderCatalog.Resolve({
+            type, resolution.domain, resolution.resolvedPath});
+        loader = loaderResult.loader;
     }
-    if (!loader || !loader->CanLoad(resolution.resolvedPath))
+    if (!loader)
     {
-        RVX_RESOURCE_ERROR("No compatible loader registered for resource type: {}",
-                           GetResourceTypeName(type));
+        SetLastLoadDiagnostic(
+            MakeLoadDiagnostic(resolution,
+                               false,
+                               ResourceLoadFailureCode::LoaderUnavailable,
+                               loaderResult.diagnostic));
+        RVX_RESOURCE_ERROR(
+            "Resource loader selection failed for type {}: {}",
+            GetResourceTypeName(type),
+            loaderResult.diagnostic);
         return nullptr;
     }
 
@@ -1267,21 +1269,22 @@ IResource* ResourceManager::LoadResource(ResourceId id)
     // the requested id; silently applying today's options to an old variant id
     // would corrupt the cache's identity contract.
     std::shared_ptr<IResourceLoader> loader;
+    ResourceLoaderResolveResult loaderResult;
     {
         std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
-        const auto loaderIt = m_loaders.find(metadata->type);
-        if (loaderIt != m_loaders.end())
-        {
-            loader = loaderIt->second;
-        }
+        loaderResult = m_loaderCatalog.Resolve({
+            metadata->type,
+            resolution.domain,
+            resolution.resolvedPath});
+        loader = loaderResult.loader;
     }
-    if (!loader || !loader->CanLoad(resolution.resolvedPath))
+    if (!loader)
     {
         SetLastLoadDiagnostic(
             MakeLoadDiagnostic(resolution,
                                false,
                                ResourceLoadFailureCode::LoaderUnavailable,
-                               "No compatible loader is available for the registered resource."));
+                               loaderResult.diagnostic));
         return nullptr;
     }
 
@@ -1416,14 +1419,15 @@ IResource* ResourceManager::LoadInternal(const std::string& path,
     // Snapshot the loader under the manager lock, then perform IO/parse/decode
     // after releasing it. The shared ownership keeps the loader alive through
     // synchronous work even if shutdown or replacement begins elsewhere.
+    std::string loaderDiagnostic = "No loader registered for resource type.";
     if (!loader)
     {
         std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
-        const auto loaderIt = m_loaders.find(type);
-        if (loaderIt != m_loaders.end())
-        {
-            loader = loaderIt->second;
-        }
+        const ResourceLoaderResolveResult loaderResult =
+            m_loaderCatalog.Resolve({
+                type, resolution.domain, resolution.resolvedPath});
+        loader = loaderResult.loader;
+        loaderDiagnostic = loaderResult.diagnostic;
     }
     if (!loader)
     {
@@ -1431,8 +1435,11 @@ IResource* ResourceManager::LoadInternal(const std::string& path,
             MakeLoadDiagnostic(resolution,
                                false,
                                ResourceLoadFailureCode::LoaderUnavailable,
-                               "No loader registered for resource type."));
-        RVX_RESOURCE_ERROR("No loader registered for resource type: {}", GetResourceTypeName(type));
+                               loaderDiagnostic));
+        RVX_RESOURCE_ERROR(
+            "Resource loader selection failed for type {}: {}",
+            GetResourceTypeName(type),
+            loaderDiagnostic);
         loadSpan.SetAttribute("result", "loader-unavailable");
         return nullptr;
     }
@@ -3136,15 +3143,26 @@ void ResourceManager::RegisterLoader(ResourceType type, std::unique_ptr<IResourc
                           GetResourceTypeName(type));
         return;
     }
+    if (loader->GetResourceType() != type)
+    {
+        RVX_RESOURCE_ERROR(
+            "ResourceManager rejected loader type mismatch: registration={}, loader={}",
+            GetResourceTypeName(type),
+            GetResourceTypeName(loader->GetResourceType()));
+        return;
+    }
     std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
-    m_loaders[type] = std::shared_ptr<IResourceLoader>(std::move(loader));
+    std::string error;
+    if (!m_loaderCatalog.Add(std::move(loader), error))
+    {
+        RVX_RESOURCE_ERROR("ResourceManager rejected loader: {}", error);
+    }
 }
 
 IResourceLoader* ResourceManager::GetLoader(ResourceType type)
 {
     std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
-    auto it = m_loaders.find(type);
-    return it != m_loaders.end() ? it->second.get() : nullptr;
+    return m_loaderCatalog.FindOnlyByType(type);
 }
 
 void ResourceManager::ProcessCompletedLoads()
@@ -3278,19 +3296,20 @@ ResourceLoadOperationOwner ResourceManager::RequestPreparedLoad(
             return {};
         }
 
-        const auto loaderIt = m_loaders.find(resourceType);
-        if (loaderIt == m_loaders.end() || !loaderIt->second)
+        const ResourceLoaderResolveResult loaderResult =
+            m_loaderCatalog.Resolve({
+                resourceType,
+                resolution.domain,
+                resolution.resolvedPath});
+        if (!loaderResult.Succeeded())
         {
+            RVX_RESOURCE_WARN(
+                "ResourceManager rejected async loader selection for '{}': {}",
+                path,
+                loaderResult.diagnostic);
             return {};
         }
-        loader = loaderIt->second;
-        if (!loader->CanLoad(resolution.resolvedPath))
-        {
-            RVX_RESOURCE_WARN("Resource loader for {} rejected path '{}'",
-                              GetResourceTypeName(resourceType),
-                              resolution.resolvedPath);
-            return {};
-        }
+        loader = loaderResult.loader;
 
         uint64 canonicalImportOptionsHash = options.importOptionsHash;
         ResourceLoadError captureError;

@@ -5,6 +5,7 @@
  * @brief Base resource class and common types
  */
 
+#include "AssetContracts/ResourceTypes.h"
 #include "Core/AssetResource.h"
 #include "Core/RefCounted.h"
 #include "Core/Types.h"
@@ -19,10 +20,6 @@
 
 namespace RVX::Resource
 {
-    /// Resource identifier type (64-bit hash or GUID)
-    using ResourceId = uint64_t;
-    static constexpr ResourceId InvalidResourceId = 0;
-
     /**
      * @brief Resource loading state
      */
@@ -33,28 +30,6 @@ namespace RVX::Resource
         Loaded,     // Successfully loaded
         Failed,     // Failed to load
         Unloading   // Being unloaded
-    };
-
-    /**
-     * @brief Resource type enumeration
-     */
-    enum class ResourceType : uint32_t
-    {
-        Unknown = 0,
-        Mesh,
-        Texture,
-        Material,
-        Shader,
-        Skeleton,
-        Animation,
-        Audio,
-        Scene,
-        Model,
-        Prefab,
-        Script,
-        Environment,
-        // Extensible...
-        Custom = 1000
     };
 
     /**
@@ -206,7 +181,6 @@ namespace RVX::Resource
     ResourceId GenerateResourceId(const std::string& path);
 
     /// Get type name for ResourceType
-    const char* GetResourceTypeName(ResourceType type);
 
 } // namespace RVX::Resource
 

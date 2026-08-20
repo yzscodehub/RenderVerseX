@@ -933,6 +933,18 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME ResourceLoaderCatalogValidation
+    LANE unit
+    SOURCES ResourceLoaderCatalogValidation/main.cpp
+    LIBS
+        RVX::AssetContracts
+        RVX::Resource
+        RVX::ResourceRuntime
+    TAGS subsystem.resource suite.loader-catalog
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
     NAME ResourceLoadOperationValidation
     LANE unit
     SOURCES ResourceLoadOperationValidation/main.cpp

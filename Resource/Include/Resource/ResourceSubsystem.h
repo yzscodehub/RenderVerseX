@@ -111,8 +111,14 @@ namespace RVX::Resource
         const char* GetName() const override { return "ResourceSubsystem"; }
         /** @brief Configure the manager before Engine initializes the subsystem. */
         [[nodiscard]] bool Configure(const ResourceManagerConfig& config);
+        [[nodiscard]] bool Configure(
+            const ResourceManagerConfig& config,
+            ResourceManagerDependencies dependencies);
         void Initialize() override;
         void Initialize(const ResourceManagerConfig& config);
+        void Initialize(
+            const ResourceManagerConfig& config,
+            ResourceManagerDependencies dependencies);
         void Deinitialize() override;
         bool ShouldTick() const override { return true; }
         void Tick(float deltaTime) override;
@@ -349,6 +355,7 @@ namespace RVX::Resource
         const ResourceManager& GetManager() const;
 
     private:
+        std::optional<ResourceManagerDependencies> m_dependencies;
         // =====================================================================
         // Update-side State
         // =====================================================================

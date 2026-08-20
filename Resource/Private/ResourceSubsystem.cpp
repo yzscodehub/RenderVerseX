@@ -72,6 +72,22 @@ namespace
             return false;
         }
         m_config = config;
+        m_dependencies.reset();
+        return true;
+    }
+
+    bool ResourceSubsystem::Configure(
+        const ResourceManagerConfig& config,
+        ResourceManagerDependencies dependencies)
+    {
+        if (m_initialized)
+        {
+            RVX_VERIFY(false,
+                       "ResourceSubsystem configuration is immutable after initialization");
+            return false;
+        }
+        m_config = config;
+        m_dependencies.emplace(std::move(dependencies));
         return true;
     }
 
@@ -84,7 +100,11 @@ namespace
         m_renderShuttingDown = false;
         m_lastShutdownDiagnostics = {};
         ResourceManager& manager = ResourceManager::Get();
-        manager.Initialize(m_config);
+        ResourceManagerDependencies dependencies = m_dependencies
+            ? std::move(*m_dependencies)
+            : CreateBuiltinResourceManagerDependencies(manager);
+        m_dependencies.reset();
+        manager.Initialize(m_config, std::move(dependencies));
         manager.SetLifecycleEventCallback(
             [this](const ResourceLifecycleEvent& event)
             {
@@ -106,6 +126,15 @@ namespace
     void ResourceSubsystem::Initialize(const ResourceManagerConfig& config)
     {
         if (!Configure(config))
+            return;
+        Initialize();
+    }
+
+    void ResourceSubsystem::Initialize(
+        const ResourceManagerConfig& config,
+        ResourceManagerDependencies dependencies)
+    {
+        if (!Configure(config, std::move(dependencies)))
             return;
         Initialize();
     }

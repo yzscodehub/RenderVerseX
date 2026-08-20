@@ -83,10 +83,12 @@ if(NOT unofficial-tinygltf_FOUND)
 endif()
 
 target_link_libraries(RVX_Resource PUBLIC
+    RVX::AssetContracts
     RVX_Core
     RVX::Animation
     RVX::Geometry
     RVX::RenderContracts
+    RVX::ResourceRuntime
 )
 
 target_link_libraries(RVX_Resource PRIVATE

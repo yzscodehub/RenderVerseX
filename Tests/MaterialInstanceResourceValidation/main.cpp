@@ -96,7 +96,7 @@ namespace
             Log::Initialize();
             ResourceManagerConfig config;
             config.enableHotReload = false;
-            m_manager.Initialize(config);
+            m_manager.Initialize(config, {});
             m_manager.RegisterLoader(ResourceType::Material,
                                      std::make_unique<PreparedMaterialLoader>());
             m_primary = m_manager.Load<MaterialResource>("primary.mat");

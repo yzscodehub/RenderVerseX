@@ -76,7 +76,10 @@ namespace
             config.runtimePolicy.allowSourceAssetReads = false;
             config.runtimePolicy.requireCookedArtifacts = true;
             config.runtimePolicy.cookedRoot = cookedRoot.string();
-            ResourceManager::Get().Initialize(config);
+            ResourceManager& manager = ResourceManager::Get();
+            manager.Initialize(
+                config,
+                CreateBuiltinResourceManagerDependencies(manager));
         }
 
         ~ManagerGuard()

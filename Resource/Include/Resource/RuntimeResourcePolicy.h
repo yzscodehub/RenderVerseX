@@ -5,6 +5,7 @@
  * @brief Runtime resource path policy and load diagnostics
  */
 
+#include "AssetContracts/ResourceTypes.h"
 #include "Core/App/AppMode.h"
 #include "Core/Types.h"
 #include <string>
@@ -21,14 +22,6 @@ namespace RVX::Resource
         Editor = 0,
         CookedRuntime,
         PackagedRuntime,
-    };
-
-    enum class ResourceLoadDomain : uint8
-    {
-        Unknown = 0,
-        SourceAsset,
-        CookedArtifact,
-        RuntimePackage,
     };
 
     enum class ResourceLoadFailureCode : uint8

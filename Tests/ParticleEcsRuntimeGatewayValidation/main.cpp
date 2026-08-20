@@ -27,7 +27,7 @@ namespace
             config.asyncThreadCount = 0;
             config.runtimePolicy.mode = RVX::Resource::ResourceRuntimeMode::Editor;
             config.runtimePolicy.allowSourceAssetReads = true;
-            RVX::Resource::ResourceManager::Get().Initialize(config);
+            RVX::Resource::ResourceManager::Get().Initialize(config, {});
         }
 
         ~ResourceManagerScope()

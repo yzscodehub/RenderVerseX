@@ -205,14 +205,19 @@ namespace
     class ResourceManagerTestGuard
     {
     public:
-        explicit ResourceManagerTestGuard(const ResourceManagerConfig& config)
+        explicit ResourceManagerTestGuard(
+            const ResourceManagerConfig& config,
+            bool useBuiltinLoaders = false)
         {
             auto& manager = ResourceManager::Get();
             if (manager.IsInitialized())
             {
                 manager.Shutdown();
             }
-            manager.Initialize(config);
+            ResourceManagerDependencies dependencies = useBuiltinLoaders
+                ? CreateBuiltinResourceManagerDependencies(manager)
+                : ResourceManagerDependencies{};
+            manager.Initialize(config, std::move(dependencies));
         }
 
         ~ResourceManagerTestGuard()
@@ -300,6 +305,35 @@ namespace
         ASSERT_TRUE(WriteShaderArtifactV2(path, artifact, error)) << error;
     }
 } // namespace
+
+TEST(ResourceRuntimePolicyValidation, EmptyDependenciesDoNotInstallImplicitLoaders)
+{
+    ResourceManagerConfig config;
+    config.asyncThreadCount = 0;
+    config.runtimePolicy.mode = ResourceRuntimeMode::Editor;
+    config.runtimePolicy.allowSourceAssetReads = true;
+
+    ResourceManagerTestGuard guard(config);
+    EXPECT_EQ(ResourceManager::Get().GetLoader(ResourceType::Texture), nullptr);
+    EXPECT_EQ(ResourceManager::Get().GetLoader(ResourceType::Shader), nullptr);
+    EXPECT_EQ(ResourceManager::Get().GetLoader(ResourceType::Model), nullptr);
+}
+
+TEST(ResourceRuntimePolicyValidation, BuiltinLoaderCompositionIsExplicit)
+{
+    ResourceManagerConfig config;
+    config.asyncThreadCount = 0;
+    config.runtimePolicy.mode = ResourceRuntimeMode::Editor;
+    config.runtimePolicy.allowSourceAssetReads = true;
+
+    ResourceManagerTestGuard guard(config, true);
+    EXPECT_NE(ResourceManager::Get().GetLoader(ResourceType::Texture), nullptr);
+    EXPECT_NE(ResourceManager::Get().GetLoader(ResourceType::Mesh), nullptr);
+    EXPECT_NE(ResourceManager::Get().GetLoader(ResourceType::Shader), nullptr);
+    EXPECT_NE(ResourceManager::Get().GetLoader(ResourceType::Model), nullptr);
+    EXPECT_NE(ResourceManager::Get().GetLoader(ResourceType::Animation), nullptr);
+    EXPECT_NE(ResourceManager::Get().GetLoader(ResourceType::Environment), nullptr);
+}
 
 TEST(ResourceRuntimePolicyValidation, RejectsSourceAssetsWhenCookedArtifactsAreRequired)
 {
@@ -495,11 +529,12 @@ TEST(ResourceRuntimePolicyValidation, MapsRuntimePackageEntriesThroughMountedPac
     ResourceManagerTestGuard guard(config);
     auto& manager = ResourceManager::Get();
 
-    auto loader = std::make_unique<RecordingLoader>(ResourceType::Unknown);
+    auto loader = std::make_unique<RecordingLoader>(ResourceType::Custom);
     RecordingLoader* loaderPtr = loader.get();
-    manager.RegisterLoader(ResourceType::Unknown, std::move(loader));
+    manager.RegisterLoader(ResourceType::Custom, std::move(loader));
 
-    IResource* resource = manager.LoadResource("package://Base/shaders/basic.rva");
+    IResource* resource = manager.LoadResource(
+        "package://Base/shaders/basic.rva", ResourceType::Custom);
     ASSERT_NE(resource, nullptr);
     EXPECT_EQ(loaderPtr->loadCount, 1u);
     ExpectEquivalentExistingPath(loaderPtr->lastPath, packageEntryPath);
@@ -548,11 +583,12 @@ TEST(ResourceRuntimePolicyValidation, MapsRuntimePackageEntriesThroughMountTable
     ResourceManagerTestGuard guard(config);
     auto& manager = ResourceManager::Get();
 
-    auto loader = std::make_unique<RecordingLoader>(ResourceType::Unknown);
+    auto loader = std::make_unique<RecordingLoader>(ResourceType::Custom);
     RecordingLoader* loaderPtr = loader.get();
-    manager.RegisterLoader(ResourceType::Unknown, std::move(loader));
+    manager.RegisterLoader(ResourceType::Custom, std::move(loader));
 
-    IResource* resource = manager.LoadResource("package://Base/shaders/basic.rva");
+    IResource* resource = manager.LoadResource(
+        "package://Base/shaders/basic.rva", ResourceType::Custom);
     ASSERT_NE(resource, nullptr);
     EXPECT_EQ(loaderPtr->loadCount, 1u);
     ExpectEquivalentExistingPath(loaderPtr->lastPath, highArtifactPath);
@@ -834,7 +870,7 @@ TEST(ResourceRuntimePolicyValidation, CookedShaderArtifactExposesStableRuntimeCo
     config.runtimePolicy.requireCookedArtifacts = true;
     config.runtimePolicy.cookedRoot = root.string();
 
-    ResourceManagerTestGuard guard(config);
+    ResourceManagerTestGuard guard(config, true);
     auto& manager = ResourceManager::Get();
 
     IResource* resource = manager.LoadResource("cooked://shaders/fullscreen.rva");
@@ -1939,7 +1975,7 @@ TEST(ResourceRuntimePolicyValidation,
     FakeResourceGateway gateway;
     ResourceSubsystem subsystem;
     subsystem.SetRenderResourceGateway(&gateway);
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+    subsystem.Initialize(MakeRenderResourceTestConfig(root), {});
 
     auto* texture = new TextureResource();
     texture->SetId(301);
@@ -1977,7 +2013,7 @@ TEST(ResourceRuntimePolicyValidation,
     FakeResourceGateway gateway;
     ResourceSubsystem subsystem;
     subsystem.SetRenderResourceGateway(&gateway);
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+    subsystem.Initialize(MakeRenderResourceTestConfig(root), {});
 
     auto* texture = new TextureResource();
     texture->SetId(302);
@@ -2104,7 +2140,7 @@ TEST(ResourceRuntimePolicyValidation,
     FakeResourceGateway gateway;
     ResourceSubsystem subsystem;
     subsystem.SetRenderResourceGateway(&gateway);
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+    subsystem.Initialize(MakeRenderResourceTestConfig(root), {});
 
     auto* texture = new TextureResource();
     texture->SetId(305);
@@ -2379,7 +2415,7 @@ TEST(ResourceRuntimePolicyValidation, ResourceSubsystemRetriesPressureAndEnqueue
     gateway.pressureCode = RenderUploadEnqueueCode::QueueFullByCount;
     ResourceSubsystem subsystem;
     subsystem.SetRenderResourceGateway(&gateway);
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+    subsystem.Initialize(MakeRenderResourceTestConfig(root), {});
     subsystem.RegisterLoader(ResourceType::Texture,
                              std::make_unique<RenderTextureLoader>());
 
@@ -2432,7 +2468,7 @@ TEST(ResourceRuntimePolicyValidation,
     FakeResourceGateway gateway;
     ResourceSubsystem subsystem;
     subsystem.SetRenderResourceGateway(&gateway);
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+    subsystem.Initialize(MakeRenderResourceTestConfig(root), {});
     subsystem.RegisterLoader(ResourceType::Texture,
                              std::make_unique<PreparedRenderTextureLoader>());
 
@@ -2515,7 +2551,7 @@ TEST(ResourceRuntimePolicyValidation,
     WriteTextFile(root / "textures" / "cpu-only.png", "placeholder");
 
     ResourceSubsystem subsystem;
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+    subsystem.Initialize(MakeRenderResourceTestConfig(root), {});
     subsystem.RegisterLoader(ResourceType::Texture,
                              std::make_unique<PreparedRenderTextureLoader>());
 
@@ -2567,7 +2603,7 @@ TEST(ResourceRuntimePolicyValidation, AsyncWorkersNeverPublishRenderGatewayOpera
     FakeResourceGateway gateway;
     ResourceSubsystem subsystem;
     subsystem.SetRenderResourceGateway(&gateway);
-    subsystem.Initialize(config);
+    subsystem.Initialize(config, {});
     subsystem.RegisterLoader(ResourceType::Texture,
                              std::make_unique<RenderTextureLoader>());
 
@@ -2610,7 +2646,7 @@ TEST(ResourceRuntimePolicyValidation, ResourceSubsystemRejectsWorkerGatewayMutat
     FakeResourceGateway updateGateway;
     FakeResourceGateway workerGateway;
     ResourceSubsystem subsystem;
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+    subsystem.Initialize(MakeRenderResourceTestConfig(root), {});
     subsystem.SetRenderResourceGateway(&updateGateway);
 
     std::thread worker(
@@ -2650,7 +2686,7 @@ TEST(ResourceRuntimePolicyValidation, ResourceSubsystemReclaimsEveryTerminalRequ
     FakeResourceGateway gateway;
     ResourceSubsystem subsystem;
     subsystem.SetRenderResourceGateway(&gateway);
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+    subsystem.Initialize(MakeRenderResourceTestConfig(root), {});
     subsystem.RegisterLoader(ResourceType::Texture,
                              std::make_unique<RenderTextureLoader>());
 
@@ -2710,7 +2746,7 @@ TEST(ResourceRuntimePolicyValidation, ResourceSubsystemReplacesAfterUnloadAndSea
     FakeResourceGateway gateway;
     ResourceSubsystem subsystem;
     subsystem.SetRenderResourceGateway(&gateway);
-    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+    subsystem.Initialize(MakeRenderResourceTestConfig(root), {});
     subsystem.RegisterLoader(ResourceType::Texture,
                              std::make_unique<RenderTextureLoader>());
 

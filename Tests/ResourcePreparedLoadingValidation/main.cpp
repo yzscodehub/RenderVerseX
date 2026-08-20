@@ -259,13 +259,17 @@ namespace
     class ManagerGuard final
     {
     public:
-        explicit ManagerGuard(uint32 workerCount)
+        explicit ManagerGuard(uint32 workerCount, bool useBuiltinLoaders = false)
         {
             ResourceManagerConfig config;
             config.asyncThreadCount = static_cast<int>(workerCount);
             config.runtimePolicy.mode = ResourceRuntimeMode::Editor;
             config.runtimePolicy.allowSourceAssetReads = true;
-            ResourceManager::Get().Initialize(config);
+            ResourceManager& manager = ResourceManager::Get();
+            ResourceManagerDependencies dependencies = useBuiltinLoaders
+                ? CreateBuiltinResourceManagerDependencies(manager)
+                : ResourceManagerDependencies{};
+            manager.Initialize(config, std::move(dependencies));
         }
 
         ~ManagerGuard()
@@ -573,7 +577,7 @@ TEST(ResourcePreparedLoadingValidation, ModelPreparedLoadVerifiesR7TriangleConsu
     const std::filesystem::path fixture = FindR7TriangleFixture();
     ASSERT_TRUE(std::filesystem::is_regular_file(fixture));
 
-    ManagerGuard guard(0);
+    ManagerGuard guard(0, true);
     ResourceLoadOptions options;
     options.expectedContentIdentity = MakeContentIdentity(
         "f41b11c0403cc68c8da3988a954391c8b2e4f5b46a9d800f82c9d4256b395aab",

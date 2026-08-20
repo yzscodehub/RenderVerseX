@@ -196,6 +196,8 @@ endif()
 # Subdirectories
 # =============================================================================
 add_subdirectory(Core)
+add_subdirectory(AssetContracts)
+add_subdirectory(ResourceRuntime)
 add_subdirectory(RenderContracts) # Render-only extraction data contracts
 add_subdirectory(Geometry)     # Geometry module (primitives, queries, algorithms)
 add_subdirectory(HAL)          # Hardware Abstraction Layer (Window, Input)

@@ -154,7 +154,10 @@ namespace
             config.asyncThreadCount = 2;
             config.runtimePolicy.mode = ResourceRuntimeMode::Editor;
             config.runtimePolicy.allowSourceAssetReads = true;
-            ResourceManager::Get().Initialize(config);
+            ResourceManager& manager = ResourceManager::Get();
+            manager.Initialize(
+                config,
+                CreateBuiltinResourceManagerDependencies(manager));
         }
 
         ~EnvironmentManagerGuard()

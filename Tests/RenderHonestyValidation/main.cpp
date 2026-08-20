@@ -370,6 +370,15 @@ namespace
         file << text;
     }
 
+    void InitializeBuiltinResources(
+        RVX::Resource::ResourceManager& manager,
+        const RVX::Resource::ResourceManagerConfig& config = {})
+    {
+        manager.Initialize(
+            config,
+            RVX::Resource::CreateBuiltinResourceManagerDependencies(manager));
+    }
+
     void WriteBinaryFile(const fs::path& path, const std::vector<uint8_t>& bytes)
     {
         fs::create_directories(path.parent_path());
@@ -1783,7 +1792,7 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliRewritesGltfTextureUrisToCooked
     RVX::Resource::ResourceManager manager;
     RVX::Resource::ResourceManagerConfig config;
     config.asyncThreadCount = 0;
-    manager.Initialize(config);
+    InitializeBuiltinResources(manager, config);
 
     RVX::Resource::ResourceHandle<RVX::Resource::ModelResource> model =
         manager.Load<RVX::Resource::ModelResource>(rewrittenModel.string());
@@ -2098,7 +2107,7 @@ TEST_F(RenderHonestyValidationFixture, ModelLoaderResolvesExternalCookedTextureA
     RVX::Resource::ResourceManager manager;
     RVX::Resource::ResourceManagerConfig config;
     config.asyncThreadCount = 0;
-    manager.Initialize(config);
+    InitializeBuiltinResources(manager, config);
 
     RVX::Resource::ResourceHandle<RVX::Resource::ModelResource> model =
         manager.Load<RVX::Resource::ModelResource>(modelPath.string());
@@ -2121,7 +2130,7 @@ TEST_F(RenderHonestyValidationFixture, ModelLoaderResolvesExternalCookedTextureA
     // cooked CPU product. It is published directly and never enters the
     // source-image fallback/decode streaming state machine.
     RVX::Resource::ResourceManager preparedManager;
-    preparedManager.Initialize(config);
+    InitializeBuiltinResources(preparedManager, config);
     auto preparedRequest =
         preparedManager.RequestAsync<RVX::Resource::ModelResource>(
             modelPath.string());
@@ -2332,7 +2341,7 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerDispatchesCookedTextureArt
     ASSERT_TRUE(importer.Import(source, output, &importOptions).success);
 
     RVX::Resource::ResourceManager manager;
-    manager.Initialize();
+    InitializeBuiltinResources(manager);
 
     RVX::IResource* resource = manager.LoadResource(output.string());
     ASSERT_NE(resource, nullptr);
@@ -2358,7 +2367,7 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerRejectsUnknownCookedArtifa
     WriteTextFile(artifact, "RVX_UNKNOWN_PREBAKE_V1\n");
 
     RVX::Resource::ResourceManager manager;
-    manager.Initialize();
+    InitializeBuiltinResources(manager);
 
     EXPECT_EQ(manager.LoadResource(artifact.string()), nullptr);
 
@@ -2544,7 +2553,7 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerLoadsCookedMeshArtifactWit
     ASSERT_TRUE(result.success) << result.error;
 
     RVX::Resource::ResourceManager manager;
-    manager.Initialize();
+    InitializeBuiltinResources(manager);
 
     RVX::IResource* resource = manager.LoadResource(output.string());
     ASSERT_NE(resource, nullptr);
@@ -2644,7 +2653,7 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerLoadsCookedShaderArtifactB
         output, artifact, artifactError)) << artifactError;
 
     RVX::Resource::ResourceManager manager;
-    manager.Initialize();
+    InitializeBuiltinResources(manager);
 
     RVX::IResource* resource = manager.LoadResource(output.string());
     ASSERT_NE(resource, nullptr);
@@ -3219,7 +3228,7 @@ TEST_F(RenderHonestyValidationFixture, TextureCacheHitsReportLoadedStatus)
     RVX::Resource::ResourceManager manager;
     RVX::Resource::ResourceManagerConfig config;
     config.asyncThreadCount = 0;
-    manager.Initialize(config);
+    InitializeBuiltinResources(manager, config);
 
     RVX::Resource::TextureLoader loader(&manager);
     std::vector<RVX::uint8> rgba = { 255, 255, 255, 255 };
@@ -3376,7 +3385,7 @@ TEST_F(RenderHonestyValidationFixture, TextureReferenceExternalUsageControlsMipP
     RVX::Resource::ResourceManager manager;
     RVX::Resource::ResourceManagerConfig config;
     config.asyncThreadCount = 0;
-    manager.Initialize(config);
+    InitializeBuiltinResources(manager, config);
 
     RVX::Resource::TextureLoader loader(&manager);
     RVX::Resource::TextureReference colorRef =
@@ -3417,7 +3426,7 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerTextureLoadDoesNotLeavePol
     RVX::Resource::ResourceManager manager;
     RVX::Resource::ResourceManagerConfig config;
     config.asyncThreadCount = 0;
-    manager.Initialize(config);
+    InitializeBuiltinResources(manager, config);
 
     RVX::IResource* resource = manager.LoadResource(texturePath.string());
     ASSERT_NE(resource, nullptr);
@@ -3454,7 +3463,7 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerTextureLoadDoesNotStealExi
     RVX::Resource::ResourceManager manager;
     RVX::Resource::ResourceManagerConfig config;
     config.asyncThreadCount = 0;
-    manager.Initialize(config);
+    InitializeBuiltinResources(manager, config);
 
     RVX::Resource::TextureLoader loader(&manager);
     RVX::Resource::TextureReference normalRef =

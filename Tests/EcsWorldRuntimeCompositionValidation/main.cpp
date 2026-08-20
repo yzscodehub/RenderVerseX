@@ -280,7 +280,7 @@ namespace
             m_resources.SetRenderResourceGateway(&m_gateway);
             Resource::ResourceManagerConfig config;
             config.asyncThreadCount = 0;
-            m_resources.Initialize(config);
+            m_resources.Initialize(config, {});
             m_resources.RegisterLoader(
                 ResourceType::Environment,
                 std::make_unique<ImmediateEnvironmentLoader>());

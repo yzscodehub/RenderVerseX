@@ -19,6 +19,7 @@
 #include "Resource/ResourceRegistry.h"
 #include "Resource/RuntimeResourcePolicy.h"
 #include "Resource/Types/MaterialInstanceResource.h"
+#include "ResourceRuntime/ResourceManagerDependencies.h"
 #include <atomic>
 #include <chrono>
 #include <functional>
@@ -33,7 +34,6 @@
 namespace RVX::Resource
 {
     // Forward declarations
-    class IResourceLoader;
     class ModelResource;
     class ModelTextureStreamingService;
     class TextureResource;
@@ -70,9 +70,6 @@ namespace RVX::Resource
     public:
         virtual ~ResourceLoadPreparationState() = default;
     };
-
-    using ResourceLoadPreparationStateRef =
-        std::shared_ptr<const ResourceLoadPreparationState>;
 
     template<typename T>
     constexpr ResourceType GetResourceTypeHint()
@@ -274,7 +271,9 @@ namespace RVX::Resource
         // Initialization
         // =====================================================================
 
-        void Initialize(const ResourceManagerConfig& config = {});
+        void Initialize(
+            const ResourceManagerConfig& config,
+            ResourceManagerDependencies dependencies);
         void Shutdown();
         bool IsInitialized() const;
 
@@ -582,7 +581,7 @@ namespace RVX::Resource
         std::unique_ptr<ResourceCache> m_cache;
         std::unique_ptr<DependencyGraph> m_dependencyGraph;
 
-        std::unordered_map<ResourceType, std::shared_ptr<IResourceLoader>> m_loaders;
+        ResourceLoaderCatalog m_loaderCatalog;
 
         std::function<void(ResourceId, IResource*)> m_reloadCallback;
 
@@ -742,74 +741,13 @@ namespace RVX::Resource
                                     bool enabled,
                                     const std::string& message);
 
-        // Register default loaders (ModelLoader, TextureLoader)
-        void RegisterDefaultLoaders();
-
         void StartAsyncWorkers();
         void StopAsyncWorkers();
     };
 
-    /**
-     * @brief Interface for resource loaders
-     */
-    class IResourceLoader
-    {
-    public:
-        virtual ~IResourceLoader() = default;
-
-        /// Get the resource type this loader handles
-        virtual ResourceType GetResourceType() const = 0;
-
-        /// Get supported file extensions
-        virtual std::vector<std::string> GetSupportedExtensions() const = 0;
-
-        /// Load a resource from file
-        virtual IResource* Load(const std::string& path) = 0;
-
-        /**
-         * @brief Prepare resources without owner-state side effects.
-         *
-         * Built-in production loaders override this method.  Third-party
-         * legacy loaders can keep using Load() synchronously, but are rejected
-         * from the asynchronous prepared path until they supply this contract.
-         */
-        virtual bool Prepare(const ResourceLoadPreparationContext& context,
-                             PreparedResourceBundle& outBundle,
-                             ResourceLoadError& outError);
-
-        /** @brief Whether synchronous compatibility loads may use Prepare + owner publish. */
-        virtual bool SupportsPreparedLoading() const { return false; }
-
-        /**
-         * @brief Capture immutable loader configuration for one AssetKey.
-         *
-         * Stateless loaders keep the default implementation. Stateful loaders
-         * must return a snapshot and its canonical import hash so later worker
-         * execution cannot drift from the admitted cache identity.
-         */
-        virtual bool CapturePreparationState(
-            uint64 requestedImportOptionsHash,
-            ResourceLoadPreparationStateRef& outState,
-            uint64& outCanonicalImportOptionsHash,
-            ResourceLoadError& outError) const;
-
-        /**
-         * @brief Validate immutable state supplied by a request caller.
-         *
-         * Stateless and legacy loaders reject non-null explicit state by
-         * default. Stateful loaders must verify both the concrete state type
-         * and requested hash before returning the canonical worker snapshot.
-         */
-        virtual bool ValidatePreparationState(
-            uint64 requestedImportOptionsHash,
-            ResourceLoadPreparationStateRef suppliedState,
-            ResourceLoadPreparationStateRef& outState,
-            uint64& outCanonicalImportOptionsHash,
-            ResourceLoadError& outError) const;
-
-        /// Check if this loader can handle the file
-        virtual bool CanLoad(const std::string& path) const;
-    };
+    /** @brief Compose the current built-in loader set explicitly for one manager. */
+    [[nodiscard]] ResourceManagerDependencies
+        CreateBuiltinResourceManagerDependencies(ResourceManager& manager);
 
     // =========================================================================
     // Template Implementations

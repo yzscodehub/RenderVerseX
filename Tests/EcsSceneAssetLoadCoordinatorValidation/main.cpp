@@ -377,7 +377,7 @@ namespace
         {
             RVX::Resource::ResourceManagerConfig config;
             config.asyncThreadCount = asyncThreadCount;
-            m_resources.Initialize(config);
+            m_resources.Initialize(config, {});
             m_resources.RegisterLoader(
                 RVX::ResourceType::Model,
                 std::make_unique<PreparedRootOnlyModelLoader>());

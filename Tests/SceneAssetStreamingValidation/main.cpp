@@ -44,7 +44,10 @@ public:
         config.runtimePolicy.mode = ResourceRuntimeMode::Editor;
         config.runtimePolicy.allowSourceAssetReads = true;
         config.startupTraceContext = std::move(traceContext);
-        ResourceManager::Get().Initialize(config);
+        ResourceManager& manager = ResourceManager::Get();
+        manager.Initialize(
+            config,
+            CreateBuiltinResourceManagerDependencies(manager));
     }
 
     ~ManagerGuard()

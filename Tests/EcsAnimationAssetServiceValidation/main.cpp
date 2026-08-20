@@ -38,7 +38,7 @@ namespace
             config.asyncThreadCount = 1;
             config.runtimePolicy.mode = Resource::ResourceRuntimeMode::Editor;
             config.runtimePolicy.allowSourceAssetReads = true;
-            m_resources.Initialize(config);
+            m_resources.Initialize(config, {});
         }
 
         ~ResourceSubsystemScope()
