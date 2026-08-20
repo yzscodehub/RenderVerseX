@@ -41,7 +41,7 @@ target_sources(RVX_ResourceRuntime PRIVATE
     Private/Cooked/CookedEnvironmentArtifact.cpp
     Private/Cooked/CookedModelArtifact.cpp
     Private/Cooked/CookedTextureArtifact.cpp
-    
+
     # Concrete resource types
     Private/Types/MeshResource.cpp
     Private/Types/TextureResource.cpp
@@ -61,7 +61,6 @@ target_sources(RVX_ResourceRuntime PRIVATE
     Private/Loader/AnimationLoader.cpp
     Private/Loader/CookedAudioLoader.cpp
     Private/Loader/CookedEnvironmentLoader.cpp
-
 )
 
 target_include_directories(RVX_ResourceRuntime PUBLIC
