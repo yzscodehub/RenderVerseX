@@ -265,10 +265,10 @@ add_subdirectory(Source/Runtime/HAL)          # Hardware Abstraction Layer (Wind
 add_subdirectory(Source/Runtime/ECS)          # Runtime sparse-set entity/fragment kernel
 add_subdirectory(Scene)
 add_subdirectory(Source/Runtime/Animation)
-add_subdirectory(Runtime)      # Runtime subsystems (includes Camera)
+add_subdirectory(Source/Runtime/RuntimeServices) # Runtime subsystems (includes Camera)
 add_subdirectory(Source/Runtime/RHI)
-add_subdirectory(ShaderContracts)
-add_subdirectory(ShaderRuntime)
+add_subdirectory(Source/Runtime/ShaderContracts)
+add_subdirectory(Source/Runtime/ShaderRuntime)
 if(RVX_BUILD_DEVELOPER)
     add_subdirectory(ShaderCompiler)
 else()
@@ -278,7 +278,7 @@ else()
 endif()
 
 if(RVX_ENABLE_DX11)
-    add_subdirectory(RHI_DX11)
+    add_subdirectory(Source/Runtime/RHI_DX11)
 else()
     rvx_register_disabled_module(
         MODULE RHI_DX11
@@ -286,7 +286,7 @@ else()
 endif()
 
 if(RVX_ENABLE_DX12)
-    add_subdirectory(RHI_DX12)
+    add_subdirectory(Source/Runtime/RHI_DX12)
 else()
     rvx_register_disabled_module(
         MODULE RHI_DX12
@@ -294,7 +294,7 @@ else()
 endif()
 
 if(RVX_ENABLE_VULKAN)
-    add_subdirectory(RHI_Vulkan)
+    add_subdirectory(Source/Runtime/RHI_Vulkan)
 else()
     rvx_register_disabled_module(
         MODULE RHI_Vulkan
@@ -302,7 +302,7 @@ else()
 endif()
 
 if(RVX_ENABLE_METAL)
-    add_subdirectory(RHI_Metal)
+    add_subdirectory(Source/Runtime/RHI_Metal)
 else()
     rvx_register_disabled_module(
         MODULE RHI_Metal
@@ -310,14 +310,14 @@ else()
 endif()
 
 if(RVX_ENABLE_OPENGL)
-    add_subdirectory(RHI_OpenGL)
+    add_subdirectory(Source/Runtime/RHI_OpenGL)
 else()
     rvx_register_disabled_module(
         MODULE RHI_OpenGL
         REASON "OpenGL backend is disabled for this configuration")
 endif()
 
-add_subdirectory(RHI_BackendFactory) # Enabled RHI backend composition
+add_subdirectory(Source/Runtime/RHI_BackendFactory) # Enabled RHI backend composition
 
 add_subdirectory(Resource)   # Resource runtime and cooked resource management
 if(RVX_BUILD_DEVELOPER)

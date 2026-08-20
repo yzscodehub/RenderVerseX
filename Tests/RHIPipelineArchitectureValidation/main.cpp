@@ -23,7 +23,8 @@ namespace RVX::Tests
     TEST(RHIPipelineValidation,
          PrimaryBackendsConsumeSharedVertexTranslation)
     {
-        const std::filesystem::path sourceRoot = RVX_SOURCE_DIR;
+        const std::filesystem::path sourceRoot =
+            std::filesystem::path(RVX_SOURCE_DIR) / "Source" / "Runtime";
         const std::array<std::filesystem::path, 3> backendSources = {
             sourceRoot / "RHI_DX12" / "Private" / "DX12Pipeline.cpp",
             sourceRoot / "RHI_Vulkan" / "Private" /
@@ -45,7 +46,8 @@ namespace RVX::Tests
     TEST(RHIPipelineValidation,
          MetalVertexStreamsUseLegalDescendingBufferIndices)
     {
-        const std::filesystem::path sourceRoot = RVX_SOURCE_DIR;
+        const std::filesystem::path sourceRoot =
+            std::filesystem::path(RVX_SOURCE_DIR) / "Source" / "Runtime";
         const std::string commonSource = ReadTextFile(
             sourceRoot / "RHI_Metal" / "Private" / "MetalCommon.h");
         const std::string pipelineSource = ReadTextFile(

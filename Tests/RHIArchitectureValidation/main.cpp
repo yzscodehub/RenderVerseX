@@ -29,10 +29,10 @@ namespace RVX::Tests
     TEST(RHIContractValidation, PrimaryBackendsConsumeTheSharedDescriptorSnapshotContract)
     {
         const std::string descriptorHeader = ReadSource("Source/Runtime/RHI/Include/RHI/RHIDescriptor.h");
-        const std::string dx12Pipeline = ReadSource("RHI_DX12/Private/DX12Pipeline.cpp");
-        const std::string vulkanPipeline = ReadSource("RHI_Vulkan/Private/VulkanPipeline.cpp");
-        const std::string metalResources = ReadSource("RHI_Metal/Private/MetalResources.mm");
-        const std::string metalCommands = ReadSource("RHI_Metal/Private/MetalCommandContext.mm");
+        const std::string dx12Pipeline = ReadSource("Source/Runtime/RHI_DX12/Private/DX12Pipeline.cpp");
+        const std::string vulkanPipeline = ReadSource("Source/Runtime/RHI_Vulkan/Private/VulkanPipeline.cpp");
+        const std::string metalResources = ReadSource("Source/Runtime/RHI_Metal/Private/MetalResources.mm");
+        const std::string metalCommands = ReadSource("Source/Runtime/RHI_Metal/Private/MetalCommandContext.mm");
 
         EXPECT_NE(descriptorHeader.find("RHIResourceDataVolatility"), std::string::npos);
         EXPECT_NE(descriptorHeader.find("IncompleteSnapshot"), std::string::npos);
@@ -47,10 +47,10 @@ namespace RVX::Tests
     TEST(RHIContractValidation, PrimaryBackendsTranslateScopedDependenciesStructurally)
     {
         const std::string accessHeader = ReadSource("Source/Runtime/RHI/Include/RHI/RHIAccess.h");
-        const std::string dx12 = ReadSource("RHI_DX12/Private/DX12CommandContext.cpp");
-        const std::string vulkanCommon = ReadSource("RHI_Vulkan/Private/VulkanCommon.h");
-        const std::string vulkan = ReadSource("RHI_Vulkan/Private/VulkanCommandContext.cpp");
-        const std::string metal = ReadSource("RHI_Metal/Private/MetalCommandContext.mm");
+        const std::string dx12 = ReadSource("Source/Runtime/RHI_DX12/Private/DX12CommandContext.cpp");
+        const std::string vulkanCommon = ReadSource("Source/Runtime/RHI_Vulkan/Private/VulkanCommon.h");
+        const std::string vulkan = ReadSource("Source/Runtime/RHI_Vulkan/Private/VulkanCommandContext.cpp");
+        const std::string metal = ReadSource("Source/Runtime/RHI_Metal/Private/MetalCommandContext.mm");
 
         EXPECT_NE(accessHeader.find("struct RHIAccessSnapshot"), std::string::npos);
         EXPECT_NE(accessHeader.find("RHIContentValidity"), std::string::npos);
@@ -146,9 +146,9 @@ namespace RVX::Tests
         const std::string renderSubsystem =
             ReadSource("Render/Private/RenderSubsystem.cpp");
         const std::string dx12Device =
-            ReadSource("RHI_DX12/Private/DX12Device.cpp");
+            ReadSource("Source/Runtime/RHI_DX12/Private/DX12Device.cpp");
         const std::string vulkanDevice =
-            ReadSource("RHI_Vulkan/Private/VulkanDevice.cpp");
+            ReadSource("Source/Runtime/RHI_Vulkan/Private/VulkanDevice.cpp");
 
         EXPECT_NE(runtimeTypes.find(
                       "bool allowSoftwareAdapter = false;"),
@@ -290,7 +290,7 @@ namespace RVX::Tests
         const std::string renderSubsystem =
             ReadSource(root / "Render/Private/RenderSubsystem.cpp");
         const std::string windowSubsystem =
-            ReadSource(root / "Runtime/Private/Window/WindowSubsystem.cpp");
+            ReadSource(root / "Source/Runtime/RuntimeServices/Private/Window/WindowSubsystem.cpp");
         const std::string editorSwapChain =
             ReadSource(root / "Editor/Private/EditorMainSwapChainService.cpp");
         const std::string editorBootstrap =
@@ -379,7 +379,7 @@ namespace RVX::Tests
 
     TEST(RHIContractValidation, OpenGLClaimsTheBackendWindowBeforeLoadingGlad)
     {
-        const std::string source = ReadSource("RHI_OpenGL/Private/OpenGLDevice.cpp");
+        const std::string source = ReadSource("Source/Runtime/RHI_OpenGL/Private/OpenGLDevice.cpp");
         const size_t backendWindow = source.find("desc.initialSurface.backendWindow");
         const size_t makeCurrent = source.find("glfwMakeContextCurrent");
         const size_t loadGlad = source.find("gladLoadGLLoader");
@@ -394,7 +394,7 @@ namespace RVX::Tests
     TEST(RHIContractValidation, OpenGLSwapChainRetainsCapturedSurfaceExtent)
     {
         const std::string source =
-            ReadSource("RHI_OpenGL/Private/OpenGLSwapChain.cpp");
+            ReadSource("Source/Runtime/RHI_OpenGL/Private/OpenGLSwapChain.cpp");
         EXPECT_EQ(source.find("glfwGetFramebufferSize"), std::string::npos);
         EXPECT_NE(source.find("m_width(desc.surface.width)"),
                   std::string::npos);
@@ -407,9 +407,9 @@ namespace RVX::Tests
         const std::string deviceInterface =
             ReadSource("Source/Runtime/RHI/Include/RHI/RHIDevice.h");
         const std::string openGLHeader =
-            ReadSource("RHI_OpenGL/Private/OpenGLDevice.h");
+            ReadSource("Source/Runtime/RHI_OpenGL/Private/OpenGLDevice.h");
         const std::string openGLDevice =
-            ReadSource("RHI_OpenGL/Private/OpenGLDevice.cpp");
+            ReadSource("Source/Runtime/RHI_OpenGL/Private/OpenGLDevice.cpp");
         const std::string renderSubsystem =
             ReadSource("Render/Private/RenderSubsystem.cpp");
         const std::string renderContext =
@@ -470,9 +470,9 @@ namespace RVX::Tests
     TEST(RHIContractValidation, OpenGLFactoryRequiresItsOwnedCurrentContext)
     {
         const std::string header =
-            ReadSource("RHI_OpenGL/Private/OpenGLDevice.h");
+            ReadSource("Source/Runtime/RHI_OpenGL/Private/OpenGLDevice.h");
         const std::string source =
-            ReadSource("RHI_OpenGL/Private/OpenGLDevice.cpp");
+            ReadSource("Source/Runtime/RHI_OpenGL/Private/OpenGLDevice.cpp");
 
         EXPECT_NE(header.find("bool IsSurfaceContextCurrent("),
                   std::string::npos);
@@ -508,9 +508,9 @@ namespace RVX::Tests
          SurfaceRebindPolicyImplementationKeepsVulkanReplacementEnabled)
     {
         const std::string vulkanHeader =
-            ReadSource("RHI_Vulkan/Private/VulkanDevice.h");
+            ReadSource("Source/Runtime/RHI_Vulkan/Private/VulkanDevice.h");
         const std::string openGLSwapChain =
-            ReadSource("RHI_OpenGL/Private/OpenGLSwapChain.cpp");
+            ReadSource("Source/Runtime/RHI_OpenGL/Private/OpenGLSwapChain.cpp");
         EXPECT_EQ(vulkanHeader.find("SupportsSurfaceRebind"),
                   std::string::npos);
         EXPECT_EQ(openGLSwapChain.find("glfwMakeContextCurrent"),
@@ -519,7 +519,7 @@ namespace RVX::Tests
 
     TEST(RHIContractValidation, MetalPresentationStaysInsideCommandBufferOwnership)
     {
-        const std::string swapChain = ReadSource("RHI_Metal/Private/MetalSwapChain.mm");
+        const std::string swapChain = ReadSource("Source/Runtime/RHI_Metal/Private/MetalSwapChain.mm");
         for (const char* forbidden : {"NSWindow", "NSView", "UIView", "contentView",
                                       "setWantsLayer:", "setLayer:",
                                       "[m_currentDrawable present]"})
@@ -531,7 +531,7 @@ namespace RVX::Tests
                   std::string::npos);
 
         const std::string commandContext =
-            ReadSource("RHI_Metal/Private/MetalCommandContext.mm");
+            ReadSource("Source/Runtime/RHI_Metal/Private/MetalCommandContext.mm");
         const size_t present = commandContext.find("presentDrawable:");
         const size_t commit = commandContext.find("[m_commandBuffer commit]");
         ASSERT_NE(present, std::string::npos);
@@ -542,9 +542,9 @@ namespace RVX::Tests
     TEST(RHIContractValidation, PlatformSurfaceBridgesRejectPartialConstruction)
     {
         const std::string vulkanHeader =
-            ReadSource("RHI_Vulkan/Private/VulkanSwapChain.h");
+            ReadSource("Source/Runtime/RHI_Vulkan/Private/VulkanSwapChain.h");
         const std::string vulkanSwapChain =
-            ReadSource("RHI_Vulkan/Private/VulkanSwapChain.cpp");
+            ReadSource("Source/Runtime/RHI_Vulkan/Private/VulkanSwapChain.cpp");
         EXPECT_NE(vulkanHeader.find("bool IsValid() const"),
                   std::string::npos);
         EXPECT_NE(vulkanSwapChain.find("if (!swapChain->IsValid())"),
@@ -563,17 +563,17 @@ namespace RVX::Tests
     TEST(RHIContractValidation, SwapChainFactoriesRejectFailedConstruction)
     {
         const std::string dx12Header =
-            ReadSource("RHI_DX12/Private/DX12SwapChain.h");
+            ReadSource("Source/Runtime/RHI_DX12/Private/DX12SwapChain.h");
         const std::string dx12Factory =
-            ReadSource("RHI_DX12/Private/DX12SwapChain.cpp");
+            ReadSource("Source/Runtime/RHI_DX12/Private/DX12SwapChain.cpp");
         const std::string metalHeader =
-            ReadSource("RHI_Metal/Private/MetalSwapChain.h");
+            ReadSource("Source/Runtime/RHI_Metal/Private/MetalSwapChain.h");
         const std::string metalFactory =
-            ReadSource("RHI_Metal/Private/MetalDevice.mm");
+            ReadSource("Source/Runtime/RHI_Metal/Private/MetalDevice.mm");
         const std::string openGLHeader =
-            ReadSource("RHI_OpenGL/Private/OpenGLSwapChain.h");
+            ReadSource("Source/Runtime/RHI_OpenGL/Private/OpenGLSwapChain.h");
         const std::string openGLFactory =
-            ReadSource("RHI_OpenGL/Private/OpenGLDevice.cpp");
+            ReadSource("Source/Runtime/RHI_OpenGL/Private/OpenGLDevice.cpp");
 
         for (const std::string* header :
              {&dx12Header, &metalHeader, &openGLHeader})
@@ -593,10 +593,10 @@ namespace RVX::Tests
 
     TEST(RHIContractValidation, IndexedIndirectBackendLimitsUseNativeContracts)
     {
-        const std::string dx12 = ReadSource("RHI_DX12/Private/DX12Device.cpp");
-        const std::string vulkan = ReadSource("RHI_Vulkan/Private/VulkanDevice.cpp");
-        const std::string dx11 = ReadSource("RHI_DX11/Private/DX11Device.cpp");
-        const std::string openGL = ReadSource("RHI_OpenGL/Private/OpenGLDevice.cpp");
+        const std::string dx12 = ReadSource("Source/Runtime/RHI_DX12/Private/DX12Device.cpp");
+        const std::string vulkan = ReadSource("Source/Runtime/RHI_Vulkan/Private/VulkanDevice.cpp");
+        const std::string dx11 = ReadSource("Source/Runtime/RHI_DX11/Private/DX11Device.cpp");
+        const std::string openGL = ReadSource("Source/Runtime/RHI_OpenGL/Private/OpenGLDevice.cpp");
 
         EXPECT_NE(dx12.find("sizeof(D3D12_DRAW_INDEXED_ARGUMENTS)"),
                   std::string::npos);
@@ -615,18 +615,18 @@ namespace RVX::Tests
 
     TEST(RHIContractValidation, QueueTopologyPublicationStaysBackendHonest)
     {
-        const std::string dx12 = ReadSource("RHI_DX12/Private/DX12Device.cpp");
+        const std::string dx12 = ReadSource("Source/Runtime/RHI_DX12/Private/DX12Device.cpp");
         EXPECT_NE(dx12.find("RHIQueueCompletionMode::NativeTimeline"), std::string::npos);
         EXPECT_NE(dx12.find("GPUQueueDomain::Compute"), std::string::npos);
         EXPECT_NE(dx12.find("GPUQueueDomain::Copy"), std::string::npos);
 
-        const std::string vulkan = ReadSource("RHI_Vulkan/Private/VulkanDevice.cpp");
+        const std::string vulkan = ReadSource("Source/Runtime/RHI_Vulkan/Private/VulkanDevice.cpp");
         EXPECT_NE(vulkan.find("const bool hasDedicatedComputeQueue"),
                   std::string::npos);
         EXPECT_NE(vulkan.find("m_capabilities.supportsAsyncCompute = hasDedicatedComputeQueue"),
                   std::string::npos);
         const std::string vulkanDeviceHeader =
-            ReadSource("RHI_Vulkan/Private/VulkanDevice.h");
+            ReadSource("Source/Runtime/RHI_Vulkan/Private/VulkanDevice.h");
         EXPECT_NE(vulkanDeviceHeader.find(
                       "uint32 GetComputeQueueFamily() const { return m_queueFamilies.computeFamily.value(); }"),
                   std::string::npos);
@@ -638,7 +638,7 @@ namespace RVX::Tests
         EXPECT_NE(dx12.find("supportsMultiQueueBatchSubmit = true"),
                   std::string::npos);
 
-        const std::string metal = ReadSource("RHI_Metal/Private/MetalDevice.mm");
+        const std::string metal = ReadSource("Source/Runtime/RHI_Metal/Private/MetalDevice.mm");
         EXPECT_NE(metal.find("m_capabilities.supportsAsyncCompute = false"), std::string::npos);
         EXPECT_NE(metal.find("RHIQueueCompletionMode::NativeTimeline"), std::string::npos);
         EXPECT_NE(metal.find("m_capabilities.queueTopology.activeDomainCount = 1"),
@@ -647,9 +647,9 @@ namespace RVX::Tests
         EXPECT_EQ(metal.find("d3d12.h"), std::string::npos);
 
         const std::string metalCommandContext =
-            ReadSource("RHI_Metal/Private/MetalCommandContext.mm");
+            ReadSource("Source/Runtime/RHI_Metal/Private/MetalCommandContext.mm");
         const std::string metalSynchronization =
-            ReadSource("RHI_Metal/Private/MetalSynchronization.mm");
+            ReadSource("Source/Runtime/RHI_Metal/Private/MetalSynchronization.mm");
         EXPECT_NE(metalCommandContext.find("SignalFromCommandBuffer(m_commandBuffer)"),
                   std::string::npos);
         EXPECT_NE(metalSynchronization.find("encodeSignalEvent:m_event value:newValue"),
@@ -658,8 +658,8 @@ namespace RVX::Tests
                   std::string::npos);
 
         for (const char* path : {
-                 "RHI_DX11/Private/DX11Device.cpp",
-                 "RHI_OpenGL/Private/OpenGLDevice.cpp"})
+                 "Source/Runtime/RHI_DX11/Private/DX11Device.cpp",
+                 "Source/Runtime/RHI_OpenGL/Private/OpenGLDevice.cpp"})
         {
             const std::string compatibility = ReadSource(path);
             EXPECT_NE(compatibility.find("RHIQueueCompletionMode::CompatibilityWaitIdle"),
@@ -673,11 +673,11 @@ namespace RVX::Tests
         }
 
         for (const char* path : {
-                 "RHI_DX11/Private/DX11CommandContext.h",
-                 "RHI_DX12/Private/DX12CommandContext.h",
-                 "RHI_Vulkan/Private/VulkanCommandContext.h",
-                 "RHI_Metal/Private/MetalCommandContext.h",
-                 "RHI_OpenGL/Private/OpenGLCommandContext.h"})
+                 "Source/Runtime/RHI_DX11/Private/DX11CommandContext.h",
+                 "Source/Runtime/RHI_DX12/Private/DX12CommandContext.h",
+                 "Source/Runtime/RHI_Vulkan/Private/VulkanCommandContext.h",
+                 "Source/Runtime/RHI_Metal/Private/MetalCommandContext.h",
+                 "Source/Runtime/RHI_OpenGL/Private/OpenGLCommandContext.h"})
         {
             const std::string context = ReadSource(path);
             EXPECT_NE(context.find("RHICommandQueueType GetQueueType() const override"),

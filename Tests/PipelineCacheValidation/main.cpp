@@ -2096,7 +2096,8 @@ TEST_F(PipelineCacheValidationFixture, OpenGLDescriptorBindingsUseStableGLSLBind
     const std::string translatorSource =
         ReadTextFile(repoRoot / "ShaderCompiler" / "Private" / "SPIRVCrossTranslator.cpp");
     const std::string descriptorSource =
-        ReadTextFile(repoRoot / "RHI_OpenGL" / "Private" / "OpenGLDescriptor.cpp");
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "RHI_OpenGL" / "Private" /
+                     "OpenGLDescriptor.cpp");
 
     EXPECT_NE(translatorSource.find("SortResourcesBySetBinding(glslCompiler, resources.uniform_buffers);"),
               std::string::npos);
@@ -2241,7 +2242,8 @@ TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCove
     const std::string renderRuntimeComposition =
         ReadTextFile(repoRoot / "Engine" / "Private" / "ECS" / "EcsRenderRuntimeComposition.cpp");
     const std::string windowSubsystem =
-        ReadTextFile(repoRoot / "Runtime" / "Private" / "Window" / "WindowSubsystem.cpp");
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "RuntimeServices" / "Private" /
+                     "Window" / "WindowSubsystem.cpp");
     EXPECT_NE(renderRuntimeComposition.find("m_services->CaptureRenderSurface()"), std::string::npos);
     EXPECT_NE(renderRuntimeComposition.find("m_services->ReleaseGraphicsContextFromUpdateThread()"),
               std::string::npos);
@@ -2249,13 +2251,17 @@ TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCove
     EXPECT_NE(windowSubsystem.find("surface.backendWindow = handles.backendWindow"), std::string::npos);
 
     const std::string openGLCommandContext =
-        ReadTextFile(repoRoot / "RHI_OpenGL" / "Private" / "OpenGLCommandContext.cpp");
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "RHI_OpenGL" / "Private" /
+                     "OpenGLCommandContext.cpp");
     const std::string openGLResources =
-        ReadTextFile(repoRoot / "RHI_OpenGL" / "Private" / "OpenGLResources.cpp");
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "RHI_OpenGL" / "Private" /
+                     "OpenGLResources.cpp");
     const std::string openGLResourcesHeader =
-        ReadTextFile(repoRoot / "RHI_OpenGL" / "Private" / "OpenGLResources.h");
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "RHI_OpenGL" / "Private" /
+                     "OpenGLResources.h");
     const std::string openGLUpload =
-        ReadTextFile(repoRoot / "RHI_OpenGL" / "Private" / "OpenGLUpload.cpp");
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "RHI_OpenGL" / "Private" /
+                     "OpenGLUpload.cpp");
     const std::string particleCMake =
         ReadTextFile(repoRoot / "Particle" / "CMakeLists.txt");
     const std::string renderCMake =
@@ -2333,7 +2339,8 @@ TEST_F(PipelineCacheValidationFixture, OpenGLRenderPassClearsIgnorePreviousWrite
 
     const fs::path repoRoot = FindShaderDirectory().parent_path().parent_path();
     const std::string openGLCommandContext =
-        ReadTextFile(repoRoot / "RHI_OpenGL" / "Private" / "OpenGLCommandContext.cpp");
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "RHI_OpenGL" / "Private" /
+                     "OpenGLCommandContext.cpp");
 
     const size_t colorMaskSave =
         openGLCommandContext.find("glGetBooleani_v(GL_COLOR_WRITEMASK, i, previousColorMask)");
@@ -6467,7 +6474,7 @@ TEST_F(PipelineCacheValidationFixture, DX12BackendImplementsRayTracingPipelineSh
     }
 
     const fs::path repoRoot = FindShaderDirectory().parent_path().parent_path();
-    const fs::path dx12Dir = repoRoot / "RHI_DX12" / "Private";
+    const fs::path dx12Dir = repoRoot / "Source" / "Runtime" / "RHI_DX12" / "Private";
     const std::string pipelineHeader = ReadTextFile(dx12Dir / "DX12Pipeline.h");
     const std::string pipelineSource = ReadTextFile(dx12Dir / "DX12Pipeline.cpp");
     const std::string resourcesHeader = ReadTextFile(dx12Dir / "DX12Resources.h");
@@ -6873,7 +6880,7 @@ TEST_F(PipelineCacheValidationFixture, VulkanBackendDoesNotAdvertiseRayTracingBe
     }
 
     const fs::path repoRoot = FindShaderDirectory().parent_path().parent_path();
-    const fs::path vulkanDir = repoRoot / "RHI_Vulkan" / "Private";
+    const fs::path vulkanDir = repoRoot / "Source" / "Runtime" / "RHI_Vulkan" / "Private";
     const std::string deviceHeader = ReadTextFile(vulkanDir / "VulkanDevice.h");
     const std::string deviceSource = ReadTextFile(vulkanDir / "VulkanDevice.cpp");
     const std::string commandHeader = ReadTextFile(vulkanDir / "VulkanCommandContext.h");
@@ -8468,7 +8475,8 @@ TEST_F(PipelineCacheValidationFixture, VulkanRasterizerEnablesDepthBiasForSlopeA
     }
 
     const fs::path vulkanPipelinePath = shaderDir.parent_path().parent_path() /
-                                        "RHI_Vulkan" / "Private" / "VulkanPipeline.cpp";
+                                        "Source" / "Runtime" / "RHI_Vulkan" / "Private" /
+                                        "VulkanPipeline.cpp";
     const std::string source = ReadTextFile(vulkanPipelinePath);
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("desc.rasterizerState.depthBias != 0.0f"), std::string::npos);

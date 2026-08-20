@@ -2315,7 +2315,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11CommandContext.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11CommandContext.h",
       "owner": "DX11CommandContext",
       "symbol": "m_commandList",
       "policy": "ShutdownAfterDrain",
@@ -2324,7 +2324,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11CommandContext.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11CommandContext.h",
       "owner": "DX11CommandContext",
       "symbol": "m_context",
       "policy": "ShutdownAfterDrain",
@@ -2333,7 +2333,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Debug.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Debug.h",
       "owner": "DX11Debug",
       "symbol": "m_d3dDebug",
       "policy": "ShutdownAfterDrain",
@@ -2342,7 +2342,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Debug.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Debug.h",
       "owner": "DX11Debug",
       "symbol": "m_infoQueue",
       "policy": "ShutdownAfterDrain",
@@ -2351,7 +2351,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Device.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Device.h",
       "owner": "DX11Device",
       "symbol": "m_adapter",
       "policy": "ShutdownAfterDrain",
@@ -2360,7 +2360,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Device.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Device.h",
       "owner": "DX11Device",
       "symbol": "m_device",
       "policy": "ShutdownAfterDrain",
@@ -2369,7 +2369,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Device.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Device.h",
       "owner": "DX11Device",
       "symbol": "m_device1",
       "policy": "ShutdownAfterDrain",
@@ -2378,7 +2378,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Device.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Device.h",
       "owner": "DX11Device",
       "symbol": "m_device5",
       "policy": "ShutdownAfterDrain",
@@ -2387,7 +2387,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Device.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Device.h",
       "owner": "DX11Device",
       "symbol": "m_factory",
       "policy": "ShutdownAfterDrain",
@@ -2396,7 +2396,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Device.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Device.h",
       "owner": "DX11Device",
       "symbol": "m_immediateContext",
       "policy": "ShutdownAfterDrain",
@@ -2405,7 +2405,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Device.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Device.h",
       "owner": "DX11Device",
       "symbol": "m_immediateContext1",
       "policy": "ShutdownAfterDrain",
@@ -2414,7 +2414,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Pipeline.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Pipeline.h",
       "owner": "DX11ComputePipeline",
       "symbol": "m_computeShader",
       "policy": "OwnerSnapshot",
@@ -2423,7 +2423,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Pipeline.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Pipeline.h",
       "owner": "DX11GraphicsPipeline",
       "symbol": "m_domainShader",
       "policy": "OwnerSnapshot",
@@ -2432,7 +2432,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Pipeline.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Pipeline.h",
       "owner": "DX11GraphicsPipeline",
       "symbol": "m_geometryShader",
       "policy": "OwnerSnapshot",
@@ -2441,7 +2441,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Pipeline.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Pipeline.h",
       "owner": "DX11GraphicsPipeline",
       "symbol": "m_hullShader",
       "policy": "OwnerSnapshot",
@@ -2450,7 +2450,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Pipeline.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Pipeline.h",
       "owner": "DX11GraphicsPipeline",
       "symbol": "m_pixelShader",
       "policy": "OwnerSnapshot",
@@ -2459,7 +2459,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Pipeline.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Pipeline.h",
       "owner": "DX11GraphicsPipeline",
       "symbol": "m_vertexShader",
       "policy": "OwnerSnapshot",
@@ -2468,7 +2468,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Pipeline.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Pipeline.h",
       "owner": "DX11PipelineLayout",
       "symbol": "m_pushConstantBuffer",
       "policy": "OwnerSnapshot",
@@ -2477,7 +2477,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11Buffer",
       "symbol": "m_buffer",
       "policy": "OwnerSnapshot",
@@ -2486,7 +2486,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11Buffer",
       "symbol": "m_srv",
       "policy": "OwnerSnapshot",
@@ -2495,7 +2495,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11Buffer",
       "symbol": "m_uav",
       "policy": "OwnerSnapshot",
@@ -2504,7 +2504,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11Fence",
       "symbol": "m_fence",
       "policy": "OwnerSnapshot",
@@ -2513,7 +2513,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11Fence",
       "symbol": "m_query",
       "policy": "OwnerSnapshot",
@@ -2522,7 +2522,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11QueryPool",
       "symbol": "m_queries",
       "policy": "OwnerSnapshot",
@@ -2531,7 +2531,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11Sampler",
       "symbol": "m_sampler",
       "policy": "OwnerSnapshot",
@@ -2540,7 +2540,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11Shader",
       "symbol": "m_computeShader",
       "policy": "OwnerSnapshot",
@@ -2549,7 +2549,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11Shader",
       "symbol": "m_domainShader",
       "policy": "OwnerSnapshot",
@@ -2558,7 +2558,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11Shader",
       "symbol": "m_geometryShader",
       "policy": "OwnerSnapshot",
@@ -2567,7 +2567,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11Shader",
       "symbol": "m_hullShader",
       "policy": "OwnerSnapshot",
@@ -2576,7 +2576,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11Shader",
       "symbol": "m_pixelShader",
       "policy": "OwnerSnapshot",
@@ -2585,7 +2585,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11Shader",
       "symbol": "m_vertexShader",
       "policy": "OwnerSnapshot",
@@ -2594,7 +2594,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11Texture",
       "symbol": "m_dsv",
       "policy": "OwnerSnapshot",
@@ -2603,7 +2603,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11Texture",
       "symbol": "m_resource",
       "policy": "OwnerSnapshot",
@@ -2612,7 +2612,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11Texture",
       "symbol": "m_rtvs",
       "policy": "OwnerSnapshot",
@@ -2621,7 +2621,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11Texture",
       "symbol": "m_srv",
       "policy": "OwnerSnapshot",
@@ -2630,7 +2630,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11Texture",
       "symbol": "m_uav",
       "policy": "OwnerSnapshot",
@@ -2639,7 +2639,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11TextureView",
       "symbol": "m_dsv",
       "policy": "OwnerSnapshot",
@@ -2648,7 +2648,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11TextureView",
       "symbol": "m_rtv",
       "policy": "OwnerSnapshot",
@@ -2657,7 +2657,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11TextureView",
       "symbol": "m_srv",
       "policy": "OwnerSnapshot",
@@ -2666,7 +2666,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Resources.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Resources.h",
       "owner": "DX11TextureView",
       "symbol": "m_uav",
       "policy": "OwnerSnapshot",
@@ -2675,7 +2675,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11StateCache.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11StateCache.h",
       "owner": "DX11StateCache",
       "symbol": "m_blendStates",
       "policy": "ShutdownAfterDrain",
@@ -2684,7 +2684,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11StateCache.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11StateCache.h",
       "owner": "DX11StateCache",
       "symbol": "m_depthStencilStates",
       "policy": "ShutdownAfterDrain",
@@ -2693,7 +2693,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11StateCache.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11StateCache.h",
       "owner": "DX11StateCache",
       "symbol": "m_inputLayouts",
       "policy": "ShutdownAfterDrain",
@@ -2702,7 +2702,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11StateCache.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11StateCache.h",
       "owner": "DX11StateCache",
       "symbol": "m_rasterizerStates",
       "policy": "ShutdownAfterDrain",
@@ -2711,7 +2711,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11StateCache.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11StateCache.h",
       "owner": "DX11StateCache",
       "symbol": "m_samplerStates",
       "policy": "ShutdownAfterDrain",
@@ -2720,7 +2720,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11SwapChain.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11SwapChain.h",
       "owner": "DX11SwapChain",
       "symbol": "m_backBuffers",
       "policy": "SurfaceGeneration",
@@ -2729,7 +2729,7 @@
       "deviceLostRelease": "surface explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11SwapChain.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11SwapChain.h",
       "owner": "DX11SwapChain",
       "symbol": "m_backBufferViews",
       "policy": "SurfaceGeneration",
@@ -2738,7 +2738,7 @@
       "deviceLostRelease": "surface explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11SwapChain.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11SwapChain.h",
       "owner": "DX11SwapChain",
       "symbol": "m_swapChain",
       "policy": "SurfaceGeneration",
@@ -2747,7 +2747,7 @@
       "deviceLostRelease": "surface explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Upload.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Upload.h",
       "owner": "DX11RingBuffer",
       "symbol": "m_buffers",
       "policy": "SubmissionBatch",
@@ -2756,7 +2756,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Upload.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Upload.h",
       "owner": "DX11RingBuffer",
       "symbol": "m_wrapperBuffer",
       "policy": "SubmissionBatch",
@@ -2765,7 +2765,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Upload.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Upload.h",
       "owner": "DX11StagingBuffer",
       "symbol": "m_buffer",
       "policy": "SubmissionBatch",
@@ -2774,7 +2774,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX11/Private/DX11Upload.h",
+      "path": "Source/Runtime/RHI_DX11/Private/DX11Upload.h",
       "owner": "DX11StagingBuffer",
       "symbol": "m_wrapperBuffer",
       "policy": "SubmissionBatch",
@@ -2783,7 +2783,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12CommandAllocatorPool.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12CommandAllocatorPool.h",
       "owner": "DX12CommandAllocatorPool",
       "symbol": "m_availableAllocators",
       "policy": "PoolAvailability",
@@ -2792,7 +2792,7 @@
       "deviceLostRelease": "pool explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12CommandAllocatorPool.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12CommandAllocatorPool.h",
       "owner": "DX12CommandAllocatorPool",
       "symbol": "m_fences",
       "policy": "PoolAvailability",
@@ -2801,7 +2801,7 @@
       "deviceLostRelease": "pool explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12CommandAllocatorPool.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12CommandAllocatorPool.h",
       "owner": "PendingAllocator",
       "symbol": "allocator",
       "policy": "PoolAvailability",
@@ -2810,7 +2810,7 @@
       "deviceLostRelease": "pool explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12CommandContext.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12CommandContext.h",
       "owner": "DX12CommandContext",
       "symbol": "m_commandAllocator",
       "policy": "ShutdownAfterDrain",
@@ -2819,7 +2819,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12CommandContext.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12CommandContext.h",
       "owner": "DX12CommandContext",
       "symbol": "m_commandList",
       "policy": "ShutdownAfterDrain",
@@ -2828,7 +2828,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12DescriptorHeap.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12DescriptorHeap.h",
       "owner": "DX12RingDescriptorHeap",
       "symbol": "m_heap",
       "policy": "ShutdownAfterDrain",
@@ -2837,7 +2837,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12DescriptorHeap.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12DescriptorHeap.h",
       "owner": "DX12StaticDescriptorHeap",
       "symbol": "m_heap",
       "policy": "ShutdownAfterDrain",
@@ -2846,7 +2846,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Device.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Device.h",
       "owner": "DX12Device",
       "symbol": "m_adapter",
       "policy": "ShutdownAfterDrain",
@@ -2855,7 +2855,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Device.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Device.h",
       "owner": "DX12Device",
       "symbol": "m_computeQueue",
       "policy": "ShutdownAfterDrain",
@@ -2864,7 +2864,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Device.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Device.h",
       "owner": "DX12Device",
       "symbol": "m_copyQueue",
       "policy": "ShutdownAfterDrain",
@@ -2873,7 +2873,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Device.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Device.h",
       "owner": "DX12Device",
       "symbol": "m_device",
       "policy": "ShutdownAfterDrain",
@@ -2882,7 +2882,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Device.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Device.h",
       "owner": "DX12Device",
       "symbol": "m_factory",
       "policy": "ShutdownAfterDrain",
@@ -2891,7 +2891,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Device.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Device.h",
       "owner": "DX12Device",
       "symbol": "m_frameFence",
       "policy": "ShutdownAfterDrain",
@@ -2900,7 +2900,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Device.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Device.h",
       "owner": "DX12Device",
       "symbol": "m_graphicsQueue",
       "policy": "ShutdownAfterDrain",
@@ -2909,7 +2909,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Device.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Device.h",
       "owner": "DX12Device",
       "symbol": "m_memoryAllocator",
       "policy": "ShutdownAfterDrain",
@@ -2918,7 +2918,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Device.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Device.h",
       "owner": "DX12Device",
       "symbol": "m_rootSignatureCache",
       "policy": "ShutdownAfterDrain",
@@ -2927,7 +2927,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Pipeline.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Pipeline.h",
       "owner": "DX12PipelineLayout",
       "symbol": "m_rootSignature",
       "policy": "OwnerSnapshot",
@@ -2936,7 +2936,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Pipeline.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Pipeline.h",
       "owner": "DX12Pipeline",
       "symbol": "m_ownedLayout",
       "policy": "OwnerSnapshot",
@@ -2945,7 +2945,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Pipeline.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Pipeline.h",
       "owner": "DX12Pipeline",
       "symbol": "m_pipelineState",
       "policy": "OwnerSnapshot",
@@ -2954,7 +2954,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Pipeline.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Pipeline.h",
       "owner": "DX12Pipeline",
       "symbol": "m_rootSignature",
       "policy": "OwnerSnapshot",
@@ -2963,7 +2963,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Pipeline.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Pipeline.h",
       "owner": "DX12Pipeline",
       "symbol": "m_stateObject",
       "policy": "OwnerSnapshot",
@@ -2972,7 +2972,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Pipeline.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Pipeline.h",
       "owner": "DX12Pipeline",
       "symbol": "m_stateObjectProperties",
       "policy": "OwnerSnapshot",
@@ -2981,7 +2981,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Pipeline.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Pipeline.h",
       "owner": "DX12ShaderTable",
       "symbol": "m_buffer",
       "policy": "OwnerSnapshot",
@@ -2990,7 +2990,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Pipeline.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Pipeline.h",
       "owner": "DX12ShaderTable",
       "symbol": "m_pipelineOwner",
       "policy": "OwnerSnapshot",
@@ -2999,7 +2999,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12PipelineCache.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12PipelineCache.h",
       "owner": "DX12PipelineCache",
       "symbol": "m_pipelineLibrary",
       "policy": "OwnerSnapshot",
@@ -3008,7 +3008,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12PipelineCache.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12PipelineCache.h",
       "owner": "DX12PipelineCache",
       "symbol": "m_psoCache",
       "policy": "OwnerSnapshot",
@@ -3017,7 +3017,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Query.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Query.h",
       "owner": "DX12QueryPool",
       "symbol": "m_heap",
       "policy": "OwnerSnapshot",
@@ -3026,7 +3026,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Resources.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Resources.h",
       "owner": "DX12AccelerationStructure",
       "symbol": "m_storageBuffer",
       "policy": "OwnerSnapshot",
@@ -3035,7 +3035,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Resources.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Resources.h",
       "owner": "DX12Buffer",
       "symbol": "m_allocation",
       "policy": "OwnerSnapshot",
@@ -3044,7 +3044,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Resources.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Resources.h",
       "owner": "DX12Buffer",
       "symbol": "m_resource",
       "policy": "OwnerSnapshot",
@@ -3053,7 +3053,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Resources.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Resources.h",
       "owner": "DX12Fence",
       "symbol": "m_fence",
       "policy": "OwnerSnapshot",
@@ -3062,7 +3062,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Resources.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Resources.h",
       "owner": "DX12Heap",
       "symbol": "m_heap",
       "policy": "OwnerSnapshot",
@@ -3071,7 +3071,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Resources.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Resources.h",
       "owner": "DX12Texture",
       "symbol": "m_allocation",
       "policy": "OwnerSnapshot",
@@ -3080,7 +3080,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Resources.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Resources.h",
       "owner": "DX12Texture",
       "symbol": "m_resource",
       "policy": "OwnerSnapshot",
@@ -3089,7 +3089,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12SwapChain.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12SwapChain.h",
       "owner": "DX12SwapChain",
       "symbol": "m_backBuffers",
       "policy": "SurfaceGeneration",
@@ -3098,7 +3098,7 @@
       "deviceLostRelease": "surface explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12SwapChain.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12SwapChain.h",
       "owner": "DX12SwapChain",
       "symbol": "m_backBufferViews",
       "policy": "SurfaceGeneration",
@@ -3107,7 +3107,7 @@
       "deviceLostRelease": "surface explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12SwapChain.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12SwapChain.h",
       "owner": "DX12SwapChain",
       "symbol": "m_swapChain",
       "policy": "SurfaceGeneration",
@@ -3116,7 +3116,7 @@
       "deviceLostRelease": "surface explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Upload.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Upload.h",
       "owner": "DX12RingBuffer",
       "symbol": "m_resource",
       "policy": "SubmissionBatch",
@@ -3125,7 +3125,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Upload.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Upload.h",
       "owner": "DX12RingBuffer",
       "symbol": "m_wrapperBuffer",
       "policy": "SubmissionBatch",
@@ -3134,7 +3134,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Upload.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Upload.h",
       "owner": "DX12StagingBuffer",
       "symbol": "m_resource",
       "policy": "SubmissionBatch",
@@ -3143,7 +3143,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Upload.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Upload.h",
       "owner": "DX12StagingBuffer",
       "symbol": "m_wrapperBuffer",
       "policy": "SubmissionBatch",
@@ -3152,7 +3152,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalCommandContext.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalCommandContext.h",
       "owner": "MetalCommandContext",
       "symbol": "m_blitEncoder",
       "policy": "ShutdownAfterDrain",
@@ -3161,7 +3161,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalCommandContext.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalCommandContext.h",
       "owner": "MetalCommandContext",
       "symbol": "m_commandBuffer",
       "policy": "ShutdownAfterDrain",
@@ -3170,7 +3170,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalCommandContext.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalCommandContext.h",
       "owner": "MetalCommandContext",
       "symbol": "m_computeEncoder",
       "policy": "ShutdownAfterDrain",
@@ -3179,7 +3179,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalCommandContext.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalCommandContext.h",
       "owner": "MetalCommandContext",
       "symbol": "m_currentIndexBuffer",
       "policy": "ShutdownAfterDrain",
@@ -3188,7 +3188,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalCommandContext.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalCommandContext.h",
       "owner": "MetalCommandContext",
       "symbol": "m_renderEncoder",
       "policy": "ShutdownAfterDrain",
@@ -3197,7 +3197,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalDevice.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalDevice.h",
       "owner": "MetalDevice",
       "symbol": "m_commandQueue",
       "policy": "ShutdownAfterDrain",
@@ -3206,7 +3206,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalDevice.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalDevice.h",
       "owner": "MetalDevice",
       "symbol": "m_device",
       "policy": "ShutdownAfterDrain",
@@ -3215,7 +3215,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalPipeline.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalPipeline.h",
       "owner": "MetalComputePipeline",
       "symbol": "m_pipelineState",
       "policy": "OwnerSnapshot",
@@ -3224,7 +3224,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalPipeline.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalPipeline.h",
       "owner": "MetalGraphicsPipeline",
       "symbol": "m_depthStencilState",
       "policy": "OwnerSnapshot",
@@ -3233,7 +3233,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalPipeline.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalPipeline.h",
       "owner": "MetalGraphicsPipeline",
       "symbol": "m_pipelineState",
       "policy": "OwnerSnapshot",
@@ -3242,7 +3242,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalQuery.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalQuery.h",
       "owner": "MetalQueryPool",
       "symbol": "m_counterSampleBuffer",
       "policy": "OwnerSnapshot",
@@ -3251,7 +3251,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalQuery.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalQuery.h",
       "owner": "MetalQueryPool",
       "symbol": "m_device",
       "policy": "OwnerSnapshot",
@@ -3260,7 +3260,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalQuery.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalQuery.h",
       "owner": "MetalQueryPool",
       "symbol": "m_resultBuffer",
       "policy": "OwnerSnapshot",
@@ -3269,7 +3269,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalQuery.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalQuery.h",
       "owner": "MetalQueryPool",
       "symbol": "m_visibilityBuffer",
       "policy": "OwnerSnapshot",
@@ -3278,7 +3278,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalResources.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalResources.h",
       "owner": "BindingData",
       "symbol": "buffer",
       "policy": "OwnerSnapshot",
@@ -3287,7 +3287,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalResources.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalResources.h",
       "owner": "BindingData",
       "symbol": "sampler",
       "policy": "OwnerSnapshot",
@@ -3296,7 +3296,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalResources.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalResources.h",
       "owner": "BindingData",
       "symbol": "texture",
       "policy": "OwnerSnapshot",
@@ -3305,7 +3305,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalResources.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalResources.h",
       "owner": "MetalBuffer",
       "symbol": "m_buffer",
       "policy": "OwnerSnapshot",
@@ -3314,7 +3314,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalResources.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalResources.h",
       "owner": "MetalHeap",
       "symbol": "m_heap",
       "policy": "OwnerSnapshot",
@@ -3323,7 +3323,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalResources.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalResources.h",
       "owner": "MetalSampler",
       "symbol": "m_sampler",
       "policy": "OwnerSnapshot",
@@ -3332,7 +3332,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalResources.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalResources.h",
       "owner": "MetalShader",
       "symbol": "m_function",
       "policy": "OwnerSnapshot",
@@ -3341,7 +3341,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalResources.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalResources.h",
       "owner": "MetalShader",
       "symbol": "m_library",
       "policy": "OwnerSnapshot",
@@ -3350,7 +3350,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalResources.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalResources.h",
       "owner": "MetalTexture",
       "symbol": "m_texture",
       "policy": "OwnerSnapshot",
@@ -3359,7 +3359,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalResources.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalResources.h",
       "owner": "MetalTextureView",
       "symbol": "m_textureView",
       "policy": "OwnerSnapshot",
@@ -3368,7 +3368,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalSwapChain.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalSwapChain.h",
       "owner": "MetalSwapChain",
       "symbol": "m_backBuffers",
       "policy": "SurfaceGeneration",
@@ -3377,7 +3377,7 @@
       "deviceLostRelease": "surface explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalSwapChain.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalSwapChain.h",
       "owner": "MetalSwapChain",
       "symbol": "m_backBufferViews",
       "policy": "SurfaceGeneration",
@@ -3386,7 +3386,7 @@
       "deviceLostRelease": "surface explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalSynchronization.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalSynchronization.h",
       "owner": "MetalFence",
       "symbol": "m_event",
       "policy": "OwnerSnapshot",
@@ -3395,7 +3395,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalUpload.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalUpload.h",
       "owner": "MetalRingBuffer",
       "symbol": "m_buffer",
       "policy": "SubmissionBatch",
@@ -3404,7 +3404,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalUpload.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalUpload.h",
       "owner": "MetalRingBuffer",
       "symbol": "m_device",
       "policy": "SubmissionBatch",
@@ -3413,7 +3413,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalUpload.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalUpload.h",
       "owner": "MetalRingBuffer",
       "symbol": "m_wrapperBuffer",
       "policy": "SubmissionBatch",
@@ -3422,7 +3422,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalUpload.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalUpload.h",
       "owner": "MetalStagingBuffer",
       "symbol": "m_buffer",
       "policy": "SubmissionBatch",
@@ -3431,7 +3431,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalUpload.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalUpload.h",
       "owner": "MetalStagingBuffer",
       "symbol": "m_device",
       "policy": "SubmissionBatch",
@@ -3440,7 +3440,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_Metal/Private/MetalUpload.h",
+      "path": "Source/Runtime/RHI_Metal/Private/MetalUpload.h",
       "owner": "MetalStagingBuffer",
       "symbol": "m_wrapperBuffer",
       "policy": "SubmissionBatch",
@@ -3449,7 +3449,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_OpenGL/Private/OpenGLSync.h",
+      "path": "Source/Runtime/RHI_OpenGL/Private/OpenGLSync.h",
       "owner": "SyncPoint",
       "symbol": "sync",
       "policy": "OwnerSnapshot",
@@ -3458,7 +3458,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_OpenGL/Private/OpenGLUpload.h",
+      "path": "Source/Runtime/RHI_OpenGL/Private/OpenGLUpload.h",
       "owner": "OpenGLRingBuffer",
       "symbol": "m_wrapperBuffer",
       "policy": "SubmissionBatch",
@@ -3467,7 +3467,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_OpenGL/Private/OpenGLUpload.h",
+      "path": "Source/Runtime/RHI_OpenGL/Private/OpenGLUpload.h",
       "owner": "OpenGLStagingBuffer",
       "symbol": "m_wrapperBuffer",
       "policy": "SubmissionBatch",
@@ -3476,7 +3476,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanCommandBufferPool.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanCommandBufferPool.h",
       "owner": "VulkanCommandBufferPool",
       "symbol": "m_allBuffers",
       "policy": "PoolAvailability",
@@ -3485,7 +3485,7 @@
       "deviceLostRelease": "pool explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanCommandBufferPool.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanCommandBufferPool.h",
       "owner": "VulkanCommandBufferPool",
       "symbol": "m_availableBuffers",
       "policy": "PoolAvailability",
@@ -3494,7 +3494,7 @@
       "deviceLostRelease": "pool explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanCommandBufferPool.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanCommandBufferPool.h",
       "owner": "VulkanCommandBufferPool",
       "symbol": "m_commandPool",
       "policy": "PoolAvailability",
@@ -3503,7 +3503,7 @@
       "deviceLostRelease": "pool explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanCommandContext.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanCommandContext.h",
       "owner": "VulkanCommandContext",
       "symbol": "m_commandBuffer",
       "policy": "ShutdownAfterDrain",
@@ -3512,7 +3512,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanCommandContext.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanCommandContext.h",
       "owner": "VulkanCommandContext",
       "symbol": "m_commandPool",
       "policy": "ShutdownAfterDrain",
@@ -3521,7 +3521,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanDevice.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanDevice.h",
       "owner": "DeferredSemaphoreDestroy",
       "symbol": "fence",
       "policy": "ShutdownAfterDrain",
@@ -3530,7 +3530,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanDevice.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanDevice.h",
       "owner": "DeferredSemaphoreDestroy",
       "symbol": "semaphores",
       "policy": "ShutdownAfterDrain",
@@ -3539,7 +3539,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanDevice.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanDevice.h",
       "owner": "VulkanDevice",
       "symbol": "m_computeCommandPool",
       "policy": "ShutdownAfterDrain",
@@ -3548,7 +3548,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanDevice.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanDevice.h",
       "owner": "VulkanDevice",
       "symbol": "m_frameFences",
       "policy": "ShutdownAfterDrain",
@@ -3557,7 +3557,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanDevice.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanDevice.h",
       "owner": "VulkanDevice",
       "symbol": "m_graphicsCommandPool",
       "policy": "ShutdownAfterDrain",
@@ -3566,7 +3566,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanDevice.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanDevice.h",
       "owner": "VulkanDevice",
       "symbol": "m_imageAvailableSemaphores",
       "policy": "ShutdownAfterDrain",
@@ -3575,7 +3575,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanDevice.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanDevice.h",
       "owner": "VulkanDevice",
       "symbol": "m_renderFinishedSemaphores",
       "policy": "ShutdownAfterDrain",
@@ -3584,7 +3584,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanDevice.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanDevice.h",
       "owner": "VulkanDevice",
       "symbol": "m_transferCommandPool",
       "policy": "ShutdownAfterDrain",
@@ -3593,7 +3593,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanPipeline.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanPipeline.h",
       "owner": "VulkanDescriptorSetLayout",
       "symbol": "m_layout",
       "policy": "OwnerSnapshot",
@@ -3602,7 +3602,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanPipeline.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanPipeline.h",
       "owner": "VulkanDescriptorSet",
       "symbol": "m_descriptorSet",
       "policy": "OwnerSnapshot",
@@ -3611,7 +3611,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanPipeline.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanPipeline.h",
       "owner": "VulkanDescriptorSet",
       "symbol": "m_layout",
       "policy": "OwnerSnapshot",
@@ -3620,7 +3620,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanPipeline.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanPipeline.h",
       "owner": "VulkanPipelineLayout",
       "symbol": "m_layout",
       "policy": "OwnerSnapshot",
@@ -3629,7 +3629,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanPipeline.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanPipeline.h",
       "owner": "VulkanPipelineLayout",
       "symbol": "m_setLayouts",
       "policy": "OwnerSnapshot",
@@ -3638,7 +3638,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanPipeline.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanPipeline.h",
       "owner": "VulkanPipeline",
       "symbol": "m_pipeline",
       "policy": "OwnerSnapshot",
@@ -3647,7 +3647,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanPipeline.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanPipeline.h",
       "owner": "VulkanPipeline",
       "symbol": "m_pipelineLayout",
       "policy": "OwnerSnapshot",
@@ -3656,7 +3656,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanResources.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanResources.h",
       "owner": "VulkanBuffer",
       "symbol": "m_boundMemory",
       "policy": "OwnerSnapshot",
@@ -3665,7 +3665,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanResources.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanResources.h",
       "owner": "VulkanBuffer",
       "symbol": "m_buffer",
       "policy": "OwnerSnapshot",
@@ -3674,7 +3674,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanResources.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanResources.h",
       "owner": "VulkanFence",
       "symbol": "m_semaphore",
       "policy": "OwnerSnapshot",
@@ -3683,7 +3683,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanResources.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanResources.h",
       "owner": "VulkanHeap",
       "symbol": "m_memory",
       "policy": "OwnerSnapshot",
@@ -3692,7 +3692,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanResources.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanResources.h",
       "owner": "VulkanSampler",
       "symbol": "m_sampler",
       "policy": "OwnerSnapshot",
@@ -3701,7 +3701,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanResources.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanResources.h",
       "owner": "VulkanShader",
       "symbol": "m_shaderModule",
       "policy": "OwnerSnapshot",
@@ -3710,7 +3710,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanResources.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanResources.h",
       "owner": "VulkanTexture",
       "symbol": "m_image",
       "policy": "OwnerSnapshot",
@@ -3719,7 +3719,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanResources.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanResources.h",
       "owner": "VulkanTextureView",
       "symbol": "m_imageView",
       "policy": "OwnerSnapshot",
@@ -3728,7 +3728,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanSwapChain.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanSwapChain.h",
       "owner": "VulkanSwapChain",
       "symbol": "m_backBuffers",
       "policy": "SurfaceGeneration",
@@ -3737,7 +3737,7 @@
       "deviceLostRelease": "surface explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanSwapChain.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanSwapChain.h",
       "owner": "VulkanSwapChain",
       "symbol": "m_backBufferViews",
       "policy": "SurfaceGeneration",
@@ -3746,7 +3746,7 @@
       "deviceLostRelease": "surface explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanSwapChain.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanSwapChain.h",
       "owner": "VulkanSwapChain",
       "symbol": "m_imagesInFlight",
       "policy": "SurfaceGeneration",
@@ -3755,7 +3755,7 @@
       "deviceLostRelease": "surface explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanSwapChain.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanSwapChain.h",
       "owner": "VulkanSwapChain",
       "symbol": "m_renderFinishedSemaphores",
       "policy": "SurfaceGeneration",
@@ -3764,7 +3764,7 @@
       "deviceLostRelease": "surface explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanSwapChain.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanSwapChain.h",
       "owner": "VulkanSwapChain",
       "symbol": "m_surface",
       "policy": "SurfaceGeneration",
@@ -3773,7 +3773,7 @@
       "deviceLostRelease": "surface explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanSwapChain.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanSwapChain.h",
       "owner": "VulkanSwapChain",
       "symbol": "m_swapchain",
       "policy": "SurfaceGeneration",
@@ -3782,7 +3782,7 @@
       "deviceLostRelease": "surface explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanUpload.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanUpload.h",
       "owner": "VulkanRingBuffer",
       "symbol": "m_buffer",
       "policy": "SubmissionBatch",
@@ -3791,7 +3791,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanUpload.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanUpload.h",
       "owner": "VulkanRingBuffer",
       "symbol": "m_memory",
       "policy": "SubmissionBatch",
@@ -3800,7 +3800,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanUpload.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanUpload.h",
       "owner": "VulkanRingBuffer",
       "symbol": "m_wrapperBuffer",
       "policy": "SubmissionBatch",
@@ -3809,7 +3809,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanUpload.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanUpload.h",
       "owner": "VulkanStagingBuffer",
       "symbol": "m_buffer",
       "policy": "SubmissionBatch",
@@ -3818,7 +3818,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanUpload.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanUpload.h",
       "owner": "VulkanStagingBuffer",
       "symbol": "m_memory",
       "policy": "SubmissionBatch",
@@ -3827,7 +3827,7 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanUpload.h",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanUpload.h",
       "owner": "VulkanStagingBuffer",
       "symbol": "m_wrapperBuffer",
       "policy": "SubmissionBatch",
@@ -3854,7 +3854,7 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12CommandContext.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12CommandContext.h",
       "owner": "DX12CommandContext",
       "symbol": "m_enhancedCommandList",
       "policy": "ShutdownAfterDrain",
@@ -3863,7 +3863,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12DescriptorHeap.cpp",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12DescriptorHeap.cpp",
       "owner": "DX12PagedDescriptorAllocator",
       "symbol": "heap",
       "policy": "ShutdownAfterDrain",
@@ -3872,7 +3872,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Device.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Device.h",
       "owner": "DX12Device",
       "symbol": "m_commandSignatures",
       "policy": "ShutdownAfterDrain",
@@ -3881,7 +3881,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_DX12/Private/DX12Device.h",
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Device.h",
       "owner": "DX12Device",
       "symbol": "m_queueTimelineFences",
       "policy": "ShutdownAfterDrain",
@@ -3890,7 +3890,7 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
-      "path": "RHI_Vulkan/Private/VulkanCommandContext.cpp",
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanCommandContext.cpp",
       "owner": "BatchState",
       "symbol": "completionSemaphore",
       "policy": "SubmissionBatch",
@@ -5771,7 +5771,7 @@
       "deviceLostRelease": "pre-submission provider result releases without waiting for GPU completion"
     },
     {
-      "path": "ShaderContracts/Include/ShaderContracts/ShaderProgramProvider.h",
+      "path": "Source/Runtime/ShaderContracts/Include/ShaderContracts/ShaderProgramProvider.h",
       "owner": "ShaderProgramResult",
       "symbol": "shader",
       "policy": "OwnerSnapshot",

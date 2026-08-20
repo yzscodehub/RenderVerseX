@@ -59,7 +59,7 @@ if(RVX_ENABLE_DX12)
             glfw
         INCLUDES
             ${CMAKE_CURRENT_SOURCE_DIR}
-            ${CMAKE_SOURCE_DIR}/RHI_DX12/Private
+            ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI_DX12/Private
             ${CMAKE_SOURCE_DIR}/Render/Private
         TAGS backend.dx12 trait.gpu ${RVX_NATIVE_DX12_PRIMARY_TAGS}
         TIMEOUT 120
@@ -87,7 +87,7 @@ if(RVX_ENABLE_VULKAN)
             glfw
         INCLUDES
             ${CMAKE_CURRENT_SOURCE_DIR}
-            ${CMAKE_SOURCE_DIR}/RHI_Vulkan/Private
+            ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI_Vulkan/Private
         TAGS backend.vulkan trait.gpu ${RVX_NATIVE_VULKAN_PRIMARY_TAGS}
         TIMEOUT 120
         RESOURCE_LOCK rvx_gpu
@@ -109,7 +109,7 @@ if(RVX_ENABLE_DX11)
             glfw
         INCLUDES
             ${CMAKE_CURRENT_SOURCE_DIR}
-            ${CMAKE_SOURCE_DIR}/RHI_DX11/Private
+            ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI_DX11/Private
         TAGS backend.dx11 trait.gpu
         TIMEOUT 120
         RESOURCE_LOCK rvx_gpu
