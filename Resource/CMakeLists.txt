@@ -65,9 +65,6 @@ target_sources(RVX_Resource PRIVATE
     Private/Importer/GLTFImporter.cpp
     Private/Importer/FBXImporter.cpp
 
-    # Hot-reload system
-    Private/FileWatcher.cpp
-    Private/HotReloadManager.cpp
 )
 
 target_include_directories(RVX_Resource PUBLIC

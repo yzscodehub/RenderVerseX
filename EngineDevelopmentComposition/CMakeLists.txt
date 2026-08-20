@@ -12,11 +12,13 @@ target_include_directories(RVX_EngineDevelopmentComposition PUBLIC
 
 target_link_libraries(RVX_EngineDevelopmentComposition PUBLIC
     RVX::Engine
+    RVX::Resource
     RVX::ShaderContracts
 )
 
 target_link_libraries(RVX_EngineDevelopmentComposition PRIVATE
     RVX::ShaderCompiler
+    RVX::ResourceSource
 )
 
 add_library(

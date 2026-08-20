@@ -232,8 +232,11 @@ namespace
     }
 } // namespace
 
-ModelLoader::ModelLoader(ResourceManager* manager)
+ModelLoader::ModelLoader(
+    ResourceManager* manager,
+    ResourceLoaderDomainPolicy domainPolicy)
     : m_manager(manager)
+    , m_domainPolicy(domainPolicy)
 {
 }
 
@@ -297,6 +300,21 @@ bool ModelLoader::CanLoad(const std::string& path) const
     std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
     const std::vector<std::string> extensions = GetSupportedExtensions();
     return std::find(extensions.begin(), extensions.end(), extension) != extensions.end();
+}
+
+bool ModelLoader::Supports(const ResourceLoaderRequest& request) const
+{
+    if (request.type != ResourceType::Model ||
+        !SupportsResourceLoadDomain(m_domainPolicy, request.domain) ||
+        !CanLoad(request.resolvedPath))
+    {
+        return false;
+    }
+
+    const bool cookedArtifact = IsCookedModelPath(request.resolvedPath);
+    return request.domain == ResourceLoadDomain::Source
+        ? !cookedArtifact
+        : cookedArtifact;
 }
 
 IResource* ModelLoader::Load(const std::string& path)

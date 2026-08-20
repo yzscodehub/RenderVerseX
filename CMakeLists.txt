@@ -253,6 +253,8 @@ endif()
 add_subdirectory(RHI_BackendFactory) # Enabled RHI backend composition
 
 add_subdirectory(Resource)   # Resource module (canonical resource management)
+add_subdirectory(AssetImport) # Development-only source importer adapters
+add_subdirectory(ResourceSource) # Development source loading and monitoring
 add_subdirectory(ResourceSceneAdapters) # Resource data to pure ECS scene adapters
 add_subdirectory(Physics)    # Physics subsystem
 add_subdirectory(PhysicsSceneAdapters) # Pure ECS to Built-in Physics composition

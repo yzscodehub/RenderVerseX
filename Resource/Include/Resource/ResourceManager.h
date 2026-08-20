@@ -665,9 +665,13 @@ namespace RVX::Resource
 
         mutable std::mutex m_hotReloadMutex;
         ResourceHotReloadDiagnostic m_hotReloadDiagnostic;
-        bool m_hotReloadInitializedByManager = false;
-        uint32_t m_hotReloadCallbackId = 0;
-        std::unordered_map<ResourceId, uint32_t> m_hotReloadWatchIds;
+        std::unique_ptr<IResourceChangeMonitor> m_changeMonitor;
+        std::unordered_map<ResourceId, std::string> m_hotReloadSourcePaths;
+        std::unordered_map<ResourceId, std::string> m_hotReloadRequestPaths;
+        size_t m_pendingHotReloadCount = 0;
+        size_t m_totalHotReloadCount = 0;
+        size_t m_successfulHotReloadCount = 0;
+        size_t m_failedHotReloadCount = 0;
 
         // Internal loading
         IResource* LoadInternal(const std::string& path,
@@ -733,6 +737,9 @@ namespace RVX::Resource
         bool IsHotReloadSupportedByPolicy() const;
         void ConfigureHotReload(bool enable);
         void RegisterHotReloadResource(IResource* resource, const ResourcePathResolution& resolution);
+        void UnregisterHotReloadResource(ResourceId resourceId) noexcept;
+        void ClearHotReloadResources() noexcept;
+        bool ReloadChangedResource(const ResourceSourceChange& change);
         void QueueLifecycleEvent(ResourceLifecycleEventType type,
                                  IResource* resource);
         void DrainLifecycleEvents();
@@ -745,9 +752,9 @@ namespace RVX::Resource
         void StopAsyncWorkers();
     };
 
-    /** @brief Compose the current built-in loader set explicitly for one manager. */
+    /** @brief Compose the cooked/package loader set for a runtime manager. */
     [[nodiscard]] ResourceManagerDependencies
-        CreateBuiltinResourceManagerDependencies(ResourceManager& manager);
+        CreateRuntimeResourceManagerDependencies(ResourceManager& manager);
 
     // =========================================================================
     // Template Implementations

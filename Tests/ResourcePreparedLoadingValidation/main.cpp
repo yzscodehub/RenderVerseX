@@ -1,5 +1,5 @@
 #include "Resource/ResourceManager.h"
-#include "Resource/HotReloadManager.h"
+#include "AssetImport/SourceResourceLoaders.h"
 #include "Resource/Importer/GLTFImporter.h"
 #include "Resource/Types/ModelResource.h"
 #include "Core/Log.h"
@@ -256,10 +256,36 @@ namespace
         bool m_release = false;
     };
 
+    class CountingChangeMonitor final : public IResourceChangeMonitor
+    {
+    public:
+        void Watch(ResourceId resourceId, std::string path) override
+        {
+            (void)resourceId;
+            (void)path;
+            ++watchCount;
+        }
+
+        void Unwatch(ResourceId resourceId) override
+        {
+            (void)resourceId;
+        }
+
+        std::vector<ResourceSourceChange> Poll() override
+        {
+            return {};
+        }
+
+        uint32 watchCount = 0;
+    };
+
     class ManagerGuard final
     {
     public:
-        explicit ManagerGuard(uint32 workerCount, bool useBuiltinLoaders = false)
+        explicit ManagerGuard(
+            uint32 workerCount,
+            bool useBuiltinLoaders = false,
+            bool useChangeMonitor = false)
         {
             ResourceManagerConfig config;
             config.asyncThreadCount = static_cast<int>(workerCount);
@@ -267,8 +293,14 @@ namespace
             config.runtimePolicy.allowSourceAssetReads = true;
             ResourceManager& manager = ResourceManager::Get();
             ResourceManagerDependencies dependencies = useBuiltinLoaders
-                ? CreateBuiltinResourceManagerDependencies(manager)
+                ? CreateRuntimeResourceManagerDependencies(manager)
                 : ResourceManagerDependencies{};
+            if (useChangeMonitor)
+            {
+                auto monitor = std::make_unique<CountingChangeMonitor>();
+                m_changeMonitor = monitor.get();
+                dependencies.changeMonitor = std::move(monitor);
+            }
             manager.Initialize(config, std::move(dependencies));
         }
 
@@ -277,6 +309,14 @@ namespace
             ResourceManager::Get().Shutdown();
             JobSystem::Get().Shutdown();
         }
+
+        [[nodiscard]] CountingChangeMonitor* GetChangeMonitor() const
+        {
+            return m_changeMonitor;
+        }
+
+    private:
+        CountingChangeMonitor* m_changeMonitor = nullptr;
     };
 
     ResourceContentIdentity MakeContentIdentity(
@@ -578,6 +618,10 @@ TEST(ResourcePreparedLoadingValidation, ModelPreparedLoadVerifiesR7TriangleConsu
     ASSERT_TRUE(std::filesystem::is_regular_file(fixture));
 
     ManagerGuard guard(0, true);
+    ResourceManager::Get().RegisterLoader(
+        ResourceType::Model,
+        std::make_unique<RVX::AssetImport::SourceModelLoader>(
+            &ResourceManager::Get()));
     ResourceLoadOptions options;
     options.expectedContentIdentity = MakeContentIdentity(
         "f41b11c0403cc68c8da3988a954391c8b2e4f5b46a9d800f82c9d4256b395aab",
@@ -789,9 +833,10 @@ TEST(ResourcePreparedLoadingValidation, ReservedRootIdentityCannotBeOverwrittenB
 
 TEST(ResourcePreparedLoadingValidation, VerifiedIdentityRootsDoNotRegisterForHotReload)
 {
-    ManagerGuard guard(0);
+    ManagerGuard guard(0, false, true);
     ResourceManager::Get().EnableHotReload(true);
-    ASSERT_TRUE(HotReloadManager::Get().IsInitialized());
+    ASSERT_TRUE(ResourceManager::Get().IsHotReloadEnabled());
+    ASSERT_NE(guard.GetChangeMonitor(), nullptr);
 
     auto loader = std::make_unique<PreparedTestLoader>();
     PreparedTestLoader* loaderPtr = loader.get();
@@ -818,11 +863,9 @@ TEST(ResourcePreparedLoadingValidation, VerifiedIdentityRootsDoNotRegisterForHot
     const ResourceHandle<PreparedTestResource> pinned = request.TryGet();
     ASSERT_TRUE(pinned);
     IResource* const original = pinned.Get();
-    const ResourceId resourceId = pinned.GetId();
-
-    EXPECT_EQ(HotReloadManager::Get().GetResourceVersion(resourceId), 0u);
-    EXPECT_FALSE(HotReloadManager::Get().ForceReload(resourceId));
-    EXPECT_EQ(HotReloadManager::Get().GetStats().registeredResources, 0u);
+    EXPECT_EQ(guard.GetChangeMonitor()->watchCount, 0u);
+    EXPECT_EQ(ResourceManager::Get().GetHotReloadDiagnostic().registeredResourceCount,
+              0u);
     ResourceManager::Get().ProcessCompletedLoads();
     EXPECT_EQ(reloadedEvents.load(std::memory_order_relaxed), 0u);
     EXPECT_EQ(request.TryGet().Get(), original);

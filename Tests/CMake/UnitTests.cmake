@@ -945,6 +945,19 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME ResourceSourceValidation
+    LANE unit
+    SOURCES ResourceSourceValidation/main.cpp
+    LIBS
+        RVX::AssetImport
+        RVX::EngineDevelopmentComposition
+        RVX::Resource
+        RVX::ResourceSource
+    TAGS subsystem.resource suite.source-composition
+    TIMEOUT 60
+)
+
+rvx_add_gtest(
     NAME ResourceLoadOperationValidation
     LANE unit
     SOURCES ResourceLoadOperationValidation/main.cpp
@@ -983,6 +996,7 @@ rvx_add_gtest(
     LANE unit
     SOURCES ResourcePreparedLoadingValidation/main.cpp
     LIBS
+        RVX::AssetImport
         RVX::Core
         RVX::Resource
     TAGS subsystem.resource trait.async
@@ -1016,7 +1030,7 @@ rvx_add_gtest(
     NAME SceneAssetStreamingValidation
     LANE unit
     SOURCES SceneAssetStreamingValidation/main.cpp
-    LIBS RVX::Core RVX::Resource
+    LIBS RVX::Core RVX::Resource RVX::ResourceSource
     DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     TAGS subsystem.resource suite.streaming
     TIMEOUT 30

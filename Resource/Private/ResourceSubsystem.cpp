@@ -102,7 +102,7 @@ namespace
         ResourceManager& manager = ResourceManager::Get();
         ResourceManagerDependencies dependencies = m_dependencies
             ? std::move(*m_dependencies)
-            : CreateBuiltinResourceManagerDependencies(manager);
+            : CreateRuntimeResourceManagerDependencies(manager);
         m_dependencies.reset();
         manager.Initialize(m_config, std::move(dependencies));
         manager.SetLifecycleEventCallback(

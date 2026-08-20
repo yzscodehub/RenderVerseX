@@ -4,11 +4,13 @@
 #include "Resource/Loader/TextureLoader.h"
 #include "Resource/ResourceManager.h"
 #include "Resource/Types/ModelResource.h"
+#include "ResourceSource/ResourceSourceComposition.h"
 
 #include <gtest/gtest.h>
 
 #include <chrono>
 #include <filesystem>
+#include <stdexcept>
 #include <thread>
 
 using namespace RVX;
@@ -45,9 +47,19 @@ public:
         config.runtimePolicy.allowSourceAssetReads = true;
         config.startupTraceContext = std::move(traceContext);
         ResourceManager& manager = ResourceManager::Get();
-        manager.Initialize(
-            config,
-            CreateBuiltinResourceManagerDependencies(manager));
+        ResourceManagerDependencies dependencies =
+            CreateRuntimeResourceManagerDependencies(manager);
+        std::string compositionError;
+        if (!ResourceSource::AddSourceResourceDependencies(
+                dependencies,
+                manager,
+                compositionError))
+        {
+            throw std::runtime_error(
+                "Failed to compose source resource dependencies: " +
+                compositionError);
+        }
+        manager.Initialize(config, std::move(dependencies));
     }
 
     ~ManagerGuard()

@@ -31,6 +31,7 @@
 #include "Resource/Types/MeshResource.h"
 #include "Resource/Types/ModelResource.h"
 #include "Resource/Types/ShaderResource.h"
+#include "ResourceSource/ResourceSourceComposition.h"
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHI.h"
 #include "Geometry/Asset/Mesh.h"
@@ -55,6 +56,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -376,7 +378,24 @@ namespace
     {
         manager.Initialize(
             config,
-            RVX::Resource::CreateBuiltinResourceManagerDependencies(manager));
+            RVX::Resource::CreateRuntimeResourceManagerDependencies(manager));
+    }
+
+    void InitializeDevelopmentResources(
+        RVX::Resource::ResourceManager& manager,
+        const RVX::Resource::ResourceManagerConfig& config = {})
+    {
+        RVX::Resource::ResourceManagerDependencies dependencies =
+            RVX::Resource::CreateRuntimeResourceManagerDependencies(manager);
+        std::string compositionError;
+        if (!RVX::ResourceSource::AddSourceResourceDependencies(
+                dependencies, manager, compositionError))
+        {
+            throw std::runtime_error(
+                "Failed to compose source resource dependencies: " +
+                compositionError);
+        }
+        manager.Initialize(config, std::move(dependencies));
     }
 
     void WriteBinaryFile(const fs::path& path, const std::vector<uint8_t>& bytes)
@@ -1792,7 +1811,7 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliRewritesGltfTextureUrisToCooked
     RVX::Resource::ResourceManager manager;
     RVX::Resource::ResourceManagerConfig config;
     config.asyncThreadCount = 0;
-    InitializeBuiltinResources(manager, config);
+    InitializeDevelopmentResources(manager, config);
 
     RVX::Resource::ResourceHandle<RVX::Resource::ModelResource> model =
         manager.Load<RVX::Resource::ModelResource>(rewrittenModel.string());
@@ -2107,7 +2126,7 @@ TEST_F(RenderHonestyValidationFixture, ModelLoaderResolvesExternalCookedTextureA
     RVX::Resource::ResourceManager manager;
     RVX::Resource::ResourceManagerConfig config;
     config.asyncThreadCount = 0;
-    InitializeBuiltinResources(manager, config);
+    InitializeDevelopmentResources(manager, config);
 
     RVX::Resource::ResourceHandle<RVX::Resource::ModelResource> model =
         manager.Load<RVX::Resource::ModelResource>(modelPath.string());
@@ -2130,7 +2149,7 @@ TEST_F(RenderHonestyValidationFixture, ModelLoaderResolvesExternalCookedTextureA
     // cooked CPU product. It is published directly and never enters the
     // source-image fallback/decode streaming state machine.
     RVX::Resource::ResourceManager preparedManager;
-    InitializeBuiltinResources(preparedManager, config);
+    InitializeDevelopmentResources(preparedManager, config);
     auto preparedRequest =
         preparedManager.RequestAsync<RVX::Resource::ModelResource>(
             modelPath.string());
@@ -3426,7 +3445,7 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerTextureLoadDoesNotLeavePol
     RVX::Resource::ResourceManager manager;
     RVX::Resource::ResourceManagerConfig config;
     config.asyncThreadCount = 0;
-    InitializeBuiltinResources(manager, config);
+    InitializeDevelopmentResources(manager, config);
 
     RVX::IResource* resource = manager.LoadResource(texturePath.string());
     ASSERT_NE(resource, nullptr);
@@ -3463,7 +3482,7 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerTextureLoadDoesNotStealExi
     RVX::Resource::ResourceManager manager;
     RVX::Resource::ResourceManagerConfig config;
     config.asyncThreadCount = 0;
-    InitializeBuiltinResources(manager, config);
+    InitializeDevelopmentResources(manager, config);
 
     RVX::Resource::TextureLoader loader(&manager);
     RVX::Resource::TextureReference normalRef =

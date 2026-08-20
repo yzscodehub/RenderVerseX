@@ -133,6 +133,37 @@ namespace
         std::string lastPath;
     };
 
+    class RecordingChangeMonitor final : public IResourceChangeMonitor
+    {
+    public:
+        void Watch(ResourceId resourceId, std::string path) override
+        {
+            watched[resourceId] = std::move(path);
+        }
+
+        void Unwatch(ResourceId resourceId) override
+        {
+            watched.erase(resourceId);
+        }
+
+        std::vector<ResourceSourceChange> Poll() override
+        {
+            std::vector<ResourceSourceChange> result;
+            result.swap(pending);
+            return result;
+        }
+
+        void Queue(ResourceId resourceId)
+        {
+            const auto found = watched.find(resourceId);
+            ASSERT_NE(found, watched.end());
+            pending.push_back({resourceId, found->second});
+        }
+
+        std::unordered_map<ResourceId, std::string> watched;
+        std::vector<ResourceSourceChange> pending;
+    };
+
     class BlockingLoader final : public IResourceLoader
     {
     public:
@@ -215,8 +246,20 @@ namespace
                 manager.Shutdown();
             }
             ResourceManagerDependencies dependencies = useBuiltinLoaders
-                ? CreateBuiltinResourceManagerDependencies(manager)
+                ? CreateRuntimeResourceManagerDependencies(manager)
                 : ResourceManagerDependencies{};
+            manager.Initialize(config, std::move(dependencies));
+        }
+
+        ResourceManagerTestGuard(
+            const ResourceManagerConfig& config,
+            ResourceManagerDependencies dependencies)
+        {
+            auto& manager = ResourceManager::Get();
+            if (manager.IsInitialized())
+            {
+                manager.Shutdown();
+            }
             manager.Initialize(config, std::move(dependencies));
         }
 
@@ -1344,7 +1387,11 @@ TEST(ResourceRuntimePolicyValidation, EditorHotReloadTracksSourceResourceLoads)
     config.runtimePolicy.sourceRoot = root.string();
 
     {
-        ResourceManagerTestGuard guard(config);
+        ResourceManagerDependencies dependencies;
+        auto monitor = std::make_unique<RecordingChangeMonitor>();
+        RecordingChangeMonitor* monitorPtr = monitor.get();
+        dependencies.changeMonitor = std::move(monitor);
+        ResourceManagerTestGuard guard(config, std::move(dependencies));
         auto& manager = ResourceManager::Get();
 
         EXPECT_TRUE(manager.IsHotReloadEnabled());
@@ -1356,6 +1403,7 @@ TEST(ResourceRuntimePolicyValidation, EditorHotReloadTracksSourceResourceLoads)
 
         IResource* resource = manager.LoadResource("source://textures/albedo.png");
         ASSERT_NE(resource, nullptr);
+        const ResourceId resourceId = resource->GetId();
         EXPECT_EQ(loaderPtr->loadCount, 1u);
         ExpectEquivalentExistingPath(loaderPtr->lastPath, sourcePath);
 
@@ -1391,8 +1439,40 @@ TEST(ResourceRuntimePolicyValidation, EditorHotReloadTracksSourceResourceLoads)
         ASSERT_TRUE(SaveResourceHotReloadDiagnosticJson(diagnosticPathString.c_str(), diagnostic));
         EXPECT_EQ(ReadTextFile(diagnosticPath), diagnosticJson);
 
+        uint32 reloadedEvents = 0;
+        manager.SetLifecycleEventCallback(
+            [&reloadedEvents](const ResourceLifecycleEvent& event)
+            {
+                if (event.type == ResourceLifecycleEventType::Reloaded)
+                {
+                    ++reloadedEvents;
+                }
+            });
+        monitorPtr->Queue(resourceId);
         manager.CheckForChanges();
+        manager.ProcessCompletedLoads();
+        EXPECT_EQ(loaderPtr->loadCount, 2u);
+        EXPECT_EQ(reloadedEvents, 1u);
         EXPECT_EQ(manager.GetHotReloadDiagnostic().status, ResourceHotReloadStatus::Active);
+        EXPECT_EQ(manager.GetHotReloadDiagnostic().totalReloadCount, 1u);
+        EXPECT_EQ(manager.GetHotReloadDiagnostic().successfulReloadCount, 1u);
+        EXPECT_EQ(manager.GetHotReloadDiagnostic().failedReloadCount, 0u);
+        EXPECT_EQ(manager.Unload(resourceId),
+                  AssetResidencyReleaseResult::Unloaded);
+        EXPECT_EQ(manager.GetHotReloadDiagnostic().registeredResourceCount, 0u);
+        EXPECT_TRUE(monitorPtr->watched.empty());
+    }
+
+    {
+        ResourceManagerDependencies dependencies;
+        dependencies.changeMonitor =
+            std::make_unique<RecordingChangeMonitor>();
+        ResourceManagerTestGuard guard(config, std::move(dependencies));
+        const ResourceHotReloadDiagnostic diagnostic =
+            ResourceManager::Get().GetHotReloadDiagnostic();
+        EXPECT_EQ(diagnostic.totalReloadCount, 0u);
+        EXPECT_EQ(diagnostic.successfulReloadCount, 0u);
+        EXPECT_EQ(diagnostic.failedReloadCount, 0u);
     }
 
     std::error_code removeError;

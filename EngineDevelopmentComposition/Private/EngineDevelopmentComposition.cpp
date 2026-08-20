@@ -3,6 +3,8 @@
 #include "EngineDevelopmentComposition/EngineDevelopmentComposition.h"
 
 #include "ShaderCompiler/ShaderManager.h"
+#include "Core/Assert.h"
+#include "ResourceSource/ResourceSourceComposition.h"
 
 #include <array>
 #include <filesystem>
@@ -212,5 +214,29 @@ void ConfigureEngineDevelopmentShaders(
     config.shaderProgramProviderFactory =
         CreateDevelopmentShaderProgramProviderFactory(
             std::move(shaderSourceRoot));
+}
+
+ResourceManagerDependencies CreateDevelopmentResourceManagerDependencies()
+{
+    Resource::ResourceManager& manager = Resource::ResourceManager::Get();
+    ResourceManagerDependencies dependencies =
+        Resource::CreateRuntimeResourceManagerDependencies(manager);
+    std::string error;
+    const bool added = ResourceSource::AddSourceResourceDependencies(
+        dependencies, manager, error);
+    RVX_ASSERT_MSG(
+        added,
+        "Development resource dependency composition failed: {}",
+        error);
+    return dependencies;
+}
+
+bool ConfigureEngineDevelopmentResources(
+    Resource::ResourceSubsystem& subsystem,
+    Resource::ResourceManagerConfig config)
+{
+    return subsystem.Configure(
+        config,
+        CreateDevelopmentResourceManagerDependencies());
 }
 } // namespace RVX

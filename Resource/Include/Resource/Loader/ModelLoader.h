@@ -14,6 +14,7 @@
 #include "Resource/ResourceManager.h"
 #include "Resource/Types/ModelResource.h"
 #include "Resource/Types/TextureResource.h"
+#include "ResourceRuntime/ResourceLoaderDomainPolicy.h"
 #include <mutex>
 #include <string>
 
@@ -31,7 +32,10 @@ namespace RVX::Resource
     class ModelLoader : public IResourceLoader
     {
     public:
-        explicit ModelLoader(ResourceManager* manager);
+        explicit ModelLoader(
+            ResourceManager* manager,
+            ResourceLoaderDomainPolicy domainPolicy =
+                ResourceLoaderDomainPolicy::SourceAndRuntime);
         ~ModelLoader() override = default;
 
         // =====================================================================
@@ -51,6 +55,7 @@ namespace RVX::Resource
             uint64& outCanonicalImportOptionsHash,
             ResourceLoadError& outError) const override;
         bool CanLoad(const std::string& path) const override;
+        bool Supports(const ResourceLoaderRequest& request) const override;
 
         // =====================================================================
         // Configuration
@@ -104,8 +109,22 @@ namespace RVX::Resource
             std::vector<ModelTextureStreamingSource>& outStreamingSources);
 
         ResourceManager* m_manager = nullptr;
+        ResourceLoaderDomainPolicy m_domainPolicy =
+            ResourceLoaderDomainPolicy::SourceAndRuntime;
         mutable std::mutex m_optionsMutex;
         GLTFImportOptions m_gltfOptions;
+    };
+
+    /** @brief Model loader exposed to cooked/package runtime composition. */
+    class CookedModelLoader final : public ModelLoader
+    {
+    public:
+        explicit CookedModelLoader(ResourceManager* manager)
+            : ModelLoader(
+                  manager,
+                  ResourceLoaderDomainPolicy::RuntimeOnly)
+        {
+        }
     };
 
 } // namespace RVX::Resource

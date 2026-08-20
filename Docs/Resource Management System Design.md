@@ -189,7 +189,7 @@ Asset/
       VirtualFileSystem.h        # Unified file access
       AssetBundle.h              # Packed asset format (.rvxpak)
       AssetDatabase.h            # Asset metadata DB (.rvxdb)
-      FileWatcher.h              # File change detection
+      ResourceChangeMonitor.h    # Injected source-change contract
       
       # ============ Primitive Asset Types ============
       # 封装来自其他模块的数据类型，提供生命周期管理
@@ -239,7 +239,7 @@ Asset/
     VirtualFileSystem.cpp
     AssetBundle.cpp
     AssetDatabase.cpp
-    FileWatcher.cpp
+    # Concrete polling monitor lives in the development ResourceSource module
     
     # Asset types
     Types/
@@ -1150,8 +1150,8 @@ class AnimationAsset : public Asset {
 
 **目标**：生产级功能
 
-- `FileWatcher` 文件监控
-- 热重载系统
+- `IResourceChangeMonitor` 注入式源文件变化监控
+- `ResourceManager` 所有的热重载事务
 - `AssetBundle` 打包/解包
 - 纹理 Mipmap 流式加载
 - 内存预算管理

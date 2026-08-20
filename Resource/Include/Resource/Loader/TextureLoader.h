@@ -11,6 +11,7 @@
 #include "Resource/ResourceManager.h"
 #include "Resource/Types/TextureResource.h"
 #include "Resource/Loader/TextureReference.h"
+#include "ResourceRuntime/ResourceLoaderDomainPolicy.h"
 #include <functional>
 #include <string>
 #include <memory>
@@ -51,7 +52,11 @@ namespace RVX::Resource
     class TextureLoader : public IResourceLoader
     {
     public:
-        explicit TextureLoader(ResourceManager* manager, bool prepareOnly = false);
+        explicit TextureLoader(
+            ResourceManager* manager,
+            bool prepareOnly = false,
+            ResourceLoaderDomainPolicy domainPolicy =
+                ResourceLoaderDomainPolicy::SourceAndRuntime);
         ~TextureLoader() override = default;
 
         // =====================================================================
@@ -66,6 +71,7 @@ namespace RVX::Resource
                      ResourceLoadError& outError) override;
         bool SupportsPreparedLoading() const override { return true; }
         bool CanLoad(const std::string& path) const override;
+        bool Supports(const ResourceLoaderRequest& request) const override;
 
         // =====================================================================
         // Extended Loading API
@@ -222,6 +228,8 @@ namespace RVX::Resource
 
         ResourceManager* m_manager;
         bool m_prepareOnly = false;
+        ResourceLoaderDomainPolicy m_domainPolicy =
+            ResourceLoaderDomainPolicy::SourceAndRuntime;
         TextureLoadStatus m_lastLoadStatus = TextureLoadStatus::None;
         std::string m_lastLoadError;
 
@@ -229,6 +237,19 @@ namespace RVX::Resource
         TextureResource* m_whiteTexture = nullptr;
         TextureResource* m_normalTexture = nullptr;
         TextureResource* m_errorTexture = nullptr;
+    };
+
+    /** @brief Texture loader exposed to cooked/package runtime composition. */
+    class CookedTextureLoader final : public TextureLoader
+    {
+    public:
+        explicit CookedTextureLoader(ResourceManager* manager)
+            : TextureLoader(
+                  manager,
+                  false,
+                  ResourceLoaderDomainPolicy::RuntimeOnly)
+        {
+        }
     };
 
 } // namespace RVX::Resource

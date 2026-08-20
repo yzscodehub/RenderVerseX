@@ -12,7 +12,7 @@
  * - ResourceRegistry: Metadata database
  * - DependencyGraph: Dependency tracking and resolution
  * - ResourceSubsystem: Engine subsystem integration
- * - Hot-reload support with file watching
+ * - Injected source-change monitoring for development composition
  * 
  * Supported formats:
  * - Models: glTF, GLB, FBX
@@ -34,11 +34,8 @@
  * // Or use ResourceManager directly
  * ResourceManager::Get().Load<MeshResource>("models/enemy.fbx");
  * 
- * // Hot-reload support
- * HotReloadManager::Get().Initialize(&ResourceManager::Get());
- * HotReloadManager::Get().WatchDirectory("Assets/");
- * // Call in update loop:
- * HotReloadManager::Get().Update();
+ * // Development hosts inject source loaders and a change monitor through
+ * // ResourceManagerDependencies. ResourceManager owns reload transactions.
  * @endcode
  */
 
@@ -78,7 +75,3 @@
 // Importers
 #include "Resource/Importer/GLTFImporter.h"
 #include "Resource/Importer/FBXImporter.h"
-
-// Hot-reload
-#include "Resource/FileWatcher.h"
-#include "Resource/HotReloadManager.h"

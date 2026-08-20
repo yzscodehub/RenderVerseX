@@ -2,13 +2,17 @@
 
 /** @file ResourceManagerDependencies.h @brief Move-only runtime composition */
 
+#include "ResourceRuntime/ResourceChangeMonitor.h"
 #include "ResourceRuntime/ResourceLoaderCatalog.h"
+
+#include <memory>
 
 namespace RVX::Resource
 {
     struct ResourceManagerDependencies
     {
         ResourceLoaderCatalog loaderCatalog;
+        std::unique_ptr<IResourceChangeMonitor> changeMonitor;
 
         ResourceManagerDependencies() = default;
         ~ResourceManagerDependencies() = default;

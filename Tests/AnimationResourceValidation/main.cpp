@@ -79,7 +79,7 @@ namespace
             ResourceManager& manager = ResourceManager::Get();
             manager.Initialize(
                 config,
-                CreateBuiltinResourceManagerDependencies(manager));
+                CreateRuntimeResourceManagerDependencies(manager));
         }
 
         ~ManagerGuard()

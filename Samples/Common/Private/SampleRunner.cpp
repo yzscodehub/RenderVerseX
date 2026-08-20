@@ -3978,7 +3978,8 @@ namespace RVX
         resourceConfig.asyncThreadCount =
             std::max(resourceConfig.asyncThreadCount, 1);
         resourceConfig.startupTraceContext = startupTraceContext;
-        if (!resourceSubsystem->Configure(resourceConfig))
+        if (!ConfigureEngineDevelopmentResources(
+                *resourceSubsystem, resourceConfig))
         {
             RVX_CORE_ERROR("Failed to configure ResourceSubsystem startup tracing");
             static_cast<void>(WriteEarlyFailureAssessment(

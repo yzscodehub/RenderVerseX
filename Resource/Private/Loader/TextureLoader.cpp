@@ -554,9 +554,13 @@ namespace RVX::Resource
     // Construction
     // =========================================================================
 
-    TextureLoader::TextureLoader(ResourceManager* manager, bool prepareOnly)
+    TextureLoader::TextureLoader(
+        ResourceManager* manager,
+        bool prepareOnly,
+        ResourceLoaderDomainPolicy domainPolicy)
         : m_manager(manager)
         , m_prepareOnly(prepareOnly)
+        , m_domainPolicy(domainPolicy)
     {
     }
 
@@ -577,6 +581,25 @@ namespace RVX::Resource
 
         auto extensions = GetSupportedExtensions();
         return std::find(extensions.begin(), extensions.end(), ext) != extensions.end();
+    }
+
+    bool TextureLoader::Supports(const ResourceLoaderRequest& request) const
+    {
+        if (request.type != ResourceType::Texture ||
+            !SupportsResourceLoadDomain(m_domainPolicy, request.domain) ||
+            !CanLoad(request.resolvedPath))
+        {
+            return false;
+        }
+
+        std::string extension =
+            std::filesystem::path(request.resolvedPath).extension().string();
+        std::transform(
+            extension.begin(), extension.end(), extension.begin(), ::tolower);
+        const bool cookedArtifact = extension == ".rva";
+        return request.domain == ResourceLoadDomain::Source
+            ? !cookedArtifact
+            : cookedArtifact;
     }
 
     IResource* TextureLoader::Load(const std::string& path)

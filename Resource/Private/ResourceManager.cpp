@@ -1,6 +1,5 @@
 #include "Resource/ResourceManager.h"
 #include "ModelTextureStreamingService.h"
-#include "Resource/HotReloadManager.h"
 #include "Resource/Loader/AnimationLoader.h"
 #include "Resource/Loader/EnvironmentLoader.h"
 #include "Resource/Loader/MeshLoader.h"
@@ -22,6 +21,7 @@
 #include <fstream>
 #include <iterator>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -902,6 +902,17 @@ void ResourceManager::Initialize(
 
     m_config = config;
     m_loaderCatalog = std::move(dependencies.loaderCatalog);
+    m_changeMonitor = std::move(dependencies.changeMonitor);
+    {
+        std::lock_guard<std::mutex> hotReloadLock(m_hotReloadMutex);
+        m_hotReloadSourcePaths.clear();
+        m_hotReloadRequestPaths.clear();
+        m_pendingHotReloadCount = 0;
+        m_totalHotReloadCount = 0;
+        m_successfulHotReloadCount = 0;
+        m_failedHotReloadCount = 0;
+        m_hotReloadDiagnostic = {};
+    }
     m_ownerThreadToken = GetCurrentThreadToken();
     m_cancelledLoadCount.store(0, std::memory_order_relaxed);
     m_closureUnloadRequestCount.store(0, std::memory_order_relaxed);
@@ -960,7 +971,7 @@ void ResourceManager::Initialize(
     RVX_RESOURCE_INFO("ResourceManager initialized");
 }
 
-ResourceManagerDependencies CreateBuiltinResourceManagerDependencies(
+ResourceManagerDependencies CreateRuntimeResourceManagerDependencies(
     ResourceManager& manager)
 {
     ResourceManagerDependencies dependencies;
@@ -972,10 +983,10 @@ ResourceManagerDependencies CreateBuiltinResourceManagerDependencies(
             std::move(loader), error);
         RVX_ASSERT_MSG(added, "Built-in resource loader catalog is invalid: {}", error);
     };
-    add(std::make_unique<TextureLoader>(&manager));
+    add(std::make_unique<CookedTextureLoader>(&manager));
     add(std::make_unique<MeshLoader>(&manager));
     add(std::make_unique<ShaderLoader>(&manager));
-    add(std::make_unique<ModelLoader>(&manager));
+    add(std::make_unique<CookedModelLoader>(&manager));
     add(std::make_unique<AnimationLoader>());
     add(std::make_unique<EnvironmentLoader>());
     return dependencies;
@@ -1019,21 +1030,8 @@ void ResourceManager::Shutdown()
         }
     }
 
-    if (m_hotReloadCallbackId != 0 &&
-        HotReloadManager::Get().IsInitialized())
-    {
-        HotReloadManager::Get().RemoveReloadCallback(m_hotReloadCallbackId);
-        m_hotReloadCallbackId = 0;
-    }
-    if (m_hotReloadInitializedByManager && HotReloadManager::Get().IsInitialized())
-    {
-        HotReloadManager::Get().Shutdown();
-    }
-    {
-        std::lock_guard<std::mutex> lock(m_hotReloadMutex);
-        m_hotReloadWatchIds.clear();
-        m_hotReloadInitializedByManager = false;
-    }
+    ClearHotReloadResources();
+    m_changeMonitor.reset();
     SetHotReloadDiagnostic(ResourceHotReloadStatus::Uninitialized,
                            m_config.enableHotReload,
                            false,
@@ -1567,27 +1565,13 @@ void ResourceManager::SetHotReloadDiagnostic(ResourceHotReloadStatus status,
     m_hotReloadDiagnostic.sourceAssetAccessRequired = true;
     m_hotReloadDiagnostic.status = status;
     m_hotReloadDiagnostic.message = message;
-    m_hotReloadDiagnostic.watcherInitialized = HotReloadManager::Get().IsInitialized();
-
-    if (HotReloadManager::Get().IsInitialized())
-    {
-        const HotReloadManager::ReloadStats stats = HotReloadManager::Get().GetStats();
-        m_hotReloadDiagnostic.watchedFileCount = stats.watchedFiles;
-        m_hotReloadDiagnostic.registeredResourceCount = stats.registeredResources;
-        m_hotReloadDiagnostic.pendingReloadCount = HotReloadManager::Get().GetPendingReloadCount();
-        m_hotReloadDiagnostic.totalReloadCount = stats.totalReloads;
-        m_hotReloadDiagnostic.successfulReloadCount = stats.successfulReloads;
-        m_hotReloadDiagnostic.failedReloadCount = stats.failedReloads;
-    }
-    else
-    {
-        m_hotReloadDiagnostic.watchedFileCount = 0;
-        m_hotReloadDiagnostic.registeredResourceCount = 0;
-        m_hotReloadDiagnostic.pendingReloadCount = 0;
-        m_hotReloadDiagnostic.totalReloadCount = 0;
-        m_hotReloadDiagnostic.successfulReloadCount = 0;
-        m_hotReloadDiagnostic.failedReloadCount = 0;
-    }
+    m_hotReloadDiagnostic.watcherInitialized = m_changeMonitor != nullptr;
+    m_hotReloadDiagnostic.watchedFileCount = m_hotReloadSourcePaths.size();
+    m_hotReloadDiagnostic.registeredResourceCount = m_hotReloadSourcePaths.size();
+    m_hotReloadDiagnostic.pendingReloadCount = m_pendingHotReloadCount;
+    m_hotReloadDiagnostic.totalReloadCount = m_totalHotReloadCount;
+    m_hotReloadDiagnostic.successfulReloadCount = m_successfulHotReloadCount;
+    m_hotReloadDiagnostic.failedReloadCount = m_failedHotReloadCount;
 }
 
 void ResourceManager::ConfigureHotReload(bool enable)
@@ -1597,10 +1581,6 @@ void ResourceManager::ConfigureHotReload(bool enable)
 
     if (!enable)
     {
-        if (HotReloadManager::Get().IsInitialized())
-        {
-            HotReloadManager::Get().SetEnabled(false);
-        }
         SetHotReloadDiagnostic(ResourceHotReloadStatus::Disabled,
                                false,
                                false,
@@ -1610,10 +1590,6 @@ void ResourceManager::ConfigureHotReload(bool enable)
 
     if (!supported)
     {
-        if (HotReloadManager::Get().IsInitialized())
-        {
-            HotReloadManager::Get().SetEnabled(false);
-        }
         SetHotReloadDiagnostic(ResourceHotReloadStatus::UnsupportedRuntimePolicy,
                                true,
                                false,
@@ -1622,29 +1598,17 @@ void ResourceManager::ConfigureHotReload(bool enable)
         return;
     }
 
-    HotReloadConfig hotReloadConfig;
-    hotReloadConfig.enabled = true;
-    if (!HotReloadManager::Get().IsInitialized())
+    if (!m_changeMonitor)
     {
-        HotReloadManager::Get().Initialize(this, hotReloadConfig);
-        m_hotReloadInitializedByManager = true;
-    }
-    else
-    {
-        HotReloadManager::Get().SetEnabled(true);
-    }
-
-    if (m_hotReloadCallbackId == 0)
-    {
-        m_hotReloadCallbackId = HotReloadManager::Get().OnReload(
-            [this](const ReloadEvent& event)
-            {
-                if (event.success && event.newResource != nullptr)
-                {
-                    QueueLifecycleEvent(ResourceLifecycleEventType::Reloaded,
-                                        event.newResource);
-                }
-            });
+        m_config.enableHotReload = false;
+        SetHotReloadDiagnostic(
+            ResourceHotReloadStatus::Uninitialized,
+            true,
+            false,
+            "Hot reload requires an injected source change monitor.");
+        RVX_RESOURCE_WARN(
+            "ResourceManager: hot reload requested without a source change monitor");
+        return;
     }
 
     SetHotReloadDiagnostic(ResourceHotReloadStatus::Active,
@@ -1656,7 +1620,7 @@ void ResourceManager::ConfigureHotReload(bool enable)
 void ResourceManager::RegisterHotReloadResource(IResource* resource, const ResourcePathResolution& resolution)
 {
     if (!resource || !m_config.enableHotReload || resolution.domain != ResourceLoadDomain::SourceAsset ||
-        !HotReloadManager::Get().IsInitialized())
+        !m_changeMonitor)
     {
         return;
     }
@@ -1669,33 +1633,118 @@ void ResourceManager::RegisterHotReloadResource(IResource* resource, const Resou
         return;
     }
 
-    HotReloadManager& hotReload = HotReloadManager::Get();
-    hotReload.RegisterResource(resource, resolution.resolvedPath);
-
     const ResourceId id = resource->GetId();
     {
         std::lock_guard<std::mutex> lock(m_hotReloadMutex);
-        if (m_hotReloadWatchIds.find(id) != m_hotReloadWatchIds.end())
+        if (m_hotReloadSourcePaths.find(id) != m_hotReloadSourcePaths.end())
         {
             return;
         }
     }
 
-    const uint32_t watchId = hotReload.WatchFile(resolution.resolvedPath);
+    try
     {
-        std::lock_guard<std::mutex> lock(m_hotReloadMutex);
-        if (watchId != 0)
+        std::error_code pathError;
+        const std::string observedPath = std::filesystem::absolute(
+            resolution.resolvedPath, pathError).lexically_normal().string();
+        if (pathError)
         {
-            m_hotReloadWatchIds[id] = watchId;
+            throw std::runtime_error(
+                "Source path cannot be normalized: " + pathError.message());
         }
+        m_changeMonitor->Watch(id, observedPath);
+        std::lock_guard<std::mutex> lock(m_hotReloadMutex);
+        m_hotReloadSourcePaths[id] = observedPath;
+        m_hotReloadRequestPaths[id] = resolution.requestedPath;
+    }
+    catch (const std::exception& error)
+    {
+        SetHotReloadDiagnostic(
+            ResourceHotReloadStatus::Active,
+            true,
+            true,
+            "Hot reload is active, but source monitoring failed: " +
+                std::string(error.what()));
+        return;
+    }
+    catch (...)
+    {
+        SetHotReloadDiagnostic(
+            ResourceHotReloadStatus::Active,
+            true,
+            true,
+            "Hot reload is active, but source monitoring failed.");
+        return;
     }
 
     SetHotReloadDiagnostic(ResourceHotReloadStatus::Active,
                            true,
                            true,
-                           watchId == 0
-                               ? "Hot reload is active, but watcher registration failed for the resource path."
-                               : "Hot reload is active and tracking loaded source assets.");
+                           "Hot reload is active and tracking loaded source assets.");
+}
+
+void ResourceManager::UnregisterHotReloadResource(ResourceId resourceId) noexcept
+{
+    if (resourceId == InvalidResourceId)
+    {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_hotReloadMutex);
+        if (m_hotReloadSourcePaths.erase(resourceId) == 0)
+        {
+            return;
+        }
+        m_hotReloadRequestPaths.erase(resourceId);
+        m_hotReloadDiagnostic.watchedFileCount =
+            m_hotReloadSourcePaths.size();
+        m_hotReloadDiagnostic.registeredResourceCount =
+            m_hotReloadSourcePaths.size();
+    }
+    if (m_changeMonitor)
+    {
+        try
+        {
+            m_changeMonitor->Unwatch(resourceId);
+        }
+        catch (...)
+        {
+        }
+    }
+}
+
+void ResourceManager::ClearHotReloadResources() noexcept
+{
+    std::vector<ResourceId> resourceIds;
+    {
+        std::lock_guard<std::mutex> lock(m_hotReloadMutex);
+        resourceIds.reserve(m_hotReloadSourcePaths.size());
+        for (const auto& [resourceId, path] : m_hotReloadSourcePaths)
+        {
+            (void)path;
+            resourceIds.push_back(resourceId);
+        }
+        m_hotReloadSourcePaths.clear();
+        m_hotReloadRequestPaths.clear();
+        m_pendingHotReloadCount = 0;
+        m_hotReloadDiagnostic.watchedFileCount = 0;
+        m_hotReloadDiagnostic.registeredResourceCount = 0;
+        m_hotReloadDiagnostic.pendingReloadCount = 0;
+    }
+    if (m_changeMonitor)
+    {
+        for (ResourceId resourceId : resourceIds)
+        {
+            try
+            {
+                m_changeMonitor->Unwatch(resourceId);
+            }
+            catch (...)
+            {
+            }
+        }
+    }
 }
 
 void ResourceManager::LoadDependencies(IResource* resource)
@@ -2518,6 +2567,7 @@ AssetResidencyReleaseResult ResourceManager::UnloadResourceNow(ResourceId id)
     {
         return AssetResidencyReleaseResult::BlockedByLease;
     }
+    UnregisterHotReloadResource(id);
     if (m_registry)
     {
         m_registry->Unregister(id);
@@ -2802,6 +2852,7 @@ AssetResidencyReleaseResult ResourceManager::UnloadClosureNow(
     // belongs to this explicitly released closure and is retired here.
     for (ResourceId resourceId : plan->removalOrder)
     {
+        UnregisterHotReloadResource(resourceId);
         if (m_registry)
         {
             m_registry->Unregister(resourceId);
@@ -2836,9 +2887,12 @@ AssetResidencyReleaseResult ResourceManager::EvictResourceNow(ResourceId id)
     {
         return UnloadResourceNow(id);
     }
-    return m_cache->Remove(id)
-               ? AssetResidencyReleaseResult::Unloaded
-               : AssetResidencyReleaseResult::BlockedByLease;
+    if (!m_cache->Remove(id))
+    {
+        return AssetResidencyReleaseResult::BlockedByLease;
+    }
+    UnregisterHotReloadResource(id);
+    return AssetResidencyReleaseResult::Unloaded;
 }
 
 void ResourceManager::ProcessPendingLeaseUnloads()
@@ -3050,6 +3104,7 @@ void ResourceManager::Clear()
         RVX_DEBUG_ASSERT(lifecycleCommitted);
     }
 
+    ClearHotReloadResources();
     if (m_registry) m_registry->Clear();
     if (m_dependencyGraph) m_dependencyGraph->Clear();
     m_publishedAssetKeys.clear();
@@ -3062,9 +3117,7 @@ void ResourceManager::EnableHotReload(bool enable)
 
 bool ResourceManager::IsHotReloadEnabled() const
 {
-    return m_config.enableHotReload &&
-           HotReloadManager::Get().IsInitialized() &&
-           HotReloadManager::Get().IsEnabled();
+    return m_config.enableHotReload && m_changeMonitor != nullptr;
 }
 
 ResourceHotReloadDiagnostic ResourceManager::GetHotReloadDiagnostic() const
@@ -3073,18 +3126,6 @@ ResourceHotReloadDiagnostic ResourceManager::GetHotReloadDiagnostic() const
     {
         std::lock_guard<std::mutex> lock(m_hotReloadMutex);
         diagnostic = m_hotReloadDiagnostic;
-    }
-
-    diagnostic.watcherInitialized = HotReloadManager::Get().IsInitialized();
-    if (HotReloadManager::Get().IsInitialized())
-    {
-        const HotReloadManager::ReloadStats stats = HotReloadManager::Get().GetStats();
-        diagnostic.watchedFileCount = stats.watchedFiles;
-        diagnostic.registeredResourceCount = stats.registeredResources;
-        diagnostic.pendingReloadCount = HotReloadManager::Get().GetPendingReloadCount();
-        diagnostic.totalReloadCount = stats.totalReloads;
-        diagnostic.successfulReloadCount = stats.successfulReloads;
-        diagnostic.failedReloadCount = stats.failedReloads;
     }
 
     return diagnostic;
@@ -3107,11 +3148,152 @@ void ResourceManager::CheckForChanges()
         return;
     }
 
-    HotReloadManager::Get().Update();
+    std::vector<ResourceSourceChange> changes;
+    try
+    {
+        changes = m_changeMonitor->Poll();
+    }
+    catch (const std::exception& error)
+    {
+        SetHotReloadDiagnostic(
+            ResourceHotReloadStatus::Active,
+            true,
+            true,
+            "Source change polling failed: " + std::string(error.what()));
+        return;
+    }
+    catch (...)
+    {
+        SetHotReloadDiagnostic(
+            ResourceHotReloadStatus::Active,
+            true,
+            true,
+            "Source change polling failed.");
+        return;
+    }
+
+    std::sort(
+        changes.begin(),
+        changes.end(),
+        [](const ResourceSourceChange& left, const ResourceSourceChange& right)
+        {
+            if (left.resourceId != right.resourceId)
+            {
+                return left.resourceId < right.resourceId;
+            }
+            return left.path < right.path;
+        });
+    changes.erase(
+        std::unique(
+            changes.begin(),
+            changes.end(),
+            [](const ResourceSourceChange& left, const ResourceSourceChange& right)
+            {
+                return left.resourceId == right.resourceId &&
+                    left.path == right.path;
+            }),
+        changes.end());
+
+    {
+        std::lock_guard<std::mutex> lock(m_hotReloadMutex);
+        m_pendingHotReloadCount = changes.size();
+    }
+
+    for (const ResourceSourceChange& change : changes)
+    {
+        bool tracked = false;
+        {
+            std::lock_guard<std::mutex> lock(m_hotReloadMutex);
+            const auto found = m_hotReloadSourcePaths.find(change.resourceId);
+            tracked = found != m_hotReloadSourcePaths.end() &&
+                found->second == change.path;
+            if (tracked)
+            {
+                ++m_totalHotReloadCount;
+            }
+        }
+        if (!tracked)
+        {
+            continue;
+        }
+
+        const bool reloaded = ReloadChangedResource(change);
+        std::lock_guard<std::mutex> lock(m_hotReloadMutex);
+        if (reloaded)
+        {
+            ++m_successfulHotReloadCount;
+        }
+        else
+        {
+            ++m_failedHotReloadCount;
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_hotReloadMutex);
+        m_pendingHotReloadCount = 0;
+    }
     SetHotReloadDiagnostic(ResourceHotReloadStatus::Active,
                            true,
                            true,
                            "Hot reload update processed.");
+}
+
+bool ResourceManager::ReloadChangedResource(const ResourceSourceChange& change)
+{
+    if (change.resourceId == InvalidResourceId || change.path.empty())
+    {
+        return false;
+    }
+
+    std::string requestedPath;
+    {
+        std::lock_guard<std::mutex> lock(m_hotReloadMutex);
+        const auto found = m_hotReloadRequestPaths.find(change.resourceId);
+        if (found == m_hotReloadRequestPaths.end() || found->second.empty())
+        {
+            return false;
+        }
+        requestedPath = found->second;
+    }
+
+    const AssetResidencyReleaseResult unloadResult = Unload(change.resourceId);
+    if (unloadResult != AssetResidencyReleaseResult::Unloaded)
+    {
+        RVX_RESOURCE_WARN(
+            "ResourceManager: source reload retained resource {} (result={})",
+            change.resourceId,
+            static_cast<uint32>(unloadResult));
+        return false;
+    }
+
+    IResource* replacement = nullptr;
+    try
+    {
+        replacement = LoadResource(requestedPath);
+    }
+    catch (const std::exception& error)
+    {
+        RVX_RESOURCE_ERROR(
+            "ResourceManager: source reload failed for {}: {}",
+            change.path,
+            error.what());
+        return false;
+    }
+    catch (...)
+    {
+        RVX_RESOURCE_ERROR(
+            "ResourceManager: source reload failed for {} with an unknown exception",
+            change.path);
+        return false;
+    }
+
+    if (replacement == nullptr)
+    {
+        return false;
+    }
+    QueueLifecycleEvent(ResourceLifecycleEventType::Reloaded, replacement);
+    return true;
 }
 
 void ResourceManager::OnResourceReloaded(std::function<void(ResourceId, IResource*)> callback)

@@ -350,8 +350,9 @@ Tasks:
   states.
 - Reject hot reload when the active resource runtime policy requires cooked
   artifacts or runtime packages.
-- Register source-loaded editor resources with `HotReloadManager` and the
-  underlying `FileWatcher` when hot reload is active.
+- Inject `IResourceChangeMonitor` through development composition and register
+  source-loaded resources with it when hot reload is active. The monitor only
+  reports changes; `ResourceManager` owns the reload transaction.
 - Keep watcher statistics stable enough to feed editor tooling and validation
   tests.
 
