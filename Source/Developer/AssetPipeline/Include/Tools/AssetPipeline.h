@@ -444,7 +444,7 @@ public:
                         const void* options = nullptr) override;
 };
 
-/** @brief Complete static glTF model product importer. */
+/** @brief Canonical model product importer for enabled source formats. */
 class ModelImporter : public IAssetImporter
 {
 public:
@@ -452,7 +452,11 @@ public:
 
     std::vector<std::string> GetSupportedExtensions() const override
     {
-        return {".gltf", ".glb"};
+        std::vector<std::string> extensions{".gltf", ".glb"};
+#if defined(RVX_ENABLE_FBX)
+        extensions.push_back(".fbx");
+#endif
+        return extensions;
     }
 
     AssetType GetAssetType() const override { return AssetType::Model; }

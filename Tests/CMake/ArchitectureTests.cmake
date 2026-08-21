@@ -130,6 +130,29 @@ rvx_add_validation_test(
 
 rvx_add_validation_test(
     LANE architecture
+    NAME Architecture.FBXImportContractChecker
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/test_fbx_import_contract.py
+        -v
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.FBXImportContract
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/check_fbx_import_contract.py
+        --root ${CMAKE_SOURCE_DIR}
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    REQUIRED_FILES
+        ${CMAKE_SOURCE_DIR}/vcpkg-ports/ufbx/portfile.cmake
+        ${CMAKE_SOURCE_DIR}/Source/Developer/AssetImport/Include/AssetImport/FBXImporter.h
+)
+
+rvx_add_validation_test(
+    LANE architecture
     NAME Architecture.RuntimeProductClosureChecker
     COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_SOURCE_DIR}/Scripts/test_runtime_product_closure.py

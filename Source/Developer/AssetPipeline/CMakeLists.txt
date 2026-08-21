@@ -29,6 +29,10 @@ target_link_libraries(RVX_AssetPipeline PRIVATE
     RVX::ShaderCompiler
 )
 
+if(RVX_ENABLE_FBX)
+    target_compile_definitions(RVX_AssetPipeline PUBLIC RVX_ENABLE_FBX=1)
+endif()
+
 # Optional: Link asset processing libraries when available
 # target_link_libraries(RVX_AssetPipeline PRIVATE
 #     assimp::assimp

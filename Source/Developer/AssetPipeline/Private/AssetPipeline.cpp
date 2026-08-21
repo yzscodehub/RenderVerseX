@@ -13,6 +13,9 @@
 #include "Resource/Cooked/CookedEnvironmentArtifact.h"
 #include "Resource/Cooked/CookedModelArtifact.h"
 #include "AssetImport/GLTFImporter.h"
+#if defined(RVX_ENABLE_FBX)
+#include "AssetImport/FBXImporter.h"
+#endif
 #include "AssetImport/EnvironmentLoader.h"
 #include "AssetImport/TextureLoader.h"
 #include "Resource/Types/TextureResource.h"
@@ -36,6 +39,7 @@
 #include <locale>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <sstream>
 #include <string_view>
 #include <system_error>
@@ -3430,11 +3434,40 @@ bool CookManifest::Save(const fs::path& manifestPath,
 
 void AssetPipeline::RegisterImporter(std::unique_ptr<IAssetImporter> importer)
 {
-    if (!importer) return;
-
-    for (const auto& ext : importer->GetSupportedExtensions())
+    if (!importer)
     {
-        m_importersByExt[ToLower(ext)] = importer.get();
+        throw std::invalid_argument("AssetPipeline importer must not be null.");
+    }
+
+    std::vector<std::string> extensions;
+    for (const std::string& extension : importer->GetSupportedExtensions())
+    {
+        const std::string normalized = ToLower(extension);
+        if (normalized.empty() || normalized.front() != '.')
+        {
+            throw std::invalid_argument(
+                std::string(importer->GetName()) +
+                " registered an invalid file extension: " + extension);
+        }
+        if (m_importersByExt.contains(normalized) ||
+            std::find(extensions.begin(), extensions.end(), normalized) !=
+                extensions.end())
+        {
+            throw std::invalid_argument(
+                "AssetPipeline duplicate importer extension registration: " +
+                normalized);
+        }
+        extensions.push_back(normalized);
+    }
+    if (extensions.empty())
+    {
+        throw std::invalid_argument(
+            std::string(importer->GetName()) +
+            " registered no file extensions.");
+    }
+    for (const std::string& extension : extensions)
+    {
+        m_importersByExt.emplace(extension, importer.get());
     }
     m_importers.push_back(std::move(importer));
 }
@@ -3852,7 +3885,9 @@ AssetType AssetPipeline::GetAssetTypeFromExtension(const std::string& ext)
         {".bmp", AssetType::Texture},
         {".hdr", AssetType::Environment},
         {".exr", AssetType::Environment},
-        {".fbx", AssetType::Mesh},
+#if defined(RVX_ENABLE_FBX)
+        {".fbx", AssetType::Model},
+#endif
         {".obj", AssetType::Mesh},
         {".gltf", AssetType::Model},
         {".glb", AssetType::Model},
@@ -4032,22 +4067,44 @@ ImportResult ModelImporter::Import(const fs::path& sourcePath,
         artifactSourcePath = fs::path(importOptions.artifactSourcePath);
     }
     const std::string extension = ToLower(sourcePath.extension().string());
-    if (extension != ".gltf" && extension != ".glb")
+    Resource::GLTFImportResult imported;
+    if (extension == ".gltf" || extension == ".glb")
     {
-        result.error = "ModelImporter currently supports only glTF/GLB: " +
-                       sourcePath.string();
+        Resource::GLTFImportOptions gltfOptions;
+        gltfOptions.generateNormals = true;
+        gltfOptions.generateTangents = importOptions.mesh.generateTangents;
+        gltfOptions.mergeMeshes = false;
+        gltfOptions.scaleFactor = importOptions.mesh.scaleFactor;
+
+        Resource::GLTFImporter importer;
+        imported = importer.Import(fs::absolute(sourcePath).string(), gltfOptions);
+    }
+#if defined(RVX_ENABLE_FBX)
+    else if (extension == ".fbx")
+    {
+        Resource::FBXImportOptions fbxOptions;
+        fbxOptions.generateNormals = true;
+        fbxOptions.generateTangents = importOptions.mesh.generateTangents;
+        fbxOptions.flipUVs = false;
+
+        Resource::FBXImporter importer;
+        Resource::FBXImportResult fbxImported =
+            importer.Import(fs::absolute(sourcePath).string(), fbxOptions);
+        imported.success = fbxImported.success;
+        imported.errorMessage = std::move(fbxImported.errorMessage);
+        imported.warnings = std::move(fbxImported.warnings);
+        imported.model = std::move(fbxImported.model);
+        imported.meshes = std::move(fbxImported.meshes);
+        imported.materials = std::move(fbxImported.materials);
+        imported.textures = std::move(fbxImported.textures);
+    }
+#endif
+    else
+    {
+        result.error = "ModelImporter does not support source extension " +
+                       extension + ": " + sourcePath.string();
         return result;
     }
-
-    Resource::GLTFImportOptions gltfOptions;
-    gltfOptions.generateNormals = true;
-    gltfOptions.generateTangents = importOptions.mesh.generateTangents;
-    gltfOptions.mergeMeshes = false;
-    gltfOptions.scaleFactor = importOptions.mesh.scaleFactor;
-
-    Resource::GLTFImporter importer;
-    Resource::GLTFImportResult imported =
-        importer.Import(fs::absolute(sourcePath).string(), gltfOptions);
     if (!imported.success)
     {
         result.error = imported.errorMessage.empty()

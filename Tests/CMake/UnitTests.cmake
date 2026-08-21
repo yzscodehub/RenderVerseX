@@ -1051,6 +1051,18 @@ rvx_add_gtest(
     TIMEOUT 120
 )
 
+if(RVX_ENABLE_FBX)
+    rvx_add_gtest(
+        NAME FBXImporterValidation
+        LANE unit
+        SOURCES FBXImporterValidation/main.cpp
+        LIBS RVX::AssetImport RVX::AssetPipeline RVX::Core RVX::Geometry
+        DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+        TAGS subsystem.resource suite.fbx trait.source-import
+        TIMEOUT 120
+    )
+endif()
+
 rvx_add_gtest(
     NAME EnvironmentPreparedLoadingValidation
     LANE unit

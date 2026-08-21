@@ -4,7 +4,6 @@
 add_library(RVX_AssetImport STATIC
     Private/AudioLoader.cpp
     Private/EnvironmentLoader.cpp
-    Private/FBXImporter.cpp
     Private/GLTFImporter.cpp
     Private/HDRTextureLoader.cpp
     Private/ModelLoader.cpp
@@ -46,27 +45,11 @@ else()
     endif()
 endif()
 
-option(RVX_ENABLE_FBX "Enable development FBX import via ufbx" ON)
 if(RVX_ENABLE_FBX)
-    include(FetchContent)
-    set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
-    FetchContent_Declare(
-        ufbx
-        GIT_REPOSITORY https://github.com/ufbx/ufbx.git
-        GIT_TAG v0.14.3
-        GIT_SHALLOW TRUE
-    )
-    FetchContent_GetProperties(ufbx)
-    if(NOT ufbx_POPULATED)
-        FetchContent_Populate(ufbx)
-    endif()
-    if(EXISTS "${ufbx_SOURCE_DIR}/ufbx.h" AND EXISTS "${ufbx_SOURCE_DIR}/ufbx.c")
-        target_sources(RVX_AssetImport PRIVATE "${ufbx_SOURCE_DIR}/ufbx.c")
-        target_include_directories(RVX_AssetImport PRIVATE "${ufbx_SOURCE_DIR}")
-        target_compile_definitions(RVX_AssetImport PRIVATE HAS_UFBX=1)
-    else()
-        message(WARNING "RVX_AssetImport: ufbx not found; FBX source import is unavailable")
-    endif()
+    find_package(ufbx CONFIG REQUIRED)
+    target_sources(RVX_AssetImport PRIVATE Private/FBXImporter.cpp)
+    target_link_libraries(RVX_AssetImport PRIVATE ufbx::ufbx)
+    target_compile_definitions(RVX_AssetImport PUBLIC RVX_ENABLE_FBX=1)
 endif()
 
 find_path(TINYEXR_INCLUDE_DIR tinyexr.h PATH_SUFFIXES tinyexr)

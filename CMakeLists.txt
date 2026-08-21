@@ -37,6 +37,7 @@ option(RVX_ENABLE_VULKAN "Enable Vulkan backend" ON)
 option(RVX_ENABLE_METAL "Enable Metal backend (macOS/iOS)" OFF)
 option(RVX_ENABLE_OPENGL "Enable OpenGL backend" OFF)
 option(RVX_BUILD_DEVELOPER "Build developer-only libraries and composition" ON)
+option(RVX_ENABLE_FBX "Enable verified development-only static FBX import" OFF)
 option(RVX_BUILD_PROGRAMS "Build developer command-line programs" ON)
 option(RVX_BUILD_SHIPPING_PRODUCTS "Build shipping composition and consumer roots" OFF)
 option(RVX_BUILD_SHIPPING_TESTS
@@ -55,6 +56,10 @@ option(RVX_ENABLE_GPU_VALIDATION_TESTS
 if(RVX_BUILD_PROGRAMS AND NOT RVX_BUILD_DEVELOPER)
     message(FATAL_ERROR
         "RVX_BUILD_PROGRAMS requires RVX_BUILD_DEVELOPER=ON")
+endif()
+if(RVX_ENABLE_FBX AND NOT RVX_BUILD_DEVELOPER)
+    message(FATAL_ERROR
+        "RVX_ENABLE_FBX requires RVX_BUILD_DEVELOPER=ON")
 endif()
 if(RVX_BUILD_SAMPLES AND NOT RVX_BUILD_DEVELOPER)
     message(FATAL_ERROR

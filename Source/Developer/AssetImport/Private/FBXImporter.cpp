@@ -1,1013 +1,994 @@
 #include "AssetImport/FBXImporter.h"
-#include "Core/Log.h"
 
-#include <filesystem>
-#include <algorithm>
-#include <cstring>
-#include <unordered_map>
-
-#ifdef HAS_UFBX
-// Include ufbx - header-only library
-#define UFBX_REAL_IS_FLOAT
 #include <ufbx.h>
-#endif
+
+#include <algorithm>
+#include <bit>
+#include <cctype>
+#include <cmath>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <limits>
+#include <memory>
+#include <optional>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
 
 namespace RVX::Resource
 {
-    // =========================================================================
-    // Public Interface
-    // =========================================================================
+namespace
+{
+    namespace fs = std::filesystem;
 
-    bool FBXImporter::CanImport(const std::string& path) const
+    constexpr std::uint32_t kMaxNodeDepth = 512;
+
+    struct SceneDeleter
     {
-#ifndef HAS_UFBX
-        (void)path;
-        return false;
-#else
-        std::filesystem::path filePath(path);
-        std::string ext = filePath.extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-        return ext == ".fbx";
-#endif
-    }
-
-    FBXImportResult FBXImporter::Import(const std::string& path, const FBXImportOptions& options)
-    {
-        FBXImportResult result;
-        m_currentFilePath = path;
-
-#ifndef HAS_UFBX
-        (void)options;
-        result.success = false;
-        result.errorMessage = "FBX loading not available: ufbx library not found during build";
-        RVX_CORE_WARN("FBXImporter: {}", result.errorMessage);
-        return result;
-#else
-        ReportProgress(0.0f, "Loading FBX file");
-
-        // Check if file exists
-        if (!std::filesystem::exists(path))
+        void operator()(ufbx_scene* scene) const noexcept
         {
-            result.success = false;
-            result.errorMessage = "File not found: " + path;
-            return result;
-        }
-
-        // Load FBX file using ufbx
-        ufbx_load_opts loadOpts = {};
-        loadOpts.target_axes = ufbx_axes_right_handed_y_up;
-        loadOpts.target_unit_meters = options.scaleFactor;
-        
-        if (options.convertToLeftHanded)
-        {
-            loadOpts.target_axes = ufbx_axes_left_handed_y_up;
-        }
-
-        ufbx_error error;
-        ufbx_scene* scene = ufbx_load_file(path.c_str(), &loadOpts, &error);
-
-        if (!scene)
-        {
-            result.success = false;
-            result.errorMessage = "Failed to load FBX: ";
-            result.errorMessage += error.description.data;
-            return result;
-        }
-
-        // Get base path for texture resolution
-        std::filesystem::path filePath(path);
-        std::string basePath = filePath.parent_path().string();
-
-        ReportProgress(0.1f, "Extracting materials and textures");
-        ParseMaterials(scene, basePath, result);
-
-        ReportProgress(0.3f, "Parsing meshes");
-        ParseMeshes(scene, result, options);
-
-        ReportProgress(0.5f, "Building scene graph");
-        ParseNodes(scene, result, options);
-
-        if (options.importSkeleton)
-        {
-            ReportProgress(0.6f, "Parsing skeleton");
-            ParseSkeleton(scene, result);
-        }
-
-        if (options.importAnimations)
-        {
-            ReportProgress(0.7f, "Parsing animations");
-            ParseAnimations(scene, result, options);
-        }
-
-        ReportProgress(0.9f, "Computing bounds");
-        if (result.model)
-        {
-            result.model->path = path;
-            result.model->suffix = ".fbx";
-            result.model->SetHasAnimation(!result.animations.empty());
-        }
-        if (!result.model || !result.model->ComputeBoundingBox(result.meshes))
-        {
-            result.success = false;
-            result.errorMessage =
-                "FBX indexed model bounds require complete valid mesh references.";
             ufbx_free_scene(scene);
-            return result;
         }
+    };
 
-        // Cleanup ufbx scene
-        ufbx_free_scene(scene);
+    using ScenePtr = std::unique_ptr<ufbx_scene, SceneDeleter>;
 
-        ReportProgress(1.0f, "Complete");
-        result.success = true;
-
-        RVX_CORE_INFO("FBXImporter: Loaded {} meshes, {} materials, {} animations from {}",
-            result.meshes.size(), result.materials.size(), result.animations.size(),
-            filePath.filename().string());
-
-        return result;
-#endif
+    std::string ToString(ufbx_string value)
+    {
+        return value.data ? std::string(value.data, value.length) : std::string{};
     }
 
-#ifdef HAS_UFBX
-    // =========================================================================
-    // Material Parsing
-    // =========================================================================
-
-    void FBXImporter::ParseMaterials(ufbx_scene* scene, const std::string& basePath,
-                                      FBXImportResult& result)
+    bool IsFinite(float value)
     {
-        result.materials.reserve(scene->materials.count);
-
-        for (size_t i = 0; i < scene->materials.count; ++i)
-        {
-            ufbx_material* mat = scene->materials.data[i];
-            result.materials.push_back(ConvertMaterial(scene, mat, basePath, 
-                                                        static_cast<int>(i), result));
-        }
-
-        // Add a default material if none exist
-        if (result.materials.empty())
-        {
-            auto defaultMat = std::make_shared<Material>("DefaultMaterial");
-            defaultMat->SetMaterialId(0);
-            result.materials.push_back(defaultMat);
-        }
+        return std::isfinite(value);
     }
 
-    Material::Ptr FBXImporter::ConvertMaterial(ufbx_scene* scene, ufbx_material* mat,
-                                                const std::string& basePath, int materialIndex,
-                                                FBXImportResult& result)
+    bool IsFinite(const Vec2& value)
     {
-        std::string matName = mat->name.length > 0 ? 
-            std::string(mat->name.data, mat->name.length) : 
-            "Material_" + std::to_string(materialIndex);
-
-        auto material = std::make_shared<Material>(matName);
-        material->SetMaterialId(static_cast<uint32_t>(materialIndex));
-
-        // PBR properties
-        if (mat->pbr.base_color.has_value)
-        {
-            material->SetBaseColor(
-                mat->pbr.base_color.value_vec4.x,
-                mat->pbr.base_color.value_vec4.y,
-                mat->pbr.base_color.value_vec4.z,
-                mat->pbr.base_color.value_vec4.w
-            );
-        }
-        else if (mat->fbx.diffuse_color.has_value)
-        {
-            // Fallback to FBX classic properties
-            material->SetBaseColor(
-                mat->fbx.diffuse_color.value_vec3.x,
-                mat->fbx.diffuse_color.value_vec3.y,
-                mat->fbx.diffuse_color.value_vec3.z,
-                1.0f
-            );
-        }
-
-        // Metallic
-        if (mat->pbr.metalness.has_value)
-        {
-            material->SetMetallicFactor(mat->pbr.metalness.value_real);
-        }
-
-        // Roughness
-        if (mat->pbr.roughness.has_value)
-        {
-            material->SetRoughnessFactor(mat->pbr.roughness.value_real);
-        }
-        else if (mat->fbx.specular_exponent.has_value)
-        {
-            // Convert shininess to roughness
-            float shininess = mat->fbx.specular_exponent.value_real;
-            float roughness = 1.0f - std::sqrt(shininess / 100.0f);
-            material->SetRoughnessFactor(std::clamp(roughness, 0.0f, 1.0f));
-        }
-
-        // Emissive
-        if (mat->pbr.emission_color.has_value)
-        {
-            material->SetEmissiveColor(Vec3(
-                mat->pbr.emission_color.value_vec3.x,
-                mat->pbr.emission_color.value_vec3.y,
-                mat->pbr.emission_color.value_vec3.z
-            ));
-        }
-        else if (mat->fbx.emission_color.has_value)
-        {
-            material->SetEmissiveColor(Vec3(
-                mat->fbx.emission_color.value_vec3.x,
-                mat->fbx.emission_color.value_vec3.y,
-                mat->fbx.emission_color.value_vec3.z
-            ));
-        }
-
-        // Textures
-        // Base color / Diffuse texture
-        if (mat->pbr.base_color.texture)
-        {
-            auto texRef = ExtractTexture(scene, mat->pbr.base_color.texture, basePath, TextureUsage::Color);
-            if (texRef.IsValid())
-            {
-                int texIndex = static_cast<int>(result.textures.size());
-                result.textures.push_back(texRef);
-                
-                TextureInfo info;
-                info.imageId = texIndex;
-                material->SetBaseColorTexture(info);
-            }
-        }
-        else if (mat->fbx.diffuse_color.texture)
-        {
-            auto texRef = ExtractTexture(scene, mat->fbx.diffuse_color.texture, basePath, TextureUsage::Color);
-            if (texRef.IsValid())
-            {
-                int texIndex = static_cast<int>(result.textures.size());
-                result.textures.push_back(texRef);
-                
-                TextureInfo info;
-                info.imageId = texIndex;
-                material->SetBaseColorTexture(info);
-            }
-        }
-
-        // Normal map
-        if (mat->pbr.normal_map.texture)
-        {
-            auto texRef = ExtractTexture(scene, mat->pbr.normal_map.texture, basePath, TextureUsage::Normal);
-            if (texRef.IsValid())
-            {
-                int texIndex = static_cast<int>(result.textures.size());
-                result.textures.push_back(texRef);
-                
-                TextureInfo info;
-                info.imageId = texIndex;
-                material->SetNormalTexture(info);
-            }
-        }
-        else if (mat->fbx.normal_map.texture)
-        {
-            auto texRef = ExtractTexture(scene, mat->fbx.normal_map.texture, basePath, TextureUsage::Normal);
-            if (texRef.IsValid())
-            {
-                int texIndex = static_cast<int>(result.textures.size());
-                result.textures.push_back(texRef);
-                
-                TextureInfo info;
-                info.imageId = texIndex;
-                material->SetNormalTexture(info);
-            }
-        }
-
-        // Metallic-Roughness (packed texture)
-        if (mat->pbr.metalness.texture)
-        {
-            auto texRef = ExtractTexture(scene, mat->pbr.metalness.texture, basePath, TextureUsage::Data);
-            if (texRef.IsValid())
-            {
-                int texIndex = static_cast<int>(result.textures.size());
-                result.textures.push_back(texRef);
-                
-                TextureInfo info;
-                info.imageId = texIndex;
-                material->SetMetallicRoughnessTexture(info);
-            }
-        }
-
-        // Occlusion
-        if (mat->pbr.ambient_occlusion.texture)
-        {
-            auto texRef = ExtractTexture(scene, mat->pbr.ambient_occlusion.texture, basePath, TextureUsage::Data);
-            if (texRef.IsValid())
-            {
-                int texIndex = static_cast<int>(result.textures.size());
-                result.textures.push_back(texRef);
-                
-                TextureInfo info;
-                info.imageId = texIndex;
-                material->SetOcclusionTexture(info);
-            }
-        }
-
-        // Emissive texture
-        if (mat->pbr.emission_color.texture)
-        {
-            auto texRef = ExtractTexture(scene, mat->pbr.emission_color.texture, basePath, TextureUsage::Color);
-            if (texRef.IsValid())
-            {
-                int texIndex = static_cast<int>(result.textures.size());
-                result.textures.push_back(texRef);
-                
-                TextureInfo info;
-                info.imageId = texIndex;
-                material->SetEmissiveTexture(info);
-            }
-        }
-
-        return material;
+        return IsFinite(value.x) && IsFinite(value.y);
     }
 
-    TextureReference FBXImporter::ExtractTexture(ufbx_scene* scene, void* texturePtr,
-                                                  const std::string& basePath, TextureUsage usage)
+    bool IsFinite(const Vec3& value)
     {
-        TextureReference ref;
-        ref.usage = usage;
+        return IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
+    }
 
-        ufbx_texture* texture = static_cast<ufbx_texture*>(texturePtr);
+    bool IsFinite(const Vec4& value)
+    {
+        return IsFinite(value.x) && IsFinite(value.y) &&
+               IsFinite(value.z) && IsFinite(value.w);
+    }
+
+    bool IsFinite(const Quat& value)
+    {
+        return IsFinite(value.x) && IsFinite(value.y) &&
+               IsFinite(value.z) && IsFinite(value.w);
+    }
+
+    bool IsContainedBy(const fs::path& root, const fs::path& candidate)
+    {
+        const fs::path relative = candidate.lexically_relative(root);
+        if (relative.empty() || relative.is_absolute())
+        {
+            return candidate == root;
+        }
+        for (const fs::path& component : relative)
+        {
+            if (component == "..")
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool LooksLikeAbsolutePortablePath(std::string_view path)
+    {
+        if (path.empty())
+        {
+            return false;
+        }
+        if (path.front() == '/' || path.front() == '\\')
+        {
+            return true;
+        }
+        return path.size() >= 2 &&
+               ((path[0] >= 'A' && path[0] <= 'Z') ||
+                (path[0] >= 'a' && path[0] <= 'z')) &&
+               path[1] == ':';
+    }
+
+    bool ResolveExternalTexture(const fs::path& sourceRoot,
+                                const ufbx_texture& texture,
+                                fs::path& outPath,
+                                std::shared_ptr<const std::vector<uint8_t>>& outPayload,
+                                std::string& outError)
+    {
+        std::string reference = ToString(texture.relative_filename);
+        if (reference.empty())
+        {
+            reference = ToString(texture.filename);
+        }
+        if (reference.empty())
+        {
+            outError = "FBX external texture has no source path.";
+            return false;
+        }
+
+        std::replace(reference.begin(), reference.end(), '\\', '/');
+        if (LooksLikeAbsolutePortablePath(reference))
+        {
+            outError = "Unsupported FBX external texture path outside the source root: " +
+                       reference;
+            return false;
+        }
+
+        const fs::path relative = fs::path(reference).lexically_normal();
+        if (relative.empty() || relative == ".")
+        {
+            outError = "FBX external texture path is empty after normalization.";
+            return false;
+        }
+        for (const fs::path& component : relative)
+        {
+            if (component == "..")
+            {
+                outError = "Unsupported FBX external texture path escapes the source root: " +
+                           reference;
+                return false;
+            }
+        }
+
+        std::error_code error;
+        fs::path candidate = fs::weakly_canonical(sourceRoot / relative, error);
+        if (error)
+        {
+            candidate = (sourceRoot / relative).lexically_normal();
+            error.clear();
+        }
+        if (!IsContainedBy(sourceRoot, candidate))
+        {
+            outError = "Unsupported FBX external texture path escapes the source root: " +
+                       reference;
+            return false;
+        }
+        if (!fs::is_regular_file(candidate, error) || error)
+        {
+            outError = "FBX external texture does not exist: " + candidate.string();
+            return false;
+        }
+
+        std::ifstream input(candidate, std::ios::binary);
+        if (!input.is_open())
+        {
+            outError = "FBX external texture could not be opened: " + candidate.string();
+            return false;
+        }
+        std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)),
+                                  std::istreambuf_iterator<char>());
+        if (!input.eof() && input.fail())
+        {
+            outError = "FBX external texture could not be read: " + candidate.string();
+            return false;
+        }
+        if (bytes.empty())
+        {
+            outError = "FBX external texture is empty: " + candidate.string();
+            return false;
+        }
+
+        outPath = candidate;
+        outPayload = std::make_shared<const std::vector<uint8_t>>(std::move(bytes));
+        return true;
+    }
+
+    std::uint32_t FloatBits(float value)
+    {
+        if (value == 0.0f)
+        {
+            value = 0.0f;
+        }
+        return std::bit_cast<std::uint32_t>(value);
+    }
+
+    struct VertexKey
+    {
+        Vec3 position{0.0f};
+        Vec3 normal{0.0f};
+        Vec2 uv{0.0f};
+        Vec4 tangent{0.0f};
+        Vec4 color{1.0f};
+        std::uint8_t attributeMask = 0;
+
+        bool operator==(const VertexKey& rhs) const noexcept
+        {
+            const auto same = [](float lhs, float rhsValue)
+            {
+                return FloatBits(lhs) == FloatBits(rhsValue);
+            };
+            return attributeMask == rhs.attributeMask &&
+                   same(position.x, rhs.position.x) &&
+                   same(position.y, rhs.position.y) &&
+                   same(position.z, rhs.position.z) &&
+                   same(normal.x, rhs.normal.x) &&
+                   same(normal.y, rhs.normal.y) &&
+                   same(normal.z, rhs.normal.z) &&
+                   same(uv.x, rhs.uv.x) && same(uv.y, rhs.uv.y) &&
+                   same(tangent.x, rhs.tangent.x) &&
+                   same(tangent.y, rhs.tangent.y) &&
+                   same(tangent.z, rhs.tangent.z) &&
+                   same(tangent.w, rhs.tangent.w) &&
+                   same(color.x, rhs.color.x) &&
+                   same(color.y, rhs.color.y) &&
+                   same(color.z, rhs.color.z) &&
+                   same(color.w, rhs.color.w);
+        }
+    };
+
+    struct VertexKeyHash
+    {
+        size_t operator()(const VertexKey& key) const noexcept
+        {
+            size_t hash = key.attributeMask;
+            const auto mix = [&](float value)
+            {
+                hash ^= static_cast<size_t>(FloatBits(value)) +
+                        0x9e3779b97f4a7c15ull + (hash << 6u) + (hash >> 2u);
+            };
+            mix(key.position.x); mix(key.position.y); mix(key.position.z);
+            mix(key.normal.x); mix(key.normal.y); mix(key.normal.z);
+            mix(key.uv.x); mix(key.uv.y);
+            mix(key.tangent.x); mix(key.tangent.y);
+            mix(key.tangent.z); mix(key.tangent.w);
+            mix(key.color.x); mix(key.color.y); mix(key.color.z); mix(key.color.w);
+            return hash;
+        }
+    };
+
+    bool BuildVertex(const ufbx_mesh& mesh,
+                     std::uint32_t cornerIndex,
+                     const FBXImportOptions& options,
+                     VertexKey& outVertex,
+                     std::string& outError)
+    {
+        const ufbx_vec3 sourcePosition =
+            ufbx_get_vertex_vec3(&mesh.vertex_position, cornerIndex);
+        outVertex.position = Vec3(sourcePosition.x, sourcePosition.y, sourcePosition.z);
+        if (!IsFinite(outVertex.position))
+        {
+            outError = "FBX mesh contains a non-finite position.";
+            return false;
+        }
+
+        if (mesh.vertex_normal.exists)
+        {
+            const ufbx_vec3 sourceNormal =
+                ufbx_get_vertex_vec3(&mesh.vertex_normal, cornerIndex);
+            outVertex.normal = Vec3(sourceNormal.x, sourceNormal.y, sourceNormal.z);
+            if (!IsFinite(outVertex.normal) ||
+                glm::dot(outVertex.normal, outVertex.normal) <= 0.0f)
+            {
+                outError = "FBX mesh contains an invalid normal.";
+                return false;
+            }
+            outVertex.normal = glm::normalize(outVertex.normal);
+            outVertex.attributeMask |= 0x01u;
+        }
+
+        if (mesh.vertex_uv.exists)
+        {
+            const ufbx_vec2 sourceUv =
+                ufbx_get_vertex_vec2(&mesh.vertex_uv, cornerIndex);
+            outVertex.uv = Vec2(sourceUv.x,
+                                options.flipUVs ? 1.0f - sourceUv.y : sourceUv.y);
+            if (!IsFinite(outVertex.uv))
+            {
+                outError = "FBX mesh contains a non-finite texture coordinate.";
+                return false;
+            }
+            outVertex.attributeMask |= 0x02u;
+        }
+
+        if (mesh.vertex_tangent.exists)
+        {
+            const ufbx_vec3 sourceTangent =
+                ufbx_get_vertex_vec3(&mesh.vertex_tangent, cornerIndex);
+            Vec3 tangent(sourceTangent.x, sourceTangent.y, sourceTangent.z);
+            if (!IsFinite(tangent) || glm::dot(tangent, tangent) <= 0.0f)
+            {
+                outError = "FBX mesh contains an invalid tangent.";
+                return false;
+            }
+            tangent = glm::normalize(tangent);
+            float sign = 1.0f;
+            if (mesh.vertex_bitangent.exists && mesh.vertex_normal.exists)
+            {
+                const ufbx_vec3 sourceBitangent =
+                    ufbx_get_vertex_vec3(&mesh.vertex_bitangent, cornerIndex);
+                const Vec3 bitangent(sourceBitangent.x,
+                                     sourceBitangent.y,
+                                     sourceBitangent.z);
+                sign = glm::dot(glm::cross(outVertex.normal, tangent), bitangent) < 0.0f
+                    ? -1.0f
+                    : 1.0f;
+            }
+            outVertex.tangent = Vec4(tangent, sign);
+            outVertex.attributeMask |= 0x04u;
+        }
+
+        if (mesh.vertex_color.exists)
+        {
+            const ufbx_vec4 sourceColor =
+                ufbx_get_vertex_vec4(&mesh.vertex_color, cornerIndex);
+            outVertex.color = Vec4(sourceColor.x,
+                                   sourceColor.y,
+                                   sourceColor.z,
+                                   sourceColor.w);
+            if (!IsFinite(outVertex.color))
+            {
+                outError = "FBX mesh contains a non-finite vertex color.";
+                return false;
+            }
+            outVertex.attributeMask |= 0x08u;
+        }
+        return true;
+    }
+
+    std::uint32_t ResolveMaterialId(const ufbx_scene& scene,
+                             const ufbx_mesh& mesh,
+                             size_t partIndex)
+    {
+        if (partIndex >= mesh.materials.count || !mesh.materials.data[partIndex])
+        {
+            return 0;
+        }
+        const ufbx_material* material = mesh.materials.data[partIndex];
+        for (size_t index = 0; index < scene.materials.count; ++index)
+        {
+            if (scene.materials.data[index] == material)
+            {
+                return static_cast<std::uint32_t>(index);
+            }
+        }
+        return 0;
+    }
+
+    Mesh::Ptr ConvertMesh(const ufbx_scene& scene,
+                          const ufbx_mesh& source,
+                          const FBXImportOptions& options,
+                          std::string& outError)
+    {
+        if (!source.vertex_position.exists || source.num_faces == 0)
+        {
+            outError = "FBX static mesh has no indexed polygon geometry.";
+            return nullptr;
+        }
+
+        auto mesh = std::make_shared<Mesh>();
+        mesh->name = ToString(source.name);
+        if (mesh->name.empty())
+        {
+            mesh->name = "FBXMesh_" + std::to_string(source.typed_id);
+        }
+        mesh->SetPrimitiveType(PrimitiveType::Triangles);
+
+        std::vector<VertexKey> vertices;
+        std::vector<std::uint32_t> indices;
+        std::vector<SubMesh> subMeshes;
+        std::unordered_map<VertexKey, std::uint32_t, VertexKeyHash> vertexMap;
+        vertices.reserve(source.num_indices);
+        indices.reserve(source.num_triangles * 3u);
+
+        std::vector<std::uint32_t> triangulated(source.max_face_triangles * 3u);
+        if (triangulated.empty())
+        {
+            outError = "FBX mesh cannot reserve a triangulation buffer.";
+            return nullptr;
+        }
+
+        for (size_t partIndex = 0; partIndex < source.material_parts.count; ++partIndex)
+        {
+            const ufbx_mesh_part& part = source.material_parts.data[partIndex];
+            if (part.num_triangles == 0)
+            {
+                continue;
+            }
+            if (indices.size() > std::numeric_limits<std::uint32_t>::max())
+            {
+                outError = "FBX mesh index offset exceeds the engine limit.";
+                return nullptr;
+            }
+
+            SubMesh subMesh;
+            subMesh.name = mesh->name + "_material_" + std::to_string(partIndex);
+            subMesh.indexOffset = static_cast<std::uint32_t>(indices.size());
+            subMesh.materialId = ResolveMaterialId(scene, source, partIndex);
+            subMesh.primitive = PrimitiveType::Triangles;
+
+            for (size_t faceListIndex = 0;
+                 faceListIndex < part.face_indices.count;
+                 ++faceListIndex)
+            {
+                const std::uint32_t faceIndex = part.face_indices.data[faceListIndex];
+                if (faceIndex >= source.faces.count)
+                {
+                    outError = "FBX material part contains an out-of-range face index.";
+                    return nullptr;
+                }
+                const ufbx_face face = source.faces.data[faceIndex];
+                if (face.num_indices < 3)
+                {
+                    outError = "FBX static mesh contains a non-polygon face.";
+                    return nullptr;
+                }
+                const std::uint32_t triangleCount = ufbx_triangulate_face(
+                    triangulated.data(), triangulated.size(), &source, face);
+                if (triangleCount == 0)
+                {
+                    outError = "FBX polygon triangulation failed.";
+                    return nullptr;
+                }
+                for (std::uint32_t triangleIndex = 0;
+                     triangleIndex < triangleCount * 3u;
+                     ++triangleIndex)
+                {
+                    const std::uint32_t cornerIndex = triangulated[triangleIndex];
+                    if (cornerIndex >= source.num_indices)
+                    {
+                        outError = "FBX triangulation produced an out-of-range corner index.";
+                        return nullptr;
+                    }
+                    VertexKey vertex;
+                    if (!BuildVertex(source, cornerIndex, options, vertex, outError))
+                    {
+                        return nullptr;
+                    }
+                    const auto [it, inserted] = vertexMap.emplace(
+                        vertex, static_cast<std::uint32_t>(vertices.size()));
+                    if (inserted)
+                    {
+                        if (vertices.size() >= std::numeric_limits<std::uint32_t>::max())
+                        {
+                            outError = "FBX mesh vertex count exceeds the engine limit.";
+                            return nullptr;
+                        }
+                        vertices.push_back(vertex);
+                    }
+                    indices.push_back(it->second);
+                }
+            }
+
+            const size_t partIndexCount = indices.size() - subMesh.indexOffset;
+            if (partIndexCount != part.num_triangles * 3u ||
+                partIndexCount > std::numeric_limits<std::uint32_t>::max())
+            {
+                outError = "FBX material part triangulation count is inconsistent.";
+                return nullptr;
+            }
+            subMesh.indexCount = static_cast<std::uint32_t>(partIndexCount);
+            subMeshes.push_back(std::move(subMesh));
+        }
+
+        if (indices.empty() || vertices.empty() || subMeshes.empty())
+        {
+            outError = "FBX static mesh produced no renderable triangles.";
+            return nullptr;
+        }
+
+        std::vector<Vec3> positions;
+        std::vector<Vec3> normals;
+        std::vector<Vec2> uvs;
+        std::vector<Vec4> tangents;
+        std::vector<Vec4> colors;
+        positions.reserve(vertices.size());
+        const std::uint8_t attributeMask = vertices.front().attributeMask;
+        if ((attributeMask & 0x01u) != 0) normals.reserve(vertices.size());
+        if ((attributeMask & 0x02u) != 0) uvs.reserve(vertices.size());
+        if ((attributeMask & 0x04u) != 0) tangents.reserve(vertices.size());
+        if ((attributeMask & 0x08u) != 0) colors.reserve(vertices.size());
+
+        for (const VertexKey& vertex : vertices)
+        {
+            if (vertex.attributeMask != attributeMask)
+            {
+                outError = "FBX vertex attribute presence is inconsistent across polygon corners.";
+                return nullptr;
+            }
+            positions.push_back(vertex.position);
+            if ((attributeMask & 0x01u) != 0) normals.push_back(vertex.normal);
+            if ((attributeMask & 0x02u) != 0) uvs.push_back(vertex.uv);
+            if ((attributeMask & 0x04u) != 0) tangents.push_back(vertex.tangent);
+            if ((attributeMask & 0x08u) != 0) colors.push_back(vertex.color);
+        }
+
+        mesh->SetPositions(positions);
+        mesh->SetIndices(indices);
+        if (!normals.empty()) mesh->SetNormals(normals);
+        if (!uvs.empty()) mesh->SetUVs(uvs);
+        if (!tangents.empty()) mesh->SetTangents(tangents);
+        if (!colors.empty()) mesh->SetColors(colors);
+        mesh->SetSubMeshes(std::move(subMeshes));
+
+        if (normals.empty() && options.generateNormals && !mesh->GenerateNormals())
+        {
+            outError = "FBX mesh normal generation failed.";
+            return nullptr;
+        }
+        if (tangents.empty() && options.generateTangents &&
+            mesh->HasAttribute(VertexBufferNames::Normal) &&
+            mesh->HasAttribute(VertexBufferNames::UV) &&
+            !mesh->GenerateTangents())
+        {
+            outError = "FBX mesh tangent generation failed.";
+            return nullptr;
+        }
+        if (!mesh->ComputeBoundingBox())
+        {
+            outError = "FBX mesh bounds could not be computed.";
+            return nullptr;
+        }
+        mesh->ComputeSubMeshBounds();
+        if (!mesh->ValidateSubMeshes() || !mesh->IsValid())
+        {
+            outError = "FBX mesh failed canonical engine validation.";
+            return nullptr;
+        }
+        return mesh;
+    }
+
+    struct TextureReferenceKey
+    {
+        const ufbx_texture* texture = nullptr;
+        TextureUsage usage = TextureUsage::Color;
+
+        bool operator==(const TextureReferenceKey&) const noexcept = default;
+    };
+
+    struct TextureReferenceKeyHash
+    {
+        size_t operator()(const TextureReferenceKey& key) const noexcept
+        {
+            const size_t pointerHash =
+                std::hash<const ufbx_texture*>{}(key.texture);
+            const size_t usageHash = std::hash<int>{}(static_cast<int>(key.usage));
+            return pointerHash ^ (usageHash + 0x9e3779b9u +
+                                  (pointerHash << 6u) + (pointerHash >> 2u));
+        }
+    };
+
+    using TextureReferenceIndex =
+        std::unordered_map<TextureReferenceKey, int, TextureReferenceKeyHash>;
+
+    bool AddTextureReference(const fs::path& sourceRoot,
+                             const ufbx_texture* texture,
+                             TextureUsage usage,
+                             std::vector<TextureReference>& textures,
+                             TextureReferenceIndex& textureIndices,
+                             int& outIndex,
+                             std::string& outError)
+    {
+        outIndex = -1;
         if (!texture)
         {
-            return ref;
+            return true;
+        }
+        if (texture->content.size > 0 ||
+            (texture->video && texture->video->content.size > 0))
+        {
+            outError = "Unsupported FBX feature: embedded texture.";
+            return false;
+        }
+        if (texture->type != UFBX_TEXTURE_FILE)
+        {
+            outError = "Unsupported FBX feature: non-file texture.";
+            return false;
         }
 
-        // Check if texture has an external file
-        if (texture->filename.length > 0)
+        const TextureReferenceKey key{texture, usage};
+        const auto existing = textureIndices.find(key);
+        if (existing != textureIndices.end())
         {
-            std::string texturePath(texture->filename.data, texture->filename.length);
-            
-            // Try to resolve relative path
-            std::filesystem::path fullPath;
-            if (std::filesystem::path(texturePath).is_absolute())
+            outIndex = existing->second;
+            return true;
+        }
+
+        fs::path path;
+        std::shared_ptr<const std::vector<uint8_t>> payload;
+        if (!ResolveExternalTexture(sourceRoot, *texture, path, payload, outError))
+        {
+            return false;
+        }
+
+        TextureReference reference = TextureReference::CreateExternal(
+            path.generic_string(), usage, usage == TextureUsage::Color);
+        reference.capturedPayload = std::move(payload);
+        reference.imageIndex = static_cast<int>(textures.size());
+        reference.fallbackSemantic = usage == TextureUsage::Normal
+            ? TextureFallbackSemantic::FlatNormal
+            : (usage == TextureUsage::Color
+                   ? TextureFallbackSemantic::White
+                   : TextureFallbackSemantic::Black);
+        outIndex = reference.imageIndex;
+        textureIndices.emplace(key, outIndex);
+        textures.push_back(std::move(reference));
+        return true;
+    }
+
+    bool ConvertMaterials(const ufbx_scene& scene,
+                          const fs::path& sourceRoot,
+                          FBXImportResult& result)
+    {
+        TextureReferenceIndex textureIndices;
+        result.materials.reserve(std::max<size_t>(scene.materials.count, 1u));
+
+        for (size_t materialIndex = 0;
+             materialIndex < scene.materials.count;
+             ++materialIndex)
+        {
+            const ufbx_material& source = *scene.materials.data[materialIndex];
+            std::string name = ToString(source.name);
+            if (name.empty())
             {
-                fullPath = texturePath;
+                name = "FBXMaterial_" + std::to_string(materialIndex);
             }
-            else
+            auto material = std::make_shared<Material>(name);
+            material->SetMaterialId(static_cast<std::uint32_t>(materialIndex));
+
+            if (source.pbr.base_color.has_value)
             {
-                // Try relative to FBX file
-                fullPath = std::filesystem::path(basePath) / texturePath;
-                if (!std::filesystem::exists(fullPath))
+                const ufbx_vec4 value = source.pbr.base_color.value_vec4;
+                material->SetBaseColor(value.x, value.y, value.z, value.w);
+            }
+            else if (source.fbx.diffuse_color.has_value)
+            {
+                const ufbx_vec3 value = source.fbx.diffuse_color.value_vec3;
+                material->SetBaseColor(value.x, value.y, value.z, 1.0f);
+            }
+            if (source.pbr.metalness.has_value)
+            {
+                material->SetMetallicFactor(source.pbr.metalness.value_real);
+            }
+            if (source.pbr.roughness.has_value)
+            {
+                material->SetRoughnessFactor(source.pbr.roughness.value_real);
+            }
+            else if (source.fbx.specular_exponent.has_value)
+            {
+                const float shininess = std::max(
+                    0.0f, static_cast<float>(source.fbx.specular_exponent.value_real));
+                material->SetRoughnessFactor(
+                    std::clamp(1.0f - std::sqrt(shininess / 100.0f), 0.0f, 1.0f));
+            }
+            if (source.pbr.emission_color.has_value)
+            {
+                const ufbx_vec3 value = source.pbr.emission_color.value_vec3;
+                material->SetEmissiveColor(Vec3(value.x, value.y, value.z));
+            }
+            else if (source.fbx.emission_color.has_value)
+            {
+                const ufbx_vec3 value = source.fbx.emission_color.value_vec3;
+                material->SetEmissiveColor(Vec3(value.x, value.y, value.z));
+            }
+
+            const auto bindTexture = [&](const ufbx_texture* texture,
+                                         TextureUsage usage,
+                                         auto setter) -> bool
+            {
+                int index = -1;
+                if (!AddTextureReference(sourceRoot,
+                                         texture,
+                                         usage,
+                                         result.textures,
+                                         textureIndices,
+                                         index,
+                                         result.errorMessage))
                 {
-                    // Try just the filename
-                    fullPath = std::filesystem::path(basePath) / 
-                               std::filesystem::path(texturePath).filename();
+                    return false;
                 }
-            }
-
-            if (std::filesystem::exists(fullPath))
-            {
-                ref.sourceType = TextureSourceType::External;
-                ref.path = fullPath.string();
-                ref.isSRGB = (usage == TextureUsage::Color);
-            }
-            else
-            {
-                RVX_CORE_WARN("FBXImporter: Texture not found: {}", texturePath);
-            }
-        }
-        else if (texture->content.size > 0)
-        {
-            // Embedded texture data
-            ref.sourceType = TextureSourceType::Embedded;
-            ref.embeddedData.assign(
-                static_cast<const uint8_t*>(texture->content.data),
-                static_cast<const uint8_t*>(texture->content.data) + texture->content.size
-            );
-            ref.isRawPixelData = false;
-            ref.isSRGB = (usage == TextureUsage::Color);
-        }
-
-        return ref;
-    }
-
-    // =========================================================================
-    // Mesh Parsing
-    // =========================================================================
-
-    void FBXImporter::ParseMeshes(ufbx_scene* scene, FBXImportResult& result,
-                                   const FBXImportOptions& options)
-    {
-        result.meshes.reserve(scene->meshes.count);
-
-        for (size_t i = 0; i < scene->meshes.count; ++i)
-        {
-            ufbx_mesh* mesh = scene->meshes.data[i];
-            auto convertedMesh = ConvertMesh(scene, mesh, options, static_cast<int>(i));
-            if (convertedMesh)
-            {
-                result.meshes.push_back(convertedMesh);
-            }
-        }
-    }
-
-    Mesh::Ptr FBXImporter::ConvertMesh(ufbx_scene* scene, ufbx_mesh* mesh,
-                                        const FBXImportOptions& options, int meshIndex)
-    {
-        auto resultMesh = std::make_shared<Mesh>();
-        
-        std::string meshName = mesh->name.length > 0 ?
-            std::string(mesh->name.data, mesh->name.length) :
-            "Mesh_" + std::to_string(meshIndex);
-        resultMesh->name = meshName;
-
-        // Extract vertex positions
-        std::vector<Vec3> positions;
-        positions.reserve(mesh->num_vertices);
-        
-        for (size_t i = 0; i < mesh->num_vertices; ++i)
-        {
-            ufbx_vec3 pos = mesh->vertices[i];
-            positions.push_back(ConvertPosition(pos.x, pos.y, pos.z, options));
-        }
-        resultMesh->AddAttribute(VertexBufferNames::Position, positions);
-
-        // Triangulate and extract indices
-        size_t numTriangles = mesh->num_triangles;
-        std::vector<uint32_t> indices;
-        indices.reserve(numTriangles * 3);
-
-        // Create a triangulated mesh for easier processing
-        size_t numTriIndices = mesh->max_face_triangles * 3;
-        std::vector<uint32_t> triIndices(numTriIndices);
-
-        for (size_t faceIdx = 0; faceIdx < mesh->num_faces; ++faceIdx)
-        {
-            ufbx_face face = mesh->faces[faceIdx];
-            uint32_t numTris = ufbx_triangulate_face(triIndices.data(), numTriIndices, mesh, face);
-            
-            for (uint32_t i = 0; i < numTris * 3; ++i)
-            {
-                indices.push_back(triIndices[i]);
-            }
-        }
-        resultMesh->SetIndices(indices);
-        resultMesh->SetPrimitiveType(PrimitiveType::Triangles);
-
-        // Extract normals
-        if (mesh->vertex_normal.exists)
-        {
-            std::vector<Vec3> normals;
-            normals.reserve(mesh->num_vertices);
-            
-            for (size_t i = 0; i < mesh->num_vertices; ++i)
-            {
-                ufbx_vec3 normal = ufbx_get_vertex_vec3(&mesh->vertex_normal, i);
-                Vec3 n = ConvertPosition(normal.x, normal.y, normal.z, options);
-                normals.push_back(glm::normalize(n));
-            }
-            resultMesh->AddAttribute(VertexBufferNames::Normal, normals);
-        }
-        else if (options.generateNormals)
-        {
-            resultMesh->GenerateNormals();
-        }
-
-        // Extract UVs
-        if (mesh->vertex_uv.exists)
-        {
-            std::vector<Vec2> uvs;
-            uvs.reserve(mesh->num_vertices);
-            
-            for (size_t i = 0; i < mesh->num_vertices; ++i)
-            {
-                ufbx_vec2 uv = ufbx_get_vertex_vec2(&mesh->vertex_uv, i);
-                float v = options.flipUVs ? 1.0f - uv.y : uv.y;
-                uvs.push_back(Vec2(uv.x, v));
-            }
-            resultMesh->AddAttribute(VertexBufferNames::UV, uvs);
-        }
-
-        // Extract tangents
-        if (mesh->vertex_tangent.exists)
-        {
-            std::vector<Vec4> tangents;
-            tangents.reserve(mesh->num_vertices);
-            
-            for (size_t i = 0; i < mesh->num_vertices; ++i)
-            {
-                ufbx_vec3 tangent = ufbx_get_vertex_vec3(&mesh->vertex_tangent, i);
-                // Bitangent sign (handedness)
-                float sign = 1.0f;
-                if (mesh->vertex_bitangent.exists)
+                if (index >= 0)
                 {
-                    ufbx_vec3 bitangent = ufbx_get_vertex_vec3(&mesh->vertex_bitangent, i);
-                    ufbx_vec3 normal = ufbx_get_vertex_vec3(&mesh->vertex_normal, i);
-                    // Cross product to determine handedness
-                    ufbx_vec3 cross = {
-                        normal.y * tangent.z - normal.z * tangent.y,
-                        normal.z * tangent.x - normal.x * tangent.z,
-                        normal.x * tangent.y - normal.y * tangent.x
-                    };
-                    float dot = cross.x * bitangent.x + cross.y * bitangent.y + cross.z * bitangent.z;
-                    sign = dot < 0.0f ? -1.0f : 1.0f;
+                    TextureInfo info;
+                    info.imageId = index;
+                    info.texturePath = result.textures[static_cast<size_t>(index)].path;
+                    setter(info);
                 }
-                Vec3 t = ConvertPosition(tangent.x, tangent.y, tangent.z, options);
-                tangents.push_back(Vec4(glm::normalize(t), sign));
-            }
-            resultMesh->AddAttribute(VertexBufferNames::Tangent, tangents);
-        }
-        else if (options.generateTangents && resultMesh->HasAttribute(VertexBufferNames::Normal) &&
-                 resultMesh->HasAttribute(VertexBufferNames::UV))
-        {
-            resultMesh->GenerateTangents();
-        }
+                return true;
+            };
 
-        // Extract vertex colors
-        if (mesh->vertex_color.exists)
-        {
-            std::vector<Vec4> colors;
-            colors.reserve(mesh->num_vertices);
-            
-            for (size_t i = 0; i < mesh->num_vertices; ++i)
+            const ufbx_texture* baseColor = source.pbr.base_color.texture
+                ? source.pbr.base_color.texture
+                : source.fbx.diffuse_color.texture;
+            const ufbx_texture* normal = source.pbr.normal_map.texture
+                ? source.pbr.normal_map.texture
+                : source.fbx.normal_map.texture;
+            if (!bindTexture(baseColor, TextureUsage::Color,
+                             [&](const TextureInfo& info)
+                             { material->SetBaseColorTexture(info); }) ||
+                !bindTexture(normal, TextureUsage::Normal,
+                             [&](const TextureInfo& info)
+                             { material->SetNormalTexture(info); }) ||
+                !bindTexture(source.pbr.metalness.texture, TextureUsage::Data,
+                             [&](const TextureInfo& info)
+                             { material->SetMetallicRoughnessTexture(info); }) ||
+                !bindTexture(source.pbr.ambient_occlusion.texture, TextureUsage::Data,
+                             [&](const TextureInfo& info)
+                             { material->SetOcclusionTexture(info); }) ||
+                !bindTexture(source.pbr.emission_color.texture, TextureUsage::Color,
+                             [&](const TextureInfo& info)
+                             { material->SetEmissiveTexture(info); }))
             {
-                ufbx_vec4 color = ufbx_get_vertex_vec4(&mesh->vertex_color, i);
-                colors.push_back(Vec4(color.x, color.y, color.z, color.w));
+                return false;
             }
-            resultMesh->AddAttribute(VertexBufferNames::Color, colors);
+            result.materials.push_back(std::move(material));
         }
 
-        // Extract bone weights if skinned
-        if (mesh->skin_deformers.count > 0)
+        if (result.materials.empty())
         {
-            ufbx_skin_deformer* skin = mesh->skin_deformers.data[0];
-            
-            std::vector<IVec4> boneIndices(mesh->num_vertices, IVec4(0));
-            std::vector<Vec4> boneWeights(mesh->num_vertices, Vec4(0.0f));
+            auto material = std::make_shared<Material>("DefaultMaterial");
+            material->SetMaterialId(0);
+            result.materials.push_back(std::move(material));
+        }
+        return true;
+    }
 
-            for (size_t vertIdx = 0; vertIdx < mesh->num_vertices; ++vertIdx)
+    bool ValidateInstanceMaterials(const ufbx_node& node, std::string& outError)
+    {
+        if (!node.mesh || node.materials.count == 0)
+        {
+            return true;
+        }
+        if (node.materials.count != node.mesh->materials.count)
+        {
+            outError = "Unsupported FBX feature: per-instance material override.";
+            return false;
+        }
+        for (size_t index = 0; index < node.materials.count; ++index)
+        {
+            if (node.materials.data[index] != node.mesh->materials.data[index])
             {
-                ufbx_skin_vertex skinVertex = skin->vertices[vertIdx];
-                
-                // Gather up to maxBonesPerVertex influences
-                std::vector<std::pair<int, float>> influences;
-                influences.reserve(skinVertex.num_weights);
-                
-                for (size_t w = 0; w < skinVertex.num_weights; ++w)
-                {
-                    ufbx_skin_weight weight = skin->weights[skinVertex.weight_begin + w];
-                    influences.push_back({static_cast<int>(weight.cluster_index), 
-                                         static_cast<float>(weight.weight)});
-                }
-
-                // Sort by weight descending
-                std::sort(influences.begin(), influences.end(),
-                    [](const auto& a, const auto& b) { return a.second > b.second; });
-
-                // Take top influences
-                float totalWeight = 0.0f;
-                for (int i = 0; i < std::min(options.maxBonesPerVertex, 
-                                              static_cast<int>(influences.size())); ++i)
-                {
-                    boneIndices[vertIdx][i] = influences[i].first;
-                    boneWeights[vertIdx][i] = influences[i].second;
-                    totalWeight += influences[i].second;
-                }
-
-                // Normalize weights
-                if (totalWeight > 0.0f)
-                {
-                    boneWeights[vertIdx] /= totalWeight;
-                }
+                outError = "Unsupported FBX feature: per-instance material override.";
+                return false;
             }
+        }
+        return true;
+    }
 
-            resultMesh->AddAttribute(VertexBufferNames::BoneIndices, boneIndices);
-            resultMesh->AddAttribute(VertexBufferNames::BoneWeights, boneWeights);
+    Node::Ptr ConvertNode(
+        const ufbx_node& source,
+        const std::unordered_map<const ufbx_mesh*, int>& meshIndices,
+        const std::vector<Mesh::Ptr>& meshes,
+        std::uint32_t depth,
+        std::string& outError)
+    {
+        if (depth > kMaxNodeDepth)
+        {
+            outError = "FBX node hierarchy exceeds the supported depth.";
+            return nullptr;
+        }
+        if (!ValidateInstanceMaterials(source, outError))
+        {
+            return nullptr;
         }
 
-        // Compute bounding box
-        resultMesh->ComputeBoundingBox();
-
-        // Create submeshes per material
-        for (size_t matIdx = 0; matIdx < mesh->material_parts.count; ++matIdx)
+        std::string name = ToString(source.name);
+        if (name.empty())
         {
-            ufbx_mesh_part* meshPart = &mesh->material_parts.data[matIdx];
-            if (meshPart->num_triangles == 0) continue;
+            name = "FBXNode_" + std::to_string(source.typed_id);
+        }
+        auto node = std::make_shared<Node>(name);
+        Transform& transform = node->GetLocalTransform();
+        const ufbx_transform& local = source.local_transform;
+        const Vec3 position(local.translation.x,
+                            local.translation.y,
+                            local.translation.z);
+        const Quat rotation(local.rotation.w,
+                            local.rotation.x,
+                            local.rotation.y,
+                            local.rotation.z);
+        const Vec3 scale(local.scale.x, local.scale.y, local.scale.z);
+        if (!IsFinite(position) || !IsFinite(rotation) || !IsFinite(scale))
+        {
+            outError = "FBX node contains a non-finite local transform.";
+            return nullptr;
+        }
+        transform.SetPosition(position);
+        transform.SetRotation(glm::normalize(rotation));
+        transform.SetScale(scale);
 
-            SubMesh subMesh;
-            subMesh.name = meshName + "_" + std::to_string(matIdx);
-            
-            // Find material index in scene
-            if (matIdx < mesh->materials.count && mesh->materials.data[matIdx])
+        if (source.mesh)
+        {
+            const auto found = meshIndices.find(source.mesh);
+            if (found == meshIndices.end() || found->second < 0 ||
+                static_cast<size_t>(found->second) >= meshes.size())
             {
-                for (size_t i = 0; i < scene->materials.count; ++i)
-                {
-                    if (scene->materials.data[i] == mesh->materials.data[matIdx])
-                    {
-                        subMesh.materialId = static_cast<uint32_t>(i);
-                        break;
-                    }
-                }
+                outError = "FBX node references a mesh that was not converted.";
+                return nullptr;
             }
-
-            subMesh.indexOffset = 0;  // Would need proper offset tracking for multi-material
-            subMesh.indexCount = static_cast<uint32_t>(meshPart->num_triangles * 3);
-            subMesh.localBounds = resultMesh->GetBoundingBox();
-            
-            resultMesh->AddSubMesh(subMesh);
-        }
-
-        // If no submeshes created, create one with default material
-        if (resultMesh->GetSubMeshes().empty())
-        {
-            SubMesh subMesh;
-            subMesh.name = meshName;
-            subMesh.materialId = 0;
-            subMesh.indexOffset = 0;
-            subMesh.indexCount = static_cast<uint32_t>(resultMesh->GetIndexCount());
-            subMesh.localBounds = resultMesh->GetBoundingBox();
-            resultMesh->AddSubMesh(subMesh);
-        }
-
-        return resultMesh;
-    }
-
-    // =========================================================================
-    // Node Parsing
-    // =========================================================================
-
-    void FBXImporter::ParseNodes(ufbx_scene* scene, FBXImportResult& result,
-                                  const FBXImportOptions& options)
-    {
-        // Build mesh index map
-        std::unordered_map<ufbx_mesh*, int> meshIndexMap;
-        for (size_t i = 0; i < scene->meshes.count; ++i)
-        {
-            meshIndexMap[scene->meshes.data[i]] = static_cast<int>(i);
-        }
-
-        // Convert root node
-        if (scene->root_node)
-        {
-            result.model = std::make_shared<Model>();
-            
-            auto rootNode = ConvertNode(scene, scene->root_node, options, meshIndexMap);
-            result.model->SetRootNode(rootNode);
-        }
-    }
-
-    Node::Ptr FBXImporter::ConvertNode(ufbx_scene* scene, ufbx_node* node,
-                                        const FBXImportOptions& options,
-                                        const std::unordered_map<ufbx_mesh*, int>& meshIndexMap)
-    {
-        std::string nodeName = node->name.length > 0 ?
-            std::string(node->name.data, node->name.length) : "Node";
-
-        auto resultNode = std::make_shared<Node>(nodeName);
-
-        // Set transform
-        Transform& transform = resultNode->GetLocalTransform();
-
-        // Extract local transform
-        ufbx_transform localTransform = node->local_transform;
-        
-        transform.SetPosition(ConvertPosition(
-            localTransform.translation.x,
-            localTransform.translation.y,
-            localTransform.translation.z,
-            options));
-
-        transform.SetRotation(ConvertRotation(
-            localTransform.rotation.x,
-            localTransform.rotation.y,
-            localTransform.rotation.z,
-            localTransform.rotation.w,
-            options));
-
-        transform.SetScale(Vec3(
-            localTransform.scale.x,
-            localTransform.scale.y,
-            localTransform.scale.z));
-
-        // Set mesh reference
-        if (node->mesh)
-        {
-            auto it = meshIndexMap.find(node->mesh);
-            if (it != meshIndexMap.end())
+            node->SetMeshIndex(found->second);
+            std::vector<int> materialIndices;
+            for (const SubMesh& subMesh : meshes[static_cast<size_t>(found->second)]->GetSubMeshes())
             {
-                resultNode->SetMeshIndex(it->second);
-
-                // Set material indices
-                std::vector<int> materialIndices;
-                for (size_t i = 0; i < node->mesh->materials.count; ++i)
-                {
-                    ufbx_material* mat = node->mesh->materials.data[i];
-                    if (mat)
-                    {
-                        // Find material index
-                        for (size_t matIdx = 0; matIdx < scene->materials.count; ++matIdx)
-                        {
-                            if (scene->materials.data[matIdx] == mat)
-                            {
-                                materialIndices.push_back(static_cast<int>(matIdx));
-                                break;
-                            }
-                        }
-                    }
-                    else
-                    {
-                        materialIndices.push_back(0);
-                    }
-                }
-                resultNode->SetMaterialIndices(materialIndices);
+                materialIndices.push_back(static_cast<int>(subMesh.materialId));
             }
+            node->SetMaterialIndices(materialIndices);
         }
 
-        // Process children
-        for (size_t i = 0; i < node->children.count; ++i)
+        for (size_t childIndex = 0; childIndex < source.children.count; ++childIndex)
         {
-            auto childNode = ConvertNode(scene, node->children.data[i], options, meshIndexMap);
-            resultNode->AddChild(childNode);
-        }
-
-        return resultNode;
-    }
-
-    // =========================================================================
-    // Skeleton Parsing
-    // =========================================================================
-
-    void FBXImporter::ParseSkeleton(ufbx_scene* scene, FBXImportResult& result)
-    {
-        if (scene->skin_deformers.count == 0)
-        {
-            return;
-        }
-
-        result.skeleton = std::make_unique<FBXSkeleton>();
-
-        // Gather all bones from all skin deformers
-        std::unordered_map<ufbx_node*, int> boneIndexMap;
-        std::vector<ufbx_node*> boneNodes;
-
-        for (size_t skinIdx = 0; skinIdx < scene->skin_deformers.count; ++skinIdx)
-        {
-            ufbx_skin_deformer* skin = scene->skin_deformers.data[skinIdx];
-            
-            for (size_t clusterIdx = 0; clusterIdx < skin->clusters.count; ++clusterIdx)
+            Node::Ptr child = ConvertNode(*source.children.data[childIndex],
+                                          meshIndices,
+                                          meshes,
+                                          depth + 1u,
+                                          outError);
+            if (!child)
             {
-                ufbx_skin_cluster* cluster = skin->clusters.data[clusterIdx];
-                ufbx_node* boneNode = cluster->bone_node;
-                
-                if (boneNode && boneIndexMap.find(boneNode) == boneIndexMap.end())
-                {
-                    int index = static_cast<int>(boneNodes.size());
-                    boneIndexMap[boneNode] = index;
-                    boneNodes.push_back(boneNode);
-                }
+                return nullptr;
             }
+            node->AddChild(std::move(child));
         }
+        return node;
+    }
 
-        // Build skeleton structure
-        result.skeleton->bones.reserve(boneNodes.size());
-        result.skeleton->boneNames.reserve(boneNodes.size());
-
-        for (size_t i = 0; i < boneNodes.size(); ++i)
+    bool ValidateSupportedSubset(const ufbx_scene& scene, std::string& outError)
+    {
+        if (scene.skin_deformers.count > 0 || scene.skin_clusters.count > 0)
         {
-            ufbx_node* boneNode = boneNodes[i];
-            FBXSkeleton::Bone bone;
-            
-            bone.name = boneNode->name.length > 0 ?
-                std::string(boneNode->name.data, boneNode->name.length) :
-                "Bone_" + std::to_string(i);
-
-            // Find parent bone
-            if (boneNode->parent)
+            outError = "Unsupported FBX feature: skinning.";
+            return false;
+        }
+        if (scene.anim_curves.count > 0 || scene.anim_values.count > 0)
+        {
+            outError = "Unsupported FBX feature: animation.";
+            return false;
+        }
+        if (scene.blend_deformers.count > 0 || scene.blend_channels.count > 0 ||
+            scene.blend_shapes.count > 0)
+        {
+            outError = "Unsupported FBX feature: blend shape.";
+            return false;
+        }
+        for (size_t index = 0; index < scene.textures.count; ++index)
+        {
+            const ufbx_texture* texture = scene.textures.data[index];
+            if (texture && (texture->content.size > 0 ||
+                            (texture->video && texture->video->content.size > 0)))
             {
-                auto it = boneIndexMap.find(boneNode->parent);
-                if (it != boneIndexMap.end())
-                {
-                    bone.parentIndex = it->second;
-                }
+                outError = "Unsupported FBX feature: embedded texture.";
+                return false;
             }
-
-            // Get bind pose matrix from skin cluster
-            for (size_t skinIdx = 0; skinIdx < scene->skin_deformers.count; ++skinIdx)
+        }
+        for (size_t index = 0; index < scene.videos.count; ++index)
+        {
+            if (scene.videos.data[index] && scene.videos.data[index]->content.size > 0)
             {
-                ufbx_skin_deformer* skin = scene->skin_deformers.data[skinIdx];
-                for (size_t clusterIdx = 0; clusterIdx < skin->clusters.count; ++clusterIdx)
-                {
-                    ufbx_skin_cluster* cluster = skin->clusters.data[clusterIdx];
-                    if (cluster->bone_node == boneNode)
-                    {
-                        // Store inverse bind pose
-                        ufbx_matrix mat = cluster->geometry_to_bone;
-                        bone.inverseBindPose = Mat4(
-                            mat.m00, mat.m10, mat.m20, 0.0f,
-                            mat.m01, mat.m11, mat.m21, 0.0f,
-                            mat.m02, mat.m12, mat.m22, 0.0f,
-                            mat.m03, mat.m13, mat.m23, 1.0f
-                        );
-                        bone.bindPose = glm::inverse(bone.inverseBindPose);
-                        break;
-                    }
-                }
-            }
-
-            result.skeleton->bones.push_back(bone);
-            result.skeleton->boneNames.push_back(bone.name);
-        }
-
-        RVX_CORE_INFO("FBXImporter: Extracted skeleton with {} bones", result.skeleton->bones.size());
-    }
-
-    // =========================================================================
-    // Animation Parsing
-    // =========================================================================
-
-    void FBXImporter::ParseAnimations(ufbx_scene* scene, FBXImportResult& result,
-                                       const FBXImportOptions& options)
-    {
-        if (scene->anim_stacks.count == 0 || !result.skeleton)
-        {
-            return;
-        }
-
-        result.animations.reserve(scene->anim_stacks.count);
-
-        for (size_t i = 0; i < scene->anim_stacks.count; ++i)
-        {
-            ufbx_anim_stack* animStack = scene->anim_stacks.data[i];
-            auto clip = ConvertAnimation(scene, animStack, options, result.skeleton.get());
-            if (!clip.boneAnimations.empty())
-            {
-                result.animations.push_back(std::move(clip));
+                outError = "Unsupported FBX feature: embedded texture.";
+                return false;
             }
         }
+        return true;
+    }
+} // namespace
 
-        RVX_CORE_INFO("FBXImporter: Extracted {} animation clips", result.animations.size());
+bool FBXImporter::CanImport(const std::string& path) const
+{
+    std::string extension = fs::path(path).extension().string();
+    std::transform(extension.begin(),
+                   extension.end(),
+                   extension.begin(),
+                   [](unsigned char value)
+                   { return static_cast<char>(std::tolower(value)); });
+    return extension == ".fbx";
+}
+
+FBXImportResult FBXImporter::Import(const std::string& path,
+                                    const FBXImportOptions& options)
+{
+    FBXImportResult result;
+    ReportProgress(0.0f, "Loading FBX file");
+
+    std::error_code pathError;
+    const fs::path sourcePath = fs::canonical(fs::absolute(fs::path(path)), pathError);
+    if (pathError || !fs::is_regular_file(sourcePath, pathError))
+    {
+        result.errorMessage = "FBX source file does not exist: " + path;
+        return result;
+    }
+    const fs::path sourceRoot = sourcePath.parent_path();
+
+    ufbx_load_opts loadOptions{};
+    loadOptions.strict = true;
+    loadOptions.load_external_files = false;
+    loadOptions.ignore_missing_external_files = true;
+    loadOptions.generate_missing_normals = false;
+    loadOptions.skip_skin_vertices = true;
+    loadOptions.geometry_transform_handling =
+        UFBX_GEOMETRY_TRANSFORM_HANDLING_HELPER_NODES;
+    loadOptions.inherit_mode_handling = UFBX_INHERIT_MODE_HANDLING_HELPER_NODES;
+    loadOptions.space_conversion = UFBX_SPACE_CONVERSION_ADJUST_TRANSFORMS;
+    loadOptions.target_axes = ufbx_axes_right_handed_y_up;
+    loadOptions.target_unit_meters = 1.0f;
+    loadOptions.node_depth_limit = kMaxNodeDepth;
+
+    ufbx_error error{};
+    ScenePtr scene(ufbx_load_file(sourcePath.string().c_str(), &loadOptions, &error));
+    if (!scene)
+    {
+        result.errorMessage = "Failed to parse FBX source: " +
+                              ToString(error.description);
+        return result;
+    }
+    if (!ValidateSupportedSubset(*scene, result.errorMessage))
+    {
+        return result;
+    }
+    if (scene->meshes.count == 0 || !scene->root_node)
+    {
+        result.errorMessage = "FBX source contains no static model geometry.";
+        return result;
     }
 
-    FBXAnimationClip FBXImporter::ConvertAnimation(ufbx_scene* scene, ufbx_anim_stack* animStack,
-                                                     const FBXImportOptions& options,
-                                                     const FBXSkeleton* skeleton)
+    ReportProgress(0.15f, "Validating FBX materials and textures");
+    if (!ConvertMaterials(*scene, sourceRoot, result))
     {
-        FBXAnimationClip clip;
-        
-        clip.name = animStack->name.length > 0 ?
-            std::string(animStack->name.data, animStack->name.length) :
-            "Animation";
+        return result;
+    }
 
-        // Get animation time range
-        double startTime = animStack->time_begin;
-        double endTime = animStack->time_end;
-        clip.duration = static_cast<float>(endTime - startTime);
-        
-        // Determine sample rate
-        float sampleRate = options.animationSampleRate > 0.0f ?
-            options.animationSampleRate : 30.0f;
-        clip.framesPerSecond = sampleRate;
-
-        // Sample animation for each bone
-        clip.boneAnimations.reserve(skeleton->bones.size());
-
-        // Create animation evaluator
-        ufbx_anim* anim = animStack->anim;
-
-        for (size_t boneIdx = 0; boneIdx < skeleton->bones.size(); ++boneIdx)
+    ReportProgress(0.35f, "Converting FBX polygon-corner geometry");
+    result.meshes.reserve(scene->meshes.count);
+    std::unordered_map<const ufbx_mesh*, int> meshIndices;
+    for (size_t meshIndex = 0; meshIndex < scene->meshes.count; ++meshIndex)
+    {
+        Mesh::Ptr mesh = ConvertMesh(*scene,
+                                     *scene->meshes.data[meshIndex],
+                                     options,
+                                     result.errorMessage);
+        if (!mesh)
         {
-            const auto& bone = skeleton->bones[boneIdx];
-            
-            // Find the node for this bone
-            ufbx_node* boneNode = nullptr;
-            for (size_t nodeIdx = 0; nodeIdx < scene->nodes.count; ++nodeIdx)
-            {
-                ufbx_node* node = scene->nodes.data[nodeIdx];
-                std::string nodeName = node->name.length > 0 ?
-                    std::string(node->name.data, node->name.length) : "";
-                if (nodeName == bone.name)
-                {
-                    boneNode = node;
-                    break;
-                }
-            }
-
-            if (!boneNode) continue;
-
-            FBXAnimationClip::BoneAnimation boneAnim;
-            boneAnim.boneName = bone.name;
-            boneAnim.boneIndex = static_cast<int>(boneIdx);
-
-            // Sample the animation
-            int numSamples = static_cast<int>(clip.duration * sampleRate) + 1;
-            boneAnim.positionTimes.reserve(numSamples);
-            boneAnim.rotationTimes.reserve(numSamples);
-            boneAnim.scaleTimes.reserve(numSamples);
-            boneAnim.positions.reserve(numSamples);
-            boneAnim.rotations.reserve(numSamples);
-            boneAnim.scales.reserve(numSamples);
-
-            for (int sample = 0; sample < numSamples; ++sample)
-            {
-                double time = startTime + (sample / sampleRate);
-                float keyTime = static_cast<float>(time - startTime);
-
-                // Evaluate transform at this time
-                ufbx_transform transform = ufbx_evaluate_transform(anim, boneNode, time);
-
-                boneAnim.positionTimes.push_back(keyTime);
-                boneAnim.rotationTimes.push_back(keyTime);
-                boneAnim.scaleTimes.push_back(keyTime);
-
-                boneAnim.positions.push_back(ConvertPosition(
-                    transform.translation.x,
-                    transform.translation.y,
-                    transform.translation.z,
-                    options));
-
-                boneAnim.rotations.push_back(ConvertRotation(
-                    transform.rotation.x,
-                    transform.rotation.y,
-                    transform.rotation.z,
-                    transform.rotation.w,
-                    options));
-
-                boneAnim.scales.push_back(Vec3(
-                    transform.scale.x,
-                    transform.scale.y,
-                    transform.scale.z));
-            }
-
-            clip.boneAnimations.push_back(std::move(boneAnim));
+            return result;
         }
-
-        return clip;
+        meshIndices.emplace(scene->meshes.data[meshIndex],
+                            static_cast<int>(result.meshes.size()));
+        result.meshes.push_back(std::move(mesh));
     }
 
-    // =========================================================================
-    // Coordinate System Conversion
-    // =========================================================================
-
-    Vec3 FBXImporter::ConvertPosition(float x, float y, float z, const FBXImportOptions& options) const
+    ReportProgress(0.75f, "Preserving FBX node hierarchy");
+    Node::Ptr root = ConvertNode(*scene->root_node,
+                                 meshIndices,
+                                 result.meshes,
+                                 0u,
+                                 result.errorMessage);
+    if (!root)
     {
-        // ufbx handles coordinate system conversion via load options
-        // Apply scale factor is handled by ufbx
-        return Vec3(x, y, z);
+        return result;
     }
 
-    Quat FBXImporter::ConvertRotation(float x, float y, float z, float w, const FBXImportOptions& options) const
+    result.model = std::make_shared<Model>();
+    result.model->path = sourcePath.generic_string();
+    result.model->suffix = ".fbx";
+    result.model->SetRootNode(std::move(root));
+    result.model->SetHasAnimation(false);
+    if (!result.model->ComputeBoundingBox(result.meshes))
     {
-        // ufbx quaternion order: x, y, z, w
-        // GLM quaternion order: w, x, y, z
-        return Quat(w, x, y, z);
+        result.errorMessage =
+            "FBX model bounds require complete valid indexed mesh references.";
+        result.model.reset();
+        return result;
     }
 
-    Mat4 FBXImporter::ConvertMatrix(const float* data, const FBXImportOptions& options) const
+    ReportProgress(0.95f, "Releasing FBX parser state");
+    scene.reset();
+    result.success = true;
+    ReportProgress(1.0f, "Complete");
+    return result;
+}
+
+void FBXImporter::ReportProgress(float progress, const std::string& stage) const
+{
+    if (m_progressCallback)
     {
-        return Mat4(
-            data[0], data[1], data[2], data[3],
-            data[4], data[5], data[6], data[7],
-            data[8], data[9], data[10], data[11],
-            data[12], data[13], data[14], data[15]
-        );
+        m_progressCallback(progress, stage);
     }
-#else // !HAS_UFBX
-    // Stub implementations when ufbx is not available
-    void FBXImporter::ParseMaterials(ufbx_scene*, const std::string&, FBXImportResult&) {}
-    Material::Ptr FBXImporter::ConvertMaterial(ufbx_scene*, ufbx_material*, const std::string&, int, FBXImportResult&) { return nullptr; }
-    TextureReference FBXImporter::ExtractTexture(ufbx_scene*, void*, const std::string&, TextureUsage) { return {}; }
-    void FBXImporter::ParseMeshes(ufbx_scene*, FBXImportResult&, const FBXImportOptions&) {}
-    Mesh::Ptr FBXImporter::ConvertMesh(ufbx_scene*, ufbx_mesh*, const FBXImportOptions&, int) { return nullptr; }
-    void FBXImporter::ParseNodes(ufbx_scene*, FBXImportResult&, const FBXImportOptions&) {}
-    Node::Ptr FBXImporter::ConvertNode(ufbx_scene*, ufbx_node*, const FBXImportOptions&, const std::unordered_map<ufbx_mesh*, int>&) { return nullptr; }
-    void FBXImporter::ParseSkeleton(ufbx_scene*, FBXImportResult&) {}
-    void FBXImporter::ParseAnimations(ufbx_scene*, FBXImportResult&, const FBXImportOptions&) {}
-    FBXAnimationClip FBXImporter::ConvertAnimation(ufbx_scene*, ufbx_anim_stack*, const FBXImportOptions&, const FBXSkeleton*) { return {}; }
-    Vec3 FBXImporter::ConvertPosition(float, float, float, const FBXImportOptions&) const { return {}; }
-    Quat FBXImporter::ConvertRotation(float, float, float, float, const FBXImportOptions&) const { return {}; }
-    Mat4 FBXImporter::ConvertMatrix(const float*, const FBXImportOptions&) const { return Mat4(1.0f); }
-#endif // HAS_UFBX
-
-    // =========================================================================
-    // Utility
-    // =========================================================================
-
-    void FBXImporter::ReportProgress(float progress, const std::string& stage)
-    {
-        if (m_progressCallback)
-        {
-            m_progressCallback(progress, stage);
-        }
-    }
-
-    PrimitiveType FBXImporter::GetPrimitiveType(int faceSize)
-    {
-        switch (faceSize)
-        {
-            case 1: return PrimitiveType::Points;
-            case 2: return PrimitiveType::Lines;
-            case 3: return PrimitiveType::Triangles;
-            default: return PrimitiveType::Triangles;
-        }
-    }
-
+}
 } // namespace RVX::Resource

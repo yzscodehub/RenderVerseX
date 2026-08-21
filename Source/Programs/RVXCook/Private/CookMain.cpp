@@ -1287,7 +1287,6 @@ namespace
         {
             pipeline.RegisterImporter(std::make_unique<RVX::Tools::TextureImporter>());
             pipeline.RegisterImporter(std::make_unique<RVX::Tools::EnvironmentImporter>());
-            pipeline.RegisterImporter(std::make_unique<RVX::Tools::MeshImporter>());
             pipeline.RegisterImporter(std::make_unique<RVX::Tools::ShaderImporter>());
             pipeline.RegisterImporter(std::make_unique<RVX::Tools::AudioImporter>());
         }

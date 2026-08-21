@@ -8,6 +8,14 @@
       "version": "5.4.7"
     }
   ],
+  "features": {
+    "fbx": {
+      "description": "Enable development-only static FBX import through ufbx",
+      "dependencies": [
+        "ufbx"
+      ]
+    }
+  },
   "dependencies": [
     "spdlog",
     {

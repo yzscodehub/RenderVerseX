@@ -485,6 +485,21 @@ if(TARGET RVXCook)
     target_compile_definitions(RenderHonestyValidation PRIVATE
         RVX_COOK_EXECUTABLE_PATH="$<TARGET_FILE:RVXCook>")
 endif()
+
+if(RVX_ENABLE_FBX AND TARGET RVXCook)
+    rvx_add_gtest(
+        NAME FBXCookPipelineValidation
+        LANE integration
+        SOURCES FBXCookPipelineValidation/main.cpp
+        LIBS RVX::Core RVX::ResourceRuntime
+        DEFINES
+            RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+            RVX_COOK_EXECUTABLE_PATH="$<TARGET_FILE:RVXCook>"
+        TAGS product.tools subsystem.resource suite.fbx suite.cook
+        TIMEOUT 120
+    )
+    add_dependencies(FBXCookPipelineValidation RVXCook)
+endif()
 if(MSVC)
     target_compile_options(RenderPassValidation PRIVATE /bigobj)
 endif()
