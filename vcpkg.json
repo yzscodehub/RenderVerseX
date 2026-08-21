@@ -1,7 +1,7 @@
 {
   "name": "renderversex",
   "version": "0.1.0",
-  "description": "A cross-platform rendering framework with DX11/DX12/Vulkan/Metal/OpenGL backends",
+  "description": "A runtime-first cross-platform game-engine foundation with DX11, DX12, Vulkan, Metal, and OpenGL backends",
   "overrides": [
     {
       "name": "lua",

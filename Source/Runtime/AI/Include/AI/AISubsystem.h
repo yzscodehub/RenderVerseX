@@ -2,7 +2,7 @@
 
 /**
  * @file AISubsystem.h
- * @brief World-level AI subsystem managing navigation, behavior trees, and perception
+ * @brief Experimental AI subsystem managing navigation, behavior trees, and perception
  */
 
 #include "Core/Subsystem/WorldSubsystem.h"
@@ -18,27 +18,26 @@ namespace RVX::AI
 /**
  * @brief World-level subsystem for AI management
  * 
- * The AISubsystem coordinates all AI functionality for a world:
+ * The AISubsystem coordinates the current experimental AI implementation:
  * - Navigation mesh and pathfinding
  * - Behavior tree execution
  * - Perception updates
  * - Agent crowd simulation
  * 
- * Usage:
+ * It is not registered by the Engine's ECS World composition. Until the AI
+ * feature is migrated to that composition, an experimental host must own its
+ * lifecycle explicitly.
+ *
+ * Standalone usage:
  * @code
- * // In your world setup
- * auto& aiSystem = world->GetSubsystem<AISubsystem>();
- * 
- * // Build navigation mesh
- * NavMeshBuildSettings settings;
- * aiSystem.BuildNavMesh(meshData, settings);
- * 
- * // Register an AI agent
- * aiSystem.RegisterAgent(entityId, agentConfig);
- * 
- * // Request pathfinding
+ * RVX::AI::AISubsystem aiSystem;
+ * aiSystem.Initialize();
+ * aiSystem.SetNavMesh(navMesh);
+ *
  * NavPath path;
- * aiSystem.FindPath(startPos, endPos, path);
+ * const auto status = aiSystem.FindPath(startPosition, endPosition, path);
+ *
+ * aiSystem.Deinitialize();
  * @endcode
  */
 class AISubsystem : public WorldSubsystem

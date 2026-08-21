@@ -1,0 +1,357 @@
+{
+  "schema": "RVX.EngineCapabilities",
+  "schemaVersion": 1,
+  "product": {
+    "positioning": "runtime-first cross-platform game-engine foundation",
+    "cmakeMinimum": "3.25",
+    "vcpkgDescription": "A runtime-first cross-platform game-engine foundation with DX11, DX12, Vulkan, Metal, and OpenGL backends"
+  },
+  "buildContract": {
+    "moduleManifest": "Docs/module-boundaries.json",
+    "configurePresets": [
+      "win_x64_debug",
+      "win_x64_release",
+      "win_x64_qualification_debug",
+      "win_x64_pr_debug",
+      "win_x64_nightly_compatibility_debug",
+      "win_x64_weekly_soak_debug",
+      "linux_x64_debug",
+      "linux_x64_pr_debug",
+      "linux_x64_nightly_compatibility_debug",
+      "linux_x64_weekly_soak_debug",
+      "linux_x64_tsan",
+      "linux_x64_release",
+      "mac_arm64_debug",
+      "mac_arm64_pr_debug",
+      "mac_arm64_weekly_soak_debug",
+      "mac_arm64_release",
+      "win_x64_shipping_host_release",
+      "linux_x64_shipping_host_release",
+      "mac_arm64_shipping_host_release",
+      "win_x64_shipping_release",
+      "linux_x64_shipping_release",
+      "mac_arm64_shipping_release"
+    ],
+    "testPresets": [
+      "win_x64_nightly_compatibility_debug",
+      "linux_x64_nightly_compatibility_debug",
+      "win_x64_weekly_soak_debug",
+      "linux_x64_weekly_soak_debug",
+      "mac_arm64_weekly_soak_debug",
+      "win_x64_pr_debug_smoke",
+      "linux_x64_pr_debug_smoke",
+      "mac_arm64_pr_debug_smoke",
+      "win_x64_shipping_release_shipping",
+      "linux_x64_shipping_release_shipping",
+      "mac_arm64_shipping_release_shipping",
+      "win_x64_debug_architecture",
+      "win_x64_debug_unit",
+      "win_x64_debug_integration",
+      "win_x64_debug_native",
+      "win_x64_qualification_debug_qualification",
+      "linux_x64_debug_architecture",
+      "linux_x64_debug_unit",
+      "linux_x64_debug_integration",
+      "linux_x64_debug_native",
+      "linux_x64_tsan_integration",
+      "linux_x64_tsan",
+      "mac_arm64_debug_architecture",
+      "mac_arm64_debug_unit",
+      "mac_arm64_debug_integration",
+      "mac_arm64_debug_native"
+    ],
+    "artifactContracts": [
+      {
+        "id": "model",
+        "magic": "RVX_MODEL_ARTIFACT_V2",
+        "source": "Source/Runtime/ResourceRuntime/Include/Resource/Cooked/CookedModelArtifact.h"
+      },
+      {
+        "id": "cook-manifest",
+        "magic": "RVX_COOK_MANIFEST_V2",
+        "source": "Source/Runtime/ResourceRuntime/Include/Resource/CookManifest.h"
+      }
+    ],
+    "renderGraph": {
+      "target": "RVX_RenderGraph",
+      "alias": "RVX::RenderGraph",
+      "manifestModule": "Render",
+      "source": "Source/Runtime/Render/CMakeLists.txt"
+    },
+    "fbx": {
+      "vcpkgFeature": "fbx",
+      "shippingEnabled": false
+    }
+  },
+  "documentationClasses": {
+    "classificationPrecedence": [
+      "currentContracts",
+      "futureProposalRoots",
+      "historicalEvidenceRoots",
+      "historicalEvidenceGlobs"
+    ],
+    "currentContracts": [
+      "README.md",
+      "Docs/README.md",
+      "Docs/build-truth.md",
+      "Docs/engine-capabilities.json",
+      "Docs/module-boundaries.json",
+      "Docs/module-boundaries.md",
+      "Docs/rvxcook-workflow.md",
+      "Docs/shipping-validation.md"
+    ],
+    "futureProposalRoots": [
+      "Docs/RVX-NG"
+    ],
+    "historicalEvidenceRoots": [
+      "Docs/superpowers"
+    ],
+    "historicalEvidenceGlobs": [
+      "Docs/*.md"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "core",
+      "status": "integrated",
+      "module": "Core",
+      "runtimeComposition": "engine-required",
+      "shippingSupported": true,
+      "requiredEvidence": [
+        { "path": "Tests/CMake/UnitTests.cmake", "contains": "CorePathValidation" }
+      ]
+    },
+    {
+      "id": "hal",
+      "status": "integrated",
+      "module": "HAL",
+      "runtimeComposition": "engine-required",
+      "shippingSupported": true,
+      "requiredEvidence": [
+        { "path": "Tests/CMake/IntegrationTests.cmake", "contains": "SceneLifecycleSampleValidation" }
+      ]
+    },
+    {
+      "id": "rhi",
+      "status": "integrated",
+      "module": "RHI",
+      "runtimeComposition": "engine-required",
+      "shippingSupported": true,
+      "requiredEvidence": [
+        { "path": "Tests/CMake/UnitTests.cmake", "contains": "RHIContractValidation" }
+      ]
+    },
+    {
+      "id": "render",
+      "status": "integrated",
+      "module": "Render",
+      "runtimeComposition": "engine-required",
+      "shippingSupported": true,
+      "requiredEvidence": [
+        { "path": "Tests/CMake/UnitTests.cmake", "contains": "RenderGraphValidation" }
+      ]
+    },
+    {
+      "id": "scene",
+      "status": "integrated",
+      "module": "Scene",
+      "runtimeComposition": "engine-required",
+      "shippingSupported": true,
+      "requiredEvidence": [
+        { "path": "Tests/CMake/UnitTests.cmake", "contains": "EcsSceneOrchestrationValidation" }
+      ]
+    },
+    {
+      "id": "ecs",
+      "status": "integrated",
+      "module": "ECS",
+      "runtimeComposition": "engine-required",
+      "shippingSupported": true,
+      "requiredEvidence": [
+        { "path": "Tests/CMake/UnitTests.cmake", "contains": "EcsEntityValidation" }
+      ]
+    },
+    {
+      "id": "world",
+      "status": "integrated",
+      "module": "World",
+      "runtimeComposition": "engine-required",
+      "shippingSupported": true,
+      "requiredEvidence": [
+        { "path": "Tests/CMake/UnitTests.cmake", "contains": "WorldEcsAuthorityValidation" }
+      ]
+    },
+    {
+      "id": "animation",
+      "status": "integrated",
+      "module": "Animation",
+      "runtimeComposition": "engine-required",
+      "shippingSupported": true,
+      "requiredEvidence": [
+        { "path": "Tests/CMake/UnitTests.cmake", "contains": "EcsAnimationValidation" }
+      ]
+    },
+    {
+      "id": "physics-built-in",
+      "status": "integrated",
+      "module": "Physics",
+      "runtimeComposition": "engine-required",
+      "shippingSupported": true,
+      "requiredEvidence": [
+        { "path": "Tests/CMake/UnitTests.cmake", "contains": "EcsPhysicsValidation" }
+      ]
+    },
+    {
+      "id": "particle",
+      "status": "integrated",
+      "module": "Particle",
+      "runtimeComposition": "engine-required",
+      "shippingSupported": true,
+      "requiredEvidence": [
+        { "path": "Tests/CMake/UnitTests.cmake", "contains": "EcsFeatureSnapshotValidation" }
+      ]
+    },
+    {
+      "id": "terrain",
+      "status": "integrated",
+      "module": "Terrain",
+      "runtimeComposition": "engine-required",
+      "shippingSupported": true,
+      "requiredEvidence": [
+        { "path": "Tests/CMake/UnitTests.cmake", "contains": "EcsFeatureSnapshotValidation" }
+      ]
+    },
+    {
+      "id": "water",
+      "status": "integrated",
+      "module": "Water",
+      "runtimeComposition": "engine-required",
+      "shippingSupported": true,
+      "requiredEvidence": [
+        { "path": "Tests/CMake/UnitTests.cmake", "contains": "EcsFeatureSnapshotValidation" }
+      ]
+    },
+    {
+      "id": "cooked-shader",
+      "status": "integrated",
+      "module": "ShaderRuntime",
+      "runtimeComposition": "engine-required",
+      "shippingSupported": true,
+      "requiredEvidence": [
+        { "path": "Tests/CMake/UnitTests.cmake", "contains": "ShaderArtifactValidation" }
+      ]
+    },
+    {
+      "id": "cooked-resource",
+      "status": "integrated",
+      "module": "ResourceRuntime",
+      "runtimeComposition": "engine-required",
+      "shippingSupported": true,
+      "requiredEvidence": [
+        { "path": "Tests/CMake/UnitTests.cmake", "contains": "ResourcePreparedLoadingValidation" },
+        { "path": "Tests/CMake/UnitTests.cmake", "contains": "CookedModelProductValidation" }
+      ]
+    },
+    {
+      "id": "audio",
+      "status": "partial",
+      "module": "Audio",
+      "runtimeComposition": "engine-required",
+      "shippingSupported": true,
+      "requiredEvidence": [
+        { "path": "Tests/CMake/UnitTests.cmake", "contains": "EcsAudioValidation" },
+        { "path": "Tests/CMake/IntegrationTests.cmake", "contains": "CookedEnvironmentAudioArtifactValidation" }
+      ]
+    },
+    {
+      "id": "scripting",
+      "status": "partial",
+      "module": "Scripting",
+      "runtimeComposition": "engine-required",
+      "shippingSupported": true,
+      "requiredEvidence": [
+        { "path": "Tests/CMake/UnitTests.cmake", "contains": "EcsScriptingValidation" }
+      ]
+    },
+    {
+      "id": "ui",
+      "status": "partial",
+      "module": "UI",
+      "runtimeComposition": "runtime-optional",
+      "shippingSupported": false,
+      "requiredEvidence": [
+        { "path": "Tests/CMake/UnitTests.cmake", "contains": "UIRenderPacketValidation" }
+      ]
+    },
+    {
+      "id": "ai",
+      "status": "experimental",
+      "module": "AI",
+      "runtimeComposition": "not-composed",
+      "shippingSupported": false,
+      "requiredEvidence": [
+        { "path": "Source/Runtime/AI/CMakeLists.txt", "contains": "RVX_AI" }
+      ]
+    },
+    {
+      "id": "networking",
+      "status": "experimental",
+      "module": "Networking",
+      "runtimeComposition": "not-composed",
+      "shippingSupported": false,
+      "requiredEvidence": [
+        { "path": "Source/Runtime/Networking/CMakeLists.txt", "contains": "RVX_Networking" }
+      ]
+    },
+    {
+      "id": "physics-jolt-ecs",
+      "status": "experimental",
+      "module": "PhysicsSceneAdapters",
+      "runtimeComposition": "not-composed",
+      "shippingSupported": false,
+      "requiredEvidence": [
+        { "path": "Source/Runtime/Physics/CMakeLists.txt", "contains": "RVX_ENABLE_EXPERIMENTAL_JOLT_BACKEND" }
+      ]
+    },
+    {
+      "id": "editor",
+      "status": "deferred",
+      "module": "Editor",
+      "runtimeComposition": "not-composed",
+      "shippingSupported": false,
+      "requiredEvidence": []
+    },
+    {
+      "id": "pie",
+      "status": "deferred",
+      "module": "Editor",
+      "runtimeComposition": "not-composed",
+      "shippingSupported": false,
+      "requiredEvidence": []
+    },
+    {
+      "id": "local-player",
+      "status": "deferred",
+      "module": "Engine",
+      "runtimeComposition": "not-composed",
+      "shippingSupported": false,
+      "requiredEvidence": []
+    },
+    {
+      "id": "replay",
+      "status": "deferred",
+      "module": "Engine",
+      "runtimeComposition": "not-composed",
+      "shippingSupported": false,
+      "requiredEvidence": []
+    },
+    {
+      "id": "dedicated-server",
+      "status": "deferred",
+      "module": "Engine",
+      "runtimeComposition": "not-composed",
+      "shippingSupported": false,
+      "requiredEvidence": []
+    }
+  ]
+}

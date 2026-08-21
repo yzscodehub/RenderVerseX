@@ -6,6 +6,10 @@ ownership and allowed module edges. It uses schema
 layer, public include-prefix set, allowed-module list, shipping/deferred state,
 and owner.
 
+`owner: unassigned` means that no team ownership model has been established for
+that module. It records an explicit governance gap; it must not be interpreted
+as an existing review, approval, escalation, or service-ownership process.
+
 The generated CMake inventory is the implementation source of truth. It is
 written below the build tree as
 `Architecture/RVXModuleInventory-<configuration>.json`, uses schema
@@ -54,6 +58,10 @@ The canonical developer diagnostics target is `RVX_DebugTools`, exposed as
 `RVX::DebugTools`. The old `RVX_Debug` / `RVX::Debug` identity is forbidden.
 Likewise, the retired monolith identities `RVX::Runtime`, `RVX::Resource`, and
 `RVX::Tools` must not reappear.
+
+RenderGraph is a narrow independent link target (`RVX_RenderGraph`, public
+alias `RVX::RenderGraph`) registered inside the `Render` Manifest module. It
+does not have a separate Manifest id, path policy, or ownership record.
 
 `RVX::UI` is a CPU-only producer. It records layout results into
 `RenderContracts/UIRenderPacket.h` using backend-neutral vertices, indices,

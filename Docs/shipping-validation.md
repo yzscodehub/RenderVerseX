@@ -71,7 +71,7 @@ output has been checked and the staged directory can be atomically renamed.
 cmake \
   -DRVX_COOK_EXECUTABLE=<absolute-host-RVXCook> \
   -DRVX_SOURCE_ROOT=<absolute-repository-root> \
-  -DRVX_BINARY_FIXTURE_ROOT=<absolute-build-root>/ShippingFixture \
+  -DRVX_BINARY_FIXTURE_ROOT=<absolute-shipping-build-root>/Tests/Shipping/ShippingFixtures/Release \
   -DRVX_BACKEND=DX12 \
   -DRVX_COMMIT=<7-to-64-digit-hex-commit> \
   -DRVX_PRESET=win_x64_shipping_release \
@@ -99,8 +99,8 @@ enabled by the validation environment.
 ```text
 python Scripts/check_shipping_evidence.py \
   --root . \
-  --report build/<preset>/ShippingFixture/shipping-evidence.json \
-  --receipt build/<preset>/ShippingFixture/shipping-fixture-receipt.json \
+  --report build/<shipping-preset>/Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json \
+  --receipt build/<shipping-preset>/Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json \
   --expected-backend DX12 \
   --expected-commit <commit> \
   --expected-preset win_x64_shipping_release

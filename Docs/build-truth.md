@@ -62,8 +62,15 @@ ThreadSanitizer remains a separate focused Linux preset:
 
 ```bash
 cmake --preset linux_x64_tsan
-cmake --build --preset linux_x64_tsan --target RenderConcurrencyTSAN
-ctest --preset linux_x64_tsan --output-on-failure
+pwsh -NoProfile -File ./Scripts/run_required_suite.ps1 \
+  -ConfigurePreset linux_x64_tsan \
+  -BuildPreset linux_x64_tsan \
+  -TestPreset linux_x64_tsan \
+  -BuildDir build/linux_x64_tsan \
+  -Configuration Debug \
+  -BuildTarget RenderConcurrencyTSAN \
+  -RequiredLabel lane.integration \
+  -SkipConfigure
 ```
 
 Exit code `0` means every requested lane and evidence check passed. Build Truth

@@ -153,6 +153,31 @@ rvx_add_validation_test(
 
 rvx_add_validation_test(
     LANE architecture
+    NAME Architecture.EngineCapabilityContractChecker
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/test_engine_capability_contract.py
+        -v
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.EngineCapabilityContract
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/check_engine_capability_contract.py
+        --root ${CMAKE_SOURCE_DIR}
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    REQUIRED_FILES
+        ${CMAKE_SOURCE_DIR}/Docs/engine-capabilities.json
+        ${CMAKE_SOURCE_DIR}/Docs/module-boundaries.json
+        ${CMAKE_SOURCE_DIR}/CMakePresets.json
+        ${CMAKE_SOURCE_DIR}/vcpkg.json
+)
+
+rvx_add_validation_test(
+    LANE architecture
     NAME Architecture.RuntimeProductClosureChecker
     COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_SOURCE_DIR}/Scripts/test_runtime_product_closure.py

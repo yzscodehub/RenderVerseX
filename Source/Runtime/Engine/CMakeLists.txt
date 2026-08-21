@@ -1,15 +1,12 @@
 # =============================================================================
 # Engine Module - Main engine and subsystem coordinator
 # =============================================================================
-# The Engine module coordinates all other modules and provides the main
-# application lifecycle management.
+# The Engine module is the top-level Runtime composition. Developer and
+# Shipping roots inject its move-only dependencies; Engine never discovers
+# source importers or shader compilers through hidden fallback state.
 #
-# Module Architecture (after refactoring):
-# - HAL: Hardware abstraction (Window, Input backend)
-# - Runtime: Runtime services (Window, Input, Time, Camera subsystems)
-# - World: ownership of the single Scene ECS runtime
-# - Render: Rendering (RenderGraph, RenderSubsystem)
-# - Resource: Asset management (ResourceSubsystem)
+# RenderGraph is an independent link target owned by the Render Manifest
+# module. World owns ECS state; Engine owns the per-World Runtime composition.
 # =============================================================================
 add_library(RVX_Engine STATIC)
 

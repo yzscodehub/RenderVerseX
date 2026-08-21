@@ -85,8 +85,9 @@ namespace RVX
      * StatsHUD::Get().Initialize();
      * 
      * // Register custom stats
-     * StatsHUD::Get().RegisterStat("Physics", "RigidBodies", "count", 
-     *     []() { return PhysicsWorld::Get().GetBodyCount(); });
+     * PhysicsWorld& physicsWorld = GetInjectedPhysicsWorld();
+     * StatsHUD::Get().RegisterStat("Physics", "RigidBodies", "count",
+     *     [&physicsWorld]() { return physicsWorld.GetBodyCount(); });
      * 
      * // Each frame
      * StatsHUD::Get().Update(deltaTime);

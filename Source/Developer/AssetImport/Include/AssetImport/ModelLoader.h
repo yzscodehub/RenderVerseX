@@ -4,8 +4,10 @@
  * @file ModelLoader.h
  * @brief Model resource loader
  *
- * Loads 3D models from various formats (glTF, GLB, etc.).
+ * Loads source glTF and GLB models for the legacy direct loader path.
  * Creates ModelResource with properly indexed MeshResources and MaterialResources.
+ * Canonical RVXCook import dispatch, including feature-enabled static FBX,
+ * lives behind ModelImporter and converges on Model Artifact V2.
  */
 
 #include "AssetImport/GLTFImporter.h"
@@ -22,7 +24,7 @@ namespace RVX::Resource
      * @brief Model resource loader
      *
      * Features:
-     * - Loads source glTF/GLB model assets
+     * - Loads source glTF/GLB model assets only
      * - Creates ModelResource with indexed MeshResources and MaterialResources
      * - Uses modelPath#type_index format for ResourceId generation
      * - Integrates with TextureLoader for texture loading
