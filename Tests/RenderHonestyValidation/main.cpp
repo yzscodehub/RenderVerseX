@@ -28,6 +28,7 @@
 #include "Resource/CookManifest.h"
 #include "AssetImport/TextureLoader.h"
 #include "Resource/Loader/CookedTextureLoader.h"
+#include "Resource/ResourceManager.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/MeshResource.h"
 #include "Resource/Types/ModelResource.h"
@@ -65,6 +66,49 @@
 namespace
 {
     namespace fs = std::filesystem;
+
+    RVX::Resource::TextureHandle PrepareCookedTexture(
+        RVX::Resource::CookedTextureLoader& loader,
+        const fs::path& path,
+        std::string& outError)
+    {
+        RVX::Resource::ResourceLoadPreparationContext context;
+        context.requestedPath = path.string();
+        context.resolvedPath = path.string();
+        context.assetKey = RVX::Resource::MakeAssetKey(
+            context.requestedPath, RVX::Resource::ResourceType::Texture);
+        context.resourceIdentityPath = context.assetKey.canonicalPath;
+        context.rootResourceId = RVX::Resource::GenerateResourceId(
+            context.resourceIdentityPath);
+
+        RVX::Resource::PreparedResourceBundle bundle;
+        RVX::Resource::ResourceLoadError error;
+        if (!loader.Prepare(context, bundle, error))
+        {
+            outError = error.message;
+            return {};
+        }
+
+        std::vector<RVX::Resource::IResource*> resources;
+        resources.reserve(bundle.GetEntries().size());
+        for (const RVX::Resource::PreparedResourceEntry& entry :
+             bundle.GetEntries())
+        {
+            resources.push_back(entry.resource.Get());
+        }
+        RVX::Resource::ResourceCache publicationCache;
+        if (!publicationCache.StorePreparedBatch(resources))
+        {
+            outError = "Could not publish prepared cooked texture bundle.";
+            return {};
+        }
+
+        auto* texture = dynamic_cast<RVX::Resource::TextureResource*>(
+            bundle.GetRoot().Get());
+        if (!texture)
+            outError = "Cooked texture bundle root has the wrong type.";
+        return RVX::Resource::TextureHandle(texture);
+    }
 
     class NullDevice : public RVX::IRHIDevice
     {
@@ -380,7 +424,7 @@ namespace
     {
         manager.Initialize(
             config,
-            RVX::Resource::CreateRuntimeResourceManagerDependencies(manager));
+            RVX::Resource::CreateRuntimeResourceManagerDependencies());
     }
 
     void InitializeDevelopmentResources(
@@ -388,10 +432,10 @@ namespace
         const RVX::Resource::ResourceManagerConfig& config = {})
     {
         RVX::Resource::ResourceManagerDependencies dependencies =
-            RVX::Resource::CreateRuntimeResourceManagerDependencies(manager);
+            RVX::Resource::CreateRuntimeResourceManagerDependencies();
         std::string compositionError;
         if (!RVX::ResourceSource::AddSourceResourceDependencies(
-                dependencies, manager, compositionError))
+                dependencies, compositionError))
         {
             throw std::runtime_error(
                 "Failed to compose source resource dependencies: " +
@@ -1684,9 +1728,11 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliWritesBC7TextureArtifact)
     EXPECT_NEAR(decodedPixels[0][2], rgba[2], 80);
     EXPECT_NEAR(decodedPixels[0][3], rgba[3], 2);
 
-    RVX::Resource::CookedTextureLoader loader(nullptr);
-    std::unique_ptr<RVX::Resource::TextureResource> texture(loader.Load(artifactPath.string()));
-    ASSERT_NE(texture, nullptr) << loader.GetLastLoadError();
+    RVX::Resource::CookedTextureLoader loader;
+    std::string loadError;
+    RVX::Resource::TextureHandle texture =
+        PrepareCookedTexture(loader, artifactPath, loadError);
+    ASSERT_TRUE(texture) << loadError;
     EXPECT_EQ(texture->GetFormat(), RVX::Resource::TextureFormat::BC7);
     EXPECT_EQ(texture->GetUsage(), RVX::Resource::TextureUsage::Color);
     EXPECT_TRUE(texture->IsSRGB());
@@ -1962,10 +2008,15 @@ TEST_F(RenderHonestyValidationFixture, CookedTextureLoaderReadsCookedTextureArti
     const RVX::Tools::ImportResult importResult = importer.Import(source, output, &importOptions);
     ASSERT_TRUE(importResult.success) << importResult.error;
 
-    RVX::Resource::CookedTextureLoader loader(nullptr);
-    EXPECT_TRUE(loader.CanLoad(output.string()));
-    std::unique_ptr<RVX::Resource::TextureResource> texture(loader.Load(output.string()));
-    ASSERT_NE(texture, nullptr) << loader.GetLastLoadError();
+    RVX::Resource::CookedTextureLoader loader;
+    EXPECT_TRUE(loader.Supports({
+        RVX::Resource::ResourceType::Texture,
+        RVX::Resource::ResourceLoadDomain::Cooked,
+        output.string()}));
+    std::string loadError;
+    RVX::Resource::TextureHandle texture =
+        PrepareCookedTexture(loader, output, loadError);
+    ASSERT_TRUE(texture) << loadError;
     EXPECT_FALSE(texture->IsDefaultFallback());
 
     const RVX::Resource::TextureMetadata& metadata = texture->GetMetadata();
@@ -2010,9 +2061,11 @@ TEST_F(RenderHonestyValidationFixture, CookedTextureLoaderReadsCookedBC1TextureA
     ASSERT_TRUE(importResult.success) << importResult.error;
     EXPECT_TRUE(importResult.warnings.empty());
 
-    RVX::Resource::CookedTextureLoader loader(nullptr);
-    std::unique_ptr<RVX::Resource::TextureResource> texture(loader.Load(output.string()));
-    ASSERT_NE(texture, nullptr) << loader.GetLastLoadError();
+    RVX::Resource::CookedTextureLoader loader;
+    std::string loadError;
+    RVX::Resource::TextureHandle texture =
+        PrepareCookedTexture(loader, output, loadError);
+    ASSERT_TRUE(texture) << loadError;
 
     const RVX::Resource::TextureMetadata& metadata = texture->GetMetadata();
     EXPECT_EQ(metadata.width, 4u);
@@ -2204,9 +2257,11 @@ TEST_F(RenderHonestyValidationFixture, TextureImporterWritesCookedBC3AlphaArtifa
     EXPECT_NE(artifact.find("compression=BC3"), std::string::npos);
     EXPECT_NE(artifact.find("dataSize=48"), std::string::npos);
 
-    RVX::Resource::CookedTextureLoader loader(nullptr);
-    std::unique_ptr<RVX::Resource::TextureResource> texture(loader.Load(output.string()));
-    ASSERT_NE(texture, nullptr) << loader.GetLastLoadError();
+    RVX::Resource::CookedTextureLoader loader;
+    std::string loadError;
+    RVX::Resource::TextureHandle texture =
+        PrepareCookedTexture(loader, output, loadError);
+    ASSERT_TRUE(texture) << loadError;
 
     const RVX::Resource::TextureMetadata& metadata = texture->GetMetadata();
     EXPECT_EQ(metadata.width, 4u);
@@ -2319,9 +2374,11 @@ TEST_F(RenderHonestyValidationFixture, TextureImporterWritesCookedBC5NormalArtif
     EXPECT_NE(artifact.find("compression=BC5"), std::string::npos);
     EXPECT_NE(artifact.find("dataSize=48"), std::string::npos);
 
-    RVX::Resource::CookedTextureLoader loader(nullptr);
-    std::unique_ptr<RVX::Resource::TextureResource> texture(loader.Load(output.string()));
-    ASSERT_NE(texture, nullptr) << loader.GetLastLoadError();
+    RVX::Resource::CookedTextureLoader loader;
+    std::string loadError;
+    RVX::Resource::TextureHandle texture =
+        PrepareCookedTexture(loader, output, loadError);
+    ASSERT_TRUE(texture) << loadError;
 
     const RVX::Resource::TextureMetadata& metadata = texture->GetMetadata();
     EXPECT_EQ(metadata.width, 4u);
@@ -3223,7 +3280,7 @@ TEST_F(RenderHonestyValidationFixture, DescriptorValidationHelpersRejectInvalidI
 
 TEST_F(RenderHonestyValidationFixture, TextureReferenceFallbackIsObservable)
 {
-    RVX::Resource::TextureLoader loader(nullptr);
+    RVX::Resource::TextureLoader loader;
     RVX::Resource::TextureReference invalidReference;
 
     RVX::Resource::TextureResource* texture = loader.LoadFromReference(invalidReference, "model.gltf");
@@ -3236,20 +3293,16 @@ TEST_F(RenderHonestyValidationFixture, TextureReferenceFallbackIsObservable)
     EXPECT_FALSE(loader.GetLastLoadError().empty());
 }
 
-TEST_F(RenderHonestyValidationFixture, TextureCacheHitsReportLoadedStatus)
+TEST_F(RenderHonestyValidationFixture, TextureUtilityLoadsRemainManagerFreeAndResetStatus)
 {
-    RVX::Resource::ResourceManager manager;
-    RVX::Resource::ResourceManagerConfig config;
-    config.asyncThreadCount = 0;
-    InitializeBuiltinResources(manager, config);
-
-    RVX::Resource::TextureLoader loader(&manager);
+    RVX::Resource::TextureLoader loader;
     std::vector<RVX::uint8> rgba = { 255, 255, 255, 255 };
     const fs::path cachePath = MakeTempDir("rvx_texture_cache") / "cached.png";
 
     RVX::Resource::TextureResource* first = loader.LoadFromMemory(
         rgba.data(), rgba.size(), cachePath.string(), RVX::Resource::TextureUsage::Color, true, 1, 1);
     ASSERT_NE(first, nullptr);
+    RVX::Resource::TextureHandle firstHandle(first);
     EXPECT_FALSE(first->IsDefaultFallback());
     EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
 
@@ -3261,7 +3314,10 @@ TEST_F(RenderHonestyValidationFixture, TextureCacheHitsReportLoadedStatus)
 
     RVX::Resource::TextureResource* cachedMemory = loader.LoadFromMemory(
         rgba.data(), rgba.size(), cachePath.string(), RVX::Resource::TextureUsage::Color, true, 1, 1);
-    EXPECT_EQ(cachedMemory, first);
+    ASSERT_NE(cachedMemory, nullptr);
+    RVX::Resource::TextureHandle cachedMemoryHandle(cachedMemory);
+    EXPECT_NE(cachedMemory, first);
+    EXPECT_EQ(cachedMemory->GetId(), first->GetId());
     EXPECT_FALSE(cachedMemory->IsDefaultFallback());
     EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
     EXPECT_FALSE(loader.WasLastLoadFallback());
@@ -3271,11 +3327,10 @@ TEST_F(RenderHonestyValidationFixture, TextureCacheHitsReportLoadedStatus)
     ASSERT_TRUE(loader.WasLastLoadFallback());
 
     RVX::Resource::TextureResource* cachedFile = loader.LoadFromFile(cachePath.string());
-    EXPECT_EQ(cachedFile, first);
-    EXPECT_FALSE(cachedFile->IsDefaultFallback());
-    EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
+    EXPECT_EQ(cachedFile, nullptr);
+    EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Failed);
     EXPECT_FALSE(loader.WasLastLoadFallback());
-    EXPECT_TRUE(loader.GetLastLoadError().empty());
+    EXPECT_FALSE(loader.GetLastLoadError().empty());
 
     std::vector<RVX::uint8> embeddedPixels = { 128, 128, 255, 255 };
     RVX::Resource::TextureReference embedded = RVX::Resource::TextureReference::CreateEmbeddedRaw(
@@ -3283,6 +3338,7 @@ TEST_F(RenderHonestyValidationFixture, TextureCacheHitsReportLoadedStatus)
 
     RVX::Resource::TextureResource* embeddedFirst = loader.LoadFromReference(embedded, "model.gltf");
     ASSERT_NE(embeddedFirst, nullptr);
+    RVX::Resource::TextureHandle embeddedFirstHandle(embeddedFirst);
     EXPECT_FALSE(embeddedFirst->IsDefaultFallback());
     EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
 
@@ -3290,13 +3346,15 @@ TEST_F(RenderHonestyValidationFixture, TextureCacheHitsReportLoadedStatus)
     ASSERT_TRUE(loader.WasLastLoadFallback());
 
     RVX::Resource::TextureResource* embeddedCached = loader.LoadFromReference(embedded, "model.gltf");
-    EXPECT_EQ(embeddedCached, embeddedFirst);
+    ASSERT_NE(embeddedCached, nullptr);
+    RVX::Resource::TextureHandle embeddedCachedHandle(embeddedCached);
+    EXPECT_NE(embeddedCached, embeddedFirst);
+    EXPECT_EQ(embeddedCached->GetId(), embeddedFirst->GetId());
     EXPECT_FALSE(embeddedCached->IsDefaultFallback());
     EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
     EXPECT_FALSE(loader.WasLastLoadFallback());
     EXPECT_TRUE(loader.GetLastLoadError().empty());
 
-    manager.Shutdown();
     fs::remove_all(cachePath.parent_path());
 }
 
@@ -3304,7 +3362,7 @@ TEST_F(RenderHonestyValidationFixture, TextureLoaderGeneratesOrdinaryRgbaMipChai
 {
     std::vector<RVX::uint8> rgba(static_cast<size_t>(4 * 4 * 4), 255u);
 
-    RVX::Resource::TextureLoader loader(nullptr);
+    RVX::Resource::TextureLoader loader;
     RVX::Resource::TextureResource* texture =
         loader.LoadFromMemory(rgba.data(), rgba.size(), "ordinary_4x4_rgba", RVX::Resource::TextureUsage::Color, true, 4, 4);
 
@@ -3321,7 +3379,7 @@ TEST_F(RenderHonestyValidationFixture, TextureLoaderGeneratesColorMipsInLinearSp
         0, 0, 0, 255,     255, 255, 255, 255,
     };
 
-    RVX::Resource::TextureLoader loader(nullptr);
+    RVX::Resource::TextureLoader loader;
     RVX::Resource::TextureResource* texture =
         loader.LoadFromMemory(rgba.data(), rgba.size(), "color_srgb_2x2", RVX::Resource::TextureUsage::Color, true, 2, 2);
 
@@ -3343,7 +3401,7 @@ TEST_F(RenderHonestyValidationFixture, TextureLoaderGeneratesNormalMipsInSignedS
         128, 128, 255, 255,   128, 128, 255, 255,
     };
 
-    RVX::Resource::TextureLoader loader(nullptr);
+    RVX::Resource::TextureLoader loader;
     RVX::Resource::TextureResource* texture =
         loader.LoadFromMemory(rgba.data(), rgba.size(), "normal_2x2", RVX::Resource::TextureUsage::Normal, true, 2, 2);
 
@@ -3366,7 +3424,7 @@ TEST_F(RenderHonestyValidationFixture, TextureLoaderGeneratesDataMipsWithByteLin
         0, 0, 0, 255,     255, 255, 255, 255,
     };
 
-    RVX::Resource::TextureLoader loader(nullptr);
+    RVX::Resource::TextureLoader loader;
     RVX::Resource::TextureResource* texture =
         loader.LoadFromMemory(rgba.data(), rgba.size(), "data_2x2", RVX::Resource::TextureUsage::Data, true, 2, 2);
 
@@ -3400,7 +3458,7 @@ TEST_F(RenderHonestyValidationFixture, TextureReferenceExternalUsageControlsMipP
     config.asyncThreadCount = 0;
     InitializeBuiltinResources(manager, config);
 
-    RVX::Resource::TextureLoader loader(&manager);
+    RVX::Resource::TextureLoader loader;
     RVX::Resource::TextureReference colorRef =
         RVX::Resource::TextureReference::CreateExternal(texturePath.string(), RVX::Resource::TextureUsage::Color, true);
     RVX::Resource::TextureReference normalRef =
@@ -3460,7 +3518,7 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerTextureLoadDoesNotLeavePol
     fs::remove_all(temp);
 }
 
-TEST_F(RenderHonestyValidationFixture, ResourceManagerTextureLoadDoesNotStealExistingPolicyTexture)
+TEST_F(RenderHonestyValidationFixture, ResourceManagerDoesNotAdoptLoaderOwnedPolicyTexture)
 {
     fs::path temp = MakeTempDir("rvx_texture_manager_policy_existing");
     const fs::path texturePath = temp / "shared_texture.tga";
@@ -3478,32 +3536,36 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerTextureLoadDoesNotStealExi
     config.asyncThreadCount = 0;
     InitializeDevelopmentResources(manager, config);
 
-    RVX::Resource::TextureLoader loader(&manager);
+    RVX::Resource::TextureLoader loader;
     RVX::Resource::TextureReference normalRef =
         RVX::Resource::TextureReference::CreateExternal(texturePath.string(), RVX::Resource::TextureUsage::Normal, false);
 
     RVX::Resource::TextureResource* policyTexture = loader.LoadFromReference(normalRef, modelPath.string());
     ASSERT_NE(policyTexture, nullptr);
+    RVX::Resource::TextureHandle policyTextureHandle(policyTexture);
     const RVX::Resource::ResourceId policyId = policyTexture->GetId();
-    EXPECT_TRUE(manager.GetCache().Contains(policyId));
+    EXPECT_FALSE(manager.GetCache().Contains(policyId));
 
     RVX::IResource* genericResource = manager.LoadResource(texturePath.string());
     ASSERT_NE(genericResource, nullptr);
     EXPECT_NE(genericResource, policyTexture);
     EXPECT_EQ(policyTexture->GetId(), policyId);
-    EXPECT_TRUE(manager.GetCache().Contains(policyId));
+    EXPECT_FALSE(manager.GetCache().Contains(policyId));
     EXPECT_TRUE(manager.GetCache().Contains(RVX::GenerateResourceId(texturePath.string())));
 
     RVX::Resource::ResourceCache::Stats stats = manager.GetCache().GetStats();
-    EXPECT_EQ(stats.totalResources, 2u);
+    EXPECT_EQ(stats.totalResources, 1u);
 
     manager.Unload(texturePath.string());
-    EXPECT_TRUE(manager.GetCache().Contains(policyId));
+    EXPECT_FALSE(manager.GetCache().Contains(policyId));
     EXPECT_EQ(policyTexture->GetId(), policyId);
 
-    RVX::Resource::TextureResource* policyCached = loader.LoadFromReference(normalRef, modelPath.string());
-    EXPECT_EQ(policyCached, policyTexture);
-    EXPECT_EQ(policyCached->GetId(), policyId);
+    RVX::Resource::TextureResource* secondPolicy =
+        loader.LoadFromReference(normalRef, modelPath.string());
+    ASSERT_NE(secondPolicy, nullptr);
+    RVX::Resource::TextureHandle secondPolicyHandle(secondPolicy);
+    EXPECT_NE(secondPolicy, policyTexture);
+    EXPECT_EQ(secondPolicy->GetId(), policyId);
 
     manager.Shutdown();
     fs::remove_all(temp);

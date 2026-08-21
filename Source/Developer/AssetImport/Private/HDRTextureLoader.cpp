@@ -2,7 +2,6 @@
 
 #include "Core/Hash/SHA256.h"
 #include "Core/Log.h"
-#include "Resource/ResourceCache.h"
 
 #include <stb_image.h>
 
@@ -418,12 +417,6 @@ namespace RVX::Resource
     // Construction
     // =========================================================================
 
-    HDRTextureLoader::HDRTextureLoader(ResourceManager* manager, bool prepareOnly)
-        : m_manager(manager)
-        , m_prepareOnly(prepareOnly)
-    {
-    }
-
     // =========================================================================
     // IResourceLoader Interface
     // =========================================================================
@@ -437,23 +430,33 @@ namespace RVX::Resource
         return extensions;
     }
 
-    bool HDRTextureLoader::CanLoad(const std::string& path) const
+    bool HDRTextureLoader::SupportsPath(
+        const std::string& path) const noexcept
     {
-        std::filesystem::path filePath(path);
-        std::string ext = filePath.extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-
-        if (ext == ".hdr") return true;
+        try
+        {
+            std::string extension =
+                std::filesystem::path(path).extension().string();
+            std::transform(
+                extension.begin(), extension.end(), extension.begin(), ::tolower);
+            if (extension == ".hdr") return true;
 #if HAS_TINYEXR
-        if (ext == ".exr") return true;
+            if (extension == ".exr") return true;
 #endif
-        return false;
+            return false;
+        }
+        catch (...)
+        {
+            return false;
+        }
     }
 
-    IResource* HDRTextureLoader::Load(const std::string& path)
+    bool HDRTextureLoader::Supports(
+        const ResourceLoaderRequest& request) const noexcept
     {
-        HDRLoadOptions options;
-        return LoadWithOptions(path, options);
+        return request.type == ResourceType::Texture &&
+            request.domain == ResourceLoadDomain::Source &&
+            SupportsPath(request.resolvedPath);
     }
 
     bool HDRTextureLoader::Prepare(const ResourceLoadPreparationContext& context,
@@ -485,7 +488,7 @@ namespace RVX::Resource
             return false;
         }
 
-        HDRTextureLoader preparedLoader(nullptr, true);
+        HDRTextureLoader preparedLoader;
         HDRLoadOptions options;
         TextureResource* texture = preparedLoader.LoadWithOptionsFromBytes(
             context.resolvedPath,
@@ -560,9 +563,7 @@ namespace RVX::Resource
     {
         std::filesystem::path absPath = std::filesystem::absolute(path);
         const std::string absolutePath = absPath.string();
-        const Diagnostics::TraceContext traceContext =
-            m_manager != nullptr ? m_manager->GetStartupTraceContext()
-                                 : Diagnostics::TraceContext{};
+        const Diagnostics::TraceContext traceContext{};
         Diagnostics::TraceSpan prepareSpan = Diagnostics::BeginTraceSpan(
             traceContext,
             "CPUPrepare",
@@ -623,17 +624,6 @@ namespace RVX::Resource
             const std::string cacheKey = BuildHDREquirectCacheKey(absolutePath, options);
             ResourceId texId = GenerateHDRTextureId(cacheKey);
 
-            // Check cache
-            if (m_manager && m_manager->IsInitialized())
-            {
-                if (auto* cached = m_manager->GetCache().Get(texId))
-                {
-                    prepareSpan.SetAttribute("cacheHit", true);
-                    prepareSpan.SetAttribute("result", "cached");
-                    return static_cast<TextureResource*>(cached);
-                }
-            }
-
             auto* texture = new GeneratedHDRTextureResource();
             texture->SetId(texId);
             texture->SetPath(absolutePath);
@@ -655,16 +645,6 @@ namespace RVX::Resource
             const uint64 preparedBytes = static_cast<uint64>(byteData.size());
 
             texture->SetData(std::move(byteData), metadata);
-            if (!m_prepareOnly)
-            {
-                texture->MarkLoaded();
-            }
-
-            if (m_manager && m_manager->IsInitialized())
-            {
-                m_manager->GetCache().Store(texture);
-            }
-
             prepareSpan.SetAttribute("result", "prepared");
             prepareSpan.SetAttribute("bytes", preparedBytes);
             return texture;
@@ -709,9 +689,7 @@ namespace RVX::Resource
 
         std::filesystem::path absPath = std::filesystem::absolute(path);
         std::string absolutePath = absPath.string();
-        const Diagnostics::TraceContext traceContext =
-            m_manager != nullptr ? m_manager->GetStartupTraceContext()
-                                 : Diagnostics::TraceContext{};
+        const Diagnostics::TraceContext traceContext{};
         Diagnostics::TraceSpan prepareSpan = Diagnostics::BeginTraceSpan(
             traceContext,
             "CPUPrepare",
@@ -1166,15 +1144,6 @@ namespace RVX::Resource
         const std::string cacheKey = BuildBRDFLUTCacheKey(resolution, numSamples);
         ResourceId lutId = GenerateHDRTextureId(cacheKey);
 
-        // Check cache
-        if (m_manager && m_manager->IsInitialized())
-        {
-            if (auto* cached = m_manager->GetCache().Get(lutId))
-            {
-                return static_cast<TextureResource*>(cached);
-            }
-        }
-
         std::vector<float> lutData(resolution * resolution * 2);  // RG16F
         const uint32_t sampleCount = std::max(1u, numSamples);
 
@@ -1261,16 +1230,6 @@ namespace RVX::Resource
         }
 
         texture->SetData(std::move(byteData), metadata);
-        if (!m_prepareOnly)
-        {
-            texture->MarkLoaded();
-        }
-
-        if (m_manager && m_manager->IsInitialized())
-        {
-            m_manager->GetCache().Store(texture);
-        }
-
         return texture;
     }
 
@@ -1322,9 +1281,7 @@ namespace RVX::Resource
                                     std::vector<float>& outPixels,
                                     uint32_t& outWidth, uint32_t& outHeight)
     {
-        const Diagnostics::TraceContext traceContext =
-            m_manager != nullptr ? m_manager->GetStartupTraceContext()
-                                 : Diagnostics::TraceContext{};
+        const Diagnostics::TraceContext traceContext{};
         // The caller owns the only source read. Decode exactly that immutable
         // byte vector so observed content identity and parser input cannot
         // diverge due to a between-read file replacement.
@@ -1372,9 +1329,7 @@ namespace RVX::Resource
                                     std::vector<float>& outPixels,
                                     uint32_t& outWidth, uint32_t& outHeight)
     {
-        const Diagnostics::TraceContext traceContext =
-            m_manager != nullptr ? m_manager->GetStartupTraceContext()
-                                 : Diagnostics::TraceContext{};
+        const Diagnostics::TraceContext traceContext{};
         Diagnostics::TraceSpan decodeSpan = Diagnostics::BeginTraceSpan(
             traceContext,
             "TextureDecode",
@@ -1440,15 +1395,6 @@ namespace RVX::Resource
     {
         ResourceId texId = GenerateHDRTextureId(uniqueKey);
 
-        // Check cache
-        if (m_manager && m_manager->IsInitialized())
-        {
-            if (auto* cached = m_manager->GetCache().Get(texId))
-            {
-                return static_cast<TextureResource*>(cached);
-            }
-        }
-
         auto* texture = new GeneratedHDRTextureResource();
         texture->SetId(texId);
         texture->SetPath(uniqueKey);
@@ -1479,16 +1425,6 @@ namespace RVX::Resource
         metadata.usage = TextureUsage::Color;
 
         texture->SetData(std::move(cubemapData), metadata);
-        if (!m_prepareOnly)
-        {
-            texture->MarkLoaded();
-        }
-
-        if (m_manager && m_manager->IsInitialized())
-        {
-            m_manager->GetCache().Store(texture);
-        }
-
         return texture;
     }
 
@@ -1502,15 +1438,6 @@ namespace RVX::Resource
         }
 
         ResourceId texId = GenerateHDRTextureId(uniqueKey);
-
-        // Check cache
-        if (m_manager && m_manager->IsInitialized())
-        {
-            if (auto* cached = m_manager->GetCache().Get(texId))
-            {
-                return static_cast<TextureResource*>(cached);
-            }
-        }
 
         auto* texture = new GeneratedHDRTextureResource();
         texture->SetId(texId);
@@ -1553,16 +1480,6 @@ namespace RVX::Resource
         metadata.usage = TextureUsage::Color;
 
         texture->SetData(std::move(cubemapData), metadata);
-        if (!m_prepareOnly)
-        {
-            texture->MarkLoaded();
-        }
-
-        if (m_manager && m_manager->IsInitialized())
-        {
-            m_manager->GetCache().Store(texture);
-        }
-
         return texture;
     }
 

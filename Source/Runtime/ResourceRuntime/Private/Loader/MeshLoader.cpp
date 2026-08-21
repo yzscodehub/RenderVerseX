@@ -2,6 +2,7 @@
 #include "Resource/Cooked/CookedMeshArtifactReader.h"
 
 #include "Core/Log.h"
+#include "Core/Hash/SHA256.h"
 
 #include <algorithm>
 #include <cstring>
@@ -18,6 +19,21 @@ namespace RVX::Resource
 namespace
 {
     using FieldMap = std::unordered_map<std::string, std::string>;
+
+    ResourceContentIdentity MakeObservedIdentity(
+        const std::vector<uint8>& bytes)
+    {
+        ResourceContentIdentity identity;
+        identity.schemaVersion = RVX_RESOURCE_CONTENT_IDENTITY_SCHEMA_VERSION;
+        identity.domain = ResourceContentIdentityDomain::CookedArtifact;
+        identity.scope = ResourceContentIdentityScope::SelfContainedArtifact;
+        identity.algorithm = ResourceContentHashAlgorithm::SHA256;
+        identity.digest = Hash::FormatSHA256Digest(
+            Hash::ComputeSHA256(bytes.data(), bytes.size()));
+        identity.byteCount = bytes.size();
+        identity.fileCount = 1;
+        return identity;
+    }
 
     std::vector<uint8_t> ReadFileBytes(const std::string& path, std::string& outError)
     {
@@ -613,47 +629,69 @@ bool CookedMeshArtifactReader::ReadBytes(
     return ParseCookedMeshRecords(bytes, outMeshes, outError);
 }
 
-MeshLoader::MeshLoader(ResourceManager* manager)
-    : m_manager(manager)
-{
-}
-
 std::vector<std::string> MeshLoader::GetSupportedExtensions() const
 {
     return { ".rva" };
 }
 
-bool MeshLoader::CanLoad(const std::string& path) const
+bool MeshLoader::Supports(
+    const ResourceLoaderRequest& request) const noexcept
 {
-    std::filesystem::path filePath(path);
-    std::string ext = filePath.extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-    return ext == ".rva";
+    try
+    {
+        std::string extension =
+            std::filesystem::path(request.resolvedPath).extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
+        return request.type == ResourceType::Mesh &&
+            (request.domain == ResourceLoadDomain::Cooked ||
+             request.domain == ResourceLoadDomain::Package) &&
+            extension == ".rva";
+    }
+    catch (...)
+    {
+        return false;
+    }
 }
 
-IResource* MeshLoader::Load(const std::string& path)
+bool MeshLoader::Prepare(
+    const ResourceLoadPreparationContext& context,
+    PreparedResourceBundle& outBundle,
+    ResourceLoadError& outError)
 {
     m_lastLoadError.clear();
-
-    const std::filesystem::path absPath = std::filesystem::absolute(path);
     std::string readError;
-    std::vector<uint8_t> fileData = ReadFileBytes(absPath.string(), readError);
+    std::vector<uint8_t> fileData =
+        ReadFileBytes(context.resolvedPath, readError);
     if (fileData.empty())
     {
         m_lastLoadError = readError;
-        RVX_CORE_WARN("MeshLoader: {}", m_lastLoadError);
-        return nullptr;
+        outError = {ResourceLoadErrorCode::LoaderFailure, readError};
+        return false;
     }
-
-    std::unique_ptr<MeshResource> resource = ParseCookedMeshArtifact(fileData, absPath.string(), m_lastLoadError);
+    if (context.IsCancellationRequested())
+    {
+        outError = {ResourceLoadErrorCode::Cancelled,
+                    "Cooked mesh load was cancelled."};
+        return false;
+    }
+    std::unique_ptr<MeshResource> resource = ParseCookedMeshArtifact(
+        fileData, context.resolvedPath, m_lastLoadError);
     if (!resource)
     {
-        RVX_CORE_WARN("MeshLoader: {}", m_lastLoadError);
-        return nullptr;
+        outError = {ResourceLoadErrorCode::LoaderFailure, m_lastLoadError};
+        return false;
     }
-
-    (void)m_manager;
-    resource->NotifyLoaded();
-    return resource.release();
+    resource->SetId(context.rootResourceId);
+    resource->SetPath(context.requestedPath);
+    resource->SetName(
+        std::filesystem::path(context.requestedPath).stem().string());
+    if (!outBundle.SetRoot(ResourceHandle<IResource>(resource.release())) ||
+        !outBundle.SetObservedContentIdentity(MakeObservedIdentity(fileData)))
+    {
+        outError = {ResourceLoadErrorCode::LoaderFailure,
+                    "Cooked mesh could not form a prepared bundle."};
+        return false;
+    }
+    return true;
 }
 } // namespace RVX::Resource

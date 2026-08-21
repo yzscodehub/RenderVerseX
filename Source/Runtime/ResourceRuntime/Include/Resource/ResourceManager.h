@@ -264,9 +264,6 @@ namespace RVX::Resource
         ResourceManager();
         ~ResourceManager();
 
-        // Singleton access
-        static ResourceManager& Get();
-
         // =====================================================================
         // Initialization
         // =====================================================================
@@ -483,16 +480,6 @@ namespace RVX::Resource
         const ResourceRegistry* GetRegistry() const { return m_registry.get(); }
 
         // =====================================================================
-        // Loader Registration
-        // =====================================================================
-
-        /// Register a loader for a specific resource type
-        void RegisterLoader(ResourceType type, std::unique_ptr<IResourceLoader> loader);
-
-        /// Get loader for a resource type
-        IResourceLoader* GetLoader(ResourceType type);
-
-        // =====================================================================
         // Async Processing
         // =====================================================================
 
@@ -674,11 +661,6 @@ namespace RVX::Resource
         size_t m_failedHotReloadCount = 0;
 
         // Internal loading
-        IResource* LoadInternal(const std::string& path,
-                                const ResourcePathResolution& resolution,
-                                ResourceType type,
-                                ResourceId managerId,
-                                std::shared_ptr<IResourceLoader> loader = {});
         IResource* LoadPreparedSynchronously(
             const ResourcePathResolution& resolution,
             const std::string& requestedPath,
@@ -754,7 +736,7 @@ namespace RVX::Resource
 
     /** @brief Compose the cooked/package loader set for a runtime manager. */
     [[nodiscard]] ResourceManagerDependencies
-        CreateRuntimeResourceManagerDependencies(ResourceManager& manager);
+        CreateRuntimeResourceManagerDependencies();
 
     // =========================================================================
     // Template Implementations

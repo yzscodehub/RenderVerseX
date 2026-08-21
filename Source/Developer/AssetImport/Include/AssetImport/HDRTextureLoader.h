@@ -150,7 +150,7 @@ namespace RVX::Resource
         /// An empty predicate preserves the legacy, non-cancellable API path.
         using CancellationPredicate = std::function<bool()>;
 
-        explicit HDRTextureLoader(ResourceManager* manager, bool prepareOnly = false);
+        HDRTextureLoader() = default;
         ~HDRTextureLoader() override = default;
 
         // =====================================================================
@@ -159,12 +159,11 @@ namespace RVX::Resource
 
         ResourceType GetResourceType() const override { return ResourceType::Texture; }
         std::vector<std::string> GetSupportedExtensions() const override;
-        IResource* Load(const std::string& path) override;
+        bool Supports(
+            const ResourceLoaderRequest& request) const noexcept override;
         bool Prepare(const ResourceLoadPreparationContext& context,
                      PreparedResourceBundle& outBundle,
                      ResourceLoadError& outError) override;
-        bool SupportsPreparedLoading() const override { return true; }
-        bool CanLoad(const std::string& path) const override;
 
         // =====================================================================
         // Extended Loading API
@@ -267,6 +266,8 @@ namespace RVX::Resource
         TextureResource* GetDefaultBRDFLUT();
 
     private:
+        [[nodiscard]] bool SupportsPath(
+            const std::string& path) const noexcept;
         // Loading helpers
         bool LoadHDR(const std::string& path,
                      const std::vector<uint8>& sourceBytes,
@@ -306,8 +307,6 @@ namespace RVX::Resource
 
         ResourceId GenerateHDRTextureId(const std::string& uniqueKey);
 
-        ResourceManager* m_manager = nullptr;
-        bool m_prepareOnly = false;
         TextureResource* m_defaultEnvMap = nullptr;
         TextureResource* m_defaultBRDFLUT = nullptr;
     };

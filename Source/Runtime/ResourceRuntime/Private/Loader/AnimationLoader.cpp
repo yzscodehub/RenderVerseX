@@ -116,11 +116,19 @@ std::vector<std::string> AnimationLoader::GetSupportedExtensions() const
     return {".rvxanim"};
 }
 
-bool AnimationLoader::CanLoad(const std::string& path) const
+bool AnimationLoader::Supports(
+    const ResourceLoaderRequest& request) const noexcept
 {
     try
     {
-        std::string extension = std::filesystem::path(path).extension().string();
+        if (request.type != ResourceType::Animation ||
+            (request.domain != ResourceLoadDomain::Cooked &&
+             request.domain != ResourceLoadDomain::Package))
+        {
+            return false;
+        }
+        std::string extension =
+            std::filesystem::path(request.resolvedPath).extension().string();
         std::transform(extension.begin(), extension.end(), extension.begin(),
                        [](unsigned char value)
                        {
@@ -131,68 +139,6 @@ bool AnimationLoader::CanLoad(const std::string& path) const
     catch (...)
     {
         return false;
-    }
-}
-
-IResource* AnimationLoader::Load(const std::string& path)
-{
-    try
-    {
-        std::error_code absolutePathError;
-        const std::filesystem::path absolutePath =
-            std::filesystem::absolute(path, absolutePathError);
-        if (absolutePathError)
-        {
-            RVX_CORE_ERROR("AnimationLoader: Could not resolve '{}': {}",
-                           path,
-                           absolutePathError.message());
-            return nullptr;
-        }
-
-        const std::string absolutePathString = absolutePath.string();
-        std::vector<uint8> bytes;
-        std::string error;
-        if (!CanLoad(absolutePathString) ||
-            !ReadArtifactBytes(absolutePathString, bytes, error))
-        {
-            RVX_CORE_ERROR("AnimationLoader: {}", error.empty()
-                ? "Unsupported animation artifact path." : error);
-            return nullptr;
-        }
-
-        CookedAnimationArtifact artifact;
-        if (!DeserializeCookedAnimationArtifact(bytes, artifact, error))
-        {
-            RVX_CORE_ERROR("AnimationLoader: Failed to decode '{}': {}", path, error);
-            return nullptr;
-        }
-
-        const std::string identityPath = CanonicalizeAssetPath(absolutePathString);
-        AnimationResource* resource = BuildResource(
-            artifact,
-            GenerateResourceId(identityPath),
-            identityPath,
-            absolutePathString,
-            error);
-        if (!resource)
-        {
-            RVX_CORE_ERROR("AnimationLoader: Failed to create '{}': {}", path, error);
-            return nullptr;
-        }
-        resource->NotifyLoaded();
-        return resource;
-    }
-    catch (const std::exception& exception)
-    {
-        RVX_CORE_ERROR("AnimationLoader: Load of '{}' raised an exception: {}",
-                       path,
-                       exception.what());
-        return nullptr;
-    }
-    catch (...)
-    {
-        RVX_CORE_ERROR("AnimationLoader: Load of '{}' raised an unknown exception.", path);
-        return nullptr;
     }
 }
 
@@ -213,8 +159,10 @@ bool AnimationLoader::Prepare(const ResourceLoadPreparationContext& context,
                         "Animation load was cancelled before reading the artifact."};
             return false;
         }
-        if (context.assetKey.resourceType != AnimationResource::StaticResourceType ||
-            context.rootResourceId == InvalidResourceId || !CanLoad(context.resolvedPath))
+        if (context.rootResourceId == InvalidResourceId ||
+            !Supports({context.assetKey.resourceType,
+                       ResourceLoadDomain::Cooked,
+                       context.resolvedPath}))
         {
             outError = {ResourceLoadErrorCode::InvalidRequest,
                         "Animation preparation requires a valid .rvxanim AssetKey."};

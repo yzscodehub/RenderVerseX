@@ -117,11 +117,6 @@ namespace
     }
 } // namespace
 
-ModelLoader::ModelLoader(ResourceManager* manager)
-    : m_manager(manager)
-{
-}
-
 void ModelLoader::SetGLTFImportOptions(const GLTFImportOptions& options)
 {
     std::lock_guard<std::mutex> lock(m_optionsMutex);
@@ -176,77 +171,28 @@ std::vector<std::string> ModelLoader::GetSupportedExtensions() const
     return {".gltf", ".glb"};
 }
 
-bool ModelLoader::CanLoad(const std::string& path) const
+bool ModelLoader::SupportsPath(const std::string& path) const noexcept
 {
-    std::string extension = std::filesystem::path(path).extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
-    const std::vector<std::string> extensions = GetSupportedExtensions();
-    return std::find(extensions.begin(), extensions.end(), extension) != extensions.end();
+    try
+    {
+        std::string extension = std::filesystem::path(path).extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
+        const std::vector<std::string> extensions = GetSupportedExtensions();
+        return std::find(
+            extensions.begin(), extensions.end(), extension) != extensions.end();
+    }
+    catch (...)
+    {
+        return false;
+    }
 }
 
-bool ModelLoader::Supports(const ResourceLoaderRequest& request) const
+bool ModelLoader::Supports(
+    const ResourceLoaderRequest& request) const noexcept
 {
     return request.type == ResourceType::Model &&
            request.domain == ResourceLoadDomain::Source &&
-           CanLoad(request.resolvedPath);
-}
-
-IResource* ModelLoader::Load(const std::string& path)
-{
-    // Compatibility-only synchronous path. Asynchronous production loads use
-    // Prepare(), which creates a fresh importer/decoder with no manager access.
-    const std::filesystem::path absolutePath = std::filesystem::absolute(path);
-    GLTFImportOptions options;
-    {
-        std::lock_guard<std::mutex> lock(m_optionsMutex);
-        options = m_gltfOptions;
-    }
-
-    const Diagnostics::TraceContext traceContext =
-        m_manager ? m_manager->GetStartupTraceContext() : Diagnostics::TraceContext{};
-    TextureLoader textureLoader(m_manager);
-    const std::string resourceIdentityPath = CanonicalizeAssetPath(absolutePath.string());
-    GLTFImporter importer;
-    GLTFImportResult imported = importer.Import(absolutePath.string(), options, traceContext);
-    if (!imported.success)
-    {
-        RVX_CORE_ERROR("ModelLoader: Failed to import '{}': {}", path, imported.errorMessage);
-        return nullptr;
-    }
-    ModelResource* model = CreateModelResource(resourceIdentityPath,
-                                               absolutePath.string(),
-                                               imported,
-                                               textureLoader,
-                                               traceContext,
-                                               false);
-    if (!model)
-    {
-        return nullptr;
-    }
-    model->SetId(GenerateModelId(resourceIdentityPath));
-    model->SetPath(absolutePath.string());
-    model->SetName(absolutePath.stem().string());
-    for (const ResourceHandle<MeshResource>& mesh : model->GetMeshes())
-    {
-        if (mesh && !mesh->IsLoaded())
-        {
-            MarkSynchronousLoadComplete(*mesh);
-        }
-    }
-    for (const ResourceHandle<MaterialResource>& material : model->GetMaterials())
-    {
-        if (material && !material->IsLoaded())
-        {
-            MarkSynchronousLoadComplete(*material);
-        }
-    }
-    if (const AnimationHandle animation = model->GetAnimationResource();
-        animation && !animation->IsLoaded())
-    {
-        MarkSynchronousLoadComplete(*animation);
-    }
-    MarkSynchronousLoadComplete(*model);
-    return model;
+           SupportsPath(request.resolvedPath);
 }
 
 bool ModelLoader::Prepare(const ResourceLoadPreparationContext& context,
@@ -289,7 +235,7 @@ bool ModelLoader::Prepare(const ResourceLoadPreparationContext& context,
         context.traceContext,
         "CPUPrepare",
         {{"path", context.resolvedPath}});
-    TextureLoader textureLoader(nullptr, true);
+    TextureLoader textureLoader;
     model = CreateModelResource(context.resourceIdentityPath,
                                 context.resolvedPath,
                                 imported,

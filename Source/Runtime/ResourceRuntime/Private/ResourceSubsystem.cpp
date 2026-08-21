@@ -114,7 +114,7 @@ namespace
         m_updateThreadId = std::this_thread::get_id();
         m_renderShuttingDown = false;
         m_lastShutdownDiagnostics = {};
-        ResourceManager& manager = ResourceManager::Get();
+        ResourceManager& manager = m_manager;
         if (!m_dependencies.has_value())
         {
             throw std::logic_error(
@@ -199,7 +199,7 @@ namespace
             "ResourceSubsystem cannot deinitialize before Render publishes "
             "terminal retirement for every accepted resource request");
 
-        ResourceManager& manager = ResourceManager::Get();
+        ResourceManager& manager = m_manager;
         // ResourceManager may deliver final cancellation/unload events while
         // it drains jobs and cache entries. Detach first so those callbacks
         // cannot observe partially cleared ResourceSubsystem state.
@@ -237,7 +237,7 @@ namespace
         if (!m_initialized || !RequireUpdateThread("Tick"))
             return;
 
-        ResourceManager& manager = ResourceManager::Get();
+        ResourceManager& manager = m_manager;
         manager.ProcessCompletedLoads();
         if (m_config.enableHotReload)
         {
@@ -421,7 +421,7 @@ namespace
             if (model)
             {
                 static_cast<void>(
-                    ResourceManager::Get().CancelModelTextureStreaming(
+                    m_manager.CancelModelTextureStreaming(
                         model.GetId()));
             }
         }
@@ -723,7 +723,7 @@ namespace
             // catch nevertheless: this public service boundary is noexcept
             // and must expose unexpected Manager failure as retained evidence
             // rather than terminate an Engine shutdown path.
-            consumed = ResourceManager::Get().ConsumeSceneAssetResidencyLease(
+            consumed = m_manager.ConsumeSceneAssetResidencyLease(
                 persisted.retainedLease);
         }
         catch (...)
@@ -1072,7 +1072,7 @@ namespace
     ResourceDiagnosticsSnapshot ResourceSubsystem::GetDiagnosticsSnapshot() const
     {
         ResourceDiagnosticsSnapshot snapshot =
-            ResourceManager::Get().GetDiagnosticsSnapshot();
+            m_manager.GetDiagnosticsSnapshot();
         snapshot.pendingUploadCount = m_pendingUploads.size();
         snapshot.pendingRetirementCount = m_retainedRequests.size();
         snapshot.pendingRollbackCount = m_localTerminalRequests.size();
@@ -1128,7 +1128,7 @@ namespace
             }
         }
 
-        report.stream = ResourceManager::Get().CancelModelTextureStreaming(
+        report.stream = m_manager.CancelModelTextureStreaming(
             modelId);
         model->CancelTextureStreaming();
         std::erase_if(
@@ -1258,7 +1258,7 @@ namespace
         // cancellation before handing decode work to ResourceManager. This is
         // intentionally an explicit consumer action; Tick never calls it.
         TrackModelTextureStreaming(model);
-        return ResourceManager::Get().BeginModelTextureStreaming(
+        return m_manager.BeginModelTextureStreaming(
             std::move(model));
     }
 
@@ -1290,43 +1290,35 @@ namespace
     bool ResourceSubsystem::CanTeardownSceneAssets() const noexcept
     {
         return m_initialized && IsOnUpdateThread() &&
-               ResourceManager::Get().IsInitialized();
+               m_manager.IsInitialized();
     }
 
     bool ResourceSubsystem::IsLoaded(const std::string& path) const
     {
-        return ResourceManager::Get().IsLoaded(path);
+        return m_manager.IsLoaded(path);
     }
 
     bool ResourceSubsystem::IsLoaded(ResourceId id) const
     {
-        return ResourceManager::Get().IsLoaded(id);
+        return m_manager.IsLoaded(id);
     }
 
     void ResourceSubsystem::Unload(const std::string& path)
     {
         if (RequireUpdateThread("Unload"))
-            static_cast<void>(ResourceManager::Get().Unload(path));
+            static_cast<void>(m_manager.Unload(path));
     }
 
     void ResourceSubsystem::Unload(ResourceId id)
     {
         if (RequireUpdateThread("Unload"))
-            static_cast<void>(ResourceManager::Get().Unload(id));
+            static_cast<void>(m_manager.Unload(id));
     }
 
     void ResourceSubsystem::UnloadUnused()
     {
         if (RequireUpdateThread("UnloadUnused"))
-            ResourceManager::Get().UnloadUnused();
-    }
-
-    void ResourceSubsystem::RegisterLoader(
-        ResourceType type,
-        std::unique_ptr<IResourceLoader> loader)
-    {
-        if (RequireUpdateThread("RegisterLoader"))
-            ResourceManager::Get().RegisterLoader(type, std::move(loader));
+            m_manager.UnloadUnused();
     }
 
     void ResourceSubsystem::EnableHotReload(bool enable)
@@ -1334,7 +1326,7 @@ namespace
         if (!RequireUpdateThread("EnableHotReload"))
             return;
         m_config.enableHotReload = enable;
-        ResourceManager::Get().EnableHotReload(enable);
+        m_manager.EnableHotReload(enable);
     }
 
     void ResourceSubsystem::OnResourceReloaded(
@@ -1342,35 +1334,35 @@ namespace
     {
         if (RequireUpdateThread("OnResourceReloaded"))
         {
-            ResourceManager::Get().OnResourceReloaded(std::move(callback));
+            m_manager.OnResourceReloaded(std::move(callback));
         }
     }
 
     void ResourceSubsystem::SetCacheLimit(size_t bytes)
     {
         if (RequireUpdateThread("SetCacheLimit"))
-            ResourceManager::Get().SetCacheLimit(bytes);
+            m_manager.SetCacheLimit(bytes);
     }
 
     void ResourceSubsystem::ClearCache()
     {
         if (RequireUpdateThread("ClearCache"))
-            ResourceManager::Get().ClearCache();
+            m_manager.ClearCache();
     }
 
     ResourceManager::Stats ResourceSubsystem::GetStats() const
     {
-        return ResourceManager::Get().GetStats();
+        return m_manager.GetStats();
     }
 
     ResourceManager& ResourceSubsystem::GetManager()
     {
-        return ResourceManager::Get();
+        return m_manager;
     }
 
     const ResourceManager& ResourceSubsystem::GetManager() const
     {
-        return ResourceManager::Get();
+        return m_manager;
     }
 
     bool ResourceSubsystem::IsOnUpdateThread() const
@@ -1419,7 +1411,7 @@ namespace
                         event.resource.Get());
                     model->CancelTextureStreaming();
                     static_cast<void>(
-                        ResourceManager::Get().CancelModelTextureStreaming(
+                        m_manager.CancelModelTextureStreaming(
                             event.resourceId));
                     std::erase_if(
                         m_streamingModels,
@@ -1493,7 +1485,7 @@ namespace
                     continue;
                 }
                 if (IResource* dependency =
-                        ResourceManager::Get().GetCache().Get(dependencyId))
+                        m_manager.GetCache().Get(dependencyId))
                 {
                     resourcesToQueue.emplace_back(dependency);
                 }
@@ -1617,7 +1609,7 @@ namespace
                 });
             if (referencesAsset)
             {
-                if (!ResourceManager::Get()
+                if (!m_manager
                          .CompleteModelTexturePublication(assetId.value,
                                                           false,
                                                           reason))
@@ -1702,7 +1694,7 @@ namespace
             return pendingResource || pendingUpload || retained;
         };
 
-        ResourceManager& manager = ResourceManager::Get();
+        ResourceManager& manager = m_manager;
         const std::vector<ResourceHandle<TextureResource>> publications =
             manager.GetPendingModelTexturePublications();
         for (const ResourceHandle<TextureResource>& texture : publications)

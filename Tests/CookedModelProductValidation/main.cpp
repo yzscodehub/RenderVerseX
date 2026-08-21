@@ -6,6 +6,7 @@
 #include "Resource/Cooked/CookedModelArtifact.h"
 #include "AssetImport/GLTFImporter.h"
 #include "Resource/Loader/CookedModelLoader.h"
+#include "Resource/ResourceManager.h"
 #include "Resource/Types/ModelResource.h"
 #include "Tools/AssetPipeline.h"
 
@@ -66,6 +67,45 @@ namespace
         prefix.resize(static_cast<size_t>(file.gcount()));
         return prefix;
     }
+
+    RVX::Resource::ModelHandle PrepareCookedModel(
+        RVX::Resource::CookedModelLoader& loader,
+        const fs::path& path,
+        RVX::Resource::ResourceLoadError* outError = nullptr)
+    {
+        RVX::Resource::ResourceLoadPreparationContext context;
+        context.requestedPath = path.string();
+        context.resolvedPath = path.string();
+        context.assetKey = RVX::Resource::MakeAssetKey(
+            context.requestedPath, RVX::Resource::ResourceType::Model);
+        context.resourceIdentityPath = context.assetKey.canonicalPath;
+        context.rootResourceId = RVX::Resource::GenerateResourceId(
+            context.resourceIdentityPath);
+
+        RVX::Resource::PreparedResourceBundle bundle;
+        RVX::Resource::ResourceLoadError error;
+        if (!loader.Prepare(context, bundle, error))
+        {
+            if (outError)
+                *outError = error;
+            return {};
+        }
+
+        std::vector<RVX::Resource::IResource*> resources;
+        resources.reserve(bundle.GetEntries().size());
+        for (const RVX::Resource::PreparedResourceEntry& entry :
+             bundle.GetEntries())
+        {
+            resources.push_back(entry.resource.Get());
+        }
+        RVX::Resource::ResourceCache publicationCache;
+        if (!publicationCache.StorePreparedBatch(resources))
+            return {};
+
+        auto* model = dynamic_cast<RVX::Resource::ModelResource*>(
+            bundle.GetRoot().Get());
+        return RVX::Resource::ModelHandle(model);
+    }
 } // namespace
 
 TEST(CookedModelProductValidation, DeterministicRoundTripLoadsWithoutSourceParsing)
@@ -122,10 +162,8 @@ TEST(CookedModelProductValidation, DeterministicRoundTripLoadsWithoutSourceParsi
     for (const auto& mesh : meshes)
         ASSERT_FALSE(mesh.lodMeshes.empty());
 
-    RVX::Resource::CookedModelLoader loader(nullptr);
-    std::unique_ptr<RVX::Resource::ModelResource> model(
-        static_cast<RVX::Resource::ModelResource*>(
-            loader.Load(output.string())));
+    RVX::Resource::CookedModelLoader loader;
+    RVX::Resource::ModelHandle model = PrepareCookedModel(loader, output);
     ASSERT_TRUE(model);
     EXPECT_EQ(model->GetMeshCount(), 5u);
     EXPECT_EQ(model->GetMaterialCount(), 5u);
@@ -295,8 +333,8 @@ TEST(CookedModelProductValidation, CorruptionAndDependencyEscapeFailClosed)
                       static_cast<std::streamsize>(escapedBytes.size()));
     escapedFile.close();
     RVX::Log::Initialize();
-    RVX::Resource::CookedModelLoader loader(nullptr);
-    EXPECT_EQ(loader.Load(escapedRoot.string()), nullptr);
+    RVX::Resource::CookedModelLoader loader;
+    EXPECT_FALSE(PrepareCookedModel(loader, escapedRoot));
     RVX::Log::Shutdown();
 }
 
@@ -339,7 +377,7 @@ TEST(CookedModelProductValidation, ResolvedDependencyMustRemainInsideProductDire
     escapedFile.close();
 
     RVX::Log::Initialize();
-    RVX::Resource::CookedModelLoader loader(nullptr);
-    EXPECT_EQ(loader.Load(escapedRoot.string()), nullptr);
+    RVX::Resource::CookedModelLoader loader;
+    EXPECT_FALSE(PrepareCookedModel(loader, escapedRoot));
     RVX::Log::Shutdown();
 }

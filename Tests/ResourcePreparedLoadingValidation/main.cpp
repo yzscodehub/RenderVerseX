@@ -86,10 +86,12 @@ namespace
     public:
         ResourceType GetResourceType() const override { return ResourceType::Texture; }
         std::vector<std::string> GetSupportedExtensions() const override { return {".png"}; }
-        IResource* Load(const std::string&) override
+        bool Supports(
+            const ResourceLoaderRequest& request) const noexcept override
         {
-            syncLoadCount.fetch_add(1, std::memory_order_relaxed);
-            return new PreparedTestResource();
+            return request.type == ResourceType::Texture &&
+                request.domain == ResourceLoadDomain::Source &&
+                std::filesystem::path(request.resolvedPath).extension() == ".png";
         }
 
         bool CapturePreparationState(
@@ -212,8 +214,6 @@ namespace
             return true;
         }
 
-        bool SupportsPreparedLoading() const override { return true; }
-
         bool WaitUntilEntered(uint32 count)
         {
             std::unique_lock<std::mutex> lock(m_mutex);
@@ -287,27 +287,40 @@ namespace
             bool useBuiltinLoaders = false,
             bool useChangeMonitor = false)
         {
-            ResourceManagerConfig config;
-            config.asyncThreadCount = static_cast<int>(workerCount);
-            config.runtimePolicy.mode = ResourceRuntimeMode::Editor;
-            config.runtimePolicy.allowSourceAssetReads = true;
-            ResourceManager& manager = ResourceManager::Get();
-            ResourceManagerDependencies dependencies = useBuiltinLoaders
-                ? CreateRuntimeResourceManagerDependencies(manager)
+            m_config.asyncThreadCount = static_cast<int>(workerCount);
+            m_config.runtimePolicy.mode = ResourceRuntimeMode::Editor;
+            m_config.runtimePolicy.allowSourceAssetReads = true;
+            m_dependencies = useBuiltinLoaders
+                ? CreateRuntimeResourceManagerDependencies()
                 : ResourceManagerDependencies{};
             if (useChangeMonitor)
             {
                 auto monitor = std::make_unique<CountingChangeMonitor>();
                 m_changeMonitor = monitor.get();
-                dependencies.changeMonitor = std::move(monitor);
+                m_dependencies.changeMonitor = std::move(monitor);
             }
-            manager.Initialize(config, std::move(dependencies));
         }
 
         ~ManagerGuard()
         {
-            ResourceManager::Get().Shutdown();
+            m_manager.Shutdown();
             JobSystem::Get().Shutdown();
+        }
+
+        bool AddLoader(std::unique_ptr<IResourceLoader> loader)
+        {
+            if (m_manager.IsInitialized())
+                return false;
+            std::string error;
+            return m_dependencies.loaderCatalog.Add(
+                std::move(loader), error);
+        }
+
+        ResourceManager& GetManager()
+        {
+            if (!m_manager.IsInitialized())
+                m_manager.Initialize(m_config, std::move(m_dependencies));
+            return m_manager;
         }
 
         [[nodiscard]] CountingChangeMonitor* GetChangeMonitor() const
@@ -316,6 +329,9 @@ namespace
         }
 
     private:
+        ResourceManager m_manager;
+        ResourceManagerConfig m_config;
+        ResourceManagerDependencies m_dependencies;
         CountingChangeMonitor* m_changeMonitor = nullptr;
     };
 
@@ -372,20 +388,94 @@ TEST(ResourcePreparedLoadingValidation, CoalescesIdenticalKeysAndPublishesOnlyFr
     ManagerGuard guard(0);
     auto loader = std::make_unique<PreparedTestLoader>();
     PreparedTestLoader* loaderPtr = loader.get();
-    ResourceManager::Get().RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
-    auto first = ResourceManager::Get().RequestAsync<PreparedTestResource>("coalesced.png");
-    auto second = ResourceManager::Get().RequestAsync<PreparedTestResource>("coalesced.png");
+    auto first = guard.GetManager().RequestAsync<PreparedTestResource>("coalesced.png");
+    auto second = guard.GetManager().RequestAsync<PreparedTestResource>("coalesced.png");
     ASSERT_TRUE(first);
     ASSERT_TRUE(second);
     EXPECT_EQ(first.GetRequestId(), second.GetRequestId());
     EXPECT_EQ(loaderPtr->prepareCount.load(std::memory_order_relaxed), 1u);
     EXPECT_FALSE(first.TryGet());
 
-    ResourceManager::Get().ProcessCompletedLoads();
+    guard.GetManager().ProcessCompletedLoads();
     EXPECT_TRUE(first.TryGet());
     EXPECT_TRUE(second.TryGet());
-    EXPECT_TRUE(ResourceManager::Get().IsLoaded("coalesced.png"));
+    EXPECT_TRUE(guard.GetManager().IsLoaded("coalesced.png"));
+}
+
+TEST(ResourcePreparedLoadingValidation, ManagersOwnIndependentCachesCallbacksAndChangeMonitors)
+{
+    ResourceManagerConfig config;
+    config.asyncThreadCount = 0;
+    config.runtimePolicy.mode = ResourceRuntimeMode::Editor;
+    config.runtimePolicy.allowSourceAssetReads = true;
+    config.enableHotReload = true;
+
+    ResourceManagerDependencies firstDependencies;
+    auto firstLoader = std::make_unique<PreparedTestLoader>();
+    auto firstMonitor = std::make_unique<CountingChangeMonitor>();
+    CountingChangeMonitor* firstMonitorObserver = firstMonitor.get();
+    firstDependencies.changeMonitor = std::move(firstMonitor);
+    std::string error;
+    ASSERT_TRUE(firstDependencies.loaderCatalog.Add(
+        std::move(firstLoader), error)) << error;
+
+    ResourceManagerDependencies secondDependencies;
+    auto secondLoader = std::make_unique<PreparedTestLoader>();
+    auto secondMonitor = std::make_unique<CountingChangeMonitor>();
+    CountingChangeMonitor* secondMonitorObserver = secondMonitor.get();
+    secondDependencies.changeMonitor = std::move(secondMonitor);
+    ASSERT_TRUE(secondDependencies.loaderCatalog.Add(
+        std::move(secondLoader), error)) << error;
+
+    ResourceManager first;
+    ResourceManager second;
+    first.Initialize(config, std::move(firstDependencies));
+    second.Initialize(config, std::move(secondDependencies));
+    ASSERT_TRUE(first.IsInitialized());
+    ASSERT_TRUE(second.IsInitialized());
+
+    uint32 firstReadyCount = 0;
+    uint32 secondReadyCount = 0;
+    first.SetLifecycleEventCallback(
+        [&firstReadyCount](const ResourceLifecycleEvent& event)
+        {
+            if (event.type == ResourceLifecycleEventType::Ready)
+                ++firstReadyCount;
+        });
+    second.SetLifecycleEventCallback(
+        [&secondReadyCount](const ResourceLifecycleEvent& event)
+        {
+            if (event.type == ResourceLifecycleEventType::Ready)
+                ++secondReadyCount;
+        });
+
+    ASSERT_TRUE(first.Load<PreparedTestResource>("first-manager.png"));
+    ASSERT_TRUE(second.Load<PreparedTestResource>("second-manager.png"));
+    first.ProcessCompletedLoads();
+    second.ProcessCompletedLoads();
+
+    EXPECT_TRUE(first.IsLoaded("first-manager.png"));
+    EXPECT_FALSE(first.IsLoaded("second-manager.png"));
+    EXPECT_TRUE(second.IsLoaded("second-manager.png"));
+    EXPECT_FALSE(second.IsLoaded("first-manager.png"));
+    EXPECT_EQ(firstReadyCount, 1u);
+    EXPECT_EQ(secondReadyCount, 1u);
+    EXPECT_EQ(firstMonitorObserver->watchCount, 1u);
+    EXPECT_EQ(secondMonitorObserver->watchCount, 1u);
+
+    first.Shutdown();
+    EXPECT_FALSE(first.IsInitialized());
+    EXPECT_TRUE(second.IsInitialized());
+    EXPECT_TRUE(second.IsLoaded("second-manager.png"));
+
+    ASSERT_TRUE(second.Load<PreparedTestResource>("second-manager-next.png"));
+    second.ProcessCompletedLoads();
+    EXPECT_EQ(firstReadyCount, 1u);
+    EXPECT_EQ(secondReadyCount, 2u);
+    EXPECT_EQ(secondMonitorObserver->watchCount, 2u);
+    second.Shutdown();
 }
 
 TEST(ResourcePreparedLoadingValidation, ConcurrentCallersCoalesceAndCallbacksReturnToOwnerPump)
@@ -394,9 +484,9 @@ TEST(ResourcePreparedLoadingValidation, ConcurrentCallersCoalesceAndCallbacksRet
     auto loader = std::make_unique<PreparedTestLoader>();
     PreparedTestLoader* loaderPtr = loader.get();
     loaderPtr->blockPreparation = true;
-    ResourceManager::Get().RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
-    auto ownerHandle = ResourceManager::Get().RequestAsync<PreparedTestResource>("shared.png");
+    auto ownerHandle = guard.GetManager().RequestAsync<PreparedTestResource>("shared.png");
     ASSERT_TRUE(ownerHandle);
     ASSERT_TRUE(loaderPtr->WaitUntilEntered(1));
 
@@ -407,8 +497,8 @@ TEST(ResourcePreparedLoadingValidation, ConcurrentCallersCoalesceAndCallbacksRet
         [&]
         {
             workerHandle =
-                ResourceManager::Get().RequestAsync<PreparedTestResource>("./shared.png");
-            ResourceManager::Get().LoadAsync<PreparedTestResource>(
+                guard.GetManager().RequestAsync<PreparedTestResource>("./shared.png");
+            guard.GetManager().LoadAsync<PreparedTestResource>(
                 "shared.png",
                 [&](ResourceHandle<PreparedTestResource> resource)
                 {
@@ -430,7 +520,7 @@ TEST(ResourcePreparedLoadingValidation, ConcurrentCallersCoalesceAndCallbacksRet
                            !callbackCalled.load(std::memory_order_acquire));
          ++attempt)
     {
-        ResourceManager::Get().ProcessCompletedLoads();
+        guard.GetManager().ProcessCompletedLoads();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
 
@@ -446,10 +536,10 @@ TEST(ResourcePreparedLoadingValidation, DistinctAssetsCanPrepareConcurrentlyWith
     auto loader = std::make_unique<PreparedTestLoader>();
     PreparedTestLoader* loaderPtr = loader.get();
     loaderPtr->blockPreparation = true;
-    ResourceManager::Get().RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
-    auto first = ResourceManager::Get().RequestAsync<PreparedTestResource>("first.png");
-    auto second = ResourceManager::Get().RequestAsync<PreparedTestResource>("second.png");
+    auto first = guard.GetManager().RequestAsync<PreparedTestResource>("first.png");
+    auto second = guard.GetManager().RequestAsync<PreparedTestResource>("second.png");
     ASSERT_TRUE(first);
     ASSERT_TRUE(second);
     ASSERT_TRUE(loaderPtr->WaitUntilEntered(2));
@@ -459,7 +549,7 @@ TEST(ResourcePreparedLoadingValidation, DistinctAssetsCanPrepareConcurrentlyWith
     loaderPtr->Release();
     for (uint32 attempt = 0; attempt < 100 && (!first.TryGet() || !second.TryGet()); ++attempt)
     {
-        ResourceManager::Get().ProcessCompletedLoads();
+        guard.GetManager().ProcessCompletedLoads();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     EXPECT_TRUE(first.TryGet());
@@ -472,21 +562,21 @@ TEST(ResourcePreparedLoadingValidation, CancellationAndPreparedFailureDoNotPubli
     ManagerGuard guard(0);
     auto loader = std::make_unique<PreparedTestLoader>();
     PreparedTestLoader* loaderPtr = loader.get();
-    ResourceManager::Get().RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
-    auto cancelled = ResourceManager::Get().RequestAsync<PreparedTestResource>("cancelled.png");
+    auto cancelled = guard.GetManager().RequestAsync<PreparedTestResource>("cancelled.png");
     ASSERT_TRUE(cancelled);
     EXPECT_TRUE(cancelled.Cancel());
-    ResourceManager::Get().ProcessCompletedLoads();
-    EXPECT_FALSE(ResourceManager::Get().IsLoaded("cancelled.png"));
+    guard.GetManager().ProcessCompletedLoads();
+    EXPECT_FALSE(guard.GetManager().IsLoaded("cancelled.png"));
 
     loaderPtr->failPreparation = true;
-    auto failed = ResourceManager::Get().RequestAsync<PreparedTestResource>("failed.png");
+    auto failed = guard.GetManager().RequestAsync<PreparedTestResource>("failed.png");
     ASSERT_TRUE(failed);
-    ResourceManager::Get().ProcessCompletedLoads();
+    guard.GetManager().ProcessCompletedLoads();
     const ResourceLoadSnapshot failedSnapshot = failed.GetSnapshot();
     EXPECT_EQ(failedSnapshot.state, ResourceLoadState::Failed);
-    EXPECT_FALSE(ResourceManager::Get().IsLoaded("failed.png"));
+    EXPECT_FALSE(guard.GetManager().IsLoaded("failed.png"));
 }
 
 TEST(ResourcePreparedLoadingValidation, AssetKeyOptionsSplitOperationsAndCanonicalAliasesShareDefaultIdentity)
@@ -494,47 +584,47 @@ TEST(ResourcePreparedLoadingValidation, AssetKeyOptionsSplitOperationsAndCanonic
     ManagerGuard guard(0);
     auto loader = std::make_unique<PreparedTestLoader>();
     PreparedTestLoader* loaderPtr = loader.get();
-    ResourceManager::Get().RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
     ResourceLoadOptions firstOptions;
     firstOptions.importOptionsHash = 101;
     ResourceLoadOptions secondOptions;
     secondOptions.importOptionsHash = 202;
-    auto first = ResourceManager::Get().RequestAsync<PreparedTestResource>("options.png", firstOptions);
-    auto second = ResourceManager::Get().RequestAsync<PreparedTestResource>("options.png", secondOptions);
+    auto first = guard.GetManager().RequestAsync<PreparedTestResource>("options.png", firstOptions);
+    auto second = guard.GetManager().RequestAsync<PreparedTestResource>("options.png", secondOptions);
     ASSERT_TRUE(first);
     ASSERT_TRUE(second);
     EXPECT_NE(first.GetRequestId(), second.GetRequestId());
-    ResourceManager::Get().ProcessCompletedLoads();
+    guard.GetManager().ProcessCompletedLoads();
     ASSERT_TRUE(first.TryGet());
     ASSERT_TRUE(second.TryGet());
     EXPECT_NE(first.TryGet().Get(), second.TryGet().Get());
     EXPECT_EQ(loaderPtr->prepareCount.load(std::memory_order_relaxed), 2u);
-    EXPECT_TRUE(ResourceManager::Get().IsLoaded(first.GetSnapshot().assetKey));
-    EXPECT_TRUE(ResourceManager::Get().IsLoaded(second.GetSnapshot().assetKey));
-    ASSERT_EQ(ResourceManager::Get().GetRegistry()->GetCount(), 2u);
-    ASSERT_TRUE(ResourceManager::Get().GetRegistry()->FindByPath("options.png"));
-    EXPECT_EQ(ResourceManager::Get().GetRegistry()->FindByPath("options.png")->id,
+    EXPECT_TRUE(guard.GetManager().IsLoaded(first.GetSnapshot().assetKey));
+    EXPECT_TRUE(guard.GetManager().IsLoaded(second.GetSnapshot().assetKey));
+    ASSERT_EQ(guard.GetManager().GetRegistry()->GetCount(), 2u);
+    ASSERT_TRUE(guard.GetManager().GetRegistry()->FindByPath("options.png"));
+    EXPECT_EQ(guard.GetManager().GetRegistry()->FindByPath("options.png")->id,
               second.TryGet().GetId());
 
-    EXPECT_EQ(ResourceManager::Get().Unload(second.GetSnapshot().assetKey),
+    EXPECT_EQ(guard.GetManager().Unload(second.GetSnapshot().assetKey),
               AssetResidencyReleaseResult::Unloaded);
-    EXPECT_TRUE(ResourceManager::Get().IsLoaded(first.GetSnapshot().assetKey));
-    EXPECT_FALSE(ResourceManager::Get().IsLoaded(second.GetSnapshot().assetKey));
-    ASSERT_TRUE(ResourceManager::Get().GetRegistry()->FindByPath("options.png"));
-    EXPECT_EQ(ResourceManager::Get().GetRegistry()->FindByPath("options.png")->id,
+    EXPECT_TRUE(guard.GetManager().IsLoaded(first.GetSnapshot().assetKey));
+    EXPECT_FALSE(guard.GetManager().IsLoaded(second.GetSnapshot().assetKey));
+    ASSERT_TRUE(guard.GetManager().GetRegistry()->FindByPath("options.png"));
+    EXPECT_EQ(guard.GetManager().GetRegistry()->FindByPath("options.png")->id,
               first.TryGet().GetId());
 
-    auto async = ResourceManager::Get().RequestAsync<PreparedTestResource>("./aliases.png");
+    auto async = guard.GetManager().RequestAsync<PreparedTestResource>("./aliases.png");
     ASSERT_TRUE(async);
-    ResourceManager::Get().ProcessCompletedLoads();
+    guard.GetManager().ProcessCompletedLoads();
     const ResourceHandle<PreparedTestResource> asyncResource = async.TryGet();
     ASSERT_TRUE(asyncResource);
-    IResource* const synchronousAlias = ResourceManager::Get().LoadResource("aliases.png");
+    IResource* const synchronousAlias = guard.GetManager().LoadResource("aliases.png");
     EXPECT_EQ(synchronousAlias, asyncResource.Get());
     EXPECT_EQ(loaderPtr->syncLoadCount.load(std::memory_order_relaxed), 0u);
-    EXPECT_TRUE(ResourceManager::Get().IsLoaded("aliases.png"));
-    EXPECT_TRUE(ResourceManager::Get().IsLoaded("./aliases.png"));
+    EXPECT_TRUE(guard.GetManager().IsLoaded("aliases.png"));
+    EXPECT_TRUE(guard.GetManager().IsLoaded("./aliases.png"));
 }
 
 TEST(ResourcePreparedLoadingValidation, ContentIdentityVerificationPrecedesEveryPublication)
@@ -544,14 +634,14 @@ TEST(ResourcePreparedLoadingValidation, ContentIdentityVerificationPrecedesEvery
     PreparedTestLoader* loaderPtr = loader.get();
     const ResourceContentIdentity observed = MakeContentIdentity();
     loaderPtr->observedContentIdentity = observed;
-    ResourceManager::Get().RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
     ResourceLoadOptions verifiedOptions;
     verifiedOptions.expectedContentIdentity = observed;
-    auto verified = ResourceManager::Get().RequestAsync<PreparedTestResource>(
+    auto verified = guard.GetManager().RequestAsync<PreparedTestResource>(
         "verified-identity.png", verifiedOptions);
     ASSERT_TRUE(verified);
-    ResourceManager::Get().ProcessCompletedLoads();
+    guard.GetManager().ProcessCompletedLoads();
     const ResourceHandle<PreparedTestResource> verifiedResource = verified.TryGet();
     ASSERT_TRUE(verifiedResource);
     const ResourceContentVerificationReceipt& verifiedReceipt =
@@ -561,35 +651,35 @@ TEST(ResourcePreparedLoadingValidation, ContentIdentityVerificationPrecedesEvery
     EXPECT_EQ(verifiedReceipt.expected, observed);
     EXPECT_EQ(verifiedReceipt.observed, observed);
     EXPECT_STREQ(GetResourceContentVerificationStatusName(verifiedReceipt.status), "verified");
-    const size_t publishedCount = ResourceManager::Get().GetRegistry()->GetCount();
+    const size_t publishedCount = guard.GetManager().GetRegistry()->GetCount();
 
     ResourceLoadOptions mismatchOptions;
     ResourceContentIdentity mismatch = observed;
     mismatch.digest[0] = 'e';
     mismatchOptions.expectedContentIdentity = mismatch;
-    auto mismatched = ResourceManager::Get().RequestAsync<PreparedTestResource>(
+    auto mismatched = guard.GetManager().RequestAsync<PreparedTestResource>(
         "verified-identity.png", mismatchOptions);
     ASSERT_TRUE(mismatched);
-    ResourceManager::Get().ProcessCompletedLoads();
+    guard.GetManager().ProcessCompletedLoads();
     EXPECT_EQ(mismatched.GetSnapshot().state, ResourceLoadState::Failed);
     EXPECT_EQ(mismatched.GetSnapshot().error.code, ResourceLoadErrorCode::ContentIdentityMismatch);
-    EXPECT_FALSE(ResourceManager::Get().IsLoaded(mismatched.GetSnapshot().assetKey));
-    EXPECT_EQ(ResourceManager::Get().GetRegistry()->GetCount(), publishedCount);
-    EXPECT_EQ(ResourceManager::Get().GetCache().GetStats().totalResources, publishedCount);
+    EXPECT_FALSE(guard.GetManager().IsLoaded(mismatched.GetSnapshot().assetKey));
+    EXPECT_EQ(guard.GetManager().GetRegistry()->GetCount(), publishedCount);
+    EXPECT_EQ(guard.GetManager().GetCache().GetStats().totalResources, publishedCount);
 
     loaderPtr->observedContentIdentity = {};
     ResourceLoadOptions unavailableOptions;
     unavailableOptions.expectedContentIdentity = MakeContentIdentity(
         "a009e85dae4e41d6d1cc9ba534a5948090c986993523280fd7e513df87c40300");
-    auto unavailable = ResourceManager::Get().RequestAsync<PreparedTestResource>(
+    auto unavailable = guard.GetManager().RequestAsync<PreparedTestResource>(
         "unavailable-identity.png", unavailableOptions);
     ASSERT_TRUE(unavailable);
-    ResourceManager::Get().ProcessCompletedLoads();
+    guard.GetManager().ProcessCompletedLoads();
     EXPECT_EQ(unavailable.GetSnapshot().state, ResourceLoadState::Failed);
     EXPECT_EQ(unavailable.GetSnapshot().error.code,
               ResourceLoadErrorCode::ContentIdentityUnavailable);
-    EXPECT_FALSE(ResourceManager::Get().IsLoaded(unavailable.GetSnapshot().assetKey));
-    EXPECT_EQ(ResourceManager::Get().GetRegistry()->GetCount(), publishedCount);
+    EXPECT_FALSE(guard.GetManager().IsLoaded(unavailable.GetSnapshot().assetKey));
+    EXPECT_EQ(guard.GetManager().GetRegistry()->GetCount(), publishedCount);
 }
 
 TEST(ResourcePreparedLoadingValidation, UnrequestedObservedIdentityNeverClaimsVerification)
@@ -598,11 +688,11 @@ TEST(ResourcePreparedLoadingValidation, UnrequestedObservedIdentityNeverClaimsVe
     auto loader = std::make_unique<PreparedTestLoader>();
     PreparedTestLoader* loaderPtr = loader.get();
     loaderPtr->observedContentIdentity = MakeContentIdentity();
-    ResourceManager::Get().RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
-    auto request = ResourceManager::Get().RequestAsync<PreparedTestResource>("observed-identity.png");
+    auto request = guard.GetManager().RequestAsync<PreparedTestResource>("observed-identity.png");
     ASSERT_TRUE(request);
-    ResourceManager::Get().ProcessCompletedLoads();
+    guard.GetManager().ProcessCompletedLoads();
     const ResourceHandle<PreparedTestResource> resource = request.TryGet();
     ASSERT_TRUE(resource);
     const ResourceContentVerificationReceipt& receipt = resource->GetContentVerificationReceipt();
@@ -618,17 +708,15 @@ TEST(ResourcePreparedLoadingValidation, ModelPreparedLoadVerifiesR7TriangleConsu
     ASSERT_TRUE(std::filesystem::is_regular_file(fixture));
 
     ManagerGuard guard(0, true);
-    ResourceManager::Get().RegisterLoader(
-        ResourceType::Model,
-        std::make_unique<RVX::AssetImport::SourceModelLoader>(
-            &ResourceManager::Get()));
+    ASSERT_TRUE(guard.AddLoader(
+        std::make_unique<RVX::AssetImport::SourceModelLoader>()));
     ResourceLoadOptions options;
     options.expectedContentIdentity = MakeContentIdentity(
         "f41b11c0403cc68c8da3988a954391c8b2e4f5b46a9d800f82c9d4256b395aab",
         1939);
-    auto request = ResourceManager::Get().RequestAsync<ModelResource>(fixture.string(), options);
+    auto request = guard.GetManager().RequestAsync<ModelResource>(fixture.string(), options);
     ASSERT_TRUE(request);
-    ResourceManager::Get().ProcessCompletedLoads();
+    guard.GetManager().ProcessCompletedLoads();
     const ResourceHandle<ModelResource> model = request.TryGet();
     ASSERT_TRUE(model) << request.GetSnapshot().error.message;
     const ResourceContentVerificationReceipt& receipt = model->GetContentVerificationReceipt();
@@ -724,16 +812,16 @@ TEST(ResourcePreparedLoadingValidation, PreparedCacheCommitIsLoadedAndBudgetCann
     EXPECT_TRUE(directCache.ContainsLoaded(direct.GetId()));
 
     ManagerGuard guard(0);
-    ResourceManager::Get().SetCacheLimit(1);
     auto loader = std::make_unique<PreparedTestLoader>();
-    ResourceManager::Get().RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
+    guard.GetManager().SetCacheLimit(1);
 
-    auto request = ResourceManager::Get().RequestAsync<PreparedTestResource>("pinned-budget.png");
+    auto request = guard.GetManager().RequestAsync<PreparedTestResource>("pinned-budget.png");
     ASSERT_TRUE(request);
-    ResourceManager::Get().ProcessCompletedLoads();
+    guard.GetManager().ProcessCompletedLoads();
     ASSERT_TRUE(request.TryGet());
     EXPECT_TRUE(request.TryGet()->IsLoaded());
-    EXPECT_TRUE(ResourceManager::Get().IsLoaded(request.GetSnapshot().assetKey));
+    EXPECT_TRUE(guard.GetManager().IsLoaded(request.GetSnapshot().assetKey));
 }
 
 TEST(ResourcePreparedLoadingValidation, OwnerPublicationExceptionRollsBackAndRetryUsesNewRequest)
@@ -742,27 +830,27 @@ TEST(ResourcePreparedLoadingValidation, OwnerPublicationExceptionRollsBackAndRet
     auto loader = std::make_unique<PreparedTestLoader>();
     PreparedTestLoader* loaderPtr = loader.get();
     loaderPtr->throwOnSecondGetType = true;
-    ResourceManager::Get().RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
-    auto failed = ResourceManager::Get().RequestAsync<PreparedTestResource>(
+    auto failed = guard.GetManager().RequestAsync<PreparedTestResource>(
         "owner-publication-throw.png");
     ASSERT_TRUE(failed);
     const ResourceLoadRequestId failedRequestId = failed.GetRequestId();
-    EXPECT_NO_THROW(ResourceManager::Get().ProcessCompletedLoads());
+    EXPECT_NO_THROW(guard.GetManager().ProcessCompletedLoads());
     EXPECT_EQ(failed.GetSnapshot().state, ResourceLoadState::Failed);
     EXPECT_EQ(failed.GetSnapshot().error.code, ResourceLoadErrorCode::PublishFailure);
-    EXPECT_EQ(ResourceManager::Get().GetRegistry()->GetCount(), 0u);
-    EXPECT_EQ(ResourceManager::Get().GetCache().GetStats().totalResources, 0u);
+    EXPECT_EQ(guard.GetManager().GetRegistry()->GetCount(), 0u);
+    EXPECT_EQ(guard.GetManager().GetCache().GetStats().totalResources, 0u);
 
     loaderPtr->throwOnSecondGetType = false;
-    auto retry = ResourceManager::Get().RequestAsync<PreparedTestResource>(
+    auto retry = guard.GetManager().RequestAsync<PreparedTestResource>(
         "owner-publication-throw.png");
     ASSERT_TRUE(retry);
     EXPECT_NE(retry.GetRequestId(), failedRequestId);
-    EXPECT_NO_THROW(ResourceManager::Get().ProcessCompletedLoads());
+    EXPECT_NO_THROW(guard.GetManager().ProcessCompletedLoads());
     EXPECT_EQ(retry.GetSnapshot().state, ResourceLoadState::Ready);
     ASSERT_TRUE(retry.TryGet());
-    EXPECT_TRUE(ResourceManager::Get().IsLoaded(retry.GetSnapshot().assetKey));
+    EXPECT_TRUE(guard.GetManager().IsLoaded(retry.GetSnapshot().assetKey));
 }
 
 TEST(ResourcePreparedLoadingValidation, ReservedRootIdentityCannotBeOverwrittenByAnEvictedDependency)
@@ -772,32 +860,32 @@ TEST(ResourcePreparedLoadingValidation, ReservedRootIdentityCannotBeOverwrittenB
     PreparedTestLoader* loaderPtr = loader.get();
     const ResourceContentIdentity expectedIdentity = MakeContentIdentity();
     loaderPtr->observedContentIdentity = expectedIdentity;
-    ResourceManager::Get().RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
     ResourceLoadOptions verifiedOptions;
     verifiedOptions.expectedContentIdentity = expectedIdentity;
-    auto verified = ResourceManager::Get().RequestAsync<PreparedTestResource>(
+    auto verified = guard.GetManager().RequestAsync<PreparedTestResource>(
         "reserved-root-a.png", verifiedOptions);
     ASSERT_TRUE(verified);
-    ResourceManager::Get().ProcessCompletedLoads();
+    guard.GetManager().ProcessCompletedLoads();
     const ResourceHandle<PreparedTestResource> original = verified.TryGet();
     ASSERT_TRUE(original);
     const ResourceId reservedRootId = original.GetId();
     ASSERT_TRUE(original->GetContentVerificationReceipt().IsVerified());
-    ASSERT_TRUE(ResourceManager::Get().GetCache().Remove(reservedRootId));
-    EXPECT_FALSE(ResourceManager::Get().GetCache().Contains(reservedRootId));
-    const auto originalMetadata = ResourceManager::Get().GetRegistry()->FindById(reservedRootId);
+    ASSERT_TRUE(guard.GetManager().GetCache().Remove(reservedRootId));
+    EXPECT_FALSE(guard.GetManager().GetCache().Contains(reservedRootId));
+    const auto originalMetadata = guard.GetManager().GetRegistry()->FindById(reservedRootId);
     ASSERT_TRUE(originalMetadata);
 
     loaderPtr->forcedDependencyResourceId = reservedRootId;
-    auto conflicting = ResourceManager::Get().RequestAsync<PreparedTestResource>(
+    auto conflicting = guard.GetManager().RequestAsync<PreparedTestResource>(
         "reserved-root-b.png");
     ASSERT_TRUE(conflicting);
-    EXPECT_NO_THROW(ResourceManager::Get().ProcessCompletedLoads());
+    EXPECT_NO_THROW(guard.GetManager().ProcessCompletedLoads());
     EXPECT_EQ(conflicting.GetSnapshot().state, ResourceLoadState::Failed);
     EXPECT_EQ(conflicting.GetSnapshot().error.code, ResourceLoadErrorCode::PublishFailure);
-    EXPECT_FALSE(ResourceManager::Get().GetCache().Contains(reservedRootId));
-    const auto metadataAfterConflict = ResourceManager::Get().GetRegistry()->FindById(reservedRootId);
+    EXPECT_FALSE(guard.GetManager().GetCache().Contains(reservedRootId));
+    const auto metadataAfterConflict = guard.GetManager().GetRegistry()->FindById(reservedRootId);
     ASSERT_TRUE(metadataAfterConflict);
     EXPECT_EQ(metadataAfterConflict->path, originalMetadata->path);
     EXPECT_EQ(metadataAfterConflict->type, originalMetadata->type);
@@ -806,21 +894,21 @@ TEST(ResourcePreparedLoadingValidation, ReservedRootIdentityCannotBeOverwrittenB
     unverifiedCacheEntry->SetId(reservedRootId);
     unverifiedCacheEntry->SetPath("reserved-root-a.png");
     unverifiedCacheEntry->SetName("UnverifiedReservedRoot");
-    ASSERT_TRUE(ResourceManager::Get().GetCache().StorePreparedBatch(
+    ASSERT_TRUE(guard.GetManager().GetCache().StorePreparedBatch(
         {unverifiedCacheEntry.Get()}));
-    auto rejectedCacheHit = ResourceManager::Get().RequestAsync<PreparedTestResource>(
+    auto rejectedCacheHit = guard.GetManager().RequestAsync<PreparedTestResource>(
         "reserved-root-a.png", verifiedOptions);
     EXPECT_FALSE(rejectedCacheHit);
-    EXPECT_EQ(ResourceManager::Get().GetCache().Get(reservedRootId),
+    EXPECT_EQ(guard.GetManager().GetCache().Get(reservedRootId),
               unverifiedCacheEntry.Get());
-    ASSERT_TRUE(ResourceManager::Get().GetCache().Remove(reservedRootId));
+    ASSERT_TRUE(guard.GetManager().GetCache().Remove(reservedRootId));
 
     loaderPtr->forcedDependencyResourceId = InvalidResourceId;
-    auto retry = ResourceManager::Get().RequestAsync<PreparedTestResource>(
+    auto retry = guard.GetManager().RequestAsync<PreparedTestResource>(
         "reserved-root-a.png", verifiedOptions);
     ASSERT_TRUE(retry);
     EXPECT_NE(retry.GetRequestId(), verified.GetRequestId());
-    EXPECT_NO_THROW(ResourceManager::Get().ProcessCompletedLoads());
+    EXPECT_NO_THROW(guard.GetManager().ProcessCompletedLoads());
     const ResourceHandle<PreparedTestResource> reverified = retry.TryGet();
     ASSERT_TRUE(reverified);
     EXPECT_NE(reverified.Get(), original.Get());
@@ -834,18 +922,17 @@ TEST(ResourcePreparedLoadingValidation, ReservedRootIdentityCannotBeOverwrittenB
 TEST(ResourcePreparedLoadingValidation, VerifiedIdentityRootsDoNotRegisterForHotReload)
 {
     ManagerGuard guard(0, false, true);
-    ResourceManager::Get().EnableHotReload(true);
-    ASSERT_TRUE(ResourceManager::Get().IsHotReloadEnabled());
-    ASSERT_NE(guard.GetChangeMonitor(), nullptr);
-
     auto loader = std::make_unique<PreparedTestLoader>();
     PreparedTestLoader* loaderPtr = loader.get();
     const ResourceContentIdentity expectedIdentity = MakeContentIdentity();
     loaderPtr->observedContentIdentity = expectedIdentity;
-    ResourceManager::Get().RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
+    guard.GetManager().EnableHotReload(true);
+    ASSERT_TRUE(guard.GetManager().IsHotReloadEnabled());
+    ASSERT_NE(guard.GetChangeMonitor(), nullptr);
 
     std::atomic<uint32> reloadedEvents{0};
-    ResourceManager::Get().SetLifecycleEventCallback(
+    guard.GetManager().SetLifecycleEventCallback(
         [&reloadedEvents](const ResourceLifecycleEvent& event)
         {
             if (event.type == ResourceLifecycleEventType::Reloaded)
@@ -856,17 +943,17 @@ TEST(ResourcePreparedLoadingValidation, VerifiedIdentityRootsDoNotRegisterForHot
 
     ResourceLoadOptions options;
     options.expectedContentIdentity = expectedIdentity;
-    auto request = ResourceManager::Get().RequestAsync<PreparedTestResource>(
+    auto request = guard.GetManager().RequestAsync<PreparedTestResource>(
         "hot-reload-pinned.png", options);
     ASSERT_TRUE(request);
-    ResourceManager::Get().ProcessCompletedLoads();
+    guard.GetManager().ProcessCompletedLoads();
     const ResourceHandle<PreparedTestResource> pinned = request.TryGet();
     ASSERT_TRUE(pinned);
     IResource* const original = pinned.Get();
     EXPECT_EQ(guard.GetChangeMonitor()->watchCount, 0u);
-    EXPECT_EQ(ResourceManager::Get().GetHotReloadDiagnostic().registeredResourceCount,
+    EXPECT_EQ(guard.GetManager().GetHotReloadDiagnostic().registeredResourceCount,
               0u);
-    ResourceManager::Get().ProcessCompletedLoads();
+    guard.GetManager().ProcessCompletedLoads();
     EXPECT_EQ(reloadedEvents.load(std::memory_order_relaxed), 0u);
     EXPECT_EQ(request.TryGet().Get(), original);
     EXPECT_TRUE(pinned->IsLoaded());
@@ -885,9 +972,9 @@ TEST(ResourcePreparedLoadingValidation, LoaderProfileSnapshotAndAssetKeyCannotDr
     loaderPtr->captureMutableProfile = true;
     loaderPtr->blockPreparation = true;
     loaderPtr->activeImportProfileHash.store(101, std::memory_order_release);
-    ResourceManager::Get().RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
-    auto first = ResourceManager::Get().RequestAsync<PreparedTestResource>("profile.png");
+    auto first = guard.GetManager().RequestAsync<PreparedTestResource>("profile.png");
     ASSERT_TRUE(first);
     EXPECT_EQ(first.GetSnapshot().assetKey.importOptionsHash, 101u);
     loaderPtr->activeImportProfileHash.store(202, std::memory_order_release);
@@ -895,7 +982,7 @@ TEST(ResourcePreparedLoadingValidation, LoaderProfileSnapshotAndAssetKeyCannotDr
     loaderPtr->Release();
     for (uint32 attempt = 0; attempt < 100 && !first.TryGet(); ++attempt)
     {
-        ResourceManager::Get().ProcessCompletedLoads();
+        guard.GetManager().ProcessCompletedLoads();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     ASSERT_TRUE(first.TryGet());
@@ -903,11 +990,11 @@ TEST(ResourcePreparedLoadingValidation, LoaderProfileSnapshotAndAssetKeyCannotDr
 
     ResourceLoadOptions staleOptions;
     staleOptions.importOptionsHash = 101;
-    auto stale = ResourceManager::Get().RequestAsync<PreparedTestResource>("other-profile.png",
+    auto stale = guard.GetManager().RequestAsync<PreparedTestResource>("other-profile.png",
                                                                            staleOptions);
     EXPECT_FALSE(stale);
 
-    auto second = ResourceManager::Get().RequestAsync<PreparedTestResource>("profile.png");
+    auto second = guard.GetManager().RequestAsync<PreparedTestResource>("profile.png");
     ASSERT_TRUE(second);
     EXPECT_NE(second.GetRequestId(), first.GetRequestId());
     EXPECT_EQ(second.GetSnapshot().assetKey.importOptionsHash, 202u);
@@ -920,33 +1007,33 @@ TEST(ResourcePreparedLoadingValidation, ResourceIdReloadFailsClosedWhenImportPro
     PreparedTestLoader* loaderPtr = loader.get();
     loaderPtr->captureMutableProfile = true;
     loaderPtr->activeImportProfileHash.store(101, std::memory_order_release);
-    ResourceManager::Get().RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
     ResourceId variantId = InvalidResourceId;
     {
         auto request =
-            ResourceManager::Get().RequestAsync<PreparedTestResource>("reload-profile.png");
+            guard.GetManager().RequestAsync<PreparedTestResource>("reload-profile.png");
         ASSERT_TRUE(request);
-        ResourceManager::Get().ProcessCompletedLoads();
+        guard.GetManager().ProcessCompletedLoads();
         const ResourceHandle<PreparedTestResource> resource = request.TryGet();
         ASSERT_TRUE(resource);
         variantId = resource.GetId();
     }
 
-    ResourceManager::Get().UnloadUnused();
-    ASSERT_FALSE(ResourceManager::Get().IsLoaded(variantId));
-    ASSERT_TRUE(ResourceManager::Get().GetRegistry()->FindById(variantId));
+    guard.GetManager().UnloadUnused();
+    ASSERT_FALSE(guard.GetManager().IsLoaded(variantId));
+    ASSERT_TRUE(guard.GetManager().GetRegistry()->FindById(variantId));
 
     loaderPtr->activeImportProfileHash.store(202, std::memory_order_release);
-    EXPECT_EQ(ResourceManager::Get().LoadResource(variantId), nullptr);
-    EXPECT_EQ(ResourceManager::Get().GetLastLoadDiagnostic().failure,
+    EXPECT_EQ(guard.GetManager().LoadResource(variantId), nullptr);
+    EXPECT_EQ(guard.GetManager().GetLastLoadDiagnostic().failure,
               ResourceLoadFailureCode::AssetIdentityMismatch);
     EXPECT_EQ(loaderPtr->syncLoadCount.load(std::memory_order_relaxed), 0u);
 
     loaderPtr->activeImportProfileHash.store(101, std::memory_order_release);
     loaderPtr->profileAfterCapture.store(202, std::memory_order_release);
     loaderPtr->switchProfileAfterCapture.store(true, std::memory_order_release);
-    IResource* const reloaded = ResourceManager::Get().LoadResource(variantId);
+    IResource* const reloaded = guard.GetManager().LoadResource(variantId);
     ASSERT_NE(reloaded, nullptr);
     EXPECT_EQ(reloaded->GetId(), variantId);
     EXPECT_EQ(loaderPtr->preparedProfileHash.load(std::memory_order_acquire), 101u);
@@ -958,27 +1045,27 @@ TEST(ResourcePreparedLoadingValidation, ResourceIdReloadRejectsUnpersistedPlatfo
 {
     ManagerGuard guard(0);
     auto loader = std::make_unique<PreparedTestLoader>();
-    ResourceManager::Get().RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
     ResourceId variantId = InvalidResourceId;
     {
         ResourceLoadOptions options;
         options.platformProfileHash = 77;
         options.loaderSchemaVersion = 2;
-        auto request = ResourceManager::Get().RequestAsync<PreparedTestResource>(
+        auto request = guard.GetManager().RequestAsync<PreparedTestResource>(
             "platform-profile.png",
             options);
         ASSERT_TRUE(request);
-        ResourceManager::Get().ProcessCompletedLoads();
+        guard.GetManager().ProcessCompletedLoads();
         const ResourceHandle<PreparedTestResource> resource = request.TryGet();
         ASSERT_TRUE(resource);
         variantId = resource.GetId();
     }
 
-    ResourceManager::Get().UnloadUnused();
-    ASSERT_FALSE(ResourceManager::Get().IsLoaded(variantId));
-    EXPECT_EQ(ResourceManager::Get().LoadResource(variantId), nullptr);
-    EXPECT_EQ(ResourceManager::Get().GetLastLoadDiagnostic().failure,
+    guard.GetManager().UnloadUnused();
+    ASSERT_FALSE(guard.GetManager().IsLoaded(variantId));
+    EXPECT_EQ(guard.GetManager().LoadResource(variantId), nullptr);
+    EXPECT_EQ(guard.GetManager().GetLastLoadDiagnostic().failure,
               ResourceLoadFailureCode::AssetIdentityMismatch);
 }
 
@@ -991,9 +1078,9 @@ TEST(ResourcePreparedLoadingValidation, SynchronousPathLoadConsumesTheCapturedIm
     loaderPtr->activeImportProfileHash.store(101, std::memory_order_release);
     loaderPtr->profileAfterCapture.store(202, std::memory_order_release);
     loaderPtr->switchProfileAfterCapture.store(true, std::memory_order_release);
-    ResourceManager::Get().RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
-    IResource* const loaded = ResourceManager::Get().LoadResource(
+    IResource* const loaded = guard.GetManager().LoadResource(
         "synchronous-profile.png",
         ResourceType::Texture);
     ASSERT_NE(loaded, nullptr);
@@ -1011,21 +1098,21 @@ TEST(ResourcePreparedLoadingValidation, OwnerPublishFailureRollsBackDependencies
         auto loader = std::make_unique<PreparedTestLoader>();
         PreparedTestLoader* loaderPtr = loader.get();
         loaderPtr->failPublicationTransaction = true;
-        ResourceManager::Get().RegisterLoader(ResourceType::Texture, std::move(loader));
+        ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
         std::atomic<uint32> lifecycleEvents{0};
-        ResourceManager::Get().SetLifecycleEventCallback(
+        guard.GetManager().SetLifecycleEventCallback(
             [&lifecycleEvents](const ResourceLifecycleEvent&)
             {
                 lifecycleEvents.fetch_add(1, std::memory_order_relaxed);
             });
 
-        auto failed = ResourceManager::Get().RequestAsync<PreparedTestResource>("transaction.png");
+        auto failed = guard.GetManager().RequestAsync<PreparedTestResource>("transaction.png");
         ASSERT_TRUE(failed);
-        ResourceManager::Get().ProcessCompletedLoads();
+        guard.GetManager().ProcessCompletedLoads();
         EXPECT_EQ(failed.GetSnapshot().state, ResourceLoadState::Failed);
-        EXPECT_EQ(ResourceManager::Get().GetRegistry()->GetCount(), 0u);
-        EXPECT_EQ(ResourceManager::Get().GetCache().GetStats().totalResources, 0u);
+        EXPECT_EQ(guard.GetManager().GetRegistry()->GetCount(), 0u);
+        EXPECT_EQ(guard.GetManager().GetCache().GetStats().totalResources, 0u);
         EXPECT_EQ(lifecycleEvents.load(std::memory_order_relaxed), 0u);
     }
 
@@ -1033,18 +1120,18 @@ TEST(ResourcePreparedLoadingValidation, OwnerPublishFailureRollsBackDependencies
     auto loader = std::make_unique<PreparedTestLoader>();
     PreparedTestLoader* loaderPtr = loader.get();
     loaderPtr->blockPreparation = true;
-    ResourceManager::Get().RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
     std::atomic<uint32> lifecycleEvents{0};
-    ResourceManager::Get().SetLifecycleEventCallback(
+    guard.GetManager().SetLifecycleEventCallback(
         [&lifecycleEvents](const ResourceLifecycleEvent&)
         {
             lifecycleEvents.fetch_add(1, std::memory_order_relaxed);
         });
-    auto pending = ResourceManager::Get().RequestAsync<PreparedTestResource>("shutdown.png");
+    auto pending = guard.GetManager().RequestAsync<PreparedTestResource>("shutdown.png");
     ASSERT_TRUE(pending);
     ASSERT_TRUE(loaderPtr->WaitUntilEntered(1));
-    ResourceManager::Get().Shutdown();
+    guard.GetManager().Shutdown();
     EXPECT_EQ(pending.GetSnapshot().state, ResourceLoadState::Cancelled);
     EXPECT_EQ(lifecycleEvents.load(std::memory_order_relaxed), 0u);
 }
@@ -1054,20 +1141,20 @@ TEST(ResourcePreparedLoadingValidation, CanonicalRootCollisionFailsAndObserverFa
     ManagerGuard guard(0);
     auto loader = std::make_unique<PreparedTestLoader>();
     PreparedTestLoader* loaderPtr = loader.get();
-    ResourceManager::Get().RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
     loaderPtr->rootRebindCollision = true;
-    auto collision = ResourceManager::Get().RequestAsync<PreparedTestResource>("collision.png");
+    auto collision = guard.GetManager().RequestAsync<PreparedTestResource>("collision.png");
     ASSERT_TRUE(collision);
-    ResourceManager::Get().ProcessCompletedLoads();
+    guard.GetManager().ProcessCompletedLoads();
     EXPECT_EQ(collision.GetSnapshot().state, ResourceLoadState::Failed);
-    EXPECT_EQ(ResourceManager::Get().GetRegistry()->GetCount(), 0u);
-    EXPECT_EQ(ResourceManager::Get().GetCache().GetStats().totalResources, 0u);
+    EXPECT_EQ(guard.GetManager().GetRegistry()->GetCount(), 0u);
+    EXPECT_EQ(guard.GetManager().GetCache().GetStats().totalResources, 0u);
 
     loaderPtr->rootRebindCollision = false;
     loaderPtr->throwOnLoadedObserver = true;
     std::atomic<uint32> readyEvents{0};
-    ResourceManager::Get().SetLifecycleEventCallback(
+    guard.GetManager().SetLifecycleEventCallback(
         [&readyEvents](const ResourceLifecycleEvent& event)
         {
             if (event.type == ResourceLifecycleEventType::Ready)
@@ -1075,14 +1162,14 @@ TEST(ResourcePreparedLoadingValidation, CanonicalRootCollisionFailsAndObserverFa
                 readyEvents.fetch_add(1, std::memory_order_relaxed);
             }
         });
-    auto committed = ResourceManager::Get().RequestAsync<PreparedTestResource>("observer.png");
+    auto committed = guard.GetManager().RequestAsync<PreparedTestResource>("observer.png");
     ASSERT_TRUE(committed);
-    ResourceManager::Get().ProcessCompletedLoads();
+    guard.GetManager().ProcessCompletedLoads();
     EXPECT_EQ(committed.GetSnapshot().state, ResourceLoadState::Ready);
     ASSERT_TRUE(committed.TryGet());
     EXPECT_TRUE(committed.TryGet()->IsLoaded());
-    EXPECT_TRUE(ResourceManager::Get().IsLoaded("observer.png"));
-    EXPECT_EQ(ResourceManager::Get().GetRegistry()->GetCount(), 1u);
+    EXPECT_TRUE(guard.GetManager().IsLoaded("observer.png"));
+    EXPECT_EQ(guard.GetManager().GetRegistry()->GetCount(), 1u);
     EXPECT_EQ(readyEvents.load(std::memory_order_relaxed), 1u);
 }
 
@@ -1090,11 +1177,11 @@ TEST(ResourcePreparedLoadingValidation, ShutdownCannotDispatchOwnerCallbacksFrom
 {
     ManagerGuard guard(0);
     auto loader = std::make_unique<PreparedTestLoader>();
-    ResourceManager::Get().RegisterLoader(ResourceType::Texture, std::move(loader));
+    ASSERT_TRUE(guard.AddLoader(std::move(loader)));
 
     std::atomic<bool> callbackCalled{false};
     std::thread::id callbackThread;
-    ResourceManager::Get().LoadAsync<PreparedTestResource>(
+    guard.GetManager().LoadAsync<PreparedTestResource>(
         "shutdown-affinity.png",
         [&](ResourceHandle<PreparedTestResource> resource)
         {
@@ -1103,12 +1190,12 @@ TEST(ResourcePreparedLoadingValidation, ShutdownCannotDispatchOwnerCallbacksFrom
             callbackCalled.store(true, std::memory_order_release);
         });
 
-    std::thread shutdownThread([] { ResourceManager::Get().Shutdown(); });
+    std::thread shutdownThread([&guard] { guard.GetManager().Shutdown(); });
     shutdownThread.join();
-    EXPECT_TRUE(ResourceManager::Get().IsInitialized());
+    EXPECT_TRUE(guard.GetManager().IsInitialized());
     EXPECT_FALSE(callbackCalled.load(std::memory_order_acquire));
 
-    ResourceManager::Get().ProcessCompletedLoads();
+    guard.GetManager().ProcessCompletedLoads();
     EXPECT_TRUE(callbackCalled.load(std::memory_order_acquire));
     EXPECT_EQ(callbackThread, std::this_thread::get_id());
 }

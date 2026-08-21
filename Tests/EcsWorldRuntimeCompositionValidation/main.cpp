@@ -13,6 +13,7 @@
 
 #include <gtest/gtest.h>
 
+#include <stdexcept>
 #include <unordered_map>
 
 namespace
@@ -114,8 +115,12 @@ namespace
     public:
         ResourceType GetResourceType() const override { return ResourceType::Environment; }
         std::vector<std::string> GetSupportedExtensions() const override { return {".hdr"}; }
-        Resource::IResource* Load(const std::string&) override { return nullptr; }
-        bool SupportsPreparedLoading() const override { return true; }
+        bool Supports(
+            const Resource::ResourceLoaderRequest& request) const noexcept override
+        {
+            return request.type == ResourceType::Environment &&
+                request.resolvedPath.ends_with(".hdr");
+        }
 
         bool ValidatePreparationState(
             uint64 requestedImportOptionsHash,
@@ -291,10 +296,14 @@ namespace
             m_resources.SetRenderResourceGateway(&m_gateway);
             Resource::ResourceManagerConfig config;
             config.asyncThreadCount = 0;
-            m_resources.Initialize(config, {});
-            m_resources.RegisterLoader(
-                ResourceType::Environment,
-                std::make_unique<ImmediateEnvironmentLoader>());
+            Resource::ResourceManagerDependencies dependencies;
+            std::string loaderError;
+            if (!dependencies.loaderCatalog.Add(
+                    std::make_unique<ImmediateEnvironmentLoader>(), loaderError))
+            {
+                throw std::runtime_error(loaderError);
+            }
+            m_resources.Initialize(config, std::move(dependencies));
         }
 
         ~ResourceScope() { m_resources.Deinitialize(); }

@@ -11,7 +11,6 @@
 
 namespace RVX::Resource
 {
-    class IResource;
     class ResourceLoadPreparationState;
     class PreparedResourceBundle;
     struct ResourceLoadError;
@@ -27,14 +26,23 @@ namespace RVX::Resource
 
         virtual ResourceType GetResourceType() const = 0;
         virtual std::vector<std::string> GetSupportedExtensions() const = 0;
-        virtual IResource* Load(const std::string& path) = 0;
 
+        /** @brief Match an exact type/domain/path without I/O or side effects. */
+        virtual bool Supports(
+            const ResourceLoaderRequest& request) const noexcept = 0;
+
+        /**
+         * @brief Build a complete unpublished CPU bundle without manager access.
+         *
+         * Implementations must observe cancellation, remain safe for concurrent
+         * requests, and leave no publishable partial state when returning false.
+         * Validation, cache mutation, registry mutation, and lifecycle callbacks
+         * are exclusively ResourceManager responsibilities.
+         */
         virtual bool Prepare(
             const ResourceLoadPreparationContext& context,
             PreparedResourceBundle& outBundle,
-            ResourceLoadError& outError);
-
-        virtual bool SupportsPreparedLoading() const { return false; }
+            ResourceLoadError& outError) = 0;
 
         virtual bool CapturePreparationState(
             uint64 requestedImportOptionsHash,
@@ -49,18 +57,6 @@ namespace RVX::Resource
             uint64& outCanonicalImportOptionsHash,
             ResourceLoadError& outError) const;
 
-        virtual bool CanLoad(const std::string& path) const;
-
-        /** @brief Match one exact type/domain/path request. */
-        virtual bool Supports(const ResourceLoaderRequest& request) const
-        {
-            return request.type == GetResourceType() &&
-                CanLoad(request.resolvedPath);
-        }
-
-    protected:
-        /** @brief Complete a synchronous loader-owned resource without exposing publication publicly. */
-        static void MarkSynchronousLoadComplete(IResource& resource);
     };
 } // namespace RVX::Resource
 

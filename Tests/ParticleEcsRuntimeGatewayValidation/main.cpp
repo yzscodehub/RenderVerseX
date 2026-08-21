@@ -7,6 +7,7 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string_view>
 
 namespace
@@ -27,13 +28,29 @@ namespace
             config.asyncThreadCount = 0;
             config.runtimePolicy.mode = RVX::Resource::ResourceRuntimeMode::Editor;
             config.runtimePolicy.allowSourceAssetReads = true;
-            RVX::Resource::ResourceManager::Get().Initialize(config, {});
+            RVX::Resource::ResourceManagerDependencies dependencies;
+            std::string error;
+            if (!dependencies.loaderCatalog.Add(
+                    std::make_unique<RVX::Particle::ParticleSystemLoader>(),
+                    error))
+            {
+                throw std::runtime_error(error);
+            }
+            m_manager.Initialize(config, std::move(dependencies));
         }
 
         ~ResourceManagerScope()
         {
-            RVX::Resource::ResourceManager::Get().Shutdown();
+            m_manager.Shutdown();
         }
+
+        RVX::Resource::ResourceManager& GetManager() noexcept
+        {
+            return m_manager;
+        }
+
+    private:
+        RVX::Resource::ResourceManager m_manager;
     };
 
     bool Check(bool value, const char* message)
@@ -50,10 +67,7 @@ int main()
 {
     LogScope logScope;
     ResourceManagerScope managerScope;
-    RVX::Resource::ResourceManager& manager = RVX::Resource::ResourceManager::Get();
-    manager.RegisterLoader(
-        RVX::Particle::ResourceType_ParticleSystem,
-        std::make_unique<RVX::Particle::ParticleSystemLoader>());
+    RVX::Resource::ResourceManager& manager = managerScope.GetManager();
 
     RVX::Resource::IResource* loaded = manager.LoadResource(
         "Tests/ParticleEcsRuntimeGatewayValidation/Fixture.particle",
@@ -79,8 +93,8 @@ int main()
             config.systemAssetId.value);
     const std::optional<RVX::Resource::AssetKey> assetKey =
         manager.FindPublishedAssetKey(config.systemAssetId.value);
-    if (!Check(retained && retained.IsLoaded() && !assetKey.has_value(),
-               "demonstrate unavailable exact particle residency seam"))
+    if (!Check(retained && retained.IsLoaded() && assetKey.has_value(),
+               "publish exact particle residency identity"))
     {
         return 1;
     }
@@ -91,10 +105,8 @@ int main()
         .command = RVX::Particle::ParticleEcsCommand::Play,
         .deltaSeconds = 1.0 / 60.0,
     });
-    if (!Check(!first.IsValid() && !gateway.IsAlive(first) && gateway.GetLiveRuntimeCount() == 0 &&
-                   std::string_view(gateway.GetLastFailureReason()).find("published exact AssetKey") !=
-                       std::string_view::npos,
-               "reject particle runtime without exact residency proof"))
+    if (!Check(first.IsValid() && gateway.IsAlive(first) && gateway.GetLiveRuntimeCount() == 1,
+               "create particle runtime with exact residency proof"))
     {
         return 1;
     }
@@ -113,8 +125,15 @@ int main()
         return 1;
     }
 
-    return Check(gateway.GetLiveRuntimeCount() == 0 &&
-                     gateway.Release(first) == RVX::Particle::ParticleEcsReleaseResult::AlreadyAbsent,
+    if (!Check(gateway.GetLiveRuntimeCount() == 1 &&
+                   gateway.Release(first) == RVX::Particle::ParticleEcsReleaseResult::Released &&
+                   !gateway.IsAlive(first) && gateway.GetLiveRuntimeCount() == 0,
+               "release resident particle runtime"))
+    {
+        return 1;
+    }
+
+    return Check(gateway.Release(first) == RVX::Particle::ParticleEcsReleaseResult::AlreadyAbsent,
                  "release absent particle runtime") ?
                0 :
                1;

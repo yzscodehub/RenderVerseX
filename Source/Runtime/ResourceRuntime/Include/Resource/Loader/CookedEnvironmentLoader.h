@@ -15,12 +15,10 @@ namespace RVX::Resource
             return ResourceType::Environment;
         }
         std::vector<std::string> GetSupportedExtensions() const override;
-        IResource* Load(const std::string& path) override;
+        bool Supports(
+            const ResourceLoaderRequest& request) const noexcept override;
         bool Prepare(const ResourceLoadPreparationContext& context,
                      PreparedResourceBundle& outBundle,
                      ResourceLoadError& outError) override;
-        bool SupportsPreparedLoading() const override { return true; }
-        bool CanLoad(const std::string& path) const override;
-        bool Supports(const ResourceLoaderRequest& request) const override;
     };
 } // namespace RVX::Resource

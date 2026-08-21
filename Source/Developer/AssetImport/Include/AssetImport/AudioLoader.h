@@ -78,7 +78,7 @@ namespace RVX::Resource
     class AudioLoader : public IResourceLoader
     {
     public:
-        explicit AudioLoader(ResourceManager* manager);
+        AudioLoader() = default;
         ~AudioLoader() override;
 
         // =====================================================================
@@ -87,9 +87,11 @@ namespace RVX::Resource
 
         ResourceType GetResourceType() const override { return ResourceType::Audio; }
         std::vector<std::string> GetSupportedExtensions() const override;
-        IResource* Load(const std::string& path) override;
-        bool CanLoad(const std::string& path) const override;
-        bool Supports(const ResourceLoaderRequest& request) const override;
+        bool Supports(
+            const ResourceLoaderRequest& request) const noexcept override;
+        bool Prepare(const ResourceLoadPreparationContext& context,
+                     PreparedResourceBundle& outBundle,
+                     ResourceLoadError& outError) override;
 
         AudioLoadStatus GetLastLoadStatus() const { return m_lastLoadStatus; }
         const std::string& GetLastLoadError() const { return m_lastLoadError; }
@@ -191,6 +193,8 @@ namespace RVX::Resource
         static const char* GetFormatDescription(const std::string& extension);
 
     private:
+        [[nodiscard]] bool SupportsPath(
+            const std::string& path) const noexcept;
         /// Decode audio file using miniaudio
         bool DecodeFile(const std::string& path,
                         std::vector<uint8_t>& outData,
@@ -211,7 +215,6 @@ namespace RVX::Resource
         /// Generate ResourceId from unique key
         ResourceId GenerateAudioId(const std::string& uniqueKey);
 
-        ResourceManager* m_manager;
         AudioLoadStatus m_lastLoadStatus = AudioLoadStatus::None;
         std::string m_lastLoadError;
         AudioResource* m_silentAudio = nullptr;

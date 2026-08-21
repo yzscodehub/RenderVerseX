@@ -278,7 +278,7 @@ namespace RVX::Resource
         {
             if (!RequireUpdateThread("Load"))
                 return {};
-            return ResourceManager::Get().Load<T>(path);
+            return m_manager.Load<T>(path);
         }
 
         template<typename T>
@@ -286,14 +286,14 @@ namespace RVX::Resource
         {
             if (!RequireUpdateThread("Load"))
                 return {};
-            return ResourceManager::Get().Load<T>(id);
+            return m_manager.Load<T>(id);
         }
 
         /** @brief Retain an already-published loaded resource without initiating I/O. */
         template<typename T>
         [[nodiscard]] ResourceHandle<T> TryAcquireLoaded(ResourceId id)
         {
-            return ResourceManager::Get().TryAcquireLoaded<T>(id);
+            return m_manager.TryAcquireLoaded<T>(id);
         }
 
         template<typename T>
@@ -301,7 +301,7 @@ namespace RVX::Resource
         {
             if (!RequireUpdateThread("LoadAsync"))
                 return {};
-            return ResourceManager::Get().LoadAsync<T>(path);
+            return m_manager.LoadAsync<T>(path);
         }
 
         /** @brief Begin a coalesced load without blocking the update thread. */
@@ -312,7 +312,7 @@ namespace RVX::Resource
         {
             if (!m_initialized || !RequireUpdateThread("RequestAsync"))
                 return {};
-            return ResourceManager::Get().RequestAsync<T>(
+            return m_manager.RequestAsync<T>(
                 path,
                 std::move(options));
         }
@@ -326,7 +326,7 @@ namespace RVX::Resource
         {
             if (!m_initialized || !RequireUpdateThread("RequestAsync"))
                 return {};
-            return ResourceManager::Get().RequestAsync<T>(
+            return m_manager.RequestAsync<T>(
                 path,
                 std::move(options),
                 std::move(preparationState));
@@ -338,7 +338,7 @@ namespace RVX::Resource
         {
             if (!RequireUpdateThread("LoadAsync"))
                 return;
-            ResourceManager::Get().LoadAsync<T>(path, std::move(callback));
+            m_manager.LoadAsync<T>(path, std::move(callback));
         }
 
         bool IsLoaded(const std::string& path) const;
@@ -346,8 +346,6 @@ namespace RVX::Resource
         void Unload(const std::string& path);
         void Unload(ResourceId id);
         void UnloadUnused();
-        void RegisterLoader(ResourceType type,
-                            std::unique_ptr<IResourceLoader> loader);
         void EnableHotReload(bool enable);
         void OnResourceReloaded(
             std::function<void(ResourceId, IResource*)> callback);
@@ -359,6 +357,7 @@ namespace RVX::Resource
 
     private:
         std::optional<ResourceManagerDependencies> m_dependencies;
+        ResourceManager m_manager;
         // =====================================================================
         // Update-side State
         // =====================================================================

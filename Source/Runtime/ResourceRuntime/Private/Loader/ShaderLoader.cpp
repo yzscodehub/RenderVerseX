@@ -1,17 +1,50 @@
 #include "Resource/Loader/ShaderLoader.h"
 
 #include "Core/Log.h"
+#include "Core/Hash/SHA256.h"
 #include "ShaderContracts/ShaderArtifact.h"
 
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <fstream>
 #include <utility>
 
 namespace RVX::Resource
 {
 namespace
 {
+    bool ReadBytes(
+        const std::filesystem::path& path,
+        std::vector<uint8>& outBytes)
+    {
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        if (!file.is_open())
+            return false;
+        const std::streamsize size = file.tellg();
+        if (size <= 0)
+            return false;
+        file.seekg(0, std::ios::beg);
+        outBytes.resize(static_cast<size_t>(size));
+        return file.read(
+            reinterpret_cast<char*>(outBytes.data()), size).good();
+    }
+
+    ResourceContentIdentity MakeObservedIdentity(
+        const std::vector<uint8>& bytes)
+    {
+        ResourceContentIdentity identity;
+        identity.schemaVersion = RVX_RESOURCE_CONTENT_IDENTITY_SCHEMA_VERSION;
+        identity.domain = ResourceContentIdentityDomain::CookedArtifact;
+        identity.scope = ResourceContentIdentityScope::SelfContainedArtifact;
+        identity.algorithm = ResourceContentHashAlgorithm::SHA256;
+        identity.digest = Hash::FormatSHA256Digest(
+            Hash::ComputeSHA256(bytes.data(), bytes.size()));
+        identity.byteCount = bytes.size();
+        identity.fileCount = 1;
+        return identity;
+    }
+
     ShaderBackendType ToResourceBackend(RHIBackendType backend)
     {
         switch (backend)
@@ -49,44 +82,58 @@ namespace
     }
 } // namespace
 
-ShaderLoader::ShaderLoader(ResourceManager* manager)
-    : m_manager(manager)
-{
-}
-
 std::vector<std::string> ShaderLoader::GetSupportedExtensions() const
 {
     return {".rva", ".rvxshader"};
 }
 
-bool ShaderLoader::CanLoad(const std::string& path) const
+bool ShaderLoader::Supports(
+    const ResourceLoaderRequest& request) const noexcept
 {
-    std::string extension =
-        std::filesystem::path(path).extension().string();
-    std::transform(
-        extension.begin(), extension.end(), extension.begin(),
-        [](unsigned char ch)
-        {
-            return static_cast<char>(std::tolower(ch));
-        });
-    const std::vector<std::string> supported = GetSupportedExtensions();
-    return std::find(
-        supported.begin(), supported.end(), extension) != supported.end();
+    try
+    {
+        std::string extension =
+            std::filesystem::path(request.resolvedPath).extension().string();
+        std::transform(
+            extension.begin(), extension.end(), extension.begin(),
+            [](unsigned char ch)
+            {
+                return static_cast<char>(std::tolower(ch));
+            });
+        return request.type == ResourceType::Shader &&
+            (request.domain == ResourceLoadDomain::Cooked ||
+             request.domain == ResourceLoadDomain::Package) &&
+            (extension == ".rva" || extension == ".rvxshader");
+    }
+    catch (...)
+    {
+        return false;
+    }
 }
 
-IResource* ShaderLoader::Load(const std::string& path)
+bool ShaderLoader::Prepare(
+    const ResourceLoadPreparationContext& context,
+    PreparedResourceBundle& outBundle,
+    ResourceLoadError& outError)
 {
-    (void)m_manager;
     const std::filesystem::path absolutePath =
-        std::filesystem::absolute(path);
+        std::filesystem::absolute(context.resolvedPath);
     m_lastLoadError.clear();
+
+    std::vector<uint8> consumedBytes;
+    if (!ReadBytes(absolutePath, consumedBytes))
+    {
+        outError = {ResourceLoadErrorCode::LoaderFailure,
+                    "ShaderLoader could not read the cooked artifact."};
+        return false;
+    }
 
     ShaderArtifact artifact;
     if (!ReadShaderArtifactV2(
             absolutePath, artifact, m_lastLoadError))
     {
-        RVX_CORE_ERROR("ShaderLoader: {}", m_lastLoadError);
-        return nullptr;
+        outError = {ResourceLoadErrorCode::LoaderFailure, m_lastLoadError};
+        return false;
     }
 
     ShaderMetadata metadata;
@@ -99,13 +146,20 @@ IResource* ShaderLoader::Load(const std::string& path)
     metadata.reflectionResourceCount = static_cast<std::uint32_t>(
         artifact.reflection.resources.size());
 
-    auto* resource = new ShaderResource();
+    auto resource = std::make_unique<ShaderResource>();
     resource->SetData(
         std::move(artifact.code), {}, {}, metadata);
-    resource->SetId(GenerateResourceId(path));
-    resource->SetPath(path);
+    resource->SetId(context.rootResourceId);
+    resource->SetPath(context.requestedPath);
     resource->SetName(absolutePath.stem().string());
-    resource->NotifyLoaded();
-    return resource;
+    if (!outBundle.SetRoot(ResourceHandle<IResource>(resource.release())) ||
+        !outBundle.SetObservedContentIdentity(
+            MakeObservedIdentity(consumedBytes)))
+    {
+        outError = {ResourceLoadErrorCode::LoaderFailure,
+                    "Cooked shader could not form a prepared bundle."};
+        return false;
+    }
+    return true;
 }
 } // namespace RVX::Resource

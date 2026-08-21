@@ -6,11 +6,6 @@
 
 #include <string>
 
-namespace RVX::Resource
-{
-    class ResourceManager;
-}
-
 namespace RVX::ResourceSource
 {
     /**
@@ -21,6 +16,5 @@ namespace RVX::ResourceSource
      */
     [[nodiscard]] bool AddSourceResourceDependencies(
         ResourceManagerDependencies& dependencies,
-        Resource::ResourceManager& manager,
         std::string& outError);
 } // namespace RVX::ResourceSource

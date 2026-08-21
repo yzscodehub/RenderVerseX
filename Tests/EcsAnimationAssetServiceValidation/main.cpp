@@ -33,13 +33,14 @@ namespace
     class ResourceSubsystemScope final
     {
     public:
-        ResourceSubsystemScope()
+        explicit ResourceSubsystemScope(
+            Resource::ResourceManagerDependencies dependencies = {})
         {
             Resource::ResourceManagerConfig config;
             config.asyncThreadCount = 1;
             config.runtimePolicy.mode = Resource::ResourceRuntimeMode::Editor;
             config.runtimePolicy.allowSourceAssetReads = true;
-            m_resources.Initialize(config, {});
+            m_resources.Initialize(config, std::move(dependencies));
         }
 
         ~ResourceSubsystemScope()
@@ -154,7 +155,12 @@ namespace
             return {".animsvc"};
         }
 
-        Resource::IResource* Load(const std::string&) override { return nullptr; }
+        bool Supports(
+            const Resource::ResourceLoaderRequest& request) const noexcept override
+        {
+            return request.type == Resource::ResourceType::Animation &&
+                request.resolvedPath.ends_with(".animsvc");
+        }
 
         bool Prepare(const Resource::ResourceLoadPreparationContext& context,
                      Resource::PreparedResourceBundle& outBundle,
@@ -178,8 +184,6 @@ namespace
             return true;
         }
 
-        bool SupportsPreparedLoading() const override { return true; }
-
         uint32 prepareCount = 0;
     };
 
@@ -196,7 +200,12 @@ namespace
             return {".modelsvc"};
         }
 
-        Resource::IResource* Load(const std::string&) override { return nullptr; }
+        bool Supports(
+            const Resource::ResourceLoaderRequest& request) const noexcept override
+        {
+            return request.type == Resource::ResourceType::Model &&
+                request.resolvedPath.ends_with(".modelsvc");
+        }
 
         bool Prepare(const Resource::ResourceLoadPreparationContext& context,
                      Resource::PreparedResourceBundle& outBundle,
@@ -228,8 +237,6 @@ namespace
             }
             return true;
         }
-
-        bool SupportsPreparedLoading() const override { return true; }
     };
 
     template<typename Predicate>
@@ -274,11 +281,14 @@ namespace
 TEST(EcsAnimationAssetServiceValidation,
      PublishesExactAsyncMetadataAndCancelsOnlyTheOwningSceneRequest)
 {
-    ResourceSubsystemScope resourceScope;
-    Resource::ResourceSubsystem& resources = resourceScope.Get();
+    Resource::ResourceManagerDependencies dependencies;
     auto animationLoader = std::make_unique<AnimationTestLoader>();
     AnimationTestLoader* const loader = animationLoader.get();
-    resources.RegisterLoader(Resource::ResourceType::Animation, std::move(animationLoader));
+    std::string loaderError;
+    ASSERT_TRUE(dependencies.loaderCatalog.Add(std::move(animationLoader), loaderError))
+        << loaderError;
+    ResourceSubsystemScope resourceScope(std::move(dependencies));
+    Resource::ResourceSubsystem& resources = resourceScope.Get();
 
     AnimationSceneAdapters::EcsAnimationAssetService service(resources);
     const ECS::SceneRuntimeId firstScene(101);
@@ -413,10 +423,12 @@ TEST(EcsAnimationAssetServiceValidation,
 
 TEST(EcsAnimationAssetServiceValidation, ResolvesLoadedModelContainedAnimationAssetIdWithoutStartingIo)
 {
-    ResourceSubsystemScope resourceScope;
+    Resource::ResourceManagerDependencies dependencies;
+    std::string loaderError;
+    ASSERT_TRUE(dependencies.loaderCatalog.Add(
+        std::make_unique<ModelWithAnimationLoader>(), loaderError)) << loaderError;
+    ResourceSubsystemScope resourceScope(std::move(dependencies));
     Resource::ResourceSubsystem& resources = resourceScope.Get();
-    resources.RegisterLoader(Resource::ResourceType::Model,
-                             std::make_unique<ModelWithAnimationLoader>());
     AnimationSceneAdapters::EcsAnimationAssetService service(resources);
 
     auto modelRequest = resources.RequestAsync<Resource::ModelResource>("character.modelsvc");

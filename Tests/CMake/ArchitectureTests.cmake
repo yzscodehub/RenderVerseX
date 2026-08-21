@@ -108,6 +108,28 @@ rvx_add_validation_test(
 
 rvx_add_validation_test(
     LANE architecture
+    NAME Architecture.ResourceLoaderContractChecker
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/test_resource_loader_contracts.py
+        -v
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.ResourceLoaderContract
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/check_resource_loader_contracts.py
+        --root ${CMAKE_SOURCE_DIR}
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    REQUIRED_FILES
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/ResourceRuntime/Include/ResourceRuntime/ResourceLoader.h
+)
+
+rvx_add_validation_test(
+    LANE architecture
     NAME Architecture.RuntimeProductClosureChecker
     COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_SOURCE_DIR}/Scripts/test_runtime_product_closure.py

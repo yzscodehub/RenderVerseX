@@ -16,7 +16,6 @@ namespace RVX::Resource
         InvalidRequest,
         NotFound,
         Ambiguous,
-        MatcherFailure,
     };
 
     struct ResourceLoaderResolveResult
@@ -49,17 +48,23 @@ namespace RVX::Resource
             std::unique_ptr<IResourceLoader> loader,
             std::string& outError);
 
+        /** @brief Freeze registration before the catalog becomes observable. */
+        [[nodiscard]] bool Seal(std::string& outError) noexcept;
+
         [[nodiscard]] ResourceLoaderResolveResult Resolve(
             const ResourceLoaderRequest& request) const;
 
-        [[nodiscard]] IResourceLoader* FindOnlyByType(
-            ResourceType type) const;
-
-        void Clear() noexcept { m_loaders.clear(); }
+        void Clear() noexcept
+        {
+            m_loaders.clear();
+            m_sealed = false;
+        }
         [[nodiscard]] size_t Size() const noexcept { return m_loaders.size(); }
+        [[nodiscard]] bool IsSealed() const noexcept { return m_sealed; }
 
     private:
         std::vector<std::shared_ptr<IResourceLoader>> m_loaders;
+        bool m_sealed = false;
     };
 } // namespace RVX::Resource
 

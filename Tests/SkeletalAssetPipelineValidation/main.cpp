@@ -6,6 +6,7 @@
 #include "AssetImport/GLTFImporter.h"
 #include "AssetImport/ModelLoader.h"
 #include "Resource/Loader/CookedModelLoader.h"
+#include "Resource/ResourceManager.h"
 #include "Resource/Types/ModelResource.h"
 #include "Tools/AssetPipeline.h"
 
@@ -32,6 +33,58 @@
 namespace
 {
 namespace fs = std::filesystem;
+
+template<typename Loader>
+RVX::Resource::ModelHandle PrepareModel(
+    Loader& loader,
+    const fs::path& path,
+    RVX::Resource::ResourceLoadDomain domain)
+{
+    const RVX::Resource::ResourceLoaderRequest request{
+        RVX::Resource::ResourceType::Model, domain, path.string()};
+    if (!loader.Supports(request))
+        return {};
+
+    RVX::Resource::ResourceLoadPreparationStateRef loaderState;
+    RVX::uint64 canonicalImportOptionsHash = 0;
+    RVX::Resource::ResourceLoadError error;
+    if (!loader.CapturePreparationState(
+            0, loaderState, canonicalImportOptionsHash, error))
+    {
+        return {};
+    }
+
+    RVX::Resource::ResourceLoadPreparationContext context;
+    context.requestedPath = path.string();
+    context.resolvedPath = path.string();
+    context.assetKey = RVX::Resource::MakeAssetKey(
+        context.requestedPath,
+        RVX::Resource::ResourceType::Model,
+        canonicalImportOptionsHash);
+    context.resourceIdentityPath = context.assetKey.canonicalPath;
+    context.rootResourceId = RVX::Resource::GenerateResourceId(
+        context.resourceIdentityPath);
+    context.loaderState = std::move(loaderState);
+
+    RVX::Resource::PreparedResourceBundle bundle;
+    if (!loader.Prepare(context, bundle, error))
+        return {};
+
+    std::vector<RVX::Resource::IResource*> resources;
+    resources.reserve(bundle.GetEntries().size());
+    for (const RVX::Resource::PreparedResourceEntry& entry :
+         bundle.GetEntries())
+    {
+        resources.push_back(entry.resource.Get());
+    }
+    RVX::Resource::ResourceCache publicationCache;
+    if (!publicationCache.StorePreparedBatch(resources))
+        return {};
+
+    auto* model = dynamic_cast<RVX::Resource::ModelResource*>(
+        bundle.GetRoot().Get());
+    return RVX::Resource::ModelHandle(model);
+}
 
 enum class FixtureFault
 {
@@ -523,10 +576,9 @@ TEST_F(SkeletalAssetPipelineValidation,
         "models/casual-female/Casual_Female.rva");
     ASSERT_FALSE(cookedModel.empty());
 
-    RVX::Resource::CookedModelLoader loader(nullptr);
-    std::unique_ptr<RVX::Resource::ModelResource> model(
-        static_cast<RVX::Resource::ModelResource*>(
-            loader.Load(cookedModel.string())));
+    RVX::Resource::CookedModelLoader loader;
+    RVX::Resource::ModelHandle model = PrepareModel(
+        loader, cookedModel, RVX::Resource::ResourceLoadDomain::Cooked);
     ASSERT_TRUE(model);
     ASSERT_TRUE(model->HasSkeleton());
     EXPECT_EQ(model->GetSkeleton()->GetBoneCount(), 23u);
@@ -617,10 +669,9 @@ TEST_F(SkeletalAssetPipelineValidation,
        ModelLoaderPublishesImportedSkeletonAndClipLibrary)
 {
     ScopedGLB fixture("model_loader", FixtureFault::None);
-    RVX::Resource::ModelLoader loader(nullptr);
-    std::unique_ptr<RVX::Resource::ModelResource> model(
-        static_cast<RVX::Resource::ModelResource*>(
-            loader.Load(fixture.Path().string())));
+    RVX::Resource::ModelLoader loader;
+    RVX::Resource::ModelHandle model = PrepareModel(
+        loader, fixture.Path(), RVX::Resource::ResourceLoadDomain::Source);
     ASSERT_TRUE(model);
     ASSERT_TRUE(model->HasSkeleton());
     EXPECT_EQ(model->GetSkeleton()->GetBoneCount(), 3u);
@@ -801,9 +852,9 @@ TEST_F(SkeletalAssetPipelineValidation,
     EXPECT_EQ(ReadBytes(animationPath), firstAnimationBytes);
     EXPECT_EQ(ReadBytes(meshPath), firstMeshBytes);
 
-    RVX::Resource::CookedModelLoader loader(nullptr);
-    std::unique_ptr<RVX::Resource::ModelResource> model(
-        static_cast<RVX::Resource::ModelResource*>(loader.Load(output.string())));
+    RVX::Resource::CookedModelLoader loader;
+    RVX::Resource::ModelHandle model = PrepareModel(
+        loader, output, RVX::Resource::ResourceLoadDomain::Cooked);
     ASSERT_TRUE(model);
     const RVX::Resource::AnimationHandle animation =
         model->GetAnimationResource();
@@ -821,7 +872,8 @@ TEST_F(SkeletalAssetPipelineValidation,
         reinterpret_cast<const char*>(corruptAnimation.data()),
         static_cast<std::streamsize>(corruptAnimation.size()));
     corruptFile.close();
-    EXPECT_EQ(loader.Load(output.string()), nullptr);
+    EXPECT_FALSE(PrepareModel(
+        loader, output, RVX::Resource::ResourceLoadDomain::Cooked));
 }
 
 TEST_F(SkeletalAssetPipelineValidation,

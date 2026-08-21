@@ -75,79 +75,30 @@ std::vector<std::string> EnvironmentLoader::GetSupportedExtensions() const
     return {".hdr", ".exr"};
 }
 
-bool EnvironmentLoader::CanLoad(const std::string& path) const
+bool EnvironmentLoader::SupportsPath(const std::string& path) noexcept
 {
-    std::string extension = std::filesystem::path(path).extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char character)
-                   {
-                       return static_cast<char>(std::tolower(character));
-                   });
-    return extension == ".hdr" || extension == ".exr";
+    try
+    {
+        std::string extension = std::filesystem::path(path).extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(),
+                       [](unsigned char character)
+                       {
+                           return static_cast<char>(std::tolower(character));
+                       });
+        return extension == ".hdr" || extension == ".exr";
+    }
+    catch (...)
+    {
+        return false;
+    }
 }
 
-bool EnvironmentLoader::Supports(const ResourceLoaderRequest& request) const
+bool EnvironmentLoader::Supports(
+    const ResourceLoaderRequest& request) const noexcept
 {
     return request.type == ResourceType::Environment &&
         request.domain == ResourceLoadDomain::Source &&
-        CanLoad(request.resolvedPath);
-}
-
-IResource* EnvironmentLoader::Load(const std::string& path)
-{
-    const EnvironmentPreparationState state = CapturePreparationState();
-    if (!state.IsValid() || !CanLoad(path))
-    {
-        return nullptr;
-    }
-
-    // Compatibility-only synchronous path. Unlike Prepare this marks the
-    // resulting resources ready, but still avoids ResourceManager/cache access.
-    HDRTextureLoader loader(nullptr, false);
-    const IBLData ibl = loader.LoadIBL(path, state.hdrOptions);
-    if (!ibl.IsValid())
-    {
-        return nullptr;
-    }
-
-    TextureHandle environment(ibl.environmentMap);
-    TextureHandle irradiance(ibl.irradianceMap);
-    TextureHandle prefiltered(ibl.prefilteredMap);
-    TextureHandle brdfLUT(ibl.brdfLUT);
-
-    const std::string identity = CanonicalizeAssetPath(path);
-    if (identity.empty())
-    {
-        return nullptr;
-    }
-    AssignPreparedIdentity(*environment, identity + "#environment", path, "Environment");
-    AssignPreparedIdentity(*irradiance, identity + "#irradiance", path, "Irradiance");
-    AssignPreparedIdentity(*prefiltered, identity + "#prefiltered", path, "Prefiltered");
-    AssignPreparedIdentity(*brdfLUT, identity + "#brdf_lut", path, "BRDF_LUT");
-
-    EnvironmentResourceData data;
-    data.sourcePath = path;
-    data.environment = std::move(environment);
-    data.irradiance = std::move(irradiance);
-    data.prefiltered = std::move(prefiltered);
-    data.brdfLUT = std::move(brdfLUT);
-    data.environmentResolution = data.environment->GetWidth();
-    data.irradianceResolution = data.irradiance->GetWidth();
-    data.prefilteredResolution = data.prefiltered->GetWidth();
-    data.prefilteredMipLevels = data.prefiltered->GetMipLevels();
-    data.brdfLUTResolution = data.brdfLUT->GetWidth();
-    data.intensity = state.hdrOptions.exposure;
-
-    auto* resource = new EnvironmentResource();
-    resource->SetId(GenerateResourceId(identity));
-    resource->SetPath(path);
-    resource->SetName(std::filesystem::path(path).stem().string());
-    if (!resource->SetData(std::move(data)))
-    {
-        delete resource;
-        return nullptr;
-    }
-    return resource;
+        SupportsPath(request.resolvedPath);
 }
 
 bool EnvironmentLoader::Prepare(const ResourceLoadPreparationContext& context,
@@ -187,7 +138,7 @@ bool EnvironmentLoader::Prepare(const ResourceLoadPreparationContext& context,
                     "Environment preparation state does not match the admitted importOptionsHash."};
         return false;
     }
-    if (!CanLoad(context.resolvedPath))
+    if (!SupportsPath(context.resolvedPath))
     {
         outError = {ResourceLoadErrorCode::InvalidRequest,
                     "Environment loader accepts only HDR or EXR source paths."};
@@ -196,7 +147,7 @@ bool EnvironmentLoader::Prepare(const ResourceLoadPreparationContext& context,
 
     // A manager-null, prepare-only HDR loader cannot cache, notify, touch a
     // Scene, or reach the render upload gateway.
-    HDRTextureLoader hdrLoader(nullptr, true);
+    HDRTextureLoader hdrLoader;
     const IBLData ibl = hdrLoader.LoadIBL(
         context.resolvedPath,
         state.hdrOptions,

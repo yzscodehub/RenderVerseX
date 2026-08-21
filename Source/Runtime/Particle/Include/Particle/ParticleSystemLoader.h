@@ -60,7 +60,12 @@ namespace RVX::Particle
             return { ".particle", ".vfx" };
         }
 
-        Resource::IResource* Load(const std::string& path) override;
+        bool Supports(
+            const ResourceLoaderRequest& request) const noexcept override;
+        bool Prepare(
+            const Resource::ResourceLoadPreparationContext& context,
+            Resource::PreparedResourceBundle& outBundle,
+            Resource::ResourceLoadError& outError) override;
 
         // =====================================================================
         // Serialization

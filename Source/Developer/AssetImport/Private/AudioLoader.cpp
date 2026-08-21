@@ -1,6 +1,6 @@
 #include "AssetImport/AudioLoader.h"
 #include "Core/Log.h"
-#include "Resource/ResourceCache.h"
+#include "Core/Hash/SHA256.h"
 
 // miniaudio configuration - enable all decoders
 #define MA_NO_DEVICE_IO  // We just need decoding, not playback
@@ -18,16 +18,26 @@ namespace RVX::Resource
     {
         constexpr const char* RVX_AUDIO_RESOURCE_STREAMING_UNSUPPORTED =
             "Audio resource streaming is unsupported because AudioResource has no decoder-backed stream buffer implementation";
+
+        ResourceContentIdentity MakeObservedIdentity(
+            const std::vector<uint8>& bytes)
+        {
+            ResourceContentIdentity identity;
+            identity.schemaVersion = RVX_RESOURCE_CONTENT_IDENTITY_SCHEMA_VERSION;
+            identity.domain = ResourceContentIdentityDomain::Source;
+            identity.scope = ResourceContentIdentityScope::SelfContainedArtifact;
+            identity.algorithm = ResourceContentHashAlgorithm::SHA256;
+            identity.digest = Hash::FormatSHA256Digest(
+                Hash::ComputeSHA256(bytes.data(), bytes.size()));
+            identity.byteCount = bytes.size();
+            identity.fileCount = 1;
+            return identity;
+        }
     } // namespace
 
     // =========================================================================
     // Construction
     // =========================================================================
-
-    AudioLoader::AudioLoader(ResourceManager* manager)
-        : m_manager(manager)
-    {
-    }
 
     AudioLoader::~AudioLoader()
     {
@@ -43,27 +53,116 @@ namespace RVX::Resource
         return { ".wav", ".mp3", ".ogg", ".flac", ".aiff", ".aif" };
     }
 
-    bool AudioLoader::CanLoad(const std::string& path) const
+    bool AudioLoader::SupportsPath(const std::string& path) const noexcept
     {
-        std::filesystem::path filePath(path);
-        std::string ext = filePath.extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-
-        auto extensions = GetSupportedExtensions();
-        return std::find(extensions.begin(), extensions.end(), ext) != extensions.end();
+        try
+        {
+            std::string extension =
+                std::filesystem::path(path).extension().string();
+            std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
+            const auto extensions = GetSupportedExtensions();
+            return std::find(
+                extensions.begin(), extensions.end(), extension) != extensions.end();
+        }
+        catch (...)
+        {
+            return false;
+        }
     }
 
-    bool AudioLoader::Supports(const ResourceLoaderRequest& request) const
+    bool AudioLoader::Supports(
+        const ResourceLoaderRequest& request) const noexcept
     {
         return request.type == ResourceType::Audio &&
             request.domain == ResourceLoadDomain::Source &&
-            CanLoad(request.resolvedPath);
+            SupportsPath(request.resolvedPath);
     }
 
-    IResource* AudioLoader::Load(const std::string& path)
+    bool AudioLoader::Prepare(
+        const ResourceLoadPreparationContext& context,
+        PreparedResourceBundle& outBundle,
+        ResourceLoadError& outError)
     {
+        if (context.IsCancellationRequested() ||
+            context.rootResourceId == InvalidResourceId ||
+            !SupportsPath(context.resolvedPath))
+        {
+            outError = {context.IsCancellationRequested()
+                            ? ResourceLoadErrorCode::Cancelled
+                            : ResourceLoadErrorCode::InvalidRequest,
+                        "Source audio preparation request is invalid or cancelled."};
+            return false;
+        }
+
+        std::ifstream file(
+            context.resolvedPath, std::ios::binary | std::ios::ate);
+        if (!file.is_open())
+        {
+            outError = {ResourceLoadErrorCode::LoaderFailure,
+                        "Source audio file could not be opened."};
+            return false;
+        }
+        const std::streamsize size = file.tellg();
+        if (size <= 0)
+        {
+            outError = {ResourceLoadErrorCode::LoaderFailure,
+                        "Source audio file is empty."};
+            return false;
+        }
+        file.seekg(0, std::ios::beg);
+        std::vector<uint8> sourceBytes(static_cast<size_t>(size));
+        if (!file.read(
+                reinterpret_cast<char*>(sourceBytes.data()), size))
+        {
+            outError = {ResourceLoadErrorCode::LoaderFailure,
+                        "Source audio file could not be read completely."};
+            return false;
+        }
+        if (context.IsCancellationRequested())
+        {
+            outError = {ResourceLoadErrorCode::Cancelled,
+                        "Source audio preparation was cancelled after reading."};
+            return false;
+        }
+
+        std::vector<uint8> audioData;
+        AudioMetadata metadata;
         AudioLoadOptions options;
-        return LoadWithOptions(path, options);
+        if (!DecodeMemory(
+                sourceBytes.data(), sourceBytes.size(), audioData, metadata, options))
+        {
+            outError = {ResourceLoadErrorCode::LoaderFailure,
+                        "Source audio decode failed."};
+            return false;
+        }
+        if (context.IsCancellationRequested())
+        {
+            outError = {ResourceLoadErrorCode::Cancelled,
+                        "Source audio preparation was cancelled after decoding."};
+            return false;
+        }
+        std::string extension =
+            std::filesystem::path(context.resolvedPath).extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
+        if (!extension.empty() && extension.front() == '.')
+            extension.erase(extension.begin());
+        metadata.sourceFormat = std::move(extension);
+
+        auto root = ResourceHandle<AudioResource>(new AudioResource());
+        root->SetId(context.rootResourceId);
+        root->SetPath(context.requestedPath);
+        root->SetName(
+            std::filesystem::path(context.requestedPath).stem().string());
+        if (!root->SetPreparedData(std::move(audioData), std::move(metadata)) ||
+            !outBundle.SetRoot(ResourceHandle<IResource>(root)) ||
+            !outBundle.SetObservedContentIdentity(
+                MakeObservedIdentity(sourceBytes)))
+        {
+            outError = {ResourceLoadErrorCode::LoaderFailure,
+                        "Source audio could not form a prepared bundle."};
+            return false;
+        }
+        return true;
     }
 
     // =========================================================================
@@ -83,18 +182,6 @@ namespace RVX::Resource
         if (options.enableStreaming)
         {
             return LoadForStreaming(absolutePath);
-        }
-
-        ResourceId audioId = GenerateAudioId(absolutePath);
-
-        // Check cache
-        if (m_manager && m_manager->IsInitialized())
-        {
-            if (auto* cached = m_manager->GetCache().Get(audioId))
-            {
-                m_lastLoadStatus = AudioLoadStatus::Loaded;
-                return static_cast<AudioResource*>(cached);
-            }
         }
 
         // Check if file exists
@@ -158,18 +245,6 @@ namespace RVX::Resource
     {
         m_lastLoadStatus = AudioLoadStatus::None;
         m_lastLoadError.clear();
-
-        ResourceId audioId = GenerateAudioId(uniqueKey);
-
-        // Check cache
-        if (m_manager && m_manager->IsInitialized())
-        {
-            if (auto* cached = m_manager->GetCache().Get(audioId))
-            {
-                m_lastLoadStatus = AudioLoadStatus::Loaded;
-                return static_cast<AudioResource*>(cached);
-            }
-        }
 
         // Decode audio
         std::vector<uint8_t> audioData;
@@ -240,18 +315,6 @@ namespace RVX::Resource
 
         std::string uniqueKey = "__sine_" + std::to_string(static_cast<int>(frequency)) + 
                                 "_" + std::to_string(static_cast<int>(duration * 1000)) + "__";
-
-        ResourceId audioId = GenerateAudioId(uniqueKey);
-
-        // Check cache
-        if (m_manager && m_manager->IsInitialized())
-        {
-            if (auto* cached = m_manager->GetCache().Get(audioId))
-            {
-                m_lastLoadStatus = AudioLoadStatus::Loaded;
-                return static_cast<AudioResource*>(cached);
-            }
-        }
 
         uint32_t channels = 2;
         uint64_t totalFrames = static_cast<uint64_t>(duration * sampleRate);
@@ -629,12 +692,6 @@ namespace RVX::Resource
         audio->SetName(filePath.stem().string());
 
         audio->SetData(std::move(data), metadata);
-
-        // Store in cache
-        if (m_manager && m_manager->IsInitialized())
-        {
-            m_manager->GetCache().Store(audio);
-        }
 
         return audio;
     }

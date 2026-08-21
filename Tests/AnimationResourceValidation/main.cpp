@@ -76,17 +76,21 @@ namespace
             config.runtimePolicy.allowSourceAssetReads = false;
             config.runtimePolicy.requireCookedArtifacts = true;
             config.runtimePolicy.cookedRoot = cookedRoot.string();
-            ResourceManager& manager = ResourceManager::Get();
-            manager.Initialize(
+            m_manager.Initialize(
                 config,
-                CreateRuntimeResourceManagerDependencies(manager));
+                CreateRuntimeResourceManagerDependencies());
         }
 
         ~ManagerGuard()
         {
-            ResourceManager::Get().Shutdown();
+            m_manager.Shutdown();
             JobSystem::Get().Shutdown();
         }
+
+        ResourceManager& GetManager() noexcept { return m_manager; }
+
+    private:
+        ResourceManager m_manager;
     };
 
     Skeleton::Ptr MakeSkeleton()
@@ -813,14 +817,12 @@ TEST(AnimationResourceValidation, PreparedAndManagerLoadsVerifyExactCookedBytes)
     WriteBytes(animationPath, bytes);
 
     AnimationLoader loader;
-    EXPECT_TRUE(loader.CanLoad(animationPath.string()));
-    EXPECT_FALSE(loader.CanLoad((temporary.Get() / "wrong.anim").string()));
-
-    std::unique_ptr<AnimationResource> synchronous(
-        static_cast<AnimationResource*>(loader.Load(animationPath.string())));
-    ASSERT_TRUE(synchronous);
-    EXPECT_TRUE(synchronous->IsLoaded());
-    EXPECT_EQ(synchronous->GetClips().size(), 3u);
+    EXPECT_TRUE(loader.Supports({ResourceType::Animation,
+                                 ResourceLoadDomain::Cooked,
+                                 animationPath.string()}));
+    EXPECT_FALSE(loader.Supports({ResourceType::Animation,
+                                  ResourceLoadDomain::Cooked,
+                                  (temporary.Get() / "wrong.anim").string()}));
 
     ResourceLoadPreparationContext context;
     context.requestedPath = "cooked://casual-female.rvxanim";
@@ -867,7 +869,7 @@ TEST(AnimationResourceValidation, PreparedAndManagerLoadsVerifyExactCookedBytes)
 
     {
         ManagerGuard guard(temporary.Get());
-        const AnimationHandle managed = ResourceManager::Get().Load<AnimationResource>(
+        const AnimationHandle managed = guard.GetManager().Load<AnimationResource>(
             "cooked://casual-female.rvxanim");
         ASSERT_TRUE(managed);
         EXPECT_EQ(managed->GetClips().size(), 3u);

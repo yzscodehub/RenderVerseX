@@ -67,10 +67,10 @@ namespace
 
 TEST(ResourceSourceValidation, RuntimeCatalogRejectsSourceTextureAndModel)
 {
-    RVX::Resource::ResourceManager& manager =
-        RVX::Resource::ResourceManager::Get();
     auto dependencies =
-        RVX::Resource::CreateRuntimeResourceManagerDependencies(manager);
+        RVX::Resource::CreateRuntimeResourceManagerDependencies();
+    std::string sealError;
+    ASSERT_TRUE(dependencies.loaderCatalog.Seal(sealError)) << sealError;
 
     const auto sourceTexture = dependencies.loaderCatalog.Resolve({
         RVX::ResourceType::Texture,
@@ -108,6 +108,8 @@ TEST(ResourceSourceValidation, RuntimeCatalogRejectsSourceTextureAndModel)
 TEST(ResourceSourceValidation, DevelopmentCompositionAddsExactSourceLoaders)
 {
     auto dependencies = RVX::CreateDevelopmentResourceManagerDependencies();
+    std::string sealError;
+    ASSERT_TRUE(dependencies.loaderCatalog.Seal(sealError)) << sealError;
     ASSERT_NE(dependencies.changeMonitor, nullptr);
 
     const auto sourceTexture = dependencies.loaderCatalog.Resolve({
@@ -147,6 +149,10 @@ TEST(ResourceSourceValidation, DevelopmentEngineBundleIsCompleteAndMoveOnly)
     RVX::EngineRuntimeDependencies dependencies =
         RVX::CreateDevelopmentEngineRuntimeDependencies();
     ASSERT_TRUE(dependencies.resourceManager.has_value());
+    std::string sealError;
+    ASSERT_TRUE(
+        dependencies.resourceManager->loaderCatalog.Seal(sealError))
+        << sealError;
     EXPECT_TRUE(dependencies.shaderPrograms);
     EXPECT_NE(dependencies.resourceManager->changeMonitor, nullptr);
 

@@ -46,7 +46,13 @@ def exact_include_prefix_module(policy, prefix: str) -> str | None:
     return None
 
 
-def resolve_include_module(policy, source: str, including, include: str) -> tuple[str | None, str | None]:
+def resolve_include_module(
+    policy,
+    source: str,
+    including,
+    include: str,
+    include_root_cache: dict[tuple[str, bool], tuple[Path, ...]],
+) -> tuple[str | None, str | None]:
     """Resolve project includes through real local/private/public candidates.
 
     A basename such as ``Runtime/Foo.h`` may be a local Render private include
@@ -55,8 +61,17 @@ def resolve_include_module(policy, source: str, including, include: str) -> tupl
     """
     module = policy.modules[source]
     include_path = Path(include)
+    def roots(module_id: str, public_only: bool) -> tuple[Path, ...]:
+        key = (module_id, public_only)
+        if key not in include_root_cache:
+            include_root_cache[key] = tuple(
+                module_include_roots(
+                    policy, module_id, public_only=public_only)
+            )
+        return include_root_cache[key]
+
     candidates = [including.parent / include_path, policy.root / module.path / "Private" / include_path]
-    candidates.extend(root / include_path for root in module_include_roots(policy, source, public_only=False))
+    candidates.extend(root / include_path for root in roots(source, False))
     parts = include_path.parts
     public_module = None
     if parts:
@@ -64,7 +79,7 @@ def resolve_include_module(policy, source: str, including, include: str) -> tupl
         if public_module is not None:
             candidates.extend(
                 root / include_path
-                for root in module_include_roots(policy, public_module, public_only=True)
+                for root in roots(public_module, True)
             )
     resolved_modules: set[str] = set()
     for candidate in candidates:
@@ -89,6 +104,7 @@ def main() -> int:
     policy = load_policy(resolve_repo_root(args.root), args)
     findings: list[str] = []
     count = 0
+    include_root_cache: dict[tuple[str, bool], tuple[Path, ...]] = {}
     production_modules = [
         module.id for module in policy.modules.values()
         if not module.deferred and module.domain != "tests"
@@ -112,7 +128,13 @@ def main() -> int:
             if not match:
                 continue
             include = match.group(1).replace("\\", "/")
-            destination, error = resolve_include_module(policy, source, path, include)
+            destination, error = resolve_include_module(
+                policy,
+                source,
+                path,
+                include,
+                include_root_cache,
+            )
             if error is not None:
                 findings.append(f"{path.relative_to(policy.root)}:{line_number}: {error}")
                 continue

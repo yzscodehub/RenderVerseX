@@ -494,59 +494,27 @@ std::vector<std::string> CookedModelLoader::GetSupportedExtensions() const
     return {".rva"};
 }
 
-bool CookedModelLoader::CanLoad(const std::string& path) const
+bool CookedModelLoader::Supports(
+    const ResourceLoaderRequest& request) const noexcept
 {
-    std::string extension = std::filesystem::path(path).extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char value)
-                   {
-                       return static_cast<char>(std::tolower(value));
-                   });
-    return extension == ".rva";
-}
-
-bool CookedModelLoader::Supports(const ResourceLoaderRequest& request) const
-{
-    return request.type == ResourceType::Model &&
-        (request.domain == ResourceLoadDomain::Cooked ||
-         request.domain == ResourceLoadDomain::Package) &&
-        CanLoad(request.resolvedPath);
-}
-
-ModelResource* CookedModelLoader::Load(const std::string& path)
-{
-    m_lastLoadError.clear();
-    const std::filesystem::path absolute = std::filesystem::absolute(path);
-    const std::string identity = CanonicalizeAssetPath(absolute.string());
-    if (identity.empty())
+    try
     {
-        m_lastLoadError = "Cooked model path could not be canonicalized";
-        return nullptr;
+        std::string extension =
+            std::filesystem::path(request.resolvedPath).extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(),
+                       [](unsigned char value)
+                       {
+                           return static_cast<char>(std::tolower(value));
+                       });
+        return request.type == ResourceType::Model &&
+            (request.domain == ResourceLoadDomain::Cooked ||
+             request.domain == ResourceLoadDomain::Package) &&
+            extension == ".rva";
     }
-    std::unique_ptr<ModelResource> model =
-        BuildModel(absolute.string(), identity, m_lastLoadError);
-    if (!model)
-        return nullptr;
-    model->SetId(GenerateResourceId(identity));
-    model->SetPath(absolute.string());
-    model->SetName(absolute.stem().string());
-    for (const ResourceHandle<MeshResource>& mesh : model->GetMeshes())
-        MarkSynchronousLoadComplete(*mesh);
-    for (const ResourceHandle<MaterialResource>& material : model->GetMaterials())
-        MarkSynchronousLoadComplete(*material);
-    for (const ResourceHandle<MaterialResource>& material : model->GetMaterials())
+    catch (...)
     {
-        for (const auto& [slot, texture] : material->GetTextures())
-        {
-            (void)slot;
-            if (texture && !texture->IsLoaded())
-                MarkSynchronousLoadComplete(*texture);
-        }
+        return false;
     }
-    if (const AnimationHandle animation = model->GetAnimationResource(); animation)
-        MarkSynchronousLoadComplete(*animation);
-    MarkSynchronousLoadComplete(*model);
-    return model.release();
 }
 
 bool CookedModelLoader::Prepare(

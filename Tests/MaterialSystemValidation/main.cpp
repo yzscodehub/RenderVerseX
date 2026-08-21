@@ -8,6 +8,7 @@
 #include "Resources/FrameConstantUploadArena.h"
 #include "Resources/RenderSubmissionTracker.h"
 #include "Resource/Loader/CookedTextureLoader.h"
+#include "Resource/ResourceManager.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/ShaderResource.h"
 #include "Resource/Types/TextureResource.h"
@@ -34,6 +35,46 @@ using namespace RVX;
 
 namespace
 {
+    Resource::TextureHandle PrepareCookedTexture(
+        const std::filesystem::path& path,
+        std::string& outError)
+    {
+        Resource::CookedTextureLoader loader;
+        Resource::ResourceLoadPreparationContext context;
+        context.requestedPath = path.string();
+        context.resolvedPath = path.string();
+        context.assetKey = Resource::MakeAssetKey(
+            context.requestedPath, Resource::ResourceType::Texture);
+        context.resourceIdentityPath = context.assetKey.canonicalPath;
+        context.rootResourceId = Resource::GenerateResourceId(
+            context.resourceIdentityPath);
+
+        Resource::PreparedResourceBundle bundle;
+        Resource::ResourceLoadError error;
+        if (!loader.Prepare(context, bundle, error))
+        {
+            outError = error.message;
+            return {};
+        }
+
+        std::vector<Resource::IResource*> resources;
+        resources.reserve(bundle.GetEntries().size());
+        for (const Resource::PreparedResourceEntry& entry : bundle.GetEntries())
+            resources.push_back(entry.resource.Get());
+        Resource::ResourceCache publicationCache;
+        if (!publicationCache.StorePreparedBatch(resources))
+        {
+            outError = "Could not publish prepared cooked texture bundle.";
+            return {};
+        }
+
+        auto* texture = dynamic_cast<Resource::TextureResource*>(
+            bundle.GetRoot().Get());
+        if (!texture)
+            outError = "Cooked texture bundle root has the wrong type.";
+        return Resource::TextureHandle(texture);
+    }
+
     class FakeBuffer final : public RHIBuffer
     {
     public:
@@ -2247,13 +2288,16 @@ namespace
             false,
             std::vector<uint8>(16, 0x33)));
 
-        Resource::CookedTextureLoader loader(nullptr);
-        Resource::TextureHandle albedo(loader.Load(albedoPath.string()));
-        ASSERT_TRUE(albedo) << loader.GetLastLoadError();
-        Resource::TextureHandle metallicRoughness(loader.Load(metallicRoughnessPath.string()));
-        ASSERT_TRUE(metallicRoughness) << loader.GetLastLoadError();
-        Resource::TextureHandle normal(loader.Load(normalPath.string()));
-        ASSERT_TRUE(normal) << loader.GetLastLoadError();
+        std::string loadError;
+        Resource::TextureHandle albedo =
+            PrepareCookedTexture(albedoPath, loadError);
+        ASSERT_TRUE(albedo) << loadError;
+        Resource::TextureHandle metallicRoughness =
+            PrepareCookedTexture(metallicRoughnessPath, loadError);
+        ASSERT_TRUE(metallicRoughness) << loadError;
+        Resource::TextureHandle normal =
+            PrepareCookedTexture(normalPath, loadError);
+        ASSERT_TRUE(normal) << loadError;
 
         EXPECT_EQ(Resource::TextureFormat::BC1, albedo->GetFormat());
         EXPECT_TRUE(albedo->IsSRGB());

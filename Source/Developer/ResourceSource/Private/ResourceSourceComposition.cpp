@@ -3,7 +3,6 @@
 #include "ResourceSource/ResourceSourceComposition.h"
 
 #include "AssetImport/SourceResourceLoaders.h"
-#include "Resource/ResourceManager.h"
 #include "ResourceSource/PollingResourceChangeMonitor.h"
 
 #include <memory>
@@ -12,7 +11,6 @@ namespace RVX::ResourceSource
 {
 bool AddSourceResourceDependencies(
     ResourceManagerDependencies& dependencies,
-    Resource::ResourceManager& manager,
     std::string& outError)
 {
     if (dependencies.changeMonitor)
@@ -23,7 +21,7 @@ bool AddSourceResourceDependencies(
     }
 
     if (!dependencies.loaderCatalog.Add(
-            std::make_unique<AssetImport::SourceAudioLoader>(&manager),
+            std::make_unique<AssetImport::SourceAudioLoader>(),
             outError))
     {
         return false;
@@ -35,13 +33,13 @@ bool AddSourceResourceDependencies(
         return false;
     }
     if (!dependencies.loaderCatalog.Add(
-            std::make_unique<AssetImport::SourceTextureLoader>(&manager),
+            std::make_unique<AssetImport::SourceTextureLoader>(),
             outError))
     {
         return false;
     }
     if (!dependencies.loaderCatalog.Add(
-            std::make_unique<AssetImport::SourceModelLoader>(&manager),
+            std::make_unique<AssetImport::SourceModelLoader>(),
             outError))
     {
         return false;
@@ -55,7 +53,7 @@ bool AddSourceResourceDependencies(
     }
 
     dependencies.textureSourceDecoder =
-        std::make_unique<AssetImport::SourceTextureLoader>(nullptr);
+        std::make_unique<AssetImport::SourceTextureLoader>();
 
     dependencies.changeMonitor =
         std::make_unique<PollingResourceChangeMonitor>();

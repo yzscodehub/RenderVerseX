@@ -2,7 +2,6 @@
 
 #include "ResourceRuntime/ResourceLoaderCatalog.h"
 
-#include <exception>
 #include <utility>
 
 namespace RVX::Resource
@@ -11,6 +10,11 @@ bool ResourceLoaderCatalog::Add(
     std::unique_ptr<IResourceLoader> loader,
     std::string& outError)
 {
+    if (m_sealed)
+    {
+        outError = "Cannot register a resource loader after the catalog is sealed";
+        return false;
+    }
     if (!loader)
     {
         outError = "Cannot register a null resource loader";
@@ -26,10 +30,28 @@ bool ResourceLoaderCatalog::Add(
     return true;
 }
 
+bool ResourceLoaderCatalog::Seal(std::string& outError) noexcept
+{
+    if (m_sealed)
+    {
+        outError = "Resource loader catalog is already sealed";
+        return false;
+    }
+    m_sealed = true;
+    outError.clear();
+    return true;
+}
+
 ResourceLoaderResolveResult ResourceLoaderCatalog::Resolve(
     const ResourceLoaderRequest& request) const
 {
     ResourceLoaderResolveResult result;
+    if (!m_sealed)
+    {
+        result.diagnostic =
+            "Resource loader catalog must be sealed before resolution";
+        return result;
+    }
     if (request.type == ResourceType::Unknown ||
         request.domain == ResourceLoadDomain::Unknown ||
         request.resolvedPath.empty())
@@ -41,29 +63,7 @@ ResourceLoaderResolveResult ResourceLoaderCatalog::Resolve(
 
     for (const std::shared_ptr<IResourceLoader>& loader : m_loaders)
     {
-        bool supports = false;
-        try
-        {
-            supports = loader && loader->Supports(request);
-        }
-        catch (const std::exception& error)
-        {
-            result.loader.reset();
-            result.status = ResourceLoaderResolveStatus::MatcherFailure;
-            result.diagnostic =
-                "Resource loader threw while matching request: " +
-                std::string(error.what());
-            return result;
-        }
-        catch (...)
-        {
-            result.loader.reset();
-            result.status = ResourceLoaderResolveStatus::MatcherFailure;
-            result.diagnostic =
-                "Resource loader threw while matching request";
-            return result;
-        }
-        if (!supports)
+        if (!loader || !loader->Supports(request))
         {
             continue;
         }
@@ -90,25 +90,6 @@ ResourceLoaderResolveResult ResourceLoaderCatalog::Resolve(
     }
     result.status = ResourceLoaderResolveStatus::Success;
     result.diagnostic.clear();
-    return result;
-}
-
-IResourceLoader* ResourceLoaderCatalog::FindOnlyByType(
-    ResourceType type) const
-{
-    IResourceLoader* result = nullptr;
-    for (const std::shared_ptr<IResourceLoader>& loader : m_loaders)
-    {
-        if (!loader || loader->GetResourceType() != type)
-        {
-            continue;
-        }
-        if (result != nullptr)
-        {
-            return nullptr;
-        }
-        result = loader.get();
-    }
     return result;
 }
 } // namespace RVX::Resource

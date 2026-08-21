@@ -601,8 +601,6 @@ void AssetResidencyLease::Reset() noexcept
     m_dependencyClosure.clear();
 }
 
-static ResourceManager* s_instance = nullptr;
-
 namespace
 {
     using Diagnostics::JsonBool;
@@ -897,15 +895,6 @@ bool SaveResourceHotReloadDiagnosticJson(const char* filename,
     return file.good();
 }
 
-ResourceManager& ResourceManager::Get()
-{
-    if (!s_instance)
-    {
-        s_instance = new ResourceManager();
-    }
-    return *s_instance;
-}
-
 void ResourceManager::Initialize(
     const ResourceManagerConfig& config,
     ResourceManagerDependencies dependencies)
@@ -919,6 +908,18 @@ void ResourceManager::Initialize(
 
     m_config = config;
     m_loaderCatalog = std::move(dependencies.loaderCatalog);
+    if (!m_loaderCatalog.IsSealed())
+    {
+        std::string catalogError;
+        if (!m_loaderCatalog.Seal(catalogError))
+        {
+            RVX_RESOURCE_ERROR(
+                "ResourceManager loader catalog could not be sealed: {}",
+                catalogError);
+            m_loaderCatalog.Clear();
+            return;
+        }
+    }
     m_changeMonitor = std::move(dependencies.changeMonitor);
     {
         std::lock_guard<std::mutex> hotReloadLock(m_hotReloadMutex);
@@ -992,8 +993,7 @@ void ResourceManager::Initialize(
     RVX_RESOURCE_INFO("ResourceManager initialized");
 }
 
-ResourceManagerDependencies CreateRuntimeResourceManagerDependencies(
-    ResourceManager& manager)
+ResourceManagerDependencies CreateRuntimeResourceManagerDependencies()
 {
     ResourceManagerDependencies dependencies;
     std::string error;
@@ -1004,12 +1004,12 @@ ResourceManagerDependencies CreateRuntimeResourceManagerDependencies(
             std::move(loader), error);
         RVX_ASSERT_MSG(added, "Built-in resource loader catalog is invalid: {}", error);
     };
-    add(std::make_unique<CookedTextureLoader>(&manager));
-    add(std::make_unique<MeshLoader>(&manager));
-    add(std::make_unique<ShaderLoader>(&manager));
-    add(std::make_unique<CookedModelLoader>(&manager));
+    add(std::make_unique<CookedTextureLoader>());
+    add(std::make_unique<MeshLoader>());
+    add(std::make_unique<ShaderLoader>());
+    add(std::make_unique<CookedModelLoader>());
     add(std::make_unique<AnimationLoader>());
-    add(std::make_unique<CookedAudioLoader>(&manager));
+    add(std::make_unique<CookedAudioLoader>());
     add(std::make_unique<CookedEnvironmentLoader>());
     return dependencies;
 }
@@ -1222,16 +1222,11 @@ IResource* ResourceManager::LoadResource(const std::string& path,
         return cached;
     }
 
-    if (loader->SupportsPreparedLoading())
-    {
-        return LoadPreparedSynchronously(resolution,
-                                         path,
-                                         assetKey,
-                                         std::move(loader),
-                                         std::move(loaderState));
-    }
-
-    return LoadInternal(path, resolution, type, id, std::move(loader));
+    return LoadPreparedSynchronously(resolution,
+                                     path,
+                                     assetKey,
+                                     std::move(loader),
+                                     std::move(loaderState));
 }
 
 IResource* ResourceManager::LoadResource(ResourceId id)
@@ -1344,20 +1339,11 @@ IResource* ResourceManager::LoadResource(ResourceId id)
         return nullptr;
     }
 
-    if (loader->SupportsPreparedLoading())
-    {
-        return LoadPreparedSynchronously(resolution,
-                                         metadata->path,
-                                         currentAssetKey,
-                                         std::move(loader),
-                                         std::move(loaderState));
-    }
-
-    return LoadInternal(metadata->path,
-                        resolution,
-                        metadata->type,
-                        id,
-                        std::move(loader));
+    return LoadPreparedSynchronously(resolution,
+                                     metadata->path,
+                                     currentAssetKey,
+                                     std::move(loader),
+                                     std::move(loaderState));
 }
 
 IResource* ResourceManager::LoadPreparedSynchronously(
@@ -1419,131 +1405,13 @@ IResource* ResourceManager::LoadPreparedSynchronously(
         return nullptr;
     }
 
-    return root.Get();
-}
-
-IResource* ResourceManager::LoadInternal(const std::string& path,
-                                         const ResourcePathResolution& resolution,
-                                         ResourceType type,
-                                         ResourceId managerId,
-                                         std::shared_ptr<IResourceLoader> loader)
-{
-    Diagnostics::TraceSpan loadSpan = Diagnostics::BeginTraceSpan(
-        m_config.startupTraceContext,
-        "ResourceLoad",
-        {{"requestedPath", path},
-         {"resolvedPath", resolution.resolvedPath},
-         {"resourceType", GetResourceTypeName(type)}});
-    const std::string& resolvedPath = resolution.resolvedPath;
-
-    // Snapshot the loader under the manager lock, then perform IO/parse/decode
-    // after releasing it. The shared ownership keeps the loader alive through
-    // synchronous work even if shutdown or replacement begins elsewhere.
-    std::string loaderDiagnostic = "No loader registered for resource type.";
-    if (!loader)
-    {
-        std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
-        const ResourceLoaderResolveResult loaderResult =
-            m_loaderCatalog.Resolve({
-                type, resolution.domain, resolution.resolvedPath});
-        loader = loaderResult.loader;
-        loaderDiagnostic = loaderResult.diagnostic;
-    }
-    if (!loader)
-    {
-        SetLastLoadDiagnostic(
-            MakeLoadDiagnostic(resolution,
-                               false,
-                               ResourceLoadFailureCode::LoaderUnavailable,
-                               loaderDiagnostic));
-        RVX_RESOURCE_ERROR(
-            "Resource loader selection failed for type {}: {}",
-            GetResourceTypeName(type),
-            loaderDiagnostic);
-        loadSpan.SetAttribute("result", "loader-unavailable");
-        return nullptr;
-    }
-
-    // Load the resource
-    IResource* resource = loader->Load(resolvedPath);
-    if (!resource)
-    {
-        SetLastLoadDiagnostic(
-            MakeLoadDiagnostic(resolution,
-                               false,
-                               ResourceLoadFailureCode::LoaderFailed,
-                               "Loader failed to create the resource."));
-        RVX_RESOURCE_ERROR("Failed to load resource: {}", path);
-        loadSpan.SetAttribute("result", "loader-failed");
-        return nullptr;
-    }
-
-    Diagnostics::TraceSpan publishSpan = Diagnostics::BeginTraceSpan(
-        m_config.startupTraceContext,
-        "CPUPublish",
-        {{"requestedPath", path},
-         {"resourceType", GetResourceTypeName(type)}});
-
-    // Some loaders cache specialized variants internally while loading. The
-    // ResourceManager path API owns the generic path identity, so remove any
-    // loader-assigned cache entry before rewriting the ID to avoid one object
-    // being stored under two keys.
-    const ResourceId loaderAssignedId = resource->GetId();
-    bool releaseLoaderCacheRetainAfterStore = false;
-    if (loaderAssignedId != InvalidResourceId && loaderAssignedId != managerId &&
-        m_cache->Contains(loaderAssignedId))
-    {
-        resource->AddRef();
-        static_cast<void>(m_cache->Remove(loaderAssignedId));
-        releaseLoaderCacheRetainAfterStore = true;
-    }
-
-    resource->SetId(managerId);
-    resource->SetPath(path);
-    resource->SetName(std::filesystem::path(path).stem().string());
-
-    // Load dependencies
-    LoadDependencies(resource);
-
-    // Register in registry
-    ResourceMetadata metadata;
-    metadata.id = resource->GetId();
-    metadata.path = path;
-    metadata.name = resource->GetName();
-    metadata.type = type;
-    metadata.dependencies = resource->GetAllDependencies();
-    m_registry->Register(metadata);
-
-    // Add to dependency graph
-    m_dependencyGraph->AddResource(resource->GetId(), metadata.dependencies);
-
-    // Store in cache
-    m_cache->Store(resource);
-    if (releaseLoaderCacheRetainAfterStore)
-    {
-        resource->Release();
-    }
-
-    // Mark as loaded
-    resource->NotifyLoaded();
-    QueueLifecycleEvent(ResourceLifecycleEventType::Ready, resource);
-    publishSpan.SetAttribute("resourceId", resource->GetId());
-    publishSpan.SetAttribute("result", "published");
-
     SetLastLoadDiagnostic(
         MakeLoadDiagnostic(resolution,
                            true,
                            ResourceLoadFailureCode::None,
                            "Resource loaded successfully."));
-    RegisterHotReloadResource(resource, resolution);
 
-    loadSpan.SetAttribute("result", "loaded");
-    Diagnostics::RecordTraceInstant(
-        m_config.startupTraceContext,
-        "CPUReady",
-        {{"requestedPath", path}, {"resourceId", resource->GetId()}});
-    RVX_RESOURCE_DEBUG("Loaded resource: {} (type: {})", path, GetResourceTypeName(type));
-    return resource;
+    return root.Get();
 }
 
 ResourceLoadDiagnostic ResourceManager::GetLastLoadDiagnostic() const
@@ -3339,36 +3207,6 @@ void ResourceManager::ClearCache()
     }
 }
 
-void ResourceManager::RegisterLoader(ResourceType type, std::unique_ptr<IResourceLoader> loader)
-{
-    if (!loader)
-    {
-        RVX_RESOURCE_WARN("ResourceManager rejected null loader registration for {}",
-                          GetResourceTypeName(type));
-        return;
-    }
-    if (loader->GetResourceType() != type)
-    {
-        RVX_RESOURCE_ERROR(
-            "ResourceManager rejected loader type mismatch: registration={}, loader={}",
-            GetResourceTypeName(type),
-            GetResourceTypeName(loader->GetResourceType()));
-        return;
-    }
-    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
-    std::string error;
-    if (!m_loaderCatalog.Add(std::move(loader), error))
-    {
-        RVX_RESOURCE_ERROR("ResourceManager rejected loader: {}", error);
-    }
-}
-
-IResourceLoader* ResourceManager::GetLoader(ResourceType type)
-{
-    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
-    return m_loaderCatalog.FindOnlyByType(type);
-}
-
 void ResourceManager::ProcessCompletedLoads()
 {
     if (m_initialized && !IsOwnerThread())
@@ -4916,18 +4754,6 @@ void ResourceManager::StopAsyncWorkers()
     }
 }
 
-// IResourceLoader implementation
-bool IResourceLoader::Prepare(const ResourceLoadPreparationContext& context,
-                              PreparedResourceBundle& outBundle,
-                              ResourceLoadError& outError)
-{
-    (void)context;
-    (void)outBundle;
-    outError = {ResourceLoadErrorCode::LoaderFailure,
-                "This resource loader does not implement allocation-free prepared loading."};
-    return false;
-}
-
 bool IResourceLoader::CapturePreparationState(
     uint64 requestedImportOptionsHash,
     ResourceLoadPreparationStateRef& outState,
@@ -4938,20 +4764,6 @@ bool IResourceLoader::CapturePreparationState(
     outCanonicalImportOptionsHash = requestedImportOptionsHash;
     outError = {};
     return true;
-}
-
-bool IResourceLoader::CanLoad(const std::string& path) const
-{
-    std::filesystem::path fsPath(path);
-    std::string ext = fsPath.extension().string();
-
-    auto supported = GetSupportedExtensions();
-    return std::find(supported.begin(), supported.end(), ext) != supported.end();
-}
-
-void IResourceLoader::MarkSynchronousLoadComplete(IResource& resource)
-{
-    resource.NotifyLoaded();
 }
 
 } // namespace RVX::Resource

@@ -182,42 +182,27 @@ std::vector<std::string> CookedEnvironmentLoader::GetSupportedExtensions() const
     return {".rva"};
 }
 
-bool CookedEnvironmentLoader::CanLoad(const std::string& path) const
-{
-    std::string extension = std::filesystem::path(path).extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char value)
-                   {
-                       return static_cast<char>(std::tolower(value));
-                   });
-    return extension == ".rva";
-}
-
 bool CookedEnvironmentLoader::Supports(
-    const ResourceLoaderRequest& request) const
+    const ResourceLoaderRequest& request) const noexcept
 {
-    return request.type == ResourceType::Environment &&
-        (request.domain == ResourceLoadDomain::Cooked ||
-         request.domain == ResourceLoadDomain::Package) &&
-        CanLoad(request.resolvedPath);
-}
-
-IResource* CookedEnvironmentLoader::Load(const std::string& path)
-{
-    std::vector<uint8> bytes;
-    CookedEnvironmentArtifact artifact;
-    std::string error;
-    if (!ReadArtifact(path, bytes, artifact, error))
-        return nullptr;
-    const std::string identity = CanonicalizeAssetPath(path);
-    BuiltEnvironment built;
-    if (identity.empty() ||
-        !BuildResources(artifact, identity, path,
-                        GenerateResourceId(identity), true, built, error))
+    try
     {
-        return nullptr;
+        std::string extension =
+            std::filesystem::path(request.resolvedPath).extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(),
+                       [](unsigned char value)
+                       {
+                           return static_cast<char>(std::tolower(value));
+                       });
+        return request.type == ResourceType::Environment &&
+            (request.domain == ResourceLoadDomain::Cooked ||
+             request.domain == ResourceLoadDomain::Package) &&
+            extension == ".rva";
     }
-    return built.synchronousRoot;
+    catch (...)
+    {
+        return false;
+    }
 }
 
 bool CookedEnvironmentLoader::Prepare(

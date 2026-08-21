@@ -30,7 +30,7 @@ namespace RVX::Resource
     class ModelLoader : public IResourceLoader
     {
     public:
-        explicit ModelLoader(ResourceManager* manager);
+        ModelLoader() = default;
         ~ModelLoader() override = default;
 
         // =====================================================================
@@ -39,18 +39,16 @@ namespace RVX::Resource
 
         ResourceType GetResourceType() const override { return ResourceType::Model; }
         std::vector<std::string> GetSupportedExtensions() const override;
-        IResource* Load(const std::string& path) override;
+        bool Supports(
+            const ResourceLoaderRequest& request) const noexcept override;
         bool Prepare(const ResourceLoadPreparationContext& context,
                      PreparedResourceBundle& outBundle,
                      ResourceLoadError& outError) override;
-        bool SupportsPreparedLoading() const override { return true; }
         bool CapturePreparationState(
             uint64 requestedImportOptionsHash,
             ResourceLoadPreparationStateRef& outState,
             uint64& outCanonicalImportOptionsHash,
             ResourceLoadError& outError) const override;
-        bool CanLoad(const std::string& path) const override;
-        bool Supports(const ResourceLoaderRequest& request) const override;
 
         // =====================================================================
         // Configuration
@@ -65,6 +63,8 @@ namespace RVX::Resource
         static uint64 CalculateImportOptionsHash(const GLTFImportOptions& options);
 
     private:
+        [[nodiscard]] bool SupportsPath(
+            const std::string& path) const noexcept;
         // ResourceId generation (ensures global uniqueness)
         ResourceId GenerateModelId(const std::string& modelPath);
         ResourceId GenerateMeshId(const std::string& modelPath, int index);
@@ -96,7 +96,6 @@ namespace RVX::Resource
             bool streamTextures,
             std::vector<ModelTextureStreamingSource>& outStreamingSources);
 
-        ResourceManager* m_manager = nullptr;
         mutable std::mutex m_optionsMutex;
         GLTFImportOptions m_gltfOptions;
     };

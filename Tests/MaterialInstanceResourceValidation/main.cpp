@@ -29,8 +29,12 @@ namespace
             return {".mat"};
         }
 
-        IResource* Load(const std::string&) override { return nullptr; }
-        bool SupportsPreparedLoading() const override { return true; }
+        bool Supports(
+            const ResourceLoaderRequest& request) const noexcept override
+        {
+            return request.type == ResourceType::Material &&
+                request.domain == ResourceLoadDomain::Source;
+        }
 
         bool Prepare(const ResourceLoadPreparationContext& context,
                      PreparedResourceBundle& outBundle,
@@ -96,9 +100,11 @@ namespace
             Log::Initialize();
             ResourceManagerConfig config;
             config.enableHotReload = false;
-            m_manager.Initialize(config, {});
-            m_manager.RegisterLoader(ResourceType::Material,
-                                     std::make_unique<PreparedMaterialLoader>());
+            ResourceManagerDependencies dependencies;
+            std::string error;
+            ASSERT_TRUE(dependencies.loaderCatalog.Add(
+                std::make_unique<PreparedMaterialLoader>(), error)) << error;
+            m_manager.Initialize(config, std::move(dependencies));
             m_primary = m_manager.Load<MaterialResource>("primary.mat");
             m_alternate = m_manager.Load<MaterialResource>("alternate.mat");
             ASSERT_TRUE(m_primary.IsValid());

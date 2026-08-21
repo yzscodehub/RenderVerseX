@@ -77,10 +77,20 @@ namespace
             return {".acquiretest"};
         }
 
-        IResource* Load(const std::string&) override
+        bool Supports(
+            const ResourceLoaderRequest& request) const noexcept override
+        {
+            return request.type == ResourceType::Custom;
+        }
+
+        bool Prepare(const ResourceLoadPreparationContext&,
+                     PreparedResourceBundle&,
+                     ResourceLoadError& outError) override
         {
             ++loadCallCount;
-            return nullptr;
+            outError = {ResourceLoadErrorCode::LoaderFailure,
+                        "Acquire-only test loader must not be invoked."};
+            return false;
         }
 
         std::atomic<uint32> loadCallCount{0};
@@ -89,11 +99,12 @@ namespace
     class ResourceSubsystemScope final
     {
     public:
-        ResourceSubsystemScope()
+        explicit ResourceSubsystemScope(
+            ResourceManagerDependencies dependencies = {})
         {
             ResourceManagerConfig config;
             config.asyncThreadCount = 0;
-            m_subsystem.Initialize(config, {});
+            m_subsystem.Initialize(config, std::move(dependencies));
         }
 
         ~ResourceSubsystemScope()
@@ -160,13 +171,15 @@ TEST(ResourceLoadedAcquireValidation, CacheAcquiresOnlyExactLoadedMatchingEntry)
 
 TEST(ResourceLoadedAcquireValidation, ManagerAndSubsystemNeverLoadOnAcquireMiss)
 {
-    ResourceSubsystemScope scope;
-    ResourceSubsystem& subsystem = scope.Get();
-    ResourceManager& manager = subsystem.GetManager();
-
     auto loader = std::make_unique<CountingLoader>();
     CountingLoader* const loaderObserver = loader.get();
-    subsystem.RegisterLoader(ResourceType::Custom, std::move(loader));
+    ResourceManagerDependencies dependencies;
+    std::string error;
+    ASSERT_TRUE(dependencies.loaderCatalog.Add(
+        std::move(loader), error)) << error;
+    ResourceSubsystemScope scope(std::move(dependencies));
+    ResourceSubsystem& subsystem = scope.Get();
+    ResourceManager& manager = subsystem.GetManager();
 
     EXPECT_FALSE(manager.TryAcquireLoaded<TestResource>(701));
     EXPECT_FALSE(subsystem.TryAcquireLoaded<TestResource>(701));

@@ -13,6 +13,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -146,8 +147,12 @@ namespace
         }
 
         std::vector<std::string> GetSupportedExtensions() const override { return {".ecsmodel"}; }
-        RVX::Resource::IResource* Load(const std::string&) override { return nullptr; }
-        bool SupportsPreparedLoading() const override { return true; }
+        bool Supports(
+            const RVX::Resource::ResourceLoaderRequest& request) const noexcept override
+        {
+            return request.type == RVX::ResourceType::Model &&
+                request.resolvedPath.ends_with(".ecsmodel");
+        }
 
         bool Prepare(const RVX::Resource::ResourceLoadPreparationContext& context,
                      RVX::Resource::PreparedResourceBundle& bundle,
@@ -418,10 +423,13 @@ namespace
             RVX::Resource::ResourceManagerDependencies dependencies;
             dependencies.textureSourceDecoder =
                 std::make_unique<FixtureTextureSourceDecoder>();
+            std::string loaderError;
+            if (!dependencies.loaderCatalog.Add(
+                    std::make_unique<PreparedRootOnlyModelLoader>(), loaderError))
+            {
+                throw std::runtime_error(loaderError);
+            }
             m_resources.Initialize(config, std::move(dependencies));
-            m_resources.RegisterLoader(
-                RVX::ResourceType::Model,
-                std::make_unique<PreparedRootOnlyModelLoader>());
         }
 
         ~ResourceSubsystemScope() { m_resources.Deinitialize(); }

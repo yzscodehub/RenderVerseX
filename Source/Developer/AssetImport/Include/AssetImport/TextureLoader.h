@@ -39,9 +39,7 @@ namespace RVX::Resource
     class TextureLoader : public IResourceLoader
     {
     public:
-        explicit TextureLoader(
-            ResourceManager* manager,
-            bool prepareOnly = false);
+        TextureLoader() = default;
         ~TextureLoader() override = default;
 
         // =====================================================================
@@ -50,13 +48,11 @@ namespace RVX::Resource
 
         ResourceType GetResourceType() const override { return ResourceType::Texture; }
         std::vector<std::string> GetSupportedExtensions() const override;
-        IResource* Load(const std::string& path) override;
+        bool Supports(
+            const ResourceLoaderRequest& request) const noexcept override;
         bool Prepare(const ResourceLoadPreparationContext& context,
                      PreparedResourceBundle& outBundle,
                      ResourceLoadError& outError) override;
-        bool SupportsPreparedLoading() const override { return true; }
-        bool CanLoad(const std::string& path) const override;
-        bool Supports(const ResourceLoaderRequest& request) const override;
 
         // =====================================================================
         // Extended Loading API
@@ -168,6 +164,8 @@ namespace RVX::Resource
         TextureResource* GetErrorTexture();
 
     private:
+        [[nodiscard]] bool SupportsPath(
+            const std::string& path) const noexcept;
         /// Decode image data using stb_image
         bool DecodeImage(const void* data, size_t size,
                          std::vector<uint8_t>& outPixels,
@@ -211,8 +209,6 @@ namespace RVX::Resource
         /// Generate ResourceId from unique key
         ResourceId GenerateTextureId(const std::string& uniqueKey);
 
-        ResourceManager* m_manager;
-        bool m_prepareOnly = false;
         TextureLoadStatus m_lastLoadStatus = TextureLoadStatus::None;
         std::string m_lastLoadError;
 

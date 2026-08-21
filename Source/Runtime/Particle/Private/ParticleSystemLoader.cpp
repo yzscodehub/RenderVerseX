@@ -19,19 +19,44 @@
 #include "Particle/Modules/SubEmitterModule.h"
 #include "Core/Serialization/Serialization.h"
 #include "Core/Log.h"
+#include "Core/Hash/SHA256.h"
+#include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
 namespace RVX::Particle
 {
 
-Resource::IResource* ParticleSystemLoader::Load(const std::string& path)
+bool ParticleSystemLoader::Supports(
+    const ResourceLoaderRequest& request) const noexcept
 {
-    std::ifstream file(path);
+    try
+    {
+        std::string extension =
+            std::filesystem::path(request.resolvedPath).extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
+        return request.type == ResourceType_ParticleSystem &&
+            request.domain == ResourceLoadDomain::Source &&
+            (extension == ".particle" || extension == ".vfx");
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
+bool ParticleSystemLoader::Prepare(
+    const Resource::ResourceLoadPreparationContext& context,
+    Resource::PreparedResourceBundle& outBundle,
+    Resource::ResourceLoadError& outError)
+{
+    std::ifstream file(context.resolvedPath, std::ios::binary);
     if (!file.is_open())
     {
-        RVX_CORE_ERROR("ParticleSystemLoader: Failed to open file: {}", path);
-        return nullptr;
+        outError = {Resource::ResourceLoadErrorCode::LoaderFailure,
+                    "Particle system source file could not be opened."};
+        return false;
     }
 
     std::stringstream buffer;
@@ -41,12 +66,36 @@ Resource::IResource* ParticleSystemLoader::Load(const std::string& path)
     auto system = DeserializeFromJson(json);
     if (!system)
     {
-        RVX_CORE_ERROR("ParticleSystemLoader: Failed to parse file: {}", path);
-        return nullptr;
+        outError = {Resource::ResourceLoadErrorCode::LoaderFailure,
+                    "Particle system source file could not be parsed."};
+        return false;
     }
 
-    RVX_CORE_INFO("ParticleSystemLoader: Loaded {}", path);
-    return new ParticleSystemResource(system);
+    auto resource = Resource::ResourceHandle<ParticleSystemResource>(
+        new ParticleSystemResource(std::move(system)));
+    resource->SetId(context.rootResourceId);
+    resource->SetPath(context.requestedPath);
+    resource->SetName(
+        std::filesystem::path(context.requestedPath).stem().string());
+
+    Resource::ResourceContentIdentity identity;
+    identity.schemaVersion = Resource::RVX_RESOURCE_CONTENT_IDENTITY_SCHEMA_VERSION;
+    identity.domain = Resource::ResourceContentIdentityDomain::Source;
+    identity.scope = Resource::ResourceContentIdentityScope::SelfContainedArtifact;
+    identity.algorithm = Resource::ResourceContentHashAlgorithm::SHA256;
+    identity.digest = Hash::FormatSHA256Digest(
+        Hash::ComputeSHA256(json.data(), json.size()));
+    identity.byteCount = json.size();
+    identity.fileCount = 1;
+
+    if (!outBundle.SetRoot(Resource::ResourceHandle<Resource::IResource>(resource)) ||
+        !outBundle.SetObservedContentIdentity(std::move(identity)))
+    {
+        outError = {Resource::ResourceLoadErrorCode::LoaderFailure,
+                    "Particle system could not form a prepared bundle."};
+        return false;
+    }
+    return true;
 }
 
 bool ParticleSystemLoader::Save(const std::string& path, ParticleSystemResource* resource)

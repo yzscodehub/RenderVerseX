@@ -58,6 +58,42 @@ std::vector<uint8> ReadBytes(const fs::path& path)
     return {std::istreambuf_iterator<char>(input), {}};
 }
 
+template<typename Loader>
+Resource::ResourceHandle<Resource::IResource> PrepareCookedResource(
+    Loader& loader,
+    const fs::path& path,
+    Resource::ResourceType type,
+    std::string& outError)
+{
+    Resource::ResourceLoadPreparationContext context;
+    context.requestedPath = path.string();
+    context.resolvedPath = path.string();
+    context.assetKey = Resource::MakeAssetKey(context.requestedPath, type);
+    context.resourceIdentityPath = context.assetKey.canonicalPath;
+    context.rootResourceId = Resource::GenerateResourceId(
+        context.resourceIdentityPath);
+
+    Resource::PreparedResourceBundle bundle;
+    Resource::ResourceLoadError error;
+    if (!loader.Prepare(context, bundle, error))
+    {
+        outError = error.message;
+        return {};
+    }
+
+    std::vector<Resource::IResource*> resources;
+    resources.reserve(bundle.GetEntries().size());
+    for (const Resource::PreparedResourceEntry& entry : bundle.GetEntries())
+        resources.push_back(entry.resource.Get());
+    Resource::ResourceCache publicationCache;
+    if (!publicationCache.StorePreparedBatch(resources))
+    {
+        outError = "Could not publish prepared cooked resource bundle.";
+        return {};
+    }
+    return bundle.GetRoot();
+}
+
 void WriteU16(std::ofstream& output, uint16 value)
 {
     const uint8 bytes[] = {
@@ -238,9 +274,10 @@ TEST(CookedEnvironmentAudioArtifactValidation,
 TEST(CookedEnvironmentAudioArtifactValidation,
      RuntimeCatalogRejectsSourceDomainAndAcceptsCookedDomain)
 {
-    Resource::ResourceManager manager;
     Resource::ResourceManagerDependencies dependencies =
-        Resource::CreateRuntimeResourceManagerDependencies(manager);
+        Resource::CreateRuntimeResourceManagerDependencies();
+    std::string sealError;
+    ASSERT_TRUE(dependencies.loaderCatalog.Seal(sealError)) << sealError;
     const auto sourceAudio = dependencies.loaderCatalog.Resolve({
         Resource::ResourceType::Audio,
         Resource::ResourceLoadDomain::Source,
@@ -313,17 +350,25 @@ TEST(CookedEnvironmentAudioArtifactValidation,
         outputA / "CookManifest.rvxmanifest", runtimeManifest, error)) << error;
     ASSERT_EQ(runtimeManifest.entries.size(), 2u);
 
-    Resource::CookedAudioLoader audioLoader(nullptr);
-    std::unique_ptr<Resource::IResource> audio(
-        audioLoader.Load((outputA / "Tone.rva").string()));
-    ASSERT_NE(audio, nullptr);
+    Resource::CookedAudioLoader audioLoader;
+    Resource::ResourceHandle<Resource::IResource> audio =
+        PrepareCookedResource(
+            audioLoader,
+            outputA / "Tone.rva",
+            Resource::ResourceType::Audio,
+            error);
+    ASSERT_TRUE(audio) << error;
     EXPECT_EQ(audio->GetType(), Resource::ResourceType::Audio);
     EXPECT_TRUE(audio->IsLoaded());
 
     Resource::CookedEnvironmentLoader environmentLoader;
-    std::unique_ptr<Resource::IResource> environment(
-        environmentLoader.Load((outputA / "Sky.rva").string()));
-    ASSERT_NE(environment, nullptr);
+    Resource::ResourceHandle<Resource::IResource> environment =
+        PrepareCookedResource(
+            environmentLoader,
+            outputA / "Sky.rva",
+            Resource::ResourceType::Environment,
+            error);
+    ASSERT_TRUE(environment) << error;
     EXPECT_EQ(environment->GetType(), Resource::ResourceType::Environment);
     EXPECT_TRUE(environment->IsLoaded());
 }

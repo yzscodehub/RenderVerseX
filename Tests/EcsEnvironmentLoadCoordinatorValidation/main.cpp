@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <stdexcept>
 #include <unordered_map>
 
 namespace
@@ -45,8 +46,12 @@ namespace
         }
 
         std::vector<std::string> GetSupportedExtensions() const override { return {".hdr"}; }
-        RVX::Resource::IResource* Load(const std::string&) override { return nullptr; }
-        bool SupportsPreparedLoading() const override { return true; }
+        bool Supports(
+            const RVX::Resource::ResourceLoaderRequest& request) const noexcept override
+        {
+            return request.type == RVX::ResourceType::Environment &&
+                request.resolvedPath.ends_with(".hdr");
+        }
 
         bool ValidatePreparationState(
             RVX::uint64 requestedImportOptionsHash,
@@ -232,10 +237,14 @@ namespace
             m_resources.SetRenderResourceGateway(&m_gateway);
             RVX::Resource::ResourceManagerConfig config;
             config.asyncThreadCount = 0;
-            m_resources.Initialize(config, {});
-            m_resources.RegisterLoader(
-                RVX::ResourceType::Environment,
-                std::make_unique<ImmediateEnvironmentLoader>());
+            RVX::Resource::ResourceManagerDependencies dependencies;
+            std::string loaderError;
+            if (!dependencies.loaderCatalog.Add(
+                    std::make_unique<ImmediateEnvironmentLoader>(), loaderError))
+            {
+                throw std::runtime_error(loaderError);
+            }
+            m_resources.Initialize(config, std::move(dependencies));
         }
 
         ~ResourceSubsystemScope() { m_resources.Deinitialize(); }

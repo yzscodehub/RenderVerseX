@@ -92,44 +92,27 @@ std::vector<std::string> CookedAudioLoader::GetSupportedExtensions() const
     return {".rva"};
 }
 
-bool CookedAudioLoader::CanLoad(const std::string& path) const
+bool CookedAudioLoader::Supports(
+    const ResourceLoaderRequest& request) const noexcept
 {
-    std::string extension = std::filesystem::path(path).extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char value)
-                   {
-                       return static_cast<char>(std::tolower(value));
-                   });
-    return extension == ".rva";
-}
-
-bool CookedAudioLoader::Supports(const ResourceLoaderRequest& request) const
-{
-    return request.type == ResourceType::Audio &&
-        (request.domain == ResourceLoadDomain::Cooked ||
-         request.domain == ResourceLoadDomain::Package) &&
-        CanLoad(request.resolvedPath);
-}
-
-IResource* CookedAudioLoader::Load(const std::string& path)
-{
-    std::vector<uint8> bytes;
-    CookedAudioArtifact artifact;
-    std::string error;
-    if (!ReadArtifact(path, bytes, artifact, error))
-        return nullptr;
-
-    auto* resource = new AudioResource();
-    resource->SetId(GenerateResourceId(CanonicalizeAssetPath(path)));
-    resource->SetPath(path);
-    resource->SetName(std::filesystem::path(path).stem().string());
-    resource->SetData(MakePcmBytes(artifact), MakeMetadata(artifact));
-    if (!resource->IsLoaded())
+    try
     {
-        delete resource;
-        return nullptr;
+        std::string extension =
+            std::filesystem::path(request.resolvedPath).extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(),
+                       [](unsigned char value)
+                       {
+                           return static_cast<char>(std::tolower(value));
+                       });
+        return request.type == ResourceType::Audio &&
+            (request.domain == ResourceLoadDomain::Cooked ||
+             request.domain == ResourceLoadDomain::Package) &&
+            extension == ".rva";
     }
-    return resource;
+    catch (...)
+    {
+        return false;
+    }
 }
 
 bool CookedAudioLoader::Prepare(

@@ -19,18 +19,20 @@ namespace RVX::Resource
     class ShaderLoader : public IResourceLoader
     {
     public:
-        explicit ShaderLoader(ResourceManager* manager);
+        ShaderLoader() = default;
         ~ShaderLoader() override = default;
 
         ResourceType GetResourceType() const override { return ResourceType::Shader; }
         std::vector<std::string> GetSupportedExtensions() const override;
-        IResource* Load(const std::string& path) override;
-        bool CanLoad(const std::string& path) const override;
+        bool Supports(
+            const ResourceLoaderRequest& request) const noexcept override;
+        bool Prepare(const ResourceLoadPreparationContext& context,
+                     PreparedResourceBundle& outBundle,
+                     ResourceLoadError& outError) override;
 
         const std::string& GetLastLoadError() const { return m_lastLoadError; }
 
     private:
-        ResourceManager* m_manager = nullptr;
         std::string m_lastLoadError;
     };
 } // namespace RVX::Resource

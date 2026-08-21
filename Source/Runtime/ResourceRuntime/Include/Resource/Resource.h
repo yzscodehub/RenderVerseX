@@ -32,7 +32,7 @@
  * auto audio = resourceSys.Load<AudioResource>("audio/music.mp3");
  * 
  * // Or use ResourceManager directly
- * ResourceManager::Get().Load<MeshResource>("models/enemy.fbx");
+ * resourceSubsystem.Load<MeshResource>("models/enemy.rva");
  * 
  * // Development hosts inject source loaders and a change monitor through
  * // ResourceManagerDependencies. ResourceManager owns reload transactions.

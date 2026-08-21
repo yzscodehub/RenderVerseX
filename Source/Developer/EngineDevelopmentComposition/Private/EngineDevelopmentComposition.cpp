@@ -210,12 +210,11 @@ ShaderProgramProviderFactory CreateDevelopmentShaderProgramProviderFactory(
 
 ResourceManagerDependencies CreateDevelopmentResourceManagerDependencies()
 {
-    Resource::ResourceManager& manager = Resource::ResourceManager::Get();
     ResourceManagerDependencies dependencies =
-        Resource::CreateRuntimeResourceManagerDependencies(manager);
+        Resource::CreateRuntimeResourceManagerDependencies();
     std::string error;
     const bool added = ResourceSource::AddSourceResourceDependencies(
-        dependencies, manager, error);
+        dependencies, error);
     RVX_ASSERT_MSG(
         added,
         "Development resource dependency composition failed: {}",

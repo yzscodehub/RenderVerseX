@@ -3895,7 +3895,7 @@ ImportResult TextureImporter::Import(const fs::path& sourcePath,
 
     RVX_CORE_INFO("Importing texture: {}", sourcePath.string());
 
-    Resource::TextureLoader loader(nullptr);
+    Resource::TextureLoader loader;
     std::unique_ptr<Resource::TextureResource> texture(
         loader.LoadFromFile(fs::absolute(sourcePath).string()));
     if (!texture || texture->IsDefaultFallback())
@@ -4241,7 +4241,7 @@ ImportResult ModelImporter::Import(const fs::path& sourcePath,
         }
     }
 
-    Resource::TextureLoader textureLoader(nullptr, true);
+    Resource::TextureLoader textureLoader;
     modelArtifact.textures.reserve(imported.textures.size());
     for (size_t index = 0; index < imported.textures.size(); ++index)
     {
@@ -4679,12 +4679,41 @@ ImportResult EnvironmentImporter::Import(const fs::path& sourcePath,
     loadOptions.exposure = importOptions.exposure;
     loadOptions.applyGamma = importOptions.applyGamma;
     Resource::EnvironmentLoader loader(loadOptions);
-    std::unique_ptr<Resource::EnvironmentResource> environment(
-        static_cast<Resource::EnvironmentResource*>(
-            loader.Load(fs::absolute(sourcePath).string())));
-    if (!environment || !environment->IsLoaded())
+    const fs::path absoluteSource = fs::absolute(sourcePath);
+    uint64 canonicalImportOptionsHash = 0;
+    Resource::ResourceLoadError preparationError;
+    Resource::ResourceLoadPreparationStateRef preparationState =
+        Resource::EnvironmentLoader::CreatePreparationState(
+            loadOptions,
+            canonicalImportOptionsHash,
+            preparationError);
+    Resource::ResourceLoadPreparationContext context;
+    context.requestedPath = absoluteSource.string();
+    context.resolvedPath = absoluteSource.string();
+    context.assetKey = Resource::MakeAssetKey(
+        context.resolvedPath,
+        Resource::ResourceType::Environment,
+        canonicalImportOptionsHash);
+    context.resourceIdentityPath = context.assetKey.canonicalPath;
+    context.rootResourceId = Resource::GenerateResourceId(
+        context.resourceIdentityPath);
+    context.loaderState = std::move(preparationState);
+    Resource::PreparedResourceBundle bundle;
+    if (!context.loaderState ||
+        !loader.Prepare(context, bundle, preparationError))
     {
-        result.error = "HDR/EXR environment import failed";
+        result.error = preparationError.message.empty()
+            ? "HDR/EXR environment import failed"
+            : preparationError.message;
+        return result;
+    }
+    const Resource::ResourceHandle<Resource::IResource> preparedRoot =
+        bundle.GetRoot();
+    const auto* environment =
+        dynamic_cast<const Resource::EnvironmentResource*>(preparedRoot.Get());
+    if (!environment)
+    {
+        result.error = "HDR/EXR environment import produced the wrong resource type";
         return result;
     }
 
@@ -4757,7 +4786,7 @@ ImportResult AudioImporter::Import(const fs::path& sourcePath,
     loadOptions.forceStereo = importOptions.forceStereo;
     loadOptions.enableStreaming = false;
     loadOptions.streamingThreshold = std::numeric_limits<size_t>::max();
-    Resource::AudioLoader loader(nullptr);
+    Resource::AudioLoader loader;
     Resource::AudioResource* loaded = loader.LoadWithOptions(
         fs::absolute(sourcePath).string(), loadOptions);
     if (!loaded || loader.WasLastLoadFallback() ||

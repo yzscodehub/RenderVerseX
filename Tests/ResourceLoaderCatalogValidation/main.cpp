@@ -18,12 +18,10 @@ namespace
         MatchingLoader(
             RVX::ResourceType type,
             RVX::ResourceLoadDomain domain,
-            std::string suffix,
-            bool throwOnSupports = false)
+            std::string suffix)
             : m_type(type),
               m_domain(domain),
-              m_suffix(std::move(suffix)),
-              m_throwOnSupports(throwOnSupports)
+              m_suffix(std::move(suffix))
         {
         }
 
@@ -31,10 +29,6 @@ namespace
         std::vector<std::string> GetSupportedExtensions() const override
         {
             return {m_suffix};
-        }
-        RVX::Resource::IResource* Load(const std::string&) override
-        {
-            return nullptr;
         }
         bool Prepare(
             const RVX::Resource::ResourceLoadPreparationContext&,
@@ -64,20 +58,12 @@ namespace
             outCanonicalHash = requestedHash;
             return true;
         }
-        bool CanLoad(const std::string& path) const override
-        {
-            return path.ends_with(m_suffix);
-        }
         bool Supports(
-            const RVX::ResourceLoaderRequest& request) const override
+            const RVX::ResourceLoaderRequest& request) const noexcept override
         {
-            if (m_throwOnSupports)
-            {
-                throw std::runtime_error("test matcher failure");
-            }
             return request.type == m_type &&
                 request.domain == m_domain &&
-                CanLoad(request.resolvedPath);
+                request.resolvedPath.ends_with(m_suffix);
         }
 
     private:
@@ -85,7 +71,6 @@ namespace
         RVX::ResourceLoadDomain m_domain =
             RVX::ResourceLoadDomain::Unknown;
         std::string m_suffix;
-        bool m_throwOnSupports = false;
     };
 
     void AddLoader(
@@ -94,6 +79,12 @@ namespace
     {
         std::string error;
         ASSERT_TRUE(catalog.Add(std::move(loader), error)) << error;
+    }
+
+    void Seal(RVX::ResourceLoaderCatalog& catalog)
+    {
+        std::string error;
+        ASSERT_TRUE(catalog.Seal(error)) << error;
     }
 } // namespace
 
@@ -113,6 +104,7 @@ TEST(ResourceLoaderCatalogValidation, ResolvesExactlyOneTypeDomainAndPathMatch)
         RVX::ResourceType::Texture,
         RVX::ResourceLoadDomain::Cooked,
         ".rva"));
+    Seal(catalog);
 
     const RVX::ResourceLoaderResolveResult source = catalog.Resolve({
         RVX::ResourceType::Texture,
@@ -137,6 +129,7 @@ TEST(ResourceLoaderCatalogValidation, MissingMatchFailsClosed)
         RVX::ResourceType::Texture,
         RVX::ResourceLoadDomain::Source,
         ".png"));
+    Seal(catalog);
 
     const RVX::ResourceLoaderResolveResult result = catalog.Resolve({
         RVX::ResourceType::Texture,
@@ -159,6 +152,7 @@ TEST(ResourceLoaderCatalogValidation, MultipleMatchesFailClosed)
         RVX::ResourceType::Shader,
         RVX::ResourceLoadDomain::Cooked,
         ".rvxshader"));
+    Seal(catalog);
 
     const RVX::ResourceLoaderResolveResult result = catalog.Resolve({
         RVX::ResourceType::Shader,
@@ -185,6 +179,7 @@ TEST(ResourceLoaderCatalogValidation, InvalidAndUnknownLoaderContractsAreRejecte
         error));
     EXPECT_FALSE(error.empty());
 
+    Seal(catalog);
     const RVX::ResourceLoaderResolveResult invalid = catalog.Resolve({});
     EXPECT_EQ(
         invalid.status,
@@ -192,22 +187,22 @@ TEST(ResourceLoaderCatalogValidation, InvalidAndUnknownLoaderContractsAreRejecte
     EXPECT_EQ(invalid.loader, nullptr);
 }
 
-TEST(ResourceLoaderCatalogValidation, MatcherExceptionsFailClosed)
+TEST(ResourceLoaderCatalogValidation, SealedCatalogRejectsMutation)
 {
     RVX::ResourceLoaderCatalog catalog;
     AddLoader(catalog, std::make_unique<MatchingLoader>(
         RVX::ResourceType::Texture,
         RVX::ResourceLoadDomain::Source,
-        ".png",
-        true));
+        ".png"));
+    Seal(catalog);
 
-    const RVX::ResourceLoaderResolveResult result = catalog.Resolve({
-        RVX::ResourceType::Texture,
-        RVX::ResourceLoadDomain::Source,
-        "Assets/Color.png"});
-    EXPECT_EQ(
-        result.status,
-        RVX::ResourceLoaderResolveStatus::MatcherFailure);
-    EXPECT_EQ(result.loader, nullptr);
-    EXPECT_NE(result.diagnostic.find("test matcher failure"), std::string::npos);
+    std::string error;
+    EXPECT_FALSE(catalog.Add(
+        std::make_unique<MatchingLoader>(
+            RVX::ResourceType::Texture,
+            RVX::ResourceLoadDomain::Source,
+            ".jpg"),
+        error));
+    EXPECT_FALSE(error.empty());
+    EXPECT_FALSE(catalog.Seal(error));
 }

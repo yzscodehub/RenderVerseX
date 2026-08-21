@@ -1,6 +1,5 @@
 #include "AssetImport/TextureLoader.h"
 #include "Resource/DefaultResources.h"
-#include "Resource/ResourceCache.h"
 #include "Core/Log.h"
 
 #include <stb_image.h>
@@ -19,18 +18,6 @@ namespace RVX::Resource
 {
     namespace
     {
-        Diagnostics::TraceContext ResolveTraceContext(
-            ResourceManager* manager,
-            const Diagnostics::TraceContext& requested)
-        {
-            if (requested.IsEnabled())
-            {
-                return requested;
-            }
-            return manager != nullptr ? manager->GetStartupTraceContext()
-                                      : Diagnostics::TraceContext{};
-        }
-
         float ByteToUnit(uint8_t value)
         {
             return static_cast<float>(value) / 255.0f;
@@ -322,14 +309,6 @@ namespace RVX::Resource
     // Construction
     // =========================================================================
 
-    TextureLoader::TextureLoader(
-        ResourceManager* manager,
-        bool prepareOnly)
-        : m_manager(manager)
-        , m_prepareOnly(prepareOnly)
-    {
-    }
-
     // =========================================================================
     // IResourceLoader Interface
     // =========================================================================
@@ -339,36 +318,29 @@ namespace RVX::Resource
         return { ".png", ".jpg", ".jpeg", ".tga", ".bmp", ".gif", ".hdr" };
     }
 
-    bool TextureLoader::CanLoad(const std::string& path) const
+    bool TextureLoader::SupportsPath(const std::string& path) const noexcept
     {
-        std::filesystem::path filePath(path);
-        std::string ext = filePath.extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-
-        auto extensions = GetSupportedExtensions();
-        return std::find(extensions.begin(), extensions.end(), ext) != extensions.end();
+        try
+        {
+            std::string extension =
+                std::filesystem::path(path).extension().string();
+            std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
+            const auto extensions = GetSupportedExtensions();
+            return std::find(
+                extensions.begin(), extensions.end(), extension) != extensions.end();
+        }
+        catch (...)
+        {
+            return false;
+        }
     }
 
-    bool TextureLoader::Supports(const ResourceLoaderRequest& request) const
+    bool TextureLoader::Supports(
+        const ResourceLoaderRequest& request) const noexcept
     {
         return request.type == ResourceType::Texture &&
                request.domain == ResourceLoadDomain::Source &&
-               CanLoad(request.resolvedPath);
-    }
-
-    IResource* TextureLoader::Load(const std::string& path)
-    {
-        // Resolve to absolute path
-        std::filesystem::path absPath = std::filesystem::absolute(path);
-        const TextureUsage usage = InferTextureUsageFromPath(absPath.string());
-        const bool isSRGB = usage == TextureUsage::Color;
-        m_lastLoadStatus = TextureLoadStatus::None;
-        m_lastLoadError.clear();
-        return LoadFromFileWithPolicy(absPath.string(),
-                                      usage,
-                                      isSRGB,
-                                      absPath.string(),
-                                      ResolveTraceContext(m_manager, {}));
+               SupportsPath(request.resolvedPath);
     }
 
     bool TextureLoader::Prepare(const ResourceLoadPreparationContext& context,
@@ -384,7 +356,7 @@ namespace RVX::Resource
         // Use a per-request loader with no ResourceManager. This prevents this
         // worker from reaching cache, registry, lifecycle notifications or the
         // render upload gateway while keeping all decode helpers reusable.
-        TextureLoader preparedLoader(nullptr, true);
+        TextureLoader preparedLoader;
         IResource* raw = preparedLoader.LoadFromFile(context.resolvedPath, context.traceContext);
         if (!raw)
         {
@@ -423,8 +395,7 @@ namespace RVX::Resource
                                                         const Diagnostics::TraceContext& traceContext,
                                                         const std::string& resourceIdentityBase)
     {
-        const Diagnostics::TraceContext activeTraceContext =
-            ResolveTraceContext(m_manager, traceContext);
+        const Diagnostics::TraceContext activeTraceContext = traceContext;
         m_lastLoadStatus = TextureLoadStatus::None;
         m_lastLoadError.clear();
 
@@ -442,27 +413,6 @@ namespace RVX::Resource
             : resourceIdentityBase + "#texture_" + std::to_string(ref.imageIndex) +
                   "_usage_" + std::to_string(static_cast<uint32>(ref.usage));
         const std::string cacheKey = BuildTexturePolicyCacheKey(identityKey, ref.usage, ref.isSRGB);
-        ResourceId textureId = GenerateTextureId(cacheKey);
-
-        // Check cache first
-        {
-            Diagnostics::TraceSpan cacheLookupSpan = Diagnostics::BeginTraceSpan(
-                activeTraceContext,
-                "CacheLookup",
-                {{"assetId", textureId}, {"path", sourceKey}});
-            if (m_manager && m_manager->IsInitialized())
-            {
-                if (auto* cached = m_manager->GetCache().Get(textureId))
-                {
-                    cacheLookupSpan.SetAttribute("cacheHit", true);
-                    m_lastLoadStatus = TextureLoadStatus::Loaded;
-                    m_lastLoadError.clear();
-                    return static_cast<TextureResource*>(cached);
-                }
-            }
-            cacheLookupSpan.SetAttribute("cacheHit", false);
-        }
-
         TextureResource* texture = nullptr;
 
         if (ref.HasCapturedPayload())
@@ -576,7 +526,7 @@ namespace RVX::Resource
             outError = "Texture reference is invalid";
             return false;
         }
-        if (ref.sourceType == TextureSourceType::External && !CanLoad(ref.path))
+        if (ref.sourceType == TextureSourceType::External && !SupportsPath(ref.path))
         {
             outError = "Source texture decoder does not accept this external file type: " +
                        ref.path;
@@ -678,7 +628,7 @@ namespace RVX::Resource
             outError = "Texture decode requires importer-captured bytes";
             return false;
         }
-        if (ref.sourceType == TextureSourceType::External && !CanLoad(ref.path))
+        if (ref.sourceType == TextureSourceType::External && !SupportsPath(ref.path))
         {
             outError = "Source texture decoder does not accept this external file type: " +
                        ref.path;
@@ -768,7 +718,7 @@ namespace RVX::Resource
             usage,
             isSRGB,
             cacheKey,
-            ResolveTraceContext(m_manager, traceContext));
+            traceContext);
     }
 
     TextureResource* TextureLoader::LoadFromFileWithPolicy(const std::string& absolutePath,
@@ -777,7 +727,7 @@ namespace RVX::Resource
                                                             const std::string& cacheKey,
                                                             const Diagnostics::TraceContext& traceContext)
     {
-        if (!CanLoad(absolutePath))
+        if (!SupportsPath(absolutePath))
         {
             m_lastLoadStatus = TextureLoadStatus::Failed;
             m_lastLoadError = "Source texture loader does not support this file type: " +
@@ -785,24 +735,6 @@ namespace RVX::Resource
             return nullptr;
         }
         ResourceId textureId = GenerateTextureId(cacheKey);
-
-        {
-            Diagnostics::TraceSpan cacheLookupSpan = Diagnostics::BeginTraceSpan(
-                traceContext,
-                "CacheLookup",
-                {{"assetId", textureId}, {"path", absolutePath}});
-            if (m_manager && m_manager->IsInitialized())
-            {
-                if (auto* cached = m_manager->GetCache().Get(textureId))
-                {
-                    cacheLookupSpan.SetAttribute("cacheHit", true);
-                    m_lastLoadStatus = TextureLoadStatus::Loaded;
-                    m_lastLoadError.clear();
-                    return static_cast<TextureResource*>(cached);
-                }
-            }
-            cacheLookupSpan.SetAttribute("cacheHit", false);
-        }
 
         // Check if file exists
         if (!std::filesystem::exists(absolutePath))
@@ -899,7 +831,7 @@ namespace RVX::Resource
                                         isRawRGBA,
                                         width,
                                         height,
-                                        ResolveTraceContext(m_manager, traceContext));
+                                        traceContext);
     }
 
     TextureResource* TextureLoader::LoadFromMemoryWithPolicy(const void* data, size_t size,
@@ -912,27 +844,6 @@ namespace RVX::Resource
                                                            uint32_t height,
                                                            const Diagnostics::TraceContext& traceContext)
     {
-        ResourceId textureId = GenerateTextureId(cacheKey);
-
-        // Check cache
-        {
-            Diagnostics::TraceSpan cacheLookupSpan = Diagnostics::BeginTraceSpan(
-                traceContext,
-                "CacheLookup",
-                {{"assetId", textureId}, {"path", sourceKey}});
-            if (m_manager && m_manager->IsInitialized())
-            {
-                if (auto* cached = m_manager->GetCache().Get(textureId))
-                {
-                    cacheLookupSpan.SetAttribute("cacheHit", true);
-                    m_lastLoadStatus = TextureLoadStatus::Loaded;
-                    m_lastLoadError.clear();
-                    return static_cast<TextureResource*>(cached);
-                }
-            }
-            cacheLookupSpan.SetAttribute("cacheHit", false);
-        }
-
         TextureResource* texture = nullptr;
         if (isRawRGBA)
         {
@@ -1185,17 +1096,6 @@ namespace RVX::Resource
         }
 
         texture->SetData(std::move(pixels), metadata);
-        if (!m_prepareOnly)
-        {
-            MarkSynchronousLoadComplete(*texture);
-        }
-
-        // Store in cache
-        if (m_manager && m_manager->IsInitialized())
-        {
-            m_manager->GetCache().Store(texture);
-        }
-
         return texture;
     }
 
