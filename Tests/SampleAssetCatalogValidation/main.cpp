@@ -1033,8 +1033,8 @@ namespace
                   RVX::RVX_SAMPLE_ASSET_CONTENT_ID_SCHEMA_VERSION);
         EXPECT_EQ(entry->assetContentId.algorithm, "sha256");
         EXPECT_EQ(entry->assetContentId.digest,
-                  "42dec4e0c8ed81f540f666943f7823e500f53d22c9eccc7a9750cc9c1324dee5");
-        EXPECT_EQ(entry->assetContentId.byteCount, 3595794u);
+                  "e5ef68f61edfd7d7bcc89207e253352368a7e57569051946917a6a22aa55f58d");
+        EXPECT_EQ(entry->assetContentId.byteCount, 3595796u);
         EXPECT_EQ(entry->assetContentId.fileCount, 5u);
 
         ASSERT_EQ(entry->files.size(), 5u);
@@ -1069,11 +1069,11 @@ namespace
         EXPECT_EQ(entry->cook.selector.type,
                   RVX::Resource::CookAssetType::Model);
         EXPECT_EQ(entry->cook.cookedContentIdentity.digest,
-                  "c91215f2751eb272b6750de1a03829d2599577a13842fa76dc488e621a94ce89");
-        EXPECT_EQ(entry->cook.cookedContentIdentity.byteCount, 1534789u);
+                  "28bffeba26ec3e01c9792fdc82ea8f43a06c34c508c361e266415c8d7fa54076");
+        EXPECT_EQ(entry->cook.cookedContentIdentity.byteCount, 1534791u);
         EXPECT_EQ(entry->cook.cookedContentIdentity.fileCount, 3u);
         EXPECT_EQ(entry->cook.manifestContentIdentity.digest,
-                  "87e1fb3666fce0a75740894ea6124e8cb27e7fa88c4142fe9debe40670132096");
+                  "df8235a8f12900077443d765a32c7632f9faa1320ea480e3590e8a4bcfb5ff66");
         EXPECT_EQ(entry->cook.cookSettingsHash,
                   "d47a3f3b166ac705cfd06128506f127d776f43ad59eaeaa5cb4d52c1946829fa");
         EXPECT_EQ(entry->cook.recipeHash,
@@ -1174,7 +1174,7 @@ namespace
                   "rvx-animation-root-motion-derive-v1");
         EXPECT_EQ(entry->generation.toolVersion, "1.0.0");
         EXPECT_EQ(entry->generation.recipeHash,
-                  "3f12412b0a93123d4727c06ab91a87c5e86d7c1055b1db511de0f62e9eab21e3");
+                  "7afd7f6f2a6321f55f1458f69ca0dc1f523c4653af4a6e63d4b41a307acc0c41");
 
         const auto expectIdentity =
             [](const RVX::Resource::ResourceContentIdentity& identity,
@@ -1200,7 +1200,7 @@ namespace
             entry->contentIdentity,
             RVX::Resource::ResourceContentIdentityDomain::CookedArtifact,
             RVX::Resource::ResourceContentIdentityScope::SelfContainedArtifact,
-            "8a04a46e8507391e11df7b2102e5ba3260aecea14d822b33c2d5871c9909e1ca",
+            "86ed6cd35db4c77863b235998f1a27483b9f6b17eb8470e46a221940f5c16ccb",
             54462u,
             1u);
 
@@ -1209,7 +1209,7 @@ namespace
                   RVX::RVX_SAMPLE_ASSET_CONTENT_ID_SCHEMA_VERSION);
         EXPECT_EQ(entry->assetContentId.algorithm, "sha256");
         EXPECT_EQ(entry->assetContentId.digest,
-                  "3e32fb4c332021590f3841ddb7fe858e09c8240246bfbf16e67bb8b795413360");
+                  "5b9389ee4822bc351d255cc22d1fa0a48515a9f34493d46175d520b65212f206");
         EXPECT_EQ(entry->assetContentId.byteCount, 56156u);
         EXPECT_EQ(entry->assetContentId.fileCount, 2u);
 
@@ -1220,7 +1220,7 @@ namespace
         EXPECT_EQ(manifestFile.purpose, "cook-manifest");
         EXPECT_EQ(manifestFile.byteCount, 1694u);
         EXPECT_EQ(manifestFile.sha256,
-                  "00f59bc67067c1503f148daa77da2093e151cf3910aaed186b27bca93fd93c17");
+                  "c4b5ad12e5d3cb05ed29c5d06c195e113c5a378382a1e207da37983697227116");
         EXPECT_TRUE(std::filesystem::is_regular_file(manifestFile.resolvedPath));
         EXPECT_EQ(std::filesystem::file_size(manifestFile.resolvedPath),
                   manifestFile.byteCount);
@@ -1233,7 +1233,7 @@ namespace
         EXPECT_EQ(artifactFile.purpose, "runtime-root");
         EXPECT_EQ(artifactFile.byteCount, 54462u);
         EXPECT_EQ(artifactFile.sha256,
-                  "8a04a46e8507391e11df7b2102e5ba3260aecea14d822b33c2d5871c9909e1ca");
+                  "86ed6cd35db4c77863b235998f1a27483b9f6b17eb8470e46a221940f5c16ccb");
         EXPECT_TRUE(std::filesystem::is_regular_file(artifactFile.resolvedPath));
         EXPECT_EQ(std::filesystem::file_size(artifactFile.resolvedPath),
                   artifactFile.byteCount);
@@ -1262,20 +1262,20 @@ namespace
             entry->cook.cookedContentIdentity,
             RVX::Resource::ResourceContentIdentityDomain::CookedArtifact,
             RVX::Resource::ResourceContentIdentityScope::SelfContainedArtifact,
-            "b820610acdfb55f6f182d753ddeabdc0d73d635816d0b14d93b8ae899b16acbb",
+            "5fab9c5b30fed8ef486f3ac2011539ec1dc40bab5c323e938c53417897faee8f",
             54462u,
             1u);
         expectIdentity(
             entry->cook.manifestContentIdentity,
             RVX::Resource::ResourceContentIdentityDomain::CookManifest,
             RVX::Resource::ResourceContentIdentityScope::SelfContainedArtifact,
-            "00f59bc67067c1503f148daa77da2093e151cf3910aaed186b27bca93fd93c17",
+            "c4b5ad12e5d3cb05ed29c5d06c195e113c5a378382a1e207da37983697227116",
             1694u,
             1u);
         EXPECT_EQ(entry->cook.cookSettingsHash,
-                  "0618f669053ab678745f85251fe13a8db9966f8196a30f955ea1585bc2c81963");
+                  "ab0e49942ad560a6061b96cfc94b2691ea3a2a99f9a628b1273627ef17817822");
         EXPECT_EQ(entry->cook.recipeHash,
-                  "2984a9d350b89ae24050cbcc3087c4714f66aafca654ea8cef9b7bc5a8dcd709");
+                  "c1ade5aa9db8741f460047448618b173b9b74c52209e63153703572c37efa4ed");
         EXPECT_EQ(entry->cook.toolName, "RVXCook");
         EXPECT_EQ(entry->cook.toolVersion, "2.0.0");
 

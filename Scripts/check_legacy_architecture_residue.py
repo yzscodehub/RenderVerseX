@@ -37,6 +37,20 @@ LEGACY_COMPATIBILITY_FILES = (
     "Source/Runtime/Core/Include/Core/Math.h",
 )
 
+LEGACY_CONTENT_PATTERNS = (
+    "RVX_MODEL_" "PREBAKE",
+    "RVX_GLTF_MODEL_" "WITH_ANIMATION_V2",
+)
+
+SCANNED_TEXT_SUFFIXES = frozenset({
+    ".c", ".cc", ".cmake", ".cpp", ".h", ".hpp", ".json", ".md",
+    ".py", ".ps1", ".txt", ".yaml", ".yml",
+})
+
+IGNORED_SCAN_DIRECTORIES = frozenset({
+    ".claude", ".codex-validation", ".git", ".vs", "build", "out",
+})
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -71,6 +85,26 @@ def main() -> int:
         if (root / relative).exists():
             failures.append(f"retired compatibility file exists: {relative}")
 
+    for directory, subdirectories, files in os.walk(root, followlinks=False):
+        subdirectories[:] = [
+            name for name in subdirectories
+            if name not in IGNORED_SCAN_DIRECTORIES
+        ]
+        for filename in files:
+            path = Path(directory) / filename
+            if path.suffix.lower() not in SCANNED_TEXT_SUFFIXES:
+                continue
+            try:
+                content = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            for pattern in LEGACY_CONTENT_PATTERNS:
+                if pattern in content:
+                    failures.append(
+                        "retired content marker exists: "
+                        f"{path.relative_to(root).as_posix()}: {pattern}"
+                    )
+
     old_modules = sorted(LEGACY_MODULE_IDS.intersection(policy.modules))
     if old_modules:
         failures.append("retired manifest module ids exist: " + ", ".join(old_modules))
@@ -86,7 +120,10 @@ def main() -> int:
         return 1
 
     print("Legacy architecture residue check passed.")
-    print(f"Validated {len(LEGACY_ROOTS)} retired roots and {len(policy.targets)} targets.")
+    print(
+        f"Validated {len(LEGACY_ROOTS)} retired roots, {len(policy.targets)} targets, "
+        f"and {len(LEGACY_CONTENT_PATTERNS)} retired content markers."
+    )
     return 0
 
 

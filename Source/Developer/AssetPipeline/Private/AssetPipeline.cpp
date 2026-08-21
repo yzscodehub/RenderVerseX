@@ -4179,7 +4179,7 @@ ImportResult ModelImporter::Import(const fs::path& sourcePath,
     }
 
     Resource::CookedModelArtifact modelArtifact;
-    modelArtifact.sourcePath = artifactSourcePath.generic_string();
+    modelArtifact.logicalAssetId = artifactSourcePath.generic_string();
     modelArtifact.meshArtifactPath =
         (finalDependencyDirectory.filename() / "meshes.rva").generic_string();
     if (sourceDeclaresSkeletalPayload)

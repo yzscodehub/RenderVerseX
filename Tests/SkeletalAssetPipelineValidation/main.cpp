@@ -362,11 +362,13 @@ std::vector<RVX::uint8> RewriteV2Payload(
         hash *= RVX::Diagnostics::RVX_DIAGNOSTICS_FNV1A64_PRIME;
     }
     std::ostringstream rebuilt;
-    rebuilt << RVX::Resource::RVX_MODEL_PREBAKE_MAGIC << '\n'
-            << "schemaVersion=" << RVX::Resource::RVX_MODEL_PREBAKE_SCHEMA_VERSION
+    rebuilt << RVX::Resource::RVX_MODEL_ARTIFACT_MAGIC << '\n'
+            << "schemaVersion=" << RVX::Resource::RVX_MODEL_ARTIFACT_SCHEMA_VERSION
             << '\n'
-            << "buildFingerprint="
-            << RVX::Resource::RVX_MODEL_PREBAKE_BUILD_FINGERPRINT << '\n'
+            << "writerAbi=" << RVX::Resource::RVX_MODEL_ARTIFACT_WRITER_ABI << '\n'
+            << "flags="
+            << (payload.find("animationPresent=1\n") != std::string::npos ? 1 : 0)
+            << '\n'
             << "contentHash=" << RVX::Diagnostics::FormatContentHash(hash) << '\n'
             << "payloadSize=" << payload.size() << '\n'
             << payloadBegin << payload << payloadEnd;
@@ -699,13 +701,13 @@ TEST_F(SkeletalAssetPipelineValidation,
     const std::string modelPrefix(
         reinterpret_cast<const char*>(firstModelBytes.data()),
         std::min<size_t>(firstModelBytes.size(), 64u));
-    EXPECT_TRUE(modelPrefix.starts_with(RVX::Resource::RVX_MODEL_PREBAKE_MAGIC));
+    EXPECT_TRUE(modelPrefix.starts_with(RVX::Resource::RVX_MODEL_ARTIFACT_MAGIC));
 
     RVX::Resource::CookedModelArtifact modelArtifact;
     std::string error;
     ASSERT_TRUE(RVX::Resource::DeserializeCookedModelArtifact(
         firstModelBytes, modelArtifact, error)) << error;
-    ASSERT_FALSE(modelArtifact.animationArtifactPath.empty());
+    ASSERT_TRUE(modelArtifact.animationArtifactPath.has_value());
     ASSERT_TRUE(modelArtifact.rootNode);
     RVX::Node* skinnedNode = nullptr;
     modelArtifact.rootNode->TraverseDepthFirst(
@@ -718,26 +720,13 @@ TEST_F(SkeletalAssetPipelineValidation,
     EXPECT_EQ(skinnedNode->GetSkinIndex(), 0);
     EXPECT_EQ(skinnedNode->GetMeshIndices(), (std::vector<int>{0}));
 
-    // V2 predates explicit primitive mappings.  The optional fields may be
-    // absent only when the compatibility primary mesh index can supply the
-    // unambiguous one-mesh fallback.
+    // Earlier V2 variants omitted explicit primitive mappings. The strict
+    // schema rejects them instead of reconstructing an ambiguous fallback.
     RVX::Resource::CookedModelArtifact legacyV2Artifact;
     const std::vector<RVX::uint8> legacyV2Bytes =
         OmitV2PrimitiveMeshIndices(firstModelBytes);
-    ASSERT_TRUE(RVX::Resource::DeserializeCookedModelArtifact(
-        legacyV2Bytes, legacyV2Artifact, error)) << error;
-    ASSERT_TRUE(legacyV2Artifact.rootNode);
-    RVX::Node* legacySkinnedNode = nullptr;
-    legacyV2Artifact.rootNode->TraverseDepthFirst(
-        [&legacySkinnedNode](RVX::Node* node)
-        {
-            if (node && node->HasSkin())
-                legacySkinnedNode = node;
-        });
-    ASSERT_NE(legacySkinnedNode, nullptr);
-    EXPECT_FALSE(legacySkinnedNode->HasExplicitMeshIndices());
-    EXPECT_TRUE(legacySkinnedNode->GetMeshIndices().empty());
-    EXPECT_EQ(legacySkinnedNode->GetMeshIndex(), 0);
+    EXPECT_FALSE(RVX::Resource::DeserializeCookedModelArtifact(
+        legacyV2Bytes, legacyV2Artifact, error));
 
     const auto expectRejectedPrimitiveMapping =
         [](const std::vector<RVX::uint8>& malformedBytes)
@@ -817,7 +806,7 @@ TEST_F(SkeletalAssetPipelineValidation,
     skinnedNode->SetMaterialIndices(originalMaterialIndices);
 
     const fs::path animationPath =
-        output.parent_path() / modelArtifact.animationArtifactPath;
+        output.parent_path() / *modelArtifact.animationArtifactPath;
     const fs::path meshPath =
         output.parent_path() / modelArtifact.meshArtifactPath;
     ASSERT_TRUE(fs::is_regular_file(animationPath));

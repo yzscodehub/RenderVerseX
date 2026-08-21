@@ -1,4 +1,5 @@
 #include "Common/FilesystemLinkTestSupport.h"
+#include "Core/Diagnostics/ContentHash.h"
 #include "Core/Log.h"
 #include "Geometry/Asset/Mesh.h"
 #include "Geometry/Asset/Model.h"
@@ -16,10 +17,15 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <sstream>
+#include <stdexcept>
 #include <string>
+#include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace
@@ -66,6 +72,98 @@ namespace
         file.read(prefix.data(), static_cast<std::streamsize>(prefix.size()));
         prefix.resize(static_cast<size_t>(file.gcount()));
         return prefix;
+    }
+
+    std::string HexEncode(std::string_view value)
+    {
+        constexpr char digits[] = "0123456789abcdef";
+        std::string encoded(value.size() * 2, '\0');
+        for (size_t index = 0; index < value.size(); ++index)
+        {
+            const auto byte = static_cast<RVX::uint8>(value[index]);
+            encoded[index * 2] = digits[byte >> 4u];
+            encoded[index * 2 + 1] = digits[byte & 0x0fu];
+        }
+        return encoded;
+    }
+
+    std::vector<RVX::uint8> RewriteModelPayload(
+        const std::vector<RVX::uint8>& bytes,
+        const std::function<void(std::vector<std::string>&)>& rewrite)
+    {
+        constexpr std::string_view payloadBegin =
+            "RVX_MODEL_PAYLOAD_BEGIN\n";
+        constexpr std::string_view payloadEnd =
+            "RVX_MODEL_PAYLOAD_END\n";
+        const std::string serialized(
+            reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        const size_t marker = serialized.find(payloadBegin);
+        const size_t end = serialized.find(payloadEnd, marker);
+        if (marker == std::string::npos || end == std::string::npos)
+            throw std::runtime_error("Model artifact payload is missing");
+
+        const size_t offset = marker + payloadBegin.size();
+        std::istringstream input(serialized.substr(offset, end - offset));
+        std::vector<std::string> lines;
+        std::string line;
+        while (std::getline(input, line))
+            lines.push_back(std::move(line));
+        rewrite(lines);
+
+        std::string payload;
+        for (const std::string& value : lines)
+            payload += value + '\n';
+        RVX::uint64 hash =
+            RVX::Diagnostics::RVX_DIAGNOSTICS_FNV1A64_OFFSET_BASIS;
+        for (const char value : payload)
+        {
+            hash ^= static_cast<RVX::uint8>(value);
+            hash *= RVX::Diagnostics::RVX_DIAGNOSTICS_FNV1A64_PRIME;
+        }
+        std::ostringstream output;
+        output << RVX::Resource::RVX_MODEL_ARTIFACT_MAGIC << '\n'
+               << "schemaVersion="
+               << RVX::Resource::RVX_MODEL_ARTIFACT_SCHEMA_VERSION << '\n'
+               << "writerAbi="
+               << RVX::Resource::RVX_MODEL_ARTIFACT_WRITER_ABI << '\n'
+               << "flags="
+               << (payload.find("animationPresent=1\n") != std::string::npos
+                       ? 1
+                       : 0)
+               << '\n'
+               << "contentHash="
+               << RVX::Diagnostics::FormatContentHash(hash) << '\n'
+               << "payloadSize=" << payload.size() << '\n'
+               << payloadBegin << payload << payloadEnd;
+        const std::string rebuilt = output.str();
+        return {rebuilt.begin(), rebuilt.end()};
+    }
+
+    RVX::Resource::CookedModelArtifact MakeMinimalArtifact()
+    {
+        RVX::Resource::CookedModelArtifact artifact;
+        artifact.logicalAssetId = "Models/Minimal.gltf";
+        artifact.meshArtifactPath = "Minimal.rvdeps/meshes.rva";
+        artifact.rootNode = std::make_shared<RVX::Node>("Root");
+        artifact.bounds = RVX::AABB(
+            RVX::Vec3(0.0f), RVX::Vec3(1.0f));
+        return artifact;
+    }
+
+    bool RewriteField(std::vector<std::string>& lines,
+                      std::string_view key,
+                      std::string value)
+    {
+        const std::string prefix = std::string(key) + '=';
+        for (std::string& line : lines)
+        {
+            if (line.starts_with(prefix))
+            {
+                line = prefix + std::move(value);
+                return true;
+            }
+        }
+        return false;
     }
 
     RVX::Resource::ModelHandle PrepareCookedModel(
@@ -127,7 +225,7 @@ TEST(CookedModelProductValidation, DeterministicRoundTripLoadsWithoutSourceParsi
         reinterpret_cast<const char*>(firstBytes.data()),
         std::min<size_t>(firstBytes.size(), 64u));
     EXPECT_TRUE(firstPrefix.starts_with(
-        RVX::Resource::RVX_MODEL_PREBAKE_LEGACY_MAGIC));
+        RVX::Resource::RVX_MODEL_ARTIFACT_MAGIC));
 
     RVX::Tools::ImportResult second = importer.Import(source, output);
     ASSERT_TRUE(second.success) << second.error;
@@ -138,7 +236,7 @@ TEST(CookedModelProductValidation, DeterministicRoundTripLoadsWithoutSourceParsi
     ASSERT_TRUE(RVX::Resource::DeserializeCookedModelArtifact(
         firstBytes, artifact, error)) << error;
     ASSERT_TRUE(artifact.rootNode);
-    EXPECT_TRUE(artifact.animationArtifactPath.empty());
+    EXPECT_FALSE(artifact.animationArtifactPath.has_value());
     EXPECT_EQ(artifact.materials.size(), 5u);
     EXPECT_EQ(artifact.textures.size(), 1u);
 
@@ -220,6 +318,162 @@ TEST(CookedModelProductValidation, PersistedAssetTypeValuesRemainStable)
     EXPECT_EQ(static_cast<RVX::uint8>(RVX::Tools::AssetType::Material), 3u);
     EXPECT_EQ(static_cast<RVX::uint8>(RVX::Tools::AssetType::Script), 10u);
     EXPECT_EQ(static_cast<RVX::uint8>(RVX::Tools::AssetType::Model), 11u);
+}
+
+TEST(CookedModelProductValidation,
+     StrictV2RejectsLegacyUnknownDuplicateAndEscapingMetadata)
+{
+    RVX::Resource::CookedModelArtifact source = MakeMinimalArtifact();
+    std::vector<RVX::uint8> valid;
+    std::string error;
+    ASSERT_TRUE(RVX::Resource::SerializeCookedModelArtifact(
+        source, valid, error)) << error;
+
+    const auto expectRejected = [&error](const std::vector<RVX::uint8>& bytes)
+    {
+        RVX::Resource::CookedModelArtifact artifact;
+        error.clear();
+        EXPECT_FALSE(RVX::Resource::DeserializeCookedModelArtifact(
+            bytes, artifact, error));
+        EXPECT_FALSE(error.empty());
+    };
+
+    for (const std::string legacy : {
+             "RVX_MODEL_" "PREBAKE_V1\n",
+             "RVX_MODEL_" "PREBAKE_V2\n",
+             "RVX_GLTF_MODEL_" "WITH_ANIMATION_V2\n"})
+    {
+        expectRejected(std::vector<RVX::uint8>(legacy.begin(), legacy.end()));
+    }
+
+    expectRejected(RewriteModelPayload(
+        valid,
+        [](std::vector<std::string>& lines)
+        {
+            lines.push_back("futureRequiredField=1");
+        }));
+    expectRejected(RewriteModelPayload(
+        valid,
+        [](std::vector<std::string>& lines)
+        {
+            const auto found = std::find_if(
+                lines.begin(), lines.end(),
+                [](const std::string& line)
+                {
+                    return line.starts_with("meshArtifact=");
+                });
+            ASSERT_NE(found, lines.end());
+            lines.push_back(*found);
+        }));
+
+    for (const std::string invalidPath : {
+             "../outside.rva", "/absolute/mesh.rva",
+             "C:/outside/mesh.rva", "//server/share/mesh.rva",
+             "folder\\mesh.rva", "folder/./mesh.rva"})
+    {
+        SCOPED_TRACE(invalidPath);
+        expectRejected(RewriteModelPayload(
+            valid,
+            [&invalidPath](std::vector<std::string>& lines)
+            {
+                ASSERT_TRUE(RewriteField(
+                    lines, "meshArtifact", HexEncode(invalidPath)));
+            }));
+        RVX::Resource::CookedModelArtifact invalid = source;
+        invalid.meshArtifactPath = invalidPath;
+        std::vector<RVX::uint8> ignored;
+        EXPECT_FALSE(RVX::Resource::SerializeCookedModelArtifact(
+            invalid, ignored, error));
+    }
+}
+
+TEST(CookedModelProductValidation,
+     StrictV2EnforcesCountStringDepthAndCheckedBoundaryLimits)
+{
+    RVX::Resource::CookedModelArtifact source = MakeMinimalArtifact();
+    auto child = std::make_shared<RVX::Node>("Child");
+    source.rootNode->AddChild(child);
+    std::vector<RVX::uint8> valid;
+    std::string error;
+    ASSERT_TRUE(RVX::Resource::SerializeCookedModelArtifact(
+        source, valid, error)) << error;
+
+    const auto deserialize = [&error](const std::vector<RVX::uint8>& bytes)
+    {
+        RVX::Resource::CookedModelArtifact artifact;
+        error.clear();
+        return RVX::Resource::DeserializeCookedModelArtifact(
+            bytes, artifact, error);
+    };
+    for (const auto& [key, boundary, tooMany] :
+         std::vector<std::tuple<std::string, std::string, std::string>>{
+             {"textureCount", "16384", "16385"},
+             {"materialCount", "16384", "16385"},
+             {"nodeCount", "1048576", "1048577"}})
+    {
+        EXPECT_FALSE(deserialize(RewriteModelPayload(
+            valid,
+            [&](std::vector<std::string>& lines)
+            {
+                ASSERT_TRUE(RewriteField(lines, key, boundary));
+            })));
+        EXPECT_EQ(error.find("exceeds the configured limit"),
+                  std::string::npos);
+        EXPECT_FALSE(deserialize(RewriteModelPayload(
+            valid,
+            [&](std::vector<std::string>& lines)
+            {
+                ASSERT_TRUE(RewriteField(lines, key, tooMany));
+            })));
+        EXPECT_NE(error.find("exceeds the configured limit"),
+                  std::string::npos);
+    }
+
+    EXPECT_FALSE(deserialize(RewriteModelPayload(
+        valid,
+        [](std::vector<std::string>& lines)
+        {
+            ASSERT_TRUE(RewriteField(lines, "node.1.parent", "1"));
+        })));
+
+    std::vector<RVX::uint8> overflow = valid;
+    std::string overflowText(
+        reinterpret_cast<const char*>(overflow.data()), overflow.size());
+    const std::string payloadSize = "payloadSize=";
+    const size_t sizeOffset = overflowText.find(payloadSize);
+    ASSERT_NE(sizeOffset, std::string::npos);
+    const size_t sizeEnd = overflowText.find('\n', sizeOffset);
+    overflowText.replace(sizeOffset + payloadSize.size(),
+                         sizeEnd - sizeOffset - payloadSize.size(),
+                         "18446744073709551615");
+    overflow.assign(overflowText.begin(), overflowText.end());
+    EXPECT_FALSE(deserialize(overflow));
+    EXPECT_NE(error.find("boundary"), std::string::npos);
+
+    RVX::Resource::CookedModelArtifact stringBoundary = MakeMinimalArtifact();
+    stringBoundary.logicalAssetId.assign(1024u * 1024u, 'a');
+    std::vector<RVX::uint8> boundaryBytes;
+    ASSERT_TRUE(RVX::Resource::SerializeCookedModelArtifact(
+        stringBoundary, boundaryBytes, error)) << error;
+    EXPECT_TRUE(deserialize(boundaryBytes)) << error;
+    stringBoundary.logicalAssetId.push_back('b');
+    EXPECT_FALSE(RVX::Resource::SerializeCookedModelArtifact(
+        stringBoundary, boundaryBytes, error));
+
+    RVX::Resource::CookedModelArtifact depthBoundary = MakeMinimalArtifact();
+    RVX::Node::Ptr cursor = depthBoundary.rootNode;
+    for (RVX::uint32 depth = 1; depth < 512; ++depth)
+    {
+        auto next = std::make_shared<RVX::Node>("Node");
+        cursor->AddChild(next);
+        cursor = std::move(next);
+    }
+    ASSERT_TRUE(RVX::Resource::SerializeCookedModelArtifact(
+        depthBoundary, boundaryBytes, error)) << error;
+    EXPECT_TRUE(deserialize(boundaryBytes)) << error;
+    cursor->AddChild(std::make_shared<RVX::Node>("TooDeep"));
+    EXPECT_FALSE(RVX::Resource::SerializeCookedModelArtifact(
+        depthBoundary, boundaryBytes, error));
 }
 
 TEST(CookedModelProductValidation, IncompleteSkinWithoutAnimationFailsAtCookTime)
@@ -325,17 +579,8 @@ TEST(CookedModelProductValidation, CorruptionAndDependencyEscapeFailClosed)
 
     artifact.meshArtifactPath = "../outside.rva";
     std::vector<RVX::uint8> escapedBytes;
-    ASSERT_TRUE(RVX::Resource::SerializeCookedModelArtifact(
-        artifact, escapedBytes, error)) << error;
-    const fs::path escapedRoot = temporary.Get() / "Escaped.rva";
-    std::ofstream escapedFile(escapedRoot, std::ios::binary);
-    escapedFile.write(reinterpret_cast<const char*>(escapedBytes.data()),
-                      static_cast<std::streamsize>(escapedBytes.size()));
-    escapedFile.close();
-    RVX::Log::Initialize();
-    RVX::Resource::CookedModelLoader loader;
-    EXPECT_FALSE(PrepareCookedModel(loader, escapedRoot));
-    RVX::Log::Shutdown();
+    EXPECT_FALSE(RVX::Resource::SerializeCookedModelArtifact(
+        artifact, escapedBytes, error));
 }
 
 TEST(CookedModelProductValidation, ResolvedDependencyMustRemainInsideProductDirectory)

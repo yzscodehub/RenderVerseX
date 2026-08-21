@@ -13,6 +13,7 @@
 #include "Resource/Types/TextureResource.h"
 #include "Resource/Cooked/CookedAudioArtifact.h"
 #include "Resource/Cooked/CookedEnvironmentArtifact.h"
+#include "Resource/Cooked/CookedModelArtifact.h"
 #include "Core/Assert.h"
 #include "Core/Diagnostics/JsonWriter.h"
 #include "Core/Log.h"
@@ -676,8 +677,7 @@ namespace
         {
             return ResourceType::Mesh;
         }
-        if (firstLine == "RVX_MODEL_PREBAKE_V1" ||
-            firstLine == "RVX_MODEL_PREBAKE_V2")
+        if (firstLine == RVX_MODEL_ARTIFACT_MAGIC)
         {
             return ResourceType::Model;
         }

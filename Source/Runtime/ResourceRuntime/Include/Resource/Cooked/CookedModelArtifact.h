@@ -11,30 +11,25 @@
 #include "Geometry/Asset/Node.h"
 #include "Resource/Loader/TextureReference.h"
 
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
 
 namespace RVX::Resource
 {
-    inline constexpr const char* RVX_MODEL_PREBAKE_LEGACY_MAGIC =
-        "RVX_MODEL_PREBAKE_V1";
-    inline constexpr uint32 RVX_MODEL_PREBAKE_LEGACY_SCHEMA_VERSION = 1;
-    inline constexpr const char* RVX_MODEL_PREBAKE_LEGACY_BUILD_FINGERPRINT =
-        "RVX_STATIC_GLTF_MODEL_V1";
-    inline constexpr const char* RVX_MODEL_PREBAKE_MAGIC =
-        "RVX_MODEL_PREBAKE_V2";
-    inline constexpr uint32 RVX_MODEL_PREBAKE_SCHEMA_VERSION = 2;
-    inline constexpr const char* RVX_MODEL_PREBAKE_BUILD_FINGERPRINT =
-        "RVX_GLTF_MODEL_WITH_ANIMATION_V2";
+    inline constexpr const char* RVX_MODEL_ARTIFACT_MAGIC =
+        "RVX_MODEL_ARTIFACT_V2";
+    inline constexpr uint32 RVX_MODEL_ARTIFACT_SCHEMA_VERSION = 2;
+    inline constexpr const char* RVX_MODEL_ARTIFACT_WRITER_ABI =
+        "RVX_MODEL_ARTIFACT_WRITER_ABI_V2";
 
-    /** @brief Parsed data carried by an RVX_MODEL_PREBAKE artifact. */
+    /** @brief Parsed data carried by the single supported model artifact schema. */
     struct CookedModelArtifact
     {
-        std::string sourcePath;
+        std::string logicalAssetId;
         std::string meshArtifactPath;
-        /** @brief Optional contained .rvxanim dependency (schema v2). */
-        std::string animationArtifactPath;
+        std::optional<std::string> animationArtifactPath;
         std::vector<TextureReference> textures;
         std::vector<Material::Ptr> materials;
         Node::Ptr rootNode;

@@ -1652,7 +1652,7 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliAppliesMeshProfileLODOptions)
     EXPECT_NE(manifestText.find("entry.0.dependency.0.sha256="), std::string::npos);
 
     const std::string modelArtifact = ReadBinaryFile(outputRoot / "Meshes" / "Quad.rva");
-    EXPECT_NE(modelArtifact.find("RVX_MODEL_PREBAKE_V1"), std::string::npos);
+    EXPECT_NE(modelArtifact.find("RVX_MODEL_ARTIFACT_V2"), std::string::npos);
     const std::string artifact =
         ReadBinaryFile(outputRoot / "Meshes" / "Quad.rvdeps" / "meshes.rva");
     EXPECT_NE(artifact.find("RVX_MESH_PREBAKE_V1"), std::string::npos);
@@ -2593,7 +2593,7 @@ TEST_F(RenderHonestyValidationFixture, AssetDatabaseReimportAcceptsModelImporter
     const fs::path importedPath = importedRoot / "Meshes" / "Quad.rva";
     ASSERT_TRUE(fs::exists(importedPath));
     const std::string artifact = ReadBinaryFile(importedPath);
-    EXPECT_NE(artifact.find("RVX_MODEL_PREBAKE_V1"), std::string::npos);
+    EXPECT_NE(artifact.find("RVX_MODEL_ARTIFACT_V2"), std::string::npos);
     const std::string meshArtifact =
         ReadBinaryFile(importedRoot / "Meshes" / "Quad.rvdeps" / "meshes.rva");
     EXPECT_NE(meshArtifact.find("mesh.0.hasTangents=1"), std::string::npos);

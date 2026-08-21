@@ -60,14 +60,21 @@ namespace
         std::filesystem::path& outPath)
     {
         const std::filesystem::path relativePath(relativeValue);
-        if (relativeValue.empty() || relativePath.is_absolute() ||
-            relativePath.has_root_path())
+        if (relativeValue.empty() || relativeValue.find('\0') != std::string::npos ||
+            relativeValue.find('\\') != std::string::npos ||
+            relativeValue.front() == '/' ||
+            (relativeValue.size() >= 2u && relativeValue[1] == ':' &&
+             ((relativeValue[0] >= 'A' && relativeValue[0] <= 'Z') ||
+              (relativeValue[0] >= 'a' && relativeValue[0] <= 'z'))) ||
+            relativePath.is_absolute() || relativePath.has_root_name() ||
+            relativePath.has_root_path() ||
+            relativePath.generic_string() != relativeValue)
         {
             return false;
         }
         for (const std::filesystem::path& component : relativePath)
         {
-            if (component == "..")
+            if (component.empty() || component == "." || component == "..")
                 return false;
         }
 
@@ -305,12 +312,12 @@ namespace
         }
 
         AnimationHandle animation;
-        if (!artifact.animationArtifactPath.empty())
+        if (artifact.animationArtifactPath.has_value())
         {
             std::filesystem::path animationPath;
             if (!ResolveContainedDependency(
                     modelDirectory,
-                    artifact.animationArtifactPath,
+                    *artifact.animationArtifactPath,
                     ".rvxanim",
                     animationPath))
             {
@@ -331,7 +338,7 @@ namespace
             {
                 return nullptr;
             }
-            if (animationArtifact.sourcePath != artifact.sourcePath)
+            if (animationArtifact.sourcePath != artifact.logicalAssetId)
             {
                 outError =
                     "Cooked model and animation source identities differ";

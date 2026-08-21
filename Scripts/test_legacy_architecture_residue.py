@@ -71,6 +71,20 @@ class LegacyArchitectureResidueTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertIn("retired compatibility file exists", result.stdout)
 
+    def test_retired_model_artifact_marker_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest, inventory = write_fixture(root)
+            legacy = root / "Source/Runtime/Fixture.cpp"
+            legacy.parent.mkdir(parents=True, exist_ok=True)
+            legacy.write_text(
+                'constexpr auto magic = "' + "RVX_MODEL_" + 'PREBAKE_V1";\n',
+                encoding="utf-8",
+            )
+            result = run_checker(root, manifest, inventory)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("retired content marker exists", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

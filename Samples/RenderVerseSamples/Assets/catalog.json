@@ -29,8 +29,8 @@
       "assetContentId": {
         "schemaVersion": 1,
         "algorithm": "sha256",
-        "digest": "42dec4e0c8ed81f540f666943f7823e500f53d22c9eccc7a9750cc9c1324dee5",
-        "byteCount": 3595794,
+        "digest": "e5ef68f61edfd7d7bcc89207e253352368a7e57569051946917a6a22aa55f58d",
+        "byteCount": 3595796,
         "fileCount": 5
       },
       "files": [
@@ -38,13 +38,13 @@
           "path": "cooked/casual-female/CookManifest.rvxmanifest",
           "purpose": "cook-manifest",
           "byteCount": 2122,
-          "sha256": "87e1fb3666fce0a75740894ea6124e8cb27e7fa88c4142fe9debe40670132096"
+          "sha256": "df8235a8f12900077443d765a32c7632f9faa1320ea480e3590e8a4bcfb5ff66"
         },
         {
           "path": "cooked/casual-female/models/casual-female/Casual_Female.rva",
           "purpose": "cooked-artifact",
-          "byteCount": 15841,
-          "sha256": "5761696ced130fec6ec302660cae7e1f9d260b8a7f112b7f3cd93ade65062d39"
+          "byteCount": 15843,
+          "sha256": "3b13707c940f17cc592740ab0d7772b22c84500da371240de12224a50adeb2e2"
         },
         {
           "path": "cooked/casual-female/models/casual-female/Casual_Female.rvdeps/animation.rvxanim",
@@ -90,8 +90,8 @@
           "domain": "cooked-artifact",
           "scope": "dependency-closure",
           "algorithm": "sha256",
-          "digest": "c91215f2751eb272b6750de1a03829d2599577a13842fa76dc488e621a94ce89",
-          "byteCount": 1534789,
+          "digest": "28bffeba26ec3e01c9792fdc82ea8f43a06c34c508c361e266415c8d7fa54076",
+          "byteCount": 1534791,
           "fileCount": 3
         },
         "manifestContentIdentity": {
@@ -99,7 +99,7 @@
           "domain": "cook-manifest",
           "scope": "self-contained-artifact",
           "algorithm": "sha256",
-          "digest": "87e1fb3666fce0a75740894ea6124e8cb27e7fa88c4142fe9debe40670132096",
+          "digest": "df8235a8f12900077443d765a32c7632f9faa1320ea480e3590e8a4bcfb5ff66",
           "byteCount": 2122,
           "fileCount": 1
         },
@@ -131,14 +131,14 @@
         "domain": "cooked-artifact",
         "scope": "self-contained-artifact",
         "algorithm": "sha256",
-        "digest": "8a04a46e8507391e11df7b2102e5ba3260aecea14d822b33c2d5871c9909e1ca",
+        "digest": "86ed6cd35db4c77863b235998f1a27483b9f6b17eb8470e46a221940f5c16ccb",
         "byteCount": 54462,
         "fileCount": 1
       },
       "assetContentId": {
         "schemaVersion": 1,
         "algorithm": "sha256",
-        "digest": "3e32fb4c332021590f3841ddb7fe858e09c8240246bfbf16e67bb8b795413360",
+        "digest": "5b9389ee4822bc351d255cc22d1fa0a48515a9f34493d46175d520b65212f206",
         "byteCount": 56156,
         "fileCount": 2
       },
@@ -147,13 +147,13 @@
           "path": "cooked/casual-female-root-motion/CookManifest.rvxmanifest",
           "purpose": "cook-manifest",
           "byteCount": 1694,
-          "sha256": "00f59bc67067c1503f148daa77da2093e151cf3910aaed186b27bca93fd93c17"
+          "sha256": "c4b5ad12e5d3cb05ed29c5d06c195e113c5a378382a1e207da37983697227116"
         },
         {
           "path": "cooked/casual-female-root-motion/casual-female-walk-root-motion.rvxanim",
           "purpose": "runtime-root",
           "byteCount": 54462,
-          "sha256": "8a04a46e8507391e11df7b2102e5ba3260aecea14d822b33c2d5871c9909e1ca"
+          "sha256": "86ed6cd35db4c77863b235998f1a27483b9f6b17eb8470e46a221940f5c16ccb"
         }
       ],
       "attribution": "Derived from Quaternius Casual Female Walk, CC0 1.0 Universal.",
@@ -165,7 +165,7 @@
       "generation": {
         "recipe": "rvx-animation-root-motion-derive-v1",
         "toolVersion": "1.0.0",
-        "recipeHash": "3f12412b0a93123d4727c06ab91a87c5e86d7c1055b1db511de0f62e9eab21e3"
+        "recipeHash": "7afd7f6f2a6321f55f1458f69ca0dc1f523c4653af4a6e63d4b41a307acc0c41"
       },
       "cook": {
         "manifestPath": "cooked/casual-female-root-motion/CookManifest.rvxmanifest",
@@ -189,7 +189,7 @@
           "domain": "cooked-artifact",
           "scope": "self-contained-artifact",
           "algorithm": "sha256",
-          "digest": "b820610acdfb55f6f182d753ddeabdc0d73d635816d0b14d93b8ae899b16acbb",
+          "digest": "5fab9c5b30fed8ef486f3ac2011539ec1dc40bab5c323e938c53417897faee8f",
           "byteCount": 54462,
           "fileCount": 1
         },
@@ -198,12 +198,12 @@
           "domain": "cook-manifest",
           "scope": "self-contained-artifact",
           "algorithm": "sha256",
-          "digest": "00f59bc67067c1503f148daa77da2093e151cf3910aaed186b27bca93fd93c17",
+          "digest": "c4b5ad12e5d3cb05ed29c5d06c195e113c5a378382a1e207da37983697227116",
           "byteCount": 1694,
           "fileCount": 1
         },
-        "cookSettingsHash": "0618f669053ab678745f85251fe13a8db9966f8196a30f955ea1585bc2c81963",
-        "recipeHash": "2984a9d350b89ae24050cbcc3087c4714f66aafca654ea8cef9b7bc5a8dcd709",
+        "cookSettingsHash": "ab0e49942ad560a6061b96cfc94b2691ea3a2a99f9a628b1273627ef17817822",
+        "recipeHash": "c1ade5aa9db8741f460047448618b173b9b74c52209e63153703572c37efa4ed",
         "tool": {
           "name": "RVXCook",
           "version": "2.0.0"
@@ -452,7 +452,7 @@
       "generation": {
         "recipe": "Scripts/Assets/convert_crytek_sponza.py",
         "toolVersion": "1.0.0",
-        "recipeHash": "e51b9ea31691b7cf0b1174c6ed7619cfabaf519211187e8aa216a4724b43b849"
+        "recipeHash": "4357a60f357bcb1badc468ff6a10b9a72d9193a49815060205224fb16dfe06bc"
       }
     },
     {
