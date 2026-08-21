@@ -124,6 +124,10 @@ def validate(root: Path) -> list[str]:
         for forbidden in ("continue-on-error:", "|| true", "--no-tests=ignore"):
             if forbidden in text:
                 findings.append(f"{filename}: fail-open workflow token is forbidden: {forbidden}")
+        if re.search(r"\brun:\s*(?:xvfb-run\s+-a\s+)?ctest\b", text):
+            findings.append(
+                f"{filename}: required suites must use Scripts/run_required_suite.ps1, not raw ctest"
+            )
         if "actions/checkout@v4" not in text or "actions/cache@v4" not in text:
             findings.append(f"{filename}: checkout@v4 and cache@v4 are required")
 
@@ -153,6 +157,8 @@ def validate(root: Path) -> list[str]:
     for token in (
         "RVXValidationArchitecture",
         "linux_x64_debug_architecture",
+        "Scripts/run_required_suite.ps1",
+        "-RequiredLabel lane.architecture",
         'unittest discover -s Scripts -p "test_*.py"',
         "Scripts/plan_validation.py",
         "--mode observation",
@@ -187,10 +193,21 @@ def validate(root: Path) -> list[str]:
             findings.append(f"ci.yml {job_name} must run the exact Unit/Integration/Native lane set")
         if smoke not in block:
             findings.append(f"ci.yml {job_name} is missing fixed PR smoke preset {smoke}")
+        for token in (
+            "Scripts/run_required_suite.ps1",
+            "RVXValidationSuitePrSmoke",
+            "-RequiredLabel suite.pr-smoke",
+            "-ExpectedTestCount 3",
+        ):
+            if token not in block:
+                findings.append(f"ci.yml {job_name} is missing fail-closed PR smoke token {token}")
 
     tsan = ci_jobs.get("linux-tsan", "")
     if "RenderConcurrencyTSAN" not in tsan or "linux_x64_tsan" not in tsan:
         findings.append("ci.yml Linux TSAN must build and run the focused concurrency target")
+    for token in ("Scripts/run_required_suite.ps1", "-RequiredLabel lane.integration"):
+        if token not in tsan:
+            findings.append(f"ci.yml Linux TSAN is missing fail-closed token {token}")
 
     shipping = ci_jobs.get("shipping", "")
     for token in (*SHIPPING_PRESETS.keys(), *SHIPPING_PRESETS.values()):
@@ -199,6 +216,16 @@ def validate(root: Path) -> list[str]:
     for platform in ("Windows", "Linux", "macOS"):
         if f"platform: {platform}" not in shipping:
             findings.append(f"ci.yml Shipping matrix is missing {platform}")
+    for token in (
+        "Scripts/run_required_suite.ps1",
+        "RVXValidationSuiteRequiredShipping",
+        "-RequiredLabel suite.required-shipping",
+        "-ExpectedTestCount 5",
+        "build/*shipping_release/Tests/Shipping/ShippingFixtures",
+        "if-no-files-found: error",
+    ):
+        if token not in shipping:
+            findings.append(f"ci.yml Shipping is missing fail-closed token {token}")
 
     verdict = ci_jobs.get("pr-verdict", "")
     if "if: always()" not in verdict:
@@ -227,6 +254,9 @@ def validate(root: Path) -> list[str]:
         "RVX_EXTERNAL_ASSET_URL",
         "RVX_EXTERNAL_ASSET_SHA256",
         "RVX_ENABLE_EXTERNAL_ASSET_TESTS=ON",
+        "Scripts/run_required_suite.ps1",
+        "RVXValidationSuiteCompatibilitySmoke",
+        "-RequiredLabel lane.qualification",
     ):
         if token not in nightly:
             findings.append(f"nightly.yml is missing required coverage token {token}")
@@ -238,6 +268,10 @@ def validate(root: Path) -> list[str]:
         "Linux-Vulkan",
         "macOS-Metal",
         *sorted(WEEKLY_PRESETS),
+        "Scripts/run_required_suite.ps1",
+        "RVXValidationSuiteWeeklySoak",
+        "-RequiredLabel suite.weekly-soak",
+        "-ExpectedTestCount 2",
     ):
         if token not in weekly:
             findings.append(f"weekly.yml is missing required soak token {token}")

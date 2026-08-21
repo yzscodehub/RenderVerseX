@@ -48,10 +48,18 @@ jobs:
           --head-ref HEAD
           --mode observation
           --output build/linux_x64_debug/BuildTruth/ValidationSelectionPlan.json
-      - name: Build architecture gates
-        run: cmake --build build/linux_x64_debug --target RVXValidationArchitecture --parallel 4
-      - name: Run architecture gates
-        run: ctest --preset linux_x64_debug_architecture
+      - name: Run fail-closed architecture suite
+        run: >-
+          pwsh -NoProfile -File ./Scripts/run_required_suite.ps1
+          -ConfigurePreset linux_x64_debug
+          -BuildPreset linux_x64_debug
+          -TestPreset linux_x64_debug_architecture
+          -BuildDir build/linux_x64_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationArchitecture
+          -RequiredLabel lane.architecture
+          -BaseRef origin/master
+          -SkipConfigure
       - name: Run policy self-tests
         run: python3 -m unittest discover -s Scripts -p "test_*.py" -v
       - name: Verify diff hygiene
@@ -92,12 +100,21 @@ jobs:
           -BaseRef origin/master
           -RequiredNativeBackend DX12
           -Fresh
-      - name: Configure fixed PR smoke
-        run: cmake --preset win_x64_pr_debug
-      - name: Build fixed PR smoke
-        run: cmake --build --preset win_x64_pr_debug --parallel 4
-      - name: Run fixed SceneLifecycle smoke
-        run: ctest --preset win_x64_pr_debug_smoke
+      - name: Run fail-closed fixed SceneLifecycle smoke
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset win_x64_pr_debug
+          -BuildPreset win_x64_pr_debug
+          -TestPreset win_x64_pr_debug_smoke
+          -BuildDir build/win_x64_pr_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationSuitePrSmoke
+          -RequiredLabel suite.pr-smoke
+          -ExpectedTestCount 3
+          -RequiredEvidence 'Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.ppm;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12SceneLifecycleDirect_320x180.json'
+          -BaseRef origin/master
+          -Fresh
       - name: Upload Windows evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -108,6 +125,7 @@ jobs:
             build/win_x64_pr_debug/BuildTruth
             build/win_x64_pr_debug/Tests/VisualArtifacts
             build/win_x64_pr_debug/Tests/SampleReports
+            build/win_x64_pr_debug/Tests/StartupTimelines
 
   linux-debug:
     name: Linux Debug
@@ -156,12 +174,20 @@ jobs:
             -BaseRef origin/master \
             -RequiredNativeBackend Vulkan \
             -Fresh
-      - name: Configure fixed PR smoke
-        run: cmake --preset linux_x64_pr_debug
-      - name: Build fixed PR smoke
-        run: cmake --build --preset linux_x64_pr_debug --parallel 4
-      - name: Run fixed SceneLifecycle smoke
-        run: xvfb-run -a ctest --preset linux_x64_pr_debug_smoke
+      - name: Run fail-closed fixed SceneLifecycle smoke
+        run: >-
+          xvfb-run -a pwsh -NoProfile -File ./Scripts/run_required_suite.ps1
+          -ConfigurePreset linux_x64_pr_debug
+          -BuildPreset linux_x64_pr_debug
+          -TestPreset linux_x64_pr_debug_smoke
+          -BuildDir build/linux_x64_pr_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationSuitePrSmoke
+          -RequiredLabel suite.pr-smoke
+          -ExpectedTestCount 3
+          -RequiredEvidence 'Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanSceneLifecycleDirect_320x180.ppm;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanSceneLifecycleDirect_320x180.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanSceneLifecycleDirect_320x180.json'
+          -BaseRef origin/master
+          -Fresh
       - name: Upload Linux evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -172,6 +198,7 @@ jobs:
             build/linux_x64_pr_debug/BuildTruth
             build/linux_x64_pr_debug/Tests/VisualArtifacts
             build/linux_x64_pr_debug/Tests/SampleReports
+            build/linux_x64_pr_debug/Tests/StartupTimelines
 
   linux-tsan:
     name: Linux TSAN
@@ -196,12 +223,20 @@ jobs:
           restore-keys: vcpkg-linux-tsan-
       - name: Configure TSAN
         run: cmake --preset linux_x64_tsan
-      - name: Build focused concurrency validation
-        run: cmake --build --preset linux_x64_tsan --target RenderConcurrencyTSAN --parallel 4
-      - name: Run focused concurrency validation
+      - name: Run fail-closed focused concurrency validation
         env:
           TSAN_OPTIONS: halt_on_error=1:abort_on_error=1
-        run: ctest --preset linux_x64_tsan
+        run: >-
+          pwsh -NoProfile -File ./Scripts/run_required_suite.ps1
+          -ConfigurePreset linux_x64_tsan
+          -BuildPreset linux_x64_tsan
+          -TestPreset linux_x64_tsan
+          -BuildDir build/linux_x64_tsan
+          -Configuration Debug
+          -BuildTarget RenderConcurrencyTSAN
+          -RequiredLabel lane.integration
+          -BaseRef origin/master
+          -SkipConfigure
       - name: Upload TSAN evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -238,12 +273,21 @@ jobs:
           -BaseRef origin/master
           -RequiredNativeBackend Metal
           -Fresh
-      - name: Configure fixed PR smoke
-        run: cmake --preset mac_arm64_pr_debug
-      - name: Build fixed PR smoke
-        run: cmake --build --preset mac_arm64_pr_debug --parallel 3
-      - name: Run fixed SceneLifecycle smoke
-        run: ctest --preset mac_arm64_pr_debug_smoke
+      - name: Run fail-closed fixed SceneLifecycle smoke
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset mac_arm64_pr_debug
+          -BuildPreset mac_arm64_pr_debug
+          -TestPreset mac_arm64_pr_debug_smoke
+          -BuildDir build/mac_arm64_pr_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationSuitePrSmoke
+          -RequiredLabel suite.pr-smoke
+          -ExpectedTestCount 3
+          -RequiredEvidence 'Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesMetalSceneLifecycleDirect_320x180.ppm;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesMetalSceneLifecycleDirect_320x180.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesMetalSceneLifecycleDirect_320x180.json'
+          -BaseRef origin/master
+          -Fresh
       - name: Upload macOS evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -254,6 +298,7 @@ jobs:
             build/mac_arm64_pr_debug/BuildTruth
             build/mac_arm64_pr_debug/Tests/VisualArtifacts
             build/mac_arm64_pr_debug/Tests/SampleReports
+            build/mac_arm64_pr_debug/Tests/StartupTimelines
 
   shipping:
     name: Shipping (${{ matrix.platform }})
@@ -261,9 +306,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {platform: Windows, runner: windows-2022, vcpkg_root: 'C:/vcpkg', host_preset: win_x64_shipping_host_release, shipping_preset: win_x64_shipping_release, test_preset: win_x64_shipping_release_shipping}
-          - {platform: Linux, runner: ubuntu-24.04, vcpkg_root: /usr/local/share/vcpkg, host_preset: linux_x64_shipping_host_release, shipping_preset: linux_x64_shipping_release, test_preset: linux_x64_shipping_release_shipping}
-          - {platform: macOS, runner: macos-15, vcpkg_root: /usr/local/share/vcpkg, host_preset: mac_arm64_shipping_host_release, shipping_preset: mac_arm64_shipping_release, test_preset: mac_arm64_shipping_release_shipping}
+          - {platform: Windows, runner: windows-2022, vcpkg_root: 'C:/vcpkg', host_preset: win_x64_shipping_host_release, shipping_preset: win_x64_shipping_release, test_preset: win_x64_shipping_release_shipping, build_dir: build/win_x64_shipping_release}
+          - {platform: Linux, runner: ubuntu-24.04, vcpkg_root: /usr/local/share/vcpkg, host_preset: linux_x64_shipping_host_release, shipping_preset: linux_x64_shipping_release, test_preset: linux_x64_shipping_release_shipping, build_dir: build/linux_x64_shipping_release}
+          - {platform: macOS, runner: macos-15, vcpkg_root: /usr/local/share/vcpkg, host_preset: mac_arm64_shipping_host_release, shipping_preset: mac_arm64_shipping_release, test_preset: mac_arm64_shipping_release_shipping, build_dir: build/mac_arm64_shipping_release}
     runs-on: ${{ matrix.runner }}
     env:
       VCPKG_ROOT: ${{ matrix.vcpkg_root }}
@@ -301,16 +346,37 @@ jobs:
         run: cmake --preset ${{ matrix.host_preset }}
       - name: Build host cooker
         run: cmake --build --preset ${{ matrix.host_preset }} --parallel 3
-      - name: Configure Shipping product
-        run: cmake --preset ${{ matrix.shipping_preset }}
-      - name: Build Shipping validation
-        run: cmake --build --preset ${{ matrix.shipping_preset }} --parallel 3
-      - name: Run Shipping validation
+      - name: Run fail-closed Shipping validation
         if: runner.os != 'Linux'
-        run: ctest --preset ${{ matrix.test_preset }}
-      - name: Run Linux Shipping validation
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset ${{ matrix.shipping_preset }}
+          -BuildPreset ${{ matrix.shipping_preset }}
+          -TestPreset ${{ matrix.test_preset }}
+          -BuildDir ${{ matrix.build_dir }}
+          -Configuration Release
+          -BuildTarget RVXValidationSuiteRequiredShipping
+          -RequiredLabel suite.required-shipping
+          -ExpectedTestCount 5
+          -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json'
+          -BaseRef origin/master
+          -Fresh
+      - name: Run fail-closed Linux Shipping validation
         if: runner.os == 'Linux'
-        run: xvfb-run -a ctest --preset ${{ matrix.test_preset }}
+        run: >-
+          xvfb-run -a pwsh -NoProfile -File ./Scripts/run_required_suite.ps1
+          -ConfigurePreset ${{ matrix.shipping_preset }}
+          -BuildPreset ${{ matrix.shipping_preset }}
+          -TestPreset ${{ matrix.test_preset }}
+          -BuildDir ${{ matrix.build_dir }}
+          -Configuration Release
+          -BuildTarget RVXValidationSuiteRequiredShipping
+          -RequiredLabel suite.required-shipping
+          -ExpectedTestCount 5
+          -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json'
+          -BaseRef origin/master
+          -Fresh
       - name: Upload Shipping evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -318,7 +384,8 @@ jobs:
           name: shipping-${{ matrix.platform }}
           path: |
             build/*shipping_release/BuildTruth
-            build/*shipping_release/ShippingFixtures
+            build/*shipping_release/Tests/Shipping/ShippingFixtures
+          if-no-files-found: error
 
   pr-verdict:
     name: PR Verdict

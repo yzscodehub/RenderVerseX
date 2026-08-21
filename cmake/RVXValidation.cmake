@@ -38,7 +38,29 @@ function(_rvx_validation_append_unique_global property_name)
     set_property(GLOBAL PROPERTY "${property_name}" "${_rvx_validation_current}")
 endfunction()
 
-function(_rvx_validation_register_target target_name lane)
+function(_rvx_validation_suite_key out_key suite)
+    string(MAKE_C_IDENTIFIER "${suite}" _rvx_validation_suite_identifier)
+    string(TOUPPER "${_rvx_validation_suite_identifier}" _rvx_validation_suite_key)
+    set("${out_key}" "${_rvx_validation_suite_key}" PARENT_SCOPE)
+endfunction()
+
+function(_rvx_validation_suite_target_name out_name suite)
+    string(REGEX REPLACE "[_.-]+" ";" _rvx_validation_suite_parts "${suite}")
+    set(_rvx_validation_suffix "")
+    foreach(_rvx_validation_suite_part IN LISTS _rvx_validation_suite_parts)
+        if(_rvx_validation_suite_part STREQUAL "")
+            continue()
+        endif()
+        string(SUBSTRING "${_rvx_validation_suite_part}" 0 1 _rvx_validation_first)
+        string(TOUPPER "${_rvx_validation_first}" _rvx_validation_first)
+        string(SUBSTRING "${_rvx_validation_suite_part}" 1 -1 _rvx_validation_remainder)
+        string(APPEND _rvx_validation_suffix
+            "${_rvx_validation_first}${_rvx_validation_remainder}")
+    endforeach()
+    set("${out_name}" "RVXValidationSuite${_rvx_validation_suffix}" PARENT_SCOPE)
+endfunction()
+
+function(_rvx_validation_register_target target_name lane suite)
     if(NOT TARGET "${target_name}")
         message(FATAL_ERROR
             "Validation target '${target_name}' must exist before it can be registered")
@@ -51,6 +73,15 @@ function(_rvx_validation_register_target target_name lane)
         "RVX_VALIDATION_LANE_${_rvx_validation_lane_upper}_TARGETS"
         "${target_name}"
     )
+    if(suite)
+        _rvx_validation_suite_key(_rvx_validation_suite_key "${suite}")
+        _rvx_validation_append_unique_global(
+            RVX_VALIDATION_SUITES "${suite}")
+        _rvx_validation_append_unique_global(
+            "RVX_VALIDATION_SUITE_${_rvx_validation_suite_key}_TARGETS"
+            "${target_name}"
+        )
+    endif()
 endfunction()
 
 function(_rvx_validation_register_test_module_target_if_needed target_name)
@@ -318,7 +349,11 @@ function(rvx_add_gtest)
         ${_rvx_validation_gtest_metadata_arguments}
     )
 
-    _rvx_validation_register_target("${RVX_GTEST_NAME}" "${RVX_GTEST_LANE}")
+    _rvx_validation_register_target(
+        "${RVX_GTEST_NAME}"
+        "${RVX_GTEST_LANE}"
+        "${RVX_GTEST_SUITE}"
+    )
 endfunction()
 
 # Registers a non-GTest CTest entry. BUILD_TARGETS join the matching build
@@ -407,7 +442,11 @@ function(rvx_add_validation_test)
     foreach(_rvx_validation_target IN LISTS RVX_TEST_BUILD_TARGETS)
         _rvx_validation_register_test_module_target_if_needed(
             "${_rvx_validation_target}")
-        _rvx_validation_register_target("${_rvx_validation_target}" "${RVX_TEST_LANE}")
+        _rvx_validation_register_target(
+            "${_rvx_validation_target}"
+            "${RVX_TEST_LANE}"
+            "${RVX_TEST_SUITE}"
+        )
     endforeach()
 endfunction()
 
@@ -448,6 +487,30 @@ function(rvx_finalize_validation)
         )
         rvx_register_module_target(
             TARGET "${_rvx_validation_aggregate}"
+            MODULE Tests
+            INFRASTRUCTURE
+        )
+    endforeach()
+
+    get_property(_rvx_validation_suites GLOBAL PROPERTY RVX_VALIDATION_SUITES)
+    list(REMOVE_DUPLICATES _rvx_validation_suites)
+    foreach(_rvx_validation_suite IN LISTS _rvx_validation_suites)
+        _rvx_validation_suite_key(
+            _rvx_validation_suite_key "${_rvx_validation_suite}")
+        get_property(_rvx_validation_suite_targets GLOBAL
+            PROPERTY "RVX_VALIDATION_SUITE_${_rvx_validation_suite_key}_TARGETS")
+        list(REMOVE_DUPLICATES _rvx_validation_suite_targets)
+        _rvx_validation_suite_target_name(
+            _rvx_validation_suite_aggregate "${_rvx_validation_suite}")
+        if(TARGET "${_rvx_validation_suite_aggregate}")
+            message(FATAL_ERROR
+                "Validation suite aggregate '${_rvx_validation_suite_aggregate}' already exists")
+        endif()
+        add_custom_target(${_rvx_validation_suite_aggregate}
+            DEPENDS ${_rvx_validation_suite_targets}
+        )
+        rvx_register_module_target(
+            TARGET "${_rvx_validation_suite_aggregate}"
             MODULE Tests
             INFRASTRUCTURE
         )

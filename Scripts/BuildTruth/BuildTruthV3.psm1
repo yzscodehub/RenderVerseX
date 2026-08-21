@@ -177,6 +177,155 @@ function Get-BuildTruthTestLanes
     return @($labelProperty[0].value | Where-Object { $_ -match "^lane\." })
 }
 
+function Get-BuildTruthTestLabels
+{
+    param([Parameter(Mandatory)][object]$Test)
+
+    $labelProperty = @(
+        $Test.properties |
+            Where-Object { $_.name -eq "LABELS" } |
+            Select-Object -First 1
+    )
+    if ($labelProperty.Count -eq 0)
+    {
+        return @()
+    }
+    return @($labelProperty[0].value)
+}
+
+function Assert-BuildTruthRequiredSelection
+{
+    param(
+        [Parameter(Mandatory)][object]$Inventory,
+        [Parameter(Mandatory)][string]$RequiredLabel,
+        [int]$ExpectedTestCount = 0,
+        [string]$Context = "required selection"
+    )
+
+    if ($RequiredLabel -notmatch "^(lane|suite)\.[A-Za-z0-9][A-Za-z0-9_.-]*$")
+    {
+        Throw-BuildTruthFailure -Category "RequiredLabel" -Message (
+            "$Context has invalid required label '$RequiredLabel'")
+    }
+
+    Assert-BuildTruthInventoryLanes -Inventory $Inventory -Context $Context
+    $tests = @($Inventory.tests)
+    if ($ExpectedTestCount -lt 0)
+    {
+        Throw-BuildTruthFailure -Category "ExpectedCount" -Message (
+            "$Context expected test count cannot be negative")
+    }
+    if ($ExpectedTestCount -gt 0 -and $tests.Count -ne $ExpectedTestCount)
+    {
+        Throw-BuildTruthFailure -Category "NotRun" -Message (
+            "$Context selects $($tests.Count) tests, expected $ExpectedTestCount")
+    }
+
+    $missingLabel = @(
+        $tests | Where-Object {
+            $labels = @(Get-BuildTruthTestLabels -Test $_)
+            $RequiredLabel -notin $labels
+        }
+    )
+    if ($missingLabel.Count -ne 0)
+    {
+        $names = @($missingLabel | Select-Object -First 10 | ForEach-Object { $_.name })
+        Throw-BuildTruthFailure -Category "RequiredLabel" -Message (
+            "$Context contains tests without '$RequiredLabel': $($names -join ', ')")
+    }
+}
+
+function Resolve-BuildTruthContainedPath
+{
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$Path,
+        [switch]$AllowMissing
+    )
+
+    $rootPath = [IO.Path]::GetFullPath($Root).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar)
+    $candidate = if ([IO.Path]::IsPathRooted($Path))
+    {
+        [IO.Path]::GetFullPath($Path)
+    }
+    else
+    {
+        [IO.Path]::GetFullPath((Join-Path $rootPath $Path))
+    }
+    $prefix = $rootPath + [IO.Path]::DirectorySeparatorChar
+    if (-not $candidate.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase))
+    {
+        Throw-BuildTruthFailure -Category "PathEscape" -Message (
+            "Path '$Path' resolves outside '$rootPath'")
+    }
+
+    if (Test-Path -LiteralPath $candidate)
+    {
+        $resolved = (Resolve-Path -LiteralPath $candidate).Path
+        if (-not $resolved.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase))
+        {
+            Throw-BuildTruthFailure -Category "PathEscape" -Message (
+                "Path '$Path' resolves through a link outside '$rootPath'")
+        }
+        $item = Get-Item -LiteralPath $candidate -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+        {
+            Throw-BuildTruthFailure -Category "PathEscape" -Message (
+                "Path '$Path' is a reparse point")
+        }
+    }
+    elseif (-not $AllowMissing)
+    {
+        Throw-BuildTruthFailure -Category "MissingArtifact" -Message (
+            "Required path is missing: $candidate")
+    }
+
+    return $candidate
+}
+
+function Get-BuildTruthFileEvidence
+{
+    param(
+        [Parameter(Mandatory)][string]$BuildRoot,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Paths
+    )
+
+    $evidence = [System.Collections.Generic.List[object]]::new()
+    foreach ($path in $Paths)
+    {
+        $absolutePath = Resolve-BuildTruthContainedPath `
+            -Root $BuildRoot `
+            -Path $path
+        if (-not (Test-Path -LiteralPath $absolutePath -PathType Leaf))
+        {
+            Throw-BuildTruthFailure -Category "MissingArtifact" -Message (
+                "Required evidence is not a file: $absolutePath")
+        }
+        $item = Get-Item -LiteralPath $absolutePath
+        $hash = (Get-FileHash -LiteralPath $absolutePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $evidence.Add([ordered]@{
+            path = $absolutePath
+            size = $item.Length
+            lastWriteTimeUtc = $item.LastWriteTimeUtc.ToString("o")
+            sha256 = $hash
+        })
+    }
+    return @($evidence)
+}
+
+function Get-BuildTruthFailureCategory
+{
+    param([string]$Message)
+
+    if ($Message -match "^BT3\.([A-Za-z0-9]+):")
+    {
+        return $Matches[1]
+    }
+    return "Unexpected"
+}
+
 function Assert-BuildTruthInventoryLanes
 {
     param(
@@ -441,14 +590,19 @@ function Get-BuildTruthNativeEvidence
 Export-ModuleMember -Function @(
     "Assert-BuildTruthInventoryLanes",
     "Assert-BuildTruthJUnitOutcome",
+    "Assert-BuildTruthRequiredSelection",
     "Get-BuildTruthCTestInventory",
+    "Get-BuildTruthFailureCategory",
+    "Get-BuildTruthFileEvidence",
     "Get-BuildTruthJUnitOutcome",
     "Get-BuildTruthNativeEvidence",
     "Get-BuildTruthPathFingerprint",
+    "Get-BuildTruthTestLabels",
     "Get-BuildTruthTestLanes",
     "Get-BuildTruthWorkingSourceFingerprint",
     "Invoke-BuildTruthCTestLane",
     "New-BuildTruthFailure",
+    "Resolve-BuildTruthContainedPath",
     "Throw-BuildTruthFailure",
     "Write-BuildTruthJson"
 )

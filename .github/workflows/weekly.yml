@@ -19,9 +19,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {platform: Windows-DX12, runner: windows-2022, vcpkg_root: 'C:/vcpkg', preset: win_x64_weekly_soak_debug, build_dir: build/win_x64_weekly_soak_debug}
-          - {platform: Linux-Vulkan, runner: ubuntu-24.04, vcpkg_root: /usr/local/share/vcpkg, preset: linux_x64_weekly_soak_debug, build_dir: build/linux_x64_weekly_soak_debug}
-          - {platform: macOS-Metal, runner: macos-15, vcpkg_root: /usr/local/share/vcpkg, preset: mac_arm64_weekly_soak_debug, build_dir: build/mac_arm64_weekly_soak_debug}
+          - {platform: Windows-DX12, runner: windows-2022, vcpkg_root: 'C:/vcpkg', preset: win_x64_weekly_soak_debug, build_dir: build/win_x64_weekly_soak_debug, backend_label: DX12}
+          - {platform: Linux-Vulkan, runner: ubuntu-24.04, vcpkg_root: /usr/local/share/vcpkg, preset: linux_x64_weekly_soak_debug, build_dir: build/linux_x64_weekly_soak_debug, backend_label: Vulkan}
+          - {platform: macOS-Metal, runner: macos-15, vcpkg_root: /usr/local/share/vcpkg, preset: mac_arm64_weekly_soak_debug, build_dir: build/mac_arm64_weekly_soak_debug, backend_label: Metal}
     runs-on: ${{ matrix.runner }}
     env:
       VCPKG_ROOT: ${{ matrix.vcpkg_root }}
@@ -51,16 +51,37 @@ jobs:
           path: ${{ github.workspace }}/.vcpkg-cache
           key: weekly-vcpkg-${{ matrix.platform }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
           restore-keys: weekly-vcpkg-${{ matrix.platform }}-
-      - name: Configure soak tree
-        run: cmake --preset ${{ matrix.preset }}
-      - name: Build qualification targets
-        run: cmake --build --preset ${{ matrix.preset }} --parallel 3
-      - name: Run 10,000-frame / five-minute soak
+      - name: Run fail-closed 10,000-frame / five-minute soak
         if: runner.os != 'Linux'
-        run: ctest --preset ${{ matrix.preset }}
-      - name: Run Linux 10,000-frame / five-minute soak
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset ${{ matrix.preset }}
+          -BuildPreset ${{ matrix.preset }}
+          -TestPreset ${{ matrix.preset }}
+          -BuildDir ${{ matrix.build_dir }}
+          -Configuration Debug
+          -BuildTarget RVXValidationSuiteWeeklySoak
+          -RequiredLabel suite.weekly-soak
+          -ExpectedTestCount 2
+          -RequiredEvidence 'artifacts/Debug/WeeklySoak/${{ matrix.backend_label }}/startup.json;artifacts/Debug/WeeklySoak/${{ matrix.backend_label }}/lifetime.json;artifacts/Debug/WeeklySoak/${{ matrix.backend_label }}/sample.json'
+          -BaseRef origin/master
+          -Fresh
+      - name: Run fail-closed Linux 10,000-frame / five-minute soak
         if: runner.os == 'Linux'
-        run: xvfb-run -a ctest --preset ${{ matrix.preset }}
+        run: >-
+          xvfb-run -a pwsh -NoProfile -File ./Scripts/run_required_suite.ps1
+          -ConfigurePreset ${{ matrix.preset }}
+          -BuildPreset ${{ matrix.preset }}
+          -TestPreset ${{ matrix.preset }}
+          -BuildDir ${{ matrix.build_dir }}
+          -Configuration Debug
+          -BuildTarget RVXValidationSuiteWeeklySoak
+          -RequiredLabel suite.weekly-soak
+          -ExpectedTestCount 2
+          -RequiredEvidence 'artifacts/Debug/WeeklySoak/${{ matrix.backend_label }}/startup.json;artifacts/Debug/WeeklySoak/${{ matrix.backend_label }}/lifetime.json;artifacts/Debug/WeeklySoak/${{ matrix.backend_label }}/sample.json'
+          -BaseRef origin/master
+          -Fresh
       - if: always()
         uses: actions/upload-artifact@v4
         with:

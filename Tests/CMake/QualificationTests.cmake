@@ -151,6 +151,7 @@ function(rvx_add_renderverse_primary_smoke SAMPLE_ID SAMPLE_LABEL ASSET_ID BACKE
         BUILD_TARGETS RenderVerseSamples ImageContentValidation SampleReportContentValidation
         TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME}
             suite.${RVX_SAMPLE_SUITE}
+        SUITE ${RVX_SAMPLE_SUITE}
         TIMEOUT ${RVX_SAMPLE_TIMEOUT}
         WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
         RESOURCE_LOCK rvx_gpu
@@ -172,6 +173,7 @@ function(rvx_add_renderverse_primary_smoke SAMPLE_ID SAMPLE_LABEL ASSET_ID BACKE
         BUILD_TARGETS ImageContentValidation
         TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME}
             suite.${RVX_SAMPLE_SUITE}
+        SUITE ${RVX_SAMPLE_SUITE}
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         FIXTURES_REQUIRED "${test_prefix}FreshCapture"
@@ -201,6 +203,7 @@ function(rvx_add_renderverse_primary_smoke SAMPLE_ID SAMPLE_LABEL ASSET_ID BACKE
         BUILD_TARGETS SampleReportContentValidation
         TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME}
             suite.${RVX_SAMPLE_SUITE}
+        SUITE ${RVX_SAMPLE_SUITE}
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         FIXTURES_REQUIRED "${test_prefix}FreshCapture"
@@ -277,12 +280,37 @@ function(rvx_add_renderverse_weekly_soak BACKEND_NAME BACKEND_LABEL)
             --report "${lifetime_root}/sample.json"
             --diagnostics
             --validation
-        BUILD_TARGETS RenderVerseSamples
+        BUILD_TARGETS RenderVerseSamples SampleQualificationReportValidation
         TAGS product.samples trait.gpu backend.${BACKEND_NAME}
-            suite.model-viewer suite.lifetime suite.soak suite.weekly-soak
+        suite.model-viewer suite.lifetime suite.soak suite.weekly-soak
+        SUITE weekly-soak
         TIMEOUT 3600
         WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
         RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}Artifacts"
+    )
+
+    rvx_add_validation_test(
+        LANE qualification
+        NAME ${test_prefix}Evidence
+        COMMAND $<TARGET_FILE:SampleQualificationReportValidation>
+            --startup-report "${lifetime_root}/startup.json"
+            --lifetime-report "${lifetime_root}/lifetime.json"
+            --sample-report "${lifetime_root}/sample.json"
+            --backend ${BACKEND_NAME}
+            --render-path direct
+            --asset-mode source
+            --expected-texture-count 0
+            --expected-visible-objects 1
+            --max-first-present-ms 5000
+            --require-resize
+        BUILD_TARGETS SampleQualificationReportValidation
+        TAGS product.samples trait.diagnostics backend.${BACKEND_NAME}
+            suite.model-viewer suite.lifetime suite.soak
+        SUITE weekly-soak
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}Artifacts"
     )
 endfunction()
 

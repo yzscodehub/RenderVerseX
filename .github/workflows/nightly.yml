@@ -41,12 +41,19 @@ jobs:
           -BaseRef origin/master
           -RequiredNativeBackend DX12
           -Fresh
-      - name: Configure DX11/OpenGL compatibility smoke
-        run: cmake --preset win_x64_nightly_compatibility_debug
-      - name: Build DX11/OpenGL compatibility smoke
-        run: cmake --build --preset win_x64_nightly_compatibility_debug --parallel 4
-      - name: Run DX11/OpenGL compatibility smoke
-        run: ctest --preset win_x64_nightly_compatibility_debug
+      - name: Run fail-closed DX11/OpenGL compatibility smoke
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset win_x64_nightly_compatibility_debug
+          -BuildPreset win_x64_nightly_compatibility_debug
+          -TestPreset win_x64_nightly_compatibility_debug
+          -BuildDir build/win_x64_nightly_compatibility_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationSuiteCompatibilitySmoke
+          -RequiredLabel suite.compatibility-smoke
+          -BaseRef origin/master
+          -Fresh
       - name: Stage hash-pinned external asset library
         shell: pwsh
         env:
@@ -78,10 +85,19 @@ jobs:
           cmake --preset win_x64_qualification_debug
           -DRVX_ENABLE_EXTERNAL_ASSET_TESTS=ON
           "-DRVX_EXTERNAL_TEST_ASSET_ROOT=$env:RVX_NIGHTLY_EXTERNAL_ASSET_ROOT"
-      - name: Build full qualification
-        run: cmake --build build/win_x64_qualification_debug --config Debug --target RVXValidationQualification --parallel 4
-      - name: Run full qualification and parity
-        run: ctest --preset win_x64_qualification_debug_qualification
+      - name: Run fail-closed full qualification and parity
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset win_x64_qualification_debug
+          -BuildPreset win_x64_qualification_debug
+          -TestPreset win_x64_qualification_debug_qualification
+          -BuildDir build/win_x64_qualification_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationQualification
+          -RequiredLabel lane.qualification
+          -BaseRef origin/master
+          -SkipConfigure
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -130,12 +146,18 @@ jobs:
             -BaseRef origin/master \
             -RequiredNativeBackend Vulkan \
             -Fresh
-      - name: Configure OpenGL compatibility smoke
-        run: cmake --preset linux_x64_nightly_compatibility_debug
-      - name: Build OpenGL compatibility smoke
-        run: cmake --build --preset linux_x64_nightly_compatibility_debug --parallel 4
-      - name: Run OpenGL compatibility smoke
-        run: xvfb-run -a ctest --preset linux_x64_nightly_compatibility_debug
+      - name: Run fail-closed OpenGL compatibility smoke
+        run: >-
+          xvfb-run -a pwsh -NoProfile -File ./Scripts/run_required_suite.ps1
+          -ConfigurePreset linux_x64_nightly_compatibility_debug
+          -BuildPreset linux_x64_nightly_compatibility_debug
+          -TestPreset linux_x64_nightly_compatibility_debug
+          -BuildDir build/linux_x64_nightly_compatibility_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationSuiteCompatibilitySmoke
+          -RequiredLabel suite.compatibility-smoke
+          -BaseRef origin/master
+          -Fresh
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -164,11 +186,20 @@ jobs:
           key: nightly-vcpkg-linux-tsan-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-ports/**') }}
           restore-keys: nightly-vcpkg-linux-tsan-
       - run: cmake --preset linux_x64_tsan
-      - run: cmake --build build/linux_x64_tsan --target RVXValidationIntegration --parallel 4
-      - name: Run full integration under TSAN
+      - name: Run fail-closed full integration under TSAN
         env:
           TSAN_OPTIONS: halt_on_error=1:abort_on_error=1
-        run: ctest --preset linux_x64_tsan_integration
+        run: >-
+          pwsh -NoProfile -File ./Scripts/run_required_suite.ps1
+          -ConfigurePreset linux_x64_tsan
+          -BuildPreset linux_x64_tsan
+          -TestPreset linux_x64_tsan_integration
+          -BuildDir build/linux_x64_tsan
+          -Configuration Debug
+          -BuildTarget RVXValidationIntegration
+          -RequiredLabel lane.integration
+          -BaseRef origin/master
+          -SkipConfigure
       - if: always()
         uses: actions/upload-artifact@v4
         with:

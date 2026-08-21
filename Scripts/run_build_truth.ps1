@@ -12,6 +12,13 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+if ($env:OS -eq "Windows_NT")
+{
+    $canonicalPath = $env:Path
+    Remove-Item Env:PATH -ErrorAction SilentlyContinue
+    $env:Path = $canonicalPath
+}
+
 Import-Module (Join-Path $PSScriptRoot "BuildTruth\BuildTruthV3.psm1") -Force
 
 function Add-BuildTruthCommand
@@ -73,17 +80,6 @@ function Get-BuildTruthLanePresetList
         }
     }
     return @($presets)
-}
-
-function Get-BuildTruthFailureCategory
-{
-    param([string]$Message)
-
-    if ($Message -match "^BT3\.([A-Za-z0-9]+):")
-    {
-        return $Matches[1]
-    }
-    return "Unexpected"
 }
 
 function Test-BuildTruthEnabledEnvironmentFlag
