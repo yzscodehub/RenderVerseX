@@ -11,6 +11,7 @@
 #include "Render/PipelineCache.h"
 #include "Render/Policy/RenderFrameExecutionPlan.h"
 #include "Render/Renderer/RenderDrawItem.h"
+#include "Render/Renderer/RenderDrawPlan.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
 #include "Render/RenderUploadWorkDiagnostics.h"
@@ -449,6 +450,7 @@ namespace RVX
         PrimaryDirectionalLightRecordInput primaryDirectionalLight{};
         ViewData view{};
         RenderFrameExecutionPlan executionPlan{};
+        RenderViewDrawPlan drawPlan{};
         SceneMeshPassPreparation meshPassPreparation{};
         SceneRenderInstanceBatchPlans instanceBatchPlans{};
         RenderVisibilityResult visibility{};
@@ -722,6 +724,7 @@ namespace RVX
         /** Exact logical view identity paired with this recording. */
         RenderViewIdentity featureViewIdentity{};
         const RenderFrameExecutionPlan* executionPlan = nullptr;
+        const RenderViewDrawPlan* drawPlan = nullptr;
         const SceneMeshPassPreparation* meshPassPreparation = nullptr;
         const SceneRenderInstanceBatchPlans* instanceBatchPlans = nullptr;
         const RenderVisibilityResult* visibility = nullptr;
@@ -759,6 +762,7 @@ namespace RVX
                 return false;
             }
             if (view.renderFrameExecutionPlan != executionPlan ||
+                view.renderDrawPlan != drawPlan ||
                 view.meshPassPreparation != meshPassPreparation ||
                 view.instanceBatchPlans != instanceBatchPlans ||
                 view.renderVisibility != visibility ||
@@ -769,6 +773,12 @@ namespace RVX
             if (executionPlan != nullptr &&
                 (executionPlan->frameSequence != identity.frameSequence ||
                  executionPlan->viewOrdinal != identity.viewOrdinal))
+            {
+                return false;
+            }
+            if (drawPlan != nullptr &&
+                (drawPlan->frameSequence != identity.frameSequence ||
+                 drawPlan->viewOrdinal != identity.viewOrdinal))
             {
                 return false;
             }
@@ -799,6 +809,12 @@ namespace RVX
         {
             return frameSnapshot ? &frameSnapshot->meshPassPreparation : nullptr;
         }
+        [[nodiscard]] const RenderViewDrawPlan* GetDrawPlan() const
+        {
+            return frameSnapshot && frameSnapshot->drawPlan.IsValid()
+                       ? &frameSnapshot->drawPlan
+                       : nullptr;
+        }
         [[nodiscard]] const RenderVisibilityResult* GetVisibility() const
         {
             return frameSnapshot ? &frameSnapshot->visibility : nullptr;
@@ -819,6 +835,7 @@ namespace RVX
                 frameSnapshot->identity != identity ||
                 results->identity != identity ||
                 view.renderFrameExecutionPlan != &frameSnapshot->executionPlan ||
+                view.renderDrawPlan != GetDrawPlan() ||
                 view.meshPassPreparation != &frameSnapshot->meshPassPreparation ||
                 view.instanceBatchPlans != &frameSnapshot->instanceBatchPlans ||
                 view.renderVisibility != &frameSnapshot->visibility ||
@@ -876,6 +893,10 @@ namespace RVX
             snapshot->executionPlan.frameSequence = context.identity.frameSequence;
             snapshot->executionPlan.viewOrdinal = context.identity.viewOrdinal;
         }
+        if (context.drawPlan != nullptr)
+        {
+            snapshot->drawPlan = *context.drawPlan;
+        }
         if (context.meshPassPreparation != nullptr)
         {
             snapshot->meshPassPreparation = *context.meshPassPreparation;
@@ -923,6 +944,9 @@ namespace RVX
             results.executionReport.frameSequence = context.identity.frameSequence;
         }
         snapshot->view.renderFrameExecutionPlan = &snapshot->executionPlan;
+        snapshot->view.renderDrawPlan = snapshot->drawPlan.IsValid()
+                                            ? &snapshot->drawPlan
+                                            : nullptr;
         snapshot->view.meshPassPreparation = &snapshot->meshPassPreparation;
         snapshot->view.instanceBatchPlans = &snapshot->instanceBatchPlans;
         snapshot->view.renderVisibility = &snapshot->visibility;
@@ -969,6 +993,7 @@ namespace RVX
         // value snapshot and is intentionally not used by migrated scene passes.
         context.identity.recordEpoch = 1;
         context.executionPlan = view.renderFrameExecutionPlan;
+        context.drawPlan = view.renderDrawPlan;
         context.meshPassPreparation = view.meshPassPreparation;
         context.instanceBatchPlans = view.instanceBatchPlans;
         context.visibility = view.renderVisibility;

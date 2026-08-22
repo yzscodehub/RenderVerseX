@@ -19,6 +19,8 @@ namespace RVX
 
     struct RenderDrawItem
     {
+        /// Stable index into the frame's view-independent scene classification.
+        uint32 classificationIndex = RVX_INVALID_INDEX;
         uint32 objectIndex = 0;
         uint32 submeshIndex = 0;
         RenderResourceHandle mesh;

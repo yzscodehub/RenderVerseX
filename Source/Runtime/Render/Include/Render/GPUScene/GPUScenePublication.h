@@ -31,9 +31,12 @@ namespace RVX
         /** @brief All accepted RenderScene objects/draws examined by this attempt. */
         uint32 attemptedObjectCount = 0;
         uint32 attemptedDrawCount = 0;
+        /** @brief One material-binding row is authored for every accepted draw. */
+        uint32 attemptedMaterialBindingCount = 0;
         /** @brief Valid candidates constructed by this attempt before diffing. */
         uint32 candidateObjectCount = 0;
         uint32 candidateDrawCount = 0;
+        uint32 candidateMaterialBindingCount = 0;
         /** @brief Backward-compatible names for the attempt input counts. */
         uint32 acceptedObjectCount = 0;
         uint32 acceptedDrawCount = 0;
@@ -42,6 +45,8 @@ namespace RVX
         uint32 excludedObjectCount = 0;
         uint32 publishedDrawCount = 0;
         uint32 excludedDrawCount = 0;
+        uint32 publishedMaterialBindingCount = 0;
+        uint32 excludedMaterialBindingCount = 0;
         uint32 addCount = 0;
         uint32 updateCount = 0;
         uint32 removeCount = 0;
@@ -52,6 +57,35 @@ namespace RVX
             GPUScenePublicationFailureReason::None;
         bool complete = false;
         bool executionEligible = false;
+
+        /** @brief Full/incremental publications share this exact parity rule. */
+        [[nodiscard]] bool HasCompleteSceneParity() const noexcept
+        {
+            return excludedObjectCount == 0 && excludedDrawCount == 0 &&
+                   excludedMaterialBindingCount == 0 &&
+                   publishedObjectCount == attemptedObjectCount &&
+                   publishedDrawCount == attemptedDrawCount &&
+                   publishedMaterialBindingCount ==
+                       attemptedMaterialBindingCount &&
+                   attemptedMaterialBindingCount == attemptedDrawCount;
+        }
+
+        /** @brief Cross-check publication rows against the frozen scene classification. */
+        [[nodiscard]] bool HasRenderClassificationParity(
+            uint32 sceneObjectCount,
+            uint32 classifiedDrawCount,
+            uint32 classifiedMaterialBindingCount) const noexcept
+        {
+            return HasCompleteSceneParity() &&
+                   attemptedObjectCount == sceneObjectCount &&
+                   publishedObjectCount == sceneObjectCount &&
+                   attemptedDrawCount == classifiedDrawCount &&
+                   publishedDrawCount == classifiedDrawCount &&
+                   attemptedMaterialBindingCount ==
+                       classifiedMaterialBindingCount &&
+                   publishedMaterialBindingCount ==
+                       classifiedMaterialBindingCount;
+        }
     };
 
     static_assert(static_cast<uint8>(GPUScenePublicationFailureReason::None) == 0);

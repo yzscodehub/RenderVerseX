@@ -211,6 +211,7 @@ void CPUVisibilityProvider::Evaluate(const RenderCandidateSet& candidates,
                                      RenderVisibilityResult& outResult) const
 {
     outResult = {};
+    outResult.evaluatedCullingMask = request.cullingMask;
     InitializePassResults(outResult);
     outResult.structurallyValid = candidates.IsValid();
     if (!outResult.structurallyValid)
@@ -222,7 +223,8 @@ void CPUVisibilityProvider::Evaluate(const RenderCandidateSet& candidates,
 
     for (const RenderVisibilityCandidate& candidate : candidates.GetCandidates())
     {
-        if (!candidate.objectVisible || !candidate.drawable)
+        if (!candidate.objectVisible || !candidate.drawable ||
+            !IsRenderLayerVisible(candidate.layerMask, request.cullingMask))
         {
             continue;
         }
@@ -340,7 +342,9 @@ void GPUVisibilityProvider::AppendPassCandidates(
             InitializePassResults(inOutResult);
             return;
         }
-        if (!candidate.objectVisible || !candidate.drawable)
+        if (!candidate.objectVisible || !candidate.drawable ||
+            !IsRenderLayerVisible(candidate.layerMask,
+                                  inOutResult.evaluatedCullingMask))
         {
             continue;
         }

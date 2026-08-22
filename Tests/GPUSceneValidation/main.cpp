@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <limits>
 #include <type_traits>
 #include <vector>
@@ -1326,8 +1327,38 @@ TEST(GPUSceneValidation, ChangedDrawCountUpdatesOneObjectWhileAcceptedOrderRemai
         update.Publish(changedDrawCount, resources.registry);
     EXPECT_EQ(changed.updateCount, 1U);
     EXPECT_EQ(changed.noOpCount, 1U);
+    EXPECT_TRUE(changed.HasCompleteSceneParity());
+    EXPECT_TRUE(changed.HasRenderClassificationParity(2, 3, 3));
+    EXPECT_FALSE(changed.HasRenderClassificationParity(2, 2, 3));
+    EXPECT_FALSE(changed.HasRenderClassificationParity(2, 3, 2));
+    EXPECT_EQ(changed.attemptedObjectCount, 2U);
+    EXPECT_EQ(changed.attemptedDrawCount, 3U);
+    EXPECT_EQ(changed.attemptedMaterialBindingCount, 3U);
     EXPECT_EQ(changed.publishedObjectCount, 2U);
     EXPECT_EQ(changed.publishedDrawCount, 3U);
+    EXPECT_EQ(changed.publishedMaterialBindingCount, 3U);
+    EXPECT_EQ(changed.excludedMaterialBindingCount, 0U);
+    const GPUSceneCommittedMirror& changedMirror =
+        update.GetCommittedMirrorForTesting();
+    // Row zero is the typed sentinel. Material rows are bindings, so two
+    // submeshes sharing one material still publish two independent live rows.
+    // The backing vectors may also retain generation-checked tombstones.
+    const auto liveRows = [](const auto& rows)
+    {
+        return std::count_if(
+            rows.begin(), rows.end(), [](const auto& row)
+            {
+                return HasGPUSceneRowFlag(
+                    row.header.flags, GPUSceneRowFlags::Live);
+            });
+    };
+    EXPECT_EQ(changedMirror.primitives.size(), 3U);
+    EXPECT_EQ(liveRows(changedMirror.draws), 3);
+    EXPECT_EQ(liveRows(changedMirror.materials), 3);
+    EXPECT_EQ(liveRows(changedMirror.geometries), 3);
+    EXPECT_GE(changedMirror.draws.size(), 4U);
+    EXPECT_GE(changedMirror.materials.size(), 4U);
+    EXPECT_GE(changedMirror.geometries.size(), 4U);
     EXPECT_GT(changed.committedVersion, initial.committedVersion);
 
     RenderScene reordered;

@@ -454,6 +454,16 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME RenderDrawPlanValidation
+    LANE unit
+    SOURCES RenderDrawPlanValidation/main.cpp
+    LIBS RVX::RenderFoundation
+    INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+    TAGS subsystem.render suite.draw-plan
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
     NAME RenderDrawPacketCacheValidation
     LANE unit
     SOURCES RenderDrawPacketCacheValidation/main.cpp

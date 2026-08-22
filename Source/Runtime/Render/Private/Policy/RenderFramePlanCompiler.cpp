@@ -39,6 +39,7 @@ RenderPreparedDrawPacketSignature BuildRenderPreparedDrawPacketSignature(
     signature.directLayout = source.directLayout;
     signature.sourceOrdinal = source.sourceOrdinal;
     signature.viewDepth = source.viewDepth;
+    signature.classificationIndex = source.classificationIndex;
     return signature;
 }
 
@@ -198,7 +199,8 @@ namespace
                 source.groupKey != sorted.groupKey ||
                 source.directLayout != sorted.directLayout ||
                 source.sourceOrdinal != sorted.sourceOrdinal ||
-                source.viewDepth != sorted.viewDepth)
+                source.viewDepth != sorted.viewDepth ||
+                source.classificationIndex != sorted.classificationIndex)
             {
                 return false;
             }
@@ -620,6 +622,22 @@ RenderFramePlanCompileResult CompileRenderFrameExecutionPlan(
     }
     result.succeeded = true;
     result.reason = RenderPolicyReason::None;
+    return result;
+}
+
+RenderFramePlanCompileResult CompileRenderFrameExecutionPlan(
+    const RenderPolicyResolution& resolution,
+    const SceneMeshPassPreparation& preparation,
+    const RenderViewDrawPlan& drawPlan)
+{
+    RenderFramePlanCompileResult result =
+        CompileRenderFrameExecutionPlan(resolution, preparation);
+    if (!result.succeeded ||
+        !ValidateRenderFrameExecutionPlanDrawParity(result.plan, drawPlan))
+    {
+        result = {};
+        result.reason = RenderPolicyReason::InconsistentFacts;
+    }
     return result;
 }
 } // namespace RVX

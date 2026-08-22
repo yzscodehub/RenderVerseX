@@ -19,6 +19,7 @@ namespace RVX
     class Camera;
     struct RenderFrameExecutionPlan;
     struct RenderFrameExecutionReport;
+    struct RenderViewDrawPlan;
     struct RenderVisibilityResult;
     struct SceneMeshPassPreparation;
     struct SceneRenderInstanceBatchPlans;
@@ -209,6 +210,8 @@ namespace RVX
         /// Borrowed frame-owned execution contract published by SceneRenderer.
         /// Passes must not retain these pointers beyond the current frame.
         const RenderFrameExecutionPlan* renderFrameExecutionPlan = nullptr;
+        /// Frozen semantic draw intent. Direct/GPU policy cannot mutate it.
+        const RenderViewDrawPlan* renderDrawPlan = nullptr;
         const SceneMeshPassPreparation* meshPassPreparation = nullptr;
         const SceneRenderInstanceBatchPlans* instanceBatchPlans = nullptr;
         RenderFrameExecutionReport* renderFrameExecutionReport = nullptr;

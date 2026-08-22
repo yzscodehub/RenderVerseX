@@ -23,6 +23,14 @@ namespace RVX
         uint64 submissionCpuNanoseconds = 0;
         uint64 candidatePacketCount = 0;
         uint64 drawGroupCount = 0;
+        uint64 semanticPacketCount = 0;
+        uint64 visiblePacketCount = 0;
+        uint64 semanticPrimitiveCount = 0;
+        uint64 visiblePrimitiveCount = 0;
+        uint64 materialBindingCount = 0;
+        uint64 uniqueMaterialCount = 0;
+        uint64 semanticDrawGroupCount = 0;
+        uint64 drawPlanHash = 0;
         float64 averageGroupOccupancy = 0.0;
         bool planCpuTimingAvailable = false;
         bool submissionCpuTimingAvailable = false;

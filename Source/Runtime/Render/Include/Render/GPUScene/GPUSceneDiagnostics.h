@@ -134,10 +134,15 @@ namespace RVX
             GPUSceneUploadFailureReason::None;
         uint32 attemptedObjectCount = 0;
         uint32 attemptedDrawCount = 0;
+        uint32 attemptedMaterialBindingCount = 0;
         uint32 candidateObjectCount = 0;
         uint32 candidateDrawCount = 0;
+        uint32 candidateMaterialBindingCount = 0;
         uint32 publishedObjectCount = 0;
         uint32 publishedDrawCount = 0;
+        uint32 publishedMaterialBindingCount = 0;
+        uint32 excludedMaterialBindingCount = 0;
+        bool renderClassificationParity = false;
         uint32 addCount = 0;
         uint32 updateCount = 0;
         uint32 removeCount = 0;

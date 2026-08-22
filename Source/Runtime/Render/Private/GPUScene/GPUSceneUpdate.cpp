@@ -386,6 +386,9 @@ void GPUSceneUpdate::PopulateCommittedIdentity(
     stats.committedSourceSequence = m_committedSourceSequence;
     stats.publishedObjectCount = m_database.GetObjectCount();
     stats.publishedDrawCount = GetPublishedDrawCount();
+    // The current GPUScene schema owns one material row per draw row. This is
+    // material-binding parity, not a count of unique material resources.
+    stats.publishedMaterialBindingCount = stats.publishedDrawCount;
     PopulateMutationTotals(stats);
 }
 
@@ -855,12 +858,14 @@ GPUScenePublicationStats GPUSceneUpdate::PublishImpl(
         const uint32 sourceDrawCount =
             static_cast<uint32>(source.meshBatches.size());
         stats.attemptedDrawCount += sourceDrawCount;
+        stats.attemptedMaterialBindingCount += sourceDrawCount;
         stats.acceptedDrawCount = stats.attemptedDrawCount;
         BuildPublishedObjectResult built = BuildPublishedObject(source, registry);
         if (!built.Succeeded())
         {
             ++stats.excludedObjectCount;
             stats.excludedDrawCount += sourceDrawCount;
+            stats.excludedMaterialBindingCount += sourceDrawCount;
             if (stats.failureReason == GPUScenePublicationFailureReason::None)
             {
                 stats.failureReason = built.failureReason;
@@ -875,6 +880,7 @@ GPUScenePublicationStats GPUSceneUpdate::PublishImpl(
         {
             ++stats.excludedObjectCount;
             stats.excludedDrawCount += sourceDrawCount;
+            stats.excludedMaterialBindingCount += sourceDrawCount;
             if (stats.failureReason == GPUScenePublicationFailureReason::None)
             {
                 stats.failureReason = dependencyFailure;
@@ -891,6 +897,7 @@ GPUScenePublicationStats GPUSceneUpdate::PublishImpl(
         {
             ++stats.excludedObjectCount;
             stats.excludedDrawCount += drawCount;
+            stats.excludedMaterialBindingCount += drawCount;
             if (stats.failureReason == GPUScenePublicationFailureReason::None)
             {
                 stats.failureReason = GPUScenePublicationFailureReason::InvalidObject;
@@ -898,6 +905,7 @@ GPUScenePublicationStats GPUSceneUpdate::PublishImpl(
             continue;
         }
         stats.candidateDrawCount += drawCount;
+        stats.candidateMaterialBindingCount += drawCount;
     }
     stats.candidateObjectCount = static_cast<uint32>(candidateObjects.size());
 
@@ -971,8 +979,7 @@ GPUScenePublicationStats GPUSceneUpdate::PublishImpl(
     m_committedSourceSequence = stats.sourceSequence;
     PopulateCommittedIdentity(stats);
     RecordCommittedMutation(stats, true);
-    stats.complete = stats.excludedObjectCount == 0 &&
-                     stats.excludedDrawCount == 0;
+    stats.complete = stats.HasCompleteSceneParity();
     stats.executionEligible = false;
     m_stats = stats;
     return m_stats;
@@ -990,6 +997,7 @@ GPUScenePublicationStats GPUSceneUpdate::PublishIncrementalImpl(
     stats.attemptedObjectCount = static_cast<uint32>(scene.GetObjectCount());
     stats.acceptedObjectCount = stats.attemptedObjectCount;
     stats.attemptedDrawCount = scene.GetDrawCount();
+    stats.attemptedMaterialBindingCount = stats.attemptedDrawCount;
     stats.acceptedDrawCount = stats.attemptedDrawCount;
     PopulateCommittedIdentity(stats);
 
@@ -1033,6 +1041,8 @@ GPUScenePublicationStats GPUSceneUpdate::PublishIncrementalImpl(
             ++stats.excludedObjectCount;
             stats.excludedDrawCount +=
                 static_cast<uint32>(source->meshBatches.size());
+            stats.excludedMaterialBindingCount +=
+                static_cast<uint32>(source->meshBatches.size());
             if (stats.failureReason == GPUScenePublicationFailureReason::None)
                 stats.failureReason = built.failureReason;
             objectsToRemove.insert(objectId);
@@ -1048,12 +1058,16 @@ GPUScenePublicationStats GPUSceneUpdate::PublishIncrementalImpl(
             ++stats.excludedObjectCount;
             stats.excludedDrawCount +=
                 static_cast<uint32>(source->meshBatches.size());
+            stats.excludedMaterialBindingCount +=
+                static_cast<uint32>(source->meshBatches.size());
             if (stats.failureReason == GPUScenePublicationFailureReason::None)
                 stats.failureReason = dependencyFailure;
             objectsToRemove.insert(objectId);
             continue;
         }
         stats.candidateDrawCount +=
+            static_cast<uint32>(built.object.data.draws.size());
+        stats.candidateMaterialBindingCount +=
             static_cast<uint32>(built.object.data.draws.size());
         candidates.emplace(objectId, std::move(built.object));
     }
@@ -1135,10 +1149,7 @@ GPUScenePublicationStats GPUSceneUpdate::PublishIncrementalImpl(
     m_committedSourceSequence = stats.sourceSequence;
     PopulateCommittedIdentity(stats);
     RecordCommittedMutation(stats, false);
-    stats.complete = stats.excludedObjectCount == 0 &&
-                     stats.excludedDrawCount == 0 &&
-                     stats.publishedObjectCount == stats.attemptedObjectCount &&
-                     stats.publishedDrawCount == stats.attemptedDrawCount;
+    stats.complete = stats.HasCompleteSceneParity();
     stats.executionEligible = false;
     m_stats = stats;
     return m_stats;
@@ -1164,10 +1175,7 @@ GPUScenePublicationStats GPUSceneUpdate::Revalidate(
             return m_stats;
         }
     }
-    if (stats.attemptedObjectCount == stats.publishedObjectCount &&
-        stats.attemptedDrawCount == stats.publishedDrawCount &&
-        stats.excludedObjectCount == 0 &&
-        stats.excludedDrawCount == 0 &&
+    if (stats.HasCompleteSceneParity() &&
         (stats.failureReason == GPUScenePublicationFailureReason::ResourceUnavailable ||
          stats.failureReason == GPUScenePublicationFailureReason::DependencyUnavailable ||
          stats.failureReason == GPUScenePublicationFailureReason::DependencyCycle ||

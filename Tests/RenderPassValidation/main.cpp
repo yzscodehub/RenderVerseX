@@ -112,6 +112,142 @@ namespace RVX
     class SceneRendererTestAccess final
     {
     public:
+        static std::unique_ptr<const RenderFramePacketV5>
+            MakeEmptyFrameForTesting(
+            RenderSceneDatabase& sceneDatabase,
+            uint64 frameSequence)
+        {
+            RenderSceneMutationAccumulator accumulator;
+            accumulator.Begin(0, true);
+            if (!sceneDatabase.Apply(accumulator.Build(1)).IsApplied())
+            {
+                return nullptr;
+            }
+
+            RenderFrameHeaderV5 header;
+            header.sequence = frameSequence;
+            header.requiredSceneRevision = 1;
+            header.worldRevision = 1;
+            header.temporalEpoch = 1;
+            header.viewFamilyId = 1;
+            header.surfaceGeneration = 1;
+            header.configurationRevision = 1;
+            header.formatRevision = 1;
+            header.simulationTick = 1;
+            header.effectFixedDeltaSeconds = 1.0f / 60.0f;
+            header.effectSimulationSeconds = 1.0 / 60.0;
+            header.deterministicSeed = 0x7a6f4d31u;
+            header.outputWidth = 32;
+            header.outputHeight = 32;
+
+            RenderViewSnapshot view;
+            view.identity = {
+                .sceneRuntimeId = 1,
+                .cameraEntityPacked = 1,
+                .subViewIndex = 0,
+                .role = ViewRole::Main,
+            };
+            view.cameraCutRevision = 1;
+            view.viewportWidth = header.outputWidth;
+            view.viewportHeight = header.outputHeight;
+            view.absoluteTime = header.effectSimulationSeconds;
+            view.deltaTime = header.effectFixedDeltaSeconds;
+
+            RenderExtractionDiagnostics extraction;
+            extraction.code = RenderExtractionCode::Complete;
+            extraction.complete = true;
+            return RenderFramePacketV5::Create(
+                header,
+                view,
+                RenderFrameSettings{},
+                RenderFrameCaptureRequest{},
+                extraction);
+        }
+
+        static bool AcceptEmptyFrameForTesting(
+            SceneRenderer& renderer,
+            uint64 frameSequence)
+        {
+            RenderSceneDatabase sceneDatabase;
+            const std::unique_ptr<const RenderFramePacketV5> frame =
+                MakeEmptyFrameForTesting(sceneDatabase, frameSequence);
+            if (!frame)
+            {
+                return false;
+            }
+
+            RenderResourceRegistry registry;
+            return renderer.m_renderScene.ApplyFrameV5(
+                *frame, sceneDatabase, registry).IsApplied();
+        }
+
+        static bool RejectDuplicateFrameForTesting(SceneRenderer& renderer)
+        {
+            RenderSceneDatabase sceneDatabase;
+            const std::unique_ptr<const RenderFramePacketV5> duplicate =
+                MakeEmptyFrameForTesting(
+                    sceneDatabase,
+                    renderer.m_renderScene.GetAcceptedHeader().sequence);
+            if (!duplicate)
+            {
+                return false;
+            }
+            RenderResourceRegistry registry;
+            const RenderFrameApplyResult result = renderer.ApplyFrameV5(
+                *duplicate, sceneDatabase, registry);
+            return !result.IsApplied();
+        }
+
+        static bool BuildPreparedDrawPlanForTesting(SceneRenderer& renderer)
+        {
+            if (!renderer.m_sceneDrawClassification.IsValid() &&
+                !BuildRenderSceneDrawClassification(
+                    renderer.m_renderScene,
+                    renderer.m_sceneDrawClassification))
+            {
+                return false;
+            }
+
+            renderer.m_renderVisibility = {};
+            renderer.m_renderVisibility.structurallyValid = true;
+            renderer.m_renderVisibility.evaluatedCullingMask = ~0U;
+            const size_t objectCount = renderer.m_renderScene.GetObjectCount();
+            renderer.m_renderVisibility.cpuVisibleObjectMask.assign(
+                objectCount, 1);
+            renderer.m_renderVisibility.coarseVisibleObjectMask.assign(
+                objectCount, 1);
+            const auto setPassVisibility = [&renderer](
+                RenderPassKind pass,
+                const MeshPassPacketStream& stream)
+            {
+                RenderVisibilityPassResult& passVisibility =
+                    renderer.m_renderVisibility
+                        .passes[static_cast<size_t>(pass)];
+                passVisibility.pass = pass;
+                passVisibility.sourcePacketKnown.assign(
+                    stream.packets.size(), 1);
+                passVisibility.cpuVisibleBySourcePacket.assign(
+                    stream.packets.size(), 1);
+            };
+            setPassVisibility(
+                RenderPassKind::Depth, renderer.m_meshPassPreparation.depth);
+            setPassVisibility(
+                RenderPassKind::Opaque, renderer.m_meshPassPreparation.opaque);
+            setPassVisibility(
+                RenderPassKind::Transparent,
+                renderer.m_meshPassPreparation.transparent);
+
+            RenderViewDrawPlanBuildResult result = BuildRenderViewDrawPlan(
+                renderer.m_renderScene.GetAcceptedHeader().sequence,
+                0,
+                renderer.m_sceneDrawClassification,
+                renderer.m_meshPassPreparation,
+                renderer.m_renderVisibility);
+            renderer.m_renderDrawPlanBuildCode = result.code;
+            renderer.m_renderDrawPlan = std::move(result.plan);
+            return renderer.m_renderDrawPlan.IsValid();
+        }
+
         static void ConfigureGPUDrivenPlan(
             SceneRenderer& renderer,
             GPUDrivenTier selectedTier,
@@ -409,7 +545,7 @@ namespace RVX
             }
         }
 
-        static void ConfigureLaneAggregationForTesting(
+        static bool ConfigureLaneAggregationForTesting(
             SceneRenderer& renderer,
             std::unique_ptr<PipelineCache> pipelineCache,
             DepthPrepass* depthPass,
@@ -425,18 +561,50 @@ namespace RVX
             renderer.m_opaqueGPUCulling = std::move(opaqueOwner);
             renderer.m_meshPassPreparation.Clear();
 
-            MeshPassProcessorResult opaqueCandidate;
-            opaqueCandidate.disposition = MeshPassDisposition::GPUCandidate;
-            opaqueCandidate.reason = MeshPassEligibilityReason::None;
-            opaqueCandidate.packet.pass = RenderPassKind::Opaque;
-            opaqueCandidate.packet.arguments.indexCount = 3u;
-            opaqueCandidate.groupKey.pipeline.materialVariant =
-                MaterialPipelineVariant::Opaque;
-            opaqueCandidate.groupKey.pipeline.topology =
+            if (!AcceptEmptyFrameForTesting(renderer, 991))
+            {
+                return false;
+            }
+            RenderObject object;
+            object.entityId = 41;
+            object.mesh = {7, 1};
+            object.drawable = true;
+            object.visible = true;
+            object.castsShadow = true;
+            object.meshBatchesAuthoritative = true;
+            MeshBatch batch;
+            batch.objectId = object.entityId;
+            batch.mesh = object.mesh;
+            batch.primitiveData = 0;
+            batch.geometry.indexCount = 3;
+            batch.geometry.topology =
                 MeshUploadPrimitiveTopology::Triangles;
+            batch.flags = RenderBatchFlags::CastsShadow |
+                          RenderBatchFlags::MissingMaterial;
+            object.meshBatches.push_back(batch);
+            renderer.m_renderScene.AddObject(object);
+            if (!BuildRenderSceneDrawClassification(
+                    renderer.m_renderScene,
+                    renderer.m_sceneDrawClassification))
+            {
+                return false;
+            }
+            const RenderSceneDrawClassificationEntry& classification =
+                renderer.m_sceneDrawClassification.entries.front();
+            MeshPassProcessorInput input;
+            input.packet = classification.draw.packet;
+            input.classificationIndex = classification.classificationIndex;
+            renderer.m_meshPassPreparation.depth.Record(
+                DepthMeshPassProcessor{}.Process(input));
             renderer.m_meshPassPreparation.opaque.Record(
-                std::move(opaqueCandidate));
+                OpaqueMeshPassProcessor{}.Process(input));
+            renderer.m_meshPassPreparation.shadow.Record(
+                ShadowMeshPassProcessor{}.Process(input));
+            renderer.m_meshPassPreparation.depth.FinalizeGroups();
             renderer.m_meshPassPreparation.opaque.FinalizeGroups();
+            renderer.m_meshPassPreparation.shadow.FinalizeGroups();
+            renderer.m_meshPassPreparation.transparent.FinalizeGroups();
+            return BuildPreparedDrawPlanForTesting(renderer);
         }
 
         static void SetCompletedPassResultsForTesting(
@@ -1945,6 +2113,7 @@ namespace
         object.mesh = gpuResources.GetHandle(meshResource.GetId());
         object.worldMatrix = Mat4Identity();
         object.normalMatrix = Mat4Identity();
+        object.drawable = true;
         object.visible = true;
         return object;
     }
@@ -3575,7 +3744,7 @@ TEST_F(RenderPassValidationFixture,
 }
 
 TEST_F(RenderPassValidationFixture,
-       SceneRendererPolicyKeepsOpaqueTierOneWhenDepthHasNoCandidateOrOwner)
+       SceneRendererPolicyKeepsOpaqueTierOneWhenDepthPassHasNoOwner)
 {
     const fs::path shaderDir = FindShaderDirectory();
     if (shaderDir.empty())
@@ -3585,9 +3754,6 @@ TEST_F(RenderPassValidationFixture,
 
     auto scenePipelineCache = MakeD4b2PipelineCache(device, shaderDir);
     ASSERT_NE(nullptr, scenePipelineCache);
-    DepthPrepass depthPass;
-    depthPass.SetResources(scenePipelineCache.get());
-    depthPass.SetEnabled(true);
     OpaquePass opaquePass;
     opaquePass.SetResources(scenePipelineCache.get(), nullptr);
     auto opaqueOwner = MakeD4b2CullingOwner(
@@ -3605,12 +3771,12 @@ TEST_F(RenderPassValidationFixture,
     renderer.SetRenderFeatureReportDeviceForTesting(&device);
     renderer.SetExternalRenderTarget(externalTarget);
     renderer.SetGPUDrivenCullingMode(RenderGPUDrivenMode::ForceEnabled);
-    SceneRendererTestAccess::ConfigureLaneAggregationForTesting(
+    ASSERT_TRUE(SceneRendererTestAccess::ConfigureLaneAggregationForTesting(
         renderer,
         std::move(scenePipelineCache),
-        &depthPass,
+        nullptr,
         &opaquePass,
-        std::move(opaqueOwner));
+        std::move(opaqueOwner)));
 
     renderer.CompileRenderFramePlanForTesting();
 
@@ -9863,6 +10029,10 @@ TEST(SceneRendererDiagnosticsValidation,
     renderer.SetGPUDrivenCullingMode(RenderGPUDrivenMode::ForceDisabled);
     EXPECT_EQ(renderer.GetGPUDrivenCullingMode(),
               renderer.GetGPUDrivenPolicyDecision().requestedMode);
+    ASSERT_TRUE(SceneRendererTestAccess::AcceptEmptyFrameForTesting(
+        renderer, 7001));
+    ASSERT_TRUE(SceneRendererTestAccess::BuildPreparedDrawPlanForTesting(
+        renderer));
     renderer.CompileRenderFramePlanForTesting();
     ASSERT_TRUE(renderer.GetRenderPolicyDiagnostics().requestAvailable);
     ASSERT_TRUE(renderer.GetRenderPolicyDiagnostics().planAvailable);
@@ -9886,16 +10056,22 @@ TEST(SceneRendererDiagnosticsValidation,
     renderer.PrepareForSwapChainResize();
     EXPECT_FALSE(renderer.GetRenderPolicyDiagnostics().planAvailable);
 
+    ASSERT_TRUE(SceneRendererTestAccess::BuildPreparedDrawPlanForTesting(
+        renderer));
     renderer.CompileRenderFramePlanForTesting();
     ASSERT_TRUE(renderer.GetRenderPolicyDiagnostics().planAvailable);
     renderer.ClearExternalRenderTarget();
     EXPECT_FALSE(renderer.GetRenderPolicyDiagnostics().planAvailable);
 
+    ASSERT_TRUE(SceneRendererTestAccess::BuildPreparedDrawPlanForTesting(
+        renderer));
     renderer.CompileRenderFramePlanForTesting();
     ASSERT_TRUE(renderer.GetRenderPolicyDiagnostics().planAvailable);
     renderer.SetGPUDrivenCullingConfig(GPUCullingConfig{});
     EXPECT_FALSE(renderer.GetRenderPolicyDiagnostics().planAvailable);
 
+    ASSERT_TRUE(SceneRendererTestAccess::BuildPreparedDrawPlanForTesting(
+        renderer));
     renderer.CompileRenderFramePlanForTesting();
     renderer.RefreshFrameDiagnosticsForTesting();
     EXPECT_TRUE(renderer.GetFrameDiagnostics().policy.planAvailable);
@@ -9904,6 +10080,33 @@ TEST(SceneRendererDiagnosticsValidation,
     EXPECT_FALSE(renderer.GetFrameDiagnostics().policy.planAvailable);
     EXPECT_EQ(RenderGPUDrivenMode::ForceDisabled,
               ownedPlan.viewPolicy.requestedMode);
+}
+
+TEST(SceneRendererDiagnosticsValidation,
+     RejectedFrameApplyClearsPreparedDrawStateAndFailsClosed)
+{
+    SceneRenderer renderer;
+    ASSERT_TRUE(SceneRendererTestAccess::AcceptEmptyFrameForTesting(
+        renderer, 7101));
+    ASSERT_TRUE(SceneRendererTestAccess::BuildPreparedDrawPlanForTesting(
+        renderer));
+    ASSERT_TRUE(renderer.GetSceneDrawClassification().IsValid());
+    ASSERT_TRUE(renderer.GetRenderDrawPlan().IsValid());
+
+    ASSERT_TRUE(SceneRendererTestAccess::RejectDuplicateFrameForTesting(
+        renderer));
+    EXPECT_TRUE(renderer.GetRenderScene().HasAcceptedFrame());
+    EXPECT_EQ(7101U,
+              renderer.GetRenderScene().GetAcceptedHeader().sequence);
+    EXPECT_FALSE(renderer.GetSceneDrawClassification().IsValid());
+    EXPECT_FALSE(renderer.GetRenderDrawPlan().IsValid());
+    EXPECT_EQ(RenderDrawPlanBuildCode::InvalidPreparation,
+              renderer.GetRenderDrawPlanBuildCode());
+    EXPECT_TRUE(renderer.GetMeshPassPreparation().depth.packets.empty());
+    EXPECT_TRUE(renderer.GetMeshPassPreparation().opaque.packets.empty());
+    EXPECT_TRUE(renderer.GetMeshPassPreparation().shadow.packets.empty());
+    EXPECT_TRUE(renderer.GetMeshPassPreparation().transparent.packets.empty());
+    EXPECT_FALSE(renderer.GetRenderPolicyDiagnostics().planAvailable);
 }
 
 TEST_F(RenderPassValidationFixture, PostProcessSettingsDefaultRayTracedReflectionControlsAreExplicit)
@@ -19308,6 +19511,23 @@ TEST_F(RenderPassValidationFixture, RayTracingSceneManagerReportsStructuredFallb
               RayTracingSceneFallbackCode::EmptyBuildPlan);
     EXPECT_NE(std::string(emptyPlanManager.GetStats().fallbackReason).find("no buildable work"),
               std::string::npos);
+}
+
+TEST_F(RenderPassValidationFixture,
+       RayTracingSceneBuildPlanExcludesExplicitlyNonDrawableObjects)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    ASSERT_EQ(1U, scene.GetObjectCount());
+    scene.GetMutableObject(0).drawable = false;
+    const std::array<uint32, 1> visibleObjectIndices = {0};
+    const RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan(
+        scene, visibleObjectIndices, gpuResources.GetRegistry());
+    EXPECT_FALSE(plan.HasWork());
+    EXPECT_EQ(1U, plan.stats.visibleObjectCount);
+    EXPECT_EQ(0U, plan.stats.drawItemCount);
+    EXPECT_TRUE(plan.instances.empty());
+    EXPECT_TRUE(plan.blasBuilds.empty());
 }
 
 TEST_F(RenderPassValidationFixture,

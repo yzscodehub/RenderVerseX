@@ -36,6 +36,7 @@
 #include "Render/PostProcess/PostProcessStack.h"
 #include "Render/RayTracing/RayTracingSceneManager.h"
 #include "Render/Renderer/RenderDrawItem.h"
+#include "Render/Renderer/RenderDrawPlan.h"
 #include "Render/Submission/RenderInstanceBatchPlan.h"
 #include "Render/Submission/DirectRasterReadbackQualification.h"
 #include "Render/Visibility/RenderVisibility.h"
@@ -1511,6 +1512,18 @@ namespace RVX
         {
             return m_meshPassPreparation;
         }
+        const RenderSceneDrawClassification& GetSceneDrawClassification() const
+        {
+            return m_sceneDrawClassification;
+        }
+        const RenderViewDrawPlan& GetRenderDrawPlan() const
+        {
+            return m_renderDrawPlan;
+        }
+        RenderDrawPlanBuildCode GetRenderDrawPlanBuildCode() const noexcept
+        {
+            return m_renderDrawPlanBuildCode;
+        }
 
     private:
         friend class SceneRendererTestAccess;
@@ -1563,6 +1576,7 @@ namespace RVX
             const RenderPassRecordIdentity& recordIdentity);
         void CommitGPUDrivenAccessSnapshots();
         void BuildMaterialDrawLists();
+        void ClearPreparedDrawState() noexcept;
         void PrepareMeshPassPackets();
         void CompileRenderFramePlan();
         void InvalidateRenderFramePlan();
@@ -1827,6 +1841,10 @@ namespace RVX
         TransparentDrawListDiagnostics m_transparentDrawListDiagnostics{};
         std::vector<RenderDrawItem> m_coarseOpaqueDrawItems;
         std::vector<RenderDrawItem> m_coarseMaskedDrawItems;
+        RenderSceneDrawClassification m_sceneDrawClassification;
+        RenderViewDrawPlan m_renderDrawPlan;
+        RenderDrawPlanBuildCode m_renderDrawPlanBuildCode =
+            RenderDrawPlanBuildCode::InvalidPreparation;
         SceneMeshPassPreparation m_meshPassPreparation;
         SceneRenderInstanceBatchPlans m_instanceBatchPlans;
         RenderCandidateSet m_renderCandidates;

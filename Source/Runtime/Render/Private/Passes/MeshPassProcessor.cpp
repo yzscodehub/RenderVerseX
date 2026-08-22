@@ -466,6 +466,7 @@ MeshPassProcessorResult MeshPassProcessor::MakeSkipped(
     result.materialAssetId = input.materialAssetId;
     result.sourceOrdinal = input.sourceOrdinal;
     result.viewDepth = input.viewDepth;
+    result.classificationIndex = input.classificationIndex;
     return result;
 }
 
@@ -483,6 +484,7 @@ MeshPassProcessorResult MeshPassProcessor::MakeRelevant(
     result.materialAssetId = input.materialAssetId;
     result.sourceOrdinal = input.sourceOrdinal;
     result.viewDepth = input.viewDepth;
+    result.classificationIndex = input.classificationIndex;
 
     const bool missingMaterial = IsMissingMaterial(result.packet);
     if (HasDrawFlag(result.packet.flags, RenderDrawFlags::Skinned))

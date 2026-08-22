@@ -192,6 +192,7 @@ TEST(RenderDrawPacketValidation, ProjectsAuthoritativeAndLegacyObjectsToLists)
     RenderScene scene;
     RenderObject authoritative;
     authoritative.entityId = 1;
+    authoritative.drawable = true;
     authoritative.meshBatchesAuthoritative = true;
     authoritative.meshBatches = {
         MakeBatch(RenderMaterialMode::Opaque, 0),
@@ -201,11 +202,13 @@ TEST(RenderDrawPacketValidation, ProjectsAuthoritativeAndLegacyObjectsToLists)
 
     RenderObject authoritativeEmpty;
     authoritativeEmpty.entityId = 2;
+    authoritativeEmpty.drawable = true;
     authoritativeEmpty.meshBatchesAuthoritative = true;
     scene.AddObject(authoritativeEmpty);
 
     RenderObject legacy;
     legacy.entityId = 3;
+    legacy.drawable = true;
     legacy.mesh = RenderResourceHandle{31, 1};
     legacy.material = RenderResourceHandle{32, 1};
     legacy.materialModes = {RenderMaterialMode::Opaque};
@@ -240,6 +243,7 @@ TEST(RenderDrawPacketValidation,
     {
         RenderObject object;
         object.entityId = objectId;
+        object.drawable = true;
         object.meshBatchesAuthoritative = true;
         MeshBatch batch = MakeBatch(RenderMaterialMode::Transparent, submeshIndex);
         batch.objectId = objectId;

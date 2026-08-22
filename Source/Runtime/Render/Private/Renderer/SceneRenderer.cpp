@@ -289,13 +289,22 @@ namespace
                MutationTotalsDecreased(current.gpuCulling, previous.gpuCulling) ||
                MutationTotalsDecreased(current.directRaster, previous.directRaster);
     }
-    void PopulatePlanMeasurement(RenderPolicyDiagnostics& diagnostics)
+    void PopulatePlanMeasurement(RenderPolicyDiagnostics& diagnostics,
+                                 const RenderViewDrawPlan* drawPlan)
     {
         RenderPolicyMeasurement& measurement = diagnostics.measurement;
         measurement.candidatePacketCount = 0;
         measurement.drawGroupCount = 0;
         measurement.averageGroupOccupancy = 0.0;
         measurement.averageGroupOccupancyAvailable = false;
+        measurement.semanticPacketCount = 0;
+        measurement.visiblePacketCount = 0;
+        measurement.semanticPrimitiveCount = 0;
+        measurement.visiblePrimitiveCount = 0;
+        measurement.materialBindingCount = 0;
+        measurement.uniqueMaterialCount = 0;
+        measurement.semanticDrawGroupCount = 0;
+        measurement.drawPlanHash = 0;
 
         if (!diagnostics.planAvailable)
         {
@@ -318,6 +327,25 @@ namespace
                 static_cast<float64>(measurement.candidatePacketCount) /
                 static_cast<float64>(measurement.drawGroupCount);
             measurement.averageGroupOccupancyAvailable = true;
+        }
+        if (drawPlan == nullptr || !drawPlan->IsValid())
+        {
+            return;
+        }
+        measurement.drawPlanHash = drawPlan->semanticHash;
+        for (const RenderPassDrawPlan& pass : drawPlan->passes)
+        {
+            measurement.semanticPacketCount += pass.stats.semanticPacketCount;
+            measurement.visiblePacketCount += pass.stats.visiblePacketCount;
+            measurement.semanticPrimitiveCount +=
+                pass.stats.candidatePrimitiveCount;
+            measurement.visiblePrimitiveCount +=
+                pass.stats.visiblePrimitiveCount;
+            measurement.materialBindingCount +=
+                pass.stats.materialBindingCount;
+            measurement.uniqueMaterialCount += pass.stats.uniqueMaterialCount;
+            measurement.semanticDrawGroupCount +=
+                pass.stats.semanticDrawGroupCount;
         }
     }
 
@@ -464,18 +492,15 @@ namespace
         }
     }
 
-    MeshPassProcessorInput MakeMeshPassProcessorInput(
-        RenderDrawPacket packet,
+    void ResolveDrawPacketPreparationBindings(
+        RenderDrawPacket& packet,
         const RenderResourceRegistry* registry,
-        const MaterialSystem* materialSystem,
-        uint32 sourceOrdinal,
-        float32 viewDepth)
+        const MaterialSystem* materialSystem)
     {
         const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
             registry, packet.geometryKey.mesh);
-        const bool geometryReady = buffers.IsValid() &&
-            packet.geometryKey.submeshIndex < buffers.submeshes.size();
-        if (geometryReady)
+        if (buffers.IsValid() &&
+            packet.geometryKey.submeshIndex < buffers.submeshes.size())
         {
             const SubmeshGPUInfo& submesh =
                 buffers.submeshes[packet.geometryKey.submeshIndex];
@@ -487,6 +512,45 @@ namespace
             ? materialSystem->ResolveInstanceBindingKey(
                   packet.materialKey.material)
             : MaterialInstanceBindingKey{};
+    }
+
+    class RenderDrawClassificationBindingResolver final
+        : public IRenderDrawClassificationBindingResolver
+    {
+    public:
+        RenderDrawClassificationBindingResolver(
+            const RenderResourceRegistry* registry,
+            const MaterialSystem* materialSystem) noexcept
+            : m_registry(registry),
+              m_materialSystem(materialSystem)
+        {
+        }
+
+        void Resolve(RenderDrawPacket& packet) const override
+        {
+            ResolveDrawPacketPreparationBindings(
+                packet, m_registry, m_materialSystem);
+        }
+
+    private:
+        const RenderResourceRegistry* m_registry = nullptr;
+        const MaterialSystem* m_materialSystem = nullptr;
+    };
+
+    MeshPassProcessorInput MakeMeshPassProcessorInput(
+        RenderDrawPacket packet,
+        const RenderResourceRegistry* registry,
+        const MaterialSystem* materialSystem,
+        uint32 sourceOrdinal,
+        float32 viewDepth,
+        uint32 classificationIndex = RVX_INVALID_INDEX)
+    {
+        ResolveDrawPacketPreparationBindings(
+            packet, registry, materialSystem);
+        const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
+            registry, packet.geometryKey.mesh);
+        const bool geometryReady = buffers.IsValid() &&
+            packet.geometryKey.submeshIndex < buffers.submeshes.size();
 
         MeshPassProcessorInput input;
         input.packet = packet;
@@ -507,6 +571,7 @@ namespace
                 registry->ResolveMaterial(packet.materialKey.material) != nullptr);
         input.sourceOrdinal = sourceOrdinal;
         input.viewDepth = viewDepth;
+        input.classificationIndex = classificationIndex;
         return input;
     }
 
@@ -2177,6 +2242,9 @@ void SceneRenderer::PrepareFrameApplyResources(
     RenderResourceRegistry& registry)
 {
     InvalidateRenderFramePlan();
+    // A rejected apply must not expose visibility or preparation telemetry
+    // from the previously accepted frame as if it belonged to this attempt.
+    ClearPreparedDrawState();
     m_renderResourceRegistry = &registry;
     if (m_depthPrepass)
     {
@@ -3221,10 +3289,24 @@ GPUSceneDiagnostics SceneRenderer::GetGPUSceneDiagnostics() const noexcept
         diagnostics.publicationFailureReason = publication.failureReason;
         diagnostics.attemptedObjectCount = publication.attemptedObjectCount;
         diagnostics.attemptedDrawCount = publication.attemptedDrawCount;
+        diagnostics.attemptedMaterialBindingCount =
+            publication.attemptedMaterialBindingCount;
         diagnostics.candidateObjectCount = publication.candidateObjectCount;
         diagnostics.candidateDrawCount = publication.candidateDrawCount;
+        diagnostics.candidateMaterialBindingCount =
+            publication.candidateMaterialBindingCount;
         diagnostics.publishedObjectCount = publication.publishedObjectCount;
         diagnostics.publishedDrawCount = publication.publishedDrawCount;
+        diagnostics.publishedMaterialBindingCount =
+            publication.publishedMaterialBindingCount;
+        diagnostics.excludedMaterialBindingCount =
+            publication.excludedMaterialBindingCount;
+        diagnostics.renderClassificationParity =
+            m_sceneDrawClassification.IsValid() &&
+            publication.HasRenderClassificationParity(
+                m_sceneDrawClassification.stats.sceneObjectCount,
+                m_sceneDrawClassification.stats.classifiedPacketCount,
+                m_sceneDrawClassification.stats.materialBindingCount);
         diagnostics.addCount = publication.addCount;
         diagnostics.updateCount = publication.updateCount;
         diagnostics.removeCount = publication.removeCount;
@@ -3359,9 +3441,23 @@ void SceneRenderer::ResolveRenderTargetExtent(uint32& width, uint32& height) con
 
 void SceneRenderer::BuildMaterialDrawLists()
 {
+    ClearPreparedDrawState();
+
     // Direct/Transparent/legacy consumers receive the CPU-final list. GPU
     // candidates deliberately start from the coarser visible+drawable list so
     // the GPU lane never inherits a CPU frustum pre-elimination.
+    const RenderDrawClassificationBindingResolver bindingResolver{
+        m_renderResourceRegistry, m_materialSystem.get()};
+    if (!BuildRenderSceneDrawClassification(
+            m_renderScene,
+            RenderSceneDrawClassificationSources{&bindingResolver},
+            m_sceneDrawClassification))
+    {
+        m_renderDrawPlanBuildCode =
+            RenderDrawPlanBuildCode::InvalidClassification;
+        return;
+    }
+
     m_renderCandidates.Clear();
     for (uint32 objectIndex = 0;
          objectIndex < static_cast<uint32>(m_renderScene.GetObjectCount());
@@ -3370,12 +3466,11 @@ void SceneRenderer::BuildMaterialDrawLists()
         const RenderObject& object = m_renderScene.GetObject(objectIndex);
         RenderVisibilityCandidate candidate;
         candidate.objectIndex = objectIndex;
-        // This is the shared object candidate feed for CPU Direct visibility
-        // and deferred GPU visibility. Layer selection must happen here so no
-        // execution lane can observe a different scene.
-        candidate.objectVisible = object.visible && IsRenderLayerVisible(
-            object.layerMask, m_renderScene.GetView().cullingMask);
+        // Scene visibility is view-independent. The view culling mask is
+        // applied only while projecting the frozen classification below.
+        candidate.objectVisible = object.visible;
         candidate.drawable = object.drawable;
+        candidate.layerMask = object.layerMask;
         candidate.worldBounds = object.bounds;
         (void)m_renderCandidates.Add(candidate);
     }
@@ -3391,6 +3486,7 @@ void SceneRenderer::BuildMaterialDrawLists()
         initialVisibilityConfig.enableDistanceCulling;
     visibilityRequest.maxDrawDistance =
         initialVisibilityConfig.maxDrawDistance;
+    visibilityRequest.cullingMask = m_renderScene.GetView().cullingMask;
     GPUVisibilityProvider visibilityProvider;
     visibilityProvider.Evaluate(m_renderCandidates,
                                 visibilityRequest,
@@ -3398,29 +3494,74 @@ void SceneRenderer::BuildMaterialDrawLists()
     m_visibleObjectIndices = m_renderVisibility.cpuVisibleObjectIndices;
     m_coarseCandidateObjectIndices =
         m_renderVisibility.coarseVisibleObjectIndices;
+    const uint32 viewCullingMask = m_renderScene.GetView().cullingMask;
+    const auto removeViewLayerMismatch = [this, viewCullingMask](uint32 index)
+    {
+        return index >= m_renderScene.GetObjectCount() ||
+               !IsRenderLayerVisible(
+                   m_renderScene.GetObject(index).layerMask,
+                   viewCullingMask);
+    };
+    std::erase_if(m_visibleObjectIndices, removeViewLayerMismatch);
+    std::erase_if(m_coarseCandidateObjectIndices, removeViewLayerMismatch);
     m_renderScene.SortVisibleObjects(m_visibleObjectIndices,
                                      m_renderScene.GetView().cameraPosition);
     m_renderScene.SortVisibleObjects(m_coarseCandidateObjectIndices,
                                      m_renderScene.GetView().cameraPosition);
 
-    RVX::BuildMaterialDrawLists(m_renderScene,
-                                m_visibleObjectIndices,
-                                m_viewData.cameraPosition,
-                                m_opaqueDrawItems,
-                                m_maskedDrawItems,
-                                m_transparentDrawItems,
-                                &m_transparentDrawListDiagnostics);
+    const bool finalProjectionBuilt = ProjectRenderSceneDrawClassification(
+        m_sceneDrawClassification,
+        m_renderVisibility.cpuVisibleObjectMask,
+        viewCullingMask,
+        m_viewData.cameraPosition,
+        m_opaqueDrawItems,
+        m_maskedDrawItems,
+        m_transparentDrawItems,
+        &m_transparentDrawListDiagnostics);
 
     std::vector<RenderDrawItem> ignoredTransparentCandidates;
-    RVX::BuildMaterialDrawLists(m_renderScene,
-                                m_coarseCandidateObjectIndices,
-                                m_viewData.cameraPosition,
-                                m_coarseOpaqueDrawItems,
-                                m_coarseMaskedDrawItems,
-                                ignoredTransparentCandidates);
+    const bool coarseProjectionBuilt = ProjectRenderSceneDrawClassification(
+        m_sceneDrawClassification,
+        m_renderVisibility.coarseVisibleObjectMask,
+        viewCullingMask,
+        m_viewData.cameraPosition,
+        m_coarseOpaqueDrawItems,
+        m_coarseMaskedDrawItems,
+        ignoredTransparentCandidates);
+
+    if (!finalProjectionBuilt || !coarseProjectionBuilt)
+    {
+        ClearPreparedDrawState();
+        m_renderDrawPlanBuildCode =
+            RenderDrawPlanBuildCode::InvalidClassification;
+        return;
+    }
 
     PrepareMeshPassPackets();
 
+}
+
+void SceneRenderer::ClearPreparedDrawState() noexcept
+{
+    m_sceneDrawClassification.Clear();
+    m_renderCandidates.Clear();
+    m_renderVisibility = {};
+    m_renderVisibility.structurallyValid = false;
+    m_visibleObjectIndices.clear();
+    m_coarseCandidateObjectIndices.clear();
+    m_opaqueDrawItems.clear();
+    m_maskedDrawItems.clear();
+    m_transparentDrawItems.clear();
+    m_coarseOpaqueDrawItems.clear();
+    m_coarseMaskedDrawItems.clear();
+    m_transparentDrawListDiagnostics = {};
+    m_meshPassPreparation.Clear();
+    m_renderDrawPlan = {};
+    m_renderDrawPlanBuildCode =
+        RenderDrawPlanBuildCode::InvalidPreparation;
+    m_viewData.renderVisibility = nullptr;
+    m_viewData.renderDrawPlan = nullptr;
+    m_viewData.meshPassPreparation = nullptr;
 }
 
 void SceneRenderer::PrepareMeshPassPackets()
@@ -3444,7 +3585,8 @@ void SceneRenderer::PrepareMeshPassPackets()
                 m_renderResourceRegistry,
                 m_materialSystem.get(),
                 materialSourceOrdinal++,
-                item.depthFromCamera);
+                item.depthFromCamera,
+                item.classificationIndex);
             m_meshPassPreparation.depth.Record(depthProcessor.Process(input));
             m_meshPassPreparation.opaque.Record(opaqueProcessor.Process(input));
         }
@@ -3462,12 +3604,32 @@ void SceneRenderer::PrepareMeshPassPackets()
             m_renderResourceRegistry,
             m_materialSystem.get(),
             sourceOrdinal,
-            item.depthFromCamera);
+            item.depthFromCamera,
+            item.classificationIndex);
         m_meshPassPreparation.transparent.Record(
             transparentProcessor.Process(input));
     }
 
     uint32 shadowSourceOrdinal = 0;
+    const auto resolveClassificationIndex = [this](
+        const RenderDrawPacket& packet) noexcept
+    {
+        const auto found = std::find_if(
+            m_sceneDrawClassification.entries.begin(),
+            m_sceneDrawClassification.entries.end(),
+            [&packet](const RenderSceneDrawClassificationEntry& entry)
+            {
+                const RenderDrawPacket& classified = entry.draw.packet;
+                return classified.objectId == packet.objectId &&
+                       classified.primitiveData == packet.primitiveData &&
+                       classified.submeshIndex == packet.submeshIndex &&
+                       classified.geometryKey.mesh == packet.geometryKey.mesh &&
+                       classified.materialKey == packet.materialKey;
+            });
+        return found == m_sceneDrawClassification.entries.end()
+                   ? RVX_INVALID_INDEX
+                   : found->classificationIndex;
+    };
     for (uint32 objectIndex = 0;
          objectIndex < static_cast<uint32>(m_renderScene.GetObjectCount());
          ++objectIndex)
@@ -3485,38 +3647,28 @@ void SceneRenderer::PrepareMeshPassPackets()
                         m_renderResourceRegistry,
                         m_materialSystem.get(),
                         shadowSourceOrdinal++,
-                        0.0f);
+                        0.0f,
+                        resolveClassificationIndex(packet));
                 m_meshPassPreparation.shadow.Record(
                     shadowProcessor.Process(input));
             }
             continue;
         }
 
-        const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
-            m_renderResourceRegistry, object.mesh);
-        const uint32 submeshCount = buffers.submeshes.empty()
-                                        ? 1U
-                                        : static_cast<uint32>(
-                                              buffers.submeshes.size());
-        for (uint32 submeshIndex = 0;
-             submeshIndex < submeshCount;
-             ++submeshIndex)
-        {
-            const SubmeshGPUInfo* submesh =
-                submeshIndex < buffers.submeshes.size()
-                    ? &buffers.submeshes[submeshIndex]
-                    : nullptr;
-            const MeshBatch batch = BuildLegacyShadowBatch(
-                object, objectIndex, submeshIndex, submesh);
-            const MeshPassProcessorInput input = MakeMeshPassProcessorInput(
-               BuildLegacyMaterialDrawPacket(batch),
-               m_renderResourceRegistry,
-               m_materialSystem.get(),
-               shadowSourceOrdinal++,
-                0.0f);
-            m_meshPassPreparation.shadow.Record(
-                shadowProcessor.Process(input));
-        }
+        // A non-resident legacy object has exactly the same conservative
+        // submesh-zero classification as the main surface path. Never invent
+        // shadow-only draws outside the frozen classification.
+        const MeshBatch batch = BuildLegacyShadowBatch(
+            object, objectIndex, 0, nullptr);
+        const RenderDrawPacket packet = BuildLegacyMaterialDrawPacket(batch);
+        const MeshPassProcessorInput input = MakeMeshPassProcessorInput(
+            packet,
+            m_renderResourceRegistry,
+            m_materialSystem.get(),
+            shadowSourceOrdinal++,
+            0.0f,
+            resolveClassificationIndex(packet));
+        m_meshPassPreparation.shadow.Record(shadowProcessor.Process(input));
     }
 
     m_meshPassPreparation.depth.FinalizeGroups();
@@ -3557,6 +3709,7 @@ void SceneRenderer::PrepareMeshPassPackets()
             candidate.objectVisible = object.visible && IsRenderLayerVisible(
                 object.layerMask, m_renderScene.GetView().cullingMask);
             candidate.drawable = object.drawable;
+            candidate.layerMask = object.layerMask;
             candidate.worldBounds = object.bounds;
             (void)m_renderCandidates.Add(candidate);
         }
@@ -3588,17 +3741,33 @@ void SceneRenderer::PrepareMeshPassPackets()
     validateStream(m_meshPassPreparation.opaque);
     validateStream(m_meshPassPreparation.transparent);
     validateStream(m_meshPassPreparation.shadow);
+
+    RenderViewDrawPlanBuildResult drawPlan = BuildRenderViewDrawPlan(
+        m_renderScene.GetAcceptedHeader().sequence,
+        0,
+        m_sceneDrawClassification,
+        m_meshPassPreparation,
+        m_renderVisibility);
+    m_renderDrawPlanBuildCode = drawPlan.code;
+    m_renderDrawPlan = std::move(drawPlan.plan);
+    m_viewData.renderDrawPlan = m_renderDrawPlan.IsValid()
+                                    ? &m_renderDrawPlan
+                                    : nullptr;
 }
 
 void SceneRenderer::InvalidateRenderFramePlan()
 {
     m_renderPolicyDiagnostics = {};
     m_viewData.renderFrameExecutionPlan = nullptr;
+    m_viewData.renderDrawPlan = nullptr;
     m_viewData.meshPassPreparation = nullptr;
     m_viewData.instanceBatchPlans = nullptr;
     m_instanceBatchPlans = {};
     m_viewData.renderFrameExecutionReport = nullptr;
     m_viewData.renderVisibility = nullptr;
+    m_renderDrawPlan = {};
+    m_renderDrawPlanBuildCode =
+        RenderDrawPlanBuildCode::InvalidPreparation;
     m_frameDiagnostics.policy = {};
     m_gpuDrivenCullingEnabled = false;
     m_gpuDrivenPolicyDecision = {};
@@ -3616,6 +3785,7 @@ void SceneRenderer::CompileRenderFramePlan()
     m_renderPolicyDiagnostics.measurement = {};
     m_confirmedGPUDrivenTier = GPUDrivenTier::Direct;
     m_viewData.renderFrameExecutionPlan = nullptr;
+    m_viewData.renderDrawPlan = nullptr;
     m_viewData.meshPassPreparation = nullptr;
     m_viewData.instanceBatchPlans = nullptr;
     m_instanceBatchPlans = {};
@@ -3840,7 +4010,11 @@ void SceneRenderer::CompileRenderFramePlan()
             m_gpuSceneUpdate->GetStats();
         const GPUSceneCommittedMirror& mirror =
             m_gpuSceneUpdate->GetCommittedMirrorForUpload();
-        if (publication.complete &&
+        if (m_sceneDrawClassification.IsValid() &&
+            publication.HasRenderClassificationParity(
+                m_sceneDrawClassification.stats.sceneObjectCount,
+                m_sceneDrawClassification.stats.classifiedPacketCount,
+                m_sceneDrawClassification.stats.materialBindingCount) &&
             publication.failureReason == GPUScenePublicationFailureReason::None &&
             publication.committedVersion != 0 &&
             publication.committedSourceSequence ==
@@ -3895,7 +4069,8 @@ void SceneRenderer::CompileRenderFramePlan()
     const auto planStart = std::chrono::steady_clock::now();
     const RenderPolicyResolution resolution = ResolveRenderPolicy(input);
     const RenderFramePlanCompileResult compiled =
-        CompileRenderFrameExecutionPlan(resolution, m_meshPassPreparation);
+        CompileRenderFrameExecutionPlan(
+            resolution, m_meshPassPreparation, m_renderDrawPlan);
     m_renderPolicyDiagnostics.measurement.planCpuNanoseconds =
         static_cast<uint64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - planStart).count());
@@ -3906,6 +4081,7 @@ void SceneRenderer::CompileRenderFramePlan()
         m_renderPolicyDiagnostics.selectedPlan = compiled.plan;
         m_viewData.renderFrameExecutionPlan =
             &m_renderPolicyDiagnostics.selectedPlan;
+        m_viewData.renderDrawPlan = &m_renderDrawPlan;
         m_viewData.meshPassPreparation = &m_meshPassPreparation;
         m_instanceBatchPlans = BuildSceneRenderInstanceBatchPlans(
             m_renderPolicyDiagnostics.selectedPlan,
@@ -3935,7 +4111,7 @@ void SceneRenderer::CompileRenderFramePlan()
             report.reason = passPlan.reason;
             m_renderPolicyDiagnostics.executionReport.passes.push_back(report);
         }
-        PopulatePlanMeasurement(m_renderPolicyDiagnostics);
+        PopulatePlanMeasurement(m_renderPolicyDiagnostics, &m_renderDrawPlan);
     }
     ApplyRenderFramePlanProjection();
 }
@@ -7672,6 +7848,7 @@ void SceneRenderer::BuildRenderGraph()
         m_renderScene.GetView().identity;
     AddGPUDrivenCullingPass(passRecordContext.identity);
     passRecordContext.executionPlan = m_viewData.renderFrameExecutionPlan;
+    passRecordContext.drawPlan = m_viewData.renderDrawPlan;
     passRecordContext.meshPassPreparation = m_viewData.meshPassPreparation;
     passRecordContext.instanceBatchPlans = m_viewData.instanceBatchPlans;
     passRecordContext.visibility = m_viewData.renderVisibility;

@@ -292,6 +292,8 @@ namespace RVX
         AssetId materialAssetId{};
         uint32 sourceOrdinal = 0;
         float32 viewDepth = 0.0f;
+        /// Stable source in the view-independent scene classification.
+        uint32 classificationIndex = RVX_INVALID_INDEX;
     };
 
     struct MeshPassProcessorResult
@@ -309,6 +311,8 @@ namespace RVX
         AssetId materialAssetId{};
         uint32 sourceOrdinal = 0;
         float32 viewDepth = 0.0f;
+        /// Stable source in the view-independent scene classification.
+        uint32 classificationIndex = RVX_INVALID_INDEX;
 
         [[nodiscard]] bool IsRelevant() const noexcept
         {

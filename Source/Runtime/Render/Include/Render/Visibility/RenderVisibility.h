@@ -26,6 +26,7 @@ namespace RVX
         RenderPassKind pass = RenderPassKind::None;
         bool objectVisible = true;
         bool drawable = false;
+        uint32 layerMask = ~0U;
         AABB worldBounds{};
     };
 
@@ -44,6 +45,7 @@ namespace RVX
         Vec3 cameraPosition{0.0f};
         bool enableDistanceCulling = false;
         float maxDrawDistance = 0.0f;
+        uint32 cullingMask = ~0U;
     };
 
     /** @brief Canonical world-space AABB frustum. Clip depth is [0, 1]. */
@@ -118,6 +120,7 @@ namespace RVX
     struct RenderVisibilityResult
     {
         bool structurallyValid = true;
+        uint32 evaluatedCullingMask = ~0U;
         std::vector<uint32> cpuVisibleObjectIndices;
         std::vector<uint32> coarseVisibleObjectIndices;
         /// Dense object-index masks used to project one object test onto pass packets.

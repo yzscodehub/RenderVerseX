@@ -1,10 +1,12 @@
 #include "Render/Renderer/RenderDrawItem.h"
+#include "Render/Renderer/RenderDrawPlan.h"
 #include "Render/Renderer/RenderScene.h"
 
 #include <algorithm>
 #include <bit>
 #include <cmath>
 #include <limits>
+#include <set>
 #include <tuple>
 #include <utility>
 
@@ -29,6 +31,67 @@ namespace RVX
         {
             hash ^= value;
             hash *= kTransparentOrderHashPrime;
+        }
+
+        void AppendFloatHash(uint64& hash, float32 value) noexcept
+        {
+            AppendHash(hash, std::bit_cast<uint32>(value));
+        }
+
+        [[nodiscard]] uint64 ComputeClassificationSemanticHash(
+            const RenderSceneDrawClassification& classification) noexcept
+        {
+            uint64 hash = kTransparentOrderHashSeed;
+            for (const RenderSceneDrawClassificationEntry& entry :
+                 classification.entries)
+            {
+                const RenderDrawPacket& packet = entry.draw.packet;
+                AppendHash(hash, entry.classificationIndex);
+                AppendHash(hash, entry.draw.objectIndex);
+                AppendHash(hash, entry.draw.submeshIndex);
+                AppendHash(hash, static_cast<uint8>(entry.draw.renderMode));
+                AppendHash(hash, packet.objectId);
+                AppendHash(hash, packet.primitiveData);
+                AppendHash(hash, packet.submeshIndex);
+                AppendHash(hash, GetStableHash(packet.pipelineKey));
+                AppendHash(hash, GetStableHash(packet.geometryKey));
+                AppendHash(hash, GetStableHash(packet.materialKey));
+                AppendHash(hash,
+                           packet.materialInstanceKey.textureBindingHash);
+                AppendHash(hash,
+                           static_cast<uint8>(packet.materialInstanceKey
+                                                  .parameterTableCompatible));
+                AppendHash(hash, packet.arguments.indexCount);
+                AppendHash(hash, packet.arguments.instanceCount);
+                AppendHash(hash, packet.arguments.firstIndex);
+                AppendHash(hash,
+                           static_cast<uint32>(packet.arguments.vertexOffset));
+                AppendHash(hash, packet.arguments.firstInstance);
+                AppendHash(hash, static_cast<uint32>(packet.flags));
+                AppendHash(hash, entry.layerMask);
+                AppendHash(hash, static_cast<uint8>(entry.sceneVisible));
+                AppendHash(hash, static_cast<uint8>(entry.drawable));
+                AppendHash(hash, static_cast<uint8>(entry.castsShadow));
+                AppendHash(hash, static_cast<uint8>(entry.skinned));
+                AppendFloatHash(hash, entry.worldPosition.x);
+                AppendFloatHash(hash, entry.worldPosition.y);
+                AppendFloatHash(hash, entry.worldPosition.z);
+                const Vec3 boundsMin = entry.worldBounds.GetMin();
+                const Vec3 boundsMax = entry.worldBounds.GetMax();
+                AppendFloatHash(hash, boundsMin.x);
+                AppendFloatHash(hash, boundsMin.y);
+                AppendFloatHash(hash, boundsMin.z);
+                AppendFloatHash(hash, boundsMax.x);
+                AppendFloatHash(hash, boundsMax.y);
+                AppendFloatHash(hash, boundsMax.z);
+            }
+            AppendHash(hash, classification.stats.sceneObjectCount);
+            AppendHash(hash, classification.stats.classifiedPacketCount);
+            AppendHash(hash, classification.stats.classifiedPrimitiveCount);
+            AppendHash(hash, classification.stats.materialBindingCount);
+            AppendHash(hash, classification.stats.uniqueMaterialCount);
+            hash = MixSortBits(hash);
+            return hash == 0 ? kTransparentOrderHashSeed : hash;
         }
 
         [[nodiscard]] std::tuple<uint64,
@@ -136,6 +199,11 @@ namespace RVX
             {
                 item.packet = BuildLegacyMaterialDrawPacket(batch);
             }
+            // RenderScene owns the retained primitive identity. A stale batch
+            // ordinal must not create a second authority for object lookup.
+            item.packet.objectId = object.entityId;
+            item.packet.primitiveData = objectIndex;
+            item.packet.submeshIndex = batch.submeshIndex;
             return item;
         }
 
@@ -173,9 +241,218 @@ namespace RVX
                 opaque.push_back(std::move(item));
             }
         }
-    } // namespace
+} // namespace
 
-    void BuildMaterialDrawLists(const RenderScene& scene,
+void RenderSceneDrawClassification::Clear()
+{
+    entries.clear();
+    stats = {};
+    structurallyValid = false;
+}
+
+bool RenderSceneDrawClassification::IsValid() const noexcept
+{
+    if (!structurallyValid || entries.size() != stats.classifiedPacketCount ||
+        stats.classifiedPrimitiveCount > stats.sceneObjectCount ||
+        stats.materialBindingCount != stats.classifiedPacketCount ||
+        stats.uniqueMaterialCount > stats.materialBindingCount ||
+        stats.semanticHash == 0 ||
+        stats.semanticHash != ComputeClassificationSemanticHash(*this))
+    {
+        return false;
+    }
+    for (uint32 index = 0; index < static_cast<uint32>(entries.size()); ++index)
+    {
+        const RenderSceneDrawClassificationEntry& entry = entries[index];
+        if (entry.classificationIndex != index ||
+            entry.draw.classificationIndex != index ||
+            entry.draw.objectIndex >= stats.sceneObjectCount ||
+            entry.draw.packet.primitiveData != entry.draw.objectIndex ||
+            entry.draw.packet.submeshIndex != entry.draw.submeshIndex ||
+            entry.draw.packet.geometryKey.mesh != entry.draw.mesh ||
+            entry.draw.packet.materialKey.material != entry.draw.material)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool BuildRenderSceneDrawClassification(
+    const RenderScene& scene,
+    RenderSceneDrawClassificationSources sources,
+    RenderSceneDrawClassification& outClassification)
+{
+    outClassification.Clear();
+    if (scene.GetObjectCount() > std::numeric_limits<uint32>::max())
+    {
+        return false;
+    }
+    outClassification.stats.sceneObjectCount =
+        static_cast<uint32>(scene.GetObjectCount());
+    std::set<uint32> primitives;
+    std::set<RenderResourceHandle> materials;
+
+    const auto appendEntry = [&](uint32 objectIndex,
+                                 const RenderObject& object,
+                                 const MeshBatch& batch) -> bool
+    {
+        if (outClassification.entries.size() >=
+            static_cast<size_t>(RVX_INVALID_INDEX))
+        {
+            return false;
+        }
+        RenderSceneDrawClassificationEntry entry;
+        entry.classificationIndex =
+            static_cast<uint32>(outClassification.entries.size());
+        entry.draw = MakeDrawItem(
+            scene,
+            objectIndex,
+            object,
+            batch,
+            Vec3(object.worldMatrix[3]));
+        if (sources.bindingResolver != nullptr)
+        {
+            sources.bindingResolver->Resolve(entry.draw.packet);
+        }
+        entry.draw.classificationIndex = entry.classificationIndex;
+        entry.draw.depthFromCamera = 0.0f;
+        entry.draw.sortKey = entry.draw.renderMode ==
+                                     MaterialRenderMode::Transparent
+                                 ? BuildTransparentDrawSortKey(entry.draw)
+                                 : BuildOpaqueDrawSortKey(entry.draw);
+        entry.layerMask = object.layerMask;
+        entry.worldBounds = object.bounds;
+        entry.worldPosition = Vec3(object.worldMatrix[3]);
+        entry.sceneVisible = object.visible;
+        entry.drawable = object.drawable;
+        entry.castsShadow = object.castsShadow;
+        entry.skinned = object.HasSkinningData();
+        primitives.insert(objectIndex);
+        materials.insert(entry.draw.material);
+        outClassification.entries.push_back(std::move(entry));
+        return true;
+    };
+
+    for (uint32 objectIndex = 0;
+         objectIndex < outClassification.stats.sceneObjectCount;
+         ++objectIndex)
+    {
+        const RenderObject& object = scene.GetObject(objectIndex);
+        if (object.meshBatchesAuthoritative)
+        {
+            for (const MeshBatch& batch : object.meshBatches)
+            {
+                if (!appendEntry(objectIndex, object, batch))
+                {
+                    outClassification.Clear();
+                    return false;
+                }
+            }
+            continue;
+        }
+        const MeshBatch batch = MakeLegacyBatch(
+            object, objectIndex, ResolveMaterialRenderMode(object, 0));
+        if (!appendEntry(objectIndex, object, batch))
+        {
+            outClassification.Clear();
+            return false;
+        }
+    }
+
+    outClassification.stats.classifiedPacketCount =
+        static_cast<uint32>(outClassification.entries.size());
+    outClassification.stats.classifiedPrimitiveCount =
+        static_cast<uint32>(primitives.size());
+    outClassification.stats.materialBindingCount =
+        outClassification.stats.classifiedPacketCount;
+    outClassification.stats.uniqueMaterialCount =
+        static_cast<uint32>(materials.size());
+    outClassification.stats.semanticHash =
+        ComputeClassificationSemanticHash(outClassification);
+    outClassification.structurallyValid = true;
+    if (!outClassification.IsValid())
+    {
+        outClassification.Clear();
+        return false;
+    }
+    return true;
+}
+
+bool BuildRenderSceneDrawClassification(
+    const RenderScene& scene,
+    RenderSceneDrawClassification& outClassification)
+{
+    return BuildRenderSceneDrawClassification(
+        scene, RenderSceneDrawClassificationSources{}, outClassification);
+}
+
+bool ProjectRenderSceneDrawClassification(
+    const RenderSceneDrawClassification& classification,
+    std::span<const uint8> visibleObjectMask,
+    uint32 viewCullingMask,
+    const Vec3& cameraPosition,
+    std::vector<RenderDrawItem>& outOpaqueDrawItems,
+    std::vector<RenderDrawItem>& outMaskedDrawItems,
+    std::vector<RenderDrawItem>& outTransparentDrawItems,
+    TransparentDrawListDiagnostics* outTransparentDiagnostics)
+{
+    outOpaqueDrawItems.clear();
+    outMaskedDrawItems.clear();
+    outTransparentDrawItems.clear();
+    if (outTransparentDiagnostics != nullptr)
+    {
+        *outTransparentDiagnostics = {};
+    }
+    if (!classification.IsValid())
+    {
+        return false;
+    }
+
+    for (const RenderSceneDrawClassificationEntry& entry :
+         classification.entries)
+    {
+        if (!entry.sceneVisible || !entry.drawable ||
+            entry.draw.objectIndex >= visibleObjectMask.size() ||
+            visibleObjectMask[entry.draw.objectIndex] == 0 ||
+            !IsRenderLayerVisible(entry.layerMask, viewCullingMask))
+        {
+            continue;
+        }
+        RenderDrawItem item = entry.draw;
+        item.depthFromCamera = length(entry.worldPosition - cameraPosition);
+        AppendToMaterialList(std::move(item),
+                             outOpaqueDrawItems,
+                             outMaskedDrawItems,
+                             outTransparentDrawItems,
+                             outTransparentDiagnostics);
+    }
+
+    const auto sortFrontToBack = [](const RenderDrawItem& lhs,
+                                    const RenderDrawItem& rhs)
+    {
+        return lhs.sortKey < rhs.sortKey;
+    };
+    std::sort(outOpaqueDrawItems.begin(),
+              outOpaqueDrawItems.end(),
+              sortFrontToBack);
+    std::sort(outMaskedDrawItems.begin(),
+              outMaskedDrawItems.end(),
+              sortFrontToBack);
+    std::sort(outTransparentDrawItems.begin(),
+              outTransparentDrawItems.end(),
+              IsTransparentBefore);
+    if (outTransparentDiagnostics != nullptr)
+    {
+        outTransparentDiagnostics->orderValid =
+            IsTransparentDrawListStrictlyOrdered(outTransparentDrawItems);
+        outTransparentDiagnostics->orderHash =
+            BuildTransparentDrawOrderHash(outTransparentDrawItems);
+    }
+    return true;
+}
+
+void BuildMaterialDrawLists(const RenderScene& scene,
                                 const std::vector<uint32_t>& visibleObjectIndices,
                                 const Vec3& cameraPosition,
                                 std::vector<RenderDrawItem>& outOpaqueDrawItems,
@@ -184,69 +461,36 @@ namespace RVX
                                 TransparentDrawListDiagnostics*
                                     outTransparentDiagnostics)
     {
-        outOpaqueDrawItems.clear();
-        outMaskedDrawItems.clear();
-        outTransparentDrawItems.clear();
-        if (outTransparentDiagnostics != nullptr)
+        RenderSceneDrawClassification classification;
+        if (!BuildRenderSceneDrawClassification(scene, classification))
         {
-            *outTransparentDiagnostics = {};
-        }
-
-        for (uint32_t objectIndex : visibleObjectIndices)
-        {
-            if (objectIndex >= scene.GetObjectCount())
-                continue;
-
-            const RenderObject& obj = scene.GetObject(objectIndex);
-            if (obj.meshBatchesAuthoritative)
+            outOpaqueDrawItems.clear();
+            outMaskedDrawItems.clear();
+            outTransparentDrawItems.clear();
+            if (outTransparentDiagnostics != nullptr)
             {
-                for (const MeshBatch& batch : obj.meshBatches)
-                {
-                    AppendToMaterialList(
-                        MakeDrawItem(scene,
-                                     objectIndex,
-                                     obj,
-                                     batch,
-                                     cameraPosition),
-                        outOpaqueDrawItems,
-                        outMaskedDrawItems,
-                        outTransparentDrawItems,
-                        outTransparentDiagnostics);
-                }
-                continue;
+                *outTransparentDiagnostics = {};
+                outTransparentDiagnostics->orderValid = false;
             }
-
-            const MeshBatch batch = MakeLegacyBatch(
-                obj, objectIndex, ResolveMaterialRenderMode(obj, 0));
-            AppendToMaterialList(
-                MakeDrawItem(scene,
-                             objectIndex,
-                             obj,
-                             batch,
-                             cameraPosition),
-                outOpaqueDrawItems,
-                outMaskedDrawItems,
-                outTransparentDrawItems,
-                outTransparentDiagnostics);
+            return;
         }
-
-        const auto sortFrontToBack = [](const RenderDrawItem& lhs, const RenderDrawItem& rhs)
+        std::vector<uint8> visibleMask(scene.GetObjectCount(), 0);
+        for (uint32 objectIndex : visibleObjectIndices)
         {
-            return lhs.sortKey < rhs.sortKey;
-        };
-        std::sort(outOpaqueDrawItems.begin(), outOpaqueDrawItems.end(), sortFrontToBack);
-        std::sort(outMaskedDrawItems.begin(), outMaskedDrawItems.end(), sortFrontToBack);
-
-        std::sort(outTransparentDrawItems.begin(), outTransparentDrawItems.end(),
-                  IsTransparentBefore);
-
-        if (outTransparentDiagnostics != nullptr)
-        {
-            outTransparentDiagnostics->orderValid =
-                IsTransparentDrawListStrictlyOrdered(outTransparentDrawItems);
-            outTransparentDiagnostics->orderHash =
-                BuildTransparentDrawOrderHash(outTransparentDrawItems);
+            if (objectIndex < visibleMask.size())
+            {
+                visibleMask[objectIndex] = 1;
+            }
         }
+        (void)ProjectRenderSceneDrawClassification(
+            classification,
+            visibleMask,
+            ~0U,
+            cameraPosition,
+            outOpaqueDrawItems,
+            outMaskedDrawItems,
+            outTransparentDrawItems,
+            outTransparentDiagnostics);
     }
 
     uint64 BuildOpaqueDrawSortKey(const RenderDrawItem& item)

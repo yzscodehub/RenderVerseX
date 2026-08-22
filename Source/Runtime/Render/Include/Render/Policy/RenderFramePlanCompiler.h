@@ -7,6 +7,7 @@
 
 #include "Render/Passes/MeshPassProcessor.h"
 #include "Render/Policy/RenderPolicyResolver.h"
+#include "Render/Renderer/RenderDrawPlan.h"
 
 namespace RVX
 {
@@ -53,4 +54,16 @@ namespace RVX
     [[nodiscard]] RenderFramePlanCompileResult CompileRenderFrameExecutionPlan(
         const RenderPolicyResolution& resolution,
         const SceneMeshPassPreparation& preparation);
+
+    /**
+     * @brief Compile and prove that lane selection preserved the frozen DrawPlan.
+     *
+     * Production composition uses this overload. The two-argument form remains
+     * available for isolated compiler tests that deliberately construct only
+     * the lower-level preparation contract.
+     */
+    [[nodiscard]] RenderFramePlanCompileResult CompileRenderFrameExecutionPlan(
+        const RenderPolicyResolution& resolution,
+        const SceneMeshPassPreparation& preparation,
+        const RenderViewDrawPlan& drawPlan);
 } // namespace RVX

@@ -43,6 +43,7 @@ namespace RVX
         RenderSubmissionLayout directLayout{};
         uint32 sourceOrdinal = 0;
         float32 viewDepth = 0.0f;
+        uint32 classificationIndex = RVX_INVALID_INDEX;
 
         bool operator==(
             const RenderPreparedDrawPacketSignature&) const = default;
