@@ -101,55 +101,48 @@ target_link_libraries(RVX_RenderGraph PUBLIC
 
 add_library(RVX::RenderGraph ALIAS RVX_RenderGraph)
 
-add_library(RVX_Render STATIC)
+function(rvx_configure_render_component target)
+    target_include_directories(${target} PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Include>
+        $<INSTALL_INTERFACE:include>
+    )
 
-target_sources(RVX_Render PRIVATE
-    # Core
-    Private/SwapChainManager.cpp
-    Private/RenderSubsystem.cpp
-    # Runtime shell
+    target_include_directories(${target} PRIVATE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Private>
+    )
+endfunction()
+
+# =============================================================================
+# RenderFoundation - shared renderer state and execution planning
+# =============================================================================
+# Foundation owns data and policies shared by the raster and optional feature
+# targets.  It deliberately contains no feature composition or pass ordering.
+add_library(RVX_RenderFoundation STATIC)
+
+target_sources(RVX_RenderFoundation PRIVATE
     Private/Runtime/RenderThreadRuntime.cpp
     Private/GPUUploadService.cpp
     Private/PipelineCache.cpp
-    # Context
     Private/Context/RenderContext.cpp
     Private/Context/RenderFrameTimingOwner.cpp
     Private/Context/FrameSynchronizer.cpp
-    # Renderer
     Private/Renderer/ViewData.cpp
     Private/Renderer/RenderDrawPacket.cpp
     Private/Renderer/RenderDrawPacketCache.cpp
     Private/Renderer/RenderScene.cpp
     Private/Renderer/RenderSceneDatabase.cpp
     Private/Renderer/RenderDrawItem.cpp
-    Private/Renderer/RenderPassRegistry.cpp
-    Private/Renderer/SceneRenderer.cpp
-    # GPU scene CPU shadow and non-executing persistent upload (Tasks 11B/11C)
     Private/GPUScene/GPUSceneDatabase.cpp
     Private/GPUScene/GPUSceneUpdate.cpp
     Private/GPUScene/GPUSceneUploader.cpp
-    # Visibility
     Private/Visibility/RenderVisibility.cpp
-    # Policy
     Private/Policy/RenderFramePlanCompiler.cpp
     Private/Policy/RenderPolicyResolver.cpp
-    # Feature composition
-    Private/Features/DefaultForwardComposition.cpp
-    Private/Features/LegacyForwardFeatureAdapter.cpp
-    Private/Features/RenderFeatureRegistry.cpp
-    # Submission
     Private/Submission/RenderSubmissionStrategy.cpp
     Private/Submission/RenderInstanceBatchPlan.cpp
     Private/Submission/RasterInstanceStream.cpp
     Private/Submission/DirectRasterReadbackQualification.cpp
     Private/Resources/FrameConstantUploadArena.cpp
-    # Diagnostics
-    Private/Diagnostics/RenderFeatureReport.cpp
-    Private/Diagnostics/RenderToolArtifacts.cpp
-    # Ray tracing
-    Private/RayTracing/RayTracingScene.cpp
-    Private/RayTracing/RayTracingSceneManager.cpp
-    # Passes
     Private/Passes/DirectDrawPacketBatch.cpp
     Private/Passes/MeshPassProcessor.cpp
     Private/Passes/DepthMeshPassProcessor.cpp
@@ -157,32 +150,86 @@ target_sources(RVX_Render PRIVATE
     Private/Passes/TransparentMeshPassProcessor.cpp
     Private/Passes/ShadowMeshPassProcessor.cpp
     Private/Passes/MaterialTextureGraphBindings.cpp
-    Private/Passes/OpaquePass.cpp
-    Private/Passes/DepthPrepass.cpp
-    Private/Passes/TransparentPass.cpp
-    Private/Passes/CameraVelocityPass.cpp
-    Private/Passes/ObjectVelocityPass.cpp
-    Private/Passes/ParticleFeaturePass.cpp
-    Private/Passes/SkyboxPass.cpp
-    Private/Passes/ShadowPass.cpp
-    Private/Passes/TerrainPass.cpp
-    Private/Passes/RayTracedShadowPass.cpp
-    Private/Passes/RayTracedReflectionPass.cpp
-    Private/Passes/RayTracedReflectionDenoisePass.cpp
-    Private/Passes/RayTracedReflectionCompositePass.cpp
-    Private/Passes/GBufferPass.cpp
-    Private/Passes/WaterPass.cpp
-    Private/Passes/UIPass.cpp
-    # Material
     Private/Material/MaterialBinder.cpp
     Private/Material/MaterialClassification.cpp
     Private/Material/MaterialSystem.cpp
     Private/Material/MaterialTemplate.cpp
     Private/Material/MaterialInstance.cpp
-    # Lighting
     Private/Lighting/LightManager.cpp
     Private/Lighting/ClusteredLighting.cpp
-    # PostProcess
+    Private/GPUDriven/GPUCulling.cpp
+)
+
+rvx_configure_render_component(RVX_RenderFoundation)
+
+target_link_libraries(RVX_RenderFoundation PUBLIC
+    RVX::Core
+    RVX::HAL
+    RVX::RenderContracts
+    RVX::RenderGraph
+    RVX::RHI
+    RVX::ShaderContracts
+    RVX::RenderRuntimeCore
+)
+
+target_link_libraries(RVX_RenderFoundation PRIVATE
+    RVX::RHI_BackendFactory
+    Threads::Threads
+)
+
+add_library(RVX::RenderFoundation ALIAS RVX_RenderFoundation)
+
+# =============================================================================
+# Renderer feature targets
+# =============================================================================
+# Each feature may consume the foundation and RenderGraph contracts, but never
+# another feature target. RenderComposition is the sole feature aggregator.
+add_library(RVX_RenderSurface STATIC)
+target_sources(RVX_RenderSurface PRIVATE
+    Private/Passes/OpaquePass.cpp
+    Private/Passes/DepthPrepass.cpp
+    Private/Passes/TransparentPass.cpp
+    Private/Passes/SkyboxPass.cpp
+    Private/Passes/TerrainPass.cpp
+    Private/Passes/GBufferPass.cpp
+    Private/Passes/UIPass.cpp
+    Private/Decal/DecalRenderer.cpp
+    Private/Sky/AtmosphericScattering.cpp
+    Private/Debug/DebugRenderer.cpp
+    Private/Debug/GPUProfiler.cpp
+)
+rvx_configure_render_component(RVX_RenderSurface)
+target_link_libraries(RVX_RenderSurface PUBLIC
+    RVX::RenderFoundation
+    RVX::RenderGraph
+)
+add_library(RVX::RenderSurface ALIAS RVX_RenderSurface)
+
+add_library(RVX_RenderLighting STATIC)
+target_sources(RVX_RenderLighting PRIVATE
+    Private/Passes/ShadowPass.cpp
+)
+rvx_configure_render_component(RVX_RenderLighting)
+target_link_libraries(RVX_RenderLighting PUBLIC
+    RVX::RenderFoundation
+    RVX::RenderGraph
+)
+add_library(RVX::RenderLighting ALIAS RVX_RenderLighting)
+
+add_library(RVX_RenderAnimationDeform STATIC)
+target_sources(RVX_RenderAnimationDeform PRIVATE
+    Private/Passes/CameraVelocityPass.cpp
+    Private/Passes/ObjectVelocityPass.cpp
+)
+rvx_configure_render_component(RVX_RenderAnimationDeform)
+target_link_libraries(RVX_RenderAnimationDeform PUBLIC
+    RVX::RenderFoundation
+    RVX::RenderGraph
+)
+add_library(RVX::RenderAnimationDeform ALIAS RVX_RenderAnimationDeform)
+
+add_library(RVX_RenderPostProcess STATIC)
+target_sources(RVX_RenderPostProcess PRIVATE
     Private/PostProcess/PostProcessStack.cpp
     Private/PostProcess/ToneMapping.cpp
     Private/PostProcess/Bloom.cpp
@@ -197,40 +244,91 @@ target_sources(RVX_Render PRIVATE
     Private/PostProcess/ChromaticAberration.cpp
     Private/PostProcess/FilmGrain.cpp
     Private/PostProcess/VolumetricLighting.cpp
-    # Decal
-    Private/Decal/DecalRenderer.cpp
-    # Sky
-    Private/Sky/AtmosphericScattering.cpp
-    # Debug
-    Private/Debug/DebugRenderer.cpp
-    Private/Debug/GPUProfiler.cpp
-    # GPU Driven
-    Private/GPUDriven/GPUCulling.cpp
 )
-
-target_include_directories(RVX_Render PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Include>
-    $<INSTALL_INTERFACE:include>
-)
-
-target_include_directories(RVX_Render PRIVATE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Private>
-)
-
-target_link_libraries(RVX_Render PUBLIC
-    RVX_Core
-    RVX::HAL
-    RVX::RenderContracts
+rvx_configure_render_component(RVX_RenderPostProcess)
+target_link_libraries(RVX_RenderPostProcess PUBLIC
+    RVX::RenderFoundation
     RVX::RenderGraph
-    RVX_RHI
-    RVX::ShaderContracts
 )
+add_library(RVX::RenderPostProcess ALIAS RVX_RenderPostProcess)
 
-target_link_libraries(RVX_Render PRIVATE
-    RVX::RHI_BackendFactory
-    RVX_RenderRuntimeCore
+add_library(RVX_RenderParticles STATIC)
+target_sources(RVX_RenderParticles PRIVATE
+    Private/Passes/ParticleFeaturePass.cpp
 )
+rvx_configure_render_component(RVX_RenderParticles)
+target_link_libraries(RVX_RenderParticles PUBLIC
+    RVX::RenderFoundation
+    RVX::RenderGraph
+)
+add_library(RVX::RenderParticles ALIAS RVX_RenderParticles)
 
+add_library(RVX_RenderWater STATIC)
+target_sources(RVX_RenderWater PRIVATE
+    Private/Passes/WaterPass.cpp
+)
+rvx_configure_render_component(RVX_RenderWater)
+target_link_libraries(RVX_RenderWater PUBLIC
+    RVX::RenderFoundation
+    RVX::RenderGraph
+)
+add_library(RVX::RenderWater ALIAS RVX_RenderWater)
+
+add_library(RVX_RenderRayTracing STATIC)
+target_sources(RVX_RenderRayTracing PRIVATE
+    Private/RayTracing/RayTracingScene.cpp
+    Private/RayTracing/RayTracingSceneManager.cpp
+    Private/Passes/RayTracedShadowPass.cpp
+    Private/Passes/RayTracedReflectionPass.cpp
+    Private/Passes/RayTracedReflectionDenoisePass.cpp
+    Private/Passes/RayTracedReflectionCompositePass.cpp
+)
+rvx_configure_render_component(RVX_RenderRayTracing)
+target_link_libraries(RVX_RenderRayTracing PUBLIC
+    RVX::RenderFoundation
+    RVX::RenderGraph
+)
+add_library(RVX::RenderRayTracing ALIAS RVX_RenderRayTracing)
+
+# =============================================================================
+# RenderComposition - the one place that assembles renderer features
+# =============================================================================
+add_library(RVX_RenderComposition STATIC)
+target_sources(RVX_RenderComposition PRIVATE
+    Private/Renderer/RenderPassRegistry.cpp
+    Private/Renderer/SceneRenderer.cpp
+    Private/Features/DefaultForwardComposition.cpp
+    Private/Features/LegacyForwardFeatureAdapter.cpp
+    Private/Features/RenderFeatureRegistry.cpp
+    Private/Diagnostics/RenderFeatureReport.cpp
+    Private/Diagnostics/RenderToolArtifacts.cpp
+)
+rvx_configure_render_component(RVX_RenderComposition)
+target_link_libraries(RVX_RenderComposition PUBLIC
+    RVX::RenderFoundation
+    RVX::RenderGraph
+    RVX::RenderSurface
+    RVX::RenderLighting
+    RVX::RenderAnimationDeform
+    RVX::RenderPostProcess
+    RVX::RenderParticles
+    RVX::RenderWater
+    RVX::RenderRayTracing
+)
+add_library(RVX::RenderComposition ALIAS RVX_RenderComposition)
+
+# =============================================================================
+# Render facade - public subsystem and presentation entry points only
+# =============================================================================
+add_library(RVX_Render STATIC)
+target_sources(RVX_Render PRIVATE
+    Private/RenderSubsystem.cpp
+    Private/SwapChainManager.cpp
+)
+rvx_configure_render_component(RVX_Render)
+target_link_libraries(RVX_Render PUBLIC
+    RVX::RenderComposition
+)
 add_library(RVX::Render ALIAS RVX_Render)
 
 rvx_register_module_target(
@@ -242,6 +340,51 @@ rvx_register_module_target(
     TARGET RVX_RenderGraph
     MODULE Render
     ALIASES RVX::RenderGraph
+)
+rvx_register_module_target(
+    TARGET RVX_RenderFoundation
+    MODULE Render
+    ALIASES RVX::RenderFoundation
+)
+rvx_register_module_target(
+    TARGET RVX_RenderSurface
+    MODULE Render
+    ALIASES RVX::RenderSurface
+)
+rvx_register_module_target(
+    TARGET RVX_RenderLighting
+    MODULE Render
+    ALIASES RVX::RenderLighting
+)
+rvx_register_module_target(
+    TARGET RVX_RenderAnimationDeform
+    MODULE Render
+    ALIASES RVX::RenderAnimationDeform
+)
+rvx_register_module_target(
+    TARGET RVX_RenderPostProcess
+    MODULE Render
+    ALIASES RVX::RenderPostProcess
+)
+rvx_register_module_target(
+    TARGET RVX_RenderParticles
+    MODULE Render
+    ALIASES RVX::RenderParticles
+)
+rvx_register_module_target(
+    TARGET RVX_RenderWater
+    MODULE Render
+    ALIASES RVX::RenderWater
+)
+rvx_register_module_target(
+    TARGET RVX_RenderRayTracing
+    MODULE Render
+    ALIASES RVX::RenderRayTracing
+)
+rvx_register_module_target(
+    TARGET RVX_RenderComposition
+    MODULE Render
+    ALIASES RVX::RenderComposition
 )
 rvx_register_module_target(
     TARGET RVX_Render

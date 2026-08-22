@@ -40,9 +40,10 @@ target_link_libraries(RVX_Engine PUBLIC
     RVX_World
     
     # Rendering
-    RVX_Render
-    RVX_RenderContracts
-    RVX_RenderExtraction
+    RVX::Render
+    RVX::RenderComposition
+    RVX::RenderContracts
+    RVX::RenderExtraction
     RVX::ShaderContracts
     
     # Resources

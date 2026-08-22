@@ -393,7 +393,7 @@ rvx_add_gtest(
     NAME RenderPolicyValidation
     LANE unit
     SOURCES RenderPolicyValidation/main.cpp
-    LIBS RVX::Core RVX::RenderContracts RVX::RHI RVX::Render
+    LIBS RVX::RenderFoundation
     INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
     TAGS suite.render-policy
     TIMEOUT 30
@@ -403,7 +403,7 @@ rvx_add_gtest(
     NAME RenderVisibilityValidation
     LANE unit
     SOURCES RenderVisibilityValidation/main.cpp
-    LIBS RVX::Core RVX::Render
+    LIBS RVX::RenderFoundation
     INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
     TAGS suite.visibility
     TIMEOUT 30
@@ -413,7 +413,7 @@ rvx_add_gtest(
     NAME GPUSceneValidation
     LANE unit
     SOURCES GPUSceneValidation/main.cpp
-    LIBS RVX::Render RVX_RenderRuntimeCore
+    LIBS RVX::RenderFoundation
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
@@ -425,7 +425,7 @@ rvx_add_gtest(
     NAME GPUSceneSchemaValidation
     LANE unit
     SOURCES GPUSceneSchemaValidation/main.cpp
-    LIBS RVX::Render
+    LIBS RVX::RenderFoundation
     INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
     DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     TAGS suite.gpu-scene
@@ -436,7 +436,7 @@ rvx_add_gtest(
     NAME GPUSceneUploadValidation
     LANE unit
     SOURCES GPUSceneUploadValidation/main.cpp
-    LIBS RVX::Render RVX_RenderRuntimeCore
+    LIBS RVX::RenderFoundation
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
@@ -448,7 +448,7 @@ rvx_add_gtest(
     NAME RenderDrawPacketValidation
     LANE unit
     SOURCES RenderDrawPacketValidation/main.cpp
-    LIBS RVX::Render
+    LIBS RVX::RenderFoundation
     INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
     TIMEOUT 30
 )
@@ -457,7 +457,7 @@ rvx_add_gtest(
     NAME RenderDrawPacketCacheValidation
     LANE unit
     SOURCES RenderDrawPacketCacheValidation/main.cpp
-    LIBS RVX::Render
+    LIBS RVX::RenderFoundation
     INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
     TIMEOUT 30
 )
@@ -508,7 +508,7 @@ rvx_add_gtest(
     NAME MeshPassProcessorValidation
     LANE unit
     SOURCES MeshPassProcessorValidation/main.cpp
-    LIBS RVX::Render
+    LIBS RVX::RenderFoundation
     INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
     TIMEOUT 30
 )
@@ -517,7 +517,7 @@ rvx_add_gtest(
     NAME RenderInstanceBatchPlanValidation
     LANE unit
     SOURCES RenderInstanceBatchPlanValidation/main.cpp
-    LIBS RVX::Render
+    LIBS RVX::RenderFoundation
     INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
     TIMEOUT 60
 )
@@ -544,9 +544,7 @@ rvx_add_gtest(
     LANE unit
     SOURCES RenderSubmissionValidation/main.cpp
     LIBS
-        RVX::Render
-        RVX::RHI
-        RVX_RenderRuntimeCore
+        RVX::RenderFoundation
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
     DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -558,9 +556,8 @@ rvx_add_gtest(
     LANE unit
     SOURCES RenderLifetimeCutoverValidation/main.cpp
     LIBS
-        RVX::Render
+        RVX::RenderGraph
         RVX::RHI
-        RVX_RenderRuntimeCore
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
     TIMEOUT 30
@@ -637,7 +634,7 @@ rvx_add_gtest(
     NAME RenderFeatureValidation
     LANE unit
     SOURCES RenderFeatureValidation/main.cpp
-    LIBS RVX::Render
+    LIBS RVX::RenderComposition
     INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
     TAGS subsystem.render suite.feature
     TIMEOUT 30
@@ -733,7 +730,7 @@ rvx_add_gtest(
     SOURCES PipelineCacheValidation/main.cpp
     LIBS
         RVX::Core
-        RVX::Render
+        RVX::RenderFoundation
         RVX::RHI
         RVX::ShaderContracts
         RVX::AssetPipeline
@@ -754,8 +751,7 @@ rvx_add_gtest(
         RVX::Core
         RVX::RHI
         RVX::RenderContracts
-        RVX::Render
-        RVX_RenderRuntimeCore
+        RVX::RenderFoundation
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
@@ -771,10 +767,9 @@ rvx_add_gtest(
         RVX::Core
         RVX::RHI
         RVX::RenderContracts
-        RVX::Render
+        RVX::RenderFoundation
         RVX::ShaderCompiler
         RVX::ShaderContracts
-        RVX_RenderRuntimeCore
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Tests
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
@@ -843,7 +838,7 @@ rvx_add_gtest(
     NAME RenderIncrementalSceneScaleValidation
     LANE unit
     SOURCES RenderIncrementalSceneScaleValidation/main.cpp
-    LIBS RVX::Render RVX_RenderRuntimeCore
+    LIBS RVX::RenderFoundation
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
@@ -873,7 +868,7 @@ rvx_add_gtest(
         RVX::Core
         RVX::RenderContracts
         RVX::RenderExtraction
-        RVX::Render
+        RVX::RenderFoundation
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RenderContracts/Include
@@ -888,7 +883,7 @@ rvx_add_gtest(
         Common/RenderRuntimeTestHarness.cpp
     LIBS
         RVX::Core
-        RVX::Render
+        RVX::RenderFoundation
         RVX::ResourceRuntime
         RVX::RHI
         RVX::Scene
@@ -907,7 +902,7 @@ rvx_add_gtest(
     SOURCES ClusteredLightingValidation/main.cpp
     LIBS
         RVX::Core
-        RVX::Render
+        RVX::RenderFoundation
         RVX::RHI
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
@@ -922,7 +917,7 @@ rvx_add_gtest(
     LIBS
         RVX::Core
         RVX::RHI
-        RVX::Render
+        RVX::RenderSurface
         RVX::UI
     TIMEOUT 120
 )
@@ -1114,8 +1109,7 @@ rvx_add_gtest(
     LIBS
         RVX::Core
         RVX::RHI
-        RVX::Render
-        RVX_RenderRuntimeCore
+        RVX::RenderGraph
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
