@@ -152,7 +152,7 @@ def base_contract() -> dict:
             "artifactContracts": [
                 {
                     "id": "model",
-                    "magic": "RVX_MODEL_ARTIFACT_V2",
+                    "magic": "RVX_MODEL_ARTIFACT_V3",
                     "source": "Source/Runtime/ResourceRuntime/Include/Resource/Cooked/CookedModelArtifact.h",
                 }
             ],
@@ -302,7 +302,7 @@ def write_fixture(root: Path) -> None:
     )
     write(
         root / "Source/Runtime/ResourceRuntime/Include/Resource/Cooked/CookedModelArtifact.h",
-        'constexpr auto Magic = "RVX_MODEL_ARTIFACT_V2";\n',
+        'constexpr auto Magic = "RVX_MODEL_ARTIFACT_V3";\n',
     )
     write(
         root / "Source/Runtime/Render/CMakeLists.txt",

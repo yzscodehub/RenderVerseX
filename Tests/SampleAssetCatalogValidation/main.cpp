@@ -978,7 +978,7 @@ namespace
 
         requireAsset("water-bottle", RVX::SampleAssetKind::Model, 1u);
         requireAsset("corset", RVX::SampleAssetKind::Model, 1u);
-        requireAsset("casual-female", RVX::SampleAssetKind::Model, 5u);
+        requireAsset("casual-female", RVX::SampleAssetKind::Model, 11u);
         requireAsset("crytek-sponza", RVX::SampleAssetKind::Model, 26u);
         requireAsset("kloofendal-48d-partly-cloudy-pure-sky",
                      RVX::SampleAssetKind::Environment,
@@ -1033,11 +1033,11 @@ namespace
                   RVX::RVX_SAMPLE_ASSET_CONTENT_ID_SCHEMA_VERSION);
         EXPECT_EQ(entry->assetContentId.algorithm, "sha256");
         EXPECT_EQ(entry->assetContentId.digest,
-                  "e5ef68f61edfd7d7bcc89207e253352368a7e57569051946917a6a22aa55f58d");
-        EXPECT_EQ(entry->assetContentId.byteCount, 3595796u);
-        EXPECT_EQ(entry->assetContentId.fileCount, 5u);
+                  "57b9e1ebfbcdb14606fc06d0aa36c13a0554ba3cfd4ebf68c165455ac88e63a3");
+        EXPECT_EQ(entry->assetContentId.byteCount, 3597846u);
+        EXPECT_EQ(entry->assetContentId.fileCount, 11u);
 
-        ASSERT_EQ(entry->files.size(), 5u);
+        ASSERT_EQ(entry->files.size(), 11u);
         for (const RVX::SampleAssetFile& declaredFile : entry->files)
         {
             EXPECT_TRUE(std::filesystem::is_regular_file(declaredFile.resolvedPath));
@@ -1069,15 +1069,15 @@ namespace
         EXPECT_EQ(entry->cook.selector.type,
                   RVX::Resource::CookAssetType::Model);
         EXPECT_EQ(entry->cook.cookedContentIdentity.digest,
-                  "28bffeba26ec3e01c9792fdc82ea8f43a06c34c508c361e266415c8d7fa54076");
-        EXPECT_EQ(entry->cook.cookedContentIdentity.byteCount, 1534791u);
-        EXPECT_EQ(entry->cook.cookedContentIdentity.fileCount, 3u);
+                  "28267d61f327c52df64b087235ca1754da54e6ff66511e18506a6564a8cc1a6f");
+        EXPECT_EQ(entry->cook.cookedContentIdentity.byteCount, 1534321u);
+        EXPECT_EQ(entry->cook.cookedContentIdentity.fileCount, 9u);
         EXPECT_EQ(entry->cook.manifestContentIdentity.digest,
-                  "df8235a8f12900077443d765a32c7632f9faa1320ea480e3590e8a4bcfb5ff66");
+                  "ecbb1e6d425bdb269d93045cdb5fd7c09b87fed6da7bec688ff485408b5d5949");
         EXPECT_EQ(entry->cook.cookSettingsHash,
                   "d47a3f3b166ac705cfd06128506f127d776f43ad59eaeaa5cb4d52c1946829fa");
         EXPECT_EQ(entry->cook.recipeHash,
-                  "815ad489b05e8595afec66fa1dadfc39cb1dea900cea4e18bad7e5092f8592c5");
+                  "28f13886f1ecc018d5daa7501d0e17d70a52769ae3623d10f2e6c98d8452f676");
         const RVX::SampleCookedAssetAdmissionReceipt admission =
             catalog.RequireCookedAdmission("casual-female");
         EXPECT_TRUE(admission.IsAccepted()) << admission.detail;
@@ -1174,7 +1174,7 @@ namespace
                   "rvx-animation-root-motion-derive-v1");
         EXPECT_EQ(entry->generation.toolVersion, "1.0.0");
         EXPECT_EQ(entry->generation.recipeHash,
-                  "7afd7f6f2a6321f55f1458f69ca0dc1f523c4653af4a6e63d4b41a307acc0c41");
+                  "0e473d3e0511827cff7dd51e786c7d41f6bcbaadbe3f1dee4b0659900261ee7e");
 
         const auto expectIdentity =
             [](const RVX::Resource::ResourceContentIdentity& identity,
@@ -1200,8 +1200,8 @@ namespace
             entry->contentIdentity,
             RVX::Resource::ResourceContentIdentityDomain::CookedArtifact,
             RVX::Resource::ResourceContentIdentityScope::SelfContainedArtifact,
-            "86ed6cd35db4c77863b235998f1a27483b9f6b17eb8470e46a221940f5c16ccb",
-            54462u,
+            "1402b3b629c587ba1168ee961029e9b8504ffac89f763592571ae836f13f9a7f",
+            54464u,
             1u);
 
         EXPECT_TRUE(entry->assetContentId.IsValid());
@@ -1209,8 +1209,8 @@ namespace
                   RVX::RVX_SAMPLE_ASSET_CONTENT_ID_SCHEMA_VERSION);
         EXPECT_EQ(entry->assetContentId.algorithm, "sha256");
         EXPECT_EQ(entry->assetContentId.digest,
-                  "5b9389ee4822bc351d255cc22d1fa0a48515a9f34493d46175d520b65212f206");
-        EXPECT_EQ(entry->assetContentId.byteCount, 56156u);
+                  "8986e195f30f749969d68648cd21b5271ad17547b30372b73fb7d6f154a8c544");
+        EXPECT_EQ(entry->assetContentId.byteCount, 56159u);
         EXPECT_EQ(entry->assetContentId.fileCount, 2u);
 
         ASSERT_EQ(entry->files.size(), 2u);
@@ -1218,9 +1218,9 @@ namespace
         EXPECT_EQ(manifestFile.path.generic_string(),
                   "cooked/casual-female-root-motion/CookManifest.rvxmanifest");
         EXPECT_EQ(manifestFile.purpose, "cook-manifest");
-        EXPECT_EQ(manifestFile.byteCount, 1694u);
+        EXPECT_EQ(manifestFile.byteCount, 1695u);
         EXPECT_EQ(manifestFile.sha256,
-                  "c4b5ad12e5d3cb05ed29c5d06c195e113c5a378382a1e207da37983697227116");
+                  "bf369d106c2bf53a48c329f84ee7c977fa64c58d45c9c15d2426d9bf15546f2c");
         EXPECT_TRUE(std::filesystem::is_regular_file(manifestFile.resolvedPath));
         EXPECT_EQ(std::filesystem::file_size(manifestFile.resolvedPath),
                   manifestFile.byteCount);
@@ -1231,9 +1231,9 @@ namespace
                   "cooked/casual-female-root-motion/"
                   "casual-female-walk-root-motion.rvxanim");
         EXPECT_EQ(artifactFile.purpose, "runtime-root");
-        EXPECT_EQ(artifactFile.byteCount, 54462u);
+        EXPECT_EQ(artifactFile.byteCount, 54464u);
         EXPECT_EQ(artifactFile.sha256,
-                  "86ed6cd35db4c77863b235998f1a27483b9f6b17eb8470e46a221940f5c16ccb");
+                  "1402b3b629c587ba1168ee961029e9b8504ffac89f763592571ae836f13f9a7f");
         EXPECT_TRUE(std::filesystem::is_regular_file(artifactFile.resolvedPath));
         EXPECT_EQ(std::filesystem::file_size(artifactFile.resolvedPath),
                   artifactFile.byteCount);
@@ -1262,20 +1262,20 @@ namespace
             entry->cook.cookedContentIdentity,
             RVX::Resource::ResourceContentIdentityDomain::CookedArtifact,
             RVX::Resource::ResourceContentIdentityScope::SelfContainedArtifact,
-            "5fab9c5b30fed8ef486f3ac2011539ec1dc40bab5c323e938c53417897faee8f",
-            54462u,
+            "3a7e27e1745b292b282682df0ab6fee9c4b1b1ddb8d0b080d69dc723ab122a97",
+            54464u,
             1u);
         expectIdentity(
             entry->cook.manifestContentIdentity,
             RVX::Resource::ResourceContentIdentityDomain::CookManifest,
             RVX::Resource::ResourceContentIdentityScope::SelfContainedArtifact,
-            "c4b5ad12e5d3cb05ed29c5d06c195e113c5a378382a1e207da37983697227116",
-            1694u,
+            "bf369d106c2bf53a48c329f84ee7c977fa64c58d45c9c15d2426d9bf15546f2c",
+            1695u,
             1u);
         EXPECT_EQ(entry->cook.cookSettingsHash,
-                  "ab0e49942ad560a6061b96cfc94b2691ea3a2a99f9a628b1273627ef17817822");
+                  "37d257abb1762b56436a0b3a1de267860f0507fbf0ff169ce395039ae2053232");
         EXPECT_EQ(entry->cook.recipeHash,
-                  "c1ade5aa9db8741f460047448618b173b9b74c52209e63153703572c37efa4ed");
+                  "5d814e26fdad96238fa707f11537e7ac66f9aa335252fafe525ef59338c478a7");
         EXPECT_EQ(entry->cook.toolName, "RVXCook");
         EXPECT_EQ(entry->cook.toolVersion, "2.0.0");
 

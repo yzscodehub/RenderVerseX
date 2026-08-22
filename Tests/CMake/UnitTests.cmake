@@ -1088,6 +1088,24 @@ rvx_add_gtest(
     TIMEOUT 120
 )
 
+rvx_add_gtest(
+    NAME CookedMaterialArtifactValidation
+    LANE unit
+    SOURCES CookedMaterialArtifactValidation/main.cpp
+    LIBS RVX::Core RVX::ResourceRuntime
+    TAGS subsystem.resource suite.cook suite.material
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME CookedMaterialLoaderValidation
+    LANE unit
+    SOURCES CookedMaterialLoaderValidation/main.cpp
+    LIBS RVX::Core RVX::ResourceRuntime
+    TAGS subsystem.resource suite.cook suite.material
+    TIMEOUT 30
+)
+
 if(RVX_ENABLE_FBX)
     rvx_add_gtest(
         NAME FBXImporterValidation

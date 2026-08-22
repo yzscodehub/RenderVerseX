@@ -145,37 +145,37 @@ namespace
         return {};
     }
 
-    MaterialUploadWrapMode ConvertWrap(TextureInfo::WrapMode mode)
+    MaterialUploadWrapMode ConvertWrap(MaterialSamplerWrap mode)
     {
         switch (mode)
         {
-            case TextureInfo::WrapMode::MirrorRepeat:
+            case MaterialSamplerWrap::MirrorRepeat:
                 return MaterialUploadWrapMode::MirrorRepeat;
-            case TextureInfo::WrapMode::ClampToEdge:
+            case MaterialSamplerWrap::ClampToEdge:
                 return MaterialUploadWrapMode::ClampToEdge;
-            case TextureInfo::WrapMode::ClampToBorder:
+            case MaterialSamplerWrap::ClampToBorder:
                 return MaterialUploadWrapMode::ClampToBorder;
-            case TextureInfo::WrapMode::Repeat:
+            case MaterialSamplerWrap::Repeat:
             default:
                 return MaterialUploadWrapMode::Repeat;
         }
     }
 
-    MaterialUploadFilterMode ConvertFilter(TextureInfo::FilterMode mode)
+    MaterialUploadFilterMode ConvertFilter(MaterialSamplerFilter mode)
     {
         switch (mode)
         {
-            case TextureInfo::FilterMode::Nearest:
+            case MaterialSamplerFilter::Nearest:
                 return MaterialUploadFilterMode::Nearest;
-            case TextureInfo::FilterMode::NearestMipmapNearest:
+            case MaterialSamplerFilter::NearestMipmapNearest:
                 return MaterialUploadFilterMode::NearestMipmapNearest;
-            case TextureInfo::FilterMode::LinearMipmapNearest:
+            case MaterialSamplerFilter::LinearMipmapNearest:
                 return MaterialUploadFilterMode::LinearMipmapNearest;
-            case TextureInfo::FilterMode::NearestMipmapLinear:
+            case MaterialSamplerFilter::NearestMipmapLinear:
                 return MaterialUploadFilterMode::NearestMipmapLinear;
-            case TextureInfo::FilterMode::LinearMipmapLinear:
+            case MaterialSamplerFilter::LinearMipmapLinear:
                 return MaterialUploadFilterMode::LinearMipmapLinear;
-            case TextureInfo::FilterMode::Linear:
+            case MaterialSamplerFilter::Linear:
             default:
                 return MaterialUploadFilterMode::Linear;
         }
@@ -494,53 +494,53 @@ namespace
         uint64 sourceRevision,
         RenderResourceContentOperation operation)
     {
-        MaterialUploadPayload payload;
-        payload.sourceData = resource.GetMaterialSourceData();
+        const MaterialDefinition& definition = resource.GetMaterialDefinition();
+        std::string materialError;
+        if (!ValidateMaterialDefinition(definition, materialError))
+        {
+            return {RenderUploadRequestBuildCode::InvalidResource};
+        }
 
-        constexpr MaterialUploadTextureSlot slots[] = {
-            MaterialUploadTextureSlot::BaseColor,
-            MaterialUploadTextureSlot::Normal,
-            MaterialUploadTextureSlot::MetallicRoughness,
-            MaterialUploadTextureSlot::Occlusion,
-            MaterialUploadTextureSlot::Emissive};
-        const std::shared_ptr<const Material> material = resource.GetMaterial();
+        MaterialUploadPayload payload;
+        payload.sourceData = definition.parameters;
+        payload.sourceData.textureFlags = 0;
+
+        struct UploadSlot
+        {
+            MaterialUploadTextureSlot uploadSlot;
+            MaterialTextureSlot materialSlot;
+            const char* legacyName;
+        };
+        constexpr UploadSlot slots[] = {
+            {MaterialUploadTextureSlot::BaseColor,
+             MaterialTextureSlot::BaseColor, "albedo"},
+            {MaterialUploadTextureSlot::Normal,
+             MaterialTextureSlot::Normal, "normal"},
+            {MaterialUploadTextureSlot::MetallicRoughness,
+             MaterialTextureSlot::MetallicRoughness, "metallic_roughness"},
+            {MaterialUploadTextureSlot::Occlusion,
+             MaterialTextureSlot::Occlusion, "ao"},
+            {MaterialUploadTextureSlot::Emissive,
+             MaterialTextureSlot::Emissive, "emissive"}};
 
         std::vector<RenderResourceHandle> dependencies;
-        for (MaterialUploadTextureSlot slot : slots)
+        for (const UploadSlot& slot : slots)
         {
-            ResourceHandle<TextureResource> sourceTexture;
-            const std::optional<TextureInfo>* textureInfo = nullptr;
-            switch (slot)
-            {
-                case MaterialUploadTextureSlot::BaseColor:
-                    sourceTexture = resource.GetAlbedoTexture();
-                    textureInfo = material ? &material->GetBaseColorTexture()
-                                           : nullptr;
-                    break;
-                case MaterialUploadTextureSlot::Normal:
-                    sourceTexture = resource.GetNormalTexture();
-                    textureInfo = material ? &material->GetNormalTexture()
-                                           : nullptr;
-                    break;
-                case MaterialUploadTextureSlot::MetallicRoughness:
-                    sourceTexture = resource.GetMetallicRoughnessTexture();
-                    textureInfo = material
-                                      ? &material->GetMetallicRoughnessTexture()
-                                      : nullptr;
-                    break;
-                case MaterialUploadTextureSlot::Occlusion:
-                    sourceTexture = resource.GetAOTexture();
-                    textureInfo = material ? &material->GetOcclusionTexture()
-                                           : nullptr;
-                    break;
-                case MaterialUploadTextureSlot::Emissive:
-                    sourceTexture = resource.GetEmissiveTexture();
-                    textureInfo = material ? &material->GetEmissiveTexture()
-                                           : nullptr;
-                    break;
-            }
+            const ResourceHandle<TextureResource> sourceTexture =
+                resource.GetTexture(slot.legacyName);
             if (!sourceTexture)
                 continue;
+
+            const auto metadata = std::find_if(
+                definition.textureSlots.begin(), definition.textureSlots.end(),
+                [&slot](const MaterialTextureSlotDefinition& candidate)
+                {
+                    return candidate.slot == slot.materialSlot;
+                });
+            if (metadata == definition.textureSlots.end())
+            {
+                return {RenderUploadRequestBuildCode::InvalidResource};
+            }
             if (!dependencyResolver)
             {
                 return {RenderUploadRequestBuildCode::DependencyUnavailable};
@@ -553,24 +553,20 @@ namespace
             }
 
             MaterialUploadTextureBinding binding;
-            binding.slot = slot;
+            binding.slot = slot.uploadSlot;
             binding.texture = texture;
             binding.isDefaultFallback = sourceTexture->IsDefaultFallback();
-            if (textureInfo != nullptr && textureInfo->has_value())
-            {
-                const TextureInfo& source = textureInfo->value();
-                binding.uvSet = source.uvSet;
-                binding.offset = source.offset;
-                binding.scale = source.scale;
-                binding.rotation = source.rotation;
-                binding.wrapS = ConvertWrap(source.wrapS);
-                binding.wrapT = ConvertWrap(source.wrapT);
-                binding.minFilter = ConvertFilter(source.minFilter);
-                binding.magFilter = ConvertFilter(source.magFilter);
-            }
+            binding.uvSet = metadata->uvSet;
+            binding.offset = metadata->offset;
+            binding.scale = metadata->scale;
+            binding.rotation = metadata->rotation;
+            binding.wrapS = ConvertWrap(metadata->wrapS);
+            binding.wrapT = ConvertWrap(metadata->wrapT);
+            binding.minFilter = ConvertFilter(metadata->minFilter);
+            binding.magFilter = ConvertFilter(metadata->magFilter);
             payload.textureBindings.push_back(binding);
             payload.sourceData.textureFlags |=
-                1U << static_cast<uint32>(slot);
+                1U << static_cast<uint32>(slot.uploadSlot);
             if (std::find(dependencies.begin(), dependencies.end(), texture) ==
                 dependencies.end())
             {

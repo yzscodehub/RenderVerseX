@@ -245,6 +245,14 @@ def main() -> int:
             "Casual_Female.rvdeps/animation.rvxanim",
             "cooked-artifact",
         ),
+        *[
+            file_record(
+                "cooked/casual-female/models/casual-female/"
+                f"Casual_Female.rvdeps/material_{index}.rvmat",
+                "cooked-artifact",
+            )
+            for index in range(6)
+        ],
         file_record(
             "cooked/casual-female/models/casual-female/"
             "Casual_Female.rvdeps/meshes.rva",
@@ -253,17 +261,47 @@ def main() -> int:
     ]
     expected_casual_female_cooked_files = {
         "cooked/casual-female/CookManifest.rvxmanifest": (
-            2_122,
-            "df8235a8f12900077443d765a32c7632f9faa1320ea480e3590e8a4bcfb5ff66",
+            4_642,
+            "ecbb1e6d425bdb269d93045cdb5fd7c09b87fed6da7bec688ff485408b5d5949",
         ),
         "cooked/casual-female/models/casual-female/Casual_Female.rva": (
-            15_843,
-            "3b13707c940f17cc592740ab0d7772b22c84500da371240de12224a50adeb2e2",
+            13_183,
+            "a389f29eb345f80df8e8231ff36e4bb39a4c1a05fe54270735885a6827e2c416",
         ),
         "cooked/casual-female/models/casual-female/"
         "Casual_Female.rvdeps/animation.rvxanim": (
             927_584,
             "36f4824d1d82aeaae42ce33208b3c774622e09d4547290c89ace8560eeb3ad11",
+        ),
+        "cooked/casual-female/models/casual-female/"
+        "Casual_Female.rvdeps/material_0.rvmat": (
+            365,
+            "d3c42cf7ce8629f7a1e6c7e4a977cb09c61f52fa06c5a726ef1341e3b14dc580",
+        ),
+        "cooked/casual-female/models/casual-female/"
+        "Casual_Female.rvdeps/material_1.rvmat": (
+            365,
+            "89d89a562576e9d1e5e44a4e8d5121bd808712d9fc5ef46d8cf30ad7ca2d859b",
+        ),
+        "cooked/casual-female/models/casual-female/"
+        "Casual_Female.rvdeps/material_2.rvmat": (
+            365,
+            "ac7106bad8face93755cfc2688fba28fbad597b8ebad697c9cd3b062b6b9596a",
+        ),
+        "cooked/casual-female/models/casual-female/"
+        "Casual_Female.rvdeps/material_3.rvmat": (
+            365,
+            "84c78973be6d63cc5902edfa7f019d3a62e0ba7a4b54d0ad5826ae187f170513",
+        ),
+        "cooked/casual-female/models/casual-female/"
+        "Casual_Female.rvdeps/material_4.rvmat": (
+            365,
+            "7fc705e485b0eaf09c03e1d5f340bd749ed1967957cb7fca654339119a785cc6",
+        ),
+        "cooked/casual-female/models/casual-female/"
+        "Casual_Female.rvdeps/material_5.rvmat": (
+            365,
+            "3a841e152a7e058e0c3e89073e5cf1f26a4ddb523dae69ec57d293df6a7c3f9b",
         ),
         "cooked/casual-female/models/casual-female/"
         "Casual_Female.rvdeps/meshes.rva": (
@@ -296,22 +334,22 @@ def main() -> int:
         "cookedContentIdentity": content_identity(
             "cooked-artifact",
             "dependency-closure",
-            "28bffeba26ec3e01c9792fdc82ea8f43a06c34c508c361e266415c8d7fa54076",
-            1_534_791,
-            3,
+            "28267d61f327c52df64b087235ca1754da54e6ff66511e18506a6564a8cc1a6f",
+            1_534_321,
+            9,
         ),
         "manifestContentIdentity": content_identity(
             "cook-manifest",
             "self-contained-artifact",
-            "df8235a8f12900077443d765a32c7632f9faa1320ea480e3590e8a4bcfb5ff66",
-            2_122,
+            "ecbb1e6d425bdb269d93045cdb5fd7c09b87fed6da7bec688ff485408b5d5949",
+            4_642,
             1,
         ),
         "cookSettingsHash": (
             "d47a3f3b166ac705cfd06128506f127d776f43ad59eaeaa5cb4d52c1946829fa"
         ),
         "recipeHash": (
-            "815ad489b05e8595afec66fa1dadfc39cb1dea900cea4e18bad7e5092f8592c5"
+            "28f13886f1ecc018d5daa7501d0e17d70a52769ae3623d10f2e6c98d8452f676"
         ),
         "tool": {"name": "RVXCook", "version": "2.0.0"},
     }
@@ -363,12 +401,12 @@ def main() -> int:
     )
     expected_root_motion_files = {
         root_motion_artifact_relative: (
-            54_462,
-            "86ed6cd35db4c77863b235998f1a27483b9f6b17eb8470e46a221940f5c16ccb",
+            54_464,
+            "1402b3b629c587ba1168ee961029e9b8504ffac89f763592571ae836f13f9a7f",
         ),
         root_motion_manifest_relative: (
-            1_694,
-            "c4b5ad12e5d3cb05ed29c5d06c195e113c5a378382a1e207da37983697227116",
+            1_695,
+            "bf369d106c2bf53a48c329f84ee7c977fa64c58d45c9c15d2426d9bf15546f2c",
         ),
     }
     root_motion_files = sorted(
@@ -396,8 +434,8 @@ def main() -> int:
     root_motion_identity = content_identity(
         "cooked-artifact",
         "self-contained-artifact",
-        "86ed6cd35db4c77863b235998f1a27483b9f6b17eb8470e46a221940f5c16ccb",
-        54_462,
+        "1402b3b629c587ba1168ee961029e9b8504ffac89f763592571ae836f13f9a7f",
+        54_464,
         1,
     )
     assets.append(
@@ -419,7 +457,7 @@ def main() -> int:
             generation={
                 "recipe": "rvx-animation-root-motion-derive-v1",
                 "toolVersion": "1.0.0",
-                "recipeHash": "7afd7f6f2a6321f55f1458f69ca0dc1f523c4653af4a6e63d4b41a307acc0c41",
+                "recipeHash": "0e473d3e0511827cff7dd51e786c7d41f6bcbaadbe3f1dee4b0659900261ee7e",
             },
             cook={
                 "manifestPath": root_motion_manifest_relative,
@@ -433,19 +471,19 @@ def main() -> int:
                 "cookedContentIdentity": content_identity(
                     "cooked-artifact",
                     "self-contained-artifact",
-                    "5fab9c5b30fed8ef486f3ac2011539ec1dc40bab5c323e938c53417897faee8f",
-                    54_462,
+                    "3a7e27e1745b292b282682df0ab6fee9c4b1b1ddb8d0b080d69dc723ab122a97",
+                    54_464,
                     1,
                 ),
                 "manifestContentIdentity": content_identity(
                     "cook-manifest",
                     "self-contained-artifact",
-                    "c4b5ad12e5d3cb05ed29c5d06c195e113c5a378382a1e207da37983697227116",
-                    1_694,
+                    "bf369d106c2bf53a48c329f84ee7c977fa64c58d45c9c15d2426d9bf15546f2c",
+                    1_695,
                     1,
                 ),
-                "cookSettingsHash": "ab0e49942ad560a6061b96cfc94b2691ea3a2a99f9a628b1273627ef17817822",
-                "recipeHash": "c1ade5aa9db8741f460047448618b173b9b74c52209e63153703572c37efa4ed",
+                "cookSettingsHash": "37d257abb1762b56436a0b3a1de267860f0507fbf0ff169ce395039ae2053232",
+                "recipeHash": "5d814e26fdad96238fa707f11537e7ac66f9aa335252fafe525ef59338c478a7",
                 "tool": {"name": "RVXCook", "version": "2.0.0"},
             },
         )

@@ -14,10 +14,14 @@
  * - ResourceSubsystem: Engine subsystem integration
  * - Injected source-change monitoring for development composition
  * 
- * Supported formats:
- * - Models: glTF, GLB, FBX
- * - Textures: PNG, JPG, TGA, BMP, HDR, EXR
- * - Audio: WAV, MP3, OGG, FLAC
+ * Runtime cooked formats:
+ * - Models: .rva Model Artifact V3 plus contained mesh/material products
+ * - Materials: .rvmat CookedMaterial Artifact V1
+ * - Textures: .rva cooked texture products
+ * - Audio: cooked audio products
+ *
+ * Source formats (glTF, FBX, PNG, WAV and similar) belong to Developer
+ * import/cook composition and are never a Runtime loading fallback.
  * 
  * @usage
  * @code
@@ -27,9 +31,10 @@
  * auto& resourceSys = engine->GetSubsystem<ResourceSubsystem>();
  * 
  * // Load resources
- * auto mesh = resourceSys.Load<MeshResource>("models/player.gltf");
- * auto texture = resourceSys.Load<TextureResource>("textures/diffuse.png");
- * auto audio = resourceSys.Load<AudioResource>("audio/music.mp3");
+ * auto model = resourceSys.Load<ModelResource>("models/player.rva");
+ * auto material = resourceSys.Load<MaterialResource>("materials/player.rvmat");
+ * auto texture = resourceSys.Load<TextureResource>("textures/diffuse.rva");
+ * auto audio = resourceSys.Load<AudioResource>("audio/music.rva");
  * 
  * // Or use ResourceManager directly
  * resourceSubsystem.Load<MeshResource>("models/enemy.rva");
@@ -65,8 +70,9 @@
 #include "Resource/Types/EnvironmentResource.h"
 
 // Loaders
-#include "Resource/Loader/CookedTextureLoader.h"
-#include "Resource/Loader/CookedModelLoader.h"
 #include "Resource/Loader/AnimationLoader.h"
 #include "Resource/Loader/CookedAudioLoader.h"
 #include "Resource/Loader/CookedEnvironmentLoader.h"
+#include "Resource/Loader/CookedMaterialLoader.h"
+#include "Resource/Loader/CookedModelLoader.h"
+#include "Resource/Loader/CookedTextureLoader.h"

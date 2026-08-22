@@ -6,10 +6,12 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -22,6 +24,12 @@ namespace
     class PreparedMaterialLoader final : public IResourceLoader
     {
     public:
+        explicit PreparedMaterialLoader(
+            std::shared_ptr<Material>* retainedPrimarySource = nullptr)
+            : m_retainedPrimarySource(retainedPrimarySource)
+        {
+        }
+
         ResourceType GetResourceType() const override { return ResourceType::Material; }
 
         std::vector<std::string> GetSupportedExtensions() const override
@@ -67,6 +75,10 @@ namespace
             baseTexture.texturePath = texture->GetPath();
             baseTexture.imageId = 0;
             source->SetBaseColorTexture(baseTexture);
+            if (!alternate && m_retainedPrimarySource)
+            {
+                *m_retainedPrimarySource = source;
+            }
             if (!material->SetMaterialData(std::move(source)) ||
                 !material->SetTexture("albedo", ResourceHandle<TextureResource>(texture)))
             {
@@ -84,6 +96,9 @@ namespace
             }
             return true;
         }
+
+    private:
+        std::shared_ptr<Material>* m_retainedPrimarySource = nullptr;
     };
 
     class ForgedTextureResource final : public TextureResource
@@ -91,6 +106,66 @@ namespace
     public:
         void ForceLoadedForValidation() { CommitLoadedState(); }
     };
+
+    void ExpectCanonicalDefinitionMatchesCompatibilityProjection(
+        const MaterialResource& resource)
+    {
+        const std::shared_ptr<const Material> compatibility = resource.GetMaterial();
+        ASSERT_TRUE(compatibility);
+
+        const MaterialDefinition& definition = resource.GetMaterialDefinition();
+        const MaterialSourceData& parameters = definition.parameters;
+        EXPECT_EQ(parameters.baseColorFactor, compatibility->GetBaseColor());
+        EXPECT_FLOAT_EQ(parameters.metallicFactor,
+                        compatibility->GetMetallicFactor());
+        EXPECT_FLOAT_EQ(parameters.roughnessFactor,
+                        compatibility->GetRoughnessFactor());
+        EXPECT_FLOAT_EQ(parameters.normalScale,
+                        compatibility->GetNormalScale());
+        EXPECT_FLOAT_EQ(parameters.occlusionStrength,
+                        compatibility->GetOcclusionStrength());
+        EXPECT_EQ(parameters.emissiveColor, compatibility->GetEmissiveColor());
+        EXPECT_FLOAT_EQ(parameters.emissiveStrength,
+                        compatibility->GetEmissiveStrength());
+        EXPECT_FLOAT_EQ(parameters.alphaCutoff, compatibility->GetAlphaCutoff());
+        EXPECT_EQ(parameters.doubleSided, compatibility->IsDoubleSided());
+
+        const MaterialWorkflow expectedWorkflow =
+            parameters.workflow == MaterialSourceWorkflow::SpecularGlossiness
+                ? MaterialWorkflow::SpecularGlossiness
+                : parameters.workflow == MaterialSourceWorkflow::Unlit
+                    ? MaterialWorkflow::Unlit
+                    : MaterialWorkflow::MetallicRoughness;
+        EXPECT_EQ(compatibility->GetWorkflow(), expectedWorkflow);
+
+        const Material::AlphaMode expectedAlpha =
+            parameters.alphaMode == MaterialSourceAlphaMode::Mask
+                ? Material::AlphaMode::Mask
+                : parameters.alphaMode == MaterialSourceAlphaMode::Blend
+                    ? Material::AlphaMode::Blend
+                    : Material::AlphaMode::Opaque;
+        EXPECT_EQ(compatibility->GetAlphaMode(), expectedAlpha);
+        EXPECT_EQ(definition.descriptor.cullMode,
+                  parameters.doubleSided
+                      ? MaterialCullMode::NoCull
+                      : MaterialCullMode::Back);
+
+        const auto baseColorSlot = std::find_if(
+            definition.textureSlots.begin(), definition.textureSlots.end(),
+            [](const MaterialTextureSlotDefinition& slot)
+            {
+                return slot.slot == MaterialTextureSlot::BaseColor;
+            });
+        ASSERT_NE(baseColorSlot, definition.textureSlots.end());
+        const std::optional<TextureInfo>& baseColorTexture =
+            compatibility->GetBaseColorTexture();
+        ASSERT_TRUE(baseColorTexture.has_value());
+        EXPECT_EQ(baseColorSlot->uvSet,
+                  static_cast<uint8>(baseColorTexture->uvSet));
+        EXPECT_EQ(baseColorSlot->offset, baseColorTexture->offset);
+        EXPECT_EQ(baseColorSlot->scale, baseColorTexture->scale);
+        EXPECT_FLOAT_EQ(baseColorSlot->rotation, baseColorTexture->rotation);
+    }
 
     class MaterialInstanceResourceFixture : public ::testing::Test
     {
@@ -103,7 +178,7 @@ namespace
             ResourceManagerDependencies dependencies;
             std::string error;
             ASSERT_TRUE(dependencies.loaderCatalog.Add(
-                std::make_unique<PreparedMaterialLoader>(), error)) << error;
+                std::make_unique<PreparedMaterialLoader>(&m_retainedPrimarySource), error)) << error;
             m_manager.Initialize(config, std::move(dependencies));
             m_primary = m_manager.Load<MaterialResource>("primary.mat");
             m_alternate = m_manager.Load<MaterialResource>("alternate.mat");
@@ -131,6 +206,7 @@ namespace
         ResourceManager m_manager;
         MaterialHandle m_primary;
         MaterialHandle m_alternate;
+        std::shared_ptr<Material> m_retainedPrimarySource;
     };
 
     TEST_F(MaterialInstanceResourceFixture, ParentAndInstanceRemainIsolated)
@@ -151,6 +227,32 @@ namespace
         EXPECT_EQ(created.instance->GetBaseColor(), *patch.baseColor);
         EXPECT_NE(m_primary->GetBaseColor(), *patch.baseColor);
         EXPECT_FALSE(m_primary->SetMaterialData(std::make_shared<Material>("illegal")));
+    }
+
+    TEST_F(MaterialInstanceResourceFixture,
+           RetainedLoaderMaterialCannotMutateCanonicalParentOrNewInstance)
+    {
+        ASSERT_TRUE(m_retainedPrimarySource);
+        const Vec4 preparedBaseColor = m_primary->GetBaseColor();
+        const std::shared_ptr<const Material> parentProjection = m_primary->GetMaterial();
+        ASSERT_TRUE(parentProjection);
+        EXPECT_NE(parentProjection.get(), m_retainedPrimarySource.get());
+
+        m_retainedPrimarySource->SetBaseColor(Vec4{0.05f, 0.95f, 0.25f, 0.4f});
+        m_retainedPrimarySource->SetMetallicFactor(0.9f);
+        m_retainedPrimarySource->SetRoughnessFactor(0.1f);
+        m_retainedPrimarySource->SetAlphaMode(Material::AlphaMode::Blend);
+
+        EXPECT_EQ(m_primary->GetBaseColor(), preparedBaseColor);
+        EXPECT_EQ(m_primary->GetMaterial().get(), parentProjection.get());
+        ExpectCanonicalDefinitionMatchesCompatibilityProjection(*m_primary);
+
+        const MaterialInstanceCreateResult created = Create("retained-source");
+        ASSERT_TRUE(created.receipt.Succeeded());
+        ASSERT_TRUE(created.instance.IsValid());
+        EXPECT_NE(created.instance->GetMaterial().get(), m_retainedPrimarySource.get());
+        EXPECT_EQ(created.instance->GetBaseColor(), preparedBaseColor);
+        ExpectCanonicalDefinitionMatchesCompatibilityProjection(*created.instance);
     }
 
     TEST_F(MaterialInstanceResourceFixture, PatchIsTransactionalAndIdempotent)
@@ -182,6 +284,33 @@ namespace
         receipt = m_manager.UpdateMaterialInstance(created.instance, update);
         EXPECT_EQ(receipt.code, MaterialInstanceMutationCode::NoChange);
         EXPECT_EQ(receipt.revision, updatedRevision);
+    }
+
+    TEST_F(MaterialInstanceResourceFixture,
+           InstanceUpdatesKeepCanonicalDefinitionAndCompatibilityProjectionAligned)
+    {
+        const MaterialInstanceCreateResult created = Create();
+        ASSERT_TRUE(created.receipt.Succeeded());
+        ASSERT_TRUE(created.instance.IsValid());
+
+        MaterialInstancePatch patch;
+        patch.baseColor = Vec4{0.15f, 0.35f, 0.55f, 0.75f};
+        patch.metallicFactor = 0.65f;
+        patch.roughnessFactor = 0.45f;
+        patch.normalScale = 1.5f;
+        patch.occlusionStrength = 0.8f;
+        patch.emissiveColor = Vec3{0.1f, 0.2f, 0.3f};
+        patch.emissiveStrength = 2.0f;
+        patch.alphaCutoff = 0.25f;
+        patch.textureOverrides.emplace("albedo", m_alternate->GetAlbedoTexture());
+
+        const MaterialInstanceMutationReceipt receipt =
+            m_manager.UpdateMaterialInstance(created.instance, patch);
+        ASSERT_EQ(receipt.code, MaterialInstanceMutationCode::Applied)
+            << receipt.message;
+        EXPECT_EQ(created.instance->GetAlbedoTexture().Get(),
+                  m_alternate->GetAlbedoTexture().Get());
+        ExpectCanonicalDefinitionMatchesCompatibilityProjection(*created.instance);
     }
 
     TEST_F(MaterialInstanceResourceFixture, RuntimeKeyCollisionFailsClosed)

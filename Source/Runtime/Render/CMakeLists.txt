@@ -154,8 +154,6 @@ target_sources(RVX_RenderFoundation PRIVATE
     Private/Material/MaterialBinder.cpp
     Private/Material/MaterialClassification.cpp
     Private/Material/MaterialSystem.cpp
-    Private/Material/MaterialTemplate.cpp
-    Private/Material/MaterialInstance.cpp
     Private/Lighting/LightManager.cpp
     Private/Lighting/ClusteredLighting.cpp
     Private/GPUDriven/GPUCulling.cpp

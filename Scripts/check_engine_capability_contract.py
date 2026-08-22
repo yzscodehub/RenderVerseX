@@ -55,12 +55,14 @@ FEATURE_CAPABILITY_RULES = {
 }
 GENERIC_FEATURE_SNAPSHOT_EVIDENCE = "EcsFeatureSnapshotValidation"
 RETIRED_MODEL_V1 = "RVX_MODEL_ARTIFACT_" + "V1"
+RETIRED_MODEL_V2 = "RVX_MODEL_ARTIFACT_" + "V2"
 RETIRED_GLTF_MODEL = "RVX_GLTF_MODEL_" + "WITH_ANIMATION_V2"
 STALE_CURRENT_CONTRACTS = (
     (re.compile(r"\bResourceManager::Get\s*\("), "retired ResourceManager singleton"),
     (re.compile(r"\bPhysicsWorld::Get\s*\("), "retired PhysicsWorld singleton example"),
     (re.compile(r"\bSupportsPreparedLoading\b"), "retired prepared-loading capability probe"),
     (re.compile(rf"\b{RETIRED_MODEL_V1}\b"), "retired model artifact v1"),
+    (re.compile(rf"\b{RETIRED_MODEL_V2}\b"), "retired model artifact v2"),
     (re.compile(rf"\b{RETIRED_GLTF_MODEL}\b"), "retired glTF-specific model artifact"),
     (re.compile(r"\bworld->GetSubsystem\s*<"), "nonexistent World subsystem lookup example"),
     (re.compile(r"FetchContent[\s\S]{0,200}\bufbx\b", re.IGNORECASE), "ufbx FetchContent fallback"),

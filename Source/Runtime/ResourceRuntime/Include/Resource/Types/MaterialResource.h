@@ -91,6 +91,19 @@ namespace RVX::Resource
         /** @brief Set prepared material data before ResourceManager publication. */
         bool SetMaterialData(std::shared_ptr<Material> material);
 
+        /**
+         * @brief Set the canonical material state before ResourceManager publication.
+         *
+         * The definition is the sole render-facing authority.  Geometry::Material
+         * remains only as a source-import and legacy-test compatibility mirror.
+         */
+        bool SetMaterialDefinition(const MaterialDefinition& definition);
+
+        [[nodiscard]] const MaterialDefinition& GetMaterialDefinition() const noexcept
+        {
+            return m_definition;
+        }
+
         const std::string& GetMaterialName() const;
         MaterialWorkflow GetWorkflow() const;
         MaterialWorkflowMode GetWorkflowMode() const;
@@ -146,6 +159,7 @@ namespace RVX::Resource
         [[nodiscard]] bool CanModifyPreparedState() const noexcept;
 
     private:
+        MaterialDefinition m_definition;
         std::shared_ptr<Material> m_material;
         std::unordered_map<std::string, ResourceHandle<TextureResource>> m_textures;
         ResourceHandle<ShaderResource> m_shader;

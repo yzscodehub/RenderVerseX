@@ -19,11 +19,6 @@ add_executable(RenderVerseSamples
     Scenes/RenderingStressSample.cpp
     Scenes/SceneLifecycleSample.cpp
 )
-add_dependencies(RenderVerseSamples
-    RVXSampleHDRFixtureWriter
-    RVXSampleInteriorFixtureWriter
-)
-
 target_include_directories(RenderVerseSamples PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
@@ -63,86 +58,59 @@ if(RVX_ENABLE_OPENGL)
     target_link_libraries(RenderVerseSamples PRIVATE RVX::RHI_OpenGL)
 endif()
 
-set(RVX_MODEL_RENDERING_FIXTURE
-    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/models/shadow-plane-caster/scene.gltf")
-set(RVX_MODEL_VIEWER_FIXTURE
-    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/models/r7-triangle/scene.gltf")
-set(RVX_PBR_MATERIAL_GRID_FIXTURE
-    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/models/pbr-material-grid/scene.gltf")
-set(RVX_PBR_MATERIAL_TEXTURE_CUBE_FIXTURE
-    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/models/pbr-material-texture-cube/scene.gltf")
-add_custom_command(TARGET RenderVerseSamples POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/models/shadow-plane-caster"
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/models/r7-triangle"
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/models/pbr-material-grid"
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/models/pbr-material-texture-cube"
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/models/interior-rendering-p0a"
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/environments/pbr-reference"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/Assets/models/water-bottle"
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/models/water-bottle"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/Assets/models/corset"
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/models/corset"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/Assets/models/casual-female"
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/models/casual-female"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/Assets/models/crytek-sponza"
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/models/crytek-sponza"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/Assets/cooked/casual-female"
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/cooked/casual-female"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/Assets/cooked/casual-female-root-motion"
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/cooked/casual-female-root-motion"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/Assets/environments/kloofendal-48d-partly-cloudy-pure-sky"
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/environments/kloofendal-48d-partly-cloudy-pure-sky"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${RVX_MODEL_RENDERING_FIXTURE}"
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/models/shadow-plane-caster/scene.gltf"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${RVX_MODEL_VIEWER_FIXTURE}"
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/models/r7-triangle/scene.gltf"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${RVX_PBR_MATERIAL_GRID_FIXTURE}"
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/models/pbr-material-grid/scene.gltf"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${RVX_PBR_MATERIAL_TEXTURE_CUBE_FIXTURE}"
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/models/pbr-material-texture-cube/scene.gltf"
-    COMMAND $<TARGET_FILE:RVXSampleInteriorFixtureWriter>
-        --output "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/models/interior-rendering-p0a/scene.gltf"
-    COMMAND $<TARGET_FILE:RVXSampleHDRFixtureWriter>
-        --output "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/environments/pbr-reference/environment.hdr"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/Assets/catalog.json"
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/catalog.json"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/Manifests/renderverse-samples.json"
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/renderverse-samples.json"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/Assets/LICENSE.generated-fixtures.txt"
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/LICENSE.generated-fixtures.txt"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/Assets/LICENSE.quaternius-cc0.txt"
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/LICENSE.quaternius-cc0.txt"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/Assets/LICENSE.khronos-sample-assets-cc0.txt"
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/LICENSE.khronos-sample-assets-cc0.txt"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/Assets/LICENSE.crytek-sponza-cc-by-3.0.txt"
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/LICENSE.crytek-sponza-cc-by-3.0.txt"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/Assets/LICENSE.polyhaven-cc0.txt"
-        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/LICENSE.polyhaven-cc0.txt"
+file(GLOB_RECURSE RVX_SAMPLE_ASSET_INPUTS CONFIGURE_DEPENDS
+    LIST_DIRECTORIES FALSE
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/models/water-bottle/*"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/models/corset/*"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/models/casual-female/*"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/models/crytek-sponza/*"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/cooked/casual-female/*"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/cooked/casual-female-root-motion/*"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/environments/kloofendal-48d-partly-cloudy-pure-sky/*"
+)
+list(APPEND RVX_SAMPLE_ASSET_INPUTS
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/models/shadow-plane-caster/scene.gltf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/models/r7-triangle/scene.gltf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/models/pbr-material-grid/scene.gltf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/models/pbr-material-texture-cube/scene.gltf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/catalog.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Manifests/renderverse-samples.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/LICENSE.generated-fixtures.txt"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/LICENSE.quaternius-cc0.txt"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/LICENSE.khronos-sample-assets-cc0.txt"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/LICENSE.crytek-sponza-cc-by-3.0.txt"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Assets/LICENSE.polyhaven-cc0.txt"
+    "${CMAKE_CURRENT_SOURCE_DIR}/CMake/StageSampleAssets.cmake"
+)
+
+set(RVX_SAMPLE_RUNTIME_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>")
+set(RVX_SAMPLE_ASSET_DESTINATION
+    "${RVX_SAMPLE_RUNTIME_DIRECTORY}/Assets/Samples")
+set(RVX_SAMPLE_ASSET_RECEIPT
+    "${RVX_SAMPLE_ASSET_DESTINATION}/.rvx-staged")
+add_custom_command(
+    OUTPUT "${RVX_SAMPLE_ASSET_RECEIPT}"
+    COMMAND ${CMAKE_COMMAND}
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DBUILD_ROOT=${CMAKE_BINARY_DIR}"
+        "-DDESTINATION_ROOT=${RVX_SAMPLE_ASSET_DESTINATION}"
+        "-DSTAMP_PATH=${RVX_SAMPLE_ASSET_RECEIPT}"
+        "-DHDR_FIXTURE_WRITER=$<TARGET_FILE:RVXSampleHDRFixtureWriter>"
+        "-DINTERIOR_FIXTURE_WRITER=$<TARGET_FILE:RVXSampleInteriorFixtureWriter>"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/CMake/StageSampleAssets.cmake"
+    DEPENDS
+        ${RVX_SAMPLE_ASSET_INPUTS}
+        RVXSampleHDRFixtureWriter
+        RVXSampleInteriorFixtureWriter
+    COMMENT "Staging a clean, dependency-tracked RenderVerseSamples asset tree"
     VERBATIM
+)
+add_custom_target(RVXSampleAssets DEPENDS "${RVX_SAMPLE_ASSET_RECEIPT}")
+add_dependencies(RenderVerseSamples RVXSampleAssets)
+set_target_properties(RVXSampleAssets PROPERTIES FOLDER "Samples/Assets")
+rvx_register_module_target(
+    TARGET RVXSampleAssets
+    MODULE Samples
 )
 
 set_target_properties(RenderVerseSamples PROPERTIES

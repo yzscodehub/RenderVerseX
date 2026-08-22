@@ -39,6 +39,7 @@ target_sources(RVX_ResourceRuntime PRIVATE
     Private/Cooked/CookedAnimationArtifact.cpp
     Private/Cooked/CookedAudioArtifact.cpp
     Private/Cooked/CookedEnvironmentArtifact.cpp
+    Private/Cooked/CookedMaterialArtifact.cpp
     Private/Cooked/CookedModelArtifact.cpp
     Private/Cooked/CookedTextureArtifact.cpp
 
@@ -57,6 +58,8 @@ target_sources(RVX_ResourceRuntime PRIVATE
     Private/Loader/MeshLoader.cpp
     Private/Loader/ShaderLoader.cpp
     Private/Loader/CookedTextureLoader.cpp
+    Private/Loader/CookedMaterialPreparation.cpp
+    Private/Loader/CookedMaterialLoader.cpp
     Private/Loader/CookedModelLoader.cpp
     Private/Loader/AnimationLoader.cpp
     Private/Loader/CookedAudioLoader.cpp

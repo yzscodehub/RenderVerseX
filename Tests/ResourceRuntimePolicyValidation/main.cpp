@@ -371,10 +371,19 @@ TEST(ResourceRuntimePolicyValidation, BuiltinLoaderCompositionIsExplicit)
         EXPECT_TRUE(dependencies.loaderCatalog.Resolve(
             {type, ResourceLoadDomain::Cooked, "asset.rva"}).Succeeded());
     }
+    const auto materialCooked = dependencies.loaderCatalog.Resolve(
+        {ResourceType::Material, ResourceLoadDomain::Cooked, "asset.rvmat"});
+    EXPECT_TRUE(materialCooked.Succeeded());
+    EXPECT_EQ(materialCooked.matchCount, 1u);
+    EXPECT_EQ(dependencies.loaderCatalog.Resolve(
+                  {ResourceType::Material, ResourceLoadDomain::Source, "asset.rvmat"})
+                  .status,
+              ResourceLoaderResolveStatus::NotFound);
     EXPECT_TRUE(dependencies.loaderCatalog.Resolve(
         {ResourceType::Animation,
          ResourceLoadDomain::Cooked,
          "asset.rvxanim"}).Succeeded());
+
 }
 
 TEST(ResourceRuntimePolicyValidation, RejectsSourceAssetsWhenCookedArtifactsAreRequired)

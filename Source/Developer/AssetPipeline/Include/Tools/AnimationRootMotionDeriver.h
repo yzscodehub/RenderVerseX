@@ -19,7 +19,7 @@ namespace RVX::Tools
     inline constexpr char RVX_ROOT_MOTION_DERIVE_PARENT_ASSET_ID[] =
         "casual-female";
     inline constexpr char RVX_ROOT_MOTION_DERIVE_PARENT_CONTENT_ID[] =
-        "rvx-asset-content-v1:sha256:e5ef68f61edfd7d7bcc89207e253352368a7e57569051946917a6a22aa55f58d:3595796:5";
+        "rvx-asset-content-v1:sha256:57b9e1ebfbcdb14606fc06d0aa36c13a0554ba3cfd4ebf68c165455ac88e63a3:3597846:11";
     inline constexpr uint64 RVX_ROOT_MOTION_DERIVE_PARENT_ANIMATION_BYTE_COUNT =
         927'584;
     inline constexpr char RVX_ROOT_MOTION_DERIVE_PARENT_ANIMATION_SHA256[] =
@@ -51,9 +51,9 @@ namespace RVX::Tools
         uint32 schemaVersion = 1;
         std::string algorithm = "sha256";
         std::string digest =
-            "e5ef68f61edfd7d7bcc89207e253352368a7e57569051946917a6a22aa55f58d";
-        uint64 byteCount = 3'595'796;
-        uint32 fileCount = 5;
+            "57b9e1ebfbcdb14606fc06d0aa36c13a0554ba3cfd4ebf68c165455ac88e63a3";
+        uint64 byteCount = 3'597'846;
+        uint32 fileCount = 11;
     };
 
     /** @brief Complete, intentionally narrow request for one derived .rvxanim. */

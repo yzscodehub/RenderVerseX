@@ -1,7 +1,9 @@
 #include "Core/Log.h"
 #include "Core/Diagnostics/ContentHash.h"
+#include "Core/Hash/SHA256.h"
 #include "Geometry/Asset/Mesh.h"
 #include "Resource/Cooked/CookedAnimationArtifact.h"
+#include "Resource/Cooked/CookedMaterialArtifact.h"
 #include "Resource/Cooked/CookedModelArtifact.h"
 #include "AssetImport/GLTFImporter.h"
 #include "AssetImport/ModelLoader.h"
@@ -330,7 +332,7 @@ std::vector<RVX::uint8> ReadBytes(const fs::path& path)
             std::istreambuf_iterator<char>()};
 }
 
-std::vector<RVX::uint8> RewriteV2Payload(
+std::vector<RVX::uint8> RewriteV3Payload(
     const std::vector<RVX::uint8>& bytes,
     const std::function<void(std::vector<std::string>&)>& rewrite)
 {
@@ -376,10 +378,10 @@ std::vector<RVX::uint8> RewriteV2Payload(
     return {text.begin(), text.end()};
 }
 
-std::vector<RVX::uint8> OmitV2PrimitiveMeshIndices(
+std::vector<RVX::uint8> OmitV3PrimitiveMeshIndices(
     const std::vector<RVX::uint8>& bytes)
 {
-    return RewriteV2Payload(
+    return RewriteV3Payload(
         bytes,
         [](std::vector<std::string>& lines)
         {
@@ -685,16 +687,29 @@ TEST_F(SkeletalAssetPipelineValidation,
 }
 
 TEST_F(SkeletalAssetPipelineValidation,
-       CookedV2PublishesContainedAnimationAndReloadsCanonicalDependency)
+       CookedV3PublishesContainedAnimationAndReloadsCanonicalDependency)
 {
-    ScopedGLB fixture("cooked_v2", FixtureFault::None);
-    TemporaryDirectory temporary("cooked_v2");
+    ScopedGLB fixture("cooked_v3", FixtureFault::None);
+    TemporaryDirectory temporary("cooked_v3");
     const fs::path output = temporary.Path() / "Character.rva";
 
     RVX::Tools::ModelImporter importer;
     const RVX::Tools::ImportResult first = importer.Import(fixture.Path(), output);
     ASSERT_TRUE(first.success) << first.error;
-    ASSERT_EQ(first.outputPaths.size(), 3u);
+    ASSERT_EQ(first.outputPaths.size(), 4u);
+    EXPECT_EQ(fs::weakly_canonical(first.outputPaths[0]),
+              fs::weakly_canonical(output));
+    EXPECT_EQ(fs::weakly_canonical(first.outputPaths[1]),
+              fs::weakly_canonical(
+                  output.parent_path() / "Character.rvdeps" / "meshes.rva"));
+    EXPECT_EQ(fs::weakly_canonical(first.outputPaths[2]),
+              fs::weakly_canonical(
+                  output.parent_path() / "Character.rvdeps" /
+                  "animation.rvxanim"));
+    EXPECT_EQ(fs::weakly_canonical(first.outputPaths[3]),
+              fs::weakly_canonical(
+                  output.parent_path() / "Character.rvdeps" /
+                  "material_0.rvmat"));
 
     const std::vector<RVX::uint8> firstModelBytes = ReadBytes(output);
     ASSERT_FALSE(firstModelBytes.empty());
@@ -708,6 +723,11 @@ TEST_F(SkeletalAssetPipelineValidation,
     ASSERT_TRUE(RVX::Resource::DeserializeCookedModelArtifact(
         firstModelBytes, modelArtifact, error)) << error;
     ASSERT_TRUE(modelArtifact.animationArtifactPath.has_value());
+    ASSERT_EQ(modelArtifact.materialArtifacts.size(), 1u);
+    const RVX::Resource::CookedMaterialArtifactReference& materialReference =
+        modelArtifact.materialArtifacts.front();
+    EXPECT_EQ(materialReference.packageRelativePath,
+              "Character.rvdeps/material_0.rvmat");
     ASSERT_TRUE(modelArtifact.rootNode);
     RVX::Node* skinnedNode = nullptr;
     modelArtifact.rootNode->TraverseDepthFirst(
@@ -720,13 +740,13 @@ TEST_F(SkeletalAssetPipelineValidation,
     EXPECT_EQ(skinnedNode->GetSkinIndex(), 0);
     EXPECT_EQ(skinnedNode->GetMeshIndices(), (std::vector<int>{0}));
 
-    // Earlier V2 variants omitted explicit primitive mappings. The strict
-    // schema rejects them instead of reconstructing an ambiguous fallback.
-    RVX::Resource::CookedModelArtifact legacyV2Artifact;
-    const std::vector<RVX::uint8> legacyV2Bytes =
-        OmitV2PrimitiveMeshIndices(firstModelBytes);
+    // Malformed V3 payloads that omit explicit primitive mappings are rejected
+    // instead of reconstructed into an ambiguous fallback.
+    RVX::Resource::CookedModelArtifact malformedV3Artifact;
+    const std::vector<RVX::uint8> malformedV3Bytes =
+        OmitV3PrimitiveMeshIndices(firstModelBytes);
     EXPECT_FALSE(RVX::Resource::DeserializeCookedModelArtifact(
-        legacyV2Bytes, legacyV2Artifact, error));
+        malformedV3Bytes, malformedV3Artifact, error));
 
     const auto expectRejectedPrimitiveMapping =
         [](const std::vector<RVX::uint8>& malformedBytes)
@@ -737,7 +757,7 @@ TEST_F(SkeletalAssetPipelineValidation,
                 malformedBytes, rejected, rejectedError));
             EXPECT_FALSE(rejectedError.empty());
         };
-    expectRejectedPrimitiveMapping(RewriteV2Payload(
+    expectRejectedPrimitiveMapping(RewriteV3Payload(
         firstModelBytes,
         [](std::vector<std::string>& lines)
         {
@@ -750,7 +770,7 @@ TEST_F(SkeletalAssetPipelineValidation,
                 }
             }
         }));
-    expectRejectedPrimitiveMapping(RewriteV2Payload(
+    expectRejectedPrimitiveMapping(RewriteV3Payload(
         firstModelBytes,
         [](std::vector<std::string>& lines)
         {
@@ -763,7 +783,7 @@ TEST_F(SkeletalAssetPipelineValidation,
                 }
             }
         }));
-    expectRejectedPrimitiveMapping(RewriteV2Payload(
+    expectRejectedPrimitiveMapping(RewriteV3Payload(
         firstModelBytes,
         [](std::vector<std::string>& lines)
         {
@@ -809,8 +829,11 @@ TEST_F(SkeletalAssetPipelineValidation,
         output.parent_path() / *modelArtifact.animationArtifactPath;
     const fs::path meshPath =
         output.parent_path() / modelArtifact.meshArtifactPath;
+    const fs::path materialPath =
+        output.parent_path() / materialReference.packageRelativePath;
     ASSERT_TRUE(fs::is_regular_file(animationPath));
     ASSERT_TRUE(fs::is_regular_file(meshPath));
+    ASSERT_TRUE(fs::is_regular_file(materialPath));
     const fs::path canonicalAnimationPath = fs::weakly_canonical(animationPath);
     EXPECT_TRUE(std::any_of(
         first.outputPaths.begin(),
@@ -825,6 +848,17 @@ TEST_F(SkeletalAssetPipelineValidation,
 
     const std::vector<RVX::uint8> firstAnimationBytes = ReadBytes(animationPath);
     const std::vector<RVX::uint8> firstMeshBytes = ReadBytes(meshPath);
+    const std::vector<RVX::uint8> firstMaterialBytes = ReadBytes(materialPath);
+    ASSERT_FALSE(firstMaterialBytes.empty());
+    EXPECT_EQ(RVX::Hash::ComputeSHA256(
+                  firstMaterialBytes.data(), firstMaterialBytes.size()),
+              materialReference.expectedContentHash);
+    RVX::Resource::CookedMaterialArtifact materialArtifact;
+    ASSERT_TRUE(RVX::Resource::DeserializeCookedMaterialArtifact(
+        firstMaterialBytes, materialArtifact, error)) << error;
+    EXPECT_EQ(materialArtifact.logicalMaterialId,
+              fixture.Path().generic_string() + "#material_0");
+    EXPECT_TRUE(materialArtifact.textureBindings.empty());
     RVX::Resource::CookedAnimationArtifact animationArtifact;
     ASSERT_TRUE(RVX::Resource::DeserializeCookedAnimationArtifact(
         firstAnimationBytes, animationArtifact, error)) << error;
@@ -840,6 +874,7 @@ TEST_F(SkeletalAssetPipelineValidation,
     EXPECT_EQ(ReadBytes(output), firstModelBytes);
     EXPECT_EQ(ReadBytes(animationPath), firstAnimationBytes);
     EXPECT_EQ(ReadBytes(meshPath), firstMeshBytes);
+    EXPECT_EQ(ReadBytes(materialPath), firstMaterialBytes);
 
     RVX::Resource::CookedModelLoader loader;
     RVX::Resource::ModelHandle model = PrepareModel(
@@ -852,6 +887,24 @@ TEST_F(SkeletalAssetPipelineValidation,
     EXPECT_EQ(model->GetSkeleton(), animation->GetSkeleton());
     EXPECT_EQ(model->GetAnimationClips().size(), 3u);
     EXPECT_TRUE(model->GetAnimationClip("Walk"));
+
+    std::vector<RVX::uint8> corruptMaterial = firstMaterialBytes;
+    corruptMaterial.back() ^= 0x1u;
+    std::ofstream corruptMaterialFile(materialPath,
+                                      std::ios::binary | std::ios::trunc);
+    corruptMaterialFile.write(
+        reinterpret_cast<const char*>(corruptMaterial.data()),
+        static_cast<std::streamsize>(corruptMaterial.size()));
+    corruptMaterialFile.close();
+    EXPECT_FALSE(PrepareModel(
+        loader, output, RVX::Resource::ResourceLoadDomain::Cooked));
+    std::ofstream restoreMaterialFile(materialPath,
+                                      std::ios::binary | std::ios::trunc);
+    restoreMaterialFile.write(
+        reinterpret_cast<const char*>(firstMaterialBytes.data()),
+        static_cast<std::streamsize>(firstMaterialBytes.size()));
+    restoreMaterialFile.close();
+    ASSERT_TRUE(restoreMaterialFile);
 
     std::vector<RVX::uint8> corruptAnimation = firstAnimationBytes;
     corruptAnimation.back() ^= 0x1u;
@@ -889,16 +942,20 @@ TEST_F(SkeletalAssetPipelineValidation,
     EXPECT_EQ(entry.sourcePath, "Models/Character.glb");
     EXPECT_EQ(entry.sourceContent.byteCount, fs::file_size(sourcePath));
     EXPECT_EQ(entry.sourceContent.sha256.size(), 64u);
-    ASSERT_EQ(entry.dependencies.size(), 2u);
+    ASSERT_EQ(entry.dependencies.size(), 3u);
     EXPECT_EQ(entry.dependencies[0].relativePath,
               "Models/Character.rvdeps/animation.rvxanim");
     EXPECT_EQ(entry.dependencies[1].relativePath,
+              "Models/Character.rvdeps/material_0.rvmat");
+    EXPECT_EQ(entry.dependencies[2].relativePath,
               "Models/Character.rvdeps/meshes.rva");
-    ASSERT_EQ(entry.artifacts.size(), 3u);
+    ASSERT_EQ(entry.artifacts.size(), 4u);
     EXPECT_EQ(entry.artifacts[0].relativePath, "Models/Character.rva");
     EXPECT_EQ(entry.artifacts[1].relativePath,
               "Models/Character.rvdeps/animation.rvxanim");
     EXPECT_EQ(entry.artifacts[2].relativePath,
+              "Models/Character.rvdeps/material_0.rvmat");
+    EXPECT_EQ(entry.artifacts[3].relativePath,
               "Models/Character.rvdeps/meshes.rva");
     for (const RVX::Tools::CookContentIdentity& identity : entry.artifacts)
     {
@@ -909,9 +966,28 @@ TEST_F(SkeletalAssetPipelineValidation,
     const fs::path publishedModel = outputRoot / "Models" / "Character.rva";
     const fs::path publishedAnimation =
         outputRoot / "Models" / "Character.rvdeps" / "animation.rvxanim";
+    const fs::path publishedMaterial =
+        outputRoot / "Models" / "Character.rvdeps" / "material_0.rvmat";
     const std::vector<RVX::uint8> modelBefore = ReadBytes(publishedModel);
     const std::vector<RVX::uint8> animationBefore = ReadBytes(publishedAnimation);
+    const std::vector<RVX::uint8> materialBefore = ReadBytes(publishedMaterial);
     const std::vector<RVX::uint8> manifestBefore = ReadBytes(manifestPath);
+    RVX::Resource::CookedModelArtifact publishedModelArtifact;
+    std::string publishedModelError;
+    ASSERT_TRUE(RVX::Resource::DeserializeCookedModelArtifact(
+        modelBefore, publishedModelArtifact, publishedModelError))
+        << publishedModelError;
+    ASSERT_EQ(publishedModelArtifact.materialArtifacts.size(), 1u);
+    EXPECT_EQ(publishedModelArtifact.materialArtifacts.front().packageRelativePath,
+              "Character.rvdeps/material_0.rvmat");
+    const RVX::Hash::SHA256Digest materialFileHash = RVX::Hash::ComputeSHA256(
+        materialBefore.data(), materialBefore.size());
+    EXPECT_EQ(publishedModelArtifact.materialArtifacts.front().expectedContentHash,
+              materialFileHash);
+    EXPECT_EQ(entry.dependencies[1].sha256,
+              RVX::Hash::FormatSHA256Digest(materialFileHash));
+    EXPECT_EQ(entry.artifacts[2].sha256,
+              RVX::Hash::FormatSHA256Digest(materialFileHash));
 
     const RVX::Tools::CookManifest rejected = pipeline.CookDirectory(
         sourceRoot,
@@ -946,6 +1022,7 @@ TEST_F(SkeletalAssetPipelineValidation,
     EXPECT_FALSE(rejected.manifestError.empty());
     EXPECT_EQ(ReadBytes(publishedModel), modelBefore);
     EXPECT_EQ(ReadBytes(publishedAnimation), animationBefore);
+    EXPECT_EQ(ReadBytes(publishedMaterial), materialBefore);
     EXPECT_EQ(ReadBytes(manifestPath), manifestBefore);
 }
 
@@ -988,6 +1065,7 @@ TEST_F(SkeletalAssetPipelineValidation,
         fs::path("models/Character.rva"),
         fs::path("models/Character.rvdeps/meshes.rva"),
         fs::path("models/Character.rvdeps/animation.rvxanim"),
+        fs::path("models/Character.rvdeps/material_0.rvmat"),
     };
     for (const fs::path& relativeArtifact : artifactPaths)
     {

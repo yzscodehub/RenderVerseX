@@ -6,11 +6,13 @@
 #include "Tools/AssetPipeline.h"
 #include "AssetImport/AudioLoader.h"
 #include "Core/Diagnostics/ContentHash.h"
+#include "Core/Hash/SHA256.h"
 #include "Core/Log.h"
 #include "Resource/CookManifest.h"
 #include "Resource/Cooked/CookedAnimationArtifact.h"
 #include "Resource/Cooked/CookedAudioArtifact.h"
 #include "Resource/Cooked/CookedEnvironmentArtifact.h"
+#include "Resource/Cooked/CookedMaterialArtifact.h"
 #include "Resource/Cooked/CookedModelArtifact.h"
 #include "AssetImport/GLTFImporter.h"
 #if defined(RVX_ENABLE_FBX)
@@ -346,6 +348,46 @@ namespace
 
         outHash = hasher.Finalize();
         outByteCount = readByteCount;
+        outError.clear();
+        return true;
+    }
+
+    bool ComputeFileSha256Digest(const fs::path& path,
+                                 Hash::SHA256Digest& outHash,
+                                 std::string& outError)
+    {
+        std::error_code fileError;
+        if (!fs::is_regular_file(path, fileError) || fileError)
+        {
+            outError = "Path is not a readable regular file: " + path.string();
+            return false;
+        }
+
+        std::ifstream file(path, std::ios::binary);
+        if (!file.is_open())
+        {
+            outError = "Failed to open file for SHA-256: " + path.string();
+            return false;
+        }
+
+        Hash::SHA256Hasher hasher;
+        std::array<char, 8192> buffer{};
+        while (file)
+        {
+            file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+            const std::streamsize readCount = file.gcount();
+            if (readCount > 0)
+            {
+                hasher.Update(buffer.data(), static_cast<size_t>(readCount));
+            }
+        }
+        if (file.bad())
+        {
+            outError = "Failed while reading file for SHA-256: " + path.string();
+            return false;
+        }
+
+        outHash = hasher.FinalizeDigest();
         outError.clear();
         return true;
     }
@@ -4048,6 +4090,203 @@ ImportResult MeshImporter::Import(const fs::path& sourcePath,
 // ModelImporter
 // ============================================================================
 
+namespace
+{
+    MaterialSamplerWrap ToMaterialSamplerWrap(TextureInfo::WrapMode value)
+    {
+        switch (value)
+        {
+            case TextureInfo::WrapMode::MirrorRepeat:
+                return MaterialSamplerWrap::MirrorRepeat;
+            case TextureInfo::WrapMode::ClampToEdge:
+                return MaterialSamplerWrap::ClampToEdge;
+            case TextureInfo::WrapMode::ClampToBorder:
+                return MaterialSamplerWrap::ClampToBorder;
+            case TextureInfo::WrapMode::Repeat:
+            default:
+                return MaterialSamplerWrap::Repeat;
+        }
+    }
+
+    MaterialSamplerFilter ToMaterialSamplerFilter(TextureInfo::FilterMode value)
+    {
+        switch (value)
+        {
+            case TextureInfo::FilterMode::Nearest:
+                return MaterialSamplerFilter::Nearest;
+            case TextureInfo::FilterMode::Linear:
+                return MaterialSamplerFilter::Linear;
+            case TextureInfo::FilterMode::NearestMipmapNearest:
+                return MaterialSamplerFilter::NearestMipmapNearest;
+            case TextureInfo::FilterMode::LinearMipmapNearest:
+                return MaterialSamplerFilter::LinearMipmapNearest;
+            case TextureInfo::FilterMode::NearestMipmapLinear:
+                return MaterialSamplerFilter::NearestMipmapLinear;
+            case TextureInfo::FilterMode::LinearMipmapLinear:
+            default:
+                return MaterialSamplerFilter::LinearMipmapLinear;
+        }
+    }
+
+    MaterialSourceAlphaMode ToMaterialSourceAlphaMode(Material::AlphaMode value)
+    {
+        switch (value)
+        {
+            case Material::AlphaMode::Mask: return MaterialSourceAlphaMode::Mask;
+            case Material::AlphaMode::Blend: return MaterialSourceAlphaMode::Blend;
+            case Material::AlphaMode::Opaque:
+            default: return MaterialSourceAlphaMode::Opaque;
+        }
+    }
+
+    MaterialSourceWorkflow ToMaterialSourceWorkflow(MaterialWorkflow value)
+    {
+        switch (value)
+        {
+            case MaterialWorkflow::SpecularGlossiness:
+                return MaterialSourceWorkflow::SpecularGlossiness;
+            case MaterialWorkflow::Unlit:
+                return MaterialSourceWorkflow::Unlit;
+            case MaterialWorkflow::MetallicRoughness:
+            default:
+                return MaterialSourceWorkflow::MetallicRoughness;
+        }
+    }
+
+    bool AddCookedMaterialTextureBinding(
+        const std::optional<TextureInfo>& source,
+        MaterialTextureSlot slot,
+        const std::vector<Resource::TextureReference>& cookedTextures,
+        const std::vector<Hash::SHA256Digest>& cookedTextureContentHashes,
+        Resource::CookedMaterialArtifact& outArtifact,
+        std::string& outError)
+    {
+        if (!source.has_value())
+            return true;
+        if (source->uvSet < 0 || source->uvSet > 1 ||
+            source->imageId < 0 ||
+            source->imageId >= static_cast<int32>(cookedTextures.size()) ||
+            cookedTextureContentHashes.size() != cookedTextures.size())
+        {
+            outError =
+                "Material texture slot references an invalid image or UV set";
+            return false;
+        }
+        const Resource::TextureReference& texture =
+            cookedTextures[static_cast<size_t>(source->imageId)];
+        Resource::CookedMaterialTextureBinding binding;
+        binding.definition.slot = slot;
+        binding.definition.uvSet = static_cast<uint8>(source->uvSet);
+        binding.definition.offset = source->offset;
+        binding.definition.scale = source->scale;
+        binding.definition.rotation = source->rotation;
+        binding.definition.wrapS = ToMaterialSamplerWrap(source->wrapS);
+        binding.definition.wrapT = ToMaterialSamplerWrap(source->wrapT);
+        binding.definition.minFilter = ToMaterialSamplerFilter(source->minFilter);
+        binding.definition.magFilter = ToMaterialSamplerFilter(source->magFilter);
+        binding.artifactPath = texture.path;
+        binding.expectedContentHash =
+            cookedTextureContentHashes[static_cast<size_t>(source->imageId)];
+        binding.usage = texture.usage;
+        binding.isSRGB = texture.isSRGB;
+        binding.fallbackSemantic = texture.fallbackSemantic;
+        outArtifact.material.descriptor.featureMask |=
+            1ull << static_cast<uint8>(slot);
+        outArtifact.textureBindings.push_back(std::move(binding));
+        return true;
+    }
+
+    bool BuildCookedMaterialArtifact(
+        const Material& source,
+        const fs::path& artifactSourcePath,
+        size_t materialIndex,
+        const std::vector<Resource::TextureReference>& cookedTextures,
+        const std::vector<Hash::SHA256Digest>& cookedTextureContentHashes,
+        Resource::CookedMaterialArtifact& outArtifact,
+        std::string& outError)
+    {
+        outArtifact = {};
+        outArtifact.logicalMaterialId = artifactSourcePath.generic_string() +
+            "#material_" + std::to_string(materialIndex);
+        MaterialDefinition& material = outArtifact.material;
+        material.descriptor.shadingModel =
+            source.GetWorkflow() == MaterialWorkflow::Unlit
+                ? MaterialShadingModel::Unlit
+                : MaterialShadingModel::StandardLit;
+        material.descriptor.programFamily = std::string(
+            GetMaterialProgramFamily(material.descriptor.shadingModel));
+        switch (source.GetAlphaMode())
+        {
+            case Material::AlphaMode::Mask:
+                material.descriptor.blendMode = MaterialBlendMode::Masked;
+                break;
+            case Material::AlphaMode::Blend:
+                material.descriptor.blendMode = MaterialBlendMode::AlphaBlend;
+                break;
+            case Material::AlphaMode::Opaque:
+            default:
+                material.descriptor.blendMode = MaterialBlendMode::Opaque;
+                break;
+        }
+        material.descriptor.cullMode = source.IsDoubleSided()
+            ? MaterialCullMode::NoCull
+            : MaterialCullMode::Back;
+        const bool translucent =
+            material.descriptor.blendMode == MaterialBlendMode::AlphaBlend;
+        material.descriptor.shadowPolicy = translucent
+            ? MaterialShadowPolicy::Receive
+            : MaterialShadowPolicy::CastAndReceive;
+        material.descriptor.translucencyPhase = translucent
+            ? MaterialTranslucencyPhase::Standard
+            : MaterialTranslucencyPhase::Opaque;
+
+        MaterialSourceData& parameters = material.parameters;
+        parameters.baseColorFactor = source.GetBaseColor();
+        parameters.metallicFactor = source.GetMetallicFactor();
+        parameters.roughnessFactor = source.GetRoughnessFactor();
+        parameters.normalScale = source.GetNormalScale();
+        parameters.occlusionStrength = source.GetOcclusionStrength();
+        parameters.emissiveColor = source.GetEmissiveColor();
+        parameters.emissiveStrength = source.GetEmissiveStrength();
+        parameters.alphaMode = ToMaterialSourceAlphaMode(source.GetAlphaMode());
+        parameters.alphaCutoff = source.GetAlphaCutoff();
+        parameters.workflow = ToMaterialSourceWorkflow(source.GetWorkflow());
+        parameters.doubleSided = source.IsDoubleSided();
+
+        if (!AddCookedMaterialTextureBinding(
+                source.GetBaseColorTexture(), MaterialTextureSlot::BaseColor,
+                cookedTextures, cookedTextureContentHashes,
+                outArtifact, outError) ||
+            !AddCookedMaterialTextureBinding(
+                source.GetNormalTexture(), MaterialTextureSlot::Normal,
+                cookedTextures, cookedTextureContentHashes,
+                outArtifact, outError) ||
+            !AddCookedMaterialTextureBinding(
+                source.GetMetallicRoughnessTexture(),
+                MaterialTextureSlot::MetallicRoughness,
+                cookedTextures, cookedTextureContentHashes,
+                outArtifact, outError) ||
+            !AddCookedMaterialTextureBinding(
+                source.GetOcclusionTexture(), MaterialTextureSlot::Occlusion,
+                cookedTextures, cookedTextureContentHashes,
+                outArtifact, outError) ||
+            !AddCookedMaterialTextureBinding(
+                source.GetEmissiveTexture(), MaterialTextureSlot::Emissive,
+                cookedTextures, cookedTextureContentHashes,
+                outArtifact, outError))
+        {
+            return false;
+        }
+        parameters.textureFlags = static_cast<uint32>(
+            material.descriptor.featureMask & 0xffffffffull);
+        outArtifact.permutation =
+            (static_cast<uint64>(material.descriptor.shadingModel) << 56u) |
+            (static_cast<uint64>(material.descriptor.blendMode) << 48u) |
+            (material.descriptor.featureMask & 0x0000ffffffffffffull);
+        return Resource::FinalizeCookedMaterialArtifact(outArtifact, outError);
+    }
+} // namespace
+
 ImportResult ModelImporter::Import(const fs::path& sourcePath,
                                    const fs::path& outputPath,
                                    const void* options)
@@ -4244,7 +4483,6 @@ ImportResult ModelImporter::Import(const fs::path& sourcePath,
         modelArtifact.animationArtifactPath =
             (finalDependencyDirectory.filename() / "animation.rvxanim").generic_string();
     }
-    modelArtifact.materials = imported.materials;
     modelArtifact.rootNode = imported.model ? imported.model->GetRootNode() : nullptr;
     if (imported.model && imported.model->GetBoundingBox().IsValid())
         modelArtifact.bounds = imported.model->GetBoundingBox();
@@ -4299,7 +4537,10 @@ ImportResult ModelImporter::Import(const fs::path& sourcePath,
     }
 
     Resource::TextureLoader textureLoader;
-    modelArtifact.textures.reserve(imported.textures.size());
+    std::vector<Resource::TextureReference> cookedTextureReferences;
+    std::vector<Hash::SHA256Digest> cookedTextureContentHashes;
+    cookedTextureReferences.reserve(imported.textures.size());
+    cookedTextureContentHashes.reserve(imported.textures.size());
     for (size_t index = 0; index < imported.textures.size(); ++index)
     {
         Resource::TextureReference& sourceReference = imported.textures[index];
@@ -4338,16 +4579,85 @@ ImportResult ModelImporter::Import(const fs::path& sourcePath,
             fs::remove_all(stagingDependencyDirectory, fileError);
             return result;
         }
+        Hash::SHA256Digest textureContentHash{};
+        if (!ComputeFileSha256Digest(
+                stagingTexturePath, textureContentHash, result.error))
+        {
+            fs::remove_all(stagingDependencyDirectory, fileError);
+            return result;
+        }
 
         Resource::TextureReference cookedReference =
             Resource::TextureReference::CreateExternal(
-                (finalDependencyDirectory.filename() / "textures" / textureName)
-                    .generic_string(),
+                (fs::path("textures") / textureName).generic_string(),
                 sourceReference.usage,
                 sourceReference.isSRGB);
         cookedReference.imageIndex = sourceReference.imageIndex;
         cookedReference.fallbackSemantic = sourceReference.fallbackSemantic;
-        modelArtifact.textures.push_back(std::move(cookedReference));
+        cookedTextureReferences.push_back(std::move(cookedReference));
+        cookedTextureContentHashes.push_back(textureContentHash);
+    }
+
+    modelArtifact.materialArtifacts.reserve(imported.materials.size());
+    for (size_t index = 0; index < imported.materials.size(); ++index)
+    {
+        const Material::Ptr& sourceMaterial = imported.materials[index];
+        if (!sourceMaterial)
+        {
+            result.error = "Model import produced a null material";
+            fs::remove_all(stagingDependencyDirectory, fileError);
+            return result;
+        }
+        Resource::CookedMaterialArtifact materialArtifact;
+        if (!BuildCookedMaterialArtifact(
+                *sourceMaterial,
+                artifactSourcePath,
+                index,
+                cookedTextureReferences,
+                cookedTextureContentHashes,
+                materialArtifact,
+                result.error))
+        {
+            fs::remove_all(stagingDependencyDirectory, fileError);
+            return result;
+        }
+        std::vector<uint8> materialBytes;
+        if (!Resource::SerializeCookedMaterialArtifact(
+                materialArtifact, materialBytes, result.error))
+        {
+            fs::remove_all(stagingDependencyDirectory, fileError);
+            return result;
+        }
+        const fs::path materialName =
+            "material_" + std::to_string(index) + ".rvmat";
+        const fs::path stagingMaterialPath =
+            stagingDependencyDirectory / materialName;
+        std::ofstream materialFile(stagingMaterialPath, std::ios::binary);
+        if (!materialFile.is_open() ||
+            !materialFile.write(
+                reinterpret_cast<const char*>(materialBytes.data()),
+                static_cast<std::streamsize>(materialBytes.size())))
+        {
+            result.error = "Failed to write cooked material dependency: " +
+                stagingMaterialPath.string();
+            fs::remove_all(stagingDependencyDirectory, fileError);
+            return result;
+        }
+        materialFile.close();
+        if (!materialFile)
+        {
+            result.error = "Failed to finalize cooked material dependency: " +
+                stagingMaterialPath.string();
+            fs::remove_all(stagingDependencyDirectory, fileError);
+            return result;
+        }
+        Resource::CookedMaterialArtifactReference materialReference;
+        materialReference.packageRelativePath =
+            (finalDependencyDirectory.filename() / materialName)
+                .generic_string();
+        materialReference.expectedContentHash = Hash::ComputeSHA256(
+            materialBytes.data(), materialBytes.size());
+        modelArtifact.materialArtifacts.push_back(std::move(materialReference));
     }
 
     std::vector<uint8> rootBytes;
@@ -4554,6 +4864,13 @@ ImportResult ModelImporter::Import(const fs::path& sourcePath,
         result.outputPaths.push_back(
             (finalDependencyDirectory / "textures" /
              ("texture_" + std::to_string(index) + ".rva"))
+                .string());
+    }
+    for (size_t index = 0; index < imported.materials.size(); ++index)
+    {
+        result.outputPaths.push_back(
+            (finalDependencyDirectory /
+             ("material_" + std::to_string(index) + ".rvmat"))
                 .string());
     }
     return result;

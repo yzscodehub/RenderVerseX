@@ -2,7 +2,7 @@
 
 #include "Core/Diagnostics/ContentHash.h"
 
-#include <array>
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <filesystem>
@@ -20,9 +20,17 @@ namespace
 {
     struct ParsedFields
     {
-        std::unordered_map<std::string, std::string> values;
-        std::unordered_set<std::string> consumed;
+        std::unordered_map<std::string_view, std::string_view> values;
+        std::unordered_set<std::string_view> consumed;
         uint64 decodedStringBytes = 0;
+    };
+
+    struct FieldParseLimits
+    {
+        uint32 maxFieldCount = 0;
+        uint64 maxRawFieldBytes = 0;
+        uint64 maxKeyBytes = 0;
+        uint64 maxValueBytes = 0;
     };
 
     constexpr std::string_view PayloadBegin = "RVX_MODEL_PAYLOAD_BEGIN\n";
@@ -31,8 +39,20 @@ namespace
     constexpr uint64 MaxArtifactBytes = 512ull * 1024ull * 1024ull;
     constexpr uint64 MaxSingleStringBytes = 1ull * 1024ull * 1024ull;
     constexpr uint64 MaxAggregateStringBytes = 64ull * 1024ull * 1024ull;
-    constexpr uint32 MaxTextureCount = 16384u;
-    constexpr uint32 MaxMaterialCount = 16384u;
+    // Parsing retains a lookup table until the complete payload has been
+    // validated. Keep that retained state explicitly bounded, rather than
+    // allowing an otherwise in-range artifact to expand parser memory through
+    // arbitrary key/value cardinality. Values are views into the original
+    // artifact bytes, so the raw-byte limit does not make a second copy.
+    constexpr uint32 MaxHeaderFieldCount = 16u;
+    constexpr uint64 MaxHeaderRawFieldBytes = 64ull * 1024ull;
+    constexpr uint64 MaxHeaderFieldKeyBytes = 128ull;
+    constexpr uint64 MaxHeaderFieldValueBytes = 64ull * 1024ull;
+    constexpr uint32 MaxPayloadFieldCount = 1048576u;
+    constexpr uint64 MaxPayloadRawFieldBytes = 384ull * 1024ull * 1024ull;
+    constexpr uint64 MaxPayloadFieldKeyBytes = 256ull;
+    constexpr uint64 MaxPayloadFieldValueBytes = MaxSingleStringBytes * 2ull;
+    constexpr uint32 MaxMaterialArtifactCount = 16384u;
     constexpr uint32 MaxNodeCount = 1048576u;
     constexpr uint32 MaxHierarchyDepth = 512u;
     constexpr uint32 FlagHasAnimation = 1u << 0u;
@@ -62,6 +82,18 @@ namespace
         return true;
     }
 
+    bool IsCanonicalMaterialArtifactPath(const std::string& value)
+    {
+        return IsCanonicalPackageRelativePath(value) &&
+            std::filesystem::path(value).extension().generic_string() == ".rvmat";
+    }
+
+    bool IsZeroDigest(const Hash::SHA256Digest& digest)
+    {
+        return std::all_of(digest.begin(), digest.end(),
+                           [](uint8 value) { return value == 0; });
+    }
+
     bool IsFiniteBounds(const AABB& bounds)
     {
         if (!bounds.IsValid())
@@ -73,21 +105,10 @@ namespace
                std::isfinite(max.y) && std::isfinite(max.z);
     }
 
-    bool IsFiniteVector(const Vec2& value)
-    {
-        return std::isfinite(value.x) && std::isfinite(value.y);
-    }
-
     bool IsFiniteVector(const Vec3& value)
     {
         return std::isfinite(value.x) && std::isfinite(value.y) &&
                std::isfinite(value.z);
-    }
-
-    bool IsFiniteVector(const Vec4& value)
-    {
-        return std::isfinite(value.x) && std::isfinite(value.y) &&
-               std::isfinite(value.z) && std::isfinite(value.w);
     }
 
     bool IsFiniteQuaternion(const Quat& value)
@@ -148,25 +169,58 @@ namespace
     }
 
     bool ParseFields(std::string_view text,
+                     const FieldParseLimits& limits,
                      ParsedFields& outFields,
                      std::string& outError)
     {
         outFields = {};
-        std::istringstream stream{std::string(text)};
-        stream.imbue(std::locale::classic());
-        std::string line;
-        while (std::getline(stream, line))
+        uint64 rawFieldBytes = 0;
+        size_t offset = 0;
+        while (offset < text.size())
         {
+            const size_t lineEnd = text.find('\n', offset);
+            const size_t fieldEnd = lineEnd == std::string_view::npos
+                ? text.size()
+                : lineEnd;
+            const std::string_view line = text.substr(offset, fieldEnd - offset);
             const size_t separator = line.find('=');
-            if (separator == std::string::npos || separator == 0 ||
-                !outFields.values.emplace(
-                    line.substr(0, separator), line.substr(separator + 1)).second)
+            if (separator == std::string_view::npos || separator == 0)
             {
-                outError = separator == std::string::npos || separator == 0
-                    ? "Model artifact contains a malformed field"
-                    : "Model artifact contains a duplicate field";
+                outError = "Model artifact contains a malformed field";
                 return false;
             }
+
+            const std::string_view key = line.substr(0, separator);
+            const std::string_view value = line.substr(separator + 1);
+            if (key.size() > limits.maxKeyBytes ||
+                value.size() > limits.maxValueBytes)
+            {
+                outError = "Model artifact field key or value exceeds the configured limit";
+                return false;
+            }
+            if (outFields.values.size() >= limits.maxFieldCount)
+            {
+                outError = "Model artifact field count exceeds the configured limit";
+                return false;
+            }
+            const uint64 fieldBytes = static_cast<uint64>(key.size()) +
+                static_cast<uint64>(value.size());
+            if (fieldBytes > limits.maxRawFieldBytes ||
+                rawFieldBytes > limits.maxRawFieldBytes - fieldBytes)
+            {
+                outError = "Model artifact aggregate raw field bytes exceed the configured limit";
+                return false;
+            }
+            if (!outFields.values.emplace(key, value).second)
+            {
+                outError = "Model artifact contains a duplicate field";
+                return false;
+            }
+            rawFieldBytes += fieldBytes;
+
+            if (lineEnd == std::string_view::npos)
+                break;
+            offset = lineEnd + 1u;
         }
         return true;
     }
@@ -182,7 +236,7 @@ namespace
         const auto [cursor, error] = std::from_chars(begin, end, outValue);
         if (error != std::errc{} || cursor != end)
             return false;
-        fields.consumed.insert(key);
+        fields.consumed.insert(it->first);
         return true;
     }
 
@@ -194,10 +248,10 @@ namespace
         try
         {
             size_t consumed = 0;
-            outValue = std::stof(it->second, &consumed);
+            outValue = std::stof(std::string(it->second), &consumed);
             if (consumed != it->second.size() || !std::isfinite(outValue))
                 return false;
-            fields.consumed.insert(key);
+            fields.consumed.insert(it->first);
             return true;
         }
         catch (...)
@@ -218,14 +272,8 @@ namespace
             return false;
         }
         fields.decodedStringBytes += outValue.size();
-        fields.consumed.insert(key);
+        fields.consumed.insert(it->first);
         return true;
-    }
-
-    void WriteVec2(std::ostream& stream, const std::string& key, const Vec2& value)
-    {
-        stream << key << ".x=" << value.x << '\n'
-               << key << ".y=" << value.y << '\n';
     }
 
     void WriteVec3(std::ostream& stream, const std::string& key, const Vec3& value)
@@ -235,129 +283,11 @@ namespace
                << key << ".z=" << value.z << '\n';
     }
 
-    void WriteVec4(std::ostream& stream, const std::string& key, const Vec4& value)
-    {
-        stream << key << ".x=" << value.x << '\n'
-               << key << ".y=" << value.y << '\n'
-               << key << ".z=" << value.z << '\n'
-               << key << ".w=" << value.w << '\n';
-    }
-
-    bool ParseVec2(ParsedFields& fields, const std::string& key, Vec2& outValue)
-    {
-        return ParseFloat(fields, key + ".x", outValue.x) &&
-               ParseFloat(fields, key + ".y", outValue.y);
-    }
-
     bool ParseVec3(ParsedFields& fields, const std::string& key, Vec3& outValue)
     {
         return ParseFloat(fields, key + ".x", outValue.x) &&
                ParseFloat(fields, key + ".y", outValue.y) &&
                ParseFloat(fields, key + ".z", outValue.z);
-    }
-
-    bool ParseVec4(ParsedFields& fields, const std::string& key, Vec4& outValue)
-    {
-        return ParseFloat(fields, key + ".x", outValue.x) &&
-               ParseFloat(fields, key + ".y", outValue.y) &&
-               ParseFloat(fields, key + ".z", outValue.z) &&
-               ParseFloat(fields, key + ".w", outValue.w);
-    }
-
-    const std::array<std::pair<const char*, const std::optional<TextureInfo>& (Material::*)() const>, 5>
-        TextureSlots{{
-            {"albedo", &Material::GetBaseColorTexture},
-            {"normal", &Material::GetNormalTexture},
-            {"metallicRoughness", &Material::GetMetallicRoughnessTexture},
-            {"occlusion", &Material::GetOcclusionTexture},
-            {"emissive", &Material::GetEmissiveTexture},
-        }};
-
-    void WriteTextureInfo(std::ostream& stream,
-                          const std::string& key,
-                          const std::optional<TextureInfo>& value)
-    {
-        stream << key << ".present=" << (value ? 1 : 0) << '\n';
-        if (!value)
-            return;
-        stream << key << ".path=" << HexEncode(value->texturePath) << '\n'
-               << key << ".imageId=" << value->imageId << '\n'
-               << key << ".uvSet=" << value->uvSet << '\n'
-               << key << ".rotation=" << value->rotation << '\n'
-               << key << ".wrapS=" << static_cast<uint32>(value->wrapS) << '\n'
-               << key << ".wrapT=" << static_cast<uint32>(value->wrapT) << '\n'
-               << key << ".minFilter=" << static_cast<uint32>(value->minFilter) << '\n'
-               << key << ".magFilter=" << static_cast<uint32>(value->magFilter) << '\n';
-        WriteVec2(stream, key + ".offset", value->offset);
-        WriteVec2(stream, key + ".scale", value->scale);
-    }
-
-    bool IsValidTextureInfo(const std::optional<TextureInfo>& value,
-                            size_t textureCount)
-    {
-        if (!value)
-            return true;
-        return value->imageId >= 0 &&
-               value->imageId < static_cast<int>(textureCount) &&
-               std::isfinite(value->rotation) &&
-               IsFiniteVector(value->offset) &&
-               IsFiniteVector(value->scale) &&
-               static_cast<uint32>(value->wrapS) <=
-                   static_cast<uint32>(TextureInfo::WrapMode::ClampToBorder) &&
-               static_cast<uint32>(value->wrapT) <=
-                   static_cast<uint32>(TextureInfo::WrapMode::ClampToBorder) &&
-               static_cast<uint32>(value->minFilter) <=
-                   static_cast<uint32>(TextureInfo::FilterMode::LinearMipmapLinear) &&
-               static_cast<uint32>(value->magFilter) <=
-                   static_cast<uint32>(TextureInfo::FilterMode::LinearMipmapLinear);
-    }
-
-    bool ParseTextureInfo(ParsedFields& fields,
-                          const std::string& key,
-                          std::optional<TextureInfo>& outValue)
-    {
-        uint32 present = 0;
-        if (!ParseInteger(fields, key + ".present", present))
-            return false;
-        if (present > 1)
-            return false;
-        if (present == 0)
-        {
-            outValue.reset();
-            return true;
-        }
-
-        TextureInfo value;
-        uint32 wrapS = 0;
-        uint32 wrapT = 0;
-        uint32 minFilter = 0;
-        uint32 magFilter = 0;
-        if (!ParseString(fields, key + ".path", value.texturePath) ||
-            !ParseInteger(fields, key + ".imageId", value.imageId) ||
-            !ParseInteger(fields, key + ".uvSet", value.uvSet) ||
-            !ParseFloat(fields, key + ".rotation", value.rotation) ||
-            !ParseInteger(fields, key + ".wrapS", wrapS) ||
-            !ParseInteger(fields, key + ".wrapT", wrapT) ||
-            !ParseInteger(fields, key + ".minFilter", minFilter) ||
-            !ParseInteger(fields, key + ".magFilter", magFilter) ||
-            !ParseVec2(fields, key + ".offset", value.offset) ||
-            !ParseVec2(fields, key + ".scale", value.scale))
-        {
-            return false;
-        }
-        if (wrapS > static_cast<uint32>(TextureInfo::WrapMode::ClampToBorder) ||
-            wrapT > static_cast<uint32>(TextureInfo::WrapMode::ClampToBorder) ||
-            minFilter > static_cast<uint32>(TextureInfo::FilterMode::LinearMipmapLinear) ||
-            magFilter > static_cast<uint32>(TextureInfo::FilterMode::LinearMipmapLinear))
-        {
-            return false;
-        }
-        value.wrapS = static_cast<TextureInfo::WrapMode>(wrapS);
-        value.wrapT = static_cast<TextureInfo::WrapMode>(wrapT);
-        value.minFilter = static_cast<TextureInfo::FilterMode>(minFilter);
-        value.magFilter = static_cast<TextureInfo::FilterMode>(magFilter);
-        outValue = std::move(value);
-        return true;
     }
 
     struct FlatNode
@@ -406,6 +336,24 @@ namespace
         return true;
     }
 
+    bool ParseDigest(ParsedFields& fields,
+                     const std::string& key,
+                     Hash::SHA256Digest& outValue)
+    {
+        const auto it = fields.values.find(key);
+        std::string decoded;
+        if (it == fields.values.end() ||
+            it->second.size() != Hash::RVX_SHA256_DIGEST_SIZE * 2u ||
+            !HexDecode(it->second, decoded) ||
+            decoded.size() != Hash::RVX_SHA256_DIGEST_SIZE)
+        {
+            return false;
+        }
+        std::copy(decoded.begin(), decoded.end(), outValue.begin());
+        fields.consumed.insert(it->first);
+        return true;
+    }
+
     bool ParseRawField(ParsedFields& fields,
                        const std::string& key,
                        std::string& outValue)
@@ -414,7 +362,7 @@ namespace
         if (it == fields.values.end() || it->second.size() > MaxSingleStringBytes)
             return false;
         outValue = it->second;
-        fields.consumed.insert(key);
+        fields.consumed.insert(it->first);
         return true;
     }
 } // namespace
@@ -430,8 +378,7 @@ bool SerializeCookedModelArtifact(const CookedModelArtifact& artifact,
         (artifact.animationArtifactPath.has_value() &&
          !IsCanonicalPackageRelativePath(*artifact.animationArtifactPath)) ||
         !artifact.rootNode || !IsFiniteBounds(artifact.bounds) ||
-        artifact.textures.size() > MaxTextureCount ||
-        artifact.materials.size() > MaxMaterialCount)
+        artifact.materialArtifacts.size() > MaxMaterialArtifactCount)
     {
         outError = "Cooked model requires a logical id, canonical dependencies, bounded counts, a root node, and finite bounds";
         return false;
@@ -455,6 +402,21 @@ bool SerializeCookedModelArtifact(const CookedModelArtifact& artifact,
         outError = "Cooked model string metadata exceeds the configured limit";
         return false;
     }
+    std::unordered_set<std::string> uniqueMaterialArtifactPaths;
+    uniqueMaterialArtifactPaths.reserve(artifact.materialArtifacts.size());
+    for (const CookedMaterialArtifactReference& material :
+         artifact.materialArtifacts)
+    {
+        if (!IsCanonicalMaterialArtifactPath(material.packageRelativePath) ||
+            IsZeroDigest(material.expectedContentHash) ||
+            !accountString(material.packageRelativePath) ||
+            !uniqueMaterialArtifactPaths.emplace(material.packageRelativePath).second)
+        {
+            outError =
+                "Cooked model material dependencies must use unique, content-bound canonical .rvmat paths";
+            return false;
+        }
+    }
 
     std::ostringstream payload;
     payload.imbue(std::locale::classic());
@@ -471,86 +433,17 @@ bool SerializeCookedModelArtifact(const CookedModelArtifact& artifact,
     WriteVec3(payload, "boundsMin", artifact.bounds.GetMin());
     WriteVec3(payload, "boundsMax", artifact.bounds.GetMax());
 
-    payload << "textureCount=" << artifact.textures.size() << '\n';
-    for (size_t index = 0; index < artifact.textures.size(); ++index)
+    payload << "materialArtifactCount=" << artifact.materialArtifacts.size()
+            << '\n';
+    for (size_t index = 0; index < artifact.materialArtifacts.size(); ++index)
     {
-        const TextureReference& texture = artifact.textures[index];
-        if (!texture.IsExternal() ||
-            !IsCanonicalPackageRelativePath(texture.path) ||
-            !accountString(texture.path) ||
-            texture.imageIndex < 0 ||
-            static_cast<uint32>(texture.usage) >
-                static_cast<uint32>(TextureUsage::Data) ||
-            static_cast<uint32>(texture.fallbackSemantic) >
-                static_cast<uint32>(TextureFallbackSemantic::Black))
-        {
-            outError = "Cooked model texture dependency must be an external .rva path";
-            return false;
-        }
-        const std::string key = "texture." + std::to_string(index);
-        payload << key << ".path=" << HexEncode(texture.path) << '\n'
-                << key << ".imageIndex=" << texture.imageIndex << '\n'
-                << key << ".usage=" << static_cast<uint32>(texture.usage) << '\n'
-                << key << ".srgb=" << (texture.isSRGB ? 1 : 0) << '\n'
-                << key << ".fallback=" << static_cast<uint32>(texture.fallbackSemantic) << '\n';
-    }
-
-    payload << "materialCount=" << artifact.materials.size() << '\n';
-    for (size_t index = 0; index < artifact.materials.size(); ++index)
-    {
-        const Material::Ptr& material = artifact.materials[index];
-        if (!material)
-        {
-            outError = "Cooked model contains a null material";
-            return false;
-        }
-        if (!accountString(material->GetName()))
-        {
-            outError = "Cooked model material names exceed the configured string limit";
-            return false;
-        }
-        if (static_cast<uint32>(material->GetWorkflow()) >
-                static_cast<uint32>(MaterialWorkflow::Unlit) ||
-            static_cast<uint32>(material->GetAlphaMode()) >
-                static_cast<uint32>(Material::AlphaMode::Blend) ||
-            !std::isfinite(material->GetAlphaCutoff()) ||
-            !std::isfinite(material->GetMetallicFactor()) ||
-            !std::isfinite(material->GetRoughnessFactor()) ||
-            !std::isfinite(material->GetNormalScale()) ||
-            !std::isfinite(material->GetOcclusionStrength()) ||
-            !std::isfinite(material->GetEmissiveStrength()) ||
-            !IsFiniteVector(material->GetBaseColor()) ||
-            !IsFiniteVector(material->GetEmissiveColor()))
-        {
-            outError = "Cooked model material contains invalid numeric metadata";
-            return false;
-        }
-        for (const auto& [slotName, accessor] : TextureSlots)
-        {
-            (void)slotName;
-            const std::optional<TextureInfo>& textureInfo = ((*material).*accessor)();
-            if (!IsValidTextureInfo(textureInfo, artifact.textures.size()) ||
-                (textureInfo && !accountString(textureInfo->texturePath)))
-            {
-                outError = "Cooked model material contains an invalid texture reference";
-                return false;
-            }
-        }
-        const std::string key = "material." + std::to_string(index);
-        payload << key << ".name=" << HexEncode(material->GetName()) << '\n'
-                << key << ".workflow=" << static_cast<uint32>(material->GetWorkflow()) << '\n'
-                << key << ".doubleSided=" << (material->IsDoubleSided() ? 1 : 0) << '\n'
-                << key << ".alphaMode=" << static_cast<uint32>(material->GetAlphaMode()) << '\n'
-                << key << ".alphaCutoff=" << material->GetAlphaCutoff() << '\n'
-                << key << ".metallic=" << material->GetMetallicFactor() << '\n'
-                << key << ".roughness=" << material->GetRoughnessFactor() << '\n'
-                << key << ".normalScale=" << material->GetNormalScale() << '\n'
-                << key << ".occlusionStrength=" << material->GetOcclusionStrength() << '\n'
-                << key << ".emissiveStrength=" << material->GetEmissiveStrength() << '\n';
-        WriteVec4(payload, key + ".baseColor", material->GetBaseColor());
-        WriteVec3(payload, key + ".emissive", material->GetEmissiveColor());
-        for (const auto& [slotName, accessor] : TextureSlots)
-            WriteTextureInfo(payload, key + ".slot." + slotName, ((*material).*accessor)());
+        const CookedMaterialArtifactReference& material =
+            artifact.materialArtifacts[index];
+        const std::string key = "materialArtifact." + std::to_string(index);
+        payload << key << ".path="
+                << HexEncode(material.packageRelativePath) << '\n'
+                << key << ".contentHash="
+                << Hash::FormatSHA256Digest(material.expectedContentHash) << '\n';
     }
 
     std::vector<FlatNode> nodes;
@@ -577,7 +470,7 @@ bool SerializeCookedModelArtifact(const CookedModelArtifact& artifact,
         }
         if (node.GetSkinIndex() < -1 || node.GetSkinIndex() > 0)
         {
-            outError = "Cooked model schema v2 supports at most one skin";
+            outError = "Cooked model schema v3 supports at most one skin";
             return false;
         }
         hasSkinnedNode = hasSkinnedNode || node.HasSkin();
@@ -610,7 +503,8 @@ bool SerializeCookedModelArtifact(const CookedModelArtifact& artifact,
         for (const int materialIndex : node.GetMaterialIndices())
         {
             if (materialIndex < 0 ||
-                materialIndex >= static_cast<int>(artifact.materials.size()))
+                materialIndex >=
+                    static_cast<int>(artifact.materialArtifacts.size()))
             {
                 outError = "Cooked model node references an invalid material index";
                 return false;
@@ -699,8 +593,13 @@ bool DeserializeCookedModelArtifact(std::span<const uint8> bytes,
         return false;
     }
     ParsedFields header;
+    constexpr FieldParseLimits HeaderFieldLimits{
+        MaxHeaderFieldCount,
+        MaxHeaderRawFieldBytes,
+        MaxHeaderFieldKeyBytes,
+        MaxHeaderFieldValueBytes};
     if (!ParseFields(text.substr(magicLine.size(), payloadMarker - magicLine.size()),
-                     header, outError))
+                     HeaderFieldLimits, header, outError))
     {
         return false;
     }
@@ -743,7 +642,12 @@ bool DeserializeCookedModelArtifact(std::span<const uint8> bytes,
     }
 
     ParsedFields fields;
-    if (!ParseFields(payload, fields, outError))
+    constexpr FieldParseLimits PayloadFieldLimits{
+        MaxPayloadFieldCount,
+        MaxPayloadRawFieldBytes,
+        MaxPayloadFieldKeyBytes,
+        MaxPayloadFieldValueBytes};
+    if (!ParseFields(payload, PayloadFieldLimits, fields, outError))
         return false;
     if (!ParseString(fields, "logicalAssetId", outArtifact.logicalAssetId) ||
         !ParseString(fields, "meshArtifact", outArtifact.meshArtifactPath))
@@ -809,131 +713,39 @@ bool DeserializeCookedModelArtifact(std::span<const uint8> bytes,
         }
     }
 
-    uint32 textureCount = 0;
-    if (!ParseInteger(fields, "textureCount", textureCount))
+    uint32 materialArtifactCount = 0;
+    if (!ParseInteger(
+            fields, "materialArtifactCount", materialArtifactCount))
     {
-        outError = "Model artifact is missing textureCount";
+        outError = "Model artifact is missing materialArtifactCount";
         return false;
     }
-    if (textureCount > MaxTextureCount)
+    if (materialArtifactCount > MaxMaterialArtifactCount)
     {
-        outError = "Model artifact textureCount exceeds the configured limit";
+        outError =
+            "Model artifact materialArtifactCount exceeds the configured limit";
         return false;
     }
-    outArtifact.textures.reserve(textureCount);
-    for (uint32 index = 0; index < textureCount; ++index)
+    outArtifact.materialArtifacts.reserve(materialArtifactCount);
+    std::unordered_set<std::string> uniqueMaterialArtifactPaths;
+    uniqueMaterialArtifactPaths.reserve(materialArtifactCount);
+    for (uint32 index = 0; index < materialArtifactCount; ++index)
     {
-        TextureReference texture;
-        uint32 usage = 0;
-        uint32 srgb = 0;
-        uint32 fallback = 0;
-        const std::string key = "texture." + std::to_string(index);
-        if (!ParseString(fields, key + ".path", texture.path) ||
-            !ParseInteger(fields, key + ".imageIndex", texture.imageIndex) ||
-            !ParseInteger(fields, key + ".usage", usage) ||
-            !ParseInteger(fields, key + ".srgb", srgb) ||
-            !ParseInteger(fields, key + ".fallback", fallback) ||
-            usage > static_cast<uint32>(TextureUsage::Data) ||
-            fallback > static_cast<uint32>(TextureFallbackSemantic::Black) ||
-            srgb > 1 || texture.imageIndex < 0 ||
-            !IsCanonicalPackageRelativePath(texture.path))
+        CookedMaterialArtifactReference material;
+        const std::string key =
+            "materialArtifact." + std::to_string(index);
+        if (!ParseString(
+                fields, key + ".path", material.packageRelativePath) ||
+            !ParseDigest(
+                fields, key + ".contentHash", material.expectedContentHash) ||
+            !IsCanonicalMaterialArtifactPath(material.packageRelativePath) ||
+            IsZeroDigest(material.expectedContentHash) ||
+            !uniqueMaterialArtifactPaths.emplace(material.packageRelativePath).second)
         {
-            outError = "Model artifact texture metadata is invalid";
+            outError = "Model artifact material dependency metadata is invalid";
             return false;
         }
-        texture.sourceType = TextureSourceType::External;
-        texture.usage = static_cast<TextureUsage>(usage);
-        texture.isSRGB = srgb != 0;
-        texture.fallbackSemantic = static_cast<TextureFallbackSemantic>(fallback);
-        outArtifact.textures.push_back(std::move(texture));
-    }
-
-    uint32 materialCount = 0;
-    if (!ParseInteger(fields, "materialCount", materialCount))
-    {
-        outError = "Model artifact is missing materialCount";
-        return false;
-    }
-    if (materialCount > MaxMaterialCount)
-    {
-        outError = "Model artifact materialCount exceeds the configured limit";
-        return false;
-    }
-    outArtifact.materials.reserve(materialCount);
-    for (uint32 index = 0; index < materialCount; ++index)
-    {
-        const std::string key = "material." + std::to_string(index);
-        std::string name;
-        uint32 workflow = 0;
-        uint32 doubleSided = 0;
-        uint32 alphaMode = 0;
-        float32 alphaCutoff = 0.5f;
-        float32 metallic = 1.0f;
-        float32 roughness = 1.0f;
-        float32 normalScale = 1.0f;
-        float32 occlusionStrength = 1.0f;
-        float32 emissiveStrength = 1.0f;
-        Vec4 baseColor;
-        Vec3 emissive;
-        if (!ParseString(fields, key + ".name", name) ||
-            !ParseInteger(fields, key + ".workflow", workflow) ||
-            !ParseInteger(fields, key + ".doubleSided", doubleSided) ||
-            !ParseInteger(fields, key + ".alphaMode", alphaMode) ||
-            !ParseFloat(fields, key + ".alphaCutoff", alphaCutoff) ||
-            !ParseFloat(fields, key + ".metallic", metallic) ||
-            !ParseFloat(fields, key + ".roughness", roughness) ||
-            !ParseFloat(fields, key + ".normalScale", normalScale) ||
-            !ParseFloat(fields, key + ".occlusionStrength", occlusionStrength) ||
-            !ParseFloat(fields, key + ".emissiveStrength", emissiveStrength) ||
-            !ParseVec4(fields, key + ".baseColor", baseColor) ||
-            !ParseVec3(fields, key + ".emissive", emissive) ||
-            workflow > static_cast<uint32>(MaterialWorkflow::Unlit) ||
-            alphaMode > static_cast<uint32>(Material::AlphaMode::Blend) ||
-            doubleSided > 1)
-        {
-            outError = "Model artifact material metadata is invalid";
-            return false;
-        }
-
-        auto material = std::make_shared<Material>(name);
-        material->SetMaterialId(index);
-        material->SetWorkflow(static_cast<MaterialWorkflow>(workflow));
-        material->SetDoubleSided(doubleSided != 0);
-        material->SetAlphaMode(static_cast<Material::AlphaMode>(alphaMode));
-        material->SetAlphaCutoff(alphaCutoff);
-        material->SetBaseColor(baseColor);
-        material->SetMetallicFactor(metallic);
-        material->SetRoughnessFactor(roughness);
-        material->SetNormalScale(normalScale);
-        material->SetOcclusionStrength(occlusionStrength);
-        material->SetEmissiveColor(emissive);
-        material->SetEmissiveStrength(emissiveStrength);
-
-        std::array<std::optional<TextureInfo>, 5> textureInfos;
-        for (size_t slotIndex = 0; slotIndex < TextureSlots.size(); ++slotIndex)
-        {
-            if (!ParseTextureInfo(fields,
-                                  key + ".slot." + TextureSlots[slotIndex].first,
-                                  textureInfos[slotIndex]))
-            {
-                outError = "Model artifact material texture metadata is invalid";
-                return false;
-            }
-            if (textureInfos[slotIndex] &&
-                (textureInfos[slotIndex]->imageId < 0 ||
-                 textureInfos[slotIndex]->imageId >=
-                     static_cast<int>(outArtifact.textures.size())))
-            {
-                outError = "Model artifact material references an invalid texture index";
-                return false;
-            }
-        }
-        if (textureInfos[0]) material->SetBaseColorTexture(*textureInfos[0]);
-        if (textureInfos[1]) material->SetNormalTexture(*textureInfos[1]);
-        if (textureInfos[2]) material->SetMetallicRoughnessTexture(*textureInfos[2]);
-        if (textureInfos[3]) material->SetOcclusionTexture(*textureInfos[3]);
-        if (textureInfos[4]) material->SetEmissiveTexture(*textureInfos[4]);
-        outArtifact.materials.push_back(std::move(material));
+        outArtifact.materialArtifacts.push_back(std::move(material));
     }
 
     uint32 nodeCount = 0;
@@ -1045,7 +857,8 @@ bool DeserializeCookedModelArtifact(std::span<const uint8> bytes,
                 outError = "Model artifact node material list is incomplete";
                 return false;
             }
-            if (value < 0 || value >= static_cast<int32>(outArtifact.materials.size()))
+            if (value < 0 || value >=
+                    static_cast<int32>(outArtifact.materialArtifacts.size()))
             {
                 outError = "Model artifact node references an invalid material index";
                 return false;

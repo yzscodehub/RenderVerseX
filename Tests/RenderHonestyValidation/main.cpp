@@ -4,7 +4,6 @@
 #include "Core/Serialization/Serialization.h"
 #include "Render/Debug/GPUProfiler.h"
 #include "Render/Material/MaterialBinder.h"
-#include "Render/Material/MaterialTemplate.h"
 #include "Render/Passes/ParticleFeaturePass.h"
 #include "Render/Passes/RayTracedShadowPass.h"
 #include "Render/Passes/SkyboxPass.h"
@@ -1647,12 +1646,21 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliAppliesMeshProfileLODOptions)
     EXPECT_NE(manifestText.find("entry.0.source=Meshes/Quad.gltf"), std::string::npos);
     EXPECT_NE(manifestText.find("entry.0.output=Meshes/Quad.rva"), std::string::npos);
     EXPECT_NE(manifestText.find("entry.0.type=Model"), std::string::npos);
-    EXPECT_NE(manifestText.find("entry.0.dependency.0.path=Meshes/Quad.rvdeps/meshes.rva"),
+    EXPECT_NE(manifestText.find("entry.0.dependencyCount=2"), std::string::npos);
+    EXPECT_NE(manifestText.find(
+                  "entry.0.dependency.0.path=Meshes/Quad.rvdeps/material_0.rvmat"),
               std::string::npos);
     EXPECT_NE(manifestText.find("entry.0.dependency.0.sha256="), std::string::npos);
+    EXPECT_NE(manifestText.find("entry.0.dependency.1.path=Meshes/Quad.rvdeps/meshes.rva"),
+              std::string::npos);
+    EXPECT_NE(manifestText.find("entry.0.dependency.1.sha256="), std::string::npos);
 
     const std::string modelArtifact = ReadBinaryFile(outputRoot / "Meshes" / "Quad.rva");
-    EXPECT_NE(modelArtifact.find("RVX_MODEL_ARTIFACT_V2"), std::string::npos);
+    EXPECT_NE(modelArtifact.find("RVX_MODEL_ARTIFACT_V3"), std::string::npos);
+    const std::string materialArtifact = ReadBinaryFile(
+        outputRoot / "Meshes" / "Quad.rvdeps" / "material_0.rvmat");
+    EXPECT_NE(materialArtifact.find("RVX_MATERIAL_ARTIFACT_V1"),
+              std::string::npos);
     const std::string artifact =
         ReadBinaryFile(outputRoot / "Meshes" / "Quad.rvdeps" / "meshes.rva");
     EXPECT_NE(artifact.find("RVX_MESH_PREBAKE_V1"), std::string::npos);
@@ -2593,7 +2601,7 @@ TEST_F(RenderHonestyValidationFixture, AssetDatabaseReimportAcceptsModelImporter
     const fs::path importedPath = importedRoot / "Meshes" / "Quad.rva";
     ASSERT_TRUE(fs::exists(importedPath));
     const std::string artifact = ReadBinaryFile(importedPath);
-    EXPECT_NE(artifact.find("RVX_MODEL_ARTIFACT_V2"), std::string::npos);
+    EXPECT_NE(artifact.find("RVX_MODEL_ARTIFACT_V3"), std::string::npos);
     const std::string meshArtifact =
         ReadBinaryFile(importedRoot / "Meshes" / "Quad.rvdeps" / "meshes.rva");
     EXPECT_NE(meshArtifact.find("mesh.0.hasTangents=1"), std::string::npos);
@@ -2791,18 +2799,6 @@ float4 main() : SV_Target
     EXPECT_NE(0u, afterImport->importedModTime);
 
     fs::remove_all(dir);
-}
-
-TEST_F(RenderHonestyValidationFixture, MaterialTemplateCompileDoesNotReportPlaceholderSuccess)
-{
-    NullDevice device;
-    RVX::MaterialTemplate materialTemplate("honesty-test");
-    materialTemplate.SetVertexShader("missing_vs.hlsl");
-    materialTemplate.SetPixelShader("missing_ps.hlsl");
-
-    EXPECT_FALSE(materialTemplate.Compile(&device));
-    EXPECT_FALSE(materialTemplate.IsCompiled());
-    EXPECT_FALSE(materialTemplate.GetLastCompileError().empty());
 }
 
 TEST_F(RenderHonestyValidationFixture, MaterialBinderRejectsInitializationWithoutDevice)

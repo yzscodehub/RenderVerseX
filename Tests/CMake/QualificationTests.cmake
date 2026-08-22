@@ -765,22 +765,22 @@ function(rvx_add_renderverse_animation_character_matrix BACKEND_NAME BACKEND_LAB
     # are required because CMake otherwise treats the typed receipt fields as
     # a list before it writes CTestTestfile.cmake.
     string(JOIN "$<SEMICOLON>" casual_female_cook_admission
-        "assetId=casual-female" "packageContentId=e5ef68f61edfd7d7bcc89207e253352368a7e57569051946917a6a22aa55f58d/3595796/5" "required=true" "accepted=true"
+        "assetId=casual-female" "packageContentId=57b9e1ebfbcdb14606fc06d0aa36c13a0554ba3cfd4ebf68c165455ac88e63a3/3597846/11" "required=true" "accepted=true"
         "manifestPath=$<SHELL_PATH:$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/cooked/casual-female/CookManifest.rvxmanifest>" "cookedRoot=$<SHELL_PATH:$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/cooked/casual-female>"
         "declaredSource=source/self-contained-artifact/87327963ab0f37d004c7340d130808727f3d67b724c3d41aad01fd63c7d6fc8a/2058883/1" "observedSource=source/self-contained-artifact/87327963ab0f37d004c7340d130808727f3d67b724c3d41aad01fd63c7d6fc8a/2058883/1"
-        "declaredCooked=cooked-artifact/dependency-closure/28bffeba26ec3e01c9792fdc82ea8f43a06c34c508c361e266415c8d7fa54076/1534791/3" "observedCooked=cooked-artifact/dependency-closure/28bffeba26ec3e01c9792fdc82ea8f43a06c34c508c361e266415c8d7fa54076/1534791/3"
-        "declaredManifest=cook-manifest/self-contained-artifact/df8235a8f12900077443d765a32c7632f9faa1320ea480e3590e8a4bcfb5ff66/2122/1" "observedManifest=cook-manifest/self-contained-artifact/df8235a8f12900077443d765a32c7632f9faa1320ea480e3590e8a4bcfb5ff66/2122/1"
-        "cookSettingsHash=d47a3f3b166ac705cfd06128506f127d776f43ad59eaeaa5cb4d52c1946829fa" "recipeHash=815ad489b05e8595afec66fa1dadfc39cb1dea900cea4e18bad7e5092f8592c5" "toolName=RVXCook" "toolVersion=2.0.0")
+        "declaredCooked=cooked-artifact/dependency-closure/28267d61f327c52df64b087235ca1754da54e6ff66511e18506a6564a8cc1a6f/1534321/9" "observedCooked=cooked-artifact/dependency-closure/28267d61f327c52df64b087235ca1754da54e6ff66511e18506a6564a8cc1a6f/1534321/9"
+        "declaredManifest=cook-manifest/self-contained-artifact/ecbb1e6d425bdb269d93045cdb5fd7c09b87fed6da7bec688ff485408b5d5949/4642/1" "observedManifest=cook-manifest/self-contained-artifact/ecbb1e6d425bdb269d93045cdb5fd7c09b87fed6da7bec688ff485408b5d5949/4642/1"
+        "cookSettingsHash=d47a3f3b166ac705cfd06128506f127d776f43ad59eaeaa5cb4d52c1946829fa" "recipeHash=28f13886f1ecc018d5daa7501d0e17d70a52769ae3623d10f2e6c98d8452f676" "toolName=RVXCook" "toolVersion=2.0.0")
     string(JOIN "$<SEMICOLON>" root_motion_cook_admission
-        "assetId=casual-female-walk-root-motion" "packageContentId=5b9389ee4822bc351d255cc22d1fa0a48515a9f34493d46175d520b65212f206/56156/2" "required=true" "accepted=true"
+        "assetId=casual-female-walk-root-motion" "packageContentId=8986e195f30f749969d68648cd21b5271ad17547b30372b73fb7d6f154a8c544/56159/2" "required=true" "accepted=true"
         "manifestPath=$<SHELL_PATH:$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/cooked/casual-female-root-motion/CookManifest.rvxmanifest>" "cookedRoot=$<SHELL_PATH:$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/cooked/casual-female-root-motion>"
         "declaredSource=source/self-contained-artifact/36f4824d1d82aeaae42ce33208b3c774622e09d4547290c89ace8560eeb3ad11/927584/1" "observedSource=source/self-contained-artifact/36f4824d1d82aeaae42ce33208b3c774622e09d4547290c89ace8560eeb3ad11/927584/1"
-        "declaredCooked=cooked-artifact/self-contained-artifact/5fab9c5b30fed8ef486f3ac2011539ec1dc40bab5c323e938c53417897faee8f/54462/1" "observedCooked=cooked-artifact/self-contained-artifact/5fab9c5b30fed8ef486f3ac2011539ec1dc40bab5c323e938c53417897faee8f/54462/1"
-        "declaredManifest=cook-manifest/self-contained-artifact/c4b5ad12e5d3cb05ed29c5d06c195e113c5a378382a1e207da37983697227116/1694/1" "observedManifest=cook-manifest/self-contained-artifact/c4b5ad12e5d3cb05ed29c5d06c195e113c5a378382a1e207da37983697227116/1694/1"
-        "cookSettingsHash=ab0e49942ad560a6061b96cfc94b2691ea3a2a99f9a628b1273627ef17817822" "recipeHash=c1ade5aa9db8741f460047448618b173b9b74c52209e63153703572c37efa4ed" "toolName=RVXCook" "toolVersion=2.0.0")
+        "declaredCooked=cooked-artifact/self-contained-artifact/3a7e27e1745b292b282682df0ab6fee9c4b1b1ddb8d0b080d69dc723ab122a97/54464/1" "observedCooked=cooked-artifact/self-contained-artifact/3a7e27e1745b292b282682df0ab6fee9c4b1b1ddb8d0b080d69dc723ab122a97/54464/1"
+        "declaredManifest=cook-manifest/self-contained-artifact/bf369d106c2bf53a48c329f84ee7c977fa64c58d45c9c15d2426d9bf15546f2c/1695/1" "observedManifest=cook-manifest/self-contained-artifact/bf369d106c2bf53a48c329f84ee7c977fa64c58d45c9c15d2426d9bf15546f2c/1695/1"
+        "cookSettingsHash=37d257abb1762b56436a0b3a1de267860f0507fbf0ff169ce395039ae2053232" "recipeHash=5d814e26fdad96238fa707f11537e7ac66f9aa335252fafe525ef59338c478a7" "toolName=RVXCook" "toolVersion=2.0.0")
     string(JOIN "$<SEMICOLON>" root_motion_asset_receipt
-        "assetId=casual-female-walk-root-motion" "role=animation" "kind=animation" "packageContentId=5b9389ee4822bc351d255cc22d1fa0a48515a9f34493d46175d520b65212f206/56156/2"
-        "expected=cooked-artifact/self-contained-artifact/86ed6cd35db4c77863b235998f1a27483b9f6b17eb8470e46a221940f5c16ccb/54462/1" "observed=cooked-artifact/self-contained-artifact/86ed6cd35db4c77863b235998f1a27483b9f6b17eb8470e46a221940f5c16ccb/54462/1"
+        "assetId=casual-female-walk-root-motion" "role=animation" "kind=animation" "packageContentId=8986e195f30f749969d68648cd21b5271ad17547b30372b73fb7d6f154a8c544/56159/2"
+        "expected=cooked-artifact/self-contained-artifact/1402b3b629c587ba1168ee961029e9b8504ffac89f763592571ae836f13f9a7f/54464/1" "observed=cooked-artifact/self-contained-artifact/1402b3b629c587ba1168ee961029e9b8504ffac89f763592571ae836f13f9a7f/54464/1"
         "verificationStatus=verified" "loaded=true" "verified=true")
 
     foreach(path_label Direct GPUDriven)
@@ -826,7 +826,7 @@ function(rvx_add_renderverse_animation_character_matrix BACKEND_NAME BACKEND_LAB
                 --require-asset-entry casual-female-walk-root-motion
                 --require-asset-entry water-bottle
                 --require-asset-content-id 87327963ab0f37d004c7340d130808727f3d67b724c3d41aad01fd63c7d6fc8a
-                --require-asset-content-id e5ef68f61edfd7d7bcc89207e253352368a7e57569051946917a6a22aa55f58d
+                --require-asset-content-id 57b9e1ebfbcdb14606fc06d0aa36c13a0554ba3cfd4ebf68c165455ac88e63a3
                 --require-asset-content-id b337e526fd6a162013c2984aeec163f5fbb4f717252724dfc3f3458bd51df94b
                 --require-asset-content-id 4df540b802067f192a7aa38aed524dda141dc23d9cb7a7e6272fc021694198ed
                 --require-cook-admission "${casual_female_cook_admission}"

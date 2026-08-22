@@ -63,8 +63,13 @@
     "artifactContracts": [
       {
         "id": "model",
-        "magic": "RVX_MODEL_ARTIFACT_V2",
+        "magic": "RVX_MODEL_ARTIFACT_V3",
         "source": "Source/Runtime/ResourceRuntime/Include/Resource/Cooked/CookedModelArtifact.h"
+      },
+      {
+        "id": "material",
+        "magic": "RVX_MATERIAL_ARTIFACT_V1",
+        "source": "Source/Runtime/ResourceRuntime/Include/Resource/Cooked/CookedMaterialArtifact.h"
       },
       {
         "id": "cook-manifest",

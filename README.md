@@ -25,7 +25,8 @@ explained in [`Docs/README.md`](Docs/README.md).
   `Supports -> Prepare -> Validate -> Publish`.
 - RenderGraph is the independent `RVX::RenderGraph` link target inside the
   `Render` Manifest module.
-- Model products use only `RVX_MODEL_ARTIFACT_V2`; source FBX support is a
+- Model products use only `RVX_MODEL_ARTIFACT_V3`, with standalone
+  `RVX_MATERIAL_ARTIFACT_V1` dependencies; source FBX support is a
   development-only, feature-gated static subset.
 
 Core/HAL/RHI/Render, Scene/ECS/World, Animation, Built-in Physics, Particle,
@@ -155,7 +156,7 @@ contracts.
 `RVXCook` is built only in a Developer/Programs host-tools configuration.
 Runtime and Shipping read cooked or package artifacts through strict loaders.
 Model cooking converges glTF/GLB and feature-enabled static FBX into the same
-Model Artifact V2 tail. FBX deliberately rejects skin, animation, blend shape,
+Model Artifact V3 tail. FBX deliberately rejects skin, animation, blend shape,
 embedded texture, missing external texture, and source-root escape cases.
 
 See [`Docs/rvxcook-workflow.md`](Docs/rvxcook-workflow.md) for commands,

@@ -4,7 +4,6 @@
 #include "Render/Material/MaterialBinder.h"
 #include "Render/Material/MaterialClassification.h"
 #include "Render/Material/MaterialSystem.h"
-#include "Render/Material/MaterialTemplate.h"
 #include "Resources/FrameConstantUploadArena.h"
 #include "Resources/RenderSubmissionTracker.h"
 #include "Resource/Loader/CookedTextureLoader.h"
@@ -1183,54 +1182,6 @@ namespace
                   GetPipelineVariantForRenderMode(MaterialRenderMode::Masked));
         EXPECT_EQ(MaterialPipelineVariant::Transparent,
                   GetPipelineVariantForRenderMode(MaterialRenderMode::Transparent));
-    }
-
-    TEST(MaterialSystemValidation, MaterialTemplateCompileFailuresAreSpecificAndVisible)
-    {
-        {
-            MaterialTemplate materialTemplate("null-device");
-            materialTemplate.SetVertexShader("PBRLit.hlsl");
-            materialTemplate.SetPixelShader("PBRLit.hlsl");
-
-            EXPECT_FALSE(materialTemplate.Compile(nullptr));
-            EXPECT_FALSE(materialTemplate.IsCompiled());
-            EXPECT_EQ(materialTemplate.GetPipeline(), nullptr);
-            EXPECT_TRUE(Contains(materialTemplate.GetLastCompileError(), "RHI device"));
-        }
-
-        {
-            FakeDevice device;
-            MaterialTemplate materialTemplate("missing-vertex");
-            materialTemplate.SetPixelShader("PBRLit.hlsl");
-
-            EXPECT_FALSE(materialTemplate.Compile(&device));
-            EXPECT_FALSE(materialTemplate.IsCompiled());
-            EXPECT_EQ(materialTemplate.GetPipeline(), nullptr);
-            EXPECT_TRUE(Contains(materialTemplate.GetLastCompileError(), "vertex shader path"));
-        }
-
-        {
-            FakeDevice device;
-            MaterialTemplate materialTemplate("missing-pixel");
-            materialTemplate.SetVertexShader("PBRLit.hlsl");
-
-            EXPECT_FALSE(materialTemplate.Compile(&device));
-            EXPECT_FALSE(materialTemplate.IsCompiled());
-            EXPECT_EQ(materialTemplate.GetPipeline(), nullptr);
-            EXPECT_TRUE(Contains(materialTemplate.GetLastCompileError(), "pixel shader path"));
-        }
-
-        {
-            FakeDevice device;
-            MaterialTemplate materialTemplate("missing-pipeline");
-            materialTemplate.SetVertexShader("PBRLit.hlsl");
-            materialTemplate.SetPixelShader("PBRLit.hlsl");
-
-            EXPECT_FALSE(materialTemplate.Compile(&device));
-            EXPECT_FALSE(materialTemplate.IsCompiled());
-            EXPECT_EQ(materialTemplate.GetPipeline(), nullptr);
-            EXPECT_TRUE(Contains(materialTemplate.GetLastCompileError(), "standalone material pipeline"));
-        }
     }
 
     TEST(MaterialSystemValidation, MaterialBinderConvertToGPUUsesMaterialProperties)

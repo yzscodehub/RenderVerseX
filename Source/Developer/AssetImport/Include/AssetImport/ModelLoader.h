@@ -7,7 +7,7 @@
  * Loads source glTF and GLB models for the legacy direct loader path.
  * Creates ModelResource with properly indexed MeshResources and MaterialResources.
  * Canonical RVXCook import dispatch, including feature-enabled static FBX,
- * lives behind ModelImporter and converges on Model Artifact V2.
+ * lives behind ModelImporter and converges on Model Artifact V3.
  */
 
 #include "AssetImport/GLTFImporter.h"

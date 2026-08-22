@@ -2,6 +2,9 @@
 
 #include "Resource/Loader/CookedModelLoader.h"
 
+#include "CookedMaterialPreparation.h"
+
+#include "Core/Hash/SHA256.h"
 #include "Geometry/Asset/VertexAttribute.h"
 #include "Resource/Cooked/CookedAnimationArtifact.h"
 #include "Resource/Cooked/CookedMeshArtifactReader.h"
@@ -51,6 +54,29 @@ namespace
             return false;
         }
         return true;
+    }
+
+    /**
+     * @brief Builds the identity for the root .rva bytes consumed by this loader.
+     *
+     * Model dependencies are independently admitted through their declared
+     * hashes, while CookManifest admission owns an optional closure identity.
+     * The ResourceManager expectation for this loader must therefore describe
+     * only the root artifact bytes it actually reads as its primary input.
+     */
+    ResourceContentIdentity MakeObservedRootIdentity(
+        std::span<const uint8> bytes)
+    {
+        ResourceContentIdentity identity;
+        identity.schemaVersion = RVX_RESOURCE_CONTENT_IDENTITY_SCHEMA_VERSION;
+        identity.domain = ResourceContentIdentityDomain::CookedArtifact;
+        identity.scope = ResourceContentIdentityScope::SelfContainedArtifact;
+        identity.algorithm = ResourceContentHashAlgorithm::SHA256;
+        identity.digest = Hash::FormatSHA256Digest(
+            Hash::ComputeSHA256(bytes.data(), bytes.size()));
+        identity.byteCount = bytes.size();
+        identity.fileCount = 1;
+        return identity;
     }
 
     bool ResolveContainedDependency(
@@ -188,40 +214,6 @@ namespace
         return valid;
     }
 
-    MaterialResource* BuildMaterial(
-        const std::string& modelIdentity,
-        int index,
-        const Material::Ptr& material,
-        const std::vector<ResourceHandle<TextureResource>>& textures)
-    {
-        if (!material)
-            return nullptr;
-        auto resource = std::make_unique<MaterialResource>();
-        resource->SetId(GenerateResourceId(
-            modelIdentity + "#material_" + std::to_string(index)));
-        resource->SetPath(
-            modelIdentity + "#material_" + std::to_string(index));
-        resource->SetName(material->GetName());
-        resource->SetMaterialData(material);
-        const auto associate =
-            [&](const std::optional<TextureInfo>& info, const char* slot)
-            {
-                if (info && info->imageId >= 0 &&
-                    info->imageId < static_cast<int>(textures.size()) &&
-                    textures[static_cast<size_t>(info->imageId)])
-                {
-                    resource->SetTexture(
-                        slot, textures[static_cast<size_t>(info->imageId)]);
-                }
-            };
-        associate(material->GetBaseColorTexture(), "albedo");
-        associate(material->GetNormalTexture(), "normal");
-        associate(material->GetMetallicRoughnessTexture(), "metallic_roughness");
-        associate(material->GetOcclusionTexture(), "ao");
-        associate(material->GetEmissiveTexture(), "emissive");
-        return resource.release();
-    }
-
     bool BuildPreparedBundle(
         ModelResource* model,
         PreparedResourceBundle& outBundle,
@@ -285,11 +277,18 @@ namespace
     std::unique_ptr<ModelResource> BuildModel(
         const std::string& sourcePath,
         const std::string& identity,
+        ResourceContentIdentity& outObservedRootIdentity,
         std::string& outError)
     {
         std::vector<uint8> modelBytes;
         if (!ReadBytes(sourcePath, modelBytes, outError))
             return nullptr;
+        outObservedRootIdentity = MakeObservedRootIdentity(modelBytes);
+        if (!outObservedRootIdentity.IsValid())
+        {
+            outError = "Cooked model root artifact has no valid content identity";
+            return nullptr;
+        }
         CookedModelArtifact artifact;
         if (!DeserializeCookedModelArtifact(modelBytes, artifact, outError))
             return nullptr;
@@ -358,46 +357,52 @@ namespace
             animation = AnimationHandle(resource.release());
         }
 
-        std::vector<ResourceHandle<TextureResource>> textures;
-        textures.reserve(artifact.textures.size());
-        for (size_t index = 0; index < artifact.textures.size(); ++index)
+        CookedMaterialPreparationCache materialCache;
+        std::vector<ResourceHandle<MaterialResource>> materials;
+        materials.reserve(artifact.materialArtifacts.size());
+        for (const CookedMaterialArtifactReference& reference :
+             artifact.materialArtifacts)
         {
-            const TextureReference& reference = artifact.textures[index];
-            std::filesystem::path texturePath;
+            std::filesystem::path materialPath;
             if (!ResolveContainedDependency(
-                    modelDirectory, reference.path, ".rva", texturePath))
+                    modelDirectory,
+                    reference.packageRelativePath,
+                    ".rvmat",
+                    materialPath))
             {
                 outError =
-                    "Cooked model texture dependency must be a contained .rva product";
+                    "Cooked model material dependency must be a contained .rvmat product";
                 return nullptr;
             }
-            std::vector<uint8> textureBytes;
-            if (!ReadBytes(texturePath, textureBytes, outError))
-                return nullptr;
-            CookedTextureArtifact textureArtifact;
-            if (!DeserializeCookedTextureArtifact(
-                    textureBytes, textureArtifact, outError))
+            const std::string materialIdentity =
+                CanonicalizeAssetPath(materialPath.string());
+            CookedMaterialPreparedResources prepared;
+            if (!PrepareCookedMaterialResources(
+                    materialPath.string(),
+                    materialIdentity,
+                    GenerateResourceId(materialIdentity),
+                    materialPath.string(),
+                    materialPath.stem().string(),
+                    &materialCache,
+                    prepared,
+                    outError))
             {
                 return nullptr;
             }
-            if (textureArtifact.metadata.usage != reference.usage ||
-                textureArtifact.metadata.isSRGB != reference.isSRGB)
+            const Hash::SHA256Digest observedHash = Hash::ComputeSHA256(
+                prepared.artifactBytes.data(), prepared.artifactBytes.size());
+            if (observedHash != reference.expectedContentHash)
             {
                 outError =
-                    "Cooked model texture metadata does not match its model contract";
+                    "Cooked model material dependency content hash mismatch";
                 return nullptr;
             }
-            auto texture = std::make_unique<TextureResource>();
-            const std::string textureIdentity =
-                CanonicalizeAssetPath(texturePath.string()) +
-                "|usage=" + std::to_string(static_cast<uint32>(reference.usage)) +
-                "|srgb=" + std::to_string(reference.isSRGB ? 1 : 0);
-            texture->SetId(GenerateResourceId(textureIdentity));
-            texture->SetPath(texturePath.string());
-            texture->SetName(texturePath.stem().string());
-            texture->SetData(
-                std::move(textureArtifact.pixels), textureArtifact.metadata);
-            textures.emplace_back(texture.release());
+            if (!prepared.material)
+            {
+                outError = "Cooked model material dependency is invalid";
+                return nullptr;
+            }
+            materials.push_back(prepared.material);
         }
 
         auto model = std::make_unique<ModelResource>();
@@ -423,22 +428,6 @@ namespace
         }
         model->SetMeshes(std::move(meshes));
 
-        std::vector<ResourceHandle<MaterialResource>> materials;
-        materials.reserve(artifact.materials.size());
-        for (size_t index = 0; index < artifact.materials.size(); ++index)
-        {
-            MaterialResource* material = BuildMaterial(
-                identity,
-                static_cast<int>(index),
-                artifact.materials[index],
-                textures);
-            if (!material)
-            {
-                outError = "Cooked model contains an invalid material";
-                return nullptr;
-            }
-            materials.emplace_back(material);
-        }
         model->SetMaterials(std::move(materials));
         model->SetRootNode(std::move(artifact.rootNode));
         model->SetAnimationResource(std::move(animation));
@@ -536,9 +525,11 @@ bool CookedModelLoader::Prepare(
         return false;
     }
     std::string error;
+    ResourceContentIdentity observedRootIdentity;
     std::unique_ptr<ModelResource> model = BuildModel(
         context.resolvedPath,
         context.resourceIdentityPath,
+        observedRootIdentity,
         error);
     if (!model)
     {
@@ -549,6 +540,16 @@ bool CookedModelLoader::Prepare(
     model->SetPath(context.requestedPath);
     model->SetName(
         std::filesystem::path(context.requestedPath).stem().string());
-    return BuildPreparedBundle(model.release(), outBundle, outError);
+    if (!BuildPreparedBundle(model.release(), outBundle, outError) ||
+        !outBundle.SetObservedContentIdentity(std::move(observedRootIdentity)))
+    {
+        if (outError.code == ResourceLoadErrorCode::None)
+        {
+            outError = {ResourceLoadErrorCode::LoaderFailure,
+                        "Cooked model prepared bundle has no valid root content identity."};
+        }
+        return false;
+    }
+    return true;
 }
 } // namespace RVX::Resource

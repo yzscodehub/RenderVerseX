@@ -443,15 +443,6 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Source/Runtime/Render/Include/Render/Material/MaterialTemplate.h",
-      "owner": "MaterialTemplate",
-      "symbol": "m_pipeline",
-      "policy": "OwnerSnapshot",
-      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
-      "normalRelease": "owner replacement retires after the captured snapshot completes",
-      "deviceLostRelease": "owner explicit device-lost teardown"
-    },
-    {
       "path": "Source/Runtime/Render/Include/Render/Passes/CameraVelocityPass.h",
       "owner": "CameraVelocityPass",
       "symbol": "m_constantBuffer",

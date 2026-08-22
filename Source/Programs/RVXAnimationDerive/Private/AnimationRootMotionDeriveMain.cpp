@@ -32,16 +32,16 @@ namespace
                << "--source-clip Walk --output-clip casual-female-walk-root-motion "
                << "--root CharacterArmature/Bone/Body/Hips --axis +Z --speed 1.0 "
                << "--duration-us 1250000 --parent-asset-id casual-female "
-               << "(--parent-content-id rvx-asset-content-v1:sha256:<digest>:3595796:5 "
+               << "(--parent-content-id rvx-asset-content-v1:sha256:<digest>:3597846:11 "
                << "| --parent-content-schema-version 1 --parent-content-algorithm sha256 "
-               << "--parent-content-digest <digest> --parent-content-byte-count 3595796 "
-               << "--parent-content-file-count 5)\n"
+               << "--parent-content-digest <digest> --parent-content-byte-count 3597846 "
+               << "--parent-content-file-count 11)\n"
                << "   or: RVXAnimationDerive --mode package --input <parent.rvxanim> "
                << "--source-root <SamplesAssets> --package-output <child-package-dir> "
                << "--source-clip Walk --output-clip casual-female-walk-root-motion "
                << "--root CharacterArmature/Bone/Body/Hips --axis +Z --speed 1.0 "
                << "--duration-us 1250000 --parent-asset-id casual-female "
-               << "--parent-content-id rvx-asset-content-v1:sha256:<digest>:3595796:5\n";
+               << "--parent-content-id rvx-asset-content-v1:sha256:<digest>:3597846:11\n";
     }
 
     bool IsCanonicalUnsigned(std::string_view value)

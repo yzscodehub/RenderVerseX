@@ -104,7 +104,7 @@ namespace
     }
 } // namespace
 
-TEST(FBXCookPipelineValidation, RVXCookProducesDeterministicV2AndRuntimeLoadsIt)
+TEST(FBXCookPipelineValidation, RVXCookProducesDeterministicV3AndRuntimeLoadsIt)
 {
     TemporaryDirectory temporary;
     const fs::path sourceRoot = temporary.Get() / "Source";

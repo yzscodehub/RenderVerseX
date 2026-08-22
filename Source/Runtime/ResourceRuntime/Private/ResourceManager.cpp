@@ -3,6 +3,7 @@
 #include "Resource/Loader/AnimationLoader.h"
 #include "Resource/Loader/CookedAudioLoader.h"
 #include "Resource/Loader/CookedEnvironmentLoader.h"
+#include "Resource/Loader/CookedMaterialLoader.h"
 #include "Resource/Loader/CookedModelLoader.h"
 #include "Resource/Loader/CookedTextureLoader.h"
 #include "Resource/Loader/MeshLoader.h"
@@ -1005,6 +1006,7 @@ ResourceManagerDependencies CreateRuntimeResourceManagerDependencies()
         RVX_ASSERT_MSG(added, "Built-in resource loader catalog is invalid: {}", error);
     };
     add(std::make_unique<CookedTextureLoader>());
+    add(std::make_unique<CookedMaterialLoader>());
     add(std::make_unique<MeshLoader>());
     add(std::make_unique<ShaderLoader>());
     add(std::make_unique<CookedModelLoader>());
@@ -4670,7 +4672,7 @@ ResourceType ResourceManager::GetTypeFromExtension(const std::string& extension)
         return ResourceType::Texture;
 
     // Material
-    if (ext == ".mat" || ext == ".material")
+    if (ext == ".mat" || ext == ".material" || ext == ".rvmat")
         return ResourceType::Material;
 
     // Shader

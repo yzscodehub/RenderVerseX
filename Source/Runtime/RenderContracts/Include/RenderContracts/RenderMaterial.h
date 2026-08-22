@@ -8,8 +8,111 @@
 #include "Core/Types.h"
 #include "Core/MathTypes.h"
 
+#include <string>
+#include <string_view>
+#include <vector>
+
 namespace RVX
 {
+    /** @brief Pipeline domain represented by a cooked material. */
+    enum class MaterialDomain : uint8
+    {
+        Surface = 0
+    };
+
+    /** @brief Stable shading models supported by the material contract. */
+    enum class MaterialShadingModel : uint8
+    {
+        StandardLit = 0,
+        ToonLit,
+        Unlit,
+        ThinTransmission
+    };
+
+    /** @brief Backend-neutral blend policy selected during pipeline resolution. */
+    enum class MaterialBlendMode : uint8
+    {
+        Opaque = 0,
+        Masked,
+        AlphaBlend,
+        Premultiplied,
+        Additive
+    };
+
+    /** @brief Backend-neutral raster culling policy. */
+    enum class MaterialCullMode : uint8
+    {
+        Back = 0,
+        NoCull
+    };
+
+    /** @brief Shadow participation policy carried by immutable material state. */
+    enum class MaterialShadowPolicy : uint8
+    {
+        None = 0,
+        Cast,
+        Receive,
+        CastAndReceive
+    };
+
+    /** @brief Legal renderer phase for a surface material. */
+    enum class MaterialTranslucencyPhase : uint8
+    {
+        Opaque = 0,
+        Standard,
+        AfterToneMap
+    };
+
+    /** @brief Stable texture slot names understood by material upload and shaders. */
+    enum class MaterialTextureSlot : uint8
+    {
+        BaseColor = 0,
+        Normal,
+        MetallicRoughness,
+        Occlusion,
+        Emissive,
+        ToonRamp,
+        Transmission,
+        Thickness
+    };
+
+    enum class MaterialSamplerWrap : uint8
+    {
+        Repeat = 0,
+        MirrorRepeat,
+        ClampToEdge,
+        ClampToBorder
+    };
+
+    enum class MaterialSamplerFilter : uint8
+    {
+        Nearest = 0,
+        Linear,
+        NearestMipmapNearest,
+        LinearMipmapNearest,
+        NearestMipmapLinear,
+        LinearMipmapLinear
+    };
+
+    /** @brief Stable schema hash; deliberately independent of C++ sizeof/padding. */
+    [[nodiscard]] uint64 GetMaterialParameterLayoutHashV1() noexcept;
+
+    /** @brief Immutable pipeline-affecting portion of a material definition. */
+    struct MaterialStaticDescriptor
+    {
+        MaterialDomain domain = MaterialDomain::Surface;
+        MaterialShadingModel shadingModel = MaterialShadingModel::StandardLit;
+        MaterialBlendMode blendMode = MaterialBlendMode::Opaque;
+        MaterialCullMode cullMode = MaterialCullMode::Back;
+        MaterialShadowPolicy shadowPolicy = MaterialShadowPolicy::CastAndReceive;
+        MaterialTranslucencyPhase translucencyPhase =
+            MaterialTranslucencyPhase::Opaque;
+        int32 sortPriority = 0;
+        uint64 featureMask = 0;
+        std::string programFamily = "standard-lit-v1";
+        uint64 parameterLayoutHash = GetMaterialParameterLayoutHashV1();
+    };
+
     enum class RenderMaterialMode : uint8
     {
         Opaque = 0,
@@ -48,6 +151,66 @@ namespace RVX
         float alphaCutoff = 0.5f;
         MaterialSourceWorkflow workflow = MaterialSourceWorkflow::MetallicRoughness;
         bool doubleSided = false;
+
+        // Reserved fixed-layout fields used by the declared shading models.
+        float toonBands = 4.0f;
+        float toonSpecularThreshold = 0.5f;
+        float toonRimStrength = 0.0f;
+        float toonOutlineWidth = 0.0f;
+        Vec3 toonShadowTint{0.5f, 0.5f, 0.5f};
+        float transmission = 0.0f;
+        float indexOfRefraction = 1.5f;
+        float thickness = 0.0f;
+        Vec3 attenuationColor{1.0f, 1.0f, 1.0f};
+        float attenuationDistance = 1.0f;
     };
+
+    /** @brief UV transform and sampler state for one typed material slot. */
+    struct MaterialTextureSlotDefinition
+    {
+        MaterialTextureSlot slot = MaterialTextureSlot::BaseColor;
+        uint8 uvSet = 0;
+        Vec2 offset{0.0f, 0.0f};
+        Vec2 scale{1.0f, 1.0f};
+        float rotation = 0.0f;
+        MaterialSamplerWrap wrapS = MaterialSamplerWrap::Repeat;
+        MaterialSamplerWrap wrapT = MaterialSamplerWrap::Repeat;
+        MaterialSamplerFilter minFilter =
+            MaterialSamplerFilter::LinearMipmapLinear;
+        MaterialSamplerFilter magFilter = MaterialSamplerFilter::Linear;
+    };
+
+    /**
+     * @brief Canonical runtime material value shared by source and cooked paths.
+     *
+     * Resource bindings are stored by ResourceRuntime; this value carries only
+     * immutable pipeline policy, typed parameters, and binding metadata.
+     */
+    struct MaterialDefinition
+    {
+        MaterialStaticDescriptor descriptor;
+        MaterialSourceData parameters;
+        std::vector<MaterialTextureSlotDefinition> textureSlots;
+    };
+
+    inline constexpr std::string_view
+        RVX_MATERIAL_PARAMETER_LAYOUT_SCHEMA_V1 =
+            "RVX.MaterialParameters.V1:baseColorFactor=float4;metallicFactor=float;"
+            "roughnessFactor=float;normalScale=float;occlusionStrength=float;"
+            "emissiveColor=float3;emissiveStrength=float;textureFlags=uint;"
+            "alphaMode=uint;alphaCutoff=float;workflow=uint;doubleSided=bool;"
+            "toonBands=float;toonSpecularThreshold=float;toonRimStrength=float;"
+            "toonOutlineWidth=float;toonShadowTint=float3;transmission=float;"
+            "indexOfRefraction=float;thickness=float;attenuationColor=float3;"
+            "attenuationDistance=float";
+
+    /** @brief Required program family for one fixed shading model. */
+    [[nodiscard]] std::string_view GetMaterialProgramFamily(
+        MaterialShadingModel shadingModel) noexcept;
+
+    /** @brief Validate the complete backend-neutral material contract. */
+    [[nodiscard]] bool ValidateMaterialDefinition(
+        const MaterialDefinition& definition,
+        std::string& outError);
 
 } // namespace RVX
