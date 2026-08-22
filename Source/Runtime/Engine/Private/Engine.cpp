@@ -119,6 +119,12 @@ bool Engine::Initialize()
         startupSpan.SetAttribute("result", "already-initialized");
         return true;
     }
+    if (m_config.effectDeterministicSeed == 0)
+    {
+        RVX_CORE_ERROR("Engine requires a non-zero deterministic effect seed");
+        startupSpan.SetAttribute("result", "invalid-effect-seed");
+        return false;
+    }
     if (m_initializationRollbackPending)
     {
         if (!RollbackFailedInitialization())
@@ -255,6 +261,9 @@ bool Engine::Initialize()
     m_frameNumber = 0;
     m_compatibilityElapsedTimeSeconds = 0.0;
     m_lastFrameAbsoluteTimeSeconds = 0.0;
+    m_effectSimulationTick = 0;
+    m_effectSimulationSeconds = 0.0;
+    m_effectDeterministicSeed = m_config.effectDeterministicSeed;
     RVX_CORE_INFO("=== RenderVerseX Engine Initialized ===");
     startupSpan.SetAttribute("result", "initialized");
     return true;
@@ -309,7 +318,11 @@ void Engine::TickFrame(float32 deltaTime, float64 absoluteTimeSeconds)
     EventBus::Get().ProcessDeferredEvents();
     TickSubsystems(deltaTime);
     TickWorlds(deltaTime);
-    RenderAfterWorlds(deltaTime, absoluteTimeSeconds);
+    RenderAfterWorlds(deltaTime,
+                      absoluteTimeSeconds,
+                      m_effectSimulationTick,
+                      m_effectSimulationSeconds,
+                      m_effectDeterministicSeed);
     FinalizeDestroyRequestedWorlds(deltaTime);
 
     if (auto* window = GetSubsystem<WindowSubsystem>(); window != nullptr && window->ShouldClose())
@@ -317,6 +330,16 @@ void Engine::TickFrame(float32 deltaTime, float64 absoluteTimeSeconds)
         RequestShutdown();
     }
     m_lastFrameAbsoluteTimeSeconds = absoluteTimeSeconds;
+    if (m_effectSimulationTick != std::numeric_limits<uint64>::max())
+    {
+        ++m_effectSimulationTick;
+    }
+    const float64 nextEffectSimulationSeconds =
+        m_effectSimulationSeconds + static_cast<float64>(deltaTime);
+    if (std::isfinite(nextEffectSimulationSeconds))
+    {
+        m_effectSimulationSeconds = nextEffectSimulationSeconds;
+    }
     ++m_frameNumber;
 }
 
@@ -686,7 +709,11 @@ void Engine::ShutdownWorlds()
     // frame while the providers are still alive on every retry.
     TickSubsystems(0.0f);
     TickWorlds(0.0f);
-    RenderAfterWorlds(0.0f, m_lastFrameAbsoluteTimeSeconds);
+    RenderAfterWorlds(0.0f,
+                      m_lastFrameAbsoluteTimeSeconds,
+                      m_effectSimulationTick,
+                      m_effectSimulationSeconds,
+                      m_effectDeterministicSeed);
     FinalizeDestroyRequestedWorlds(0.0f);
 }
 
@@ -990,7 +1017,10 @@ bool Engine::RollbackFailedInitialization()
 }
 
 void Engine::RenderAfterWorlds(float32 deltaTime,
-                               float64 absoluteTimeSeconds)
+                               float64 absoluteTimeSeconds,
+                               uint64 simulationTick,
+                               float64 simulationSeconds,
+                               uint32 deterministicSeed)
 {
     if (m_ecsRenderComposition == nullptr)
     {
@@ -1012,7 +1042,12 @@ void Engine::RenderAfterWorlds(float32 deltaTime,
     const std::shared_ptr<const SceneECS::FrozenSceneSnapshot> snapshot =
         active->world->GetSceneEcsRuntime().GetLatestFrozenSnapshot();
     static_cast<void>(m_ecsRenderComposition->Tick(
-        snapshot.get(), deltaTime, static_cast<float32>(absoluteTimeSeconds)));
+        snapshot.get(),
+        deltaTime,
+        absoluteTimeSeconds,
+        simulationTick,
+        simulationSeconds,
+        deterministicSeed));
 }
 
 bool Engine::SetRenderFrameSettings(const RenderFrameSettings& settings) noexcept
@@ -1038,6 +1073,18 @@ const RenderFrameSettings& Engine::GetRenderFrameSettings() const noexcept
 uint64 Engine::RequestRenderTemporalReset() noexcept
 {
     return m_ecsRenderComposition != nullptr ? m_ecsRenderComposition->RequestTemporalReset() : 0;
+}
+
+bool Engine::ResetEffectFrameTime(uint32 deterministicSeed) noexcept
+{
+    if (deterministicSeed == 0)
+    {
+        return false;
+    }
+    m_effectSimulationTick = 0;
+    m_effectSimulationSeconds = 0.0;
+    m_effectDeterministicSeed = deterministicSeed;
+    return true;
 }
 
 bool Engine::RequestRenderFrameCapture(const RenderFrameCaptureRequest& request) noexcept

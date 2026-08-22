@@ -380,6 +380,16 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME RenderViewHistoryValidation
+    LANE unit
+    SOURCES RenderViewHistoryValidation/main.cpp
+    LIBS RVX::RenderContracts RVX_RenderRuntimeCore
+    INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
+    TAGS subsystem.render suite.render-history
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
     NAME RenderPolicyValidation
     LANE unit
     SOURCES RenderPolicyValidation/main.cpp
@@ -852,6 +862,7 @@ rvx_add_gtest(
     LIBS
         RVX::Core
         RVX::RenderContracts
+        RVX::RenderExtraction
         RVX::Render
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include

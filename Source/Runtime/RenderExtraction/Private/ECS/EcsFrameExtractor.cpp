@@ -28,6 +28,11 @@ namespace
         return std::isfinite(value);
     }
 
+    [[nodiscard]] bool IsFinite(float64 value) noexcept
+    {
+        return std::isfinite(value);
+    }
+
     [[nodiscard]] bool IsFinite(const Vec3& value) noexcept
     {
         return IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
@@ -168,6 +173,28 @@ namespace
         }
         return EcsFrozenSceneBridge::DeriveRenderId(
             {sceneRuntimeId, member.entity, sourceType, 0});
+    }
+
+    [[nodiscard]] RenderSceneObjectSourceIdentity MakeObjectSourceIdentity(
+        ECS::SceneRuntimeId sceneRuntimeId,
+        ECS::EntityHandle entity) noexcept
+    {
+        return {
+            .sceneRuntimeId = sceneRuntimeId.GetValue(),
+            .entitySlot = entity.GetIndex(),
+            .entityGeneration = entity.GetGeneration(),
+        };
+    }
+
+    [[nodiscard]] RenderFeatureSourceIdentity MakeFeatureSourceIdentity(
+        ECS::SceneRuntimeId sceneRuntimeId,
+        ECS::EntityHandle entity) noexcept
+    {
+        return {
+            .sceneRuntimeId = sceneRuntimeId.GetValue(),
+            .entitySlot = entity.GetIndex(),
+            .entityGeneration = entity.GetGeneration(),
+        };
     }
 
     [[nodiscard]] bool IsValidMaterialMode(RenderMaterialMode mode) noexcept
@@ -312,7 +339,17 @@ namespace
         cameraIds.reserve(source.cameras.size());
         for (const EcsFrozenSceneCameraValue& camera : source.cameras)
         {
+            const RenderViewIdentity expectedIdentity = {
+                .sceneRuntimeId = source.sceneRuntimeId.GetValue(),
+                .cameraEntityPacked = camera.sourceEntity.GetPackedValue(),
+                .subViewIndex = 0,
+                .role = ViewRole::Main,
+            };
             if (camera.id == 0 || !cameraIds.insert(camera.id).second ||
+                camera.sourceSceneRuntimeId != source.sceneRuntimeId ||
+                !camera.sourceEntity.IsValid() || camera.cutRevision == 0 ||
+                camera.view.identity != expectedIdentity ||
+                camera.view.cameraCutRevision != camera.cutRevision ||
                 camera.view.cullingMask != camera.cullingMask ||
                 !IsValidCameraView(camera.view) ||
                 !IsValidNormalizedViewport(camera.normalizedViewport) ||
@@ -452,8 +489,18 @@ EcsFrameExtractionResult EcsFrameExtractor::Extract(
         return fail(EcsFrameExtractionResultCode::CandidatePublicationPending,
                     RenderExtractionCode::MissingProvider);
     }
-    if (input.sequence == 0 || input.outputWidth == 0 ||
-        input.outputHeight == 0 || !input.assetResolver.IsValid() ||
+    if (input.sequence == 0 || input.worldRevision == 0 ||
+        input.temporalEpoch == 0 || input.viewFamilyId == 0 ||
+        input.surfaceGeneration == 0 || input.configurationRevision == 0 ||
+        input.formatRevision == 0 || input.deterministicSeed == 0 ||
+        !std::isfinite(input.effectFixedDeltaSeconds) ||
+        input.effectFixedDeltaSeconds < 0.0f ||
+        !std::isfinite(input.effectSimulationSeconds) ||
+        input.effectSimulationSeconds < 0.0 ||
+        input.outputWidth == 0 ||
+        input.outputHeight == 0 || !IsFinite(input.absoluteTime) ||
+        input.absoluteTime < 0.0 || !IsFinite(input.deltaTime) ||
+        input.deltaTime < 0.0f || !input.assetResolver.IsValid() ||
         !IsValidRenderFrameSettings(input.settings) ||
         !IsValidRenderFrameCaptureRequest(input.captureRequest))
     {
@@ -517,8 +564,19 @@ EcsFrameExtractionResult EcsFrameExtractor::Extract(
          source.primitiveTemporalValues)
     {
         const auto proxy = proxies.find(temporal.primitiveId.value);
+        const RenderSceneObjectSourceIdentity expectedSource =
+            MakeObjectSourceIdentity(source.sceneRuntimeId,
+                                     temporal.sourceEntity);
+        const uint64 expectedRenderId = EcsFrozenSceneBridge::DeriveRenderId(
+            {source.sceneRuntimeId,
+             temporal.sourceEntity,
+             SceneECS::FrozenSceneObjectType::Mesh,
+             0});
         if (!temporal.primitiveId.IsValid() || proxy == proxies.end() ||
             temporal.ownerId != proxy->second->ownerId ||
+            !temporal.sourceEntity.IsValid() ||
+            temporal.source != expectedSource ||
+            temporal.primitiveId.value != expectedRenderId ||
             !IsFinite(temporal.previousWorldTransform) ||
             !temporals.emplace(temporal.primitiveId.value, &temporal).second)
         {
@@ -574,7 +632,15 @@ EcsFrameExtractionResult EcsFrameExtractor::Extract(
         const EcsRenderSceneRetirementMember member{
             .entity = value.sourceEntity,
             .type = EcsRenderSceneRetainedMemberType::Particle};
+        const RenderSceneObjectSourceIdentity expectedObjectSource =
+            MakeObjectSourceIdentity(source.sceneRuntimeId, value.sourceEntity);
+        const RenderFeatureSourceIdentity expectedFeatureSource =
+            MakeFeatureSourceIdentity(source.sceneRuntimeId, value.sourceEntity);
         if (value.id == 0 || !value.sourceEntity.IsValid() ||
+            value.source != expectedObjectSource ||
+            value.payloadRevision != value.state.header.configurationRevision ||
+            value.state.ValidateChannel(expectedFeatureSource) !=
+                RenderFeatureChannelValidationCode::Valid ||
             value.state.instanceId != value.id || value.state.systemId != value.id ||
             value.id != DeriveRetainedRenderId(source.sceneRuntimeId, member) ||
             !particleIds.insert(value.id).second ||
@@ -593,7 +659,15 @@ EcsFrameExtractionResult EcsFrameExtractor::Extract(
         const EcsRenderSceneRetirementMember member{
             .entity = value.sourceEntity,
             .type = EcsRenderSceneRetainedMemberType::Water};
+        const RenderSceneObjectSourceIdentity expectedObjectSource =
+            MakeObjectSourceIdentity(source.sceneRuntimeId, value.sourceEntity);
+        const RenderFeatureSourceIdentity expectedFeatureSource =
+            MakeFeatureSourceIdentity(source.sceneRuntimeId, value.sourceEntity);
         if (value.id == 0 || !value.sourceEntity.IsValid() ||
+            value.source != expectedObjectSource ||
+            value.payloadRevision != value.state.header.configurationRevision ||
+            value.state.ValidateChannel(expectedFeatureSource) !=
+                RenderFeatureChannelValidationCode::Valid ||
             value.state.componentId != value.id || !waterIds.insert(value.id).second ||
             value.id != DeriveRetainedRenderId(source.sceneRuntimeId, member) ||
             !currentScene.water.emplace(value.id, value.state).second)
@@ -611,7 +685,15 @@ EcsFrameExtractionResult EcsFrameExtractor::Extract(
         const EcsRenderSceneRetirementMember member{
             .entity = value.sourceEntity,
             .type = EcsRenderSceneRetainedMemberType::Terrain};
+        const RenderSceneObjectSourceIdentity expectedObjectSource =
+            MakeObjectSourceIdentity(source.sceneRuntimeId, value.sourceEntity);
+        const RenderFeatureSourceIdentity expectedFeatureSource =
+            MakeFeatureSourceIdentity(source.sceneRuntimeId, value.sourceEntity);
         if (value.id == 0 || !value.sourceEntity.IsValid() ||
+            value.source != expectedObjectSource ||
+            value.payloadRevision != value.state.header.configurationRevision ||
+            value.state.ValidateChannel(expectedFeatureSource) !=
+                RenderFeatureChannelValidationCode::Valid ||
             value.state.componentId != value.id ||
             value.id != DeriveRetainedRenderId(source.sceneRuntimeId, member) ||
             !terrainIds.insert(value.id).second ||
@@ -657,6 +739,7 @@ EcsFrameExtractionResult EcsFrameExtractor::Extract(
                         RenderExtractionCode::InvalidResourceReference);
         }
         primitive.objectId = id;
+        primitive.source = temporals.at(id)->source;
         primitive.submeshes.reserve(proxy->materialAssetIds.size());
         for (size_t slot = 0; slot < proxy->materialAssetIds.size(); ++slot)
         {
@@ -705,8 +788,17 @@ EcsFrameExtractionResult EcsFrameExtractor::Extract(
     lightIds.reserve(source.lightValues.size());
     for (const EcsFrozenSceneLightValue& value : source.lightValues)
     {
+        const RenderSceneObjectSourceIdentity expectedSource =
+            MakeObjectSourceIdentity(source.sceneRuntimeId, value.sourceEntity);
+        const uint64 expectedRenderId = EcsFrozenSceneBridge::DeriveRenderId(
+            {source.sceneRuntimeId,
+             value.sourceEntity,
+             SceneECS::FrozenSceneObjectType::Light,
+             0});
         if (value.id == 0 || !value.proxy.id.IsValid() ||
             value.proxy.id.value != value.id || value.proxy.ownerId == 0 ||
+            !value.sourceEntity.IsValid() || value.source != expectedSource ||
+            value.id != expectedRenderId ||
             !IsValidLightProxyType(value.proxy.type) ||
             !IsValidLightProxyValues(value.proxy) ||
             !lightIds.insert(value.id).second)
@@ -731,6 +823,7 @@ EcsFrameExtractionResult EcsFrameExtractor::Extract(
 
         RenderLightSnapshot light;
         light.lightId = value.id;
+        light.source = value.source;
         light.type = ToRenderLightType(value.proxy.type);
         light.position = value.proxy.position;
         light.direction = value.proxy.direction;
@@ -1102,6 +1195,16 @@ EcsFrameExtractionResult EcsFrameExtractor::Extract(
     header.requiredSceneRevision = targetSceneRevision;
     header.worldRevision = input.worldRevision;
     header.temporalEpoch = input.temporalEpoch;
+    header.viewFamilyId = input.viewFamilyId;
+    header.surfaceGeneration = input.surfaceGeneration;
+    header.configurationRevision = input.configurationRevision;
+    header.formatRevision = input.formatRevision;
+    header.simulationTick = input.simulationTick;
+    header.effectFixedDeltaSeconds = input.effectFixedDeltaSeconds;
+    header.effectSimulationSeconds = input.effectSimulationSeconds;
+    header.deterministicSeed = input.deterministicSeed;
+    header.outputWidth = input.outputWidth;
+    header.outputHeight = input.outputHeight;
     header.explicitDiscontinuity = input.explicitDiscontinuity;
     result.frameV5 = RenderFramePacketV5::Create(
         header, std::move(view), input.settings, input.captureRequest,

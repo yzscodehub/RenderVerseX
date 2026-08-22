@@ -101,6 +101,115 @@ namespace RVX
         uint64 removedObjectCount = 0;
     };
 
+    /** @brief Explicit operations committed for one retained Scene value kind. */
+    struct RenderSceneMutationOperationSummary
+    {
+        uint64 upsertCount = 0;
+        uint64 removeCount = 0;
+
+        [[nodiscard]] bool Empty() const noexcept
+        {
+            return upsertCount == 0 && removeCount == 0;
+        }
+    };
+
+    /** @brief Value-only operation counts across one contiguous Scene revision span. */
+    struct RenderSceneMutationSummary
+    {
+        RenderSceneMutationOperationSummary primitives{};
+        RenderSceneMutationOperationSummary lights{};
+        RenderSceneMutationOperationSummary decals{};
+        RenderSceneMutationOperationSummary probes{};
+        RenderSceneMutationOperationSummary particles{};
+        RenderSceneMutationOperationSummary water{};
+        RenderSceneMutationOperationSummary terrain{};
+        RenderSceneMutationOperationSummary sky{};
+        RenderSceneMutationOperationSummary environment{};
+
+        [[nodiscard]] bool Empty() const noexcept
+        {
+            return primitives.Empty() && lights.Empty() && decals.Empty() &&
+                   probes.Empty() && particles.Empty() && water.Empty() &&
+                   terrain.Empty() && sky.Empty() && environment.Empty();
+        }
+    };
+
+    /** @brief Authoritative database transition consumed by one RenderScene frame. */
+    enum class RenderSceneDatabaseTransition : uint8
+    {
+        None = 0,
+        Incremental,
+        FullReset
+    };
+
+    /** @brief Retained RenderScene work selected independently of database transition. */
+    enum class RenderSceneRealizationMode : uint8
+    {
+        StaticReuse = 0,
+        Incremental,
+        FullRebuild
+    };
+
+    /**
+     * @brief Completion-qualified receipt for the exact Scene state presented by a frame.
+     *
+     * Mutation counts describe explicit accepted batch operations. A FullReset
+     * additionally means values omitted by its replacement checkpoint were
+     * removed implicitly. canonicalMutationDigest is diagnostic evidence, not
+     * a security or artifact-authenticity hash.
+     */
+    struct RenderPresentedSceneReceipt
+    {
+        bool available = false;
+        uint32 schemaVersion = 1;
+        uint64 databaseInstanceId = 0;
+        uint64 completedPresentedFrameSequence = 0;
+        uint64 requiredSceneRevision = 0;
+        uint64 baseSceneRevision = 0;
+        uint64 appliedSceneRevision = 0;
+        RenderSceneDatabaseTransition databaseTransition =
+            RenderSceneDatabaseTransition::None;
+        RenderSceneRealizationMode realizationMode =
+            RenderSceneRealizationMode::StaticReuse;
+        RenderSceneMutationSummary mutations{};
+        uint64 canonicalMutationDigest = 0;
+
+        [[nodiscard]] bool IsStructurallyValid() const noexcept
+        {
+            if (schemaVersion != 1 || databaseInstanceId == 0 ||
+                completedPresentedFrameSequence == 0 ||
+                requiredSceneRevision == 0 || appliedSceneRevision == 0 ||
+                requiredSceneRevision > appliedSceneRevision ||
+                baseSceneRevision > appliedSceneRevision ||
+                canonicalMutationDigest == 0)
+            {
+                return false;
+            }
+            switch (realizationMode)
+            {
+                case RenderSceneRealizationMode::StaticReuse:
+                case RenderSceneRealizationMode::Incremental:
+                case RenderSceneRealizationMode::FullRebuild: break;
+                default: return false;
+            }
+            switch (databaseTransition)
+            {
+                case RenderSceneDatabaseTransition::None:
+                    return baseSceneRevision == appliedSceneRevision &&
+                           mutations.Empty();
+                case RenderSceneDatabaseTransition::Incremental:
+                case RenderSceneDatabaseTransition::FullReset:
+                    return baseSceneRevision < appliedSceneRevision;
+                default: return false;
+            }
+        }
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return available && IsStructurallyValid();
+        }
+    };
+
     /** @brief Durable CPU GPU-scene publication work, accumulated by GPUSceneUpdate. */
     struct GPUScenePublicationMutationTotals
     {
@@ -179,6 +288,7 @@ namespace RVX
     struct RenderMutationEvidenceDiagnostics
     {
         RenderMutationCompletionWatermark completion{};
+        RenderPresentedSceneReceipt presentedScene{};
         uint32 gpuCullingOwnerCount = 0;
         uint32 directRasterOwnerCount = 0;
         RenderSceneMutationTotals scene{};

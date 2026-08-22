@@ -118,10 +118,17 @@ namespace
         RVX::uint64 objectId,
         RVX::RenderResourceHandle mesh,
         RVX::RenderResourceHandle material,
-        const RVX::Vec3& position)
+        const RVX::Vec3& position,
+        RVX::uint32 entitySlot,
+        RVX::uint32 entityGeneration = 0)
     {
         RVX::RenderPrimitiveSnapshot primitive;
         primitive.objectId = objectId;
+        primitive.source = {
+            .sceneRuntimeId = 1,
+            .entitySlot = entitySlot,
+            .entityGeneration = entityGeneration,
+        };
         primitive.mesh = mesh;
         primitive.material = material;
         primitive.worldTransform = RVX::Mat4Identity();
@@ -145,7 +152,22 @@ namespace
         header.requiredSceneRevision = requiredRevision;
         header.worldRevision = worldRevision;
         header.temporalEpoch = 1;
+        header.viewFamilyId = 1;
+        header.surfaceGeneration = 1;
+        header.configurationRevision = 1;
+        header.formatRevision = 1;
+        header.simulationTick = sequence - 1;
+        header.deterministicSeed =
+            (0xc2b2ae35U ^ static_cast<RVX::uint32>(sequence)) | 1U;
+        header.outputWidth = 1280;
+        header.outputHeight = 720;
         RVX::RenderViewSnapshot view;
+        view.identity = {
+            .sceneRuntimeId = 1,
+            .cameraEntityPacked = 1,
+            .subViewIndex = 0,
+        };
+        view.cameraCutRevision = 1;
         view.viewportWidth = 1280;
         view.viewportHeight = 720;
         RVX::RenderExtractionDiagnostics diagnostics;
@@ -201,7 +223,8 @@ TEST(RenderIncrementalSceneScaleValidation,
                     static_cast<RVX::uint64>(index) + 1U,
                     mesh,
                     material,
-                    {static_cast<RVX::float32>(index), 0.0F, 0.0F}),
+                    {static_cast<RVX::float32>(index), 0.0F, 0.0F},
+                    index),
                 true));
         }
 
@@ -242,7 +265,8 @@ TEST(RenderIncrementalSceneScaleValidation,
                 static_cast<RVX::uint64>(index) + 1U,
                 mesh,
                 material,
-                {static_cast<RVX::float32>(index), 1.0F, 0.0F})));
+                {static_cast<RVX::float32>(index), 1.0F, 0.0F},
+                index)));
         }
         const Clock::time_point databaseDirtyBegin = Clock::now();
         ASSERT_TRUE(database.Apply(update.Build(2)).IsApplied());
@@ -306,7 +330,9 @@ TEST(RenderIncrementalSceneScaleValidation,
                 PackHandle(index, 1),
                 mesh,
                 index % 2U == 0U ? materialA : materialB,
-                {static_cast<RVX::float32>(index), 0.0F, 0.0F}),
+                {static_cast<RVX::float32>(index), 0.0F, 0.0F},
+                index,
+                1),
             true));
     }
     RVX::RenderSceneDatabase database;
@@ -329,7 +355,9 @@ TEST(RenderIncrementalSceneScaleValidation,
                 PackHandle(index, 2),
                 mesh,
                 materialB,
-                {static_cast<RVX::float32>(index), 2.0F, 0.0F}),
+                {static_cast<RVX::float32>(index), 2.0F, 0.0F},
+                index,
+                2),
             true));
     }
     for (RVX::uint32 index = replacedCount;
@@ -340,7 +368,9 @@ TEST(RenderIncrementalSceneScaleValidation,
             PackHandle(index, 1),
             mesh,
             index % 2U == 0U ? materialB : materialA,
-            {static_cast<RVX::float32>(index), 3.0F, 0.0F})));
+            {static_cast<RVX::float32>(index), 3.0F, 0.0F},
+            index,
+            1)));
     }
     ASSERT_TRUE(database.Apply(churn.Build(2)).IsApplied());
 

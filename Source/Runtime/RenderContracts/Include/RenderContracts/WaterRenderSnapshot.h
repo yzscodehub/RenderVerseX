@@ -8,6 +8,7 @@
 #include "Core/Math/AABB.h"
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
+#include "RenderContracts/FeatureChannelContracts.h"
 #include "RenderContracts/RenderIdentity.h"
 
 #include <cstddef>
@@ -16,8 +17,6 @@
 
 namespace RVX
 {
-    inline constexpr uint32 RVX_WATER_RENDER_SNAPSHOT_SCHEMA_VERSION = 2;
-
     enum class WaterRenderSnapshotStatus : uint8
     {
         Empty = 0,
@@ -40,7 +39,7 @@ namespace RVX
         FFT
     };
 
-    struct WaterRenderSnapshotItem
+    struct WaterRenderSnapshotPayload
     {
         /** @brief Generation-qualified RenderScene object identity. */
         uint64 componentId = 0;
@@ -78,6 +77,14 @@ namespace RVX
         std::string gpuInitializationReason;
         std::string simulationFallbackReason;
         std::string renderPathReason;
+    };
+
+    /** @brief Water payload plus versioned producer/source provenance. */
+    struct WaterRenderSnapshotItem final
+        : RenderFeatureChannelEnvelope<
+              WaterRenderFeatureChannelDescriptor,
+              WaterRenderSnapshotPayload>
+    {
     };
 
     struct WaterRenderSnapshotMetadata

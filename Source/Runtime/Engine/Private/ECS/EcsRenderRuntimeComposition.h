@@ -153,7 +153,10 @@ namespace RVX
         [[nodiscard]] std::optional<EcsRenderFramePipelineResult> Tick(
             const SceneECS::FrozenSceneSnapshot* activeSnapshot,
             float32 deltaTime,
-            float32 absoluteTime);
+            float64 absoluteTime,
+            uint64 simulationTick,
+            float64 simulationSeconds,
+            uint32 deterministicSeed);
 
         /** @brief Observe Render completion even after BeginShutdown sealed publication. */
         [[nodiscard]] bool PollCompletedProgress();
@@ -234,6 +237,10 @@ namespace RVX
         std::optional<CameraFingerprint> m_activeCamera;
         ECS::SceneRuntimeId m_activeSceneRuntimeId;
         uint64 m_nextFrameSequence = 1;
+        /** Stable identity of this composition's primary output family. */
+        uint64 m_viewFamilyId = 0;
+        uint64 m_configurationRevision = 1;
+        uint64 m_formatRevision = 1;
         uint64 m_temporalEpoch = 1;
         uint64 m_pendingTemporalFrameSequence = 0;
         uint64 m_pendingTemporalEpoch = 0;

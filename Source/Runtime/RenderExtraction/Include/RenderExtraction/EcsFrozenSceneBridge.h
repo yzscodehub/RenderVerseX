@@ -59,6 +59,8 @@ namespace RVX
     {
         RenderProxyId primitiveId;
         uint64 ownerId = 0;
+        /** @brief Explicit retained-object provenance; render ID stays opaque. */
+        RenderSceneObjectSourceIdentity source;
         /** @brief Exact ECS identity; never inferred from an address. */
         ECS::EntityHandle sourceEntity = ECS::EntityHandle::Invalid();
         /** @brief Entity-local Visibility version copied with this primitive source. */
@@ -79,6 +81,8 @@ namespace RVX
     struct EcsFrozenSceneLightValue
     {
         uint64 id = 0;
+        /** @brief Explicit retained-object provenance; render ID stays opaque. */
+        RenderSceneObjectSourceIdentity source;
         ECS::EntityHandle sourceEntity = ECS::EntityHandle::Invalid();
         RenderLightProxy proxy;
         uint32 layerMask = ~0u;
@@ -89,7 +93,14 @@ namespace RVX
     /** @brief View source copied from a frozen ECS camera without viewport allocation policy. */
     struct EcsFrozenSceneCameraValue
     {
+        /** @brief Derived transient RenderScene ID; never used as history identity. */
         uint64 id = 0;
+        /** @brief Exact source registry identity retained across extraction. */
+        ECS::SceneRuntimeId sourceSceneRuntimeId;
+        /** @brief Exact generation-qualified camera entity. */
+        ECS::EntityHandle sourceEntity = ECS::EntityHandle::Invalid();
+        /** @brief Explicit projection/active-camera discontinuity revision. */
+        uint64 cutRevision = 0;
         RenderViewSnapshot view;
         Vec4 normalizedViewport{0.0f, 0.0f, 1.0f, 1.0f};
         SceneECS::CameraClearPolicy clearPolicy =
@@ -135,6 +146,8 @@ namespace RVX
     struct EcsFrozenSceneParticleValue
     {
         uint64 id = 0;
+        /** @brief Outer ECS provenance mirrored by state.header.source. */
+        RenderSceneObjectSourceIdentity source;
         ECS::EntityHandle sourceEntity = ECS::EntityHandle::Invalid();
         uint64 payloadRevision = 0;
         ParticleRenderSnapshotItem state;
@@ -144,6 +157,8 @@ namespace RVX
     struct EcsFrozenSceneWaterValue
     {
         uint64 id = 0;
+        /** @brief Outer ECS provenance mirrored by state.header.source. */
+        RenderSceneObjectSourceIdentity source;
         ECS::EntityHandle sourceEntity = ECS::EntityHandle::Invalid();
         uint64 payloadRevision = 0;
         WaterRenderSnapshotItem state;
@@ -153,6 +168,8 @@ namespace RVX
     struct EcsFrozenSceneTerrainValue
     {
         uint64 id = 0;
+        /** @brief Outer ECS provenance mirrored by state.header.source. */
+        RenderSceneObjectSourceIdentity source;
         ECS::EntityHandle sourceEntity = ECS::EntityHandle::Invalid();
         uint64 payloadRevision = 0;
         TerrainRenderSnapshotItem state;

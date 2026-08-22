@@ -15,7 +15,7 @@
 namespace RVX
 {
     inline constexpr uint32 RVX_RENDER_SCENE_UPDATE_SCHEMA_ID = 0x52565355U;
-    inline constexpr uint32 RVX_RENDER_SCENE_UPDATE_SCHEMA_VERSION = 4;
+    inline constexpr uint32 RVX_RENDER_SCENE_UPDATE_SCHEMA_VERSION = 5;
 
     enum class RenderSceneMutationOperation : uint8
     {
@@ -40,6 +40,7 @@ namespace RVX
     struct RenderDecalSnapshot
     {
         uint64 decalId = 0;
+        RenderSceneObjectSourceIdentity source;
         Mat4 worldTransform{1.0f};
         Vec3 halfExtent{0.5f, 0.5f, 0.25f};
         RenderResourceHandle material;
@@ -77,6 +78,7 @@ namespace RVX
     struct RenderProbeSnapshot
     {
         uint64 probeId = 0;
+        RenderSceneObjectSourceIdentity source;
         RenderProbeKind kind = RenderProbeKind::Reflection;
         RenderProbeShape shape = RenderProbeShape::Box;
         RenderProbeMode mode = RenderProbeMode::Baked;

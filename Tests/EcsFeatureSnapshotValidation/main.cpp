@@ -7,6 +7,8 @@
 
 #include <gtest/gtest.h>
 
+#include <utility>
+
 namespace
 {
 using namespace RVX;
@@ -22,6 +24,15 @@ using namespace RVX::SceneECS;
 {
     EcsFrameExtractionInput input;
     input.sequence = sequence;
+    input.worldRevision = sequence;
+    input.temporalEpoch = 1;
+    input.viewFamilyId = 1;
+    input.surfaceGeneration = 1;
+    input.configurationRevision = 1;
+    input.formatRevision = 1;
+    input.simulationTick = sequence - 1;
+    input.deterministicSeed =
+        (0x94d049bbU ^ static_cast<uint32>(sequence)) | 1U;
     input.outputWidth = 1280;
     input.outputHeight = 720;
     input.absoluteTime = 1.0f;
@@ -138,6 +149,123 @@ TEST(EcsFeatureSnapshotValidation,
 }
 
 TEST(EcsFeatureSnapshotValidation,
+     TypedParticleWaterAndTerrainChannelsFailClosedSymmetrically)
+{
+    ECS::Registry registry;
+    SceneFeatureSnapshotStore store(registry.GetSceneRuntimeId());
+
+    const auto exercise = [&]<typename Item>(
+                              const ECS::EntityRef& source,
+                              auto&& publish)
+    {
+        const std::optional<SceneFeatureSnapshotSource> recorded =
+            store.MakeSourceIdentity(source);
+        ASSERT_TRUE(recorded.has_value());
+        const RenderFeatureSourceIdentity expected = recorded->ToRenderIdentity();
+
+        Item item;
+        item.header.captureSequence = 4;
+        item.header.configurationRevision = 9;
+        item.header.source = expected;
+        EXPECT_TRUE(publish(item));
+
+        EXPECT_FALSE(publish(item));
+
+        Item invalid = item;
+        invalid.header.captureSequence = 5;
+        invalid.header.channelId = static_cast<RenderFeatureChannelId>(999U);
+        EXPECT_FALSE(publish(invalid));
+
+        invalid = item;
+        invalid.header.captureSequence = 5;
+        invalid.header.schemaVersion = Item::SchemaVersion + 1U;
+        EXPECT_FALSE(publish(invalid));
+
+        invalid = item;
+        invalid.header.captureSequence = 0;
+        EXPECT_FALSE(publish(invalid));
+
+        invalid = item;
+        invalid.header.captureSequence = 5;
+        invalid.header.source.sceneRuntimeId += 1;
+        EXPECT_FALSE(publish(invalid));
+
+        item.header.captureSequence = 5;
+        item.header.configurationRevision = 10;
+        EXPECT_TRUE(publish(item));
+    };
+
+    const ECS::EntityRef particleSource = registry.GetRef(registry.CreateEntity());
+    const ECS::EntityRef waterSource = registry.GetRef(registry.CreateEntity());
+    const ECS::EntityRef terrainSource = registry.GetRef(registry.CreateEntity());
+
+    exercise.template operator()<ParticleRenderSnapshotItem>(
+        particleSource,
+        [&](ParticleRenderSnapshotItem item)
+        {
+            return store.PublishParticleChannel(particleSource, std::move(item));
+        });
+    exercise.template operator()<WaterRenderSnapshotItem>(
+        waterSource,
+        [&](WaterRenderSnapshotItem item)
+        {
+            return store.PublishWaterChannel(waterSource, std::move(item));
+        });
+    exercise.template operator()<TerrainRenderSnapshotItem>(
+        terrainSource,
+        [&](TerrainRenderSnapshotItem item)
+        {
+            return store.PublishTerrainChannel(terrainSource, std::move(item));
+        });
+
+    FrozenSceneSnapshot snapshot = MakeSnapshot(registry.GetSceneRuntimeId(), 1);
+    ASSERT_TRUE(store.FreezeInto(snapshot));
+    ASSERT_EQ(snapshot.particles.size(), 1U);
+    ASSERT_EQ(snapshot.water.size(), 1U);
+    ASSERT_EQ(snapshot.terrain.size(), 1U);
+    EXPECT_EQ(snapshot.particles.front().state.header.captureSequence, 5U);
+    EXPECT_EQ(snapshot.water.front().state.header.captureSequence, 5U);
+    EXPECT_EQ(snapshot.terrain.front().state.header.captureSequence, 5U);
+    EXPECT_EQ(snapshot.particles.front().payloadRevision, 10U);
+    EXPECT_EQ(snapshot.water.front().payloadRevision, 10U);
+    EXPECT_EQ(snapshot.terrain.front().payloadRevision, 10U);
+}
+
+TEST(EcsFeatureSnapshotValidation,
+     StoreRequiresASealedFeatureCompositionForPublishAndFreeze)
+{
+    ECS::Registry registry;
+    RenderFeatureChannelRegistry unsealedRegistry;
+    SceneFeatureSnapshotStore store(
+        registry.GetSceneRuntimeId(), std::move(unsealedRegistry));
+    EXPECT_FALSE(store.GetChannelRegistry().IsSealed());
+
+    const ECS::EntityRef source = registry.GetRef(registry.CreateEntity());
+    EXPECT_FALSE(store.PublishParticle(source, MakeParticle(), 1));
+
+    ParticleRenderSnapshotItem typed = MakeParticle();
+    const std::optional<SceneFeatureSnapshotSource> identity =
+        store.MakeSourceIdentity(source);
+    ASSERT_TRUE(identity.has_value());
+    typed.header.captureSequence = 1;
+    typed.header.source = identity->ToRenderIdentity();
+    EXPECT_FALSE(store.PublishParticleChannel(source, std::move(typed)));
+
+    FrozenSceneSnapshot snapshot = MakeSnapshot(registry.GetSceneRuntimeId(), 1);
+    snapshot.particles.push_back({});
+    EXPECT_FALSE(store.FreezeInto(snapshot));
+    EXPECT_EQ(snapshot.particles.size(), 1U);
+
+    SceneFeatureSnapshotStore validStore(registry.GetSceneRuntimeId());
+    EXPECT_TRUE(validStore.GetChannelRegistry().IsSealed());
+    EXPECT_EQ(validStore.GetChannelRegistry().GetRegistrationCount(),
+              RVX_RENDER_FEATURE_CHANNEL_COUNT);
+    EXPECT_TRUE(validStore.PublishParticle(source, MakeParticle(), 1));
+    EXPECT_TRUE(validStore.FreezeInto(snapshot));
+    EXPECT_EQ(snapshot.particles.size(), 1U);
+}
+
+TEST(EcsFeatureSnapshotValidation,
      DeepCopiesDynamicParticlePayloadAndExtractsFeatureFullIncrementalAndResetDeltas)
 {
     ECS::Registry registry;
@@ -163,6 +291,16 @@ TEST(EcsFeatureSnapshotValidation,
     ASSERT_EQ(firstSnapshot.terrain.size(), 1U);
     EXPECT_FLOAT_EQ(firstSnapshot.particles[0].state.particles[0].position.x, 1.0f);
     EXPECT_EQ(firstSnapshot.particles[0].payloadRevision, 11U);
+    EXPECT_EQ(firstSnapshot.particles[0].state.header.channelId,
+              RenderFeatureChannelId::Particle);
+    EXPECT_EQ(firstSnapshot.particles[0].state.header.captureSequence, 1U);
+    EXPECT_EQ(firstSnapshot.particles[0].state.header.configurationRevision, 11U);
+    EXPECT_EQ(firstSnapshot.water[0].state.header.channelId,
+              RenderFeatureChannelId::Water);
+    EXPECT_EQ(firstSnapshot.water[0].state.header.captureSequence, 1U);
+    EXPECT_EQ(firstSnapshot.terrain[0].state.header.channelId,
+              RenderFeatureChannelId::Terrain);
+    EXPECT_EQ(firstSnapshot.terrain[0].state.header.captureSequence, 1U);
     EXPECT_EQ(firstSnapshot.particles[0].state.systemAssetId,
               (AssetId{101}));
     EXPECT_EQ(firstSnapshot.water[0].state.surfaceAssetId, (AssetId{201}));

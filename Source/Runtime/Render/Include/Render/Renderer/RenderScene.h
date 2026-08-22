@@ -186,6 +186,15 @@ namespace RVX
         {
             return m_mutationTotalsSaturated;
         }
+        /** @brief Accepted Scene receipt staged until SceneRenderer confirms Present. */
+        [[nodiscard]] const RenderPresentedSceneReceipt&
+            GetPendingPresentedSceneReceipt() const noexcept
+        {
+            return m_pendingPresentedSceneReceipt;
+        }
+        /** @brief Advance Scene evidence only at the successful Present boundary. */
+        [[nodiscard]] bool CommitPendingPresentedSceneReceipt(
+            uint64 completedPresentedFrameSequence) noexcept;
         [[nodiscard]] const std::vector<uint64>&
             GetGPUSceneChangedObjectIds() const noexcept
         {
@@ -312,6 +321,7 @@ namespace RVX
             const RenderFrameCaptureRequest& captureRequest,
             const RenderFeatureSnapshot& features,
             const RenderSceneDatabase& retainedScene,
+            const RenderSceneDatabaseChanges& receiptChanges,
             const RenderResourceRegistry& registry);
         [[nodiscard]] RenderFrameApplyResult ApplyIncrementalFrameState(
             const RenderFramePacketV5& frame,
@@ -323,6 +333,11 @@ namespace RVX
         void RemoveReferences(const std::vector<RenderResourceHandle>& references);
         void RemoveObjectAt(uint32 index);
         void RemoveLightAt(uint32 index);
+        void StagePresentedSceneReceipt(
+            const RenderFrameHeaderV5& header,
+            const RenderSceneDatabase& retainedScene,
+            const RenderSceneDatabaseChanges& changes,
+            RenderSceneRealizationMode realizationMode) noexcept;
 
         std::vector<RenderObject> m_objects;
         std::vector<RenderLight> m_lights;
@@ -355,6 +370,9 @@ namespace RVX
         RenderSceneRetainedStats m_retainedStats{};
         RenderSceneMutationTotals m_mutationTotals{};
         bool m_mutationTotalsSaturated = false;
+        RenderPresentedSceneReceipt m_pendingPresentedSceneReceipt{};
+        uint64 m_presentedSceneDatabaseId = 0;
+        uint64 m_presentedSceneRevision = 0;
         uint64 m_appliedSceneRevision = 0;
         uint64 m_sourceSceneDatabaseId = 0;
         uint64 m_observedResourceContentRevision = 0;

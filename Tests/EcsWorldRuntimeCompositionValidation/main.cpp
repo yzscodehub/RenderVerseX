@@ -72,6 +72,15 @@ namespace
     {
         return {
             .sequence = sequence,
+            .worldRevision = 1,
+            .temporalEpoch = 1,
+            .viewFamilyId = 1,
+            .surfaceGeneration = 1,
+            .configurationRevision = 1,
+            .formatRevision = 1,
+            .simulationTick = sequence - 1,
+            .deterministicSeed =
+                (0x27d4eb2dU ^ static_cast<uint32>(sequence)) | 1U,
             .outputWidth = 1280,
             .outputHeight = 720,
             .deltaTime = 1.0f / 60.0f,

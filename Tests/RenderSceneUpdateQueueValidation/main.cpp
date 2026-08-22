@@ -103,7 +103,22 @@ TEST(RenderSceneUpdateQueueValidation, V5PacketRequiresSceneRevision)
 {
     RVX::RenderFrameHeaderV5 header;
     header.sequence = 1;
+    header.worldRevision = 1;
+    header.temporalEpoch = 1;
+    header.viewFamilyId = 1;
+    header.surfaceGeneration = 1;
+    header.configurationRevision = 1;
+    header.formatRevision = 1;
+    header.deterministicSeed = 1;
+    header.outputWidth = 1280;
+    header.outputHeight = 720;
     RVX::RenderViewSnapshot view;
+    view.identity = {
+        .sceneRuntimeId = 1,
+        .cameraEntityPacked = 1,
+        .subViewIndex = 0,
+    };
+    view.cameraCutRevision = 1;
     view.viewportWidth = 1280;
     view.viewportHeight = 720;
     RVX::RenderExtractionDiagnostics diagnostics;

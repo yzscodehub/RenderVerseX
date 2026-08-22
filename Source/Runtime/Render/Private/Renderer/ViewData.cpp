@@ -69,7 +69,9 @@ void ViewData::SetupFromSnapshot(
     previousViewProjectionValid =
         static_cast<uint8>(previousRenderedViewValid && !resetHistory);
     resetTemporalHistory = resetHistory;
-    time = snapshot.absoluteTime;
+    // Shader view constants remain float32; the frame contract validates the
+    // representable range before this explicit presentation-time projection.
+    time = static_cast<float32>(snapshot.absoluteTime);
     deltaTime = snapshot.deltaTime;
 }
 

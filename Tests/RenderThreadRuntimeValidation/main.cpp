@@ -395,6 +395,14 @@ namespace
         accumulator.Begin(0, true);
         for (RenderPrimitiveSnapshot& primitive : primitives)
         {
+            if (!primitive.source.IsValid())
+            {
+                primitive.source = {
+                    .sceneRuntimeId = 1,
+                    .entitySlot = static_cast<uint32>(primitive.objectId),
+                    .entityGeneration = 0,
+                };
+            }
             EXPECT_TRUE(accumulator.UpsertPrimitive(
                 std::move(primitive), true));
         }
@@ -404,9 +412,25 @@ namespace
         RenderFrameHeaderV5 header;
         header.sequence = sequence;
         header.requiredSceneRevision = sequence;
+        header.worldRevision = 1;
+        header.temporalEpoch = 1;
+        header.viewFamilyId = 1;
+        header.surfaceGeneration = 1;
+        header.configurationRevision = 1;
+        header.formatRevision = 1;
+        header.simulationTick = sequence;
+        header.deterministicSeed = 1;
+        header.outputWidth = 64;
+        header.outputHeight = 64;
         RenderViewSnapshot view;
+        view.identity = {
+            .sceneRuntimeId = 1,
+            .cameraEntityPacked = 1,
+        };
+        view.cameraCutRevision = 1;
         view.viewportWidth = 64;
         view.viewportHeight = 64;
+        view.deltaTime = 1.0F / 60.0F;
         RenderExtractionDiagnostics extraction;
         extraction.complete = true;
         TestFrameSet result;
@@ -727,6 +751,7 @@ namespace
             RenderDiagnosticsSnapshot& diagnostics) const override
         {
             diagnostics.cpuFrameTiming = m_cpuTiming;
+            diagnostics.mutationEvidence = m_mutationEvidence;
         }
 
         void PopulateCompletionDiagnostics(
@@ -798,6 +823,12 @@ namespace
             m_frameCode = code;
         }
 
+        void SetMutationEvidence(
+            RenderMutationEvidenceDiagnostics evidence) noexcept
+        {
+            m_mutationEvidence = std::move(evidence);
+        }
+
         [[nodiscard]] uint32 GetCompletionDiagnosticsCount() const noexcept
         {
             return m_completionDiagnosticsCount;
@@ -817,6 +848,7 @@ namespace
         RenderCpuFrameTimingDiagnostics m_cpuTiming{};
         RenderGpuFrameTimingDiagnostics m_gpuTiming{};
         RenderGpuFrameTimingDiagnostics m_shutdownGpuTiming{};
+        RenderMutationEvidenceDiagnostics m_mutationEvidence{};
         bool m_publishGpuOnlyAfterShutdown = false;
         bool m_shutdownComplete = false;
         mutable uint32 m_completionDiagnosticsCount = 0;
@@ -1249,6 +1281,95 @@ namespace
     }
 
     TEST(RenderThreadRuntimeValidation,
+         PresentedSceneReceiptPublishesOnlyAfterSuccessfulFrameConsumption)
+    {
+        auto consumer = std::make_unique<TimingDiagnosticsFrameConsumer>();
+        TimingDiagnosticsFrameConsumer* consumerProbe = consumer.get();
+
+        RenderMutationEvidenceDiagnostics firstEvidence;
+        firstEvidence.presentedScene.available = true;
+        firstEvidence.presentedScene.databaseInstanceId = 9;
+        firstEvidence.presentedScene.completedPresentedFrameSequence = 71;
+        firstEvidence.presentedScene.requiredSceneRevision = 71;
+        firstEvidence.presentedScene.baseSceneRevision = 0;
+        firstEvidence.presentedScene.appliedSceneRevision = 71;
+        firstEvidence.presentedScene.databaseTransition =
+            RenderSceneDatabaseTransition::FullReset;
+        firstEvidence.presentedScene.realizationMode =
+            RenderSceneRealizationMode::FullRebuild;
+        firstEvidence.presentedScene.mutations.primitives.upsertCount = 1;
+        firstEvidence.presentedScene.canonicalMutationDigest = 0x1234;
+        ASSERT_TRUE(firstEvidence.presentedScene.IsValid());
+        consumerProbe->SetMutationEvidence(firstEvidence);
+
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::InlineTest,
+            CreateInlineRenderExecutor(),
+            std::move(consumer));
+        ASSERT_EQ(RenderRuntimeCode::Running, runtime.Start().code);
+        ASSERT_EQ(RenderFramePublishCode::Accepted,
+                  PublishFrame(runtime, MakePacket(71)).code);
+
+        const RenderPresentedSceneReceipt accepted =
+            runtime.GetDiagnosticsSnapshot().mutationEvidence.presentedScene;
+        ASSERT_TRUE(accepted.IsValid());
+        EXPECT_EQ(71U, accepted.completedPresentedFrameSequence);
+        EXPECT_EQ(9U, accepted.databaseInstanceId);
+
+        RenderMutationEvidenceDiagnostics rejectedEvidence = firstEvidence;
+        rejectedEvidence.presentedScene.completedPresentedFrameSequence = 72;
+        rejectedEvidence.presentedScene.requiredSceneRevision = 72;
+        rejectedEvidence.presentedScene.appliedSceneRevision = 72;
+        rejectedEvidence.presentedScene.canonicalMutationDigest = 0x5678;
+        consumerProbe->SetMutationEvidence(rejectedEvidence);
+        consumerProbe->SetFrameCode(
+            RenderRuntimeCode::RenderGraphValidationFailed);
+        static_cast<void>(PublishFrame(runtime, MakePacket(72)));
+
+        const RenderPresentedSceneReceipt retained =
+            runtime.GetDiagnosticsSnapshot().mutationEvidence.presentedScene;
+        ASSERT_TRUE(retained.IsValid());
+        EXPECT_EQ(71U, retained.completedPresentedFrameSequence);
+        EXPECT_EQ(0x1234U, retained.canonicalMutationDigest);
+
+        RenderMutationEvidenceDiagnostics retryEvidence = firstEvidence;
+        retryEvidence.presentedScene.completedPresentedFrameSequence = 73;
+        retryEvidence.presentedScene.requiredSceneRevision = 73;
+        retryEvidence.presentedScene.baseSceneRevision = 71;
+        retryEvidence.presentedScene.appliedSceneRevision = 73;
+        retryEvidence.presentedScene.databaseTransition =
+            RenderSceneDatabaseTransition::Incremental;
+        retryEvidence.presentedScene.realizationMode =
+            RenderSceneRealizationMode::StaticReuse;
+        retryEvidence.presentedScene.mutations = {};
+        retryEvidence.presentedScene.mutations.sky.upsertCount = 1;
+        retryEvidence.presentedScene.canonicalMutationDigest = 0x9ABC;
+        ASSERT_TRUE(retryEvidence.presentedScene.IsValid());
+        consumerProbe->SetMutationEvidence(retryEvidence);
+        consumerProbe->SetFrameCode(RenderRuntimeCode::Running);
+        ASSERT_EQ(RenderFramePublishCode::Accepted,
+                  PublishFrame(runtime, MakePacket(73)).code);
+
+        const RenderPresentedSceneReceipt retried =
+            runtime.GetDiagnosticsSnapshot().mutationEvidence.presentedScene;
+        ASSERT_TRUE(retried.IsValid());
+        EXPECT_EQ(73U, retried.completedPresentedFrameSequence);
+        EXPECT_EQ(71U, retried.baseSceneRevision);
+        EXPECT_EQ(73U, retried.appliedSceneRevision);
+        EXPECT_EQ(RenderSceneDatabaseTransition::Incremental,
+                  retried.databaseTransition);
+        EXPECT_EQ(RenderSceneRealizationMode::StaticReuse,
+                  retried.realizationMode);
+        EXPECT_EQ(1U, retried.mutations.sky.upsertCount);
+        EXPECT_EQ(0x9ABCU, retried.canonicalMutationDigest);
+        EXPECT_EQ(RenderShutdownCode::Completed, runtime.Stop().code);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
          CompletedFrameTimingSeparatesCpuSuccessFromDelayedGpuCompletion)
     {
         auto consumer = std::make_unique<TimingDiagnosticsFrameConsumer>();
@@ -1646,9 +1767,19 @@ namespace
 
         RenderPrimitiveSnapshot primitive11;
         primitive11.objectId = 11;
+        primitive11.source = {
+            .sceneRuntimeId = 1,
+            .entitySlot = 11,
+            .entityGeneration = 0,
+        };
         primitive11.mesh = RenderResourceHandle{1, 1};
         RenderPrimitiveSnapshot primitive22;
         primitive22.objectId = 22;
+        primitive22.source = {
+            .sceneRuntimeId = 1,
+            .entitySlot = 22,
+            .entityGeneration = 0,
+        };
         primitive22.mesh = RenderResourceHandle{2, 1};
 
         RenderSceneMutationAccumulator accumulator;
@@ -1661,9 +1792,25 @@ namespace
         RenderFrameHeaderV5 headerV5;
         headerV5.sequence = 17;
         headerV5.requiredSceneRevision = 1;
+        headerV5.worldRevision = 1;
+        headerV5.temporalEpoch = 1;
+        headerV5.viewFamilyId = 1;
+        headerV5.surfaceGeneration = 1;
+        headerV5.configurationRevision = 1;
+        headerV5.formatRevision = 1;
+        headerV5.simulationTick = 17;
+        headerV5.deterministicSeed = 1;
+        headerV5.outputWidth = 64;
+        headerV5.outputHeight = 64;
         RenderViewSnapshot view;
+        view.identity = {
+            .sceneRuntimeId = 1,
+            .cameraEntityPacked = 1,
+        };
+        view.cameraCutRevision = 1;
         view.viewportWidth = 64;
         view.viewportHeight = 64;
+        view.deltaTime = 1.0F / 60.0F;
         RenderExtractionDiagnostics diagnostics;
         diagnostics.fullScanCount = 1;
         diagnostics.actorRebuildCount = 2;
@@ -1703,6 +1850,7 @@ namespace
                   2U);
 
         headerV5.sequence = 18;
+        headerV5.simulationTick = 18;
         auto staticFrameV5 = RenderFramePacketV5::Create(
             headerV5,
             view,
@@ -1772,9 +1920,25 @@ namespace
         RenderFrameHeaderV5 rejectedHeader;
         rejectedHeader.sequence = 7302;
         rejectedHeader.requiredSceneRevision = accepted.appliedSceneRevision;
+        rejectedHeader.worldRevision = 1;
+        rejectedHeader.temporalEpoch = 1;
+        rejectedHeader.viewFamilyId = 1;
+        rejectedHeader.surfaceGeneration = 1;
+        rejectedHeader.configurationRevision = 1;
+        rejectedHeader.formatRevision = 1;
+        rejectedHeader.simulationTick = 7302;
+        rejectedHeader.deterministicSeed = 1;
+        rejectedHeader.outputWidth = 64;
+        rejectedHeader.outputHeight = 64;
         RenderViewSnapshot view;
+        view.identity = {
+            .sceneRuntimeId = 1,
+            .cameraEntityPacked = 1,
+        };
+        view.cameraCutRevision = 1;
         view.viewportWidth = 64;
         view.viewportHeight = 64;
+        view.deltaTime = 1.0F / 60.0F;
         RenderExtractionDiagnostics extraction;
         extraction.complete = true;
         auto rejectedFrame = RenderFramePacketV5::Create(
@@ -1825,9 +1989,25 @@ namespace
         RenderFrameHeaderV5 header;
         header.sequence = 19;
         header.requiredSceneRevision = 2;
+        header.worldRevision = 1;
+        header.temporalEpoch = 1;
+        header.viewFamilyId = 1;
+        header.surfaceGeneration = 1;
+        header.configurationRevision = 1;
+        header.formatRevision = 1;
+        header.simulationTick = 19;
+        header.deterministicSeed = 1;
+        header.outputWidth = 64;
+        header.outputHeight = 64;
         RenderViewSnapshot view;
+        view.identity = {
+            .sceneRuntimeId = 1,
+            .cameraEntityPacked = 1,
+        };
+        view.cameraCutRevision = 1;
         view.viewportWidth = 64;
         view.viewportHeight = 64;
+        view.deltaTime = 1.0F / 60.0F;
         RenderExtractionDiagnostics diagnostics;
         diagnostics.complete = true;
         auto frame = RenderFramePacketV5::Create(

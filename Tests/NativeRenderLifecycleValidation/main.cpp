@@ -261,7 +261,24 @@ namespace
         RenderFrameHeaderV5 header;
         header.sequence = sequence;
         header.requiredSceneRevision = sequence;
+        header.worldRevision = 1;
+        header.temporalEpoch = 1;
+        header.viewFamilyId = 1;
+        header.surfaceGeneration = 1;
+        header.configurationRevision = 1;
+        header.formatRevision = 1;
+        header.simulationTick = sequence - 1;
+        header.deterministicSeed =
+            (0x85ebca6bU ^ static_cast<uint32>(sequence)) | 1U;
+        header.outputWidth = width;
+        header.outputHeight = height;
         RenderViewSnapshot view;
+        view.identity = {
+            .sceneRuntimeId = 1,
+            .cameraEntityPacked = 1,
+            .subViewIndex = 0,
+        };
+        view.cameraCutRevision = 1;
         view.viewportWidth = width;
         view.viewportHeight = height;
         RenderExtractionDiagnostics extraction;

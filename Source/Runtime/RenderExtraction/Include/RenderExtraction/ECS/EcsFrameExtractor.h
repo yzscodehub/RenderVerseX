@@ -59,10 +59,22 @@ namespace RVX
         uint64 sequence = 0;
         uint64 worldRevision = 0;
         uint64 temporalEpoch = 0;
+        /** @brief Stable identity of the output family across compatible frames. */
+        uint64 viewFamilyId = 0;
+        /** @brief Exact HAL surface generation used to allocate the output. */
+        uint64 surfaceGeneration = 0;
+        uint64 configurationRevision = 0;
+        uint64 formatRevision = 0;
+        uint64 simulationTick = 0;
+        /** @brief Update-owned effect step, independent of presentation time. */
+        float32 effectFixedDeltaSeconds = 0.0f;
+        /** @brief Accumulated effect simulation time since its explicit epoch. */
+        float64 effectSimulationSeconds = 0.0;
+        uint32 deterministicSeed = 0;
         bool explicitDiscontinuity = false;
         uint32 outputWidth = 0;
         uint32 outputHeight = 0;
-        float32 absoluteTime = 0.0f;
+        float64 absoluteTime = 0.0;
         float32 deltaTime = 0.0f;
         RenderFrameSettings settings;
         RenderFrameCaptureRequest captureRequest;

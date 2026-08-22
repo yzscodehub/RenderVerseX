@@ -4333,6 +4333,7 @@ namespace RVX
         engineConfig.renderRuntime.swapChain.vsync = options.common.frames == 0;
         engineConfig.renderRuntime.enableValidation =
             options.common.enableValidation;
+        engineConfig.effectDeterministicSeed = options.deterministicSeed;
         engineConfig.renderRuntime.startupTraceContext = startupTraceContext;
         auto* window = engine.AddSubsystem<WindowSubsystem>();
         WindowConfig windowConfig;
@@ -5120,6 +5121,13 @@ namespace RVX
                     {
                         frameDriver.ResetFixedTime();
                         deterministicTick = 0;
+                        if (!engine.ResetEffectFrameTime(options.deterministicSeed))
+                        {
+                            error =
+                                "Engine rejected the deterministic Sample effect clock reset";
+                            engine.RequestShutdown();
+                            break;
+                        }
                         if (!applyContractCamera(true, error))
                         {
                             engine.RequestShutdown();

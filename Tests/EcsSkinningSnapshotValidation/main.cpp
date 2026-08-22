@@ -190,6 +190,13 @@ TEST(EcsSkinningSnapshotValidation,
     Resolver resolver{{{101, {1, 1}}, {201, {2, 1}}}};
     EcsFrameExtractionInput input;
     input.sequence = 1;
+    input.worldRevision = 1;
+    input.temporalEpoch = 1;
+    input.viewFamilyId = 1;
+    input.surfaceGeneration = 1;
+    input.configurationRevision = 1;
+    input.formatRevision = 1;
+    input.deterministicSeed = 1;
     input.outputWidth = 640;
     input.outputHeight = 480;
     input.assetResolver = {.context = &resolver, .resolve = &ResolveAsset};

@@ -13,6 +13,7 @@
 #include "Runtime/Window/WindowSubsystem.h"
 
 #include <algorithm>
+#include <atomic>
 #include <functional>
 #include <limits>
 #include <stdexcept>
@@ -22,6 +23,27 @@ namespace RVX
 {
 namespace
 {
+    std::atomic<uint64> g_nextRenderViewFamilyId{1};
+
+    [[nodiscard]] uint64 AllocateRenderViewFamilyId() noexcept
+    {
+        uint64 candidate = g_nextRenderViewFamilyId.load(
+            std::memory_order_relaxed);
+        while (candidate != 0 &&
+               candidate != std::numeric_limits<uint64>::max())
+        {
+            if (g_nextRenderViewFamilyId.compare_exchange_weak(
+                    candidate,
+                    candidate + 1,
+                    std::memory_order_relaxed,
+                    std::memory_order_relaxed))
+            {
+                return candidate;
+            }
+        }
+        return 0;
+    }
+
     class EngineEcsRenderRuntimeCompositionServices final
         : public IEcsRenderRuntimeCompositionServices,
           public NonMovable
@@ -162,9 +184,11 @@ EcsRenderRuntimeComposition::EcsRenderRuntimeComposition(
     std::unique_ptr<IEcsRenderRuntimeCompositionServices> services)
     : m_config(std::move(config)),
       m_settings(std::move(initialSettings)),
-      m_services(std::move(services))
+      m_services(std::move(services)),
+      m_viewFamilyId(AllocateRenderViewFamilyId())
 {
-    if (m_services == nullptr || !IsValidRenderFrameSettings(m_settings))
+    if (m_services == nullptr || !IsValidRenderFrameSettings(m_settings) ||
+        m_viewFamilyId == 0)
     {
         throw std::invalid_argument(
             "EcsRenderRuntimeComposition requires services and valid frame settings");
@@ -241,7 +265,10 @@ void EcsRenderRuntimeComposition::BeforeRenderSubsystemInitialize()
 std::optional<EcsRenderFramePipelineResult> EcsRenderRuntimeComposition::Tick(
     const SceneECS::FrozenSceneSnapshot* activeSnapshot,
     float32 deltaTime,
-    float32 absoluteTime)
+    float64 absoluteTime,
+    uint64 simulationTick,
+    float64 simulationSeconds,
+    uint32 deterministicSeed)
 {
     if (!m_renderConfigured || m_services == nullptr || m_pipeline == nullptr)
     {
@@ -266,6 +293,14 @@ std::optional<EcsRenderFramePipelineResult> EcsRenderRuntimeComposition::Tick(
     input.sequence = m_nextFrameSequence++;
     input.worldRevision = m_stats.worldRevision;
     input.temporalEpoch = m_temporalEpoch;
+    input.viewFamilyId = m_viewFamilyId;
+    input.surfaceGeneration = m_surface.generation;
+    input.configurationRevision = m_configurationRevision;
+    input.formatRevision = m_formatRevision;
+    input.simulationTick = simulationTick;
+    input.effectFixedDeltaSeconds = deltaTime;
+    input.effectSimulationSeconds = simulationSeconds;
+    input.deterministicSeed = deterministicSeed;
     input.explicitDiscontinuity = m_temporalResetPending;
     input.outputWidth = m_surface.width;
     input.outputHeight = m_surface.height;
@@ -344,11 +379,13 @@ uint64 EcsRenderRuntimeComposition::RequestTemporalReset() noexcept
 bool EcsRenderRuntimeComposition::SetFrameSettings(
     const RenderFrameSettings& settings) noexcept
 {
-    if (!IsValidRenderFrameSettings(settings) || m_shutdownRequested)
+    if (!IsValidRenderFrameSettings(settings) || m_shutdownRequested ||
+        m_configurationRevision == std::numeric_limits<uint64>::max())
     {
         return false;
     }
     m_settings = settings;
+    ++m_configurationRevision;
     const bool requestTemporalReset = m_settings.temporal.resetHistory;
     m_settings.temporal.resetHistory = false;
     if (requestTemporalReset)

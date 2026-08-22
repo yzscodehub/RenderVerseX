@@ -12,7 +12,9 @@
 #include "RenderContracts/RenderIdentity.h"
 #include "RenderContracts/RenderMaterial.h"
 
+#include <limits>
 #include <span>
+#include <type_traits>
 #include <vector>
 
 namespace RVX
@@ -85,8 +87,131 @@ namespace RVX
         return (layerMask & cullingMask) != 0;
     }
 
+    /** @brief Deterministic update-owned time and sequence for one render frame. */
+    struct RenderFrameStamp
+    {
+        uint64 sequence = 0;
+        float64 absoluteTimeSeconds = 0.0;
+        float32 deltaTimeSeconds = 0.0f;
+
+        friend bool operator==(const RenderFrameStamp&, const RenderFrameStamp&) =
+            default;
+    };
+
+    /** @brief Cross-thread identity of the exact scene/output configuration. */
+    struct RenderFrameIdentity
+    {
+        uint64 frameSequence = 0;
+        uint64 sceneRevision = 0;
+        uint64 surfaceGeneration = 0;
+        uint64 configurationRevision = 0;
+
+        [[nodiscard]] constexpr bool IsValid() const noexcept
+        {
+            return frameSequence != 0 && sceneRevision != 0 &&
+                   surfaceGeneration != 0 && configurationRevision != 0;
+        }
+
+        friend bool operator==(const RenderFrameIdentity&,
+                               const RenderFrameIdentity&) = default;
+    };
+
+    /**
+     * @brief Explicit ECS provenance for a retained RenderScene object.
+     *
+     * Render object IDs are opaque, collision-checked map keys. They are never
+     * decoded as if they were packed ECS handles; source slot reuse is instead
+     * validated through this value.
+     */
+    struct RenderSceneObjectSourceIdentity
+    {
+        uint64 sceneRuntimeId = 0;
+        uint32 entitySlot = std::numeric_limits<uint32>::max();
+        uint32 entityGeneration = 0;
+
+        [[nodiscard]] constexpr bool IsValid() const noexcept
+        {
+            return sceneRuntimeId != 0 &&
+                   entitySlot != std::numeric_limits<uint32>::max();
+        }
+
+        friend constexpr bool operator==(const RenderSceneObjectSourceIdentity&,
+                                         const RenderSceneObjectSourceIdentity&) =
+            default;
+    };
+
+    /** @brief Deterministic effect clock independent of presentation wall time. */
+    struct EffectFrameTime
+    {
+        uint64 simulationTick = 0;
+        float32 fixedDeltaSeconds = 0.0f;
+        float64 simulationSeconds = 0.0;
+        uint32 deterministicSeed = 0;
+
+        friend bool operator==(const EffectFrameTime&, const EffectFrameTime&) =
+            default;
+    };
+
+    /** @brief Backend-neutral output extent used by view and history contracts. */
+    struct RenderOutputExtent
+    {
+        uint32 width = 0;
+        uint32 height = 0;
+
+        [[nodiscard]] constexpr bool IsValid() const noexcept
+        {
+            return width != 0 && height != 0;
+        }
+
+        friend bool operator==(const RenderOutputExtent&,
+                               const RenderOutputExtent&) = default;
+    };
+
+    /** @brief Semantic role preventing histories from aliasing across view kinds. */
+    enum class ViewRole : uint8
+    {
+        Main = 0,
+        Shadow,
+        Reflection,
+        Editor,
+    };
+
+    [[nodiscard]] constexpr bool IsValidViewRole(ViewRole role) noexcept
+    {
+        switch (role)
+        {
+            case ViewRole::Main:
+            case ViewRole::Shadow:
+            case ViewRole::Reflection:
+            case ViewRole::Editor: return true;
+            default: return false;
+        }
+    }
+
+    /** @brief Exact generation-qualified identity of one logical render view. */
+    struct RenderViewIdentity
+    {
+        uint64 sceneRuntimeId = 0;
+        uint64 cameraEntityPacked = 0;
+        /** @brief Reserved for stereo/cubemap views; zero is the primary mono view. */
+        uint32 subViewIndex = 0;
+        ViewRole role = ViewRole::Main;
+
+        [[nodiscard]] constexpr bool IsValid() const noexcept
+        {
+            return sceneRuntimeId != 0 && cameraEntityPacked != 0 &&
+                   IsValidViewRole(role);
+        }
+
+        friend bool operator==(const RenderViewIdentity&,
+                               const RenderViewIdentity&) = default;
+    };
+
     struct RenderViewSnapshot
     {
+        RenderViewIdentity identity;
+        /** @brief Explicit camera discontinuity revision copied from Scene. */
+        uint64 cameraCutRevision = 0;
         Mat4 viewMatrix{1.0f};
         Mat4 projectionMatrix{1.0f};
         Mat4 viewProjectionMatrix{1.0f};
@@ -106,9 +231,114 @@ namespace RVX
         Vec4 clearColor{0.1f, 0.1f, 0.15f, 1.0f};
         float32 nearPlane = 0.1f;
         float32 farPlane = 1000.0f;
-        float32 absoluteTime = 0.0f;
+        float64 absoluteTime = 0.0;
         float32 deltaTime = 0.0f;
         float32 exposure = 1.0f;
+    };
+
+    /**
+     * @brief Immutable output family carried by one frame packet.
+     *
+     * GFX01 intentionally supports exactly one view. The collection is part of
+     * the durable contract so future stereo or reflection families do not need
+     * to reinterpret a process-global history slot.
+     */
+    struct RenderViewFamilySnapshot
+    {
+        RenderFrameStamp frame;
+        RenderFrameIdentity identity;
+        EffectFrameTime effectTime;
+        RenderOutputExtent extent;
+        uint64 familyId = 0;
+        uint32 primaryViewIndex = 0;
+        std::vector<RenderViewSnapshot> views;
+    };
+
+    /** @brief Exact key of temporal resources compatible with one presented view. */
+    struct RenderViewHistoryIdentity
+    {
+        /** @brief Frame that produced the history resource represented by this key. */
+        RenderFrameIdentity previousFrame;
+        RenderViewIdentity view;
+        RenderOutputExtent extent;
+        uint64 familyId = 0;
+        uint64 worldRevision = 0;
+        uint64 temporalEpoch = 0;
+        uint64 formatRevision = 0;
+        uint64 surfaceGeneration = 0;
+        uint64 cameraCutRevision = 0;
+
+        [[nodiscard]] constexpr bool IsValid() const noexcept
+        {
+            return previousFrame.IsValid() && view.IsValid() &&
+                   extent.IsValid() && familyId != 0 && worldRevision != 0 &&
+                   temporalEpoch != 0 && formatRevision != 0 &&
+                   surfaceGeneration != 0 &&
+                   surfaceGeneration == previousFrame.surfaceGeneration &&
+                   cameraCutRevision != 0;
+        }
+
+        friend bool operator==(const RenderViewHistoryIdentity&,
+                               const RenderViewHistoryIdentity&) = default;
+    };
+
+    /** @brief Bit reasons explaining why a prior temporal resource cannot be used. */
+    enum class RenderHistoryResetReason : uint32
+    {
+        None = 0,
+        FirstFrame = 1U << 0U,
+        ViewChanged = 1U << 1U,
+        ViewFamilyChanged = 1U << 2U,
+        SceneDiscontinuity = 1U << 3U,
+        TemporalEpochChanged = 1U << 4U,
+        CameraCut = 1U << 5U,
+        SurfaceChanged = 1U << 6U,
+        Resize = 1U << 7U,
+        ExplicitDiscontinuity = 1U << 8U,
+        HistoryUnavailable = 1U << 9U,
+        FormatChanged = 1U << 10U,
+        ConfigurationChanged = 1U << 11U,
+    };
+
+    [[nodiscard]] constexpr RenderHistoryResetReason operator|(
+        RenderHistoryResetReason lhs,
+        RenderHistoryResetReason rhs) noexcept
+    {
+        using Value = std::underlying_type_t<RenderHistoryResetReason>;
+        return static_cast<RenderHistoryResetReason>(
+            static_cast<Value>(lhs) | static_cast<Value>(rhs));
+    }
+
+    constexpr RenderHistoryResetReason& operator|=(
+        RenderHistoryResetReason& lhs,
+        RenderHistoryResetReason rhs) noexcept
+    {
+        lhs = lhs | rhs;
+        return lhs;
+    }
+
+    [[nodiscard]] constexpr bool HasRenderHistoryResetReason(
+        RenderHistoryResetReason reasons,
+        RenderHistoryResetReason reason) noexcept
+    {
+        using Value = std::underlying_type_t<RenderHistoryResetReason>;
+        return (static_cast<Value>(reasons) & static_cast<Value>(reason)) != 0;
+    }
+
+    /** @brief Fail-closed history decision for one accepted view candidate. */
+    struct RenderHistoryAvailability
+    {
+        RenderViewHistoryIdentity identity;
+        RenderHistoryResetReason resetReasons =
+            RenderHistoryResetReason::HistoryUnavailable;
+        bool available = false;
+
+        [[nodiscard]] constexpr bool IsConsistent() const noexcept
+        {
+            return identity.IsValid() &&
+                   (available ==
+                    (resetReasons == RenderHistoryResetReason::None));
+        }
     };
 
     struct RenderSubmeshMaterialBinding
@@ -152,6 +382,7 @@ namespace RVX
     struct RenderPrimitiveSnapshot
     {
         uint64 objectId = 0;
+        RenderSceneObjectSourceIdentity source;
         RenderResourceHandle mesh;
         std::vector<RenderSubmeshMaterialBinding> submeshes;
         RenderResourceHandle material;
@@ -179,6 +410,7 @@ namespace RVX
     struct RenderLightSnapshot
     {
         uint64 lightId = 0;
+        RenderSceneObjectSourceIdentity source;
         RenderLightType type = RenderLightType::Directional;
         Vec3 position{0.0f};
         Vec3 direction{0.0f, -1.0f, 0.0f};

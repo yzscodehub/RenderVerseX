@@ -6,11 +6,14 @@
  */
 
 #include "Core/Types.h"
+#include "Render/RenderDiagnostics.h"
 #include "RenderContracts/RenderSceneUpdate.h"
 
 #include <deque>
+#include <map>
 #include <optional>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace RVX
@@ -48,6 +51,8 @@ namespace RVX
         bool fullReset = false;
         bool skyChanged = false;
         bool environmentChanged = false;
+        RenderSceneMutationSummary mutationSummary{};
+        uint64 canonicalMutationDigest = 0;
         std::vector<uint64> primitives;
         std::vector<uint64> lights;
         std::vector<uint64> decals;
@@ -143,6 +148,24 @@ namespace RVX
         }
 
     private:
+        struct AcceptedFeatureSource
+        {
+            uint32 entityGeneration = 0;
+            uint64 renderId = 0;
+            uint64 captureSequence = 0;
+        };
+        struct AcceptedSceneObjectSource
+        {
+            uint32 entityGeneration = 0;
+            uint64 renderId = 0;
+        };
+        using SceneObjectSourceSlot = std::pair<uint64, uint32>;
+        using SceneObjectGenerationMap =
+            std::map<SceneObjectSourceSlot, AcceptedSceneObjectSource>;
+        using FeatureSourceSlot = std::pair<uint64, uint32>;
+        using FeatureGenerationMap =
+            std::map<FeatureSourceSlot, AcceptedFeatureSource>;
+
         struct ChangeJournalEntry
         {
             uint64 baseRevision = 0;
@@ -150,6 +173,8 @@ namespace RVX
             bool fullReset = false;
             bool skyChanged = false;
             bool environmentChanged = false;
+            RenderSceneMutationSummary mutationSummary{};
+            uint64 canonicalMutationDigest = 0;
             std::vector<uint64> primitives;
             std::vector<uint64> lights;
             std::vector<uint64> decals;
@@ -169,15 +194,16 @@ namespace RVX
         std::unordered_map<uint64, RenderLightSnapshot> m_lights;
         std::unordered_map<uint64, RenderDecalSnapshot> m_decals;
         std::unordered_map<uint64, RenderProbeSnapshot> m_probes;
-        std::unordered_map<uint32, uint32> m_primitiveGenerations;
-        std::unordered_map<uint32, uint32> m_lightGenerations;
-        std::unordered_map<uint32, uint32> m_decalGenerations;
-        std::unordered_map<uint32, uint32> m_probeGenerations;
+        SceneObjectGenerationMap m_primitiveGenerations;
+        SceneObjectGenerationMap m_lightGenerations;
+        SceneObjectGenerationMap m_decalGenerations;
+        SceneObjectGenerationMap m_probeGenerations;
         std::unordered_map<uint64, ParticleRenderSnapshotItem> m_particles;
+        FeatureGenerationMap m_particleGenerations;
         std::unordered_map<uint64, WaterRenderSnapshotItem> m_water;
         std::unordered_map<uint64, TerrainRenderSnapshotItem> m_terrain;
-        std::unordered_map<uint32, uint32> m_waterGenerations;
-        std::unordered_map<uint32, uint32> m_terrainGenerations;
+        FeatureGenerationMap m_waterGenerations;
+        FeatureGenerationMap m_terrainGenerations;
         std::optional<RenderSkySnapshot> m_sky;
         std::optional<RenderEnvironmentSnapshot> m_environment;
         std::deque<ChangeJournalEntry> m_changeHistory;

@@ -48,6 +48,17 @@ struct TestAssetResolver
     return MakeFrozenSceneObjectId(runtimeId, entity, type, slot);
 }
 
+[[nodiscard]] RenderFeatureSourceIdentity MakeFeatureSource(
+    ECS::SceneRuntimeId sceneRuntimeId,
+    ECS::EntityHandle entity)
+{
+    return {
+        .sceneRuntimeId = sceneRuntimeId.GetValue(),
+        .entitySlot = entity.GetIndex(),
+        .entityGeneration = entity.GetGeneration(),
+    };
+}
+
 [[nodiscard]] FrozenSceneMesh MakeMesh(
     ECS::SceneRuntimeId runtimeId,
     uint32 entityIndex,
@@ -146,6 +157,48 @@ struct TestAssetResolver
     return snapshot;
 }
 
+void AddTypedFeatureSources(FrozenSceneSnapshot& snapshot)
+{
+    const ECS::EntityHandle particleEntity = ECS::EntityHandle::Create(41, 0);
+    FrozenSceneParticle particle;
+    particle.id = MakeId(snapshot.sceneRuntimeId,
+                         particleEntity,
+                         FrozenSceneObjectType::Particle);
+    particle.sourceEntity = particleEntity;
+    particle.payloadRevision = 11;
+    particle.state.header.captureSequence = 1;
+    particle.state.header.configurationRevision = particle.payloadRevision;
+    particle.state.header.source =
+        MakeFeatureSource(snapshot.sceneRuntimeId, particleEntity);
+    snapshot.particles.push_back(std::move(particle));
+
+    const ECS::EntityHandle waterEntity = ECS::EntityHandle::Create(42, 0);
+    FrozenSceneWater water;
+    water.id = MakeId(snapshot.sceneRuntimeId,
+                      waterEntity,
+                      FrozenSceneObjectType::Water);
+    water.sourceEntity = waterEntity;
+    water.payloadRevision = 12;
+    water.state.header.captureSequence = 1;
+    water.state.header.configurationRevision = water.payloadRevision;
+    water.state.header.source =
+        MakeFeatureSource(snapshot.sceneRuntimeId, waterEntity);
+    snapshot.water.push_back(std::move(water));
+
+    const ECS::EntityHandle terrainEntity = ECS::EntityHandle::Create(43, 0);
+    FrozenSceneTerrain terrain;
+    terrain.id = MakeId(snapshot.sceneRuntimeId,
+                        terrainEntity,
+                        FrozenSceneObjectType::Terrain);
+    terrain.sourceEntity = terrainEntity;
+    terrain.payloadRevision = 13;
+    terrain.state.header.captureSequence = 1;
+    terrain.state.header.configurationRevision = terrain.payloadRevision;
+    terrain.state.header.source =
+        MakeFeatureSource(snapshot.sceneRuntimeId, terrainEntity);
+    snapshot.terrain.push_back(std::move(terrain));
+}
+
 [[nodiscard]] EcsFrozenSceneBridgeOutput MakeBridgeOutput(
     ECS::SceneRuntimeId runtimeId,
     uint64 revision,
@@ -176,6 +229,15 @@ struct TestAssetResolver
 {
     EcsFrameExtractionInput input;
     input.sequence = sequence;
+    input.worldRevision = 1;
+    input.temporalEpoch = 1;
+    input.viewFamilyId = 41;
+    input.surfaceGeneration = 7;
+    input.configurationRevision = 3;
+    input.formatRevision = 2;
+    input.simulationTick = sequence - 1;
+    input.deterministicSeed =
+        0x6a09e667U ^ static_cast<uint32>(sequence);
     input.outputWidth = 800;
     input.outputHeight = 600;
     input.absoluteTime = 2.0f;
@@ -237,6 +299,25 @@ TEST(EcsFrameExtractionValidation,
 
     EcsFrameExtractionResult full = extractor.Extract(MakeInput(resolver, 1), first);
     ASSERT_TRUE(full.IsComplete());
+    EXPECT_EQ(full.frameV5->GetView().identity.sceneRuntimeId,
+              first.sceneRuntimeId.GetValue());
+    ASSERT_TRUE(first.selectedCameraId.has_value());
+    const auto selectedCamera = std::find_if(
+        first.cameras.begin(),
+        first.cameras.end(),
+        [&first](const EcsFrozenSceneCameraValue& camera)
+        {
+            return camera.id == *first.selectedCameraId;
+        });
+    ASSERT_NE(selectedCamera, first.cameras.end());
+    EXPECT_EQ(full.frameV5->GetView().identity.cameraEntityPacked,
+              selectedCamera->sourceEntity.GetPackedValue());
+    EXPECT_EQ(full.frameV5->GetView().cameraCutRevision,
+              selectedCamera->cutRevision);
+    EXPECT_EQ(full.frameV5->GetViewFamily().familyId, 41U);
+    EXPECT_EQ(full.frameV5->GetViewFamily().identity.surfaceGeneration, 7U);
+    EXPECT_EQ(full.frameV5->GetViewFamily().identity.configurationRevision, 3U);
+    EXPECT_EQ(full.frameV5->GetViewFamily().effectTime.simulationTick, 0U);
     ASSERT_NE(full.sceneUpdate, nullptr);
     EXPECT_TRUE(full.sceneUpdate->fullReset);
     EXPECT_EQ(full.sceneUpdate->baseSceneRevision, 0U);
@@ -324,6 +405,55 @@ TEST(EcsFrameExtractionValidation,
     EXPECT_FALSE(incrementalAfterFrameOnly.sceneUpdate->fullReset);
     EXPECT_EQ(incrementalAfterFrameOnly.sceneUpdate->baseSceneRevision, 2U);
     EXPECT_EQ(incrementalAfterFrameOnly.sceneUpdate->targetSceneRevision, 3U);
+}
+
+TEST(EcsFrameExtractionValidation,
+     RejectsMissingFrameFamilyEffectAndSurfaceIdentity)
+{
+    TestAssetResolver resolver = MakeResolver();
+    const EcsFrozenSceneBridgeOutput source =
+        MakeBridgeOutput(ECS::SceneRuntimeId{91}, 1);
+
+    auto expectInvalid = [&resolver, &source](
+                             const auto& invalidateInput)
+    {
+        EcsFrameExtractor extractor;
+        EcsFrameExtractionInput input = MakeInput(resolver, 1);
+        invalidateInput(input);
+        const EcsFrameExtractionResult result = extractor.Extract(input, source);
+        EXPECT_EQ(result.code, EcsFrameExtractionResultCode::InvalidInput);
+        EXPECT_EQ(result.frameV5, nullptr);
+    };
+
+    expectInvalid([](EcsFrameExtractionInput& input) { input.worldRevision = 0; });
+    expectInvalid([](EcsFrameExtractionInput& input) { input.temporalEpoch = 0; });
+    expectInvalid([](EcsFrameExtractionInput& input) { input.viewFamilyId = 0; });
+    expectInvalid(
+        [](EcsFrameExtractionInput& input) { input.surfaceGeneration = 0; });
+    expectInvalid(
+        [](EcsFrameExtractionInput& input) { input.configurationRevision = 0; });
+    expectInvalid(
+        [](EcsFrameExtractionInput& input) { input.formatRevision = 0; });
+    expectInvalid(
+        [](EcsFrameExtractionInput& input) { input.deterministicSeed = 0; });
+    expectInvalid(
+        [](EcsFrameExtractionInput& input) { input.absoluteTime = -1.0; });
+}
+
+TEST(EcsFrameExtractionValidation,
+     RejectsCameraIdentityChangedAfterFrozenBridgeBuild)
+{
+    TestAssetResolver resolver = MakeResolver();
+    EcsFrozenSceneBridgeOutput source =
+        MakeBridgeOutput(ECS::SceneRuntimeId{92}, 1);
+    ASSERT_EQ(source.cameras.size(), 1U);
+    ++source.cameras.front().view.identity.cameraEntityPacked;
+
+    EcsFrameExtractor extractor;
+    const EcsFrameExtractionResult result =
+        extractor.Extract(MakeInput(resolver, 1), source);
+    EXPECT_EQ(result.code, EcsFrameExtractionResultCode::MissingSelectedCamera);
+    EXPECT_EQ(result.frameV5, nullptr);
 }
 
 TEST(EcsFrameExtractionValidation,
@@ -820,4 +950,38 @@ TEST(EcsFrameExtractionValidation, NumericPoisoningFailsClosedForEveryEcsSourceK
     EXPECT_FALSE(skyAndEnvironmentExtractor
                      .Extract(MakeInput(resolver, 1), poisonedSky)
                      .IsComplete());
+}
+
+TEST(EcsFrameExtractionValidation,
+     RejectsFeatureChannelHeadersThatDisagreeWithTheirOuterFrozenSource)
+{
+    TestAssetResolver resolver = MakeResolver();
+    const ECS::SceneRuntimeId runtime{181};
+    const auto expectInvalid = [&](const auto& mutate)
+    {
+        FrozenSceneSnapshot snapshot = MakeSnapshot(runtime, 1);
+        AddTypedFeatureSources(snapshot);
+        EcsFrozenSceneBridgeOutput output;
+        ASSERT_TRUE(EcsFrozenSceneBridge{}.Build(snapshot, output));
+        mutate(output);
+
+        EcsFrameExtractor extractor;
+        const EcsFrameExtractionResult result =
+            extractor.Extract(MakeInput(resolver, 1), output);
+        EXPECT_EQ(result.code, EcsFrameExtractionResultCode::InvalidBridgeOutput);
+        EXPECT_EQ(result.frameV5, nullptr);
+    };
+
+    expectInvalid([](EcsFrozenSceneBridgeOutput& output)
+    {
+        output.particles.front().state.header.source.entitySlot++;
+    });
+    expectInvalid([](EcsFrozenSceneBridgeOutput& output)
+    {
+        output.water.front().state.header.schemaVersion++;
+    });
+    expectInvalid([](EcsFrozenSceneBridgeOutput& output)
+    {
+        output.terrain.front().payloadRevision++;
+    });
 }

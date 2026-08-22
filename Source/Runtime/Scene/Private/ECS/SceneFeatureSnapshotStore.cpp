@@ -8,29 +8,120 @@ namespace RVX::SceneECS
 {
 namespace
 {
+    template<typename State, typename Entries>
+    [[nodiscard]] bool PublishTypedEntry(
+        const RenderFeatureChannelRegistry& channelRegistry,
+        Entries& entries,
+        ECS::EntityHandle entity,
+        const RenderFeatureSourceIdentity& expectedSource,
+        State state)
+    {
+        if (channelRegistry.ValidateProducer(
+                State::ChannelId,
+                State::SchemaVersion,
+                RenderFeatureProducerEndpointId::SceneFeatureSnapshotStore) !=
+            RenderFeatureChannelRegistryCode::Success)
+        {
+            return false;
+        }
+
+        const auto existing = entries.find(entity);
+        const uint64 lastAcceptedCaptureSequence =
+            existing != entries.end() ? existing->second.header.captureSequence : 0;
+        if (state.ValidateChannel(expectedSource, lastAcceptedCaptureSequence) !=
+            RenderFeatureChannelValidationCode::Valid)
+        {
+            return false;
+        }
+
+        try
+        {
+            entries.insert_or_assign(entity, std::move(state));
+            return true;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    template<typename State, typename Entries>
+    [[nodiscard]] bool PublishLegacyEntry(
+        const RenderFeatureChannelRegistry& channelRegistry,
+        Entries& entries,
+        ECS::EntityHandle entity,
+        const RenderFeatureSourceIdentity& expectedSource,
+        State state,
+        uint64 configurationRevision)
+    {
+        uint64 captureSequence = 1;
+        const auto existing = entries.find(entity);
+        if (existing != entries.end())
+        {
+            if (existing->second.header.captureSequence ==
+                std::numeric_limits<uint64>::max())
+            {
+                return false;
+            }
+            captureSequence = existing->second.header.captureSequence + 1;
+        }
+
+        state.header = {
+            .channelId = State::ChannelId,
+            .schemaVersion = State::SchemaVersion,
+            .captureSequence = captureSequence,
+            .configurationRevision = configurationRevision,
+            .source = expectedSource,
+        };
+        return PublishTypedEntry(
+            channelRegistry, entries, entity, expectedSource, std::move(state));
+    }
+
     template<typename FrozenValue, typename Entries>
     [[nodiscard]] bool CopyFrozenEntries(
+        const RenderFeatureChannelRegistry& channelRegistry,
         const Entries& entries,
         ECS::SceneRuntimeId sceneRuntimeId,
         FrozenSceneObjectType type,
         std::vector<FrozenValue>& outValues)
     {
+        using State = typename Entries::mapped_type;
         try
         {
             outValues.clear();
             outValues.reserve(entries.size());
-            for (const auto& [entity, entry] : entries)
+            for (const auto& [entity, state] : entries)
             {
+                if (channelRegistry.ValidateRoute(
+                        State::ChannelId,
+                        State::SchemaVersion,
+                        RenderFeatureProducerEndpointId::SceneFeatureSnapshotStore,
+                        RenderFeatureConsumerEndpointId::RenderSceneDatabase) !=
+                    RenderFeatureChannelRegistryCode::Success)
+                {
+                    return false;
+                }
                 if (!entity.IsValid())
                 {
                     return false;
                 }
-                outValues.push_back({
-                    .id = MakeFrozenSceneObjectId(sceneRuntimeId, entity, type),
-                    .sourceEntity = entity,
-                    .state = entry.state,
-                    .payloadRevision = entry.payloadRevision,
-                });
+                const RenderFeatureSourceIdentity expectedSource{
+                    .sceneRuntimeId = sceneRuntimeId.GetValue(),
+                    .entitySlot = entity.GetIndex(),
+                    .entityGeneration = entity.GetGeneration(),
+                };
+                if (state.ValidateChannel(expectedSource) !=
+                    RenderFeatureChannelValidationCode::Valid)
+                {
+                    return false;
+                }
+
+                FrozenValue frozen;
+                frozen.id = MakeFrozenSceneObjectId(sceneRuntimeId, entity, type);
+                frozen.sourceEntity = entity;
+                frozen.state = state;
+                frozen.payloadRevision = state.header.configurationRevision;
+                outValues.push_back(std::move(frozen));
             }
             std::sort(outValues.begin(), outValues.end(),
                       [](const FrozenValue& left, const FrozenValue& right)
@@ -48,8 +139,21 @@ namespace
 
 SceneFeatureSnapshotStore::SceneFeatureSnapshotStore(
     ECS::SceneRuntimeId sceneRuntimeId)
-    : m_sceneRuntimeId(sceneRuntimeId)
+    : SceneFeatureSnapshotStore(
+          sceneRuntimeId, CreateBuiltinRenderFeatureChannelRegistry())
 {
+}
+
+SceneFeatureSnapshotStore::SceneFeatureSnapshotStore(
+    ECS::SceneRuntimeId sceneRuntimeId,
+    RenderFeatureChannelRegistry channelRegistry)
+    : m_sceneRuntimeId(sceneRuntimeId),
+      m_channelRegistry(std::move(channelRegistry))
+{
+    if (!m_channelRegistry.IsSealed())
+    {
+        static_cast<void>(m_channelRegistry.Seal());
+    }
 }
 
 std::optional<SceneFeatureSnapshotSource>
@@ -74,18 +178,12 @@ bool SceneFeatureSnapshotStore::PublishParticle(const ECS::EntityRef& source,
     {
         return false;
     }
-    try
-    {
-        m_particles[identity->entity] = {
-            .state = std::move(state),
-            .payloadRevision = payloadRevision,
-        };
-        return true;
-    }
-    catch (...)
-    {
-        return false;
-    }
+    return PublishLegacyEntry(m_channelRegistry,
+                              m_particles,
+                              identity->entity,
+                              identity->ToRenderIdentity(),
+                              std::move(state),
+                              payloadRevision);
 }
 
 bool SceneFeatureSnapshotStore::PublishWater(const ECS::EntityRef& source,
@@ -98,18 +196,12 @@ bool SceneFeatureSnapshotStore::PublishWater(const ECS::EntityRef& source,
     {
         return false;
     }
-    try
-    {
-        m_water[identity->entity] = {
-            .state = std::move(state),
-            .payloadRevision = payloadRevision,
-        };
-        return true;
-    }
-    catch (...)
-    {
-        return false;
-    }
+    return PublishLegacyEntry(m_channelRegistry,
+                              m_water,
+                              identity->entity,
+                              identity->ToRenderIdentity(),
+                              std::move(state),
+                              payloadRevision);
 }
 
 bool SceneFeatureSnapshotStore::PublishTerrain(const ECS::EntityRef& source,
@@ -122,18 +214,54 @@ bool SceneFeatureSnapshotStore::PublishTerrain(const ECS::EntityRef& source,
     {
         return false;
     }
-    try
-    {
-        m_terrain[identity->entity] = {
-            .state = std::move(state),
-            .payloadRevision = payloadRevision,
-        };
-        return true;
-    }
-    catch (...)
-    {
-        return false;
-    }
+    return PublishLegacyEntry(m_channelRegistry,
+                              m_terrain,
+                              identity->entity,
+                              identity->ToRenderIdentity(),
+                              std::move(state),
+                              payloadRevision);
+}
+
+bool SceneFeatureSnapshotStore::PublishParticleChannel(
+    const ECS::EntityRef& source,
+    ParticleRenderSnapshotItem state)
+{
+    const std::optional<SceneFeatureSnapshotSource> identity =
+        MakeSourceIdentity(source);
+    return identity.has_value() &&
+           PublishTypedEntry(m_channelRegistry,
+                             m_particles,
+                             identity->entity,
+                             identity->ToRenderIdentity(),
+                             std::move(state));
+}
+
+bool SceneFeatureSnapshotStore::PublishWaterChannel(
+    const ECS::EntityRef& source,
+    WaterRenderSnapshotItem state)
+{
+    const std::optional<SceneFeatureSnapshotSource> identity =
+        MakeSourceIdentity(source);
+    return identity.has_value() &&
+           PublishTypedEntry(m_channelRegistry,
+                             m_water,
+                             identity->entity,
+                             identity->ToRenderIdentity(),
+                             std::move(state));
+}
+
+bool SceneFeatureSnapshotStore::PublishTerrainChannel(
+    const ECS::EntityRef& source,
+    TerrainRenderSnapshotItem state)
+{
+    const std::optional<SceneFeatureSnapshotSource> identity =
+        MakeSourceIdentity(source);
+    return identity.has_value() &&
+           PublishTypedEntry(m_channelRegistry,
+                             m_terrain,
+                             identity->entity,
+                             identity->ToRenderIdentity(),
+                             std::move(state));
 }
 
 bool SceneFeatureSnapshotStore::RemoveParticle(
@@ -194,7 +322,8 @@ void SceneFeatureSnapshotStore::Clear()
 
 bool SceneFeatureSnapshotStore::FreezeInto(FrozenSceneSnapshot& destination) const
 {
-    if (!m_sceneRuntimeId.IsValid() || destination.sceneRuntimeId != m_sceneRuntimeId ||
+    if (!m_channelRegistry.IsSealed() ||
+        !m_sceneRuntimeId.IsValid() || destination.sceneRuntimeId != m_sceneRuntimeId ||
         destination.revision == 0)
     {
         return false;
@@ -204,12 +333,15 @@ bool SceneFeatureSnapshotStore::FreezeInto(FrozenSceneSnapshot& destination) con
     std::vector<FrozenSceneWater> water;
     std::vector<FrozenSceneTerrain> terrain;
     if (!CopyFrozenEntries<FrozenSceneParticle>(
-            m_particles, m_sceneRuntimeId, FrozenSceneObjectType::Particle,
+            m_channelRegistry, m_particles, m_sceneRuntimeId,
+            FrozenSceneObjectType::Particle,
             particles) ||
         !CopyFrozenEntries<FrozenSceneWater>(
-            m_water, m_sceneRuntimeId, FrozenSceneObjectType::Water, water) ||
+            m_channelRegistry, m_water, m_sceneRuntimeId,
+            FrozenSceneObjectType::Water, water) ||
         !CopyFrozenEntries<FrozenSceneTerrain>(
-            m_terrain, m_sceneRuntimeId, FrozenSceneObjectType::Terrain, terrain))
+            m_channelRegistry, m_terrain, m_sceneRuntimeId,
+            FrozenSceneObjectType::Terrain, terrain))
     {
         return false;
     }

@@ -24,6 +24,7 @@ target_sources(RVX_RenderRuntimeCore PRIVATE
     Private/Runtime/RenderSceneUpdateQueue.cpp
     Private/Runtime/RenderUploadQueue.cpp
     Private/Runtime/RenderThreadGuard.cpp
+    Private/Runtime/RenderViewHistoryCoordinator.cpp
     Private/Resources/RenderRetirementQueue.cpp
     Private/Resources/RenderResourceRegistry.cpp
     Private/Resources/RenderSubmissionResourceBatch.cpp

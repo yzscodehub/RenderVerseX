@@ -161,6 +161,15 @@ public:
 {
     EcsFrameExtractionInput input;
     input.sequence = sequence;
+    input.worldRevision = 1;
+    input.temporalEpoch = 1;
+    input.viewFamilyId = 1;
+    input.surfaceGeneration = 1;
+    input.configurationRevision = 1;
+    input.formatRevision = 1;
+    input.simulationTick = sequence - 1;
+    input.deterministicSeed =
+        (0x165667b1U ^ static_cast<uint32>(sequence)) | 1U;
     input.outputWidth = 640;
     input.outputHeight = 480;
     input.deltaTime = 1.0f / 60.0f;

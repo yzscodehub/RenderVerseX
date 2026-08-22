@@ -30,6 +30,8 @@ namespace RVX::SceneECS
         Particle,
         Water,
         Terrain,
+        Decal,
+        Probe,
         /** @brief Palette provider identity derived from its mesh source identity. */
         SkinningPalette,
     };
@@ -144,8 +146,15 @@ namespace RVX::SceneECS
     {
         FrozenSceneObjectId id;
         ECS::EntityHandle sourceEntity = ECS::EntityHandle::Invalid();
+        /** @brief Typed envelope; header.source must exactly match sourceEntity. */
         ParticleRenderSnapshotItem state;
+        /** @brief Compatibility mirror of state.header.configurationRevision. */
         uint64 payloadRevision = 0;
+
+        [[nodiscard]] const RenderFeatureChannelHeader& GetChannelHeader() const noexcept
+        {
+            return state.header;
+        }
     };
 
     /** @brief Immutable value contribution from one water feature source. */
@@ -153,8 +162,15 @@ namespace RVX::SceneECS
     {
         FrozenSceneObjectId id;
         ECS::EntityHandle sourceEntity = ECS::EntityHandle::Invalid();
+        /** @brief Typed envelope; header.source must exactly match sourceEntity. */
         WaterRenderSnapshotItem state;
+        /** @brief Compatibility mirror of state.header.configurationRevision. */
         uint64 payloadRevision = 0;
+
+        [[nodiscard]] const RenderFeatureChannelHeader& GetChannelHeader() const noexcept
+        {
+            return state.header;
+        }
     };
 
     /** @brief Immutable value contribution from one terrain feature source. */
@@ -162,8 +178,15 @@ namespace RVX::SceneECS
     {
         FrozenSceneObjectId id;
         ECS::EntityHandle sourceEntity = ECS::EntityHandle::Invalid();
+        /** @brief Typed envelope; header.source must exactly match sourceEntity. */
         TerrainRenderSnapshotItem state;
+        /** @brief Compatibility mirror of state.header.configurationRevision. */
         uint64 payloadRevision = 0;
+
+        [[nodiscard]] const RenderFeatureChannelHeader& GetChannelHeader() const noexcept
+        {
+            return state.header;
+        }
     };
 
     /**

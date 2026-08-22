@@ -54,6 +54,8 @@ namespace RVX
         Diagnostics::TraceContext startupTraceContext{};
         RenderRuntimeConfig renderRuntime{};
         RenderFrameSettings initialRenderFrameSettings{};
+        /** @brief Non-zero deterministic base seed frozen into effect frames. */
+        uint32 effectDeterministicSeed = 1;
         Resource::ResourceManagerConfig resourceManager{};
     };
 
@@ -273,6 +275,13 @@ namespace RVX
             GetRenderFrameSettings() const noexcept;
         /** @brief Advance the temporal epoch and reset the next accepted frame. */
         [[nodiscard]] uint64 RequestRenderTemporalReset() noexcept;
+        /**
+         * @brief Reset the update-owned effect tick before a deterministic epoch.
+         *
+         * This never reads a wall clock. Callers that also invalidate temporal
+         * resources must explicitly request a render temporal reset.
+         */
+        [[nodiscard]] bool ResetEffectFrameTime(uint32 deterministicSeed) noexcept;
         /** @brief Queue one owned capture request for the next accepted frame. */
         [[nodiscard]] bool RequestRenderFrameCapture(
             const RenderFrameCaptureRequest& request) noexcept;
@@ -316,7 +325,10 @@ namespace RVX
         void TickWorlds(float deltaTime);
         void ShutdownWorlds();
         void RenderAfterWorlds(float32 deltaTime,
-                               float64 absoluteTimeSeconds);
+                               float64 absoluteTimeSeconds,
+                               uint64 simulationTick,
+                               float64 simulationSeconds,
+                               uint32 deterministicSeed);
         void FinalizeDestroyRequestedWorlds(float deltaTime);
         [[nodiscard]] bool RollbackFailedInitialization();
         [[nodiscard]] bool BeginWorldShutdown(WorldEntry& entry);
@@ -369,6 +381,11 @@ namespace RVX
         float64 m_compatibilityElapsedTimeSeconds = 0.0;
         /** Last valid effect time supplied to a completed Engine frame. */
         float64 m_lastFrameAbsoluteTimeSeconds = 0.0;
+        /** Update-owned tick frozen into EffectFrameTime; zero is a valid first tick. */
+        uint64 m_effectSimulationTick = 0;
+        /** Effect epoch time accumulated from supplied simulation steps, never wall time. */
+        float64 m_effectSimulationSeconds = 0.0;
+        uint32 m_effectDeterministicSeed = 1;
 
         static Engine* s_instance;
     };

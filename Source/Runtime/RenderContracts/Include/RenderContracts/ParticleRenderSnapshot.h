@@ -8,6 +8,7 @@
 #include "Core/Math/AABB.h"
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
+#include "RenderContracts/FeatureChannelContracts.h"
 #include "RenderContracts/RenderIdentity.h"
 
 #include <cstddef>
@@ -16,8 +17,6 @@
 
 namespace RVX
 {
-    inline constexpr uint32 RVX_PARTICLE_RENDER_SNAPSHOT_SCHEMA_VERSION = 2;
-
     enum class ParticleRenderSnapshotStatus : uint8
     {
         Empty = 0,
@@ -69,7 +68,7 @@ namespace RVX
         uint32 flags = 0;
     };
 
-    struct ParticleRenderSnapshotItem
+    struct ParticleRenderSnapshotPayload
     {
         /** @brief Generation-qualified RenderScene object identity. */
         uint64 instanceId = 0;
@@ -103,6 +102,14 @@ namespace RVX
         std::string unsupportedReason;
         std::string renderPayloadReason;
         std::string sortingReason;
+    };
+
+    /** @brief Particle payload plus versioned producer/source provenance. */
+    struct ParticleRenderSnapshotItem final
+        : RenderFeatureChannelEnvelope<
+              ParticleRenderFeatureChannelDescriptor,
+              ParticleRenderSnapshotPayload>
+    {
     };
 
     struct ParticleRenderSnapshotMetadata

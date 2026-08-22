@@ -1,16 +1,53 @@
 #include "Render/Renderer/RenderSceneDatabase.h"
 #include "RenderContracts/RenderFramePacketV5.h"
+#include "RenderExtraction/EcsFrozenSceneBridge.h"
 
 #include <gtest/gtest.h>
 
 namespace
 {
+    RVX::RenderSceneObjectSourceIdentity MakeSource(
+        RVX::uint64 sceneRuntimeId,
+        RVX::uint32 entitySlot,
+        RVX::uint32 entityGeneration = 0)
+    {
+        return {
+            .sceneRuntimeId = sceneRuntimeId,
+            .entitySlot = entitySlot,
+            .entityGeneration = entityGeneration,
+        };
+    }
+
+    RVX::uint64 DeriveRenderId(RVX::uint64 sceneRuntimeId,
+                               RVX::uint32 entitySlot,
+                               RVX::uint32 entityGeneration,
+                               RVX::SceneECS::FrozenSceneObjectType type)
+    {
+        return RVX::EcsFrozenSceneBridge::DeriveRenderId({
+            .sceneRuntimeId = RVX::ECS::SceneRuntimeId{sceneRuntimeId},
+            .entity = RVX::ECS::EntityHandle::Create(entitySlot,
+                                                       entityGeneration),
+            .type = type,
+        });
+    }
+
     RVX::RenderPrimitiveSnapshot MakePrimitive(RVX::uint64 id,
                                                 RVX::uint64 sortKey = 0)
     {
         RVX::RenderPrimitiveSnapshot primitive;
         primitive.objectId = id;
+        primitive.source = MakeSource(1, static_cast<RVX::uint32>(id));
         primitive.sortKey = sortKey;
+        return primitive;
+    }
+
+    RVX::RenderPrimitiveSnapshot MakePrimitive(
+        RVX::uint64 id,
+        const RVX::RenderSceneObjectSourceIdentity& source,
+        RVX::uint64 sortKey = 0)
+    {
+        RVX::RenderPrimitiveSnapshot primitive = MakePrimitive(id, sortKey);
+        primitive.source = source;
         return primitive;
     }
 
@@ -22,11 +59,47 @@ namespace
         return accumulator.Build(revision);
     }
 
-    constexpr RVX::uint64 PackHandle(RVX::uint32 index,
-                                     RVX::uint32 generation)
+    RVX::ParticleRenderSnapshotItem MakeParticle(
+        RVX::uint64 renderId,
+        RVX::uint64 sceneRuntimeId,
+        RVX::uint32 entitySlot,
+        RVX::uint32 entityGeneration,
+        RVX::uint64 captureSequence)
     {
-        return (static_cast<RVX::uint64>(generation) << 32u) |
-               (static_cast<RVX::uint64>(index) + 1u);
+        RVX::ParticleRenderSnapshotItem particle;
+        particle.instanceId = renderId;
+        particle.systemId = renderId;
+        particle.header.captureSequence = captureSequence;
+        particle.header.configurationRevision = 1;
+        particle.header.source = {
+            .sceneRuntimeId = sceneRuntimeId,
+            .entitySlot = entitySlot,
+            .entityGeneration = entityGeneration,
+        };
+        return particle;
+    }
+
+    void CompleteFrameIdentity(RVX::RenderFrameHeaderV5& header,
+                               RVX::RenderViewSnapshot& view,
+                               RVX::uint32 width,
+                               RVX::uint32 height)
+    {
+        header.viewFamilyId = 1;
+        header.surfaceGeneration = 1;
+        header.configurationRevision = 1;
+        header.formatRevision = 1;
+        header.simulationTick = header.sequence;
+        header.deterministicSeed = 1;
+        header.outputWidth = width;
+        header.outputHeight = height;
+        view.identity = {
+            .sceneRuntimeId = header.worldRevision,
+            .cameraEntityPacked = 1,
+        };
+        view.cameraCutRevision = 1;
+        view.viewportWidth = width;
+        view.viewportHeight = height;
+        view.deltaTime = 1.0F / 60.0F;
     }
 }
 
@@ -45,10 +118,12 @@ TEST(RenderSceneRevisionValidation,
 {
     RVX::RenderLightSnapshot first;
     first.lightId = 10;
+    first.source = MakeSource(2, 10);
     first.color = RVX::Vec3(1.0f, 0.5f, 0.25f);
     first.intensity = 2.0f;
     RVX::RenderLightSnapshot second;
     second.lightId = 20;
+    second.source = MakeSource(2, 20);
     second.type = RVX::RenderLightType::Point;
     second.position = RVX::Vec3(1.0f, 2.0f, 3.0f);
 
@@ -82,6 +157,7 @@ TEST(RenderSceneRevisionValidation,
 {
     RVX::RenderLightSnapshot light;
     light.lightId = 9;
+    light.source = MakeSource(2, 9);
     light.layerMask = 0x00000001U;
 
     RVX::RenderSceneMutationAccumulator reset;
@@ -189,6 +265,7 @@ TEST(RenderSceneRevisionValidation,
     ASSERT_TRUE(second.UpsertPrimitive(MakePrimitive(11, 9)));
     RVX::RenderLightSnapshot light;
     light.lightId = 7;
+    light.source = MakeSource(2, 7);
     ASSERT_TRUE(second.UpsertLight(light, true));
     ASSERT_TRUE(database.Apply(second.Build(2)).IsApplied());
     EXPECT_EQ(database.GetPrimitiveRevision(11), 2U);
@@ -254,6 +331,103 @@ TEST(RenderSceneRevisionValidation,
 }
 
 TEST(RenderSceneRevisionValidation,
+     MutationSummaryAndDigestAreCanonicalAcrossInputOrder)
+{
+    RVX::RenderLightSnapshot light;
+    light.lightId = 17;
+    light.source = MakeSource(2, 17);
+
+    RVX::RenderSceneMutationAccumulator firstOrder;
+    firstOrder.Begin(0, true);
+    ASSERT_TRUE(firstOrder.UpsertPrimitive(MakePrimitive(9), true));
+    ASSERT_TRUE(firstOrder.UpsertPrimitive(MakePrimitive(3), true));
+    ASSERT_TRUE(firstOrder.UpsertLight(light, true));
+    ASSERT_TRUE(firstOrder.UpsertParticle(
+        MakeParticle(41, 7, 3, 0, 1), true));
+    firstOrder.UpsertSky({});
+
+    RVX::RenderSceneMutationAccumulator reverseOrder;
+    reverseOrder.Begin(0, true);
+    reverseOrder.UpsertSky({});
+    ASSERT_TRUE(reverseOrder.UpsertParticle(
+        MakeParticle(41, 7, 3, 0, 1), true));
+    ASSERT_TRUE(reverseOrder.UpsertLight(light, true));
+    ASSERT_TRUE(reverseOrder.UpsertPrimitive(MakePrimitive(3), true));
+    ASSERT_TRUE(reverseOrder.UpsertPrimitive(MakePrimitive(9), true));
+
+    RVX::RenderSceneDatabase first;
+    RVX::RenderSceneDatabase second;
+    ASSERT_TRUE(first.Apply(firstOrder.Build(1)).IsApplied());
+    ASSERT_TRUE(second.Apply(reverseOrder.Build(1)).IsApplied());
+
+    const RVX::RenderSceneDatabaseChanges firstChanges =
+        first.CollectChangesSince(0);
+    const RVX::RenderSceneDatabaseChanges secondChanges =
+        second.CollectChangesSince(0);
+    ASSERT_TRUE(firstChanges.available);
+    ASSERT_TRUE(secondChanges.available);
+    EXPECT_TRUE(firstChanges.fullReset);
+    EXPECT_EQ(2U, firstChanges.mutationSummary.primitives.upsertCount);
+    EXPECT_EQ(0U, firstChanges.mutationSummary.primitives.removeCount);
+    EXPECT_EQ(1U, firstChanges.mutationSummary.lights.upsertCount);
+    EXPECT_EQ(1U, firstChanges.mutationSummary.particles.upsertCount);
+    EXPECT_EQ(1U, firstChanges.mutationSummary.sky.upsertCount);
+    EXPECT_NE(0U, firstChanges.canonicalMutationDigest);
+    EXPECT_EQ(firstChanges.canonicalMutationDigest,
+              secondChanges.canonicalMutationDigest);
+
+    RVX::RenderSceneMutationAccumulator update;
+    update.Begin(1);
+    ASSERT_TRUE(update.RemovePrimitive(3));
+    ASSERT_TRUE(update.UpsertPrimitive(MakePrimitive(9, 4)));
+    ASSERT_TRUE(first.Apply(update.Build(2)).IsApplied());
+    const RVX::RenderSceneDatabaseChanges incremental =
+        first.CollectChangesSince(1);
+    ASSERT_TRUE(incremental.available);
+    EXPECT_FALSE(incremental.fullReset);
+    EXPECT_EQ(1U, incremental.mutationSummary.primitives.upsertCount);
+    EXPECT_EQ(1U, incremental.mutationSummary.primitives.removeCount);
+    EXPECT_NE(firstChanges.canonicalMutationDigest,
+              incremental.canonicalMutationDigest);
+
+    RVX::RenderSceneMutationAccumulator changedPayload;
+    changedPayload.Begin(0, true);
+    ASSERT_TRUE(changedPayload.UpsertPrimitive(MakePrimitive(9, 99), true));
+    ASSERT_TRUE(changedPayload.UpsertPrimitive(MakePrimitive(3), true));
+    ASSERT_TRUE(changedPayload.UpsertLight(light, true));
+    ASSERT_TRUE(changedPayload.UpsertParticle(
+        MakeParticle(41, 7, 3, 0, 1), true));
+    changedPayload.UpsertSky({});
+    RVX::RenderSceneDatabase payloadDatabase;
+    ASSERT_TRUE(payloadDatabase.Apply(changedPayload.Build(1)).IsApplied());
+    const RVX::RenderSceneDatabaseChanges payloadChanges =
+        payloadDatabase.CollectChangesSince(0);
+    ASSERT_TRUE(payloadChanges.available);
+    EXPECT_NE(firstChanges.canonicalMutationDigest,
+              payloadChanges.canonicalMutationDigest);
+
+    RVX::ParticleRenderSnapshotItem provenance =
+        MakeParticle(41, 7, 3, 0, 1);
+    provenance.header.configurationRevision = 2;
+    RVX::RenderSceneMutationAccumulator changedProvenance;
+    changedProvenance.Begin(0, true);
+    ASSERT_TRUE(changedProvenance.UpsertPrimitive(MakePrimitive(9), true));
+    ASSERT_TRUE(changedProvenance.UpsertPrimitive(MakePrimitive(3), true));
+    ASSERT_TRUE(changedProvenance.UpsertLight(light, true));
+    ASSERT_TRUE(changedProvenance.UpsertParticle(
+        std::move(provenance), true));
+    changedProvenance.UpsertSky({});
+    RVX::RenderSceneDatabase provenanceDatabase;
+    ASSERT_TRUE(
+        provenanceDatabase.Apply(changedProvenance.Build(1)).IsApplied());
+    const RVX::RenderSceneDatabaseChanges provenanceChanges =
+        provenanceDatabase.CollectChangesSince(0);
+    ASSERT_TRUE(provenanceChanges.available);
+    EXPECT_NE(firstChanges.canonicalMutationDigest,
+              provenanceChanges.canonicalMutationDigest);
+}
+
+TEST(RenderSceneRevisionValidation,
      IncrementalSingletonRemovalCommitsAsAnEngagedEmptyValue)
 {
     RVX::RenderSceneMutationAccumulator reset;
@@ -288,12 +462,12 @@ TEST(RenderSceneRevisionValidation, ExposesAuthoritativeSceneAndV5FrameState)
 
     RVX::RenderLightSnapshot light;
     light.lightId = 7;
+    light.source = MakeSource(2, 7);
     light.intensity = 4.0f;
     ASSERT_TRUE(reset.UpsertLight(light, true));
 
     RVX::ParticleRenderSnapshotItem particle;
-    particle.instanceId = 31;
-    particle.systemId = particle.instanceId;
+    particle = MakeParticle(31, 5, 9, 0, 1);
     particle.systemAssetId = {.value = 8};
     particle.aliveParticleCount = 8;
     ASSERT_TRUE(reset.UpsertParticle(particle, true));
@@ -317,8 +491,7 @@ TEST(RenderSceneRevisionValidation, ExposesAuthoritativeSceneAndV5FrameState)
     header.temporalEpoch = 3;
 
     RVX::RenderViewSnapshot view;
-    view.viewportWidth = 1280;
-    view.viewportHeight = 720;
+    CompleteFrameIdentity(header, view, 1280, 720);
 
     RVX::RenderExtractionDiagnostics diagnostics;
     diagnostics.complete = true;
@@ -356,9 +529,10 @@ TEST(RenderSceneRevisionValidation, PersistentRevisionDoesNotSatisfyAheadV5Frame
     RVX::RenderFrameHeaderV5 header;
     header.sequence = 9;
     header.requiredSceneRevision = 3;
+    header.worldRevision = 1;
+    header.temporalEpoch = 1;
     RVX::RenderViewSnapshot view;
-    view.viewportWidth = 64;
-    view.viewportHeight = 64;
+    CompleteFrameIdentity(header, view, 64, 64);
     RVX::RenderExtractionDiagnostics diagnostics;
     diagnostics.complete = true;
     const auto frameV5 = RVX::RenderFramePacketV5::Create(
@@ -375,28 +549,29 @@ TEST(RenderSceneRevisionValidation, PersistentRevisionDoesNotSatisfyAheadV5Frame
 
 TEST(RenderSceneRevisionValidation, RecycledObjectSlotRequiresOrderedGenerationReplacement)
 {
-    const RVX::uint64 oldId = PackHandle(7, 3);
-    const RVX::uint64 staleId = PackHandle(7, 2);
-    const RVX::uint64 replacementId = PackHandle(7, 4);
+    const RVX::RenderSceneObjectSourceIdentity generationZero =
+        MakeSource(33, 7, 0);
+    const RVX::RenderSceneObjectSourceIdentity generationOne =
+        MakeSource(33, 7, 1);
+    const RVX::RenderSceneObjectSourceIdentity generationTwo =
+        MakeSource(33, 7, 2);
+    const RVX::uint64 oldId = DeriveRenderId(
+        33, 7, 0, RVX::SceneECS::FrozenSceneObjectType::Mesh);
+    const RVX::uint64 replacementId = DeriveRenderId(
+        33, 7, 1, RVX::SceneECS::FrozenSceneObjectType::Mesh);
+    const RVX::uint64 nextGenerationId = DeriveRenderId(
+        33, 7, 2, RVX::SceneECS::FrozenSceneObjectType::Mesh);
 
     RVX::RenderSceneMutationAccumulator reset;
     reset.Begin(0, true);
-    ASSERT_TRUE(reset.UpsertPrimitive(MakePrimitive(oldId), true));
+    ASSERT_TRUE(reset.UpsertPrimitive(MakePrimitive(oldId, generationZero), true));
     RVX::RenderSceneDatabase database;
     ASSERT_TRUE(database.Apply(reset.Build(1)).IsApplied());
-
-    RVX::RenderSceneMutationAccumulator stale;
-    stale.Begin(1);
-    ASSERT_TRUE(stale.UpsertPrimitive(MakePrimitive(staleId), true));
-    EXPECT_EQ(database.Apply(stale.Build(2)).code,
-              RVX::RenderSceneUpdateApplyCode::InvalidMutation);
-    EXPECT_EQ(database.GetRevision(), 1u);
-    EXPECT_NE(database.FindPrimitive(oldId), nullptr);
 
     RVX::RenderSceneMutationAccumulator missingRemove;
     missingRemove.Begin(1);
     ASSERT_TRUE(missingRemove.UpsertPrimitive(
-        MakePrimitive(replacementId), true));
+        MakePrimitive(replacementId, generationOne), true));
     EXPECT_EQ(database.Apply(missingRemove.Build(2)).code,
               RVX::RenderSceneUpdateApplyCode::InvalidMutation);
     EXPECT_EQ(database.GetRevision(), 1u);
@@ -404,7 +579,8 @@ TEST(RenderSceneRevisionValidation, RecycledObjectSlotRequiresOrderedGenerationR
     RVX::RenderSceneMutationAccumulator replace;
     replace.Begin(1);
     ASSERT_TRUE(replace.RemovePrimitive(oldId));
-    ASSERT_TRUE(replace.UpsertPrimitive(MakePrimitive(replacementId), true));
+    ASSERT_TRUE(replace.UpsertPrimitive(
+        MakePrimitive(replacementId, generationOne), true));
     ASSERT_TRUE(database.Apply(replace.Build(2)).IsApplied());
     EXPECT_EQ(database.FindPrimitive(oldId), nullptr);
     EXPECT_NE(database.FindPrimitive(replacementId), nullptr);
@@ -425,32 +601,223 @@ TEST(RenderSceneRevisionValidation, RecycledObjectSlotRequiresOrderedGenerationR
 
     RVX::RenderSceneMutationAccumulator resurrect;
     resurrect.Begin(3);
-    ASSERT_TRUE(resurrect.UpsertPrimitive(MakePrimitive(replacementId), true));
+    ASSERT_TRUE(resurrect.UpsertPrimitive(MakePrimitive(oldId, generationZero), true));
     EXPECT_EQ(database.Apply(resurrect.Build(4)).code,
               RVX::RenderSceneUpdateApplyCode::InvalidMutation);
     EXPECT_EQ(database.GetRevision(), 3u);
 
-    const RVX::uint64 nextGenerationId = PackHandle(7, 5);
     RVX::RenderSceneMutationAccumulator nextGeneration;
     nextGeneration.Begin(3);
     ASSERT_TRUE(nextGeneration.UpsertPrimitive(
-        MakePrimitive(nextGenerationId), true));
+        MakePrimitive(nextGenerationId, generationTwo), true));
     ASSERT_TRUE(database.Apply(nextGeneration.Build(4)).IsApplied());
     EXPECT_NE(database.FindPrimitive(nextGenerationId), nullptr);
 }
 
+TEST(RenderSceneRevisionValidation,
+     SceneObjectGenerationReplacementCannotReuseOpaqueRenderId)
+{
+    constexpr RVX::uint64 opaqueRenderId = 0xA11CE00010000001ull;
+    const RVX::RenderSceneObjectSourceIdentity generationZero =
+        MakeSource(84, 6, 0);
+    const RVX::RenderSceneObjectSourceIdentity generationOne =
+        MakeSource(84, 6, 1);
+
+    RVX::RenderSceneDatabase database;
+    RVX::RenderSceneMutationAccumulator first;
+    first.Begin(0, true);
+    ASSERT_TRUE(first.UpsertPrimitive(
+        MakePrimitive(opaqueRenderId, generationZero), true));
+    ASSERT_TRUE(database.Apply(first.Build(1)).IsApplied());
+
+    RVX::RenderSceneMutationAccumulator remove;
+    remove.Begin(1);
+    ASSERT_TRUE(remove.RemovePrimitive(opaqueRenderId));
+    ASSERT_TRUE(database.Apply(remove.Build(2)).IsApplied());
+
+    RVX::RenderSceneMutationAccumulator reusedId;
+    reusedId.Begin(2);
+    ASSERT_TRUE(reusedId.UpsertPrimitive(
+        MakePrimitive(opaqueRenderId, generationOne), true));
+    EXPECT_EQ(RVX::RenderSceneUpdateApplyCode::InvalidMutation,
+              database.Apply(reusedId.Build(3)).code);
+    EXPECT_EQ(database.GetRevision(), 2U);
+    EXPECT_EQ(database.FindPrimitive(opaqueRenderId), nullptr);
+}
+
+TEST(RenderSceneRevisionValidation,
+     ParticleGenerationRestartsCaptureSequenceButRejectsStaleSources)
+{
+    constexpr RVX::uint64 oldRenderId = 0xF123456789ABCDEFull;
+    constexpr RVX::uint64 replacementRenderId = 0x0000000100000001ull;
+    constexpr RVX::uint64 nextRenderId = 0xABCDEF0102030405ull;
+
+    RVX::RenderSceneMutationAccumulator reset;
+    reset.Begin(0, true);
+    ASSERT_TRUE(reset.UpsertParticle(
+        MakeParticle(oldRenderId, 77, 4, 0, 1), true));
+    RVX::RenderSceneDatabase database;
+    ASSERT_TRUE(database.Apply(reset.Build(1)).IsApplied());
+
+    RVX::RenderSceneMutationAccumulator staleCapture;
+    staleCapture.Begin(1);
+    ASSERT_TRUE(staleCapture.UpsertParticle(
+        MakeParticle(oldRenderId, 77, 4, 0, 1)));
+    EXPECT_EQ(RVX::RenderSceneUpdateApplyCode::InvalidMutation,
+              database.Apply(staleCapture.Build(2)).code);
+
+    RVX::RenderSceneMutationAccumulator sameGeneration;
+    sameGeneration.Begin(1);
+    ASSERT_TRUE(sameGeneration.RemoveParticle(oldRenderId));
+    ASSERT_TRUE(sameGeneration.UpsertParticle(
+        MakeParticle(replacementRenderId, 77, 4, 0, 2), true));
+    EXPECT_EQ(RVX::RenderSceneUpdateApplyCode::InvalidMutation,
+              database.Apply(sameGeneration.Build(2)).code);
+
+    RVX::RenderSceneMutationAccumulator missingRemoval;
+    missingRemoval.Begin(1);
+    ASSERT_TRUE(missingRemoval.UpsertParticle(
+        MakeParticle(replacementRenderId, 77, 4, 1, 2), true));
+    EXPECT_EQ(RVX::RenderSceneUpdateApplyCode::InvalidMutation,
+              database.Apply(missingRemoval.Build(2)).code);
+
+    RVX::RenderSceneMutationAccumulator replace;
+    replace.Begin(1);
+    ASSERT_TRUE(replace.RemoveParticle(oldRenderId));
+    ASSERT_TRUE(replace.UpsertParticle(
+        MakeParticle(replacementRenderId, 77, 4, 1, 1), true));
+    ASSERT_TRUE(database.Apply(replace.Build(2)).IsApplied());
+    EXPECT_FALSE(database.GetParticles().contains(oldRenderId));
+    EXPECT_TRUE(database.GetParticles().contains(replacementRenderId));
+
+    RVX::RenderSceneMutationAccumulator staleGeneration;
+    staleGeneration.Begin(2);
+    ASSERT_TRUE(staleGeneration.UpsertParticle(
+        MakeParticle(oldRenderId, 77, 4, 0, 2), true));
+    EXPECT_EQ(RVX::RenderSceneUpdateApplyCode::InvalidMutation,
+              database.Apply(staleGeneration.Build(3)).code);
+
+    RVX::RenderSceneMutationAccumulator staleReplacementCapture;
+    staleReplacementCapture.Begin(2);
+    ASSERT_TRUE(staleReplacementCapture.UpsertParticle(
+        MakeParticle(replacementRenderId, 77, 4, 1, 1), true));
+    EXPECT_EQ(RVX::RenderSceneUpdateApplyCode::InvalidMutation,
+              database.Apply(staleReplacementCapture.Build(3)).code);
+
+    RVX::RenderSceneMutationAccumulator remove;
+    remove.Begin(2);
+    ASSERT_TRUE(remove.RemoveParticle(replacementRenderId));
+    ASSERT_TRUE(database.Apply(remove.Build(3)).IsApplied());
+
+    RVX::RenderSceneMutationAccumulator resurrect;
+    resurrect.Begin(3);
+    ASSERT_TRUE(resurrect.UpsertParticle(
+        MakeParticle(replacementRenderId, 77, 4, 1, 3), true));
+    EXPECT_EQ(RVX::RenderSceneUpdateApplyCode::InvalidMutation,
+              database.Apply(resurrect.Build(4)).code);
+
+    RVX::RenderSceneMutationAccumulator nextGeneration;
+    nextGeneration.Begin(3);
+    ASSERT_TRUE(nextGeneration.UpsertParticle(
+        MakeParticle(nextRenderId, 77, 4, 2, 4), true));
+    ASSERT_TRUE(database.Apply(nextGeneration.Build(4)).IsApplied());
+    EXPECT_TRUE(database.GetParticles().contains(nextRenderId));
+}
+
+TEST(RenderSceneRevisionValidation,
+     ParticleGenerationReplacementCannotReuseOpaqueRenderId)
+{
+    constexpr RVX::uint64 opaqueRenderId = 0xBEE7000100000001ull;
+
+    RVX::RenderSceneDatabase database;
+    RVX::RenderSceneMutationAccumulator first;
+    first.Begin(0, true);
+    ASSERT_TRUE(first.UpsertParticle(
+        MakeParticle(opaqueRenderId, 85, 7, 0, 1), true));
+    ASSERT_TRUE(database.Apply(first.Build(1)).IsApplied());
+
+    RVX::RenderSceneMutationAccumulator remove;
+    remove.Begin(1);
+    ASSERT_TRUE(remove.RemoveParticle(opaqueRenderId));
+    ASSERT_TRUE(database.Apply(remove.Build(2)).IsApplied());
+
+    RVX::RenderSceneMutationAccumulator reusedId;
+    reusedId.Begin(2);
+    ASSERT_TRUE(reusedId.UpsertParticle(
+        MakeParticle(opaqueRenderId, 85, 7, 1, 1), true));
+    EXPECT_EQ(RVX::RenderSceneUpdateApplyCode::InvalidMutation,
+              database.Apply(reusedId.Build(3)).code);
+    EXPECT_EQ(database.GetRevision(), 2U);
+    EXPECT_FALSE(database.GetParticles().contains(opaqueRenderId));
+}
+
+TEST(RenderSceneRevisionValidation,
+     FeatureRenderIdRetainsExclusiveSourceOwnershipAcrossRemoval)
+{
+    constexpr RVX::uint64 sharedRenderId = 0x9A5E000100000001ull;
+
+    RVX::RenderSceneDatabase database;
+    RVX::RenderSceneMutationAccumulator first;
+    first.Begin(0, true);
+    ASSERT_TRUE(first.UpsertParticle(
+        MakeParticle(sharedRenderId, 71, 3, 0, 1), true));
+    ASSERT_TRUE(database.Apply(first.Build(1)).IsApplied());
+
+    RVX::RenderSceneMutationAccumulator remove;
+    remove.Begin(1);
+    ASSERT_TRUE(remove.RemoveParticle(sharedRenderId));
+    ASSERT_TRUE(database.Apply(remove.Build(2)).IsApplied());
+    EXPECT_FALSE(database.GetParticles().contains(sharedRenderId));
+
+    RVX::RenderSceneMutationAccumulator historicalCollision;
+    historicalCollision.Begin(2);
+    ASSERT_TRUE(historicalCollision.UpsertParticle(
+        MakeParticle(sharedRenderId, 72, 9, 0, 1), true));
+    EXPECT_EQ(RVX::RenderSceneUpdateApplyCode::InvalidMutation,
+              database.Apply(historicalCollision.Build(3)).code);
+    EXPECT_EQ(database.GetRevision(), 2U);
+
+    RVX::RenderSceneDatabase currentOwnerDatabase;
+    RVX::RenderSceneMutationAccumulator currentOwner;
+    currentOwner.Begin(0, true);
+    ASSERT_TRUE(currentOwner.UpsertParticle(
+        MakeParticle(sharedRenderId, 71, 3, 0, 1), true));
+    ASSERT_TRUE(currentOwnerDatabase.Apply(currentOwner.Build(1)).IsApplied());
+
+    RVX::RenderSceneMutationAccumulator currentCollision;
+    currentCollision.Begin(1);
+    ASSERT_TRUE(currentCollision.UpsertParticle(
+        MakeParticle(sharedRenderId, 72, 9, 0, 1), true));
+    EXPECT_EQ(RVX::RenderSceneUpdateApplyCode::InvalidMutation,
+              currentOwnerDatabase.Apply(currentCollision.Build(2)).code);
+    EXPECT_EQ(currentOwnerDatabase.GetRevision(), 1U);
+    ASSERT_NE(currentOwnerDatabase.GetParticles().find(sharedRenderId),
+              currentOwnerDatabase.GetParticles().end());
+    EXPECT_EQ(currentOwnerDatabase.GetParticles().at(sharedRenderId)
+                  .header.source.sceneRuntimeId,
+              71U);
+}
+
 TEST(RenderSceneRevisionValidation, DecalAndProbeMutationsArePersistentAndGenerationSafe)
 {
-    const RVX::uint64 decalId = PackHandle(12, 1);
-    const RVX::uint64 probeId = PackHandle(18, 1);
+    const RVX::RenderSceneObjectSourceIdentity decalSource =
+        MakeSource(51, 12, 0);
+    const RVX::RenderSceneObjectSourceIdentity probeSource =
+        MakeSource(51, 18, 0);
+    const RVX::uint64 decalId = DeriveRenderId(
+        51, 12, 0, RVX::SceneECS::FrozenSceneObjectType::Decal);
+    const RVX::uint64 probeId = DeriveRenderId(
+        51, 18, 0, RVX::SceneECS::FrozenSceneObjectType::Probe);
 
     RVX::RenderDecalSnapshot decal;
     decal.decalId = decalId;
+    decal.source = decalSource;
     decal.opacity = 0.75f;
     decal.sortOrder = 4;
 
     RVX::RenderProbeSnapshot probe;
     probe.probeId = probeId;
+    probe.source = probeSource;
     probe.kind = RVX::RenderProbeKind::Reflection;
     probe.shape = RVX::RenderProbeShape::Box;
     probe.priority = 3;
@@ -488,8 +855,10 @@ TEST(RenderSceneRevisionValidation, DecalAndProbeMutationsArePersistentAndGenera
               RVX::RenderSceneUpdateApplyCode::InvalidMutation);
     EXPECT_EQ(database.GetRevision(), 2u);
 
-    const RVX::uint64 nextProbeId = PackHandle(18, 2);
+    const RVX::uint64 nextProbeId = DeriveRenderId(
+        51, 18, 1, RVX::SceneECS::FrozenSceneObjectType::Probe);
     probe.probeId = nextProbeId;
+    probe.source = MakeSource(51, 18, 1);
     RVX::RenderSceneMutationAccumulator replacement;
     replacement.Begin(2);
     ASSERT_TRUE(replacement.UpsertProbe(probe, true));

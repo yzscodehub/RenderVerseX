@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <limits>
+#include <tuple>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
@@ -15,18 +17,84 @@ namespace
 {
     std::atomic<uint64> g_nextRenderSceneDatabaseInstanceId{1};
 
-    void MixLightFloat(uint64& hash, float32 value)
+    void MixFloat(uint64& hash, float32 value)
     {
         Diagnostics::MixContentHashValue(
             hash,
             static_cast<uint64>(std::bit_cast<uint32>(value)));
     }
 
-    void MixLightVec3(uint64& hash, const Vec3& value)
+    void MixVec2(uint64& hash, const Vec2& value)
     {
-        MixLightFloat(hash, value.x);
-        MixLightFloat(hash, value.y);
-        MixLightFloat(hash, value.z);
+        MixFloat(hash, value.x);
+        MixFloat(hash, value.y);
+    }
+
+    void MixVec3(uint64& hash, const Vec3& value)
+    {
+        MixFloat(hash, value.x);
+        MixFloat(hash, value.y);
+        MixFloat(hash, value.z);
+    }
+
+    void MixVec4(uint64& hash, const Vec4& value)
+    {
+        MixFloat(hash, value.x);
+        MixFloat(hash, value.y);
+        MixFloat(hash, value.z);
+        MixFloat(hash, value.w);
+    }
+
+    void MixMatrix(uint64& hash, const Mat4& value)
+    {
+        for (uint32 column = 0; column < 4; ++column)
+        {
+            for (uint32 row = 0; row < 4; ++row)
+                MixFloat(hash, value[column][row]);
+        }
+    }
+
+    void MixAABB(uint64& hash, const AABB& value)
+    {
+        MixVec3(hash, value.GetMin());
+        MixVec3(hash, value.GetMax());
+    }
+
+    void MixString(uint64& hash, const std::string& value)
+    {
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(value.size()));
+        Diagnostics::MixContentHashString(hash, value);
+    }
+
+    void MixResourceHandle(uint64& hash, RenderResourceHandle value)
+    {
+        Diagnostics::MixContentHashValue(hash, value.slot);
+        Diagnostics::MixContentHashValue(hash, value.generation);
+    }
+
+    void MixFeatureHeader(uint64& hash,
+                          const RenderFeatureChannelHeader& header)
+    {
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(header.channelId));
+        Diagnostics::MixContentHashValue(hash, header.schemaVersion);
+        Diagnostics::MixContentHashValue(hash, header.captureSequence);
+        Diagnostics::MixContentHashValue(hash, header.configurationRevision);
+        Diagnostics::MixContentHashValue(hash,
+                                         header.source.sceneRuntimeId);
+        Diagnostics::MixContentHashValue(hash, header.source.entitySlot);
+        Diagnostics::MixContentHashValue(hash,
+                                         header.source.entityGeneration);
+    }
+
+    void MixSceneObjectSource(
+        uint64& hash,
+        const RenderSceneObjectSourceIdentity& source)
+    {
+        Diagnostics::MixContentHashValue(hash, source.sceneRuntimeId);
+        Diagnostics::MixContentHashValue(hash, source.entitySlot);
+        Diagnostics::MixContentHashValue(hash, source.entityGeneration);
     }
 
     template<typename Values>
@@ -44,6 +112,429 @@ namespace
         values.reserve(values.size() + mutations.size());
         for (const auto& mutation : mutations)
             values.push_back(mutation.*idMember);
+    }
+
+    enum class MutationDigestKind : uint8
+    {
+        Primitive = 1,
+        Light,
+        Decal,
+        Probe,
+        Particle,
+        Water,
+        Terrain,
+        Sky,
+        Environment
+    };
+
+    struct MutationDigestTuple
+    {
+        MutationDigestKind kind = MutationDigestKind::Primitive;
+        RenderSceneMutationOperation operation =
+            RenderSceneMutationOperation::Upsert;
+        uint64 id = 0;
+        uint64 payloadDigest = 0;
+    };
+
+    static_assert(
+        RVX_RENDER_SCENE_UPDATE_SCHEMA_VERSION == 5,
+        "Audit the complete mutation payload digest when the Scene update schema changes");
+
+    uint64 ComputeMutationPayloadDigest(
+        const RenderPrimitiveSnapshot& state)
+    {
+        uint64 hash = Diagnostics::RVX_DIAGNOSTICS_FNV1A64_OFFSET_BASIS;
+        Diagnostics::MixContentHashValue(hash, state.objectId);
+        MixSceneObjectSource(hash, state.source);
+        MixResourceHandle(hash, state.mesh);
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(state.submeshes.size()));
+        for (const RenderSubmeshMaterialBinding& binding : state.submeshes)
+        {
+            Diagnostics::MixContentHashValue(hash, binding.submeshIndex);
+            MixResourceHandle(hash, binding.material);
+            Diagnostics::MixContentHashValue(
+                hash, static_cast<uint64>(binding.materialMode));
+        }
+        MixResourceHandle(hash, state.material);
+        MixResourceHandle(hash, state.fallbackMesh);
+        MixResourceHandle(hash, state.fallbackMaterial);
+        MixMatrix(hash, state.worldTransform);
+        MixMatrix(hash, state.previousWorldTransform);
+        MixVec3(hash, state.boundsMin);
+        MixVec3(hash, state.boundsMax);
+        Diagnostics::MixContentHashValue(hash, state.flags);
+        Diagnostics::MixContentHashValue(hash, state.layerMask);
+        Diagnostics::MixContentHashValue(hash, state.sortKey);
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(state.skinMatrices.size()));
+        for (const Mat4& matrix : state.skinMatrices)
+            MixMatrix(hash, matrix);
+        Diagnostics::MixContentHashValue(
+            hash, state.hasSkinningPaletteProvider ? 1U : 0U);
+        Diagnostics::MixContentHashValue(
+            hash, state.skinningPalette.providerComponentId);
+        Diagnostics::MixContentHashValue(
+            hash, state.skinningPalette.sourceModelResourceId);
+        Diagnostics::MixContentHashValue(
+            hash, state.skinningPalette.poseSequence);
+        Diagnostics::MixContentHashValue(
+            hash, state.skinningPalette.paletteHash);
+        Diagnostics::MixContentHashValue(
+            hash, state.skinningPalette.paletteCount);
+        return hash;
+    }
+
+    uint64 ComputeMutationPayloadDigest(const RenderLightSnapshot& state)
+    {
+        uint64 hash = Diagnostics::RVX_DIAGNOSTICS_FNV1A64_OFFSET_BASIS;
+        Diagnostics::MixContentHashValue(hash, state.lightId);
+        MixSceneObjectSource(hash, state.source);
+        Diagnostics::MixContentHashValue(hash,
+                                         static_cast<uint64>(state.type));
+        MixVec3(hash, state.position);
+        MixVec3(hash, state.direction);
+        MixVec3(hash, state.color);
+        MixFloat(hash, state.intensity);
+        MixFloat(hash, state.range);
+        MixFloat(hash, state.innerConeRadians);
+        MixFloat(hash, state.outerConeRadians);
+        MixResourceHandle(hash, state.shadowResource);
+        Diagnostics::MixContentHashValue(hash, state.layerMask);
+        Diagnostics::MixContentHashValue(hash,
+                                         state.castsShadows ? 1U : 0U);
+        return hash;
+    }
+
+    uint64 ComputeMutationPayloadDigest(const RenderDecalSnapshot& state)
+    {
+        uint64 hash = Diagnostics::RVX_DIAGNOSTICS_FNV1A64_OFFSET_BASIS;
+        Diagnostics::MixContentHashValue(hash, state.decalId);
+        MixSceneObjectSource(hash, state.source);
+        MixMatrix(hash, state.worldTransform);
+        MixVec3(hash, state.halfExtent);
+        MixResourceHandle(hash, state.material);
+        MixVec4(hash, state.color);
+        MixFloat(hash, state.opacity);
+        MixFloat(hash, state.normalStrength);
+        MixFloat(hash, state.angleFade);
+        MixFloat(hash, state.fadeDistance);
+        MixFloat(hash, state.fadeWidth);
+        Diagnostics::MixContentHashValue(hash, state.layerMask);
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(static_cast<uint32>(state.sortOrder)));
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(state.blendMode));
+        return hash;
+    }
+
+    uint64 ComputeMutationPayloadDigest(const RenderProbeSnapshot& state)
+    {
+        uint64 hash = Diagnostics::RVX_DIAGNOSTICS_FNV1A64_OFFSET_BASIS;
+        Diagnostics::MixContentHashValue(hash, state.probeId);
+        MixSceneObjectSource(hash, state.source);
+        Diagnostics::MixContentHashValue(hash,
+                                         static_cast<uint64>(state.kind));
+        Diagnostics::MixContentHashValue(hash,
+                                         static_cast<uint64>(state.shape));
+        Diagnostics::MixContentHashValue(hash,
+                                         static_cast<uint64>(state.mode));
+        MixMatrix(hash, state.worldTransform);
+        MixVec3(hash, state.influenceExtent);
+        MixFloat(hash, state.blendDistance);
+        MixVec3(hash, state.boxProjectionSize);
+        MixVec3(hash, state.boxProjectionOffset);
+        MixResourceHandle(hash, state.texture);
+        for (const Vec4& coefficient : state.sphericalHarmonics)
+            MixVec4(hash, coefficient);
+        Diagnostics::MixContentHashValue(hash, state.cullingMask);
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(static_cast<uint32>(state.priority)));
+        MixFloat(hash, state.nearClip);
+        MixFloat(hash, state.farClip);
+        Diagnostics::MixContentHashValue(hash,
+                                         state.useBoxProjection ? 1U : 0U);
+        Diagnostics::MixContentHashValue(hash, state.useHDR ? 1U : 0U);
+        Diagnostics::MixContentHashValue(hash,
+                                         state.hasValidData ? 1U : 0U);
+        return hash;
+    }
+
+    uint64 ComputeMutationPayloadDigest(
+        const ParticleRenderSnapshotItem& state)
+    {
+        uint64 hash = Diagnostics::RVX_DIAGNOSTICS_FNV1A64_OFFSET_BASIS;
+        MixFeatureHeader(hash, state.header);
+        Diagnostics::MixContentHashValue(hash, state.instanceId);
+        Diagnostics::MixContentHashValue(hash, state.systemId);
+        Diagnostics::MixContentHashValue(hash, state.systemAssetId.value);
+        MixString(hash, state.systemName);
+        MixMatrix(hash, state.worldMatrix);
+        MixAABB(hash, state.worldBounds);
+        MixVec3(hash, state.position);
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(state.renderMode));
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(state.blendMode));
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(state.simulationBackend));
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(state.payloadStatus));
+        Diagnostics::MixContentHashValue(hash, state.aliveParticleCount);
+        Diagnostics::MixContentHashValue(hash, state.maxParticleCount);
+        Diagnostics::MixContentHashValue(hash, state.lodLevel);
+        MixFloat(hash, state.normalizedTime);
+        Diagnostics::MixContentHashValue(hash, state.visible ? 1U : 0U);
+        Diagnostics::MixContentHashValue(
+            hash, state.simulationSupported ? 1U : 0U);
+        Diagnostics::MixContentHashValue(
+            hash, state.renderPayloadAvailable ? 1U : 0U);
+        Diagnostics::MixContentHashValue(
+            hash, state.sortingSupported ? 1U : 0U);
+        Diagnostics::MixContentHashValue(
+            hash, state.softParticlesEnabled ? 1U : 0U);
+        MixFloat(hash, state.softParticleFadeDistance);
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(state.particles.size()));
+        for (const ParticleRenderParticleData& particle : state.particles)
+        {
+            MixVec3(hash, particle.position);
+            MixFloat(hash, particle.lifetime);
+            MixVec3(hash, particle.velocity);
+            MixFloat(hash, particle.age);
+            MixVec4(hash, particle.color);
+            MixVec2(hash, particle.size);
+            MixFloat(hash, particle.rotation);
+            Diagnostics::MixContentHashValue(hash, particle.flags);
+        }
+        MixString(hash, state.unsupportedReason);
+        MixString(hash, state.renderPayloadReason);
+        MixString(hash, state.sortingReason);
+        return hash;
+    }
+
+    uint64 ComputeMutationPayloadDigest(const WaterRenderSnapshotItem& state)
+    {
+        uint64 hash = Diagnostics::RVX_DIAGNOSTICS_FNV1A64_OFFSET_BASIS;
+        MixFeatureHeader(hash, state.header);
+        Diagnostics::MixContentHashValue(hash, state.componentId);
+        Diagnostics::MixContentHashValue(hash, state.surfaceAssetId.value);
+        Diagnostics::MixContentHashValue(hash, state.materialAssetId.value);
+        MixVec3(hash, state.worldPosition);
+        MixAABB(hash, state.worldBounds);
+        MixVec2(hash, state.size);
+        MixFloat(hash, state.depth);
+        Diagnostics::MixContentHashValue(hash, state.resolution);
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(state.surfaceType));
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(state.simulationType));
+        MixVec3(hash, state.shallowColor);
+        MixVec3(hash, state.deepColor);
+        MixVec3(hash, state.foamColor);
+        MixFloat(hash, state.transparency);
+        MixFloat(hash, state.reflectionStrength);
+        MixFloat(hash, state.refractionStrength);
+        MixFloat(hash, state.roughness);
+        MixFloat(hash, state.foamIntensity);
+        Diagnostics::MixContentHashValue(
+            hash, state.reflectionEnabled ? 1U : 0U);
+        Diagnostics::MixContentHashValue(
+            hash, state.refractionEnabled ? 1U : 0U);
+        Diagnostics::MixContentHashValue(hash,
+                                         state.causticsEnabled ? 1U : 0U);
+        Diagnostics::MixContentHashValue(
+            hash, state.underwaterEffectsEnabled ? 1U : 0U);
+        Diagnostics::MixContentHashValue(hash, state.foamEnabled ? 1U : 0U);
+        Diagnostics::MixContentHashValue(hash,
+                                         state.gpuInitialized ? 1U : 0U);
+        Diagnostics::MixContentHashValue(
+            hash, state.cpuSimulationAvailable ? 1U : 0U);
+        Diagnostics::MixContentHashValue(
+            hash, state.renderGpuPathAvailable ? 1U : 0U);
+        MixString(hash, state.gpuInitializationReason);
+        MixString(hash, state.simulationFallbackReason);
+        MixString(hash, state.renderPathReason);
+        return hash;
+    }
+
+    uint64 ComputeMutationPayloadDigest(
+        const TerrainRenderSnapshotItem& state)
+    {
+        uint64 hash = Diagnostics::RVX_DIAGNOSTICS_FNV1A64_OFFSET_BASIS;
+        MixFeatureHeader(hash, state.header);
+        Diagnostics::MixContentHashValue(hash, state.componentId);
+        Diagnostics::MixContentHashValue(hash, state.heightmapAssetId.value);
+        Diagnostics::MixContentHashValue(hash, state.materialAssetId.value);
+        MixVec3(hash, state.worldPosition);
+        MixAABB(hash, state.worldBounds);
+        MixVec3(hash, state.size);
+        MixFloat(hash, state.lodBias);
+        Diagnostics::MixContentHashValue(hash, state.patchSize);
+        Diagnostics::MixContentHashValue(hash, state.maxLODLevels);
+        Diagnostics::MixContentHashValue(hash, state.castsShadow ? 1U : 0U);
+        Diagnostics::MixContentHashValue(hash,
+                                         state.receivesShadow ? 1U : 0U);
+        Diagnostics::MixContentHashValue(hash,
+                                         state.collisionEnabled ? 1U : 0U);
+        Diagnostics::MixContentHashValue(hash,
+                                         state.hasHeightmap ? 1U : 0U);
+        Diagnostics::MixContentHashValue(hash,
+                                         state.heightmapValid ? 1U : 0U);
+        Diagnostics::MixContentHashValue(hash, state.hasMaterial ? 1U : 0U);
+        Diagnostics::MixContentHashValue(hash,
+                                         state.gpuInitialized ? 1U : 0U);
+        Diagnostics::MixContentHashValue(hash,
+                                         state.cpuDataAvailable ? 1U : 0U);
+        Diagnostics::MixContentHashValue(
+            hash, state.renderGpuPathAvailable ? 1U : 0U);
+        MixString(hash, state.renderPathReason);
+        MixString(hash, state.heightmapDiagnostic);
+        MixString(hash, state.materialDiagnostic);
+        MixString(hash, state.lodDiagnostic);
+        return hash;
+    }
+
+    uint64 ComputeMutationPayloadDigest(const RenderSkySnapshot& state)
+    {
+        uint64 hash = Diagnostics::RVX_DIAGNOSTICS_FNV1A64_OFFSET_BASIS;
+        Diagnostics::MixContentHashValue(hash,
+                                         static_cast<uint64>(state.mode));
+        MixResourceHandle(hash, state.skyTexture);
+        MixVec3(hash, state.tint);
+        MixVec3(hash, state.sunDirection);
+        MixVec3(hash, state.sunColor);
+        MixVec3(hash, state.zenithColor);
+        MixVec3(hash, state.horizonColor);
+        MixVec3(hash, state.groundColor);
+        MixFloat(hash, state.intensity);
+        MixFloat(hash, state.rotationRadians);
+        MixFloat(hash, state.blurLevel);
+        MixFloat(hash, state.scatteringIntensity);
+        return hash;
+    }
+
+    uint64 ComputeMutationPayloadDigest(
+        const RenderEnvironmentSnapshot& state)
+    {
+        uint64 hash = Diagnostics::RVX_DIAGNOSTICS_FNV1A64_OFFSET_BASIS;
+        MixResourceHandle(hash, state.irradianceTexture);
+        MixResourceHandle(hash, state.prefilteredTexture);
+        MixResourceHandle(hash, state.brdfLutTexture);
+        MixFloat(hash, state.intensity);
+        return hash;
+    }
+
+    void SaturatingAddCount(uint64& target, uint64 value) noexcept
+    {
+        if (value > std::numeric_limits<uint64>::max() - target)
+            target = std::numeric_limits<uint64>::max();
+        else
+            target += value;
+    }
+
+    void AccumulateOperationSummary(
+        RenderSceneMutationOperationSummary& target,
+        const RenderSceneMutationOperationSummary& source) noexcept
+    {
+        SaturatingAddCount(target.upsertCount, source.upsertCount);
+        SaturatingAddCount(target.removeCount, source.removeCount);
+    }
+
+    void AccumulateMutationSummary(RenderSceneMutationSummary& target,
+                                   const RenderSceneMutationSummary& source) noexcept
+    {
+        AccumulateOperationSummary(target.primitives, source.primitives);
+        AccumulateOperationSummary(target.lights, source.lights);
+        AccumulateOperationSummary(target.decals, source.decals);
+        AccumulateOperationSummary(target.probes, source.probes);
+        AccumulateOperationSummary(target.particles, source.particles);
+        AccumulateOperationSummary(target.water, source.water);
+        AccumulateOperationSummary(target.terrain, source.terrain);
+        AccumulateOperationSummary(target.sky, source.sky);
+        AccumulateOperationSummary(target.environment, source.environment);
+    }
+
+    template<typename Mutations, typename IdMember>
+    void AppendMutationEvidence(
+        const Mutations& mutations,
+        RenderSceneMutationOperationSummary& summary,
+        MutationDigestKind kind,
+        IdMember idMember,
+        std::vector<MutationDigestTuple>& tuples)
+    {
+        tuples.reserve(tuples.size() + mutations.size());
+        for (const auto& mutation : mutations)
+        {
+            if (mutation.operation == RenderSceneMutationOperation::Remove)
+                SaturatingAddCount(summary.removeCount, 1);
+            else
+                SaturatingAddCount(summary.upsertCount, 1);
+            const uint64 payloadDigest =
+                mutation.operation == RenderSceneMutationOperation::Upsert
+                ? ComputeMutationPayloadDigest(mutation.state)
+                : 0;
+            tuples.push_back(
+                {kind, mutation.operation, mutation.*idMember, payloadDigest});
+        }
+    }
+
+    template<typename State>
+    void AppendSingletonEvidence(
+        const std::optional<RenderSingletonMutation<State>>& mutation,
+        RenderSceneMutationOperationSummary& summary,
+        MutationDigestKind kind,
+        std::vector<MutationDigestTuple>& tuples)
+    {
+        if (!mutation.has_value())
+            return;
+        if (mutation->operation == RenderSceneMutationOperation::Remove)
+            SaturatingAddCount(summary.removeCount, 1);
+        else
+            SaturatingAddCount(summary.upsertCount, 1);
+        const uint64 payloadDigest =
+            mutation->operation == RenderSceneMutationOperation::Upsert
+            ? ComputeMutationPayloadDigest(mutation->state)
+            : 0;
+        tuples.push_back({kind, mutation->operation, 0, payloadDigest});
+    }
+
+    uint64 ComputeCanonicalMutationDigest(
+        const RenderSceneUpdateBatch& batch,
+        std::vector<MutationDigestTuple> tuples)
+    {
+        std::sort(tuples.begin(), tuples.end(),
+                  [](const MutationDigestTuple& left,
+                     const MutationDigestTuple& right)
+                  {
+                      return std::tie(left.kind,
+                                      left.operation,
+                                      left.id,
+                                      left.payloadDigest) <
+                             std::tie(right.kind,
+                                      right.operation,
+                                      right.id,
+                                      right.payloadDigest);
+                  });
+
+        uint64 hash = Diagnostics::RVX_DIAGNOSTICS_FNV1A64_OFFSET_BASIS;
+        Diagnostics::MixContentHashValue(hash, batch.schemaId);
+        Diagnostics::MixContentHashValue(hash, batch.schemaVersion);
+        Diagnostics::MixContentHashValue(hash, batch.baseSceneRevision);
+        Diagnostics::MixContentHashValue(hash, batch.targetSceneRevision);
+        Diagnostics::MixContentHashValue(hash, batch.fullReset ? 1U : 0U);
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(tuples.size()));
+        for (const MutationDigestTuple& tuple : tuples)
+        {
+            Diagnostics::MixContentHashValue(
+                hash, static_cast<uint64>(tuple.kind));
+            Diagnostics::MixContentHashValue(
+                hash, static_cast<uint64>(tuple.operation));
+            Diagnostics::MixContentHashValue(hash, tuple.id);
+            Diagnostics::MixContentHashValue(hash, tuple.payloadDigest);
+        }
+        return hash;
     }
 
     template<typename Values>
@@ -72,88 +563,109 @@ namespace
         }
     }
 
-    [[nodiscard]] uint32 GetHandleSlot(uint64 id) noexcept
-    {
-        return static_cast<uint32>(id & 0xFFFFFFFFull);
-    }
-
-    [[nodiscard]] uint32 GetHandleGeneration(uint64 id) noexcept
-    {
-        return static_cast<uint32>(id >> 32u);
-    }
-
-    [[nodiscard]] uint64 MakePackedHandle(uint32 slot,
-                                          uint32 generation) noexcept
-    {
-        return (static_cast<uint64>(generation) << 32U) |
-               static_cast<uint64>(slot);
-    }
-
     /**
-     * Render primitive/light IDs are packed generation-safe ComponentHandles.
-     * Validate the entire replacement transaction before applying any value so
-     * an old producer cannot resurrect a recycled component slot.
+     * Render IDs are opaque keys produced by the bridge. Source slot reuse is
+     * governed only by the explicit provenance copied into each snapshot; do
+     * not infer ECS generations by bit-decoding the opaque ID.
      */
-    template<typename Mutation, typename State>
-    bool ValidateGenerationSafeMutations(
+    template<typename Mutation, typename State, typename SourceGenerations>
+    bool ValidateSceneObjectGenerationSafeMutations(
         const std::vector<Mutation>& mutations,
         const std::unordered_map<uint64, State>& current,
-        const std::unordered_map<uint32, uint32>& acceptedGenerations,
+        const SourceGenerations& acceptedSources,
         uint64 Mutation::* idMember,
         bool fullReset)
     {
+        using SourceSlot = typename SourceGenerations::key_type;
+        struct PendingUpsert
+        {
+            uint64 renderId = 0;
+            RenderSceneObjectSourceIdentity source{};
+        };
+
         std::unordered_set<uint64> removals;
-        std::unordered_map<uint32, uint64> upsertsBySlot;
+        std::map<SourceSlot, PendingUpsert> upsertsBySource;
         removals.reserve(mutations.size());
-        upsertsBySlot.reserve(mutations.size());
         for (const Mutation& mutation : mutations)
         {
-            const uint64 id = mutation.*idMember;
-            const uint32 slot = GetHandleSlot(id);
-            if (slot == 0)
+            const uint64 renderId = mutation.*idMember;
+            if (renderId == 0)
                 return false;
 
             if (mutation.operation == RenderSceneMutationOperation::Remove)
             {
-                if (fullReset || !current.contains(id) ||
-                    !removals.insert(id).second)
+                if (fullReset || !current.contains(renderId) ||
+                    !removals.insert(renderId).second)
                 {
                     return false;
                 }
                 continue;
             }
 
-            const auto [upsert, inserted] = upsertsBySlot.emplace(slot, id);
-            if (!inserted && upsert->second != id)
+            const RenderSceneObjectSourceIdentity& source = mutation.state.source;
+            if (!source.IsValid())
+                return false;
+            const auto retainedById = current.find(renderId);
+            if (retainedById != current.end() &&
+                retainedById->second.source != source)
+            {
+                return false;
+            }
+
+            const SourceSlot slot{source.sceneRuntimeId, source.entitySlot};
+            const auto [upsert, inserted] = upsertsBySource.emplace(
+                slot, PendingUpsert{renderId, source});
+            if (!inserted && upsert->second.renderId != renderId)
                 return false;
         }
 
-        if (fullReset)
-            return true;
-
-        for (const auto& [slot, id] : upsertsBySlot)
+        for (const auto& [slot, pending] : upsertsBySource)
         {
-            const auto accepted = acceptedGenerations.find(slot);
-            const uint64 currentId = accepted != acceptedGenerations.end()
-                ? MakePackedHandle(slot, accepted->second)
-                : 0;
-            const bool hasCurrent = currentId != 0 &&
-                                    current.contains(currentId);
-            if (hasCurrent && currentId == id)
+            for (const auto& [acceptedSlot, acceptedSource] : acceptedSources)
+            {
+                if (acceptedSlot != slot &&
+                    acceptedSource.renderId == pending.renderId)
+                {
+                    return false;
+                }
+            }
+
+            const auto accepted = acceptedSources.find(slot);
+            if (accepted == acceptedSources.end())
                 continue;
 
-            if (!hasCurrent)
+            const auto& acceptedSource = accepted->second;
+            const auto retained = current.find(acceptedSource.renderId);
+            const bool hasCurrent = retained != current.end();
+            if (hasCurrent &&
+                (retained->second.source.sceneRuntimeId != slot.first ||
+                 retained->second.source.entitySlot != slot.second ||
+                 retained->second.source.entityGeneration !=
+                     acceptedSource.entityGeneration))
             {
-                if (accepted != acceptedGenerations.end() &&
-                    GetHandleGeneration(id) <= accepted->second)
+                return false;
+            }
+
+            if (pending.source.entityGeneration ==
+                acceptedSource.entityGeneration)
+            {
+                if (pending.renderId != acceptedSource.renderId || !hasCurrent)
                 {
                     return false;
                 }
                 continue;
             }
-
-            if (GetHandleGeneration(id) <= GetHandleGeneration(currentId) ||
-                !removals.contains(currentId))
+            if (pending.source.entityGeneration <
+                acceptedSource.entityGeneration)
+            {
+                return false;
+            }
+            if (pending.renderId == acceptedSource.renderId)
+            {
+                return false;
+            }
+            if (hasCurrent && !fullReset &&
+                !removals.contains(acceptedSource.renderId))
             {
                 return false;
             }
@@ -161,24 +673,159 @@ namespace
         return true;
     }
 
-    template<typename Mutation>
-    void AdvanceAcceptedGenerations(
+    template<typename Mutation, typename SourceGenerations>
+    void AdvanceAcceptedSceneObjectSources(
         const std::vector<Mutation>& mutations,
-        std::unordered_map<uint32, uint32>& generations,
-        uint64 Mutation::* idMember,
-        bool fullReset)
+        SourceGenerations& generations,
+        uint64 Mutation::* idMember)
     {
-        if (fullReset)
-            generations.clear();
+        // Tombstones intentionally survive full resets. A stale producer must
+        // not resurrect an entity slot simply because a retained scene was
+        // rebuilt from scratch.
         for (const Mutation& mutation : mutations)
         {
-            const uint64 id = mutation.*idMember;
-            const uint32 slot = GetHandleSlot(id);
-            const uint32 generation = GetHandleGeneration(id);
-            auto [it, inserted] = generations.emplace(slot, generation);
-            if (!inserted)
-                it->second = std::max(it->second, generation);
+            if (mutation.operation == RenderSceneMutationOperation::Remove)
+                continue;
+
+            const RenderSceneObjectSourceIdentity& source = mutation.state.source;
+            const typename SourceGenerations::key_type slot{
+                source.sceneRuntimeId, source.entitySlot};
+            typename SourceGenerations::mapped_type accepted;
+            accepted.entityGeneration = source.entityGeneration;
+            accepted.renderId = mutation.*idMember;
+            generations.insert_or_assign(slot, accepted);
         }
+    }
+
+    template<typename Mutation, typename State, typename FeatureGenerations>
+    bool ValidateFeatureGenerationSafeMutations(
+        const std::vector<Mutation>& mutations,
+        const std::unordered_map<uint64, State>& current,
+        const FeatureGenerations& acceptedSources,
+        uint64 Mutation::* idMember,
+        RenderFeatureChannelId expectedChannel,
+        bool fullReset)
+    {
+        using SourceSlot = typename FeatureGenerations::key_type;
+        struct PendingUpsert
+        {
+            uint64 renderId = 0;
+            RenderFeatureSourceIdentity source{};
+            uint64 captureSequence = 0;
+        };
+
+        std::unordered_set<uint64> removals;
+        std::map<SourceSlot, PendingUpsert> upsertsBySource;
+        removals.reserve(mutations.size());
+        for (const Mutation& mutation : mutations)
+        {
+            const uint64 renderId = mutation.*idMember;
+            if (renderId == 0)
+                return false;
+
+            if (mutation.operation == RenderSceneMutationOperation::Remove)
+            {
+                const auto retained = current.find(renderId);
+                if (fullReset || retained == current.end() ||
+                    retained->second.ValidateChannel() !=
+                        RenderFeatureChannelValidationCode::Valid ||
+                    !removals.insert(renderId).second)
+                {
+                    return false;
+                }
+                continue;
+            }
+
+            if (mutation.state.ValidateChannel() !=
+                    RenderFeatureChannelValidationCode::Valid ||
+                mutation.state.header.channelId != expectedChannel)
+            {
+                return false;
+            }
+            const RenderFeatureSourceIdentity& source =
+                mutation.state.header.source;
+            const auto retainedById = current.find(renderId);
+            if (retainedById != current.end() &&
+                retainedById->second.header.source != source)
+            {
+                return false;
+            }
+            const SourceSlot slot{source.sceneRuntimeId, source.entitySlot};
+            const auto [upsert, inserted] = upsertsBySource.emplace(
+                slot,
+                PendingUpsert{renderId,
+                              source,
+                              mutation.state.header.captureSequence});
+            if (!inserted && upsert->second.renderId != renderId)
+                return false;
+        }
+
+        for (const auto& [slot, pending] : upsertsBySource)
+        {
+            // Render IDs are opaque bridge keys, but they retain exclusive
+            // source ownership across accepted snapshots. Tombstones remain
+            // in acceptedSources after removal so a different source cannot
+            // reuse an ID once it has been observed by this database.
+            for (const auto& [acceptedSlot, acceptedSource] : acceptedSources)
+            {
+                if (acceptedSlot != slot &&
+                    acceptedSource.renderId == pending.renderId)
+                {
+                    return false;
+                }
+            }
+
+            const auto accepted = acceptedSources.find(slot);
+            if (accepted == acceptedSources.end())
+                continue;
+
+            const auto& acceptedSource = accepted->second;
+            const auto retained = current.find(acceptedSource.renderId);
+            const bool hasCurrent = retained != current.end();
+            if (hasCurrent &&
+                (retained->second.header.source.sceneRuntimeId != slot.first ||
+                 retained->second.header.source.entitySlot != slot.second ||
+                 retained->second.header.source.entityGeneration !=
+                     acceptedSource.entityGeneration))
+            {
+                return false;
+            }
+
+            if (pending.source.entityGeneration <
+                acceptedSource.entityGeneration)
+            {
+                return false;
+            }
+
+            const bool sameGeneration =
+                acceptedSource.entityGeneration ==
+                pending.source.entityGeneration;
+            if (sameGeneration &&
+                pending.captureSequence <= acceptedSource.captureSequence &&
+                !(fullReset && hasCurrent &&
+                  pending.captureSequence == acceptedSource.captureSequence &&
+                  acceptedSource.renderId == pending.renderId))
+            {
+                return false;
+            }
+
+            if (acceptedSource.renderId == pending.renderId && sameGeneration)
+            {
+                if (!hasCurrent)
+                    return false;
+                continue;
+            }
+            if (sameGeneration)
+                return false;
+
+            if (pending.renderId == acceptedSource.renderId)
+                return false;
+
+            if (hasCurrent && !fullReset &&
+                !removals.contains(acceptedSource.renderId))
+                return false;
+        }
+        return true;
     }
 
     template<typename State>
@@ -259,44 +906,91 @@ namespace
         return plan;
     }
 
-    template<typename Mutation>
-    IncrementalMapPlan<std::unordered_map<uint32, uint32>>
-        PrepareGenerationPlan(
-            const std::vector<Mutation>& mutations,
-            const std::unordered_map<uint32, uint32>& current,
-            uint64 Mutation::* idMember)
+    template<typename Mutation, typename SourceGenerations>
+    IncrementalMapPlan<SourceGenerations> PrepareSceneObjectGenerationPlan(
+        const std::vector<Mutation>& mutations,
+        const SourceGenerations& current,
+        uint64 Mutation::* idMember)
     {
-        IncrementalMapPlan<std::unordered_map<uint32, uint32>> plan;
+        IncrementalMapPlan<SourceGenerations> plan;
         plan.finalSize = current.size();
-        plan.upserts.reserve(mutations.size());
         for (const Mutation& mutation : mutations)
         {
-            const uint64 id = mutation.*idMember;
-            const uint32 slot = GetHandleSlot(id);
-            const uint32 generation = GetHandleGeneration(id);
-            auto staged = plan.upserts.find(slot);
-            if (staged != plan.upserts.end())
-            {
-                staged->second = std::max(staged->second, generation);
+            if (mutation.operation == RenderSceneMutationOperation::Remove)
                 continue;
-            }
-            const auto accepted = current.find(slot);
-            const uint32 next = accepted != current.end()
-                ? std::max(accepted->second, generation)
-                : generation;
-            if (accepted == current.end())
+
+            const RenderSceneObjectSourceIdentity& source = mutation.state.source;
+            const typename SourceGenerations::key_type slot{
+                source.sceneRuntimeId, source.entitySlot};
+            typename SourceGenerations::mapped_type accepted;
+            accepted.entityGeneration = source.entityGeneration;
+            accepted.renderId = mutation.*idMember;
+            if (!current.contains(slot))
                 ++plan.finalSize;
-            plan.upserts.emplace(slot, next);
+            plan.upserts.insert_or_assign(slot, accepted);
         }
         return plan;
+    }
+
+    template<typename Mutation, typename FeatureGenerations>
+    IncrementalMapPlan<FeatureGenerations> PrepareFeatureGenerationPlan(
+        const std::vector<Mutation>& mutations,
+        const FeatureGenerations& current,
+        uint64 Mutation::* idMember)
+    {
+        IncrementalMapPlan<FeatureGenerations> plan;
+        plan.finalSize = current.size();
+        for (const Mutation& mutation : mutations)
+        {
+            if (mutation.operation == RenderSceneMutationOperation::Remove)
+                continue;
+
+            const RenderFeatureSourceIdentity& source =
+                mutation.state.header.source;
+            const typename FeatureGenerations::key_type slot{
+                source.sceneRuntimeId, source.entitySlot};
+            typename FeatureGenerations::mapped_type accepted;
+            accepted.entityGeneration = source.entityGeneration;
+            accepted.renderId = mutation.*idMember;
+            accepted.captureSequence = mutation.state.header.captureSequence;
+            if (!current.contains(slot))
+                ++plan.finalSize;
+            plan.upserts.insert_or_assign(slot, accepted);
+        }
+        return plan;
+    }
+
+    template<typename Mutation, typename FeatureGenerations>
+    void AdvanceAcceptedFeatureSources(
+        const std::vector<Mutation>& mutations,
+        FeatureGenerations& generations,
+        uint64 Mutation::* idMember)
+    {
+        for (const Mutation& mutation : mutations)
+        {
+            if (mutation.operation == RenderSceneMutationOperation::Remove)
+                continue;
+            const RenderFeatureSourceIdentity& source =
+                mutation.state.header.source;
+            const typename FeatureGenerations::key_type slot{
+                source.sceneRuntimeId, source.entitySlot};
+            typename FeatureGenerations::mapped_type accepted;
+            accepted.entityGeneration = source.entityGeneration;
+            accepted.renderId = mutation.*idMember;
+            accepted.captureSequence = mutation.state.header.captureSequence;
+            generations.insert_or_assign(slot, accepted);
+        }
     }
 
     template<typename Map>
     void ReserveIncrementalTarget(Map& target,
                                   const IncrementalMapPlan<Map>& plan)
     {
-        if (plan.finalSize > target.size())
-            target.reserve(plan.finalSize);
+        if constexpr (requires(Map& value, size_t size) { value.reserve(size); })
+        {
+            if (plan.finalSize > target.size())
+                target.reserve(plan.finalSize);
+        }
     }
 
     template<typename Map>
@@ -344,7 +1038,8 @@ namespace
     bool EqualPrimitive(const RenderPrimitiveSnapshot& left,
                         const RenderPrimitiveSnapshot& right)
     {
-        if (left.objectId != right.objectId || left.mesh != right.mesh ||
+        if (left.objectId != right.objectId || left.source != right.source ||
+            left.mesh != right.mesh ||
             left.material != right.material ||
             left.fallbackMesh != right.fallbackMesh ||
             left.fallbackMaterial != right.fallbackMaterial ||
@@ -389,7 +1084,8 @@ namespace
     bool EqualLight(const RenderLightSnapshot& left,
                     const RenderLightSnapshot& right)
     {
-        return left.lightId == right.lightId && left.type == right.type &&
+        return left.lightId == right.lightId && left.source == right.source &&
+               left.type == right.type &&
                left.position == right.position && left.direction == right.direction &&
                left.color == right.color && left.intensity == right.intensity &&
                left.range == right.range &&
@@ -454,13 +1150,13 @@ uint64 RenderSceneDatabase::ComputeLightStateHash() const noexcept
         Diagnostics::MixContentHashValue(hash, lightId);
         Diagnostics::MixContentHashValue(
             hash, static_cast<uint64>(light.type));
-        MixLightVec3(hash, light.position);
-        MixLightVec3(hash, light.direction);
-        MixLightVec3(hash, light.color);
-        MixLightFloat(hash, light.intensity);
-        MixLightFloat(hash, light.range);
-        MixLightFloat(hash, light.innerConeRadians);
-        MixLightFloat(hash, light.outerConeRadians);
+        MixVec3(hash, light.position);
+        MixVec3(hash, light.direction);
+        MixVec3(hash, light.color);
+        MixFloat(hash, light.intensity);
+        MixFloat(hash, light.range);
+        MixFloat(hash, light.innerConeRadians);
+        MixFloat(hash, light.outerConeRadians);
         Diagnostics::MixContentHashValue(hash, light.shadowResource.slot);
         Diagnostics::MixContentHashValue(hash, light.shadowResource.generation);
         Diagnostics::MixContentHashValue(hash, light.layerMask);
@@ -474,36 +1170,80 @@ RenderSceneDatabase::BuildChangeJournalEntry(
     const RenderSceneUpdateBatch& batch)
 {
     ChangeJournalEntry entry;
+    std::vector<MutationDigestTuple> digestTuples;
     entry.baseRevision = batch.baseSceneRevision;
     entry.targetRevision = batch.targetSceneRevision;
     entry.fullReset = batch.fullReset;
     entry.skyChanged = batch.fullReset || batch.sky.has_value();
     entry.environmentChanged =
         batch.fullReset || batch.environment.has_value();
-    if (batch.fullReset)
-        return entry;
 
     AppendMutationIds(batch.primitives,
                       entry.primitives,
                       &RenderPrimitiveMutation::objectId);
+    AppendMutationEvidence(batch.primitives,
+                           entry.mutationSummary.primitives,
+                           MutationDigestKind::Primitive,
+                           &RenderPrimitiveMutation::objectId,
+                           digestTuples);
     AppendMutationIds(batch.lights,
                       entry.lights,
                       &RenderLightMutation::lightId);
+    AppendMutationEvidence(batch.lights,
+                           entry.mutationSummary.lights,
+                           MutationDigestKind::Light,
+                           &RenderLightMutation::lightId,
+                           digestTuples);
     AppendMutationIds(batch.decals,
                       entry.decals,
                       &RenderDecalMutation::decalId);
+    AppendMutationEvidence(batch.decals,
+                           entry.mutationSummary.decals,
+                           MutationDigestKind::Decal,
+                           &RenderDecalMutation::decalId,
+                           digestTuples);
     AppendMutationIds(batch.probes,
                       entry.probes,
                       &RenderProbeMutation::probeId);
+    AppendMutationEvidence(batch.probes,
+                           entry.mutationSummary.probes,
+                           MutationDigestKind::Probe,
+                           &RenderProbeMutation::probeId,
+                           digestTuples);
     AppendMutationIds(batch.particles,
                       entry.particles,
                       &RenderParticleMutation::instanceId);
+    AppendMutationEvidence(batch.particles,
+                           entry.mutationSummary.particles,
+                           MutationDigestKind::Particle,
+                           &RenderParticleMutation::instanceId,
+                           digestTuples);
     AppendMutationIds(batch.water,
                       entry.water,
                       &RenderWaterMutation::componentId);
+    AppendMutationEvidence(batch.water,
+                           entry.mutationSummary.water,
+                           MutationDigestKind::Water,
+                           &RenderWaterMutation::componentId,
+                           digestTuples);
     AppendMutationIds(batch.terrain,
                       entry.terrain,
                       &RenderTerrainMutation::componentId);
+    AppendMutationEvidence(batch.terrain,
+                           entry.mutationSummary.terrain,
+                           MutationDigestKind::Terrain,
+                           &RenderTerrainMutation::componentId,
+                           digestTuples);
+    AppendSingletonEvidence(batch.sky,
+                            entry.mutationSummary.sky,
+                            MutationDigestKind::Sky,
+                            digestTuples);
+    AppendSingletonEvidence(batch.environment,
+                            entry.mutationSummary.environment,
+                            MutationDigestKind::Environment,
+                            digestTuples);
+    entry.canonicalMutationDigest = ComputeCanonicalMutationDigest(
+        batch, std::move(digestTuples));
     return entry;
 }
 
@@ -536,41 +1276,50 @@ RenderSceneUpdateApplyResult RenderSceneDatabase::Apply(
         result.code = RenderSceneUpdateApplyCode::RevisionGap;
         return result;
     }
-    if (!ValidateGenerationSafeMutations(
+    if (!ValidateSceneObjectGenerationSafeMutations(
             batch.primitives,
             m_primitives,
             m_primitiveGenerations,
             &RenderPrimitiveMutation::objectId,
             batch.fullReset) ||
-        !ValidateGenerationSafeMutations(
+        !ValidateSceneObjectGenerationSafeMutations(
             batch.lights,
             m_lights,
             m_lightGenerations,
             &RenderLightMutation::lightId,
             batch.fullReset) ||
-        !ValidateGenerationSafeMutations(
+        !ValidateSceneObjectGenerationSafeMutations(
             batch.decals,
             m_decals,
             m_decalGenerations,
             &RenderDecalMutation::decalId,
             batch.fullReset) ||
-        !ValidateGenerationSafeMutations(
+        !ValidateSceneObjectGenerationSafeMutations(
             batch.probes,
             m_probes,
             m_probeGenerations,
             &RenderProbeMutation::probeId,
             batch.fullReset) ||
-        !ValidateGenerationSafeMutations(
+        !ValidateFeatureGenerationSafeMutations(
+            batch.particles,
+            m_particles,
+            m_particleGenerations,
+            &RenderParticleMutation::instanceId,
+            RenderFeatureChannelId::Particle,
+            batch.fullReset) ||
+        !ValidateFeatureGenerationSafeMutations(
             batch.water,
             m_water,
             m_waterGenerations,
             &RenderWaterMutation::componentId,
+            RenderFeatureChannelId::Water,
             batch.fullReset) ||
-        !ValidateGenerationSafeMutations(
+        !ValidateFeatureGenerationSafeMutations(
             batch.terrain,
             m_terrain,
             m_terrainGenerations,
             &RenderTerrainMutation::componentId,
+            RenderFeatureChannelId::Terrain,
             batch.fullReset))
     {
         result.code = RenderSceneUpdateApplyCode::InvalidMutation;
@@ -601,27 +1350,31 @@ RenderSceneUpdateApplyResult RenderSceneDatabase::Apply(
             batch.water, m_water, &RenderWaterMutation::componentId);
         auto terrain = PrepareIncrementalValuePlan(
             batch.terrain, m_terrain, &RenderTerrainMutation::componentId);
-        auto primitiveGenerations = PrepareGenerationPlan(
+        auto primitiveGenerations = PrepareSceneObjectGenerationPlan(
             batch.primitives,
             m_primitiveGenerations,
             &RenderPrimitiveMutation::objectId);
-        auto lightGenerations = PrepareGenerationPlan(
+        auto lightGenerations = PrepareSceneObjectGenerationPlan(
             batch.lights,
             m_lightGenerations,
             &RenderLightMutation::lightId);
-        auto decalGenerations = PrepareGenerationPlan(
+        auto decalGenerations = PrepareSceneObjectGenerationPlan(
             batch.decals,
             m_decalGenerations,
             &RenderDecalMutation::decalId);
-        auto probeGenerations = PrepareGenerationPlan(
+        auto probeGenerations = PrepareSceneObjectGenerationPlan(
             batch.probes,
             m_probeGenerations,
             &RenderProbeMutation::probeId);
-        auto waterGenerations = PrepareGenerationPlan(
+        auto particleGenerations = PrepareFeatureGenerationPlan(
+            batch.particles,
+            m_particleGenerations,
+            &RenderParticleMutation::instanceId);
+        auto waterGenerations = PrepareFeatureGenerationPlan(
             batch.water,
             m_waterGenerations,
             &RenderWaterMutation::componentId);
-        auto terrainGenerations = PrepareGenerationPlan(
+        auto terrainGenerations = PrepareFeatureGenerationPlan(
             batch.terrain,
             m_terrainGenerations,
             &RenderTerrainMutation::componentId);
@@ -643,6 +1396,7 @@ RenderSceneUpdateApplyResult RenderSceneDatabase::Apply(
         ReserveIncrementalTarget(m_lightGenerations, lightGenerations);
         ReserveIncrementalTarget(m_decalGenerations, decalGenerations);
         ReserveIncrementalTarget(m_probeGenerations, probeGenerations);
+        ReserveIncrementalTarget(m_particleGenerations, particleGenerations);
         ReserveIncrementalTarget(m_waterGenerations, waterGenerations);
         ReserveIncrementalTarget(m_terrainGenerations, terrainGenerations);
         m_changeHistory.push_back(BuildChangeJournalEntry(batch));
@@ -659,6 +1413,7 @@ RenderSceneUpdateApplyResult RenderSceneDatabase::Apply(
         CommitIncrementalPlan(m_lightGenerations, lightGenerations);
         CommitIncrementalPlan(m_decalGenerations, decalGenerations);
         CommitIncrementalPlan(m_probeGenerations, probeGenerations);
+        CommitIncrementalPlan(m_particleGenerations, particleGenerations);
         CommitIncrementalPlan(m_waterGenerations, waterGenerations);
         CommitIncrementalPlan(m_terrainGenerations, terrainGenerations);
         if (sky.has_value())
@@ -680,12 +1435,13 @@ RenderSceneUpdateApplyResult RenderSceneDatabase::Apply(
     auto lights = batch.fullReset ? decltype(m_lights){} : m_lights;
     auto decals = batch.fullReset ? decltype(m_decals){} : m_decals;
     auto probes = batch.fullReset ? decltype(m_probes){} : m_probes;
-    auto primitiveGenerations = decltype(m_primitiveGenerations){};
-    auto lightGenerations = decltype(m_lightGenerations){};
-    auto decalGenerations = decltype(m_decalGenerations){};
-    auto probeGenerations = decltype(m_probeGenerations){};
-    auto waterGenerations = decltype(m_waterGenerations){};
-    auto terrainGenerations = decltype(m_terrainGenerations){};
+    auto primitiveGenerations = m_primitiveGenerations;
+    auto lightGenerations = m_lightGenerations;
+    auto decalGenerations = m_decalGenerations;
+    auto probeGenerations = m_probeGenerations;
+    auto particleGenerations = m_particleGenerations;
+    auto waterGenerations = m_waterGenerations;
+    auto terrainGenerations = m_terrainGenerations;
     auto particles = batch.fullReset ? decltype(m_particles){} : m_particles;
     auto water = batch.fullReset ? decltype(m_water){} : m_water;
     auto terrain = batch.fullReset ? decltype(m_terrain){} : m_terrain;
@@ -704,33 +1460,30 @@ RenderSceneUpdateApplyResult RenderSceneDatabase::Apply(
     ApplyMutations(batch.lights, lights, &RenderLightMutation::lightId);
     ApplyMutations(batch.decals, decals, &RenderDecalMutation::decalId);
     ApplyMutations(batch.probes, probes, &RenderProbeMutation::probeId);
-    AdvanceAcceptedGenerations(batch.primitives,
-                               primitiveGenerations,
-                               &RenderPrimitiveMutation::objectId,
-                               batch.fullReset);
-    AdvanceAcceptedGenerations(batch.lights,
-                               lightGenerations,
-                               &RenderLightMutation::lightId,
-                               batch.fullReset);
-    AdvanceAcceptedGenerations(batch.decals,
-                               decalGenerations,
-                               &RenderDecalMutation::decalId,
-                               batch.fullReset);
-    AdvanceAcceptedGenerations(batch.probes,
-                               probeGenerations,
-                               &RenderProbeMutation::probeId,
-                               batch.fullReset);
+    AdvanceAcceptedSceneObjectSources(batch.primitives,
+                                      primitiveGenerations,
+                                      &RenderPrimitiveMutation::objectId);
+    AdvanceAcceptedSceneObjectSources(batch.lights,
+                                      lightGenerations,
+                                      &RenderLightMutation::lightId);
+    AdvanceAcceptedSceneObjectSources(batch.decals,
+                                      decalGenerations,
+                                      &RenderDecalMutation::decalId);
+    AdvanceAcceptedSceneObjectSources(batch.probes,
+                                      probeGenerations,
+                                      &RenderProbeMutation::probeId);
     ApplyMutations(batch.particles, particles, &RenderParticleMutation::instanceId);
     ApplyMutations(batch.water, water, &RenderWaterMutation::componentId);
     ApplyMutations(batch.terrain, terrain, &RenderTerrainMutation::componentId);
-    AdvanceAcceptedGenerations(batch.water,
-                               waterGenerations,
-                               &RenderWaterMutation::componentId,
-                               batch.fullReset);
-    AdvanceAcceptedGenerations(batch.terrain,
-                               terrainGenerations,
-                               &RenderTerrainMutation::componentId,
-                               batch.fullReset);
+    AdvanceAcceptedFeatureSources(batch.particles,
+                                  particleGenerations,
+                                  &RenderParticleMutation::instanceId);
+    AdvanceAcceptedFeatureSources(batch.water,
+                                  waterGenerations,
+                                  &RenderWaterMutation::componentId);
+    AdvanceAcceptedFeatureSources(batch.terrain,
+                                  terrainGenerations,
+                                  &RenderTerrainMutation::componentId);
     ApplySingleton(batch.sky, sky);
     ApplySingleton(batch.environment, environment);
 
@@ -748,6 +1501,7 @@ RenderSceneUpdateApplyResult RenderSceneDatabase::Apply(
     m_decalGenerations.swap(decalGenerations);
     m_probeGenerations.swap(probeGenerations);
     m_particles.swap(particles);
+    m_particleGenerations.swap(particleGenerations);
     m_water.swap(water);
     m_terrain.swap(terrain);
     m_waterGenerations.swap(waterGenerations);
@@ -780,6 +1534,7 @@ void RenderSceneDatabase::Clear()
     m_decalGenerations.clear();
     m_probeGenerations.clear();
     m_particles.clear();
+    m_particleGenerations.clear();
     m_water.clear();
     m_terrain.clear();
     m_waterGenerations.clear();
@@ -795,9 +1550,13 @@ RenderSceneDatabaseChanges RenderSceneDatabase::CollectChangesSince(
     RenderSceneDatabaseChanges result;
     result.baseRevision = baseRevision;
     result.targetRevision = m_revision;
+    uint64 rangeDigest = Diagnostics::RVX_DIAGNOSTICS_FNV1A64_OFFSET_BASIS;
+    Diagnostics::MixContentHashValue(rangeDigest, baseRevision);
+    Diagnostics::MixContentHashValue(rangeDigest, m_revision);
     if (baseRevision == m_revision)
     {
         result.available = true;
+        result.canonicalMutationDigest = rangeDigest;
         return result;
     }
     if (baseRevision > m_revision)
@@ -809,6 +1568,13 @@ RenderSceneDatabaseChanges RenderSceneDatabase::CollectChangesSince(
     {
         if (batch.targetRevision <= baseRevision)
             continue;
+
+        AccumulateMutationSummary(result.mutationSummary,
+                                  batch.mutationSummary);
+        Diagnostics::MixContentHashValue(rangeDigest, batch.baseRevision);
+        Diagnostics::MixContentHashValue(rangeDigest, batch.targetRevision);
+        Diagnostics::MixContentHashValue(rangeDigest,
+                                         batch.canonicalMutationDigest);
 
         if (batch.fullReset)
         {
@@ -845,6 +1611,7 @@ RenderSceneDatabaseChanges RenderSceneDatabase::CollectChangesSince(
     SortUnique(result.particles);
     SortUnique(result.water);
     SortUnique(result.terrain);
+    result.canonicalMutationDigest = rangeDigest;
     result.available = true;
     return result;
 }

@@ -85,7 +85,8 @@ bool AreRenderPrimitiveSnapshotsEqual(
     const RenderPrimitiveSnapshot& left,
     const RenderPrimitiveSnapshot& right) noexcept
 {
-    if (left.objectId != right.objectId || left.mesh != right.mesh ||
+    if (left.objectId != right.objectId || left.source != right.source ||
+        left.mesh != right.mesh ||
         left.material != right.material ||
         left.fallbackMesh != right.fallbackMesh ||
         left.fallbackMaterial != right.fallbackMaterial ||
@@ -129,7 +130,8 @@ bool AreRenderPrimitiveSnapshotsEqual(
 bool AreRenderLightSnapshotsEqual(const RenderLightSnapshot& left,
                                   const RenderLightSnapshot& right) noexcept
 {
-    return left.lightId == right.lightId && left.type == right.type &&
+    return left.lightId == right.lightId && left.source == right.source &&
+           left.type == right.type &&
            left.position == right.position &&
            left.direction == right.direction && left.color == right.color &&
            left.intensity == right.intensity && left.range == right.range &&
@@ -143,7 +145,7 @@ bool AreRenderLightSnapshotsEqual(const RenderLightSnapshot& left,
 bool AreRenderDecalSnapshotsEqual(const RenderDecalSnapshot& left,
                                   const RenderDecalSnapshot& right) noexcept
 {
-    return left.decalId == right.decalId &&
+    return left.decalId == right.decalId && left.source == right.source &&
            EqualMatrix(left.worldTransform, right.worldTransform) &&
            left.halfExtent == right.halfExtent &&
            left.material == right.material && left.color == right.color &&
@@ -160,7 +162,8 @@ bool AreRenderDecalSnapshotsEqual(const RenderDecalSnapshot& left,
 bool AreRenderProbeSnapshotsEqual(const RenderProbeSnapshot& left,
                                   const RenderProbeSnapshot& right) noexcept
 {
-    return left.probeId == right.probeId && left.kind == right.kind &&
+    return left.probeId == right.probeId && left.source == right.source &&
+           left.kind == right.kind &&
            left.shape == right.shape && left.mode == right.mode &&
            EqualMatrix(left.worldTransform, right.worldTransform) &&
            left.influenceExtent == right.influenceExtent &&
@@ -208,7 +211,8 @@ bool AreParticleRenderSnapshotItemsEqual(
     const ParticleRenderSnapshotItem& left,
     const ParticleRenderSnapshotItem& right) noexcept
 {
-    if (left.instanceId != right.instanceId ||
+    if (left.header != right.header ||
+        left.instanceId != right.instanceId ||
         left.systemId != right.systemId ||
         left.systemAssetId != right.systemAssetId ||
         left.systemName != right.systemName ||
@@ -251,7 +255,8 @@ bool AreWaterRenderSnapshotItemsEqual(
     const WaterRenderSnapshotItem& left,
     const WaterRenderSnapshotItem& right) noexcept
 {
-    return left.componentId == right.componentId &&
+    return left.header == right.header &&
+           left.componentId == right.componentId &&
            left.surfaceAssetId == right.surfaceAssetId &&
            left.materialAssetId == right.materialAssetId &&
            left.worldPosition == right.worldPosition &&
@@ -286,7 +291,8 @@ bool AreTerrainRenderSnapshotItemsEqual(
     const TerrainRenderSnapshotItem& left,
     const TerrainRenderSnapshotItem& right) noexcept
 {
-    return left.componentId == right.componentId &&
+    return left.header == right.header &&
+           left.componentId == right.componentId &&
            left.heightmapAssetId == right.heightmapAssetId &&
            left.materialAssetId == right.materialAssetId &&
            left.worldPosition == right.worldPosition &&
@@ -349,25 +355,29 @@ bool RenderSceneUpdateBatch::IsStructurallyValid() const noexcept
     for (const auto& mutation : primitives)
     {
         if (mutation.operation == RenderSceneMutationOperation::Upsert &&
-            mutation.state.objectId != mutation.objectId)
+            (mutation.state.objectId != mutation.objectId ||
+             !mutation.state.source.IsValid()))
             return false;
     }
     for (const auto& mutation : lights)
     {
         if (mutation.operation == RenderSceneMutationOperation::Upsert &&
-            mutation.state.lightId != mutation.lightId)
+            (mutation.state.lightId != mutation.lightId ||
+             !mutation.state.source.IsValid()))
             return false;
     }
     for (const auto& mutation : decals)
     {
         if (mutation.operation == RenderSceneMutationOperation::Upsert &&
-            mutation.state.decalId != mutation.decalId)
+            (mutation.state.decalId != mutation.decalId ||
+             !mutation.state.source.IsValid()))
             return false;
     }
     for (const auto& mutation : probes)
     {
         if (mutation.operation == RenderSceneMutationOperation::Upsert &&
-            mutation.state.probeId != mutation.probeId)
+            (mutation.state.probeId != mutation.probeId ||
+             !mutation.state.source.IsValid()))
             return false;
     }
     for (const auto& mutation : particles)

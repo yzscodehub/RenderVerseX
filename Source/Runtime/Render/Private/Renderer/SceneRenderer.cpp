@@ -47,6 +47,7 @@
 #include "Resources/RenderSubmissionResourceBatch.h"
 #include "Resources/RenderSubmissionTracker.h"
 #include "RHI/RHIRenderPass.h"
+#include "Runtime/RenderViewHistoryCoordinator.h"
 
 #include <algorithm>
 #include <array>
@@ -820,14 +821,16 @@ bool SceneRendererExternalTargetDesc::IsValid() const
 }
 
 SceneRenderer::SceneRenderer()
-    : m_gpuSceneUpdate(std::make_unique<GPUSceneUpdate>())
+    : m_gpuSceneUpdate(std::make_unique<GPUSceneUpdate>()),
+      m_viewHistoryCoordinator(std::make_unique<RenderViewHistoryCoordinator>())
 {
 }
 
 SceneRenderer::SceneRenderer(
     std::unique_ptr<IShaderProgramProvider> shaderProgramProvider)
     : m_shaderProgramProvider(std::move(shaderProgramProvider)),
-      m_gpuSceneUpdate(std::make_unique<GPUSceneUpdate>())
+      m_gpuSceneUpdate(std::make_unique<GPUSceneUpdate>()),
+      m_viewHistoryCoordinator(std::make_unique<RenderViewHistoryCoordinator>())
 {
 }
 
@@ -1081,6 +1084,11 @@ void SceneRenderer::Initialize(
 void SceneRenderer::Shutdown()
 {
     InvalidateRenderFramePlan();
+    AbandonAcceptedFrameHistory();
+    if (m_viewHistoryCoordinator)
+    {
+        m_viewHistoryCoordinator->Clear();
+    }
     m_environmentIBLRequested = false;
     if (m_gpuSceneUploader)
     {
@@ -1190,8 +1198,6 @@ void SceneRenderer::Shutdown()
     m_completedPresentedSkinningPalettesAvailable = false;
     m_completedPresentedSkinningPalettesOverflow = false;
     m_completedPresentedSkinningPalettes.clear();
-    m_previousViewProjectionMatrix = Mat4Identity();
-    m_previousViewProjectionValid = false;
     m_pendingTemporalHistoryReset = false;
     m_previousObjectWorldMatrices.clear();
     m_preGraphPrepareCallbacks.clear();
@@ -1206,6 +1212,57 @@ void SceneRenderer::Shutdown()
 void SceneRenderer::RequestTemporalHistoryReset()
 {
     m_pendingTemporalHistoryReset = true;
+    if (m_viewHistoryCoordinator)
+    {
+        m_viewHistoryCoordinator->RequestReset(
+            RenderHistoryResetReason::ExplicitDiscontinuity);
+    }
+}
+
+void SceneRenderer::EvaluateAcceptedFrameHistory(
+    const RenderFramePacketV5& frame,
+    RenderFrameApplyResult& result) noexcept
+{
+    // A newer accepted packet supersedes an unpresented candidate. The old
+    // identity must never become reusable merely because a later candidate
+    // happened to reach presentation.
+    AbandonAcceptedFrameHistory();
+
+    if (!m_viewHistoryCoordinator)
+    {
+        // Construction creates the coordinator, but keep this boundary
+        // fail-closed if a future lifecycle path changes that invariant.
+        result.temporalHistoryReset = true;
+        return;
+    }
+
+    // The retained RenderScene advances this state only from
+    // MarkAcceptedFramePresented(), after RenderSubsystem has presented the
+    // submitted frame. It is therefore the sole source for the legacy camera
+    // reprojection input. This deliberately says nothing about TAA, shadow,
+    // reflection, or any other effect-owned temporal resource.
+    const bool committedCameraProjectionAvailable =
+        m_renderScene.GetLastRenderedFrameSequence() != 0;
+    const RenderHistoryAvailability availability =
+        m_viewHistoryCoordinator->Evaluate(
+            frame, committedCameraProjectionAvailable);
+
+    result.temporalHistoryReset = result.temporalHistoryReset ||
+        m_pendingTemporalHistoryReset || !availability.available;
+    if (availability.identity.IsValid())
+    {
+        m_activeViewHistoryCandidate = availability.identity;
+    }
+}
+
+void SceneRenderer::AbandonAcceptedFrameHistory() noexcept
+{
+    if (m_activeViewHistoryCandidate.has_value() &&
+        m_viewHistoryCoordinator)
+    {
+        m_viewHistoryCoordinator->Abandon(*m_activeViewHistoryCandidate);
+    }
+    m_activeViewHistoryCandidate.reset();
 }
 
 void SceneRenderer::PrepareForSwapChainResize()
@@ -1917,6 +1974,27 @@ void SceneRenderer::FreezeMutationEvidenceForPresentedFrame()
     completion.appliedSceneRevision =
         m_renderScene.GetRetainedStats().appliedSceneRevision;
 
+    RenderPresentedSceneReceipt presentedScene =
+        m_renderScene.GetPendingPresentedSceneReceipt();
+    if (presentedScene.IsStructurallyValid() &&
+        presentedScene.completedPresentedFrameSequence ==
+            completion.completedFrameSequence &&
+        presentedScene.requiredSceneRevision ==
+            completion.requiredSceneRevision &&
+        presentedScene.appliedSceneRevision == completion.appliedSceneRevision &&
+        m_renderScene.CommitPendingPresentedSceneReceipt(
+            completion.completedFrameSequence))
+    {
+        presentedScene.available = true;
+        m_completedMutationEvidence.presentedScene = presentedScene;
+    }
+    else
+    {
+        // Never relabel stale or incomplete accepted-frame evidence as a
+        // completed presentation receipt.
+        m_completedMutationEvidence.presentedScene = {};
+    }
+
     // The mutation watermark is the only action evidence that may cross the
     // latest-only diagnostics transport. Publishing it after Present prevents
     // unsubmitted, failed, or merely recorded work from replacing it.
@@ -2091,10 +2169,11 @@ RenderFrameApplyResult SceneRenderer::ApplyFrameV5(
         // so diagnostics can still distinguish it from no IBL request.
         m_environmentIBLRequested = environmentIBLRequested;
     }
-    return FinalizeFrameApply(std::move(result), registry);
+    return FinalizeFrameApply(frame, std::move(result), registry);
 }
 
 RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
+    const RenderFramePacketV5& frame,
     RenderFrameApplyResult result,
     RenderResourceRegistry& registry)
 {
@@ -2102,6 +2181,8 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
     {
         return result;
     }
+
+    EvaluateAcceptedFrameHistory(frame, result);
 
     // RenderScene is authoritative. A failed GPUScene publication records
     // diagnostics and leaves the previously committed resident generation intact.
@@ -2672,6 +2753,10 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
 
 void SceneRenderer::ReleaseUnsubmittedFrame()
 {
+    // This path covers failed graph recording, failed submission, and frames
+    // discarded before recording begins. None reached Present, so their
+    // compatibility candidate must not advance committed temporal history.
+    AbandonAcceptedFrameHistory();
     const bool hadUnsubmittedRecording = m_submissionBatch != nullptr ||
         m_hasRecordingSubmissionBoundary;
     m_submissionQualifiedFrameDiagnostics = false;
@@ -2926,6 +3011,41 @@ void SceneRenderer::RetireOwnerSnapshots(
 void SceneRenderer::MarkAcceptedFramePresented()
 {
     m_renderScene.MarkAcceptedFrameRendered();
+    // Motion history is presentation-qualified. Recording, submission, or
+    // Present failure must leave the prior presented transforms intact.
+    UpdateObjectMotionHistory();
+
+    bool historyCommitted = false;
+    if (m_viewHistoryCoordinator && m_activeViewHistoryCandidate.has_value())
+    {
+        // RenderSubsystem calls this only after the submitted frame's Present
+        // completed successfully. The coordinator's state is intentionally
+        // advanced at this boundary, never at acceptance or submission.
+        historyCommitted = m_viewHistoryCoordinator->CommitPresented(
+            *m_activeViewHistoryCandidate);
+    }
+    if (!historyCommitted)
+    {
+        // Preserve correctness if a lifecycle caller violates the accepted /
+        // presented pairing. The next accepted view must start fresh rather
+        // than reuse an identity that was not committed at presentation.
+        m_pendingTemporalHistoryReset = true;
+        if (m_viewHistoryCoordinator)
+        {
+            m_viewHistoryCoordinator->RequestReset(
+                RenderHistoryResetReason::ExplicitDiscontinuity);
+        }
+        RVX_RENDER_ERROR(
+            "SceneRenderer: presented frame had no matching temporal history candidate");
+    }
+    else
+    {
+        // A queued reset remains observable until the candidate carrying it
+        // actually presents. Failed or abandoned candidates leave it pending.
+        m_pendingTemporalHistoryReset =
+            m_viewHistoryCoordinator->HasPendingReset();
+    }
+    m_activeViewHistoryCandidate.reset();
     FreezeMutationEvidenceForPresentedFrame();
     FreezePresentedMaterialBindingsForPresentedFrame();
 }
@@ -5379,9 +5499,6 @@ void SceneRenderer::Render()
             m_transientResourcePool->EvictUnused(3);  // Evict resources unused for 3 frames
         }
     }
-    UpdateObjectMotionHistory();
-    m_previousViewProjectionMatrix = m_viewData.viewProjectionMatrix;
-    m_previousViewProjectionValid = true;
 }
 
 void SceneRenderer::ApplyRayTracingBudget(ShadowPassConfig& shadowConfig,

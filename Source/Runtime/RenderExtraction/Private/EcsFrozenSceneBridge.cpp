@@ -44,6 +44,28 @@ namespace
                id.type == expectedType;
     }
 
+    [[nodiscard]] RenderSceneObjectSourceIdentity MakeObjectSourceIdentity(
+        ECS::SceneRuntimeId sceneRuntimeId,
+        ECS::EntityHandle entity) noexcept
+    {
+        return {
+            .sceneRuntimeId = sceneRuntimeId.GetValue(),
+            .entitySlot = entity.GetIndex(),
+            .entityGeneration = entity.GetGeneration(),
+        };
+    }
+
+    [[nodiscard]] RenderFeatureSourceIdentity MakeFeatureSourceIdentity(
+        ECS::SceneRuntimeId sceneRuntimeId,
+        ECS::EntityHandle entity) noexcept
+    {
+        return {
+            .sceneRuntimeId = sceneRuntimeId.GetValue(),
+            .entitySlot = entity.GetIndex(),
+            .entityGeneration = entity.GetGeneration(),
+        };
+    }
+
     [[nodiscard]] RenderLightProxy::Type ToRenderLightType(
         SceneECS::LightType type)
     {
@@ -276,13 +298,26 @@ bool EcsFrozenSceneBridge::Build(
         uint64 cameraId = 0;
         if (!identityValidator.Register(camera.id,
                                         SceneECS::FrozenSceneObjectType::Camera,
-                                        cameraId))
+                                        cameraId) ||
+            camera.source.cutRevision == 0)
         {
+            if (result.code == EcsFrozenSceneBridgeCode::Complete)
+                result.code = EcsFrozenSceneBridgeCode::InvalidSourceIdentity;
             return fail();
         }
 
         EcsFrozenSceneCameraValue value;
         value.id = cameraId;
+        value.sourceSceneRuntimeId = camera.id.sceneRuntimeId;
+        value.sourceEntity = camera.id.entity;
+        value.cutRevision = camera.source.cutRevision;
+        value.view.identity = {
+            .sceneRuntimeId = camera.id.sceneRuntimeId.GetValue(),
+            .cameraEntityPacked = camera.id.entity.GetPackedValue(),
+            .subViewIndex = 0,
+            .role = ViewRole::Main,
+        };
+        value.view.cameraCutRevision = camera.source.cutRevision;
         value.view.viewMatrix = glm::inverse(camera.worldTransform);
         value.view.projectionMatrix = MakeProjection(camera.source);
         value.view.viewProjectionMatrix =
@@ -449,6 +484,8 @@ bool EcsFrozenSceneBridge::Build(
         outOutput.primitiveTemporalValues.push_back({
             .primitiveId = {.value = meshId},
             .ownerId = meshId,
+            .source = MakeObjectSourceIdentity(mesh.id.sceneRuntimeId,
+                                               sourceEntity),
             .sourceEntity = sourceEntity,
             .visibilityWriteVersion = mesh.visibilityWriteVersion,
             .previousWorldTransform = mesh.previousSimulationWorldTransform,
@@ -492,6 +529,8 @@ bool EcsFrozenSceneBridge::Build(
 
         outOutput.lightValues.push_back({
             .id = lightId,
+            .source = MakeObjectSourceIdentity(light.id.sceneRuntimeId,
+                                               sourceEntity),
             .sourceEntity = sourceEntity,
             .proxy = proxy,
             .layerMask = light.visibility.layerMask,
@@ -562,6 +601,18 @@ bool EcsFrozenSceneBridge::Build(
             return fail();
         }
 
+        const RenderFeatureSourceIdentity expectedSource =
+            MakeFeatureSourceIdentity(particle.id.sceneRuntimeId,
+                                      particle.sourceEntity);
+        if (particle.state.ValidateChannel(expectedSource) !=
+                RenderFeatureChannelValidationCode::Valid ||
+            particle.payloadRevision !=
+                particle.state.header.configurationRevision)
+        {
+            result.code = EcsFrozenSceneBridgeCode::SourceIdentityMismatch;
+            return fail();
+        }
+
         ParticleRenderSnapshotItem state = particle.state;
         // Legacy instance/system values are intentionally discarded. One
         // feature source has exactly one generation-qualified render identity.
@@ -569,6 +620,8 @@ bool EcsFrozenSceneBridge::Build(
         state.systemId = particleId;
         outOutput.particles.push_back({
             .id = particleId,
+            .source = MakeObjectSourceIdentity(particle.id.sceneRuntimeId,
+                                               particle.sourceEntity),
             .sourceEntity = particle.sourceEntity,
             .payloadRevision = particle.payloadRevision,
             .state = std::move(state),
@@ -590,10 +643,23 @@ bool EcsFrozenSceneBridge::Build(
             return fail();
         }
 
+        const RenderFeatureSourceIdentity expectedSource =
+            MakeFeatureSourceIdentity(water.id.sceneRuntimeId,
+                                      water.sourceEntity);
+        if (water.state.ValidateChannel(expectedSource) !=
+                RenderFeatureChannelValidationCode::Valid ||
+            water.payloadRevision != water.state.header.configurationRevision)
+        {
+            result.code = EcsFrozenSceneBridgeCode::SourceIdentityMismatch;
+            return fail();
+        }
+
         WaterRenderSnapshotItem state = water.state;
         state.componentId = waterId;
         outOutput.water.push_back({
             .id = waterId,
+            .source = MakeObjectSourceIdentity(water.id.sceneRuntimeId,
+                                               water.sourceEntity),
             .sourceEntity = water.sourceEntity,
             .payloadRevision = water.payloadRevision,
             .state = std::move(state),
@@ -616,10 +682,24 @@ bool EcsFrozenSceneBridge::Build(
             return fail();
         }
 
+        const RenderFeatureSourceIdentity expectedSource =
+            MakeFeatureSourceIdentity(terrain.id.sceneRuntimeId,
+                                      terrain.sourceEntity);
+        if (terrain.state.ValidateChannel(expectedSource) !=
+                RenderFeatureChannelValidationCode::Valid ||
+            terrain.payloadRevision !=
+                terrain.state.header.configurationRevision)
+        {
+            result.code = EcsFrozenSceneBridgeCode::SourceIdentityMismatch;
+            return fail();
+        }
+
         TerrainRenderSnapshotItem state = terrain.state;
         state.componentId = terrainId;
         outOutput.terrain.push_back({
             .id = terrainId,
+            .source = MakeObjectSourceIdentity(terrain.id.sceneRuntimeId,
+                                               terrain.sourceEntity),
             .sourceEntity = terrain.sourceEntity,
             .payloadRevision = terrain.payloadRevision,
             .state = std::move(state),

@@ -8,6 +8,7 @@
 #include "Core/Math/AABB.h"
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
+#include "RenderContracts/FeatureChannelContracts.h"
 #include "RenderContracts/RenderIdentity.h"
 
 #include <cstddef>
@@ -16,8 +17,6 @@
 
 namespace RVX
 {
-    inline constexpr uint32 RVX_TERRAIN_RENDER_SNAPSHOT_SCHEMA_VERSION = 2;
-
     enum class TerrainRenderSnapshotStatus : uint8
     {
         Empty = 0,
@@ -25,7 +24,7 @@ namespace RVX
         Incomplete
     };
 
-    struct TerrainRenderSnapshotItem
+    struct TerrainRenderSnapshotPayload
     {
         /** @brief Generation-qualified RenderScene object identity. */
         uint64 componentId = 0;
@@ -54,6 +53,14 @@ namespace RVX
         std::string heightmapDiagnostic;
         std::string materialDiagnostic;
         std::string lodDiagnostic;
+    };
+
+    /** @brief Terrain payload plus versioned producer/source provenance. */
+    struct TerrainRenderSnapshotItem final
+        : RenderFeatureChannelEnvelope<
+              TerrainRenderFeatureChannelDescriptor,
+              TerrainRenderSnapshotPayload>
+    {
     };
 
     struct TerrainRenderSnapshotMetadata

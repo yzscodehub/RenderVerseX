@@ -477,6 +477,9 @@ void RenderScene::Clear()
     m_watchedResourceRevisions.clear();
     m_drawPacketCache.Clear();
     m_retainedStats = {};
+    m_pendingPresentedSceneReceipt = {};
+    m_presentedSceneDatabaseId = 0;
+    m_presentedSceneRevision = 0;
     m_appliedSceneRevision = 0;
     m_sourceSceneDatabaseId = 0;
     m_observedResourceContentRevision = 0;
@@ -546,6 +549,13 @@ RenderFrameApplyResult RenderScene::ApplyFrameV5(
     }
     const bool sameSceneDatabase =
         scene.GetInstanceId() == m_sourceSceneDatabaseId;
+    const bool samePresentedSceneDatabase =
+        scene.GetInstanceId() == m_presentedSceneDatabaseId;
+    const uint64 receiptBaseRevision = samePresentedSceneDatabase
+        ? m_presentedSceneRevision
+        : 0;
+    const RenderSceneDatabaseChanges receiptChanges =
+        scene.CollectChangesSince(receiptBaseRevision);
     if (m_hasAcceptedFrame && sameSceneDatabase && !resetHistory &&
         m_requiresTemporalSettle &&
         !m_temporalSettleObjectIds.empty() &&
@@ -578,6 +588,10 @@ RenderFrameApplyResult RenderScene::ApplyFrameV5(
         m_observedResourceContentRevision = resourceContentRevision;
         m_retainedStats.lastRebuiltObjectCount = 0;
         m_retainedStats.lastRemovedObjectCount = 0;
+        StagePresentedSceneReceipt(frameHeader,
+                                   scene,
+                                   receiptChanges,
+                                   RenderSceneRealizationMode::Incremental);
 
         result.code = RenderFrameApplyCode::Applied;
         result.temporalHistoryReset = false;
@@ -610,6 +624,10 @@ RenderFrameApplyResult RenderScene::ApplyFrameV5(
         ++m_retainedStats.staticReuseCount;
         m_retainedStats.lastRebuiltObjectCount = 0;
         m_retainedStats.lastRemovedObjectCount = 0;
+        StagePresentedSceneReceipt(frameHeader,
+                                   scene,
+                                   receiptChanges,
+                                   RenderSceneRealizationMode::StaticReuse);
 
         result.code = RenderFrameApplyCode::Applied;
         result.temporalHistoryReset = false;
@@ -637,6 +655,11 @@ RenderFrameApplyResult RenderScene::ApplyFrameV5(
             {
                 ApplyContentOnlyTextureRefreshes(m_watchedResourceRevisions,
                                                  contentOnlyTextureRefreshes);
+                StagePresentedSceneReceipt(
+                    frameHeader,
+                    scene,
+                    receiptChanges,
+                    RenderSceneRealizationMode::Incremental);
             }
             return incremental;
         }
@@ -667,6 +690,7 @@ RenderFrameApplyResult RenderScene::ApplyFrameV5(
         frame.GetCaptureRequest(),
         features,
         scene,
+        receiptChanges,
         registry);
 }
 
@@ -681,6 +705,7 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
     const RenderFrameCaptureRequest& captureRequest,
     const RenderFeatureSnapshot& features,
     const RenderSceneDatabase& retainedScene,
+    const RenderSceneDatabaseChanges& receiptChanges,
     const RenderResourceRegistry& registry)
 {
     RenderFrameApplyResult result;
@@ -1098,6 +1123,10 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
     m_retainedStats.lastRebuiltObjectCount =
         static_cast<uint32>(m_objects.size());
     m_retainedStats.lastRemovedObjectCount = 0;
+    StagePresentedSceneReceipt(header,
+                               retainedScene,
+                               receiptChanges,
+                               RenderSceneRealizationMode::FullRebuild);
 
     result.code = RenderFrameApplyCode::Applied;
     result.temporalHistoryReset = resetHistory;
@@ -1412,7 +1441,6 @@ RenderFrameApplyResult RenderScene::ApplyIncrementalFrameState(
         static_cast<uint32>(objectCandidates.size());
     m_retainedStats.lastRemovedObjectCount =
         static_cast<uint32>(m_gpuSceneRemovedObjectIds.size());
-
     result.code = RenderFrameApplyCode::Applied;
     result.temporalHistoryReset = false;
     result.sceneMutated = !changes.Empty();
@@ -1422,6 +1450,67 @@ RenderFrameApplyResult RenderScene::ApplyIncrementalFrameState(
         result.sequenceGap = header.sequence - m_lastRenderedHeader.sequence - 1;
     }
     return result;
+}
+
+void RenderScene::StagePresentedSceneReceipt(
+    const RenderFrameHeaderV5& header,
+    const RenderSceneDatabase& retainedScene,
+    const RenderSceneDatabaseChanges& changes,
+    RenderSceneRealizationMode realizationMode) noexcept
+{
+    RenderPresentedSceneReceipt receipt;
+    if (!changes.available ||
+        changes.targetRevision != retainedScene.GetRevision() ||
+        header.requiredSceneRevision > changes.targetRevision)
+    {
+        m_pendingPresentedSceneReceipt = {};
+        return;
+    }
+
+    receipt.databaseInstanceId = retainedScene.GetInstanceId();
+    // This sequence is only a staged correlation until SceneRenderer marks
+    // the receipt available after the exact frame successfully presents.
+    receipt.completedPresentedFrameSequence = header.sequence;
+    receipt.requiredSceneRevision = header.requiredSceneRevision;
+    receipt.baseSceneRevision = changes.baseRevision;
+    receipt.appliedSceneRevision = changes.targetRevision;
+    receipt.databaseTransition = changes.fullReset
+        ? RenderSceneDatabaseTransition::FullReset
+        : (changes.baseRevision == changes.targetRevision
+               ? RenderSceneDatabaseTransition::None
+               : RenderSceneDatabaseTransition::Incremental);
+    receipt.realizationMode = realizationMode;
+    receipt.mutations = changes.mutationSummary;
+    receipt.canonicalMutationDigest = changes.canonicalMutationDigest;
+    if (!receipt.IsStructurallyValid())
+    {
+        m_pendingPresentedSceneReceipt = {};
+        return;
+    }
+    m_pendingPresentedSceneReceipt = std::move(receipt);
+}
+
+bool RenderScene::CommitPendingPresentedSceneReceipt(
+    uint64 completedPresentedFrameSequence) noexcept
+{
+    const RenderPresentedSceneReceipt& receipt =
+        m_pendingPresentedSceneReceipt;
+    if (!receipt.IsStructurallyValid() ||
+        completedPresentedFrameSequence == 0 ||
+        receipt.completedPresentedFrameSequence !=
+            completedPresentedFrameSequence ||
+        m_lastRenderedHeader.sequence != completedPresentedFrameSequence ||
+        receipt.requiredSceneRevision !=
+            m_lastRenderedHeader.requiredSceneRevision ||
+        receipt.databaseInstanceId != m_sourceSceneDatabaseId ||
+        receipt.appliedSceneRevision != m_appliedSceneRevision)
+    {
+        return false;
+    }
+
+    m_presentedSceneDatabaseId = receipt.databaseInstanceId;
+    m_presentedSceneRevision = receipt.appliedSceneRevision;
+    return true;
 }
 
 void RenderScene::RebuildRetainedIndicesAndReferences()

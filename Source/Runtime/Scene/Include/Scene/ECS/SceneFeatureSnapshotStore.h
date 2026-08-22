@@ -7,6 +7,8 @@
 
 #include "Scene/ECS/FrozenSceneSnapshot.h"
 
+#include "RenderContracts/RenderFeatureChannelRegistry.h"
+
 #include <optional>
 #include <unordered_map>
 
@@ -24,6 +26,15 @@ namespace RVX::SceneECS
         }
 
         bool operator==(const SceneFeatureSnapshotSource&) const = default;
+
+        [[nodiscard]] RenderFeatureSourceIdentity ToRenderIdentity() const noexcept
+        {
+            return {
+                .sceneRuntimeId = sceneRuntimeId.GetValue(),
+                .entitySlot = entity.GetIndex(),
+                .entityGeneration = entity.GetGeneration(),
+            };
+        }
     };
 
     /** @brief Point-in-time counts for diagnostics and focused validation. */
@@ -41,16 +52,29 @@ namespace RVX::SceneECS
      * this store retains only value data and a generation-qualified source. At
      * the presentation boundary FreezeInto copies those values into a
      * FrozenSceneSnapshot; neither the store nor the frozen values retain a
-     * Registry, Fragment, Actor, Component, Resource, or RHI reference.
+     * live ECS::Registry, Fragment, Actor, Component, Resource, or RHI reference.
+     *
+     * GFX01 deliberately keeps fixed Particle/Water/Terrain storage. The
+     * sealed composition registry validates those typed routes; it does not
+     * make this store a dynamic plug-in payload container.
      */
     class SceneFeatureSnapshotStore final
     {
     public:
         explicit SceneFeatureSnapshotStore(ECS::SceneRuntimeId sceneRuntimeId);
+        SceneFeatureSnapshotStore(
+            ECS::SceneRuntimeId sceneRuntimeId,
+            RenderFeatureChannelRegistry channelRegistry);
 
         [[nodiscard]] ECS::SceneRuntimeId GetSceneRuntimeId() const
         {
             return m_sceneRuntimeId;
+        }
+
+        [[nodiscard]] const RenderFeatureChannelRegistry&
+        GetChannelRegistry() const noexcept
+        {
+            return m_channelRegistry;
         }
 
         /** @brief Capture a valid source identity before deferred cleanup invalidates its EntityRef. */
@@ -66,6 +90,17 @@ namespace RVX::SceneECS
         [[nodiscard]] bool PublishTerrain(const ECS::EntityRef& source,
                                           TerrainRenderSnapshotItem state,
                                           uint64 payloadRevision = 0);
+
+        /** @brief Publish an already-versioned value; invalid or stale headers fail closed. */
+        [[nodiscard]] bool PublishParticleChannel(
+            const ECS::EntityRef& source,
+            ParticleRenderSnapshotItem state);
+        [[nodiscard]] bool PublishWaterChannel(
+            const ECS::EntityRef& source,
+            WaterRenderSnapshotItem state);
+        [[nodiscard]] bool PublishTerrainChannel(
+            const ECS::EntityRef& source,
+            TerrainRenderSnapshotItem state);
 
         /**
          * @brief Remove one feature value, or every value, for an exact recorded identity.
@@ -92,22 +127,16 @@ namespace RVX::SceneECS
         [[nodiscard]] SceneFeatureSnapshotStoreCounts GetCounts() const;
 
     private:
-        template<typename State>
-        struct Entry
-        {
-            State state;
-            uint64 payloadRevision = 0;
-        };
-
         [[nodiscard]] bool IsOwnedSource(
             const SceneFeatureSnapshotSource& source) const;
 
         ECS::SceneRuntimeId m_sceneRuntimeId;
-        std::unordered_map<ECS::EntityHandle, Entry<ParticleRenderSnapshotItem>>
+        RenderFeatureChannelRegistry m_channelRegistry;
+        std::unordered_map<ECS::EntityHandle, ParticleRenderSnapshotItem>
             m_particles;
-        std::unordered_map<ECS::EntityHandle, Entry<WaterRenderSnapshotItem>>
+        std::unordered_map<ECS::EntityHandle, WaterRenderSnapshotItem>
             m_water;
-        std::unordered_map<ECS::EntityHandle, Entry<TerrainRenderSnapshotItem>>
+        std::unordered_map<ECS::EntityHandle, TerrainRenderSnapshotItem>
             m_terrain;
     };
 } // namespace RVX::SceneECS

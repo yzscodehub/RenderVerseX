@@ -18,23 +18,63 @@ std::unique_ptr<const RenderFramePacketV5> RenderFramePacketV5::Create(
     const bool validHeader =
         header.schemaId == RVX_RENDER_FRAME_PACKET_V5_SCHEMA_ID &&
         header.schemaVersion == RVX_RENDER_FRAME_PACKET_V5_SCHEMA_VERSION &&
-        header.sequence != 0 && header.requiredSceneRevision != 0;
-    const bool validView = view.viewportWidth != 0 && view.viewportHeight != 0 &&
-                           std::isfinite(view.nearPlane) &&
-                           std::isfinite(view.farPlane) &&
-                           view.nearPlane > 0.0f && view.farPlane > view.nearPlane &&
-                           IsValidRenderViewClearValues(view);
+        header.sequence != 0 && header.requiredSceneRevision != 0 &&
+        header.worldRevision != 0 && header.temporalEpoch != 0 &&
+        header.viewFamilyId != 0 && header.surfaceGeneration != 0 &&
+        header.configurationRevision != 0 && header.formatRevision != 0 &&
+        std::isfinite(header.effectFixedDeltaSeconds) &&
+        header.effectFixedDeltaSeconds >= 0.0f &&
+        std::isfinite(header.effectSimulationSeconds) &&
+        header.effectSimulationSeconds >= 0.0 &&
+        header.deterministicSeed != 0 &&
+        header.outputWidth != 0 && header.outputHeight != 0;
+
+    RenderViewFamilySnapshot viewFamily;
+    viewFamily.frame = {
+        .sequence = header.sequence,
+        .absoluteTimeSeconds = view.absoluteTime,
+        .deltaTimeSeconds = view.deltaTime,
+    };
+    viewFamily.identity = {
+        .frameSequence = header.sequence,
+        .sceneRevision = header.requiredSceneRevision,
+        .surfaceGeneration = header.surfaceGeneration,
+        .configurationRevision = header.configurationRevision,
+    };
+    viewFamily.effectTime = {
+        .simulationTick = header.simulationTick,
+        .fixedDeltaSeconds = header.effectFixedDeltaSeconds,
+        .simulationSeconds = header.effectSimulationSeconds,
+        .deterministicSeed = header.deterministicSeed,
+    };
+    viewFamily.extent = {
+        .width = header.outputWidth,
+        .height = header.outputHeight,
+    };
+    viewFamily.familyId = header.viewFamilyId;
+    viewFamily.views.push_back(std::move(view));
+
     const bool complete = diagnostics.complete &&
                           diagnostics.code == RenderExtractionCode::Complete;
-    if (!validHeader || !validView || !complete ||
+    if (!validHeader || !IsValidSingleRenderViewFamily(viewFamily) || !complete ||
+        !IsValidRenderFrameSettings(settings) ||
         !IsValidRenderFrameCaptureRequest(captureRequest))
     {
         return {};
     }
 
+    RenderViewHistoryIdentity historyIdentity = MakeRenderViewHistoryIdentity(
+        viewFamily,
+        header.worldRevision,
+        header.temporalEpoch,
+        header.formatRevision);
+    if (!historyIdentity.IsValid())
+        return {};
+
     return std::unique_ptr<const RenderFramePacketV5>(
         new RenderFramePacketV5(std::move(header),
-                                std::move(view),
+                                std::move(viewFamily),
+                                std::move(historyIdentity),
                                 std::move(settings),
                                 std::move(captureRequest),
                                 std::move(diagnostics)));
@@ -42,12 +82,14 @@ std::unique_ptr<const RenderFramePacketV5> RenderFramePacketV5::Create(
 
 RenderFramePacketV5::RenderFramePacketV5(
     RenderFrameHeaderV5 header,
-    RenderViewSnapshot view,
+    RenderViewFamilySnapshot viewFamily,
+    RenderViewHistoryIdentity historyIdentity,
     RenderFrameSettings settings,
     RenderFrameCaptureRequest captureRequest,
     RenderExtractionDiagnostics diagnostics)
     : m_header(std::move(header))
-    , m_view(std::move(view))
+    , m_viewFamily(std::move(viewFamily))
+    , m_historyIdentity(std::move(historyIdentity))
     , m_settings(std::move(settings))
     , m_captureRequest(std::move(captureRequest))
     , m_diagnostics(std::move(diagnostics))

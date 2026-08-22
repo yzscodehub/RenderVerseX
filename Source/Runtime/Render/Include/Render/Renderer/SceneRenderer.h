@@ -74,6 +74,7 @@ namespace RVX
     class RenderRetirementQueue;
     class RenderResourceRegistry;
     class RenderSceneDatabase;
+    class RenderViewHistoryCoordinator;
     class RenderSubmissionResourceBatch;
     class RenderSubmissionTracker;
     class GPUSceneUpdate;
@@ -168,6 +169,10 @@ namespace RVX
         std::string hdrFallbackReason;
         bool frameInputDepthAvailable = false;
         bool frameInputVelocityAvailable = false;
+        /**
+         * @brief Presentation-qualified camera reprojection compatibility;
+         * not a claim that any effect-owned temporal texture exists.
+         */
         bool frameInputTemporalHistoryAvailable = false;
         PostProcessStackExecuteStats stackStats;
     };
@@ -488,6 +493,10 @@ namespace RVX
         uint32 postProcessFallbackCopyPassCount = 0;
         bool postProcessDepthInputAvailable = false;
         bool postProcessVelocityInputAvailable = false;
+        /**
+         * @brief Frame-level camera history only. TAA, shadow, and reflection
+         * history resources each expose readiness through their own contracts.
+         */
         bool postProcessTemporalHistoryAvailable = false;
         std::string hdrFallbackReason;
         std::string postProcessFallbackCopyReason;
@@ -1514,6 +1523,7 @@ namespace RVX
 
         void PrepareFrameApplyResources(RenderResourceRegistry& registry);
         [[nodiscard]] RenderFrameApplyResult FinalizeFrameApply(
+            const RenderFramePacketV5& frame,
             RenderFrameApplyResult result,
             RenderResourceRegistry& registry);
         void RetireOwnerSnapshots(const GPUCompletionToken& completion);
@@ -1575,6 +1585,19 @@ namespace RVX
         void UpdateLiveMutationEvidence();
         void FreezeMutationEvidenceForPresentedFrame();
         void FreezePresentedMaterialBindingsForPresentedFrame();
+        /**
+         * @brief Evaluate a newly accepted packet against presentation-qualified
+         * camera reprojection history.
+         *
+         * This is deliberately only a compatibility gate for ViewData's
+         * previous projection. Individual effects retain ownership of their
+         * own history resources and must report their own readiness.
+         */
+        void EvaluateAcceptedFrameHistory(
+            const RenderFramePacketV5& frame,
+            RenderFrameApplyResult& result) noexcept;
+        /** @brief Drop a candidate that did not reach successful presentation. */
+        void AbandonAcceptedFrameHistory() noexcept;
         SceneRenderFeatureReport BuildRenderFeatureReport(const SceneRendererFrameDiagnostics& diagnostics) const;
 
         struct PreGraphPrepareCallbackEntry
@@ -1684,6 +1707,13 @@ namespace RVX
         ViewData m_viewData;
         PrimaryDirectionalLightRecordInput m_primaryDirectionalLight;
         RenderScene m_renderScene;
+        /**
+         * @brief Presentation-qualified compatibility state for the current
+         * mono view. This is not an owner for per-effect temporal textures.
+         */
+        std::unique_ptr<RenderViewHistoryCoordinator> m_viewHistoryCoordinator;
+        /** @brief Candidate evaluated after acceptance but not yet presented. */
+        std::optional<RenderViewHistoryIdentity> m_activeViewHistoryCandidate;
         RenderFeatureSnapshot m_featureSnapshot;
         RenderProxySnapshot m_proxySnapshot;
         SceneRenderCollectionStats m_collectionStats;
@@ -1753,8 +1783,6 @@ namespace RVX
         uint32 m_rayTracingReflectionGpuBudgetOverBudgetFrameCount = 0;
         uint32 m_rayTracingReflectionGpuBudgetUnderBudgetFrameCount = 0;
         SceneColorFormatPolicy m_sceneColorFormatPolicy;
-        Mat4 m_previousViewProjectionMatrix = Mat4Identity();
-        bool m_previousViewProjectionValid = false;
         bool m_pendingTemporalHistoryReset = false;
         RenderGPUDrivenMode m_gpuDrivenCullingMode = RenderGPUDrivenMode::Auto;
         GPUDrivenPolicyDecision m_gpuDrivenPolicyDecision;

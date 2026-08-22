@@ -1,6 +1,7 @@
 #include "RenderContracts/FeatureRenderSnapshot.h"
 #include "RenderContracts/RenderFramePacketV5.h"
 #include "RenderContracts/RenderFrameValidation.h"
+#include "RenderContracts/RenderFeatureChannelRegistry.h"
 #include "RenderContracts/RenderIdentity.h"
 #include "RenderContracts/RenderSceneUpdate.h"
 #include "RenderContracts/ResourceUploadRequest.h"
@@ -24,6 +25,9 @@ namespace
     static_assert(!std::is_default_constructible_v<ResourceUploadRequest>);
     static_assert(!std::is_copy_constructible_v<ResourceUploadRequest>);
     static_assert(!std::is_move_constructible_v<ResourceUploadRequest>);
+    static_assert(std::is_same_v<
+                  decltype(EffectFrameTime{}.deterministicSeed),
+                  uint32>);
     ResourceUploadRequestCreateInfo MakeValidMeshRequestInfo()
     {
         MeshUploadPayload payload;
@@ -84,9 +88,39 @@ namespace
     RenderViewSnapshot MakeValidView()
     {
         RenderViewSnapshot view;
+        view.identity = {
+            .sceneRuntimeId = 71,
+            .cameraEntityPacked = 0x0000000700000004ULL,
+            .subViewIndex = 0,
+            .role = ViewRole::Main,
+        };
+        view.cameraCutRevision = 1;
         view.viewportWidth = 1;
         view.viewportHeight = 1;
         return view;
+    }
+
+    RenderFrameHeaderV5 MakeValidFrameHeader(uint64 sequence = 1,
+                                             uint64 sceneRevision = 1)
+    {
+        RenderFrameHeaderV5 header;
+        header.sequence = sequence;
+        header.requiredSceneRevision = sceneRevision;
+        header.worldRevision = 1;
+        header.temporalEpoch = 1;
+        header.viewFamilyId = 1;
+        header.surfaceGeneration = 1;
+        header.configurationRevision = 1;
+        header.formatRevision = 1;
+        header.simulationTick = sequence - 1;
+        header.effectFixedDeltaSeconds = 1.0f / 60.0f;
+        header.effectSimulationSeconds =
+            static_cast<float64>(sequence - 1) / 60.0;
+        header.deterministicSeed =
+            0x9e3779b9U ^ static_cast<uint32>(sequence);
+        header.outputWidth = 1;
+        header.outputHeight = 1;
+        return header;
     }
 
     RenderExtractionDiagnostics MakeCompleteDiagnostics()
@@ -127,6 +161,198 @@ namespace
                   RenderResourceHandleHash{}(handle));
         EXPECT_EQ(RenderResourceHandleHash{}(handle),
                   std::hash<uint64>{}(packed));
+    }
+
+    TEST(RenderContractsValidation,
+         FeatureChannelCatalogHasStableTypedEntries)
+    {
+        static_assert(RVX_RENDER_FEATURE_CHANNEL_COUNT == 3);
+        static_assert(std::is_same_v<
+                      ParticleRenderSnapshotItem::ChannelDescriptor,
+                      std::tuple_element_t<0, RenderFeatureChannelCatalog>>);
+        static_assert(std::is_same_v<
+                      WaterRenderSnapshotItem::ChannelDescriptor,
+                      std::tuple_element_t<1, RenderFeatureChannelCatalog>>);
+        static_assert(std::is_same_v<
+                      TerrainRenderSnapshotItem::ChannelDescriptor,
+                      std::tuple_element_t<2, RenderFeatureChannelCatalog>>);
+
+        EXPECT_EQ(static_cast<uint32>(RenderFeatureChannelId::Particle), 1U);
+        EXPECT_EQ(static_cast<uint32>(RenderFeatureChannelId::Water), 2U);
+        EXPECT_EQ(static_cast<uint32>(RenderFeatureChannelId::Terrain), 3U);
+        EXPECT_FALSE(IsKnownRenderFeatureChannel(RenderFeatureChannelId::Invalid));
+        EXPECT_EQ(GetRenderFeatureChannelSchemaVersion(
+                      static_cast<RenderFeatureChannelId>(999U)),
+                  0U);
+    }
+
+    TEST(RenderContractsValidation,
+         FeatureChannelRegistryRequiresCompleteUniqueRoutesBeforeSeal)
+    {
+        const auto registrationFor = [](RenderFeatureChannelId channelId)
+        {
+            return RenderFeatureChannelRegistration{
+                .channelId = channelId,
+                .schemaVersion =
+                    GetRenderFeatureChannelSchemaVersion(channelId),
+                .producerEndpoint =
+                    RenderFeatureProducerEndpointId::SceneFeatureSnapshotStore,
+                .consumerEndpoint =
+                    RenderFeatureConsumerEndpointId::RenderSceneDatabase,
+            };
+        };
+
+        RenderFeatureChannelRegistry incomplete;
+        EXPECT_EQ(incomplete.Register(
+                      registrationFor(RenderFeatureChannelId::Particle)),
+                  RenderFeatureChannelRegistryCode::Success);
+        EXPECT_EQ(incomplete.Register(
+                      registrationFor(RenderFeatureChannelId::Water)),
+                  RenderFeatureChannelRegistryCode::Success);
+        EXPECT_EQ(incomplete.Seal(),
+                  RenderFeatureChannelRegistryCode::MissingChannel);
+        EXPECT_FALSE(incomplete.IsSealed());
+
+        RenderFeatureChannelRegistry duplicate;
+        const RenderFeatureChannelRegistration particle =
+            registrationFor(RenderFeatureChannelId::Particle);
+        EXPECT_EQ(duplicate.Register(particle),
+                  RenderFeatureChannelRegistryCode::Success);
+        EXPECT_EQ(duplicate.Register(particle),
+                  RenderFeatureChannelRegistryCode::DuplicateChannel);
+
+        RenderFeatureChannelRegistry invalid;
+        RenderFeatureChannelRegistration bad = particle;
+        ++bad.schemaVersion;
+        EXPECT_EQ(invalid.Register(bad),
+                  RenderFeatureChannelRegistryCode::SchemaMismatch);
+        bad = particle;
+        bad.producerEndpoint = RenderFeatureProducerEndpointId::Invalid;
+        EXPECT_EQ(invalid.Register(bad),
+                  RenderFeatureChannelRegistryCode::InvalidProducerEndpoint);
+        bad = particle;
+        bad.consumerEndpoint = RenderFeatureConsumerEndpointId::Invalid;
+        EXPECT_EQ(invalid.Register(bad),
+                  RenderFeatureChannelRegistryCode::InvalidConsumerEndpoint);
+        bad = particle;
+        bad.channelId = static_cast<RenderFeatureChannelId>(999U);
+        EXPECT_EQ(invalid.Register(bad),
+                  RenderFeatureChannelRegistryCode::UnknownChannel);
+        EXPECT_EQ(invalid.GetRegistrationCount(), 0U);
+    }
+
+    TEST(RenderContractsValidation,
+         BuiltinFeatureChannelRegistrySealsExactProducerConsumerRoutes)
+    {
+        RenderFeatureChannelRegistry registry =
+            CreateBuiltinRenderFeatureChannelRegistry();
+        ASSERT_TRUE(registry.IsSealed());
+        EXPECT_EQ(registry.GetRegistrationCount(),
+                  RVX_RENDER_FEATURE_CHANNEL_COUNT);
+
+        constexpr RenderFeatureChannelId channels[]{
+            RenderFeatureChannelId::Particle,
+            RenderFeatureChannelId::Water,
+            RenderFeatureChannelId::Terrain,
+        };
+        for (RenderFeatureChannelId channelId : channels)
+        {
+            const RenderFeatureChannelRegistration* route =
+                registry.Find(channelId);
+            ASSERT_NE(route, nullptr);
+            EXPECT_EQ(route->schemaVersion,
+                      GetRenderFeatureChannelSchemaVersion(channelId));
+            EXPECT_EQ(route->producerEndpoint,
+                      RenderFeatureProducerEndpointId::SceneFeatureSnapshotStore);
+            EXPECT_EQ(route->consumerEndpoint,
+                      RenderFeatureConsumerEndpointId::RenderSceneDatabase);
+            EXPECT_EQ(registry.ValidateRoute(
+                          channelId,
+                          route->schemaVersion,
+                          route->producerEndpoint,
+                          route->consumerEndpoint),
+                      RenderFeatureChannelRegistryCode::Success);
+        }
+
+        EXPECT_EQ(registry.Seal(),
+                  RenderFeatureChannelRegistryCode::RegistrySealed);
+        EXPECT_EQ(registry.Register(*registry.Find(
+                      RenderFeatureChannelId::Particle)),
+                  RenderFeatureChannelRegistryCode::RegistrySealed);
+        EXPECT_EQ(registry.ValidateProducer(
+                      RenderFeatureChannelId::Particle,
+                      RVX_PARTICLE_RENDER_SNAPSHOT_SCHEMA_VERSION + 1U,
+                      RenderFeatureProducerEndpointId::SceneFeatureSnapshotStore),
+                  RenderFeatureChannelRegistryCode::SchemaMismatch);
+        EXPECT_EQ(registry.ValidateRoute(
+                      RenderFeatureChannelId::Particle,
+                      RVX_PARTICLE_RENDER_SNAPSHOT_SCHEMA_VERSION,
+                      RenderFeatureProducerEndpointId::SceneFeatureSnapshotStore,
+                      RenderFeatureConsumerEndpointId::Invalid),
+                  RenderFeatureChannelRegistryCode::InvalidConsumerEndpoint);
+    }
+
+    TEST(RenderContractsValidation,
+         TypedFeatureChannelsRejectUnknownSchemaSequenceAndSourceFailures)
+    {
+        const RenderFeatureSourceIdentity source{
+            .sceneRuntimeId = 71,
+            .entitySlot = 4,
+            .entityGeneration = 3,
+        };
+        const RenderFeatureSourceIdentity foreignSource{
+            .sceneRuntimeId = 72,
+            .entitySlot = 4,
+            .entityGeneration = 3,
+        };
+
+        const auto verify = [&]<typename Item>()
+        {
+            Item item;
+            item.header.captureSequence = 9;
+            item.header.configurationRevision = 5;
+            item.header.source = source;
+            EXPECT_EQ(item.ValidateChannel(source, 8),
+                      RenderFeatureChannelValidationCode::Valid);
+            EXPECT_EQ(item.header.configurationRevision, 5U);
+
+            Item invalid = item;
+            invalid.header.channelId = static_cast<RenderFeatureChannelId>(999U);
+            EXPECT_EQ(invalid.ValidateChannel(source),
+                      RenderFeatureChannelValidationCode::UnknownChannel);
+
+            invalid = item;
+            invalid.header.channelId = RenderFeatureChannelId::Invalid;
+            EXPECT_EQ(invalid.ValidateChannel(source),
+                      RenderFeatureChannelValidationCode::UnknownChannel);
+
+            invalid = item;
+            invalid.header.schemaVersion = Item::SchemaVersion + 1U;
+            EXPECT_EQ(invalid.ValidateChannel(source),
+                      RenderFeatureChannelValidationCode::SchemaMismatch);
+
+            invalid = item;
+            invalid.header.captureSequence = 0;
+            EXPECT_EQ(invalid.ValidateChannel(source),
+                      RenderFeatureChannelValidationCode::ZeroCaptureSequence);
+
+            invalid = item;
+            EXPECT_EQ(invalid.ValidateChannel(source, 9),
+                      RenderFeatureChannelValidationCode::StaleCaptureSequence);
+
+            invalid = item;
+            invalid.header.source = {};
+            EXPECT_EQ(invalid.ValidateChannel(source),
+                      RenderFeatureChannelValidationCode::InvalidSource);
+
+            invalid = item;
+            EXPECT_EQ(invalid.ValidateChannel(foreignSource),
+                      RenderFeatureChannelValidationCode::SourceMismatch);
+        };
+
+        verify.template operator()<ParticleRenderSnapshotItem>();
+        verify.template operator()<WaterRenderSnapshotItem>();
+        verify.template operator()<TerrainRenderSnapshotItem>();
     }
 
     TEST(RenderContractsValidation, CreatesMesh)
@@ -953,9 +1179,7 @@ namespace
     TEST(RenderContractsValidation,
          ViewClearPolicyIsVersionedCopiedAndRejectsInvalidValues)
     {
-        RenderFrameHeaderV5 header;
-        header.sequence = 41;
-        header.requiredSceneRevision = 9;
+        RenderFrameHeaderV5 header = MakeValidFrameHeader(41, 9);
         RenderViewSnapshot view = MakeValidView();
         view.clearPolicy = RenderViewClearPolicy::SolidColor;
         view.clearColor = {0.25f, 0.5f, 0.75f, 1.0f};
@@ -995,9 +1219,7 @@ namespace
     TEST(RenderContractsValidation,
          FrameV5RejectsIncompleteInputsAndOwnsAcceptedValues)
     {
-        RenderFrameHeaderV5 header;
-        header.sequence = 87;
-        header.requiredSceneRevision = 31;
+        RenderFrameHeaderV5 header = MakeValidFrameHeader(87, 31);
         header.worldRevision = 12;
 
         RenderViewSnapshot view = MakeValidView();
@@ -1031,8 +1253,8 @@ namespace
         EXPECT_FLOAT_EQ(packet->GetSettings().renderScale, 0.75f);
         EXPECT_EQ(packet->GetCaptureRequest().width, 64U);
 
-        RenderFrameHeaderV5 invalidHeader;
-        invalidHeader.sequence = 1;
+        RenderFrameHeaderV5 invalidHeader = MakeValidFrameHeader();
+        invalidHeader.requiredSceneRevision = 0;
         EXPECT_EQ(RenderFramePacketV5::Create(invalidHeader,
                                                MakeValidView(),
                                                RenderFrameSettings{},
@@ -1049,6 +1271,208 @@ namespace
                                                RenderFrameCaptureRequest{},
                                                incompleteDiagnostics),
                   nullptr);
+    }
+
+    TEST(RenderContractsValidation,
+         SingleViewFamilyFailsClosedOnIdentitySurfaceAndNumericValues)
+    {
+        RenderFrameHeaderV5 header = MakeValidFrameHeader(101, 37);
+        RenderViewSnapshot view = MakeValidView();
+
+        const auto packet = RenderFramePacketV5::Create(
+            header,
+            view,
+            RenderFrameSettings{},
+            RenderFrameCaptureRequest{},
+            MakeCompleteDiagnostics());
+        ASSERT_NE(packet, nullptr);
+        ASSERT_EQ(packet->GetViewFamily().views.size(), 1U);
+        EXPECT_EQ(packet->GetViewFamily().primaryViewIndex, 0U);
+        EXPECT_EQ(packet->GetFrameStamp().sequence, header.sequence);
+        EXPECT_EQ(packet->GetHistoryIdentity().view, view.identity);
+        EXPECT_EQ(packet->GetHistoryIdentity().surfaceGeneration,
+                  header.surfaceGeneration);
+        EXPECT_EQ(packet->GetViewFamily().identity.frameSequence,
+                  header.sequence);
+        EXPECT_EQ(packet->GetViewFamily().effectTime.simulationTick,
+                  header.simulationTick);
+        EXPECT_FLOAT_EQ(packet->GetViewFamily().effectTime.fixedDeltaSeconds,
+                        header.effectFixedDeltaSeconds);
+        EXPECT_DOUBLE_EQ(packet->GetViewFamily().effectTime.simulationSeconds,
+                         header.effectSimulationSeconds);
+
+        RenderViewFamilySnapshot unsupportedMultiView = packet->GetViewFamily();
+        unsupportedMultiView.views.push_back(view);
+        EXPECT_FALSE(IsValidSingleRenderViewFamily(unsupportedMultiView));
+
+        RenderViewSnapshot invalidView = view;
+        invalidView.identity = {};
+        EXPECT_EQ(RenderFramePacketV5::Create(header,
+                                               invalidView,
+                                               RenderFrameSettings{},
+                                               RenderFrameCaptureRequest{},
+                                               MakeCompleteDiagnostics()),
+                  nullptr);
+
+        invalidView = view;
+        invalidView.cameraCutRevision = 0;
+        EXPECT_EQ(RenderFramePacketV5::Create(header,
+                                               invalidView,
+                                               RenderFrameSettings{},
+                                               RenderFrameCaptureRequest{},
+                                               MakeCompleteDiagnostics()),
+                  nullptr);
+
+        invalidView = view;
+        invalidView.identity.role = static_cast<ViewRole>(255);
+        EXPECT_EQ(RenderFramePacketV5::Create(header,
+                                               invalidView,
+                                               RenderFrameSettings{},
+                                               RenderFrameCaptureRequest{},
+                                               MakeCompleteDiagnostics()),
+                  nullptr);
+
+        RenderFrameHeaderV5 invalidHeader = header;
+        invalidHeader.surfaceGeneration = 0;
+        EXPECT_EQ(RenderFramePacketV5::Create(invalidHeader,
+                                               view,
+                                               RenderFrameSettings{},
+                                               RenderFrameCaptureRequest{},
+                                               MakeCompleteDiagnostics()),
+                  nullptr);
+
+        invalidHeader = header;
+        invalidHeader.temporalEpoch = 0;
+        EXPECT_EQ(RenderFramePacketV5::Create(invalidHeader,
+                                               view,
+                                               RenderFrameSettings{},
+                                               RenderFrameCaptureRequest{},
+                                               MakeCompleteDiagnostics()),
+                  nullptr);
+
+        invalidView = view;
+        invalidView.absoluteTime =
+            std::numeric_limits<float64>::quiet_NaN();
+        EXPECT_EQ(RenderFramePacketV5::Create(header,
+                                               invalidView,
+                                               RenderFrameSettings{},
+                                               RenderFrameCaptureRequest{},
+                                               MakeCompleteDiagnostics()),
+                  nullptr);
+
+        invalidView = view;
+        invalidView.viewMatrix[0].x =
+            std::numeric_limits<float32>::quiet_NaN();
+        EXPECT_EQ(RenderFramePacketV5::Create(header,
+                                               invalidView,
+                                               RenderFrameSettings{},
+                                               RenderFrameCaptureRequest{},
+                                               MakeCompleteDiagnostics()),
+                  nullptr);
+    }
+
+    TEST(RenderContractsValidation,
+         EffectTimeIsIndependentFromPresentationClock)
+    {
+        RenderFrameHeaderV5 firstHeader = MakeValidFrameHeader(301, 61);
+        firstHeader.simulationTick = 17;
+        firstHeader.effectFixedDeltaSeconds = 1.0f / 120.0f;
+        firstHeader.effectSimulationSeconds = 17.0 / 120.0;
+        firstHeader.deterministicSeed = 0x1234567U;
+        RenderViewSnapshot firstView = MakeValidView();
+        firstView.absoluteTime = 10.0;
+        firstView.deltaTime = 1.0f / 30.0f;
+
+        RenderFrameHeaderV5 secondHeader = firstHeader;
+        secondHeader.sequence = 302;
+        RenderViewSnapshot secondView = firstView;
+        secondView.absoluteTime = 9000.0;
+        secondView.deltaTime = 1.0f / 240.0f;
+
+        const auto first = RenderFramePacketV5::Create(
+            firstHeader,
+            firstView,
+            RenderFrameSettings{},
+            RenderFrameCaptureRequest{},
+            MakeCompleteDiagnostics());
+        const auto second = RenderFramePacketV5::Create(
+            secondHeader,
+            secondView,
+            RenderFrameSettings{},
+            RenderFrameCaptureRequest{},
+            MakeCompleteDiagnostics());
+        ASSERT_NE(first, nullptr);
+        ASSERT_NE(second, nullptr);
+        EXPECT_EQ(first->GetViewFamily().effectTime,
+                  second->GetViewFamily().effectTime);
+        EXPECT_NE(first->GetFrameStamp().absoluteTimeSeconds,
+                  second->GetFrameStamp().absoluteTimeSeconds);
+        EXPECT_NE(first->GetFrameStamp().deltaTimeSeconds,
+                  second->GetFrameStamp().deltaTimeSeconds);
+    }
+
+    TEST(RenderContractsValidation,
+         HistoryAvailabilityExplainsEveryCompatibilityBreak)
+    {
+        const auto packet = RenderFramePacketV5::Create(
+            MakeValidFrameHeader(201, 51),
+            MakeValidView(),
+            RenderFrameSettings{},
+            RenderFrameCaptureRequest{},
+            MakeCompleteDiagnostics());
+        ASSERT_NE(packet, nullptr);
+        const RenderViewHistoryIdentity identity = packet->GetHistoryIdentity();
+
+        RenderHistoryAvailability decision =
+            EvaluateRenderHistoryAvailability(nullptr, identity, false);
+        EXPECT_FALSE(decision.available);
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons,
+            RenderHistoryResetReason::FirstFrame));
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons,
+            RenderHistoryResetReason::HistoryUnavailable));
+
+        decision = EvaluateRenderHistoryAvailability(&identity, identity, false);
+        EXPECT_TRUE(decision.available);
+        EXPECT_EQ(decision.resetReasons, RenderHistoryResetReason::None);
+        EXPECT_TRUE(decision.IsConsistent());
+
+        RenderViewHistoryIdentity changed = identity;
+        ++changed.cameraCutRevision;
+        ++changed.temporalEpoch;
+        ++changed.worldRevision;
+        ++changed.surfaceGeneration;
+        changed.previousFrame.surfaceGeneration = changed.surfaceGeneration;
+        ++changed.extent.width;
+        ++changed.formatRevision;
+        ++changed.previousFrame.configurationRevision;
+        decision = EvaluateRenderHistoryAvailability(
+            &identity, changed, true, false);
+        EXPECT_FALSE(decision.available);
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons, RenderHistoryResetReason::CameraCut));
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons,
+            RenderHistoryResetReason::TemporalEpochChanged));
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons,
+            RenderHistoryResetReason::SceneDiscontinuity));
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons, RenderHistoryResetReason::SurfaceChanged));
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons, RenderHistoryResetReason::Resize));
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons, RenderHistoryResetReason::FormatChanged));
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons,
+            RenderHistoryResetReason::ConfigurationChanged));
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons,
+            RenderHistoryResetReason::ExplicitDiscontinuity));
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            decision.resetReasons,
+            RenderHistoryResetReason::HistoryUnavailable));
     }
 
 } // namespace
