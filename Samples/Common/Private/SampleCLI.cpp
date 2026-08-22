@@ -892,6 +892,75 @@ namespace RVX
         stream << "  \"assetRedistributable\": "
                << Diagnostics::JsonBool(report.assetRedistributable) << ",\n";
         stream << "  \"assetLoaded\": " << Diagnostics::JsonBool(report.assetLoaded) << ",\n";
+        if (report.schemaVersion >= 20)
+        {
+            stream << "  \"visualContractReceipt\": ";
+            if (!report.visualContractReceipt.has_value())
+            {
+                stream << "null,\n";
+            }
+            else
+            {
+                const SampleVisualContractReceipt& receipt =
+                    *report.visualContractReceipt;
+                stream << "{\n";
+                stream << "    \"manifestSchema\": "
+                       << Diagnostics::JsonString(receipt.manifestSchema)
+                       << ",\n";
+                stream << "    \"manifestSchemaVersion\": "
+                       << receipt.manifestSchemaVersion << ",\n";
+                stream << "    \"manifestContentSha256\": "
+                       << Diagnostics::JsonString(
+                              receipt.manifestContentSha256)
+                       << ",\n";
+                stream << "    \"visualContractVersion\": "
+                       << receipt.visualContractVersion << ",\n";
+                stream << "    \"domain\": "
+                       << Diagnostics::JsonString(
+                              GetSampleDomainName(receipt.domain))
+                       << ",\n";
+                stream << "    \"intent\": "
+                       << Diagnostics::JsonString(
+                              GetSampleIntentName(receipt.intent))
+                       << ",\n";
+                stream << "    \"requestedPipeline\": "
+                       << Diagnostics::JsonString(
+                              GetSamplePipelineRecipeName(
+                                  receipt.requestedPipeline))
+                       << ",\n";
+                stream << "    \"observedPipeline\": "
+                       << Diagnostics::JsonString(
+                              receipt.observedPipeline.has_value()
+                                  ? GetSamplePipelineRecipeName(
+                                        *receipt.observedPipeline)
+                                  : "unavailable")
+                       << ",\n";
+                stream << "    \"quality\": "
+                       << Diagnostics::JsonString(
+                              GetSampleQualityTierName(receipt.quality))
+                       << ",\n";
+                stream << "    \"cameraBookmarkId\": "
+                       << Diagnostics::JsonString(receipt.cameraBookmarkId)
+                       << ",\n";
+                stream << "    \"fixedTimeNumerator\": "
+                       << receipt.fixedTimeNumerator << ",\n";
+                stream << "    \"fixedTimeDenominator\": "
+                       << receipt.fixedTimeDenominator << ",\n";
+                stream << "    \"deterministicSeed\": "
+                       << receipt.deterministicSeed << ",\n";
+                stream << "    \"captureTick\": " << receipt.captureTick
+                       << ",\n";
+                stream << "    \"captureCarryingFrameSequence\": "
+                       << receipt.captureCarryingFrameSequence << ",\n";
+                stream << "    \"deterministicQualification\": "
+                       << Diagnostics::JsonBool(
+                              receipt.deterministicQualification)
+                       << ",\n";
+                stream << "    \"satisfied\": "
+                       << Diagnostics::JsonBool(receipt.satisfied) << "\n";
+                stream << "  },\n";
+            }
+        }
         WriteStringArray(stream, "enabledFeatures", report.enabledFeatures, ",");
         WriteStringArray(stream, "unsupportedFeatures", report.unsupportedFeatures, ",");
         WriteStringArray(stream, "fallbackReasons", report.fallbackReasons, ",");

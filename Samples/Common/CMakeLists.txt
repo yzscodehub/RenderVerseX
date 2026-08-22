@@ -12,6 +12,7 @@ add_library(RVX_SampleCommon STATIC
     Private/SampleCLI.cpp
     Private/SampleEnvironmentLoader.cpp
     Private/SampleLifetimeQualification.cpp
+    Private/SampleManifest.cpp
     Private/SampleModelLoader.cpp
     Private/SampleOrbitCameraController.cpp
     Private/SampleRegistry.cpp

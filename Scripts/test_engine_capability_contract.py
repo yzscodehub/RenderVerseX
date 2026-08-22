@@ -55,6 +55,88 @@ def base_contract() -> dict:
             "requiredEvidence": [],
         },
     ]
+    capabilities.extend(
+        [
+            {
+                "id": "particle-runtime",
+                "status": "partial",
+                "module": "Particle",
+                "runtimeComposition": "engine-required",
+                "shippingSupported": False,
+                "requiredEvidence": [
+                    {
+                        "path": "Tests/ParticleEcsRuntimeGatewayValidation/CMakeLists.txt",
+                        "contains": "ParticleEcsRuntimeGatewayValidation",
+                    }
+                ],
+            },
+            {
+                "id": "particle-rendering",
+                "status": "partial",
+                "module": "Render",
+                "runtimeComposition": "engine-required",
+                "shippingSupported": False,
+                "requiredEvidence": [
+                    {
+                        "path": "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
+                        "contains": "particle draw implementation is not connected",
+                    }
+                ],
+            },
+            {
+                "id": "water-runtime",
+                "status": "partial",
+                "module": "Water",
+                "runtimeComposition": "engine-required",
+                "shippingSupported": False,
+                "requiredEvidence": [
+                    {
+                        "path": "Tests/WaterEcsRuntimeGatewayValidation/CMakeLists.txt",
+                        "contains": "WaterEcsRuntimeGatewayValidation",
+                    }
+                ],
+            },
+            {
+                "id": "water-rendering",
+                "status": "partial",
+                "module": "Render",
+                "runtimeComposition": "engine-required",
+                "shippingSupported": False,
+                "requiredEvidence": [
+                    {
+                        "path": "Source/Runtime/Render/Private/Passes/WaterPass.cpp",
+                        "contains": "water pass scheduling is enabled",
+                    }
+                ],
+            },
+            {
+                "id": "terrain-runtime",
+                "status": "partial",
+                "module": "Terrain",
+                "runtimeComposition": "engine-required",
+                "shippingSupported": False,
+                "requiredEvidence": [
+                    {
+                        "path": "Tests/TerrainEcsRuntimeGatewayValidation/CMakeLists.txt",
+                        "contains": "TerrainEcsRuntimeGatewayValidation",
+                    }
+                ],
+            },
+            {
+                "id": "terrain-rendering",
+                "status": "partial",
+                "module": "Render",
+                "runtimeComposition": "engine-required",
+                "shippingSupported": False,
+                "requiredEvidence": [
+                    {
+                        "path": "Source/Runtime/Render/Private/Passes/TerrainPass.cpp",
+                        "contains": "terrain pass scheduling is enabled",
+                    }
+                ],
+            },
+        ]
+    )
     return {
         "schema": "RVX.EngineCapabilities",
         "schemaVersion": 1,
@@ -131,6 +213,27 @@ def write_fixture(root: Path) -> None:
                 "owner": "unassigned",
             },
             {
+                "id": "Particle",
+                "shippingAllowed": True,
+                "deferred": False,
+                "allowedModules": ["Core", "Particle"],
+                "owner": "unassigned",
+            },
+            {
+                "id": "Water",
+                "shippingAllowed": True,
+                "deferred": False,
+                "allowedModules": ["Core", "Water"],
+                "owner": "unassigned",
+            },
+            {
+                "id": "Terrain",
+                "shippingAllowed": True,
+                "deferred": False,
+                "allowedModules": ["Core", "Terrain"],
+                "owner": "unassigned",
+            },
+            {
                 "id": "Editor",
                 "shippingAllowed": False,
                 "deferred": True,
@@ -141,7 +244,13 @@ def write_fixture(root: Path) -> None:
                 "id": "Engine",
                 "shippingAllowed": True,
                 "deferred": False,
-                "allowedModules": ["Core", "Render"],
+                "allowedModules": [
+                    "Core",
+                    "Particle",
+                    "Render",
+                    "Terrain",
+                    "Water",
+                ],
                 "owner": "unassigned",
             },
         ],
@@ -163,7 +272,34 @@ def write_fixture(root: Path) -> None:
     write(root / "Docs/README.md", "# Current documentation\n")
     (root / "Docs/RVX-NG").mkdir(parents=True)
     (root / "Docs/superpowers").mkdir(parents=True)
-    write(root / "Tests/CMake/UnitTests.cmake", "NAME CoreValidation\n")
+    write(
+        root / "Tests/CMake/UnitTests.cmake",
+        "NAME CoreValidation\nNAME EcsFeatureSnapshotValidation\n",
+    )
+    write(
+        root / "Tests/ParticleEcsRuntimeGatewayValidation/CMakeLists.txt",
+        "NAME ParticleEcsRuntimeGatewayValidation\n",
+    )
+    write(
+        root / "Tests/WaterEcsRuntimeGatewayValidation/CMakeLists.txt",
+        "NAME WaterEcsRuntimeGatewayValidation\n",
+    )
+    write(
+        root / "Tests/TerrainEcsRuntimeGatewayValidation/CMakeLists.txt",
+        "NAME TerrainEcsRuntimeGatewayValidation\n",
+    )
+    write(
+        root / "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
+        "particle draw implementation is not connected\n",
+    )
+    write(
+        root / "Source/Runtime/Render/Private/Passes/WaterPass.cpp",
+        "water pass scheduling is enabled\n",
+    )
+    write(
+        root / "Source/Runtime/Render/Private/Passes/TerrainPass.cpp",
+        "terrain pass scheduling is enabled\n",
+    )
     write(
         root / "Source/Runtime/ResourceRuntime/Include/Resource/Cooked/CookedModelArtifact.h",
         'constexpr auto Magic = "RVX_MODEL_ARTIFACT_V2";\n',
@@ -191,6 +327,14 @@ def mutate_contract(root: Path, mutation) -> None:
     value = json.loads(path.read_text(encoding="utf-8"))
     mutation(value)
     path.write_text(json.dumps(value), encoding="utf-8")
+
+
+def find_capability(contract: dict, capability_id: str) -> dict:
+    return next(
+        capability
+        for capability in contract["capabilities"]
+        if capability["id"] == capability_id
+    )
 
 
 class EngineCapabilityContractTests(unittest.TestCase):
@@ -244,6 +388,106 @@ class EngineCapabilityContractTests(unittest.TestCase):
             result = run_checker(root)
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertIn("evidence source", result.stdout)
+
+    def test_broad_feature_capability_id_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture(root)
+
+            def use_broad_id(value: dict) -> None:
+                find_capability(value, "particle-runtime")["id"] = "particle"
+
+            mutate_contract(root, use_broad_id)
+            result = run_checker(root)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("ambiguous broad capability id", result.stdout)
+
+    def test_missing_feature_surface_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture(root)
+
+            def remove_surface(value: dict) -> None:
+                value["capabilities"] = [
+                    capability
+                    for capability in value["capabilities"]
+                    if capability["id"] != "terrain-rendering"
+                ]
+
+            mutate_contract(root, remove_surface)
+            result = run_checker(root)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("terrain-rendering", result.stdout)
+
+    def test_generic_snapshot_cannot_support_integrated_feature(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture(root)
+
+            def claim_integrated(value: dict) -> None:
+                capability = find_capability(value, "particle-runtime")
+                capability["status"] = "integrated"
+                capability["requiredEvidence"] = [
+                    {
+                        "path": "Tests/CMake/UnitTests.cmake",
+                        "contains": "EcsFeatureSnapshotValidation",
+                    }
+                ]
+
+            mutate_contract(root, claim_integrated)
+            result = run_checker(root)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("cannot use generic EcsFeatureSnapshotValidation", result.stdout)
+            self.assertIn("ParticleRuntimeQualification", result.stdout)
+
+    def test_generic_snapshot_cannot_support_shipping_feature(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture(root)
+
+            def claim_shipping(value: dict) -> None:
+                capability = find_capability(value, "water-runtime")
+                capability["shippingSupported"] = True
+                capability["requiredEvidence"] = [
+                    {
+                        "path": "Tests/CMake/UnitTests.cmake",
+                        "contains": "EcsFeatureSnapshotValidation",
+                    }
+                ]
+
+            mutate_contract(root, claim_shipping)
+            result = run_checker(root)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("cannot use generic EcsFeatureSnapshotValidation", result.stdout)
+            self.assertIn("WaterRuntimeShippingValidation", result.stdout)
+
+    def test_rendering_integration_requires_visual_qualification(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture(root)
+
+            def claim_integrated(value: dict) -> None:
+                find_capability(value, "particle-rendering")["status"] = "integrated"
+
+            mutate_contract(root, claim_integrated)
+            result = run_checker(root)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("ParticleRenderingQualification", result.stdout)
+
+    def test_feature_shipping_requires_dedicated_product_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture(root)
+
+            def claim_shipping(value: dict) -> None:
+                find_capability(value, "terrain-runtime")[
+                    "shippingSupported"
+                ] = True
+
+            mutate_contract(root, claim_shipping)
+            result = run_checker(root)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("TerrainRuntimeShippingValidation", result.stdout)
 
     def test_stale_current_api_example_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

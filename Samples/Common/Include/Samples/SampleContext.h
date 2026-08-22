@@ -149,6 +149,10 @@ namespace RVX
         uint32 width = 1280;
         uint32 height = 720;
         std::string quality = "default";
+        SampleQualityTier qualityTier = SampleQualityTier::Default;
+        SamplePipelineRecipe pipelineRecipe =
+            SamplePipelineRecipe::ForwardStandard;
+        uint32 deterministicSeed = 0;
         SampleRenderPath renderPath = SampleRenderPath::Auto;
         std::optional<SampleWorkloadProfile> workloadProfile;
         bool smoke = false;

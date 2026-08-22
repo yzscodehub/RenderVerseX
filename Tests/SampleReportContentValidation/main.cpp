@@ -5,6 +5,7 @@
 #include <iostream>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <numeric>
 #include <set>
 #include <sstream>
 #include <string>
@@ -1995,6 +1996,219 @@ namespace
         return passed;
     }
 
+    bool IsLowerKebabLogicalId(const std::string& value)
+    {
+        if (value.empty() || value.size() > 128)
+        {
+            return false;
+        }
+
+        bool previousWasSeparator = true;
+        for (const char character : value)
+        {
+            const bool alphaNumeric =
+                (character >= 'a' && character <= 'z') ||
+                (character >= '0' && character <= '9');
+            if (alphaNumeric)
+            {
+                previousWasSeparator = false;
+                continue;
+            }
+            if (character != '-' || previousWasSeparator)
+            {
+                return false;
+            }
+            previousWasSeparator = true;
+        }
+        return !previousWasSeparator;
+    }
+
+    bool ValidateVisualContractReceiptSchemaV20(
+        const Json& report,
+        uint64_t presentedFrameSequence)
+    {
+        const auto iterator = report.find("visualContractReceipt");
+        if (iterator == report.end() || !iterator->is_object())
+        {
+            std::cerr << "Schema-v20 report missing visualContractReceipt object\n";
+            return false;
+        }
+
+        const Json& receipt = *iterator;
+        const std::set<std::string> expectedFields = {
+            "manifestSchema",
+            "manifestSchemaVersion",
+            "manifestContentSha256",
+            "visualContractVersion",
+            "domain",
+            "intent",
+            "requestedPipeline",
+            "observedPipeline",
+            "quality",
+            "cameraBookmarkId",
+            "fixedTimeNumerator",
+            "fixedTimeDenominator",
+            "deterministicSeed",
+            "captureTick",
+            "captureCarryingFrameSequence",
+            "deterministicQualification",
+            "satisfied",
+        };
+        bool passed = true;
+        if (receipt.size() != expectedFields.size())
+        {
+            std::cerr << "Visual contract receipt v20 field set is not exact\n";
+            passed = false;
+        }
+        for (const auto& [field, value] : receipt.items())
+        {
+            static_cast<void>(value);
+            if (!expectedFields.contains(field))
+            {
+                std::cerr << "Visual contract receipt v20 has unknown field: "
+                          << field << "\n";
+                passed = false;
+            }
+        }
+
+        std::string manifestSchema;
+        std::string manifestContentSha256;
+        std::string domain;
+        std::string intent;
+        std::string requestedPipeline;
+        std::string observedPipeline;
+        std::string quality;
+        std::string cameraBookmarkId;
+        uint64_t manifestSchemaVersion = 0;
+        uint64_t visualContractVersion = 0;
+        uint64_t fixedTimeNumerator = 0;
+        uint64_t fixedTimeDenominator = 0;
+        uint64_t deterministicSeed = 0;
+        uint64_t captureTick = 0;
+        uint64_t captureCarryingFrameSequence = 0;
+        bool deterministicQualification = false;
+        bool satisfied = false;
+
+        passed &= ReadStringField(receipt, "manifestSchema", manifestSchema,
+                                  "Visual contract receipt v20", true);
+        passed &= ReadUnsignedField(receipt, "manifestSchemaVersion",
+                                    manifestSchemaVersion,
+                                    "Visual contract receipt v20");
+        passed &= ReadStringField(receipt, "manifestContentSha256",
+                                  manifestContentSha256,
+                                  "Visual contract receipt v20", true);
+        passed &= ReadUnsignedField(receipt, "visualContractVersion",
+                                    visualContractVersion,
+                                    "Visual contract receipt v20");
+        passed &= ReadStringField(receipt, "domain", domain,
+                                  "Visual contract receipt v20", true);
+        passed &= ReadStringField(receipt, "intent", intent,
+                                  "Visual contract receipt v20", true);
+        passed &= ReadStringField(receipt, "requestedPipeline",
+                                  requestedPipeline,
+                                  "Visual contract receipt v20", true);
+        passed &= ReadStringField(receipt, "observedPipeline",
+                                  observedPipeline,
+                                  "Visual contract receipt v20", true);
+        passed &= ReadStringField(receipt, "quality", quality,
+                                  "Visual contract receipt v20", true);
+        passed &= ReadStringField(receipt, "cameraBookmarkId",
+                                  cameraBookmarkId,
+                                  "Visual contract receipt v20", true);
+        passed &= ReadUnsignedField(receipt, "fixedTimeNumerator",
+                                    fixedTimeNumerator,
+                                    "Visual contract receipt v20");
+        passed &= ReadUnsignedField(receipt, "fixedTimeDenominator",
+                                    fixedTimeDenominator,
+                                    "Visual contract receipt v20");
+        passed &= ReadUnsignedField(receipt, "deterministicSeed",
+                                    deterministicSeed,
+                                    "Visual contract receipt v20");
+        passed &= ReadUnsignedField(receipt, "captureTick", captureTick,
+                                    "Visual contract receipt v20");
+        passed &= ReadUnsignedField(receipt, "captureCarryingFrameSequence",
+                                    captureCarryingFrameSequence,
+                                    "Visual contract receipt v20");
+        passed &= ReadBooleanField(receipt, "deterministicQualification",
+                                   deterministicQualification,
+                                   "Visual contract receipt v20");
+        passed &= ReadBooleanField(receipt, "satisfied", satisfied,
+                                   "Visual contract receipt v20");
+
+        const auto isOneOf = [](const std::string& value,
+                                std::initializer_list<const char*> values)
+        {
+            return std::any_of(values.begin(), values.end(),
+                               [&value](const char* candidate)
+                               {
+                                   return value == candidate;
+                               });
+        };
+        if (manifestSchema != "RVX.SampleManifest" ||
+            manifestSchemaVersion != 1 ||
+            !IsSha256DigestText(manifestContentSha256))
+        {
+            std::cerr << "Visual contract receipt v20 manifest identity is invalid\n";
+            passed = false;
+        }
+        if (visualContractVersion == 0 ||
+            visualContractVersion > std::numeric_limits<uint32_t>::max())
+        {
+            std::cerr << "Visual contract receipt v20 visualContractVersion is invalid\n";
+            passed = false;
+        }
+        if (!isOneOf(domain, {"rendering", "animation", "vfx",
+                              "environment", "physics", "systems",
+                              "qualification"}) ||
+            !isOneOf(intent, {"demonstration", "regression", "stress",
+                              "integration"}) ||
+            !isOneOf(requestedPipeline,
+                     {"minimal", "forward-plus", "deferred", "hybrid-rt",
+                      "headless"}) ||
+            !isOneOf(quality,
+                     {"default", "low", "medium", "high", "ultra"}))
+        {
+            std::cerr << "Visual contract receipt v20 enum spelling is invalid\n";
+            passed = false;
+        }
+        if (observedPipeline != "forward-plus")
+        {
+            std::cerr << "Visual contract receipt v20 observed pipeline is not an executed forward-plus recipe\n";
+            passed = false;
+        }
+        if (!IsLowerKebabLogicalId(cameraBookmarkId))
+        {
+            std::cerr << "Visual contract receipt v20 camera bookmark id is invalid\n";
+            passed = false;
+        }
+        const uint64_t maximumUInt32 =
+            std::numeric_limits<uint32_t>::max();
+        if (fixedTimeNumerator == 0 || fixedTimeDenominator == 0 ||
+            fixedTimeNumerator > maximumUInt32 ||
+            fixedTimeDenominator > maximumUInt32 ||
+            fixedTimeNumerator > fixedTimeDenominator ||
+            std::gcd(fixedTimeNumerator, fixedTimeDenominator) != 1)
+        {
+            std::cerr << "Visual contract receipt v20 fixed time is not a canonical rational in (0,1]\n";
+            passed = false;
+        }
+        if (deterministicSeed > maximumUInt32 || captureTick == 0 ||
+            captureTick > maximumUInt32 ||
+            captureCarryingFrameSequence == 0 ||
+            captureCarryingFrameSequence > presentedFrameSequence)
+        {
+            std::cerr << "Visual contract receipt v20 capture identity is invalid\n";
+            passed = false;
+        }
+        static_cast<void>(deterministicQualification);
+        if (!satisfied)
+        {
+            std::cerr << "Visual contract receipt v20 is not satisfied\n";
+            passed = false;
+        }
+        return passed;
+    }
+
     bool ValidateSampleReportV12Root(const Json& report)
     {
         bool passed = true;
@@ -2079,6 +2293,11 @@ namespace
         passed &= ReadUnsignedField(
             report, "presentedFrameSequence", presentedFrameSequence, "Report");
         passed &= ReadBooleanField(report, "pass", reportPass, "Report");
+        if (schemaVersion >= 20)
+        {
+            passed &= ValidateVisualContractReceiptSchemaV20(
+                report, presentedFrameSequence);
+        }
         if (!reportPass)
         {
             std::cerr << "Report root pass field is false\n";
@@ -3213,6 +3432,88 @@ namespace
                 ["observedTranscript"].erase(
                     "unorderedConsumedPayloadHashSecondary");
         if (ValidateSampleReportV12Root(missingDirectReadbackEvidence))
+        {
+            return false;
+        }
+
+        // Schema 20 binds a successful visual qualification to the exact
+        // manifest, fixed-time tick, selected camera, and carrying presented
+        // frame. Legacy schema 19 remains valid without this receipt.
+        Json schema20Report = schema19Report;
+        schema20Report["schemaVersion"] = 20;
+        if (ValidateSampleReportV12Root(schema20Report))
+        {
+            return false;
+        }
+        const Json visualContractReceipt = {
+            {"manifestSchema", "RVX.SampleManifest"},
+            {"manifestSchemaVersion", 1},
+            {"manifestContentSha256", std::string(64, 'd')},
+            {"visualContractVersion", 3},
+            {"domain", "rendering"},
+            {"intent", "regression"},
+            {"requestedPipeline", "deferred"},
+            {"observedPipeline", "forward-plus"},
+            {"quality", "high"},
+            {"cameraBookmarkId", "hero"},
+            {"fixedTimeNumerator", 1},
+            {"fixedTimeDenominator", 60},
+            {"deterministicSeed",
+             std::numeric_limits<uint32_t>::max()},
+            {"captureTick", 4},
+            {"captureCarryingFrameSequence", 4},
+            {"deterministicQualification", true},
+            {"satisfied", true},
+        };
+        schema20Report["visualContractReceipt"] = visualContractReceipt;
+        if (!ValidateSampleReportV12Root(schema20Report))
+        {
+            return false;
+        }
+
+        for (const auto& [field, value] : visualContractReceipt.items())
+        {
+            static_cast<void>(value);
+            Json missingField = schema20Report;
+            missingField["visualContractReceipt"].erase(field);
+            if (ValidateSampleReportV12Root(missingField))
+            {
+                return false;
+            }
+        }
+        Json unsatisfiedVisualContract = schema20Report;
+        unsatisfiedVisualContract["visualContractReceipt"]["satisfied"] =
+            false;
+        if (ValidateSampleReportV12Root(unsatisfiedVisualContract))
+        {
+            return false;
+        }
+        Json unavailableObservedPipeline = schema20Report;
+        unavailableObservedPipeline["visualContractReceipt"]
+                                   ["observedPipeline"] = "unavailable";
+        if (ValidateSampleReportV12Root(unavailableObservedPipeline))
+        {
+            return false;
+        }
+        Json nonCanonicalFixedTime = schema20Report;
+        nonCanonicalFixedTime["visualContractReceipt"]
+                             ["fixedTimeNumerator"] = 2;
+        nonCanonicalFixedTime["visualContractReceipt"]
+                             ["fixedTimeDenominator"] = 120;
+        if (ValidateSampleReportV12Root(nonCanonicalFixedTime))
+        {
+            return false;
+        }
+        Json futureCapture = schema20Report;
+        futureCapture["visualContractReceipt"]
+                     ["captureCarryingFrameSequence"] = 5;
+        if (ValidateSampleReportV12Root(futureCapture))
+        {
+            return false;
+        }
+        Json unknownReceiptField = schema20Report;
+        unknownReceiptField["visualContractReceipt"]["fallback"] = true;
+        if (ValidateSampleReportV12Root(unknownReceiptField))
         {
             return false;
         }

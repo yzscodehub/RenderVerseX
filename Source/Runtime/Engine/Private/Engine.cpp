@@ -60,6 +60,16 @@ namespace
                      static_cast<float64>(std::numeric_limits<uint32>::max())));
         return static_cast<uint32>(bounded);
     }
+
+    [[nodiscard]] bool IsValidFrameTime(float32 deltaTime,
+                                        float64 absoluteTimeSeconds) noexcept
+    {
+        return std::isfinite(deltaTime) && deltaTime >= 0.0f &&
+               std::isfinite(absoluteTimeSeconds) &&
+               absoluteTimeSeconds >= 0.0 &&
+               absoluteTimeSeconds <= static_cast<float64>(
+                   std::numeric_limits<float32>::max());
+    }
 } // namespace
 
 Engine::Engine(EngineRuntimeDependencies dependencies)
@@ -243,6 +253,8 @@ bool Engine::Initialize()
     m_initializationRollbackPending = false;
     m_shouldShutdown = false;
     m_frameNumber = 0;
+    m_compatibilityElapsedTimeSeconds = 0.0;
+    m_lastFrameAbsoluteTimeSeconds = 0.0;
     RVX_CORE_INFO("=== RenderVerseX Engine Initialized ===");
     startupSpan.SetAttribute("result", "initialized");
     return true;
@@ -251,56 +263,74 @@ bool Engine::Initialize()
 void Engine::Tick()
 {
     Time::Update();
-    Tick(Time::DeltaTime());
+    const float32 deltaTime = Time::DeltaTime();
+    const float64 absoluteTimeSeconds = Time::ElapsedTime();
+    if (!m_initialized ||
+        !IsValidFrameTime(deltaTime, absoluteTimeSeconds))
+    {
+        return;
+    }
+    TickFrame(deltaTime, absoluteTimeSeconds);
 }
 
 void Engine::Tick(float deltaTime)
 {
-    if (!m_initialized)
+    if (!m_initialized || !std::isfinite(deltaTime) || deltaTime < 0.0f)
     {
         return;
     }
 
+    const float64 absoluteTimeSeconds =
+        m_compatibilityElapsedTimeSeconds + static_cast<float64>(deltaTime);
+    if (!IsValidFrameTime(deltaTime, absoluteTimeSeconds))
+    {
+        return;
+    }
+
+    TickFrame(deltaTime, absoluteTimeSeconds);
+    m_compatibilityElapsedTimeSeconds = absoluteTimeSeconds;
+}
+
+void Engine::TickFixed(float32 deltaTime, float64 absoluteTimeSeconds)
+{
+    if (!m_initialized ||
+        !IsValidFrameTime(deltaTime, absoluteTimeSeconds))
+    {
+        return;
+    }
+
+    TickFrame(deltaTime, absoluteTimeSeconds);
+}
+
+void Engine::TickFrame(float32 deltaTime, float64 absoluteTimeSeconds)
+{
+    RVX_ASSERT(IsValidFrameTime(deltaTime, absoluteTimeSeconds));
+
     EventBus::Get().ProcessDeferredEvents();
     TickSubsystems(deltaTime);
     TickWorlds(deltaTime);
-    RenderAfterWorlds(deltaTime);
+    RenderAfterWorlds(deltaTime, absoluteTimeSeconds);
     FinalizeDestroyRequestedWorlds(deltaTime);
 
     if (auto* window = GetSubsystem<WindowSubsystem>(); window != nullptr && window->ShouldClose())
     {
         RequestShutdown();
     }
+    m_lastFrameAbsoluteTimeSeconds = absoluteTimeSeconds;
     ++m_frameNumber;
 }
 
 void Engine::TickWithoutRender()
 {
-    Time::Update();
-    TickWithoutRender(Time::DeltaTime());
+    Tick();
 }
 
 void Engine::TickWithoutRender(float deltaTime)
 {
-    if (!m_initialized)
-    {
-        return;
-    }
-
-    EventBus::Get().ProcessDeferredEvents();
-    TickSubsystems(deltaTime);
-    TickWorlds(deltaTime);
     // The ECS path has no alternate direct-render owner.  Its publication is
     // also the only route by which Render can acknowledge a World-removal
     // proof, so this simulation-oriented entry point must keep it moving.
-    RenderAfterWorlds(deltaTime);
-    FinalizeDestroyRequestedWorlds(deltaTime);
-
-    if (auto* window = GetSubsystem<WindowSubsystem>(); window != nullptr && window->ShouldClose())
-    {
-        RequestShutdown();
-    }
-    ++m_frameNumber;
+    Tick(deltaTime);
 }
 
 void Engine::Shutdown()
@@ -656,7 +686,7 @@ void Engine::ShutdownWorlds()
     // frame while the providers are still alive on every retry.
     TickSubsystems(0.0f);
     TickWorlds(0.0f);
-    RenderAfterWorlds(0.0f);
+    RenderAfterWorlds(0.0f, m_lastFrameAbsoluteTimeSeconds);
     FinalizeDestroyRequestedWorlds(0.0f);
 }
 
@@ -959,7 +989,8 @@ bool Engine::RollbackFailedInitialization()
     return true;
 }
 
-void Engine::RenderAfterWorlds(float deltaTime)
+void Engine::RenderAfterWorlds(float32 deltaTime,
+                               float64 absoluteTimeSeconds)
 {
     if (m_ecsRenderComposition == nullptr)
     {
@@ -981,7 +1012,7 @@ void Engine::RenderAfterWorlds(float deltaTime)
     const std::shared_ptr<const SceneECS::FrozenSceneSnapshot> snapshot =
         active->world->GetSceneEcsRuntime().GetLatestFrozenSnapshot();
     static_cast<void>(m_ecsRenderComposition->Tick(
-        snapshot.get(), deltaTime, static_cast<float32>(Time::ElapsedTime())));
+        snapshot.get(), deltaTime, static_cast<float32>(absoluteTimeSeconds)));
 }
 
 bool Engine::SetRenderFrameSettings(const RenderFrameSettings& settings) noexcept

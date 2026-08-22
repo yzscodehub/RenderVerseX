@@ -13,6 +13,7 @@
 #include "RHI/RHIDefinitions.h"
 #include "Resource/ResourceContentIdentity.h"
 #include "Samples/SampleAssetCatalog.h"
+#include "Samples/SampleInfo.h"
 
 #include <array>
 #include <filesystem>
@@ -24,7 +25,8 @@
 namespace RVX
 {
     /** @brief Current JSON schema version written by sample report producers. */
-    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 19;
+    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 20;
+    inline constexpr uint32 RVX_SAMPLE_REPORT_PRE_VISUAL_CONTRACT_SCHEMA_VERSION = 19;
     inline constexpr uint32 RVX_SAMPLE_REPORT_SCENARIO_SCHEMA_VERSION = 12;
     inline constexpr uint32 RVX_SAMPLE_REPORT_ECS_DIAGNOSTICS_SCHEMA_VERSION = 13;
     inline constexpr uint32 RVX_SAMPLE_REPORT_PIXEL_PROBE_SCHEMA_VERSION = 16;
@@ -686,6 +688,35 @@ namespace RVX
         std::vector<SampleReportScenarioMetric> metrics;
     };
 
+    /**
+     * @brief Completion-qualified evidence for one Sample visual contract.
+     *
+     * Fixed time remains an exact integer rational. An absent observed
+     * pipeline is serialized as "unavailable" and cannot satisfy schema-v20
+     * report validation.
+     */
+    struct SampleVisualContractReceipt
+    {
+        std::string manifestSchema = "RVX.SampleManifest";
+        uint32 manifestSchemaVersion = 0;
+        std::string manifestContentSha256;
+        uint32 visualContractVersion = 0;
+        SampleDomain domain = SampleDomain::Rendering;
+        SampleIntent intent = SampleIntent::Demonstration;
+        SamplePipelineRecipe requestedPipeline =
+            SamplePipelineRecipe::Minimal;
+        std::optional<SamplePipelineRecipe> observedPipeline;
+        SampleQualityTier quality = SampleQualityTier::Default;
+        std::string cameraBookmarkId;
+        uint32 fixedTimeNumerator = 0;
+        uint32 fixedTimeDenominator = 0;
+        uint32 deterministicSeed = 0;
+        uint32 captureTick = 0;
+        uint64 captureCarryingFrameSequence = 0;
+        bool deterministicQualification = false;
+        bool satisfied = false;
+    };
+
     /** @brief Optional raw ToneMapping input/final-output pixel receipt. */
     struct SamplePixelProbeReport
     {
@@ -783,6 +814,7 @@ namespace RVX
         SampleReportReadiness readiness;
         SampleAssessmentSummary assessment;
         SampleReportScenario scenario;
+        std::optional<SampleVisualContractReceipt> visualContractReceipt;
         std::vector<std::string> enabledFeatures;
         std::vector<std::string> unsupportedFeatures;
         std::vector<std::string> fallbackReasons;

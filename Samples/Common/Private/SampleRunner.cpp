@@ -29,6 +29,7 @@
 #include <array>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -116,8 +117,6 @@ namespace RVX
 
     namespace
     {
-        constexpr float32 SampleDeltaTime = 1.0f / 60.0f;
-
         [[nodiscard]] bool RequiredGPUCullingQualificationMatchesFrame(
             const SampleRenderDiagnostics& diagnostics,
             uint64 targetFrameSequence) noexcept
@@ -1431,6 +1430,47 @@ namespace RVX
             return true;
         }
 
+        bool ParsePositiveRunnerUInt64(std::string_view text, uint64& output)
+        {
+            if (text.empty())
+            {
+                return false;
+            }
+            uint64 value = 0;
+            const std::from_chars_result result = std::from_chars(
+                text.data(), text.data() + text.size(), value);
+            if (result.ec != std::errc{} ||
+                result.ptr != text.data() + text.size() || value == 0)
+            {
+                return false;
+            }
+            output = value;
+            return true;
+        }
+
+        bool ParsePositiveRunnerFloat64(std::string_view text,
+                                        float64& output)
+        {
+            if (text.empty())
+            {
+                return false;
+            }
+            float64 value = 0.0;
+            const std::from_chars_result result = std::from_chars(
+                text.data(),
+                text.data() + text.size(),
+                value,
+                std::chars_format::general);
+            if (result.ec != std::errc{} ||
+                result.ptr != text.data() + text.size() ||
+                !std::isfinite(value) || value <= 0.0 || value > 1.0)
+            {
+                return false;
+            }
+            output = value;
+            return true;
+        }
+
         bool ParseRunnerRenderPath(std::string_view text,
                                    SampleRenderPath& output)
         {
@@ -1543,6 +1583,10 @@ namespace RVX
                    argument == "--asset-root" ||
                    argument == "--environment" ||
                    argument == "--environment-file" ||
+                   argument == "--pipeline" ||
+                   argument == "--view" ||
+                   argument == "--fixed-delta" ||
+                   argument == "--capture-tick" ||
                    argument == "--render-path" ||
                    argument == "--workload-scale" ||
                    argument == "--instancing" ||
@@ -2010,6 +2054,17 @@ namespace RVX
             sceneOptions.width = options.common.width;
             sceneOptions.height = options.common.height;
             sceneOptions.quality = options.common.quality;
+            sceneOptions.qualityTier = options.qualityTier;
+            sceneOptions.pipelineRecipe = options.pipelineRecipe;
+            sceneOptions.deterministicSeed = options.deterministicSeed;
+            if (sceneOptions.pipelineRecipe !=
+                SamplePipelineRecipe::ForwardStandard)
+            {
+                outError = "Selected pipeline recipe is not implemented by the current Render composition: " +
+                           std::string(GetSamplePipelineRecipeName(
+                               sceneOptions.pipelineRecipe));
+                return false;
+            }
             sceneOptions.renderPath = options.renderPathExplicit
                                           ? options.renderPath
                                           : info.defaultRenderPath;
@@ -3395,6 +3450,10 @@ namespace RVX
                 options.deterministicCameraOrbit = true;
                 continue;
             }
+            if (argument == "--quality")
+            {
+                options.qualityExplicit = true;
+            }
             if (RequiresRunnerValue(argument))
             {
                 if (i + 1 >= argc || !argv[i + 1])
@@ -3423,6 +3482,57 @@ namespace RVX
                 else if (argument == "--environment-file")
                 {
                     options.environmentPath = value;
+                }
+                else if (argument == "--pipeline")
+                {
+                    if (!ParseSamplePipelineRecipe(value,
+                                                   options.pipelineRecipe) ||
+                        options.pipelineRecipe ==
+                            SamplePipelineRecipe::Minimal ||
+                        options.pipelineRecipe ==
+                            SamplePipelineRecipe::Headless)
+                    {
+                        SetError(outError,
+                                 "Invalid --pipeline value: " +
+                                     std::string(value));
+                        return false;
+                    }
+                    options.pipelineExplicit = true;
+                }
+                else if (argument == "--view")
+                {
+                    options.viewBookmarkId = value;
+                    if (options.viewBookmarkId.empty())
+                    {
+                        SetError(outError, "--view must not be empty");
+                        return false;
+                    }
+                    options.viewBookmarkExplicit = true;
+                }
+                else if (argument == "--fixed-delta")
+                {
+                    if (!ParsePositiveRunnerFloat64(
+                            value, options.fixedDeltaSeconds))
+                    {
+                        SetError(outError,
+                                 "Invalid --fixed-delta value: " +
+                                     std::string(value));
+                        return false;
+                    }
+                    options.fixedDeltaExplicit = true;
+                }
+                else if (argument == "--capture-tick")
+                {
+                    if (!ParsePositiveRunnerUInt64(value,
+                                                   options.captureTick) ||
+                        options.captureTick > 1000000u)
+                    {
+                        SetError(outError,
+                                 "Invalid --capture-tick value: " +
+                                     std::string(value));
+                        return false;
+                    }
+                    options.captureTickExplicit = true;
                 }
                 else if (argument == "--render-path")
                 {
@@ -3596,6 +3706,17 @@ namespace RVX
         {
             return false;
         }
+        if (!ParseSampleQualityTier(options.common.quality,
+                                    options.qualityTier))
+        {
+            SetError(outError,
+                     "Invalid --quality value: " + options.common.quality);
+            return false;
+        }
+        if (options.common.showHelp || options.listSamples)
+        {
+            return true;
+        }
         if (options.sampleId.empty())
         {
             SetError(outError, "--sample must not be empty");
@@ -3681,6 +3802,18 @@ namespace RVX
         {
             options.common.frames = 8;
         }
+        if (options.captureTickExplicit)
+        {
+            if (options.common.screenshotPath.empty())
+            {
+                SetError(outError,
+                         "--capture-tick requires --screenshot");
+                return false;
+            }
+            options.common.frames = std::max(
+                options.common.frames,
+                static_cast<uint32>(options.captureTick));
+        }
         if (options.readyMaxFrames == 0)
         {
             options.readyMaxFrames = std::max(options.common.frames, 120u);
@@ -3722,6 +3855,10 @@ namespace RVX
             << "  --environment-file <path.hdr|path.exr>\n"
             << "  --catalog <catalog.json>\n"
             << "  --asset-root <directory>\n"
+            << "  --pipeline <forward-plus|deferred|hybrid-rt>\n"
+            << "  --view <bookmark-id>\n"
+            << "  --fixed-delta <seconds>\n"
+            << "  --capture-tick <positive-tick>\n"
             << "  --render-path <auto|direct|gpu-driven>\n"
             << "  --workload-scale <pr|nightly|qualification>\n"
             << "  --instancing <disabled|auto>\n"
@@ -3772,6 +3909,204 @@ namespace RVX
     {
         return (minimumFrames == 0 || executedFrames >= minimumFrames) &&
                executedFrames < maximumFrames;
+    }
+
+    void SampleRunner::ConfigureFrameWaitPolicy(
+        bool deterministicEpochActive,
+        float32 deltaTime,
+        RuntimeFrameWaitRequest& request) noexcept
+    {
+        request.deltaTime = deltaTime;
+        request.advanceEngine = !deterministicEpochActive;
+        request.pumpRenderProgressOnly = deterministicEpochActive;
+    }
+
+    bool SampleRunner::ResolveManifestContract(
+        const SampleScenarioManifest& manifest,
+        SampleRunnerCLIOptions& options,
+        std::string& outError)
+    {
+        if (manifest.id != options.sampleId ||
+            manifest.visualContractVersion == 0 ||
+            manifest.fixedTime.numerator == 0 ||
+            manifest.fixedTime.denominator == 0)
+        {
+            outError =
+                "The selected Sample manifest contract is incomplete or belongs to another scenario";
+            return false;
+        }
+
+        if (!options.pipelineExplicit)
+        {
+            options.pipelineRecipe = manifest.defaultRecipe;
+        }
+        if (!options.qualityExplicit ||
+            options.qualityTier == SampleQualityTier::Default)
+        {
+            options.qualityTier = manifest.defaultQualityProfile;
+            options.common.quality =
+                GetSampleQualityTierName(options.qualityTier);
+        }
+        if (options.qualityTier == SampleQualityTier::Default)
+        {
+            outError =
+                "The selected Sample manifest did not resolve a concrete quality profile";
+            return false;
+        }
+
+        options.fixedTimeNumerator = manifest.fixedTime.numerator;
+        options.fixedTimeDenominator = manifest.fixedTime.denominator;
+        options.deterministicSeed = manifest.fixedTime.deterministicSeed;
+        const float64 manifestDelta =
+            static_cast<float64>(manifest.fixedTime.numerator) /
+            static_cast<float64>(manifest.fixedTime.denominator);
+        if (options.fixedDeltaExplicit)
+        {
+            const float64 tolerance =
+                std::numeric_limits<float64>::epsilon() *
+                std::max<float64>(1.0, std::abs(manifestDelta)) * 8.0;
+            if (std::abs(options.fixedDeltaSeconds - manifestDelta) >
+                tolerance)
+            {
+                outError =
+                    "--fixed-delta does not match the exact fixedTime declared by the Sample manifest";
+                return false;
+            }
+        }
+        options.fixedDeltaSeconds = manifestDelta;
+
+        const bool captureEvidenceRequested =
+            !options.common.screenshotPath.empty() ||
+            options.common.pixelProbeEnabled;
+        options.deterministicContractActive =
+            manifest.deterministicQualification || captureEvidenceRequested ||
+            options.fixedDeltaExplicit || options.viewBookmarkExplicit ||
+            options.captureTickExplicit;
+
+        const auto findBookmark = [&manifest](std::string_view id)
+        {
+            return std::find_if(
+                manifest.cameraBookmarks.begin(),
+                manifest.cameraBookmarks.end(),
+                [id](const SampleCameraBookmark& bookmark)
+                {
+                    return bookmark.id == id;
+                });
+        };
+        if (options.viewBookmarkExplicit)
+        {
+            if (findBookmark(options.viewBookmarkId) ==
+                manifest.cameraBookmarks.end())
+            {
+                outError = "Unknown --view bookmark '" +
+                           options.viewBookmarkId + "' for Sample '" +
+                           manifest.id + "'";
+                return false;
+            }
+            options.viewBookmarkResolved = true;
+        }
+        else if (options.deterministicContractActive)
+        {
+            if (manifest.cameraBookmarks.empty())
+            {
+                outError =
+                    "The deterministic Sample contract has no camera bookmark";
+                return false;
+            }
+            options.viewBookmarkId = manifest.cameraBookmarks.front().id;
+            options.viewBookmarkResolved = true;
+        }
+
+        if (options.captureTickExplicit)
+        {
+            if (std::find(manifest.captureTicks.begin(),
+                          manifest.captureTicks.end(),
+                          static_cast<uint32>(options.captureTick)) ==
+                manifest.captureTicks.end())
+            {
+                outError = "--capture-tick is not declared by the selected Sample manifest";
+                return false;
+            }
+            options.captureTickResolved = true;
+        }
+        else if (captureEvidenceRequested)
+        {
+            if (manifest.captureTicks.empty())
+            {
+                outError =
+                    "The Sample manifest has no capture tick for the requested evidence";
+                return false;
+            }
+            options.captureTick = manifest.captureTicks.front();
+            options.captureTickResolved = true;
+        }
+
+        if (options.captureTickResolved)
+        {
+            if (options.captureTick == 0 ||
+                options.captureTick > std::numeric_limits<uint32>::max())
+            {
+                outError = "The resolved Sample capture tick is out of range";
+                return false;
+            }
+            options.common.frames = static_cast<uint32>(options.captureTick);
+            if (!options.readyMaxFramesExplicit)
+            {
+                options.readyMaxFrames = std::max<uint32>(
+                    options.readyMaxFrames,
+                    static_cast<uint32>(options.captureTick) + 120u);
+            }
+        }
+        options.manifestContractResolved = true;
+        return true;
+    }
+
+    bool SampleRunner::ValidateManifestAssessmentContract(
+        const SampleScenarioManifest& manifest,
+        const SampleAssessmentContract& contract,
+        std::string& outError)
+    {
+        const auto findCapability = [&contract](const AssessmentCode& code)
+        {
+            return std::find_if(
+                contract.capabilities.begin(),
+                contract.capabilities.end(),
+                [&code](const AssessmentCapability& capability)
+                {
+                    return capability.code == code;
+                });
+        };
+        for (const AssessmentCode& code : manifest.requiredCapabilities)
+        {
+            const auto capability = findCapability(code);
+            if (capability == contract.capabilities.end() ||
+                !capability->gating)
+            {
+                outError = "Manifest required capability '" +
+                           code.GetValue() +
+                           "' is not a gating capability in the Sample assessment contract";
+                return false;
+            }
+        }
+        for (const AssessmentCode& code : manifest.optionalCapabilities)
+        {
+            const auto capability = findCapability(code);
+            if (capability == contract.capabilities.end() ||
+                capability->gating)
+            {
+                outError = "Manifest optional capability '" +
+                           code.GetValue() +
+                           "' is not a non-gating capability in the Sample assessment contract";
+                return false;
+            }
+        }
+        if (!manifest.allowedFallbacks.empty())
+        {
+            outError =
+                "Sample fallback declarations require the GFX02 feature resolver and cannot be advertised yet";
+            return false;
+        }
+        return true;
     }
 
     uint64 SampleRunner::ResolveSceneRemovalPublicationSequence(
@@ -3849,15 +4184,14 @@ namespace RVX
             return 0;
         }
 
-        StartupTimelineReporter startupTimeline(options.startupReportPath);
-        const Diagnostics::TraceContext startupTraceContext =
-            startupTimeline.GetContext();
-
         const SampleInfo* registeredInfo = m_registry.Find(options.sampleId);
+        const SampleScenarioManifest* manifest =
+            m_registry.FindManifest(options.sampleId);
         std::unique_ptr<ISample> sample = m_registry.Create(options.sampleId);
-        if (!registeredInfo || !sample)
+        if (!registeredInfo || !manifest || !sample)
         {
-            std::cerr << "Unknown sample: " << options.sampleId << "\n";
+            std::cerr << "Unknown or uncontracted sample: "
+                      << options.sampleId << "\n";
             PrintSampleRunnerUsage(m_registry, argc > 0 ? argv[0] : nullptr);
             static_cast<void>(WriteEarlyFailureAssessment(
                 options.assessmentReportPath,
@@ -3867,10 +4201,54 @@ namespace RVX
                 "SAMPLE.REGISTRY.NOT_FOUND",
                 "SAMPLE",
                 AssessmentCheckpoints::ScenarioSetup,
-                "The requested Product Sample is not registered.",
+                "The requested Product Sample is not registered with a manifest contract.",
                 "sampleId='" + options.sampleId + "'"));
             return 2;
         }
+        if (!ResolveManifestContract(*manifest, options, error))
+        {
+            std::cerr << error << "\n";
+            static_cast<void>(WriteEarlyFailureAssessment(
+                options.assessmentReportPath,
+                sample.get(),
+                options.sampleId,
+                options.common.backend,
+                "SAMPLE.MANIFEST.RESOLUTION_FAILED",
+                "SAMPLE",
+                AssessmentCheckpoints::ScenarioSetup,
+                "The Product Sample manifest could not resolve the requested execution contract.",
+                error));
+            return 2;
+        }
+        const SampleCameraBookmark* selectedBookmark = nullptr;
+        if (options.viewBookmarkResolved)
+        {
+            const auto bookmark = std::find_if(
+                manifest->cameraBookmarks.begin(),
+                manifest->cameraBookmarks.end(),
+                [&options](const SampleCameraBookmark& candidate)
+                {
+                    return candidate.id == options.viewBookmarkId;
+                });
+            if (bookmark == manifest->cameraBookmarks.end())
+            {
+                std::cerr << "Resolved Sample camera bookmark disappeared\n";
+                return 2;
+            }
+            selectedBookmark = &*bookmark;
+        }
+        const float32 sampleDeltaTime =
+            static_cast<float32>(options.fixedDeltaSeconds);
+        if (!std::isfinite(sampleDeltaTime) || sampleDeltaTime <= 0.0f)
+        {
+            std::cerr << "The resolved fixed delta is not representable as float32\n";
+            return 2;
+        }
+
+        StartupTimelineReporter startupTimeline(options.startupReportPath);
+        const Diagnostics::TraceContext startupTraceContext =
+            startupTimeline.GetContext();
+
         if (sample->GetInfo().id != registeredInfo->id)
         {
             std::cerr << "Sample registry metadata mismatch: "
@@ -4030,16 +4408,48 @@ namespace RVX
         bool readinessFailed = false;
         bool readinessTimedOut = false;
         bool sampleValidationFailed = false;
+        bool deterministicEpochActive = false;
+        bool deterministicCameraApplied = false;
+        uint64 deterministicTick = 0;
+        uint64 captureCarryingFrameSequence = 0;
+        uint32 executedFrames = 0;
+        const auto hasCompletedRequestedTicks = [&]() noexcept
+        {
+            if (options.captureTickResolved)
+            {
+                return deterministicEpochActive &&
+                       deterministicTick >= options.captureTick;
+            }
+            return executedFrames >= options.common.frames;
+        };
         bool finalRenderDrainRequested = false;
         bool finalRenderDrainPresentationSubmitted = false;
         bool finalRenderDrainCaptureQueued = false;
         SampleReadiness sampleReadiness =
             SampleReadiness::Pending("Sample setup has not completed");
-        uint32 executedFrames = 0;
         std::string readinessReason;
         RenderDiagnosticsSnapshot diagnostics = render->GetDiagnosticsSnapshot();
         SampleAssessmentContract assessmentContract =
             sample->GetAssessmentContract();
+        if (!ValidateManifestAssessmentContract(
+                *manifest, assessmentContract, error))
+        {
+            std::cerr << error << "\n";
+            engine.Shutdown();
+            static_cast<void>(WriteEarlyFailureAssessment(
+                options.assessmentReportPath,
+                sample.get(),
+                registeredInfo->id,
+                options.common.backend,
+                "SAMPLE.MANIFEST.CAPABILITY_MISMATCH",
+                "SAMPLE",
+                AssessmentCheckpoints::ScenarioSetup,
+                "The Sample manifest and assessment capability contracts disagree.",
+                error));
+            static_cast<void>(startupTimeline.Finalize());
+            Log::Shutdown();
+            return 1;
+        }
         const bool graphicsTimestampSupported =
             diagnostics.gpuFrameTiming.timestampFrequency != 0;
         const bool requireGpuTiming =
@@ -4066,13 +4476,30 @@ namespace RVX
                            ? std::string("driver-unavailable")
                            : diagnostics.driverVersion);
         assessmentMetadata.fingerprint.renderConfiguration =
-            std::string(GetSampleRenderPathName(sceneOptions.renderPath)) +
+            std::string(GetSamplePipelineRecipeName(
+                sceneOptions.pipelineRecipe)) + "|" +
+            GetSampleRenderPathName(sceneOptions.renderPath) +
             "|" + options.common.quality + "|" +
             std::to_string(options.common.width) + "x" +
             std::to_string(options.common.height) + "|instancing=" +
             std::to_string(static_cast<uint32>(options.instancingMode)) +
             "|validation=" +
             (options.common.enableValidation ? "on" : "off");
+        assessmentMetadata.fingerprint.renderConfiguration +=
+            "|fixed-time=" +
+            std::to_string(options.fixedTimeNumerator) + "/" +
+            std::to_string(options.fixedTimeDenominator) +
+            "|deterministic-seed=" +
+            std::to_string(options.deterministicSeed) +
+            "|capture-tick=" + std::to_string(options.captureTick) +
+            "|view=" +
+            (options.viewBookmarkId.empty() ? std::string("default")
+                                            : options.viewBookmarkId);
+        assessmentMetadata.fingerprint.renderConfiguration +=
+            "|sample-manifest-v=" +
+            std::to_string(m_registry.GetManifestSchemaVersion()) +
+            "|sample-manifest-sha256=" +
+            std::string(m_registry.GetManifestContentSha256());
         assessmentMetadata.fingerprint.renderConfiguration +=
             std::string("|assessment-profile=") +
             GetSampleAssessmentProfileName(options.assessmentProfile);
@@ -4202,6 +4629,49 @@ namespace RVX
                 sceneLifetime,
                 sceneOptions,
                 assessmentSession.GetChannel(),
+            };
+
+            const auto applyContractCamera =
+                [&](bool markCut, std::string& outError)
+            {
+                if (selectedBookmark == nullptr)
+                {
+                    return true;
+                }
+                constexpr float32 DegreesToRadians =
+                    0.017453292519943295769f;
+                const float32 aspect =
+                    static_cast<float32>(options.common.width) /
+                    static_cast<float32>(
+                        std::max(options.common.height, 1u));
+                const Vec3 position(
+                    selectedBookmark->position[0],
+                    selectedBookmark->position[1],
+                    selectedBookmark->position[2]);
+                const Vec3 target(
+                    selectedBookmark->target[0],
+                    selectedBookmark->target[1],
+                    selectedBookmark->target[2]);
+                if (!cameras->SetPerspective(
+                        camera,
+                        selectedBookmark->verticalFieldOfViewDegrees *
+                            DegreesToRadians,
+                        aspect,
+                        selectedBookmark->nearPlane,
+                        selectedBookmark->farPlane) ||
+                    !cameras->SetPose(
+                        camera,
+                        {.position = position}) ||
+                    !cameras->LookAt(camera, target) ||
+                    !cameras->SetExposure(
+                        camera, selectedBookmark->exposure) ||
+                    (markCut && !cameras->MarkCut(camera)))
+                {
+                    outError = "Failed to apply Sample camera bookmark '" +
+                               selectedBookmark->id + "'";
+                    return false;
+                }
+                return true;
             };
 
             static_cast<void>(assessmentSession.RecordCheckpoint(
@@ -4434,8 +4904,12 @@ namespace RVX
                             // This is the final Engine tick in the protocol.
                             // It publishes the capture-carrying frame, after
                             // which all progress is owner-side completion work.
-                            diagnostics = frameDriver.TickOnce(SampleDeltaTime);
+                            diagnostics = frameDriver.TickOnce(sampleDeltaTime);
                             ++executedFrames;
+                            if (deterministicEpochActive)
+                            {
+                                ++deterministicTick;
+                            }
 
                             RuntimeFrameWaitRequest presentationRequest;
                             const uint64 finalPresentationSequence =
@@ -4458,7 +4932,10 @@ namespace RVX
                             // driver switches to Render-only progress as soon
                             // as publication reaches it, so presentation does
                             // not create a replacement frame.
-                            presentationRequest.advanceEngine = true;
+                            ConfigureFrameWaitPolicy(
+                                deterministicEpochActive,
+                                sampleDeltaTime,
+                                presentationRequest);
                             presentationRequest.timeout = std::max(
                                 std::chrono::duration_cast<
                                     std::chrono::milliseconds>(
@@ -4509,6 +4986,8 @@ namespace RVX
                             if (finalRenderDrainCaptureQueued &&
                                 presentationResult.Reached())
                             {
+                                captureCarryingFrameSequence =
+                                    diagnostics.lastCapture.frameSequence;
                                 if (!options.common.screenshotPath.empty())
                                 {
                                     screenshotWritten = WriteSampleScreenshotPPM(
@@ -4620,7 +5099,7 @@ namespace RVX
                             lifetimeQualification
                                 ? lifetimeQualification->IsComplete() &&
                                       !lifetimeQualification->HasFailed()
-                                : executedFrames >= options.common.frames;
+                                : hasCompletedRequestedTicks();
                         if (sampleReady && requestedRunComplete &&
                             (options.common.screenshotPath.empty() ||
                              screenshotWritten) &&
@@ -4634,6 +5113,28 @@ namespace RVX
                             engine.RequestShutdown();
                         }
                         continue;
+                    }
+
+                    if (options.deterministicContractActive && sampleReady &&
+                        !deterministicEpochActive)
+                    {
+                        frameDriver.ResetFixedTime();
+                        deterministicTick = 0;
+                        if (!applyContractCamera(true, error))
+                        {
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        deterministicCameraApplied =
+                            selectedBookmark != nullptr;
+                        if (engine.RequestRenderTemporalReset() == 0)
+                        {
+                            error =
+                                "Render runtime rejected the deterministic Sample history reset";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        deterministicEpochActive = true;
                     }
 
                     // Surface resize is an ordinary runtime event, not a
@@ -4652,17 +5153,38 @@ namespace RVX
                         notifiedViewportHeight = diagnostics.surfaceHeight;
                     }
 
-                    sample->OnInput(context);
-                    sample->Update(context, SampleDeltaTime);
+                    if (!deterministicEpochActive)
+                    {
+                        sample->OnInput(context);
+                    }
+                    sample->Update(context, sampleDeltaTime);
+                    if (deterministicEpochActive &&
+                        !applyContractCamera(false, error))
+                    {
+                        engine.RequestShutdown();
+                        break;
+                    }
 
+                    const uint64 nextLogicalTick =
+                        deterministicEpochActive
+                            ? deterministicTick + 1u
+                            : static_cast<uint64>(executedFrames) + 1u;
+                    const bool explicitCaptureTick =
+                        options.captureTickResolved &&
+                        deterministicEpochActive &&
+                        nextLogicalTick == options.captureTick;
                     const bool fixedCaptureFrame =
                         !lifetimeQualification && !effectiveReadyWait &&
                         options.common.frames > 0 &&
-                        executedFrames + 1u >= options.common.frames;
+                        (options.captureTickResolved
+                             ? explicitCaptureTick
+                             : nextLogicalTick >= options.common.frames);
                     const bool readyCaptureFrame =
                         effectiveReadyWait && sampleReady &&
                         ((!lifetimeQualification &&
-                          executedFrames >= options.common.frames) ||
+                          (options.captureTickResolved
+                               ? explicitCaptureTick
+                               : executedFrames >= options.common.frames)) ||
                          (lifetimeQualification &&
                           lifetimeQualification->IsComplete() &&
                           !lifetimeQualification->HasFailed() &&
@@ -4716,8 +5238,12 @@ namespace RVX
 
                     const uint64 publishedBeforeOuterTick =
                         diagnostics.lastPublishedFrameSequence;
-                    diagnostics = frameDriver.TickOnce(SampleDeltaTime);
+                    diagnostics = frameDriver.TickOnce(sampleDeltaTime);
                     ++executedFrames;
+                    if (deterministicEpochActive)
+                    {
+                        ++deterministicTick;
+                    }
 
                     if (options.common.frames > 0)
                     {
@@ -4786,7 +5312,10 @@ namespace RVX
                         // immediately after target publication, so it cannot
                         // publish a replacement frame while waiting to
                         // submit/present the carrying target.
-                        request.advanceEngine = true;
+                        ConfigureFrameWaitPolicy(
+                            deterministicEpochActive,
+                            sampleDeltaTime,
+                            request);
                         const RuntimeFrameWaitResult waitResult =
                             frameDriver.WaitFor(request);
                         diagnostics = waitResult.diagnostics;
@@ -4817,6 +5346,8 @@ namespace RVX
                         }
                         if (captureFrame && captureQueued && waitResult.Reached())
                         {
+                            captureCarryingFrameSequence =
+                                diagnostics.lastCapture.frameSequence;
                             if (!options.common.screenshotPath.empty())
                             {
                                 screenshotWritten = WriteSampleScreenshotPPM(
@@ -5058,7 +5589,7 @@ namespace RVX
                         continue;
                     }
                     if (!effectiveReadyWait &&
-                        executedFrames >= options.common.frames)
+                        hasCompletedRequestedTicks())
                     {
                         engine.RequestShutdown();
                     }
@@ -5081,7 +5612,7 @@ namespace RVX
                             lifetimeQualification
                                 ? lifetimeQualification->IsComplete() &&
                                       !lifetimeQualification->HasFailed()
-                                : executedFrames >= options.common.frames;
+                                : hasCompletedRequestedTicks();
                         if (requestedRunComplete &&
                             readyAndCaptured)
                         {
@@ -5352,11 +5883,13 @@ namespace RVX
             // below.  Start from the neutral value so a fully successful run
             // is not permanently forced to false by the default member value.
             report.pass = true;
-            report.schemaVersion = options.common.pixelProbeEnabled &&
-                                       !options.common
-                                            .directOpaqueRasterReadbackQualificationEnabled
-                                       ? RVX_SAMPLE_REPORT_PIXEL_PROBE_SCHEMA_VERSION
-                                       : RVX_SAMPLE_REPORT_SCHEMA_VERSION;
+            report.schemaVersion = options.deterministicContractActive
+                                       ? RVX_SAMPLE_REPORT_SCHEMA_VERSION
+                                       : (options.common.pixelProbeEnabled &&
+                                                  !options.common
+                                                       .directOpaqueRasterReadbackQualificationEnabled
+                                              ? RVX_SAMPLE_REPORT_PIXEL_PROBE_SCHEMA_VERSION
+                                              : RVX_SAMPLE_REPORT_PRE_VISUAL_CONTRACT_SCHEMA_VERSION);
             report.scenario.contractRevision = 0;
             report.scenario.phase = "not-applicable";
             report.sampleName = registeredInfo->id;
@@ -5423,6 +5956,66 @@ namespace RVX
             report.renderPath = report.requestedRenderPath;
             report.actualRenderPath = ResolveActualRenderPath(
                 sceneOptions.renderPath, sampleRenderDiagnostics);
+            if (options.deterministicContractActive)
+            {
+                SampleVisualContractReceipt receipt;
+                receipt.manifestSchema =
+                    std::string(RVX_SAMPLE_MANIFEST_SCHEMA);
+                receipt.manifestSchemaVersion =
+                    m_registry.GetManifestSchemaVersion();
+                receipt.manifestContentSha256 =
+                    std::string(m_registry.GetManifestContentSha256());
+                receipt.visualContractVersion =
+                    manifest->visualContractVersion;
+                receipt.domain = manifest->domain;
+                receipt.intent = manifest->intent;
+                receipt.requestedPipeline = sceneOptions.pipelineRecipe;
+                if (sceneOptions.pipelineRecipe ==
+                        SamplePipelineRecipe::ForwardStandard &&
+                    features.available && features.renderAttempted &&
+                    features.rendered && features.graphBuilt &&
+                    features.graphCompiled)
+                {
+                    receipt.observedPipeline =
+                        SamplePipelineRecipe::ForwardStandard;
+                }
+                receipt.quality = options.qualityTier;
+                receipt.cameraBookmarkId = options.viewBookmarkId;
+                receipt.fixedTimeNumerator = options.fixedTimeNumerator;
+                receipt.fixedTimeDenominator = options.fixedTimeDenominator;
+                receipt.deterministicSeed = options.deterministicSeed;
+                receipt.captureTick =
+                    static_cast<uint32>(options.captureTick);
+                receipt.captureCarryingFrameSequence =
+                    captureCarryingFrameSequence;
+                receipt.deterministicQualification =
+                    manifest->deterministicQualification;
+                receipt.satisfied =
+                    options.manifestContractResolved &&
+                    options.viewBookmarkResolved &&
+                    options.captureTickResolved &&
+                    deterministicEpochActive && deterministicCameraApplied &&
+                    deterministicTick >= options.captureTick &&
+                    captureCarryingFrameSequence != 0 &&
+                    captureCarryingFrameSequence <=
+                        diagnostics.lastPresentedFrameSequence &&
+                    receipt.observedPipeline.has_value() &&
+                    receipt.manifestContentSha256.size() == 64u &&
+                    ((!options.common.screenshotPath.empty() &&
+                      screenshotWritten) ||
+                     (options.common.pixelProbeEnabled &&
+                      pixelProbeCaptured));
+                if (!receipt.satisfied)
+                {
+                    succeeded = false;
+                    if (error.empty())
+                    {
+                        error =
+                            "The deterministic Sample visual contract did not produce exact execution evidence";
+                    }
+                }
+                report.visualContractReceipt = std::move(receipt);
+            }
             report.ecsDiagnostics = MakeEcsRuntimeDiagnostics(
                 reportSceneDiagnostics, reportServiceDiagnostics);
             report.physicsDiagnosticsAvailable =
@@ -5545,7 +6138,7 @@ namespace RVX
             uint32 teardownPumpFrames = 0;
             // Activate writes the next ECS snapshot. Publish one removal-capable
             // frame before observing the selected camera or lifetime receipts.
-            diagnostics = frameDriver.TickOnce(SampleDeltaTime);
+            diagnostics = frameDriver.TickOnce(sampleDeltaTime);
             ++teardownPumpFrames;
             while (teardownPumpFrames < teardownPumpFrameLimit &&
                    std::chrono::steady_clock::now() < teardownDeadline)
@@ -5562,7 +6155,7 @@ namespace RVX
                 {
                     break;
                 }
-                diagnostics = frameDriver.TickOnce(SampleDeltaTime);
+                diagnostics = frameDriver.TickOnce(sampleDeltaTime);
                 ++teardownPumpFrames;
             }
 
@@ -5668,7 +6261,7 @@ namespace RVX
                    worldShutdownPumpFrames < teardownPumpFrameLimit &&
                    std::chrono::steady_clock::now() < teardownDeadline)
             {
-                diagnostics = frameDriver.TickOnce(SampleDeltaTime);
+                diagnostics = frameDriver.TickOnce(sampleDeltaTime);
                 ++worldShutdownPumpFrames;
             }
             const bool worldDestroyed =
@@ -6116,7 +6709,7 @@ namespace RVX
                  pump < 120u && engine.GetWorld(worldRequirements.world.name) != nullptr;
                  ++pump)
             {
-                engine.Tick(SampleDeltaTime);
+                engine.Tick(sampleDeltaTime);
             }
         }
         engine.Shutdown();

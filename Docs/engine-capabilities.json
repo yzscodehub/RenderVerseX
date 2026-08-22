@@ -202,33 +202,69 @@
       ]
     },
     {
-      "id": "particle",
-      "status": "integrated",
+      "id": "particle-runtime",
+      "status": "partial",
       "module": "Particle",
       "runtimeComposition": "engine-required",
-      "shippingSupported": true,
+      "shippingSupported": false,
       "requiredEvidence": [
-        { "path": "Tests/CMake/UnitTests.cmake", "contains": "EcsFeatureSnapshotValidation" }
+        { "path": "Tests/ParticleEcsRuntimeGatewayValidation/CMakeLists.txt", "contains": "ParticleEcsRuntimeGatewayValidation" },
+        { "path": "Tests/ParticleEcsRuntimeGatewayValidation/main.cpp", "contains": "create particle runtime with exact residency proof" }
       ]
     },
     {
-      "id": "terrain",
-      "status": "integrated",
-      "module": "Terrain",
+      "id": "particle-rendering",
+      "status": "partial",
+      "module": "Render",
       "runtimeComposition": "engine-required",
-      "shippingSupported": true,
+      "shippingSupported": false,
       "requiredEvidence": [
-        { "path": "Tests/CMake/UnitTests.cmake", "contains": "EcsFeatureSnapshotValidation" }
+        { "path": "Tests/RenderHonestyValidation/main.cpp", "contains": "ParticleRenderingAndSimulationExposeDisconnectedState" },
+        { "path": "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp", "contains": "Render-owned particle draw implementation is not connected" }
       ]
     },
     {
-      "id": "water",
-      "status": "integrated",
+      "id": "water-runtime",
+      "status": "partial",
       "module": "Water",
       "runtimeComposition": "engine-required",
-      "shippingSupported": true,
+      "shippingSupported": false,
       "requiredEvidence": [
-        { "path": "Tests/CMake/UnitTests.cmake", "contains": "EcsFeatureSnapshotValidation" }
+        { "path": "Tests/WaterEcsRuntimeGatewayValidation/CMakeLists.txt", "contains": "WaterEcsRuntimeGatewayValidation" },
+        { "path": "Tests/WaterEcsRuntimeGatewayValidation/main.cpp", "contains": "capture water snapshot" }
+      ]
+    },
+    {
+      "id": "water-rendering",
+      "status": "partial",
+      "module": "Render",
+      "runtimeComposition": "engine-required",
+      "shippingSupported": false,
+      "requiredEvidence": [
+        { "path": "Source/Runtime/Water/Private/ECS/WaterEcsRuntimeGateway.cpp", "contains": "Render-owned water surface, caustics, and underwater passes are not connected to this snapshot yet" },
+        { "path": "Source/Runtime/Render/Private/Passes/WaterPass.cpp", "contains": "Declare snapshot-driven resource usage once water pass scheduling is enabled" }
+      ]
+    },
+    {
+      "id": "terrain-runtime",
+      "status": "partial",
+      "module": "Terrain",
+      "runtimeComposition": "engine-required",
+      "shippingSupported": false,
+      "requiredEvidence": [
+        { "path": "Tests/TerrainEcsRuntimeGatewayValidation/CMakeLists.txt", "contains": "TerrainEcsRuntimeGatewayValidation" },
+        { "path": "Tests/TerrainEcsRuntimeGatewayValidation/main.cpp", "contains": "fail closed when the terrain resource seam is unavailable" }
+      ]
+    },
+    {
+      "id": "terrain-rendering",
+      "status": "partial",
+      "module": "Render",
+      "runtimeComposition": "engine-required",
+      "shippingSupported": false,
+      "requiredEvidence": [
+        { "path": "Source/Runtime/Terrain/Private/ECS/TerrainEcsRuntimeGateway.cpp", "contains": "Terrain has no Resource-backed heightfield/material contract" },
+        { "path": "Source/Runtime/Render/Private/Passes/TerrainPass.cpp", "contains": "Declare snapshot-driven resource usage once terrain pass scheduling is enabled" }
       ]
     },
     {

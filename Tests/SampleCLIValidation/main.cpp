@@ -1,8 +1,10 @@
 #include "Render/GPUScene/GPUSceneDiagnostics.h"
 #include "Engine/RenderRuntimeDiagnostics.h"
+#include "Samples/FrameworkAssessment.h"
 #include "Samples/RuntimeFrameDriver.h"
 #include "Samples/SampleCLI.h"
 #include "Samples/SampleLifetimeQualification.h"
+#include "Samples/SampleManifest.h"
 #include "Samples/SampleRunner.h"
 
 #include <gtest/gtest.h>
@@ -72,6 +74,33 @@ namespace RVX
         {
             return SampleRunner::CanBeginFinalRenderDrain(
                 executedFrames, minimumFrames, maximumFrames);
+        }
+
+        static void ConfigureFrameWaitPolicy(
+            bool deterministicEpochActive,
+            float32 deltaTime,
+            RuntimeFrameWaitRequest& request) noexcept
+        {
+            SampleRunner::ConfigureFrameWaitPolicy(
+                deterministicEpochActive, deltaTime, request);
+        }
+
+        [[nodiscard]] static bool ResolveManifestContract(
+            const SampleScenarioManifest& manifest,
+            SampleRunnerCLIOptions& options,
+            std::string& outError)
+        {
+            return SampleRunner::ResolveManifestContract(
+                manifest, options, outError);
+        }
+
+        [[nodiscard]] static bool ValidateManifestAssessmentContract(
+            const SampleScenarioManifest& manifest,
+            const SampleAssessmentContract& contract,
+            std::string& outError)
+        {
+            return SampleRunner::ValidateManifestAssessmentContract(
+                manifest, contract, outError);
         }
 
         [[nodiscard]] static uint64 ResolveSceneRemovalPublicationSequence(
@@ -347,6 +376,106 @@ namespace
         std::ostringstream ordinaryStream;
         RVX::WriteSampleReportJson(ordinaryStream, ordinary);
         EXPECT_EQ(ordinaryStream.str().find("\"pixelProbe\""),
+                  std::string::npos);
+    }
+
+    TEST(SampleCLIValidation,
+         VersionTwentyReportWritesExactVisualContractReceipt)
+    {
+        RVX::SampleReport report;
+        report.schemaVersion = RVX::RVX_SAMPLE_REPORT_SCHEMA_VERSION;
+        report.submittedFrameSequence = 91;
+        report.presentedFrameSequence = 91;
+        report.pass = true;
+
+        RVX::SampleVisualContractReceipt receipt;
+        receipt.manifestSchema = "RVX.SampleManifest";
+        receipt.manifestSchemaVersion = 1;
+        receipt.manifestContentSha256 = std::string(64, 'a');
+        receipt.visualContractVersion = 3;
+        receipt.domain = RVX::SampleDomain::Rendering;
+        receipt.intent = RVX::SampleIntent::Regression;
+        receipt.requestedPipeline =
+            RVX::SamplePipelineRecipe::DeferredQuality;
+        receipt.observedPipeline =
+            RVX::SamplePipelineRecipe::ForwardStandard;
+        receipt.quality = RVX::SampleQualityTier::High;
+        receipt.cameraBookmarkId = "hero";
+        receipt.fixedTimeNumerator = 1;
+        receipt.fixedTimeDenominator = 60;
+        receipt.deterministicSeed =
+            std::numeric_limits<RVX::uint32>::max();
+        receipt.captureTick = 16;
+        receipt.captureCarryingFrameSequence = 91;
+        receipt.deterministicQualification = true;
+        receipt.satisfied = true;
+        report.visualContractReceipt = receipt;
+
+        std::ostringstream stream;
+        RVX::WriteSampleReportJson(stream, report);
+        const std::string json = stream.str();
+        EXPECT_NE(json.find("\"schemaVersion\": 20"), std::string::npos);
+        EXPECT_NE(json.find("\"visualContractReceipt\": {"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"manifestSchema\": \"RVX.SampleManifest\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"manifestSchemaVersion\": 1"),
+                  std::string::npos);
+        EXPECT_NE(json.find(std::string(64, 'a')), std::string::npos);
+        EXPECT_NE(json.find("\"visualContractVersion\": 3"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"domain\": \"rendering\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"intent\": \"regression\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"requestedPipeline\": \"deferred\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"observedPipeline\": \"forward-plus\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"quality\": \"high\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"cameraBookmarkId\": \"hero\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"fixedTimeNumerator\": 1"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"fixedTimeDenominator\": 60"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"deterministicSeed\": 4294967295"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"captureTick\": 16"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"captureCarryingFrameSequence\": 91"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"deterministicQualification\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"satisfied\": true"), std::string::npos);
+    }
+
+    TEST(SampleCLIValidation,
+         VisualContractReceiptIsFailClosedInV20AndAbsentFromLegacySchema)
+    {
+        RVX::SampleReport current;
+        current.schemaVersion = RVX::RVX_SAMPLE_REPORT_SCHEMA_VERSION;
+        std::ostringstream currentStream;
+        RVX::WriteSampleReportJson(currentStream, current);
+        EXPECT_NE(currentStream.str().find(
+                      "\"visualContractReceipt\": null"),
+                  std::string::npos);
+
+        RVX::SampleReport legacy;
+        legacy.schemaVersion = 19;
+        legacy.visualContractReceipt.emplace();
+        std::ostringstream legacyStream;
+        RVX::WriteSampleReportJson(legacyStream, legacy);
+        EXPECT_EQ(legacyStream.str().find("\"visualContractReceipt\""),
+                  std::string::npos);
+
+        RVX::SampleReport unavailable;
+        unavailable.visualContractReceipt.emplace();
+        std::ostringstream unavailableStream;
+        RVX::WriteSampleReportJson(unavailableStream, unavailable);
+        EXPECT_NE(unavailableStream.str().find(
+                      "\"observedPipeline\": \"unavailable\""),
                   std::string::npos);
     }
 
@@ -1051,7 +1180,7 @@ namespace
         const std::string json = stream.str();
 
         EXPECT_NE(json.find("\"schemaId\": \"RVX.SampleReport\""), std::string::npos);
-        EXPECT_NE(json.find("\"schemaVersion\": 19"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 20"), std::string::npos);
         EXPECT_NE(json.find("\"sampleName\": \"BasicRHI\""), std::string::npos);
         EXPECT_NE(json.find("\"category\": \"sample\""), std::string::npos);
         EXPECT_NE(json.find("\"requestedBackend\": \"dx12\""), std::string::npos);
@@ -1298,7 +1427,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 19"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 20"), std::string::npos);
         EXPECT_NE(json.find("\"contractRevision\": 7"), std::string::npos);
         EXPECT_NE(json.find("\"phase\": \"complete\""),
                   std::string::npos);
@@ -1787,7 +1916,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 19"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 20"), std::string::npos);
         EXPECT_NE(json.find("\"packageContentId\""), std::string::npos);
         EXPECT_NE(json.find(asset.packageContentId.digest), std::string::npos);
         EXPECT_NE(json.find("\"cook\": {\"required\": true, \"accepted\": true, \"code\": \"accepted\""),
@@ -2028,6 +2157,147 @@ namespace
         engineDiagnostics.available = false;
         EXPECT_TRUE(RVX::RuntimeFrameDriverTestAccess::UsesFullTick(
             request, diagnostics, engineDiagnostics));
+    }
+
+    TEST(SampleCLIValidation,
+         DeterministicFrameContractNeverIssuesHiddenSimulationTicks)
+    {
+        RVX::RuntimeFrameWaitRequest ordinaryRequest;
+        RVX::SampleRunnerTestAccess::ConfigureFrameWaitPolicy(
+            false, 1.0f / 60.0f, ordinaryRequest);
+        EXPECT_TRUE(ordinaryRequest.advanceEngine);
+        EXPECT_FALSE(ordinaryRequest.pumpRenderProgressOnly);
+
+        RVX::RuntimeFrameWaitRequest deterministicRequest;
+        RVX::SampleRunnerTestAccess::ConfigureFrameWaitPolicy(
+            true, 1.0f / 120.0f, deterministicRequest);
+        EXPECT_FALSE(deterministicRequest.advanceEngine);
+        EXPECT_TRUE(deterministicRequest.pumpRenderProgressOnly);
+        EXPECT_FLOAT_EQ(deterministicRequest.deltaTime, 1.0f / 120.0f);
+
+        RVX::RenderDiagnosticsSnapshot diagnostics;
+        diagnostics.lastPublishedFrameSequence = 9;
+        deterministicRequest.minimumPublishedSequence = 10;
+        deterministicRequest.minimumSubmittedSequence = 10;
+        deterministicRequest.minimumPresentedSequence = 10;
+        EXPECT_TRUE(RVX::RuntimeFrameDriverTestAccess::UsesProgressPoll(
+            deterministicRequest, diagnostics));
+        EXPECT_FALSE(RVX::RuntimeFrameDriverTestAccess::UsesFullTick(
+            deterministicRequest, diagnostics));
+    }
+
+    TEST(SampleCLIValidation,
+         ManifestContractResolvesExactDeterministicCaptureDefaults)
+    {
+        RVX::SampleScenarioManifest manifest;
+        manifest.id = "model-rendering";
+        manifest.defaultRecipe =
+            RVX::SamplePipelineRecipe::ForwardStandard;
+        manifest.defaultQualityProfile = RVX::SampleQualityTier::High;
+        manifest.fixedTime = {1u, 60u, 0x1234u};
+        RVX::SampleCameraBookmark bookmark;
+        bookmark.id = "hero";
+        bookmark.position = {0.0f, 1.0f, 4.0f};
+        bookmark.target = {0.0f, 1.0f, 0.0f};
+        manifest.cameraBookmarks.push_back(bookmark);
+        manifest.captureTicks = {8u};
+        manifest.visualContractVersion = 1u;
+
+        RVX::SampleRunnerCLIOptions options;
+        options.sampleId = manifest.id;
+        options.common.screenshotPath = "capture.ppm";
+        options.common.frames = 100u;
+        std::string error;
+        ASSERT_TRUE(RVX::SampleRunnerTestAccess::ResolveManifestContract(
+            manifest, options, error))
+            << error;
+        EXPECT_TRUE(options.manifestContractResolved);
+        EXPECT_TRUE(options.deterministicContractActive);
+        EXPECT_TRUE(options.viewBookmarkResolved);
+        EXPECT_TRUE(options.captureTickResolved);
+        EXPECT_EQ(options.viewBookmarkId, "hero");
+        EXPECT_EQ(options.captureTick, 8u);
+        EXPECT_EQ(options.common.frames, 8u);
+        EXPECT_EQ(options.qualityTier, RVX::SampleQualityTier::High);
+        EXPECT_EQ(options.common.quality, "high");
+        EXPECT_EQ(options.fixedTimeNumerator, 1u);
+        EXPECT_EQ(options.fixedTimeDenominator, 60u);
+        EXPECT_EQ(options.deterministicSeed, 0x1234u);
+        EXPECT_DOUBLE_EQ(options.fixedDeltaSeconds, 1.0 / 60.0);
+    }
+
+    TEST(SampleCLIValidation,
+         ManifestContractRejectsUnknownViewTickAndInexactTime)
+    {
+        RVX::SampleScenarioManifest manifest;
+        manifest.id = "model-rendering";
+        manifest.defaultRecipe =
+            RVX::SamplePipelineRecipe::ForwardStandard;
+        manifest.defaultQualityProfile = RVX::SampleQualityTier::Low;
+        manifest.fixedTime = {1u, 60u, 7u};
+        RVX::SampleCameraBookmark bookmark;
+        bookmark.id = "hero";
+        manifest.cameraBookmarks.push_back(bookmark);
+        manifest.captureTicks = {8u};
+        manifest.visualContractVersion = 1u;
+
+        RVX::SampleRunnerCLIOptions unknownView;
+        unknownView.sampleId = manifest.id;
+        unknownView.viewBookmarkExplicit = true;
+        unknownView.viewBookmarkId = "missing";
+        std::string error;
+        EXPECT_FALSE(RVX::SampleRunnerTestAccess::ResolveManifestContract(
+            manifest, unknownView, error));
+        EXPECT_NE(error.find("Unknown --view"), std::string::npos);
+
+        RVX::SampleRunnerCLIOptions unknownTick;
+        unknownTick.sampleId = manifest.id;
+        unknownTick.common.screenshotPath = "capture.ppm";
+        unknownTick.captureTickExplicit = true;
+        unknownTick.captureTick = 9u;
+        error.clear();
+        EXPECT_FALSE(RVX::SampleRunnerTestAccess::ResolveManifestContract(
+            manifest, unknownTick, error));
+        EXPECT_NE(error.find("not declared"), std::string::npos);
+
+        RVX::SampleRunnerCLIOptions inexactTime;
+        inexactTime.sampleId = manifest.id;
+        inexactTime.fixedDeltaExplicit = true;
+        inexactTime.fixedDeltaSeconds = 1.0 / 30.0;
+        error.clear();
+        EXPECT_FALSE(RVX::SampleRunnerTestAccess::ResolveManifestContract(
+            manifest, inexactTime, error));
+        EXPECT_NE(error.find("does not match"), std::string::npos);
+    }
+
+    TEST(SampleCLIValidation,
+         ManifestCapabilitiesMustMatchAssessmentGatingPolicy)
+    {
+        RVX::SampleScenarioManifest manifest;
+        manifest.requiredCapabilities = {
+            RVX::AssessmentCode("RENDER.CAPABILITY.REQUIRED")};
+        manifest.optionalCapabilities = {
+            RVX::AssessmentCode("RENDER.CAPABILITY.OPTIONAL")};
+        RVX::SampleAssessmentContract contract =
+            RVX::MakeDefaultSampleAssessmentContract();
+        contract.capabilities = {
+            {RVX::AssessmentCode("RENDER.CAPABILITY.REQUIRED"),
+             "Required capability", true, "Required by scenario"},
+            {RVX::AssessmentCode("RENDER.CAPABILITY.OPTIONAL"),
+             "Optional capability", false, "Optional by scenario"}};
+
+        std::string error;
+        EXPECT_TRUE(
+            RVX::SampleRunnerTestAccess::ValidateManifestAssessmentContract(
+                manifest, contract, error))
+            << error;
+        contract.capabilities[0].gating = false;
+        error.clear();
+        EXPECT_FALSE(
+            RVX::SampleRunnerTestAccess::ValidateManifestAssessmentContract(
+                manifest, contract, error));
+        EXPECT_NE(error.find("not a gating capability"),
+                  std::string::npos);
     }
 
     TEST(SampleCLIValidation,

@@ -227,6 +227,14 @@ namespace RVX
         void Tick(float deltaTime);
 
         /**
+         * @brief Process one frame with an explicit deterministic effect clock.
+         *
+         * Both values must be finite and non-negative. Invalid input is rejected
+         * without advancing frame, simulation, render, or clock state.
+         */
+        void TickFixed(float32 deltaTime, float64 absoluteTimeSeconds);
+
+        /**
          * @brief Process simulation without a separate legacy render call.
          *
          * The production ECS path still publishes the active immutable Scene
@@ -302,11 +310,13 @@ namespace RVX
         struct WorldEntry;
 
         bool InitializeSubsystems();
+        void TickFrame(float32 deltaTime, float64 absoluteTimeSeconds);
         void TickSubsystems(float deltaTime);
         void ShutdownSubsystems();
         void TickWorlds(float deltaTime);
         void ShutdownWorlds();
-        void RenderAfterWorlds(float deltaTime);
+        void RenderAfterWorlds(float32 deltaTime,
+                               float64 absoluteTimeSeconds);
         void FinalizeDestroyRequestedWorlds(float deltaTime);
         [[nodiscard]] bool RollbackFailedInitialization();
         [[nodiscard]] bool BeginWorldShutdown(WorldEntry& entry);
@@ -355,6 +365,10 @@ namespace RVX
         bool m_initializationRollbackPending = false;
         bool m_shouldShutdown = false;
         uint64_t m_frameNumber = 0;
+        /** Deterministic accumulator used only by the compatibility Tick(delta) API. */
+        float64 m_compatibilityElapsedTimeSeconds = 0.0;
+        /** Last valid effect time supplied to a completed Engine frame. */
+        float64 m_lastFrameAbsoluteTimeSeconds = 0.0;
 
         static Engine* s_instance;
     };

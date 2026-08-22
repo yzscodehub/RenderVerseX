@@ -42,14 +42,28 @@ namespace
         return info;
     }
 
+    RVX::SampleScenarioManifest MakeManifest(std::string id)
+    {
+        RVX::SampleScenarioManifest manifest;
+        manifest.id = std::move(id);
+        manifest.defaultRecipe =
+            RVX::SamplePipelineRecipe::ForwardStandard;
+        manifest.defaultQualityProfile = RVX::SampleQualityTier::Low;
+        manifest.cookedAssetIds = {"fixture"};
+        manifest.visualContractVersion = 1;
+        return manifest;
+    }
+
     TEST(SampleRegistryValidation, ListsSamplesInStableIdOrder)
     {
         RVX::SampleRegistry registry;
         ASSERT_TRUE(registry.Register(
             MakeInfo("zeta"),
+            MakeManifest("zeta"),
             []() { return std::make_unique<TestSample>(MakeInfo("zeta")); }));
         ASSERT_TRUE(registry.Register(
             MakeInfo("alpha"),
+            MakeManifest("alpha"),
             []() { return std::make_unique<TestSample>(MakeInfo("alpha")); }));
 
         const auto samples = registry.List();
@@ -57,8 +71,27 @@ namespace
         EXPECT_EQ(samples[0].id, "alpha");
         EXPECT_EQ(samples[1].id, "zeta");
         ASSERT_NE(registry.Find("alpha"), nullptr);
+        ASSERT_NE(registry.FindManifest("alpha"), nullptr);
+        EXPECT_EQ(registry.Find("alpha")->visualContractId, "alpha");
         ASSERT_NE(registry.Create("alpha"), nullptr);
         EXPECT_EQ(registry.Create("alpha")->GetInfo().id, "alpha");
+
+        RVX::SampleManifestCatalog catalog;
+        catalog.contentSha256 = std::string(64, 'b');
+        catalog.samples.emplace("alpha", MakeManifest("alpha"));
+        catalog.samples.emplace("zeta", MakeManifest("zeta"));
+        std::string error;
+        ASSERT_TRUE(registry.ValidateManifestCoverage(catalog, &error))
+            << error;
+        EXPECT_EQ(registry.GetManifestSchemaVersion(), 1u);
+        EXPECT_EQ(registry.GetManifestContentSha256(),
+                  std::string_view(std::string(64, 'b')));
+        EXPECT_FALSE(registry.Register(
+            MakeInfo("late"),
+            MakeManifest("late"),
+            []() { return std::make_unique<TestSample>(MakeInfo("late")); },
+            &error));
+        EXPECT_NE(error.find("sealed"), std::string::npos);
     }
 
     TEST(SampleRegistryValidation, RejectsDuplicateAndInvalidEntries)
@@ -67,10 +100,12 @@ namespace
         std::string error;
         ASSERT_TRUE(registry.Register(
             MakeInfo("model"),
+            MakeManifest("model"),
             []() { return std::make_unique<TestSample>(MakeInfo("model")); },
             &error));
         EXPECT_FALSE(registry.Register(
             MakeInfo("model"),
+            MakeManifest("model"),
             []() { return std::make_unique<TestSample>(MakeInfo("model")); },
             &error));
         EXPECT_NE(error.find("Duplicate"), std::string::npos);
@@ -78,9 +113,50 @@ namespace
         RVX::SampleInfo emptyInfo;
         EXPECT_FALSE(registry.Register(
             emptyInfo,
+            MakeManifest("unused"),
             []() { return std::make_unique<TestSample>(MakeInfo("unused")); },
             &error));
         EXPECT_NE(error.find("must not be empty"), std::string::npos);
+    }
+
+    TEST(SampleRegistryValidation, FailsClosedOnManifestMismatchAndOrphans)
+    {
+        RVX::SampleRegistry registry;
+        std::string error;
+        EXPECT_FALSE(registry.Register(
+            MakeInfo("model"),
+            MakeManifest("other"),
+            []() { return std::make_unique<TestSample>(MakeInfo("model")); },
+            &error));
+        EXPECT_NE(error.find("does not match"), std::string::npos);
+
+        RVX::SampleInfo missingAsset = MakeInfo("missing-asset");
+        RVX::SampleScenarioManifest incomplete =
+            MakeManifest("missing-asset");
+        incomplete.cookedAssetIds.clear();
+        error.clear();
+        EXPECT_FALSE(registry.Register(
+            std::move(missingAsset),
+            std::move(incomplete),
+            []()
+            {
+                return std::make_unique<TestSample>(
+                    MakeInfo("missing-asset"));
+            },
+            &error));
+        EXPECT_NE(error.find("omits catalog asset"), std::string::npos);
+
+        ASSERT_TRUE(registry.Register(
+            MakeInfo("alpha"),
+            MakeManifest("alpha"),
+            []() { return std::make_unique<TestSample>(MakeInfo("alpha")); },
+            &error));
+        RVX::SampleManifestCatalog catalog;
+        catalog.contentSha256 = std::string(64, 'a');
+        catalog.samples.emplace("alpha", MakeManifest("alpha"));
+        catalog.samples.emplace("orphan", MakeManifest("orphan"));
+        EXPECT_FALSE(registry.ValidateManifestCoverage(catalog, &error));
+        EXPECT_NE(error.find("count mismatch"), std::string::npos);
     }
 
     TEST(SampleRegistryValidation, ParsesHostAndCommonOptionsTogether)
@@ -257,6 +333,82 @@ namespace
             << error;
         EXPECT_EQ(options.modelPath, "fixture.gltf");
         EXPECT_EQ(options.environmentId, "studio");
+    }
+
+    TEST(SampleRegistryValidation, ParsesDeterministicGraphicsContractOptions)
+    {
+        const char* argv[] = {
+            "RenderVerseSamples",
+            "--pipeline",
+            "forward-plus",
+            "--quality",
+            "high",
+            "--view",
+            "hero",
+            "--fixed-delta",
+            "0.0166666666666667",
+            "--capture-tick",
+            "32",
+            "--screenshot",
+            "capture.ppm",
+        };
+
+        RVX::SampleRunnerCLIOptions options;
+        std::string error;
+        ASSERT_TRUE(RVX::ParseSampleRunnerCLI(
+            static_cast<int>(std::size(argv)), argv, options, &error))
+            << error;
+        EXPECT_TRUE(options.pipelineExplicit);
+        EXPECT_EQ(options.pipelineRecipe,
+                  RVX::SamplePipelineRecipe::ForwardStandard);
+        EXPECT_TRUE(options.qualityExplicit);
+        EXPECT_EQ(options.qualityTier, RVX::SampleQualityTier::High);
+        EXPECT_TRUE(options.viewBookmarkExplicit);
+        EXPECT_EQ(options.viewBookmarkId, "hero");
+        EXPECT_TRUE(options.fixedDeltaExplicit);
+        EXPECT_DOUBLE_EQ(options.fixedDeltaSeconds, 0.0166666666666667);
+        EXPECT_TRUE(options.captureTickExplicit);
+        EXPECT_EQ(options.captureTick, 32u);
+        EXPECT_EQ(options.common.frames, 32u);
+    }
+
+    TEST(SampleRegistryValidation, RejectsInvalidGraphicsContractOptions)
+    {
+        const auto rejects = [](const char* option,
+                                const char* value,
+                                std::string_view diagnostic)
+        {
+            const char* argv[] = {
+                "RenderVerseSamples",
+                option,
+                value,
+            };
+            RVX::SampleRunnerCLIOptions options;
+            std::string error;
+            EXPECT_FALSE(RVX::ParseSampleRunnerCLI(
+                static_cast<int>(std::size(argv)), argv, options, &error));
+            EXPECT_NE(error.find(diagnostic), std::string::npos) << error;
+        };
+
+        rejects("--pipeline", "backend-private", "Invalid --pipeline");
+        rejects("--quality", "cinematic-ish", "Invalid --quality");
+        rejects("--fixed-delta", "nan", "Invalid --fixed-delta");
+        rejects("--fixed-delta", "0", "Invalid --fixed-delta");
+        rejects("--capture-tick", "0", "Invalid --capture-tick");
+
+        const char* captureWithoutImage[] = {
+            "RenderVerseSamples",
+            "--capture-tick",
+            "8",
+        };
+        RVX::SampleRunnerCLIOptions options;
+        std::string error;
+        EXPECT_FALSE(RVX::ParseSampleRunnerCLI(
+            static_cast<int>(std::size(captureWithoutImage)),
+            captureWithoutImage,
+            options,
+            &error));
+        EXPECT_NE(error.find("requires --screenshot"), std::string::npos);
     }
 
     TEST(SampleRegistryValidation, ListDoesNotRequireBackendSelection)

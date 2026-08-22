@@ -590,6 +590,17 @@ endif()
 
 if(TARGET RVX_SampleCommon)
     rvx_add_gtest(
+        NAME SampleManifestValidation
+        LANE unit
+        SOURCES SampleManifestValidation/main.cpp
+        LIBS RVX::SampleCommon
+        TAGS product.samples suite.contracts
+        TIMEOUT 30
+    )
+endif()
+
+if(TARGET RVX_SampleCommon)
+    rvx_add_gtest(
         NAME SampleAssetCatalogValidation
         LANE unit
         SOURCES SampleAssetCatalogValidation/main.cpp

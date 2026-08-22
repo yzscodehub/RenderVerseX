@@ -125,6 +125,9 @@ add_custom_command(TARGET RenderVerseSamples POST_BUILD
         "${CMAKE_CURRENT_SOURCE_DIR}/Assets/catalog.json"
         "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/catalog.json"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/Manifests/renderverse-samples.json"
+        "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/renderverse-samples.json"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/Assets/LICENSE.generated-fixtures.txt"
         "$<TARGET_FILE_DIR:RenderVerseSamples>/Assets/Samples/LICENSE.generated-fixtures.txt"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

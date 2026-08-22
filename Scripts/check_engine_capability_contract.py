@@ -22,6 +22,38 @@ CAPABILITY_FIELDS = {
     "shippingSupported",
     "requiredEvidence",
 }
+FEATURE_CAPABILITY_SURFACES = {
+    "particle": ("particle-runtime", "particle-rendering"),
+    "water": ("water-runtime", "water-rendering"),
+    "terrain": ("terrain-runtime", "terrain-rendering"),
+}
+FEATURE_CAPABILITY_RULES = {
+    "particle-runtime": {
+        "integrated": "ParticleRuntimeQualification",
+        "shipping": "ParticleRuntimeShippingValidation",
+    },
+    "particle-rendering": {
+        "integrated": "ParticleRenderingQualification",
+        "shipping": "ParticleRenderingShippingValidation",
+    },
+    "water-runtime": {
+        "integrated": "WaterRuntimeQualification",
+        "shipping": "WaterRuntimeShippingValidation",
+    },
+    "water-rendering": {
+        "integrated": "WaterRenderingQualification",
+        "shipping": "WaterRenderingShippingValidation",
+    },
+    "terrain-runtime": {
+        "integrated": "TerrainRuntimeQualification",
+        "shipping": "TerrainRuntimeShippingValidation",
+    },
+    "terrain-rendering": {
+        "integrated": "TerrainRenderingQualification",
+        "shipping": "TerrainRenderingShippingValidation",
+    },
+}
+GENERIC_FEATURE_SNAPSHOT_EVIDENCE = "EcsFeatureSnapshotValidation"
 RETIRED_MODEL_V1 = "RVX_MODEL_ARTIFACT_" + "V1"
 RETIRED_GLTF_MODEL = "RVX_GLTF_MODEL_" + "WITH_ANIMATION_V2"
 STALE_CURRENT_CONTRACTS = (
@@ -258,6 +290,43 @@ def validate_evidence(
             failures.append(f"{label} token is absent from its evidence source: {token}")
 
 
+def evidence_uses_generic_feature_snapshot(evidence: object) -> bool:
+    if not isinstance(evidence, list):
+        return False
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        token = item.get("contains")
+        if (
+            isinstance(path, str)
+            and GENERIC_FEATURE_SNAPSHOT_EVIDENCE in path.replace("\\", "/")
+        ) or (
+            isinstance(token, str)
+            and GENERIC_FEATURE_SNAPSHOT_EVIDENCE in token
+        ):
+            return True
+    return False
+
+
+def has_dedicated_test_evidence(evidence: object, token: str) -> bool:
+    if not isinstance(evidence, list):
+        return False
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        contains = item.get("contains")
+        if (
+            isinstance(path, str)
+            and path.replace("\\", "/").startswith("Tests/")
+            and isinstance(contains, str)
+            and token in contains
+        ):
+            return True
+    return False
+
+
 def validate_capabilities(
     root: Path,
     contract: dict[str, Any],
@@ -299,6 +368,11 @@ def validate_capabilities(
             failures.append(f"duplicate capability id: {capability_id}")
         else:
             capability_ids.add(capability_id)
+        if capability_id in FEATURE_CAPABILITY_SURFACES:
+            failures.append(
+                f"ambiguous broad capability id is forbidden: {capability_id}; "
+                "declare separate runtime and rendering capabilities"
+            )
         if status not in STATUS_VALUES:
             failures.append(f"capability {capability_id} has invalid status: {status}")
         else:
@@ -330,6 +404,40 @@ def validate_capabilities(
         elif evidence == []:
             failures.append(f"non-deferred capability {capability_id} requires evidence")
         validate_evidence(root, capability_id, evidence, failures)
+
+        feature_rule = FEATURE_CAPABILITY_RULES.get(capability_id)
+        if feature_rule is not None:
+            if evidence_uses_generic_feature_snapshot(evidence):
+                failures.append(
+                    f"capability {capability_id} cannot use generic "
+                    f"{GENERIC_FEATURE_SNAPSHOT_EVIDENCE} transport evidence"
+                )
+            if status == "integrated" and not has_dedicated_test_evidence(
+                evidence, feature_rule["integrated"]
+            ):
+                failures.append(
+                    f"integrated capability {capability_id} requires dedicated "
+                    f"test evidence containing {feature_rule['integrated']}"
+                )
+            if shipping is True and not has_dedicated_test_evidence(
+                evidence, feature_rule["shipping"]
+            ):
+                failures.append(
+                    f"Shipping capability {capability_id} requires dedicated "
+                    f"test evidence containing {feature_rule['shipping']}"
+                )
+
+    required_feature_ids = {
+        capability_id
+        for surfaces in FEATURE_CAPABILITY_SURFACES.values()
+        for capability_id in surfaces
+    }
+    missing_feature_ids = sorted(required_feature_ids - capability_ids)
+    if missing_feature_ids:
+        failures.append(
+            "capability contract is missing required runtime/rendering feature "
+            f"surfaces: {', '.join(missing_feature_ids)}"
+        )
     if seen_statuses != STATUS_VALUES:
         failures.append("capability contract must represent every supported status")
 

@@ -14,7 +14,10 @@ namespace RVX
 {
     struct EngineRenderRuntimeDiagnostics;
     class SampleRegistry;
+    struct SampleAssessmentContract;
+    struct SampleScenarioManifest;
     struct RenderDiagnosticsSnapshot;
+    struct RuntimeFrameWaitRequest;
     struct SampleRunnerTestAccess;
 
     enum class SampleAssessmentProfile : uint8
@@ -37,6 +40,15 @@ namespace RVX
         std::filesystem::path environmentPath;
         std::filesystem::path catalogPath;
         std::filesystem::path assetRoot;
+        SamplePipelineRecipe pipelineRecipe =
+            SamplePipelineRecipe::ForwardStandard;
+        SampleQualityTier qualityTier = SampleQualityTier::Default;
+        std::string viewBookmarkId;
+        float64 fixedDeltaSeconds = 1.0 / 60.0;
+        uint64 captureTick = 0;
+        uint32 fixedTimeNumerator = 1;
+        uint32 fixedTimeDenominator = 60;
+        uint32 deterministicSeed = 0;
         SampleRenderPath renderPath = SampleRenderPath::Auto;
         RenderInstancingMode instancingMode = RenderInstancingMode::Auto;
         uint32 readyTimeoutMs = 120000;
@@ -49,6 +61,15 @@ namespace RVX
         SampleAssessmentProfile assessmentProfile =
             SampleAssessmentProfile::Smoke;
         SampleWorkloadScale workloadScale = SampleWorkloadScale::PullRequest;
+        bool pipelineExplicit = false;
+        bool qualityExplicit = false;
+        bool viewBookmarkExplicit = false;
+        bool fixedDeltaExplicit = false;
+        bool captureTickExplicit = false;
+        bool manifestContractResolved = false;
+        bool viewBookmarkResolved = false;
+        bool captureTickResolved = false;
+        bool deterministicContractActive = false;
         bool renderPathExplicit = false;
         bool workloadScaleExplicit = false;
         bool readyTimeoutExplicit = false;
@@ -117,6 +138,21 @@ namespace RVX
             uint32 executedFrames,
             uint32 minimumFrames,
             uint32 maximumFrames) noexcept;
+
+        static void ConfigureFrameWaitPolicy(
+            bool deterministicEpochActive,
+            float32 deltaTime,
+            RuntimeFrameWaitRequest& request) noexcept;
+
+        [[nodiscard]] static bool ResolveManifestContract(
+            const SampleScenarioManifest& manifest,
+            SampleRunnerCLIOptions& options,
+            std::string& outError);
+
+        [[nodiscard]] static bool ValidateManifestAssessmentContract(
+            const SampleScenarioManifest& manifest,
+            const SampleAssessmentContract& contract,
+            std::string& outError);
 
         [[nodiscard]] static uint64 ResolveSceneRemovalPublicationSequence(
             uint64 removalSceneRevision,
