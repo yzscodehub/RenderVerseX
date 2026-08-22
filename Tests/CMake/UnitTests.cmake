@@ -634,6 +634,16 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME RenderFeatureValidation
+    LANE unit
+    SOURCES RenderFeatureValidation/main.cpp
+    LIBS RVX::Render
+    INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
+    TAGS subsystem.render suite.feature
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
     NAME RenderResourceRuntimeValidation
     LANE unit
     SOURCES RenderResourceRuntimeValidation/main.cpp

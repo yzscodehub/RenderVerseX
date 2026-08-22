@@ -25,7 +25,9 @@
 namespace RVX
 {
     /** @brief Current JSON schema version written by sample report producers. */
-    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 20;
+    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 21;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION = 20;
     inline constexpr uint32 RVX_SAMPLE_REPORT_PRE_VISUAL_CONTRACT_SCHEMA_VERSION = 19;
     inline constexpr uint32 RVX_SAMPLE_REPORT_SCENARIO_SCHEMA_VERSION = 12;
     inline constexpr uint32 RVX_SAMPLE_REPORT_ECS_DIAGNOSTICS_SCHEMA_VERSION = 13;
@@ -692,8 +694,9 @@ namespace RVX
      * @brief Completion-qualified evidence for one Sample visual contract.
      *
      * Fixed time remains an exact integer rational. An absent observed
-     * pipeline is serialized as "unavailable" and cannot satisfy schema-v20
-     * report validation.
+     * pipeline is serialized as "unavailable" and cannot satisfy report
+     * validation. Schema v21 additionally binds this contract to the exact
+     * presentation-qualified renderer execution receipt.
      */
     struct SampleVisualContractReceipt
     {
@@ -713,7 +716,14 @@ namespace RVX
         uint32 deterministicSeed = 0;
         uint32 captureTick = 0;
         uint64 captureCarryingFrameSequence = 0;
+        /** @brief Independently observed capture identity for receipt binding. */
+        uint64 captureSceneRuntimeId = 0;
+        uint64 captureCameraEntityPacked = 0;
+        uint64 captureSceneRevision = 0;
+        uint64 captureSurfaceGeneration = 0;
+        uint64 captureConfigurationRevision = 0;
         bool deterministicQualification = false;
+        std::optional<RenderExecutionReceipt> renderExecutionReceipt;
         bool satisfied = false;
     };
 

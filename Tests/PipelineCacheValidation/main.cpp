@@ -3800,28 +3800,84 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresLightManagerIntoDefault
         GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
-    const fs::path rendererPath = FindShaderDirectory().parent_path() / "Private" / "Renderer" / "SceneRenderer.cpp";
-    const std::string source = ReadTextFile(rendererPath);
-    EXPECT_NE(source.find("#include \"Render/Lighting/LightManager.h\""), std::string::npos);
-    EXPECT_NE(source.find("m_lightManager = std::make_unique<LightManager>();"), std::string::npos);
-    EXPECT_NE(source.find("m_lightManager->Initialize(renderContext->GetDevice());"), std::string::npos);
-    EXPECT_NE(source.find("m_lightManager->CollectLights(m_renderScene, m_viewData.cullingMask);"),
+    const fs::path renderRoot = FindShaderDirectory().parent_path();
+    const std::string rendererSource =
+        ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
+    const std::string compositionSource =
+        ReadTextFile(renderRoot / "Private" / "Features" / "DefaultForwardComposition.cpp");
+
+    EXPECT_NE(rendererSource.find("#include \"Render/Lighting/LightManager.h\""), std::string::npos);
+    EXPECT_NE(rendererSource.find("m_lightManager = std::make_unique<LightManager>();"), std::string::npos);
+    EXPECT_NE(rendererSource.find("m_lightManager->Initialize(renderContext->GetDevice());"), std::string::npos);
+    EXPECT_NE(rendererSource.find("m_lightManager->CollectLights(m_renderScene, m_viewData.cullingMask);"),
               std::string::npos);
-    EXPECT_NE(source.find("m_lightManager->UpdateGPUBuffers();"), std::string::npos);
-    EXPECT_NE(source.find("m_localLightingStats.pointLightCount = m_lightManager->GetPointLightCount();"),
+    EXPECT_NE(rendererSource.find("m_lightManager->UpdateGPUBuffers();"), std::string::npos);
+    EXPECT_NE(rendererSource.find("m_localLightingStats.pointLightCount = m_lightManager->GetPointLightCount();"),
               std::string::npos);
-    EXPECT_NE(source.find("m_localLightingStats.spotLightCount = m_lightManager->GetSpotLightCount();"),
+    EXPECT_NE(rendererSource.find("m_localLightingStats.spotLightCount = m_lightManager->GetSpotLightCount();"),
               std::string::npos);
-    EXPECT_NE(source.find("m_localLightingStats.pointShadowRequestCount = m_lightManager->GetPointShadowRequestCount();"),
+    EXPECT_NE(rendererSource.find("m_localLightingStats.pointShadowRequestCount = m_lightManager->GetPointShadowRequestCount();"),
               std::string::npos);
-    EXPECT_NE(source.find("m_localLightingStats.spotShadowRequestCount = m_lightManager->GetSpotShadowRequestCount();"),
+    EXPECT_NE(rendererSource.find("m_localLightingStats.spotShadowRequestCount = m_lightManager->GetSpotShadowRequestCount();"),
               std::string::npos);
-    EXPECT_NE(source.find("m_localLightingStats.localShadowRequestCount = m_lightManager->GetLocalShadowRequestCount();"),
+    EXPECT_NE(rendererSource.find("m_localLightingStats.localShadowRequestCount = m_lightManager->GetLocalShadowRequestCount();"),
               std::string::npos);
-    EXPECT_NE(source.find("diagnostics.localShadowRequestCount = m_localLightingStats.localShadowRequestCount;"),
+    EXPECT_NE(rendererSource.find("diagnostics.localShadowRequestCount = m_localLightingStats.localShadowRequestCount;"),
               std::string::npos);
-    EXPECT_NE(source.find("m_pipelineCache->GetLastFrameLightBindingResult()"), std::string::npos);
-    EXPECT_NE(source.find("m_clusteredLighting.get());"), std::string::npos);
+    EXPECT_NE(rendererSource.find("m_pipelineCache->GetLastFrameLightBindingResult()"), std::string::npos);
+
+    const size_t lightManagerInitialization =
+        rendererSource.find("m_lightManager = std::make_unique<LightManager>();");
+    const size_t featureCompositionSetup =
+        rendererSource.find("if (!SetupDefaultRenderFeatures())");
+    ASSERT_NE(lightManagerInitialization, std::string::npos);
+    ASSERT_NE(featureCompositionSetup, std::string::npos);
+    EXPECT_LT(lightManagerInitialization, featureCompositionSetup);
+
+    EXPECT_NE(compositionSource.find("#include \"Render/Lighting/LightManager.h\""),
+              std::string::npos);
+    EXPECT_NE(compositionSource.find("#include \"Render/Lighting/ClusteredLighting.h\""),
+              std::string::npos);
+
+    const size_t opaquePassConstruction =
+        compositionSource.find("auto opaquePass = std::make_unique<OpaquePass>();");
+    const size_t opaqueSetResources =
+        compositionSource.find("opaquePass->SetResources(", opaquePassConstruction);
+    const size_t opaqueLightManager =
+        compositionSource.find("m_lightManager.get(),", opaqueSetResources);
+    const size_t opaqueClusteredLighting =
+        compositionSource.find("m_clusteredLighting.get());", opaqueLightManager);
+    const size_t opaqueAddPass =
+        compositionSource.find("AddPass(std::move(opaquePass));", opaqueClusteredLighting);
+    ASSERT_NE(opaquePassConstruction, std::string::npos);
+    ASSERT_NE(opaqueSetResources, std::string::npos);
+    ASSERT_NE(opaqueLightManager, std::string::npos);
+    ASSERT_NE(opaqueClusteredLighting, std::string::npos);
+    ASSERT_NE(opaqueAddPass, std::string::npos);
+    EXPECT_LT(opaquePassConstruction, opaqueSetResources);
+    EXPECT_LT(opaqueSetResources, opaqueLightManager);
+    EXPECT_LT(opaqueLightManager, opaqueClusteredLighting);
+    EXPECT_LT(opaqueClusteredLighting, opaqueAddPass);
+
+    const size_t transparentPassConstruction =
+        compositionSource.find("auto transparentPass = std::make_unique<TransparentPass>();");
+    const size_t transparentSetResources =
+        compositionSource.find("transparentPass->SetResources(", transparentPassConstruction);
+    const size_t transparentLightManager =
+        compositionSource.find("m_lightManager.get(),", transparentSetResources);
+    const size_t transparentClusteredLighting =
+        compositionSource.find("m_clusteredLighting.get());", transparentLightManager);
+    const size_t transparentAddPass =
+        compositionSource.find("AddPass(std::move(transparentPass));", transparentClusteredLighting);
+    ASSERT_NE(transparentPassConstruction, std::string::npos);
+    ASSERT_NE(transparentSetResources, std::string::npos);
+    ASSERT_NE(transparentLightManager, std::string::npos);
+    ASSERT_NE(transparentClusteredLighting, std::string::npos);
+    ASSERT_NE(transparentAddPass, std::string::npos);
+    EXPECT_LT(transparentPassConstruction, transparentSetResources);
+    EXPECT_LT(transparentSetResources, transparentLightManager);
+    EXPECT_LT(transparentLightManager, transparentClusteredLighting);
+    EXPECT_LT(transparentClusteredLighting, transparentAddPass);
 }
 
 TEST_F(PipelineCacheValidationFixture, SceneRendererBuildsClusteredLightingFrameData)
@@ -4001,7 +4057,13 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererAppliesShadowQualityConfigTo
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
     const std::string header = ReadTextFile(renderRoot / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
-    const std::string source = ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
+    const std::string sceneRendererSource =
+        ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
+    const std::string defaultForwardCompositionSource =
+        ReadTextFile(renderRoot / "Private" / "Features" /
+                     "DefaultForwardComposition.cpp");
+    const std::string source =
+        sceneRendererSource + "\n" + defaultForwardCompositionSource;
 
     EXPECT_NE(header.find("void ApplyShadowPassConfig(const ShadowPassConfig& config);"), std::string::npos);
     EXPECT_NE(header.find("const ShadowPassConfig& GetShadowPassConfig() const"), std::string::npos);
@@ -4080,6 +4142,8 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracingSceneBuildBef
     const fs::path renderRoot = FindShaderDirectory().parent_path();
     const std::string header = ReadTextFile(renderRoot / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
     const std::string source = ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
+    const std::string compositionSource =
+        ReadTextFile(renderRoot / "Private" / "Features" / "DefaultForwardComposition.cpp");
 
     EXPECT_NE(header.find("#include \"Render/RayTracing/RayTracingSceneManager.h\""), std::string::npos);
     EXPECT_NE(header.find("const RayTracingSceneManagerStats& GetRayTracingSceneStats() const;"), std::string::npos);
@@ -4113,10 +4177,40 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracingSceneBuildBef
     const auto buildGraphStart = source.find("void SceneRenderer::BuildRenderGraph()");
     ASSERT_NE(buildGraphStart, std::string::npos);
     const auto rtBuildPassCall = source.find("AddRayTracingSceneBuildPass();", buildGraphStart);
-    const auto passLoop = source.find("for (auto& pass : m_passRegistry->GetPasses())", buildGraphStart);
+    const auto featurePassRegistration = source.find(
+        "m_renderFeatureRegistry->AddPasses(featureGraphBuilder, blackboard);",
+        buildGraphStart);
     ASSERT_NE(rtBuildPassCall, std::string::npos);
-    ASSERT_NE(passLoop, std::string::npos);
-    EXPECT_LT(rtBuildPassCall, passLoop);
+    ASSERT_NE(featurePassRegistration, std::string::npos);
+    EXPECT_LT(rtBuildPassCall, featurePassRegistration);
+
+    const auto rayTracedShadowConstruction =
+        compositionSource.find("auto rayTracedShadowPass = std::make_unique<RayTracedShadowPass>();");
+    const auto rayTracedShadowSceneInjection = compositionSource.find(
+        "rayTracedShadowPass->SetRayTracingScene(m_rayTracingSceneManager.get());",
+        rayTracedShadowConstruction);
+    const auto rayTracedShadowRegistration = compositionSource.find(
+        "AddPass(std::move(rayTracedShadowPass));",
+        rayTracedShadowSceneInjection);
+    ASSERT_NE(rayTracedShadowConstruction, std::string::npos);
+    ASSERT_NE(rayTracedShadowSceneInjection, std::string::npos);
+    ASSERT_NE(rayTracedShadowRegistration, std::string::npos);
+    EXPECT_LT(rayTracedShadowConstruction, rayTracedShadowSceneInjection);
+    EXPECT_LT(rayTracedShadowSceneInjection, rayTracedShadowRegistration);
+
+    const auto rayTracedReflectionConstruction = compositionSource.find(
+        "std::make_unique<RayTracedReflectionPass>();");
+    const auto rayTracedReflectionSceneInjection = compositionSource.find(
+        "rayTracedReflectionPass->SetRayTracingScene(",
+        rayTracedReflectionConstruction);
+    const auto rayTracedReflectionRegistration = compositionSource.find(
+        "AddPass(std::move(rayTracedReflectionPass));",
+        rayTracedReflectionSceneInjection);
+    ASSERT_NE(rayTracedReflectionConstruction, std::string::npos);
+    ASSERT_NE(rayTracedReflectionSceneInjection, std::string::npos);
+    ASSERT_NE(rayTracedReflectionRegistration, std::string::npos);
+    EXPECT_LT(rayTracedReflectionConstruction, rayTracedReflectionSceneInjection);
+    EXPECT_LT(rayTracedReflectionSceneInjection, rayTracedReflectionRegistration);
 }
 
 TEST_F(PipelineCacheValidationFixture, RayTracingSceneManagerInvalidatesFrameOutputsOnFallback)
@@ -4523,7 +4617,13 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracedShadowPassAfte
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
     const std::string header = ReadTextFile(renderRoot / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
-    const std::string source = ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
+    const std::string sceneRendererSource =
+        ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
+    const std::string defaultForwardCompositionSource =
+        ReadTextFile(renderRoot / "Private" / "Features" /
+                     "DefaultForwardComposition.cpp");
+    const std::string source =
+        sceneRendererSource + "\n" + defaultForwardCompositionSource;
 
     EXPECT_NE(header.find("#include \"Render/Passes/RayTracedShadowPass.h\""), std::string::npos);
     EXPECT_NE(header.find("#include \"Render/Passes/CameraVelocityPass.h\""), std::string::npos);
@@ -4671,8 +4771,10 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracedShadowPassAfte
     EXPECT_NE(header.find("uint32 reflectionDenoiseKernelTapCount = 0;"), std::string::npos);
     EXPECT_NE(header.find("RayTracedShadowPass* m_rayTracedShadowPass = nullptr;"), std::string::npos);
     EXPECT_NE(header.find("CameraVelocityPass* m_cameraVelocityPass = nullptr;"), std::string::npos);
-    EXPECT_NE(header.find("Mat4 m_previousViewProjectionMatrix = Mat4Identity();"), std::string::npos);
-    EXPECT_NE(header.find("bool m_previousViewProjectionValid = false;"), std::string::npos);
+    EXPECT_NE(header.find("std::unique_ptr<RenderViewHistoryCoordinator> m_viewHistoryCoordinator;"),
+              std::string::npos);
+    EXPECT_NE(header.find("std::optional<RenderViewHistoryIdentity> m_activeViewHistoryCandidate;"),
+              std::string::npos);
     EXPECT_NE(header.find("RayTracedReflectionPass* m_rayTracedReflectionPass = nullptr;"), std::string::npos);
     EXPECT_NE(header.find("RayTracedReflectionDenoisePass* m_rayTracedReflectionDenoisePass = nullptr;"),
               std::string::npos);
@@ -4902,7 +5004,8 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracedShadowPassAfte
               std::string::npos);
     EXPECT_NE(source.find("std::make_unique<RayTracedShadowPass>()"), std::string::npos);
     EXPECT_NE(source.find("std::make_unique<CameraVelocityPass>()"), std::string::npos);
-    EXPECT_NE(source.find("cameraVelocityPass->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());"),
+    EXPECT_NE(source.find("cameraVelocityPass->SetResources(\n"
+                          "        m_pipelineCache.get(), m_resourceViewCache.get());"),
               std::string::npos);
     EXPECT_NE(source.find("std::make_unique<RayTracedReflectionPass>()"), std::string::npos);
     EXPECT_NE(source.find("std::make_unique<RayTracedReflectionDenoisePass>()"), std::string::npos);
@@ -4952,8 +5055,10 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracedShadowPassAfte
               std::string::npos);
     EXPECT_NE(source.find("result.temporalHistoryReset);"),
               std::string::npos);
-    EXPECT_NE(source.find("m_previousViewProjectionValid = false;"), std::string::npos);
-    EXPECT_NE(source.find("m_previousViewProjectionMatrix = m_viewData.viewProjectionMatrix;"),
+    EXPECT_NE(source.find("const bool previousViewValid ="), std::string::npos);
+    EXPECT_NE(source.find("m_renderScene.GetLastRenderedView()"),
+              std::string::npos);
+    EXPECT_NE(source.find("const Mat4& previousViewProjection = previousViewValid"),
               std::string::npos);
     EXPECT_NE(source.find("m_rayTracedReflectionPass->SetEnabled(false);"), std::string::npos);
     EXPECT_NE(source.find("m_rayTracedReflectionDenoisePass->SetEnabled(false);"), std::string::npos);
@@ -5017,7 +5122,8 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracedShadowPassAfte
     EXPECT_NE(source.find("m_rayTracedReflectionCompositePass->SetEnabled(true);"), std::string::npos);
     EXPECT_NE(source.find("m_postProcessSettings.enableRayTracedReflections"), std::string::npos);
 
-    const auto setupStart = source.find("void SceneRenderer::SetupDefaultPasses()");
+    const auto setupStart =
+        source.find("bool SceneRenderer::SetupDefaultRenderFeatures()");
     ASSERT_NE(setupStart, std::string::npos);
     const auto shadowCreate = source.find("std::make_unique<ShadowPass>()", setupStart);
     const auto rayShadowCreate = source.find("std::make_unique<RayTracedShadowPass>()", setupStart);
@@ -6408,6 +6514,8 @@ TEST_F(PipelineCacheValidationFixture, OpaquePassConsumesRayTracedShadowMask)
     const std::string opaqueHeader = ReadTextFile(renderRoot / "Include" / "Render" / "Passes" / "OpaquePass.h");
     const std::string opaqueSource = ReadTextFile(renderRoot / "Private" / "Passes" / "OpaquePass.cpp");
     const std::string sceneRendererSource = ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
+    const std::string legacyForwardAdapterSource =
+        ReadTextFile(renderRoot / "Private" / "Features" / "LegacyForwardFeatureAdapter.cpp");
     const std::string pipelineHeader = ReadTextFile(renderRoot / "Include" / "Render" / "PipelineCache.h");
     const std::string pipelineSource = ReadTextFile(renderRoot / "Private" / "PipelineCache.cpp");
     const std::string defaultLitSource = ReadTextFile(FindShaderDirectory() / "DefaultLit.hlsl");
@@ -6435,9 +6543,44 @@ TEST_F(PipelineCacheValidationFixture, OpaquePassConsumesRayTracedShadowMask)
     EXPECT_NE(opaqueSource.find("dispatchReady.load(std::memory_order_acquire)"),
               std::string::npos);
     EXPECT_NE(opaqueSource.find("rayTracedExecutionFailed"), std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("passRecordContext.rayTracedShadow ="),
+    EXPECT_EQ(sceneRendererSource.find("passRecordContext.rayTracedShadow ="),
+              std::string::npos);
+    EXPECT_NE(legacyForwardAdapterSource.find("if (pass.get() == m_opaquePass)"),
+              std::string::npos);
+    EXPECT_NE(legacyForwardAdapterSource.find("Opaque pass requires graph-owned record results"),
+              std::string::npos);
+    EXPECT_NE(legacyForwardAdapterSource.find(
+                  "passContext.rayTracedShadow =\n"
+                  "                passContext.results->rayTracedShadowOutput;"),
+              std::string::npos);
+    EXPECT_NE(legacyForwardAdapterSource.find(
+                  "if (passContext.rayTracedShadow.identity !=\n"
+                  "                passContext.identity)"),
+              std::string::npos);
+    EXPECT_NE(legacyForwardAdapterSource.find("passContext.rayTracedShadow = {};"),
               std::string::npos);
     EXPECT_EQ(sceneRendererSource.find("SetRayTracedShadowSource("), std::string::npos);
+
+    const size_t opaquePassGate =
+        legacyForwardAdapterSource.find("if (pass.get() == m_opaquePass)");
+    const size_t rayTracedShadowPropagation = legacyForwardAdapterSource.find(
+        "passContext.rayTracedShadow =\n"
+        "                passContext.results->rayTracedShadowOutput;",
+        opaquePassGate);
+    const size_t rayTracedShadowIdentityGate = legacyForwardAdapterSource.find(
+        "if (passContext.rayTracedShadow.identity !=\n"
+        "                passContext.identity)",
+        rayTracedShadowPropagation);
+    const size_t rayTracedShadowReset = legacyForwardAdapterSource.find(
+        "passContext.rayTracedShadow = {};",
+        rayTracedShadowIdentityGate);
+    ASSERT_NE(opaquePassGate, std::string::npos);
+    ASSERT_NE(rayTracedShadowPropagation, std::string::npos);
+    ASSERT_NE(rayTracedShadowIdentityGate, std::string::npos);
+    ASSERT_NE(rayTracedShadowReset, std::string::npos);
+    EXPECT_LT(opaquePassGate, rayTracedShadowPropagation);
+    EXPECT_LT(rayTracedShadowPropagation, rayTracedShadowIdentityGate);
+    EXPECT_LT(rayTracedShadowIdentityGate, rayTracedShadowReset);
 
     const auto shadowStatsAccessor = sceneRendererSource.find(
         "const RayTracedShadowPassStats& SceneRenderer::GetRayTracedShadowStats() const");
@@ -7027,9 +7170,7 @@ TEST_F(PipelineCacheValidationFixture, ToneMappingOperatorUsesSharedRuntimeSetti
 
     const auto setupStart = sceneRendererSource.find("void SceneRenderer::SetupDefaultPostProcess()");
     ASSERT_NE(setupStart, std::string::npos);
-    const auto setupEnd = sceneRendererSource.find("void SceneRenderer::SetupDefaultPasses()", setupStart);
-    ASSERT_NE(setupEnd, std::string::npos);
-    const std::string setupBody = sceneRendererSource.substr(setupStart, setupEnd - setupStart);
+    const std::string setupBody = sceneRendererSource.substr(setupStart);
     EXPECT_EQ(setupBody.find("SetOperator(ToneMappingOperator::None)"), std::string::npos);
 }
 
@@ -7558,7 +7699,8 @@ TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
         ReadTextFile(renderRoot / "Include" / "Render" / "Material" / "MaterialSystem.h");
     const std::string passSource =
         ReadTextFile(renderRoot / "Private" / "Passes" / "ObjectVelocityPass.cpp");
-    const std::string rendererSource = ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
+    const std::string compositionSource =
+        ReadTextFile(renderRoot / "Private" / "Features" / "DefaultForwardComposition.cpp");
     const std::string shaderSource = ReadTextFile(FindShaderDirectory() / "ObjectVelocity.hlsl");
 
     EXPECT_NE(pipelineHeader.find("GetMaskedObjectVelocityPipeline()"), std::string::npos);
@@ -7611,9 +7753,27 @@ TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
     EXPECT_NE(passSource.find("++stats.maskedDrawCount"), std::string::npos);
     EXPECT_NE(passSource.find("data.results->identity != data.identity"), std::string::npos);
 
-    EXPECT_NE(rendererSource.find("objectVelocityPass->SetResources("), std::string::npos);
-    EXPECT_NE(rendererSource.find("m_materialSystem.get());"), std::string::npos);
-    EXPECT_EQ(rendererSource.find("m_objectVelocityPass->SetRenderScene"), std::string::npos);
+    const size_t objectVelocityPassConstruction =
+        compositionSource.find("auto objectVelocityPass = std::make_unique<ObjectVelocityPass>();");
+    const size_t objectVelocitySetResources =
+        compositionSource.find("objectVelocityPass->SetResources(", objectVelocityPassConstruction);
+    const size_t objectVelocityMaterialSystem =
+        compositionSource.find("m_materialSystem.get());", objectVelocitySetResources);
+    const size_t objectVelocityRegistry =
+        compositionSource.find("objectVelocityPass->SetResourceRegistry(m_renderResourceRegistry);",
+                               objectVelocityMaterialSystem);
+    const size_t objectVelocityRegistration =
+        compositionSource.find("AddPass(std::move(objectVelocityPass));", objectVelocityRegistry);
+    ASSERT_NE(objectVelocityPassConstruction, std::string::npos);
+    ASSERT_NE(objectVelocitySetResources, std::string::npos);
+    ASSERT_NE(objectVelocityMaterialSystem, std::string::npos);
+    ASSERT_NE(objectVelocityRegistry, std::string::npos);
+    ASSERT_NE(objectVelocityRegistration, std::string::npos);
+    EXPECT_LT(objectVelocityPassConstruction, objectVelocitySetResources);
+    EXPECT_LT(objectVelocitySetResources, objectVelocityMaterialSystem);
+    EXPECT_LT(objectVelocityMaterialSystem, objectVelocityRegistry);
+    EXPECT_LT(objectVelocityRegistry, objectVelocityRegistration);
+    EXPECT_EQ(compositionSource.find("objectVelocityPass->SetRenderScene"), std::string::npos);
 
     EXPECT_NE(shaderSource.find("struct VSMaskedInput"), std::string::npos);
     EXPECT_NE(shaderSource.find("VSMaskedOutput VSMainMasked(VSMaskedInput input)"), std::string::npos);
@@ -9569,6 +9729,10 @@ TEST_F(PipelineCacheValidationFixture,
         renderRoot / "Private" / "Passes" / "ShadowPass.cpp");
     const std::string rendererSource = ReadTextFile(
         renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
+    const std::string compositionSource = ReadTextFile(
+        renderRoot / "Private" / "Features" / "DefaultForwardComposition.cpp");
+    const std::string legacyForwardAdapterSource = ReadTextFile(
+        renderRoot / "Private" / "Features" / "LegacyForwardFeatureAdapter.cpp");
 
     EXPECT_NE(contextHeader.find("struct DirectionalShadowRecordOutput"),
               std::string::npos);
@@ -9607,9 +9771,7 @@ TEST_F(PipelineCacheValidationFixture,
     EXPECT_NE(rendererSource.find(
                   "passRecordContext.results->directionalShadowOutput.identity ="),
               std::string::npos);
-    EXPECT_NE(rendererSource.find(
-                  "passRecordContext.directionalShadow =\n"
-                  "                passRecordContext.results->directionalShadowOutput;"),
+    EXPECT_EQ(rendererSource.find("passRecordContext.directionalShadow ="),
               std::string::npos);
     EXPECT_NE(rendererSource.find(
                   "m_shadowPass->PublishRecordResults("),
@@ -9618,6 +9780,43 @@ TEST_F(PipelineCacheValidationFixture,
               std::string::npos);
     EXPECT_EQ(rendererSource.find("m_shadowPass->GetCascades"),
               std::string::npos);
+
+    const size_t shadowPassConstruction =
+        compositionSource.find("auto shadowPass = std::make_unique<ShadowPass>();");
+    const size_t shadowPassRegistration =
+        compositionSource.find("AddPass(std::move(shadowPass));", shadowPassConstruction);
+    const size_t opaquePassConstruction =
+        compositionSource.find("auto opaquePass = std::make_unique<OpaquePass>();");
+    const size_t opaquePassRegistration =
+        compositionSource.find("AddPass(std::move(opaquePass));", opaquePassConstruction);
+    ASSERT_NE(shadowPassConstruction, std::string::npos);
+    ASSERT_NE(shadowPassRegistration, std::string::npos);
+    ASSERT_NE(opaquePassConstruction, std::string::npos);
+    ASSERT_NE(opaquePassRegistration, std::string::npos);
+    EXPECT_LT(shadowPassConstruction, shadowPassRegistration);
+    EXPECT_LT(shadowPassRegistration, opaquePassConstruction);
+    EXPECT_LT(opaquePassConstruction, opaquePassRegistration);
+
+    const size_t opaquePassGate =
+        legacyForwardAdapterSource.find("if (pass.get() == m_opaquePass)");
+    const size_t directionalShadowPropagation = legacyForwardAdapterSource.find(
+        "passContext.directionalShadow =\n"
+        "                passContext.results->directionalShadowOutput;",
+        opaquePassGate);
+    const size_t directionalShadowIdentityGate = legacyForwardAdapterSource.find(
+        "if (passContext.directionalShadow.identity !=\n"
+        "                passContext.identity)",
+        directionalShadowPropagation);
+    const size_t directionalShadowReset = legacyForwardAdapterSource.find(
+        "passContext.directionalShadow = {};",
+        directionalShadowIdentityGate);
+    ASSERT_NE(opaquePassGate, std::string::npos);
+    ASSERT_NE(directionalShadowPropagation, std::string::npos);
+    ASSERT_NE(directionalShadowIdentityGate, std::string::npos);
+    ASSERT_NE(directionalShadowReset, std::string::npos);
+    EXPECT_LT(opaquePassGate, directionalShadowPropagation);
+    EXPECT_LT(directionalShadowPropagation, directionalShadowIdentityGate);
+    EXPECT_LT(directionalShadowIdentityGate, directionalShadowReset);
 }
 
 TEST_F(PipelineCacheValidationFixture,

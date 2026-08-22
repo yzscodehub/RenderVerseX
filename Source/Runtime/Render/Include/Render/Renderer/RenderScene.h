@@ -224,6 +224,10 @@ namespace RVX
         {
             return m_acceptedHeader;
         }
+        [[nodiscard]] const RenderViewFamilySnapshot& GetViewFamily() const
+        {
+            return m_viewFamily;
+        }
         [[nodiscard]] const RenderViewSnapshot& GetView() const
         {
             return m_view;
@@ -312,7 +316,7 @@ namespace RVX
     private:
         [[nodiscard]] RenderFrameApplyResult ApplyFrameState(
             const RenderFrameHeaderV5& header,
-            const RenderViewSnapshot& view,
+            const RenderViewFamilySnapshot& viewFamily,
             const std::vector<RenderPrimitiveSnapshot>& primitives,
             const std::vector<RenderLightSnapshot>& lights,
             const RenderSkySnapshot& sky,
@@ -344,6 +348,7 @@ namespace RVX
         std::unordered_map<uint64, uint32> m_objectIndices;
         std::unordered_map<uint64, uint32> m_lightIndices;
         RenderFrameHeaderV5 m_acceptedHeader{};
+        RenderViewFamilySnapshot m_viewFamily{};
         RenderViewSnapshot m_view{};
         RenderSkySnapshot m_sky{};
         RenderEnvironmentSnapshot m_environment{};

@@ -14,6 +14,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <utility>
 
 namespace RVX
 {
@@ -158,6 +159,51 @@ namespace
         graph.descriptors.depthStencils.activeDescriptors = 5;
         graph.descriptors.depthStencils.peakActiveDescriptors = 5;
         return diagnostics;
+    }
+
+    RVX::RenderExecutionReceipt MakeSuccessfulRenderExecutionReceipt(
+        RVX::uint64 frameSequence = 91)
+    {
+        RVX::RenderExecutionReceipt receipt;
+        receipt.available = true;
+        receipt.graphComposed = true;
+        receipt.executionSucceeded = true;
+        receipt.presented = true;
+        receipt.succeeded = true;
+        receipt.build.sourceCommit = std::string(40, 'a');
+        receipt.build.preset = "win_x64_pr_debug";
+        receipt.frameIdentity.frameSequence = frameSequence;
+        receipt.frameIdentity.sceneRevision = 17;
+        receipt.frameIdentity.surfaceGeneration = 3;
+        receipt.frameIdentity.configurationRevision = 5;
+        receipt.viewIdentity.sceneRuntimeId = 7;
+        receipt.viewIdentity.cameraEntityPacked = 0x0000000200000001ULL;
+        receipt.viewIdentity.subViewIndex = 0;
+        receipt.viewIdentity.role = RVX::ViewRole::Main;
+        receipt.backend = RVX::RHIBackendType::DX12;
+        receipt.requestedRecipe = RVX::RenderPipelineRecipe::DeferredQuality;
+        receipt.resolvedRecipe = RVX::RenderPipelineRecipe::DeferredQuality;
+        receipt.quality = RVX::RenderQualityTier::High;
+        receipt.profileHash = RVX::ComputeRenderPipelineProfileHash(
+            receipt.resolvedRecipe, receipt.quality);
+
+        RVX::RenderFeatureExecutionReceipt feature;
+        feature.featureId = RVX::BuiltinRenderFeatureIds::LegacyForwardMainChain;
+        feature.featureSchemaVersion = 1;
+        feature.phase = RVX::RenderFeaturePhase::Geometry;
+        feature.requirement = RVX::RenderFeatureRequirement::Required;
+        feature.readiness.compiled = true;
+        feature.readiness.hardwareSupported = true;
+        feature.readiness.implementationSupported = true;
+        feature.readiness.pipelineReady = true;
+        feature.readiness.inputsReady = true;
+        feature.readiness.executed = true;
+        feature.selected = true;
+        feature.graphPassCount = 2;
+        feature.executedGraphPassCount = 2;
+        feature.graphPassNames = {"DepthPrepass", "OpaquePass"};
+        receipt.features.push_back(std::move(feature));
+        return receipt;
     }
 
     TEST(SampleCLIValidation, ParsesCommonOptions)
@@ -380,7 +426,7 @@ namespace
     }
 
     TEST(SampleCLIValidation,
-         VersionTwentyReportWritesExactVisualContractReceipt)
+         VersionTwentyOneReportWritesExactVisualAndRenderExecutionReceipts)
     {
         RVX::SampleReport report;
         report.schemaVersion = RVX::RVX_SAMPLE_REPORT_SCHEMA_VERSION;
@@ -398,7 +444,7 @@ namespace
         receipt.requestedPipeline =
             RVX::SamplePipelineRecipe::DeferredQuality;
         receipt.observedPipeline =
-            RVX::SamplePipelineRecipe::ForwardStandard;
+            RVX::SamplePipelineRecipe::DeferredQuality;
         receipt.quality = RVX::SampleQualityTier::High;
         receipt.cameraBookmarkId = "hero";
         receipt.fixedTimeNumerator = 1;
@@ -407,14 +453,21 @@ namespace
             std::numeric_limits<RVX::uint32>::max();
         receipt.captureTick = 16;
         receipt.captureCarryingFrameSequence = 91;
+        receipt.captureSceneRuntimeId = 7;
+        receipt.captureCameraEntityPacked = 0x0000000200000001ULL;
+        receipt.captureSceneRevision = 17;
+        receipt.captureSurfaceGeneration = 3;
+        receipt.captureConfigurationRevision = 5;
         receipt.deterministicQualification = true;
+        receipt.renderExecutionReceipt =
+            MakeSuccessfulRenderExecutionReceipt(91);
         receipt.satisfied = true;
         report.visualContractReceipt = receipt;
 
         std::ostringstream stream;
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
-        EXPECT_NE(json.find("\"schemaVersion\": 20"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 21"), std::string::npos);
         EXPECT_NE(json.find("\"visualContractReceipt\": {"),
                   std::string::npos);
         EXPECT_NE(json.find("\"manifestSchema\": \"RVX.SampleManifest\""),
@@ -430,7 +483,7 @@ namespace
                   std::string::npos);
         EXPECT_NE(json.find("\"requestedPipeline\": \"deferred\""),
                   std::string::npos);
-        EXPECT_NE(json.find("\"observedPipeline\": \"forward-plus\""),
+        EXPECT_NE(json.find("\"observedPipeline\": \"deferred\""),
                   std::string::npos);
         EXPECT_NE(json.find("\"quality\": \"high\""),
                   std::string::npos);
@@ -446,13 +499,60 @@ namespace
                   std::string::npos);
         EXPECT_NE(json.find("\"captureCarryingFrameSequence\": 91"),
                   std::string::npos);
+        EXPECT_NE(json.find("\"captureSceneRuntimeId\": 7"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"captureCameraEntityPacked\": 8589934593"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"captureSceneRevision\": 17"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"captureSurfaceGeneration\": 3"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"captureConfigurationRevision\": 5"),
+                  std::string::npos);
         EXPECT_NE(json.find("\"deterministicQualification\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"renderExecutionReceipt\": {"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"sourceCommit\": \"" + std::string(40, 'a') +
+                            "\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"preset\": \"win_x64_pr_debug\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"frameSequence\": 91"), std::string::npos);
+        EXPECT_NE(json.find("\"sceneRevision\": 17"), std::string::npos);
+        EXPECT_NE(json.find("\"surfaceGeneration\": 3"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"configurationRevision\": 5"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"sceneRuntimeId\": 7"), std::string::npos);
+        EXPECT_NE(json.find("\"role\": \"main\""), std::string::npos);
+        EXPECT_NE(json.find("\"backend\": \"dx12\""), std::string::npos);
+        EXPECT_NE(json.find("\"requestedRecipe\": \"deferred\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"resolvedRecipe\": \"deferred\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"profileHash\": "), std::string::npos);
+        EXPECT_NE(json.find("\"executionSucceeded\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"presented\": true"), std::string::npos);
+        EXPECT_NE(json.find("\"succeeded\": true"), std::string::npos);
+        EXPECT_NE(json.find("\"features\": ["), std::string::npos);
+        EXPECT_NE(json.find("\"featureId\": 1"), std::string::npos);
+        EXPECT_NE(json.find("\"phase\": \"geometry\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"requirement\": \"required\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"selectedFallbackFeatureId\": 0"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"fallbackForFeatureId\": 0"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"executedGraphPassCount\": 2"),
                   std::string::npos);
         EXPECT_NE(json.find("\"satisfied\": true"), std::string::npos);
     }
 
     TEST(SampleCLIValidation,
-         VisualContractReceiptIsFailClosedInV20AndAbsentFromLegacySchema)
+         RenderExecutionReceiptIsFailClosedInV21AndV20RemainsLegacy)
     {
         RVX::SampleReport current;
         current.schemaVersion = RVX::RVX_SAMPLE_REPORT_SCHEMA_VERSION;
@@ -460,6 +560,19 @@ namespace
         RVX::WriteSampleReportJson(currentStream, current);
         EXPECT_NE(currentStream.str().find(
                       "\"visualContractReceipt\": null"),
+                  std::string::npos);
+
+        RVX::SampleReport schema20;
+        schema20.schemaVersion =
+            RVX::RVX_SAMPLE_REPORT_PRE_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION;
+        schema20.visualContractReceipt.emplace();
+        schema20.visualContractReceipt->renderExecutionReceipt =
+            MakeSuccessfulRenderExecutionReceipt();
+        std::ostringstream schema20Stream;
+        RVX::WriteSampleReportJson(schema20Stream, schema20);
+        EXPECT_NE(schema20Stream.str().find("\"visualContractReceipt\": {"),
+                  std::string::npos);
+        EXPECT_EQ(schema20Stream.str().find("\"renderExecutionReceipt\""),
                   std::string::npos);
 
         RVX::SampleReport legacy;
@@ -476,6 +589,9 @@ namespace
         RVX::WriteSampleReportJson(unavailableStream, unavailable);
         EXPECT_NE(unavailableStream.str().find(
                       "\"observedPipeline\": \"unavailable\""),
+                  std::string::npos);
+        EXPECT_NE(unavailableStream.str().find(
+                      "\"renderExecutionReceipt\": null"),
                   std::string::npos);
     }
 
@@ -1180,7 +1296,7 @@ namespace
         const std::string json = stream.str();
 
         EXPECT_NE(json.find("\"schemaId\": \"RVX.SampleReport\""), std::string::npos);
-        EXPECT_NE(json.find("\"schemaVersion\": 20"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 21"), std::string::npos);
         EXPECT_NE(json.find("\"sampleName\": \"BasicRHI\""), std::string::npos);
         EXPECT_NE(json.find("\"category\": \"sample\""), std::string::npos);
         EXPECT_NE(json.find("\"requestedBackend\": \"dx12\""), std::string::npos);
@@ -1427,7 +1543,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 20"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 21"), std::string::npos);
         EXPECT_NE(json.find("\"contractRevision\": 7"), std::string::npos);
         EXPECT_NE(json.find("\"phase\": \"complete\""),
                   std::string::npos);
@@ -1916,7 +2032,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 20"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 21"), std::string::npos);
         EXPECT_NE(json.find("\"packageContentId\""), std::string::npos);
         EXPECT_NE(json.find(asset.packageContentId.digest), std::string::npos);
         EXPECT_NE(json.find("\"cook\": {\"required\": true, \"accepted\": true, \"code\": \"accepted\""),

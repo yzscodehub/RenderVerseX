@@ -6,6 +6,7 @@
  */
 
 #include "Core/Diagnostics/Trace.h"
+#include "Render/Features/RenderFeatureTypes.h"
 #include "Render/RenderTransportTypes.h"
 #include "RenderContracts/RenderIdentity.h"
 #include "RHI/RHIPresentation.h"
@@ -174,6 +175,8 @@ namespace RVX
         uint32 frameBuffering = 2;
         RenderTransportConfig transports{};
         RenderIterationBudgets iterationBudgets{};
+        /** @brief Optional commit/preset identity copied into frame execution receipts. */
+        RenderExecutionBuildIdentity executionBuildIdentity{};
         /** @brief Optional correlated diagnostics context; disabled by default. */
         Diagnostics::TraceContext startupTraceContext{};
         std::chrono::milliseconds startupWatchdog{60000};

@@ -7,6 +7,7 @@
 
 #include "Core/Diagnostics/DiagnosticValue.h"
 #include "Render/Context/RenderFrameTiming.h"
+#include "Render/Features/RenderFeatureTypes.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/RenderRuntimeTypes.h"
 #include "Render/RenderUploadWorkDiagnostics.h"
@@ -1237,6 +1238,7 @@ namespace RVX
     struct RenderFrameFeatureDiagnostics
     {
         bool available = false;
+        RenderExecutionReceipt executionReceipt{};
         uint64 frameSequence = 0;
         bool renderAttempted = false;
         bool rendered = false;

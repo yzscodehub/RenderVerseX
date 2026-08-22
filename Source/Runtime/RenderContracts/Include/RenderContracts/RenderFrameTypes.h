@@ -11,6 +11,7 @@
 #include "RenderContracts/FeatureRenderSnapshot.h"
 #include "RenderContracts/RenderIdentity.h"
 #include "RenderContracts/RenderMaterial.h"
+#include "RenderContracts/RenderPipelineProfile.h"
 
 #include <limits>
 #include <span>
@@ -567,6 +568,8 @@ namespace RVX
 
     struct RenderFrameSettings
     {
+        /** Renderer recipe/profile remains independent of draw submission policy. */
+        RenderPipelineRequest pipelineRequest{};
         float32 renderScale = 1.0f;
         uint32 debugView = 0;
         RenderInstancingMode instancingMode = RenderInstancingMode::Auto;

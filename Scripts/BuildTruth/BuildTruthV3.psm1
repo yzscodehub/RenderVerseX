@@ -137,8 +137,21 @@ function Get-BuildTruthCTestInventory
     }
     $arguments += "--show-only=json-v1"
 
-    $output = & ctest @arguments 2>&1
-    $exitCode = $LASTEXITCODE
+    $previousErrorActionPreference = $ErrorActionPreference
+    try
+    {
+        # PowerShell can promote a native process' stderr to a terminating
+        # NativeCommandError when the caller uses Stop. CTest owns the exit
+        # status and JSON/JUnit artifacts, so preserve its complete output and
+        # classify the result below instead of losing that evidence here.
+        $ErrorActionPreference = "Continue"
+        $output = & ctest @arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally
+    {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     if ($exitCode -ne 0)
     {
         Throw-BuildTruthFailure -Category "InventoryCommand" -Message (
@@ -462,8 +475,20 @@ function Invoke-BuildTruthCTestLane
         "--output-junit", $JUnitPath
     )
     $started = Get-Date
-    $ctestOutput = & ctest @arguments 2>&1
-    $exitCode = $LASTEXITCODE
+    $previousErrorActionPreference = $ErrorActionPreference
+    try
+    {
+        # A failing CTest writes a summary to stderr. Keep that as ordinary
+        # command evidence so JUnit remains the semantic source of failure
+        # classification even when the runner itself uses Stop.
+        $ErrorActionPreference = "Continue"
+        $ctestOutput = & ctest @arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally
+    {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     $durationMs = [int]((Get-Date) - $started).TotalMilliseconds
     $ctestOutput | ForEach-Object { Write-Host $_ }
 

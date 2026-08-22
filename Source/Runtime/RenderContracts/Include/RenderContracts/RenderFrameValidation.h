@@ -216,7 +216,8 @@ namespace RVX
     [[nodiscard]] inline bool IsValidRenderFrameSettings(
         const RenderFrameSettings& settings) noexcept
     {
-        if (!std::isfinite(settings.renderScale) ||
+        if (!IsValidRenderPipelineRequest(settings.pipelineRequest) ||
+            !std::isfinite(settings.renderScale) ||
             settings.renderScale <= 0.0f ||
             !std::isfinite(settings.postProcess.bloomThreshold) ||
             settings.postProcess.bloomThreshold < 0.0f ||

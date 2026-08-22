@@ -5121,6 +5121,10 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
         ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
     const std::string source =
         ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+    const std::string featureCompositionSource =
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Features" / "DefaultForwardComposition.cpp");
+    const std::string featureAdapterSource =
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Features" / "LegacyForwardFeatureAdapter.cpp");
     const std::string depthHeader =
         ReadTextFile(root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "Passes" / "DepthPrepass.h");
     const std::string depthSource =
@@ -5139,6 +5143,8 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
         ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Passes" / "TransparentPass.cpp");
     ASSERT_FALSE(header.empty());
     ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(featureCompositionSource.empty());
+    ASSERT_FALSE(featureAdapterSource.empty());
     ASSERT_FALSE(depthHeader.empty());
     ASSERT_FALSE(depthSource.empty());
     ASSERT_FALSE(subsystemSource.empty());
@@ -5320,13 +5326,26 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
     ASSERT_NE(buildGraph, std::string::npos);
     const size_t cullGraphCall = source.find(
         "AddGPUDrivenCullingPass(passRecordContext.identity);", buildGraph);
-    const size_t passRegistryLoop = source.find("for (auto& pass : m_passRegistry->GetPasses())", buildGraph);
+    const size_t setFeatureRecordContext = source.find(
+        "m_legacyForwardFeature->SetRecordContext(passRecordContext);", buildGraph);
+    const size_t featureAddPasses = source.find(
+        "m_renderFeatureRegistry->AddPasses(featureGraphBuilder, blackboard);", buildGraph);
+    const size_t passRegistryLoop = featureAdapterSource.find(
+        "for (const std::unique_ptr<IRenderPass>& pass : m_passRegistry->GetPasses())");
     ASSERT_NE(cullGraphCall, std::string::npos);
+    ASSERT_NE(setFeatureRecordContext, std::string::npos);
+    ASSERT_NE(featureAddPasses, std::string::npos);
     ASSERT_NE(passRegistryLoop, std::string::npos);
-    EXPECT_LT(cullGraphCall, passRegistryLoop);
-    const size_t typedPassRecord = source.find(
-        "pass->AddToGraph(*m_renderGraph, passRecordContext);", passRegistryLoop);
+    EXPECT_LT(cullGraphCall, setFeatureRecordContext);
+    EXPECT_LT(setFeatureRecordContext, featureAddPasses);
+    const size_t typedPassRecord = featureAdapterSource.find(
+        "builder.AddLegacyPass(*pass, passContext)", passRegistryLoop);
     ASSERT_NE(typedPassRecord, std::string::npos);
+    EXPECT_LT(passRegistryLoop, typedPassRecord);
+    EXPECT_NE(featureCompositionSource.find("SetupDefaultRenderFeatures"),
+              std::string::npos);
+    EXPECT_NE(featureCompositionSource.find("m_renderFeatureRegistry = std::move(registry)"),
+              std::string::npos);
     EXPECT_EQ(source.find("pass->AddToGraph(*m_renderGraph, m_viewData)"),
               std::string::npos);
 
@@ -7970,13 +7989,21 @@ TEST_F(GPUDrivenValidationFixture,
     // publishing a replacement. This covers ordinary screenshots and the
     // no-screenshot final-drain path without invoking a graphics backend.
     const size_t qualificationArm = sampleRunnerSource.find(
-        "render->RequestGPUSceneCullingQualificationCapture()", 0u);
+        "gpuSceneCullingQualificationRequestAccepted =", 0u);
+    const size_t qualificationRequest = sampleRunnerSource.find(
+        "requestQualification();", qualificationArm);
     const size_t carryingTick = sampleRunnerSource.find(
-        "diagnostics = frameDriver.TickOnce(SampleDeltaTime);", qualificationArm);
+        "diagnostics = frameDriver.TickOnce(sampleDeltaTime);", qualificationRequest);
     ASSERT_NE(std::string::npos, qualificationArm);
+    ASSERT_NE(std::string::npos, qualificationRequest);
     ASSERT_NE(std::string::npos, carryingTick);
-    EXPECT_LT(qualificationArm, carryingTick);
-    EXPECT_NE(sampleRunnerSource.find("request.advanceEngine = true"),
+    EXPECT_LT(qualificationArm, qualificationRequest);
+    EXPECT_LT(qualificationRequest, carryingTick);
+    EXPECT_NE(sampleRunnerSource.find(
+                  "request.advanceEngine = !deterministicEpochActive"),
+              std::string::npos);
+    EXPECT_NE(sampleRunnerSource.find(
+                  "request.pumpRenderProgressOnly = deterministicEpochActive"),
               std::string::npos);
 
     // Qualification input accounting is diagnostic-only.  Keep an explicit

@@ -3,6 +3,7 @@
 #include "RenderContracts/RenderFrameValidation.h"
 #include "RenderContracts/RenderFeatureChannelRegistry.h"
 #include "RenderContracts/RenderIdentity.h"
+#include "RenderContracts/RenderPipelineProfile.h"
 #include "RenderContracts/RenderSceneUpdate.h"
 #include "RenderContracts/ResourceUploadRequest.h"
 #include "ResourceUploadRequestInternal.h"
@@ -161,6 +162,121 @@ namespace
                   RenderResourceHandleHash{}(handle));
         EXPECT_EQ(RenderResourceHandleHash{}(handle),
                   std::hash<uint64>{}(packed));
+    }
+
+    TEST(RenderContractsValidation,
+         PipelineProfileUsesStableMachineValuesAndNonZeroHashes)
+    {
+        static_assert(static_cast<uint8>(RenderPipelineRecipe::Minimal) == 0U);
+        static_assert(static_cast<uint8>(RenderPipelineRecipe::ForwardStandard) ==
+                      1U);
+        static_assert(static_cast<uint8>(RenderPipelineRecipe::DeferredQuality) ==
+                      2U);
+        static_assert(static_cast<uint8>(RenderPipelineRecipe::HybridRayTracing) ==
+                      3U);
+        static_assert(static_cast<uint8>(RenderPipelineRecipe::Headless) == 4U);
+        static_assert(static_cast<uint8>(RenderQualityTier::Low) == 0U);
+        static_assert(static_cast<uint8>(RenderQualityTier::Medium) == 1U);
+        static_assert(static_cast<uint8>(RenderQualityTier::High) == 2U);
+        static_assert(static_cast<uint8>(RenderQualityTier::Ultra) == 3U);
+
+        constexpr RenderPipelineRecipe recipes[]{
+            RenderPipelineRecipe::Minimal,
+            RenderPipelineRecipe::ForwardStandard,
+            RenderPipelineRecipe::DeferredQuality,
+            RenderPipelineRecipe::HybridRayTracing,
+            RenderPipelineRecipe::Headless,
+        };
+        constexpr RenderQualityTier tiers[]{
+            RenderQualityTier::Low,
+            RenderQualityTier::Medium,
+            RenderQualityTier::High,
+            RenderQualityTier::Ultra,
+        };
+
+        for (RenderPipelineRecipe recipe : recipes)
+        {
+            EXPECT_TRUE(IsDeclaredRenderPipelineRecipe(recipe));
+            RenderPipelineRecipe parsed = RenderPipelineRecipe::Minimal;
+            EXPECT_TRUE(ParseRenderPipelineRecipe(
+                GetRenderPipelineRecipeName(recipe), parsed));
+            EXPECT_EQ(parsed, recipe);
+            for (RenderQualityTier tier : tiers)
+            {
+                const uint64 hash = ComputeRenderPipelineProfileHash(recipe, tier);
+                EXPECT_NE(hash, 0U);
+                EXPECT_EQ(hash, ComputeRenderPipelineProfileHash(recipe, tier));
+            }
+        }
+        for (RenderQualityTier tier : tiers)
+        {
+            EXPECT_TRUE(IsDeclaredRenderQualityTier(tier));
+            RenderQualityTier parsed = RenderQualityTier::Low;
+            EXPECT_TRUE(ParseRenderQualityTier(GetRenderQualityTierName(tier),
+                                               parsed));
+            EXPECT_EQ(parsed, tier);
+        }
+        RenderPipelineRecipe invalidRecipeParse =
+            RenderPipelineRecipe::ForwardStandard;
+        RenderQualityTier invalidTierParse = RenderQualityTier::Medium;
+        EXPECT_FALSE(ParseRenderPipelineRecipe("forward", invalidRecipeParse));
+        EXPECT_FALSE(ParseRenderQualityTier("default", invalidTierParse));
+        EXPECT_EQ(ComputeRenderPipelineProfileHash(
+                      static_cast<RenderPipelineRecipe>(99U),
+                      RenderQualityTier::Low),
+                  0U);
+    }
+
+    TEST(RenderContractsValidation,
+         PipelineRequestsAndResolutionsFailClosedAndKeepForwardCompatibility)
+    {
+        const RenderPipelineRequest defaultRequest;
+        EXPECT_TRUE(IsValidRenderPipelineRequest(defaultRequest));
+        EXPECT_EQ(defaultRequest.recipe, RenderPipelineRecipe::ForwardStandard);
+        EXPECT_EQ(defaultRequest.quality, RenderQualityTier::Medium);
+
+        const RenderPipelineResolution resolved =
+            ResolveRenderPipelineRequest(defaultRequest);
+        EXPECT_TRUE(resolved.IsSuccessful());
+        EXPECT_EQ(resolved.code, RenderPipelineResolutionCode::Resolved);
+        EXPECT_TRUE(IsValidRenderPipelineResolution(resolved));
+        EXPECT_EQ(resolved.resolvedRecipe, defaultRequest.recipe);
+        EXPECT_EQ(resolved.resolvedQuality, defaultRequest.quality);
+        EXPECT_NE(resolved.profileHash, 0U);
+
+        RenderPipelineRequest invalidRecipe = defaultRequest;
+        invalidRecipe.recipe = static_cast<RenderPipelineRecipe>(99U);
+        EXPECT_FALSE(IsValidRenderPipelineRequest(invalidRecipe));
+        const RenderPipelineResolution rejected =
+            ResolveRenderPipelineRequest(invalidRecipe);
+        EXPECT_FALSE(rejected.IsSuccessful());
+        EXPECT_EQ(rejected.code, RenderPipelineResolutionCode::Rejected);
+        EXPECT_EQ(rejected.profileHash, 0U);
+        EXPECT_TRUE(IsValidRenderPipelineResolution(rejected));
+
+        RenderPipelineRequest invalidSchema = defaultRequest;
+        ++invalidSchema.schemaVersion;
+        EXPECT_FALSE(IsValidRenderPipelineRequest(invalidSchema));
+
+        RenderPipelineResolution fallback = resolved;
+        fallback.code = RenderPipelineResolutionCode::Fallback;
+        EXPECT_FALSE(IsValidRenderPipelineResolution(fallback));
+        fallback.resolvedRecipe =
+            RenderPipelineRecipe::DeferredQuality;
+        fallback.profileHash = ComputeRenderPipelineProfileHash(
+            fallback.resolvedRecipe, fallback.resolvedQuality);
+        EXPECT_TRUE(IsValidRenderPipelineResolution(fallback));
+    }
+
+    TEST(RenderContractsValidation,
+         FrameSettingsRejectInvalidPipelineRequest)
+    {
+        RenderFrameSettings settings;
+        EXPECT_TRUE(IsValidRenderFrameSettings(settings));
+
+        settings.pipelineRequest.quality =
+            static_cast<RenderQualityTier>(99U);
+        EXPECT_FALSE(IsValidRenderFrameSettings(settings));
     }
 
     TEST(RenderContractsValidation,

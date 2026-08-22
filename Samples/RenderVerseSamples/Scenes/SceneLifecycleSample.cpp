@@ -17,6 +17,9 @@ namespace RVX
 {
     namespace
     {
+        constexpr Vec3 SceneLifecycleCameraPosition{0.0f, 0.65f, 1.5f};
+        constexpr Vec3 SceneLifecycleCameraTarget{0.0f, 0.45f, 0.0f};
+
         const SampleInfo SceneLifecycleInfo{
             "scene-lifecycle",
             "Scene Lifecycle",
@@ -226,8 +229,9 @@ namespace RVX
         if (!context.cameras.SetPerspective(
                 context.camera, radians(45.0f), aspect, 0.05f, 250.0f) ||
             !context.cameras.SetPose(
-                context.camera, {.position = Vec3(0.0f, 1.0f, 4.5f)}) ||
-            !context.cameras.LookAt(context.camera, Vec3(0.0f, 0.45f, 0.0f)))
+                context.camera, {.position = SceneLifecycleCameraPosition}) ||
+            !context.cameras.LookAt(context.camera,
+                                    SceneLifecycleCameraTarget))
         {
             outError = "Scene-lifecycle failed to configure the primary ECS camera";
             return false;
@@ -1244,8 +1248,8 @@ namespace RVX
         if (!context.cameras.SetPerspective(
                 camera, radians(45.0f), aspect, 0.05f, 250.0f) ||
             !context.cameras.SetPose(
-                camera, {.position = Vec3(0.0f, 1.0f, 4.5f)}) ||
-            !context.cameras.LookAt(camera, Vec3(0.0f, 0.45f, 0.0f)) ||
+                camera, {.position = SceneLifecycleCameraPosition}) ||
+            !context.cameras.LookAt(camera, SceneLifecycleCameraTarget) ||
             !context.cameras.MarkCut(camera))
         {
             return false;

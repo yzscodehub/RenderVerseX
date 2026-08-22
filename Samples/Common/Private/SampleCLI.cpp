@@ -205,6 +205,187 @@ namespace RVX
                    << diagnostics.gpuCopyRangeCount << "\n";
             stream << "    },\n";
         }
+
+        [[nodiscard]] const char* GetRenderFeaturePhaseName(
+            RenderFeaturePhase phase) noexcept
+        {
+            switch (phase)
+            {
+                case RenderFeaturePhase::FrameSetup: return "frame-setup";
+                case RenderFeaturePhase::Visibility: return "visibility";
+                case RenderFeaturePhase::Shadow: return "shadow";
+                case RenderFeaturePhase::Geometry: return "geometry";
+                case RenderFeaturePhase::Lighting: return "lighting";
+                case RenderFeaturePhase::Reflection: return "reflection";
+                case RenderFeaturePhase::Sky: return "sky";
+                case RenderFeaturePhase::Translucency: return "translucency";
+                case RenderFeaturePhase::Temporal: return "temporal";
+                case RenderFeaturePhase::HDRPost: return "hdr-post";
+                case RenderFeaturePhase::ToneMap: return "tone-map";
+                case RenderFeaturePhase::LDRPost: return "ldr-post";
+                case RenderFeaturePhase::Overlay: return "overlay";
+                case RenderFeaturePhase::Present: return "present";
+                default: return "invalid";
+            }
+        }
+
+        [[nodiscard]] const char* GetRenderFeatureRequirementName(
+            RenderFeatureRequirement requirement) noexcept
+        {
+            switch (requirement)
+            {
+                case RenderFeatureRequirement::Optional: return "optional";
+                case RenderFeatureRequirement::Required: return "required";
+                default: return "invalid";
+            }
+        }
+
+        [[nodiscard]] const char* GetRenderViewRoleName(ViewRole role) noexcept
+        {
+            switch (role)
+            {
+                case ViewRole::Main: return "main";
+                case ViewRole::Shadow: return "shadow";
+                case ViewRole::Reflection: return "reflection";
+                case ViewRole::Editor: return "editor";
+                default: return "invalid";
+            }
+        }
+
+        void WriteRenderExecutionReceipt(
+            std::ostream& stream,
+            const RenderExecutionReceipt& receipt)
+        {
+            stream << "{\n";
+            stream << "      \"schemaVersion\": " << receipt.schemaVersion
+                   << ",\n";
+            stream << "      \"available\": "
+                   << Diagnostics::JsonBool(receipt.available) << ",\n";
+            stream << "      \"graphComposed\": "
+                   << Diagnostics::JsonBool(receipt.graphComposed) << ",\n";
+            stream << "      \"executionSucceeded\": "
+                   << Diagnostics::JsonBool(receipt.executionSucceeded)
+                   << ",\n";
+            stream << "      \"presented\": "
+                   << Diagnostics::JsonBool(receipt.presented) << ",\n";
+            stream << "      \"succeeded\": "
+                   << Diagnostics::JsonBool(receipt.succeeded) << ",\n";
+            stream << "      \"build\": {\"sourceCommit\": "
+                   << Diagnostics::JsonString(receipt.build.sourceCommit)
+                   << ", \"preset\": "
+                   << Diagnostics::JsonString(receipt.build.preset) << "},\n";
+            stream << "      \"frameIdentity\": {\"frameSequence\": "
+                   << receipt.frameIdentity.frameSequence
+                   << ", \"sceneRevision\": "
+                   << receipt.frameIdentity.sceneRevision
+                   << ", \"surfaceGeneration\": "
+                   << receipt.frameIdentity.surfaceGeneration
+                   << ", \"configurationRevision\": "
+                   << receipt.frameIdentity.configurationRevision << "},\n";
+            stream << "      \"viewIdentity\": {\"sceneRuntimeId\": "
+                   << receipt.viewIdentity.sceneRuntimeId
+                   << ", \"cameraEntityPacked\": "
+                   << receipt.viewIdentity.cameraEntityPacked
+                   << ", \"subViewIndex\": "
+                   << receipt.viewIdentity.subViewIndex << ", \"role\": "
+                   << Diagnostics::JsonString(
+                          GetRenderViewRoleName(receipt.viewIdentity.role))
+                   << "},\n";
+            stream << "      \"backend\": "
+                   << Diagnostics::JsonString(
+                          GetSampleBackendName(receipt.backend))
+                   << ",\n";
+            stream << "      \"requestedRecipe\": "
+                   << Diagnostics::JsonString(
+                          GetRenderPipelineRecipeName(receipt.requestedRecipe))
+                   << ",\n";
+            stream << "      \"resolvedRecipe\": "
+                   << Diagnostics::JsonString(
+                          GetRenderPipelineRecipeName(receipt.resolvedRecipe))
+                   << ",\n";
+            stream << "      \"quality\": "
+                   << Diagnostics::JsonString(
+                          GetRenderQualityTierName(receipt.quality))
+                   << ",\n";
+            stream << "      \"profileHash\": " << receipt.profileHash
+                   << ",\n";
+            stream << "      \"diagnostic\": "
+                   << Diagnostics::JsonString(receipt.diagnostic) << ",\n";
+            stream << "      \"features\": [\n";
+            for (size_t index = 0; index < receipt.features.size(); ++index)
+            {
+                const RenderFeatureExecutionReceipt& feature =
+                    receipt.features[index];
+                stream << "        {\n";
+                stream << "          \"featureId\": "
+                       << feature.featureId.value << ",\n";
+                stream << "          \"featureSchemaVersion\": "
+                       << feature.featureSchemaVersion << ",\n";
+                stream << "          \"phase\": "
+                       << Diagnostics::JsonString(
+                              GetRenderFeaturePhaseName(feature.phase))
+                       << ",\n";
+                stream << "          \"requirement\": "
+                       << Diagnostics::JsonString(
+                              GetRenderFeatureRequirementName(
+                                  feature.requirement))
+                       << ",\n";
+                stream << "          \"readiness\": {\"compiled\": "
+                       << Diagnostics::JsonBool(feature.readiness.compiled)
+                       << ", \"hardwareSupported\": "
+                       << Diagnostics::JsonBool(
+                              feature.readiness.hardwareSupported)
+                       << ", \"implementationSupported\": "
+                       << Diagnostics::JsonBool(
+                              feature.readiness.implementationSupported)
+                       << ", \"pipelineReady\": "
+                       << Diagnostics::JsonBool(
+                              feature.readiness.pipelineReady)
+                       << ", \"inputsReady\": "
+                       << Diagnostics::JsonBool(feature.readiness.inputsReady)
+                       << ", \"executed\": "
+                       << Diagnostics::JsonBool(feature.readiness.executed)
+                       << ", \"diagnostic\": "
+                       << Diagnostics::JsonString(
+                              feature.readiness.diagnostic)
+                       << "},\n";
+                stream << "          \"selected\": "
+                       << Diagnostics::JsonBool(feature.selected) << ",\n";
+                stream << "          \"fallbackUsed\": "
+                       << Diagnostics::JsonBool(feature.fallbackUsed) << ",\n";
+                stream << "          \"selectedFallbackFeatureId\": "
+                       << feature.selectedFallbackFeatureId.value << ",\n";
+                stream << "          \"fallbackForFeatureId\": "
+                       << feature.fallbackForFeatureId.value << ",\n";
+                stream << "          \"graphPassCount\": "
+                       << feature.graphPassCount << ",\n";
+                stream << "          \"executedGraphPassCount\": "
+                       << feature.executedGraphPassCount << ",\n";
+                stream << "          \"graphPassNames\": [";
+                for (size_t passIndex = 0;
+                     passIndex < feature.graphPassNames.size();
+                     ++passIndex)
+                {
+                    if (passIndex != 0)
+                    {
+                        stream << ", ";
+                    }
+                    stream << Diagnostics::JsonString(
+                        feature.graphPassNames[passIndex]);
+                }
+                stream << "],\n";
+                stream << "          \"diagnostic\": "
+                       << Diagnostics::JsonString(feature.diagnostic) << "\n";
+                stream << "        }";
+                if (index + 1 < receipt.features.size())
+                {
+                    stream << ",";
+                }
+                stream << "\n";
+            }
+            stream << "      ]\n";
+            stream << "    }";
+        }
     } // namespace
 
     SampleFeatureReporter::SampleFeatureReporter(SampleReport& report)
@@ -892,7 +1073,8 @@ namespace RVX
         stream << "  \"assetRedistributable\": "
                << Diagnostics::JsonBool(report.assetRedistributable) << ",\n";
         stream << "  \"assetLoaded\": " << Diagnostics::JsonBool(report.assetLoaded) << ",\n";
-        if (report.schemaVersion >= 20)
+        if (report.schemaVersion >
+            RVX_SAMPLE_REPORT_PRE_VISUAL_CONTRACT_SCHEMA_VERSION)
         {
             stream << "  \"visualContractReceipt\": ";
             if (!report.visualContractReceipt.has_value())
@@ -952,10 +1134,39 @@ namespace RVX
                        << ",\n";
                 stream << "    \"captureCarryingFrameSequence\": "
                        << receipt.captureCarryingFrameSequence << ",\n";
+                if (report.schemaVersion >
+                    RVX_SAMPLE_REPORT_PRE_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION)
+                {
+                    stream << "    \"captureSceneRuntimeId\": "
+                           << receipt.captureSceneRuntimeId << ",\n";
+                    stream << "    \"captureCameraEntityPacked\": "
+                           << receipt.captureCameraEntityPacked << ",\n";
+                    stream << "    \"captureSceneRevision\": "
+                           << receipt.captureSceneRevision << ",\n";
+                    stream << "    \"captureSurfaceGeneration\": "
+                           << receipt.captureSurfaceGeneration << ",\n";
+                    stream << "    \"captureConfigurationRevision\": "
+                           << receipt.captureConfigurationRevision << ",\n";
+                }
                 stream << "    \"deterministicQualification\": "
                        << Diagnostics::JsonBool(
                               receipt.deterministicQualification)
                        << ",\n";
+                if (report.schemaVersion >
+                    RVX_SAMPLE_REPORT_PRE_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION)
+                {
+                    stream << "    \"renderExecutionReceipt\": ";
+                    if (receipt.renderExecutionReceipt.has_value())
+                    {
+                        WriteRenderExecutionReceipt(
+                            stream, *receipt.renderExecutionReceipt);
+                    }
+                    else
+                    {
+                        stream << "null";
+                    }
+                    stream << ",\n";
+                }
                 stream << "    \"satisfied\": "
                        << Diagnostics::JsonBool(receipt.satisfied) << "\n";
                 stream << "  },\n";

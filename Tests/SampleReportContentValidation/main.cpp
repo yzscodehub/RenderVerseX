@@ -1,9 +1,11 @@
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <numeric>
 #include <set>
@@ -60,6 +62,42 @@ namespace
         CookIdentityRequirement expected;
         CookIdentityRequirement observed;
     };
+
+    struct ValidationBuildIdentity
+    {
+        std::string sourceCommit;
+        std::string preset;
+
+        [[nodiscard]] bool IsEmpty() const noexcept
+        {
+            return sourceCommit.empty() && preset.empty();
+        }
+    };
+
+    std::string ReadEnvironmentString(const char* name)
+    {
+#if defined(_WIN32)
+        char* value = nullptr;
+        size_t valueLength = 0;
+        if (_dupenv_s(&value, &valueLength, name) != 0 || value == nullptr)
+        {
+            return {};
+        }
+        std::string result = valueLength > 1 ? std::string(value) : std::string{};
+        std::free(value);
+        return result;
+#else
+        const char* value = std::getenv(name);
+        return value != nullptr ? std::string(value) : std::string{};
+#endif
+    }
+
+    ValidationBuildIdentity ReadExpectedValidationBuildIdentity()
+    {
+        return {
+            ReadEnvironmentString("RVX_VALIDATION_SOURCE_COMMIT"),
+            ReadEnvironmentString("RVX_VALIDATION_PRESET")};
+    }
 
     struct Options
     {
@@ -2023,6 +2061,131 @@ namespace
         return !previousWasSeparator;
     }
 
+    bool ValidateExactObjectFields(
+        const Json& object,
+        const std::set<std::string>& expectedFields,
+        const char* label)
+    {
+        if (!object.is_object())
+        {
+            std::cerr << label << " must be an object\n";
+            return false;
+        }
+
+        bool passed = true;
+        if (object.size() != expectedFields.size())
+        {
+            std::cerr << label << " field set is not exact\n";
+            passed = false;
+        }
+        for (const std::string& field : expectedFields)
+        {
+            if (!object.contains(field))
+            {
+                std::cerr << label << " missing field: " << field << "\n";
+                passed = false;
+            }
+        }
+        for (const auto& [field, value] : object.items())
+        {
+            static_cast<void>(value);
+            if (!expectedFields.contains(field))
+            {
+                std::cerr << label << " has unknown field: " << field << "\n";
+                passed = false;
+            }
+        }
+        return passed;
+    }
+
+    bool IsOneOf(const std::string& value,
+                 std::initializer_list<const char*> values)
+    {
+        return std::any_of(values.begin(), values.end(),
+                           [&value](const char* candidate)
+                           {
+                               return value == candidate;
+                           });
+    }
+
+    bool IsGitCommitIdentity(const std::string& value)
+    {
+        return (value.size() == 40 || value.size() == 64) &&
+               std::all_of(value.begin(), value.end(), [](const char character)
+               {
+                   return (character >= '0' && character <= '9') ||
+                          (character >= 'a' && character <= 'f');
+               });
+    }
+
+    bool IsValidationPresetIdentity(const std::string& value)
+    {
+        return !value.empty() && value.size() <= 128 &&
+               std::all_of(value.begin(), value.end(), [](const char character)
+               {
+                   return (character >= 'a' && character <= 'z') ||
+                          (character >= 'A' && character <= 'Z') ||
+                          (character >= '0' && character <= '9') ||
+                          character == '-' || character == '_' ||
+                          character == '.';
+               });
+    }
+
+    bool ParseRenderRecipeIdentity(const std::string& value,
+                                   uint64_t& outIdentity)
+    {
+        if (value == "minimal")
+            outIdentity = 0;
+        else if (value == "forward-plus")
+            outIdentity = 1;
+        else if (value == "deferred")
+            outIdentity = 2;
+        else if (value == "hybrid-rt")
+            outIdentity = 3;
+        else if (value == "headless")
+            outIdentity = 4;
+        else
+            return false;
+        return true;
+    }
+
+    bool ParseRenderQualityIdentity(const std::string& value,
+                                    uint64_t& outIdentity)
+    {
+        if (value == "low")
+            outIdentity = 0;
+        else if (value == "medium")
+            outIdentity = 1;
+        else if (value == "high")
+            outIdentity = 2;
+        else if (value == "ultra")
+            outIdentity = 3;
+        else
+            return false;
+        return true;
+    }
+
+    uint64_t MixRenderPipelineProfileHash(uint64_t hash, uint64_t value)
+    {
+        constexpr uint64_t prime = 1099511628211ULL;
+        for (uint32_t byte = 0; byte < sizeof(value); ++byte)
+        {
+            hash ^= (value >> (byte * 8U)) & 0xffU;
+            hash *= prime;
+        }
+        return hash;
+    }
+
+    uint64_t ComputeRenderPipelineProfileHash(uint64_t recipe,
+                                              uint64_t quality)
+    {
+        constexpr uint64_t offset = 14695981039346656037ULL;
+        uint64_t hash = MixRenderPipelineProfileHash(offset, 1);
+        hash = MixRenderPipelineProfileHash(hash, recipe);
+        hash = MixRenderPipelineProfileHash(hash, quality);
+        return hash == 0 ? 1 : hash;
+    }
+
     bool ValidateVisualContractReceiptSchemaV20(
         const Json& report,
         uint64_t presentedFrameSequence)
@@ -2209,7 +2372,592 @@ namespace
         return passed;
     }
 
-    bool ValidateSampleReportV12Root(const Json& report)
+    bool ValidateRenderExecutionReceiptSchemaV21(
+        const Json& execution,
+        uint64_t captureCarryingFrameSequence,
+        uint64_t captureSceneRuntimeId,
+        uint64_t captureCameraEntityPacked,
+        uint64_t captureSceneRevision,
+        uint64_t captureSurfaceGeneration,
+        uint64_t captureConfigurationRevision,
+        const std::string& reportBackend,
+        const std::string& requestedPipeline,
+        const std::string& observedPipeline,
+        const std::string& visualQuality,
+        const ValidationBuildIdentity& expectedBuildIdentity)
+    {
+        const std::set<std::string> expectedFields = {
+            "schemaVersion",
+            "available",
+            "graphComposed",
+            "executionSucceeded",
+            "presented",
+            "succeeded",
+            "build",
+            "frameIdentity",
+            "viewIdentity",
+            "backend",
+            "requestedRecipe",
+            "resolvedRecipe",
+            "quality",
+            "profileHash",
+            "diagnostic",
+            "features",
+        };
+        bool passed = ValidateExactObjectFields(
+            execution, expectedFields, "Render execution receipt v21");
+        if (!execution.is_object())
+        {
+            return false;
+        }
+
+        uint64_t schemaVersion = 0;
+        uint64_t profileHash = 0;
+        bool available = false;
+        bool graphComposed = false;
+        bool executionSucceeded = false;
+        bool presented = false;
+        bool succeeded = false;
+        std::string backend;
+        std::string requestedRecipe;
+        std::string resolvedRecipe;
+        std::string quality;
+        std::string diagnostic;
+        passed &= ReadUnsignedField(execution, "schemaVersion", schemaVersion,
+                                    "Render execution receipt v21");
+        passed &= ReadBooleanField(execution, "available", available,
+                                   "Render execution receipt v21");
+        passed &= ReadBooleanField(execution, "graphComposed", graphComposed,
+                                   "Render execution receipt v21");
+        passed &= ReadBooleanField(execution, "executionSucceeded",
+                                   executionSucceeded,
+                                   "Render execution receipt v21");
+        passed &= ReadBooleanField(execution, "presented", presented,
+                                   "Render execution receipt v21");
+        passed &= ReadBooleanField(execution, "succeeded", succeeded,
+                                   "Render execution receipt v21");
+        passed &= ReadStringField(execution, "backend", backend,
+                                  "Render execution receipt v21", true);
+        passed &= ReadStringField(execution, "requestedRecipe",
+                                  requestedRecipe,
+                                  "Render execution receipt v21", true);
+        passed &= ReadStringField(execution, "resolvedRecipe",
+                                  resolvedRecipe,
+                                  "Render execution receipt v21", true);
+        passed &= ReadStringField(execution, "quality", quality,
+                                  "Render execution receipt v21", true);
+        passed &= ReadUnsignedField(execution, "profileHash", profileHash,
+                                    "Render execution receipt v21");
+        passed &= ReadStringField(execution, "diagnostic", diagnostic,
+                                  "Render execution receipt v21");
+        if (schemaVersion != 1 || !available || !graphComposed ||
+            !executionSucceeded || !presented || !succeeded)
+        {
+            std::cerr << "Render execution receipt v21 is not a successful presented execution\n";
+            passed = false;
+        }
+        if (!diagnostic.empty() || diagnostic.size() > 4096)
+        {
+            std::cerr << "Successful render execution receipt v21 has a diagnostic\n";
+            passed = false;
+        }
+
+        const auto build = execution.find("build");
+        if (build == execution.end() || !build->is_object())
+        {
+            std::cerr << "Render execution receipt v21 missing build identity\n";
+            passed = false;
+        }
+        else
+        {
+            passed &= ValidateExactObjectFields(
+                *build, {"sourceCommit", "preset"},
+                "Render execution build identity v21");
+            std::string sourceCommit;
+            std::string preset;
+            passed &= ReadStringField(*build, "sourceCommit", sourceCommit,
+                                      "Render execution build identity v21");
+            passed &= ReadStringField(*build, "preset", preset,
+                                      "Render execution build identity v21");
+            const bool buildIdentityMatches = expectedBuildIdentity.IsEmpty()
+                ? sourceCommit.empty() && preset.empty()
+                : IsGitCommitIdentity(expectedBuildIdentity.sourceCommit) &&
+                      IsValidationPresetIdentity(expectedBuildIdentity.preset) &&
+                      sourceCommit == expectedBuildIdentity.sourceCommit &&
+                      preset == expectedBuildIdentity.preset;
+            if (!buildIdentityMatches)
+            {
+                std::cerr << "Render execution receipt v21 is not bound to the expected validation build identity\n";
+                passed = false;
+            }
+        }
+
+        uint64_t frameSequence = 0;
+        const auto frameIdentity = execution.find("frameIdentity");
+        if (frameIdentity == execution.end() || !frameIdentity->is_object())
+        {
+            std::cerr << "Render execution receipt v21 missing frame identity\n";
+            passed = false;
+        }
+        else
+        {
+            passed &= ValidateExactObjectFields(
+                *frameIdentity,
+                {"frameSequence", "sceneRevision", "surfaceGeneration",
+                 "configurationRevision"},
+                "Render execution frame identity v21");
+        uint64_t sceneRevision = 0;
+        uint64_t surfaceGeneration = 0;
+        uint64_t configurationRevision = 0;
+            passed &= ReadUnsignedField(*frameIdentity, "frameSequence",
+                                        frameSequence,
+                                        "Render execution frame identity v21");
+            passed &= ReadUnsignedField(*frameIdentity, "sceneRevision",
+                                        sceneRevision,
+                                        "Render execution frame identity v21");
+            passed &= ReadUnsignedField(*frameIdentity, "surfaceGeneration",
+                                        surfaceGeneration,
+                                        "Render execution frame identity v21");
+            passed &= ReadUnsignedField(*frameIdentity,
+                                        "configurationRevision",
+                                        configurationRevision,
+                                        "Render execution frame identity v21");
+            if (frameSequence == 0 ||
+                frameSequence != captureCarryingFrameSequence ||
+                sceneRevision == 0 ||
+                sceneRevision != captureSceneRevision ||
+                surfaceGeneration == 0 ||
+                surfaceGeneration != captureSurfaceGeneration ||
+                configurationRevision == 0 ||
+                configurationRevision != captureConfigurationRevision)
+            {
+                std::cerr << "Render execution receipt v21 does not identify the capture-carrying frame\n";
+                passed = false;
+            }
+        }
+
+        const auto viewIdentity = execution.find("viewIdentity");
+        if (viewIdentity == execution.end() || !viewIdentity->is_object())
+        {
+            std::cerr << "Render execution receipt v21 missing view identity\n";
+            passed = false;
+        }
+        else
+        {
+            passed &= ValidateExactObjectFields(
+                *viewIdentity,
+                {"sceneRuntimeId", "cameraEntityPacked", "subViewIndex",
+                 "role"},
+                "Render execution view identity v21");
+            uint64_t sceneRuntimeId = 0;
+            uint64_t cameraEntityPacked = 0;
+            uint64_t subViewIndex = 0;
+            std::string role;
+            passed &= ReadUnsignedField(*viewIdentity, "sceneRuntimeId",
+                                        sceneRuntimeId,
+                                        "Render execution view identity v21");
+            passed &= ReadUnsignedField(*viewIdentity, "cameraEntityPacked",
+                                        cameraEntityPacked,
+                                        "Render execution view identity v21");
+            passed &= ReadUnsignedField(*viewIdentity, "subViewIndex",
+                                        subViewIndex,
+                                        "Render execution view identity v21");
+            passed &= ReadStringField(*viewIdentity, "role", role,
+                                      "Render execution view identity v21",
+                                      true);
+            if (sceneRuntimeId == 0 ||
+                sceneRuntimeId != captureSceneRuntimeId ||
+                cameraEntityPacked == 0 ||
+                cameraEntityPacked != captureCameraEntityPacked ||
+                subViewIndex != 0 || role != "main")
+            {
+                std::cerr << "Render execution receipt v21 view identity is invalid\n";
+                passed = false;
+            }
+        }
+
+        uint64_t requestedRecipeIdentity = 0;
+        uint64_t resolvedRecipeIdentity = 0;
+        uint64_t qualityIdentity = 0;
+        if (!IsOneOf(backend, {"dx11", "dx12", "vulkan", "metal",
+                               "opengl"}) ||
+            backend != reportBackend ||
+            !ParseRenderRecipeIdentity(requestedRecipe,
+                                       requestedRecipeIdentity) ||
+            !ParseRenderRecipeIdentity(resolvedRecipe,
+                                       resolvedRecipeIdentity) ||
+            !ParseRenderQualityIdentity(quality, qualityIdentity) ||
+            requestedRecipe != requestedPipeline ||
+            resolvedRecipe != observedPipeline ||
+            requestedRecipe != resolvedRecipe || quality != visualQuality)
+        {
+            std::cerr << "Render execution receipt v21 backend or pipeline/profile identity does not match the visual contract\n";
+            passed = false;
+        }
+
+        else if (profileHash == 0 ||
+                 profileHash != ComputeRenderPipelineProfileHash(
+                                    resolvedRecipeIdentity, qualityIdentity))
+        {
+            std::cerr << "Render execution receipt v21 profile hash is invalid\n";
+            passed = false;
+        }
+
+        const auto features = execution.find("features");
+        if (features == execution.end() || !features->is_array() ||
+            features->empty() || features->size() > 1024)
+        {
+            std::cerr << "Render execution receipt v21 feature evidence is empty or invalid\n";
+            return false;
+        }
+
+        std::set<uint64_t> featureIds;
+        const std::set<std::string> expectedFeatureFields = {
+            "featureId",
+            "featureSchemaVersion",
+            "phase",
+            "requirement",
+            "readiness",
+            "selected",
+            "fallbackUsed",
+            "selectedFallbackFeatureId",
+            "fallbackForFeatureId",
+            "graphPassCount",
+            "executedGraphPassCount",
+            "graphPassNames",
+            "diagnostic",
+        };
+        const std::set<std::string> expectedReadinessFields = {
+            "compiled",
+            "hardwareSupported",
+            "implementationSupported",
+            "pipelineReady",
+            "inputsReady",
+            "executed",
+            "diagnostic",
+        };
+        std::map<uint64_t, std::pair<uint64_t, uint64_t>> fallbackRelations;
+        for (const Json& feature : *features)
+        {
+            passed &= ValidateExactObjectFields(
+                feature, expectedFeatureFields,
+                "Render feature execution receipt v21");
+            if (!feature.is_object())
+            {
+                continue;
+            }
+
+            uint64_t featureId = 0;
+            uint64_t featureSchemaVersion = 0;
+            uint64_t selectedFallbackFeatureId = 0;
+            uint64_t fallbackForFeatureId = 0;
+            uint64_t graphPassCount = 0;
+            uint64_t executedGraphPassCount = 0;
+            bool selected = false;
+            bool fallbackUsed = false;
+            std::string phase;
+            std::string requirement;
+            std::string featureDiagnostic;
+            passed &= ReadUnsignedField(feature, "featureId", featureId,
+                                        "Render feature execution receipt v21");
+            passed &= ReadUnsignedField(feature, "featureSchemaVersion",
+                                        featureSchemaVersion,
+                                        "Render feature execution receipt v21");
+            passed &= ReadStringField(feature, "phase", phase,
+                                      "Render feature execution receipt v21",
+                                      true);
+            passed &= ReadStringField(feature, "requirement", requirement,
+                                      "Render feature execution receipt v21",
+                                      true);
+            passed &= ReadBooleanField(feature, "selected", selected,
+                                       "Render feature execution receipt v21");
+            passed &= ReadBooleanField(feature, "fallbackUsed", fallbackUsed,
+                                       "Render feature execution receipt v21");
+            passed &= ReadUnsignedField(feature, "selectedFallbackFeatureId",
+                                        selectedFallbackFeatureId,
+                                        "Render feature execution receipt v21");
+            passed &= ReadUnsignedField(feature, "fallbackForFeatureId",
+                                        fallbackForFeatureId,
+                                        "Render feature execution receipt v21");
+            passed &= ReadUnsignedField(feature, "graphPassCount",
+                                        graphPassCount,
+                                        "Render feature execution receipt v21");
+            passed &= ReadUnsignedField(feature, "executedGraphPassCount",
+                                        executedGraphPassCount,
+                                        "Render feature execution receipt v21");
+            passed &= ReadStringField(feature, "diagnostic", featureDiagnostic,
+                                      "Render feature execution receipt v21");
+            if (featureId == 0 ||
+                featureId > std::numeric_limits<uint32_t>::max() ||
+                !featureIds.insert(featureId).second ||
+                featureSchemaVersion == 0 ||
+                featureSchemaVersion > std::numeric_limits<uint32_t>::max() ||
+                selectedFallbackFeatureId >
+                    std::numeric_limits<uint32_t>::max() ||
+                fallbackForFeatureId >
+                    std::numeric_limits<uint32_t>::max() ||
+                graphPassCount > 4096 ||
+                executedGraphPassCount > graphPassCount || !selected ||
+                (!fallbackUsed &&
+                 (selectedFallbackFeatureId != 0 ||
+                  fallbackForFeatureId != 0)) ||
+                (requirement == "required" && fallbackUsed) ||
+                selectedFallbackFeatureId == featureId ||
+                fallbackForFeatureId == featureId ||
+                !IsOneOf(phase,
+                         {"frame-setup", "visibility", "shadow", "geometry",
+                          "lighting", "reflection", "sky", "translucency",
+                          "temporal", "hdr-post", "tone-map", "ldr-post",
+                          "overlay", "present"}) ||
+                !IsOneOf(requirement, {"optional", "required"}) ||
+                featureDiagnostic.size() > 4096)
+            {
+                std::cerr << "Render feature execution receipt v21 identity or execution counts are invalid\n";
+                passed = false;
+            }
+            fallbackRelations[featureId] = {
+                selectedFallbackFeatureId, fallbackForFeatureId};
+
+            const auto graphPassNames = feature.find("graphPassNames");
+            if (graphPassNames == feature.end() ||
+                !graphPassNames->is_array() ||
+                graphPassNames->size() != graphPassCount)
+            {
+                std::cerr << "Render feature execution receipt v21 graph pass evidence is invalid\n";
+                passed = false;
+            }
+            else
+            {
+                for (const Json& passName : *graphPassNames)
+                {
+                    if (!passName.is_string() ||
+                        passName.get_ref<const std::string&>().empty() ||
+                        passName.get_ref<const std::string&>().size() > 256)
+                    {
+                        std::cerr << "Render feature execution receipt v21 graph pass name is invalid\n";
+                        passed = false;
+                    }
+                }
+            }
+
+            const auto readiness = feature.find("readiness");
+            if (readiness == feature.end() || !readiness->is_object())
+            {
+                std::cerr << "Render feature execution receipt v21 missing readiness evidence\n";
+                passed = false;
+                continue;
+            }
+            passed &= ValidateExactObjectFields(
+                *readiness, expectedReadinessFields,
+                "Render feature readiness v21");
+            bool compiled = false;
+            bool hardwareSupported = false;
+            bool implementationSupported = false;
+            bool pipelineReady = false;
+            bool inputsReady = false;
+            bool executed = false;
+            std::string readinessDiagnostic;
+            passed &= ReadBooleanField(*readiness, "compiled", compiled,
+                                       "Render feature readiness v21");
+            passed &= ReadBooleanField(*readiness, "hardwareSupported",
+                                       hardwareSupported,
+                                       "Render feature readiness v21");
+            passed &= ReadBooleanField(*readiness,
+                                       "implementationSupported",
+                                       implementationSupported,
+                                       "Render feature readiness v21");
+            passed &= ReadBooleanField(*readiness, "pipelineReady",
+                                       pipelineReady,
+                                       "Render feature readiness v21");
+            passed &= ReadBooleanField(*readiness, "inputsReady", inputsReady,
+                                       "Render feature readiness v21");
+            passed &= ReadBooleanField(*readiness, "executed", executed,
+                                       "Render feature readiness v21");
+            passed &= ReadStringField(*readiness, "diagnostic",
+                                      readinessDiagnostic,
+                                      "Render feature readiness v21");
+            const bool ready = compiled && hardwareSupported &&
+                implementationSupported && pipelineReady && inputsReady;
+            const bool completeGraphExecution = graphPassCount == 0 ||
+                executedGraphPassCount == graphPassCount;
+            const bool allowedOptionalSkip = requirement == "optional" &&
+                fallbackUsed && !executed && graphPassCount == 0 &&
+                executedGraphPassCount == 0;
+            if (readinessDiagnostic.size() > 4096 ||
+                (executed && (!ready || !completeGraphExecution)) ||
+                (!executed && !allowedOptionalSkip))
+            {
+                std::cerr << "Render feature readiness v21 is inconsistent with successful execution\n";
+                passed = false;
+            }
+        }
+        for (const auto& [featureId, relation] : fallbackRelations)
+        {
+            const auto [selectedFallback, fallbackFor] = relation;
+            if (selectedFallback != 0)
+            {
+                const auto target = fallbackRelations.find(selectedFallback);
+                if (target == fallbackRelations.end() ||
+                    target->second.second != featureId)
+                {
+                    std::cerr << "Render feature fallback selection is not reciprocal\n";
+                    passed = false;
+                }
+            }
+            if (fallbackFor != 0)
+            {
+                const auto parent = fallbackRelations.find(fallbackFor);
+                if (parent == fallbackRelations.end() ||
+                    parent->second.first != featureId)
+                {
+                    std::cerr << "Render feature fallback parent is not reciprocal\n";
+                    passed = false;
+                }
+            }
+        }
+        return passed;
+    }
+
+    bool ValidateVisualContractReceiptSchemaV21(
+        const Json& report,
+        uint64_t presentedFrameSequence,
+        const ValidationBuildIdentity& expectedBuildIdentity)
+    {
+        const auto iterator = report.find("visualContractReceipt");
+        if (iterator == report.end() || !iterator->is_object())
+        {
+            std::cerr << "Schema-v21 report missing visualContractReceipt object\n";
+            return false;
+        }
+
+        const Json& receipt = *iterator;
+        const std::set<std::string> expectedFields = {
+            "manifestSchema",
+            "manifestSchemaVersion",
+            "manifestContentSha256",
+            "visualContractVersion",
+            "domain",
+            "intent",
+            "requestedPipeline",
+            "observedPipeline",
+            "quality",
+            "cameraBookmarkId",
+            "fixedTimeNumerator",
+            "fixedTimeDenominator",
+            "deterministicSeed",
+            "captureTick",
+            "captureCarryingFrameSequence",
+            "captureSceneRuntimeId",
+            "captureCameraEntityPacked",
+            "captureSceneRevision",
+            "captureSurfaceGeneration",
+            "captureConfigurationRevision",
+            "deterministicQualification",
+            "renderExecutionReceipt",
+            "satisfied",
+        };
+        bool passed = ValidateExactObjectFields(
+            receipt, expectedFields, "Visual contract receipt v21");
+
+        std::string reportBackend;
+        std::string requestedPipeline;
+        std::string observedPipeline;
+        std::string quality;
+        uint64_t captureCarryingFrameSequence = 0;
+        uint64_t captureSceneRuntimeId = 0;
+        uint64_t captureCameraEntityPacked = 0;
+        uint64_t captureSceneRevision = 0;
+        uint64_t captureSurfaceGeneration = 0;
+        uint64_t captureConfigurationRevision = 0;
+        passed &= ReadStringField(report, "backend", reportBackend,
+                                  "Schema-v21 report", true);
+        passed &= ReadStringField(receipt, "requestedPipeline",
+                                  requestedPipeline,
+                                  "Visual contract receipt v21", true);
+        passed &= ReadStringField(receipt, "observedPipeline",
+                                  observedPipeline,
+                                  "Visual contract receipt v21", true);
+        passed &= ReadStringField(receipt, "quality", quality,
+                                  "Visual contract receipt v21", true);
+        passed &= ReadUnsignedField(receipt,
+                                    "captureCarryingFrameSequence",
+                                    captureCarryingFrameSequence,
+                                    "Visual contract receipt v21");
+        passed &= ReadUnsignedField(receipt, "captureSceneRuntimeId",
+                                    captureSceneRuntimeId,
+                                    "Visual contract receipt v21");
+        passed &= ReadUnsignedField(receipt, "captureCameraEntityPacked",
+                                    captureCameraEntityPacked,
+                                    "Visual contract receipt v21");
+        passed &= ReadUnsignedField(receipt, "captureSceneRevision",
+                                    captureSceneRevision,
+                                    "Visual contract receipt v21");
+        passed &= ReadUnsignedField(receipt, "captureSurfaceGeneration",
+                                    captureSurfaceGeneration,
+                                    "Visual contract receipt v21");
+        passed &= ReadUnsignedField(receipt,
+                                    "captureConfigurationRevision",
+                                    captureConfigurationRevision,
+                                    "Visual contract receipt v21");
+        if (captureSceneRuntimeId == 0 || captureCameraEntityPacked == 0 ||
+            captureSceneRevision == 0 || captureSurfaceGeneration == 0 ||
+            captureConfigurationRevision == 0)
+        {
+            std::cerr << "Visual contract receipt v21 capture identity is incomplete\n";
+            passed = false;
+        }
+
+        // Preserve the exact schema-v20 validator as the compatibility
+        // contract. A sanitized copy reuses all common manifest/time/camera
+        // checks while v21 independently validates its generalized observed
+        // recipe and execution evidence below.
+        Json legacyReport = report;
+        Json& legacyReceipt = legacyReport["visualContractReceipt"];
+        legacyReceipt.erase("renderExecutionReceipt");
+        legacyReceipt.erase("captureSceneRuntimeId");
+        legacyReceipt.erase("captureCameraEntityPacked");
+        legacyReceipt.erase("captureSceneRevision");
+        legacyReceipt.erase("captureSurfaceGeneration");
+        legacyReceipt.erase("captureConfigurationRevision");
+        legacyReceipt["observedPipeline"] = "forward-plus";
+        passed &= ValidateVisualContractReceiptSchemaV20(
+            legacyReport, presentedFrameSequence);
+
+        uint64_t ignoredRecipeIdentity = 0;
+        uint64_t ignoredQualityIdentity = 0;
+        if (!ParseRenderRecipeIdentity(observedPipeline,
+                                       ignoredRecipeIdentity) ||
+            !ParseRenderQualityIdentity(quality, ignoredQualityIdentity))
+        {
+            std::cerr << "Visual contract receipt v21 observed pipeline or quality is invalid\n";
+            passed = false;
+        }
+
+        const auto execution = receipt.find("renderExecutionReceipt");
+        if (execution == receipt.end() || !execution->is_object())
+        {
+            std::cerr << "Visual contract receipt v21 missing render execution receipt\n";
+            return false;
+        }
+        passed &= ValidateRenderExecutionReceiptSchemaV21(
+            *execution,
+            captureCarryingFrameSequence,
+            captureSceneRuntimeId,
+            captureCameraEntityPacked,
+            captureSceneRevision,
+            captureSurfaceGeneration,
+            captureConfigurationRevision,
+            reportBackend,
+            requestedPipeline,
+            observedPipeline,
+            quality,
+            expectedBuildIdentity);
+        return passed;
+    }
+
+    bool ValidateSampleReportV12Root(
+        const Json& report,
+        const ValidationBuildIdentity& expectedBuildIdentity = {})
     {
         bool passed = true;
         std::string schemaId;
@@ -2293,7 +3041,12 @@ namespace
         passed &= ReadUnsignedField(
             report, "presentedFrameSequence", presentedFrameSequence, "Report");
         passed &= ReadBooleanField(report, "pass", reportPass, "Report");
-        if (schemaVersion >= 20)
+        if (schemaVersion >= 21)
+        {
+            passed &= ValidateVisualContractReceiptSchemaV21(
+                report, presentedFrameSequence, expectedBuildIdentity);
+        }
+        else if (schemaVersion >= 20)
         {
             passed &= ValidateVisualContractReceiptSchemaV20(
                 report, presentedFrameSequence);
@@ -3518,6 +4271,221 @@ namespace
             return false;
         }
 
+        // Schema 21 binds the visual contract to the renderer's exact
+        // presentation-qualified execution receipt. Schema 20 above remains
+        // the legacy contract and deliberately has no nested execution object.
+        Json schema21Report = schema20Report;
+        schema21Report["schemaVersion"] = 21;
+        schema21Report["visualContractReceipt"]["observedPipeline"] =
+            "deferred";
+        schema21Report["visualContractReceipt"]["captureSceneRuntimeId"] = 11;
+        schema21Report["visualContractReceipt"]
+                      ["captureCameraEntityPacked"] = 13;
+        schema21Report["visualContractReceipt"]["captureSceneRevision"] = 7;
+        schema21Report["visualContractReceipt"]
+                      ["captureSurfaceGeneration"] = 2;
+        schema21Report["visualContractReceipt"]
+                      ["captureConfigurationRevision"] = 3;
+        schema21Report["visualContractReceipt"]["renderExecutionReceipt"] = {
+            {"schemaVersion", 1},
+            {"available", true},
+            {"graphComposed", true},
+            {"executionSucceeded", true},
+            {"presented", true},
+            {"succeeded", true},
+            {"build", {{"sourceCommit", std::string(40, 'e')},
+                       {"preset", "win_x64_pr_debug"}}},
+            {"frameIdentity", {{"frameSequence", 4},
+                               {"sceneRevision", 7},
+                               {"surfaceGeneration", 2},
+                               {"configurationRevision", 3}}},
+            {"viewIdentity", {{"sceneRuntimeId", 11},
+                              {"cameraEntityPacked", 13},
+                              {"subViewIndex", 0},
+                              {"role", "main"}}},
+            {"backend", "dx12"},
+            {"requestedRecipe", "deferred"},
+            {"resolvedRecipe", "deferred"},
+            {"quality", "high"},
+            {"profileHash", ComputeRenderPipelineProfileHash(2, 2)},
+            {"diagnostic", ""},
+            {"features",
+             Json::array({{{"featureId", 1},
+                           {"featureSchemaVersion", 1},
+                           {"phase", "geometry"},
+                           {"requirement", "required"},
+                           {"readiness", {{"compiled", true},
+                                          {"hardwareSupported", true},
+                                          {"implementationSupported", true},
+                                          {"pipelineReady", true},
+                                          {"inputsReady", true},
+                                          {"executed", true},
+                                          {"diagnostic", ""}}},
+                           {"selected", true},
+                           {"fallbackUsed", false},
+                           {"selectedFallbackFeatureId", 0},
+                           {"fallbackForFeatureId", 0},
+                           {"graphPassCount", 2},
+                           {"executedGraphPassCount", 2},
+                           {"graphPassNames",
+                            Json::array({"DepthPrepass", "OpaquePass"})},
+                           {"diagnostic", ""}}})},
+        };
+        const ValidationBuildIdentity expectedBuildIdentity{
+            std::string(40, 'e'), "win_x64_pr_debug"};
+        if (!ValidateSampleReportV12Root(
+                schema21Report, expectedBuildIdentity))
+        {
+            return false;
+        }
+
+        const auto expectInvalidSchema21 =
+            [&expectedBuildIdentity](Json invalid)
+        {
+            return !ValidateSampleReportV12Root(
+                invalid, expectedBuildIdentity);
+        };
+        Json missingExecutionReceipt = schema21Report;
+        missingExecutionReceipt["visualContractReceipt"].erase(
+            "renderExecutionReceipt");
+        Json executionNotPresented = schema21Report;
+        executionNotPresented["visualContractReceipt"]
+                             ["renderExecutionReceipt"]["presented"] = false;
+        Json executionUnavailable = schema21Report;
+        executionUnavailable["visualContractReceipt"]
+                            ["renderExecutionReceipt"]["available"] = false;
+        Json graphNotComposed = schema21Report;
+        graphNotComposed["visualContractReceipt"]
+                        ["renderExecutionReceipt"]["graphComposed"] = false;
+        Json executionFailed = schema21Report;
+        executionFailed["visualContractReceipt"]
+                       ["renderExecutionReceipt"]
+                       ["executionSucceeded"] = false;
+        Json receiptFailed = schema21Report;
+        receiptFailed["visualContractReceipt"]
+                     ["renderExecutionReceipt"]["succeeded"] = false;
+        Json staleExecutionFrame = schema21Report;
+        staleExecutionFrame["visualContractReceipt"]
+                           ["renderExecutionReceipt"]
+                           ["frameIdentity"]["frameSequence"] = 3;
+        Json wrongRequestedRecipe = schema21Report;
+        wrongRequestedRecipe["visualContractReceipt"]
+                            ["renderExecutionReceipt"]
+                            ["requestedRecipe"] = "minimal";
+        Json wrongResolvedRecipe = schema21Report;
+        wrongResolvedRecipe["visualContractReceipt"]
+                           ["renderExecutionReceipt"]
+                           ["resolvedRecipe"] = "forward-plus";
+        Json wrongExecutionQuality = schema21Report;
+        wrongExecutionQuality["visualContractReceipt"]
+                             ["renderExecutionReceipt"]["quality"] = "ultra";
+        Json wrongProfileHash = schema21Report;
+        wrongProfileHash["visualContractReceipt"]
+                        ["renderExecutionReceipt"]["profileHash"] = 1;
+        Json wrongExecutionBackend = schema21Report;
+        wrongExecutionBackend["visualContractReceipt"]
+                             ["renderExecutionReceipt"]["backend"] = "vulkan";
+        Json missingBuildIdentity = schema21Report;
+        missingBuildIdentity["visualContractReceipt"]
+                            ["renderExecutionReceipt"]
+                            ["build"]["sourceCommit"] = "";
+        Json staleBuildCommit = schema21Report;
+        staleBuildCommit["visualContractReceipt"]
+                        ["renderExecutionReceipt"]
+                        ["build"]["sourceCommit"] = std::string(40, 'a');
+        Json staleBuildPreset = schema21Report;
+        staleBuildPreset["visualContractReceipt"]
+                        ["renderExecutionReceipt"]
+                        ["build"]["preset"] = "win_x64_debug";
+        Json wrongViewRole = schema21Report;
+        wrongViewRole["visualContractReceipt"]
+                     ["renderExecutionReceipt"]
+                     ["viewIdentity"]["role"] = "reflection";
+        Json wrongCameraIdentity = schema21Report;
+        wrongCameraIdentity["visualContractReceipt"]
+                           ["renderExecutionReceipt"]
+                           ["viewIdentity"]["cameraEntityPacked"] = 14;
+        Json wrongSceneRevision = schema21Report;
+        wrongSceneRevision["visualContractReceipt"]
+                          ["renderExecutionReceipt"]
+                          ["frameIdentity"]["sceneRevision"] = 8;
+        Json wrongCaptureConfigurationRevision = schema21Report;
+        wrongCaptureConfigurationRevision["visualContractReceipt"]
+                                        ["captureConfigurationRevision"] = 2;
+        Json requiredFeatureNotExecuted = schema21Report;
+        requiredFeatureNotExecuted["visualContractReceipt"]
+                                  ["renderExecutionReceipt"]
+                                  ["features"][0]
+                                  ["readiness"]["executed"] = false;
+        Json missingFeatureEvidence = schema21Report;
+        missingFeatureEvidence["visualContractReceipt"]
+                              ["renderExecutionReceipt"]
+                              ["features"][0].erase("graphPassNames");
+        Json danglingFallback = schema21Report;
+        danglingFallback["visualContractReceipt"]
+                        ["renderExecutionReceipt"]
+                        ["features"][0]["requirement"] = "optional";
+        danglingFallback["visualContractReceipt"]
+                        ["renderExecutionReceipt"]
+                        ["features"][0]["fallbackUsed"] = true;
+        danglingFallback["visualContractReceipt"]
+                        ["renderExecutionReceipt"]
+                        ["features"][0]["selectedFallbackFeatureId"] = 2;
+        Json partialGraphExecution = schema21Report;
+        partialGraphExecution["visualContractReceipt"]
+                             ["renderExecutionReceipt"]
+                             ["features"][0]
+                             ["executedGraphPassCount"] = 1;
+        Json unknownExecutionField = schema21Report;
+        unknownExecutionField["visualContractReceipt"]
+                             ["renderExecutionReceipt"]["fallback"] = true;
+        Json emptyFeatureEvidence = schema21Report;
+        emptyFeatureEvidence["visualContractReceipt"]
+                            ["renderExecutionReceipt"]["features"] =
+            Json::array();
+        if (!expectInvalidSchema21(std::move(missingExecutionReceipt)) ||
+            !expectInvalidSchema21(std::move(executionNotPresented)) ||
+            !expectInvalidSchema21(std::move(executionUnavailable)) ||
+            !expectInvalidSchema21(std::move(graphNotComposed)) ||
+            !expectInvalidSchema21(std::move(executionFailed)) ||
+            !expectInvalidSchema21(std::move(receiptFailed)) ||
+            !expectInvalidSchema21(std::move(staleExecutionFrame)) ||
+            !expectInvalidSchema21(std::move(wrongRequestedRecipe)) ||
+            !expectInvalidSchema21(std::move(wrongResolvedRecipe)) ||
+            !expectInvalidSchema21(std::move(wrongExecutionQuality)) ||
+            !expectInvalidSchema21(std::move(wrongProfileHash)) ||
+            !expectInvalidSchema21(std::move(wrongExecutionBackend)) ||
+            !expectInvalidSchema21(std::move(wrongCaptureConfigurationRevision)) ||
+            !expectInvalidSchema21(std::move(missingBuildIdentity)) ||
+            !expectInvalidSchema21(std::move(staleBuildCommit)) ||
+            !expectInvalidSchema21(std::move(staleBuildPreset)) ||
+            !expectInvalidSchema21(std::move(wrongViewRole)) ||
+            !expectInvalidSchema21(std::move(wrongCameraIdentity)) ||
+            !expectInvalidSchema21(std::move(wrongSceneRevision)) ||
+            !expectInvalidSchema21(std::move(requiredFeatureNotExecuted)) ||
+            !expectInvalidSchema21(std::move(missingFeatureEvidence)) ||
+            !expectInvalidSchema21(std::move(danglingFallback)) ||
+            !expectInvalidSchema21(std::move(partialGraphExecution)) ||
+            !expectInvalidSchema21(std::move(unknownExecutionField)) ||
+            !expectInvalidSchema21(std::move(emptyFeatureEvidence)))
+        {
+            return false;
+        }
+
+        Json localUnboundSchema21 = schema21Report;
+        localUnboundSchema21["visualContractReceipt"]
+                            ["renderExecutionReceipt"]
+                            ["build"]["sourceCommit"] = "";
+        localUnboundSchema21["visualContractReceipt"]
+                            ["renderExecutionReceipt"]
+                            ["build"]["preset"] = "";
+        if (!ValidateSampleReportV12Root(localUnboundSchema21) ||
+            ValidateSampleReportV12Root(
+                localUnboundSchema21, expectedBuildIdentity))
+        {
+            return false;
+        }
+
         Json stalePolicy = report;
         stalePolicy["renderDiagnostics"]["renderPolicyReportFrameSequence"] = 3;
         if (ValidateSampleReportV12Root(stalePolicy))
@@ -3866,7 +4834,10 @@ int main(int argc, char* argv[])
     }
 
     bool passed = true;
-    const bool rootValid = ValidateSampleReportV12Root(report);
+    const ValidationBuildIdentity expectedBuildIdentity =
+        ReadExpectedValidationBuildIdentity();
+    const bool rootValid = ValidateSampleReportV12Root(
+        report, expectedBuildIdentity);
     passed &= rootValid;
     const bool scenarioValid = ValidateScenario(report);
     passed &= scenarioValid;

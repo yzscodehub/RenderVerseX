@@ -220,6 +220,11 @@ try
                 "Native lane '$testPreset' requires RequiredNativeBackend so lifecycle evidence cannot be skipped")
         }
         $previousNativeLifecyclePath = $env:RVX_NATIVE_LIFECYCLE_REPORT
+        $previousValidationSourceCommit =
+            $env:RVX_VALIDATION_SOURCE_COMMIT
+        $previousValidationPreset = $env:RVX_VALIDATION_PRESET
+        $env:RVX_VALIDATION_SOURCE_COMMIT = $sourceCommit
+        $env:RVX_VALIDATION_PRESET = $testPreset
         if ($isNativeLane -and -not [string]::IsNullOrWhiteSpace($RequiredNativeBackend))
         {
             $nativeLifecycleTests = @(
@@ -255,6 +260,22 @@ try
             else
             {
                 $env:RVX_NATIVE_LIFECYCLE_REPORT = $previousNativeLifecyclePath
+            }
+            if ($null -eq $previousValidationSourceCommit)
+            {
+                Remove-Item Env:RVX_VALIDATION_SOURCE_COMMIT -ErrorAction SilentlyContinue
+            }
+            else
+            {
+                $env:RVX_VALIDATION_SOURCE_COMMIT = $previousValidationSourceCommit
+            }
+            if ($null -eq $previousValidationPreset)
+            {
+                Remove-Item Env:RVX_VALIDATION_PRESET -ErrorAction SilentlyContinue
+            }
+            else
+            {
+                $env:RVX_VALIDATION_PRESET = $previousValidationPreset
             }
         }
 

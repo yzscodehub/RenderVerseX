@@ -198,6 +198,39 @@ void Prepare(EcsRenderRuntimeComposition& composition)
     ASSERT_TRUE(composition.PrepareBeforeSubsystemInitialization());
     composition.BeforeRenderSubsystemInitialize();
 }
+
+class TestEffectFrameClock
+{
+public:
+    [[nodiscard]] std::optional<EcsRenderFramePipelineResult> Tick(
+        EcsRenderRuntimeComposition& composition,
+        const FrozenSceneSnapshot* snapshot,
+        float32 deltaTime,
+        float64 absoluteTime)
+    {
+        const EffectFrameTime effectTime{
+            .simulationTick = m_tick,
+            .fixedDeltaSeconds = deltaTime,
+            .simulationSeconds = m_seconds,
+            .deterministicSeed = DeterministicSeed,
+        };
+        auto result = composition.Tick(snapshot,
+                                       deltaTime,
+                                       absoluteTime,
+                                       effectTime.simulationTick,
+                                       effectTime.simulationSeconds,
+                                       effectTime.deterministicSeed);
+        ++m_tick;
+        m_seconds += static_cast<float64>(deltaTime);
+        return result;
+    }
+
+    static constexpr uint32 DeterministicSeed = 0x52565845u;
+
+private:
+    uint64 m_tick = 0;
+    float64 m_seconds = 0.0;
+};
 } // namespace
 
 TEST(EcsRenderRuntimeCompositionValidation,
@@ -223,13 +256,14 @@ TEST(EcsRenderRuntimeCompositionValidation,
 {
     FakeServices* services = nullptr;
     auto composition = MakeComposition(services);
+    TestEffectFrameClock effectClock;
     Prepare(*composition);
     ASSERT_EQ(services->injectedGatewayCount, 1U);
     ASSERT_EQ(services->configureCount, 1U);
 
     const FrozenSceneSnapshot snapshot = MakeSnapshot(ECS::SceneRuntimeId{1001}, 1, 1);
     services->assetsReady = false;
-    const auto missing = composition->Tick(&snapshot, 1.0f / 60.0f, 1.0f);
+    const auto missing = effectClock.Tick(*composition, &snapshot, 1.0f / 60.0f, 1.0f);
     ASSERT_TRUE(missing.has_value());
     EXPECT_EQ(missing->code, EcsRenderFramePipelineCode::ExtractionFailed);
     EXPECT_EQ(missing->extractionCode,
@@ -239,10 +273,17 @@ TEST(EcsRenderRuntimeCompositionValidation,
     services->assetsReady = true;
     services->transport.progress = {.appliedRenderSceneRevision = 1,
                                     .presentedFrameSequence = 1};
-    const auto published = composition->Tick(&snapshot, 1.0f / 60.0f, 2.0f);
+    const auto published = effectClock.Tick(*composition, &snapshot, 1.0f / 60.0f, 2.0f);
     ASSERT_TRUE(published.has_value());
     EXPECT_EQ(published->code, EcsRenderFramePipelineCode::Published);
     EXPECT_EQ(services->transport.publishCount, 1U);
+    EXPECT_EQ(services->transport.lastHeader.simulationTick, 1U);
+    EXPECT_FLOAT_EQ(services->transport.lastHeader.effectFixedDeltaSeconds,
+                    1.0f / 60.0f);
+    EXPECT_DOUBLE_EQ(services->transport.lastHeader.effectSimulationSeconds,
+                     static_cast<float64>(1.0f / 60.0f));
+    EXPECT_EQ(services->transport.lastHeader.deterministicSeed,
+              TestEffectFrameClock::DeterministicSeed);
     EXPECT_EQ(composition->GetStats().publicationAccepted, 1U);
     EXPECT_TRUE(composition->TryShutdown());
 }
@@ -252,13 +293,15 @@ TEST(EcsRenderRuntimeCompositionValidation,
 {
     FakeServices* services = nullptr;
     auto composition = MakeComposition(services);
+    TestEffectFrameClock effectClock;
     Prepare(*composition);
     services->transport.progress = {.appliedRenderSceneRevision = 1,
                                     .presentedFrameSequence = 0};
 
     FrozenSceneSnapshot first = MakeSnapshot(ECS::SceneRuntimeId{1002}, 1, 1);
-    ASSERT_EQ(composition->Tick(&first, 0.01f, 1.0f)->code,
-              EcsRenderFramePipelineCode::Published);
+    const auto firstResult = effectClock.Tick(*composition, &first, 0.01f, 1.0f);
+    ASSERT_TRUE(firstResult.has_value());
+    ASSERT_EQ(firstResult->code, EcsRenderFramePipelineCode::Published);
     EXPECT_EQ(composition->GetStats().worldRevision, 1U);
     EXPECT_EQ(composition->GetStats().temporalEpoch, 2U);
     EXPECT_TRUE(services->transport.lastHeader.explicitDiscontinuity);
@@ -277,7 +320,9 @@ TEST(EcsRenderRuntimeCompositionValidation,
                                     .presentedFrameSequence = 1};
     FrozenSceneSnapshot cut = MakeSnapshot(ECS::SceneRuntimeId{1002}, 2, 2);
     cut.meshes.front().worldTransform[3].x += 1.0f;
-    ASSERT_EQ(composition->Tick(&cut, 0.01f, 2.0f)->code,
+    const auto cutResult = effectClock.Tick(*composition, &cut, 0.01f, 2.0f);
+    ASSERT_TRUE(cutResult.has_value());
+    ASSERT_EQ(cutResult->code,
               EcsRenderFramePipelineCode::SceneUpdatePublishedWithoutFrame);
     EXPECT_EQ(composition->GetStats().lastAcknowledgedCaptureRequestId, 0U);
     EXPECT_EQ(composition->GetStats().temporalEpoch, 3U);
@@ -287,8 +332,10 @@ TEST(EcsRenderRuntimeCompositionValidation,
     services->transport.progress = {.appliedRenderSceneRevision = 3,
                                     .presentedFrameSequence = 3};
     FrozenSceneSnapshot accepted = MakeSnapshot(ECS::SceneRuntimeId{1002}, 3, 2);
-    ASSERT_EQ(composition->Tick(&accepted, 0.01f, 3.0f)->code,
-              EcsRenderFramePipelineCode::Published);
+    const auto acceptedResult =
+        effectClock.Tick(*composition, &accepted, 0.01f, 3.0f);
+    ASSERT_TRUE(acceptedResult.has_value());
+    ASSERT_EQ(acceptedResult->code, EcsRenderFramePipelineCode::Published);
     EXPECT_EQ(composition->GetStats().lastAcknowledgedCaptureRequestId, 0U);
     services->completedProgress = services->transport.progress;
     services->captureResult = {
@@ -299,7 +346,7 @@ TEST(EcsRenderRuntimeCompositionValidation,
         .width = 64,
         .height = 64,
     };
-    EXPECT_FALSE(composition->Tick(nullptr, 0.01f, 3.5f).has_value());
+    EXPECT_FALSE(effectClock.Tick(*composition, nullptr, 0.01f, 3.5f).has_value());
     EXPECT_EQ(composition->GetStats().lastAcknowledgedCaptureRequestId, 17U);
 
     ASSERT_TRUE(composition->RequestSurfaceResize(800, 600));
@@ -311,8 +358,10 @@ TEST(EcsRenderRuntimeCompositionValidation,
     services->transport.progress = {.appliedRenderSceneRevision = 4,
                                     .presentedFrameSequence = 4};
     FrozenSceneSnapshot swapped = MakeSnapshot(ECS::SceneRuntimeId{1003}, 1, 2);
-    ASSERT_EQ(composition->Tick(&swapped, 0.01f, 4.0f)->code,
-              EcsRenderFramePipelineCode::Published);
+    const auto swappedResult =
+        effectClock.Tick(*composition, &swapped, 0.01f, 4.0f);
+    ASSERT_TRUE(swappedResult.has_value());
+    ASSERT_EQ(swappedResult->code, EcsRenderFramePipelineCode::Published);
     EXPECT_EQ(services->renderResizeRequestCount, 1U);
     EXPECT_EQ(services->lastRenderResizeSurface.generation, 2U);
     EXPECT_EQ(services->lastRenderResizeSurface.width, 800U);
@@ -329,13 +378,15 @@ TEST(EcsRenderRuntimeCompositionValidation,
 {
     FakeServices* services = nullptr;
     auto composition = MakeComposition(services);
+    TestEffectFrameClock effectClock;
     Prepare(*composition);
     services->transport.progress = {.appliedRenderSceneRevision = 1,
                                     .presentedFrameSequence = 0};
     const ECS::SceneRuntimeId runtime{1004};
     FrozenSceneSnapshot first = MakeSnapshot(runtime, 1, 1);
-    ASSERT_EQ(composition->Tick(&first, 0.01f, 1.0f)->code,
-              EcsRenderFramePipelineCode::Published);
+    const auto firstResult = effectClock.Tick(*composition, &first, 0.01f, 1.0f);
+    ASSERT_TRUE(firstResult.has_value());
+    ASSERT_EQ(firstResult->code, EcsRenderFramePipelineCode::Published);
     services->completedProgress = services->transport.progress;
 
     IEcsSceneAssetRetirementProofGateway& proof =
@@ -350,18 +401,20 @@ TEST(EcsRenderRuntimeCompositionValidation,
     services->transport.progress = {.appliedRenderSceneRevision = 2,
                                     .presentedFrameSequence = 0};
     FrozenSceneSnapshot removed = MakeSnapshot(runtime, 2, 1, false);
-    ASSERT_EQ(composition->Tick(&removed, 0.01f, 2.0f)->code,
-              EcsRenderFramePipelineCode::Published);
+    const auto removedResult =
+        effectClock.Tick(*composition, &removed, 0.01f, 2.0f);
+    ASSERT_TRUE(removedResult.has_value());
+    ASSERT_EQ(removedResult->code, EcsRenderFramePipelineCode::Published);
     EXPECT_EQ(proof.QueryRetirementProof(begin.token).state,
               EcsSceneAssetRetirementProofState::AppliedNotPresented);
 
     services->completedProgress = {.appliedRenderSceneRevision = 3,
                                    .presentedFrameSequence = 3};
-    EXPECT_FALSE(composition->Tick(nullptr, 0.01f, 3.0f).has_value());
+    EXPECT_FALSE(effectClock.Tick(*composition, nullptr, 0.01f, 3.0f).has_value());
     EXPECT_EQ(composition->GetStats().completedProgress.presentedFrameSequence, 3U);
     services->completedProgress = {.appliedRenderSceneRevision = 2,
                                    .presentedFrameSequence = 2};
-    EXPECT_FALSE(composition->Tick(nullptr, 0.01f, 4.0f).has_value());
+    EXPECT_FALSE(effectClock.Tick(*composition, nullptr, 0.01f, 4.0f).has_value());
     EXPECT_EQ(composition->GetStats().completedProgressRejected, 1U);
 
     composition->BeginShutdown();
@@ -372,7 +425,7 @@ TEST(EcsRenderRuntimeCompositionValidation,
 
     services->completedProgress = {.appliedRenderSceneRevision = 2,
                                    .presentedFrameSequence = 2};
-    EXPECT_FALSE(composition->Tick(nullptr, 0.01f, 2.5f).has_value());
+    EXPECT_FALSE(effectClock.Tick(*composition, nullptr, 0.01f, 2.5f).has_value());
     EXPECT_EQ(proof.QueryRetirementProof(begin.token).state,
               EcsSceneAssetRetirementProofState::Presented);
     EXPECT_TRUE(composition->HasOutstandingProofs());
@@ -390,6 +443,7 @@ TEST(EcsRenderRuntimeCompositionValidation,
 {
     FakeServices* services = nullptr;
     auto composition = MakeComposition(services);
+    TestEffectFrameClock effectClock;
     Prepare(*composition);
     ASSERT_TRUE(composition->QueueCapture({
         .requestId = 22,
@@ -402,8 +456,9 @@ TEST(EcsRenderRuntimeCompositionValidation,
     services->transport.progress = {.appliedRenderSceneRevision = 1,
                                     .presentedFrameSequence = 0};
     FrozenSceneSnapshot first = MakeSnapshot(runtime, 1, 1);
-    ASSERT_EQ(composition->Tick(&first, 0.01f, 1.0f)->code,
-              EcsRenderFramePipelineCode::Published);
+    const auto firstResult = effectClock.Tick(*composition, &first, 0.01f, 1.0f);
+    ASSERT_TRUE(firstResult.has_value());
+    ASSERT_EQ(firstResult->code, EcsRenderFramePipelineCode::Published);
     const uint64 replacedCaptureSequence = services->transport.lastHeader.sequence;
     EXPECT_TRUE(services->transport.lastTemporalReset);
     EXPECT_EQ(services->transport.lastCaptureRequest.requestId, 22U);
@@ -412,8 +467,10 @@ TEST(EcsRenderRuntimeCompositionValidation,
     services->transport.progress = {.appliedRenderSceneRevision = 2,
                                     .presentedFrameSequence = 0};
     FrozenSceneSnapshot replacement = MakeSnapshot(runtime, 2, 1);
-    ASSERT_EQ(composition->Tick(&replacement, 0.01f, 2.0f)->code,
-              EcsRenderFramePipelineCode::Published);
+    const auto replacementResult =
+        effectClock.Tick(*composition, &replacement, 0.01f, 2.0f);
+    ASSERT_TRUE(replacementResult.has_value());
+    ASSERT_EQ(replacementResult->code, EcsRenderFramePipelineCode::Published);
     const uint64 carryingCaptureSequence = services->transport.lastHeader.sequence;
     EXPECT_GT(carryingCaptureSequence, replacedCaptureSequence);
     EXPECT_TRUE(services->transport.lastTemporalReset);
@@ -430,21 +487,24 @@ TEST(EcsRenderRuntimeCompositionValidation,
         .width = 64,
         .height = 64,
     };
-    EXPECT_FALSE(composition->Tick(nullptr, 0.01f, 2.5f).has_value());
+    EXPECT_FALSE(effectClock.Tick(*composition, nullptr, 0.01f, 2.5f).has_value());
     EXPECT_EQ(composition->GetStats().lastAcknowledgedCaptureRequestId, 0U);
     EXPECT_NE(composition->GetStats().pendingTemporalFrameSequence, 0U);
 
     services->completedProgress = {.appliedRenderSceneRevision = 2,
                                    .presentedFrameSequence = carryingCaptureSequence};
     services->captureResult.frameSequence = carryingCaptureSequence;
-    EXPECT_FALSE(composition->Tick(nullptr, 0.01f, 3.0f).has_value());
+    EXPECT_FALSE(effectClock.Tick(*composition, nullptr, 0.01f, 3.0f).has_value());
     EXPECT_EQ(composition->GetStats().lastAcknowledgedCaptureRequestId, 22U);
     EXPECT_EQ(composition->GetStats().pendingTemporalFrameSequence, 0U);
 
     services->transport.progress = {.appliedRenderSceneRevision = 3,
                                     .presentedFrameSequence = 3};
     FrozenSceneSnapshot afterPresentation = MakeSnapshot(runtime, 3, 1);
-    ASSERT_EQ(composition->Tick(&afterPresentation, 0.01f, 4.0f)->code,
+    const auto afterPresentationResult =
+        effectClock.Tick(*composition, &afterPresentation, 0.01f, 4.0f);
+    ASSERT_TRUE(afterPresentationResult.has_value());
+    ASSERT_EQ(afterPresentationResult->code,
               EcsRenderFramePipelineCode::Published);
     EXPECT_FALSE(services->transport.lastTemporalReset);
     EXPECT_EQ(services->transport.lastCaptureRequest.requestId, 0U);
@@ -456,14 +516,16 @@ TEST(EcsRenderRuntimeCompositionValidation,
 {
     FakeServices* services = nullptr;
     auto composition = MakeComposition(services);
+    TestEffectFrameClock effectClock;
     Prepare(*composition);
 
     const ECS::SceneRuntimeId firstRuntime{1006};
     services->transport.progress = {.appliedRenderSceneRevision = 1,
                                     .presentedFrameSequence = 1};
     FrozenSceneSnapshot first = MakeSnapshot(firstRuntime, 1, 7);
-    ASSERT_EQ(composition->Tick(&first, 0.01f, 1.0f)->code,
-              EcsRenderFramePipelineCode::Published);
+    const auto firstResult = effectClock.Tick(*composition, &first, 0.01f, 1.0f);
+    ASSERT_TRUE(firstResult.has_value());
+    ASSERT_EQ(firstResult->code, EcsRenderFramePipelineCode::Published);
     ASSERT_TRUE(composition->GetStats().lastAcceptedFrame.has_value());
     const EcsRenderAcceptedFrameEvidence firstEvidence =
         *composition->GetStats().lastAcceptedFrame;
@@ -485,7 +547,10 @@ TEST(EcsRenderRuntimeCompositionValidation,
     services->transport.progress = {.appliedRenderSceneRevision = 1,
                                     .presentedFrameSequence = 1};
     FrozenSceneSnapshot rejected = MakeSnapshot(firstRuntime, 2, 8);
-    ASSERT_EQ(composition->Tick(&rejected, 0.01f, 2.0f)->code,
+    const auto rejectedResult =
+        effectClock.Tick(*composition, &rejected, 0.01f, 2.0f);
+    ASSERT_TRUE(rejectedResult.has_value());
+    ASSERT_EQ(rejectedResult->code,
               EcsRenderFramePipelineCode::TransportNotAccepted);
     ASSERT_TRUE(composition->GetStats().lastAcceptedFrame.has_value());
     EXPECT_EQ(composition->GetStats().lastAcceptedFrame->sceneRuntimeId,
@@ -501,7 +566,10 @@ TEST(EcsRenderRuntimeCompositionValidation,
                                     .presentedFrameSequence = 1};
     FrozenSceneSnapshot sceneOnly = MakeSnapshot(firstRuntime, 3, 9);
     sceneOnly.meshes.front().worldTransform[3].x += 1.0f;
-    ASSERT_EQ(composition->Tick(&sceneOnly, 0.01f, 3.0f)->code,
+    const auto sceneOnlyResult =
+        effectClock.Tick(*composition, &sceneOnly, 0.01f, 3.0f);
+    ASSERT_TRUE(sceneOnlyResult.has_value());
+    ASSERT_EQ(sceneOnlyResult->code,
               EcsRenderFramePipelineCode::SceneUpdatePublishedWithoutFrame);
     ASSERT_TRUE(composition->GetStats().lastSceneUpdatePublication.has_value());
     EXPECT_EQ(composition->GetStats().lastSceneUpdatePublication->
@@ -516,8 +584,10 @@ TEST(EcsRenderRuntimeCompositionValidation,
                                     .presentedFrameSequence = 3};
     const ECS::SceneRuntimeId secondRuntime{1007};
     FrozenSceneSnapshot worldSwap = MakeSnapshot(secondRuntime, 1, 11);
-    ASSERT_EQ(composition->Tick(&worldSwap, 0.01f, 4.0f)->code,
-              EcsRenderFramePipelineCode::Published);
+    const auto worldSwapResult =
+        effectClock.Tick(*composition, &worldSwap, 0.01f, 4.0f);
+    ASSERT_TRUE(worldSwapResult.has_value());
+    ASSERT_EQ(worldSwapResult->code, EcsRenderFramePipelineCode::Published);
     ASSERT_TRUE(composition->GetStats().lastAcceptedFrame.has_value());
     EXPECT_EQ(composition->GetStats().lastAcceptedFrame->sceneRuntimeId,
               secondRuntime);
@@ -531,8 +601,10 @@ TEST(EcsRenderRuntimeCompositionValidation,
     services->transport.progress = {.appliedRenderSceneRevision = 4,
                                     .presentedFrameSequence = 4};
     FrozenSceneSnapshot cameraCut = MakeSnapshot(secondRuntime, 2, 12);
-    ASSERT_EQ(composition->Tick(&cameraCut, 0.01f, 5.0f)->code,
-              EcsRenderFramePipelineCode::Published);
+    const auto cameraCutResult =
+        effectClock.Tick(*composition, &cameraCut, 0.01f, 5.0f);
+    ASSERT_TRUE(cameraCutResult.has_value());
+    ASSERT_EQ(cameraCutResult->code, EcsRenderFramePipelineCode::Published);
     EXPECT_EQ(composition->GetStats().lastAcceptedFrame->sceneRuntimeId,
               secondRuntime);
     EXPECT_EQ(composition->GetStats().lastAcceptedFrame->frozenSnapshotRevision,

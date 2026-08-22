@@ -133,6 +133,10 @@ target_sources(RVX_Render PRIVATE
     # Policy
     Private/Policy/RenderFramePlanCompiler.cpp
     Private/Policy/RenderPolicyResolver.cpp
+    # Feature composition
+    Private/Features/DefaultForwardComposition.cpp
+    Private/Features/LegacyForwardFeatureAdapter.cpp
+    Private/Features/RenderFeatureRegistry.cpp
     # Submission
     Private/Submission/RenderSubmissionStrategy.cpp
     Private/Submission/RenderInstanceBatchPlan.cpp

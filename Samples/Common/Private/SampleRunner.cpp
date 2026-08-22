@@ -8,6 +8,7 @@
 #include "EngineDevelopmentComposition/EngineDevelopmentComposition.h"
 #include "HAL/Input/KeyCodes.h"
 #include "Render/RenderSubsystem.h"
+#include "RenderContracts/RenderPipelineProfile.h"
 #include "Resource/ResourceSubsystem.h"
 #include "Runtime/Input/InputSubsystem.h"
 #include "Runtime/Window/WindowSubsystem.h"
@@ -30,6 +31,7 @@
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -50,6 +52,108 @@
 
 namespace RVX
 {
+namespace
+{
+    [[nodiscard]] bool TryMapSamplePipelineRecipe(
+        SamplePipelineRecipe sampleRecipe,
+        RenderPipelineRecipe& outRecipe) noexcept
+    {
+        switch (sampleRecipe)
+        {
+            case SamplePipelineRecipe::Minimal:
+                outRecipe = RenderPipelineRecipe::Minimal;
+                return true;
+            case SamplePipelineRecipe::ForwardStandard:
+                outRecipe = RenderPipelineRecipe::ForwardStandard;
+                return true;
+            case SamplePipelineRecipe::DeferredQuality:
+                outRecipe = RenderPipelineRecipe::DeferredQuality;
+                return true;
+            case SamplePipelineRecipe::HybridRayTracing:
+                outRecipe = RenderPipelineRecipe::HybridRayTracing;
+                return true;
+            case SamplePipelineRecipe::Headless:
+                outRecipe = RenderPipelineRecipe::Headless;
+                return true;
+            default: return false;
+        }
+    }
+
+    [[nodiscard]] bool TryMapRenderPipelineRecipe(
+        RenderPipelineRecipe renderRecipe,
+        SamplePipelineRecipe& outRecipe) noexcept
+    {
+        switch (renderRecipe)
+        {
+            case RenderPipelineRecipe::Minimal:
+                outRecipe = SamplePipelineRecipe::Minimal;
+                return true;
+            case RenderPipelineRecipe::ForwardStandard:
+                outRecipe = SamplePipelineRecipe::ForwardStandard;
+                return true;
+            case RenderPipelineRecipe::DeferredQuality:
+                outRecipe = SamplePipelineRecipe::DeferredQuality;
+                return true;
+            case RenderPipelineRecipe::HybridRayTracing:
+                outRecipe = SamplePipelineRecipe::HybridRayTracing;
+                return true;
+            case RenderPipelineRecipe::Headless:
+                outRecipe = SamplePipelineRecipe::Headless;
+                return true;
+            default: return false;
+        }
+    }
+
+    [[nodiscard]] bool TryMapSampleQualityTier(
+        SampleQualityTier sampleTier,
+        RenderQualityTier& outTier) noexcept
+    {
+        switch (sampleTier)
+        {
+            case SampleQualityTier::Low:
+                outTier = RenderQualityTier::Low;
+                return true;
+            case SampleQualityTier::Medium:
+                outTier = RenderQualityTier::Medium;
+                return true;
+            case SampleQualityTier::High:
+                outTier = RenderQualityTier::High;
+                return true;
+            case SampleQualityTier::Ultra:
+                outTier = RenderQualityTier::Ultra;
+                return true;
+            case SampleQualityTier::Default:
+            default: return false;
+        }
+    }
+
+    [[nodiscard]] std::string ReadEnvironmentString(const char* name)
+    {
+#if defined(_WIN32)
+        char* value = nullptr;
+        size_t valueLength = 0;
+        if (_dupenv_s(&value, &valueLength, name) != 0 || value == nullptr)
+        {
+            return {};
+        }
+        std::string result = valueLength > 1 ? std::string(value) : std::string{};
+        std::free(value);
+        return result;
+#else
+        const char* value = std::getenv(name);
+        return value != nullptr ? std::string(value) : std::string{};
+#endif
+    }
+
+    [[nodiscard]] RenderExecutionBuildIdentity
+    ReadValidationExecutionBuildIdentity()
+    {
+        return RenderExecutionBuildIdentity{
+            ReadEnvironmentString("RVX_VALIDATION_SOURCE_COMMIT"),
+            ReadEnvironmentString("RVX_VALIDATION_PRESET")};
+    }
+} // namespace
+
     bool HasRequiredGPUCullingQualificationComparison(
         const SampleRenderDiagnostics& diagnostics) noexcept
     {
@@ -2057,12 +2161,15 @@ namespace RVX
             sceneOptions.qualityTier = options.qualityTier;
             sceneOptions.pipelineRecipe = options.pipelineRecipe;
             sceneOptions.deterministicSeed = options.deterministicSeed;
-            if (sceneOptions.pipelineRecipe !=
-                SamplePipelineRecipe::ForwardStandard)
+            RenderPipelineRecipe validatedRecipe{};
+            RenderQualityTier validatedQuality{};
+            if (!TryMapSamplePipelineRecipe(
+                    sceneOptions.pipelineRecipe, validatedRecipe) ||
+                !TryMapSampleQualityTier(
+                    sceneOptions.qualityTier, validatedQuality))
             {
-                outError = "Selected pipeline recipe is not implemented by the current Render composition: " +
-                           std::string(GetSamplePipelineRecipeName(
-                               sceneOptions.pipelineRecipe));
+                outError =
+                    "Selected Sample pipeline recipe or quality profile is invalid";
                 return false;
             }
             sceneOptions.renderPath = options.renderPathExplicit
@@ -4333,6 +4440,24 @@ namespace RVX
         engineConfig.renderRuntime.swapChain.vsync = options.common.frames == 0;
         engineConfig.renderRuntime.enableValidation =
             options.common.enableValidation;
+        RenderPipelineRecipe requestedRecipe{};
+        RenderQualityTier requestedQuality{};
+        const bool pipelineRequestMapped =
+            TryMapSamplePipelineRecipe(
+                sceneOptions.pipelineRecipe, requestedRecipe) &&
+            TryMapSampleQualityTier(
+                sceneOptions.qualityTier, requestedQuality);
+        RVX_ASSERT_MSG(
+            pipelineRequestMapped,
+            "Resolved Sample pipeline contract must map to Render contracts");
+        engineConfig.initialRenderFrameSettings.pipelineRequest.recipe =
+            requestedRecipe;
+        engineConfig.initialRenderFrameSettings.pipelineRequest.quality =
+            requestedQuality;
+        const RenderExecutionBuildIdentity validationBuildIdentity =
+            ReadValidationExecutionBuildIdentity();
+        engineConfig.renderRuntime.executionBuildIdentity =
+            validationBuildIdentity;
         engineConfig.effectDeterministicSeed = options.deterministicSeed;
         engineConfig.renderRuntime.startupTraceContext = startupTraceContext;
         auto* window = engine.AddSubsystem<WindowSubsystem>();
@@ -4413,6 +4538,12 @@ namespace RVX
         bool deterministicCameraApplied = false;
         uint64 deterministicTick = 0;
         uint64 captureCarryingFrameSequence = 0;
+        uint64 captureSceneRuntimeId = 0;
+        uint64 captureCameraEntityPacked = 0;
+        uint64 captureSceneRevision = 0;
+        uint64 captureSurfaceGeneration = 0;
+        uint64 captureConfigurationRevision = 0;
+        std::optional<RenderExecutionReceipt> captureExecutionReceipt{};
         uint32 executedFrames = 0;
         const auto hasCompletedRequestedTicks = [&]() noexcept
         {
@@ -4989,6 +5120,34 @@ namespace RVX
                             {
                                 captureCarryingFrameSequence =
                                     diagnostics.lastCapture.frameSequence;
+                                captureExecutionReceipt =
+                                    diagnostics.frameFeatures.executionReceipt;
+                                captureConfigurationRevision =
+                                    captureExecutionReceipt.has_value() &&
+                                        captureExecutionReceipt->available &&
+                                        captureExecutionReceipt
+                                            ->frameIdentity
+                                            .configurationRevision != 0
+                                        ? captureExecutionReceipt
+                                              ->frameIdentity
+                                              .configurationRevision
+                                        : 0;
+                                const EngineRenderRuntimeDiagnostics
+                                    captureEngineDiagnostics =
+                                        engine.GetRenderRuntimeDiagnostics();
+                                const SceneECS::SceneEcsDiagnosticsSnapshot
+                                    captureSceneDiagnostics =
+                                        scene->GetDiagnosticsSnapshot();
+                                captureSceneRuntimeId =
+                                    captureSceneDiagnostics.sceneRuntimeId
+                                            .GetValue();
+                                captureCameraEntityPacked =
+                                    captureEngineDiagnostics.cameraIdentity;
+                                captureSceneRevision =
+                                    diagnostics.sceneValues
+                                        .requiredSceneRevision;
+                                captureSurfaceGeneration =
+                                    diagnostics.surfaceGeneration;
                                 if (!options.common.screenshotPath.empty())
                                 {
                                     screenshotWritten = WriteSampleScreenshotPPM(
@@ -5356,6 +5515,32 @@ namespace RVX
                         {
                             captureCarryingFrameSequence =
                                 diagnostics.lastCapture.frameSequence;
+                            captureExecutionReceipt =
+                                diagnostics.frameFeatures.executionReceipt;
+                            captureConfigurationRevision =
+                                captureExecutionReceipt.has_value() &&
+                                    captureExecutionReceipt->available &&
+                                    captureExecutionReceipt->frameIdentity
+                                            .configurationRevision !=
+                                        0
+                                    ? captureExecutionReceipt->frameIdentity
+                                          .configurationRevision
+                                    : 0;
+                            const EngineRenderRuntimeDiagnostics
+                                captureEngineDiagnostics =
+                                    engine.GetRenderRuntimeDiagnostics();
+                            const SceneECS::SceneEcsDiagnosticsSnapshot
+                                captureSceneDiagnostics =
+                                    scene->GetDiagnosticsSnapshot();
+                            captureSceneRuntimeId =
+                                captureSceneDiagnostics.sceneRuntimeId
+                                    .GetValue();
+                            captureCameraEntityPacked =
+                                captureEngineDiagnostics.cameraIdentity;
+                            captureSceneRevision =
+                                diagnostics.sceneValues.requiredSceneRevision;
+                            captureSurfaceGeneration =
+                                diagnostics.surfaceGeneration;
                             if (!options.common.screenshotPath.empty())
                             {
                                 screenshotWritten = WriteSampleScreenshotPPM(
@@ -5725,7 +5910,10 @@ namespace RVX
                               diagnostics.lastPresentedFrameSequence > 0 &&
                              features.available && features.renderAttempted &&
                              features.rendered && features.graphBuilt &&
-                             features.graphCompiled;
+                             features.graphCompiled &&
+                             features.executionReceipt.available &&
+                             features.executionReceipt.presented &&
+                             features.executionReceipt.succeeded;
             if (lifetimeQualification)
             {
                 if (!lifetimeQualification->IsComplete())
@@ -5978,14 +6166,75 @@ namespace RVX
                 receipt.domain = manifest->domain;
                 receipt.intent = manifest->intent;
                 receipt.requestedPipeline = sceneOptions.pipelineRecipe;
-                if (sceneOptions.pipelineRecipe ==
-                        SamplePipelineRecipe::ForwardStandard &&
-                    features.available && features.renderAttempted &&
-                    features.rendered && features.graphBuilt &&
-                    features.graphCompiled)
+                const RenderExecutionReceipt* executionReceipt =
+                    captureExecutionReceipt.has_value()
+                        ? &*captureExecutionReceipt
+                        : nullptr;
+                if (executionReceipt != nullptr)
                 {
-                    receipt.observedPipeline =
-                        SamplePipelineRecipe::ForwardStandard;
+                    receipt.renderExecutionReceipt = *executionReceipt;
+                }
+                RenderPipelineRecipe requestedRenderRecipe{};
+                RenderQualityTier requestedRenderQuality{};
+                SamplePipelineRecipe observedSampleRecipe{};
+                const bool requestedProfileMapped =
+                    TryMapSamplePipelineRecipe(
+                        sceneOptions.pipelineRecipe,
+                        requestedRenderRecipe) &&
+                    TryMapSampleQualityTier(
+                        sceneOptions.qualityTier,
+                        requestedRenderQuality);
+                const bool observedRecipeMapped =
+                    TryMapRenderPipelineRecipe(
+                        executionReceipt != nullptr
+                            ? executionReceipt->resolvedRecipe
+                            : RenderPipelineRecipe::Count,
+                        observedSampleRecipe);
+                const bool validationBuildIdentityAccepted =
+                    validationBuildIdentity.IsEmpty()
+                        ? executionReceipt != nullptr &&
+                              executionReceipt->build.IsEmpty()
+                        : validationBuildIdentity.IsStructurallyValid() &&
+                              executionReceipt != nullptr &&
+                              executionReceipt->build ==
+                                  validationBuildIdentity;
+                const bool executionMatchesCapture =
+                    requestedProfileMapped && observedRecipeMapped &&
+                    executionReceipt != nullptr &&
+                    executionReceipt->IsStructurallyValid() &&
+                    executionReceipt->available &&
+                    executionReceipt->graphComposed &&
+                    executionReceipt->executionSucceeded &&
+                    executionReceipt->presented &&
+                    executionReceipt->succeeded &&
+                    executionReceipt->frameIdentity.frameSequence ==
+                        captureCarryingFrameSequence &&
+                    executionReceipt->frameIdentity.sceneRevision ==
+                        captureSceneRevision &&
+                    executionReceipt->frameIdentity.surfaceGeneration ==
+                        captureSurfaceGeneration &&
+                    executionReceipt->frameIdentity.configurationRevision ==
+                        captureConfigurationRevision &&
+                    executionReceipt->viewIdentity.sceneRuntimeId ==
+                        captureSceneRuntimeId &&
+                    executionReceipt->viewIdentity.cameraEntityPacked ==
+                        captureCameraEntityPacked &&
+                    executionReceipt->viewIdentity.subViewIndex == 0 &&
+                    executionReceipt->viewIdentity.role == ViewRole::Main &&
+                    executionReceipt->backend == diagnostics.backend &&
+                    executionReceipt->requestedRecipe ==
+                        requestedRenderRecipe &&
+                    executionReceipt->resolvedRecipe ==
+                        requestedRenderRecipe &&
+                    executionReceipt->quality == requestedRenderQuality &&
+                    executionReceipt->profileHash ==
+                        ComputeRenderPipelineProfileHash(
+                            executionReceipt->resolvedRecipe,
+                            requestedRenderQuality) &&
+                    validationBuildIdentityAccepted;
+                if (executionMatchesCapture)
+                {
+                    receipt.observedPipeline = observedSampleRecipe;
                 }
                 receipt.quality = options.qualityTier;
                 receipt.cameraBookmarkId = options.viewBookmarkId;
@@ -5996,6 +6245,14 @@ namespace RVX
                     static_cast<uint32>(options.captureTick);
                 receipt.captureCarryingFrameSequence =
                     captureCarryingFrameSequence;
+                receipt.captureSceneRuntimeId = captureSceneRuntimeId;
+                receipt.captureCameraEntityPacked =
+                    captureCameraEntityPacked;
+                receipt.captureSceneRevision = captureSceneRevision;
+                receipt.captureSurfaceGeneration =
+                    captureSurfaceGeneration;
+                receipt.captureConfigurationRevision =
+                    captureConfigurationRevision;
                 receipt.deterministicQualification =
                     manifest->deterministicQualification;
                 receipt.satisfied =
@@ -6005,6 +6262,7 @@ namespace RVX
                     deterministicEpochActive && deterministicCameraApplied &&
                     deterministicTick >= options.captureTick &&
                     captureCarryingFrameSequence != 0 &&
+                    captureConfigurationRevision != 0 &&
                     captureCarryingFrameSequence <=
                         diagnostics.lastPresentedFrameSequence &&
                     receipt.observedPipeline.has_value() &&

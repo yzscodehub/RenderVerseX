@@ -123,6 +123,8 @@ namespace
 
             m_sceneRenderer = std::make_unique<SceneRenderer>(
                 std::move(shaderProgramProvider));
+            m_sceneRenderer->SetExecutionBuildIdentity(
+                config.executionBuildIdentity);
             m_sceneRenderer->Initialize(m_context.get(),
                                         &m_resourceRegistry,
                                         &m_retirementQueue);
@@ -463,6 +465,7 @@ namespace
 
             RenderFrameFeatureDiagnostics features;
             features.available = true;
+            features.executionReceipt = frame.presentedExecutionReceipt;
             features.frameSequence =
                 m_sceneRenderer->GetLastPresentedFrameSequence();
             features.renderAttempted = frame.renderAttempted;

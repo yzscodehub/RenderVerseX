@@ -463,6 +463,7 @@ void RenderScene::Clear()
     m_objectIndices.clear();
     m_lightIndices.clear();
     m_acceptedHeader = {};
+    m_viewFamily = {};
     m_view = {};
     m_sky = {};
     m_environment = {};
@@ -578,6 +579,7 @@ RenderFrameApplyResult RenderScene::ApplyFrameV5(
         m_temporalSettleObjectIds.clear();
         m_requiresTemporalSettle = false;
         m_acceptedHeader = frameHeader;
+        m_viewFamily = frame.GetViewFamily();
         m_view = frame.GetView();
         m_settings = frame.GetSettings();
         m_captureRequest = frame.GetCaptureRequest();
@@ -610,6 +612,7 @@ RenderFrameApplyResult RenderScene::ApplyFrameV5(
         watchedResourcesCurrent)
     {
         m_acceptedHeader = frameHeader;
+        m_viewFamily = frame.GetViewFamily();
         m_view = frame.GetView();
         m_settings = frame.GetSettings();
         m_captureRequest = frame.GetCaptureRequest();
@@ -681,7 +684,7 @@ RenderFrameApplyResult RenderScene::ApplyFrameV5(
 
     return ApplyFrameState(
         frameHeader,
-        frame.GetView(),
+        frame.GetViewFamily(),
         primitives,
         lights,
         scene.GetSky().value_or(RenderSkySnapshot{}),
@@ -696,7 +699,7 @@ RenderFrameApplyResult RenderScene::ApplyFrameV5(
 
 RenderFrameApplyResult RenderScene::ApplyFrameState(
     const RenderFrameHeaderV5& header,
-    const RenderViewSnapshot& view,
+    const RenderViewFamilySnapshot& viewFamily,
     const std::vector<RenderPrimitiveSnapshot>& primitives,
     const std::vector<RenderLightSnapshot>& lights,
     const RenderSkySnapshot& inputSky,
@@ -712,6 +715,15 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
     result.sequence = header.sequence;
     result.previousAcceptedSequence = m_acceptedHeader.sequence;
     result.lastRenderedSequence = m_lastRenderedHeader.sequence;
+
+    if (viewFamily.views.empty() ||
+        viewFamily.primaryViewIndex >= viewFamily.views.size())
+    {
+        result.code = RenderFrameApplyCode::InvalidPacket;
+        return result;
+    }
+    const RenderViewSnapshot& view =
+        viewFamily.views[viewFamily.primaryViewIndex];
 
     if (header.sequence == 0 ||
         (m_hasAcceptedFrame && header.sequence <= m_acceptedHeader.sequence))
@@ -1086,6 +1098,7 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
     m_watchedResourceRevisions.swap(candidateWatchedResources);
     RebuildRetainedIndicesAndReferences();
     m_acceptedHeader = header;
+    m_viewFamily = viewFamily;
     m_view = view;
     m_sky = std::move(sky);
     m_environment = std::move(environment);
@@ -1417,6 +1430,7 @@ RenderFrameApplyResult RenderScene::ApplyIncrementalFrameState(
         m_watchedResourceRevisions.insert_or_assign(handle, revision);
 
     m_acceptedHeader = header;
+    m_viewFamily = frame.GetViewFamily();
     m_view = frame.GetView();
     m_settings = frame.GetSettings();
     m_captureRequest = frame.GetCaptureRequest();

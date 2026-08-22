@@ -67,6 +67,7 @@
 #include "Render/RayTracing/RayTracingScene.h"
 #include "Render/RayTracing/RayTracingSceneManager.h"
 #include "Render/Renderer/RenderScene.h"
+#include "Render/Renderer/RenderSceneDatabase.h"
 #include "Render/Renderer/SceneRenderer.h"
 #include "Render/Renderer/ViewData.h"
 #include "Render/Visibility/RenderVisibility.h"
@@ -9528,7 +9529,9 @@ TEST(SceneRendererPassRecordingValidation,
      RegistryBuildUsesTypedRecordContextInsteadOfViewDataOverload)
 {
     FakeDevice device;
+    device.EnableBasicCapabilities();
     SceneRenderer renderer;
+    renderer.SetRenderFeatureReportDeviceForTesting(&device);
     auto graph = std::make_unique<RenderGraph>();
     RenderGraphValidationAccess::SetDevice(*graph, &device);
     renderer.SetRenderGraphForTesting(std::move(graph));
@@ -9554,6 +9557,60 @@ TEST(SceneRendererPassRecordingValidation,
     externalTarget.depthFinalState = RHIResourceState::DepthRead;
     renderer.SetExternalRenderTarget(externalTarget);
 
+    // The feature registry consumes the accepted immutable frame identity,
+    // while this focused graph build still supplies its legacy pass snapshot
+    // through ViewData. Establish both sides explicitly so the compatibility
+    // adapter must prove that it joins the same frame/view lineage.
+    RenderSceneDatabase sceneDatabase;
+    RenderSceneMutationAccumulator sceneAccumulator;
+    sceneAccumulator.Begin(0, true);
+    ASSERT_TRUE(sceneDatabase.Apply(sceneAccumulator.Build(1)).IsApplied());
+
+    RenderFrameHeaderV5 frameHeader;
+    frameHeader.sequence = 7001;
+    frameHeader.requiredSceneRevision = 1;
+    frameHeader.worldRevision = 1;
+    frameHeader.temporalEpoch = 1;
+    frameHeader.viewFamilyId = 17;
+    frameHeader.surfaceGeneration = 1;
+    frameHeader.configurationRevision = 1;
+    frameHeader.formatRevision = 1;
+    frameHeader.simulationTick = 73;
+    frameHeader.effectFixedDeltaSeconds = 1.0f / 60.0f;
+    frameHeader.effectSimulationSeconds = 73.0 / 60.0;
+    frameHeader.deterministicSeed = 0x7a6f4d31u;
+    frameHeader.outputWidth = 401;
+    frameHeader.outputHeight = 233;
+
+    RenderViewSnapshot frameView;
+    frameView.identity = {
+        .sceneRuntimeId = 1,
+        .cameraEntityPacked = 73,
+        .subViewIndex = 0,
+        .role = ViewRole::Main,
+    };
+    frameView.cameraCutRevision = 1;
+    frameView.viewportWidth = frameHeader.outputWidth;
+    frameView.viewportHeight = frameHeader.outputHeight;
+    frameView.absoluteTime = frameHeader.effectSimulationSeconds;
+    frameView.deltaTime = frameHeader.effectFixedDeltaSeconds;
+
+    RenderExtractionDiagnostics extractionDiagnostics;
+    extractionDiagnostics.code = RenderExtractionCode::Complete;
+    extractionDiagnostics.complete = true;
+    const std::unique_ptr<const RenderFramePacketV5> acceptedFrame =
+        RenderFramePacketV5::Create(
+            frameHeader,
+            frameView,
+            RenderFrameSettings{},
+            RenderFrameCaptureRequest{},
+            extractionDiagnostics);
+    ASSERT_NE(nullptr, acceptedFrame);
+
+    RenderResourceRegistry resourceRegistry;
+    ASSERT_TRUE(renderer.GetRenderScene().ApplyFrameV5(
+        *acceptedFrame, sceneDatabase, resourceRegistry).IsApplied());
+
     auto probe = std::make_unique<SceneRendererOverloadProbePass>();
     SceneRendererOverloadProbePass* const probePtr = probe.get();
     ASSERT_NE(nullptr, probePtr);
@@ -9564,7 +9621,9 @@ TEST(SceneRendererPassRecordingValidation,
     // frame identity and mutable caller values after registration.
     RenderFrameExecutionPlan plan;
     plan.frameSequence = 7001;
-    plan.viewOrdinal = 3;
+    // The focused packet carries one primary view, so the record context
+    // must use that view's ordinal rather than an arbitrary legacy value.
+    plan.viewOrdinal = 0;
     renderer.GetViewData().renderFrameExecutionPlan = &plan;
     renderer.GetViewData().viewportWidth = 401;
     renderer.GetViewData().viewportHeight = 233;
@@ -9574,6 +9633,9 @@ TEST(SceneRendererPassRecordingValidation,
 
     EXPECT_EQ(0u, probePtr->viewDataOverloadCount);
     EXPECT_EQ(1u, probePtr->typedOverloadCount);
+    // This remains false: the pass is reached through the GFX02 feature
+    // adapter, but it receives the renderer-owned typed context rather than
+    // the deprecated ViewData compatibility bridge.
     EXPECT_FALSE(probePtr->typedLegacyAdapter);
     EXPECT_TRUE(probePtr->typedIdentity.Matches(*renderer.GetRenderGraph()));
     EXPECT_TRUE(probePtr->typedContextIdentityValid);
@@ -21018,6 +21080,9 @@ TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeFeatur
         ReadTextFile(renderRoot / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
     const std::string sceneRendererSource =
         ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
+    const std::string defaultForwardCompositionSource =
+        ReadTextFile(renderRoot / "Private" / "Features" /
+                     "DefaultForwardComposition.cpp");
     const std::string artifactSource =
         ReadTextFile(renderRoot / "Private" / "Diagnostics" / "RenderToolArtifacts.cpp");
     const std::string renderCMake = ReadTextFile(renderRoot / "CMakeLists.txt");
@@ -21026,7 +21091,9 @@ TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeFeatur
     EXPECT_NE(sceneRendererHeader.find("size_t particleMetadataOnlyCount = 0;"), std::string::npos);
     EXPECT_NE(sceneRendererHeader.find("size_t particleRenderPayloadReadyCount = 0;"), std::string::npos);
     EXPECT_NE(sceneRendererHeader.find("size_t particleSortingSupportedCount = 0;"), std::string::npos);
-    EXPECT_NE(sceneRendererHeader.find("RenderFeatureSnapshot m_featureSnapshot;"), std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find(
+                  "std::shared_ptr<const RenderFeatureSnapshot> m_featureSnapshot"),
+              std::string::npos);
     EXPECT_NE(sceneRendererHeader.find("ParticleFeaturePass* m_particleFeaturePass = nullptr;"),
               std::string::npos);
     EXPECT_NE(sceneRendererHeader.find("const ParticleFeaturePassStats& GetParticleFeaturePassStats() const;"),
@@ -21035,14 +21102,29 @@ TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeFeatur
               std::string::npos);
     EXPECT_NE(sceneRendererHeader.find("SceneFeatureExtractionStats featureExtractionStats;"),
               std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("m_featureSnapshot = m_renderScene.GetFeatures();"),
+    EXPECT_NE(sceneRendererSource.find(
+                  "m_featureSnapshot = std::make_shared<const RenderFeatureSnapshot>("),
               std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("std::make_unique<ParticleFeaturePass>()"), std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("m_particleFeaturePass->SetSnapshot(&m_featureSnapshot.particles)"),
+    // GFX02 owns the legacy ForwardStandard pass composition outside
+    // SceneRenderer. Feature extraction and frame diagnostics remain the
+    // renderer's responsibility, while construction/wiring of the particle
+    // pass belongs to the composition root.
+    EXPECT_NE(defaultForwardCompositionSource.find("std::make_unique<ParticleFeaturePass>()"),
+              std::string::npos);
+    EXPECT_NE(defaultForwardCompositionSource.find(
+                  "m_particleFeaturePass = particleFeaturePass.get();"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("m_particleFeaturePass->SetSnapshot(&m_featureSnapshot->particles)"),
               std::string::npos);
     EXPECT_NE(sceneRendererSource.find("return m_particleFeaturePass ? m_particleFeaturePass->GetStats()"),
               std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("m_featureSnapshot.GetMetadata()"), std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("m_featureSnapshot->GetMetadata()"), std::string::npos);
+    EXPECT_NE(sceneRendererSource.find(
+                  "featureContext.snapshotInputs = RenderFeatureSnapshotView("),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find(
+                  "m_featureSnapshot,\n        GetBuiltinRenderFeatureChannelRegistry()"),
+              std::string::npos);
     EXPECT_NE(sceneRendererSource.find("ParticleRenderSnapshotPayloadStatus::MetadataOnly"), std::string::npos);
     EXPECT_NE(sceneRendererSource.find("ParticleRenderSnapshotPayloadStatus::RenderOwnedPayloadReady"),
               std::string::npos);

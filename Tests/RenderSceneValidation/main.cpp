@@ -800,6 +800,9 @@ TEST(RenderSceneValidation,
         scene.ApplyFrameV5(*settleFrame, database, resources.registry);
     ASSERT_TRUE(settled.IsApplied());
     ASSERT_TRUE(settled.sceneMutated);
+    EXPECT_EQ(scene.GetAcceptedHeader().sequence, 2U);
+    EXPECT_EQ(scene.GetViewFamily().frame.sequence, 2U);
+    EXPECT_EQ(scene.GetViewFamily().identity.frameSequence, 2U);
     EXPECT_EQ(scene.GetGPUSceneChangedObjectIds().size(), objectCount);
     scene.MarkAcceptedFrameRendered();
 

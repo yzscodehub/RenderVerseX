@@ -8,6 +8,7 @@
 #include "Render/Renderer/ViewData.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/RenderDiagnostics.h"
+#include "Render/Features/RenderFeatureTypes.h"
 #include "Render/GPUScene/GPUScenePublication.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Graph/TransientResourcePool.h"
@@ -46,8 +47,10 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace RVX
@@ -70,6 +73,8 @@ namespace RVX
     class DepthPrepass;
     class OpaquePass;
     class ParticleFeaturePass;
+    class LegacyForwardFeatureAdapter;
+    class RenderFeatureRegistry;
     class RenderPassRegistry;
     class RenderRetirementQueue;
     class RenderResourceRegistry;
@@ -298,8 +303,8 @@ namespace RVX
     };
 
     inline constexpr uint32 RVX_SCENE_RENDER_FEATURE_REPORT_SCHEMA_VERSION = 2;
-    inline constexpr uint32 RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION = 7;
-    inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION = 28;
+    inline constexpr uint32 RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION = 8;
+    inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION = 29;
     inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_ARTIFACT_SUMMARY_SCHEMA_VERSION = 24;
     inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION = 25;
 
@@ -364,6 +369,10 @@ namespace RVX
         bool graphCompileValid = true;
         bool graphExecutionSkipped = false;
         std::string skippedReason;
+        /** @brief Latest graph/execution attempt, including fail-closed evidence. */
+        RenderExecutionReceipt attemptedExecutionReceipt{};
+        /** @brief Last successfully presented frame; never overwritten by a failed attempt. */
+        RenderExecutionReceipt presentedExecutionReceipt{};
         /** @brief Completion-qualified cumulative mutation evidence. */
         RenderMutationEvidenceDiagnostics mutationEvidence{};
         /** Exact material generations used by the most recently presented frame. */
@@ -1006,6 +1015,12 @@ namespace RVX
                         RenderResourceRegistry* resourceRegistry,
                         RenderRetirementQueue* retirementQueue = nullptr);
 
+        /** @brief Bind optional validation build identity before frame execution. */
+        void SetExecutionBuildIdentity(RenderExecutionBuildIdentity identity)
+        {
+            m_executionBuildIdentity = std::move(identity);
+        }
+
         /**
          * @brief Shutdown and release resources
          */
@@ -1232,7 +1247,7 @@ namespace RVX
         /// Compile an empty/current prepared frame policy for lifecycle validation.
         void CompileRenderFramePlanForTesting() { CompileRenderFramePlan(); }
 
-        /// Override the RHI capability source for focused feature-report tests.
+        /// Override the RHI capability source for focused feature/report tests.
         void SetRenderFeatureReportDeviceForTesting(IRHIDevice* device)
         {
             m_featureReportDeviceForTesting = device;
@@ -1286,7 +1301,10 @@ namespace RVX
         const SceneFeatureExtractionStats& GetFeatureExtractionStats() const { return m_featureExtractionStats; }
 
         /// Get the most recent render-facing feature snapshot.
-        const RenderFeatureSnapshot& GetFeatureSnapshot() const { return m_featureSnapshot; }
+        const RenderFeatureSnapshot& GetFeatureSnapshot() const
+        {
+            return *m_featureSnapshot;
+        }
 
         /// Get render pass chain statistics from the last RenderGraph build.
         const SceneRenderPassChainStats& GetPassChainStats() const { return m_passChainStats; }
@@ -1567,7 +1585,8 @@ namespace RVX
                                    bool reflectionRequested,
                                    bool denoiseRequested);
         void SetupDefaultPostProcess();
-        void SetupDefaultPasses();
+        [[nodiscard]] bool SetupDefaultRenderFeatures();
+        [[nodiscard]] bool EnsureLegacyForwardComposition();
         SceneColorFormatPolicy ResolveSceneColorFormatPolicy(RHIFormat backBufferFormat,
                                                              bool postProcessActive) const;
         ToneMappingOutputColorSpace ResolveToneMappingOutputColorSpace(RHIFormat outputFormat) const;
@@ -1619,6 +1638,8 @@ namespace RVX
         std::unique_ptr<TransientResourcePool> m_transientResourcePool;
         std::unique_ptr<ResourceViewCache> m_resourceViewCache;
         std::unique_ptr<RenderPassRegistry> m_passRegistry;
+        std::unique_ptr<RenderFeatureRegistry> m_renderFeatureRegistry;
+        LegacyForwardFeatureAdapter* m_legacyForwardFeature = nullptr;
         // Each GPU-capable pass owns its instance/group/indirect/count stream.
         // Candidate extraction remains shared, but compaction and resource
         // lifetime are intentionally pass-local.
@@ -1714,7 +1735,9 @@ namespace RVX
         std::unique_ptr<RenderViewHistoryCoordinator> m_viewHistoryCoordinator;
         /** @brief Candidate evaluated after acceptance but not yet presented. */
         std::optional<RenderViewHistoryIdentity> m_activeViewHistoryCandidate;
-        RenderFeatureSnapshot m_featureSnapshot;
+        /** @brief One immutable feature snapshot shared by every view in the frame. */
+        std::shared_ptr<const RenderFeatureSnapshot> m_featureSnapshot =
+            std::make_shared<const RenderFeatureSnapshot>();
         RenderProxySnapshot m_proxySnapshot;
         SceneRenderCollectionStats m_collectionStats;
         SceneFeatureExtractionStats m_featureExtractionStats;
@@ -1725,6 +1748,11 @@ namespace RVX
         SceneLocalLightingStats m_localLightingStats;
         SceneClusteredLightingStats m_clusteredLightingStats;
         SceneRendererFrameDiagnostics m_frameDiagnostics;
+        RenderExecutionBuildIdentity m_executionBuildIdentity{};
+        RenderExecutionReceipt m_lastAttemptedRenderExecutionReceipt{};
+        RenderExecutionReceipt m_completedRenderExecutionReceipt{};
+        std::optional<RenderExecutionReceipt> m_pendingRenderExecutionReceipt{};
+        std::string m_featureCompositionFailureReason{};
         RenderMutationEvidenceDiagnostics m_liveMutationEvidence{};
         RenderMutationEvidenceDiagnostics m_lastObservedMutationEvidence{};
         RenderMutationEvidenceDiagnostics m_completedMutationEvidence{};

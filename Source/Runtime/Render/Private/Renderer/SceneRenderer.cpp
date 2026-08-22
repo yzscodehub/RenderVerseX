@@ -8,6 +8,10 @@
 #include "Context/RenderContextInternal.h"
 #include "GPUScene/GPUSceneUpdate.h"
 #include "GPUScene/GPUSceneUploader.h"
+#include "Features/LegacyForwardFeatureAdapter.h"
+#include "Render/Features/RenderFeatureGraphBuilder.h"
+#include "Render/Features/RenderFeatureRegistry.h"
+#include "Render/Features/RenderGraphBlackboard.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
 #include "Render/Graph/RenderGraphCompiler.h"
@@ -65,6 +69,41 @@ namespace RVX
 {
 namespace
 {
+    [[nodiscard]] RenderFeatureCapabilityMask
+    BuildRenderFeatureCapabilityMask(const RHICapabilities& capabilities) noexcept
+    {
+        RenderFeatureCapabilityMask mask =
+            ToMask(RenderFeatureCapability::Graphics);
+        if (capabilities.supportsComputePipeline)
+        {
+            mask |= ToMask(RenderFeatureCapability::Compute);
+        }
+        if (capabilities.supportsDescriptorSets)
+        {
+            mask |= ToMask(RenderFeatureCapability::DescriptorBindings);
+        }
+        if (capabilities.supportsRaytracing &&
+            capabilities.supportsRaytracingPipeline)
+        {
+            mask |= ToMask(RenderFeatureCapability::RayTracing);
+        }
+        if (capabilities.supportsAccelerationStructureUpdate)
+        {
+            mask |= ToMask(
+                RenderFeatureCapability::AccelerationStructureUpdate);
+        }
+        return mask;
+    }
+
+    [[nodiscard]] const std::shared_ptr<const RenderFeatureChannelRegistry>&
+    GetBuiltinRenderFeatureChannelRegistry()
+    {
+        static const auto registry =
+            std::make_shared<const RenderFeatureChannelRegistry>(
+                CreateBuiltinRenderFeatureChannelRegistry());
+        return registry;
+    }
+
     [[nodiscard]] uint64 MixGPUCullingQualificationIdentity(
         uint64 seed, uint64 value) noexcept
     {
@@ -1073,8 +1112,12 @@ void SceneRenderer::Initialize(
         }
     }
 
-    // Setup default passes (can be customized later)
-    SetupDefaultPasses();
+    // Seal the compatibility ForwardStandard composition before any frame.
+    if (!SetupDefaultRenderFeatures())
+    {
+        ClearPasses();
+        return;
+    }
     SetupDefaultPostProcess();
 
     m_initialized = true;
@@ -1111,6 +1154,8 @@ void SceneRenderer::Shutdown()
         m_submissionBatch.reset();
     }
 
+    m_renderFeatureRegistry.reset();
+    m_legacyForwardFeature = nullptr;
     ClearPasses();
     m_depthPrepass = nullptr;
     m_opaquePass = nullptr;
@@ -1131,6 +1176,10 @@ void SceneRenderer::Shutdown()
     m_filmGrainPostProcess = nullptr;
     m_ssaoPostProcess = nullptr;
     m_fxaaPostProcess = nullptr;
+    m_pendingRenderExecutionReceipt.reset();
+    m_lastAttemptedRenderExecutionReceipt = {};
+    m_completedRenderExecutionReceipt = {};
+    m_featureCompositionFailureReason.clear();
     if (m_postProcessStack)
     {
         m_postProcessStack->Shutdown();
@@ -1226,6 +1275,17 @@ void SceneRenderer::EvaluateAcceptedFrameHistory(
     // A newer accepted packet supersedes an unpresented candidate. The old
     // identity must never become reusable merely because a later candidate
     // happened to reach presentation.
+    if (m_pendingRenderExecutionReceipt.has_value())
+    {
+        RenderExecutionReceipt superseded =
+            *m_pendingRenderExecutionReceipt;
+        superseded.presented = false;
+        superseded.succeeded = false;
+        superseded.diagnostic =
+            "Render execution receipt was superseded before presentation";
+        m_lastAttemptedRenderExecutionReceipt = std::move(superseded);
+        m_pendingRenderExecutionReceipt.reset();
+    }
     AbandonAcceptedFrameHistory();
 
     if (!m_viewHistoryCoordinator)
@@ -1371,6 +1431,10 @@ void SceneRenderer::RefreshFrameDiagnostics(bool renderAttempted,
     diagnostics.graphCompiled = graphCompiled;
     diagnostics.graphExecutionSkipped = renderAttempted && !rendered;
     diagnostics.skippedReason = skippedReason ? skippedReason : "";
+    diagnostics.attemptedExecutionReceipt =
+        m_lastAttemptedRenderExecutionReceipt;
+    diagnostics.presentedExecutionReceipt =
+        m_completedRenderExecutionReceipt;
     diagnostics.mutationEvidence = m_completedMutationEvidence;
     diagnostics.presentedMaterialBindingsAvailable =
         m_completedPresentedMaterialBindingsAvailable;
@@ -2357,9 +2421,10 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
         frameSettings.rayTracing.gpuTimingAdjustmentFrameCount;
     ApplyRayTracingBudgetSettings(rayTracingBudget);
 
-    m_featureSnapshot = m_renderScene.GetFeatures();
+    m_featureSnapshot = std::make_shared<const RenderFeatureSnapshot>(
+        m_renderScene.GetFeatures());
     const RenderFeatureSnapshotMetadata featureMetadata =
-        m_featureSnapshot.GetMetadata();
+        m_featureSnapshot->GetMetadata();
     m_featureExtractionStats = {};
     m_featureExtractionStats.attempted = true;
     m_featureExtractionStats.usedProviderPath = true;
@@ -2378,7 +2443,7 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
     m_featureExtractionStats.terrainItemCount =
         featureMetadata.terrainItemCount;
     for (const ParticleRenderSnapshotItem& item :
-         m_featureSnapshot.particles.items)
+         m_featureSnapshot->particles.items)
     {
         if (item.payloadStatus ==
             ParticleRenderSnapshotPayloadStatus::MetadataOnly)
@@ -2398,7 +2463,7 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
     }
     if (m_particleFeaturePass)
     {
-        m_particleFeaturePass->SetSnapshot(&m_featureSnapshot.particles);
+        m_particleFeaturePass->SetSnapshot(&m_featureSnapshot->particles);
     }
 
     const RenderEnvironmentSnapshot& environment =
@@ -2757,6 +2822,21 @@ void SceneRenderer::ReleaseUnsubmittedFrame()
     // discarded before recording begins. None reached Present, so their
     // compatibility candidate must not advance committed temporal history.
     AbandonAcceptedFrameHistory();
+    if (m_pendingRenderExecutionReceipt.has_value())
+    {
+        RenderExecutionReceipt rejected =
+            *m_pendingRenderExecutionReceipt;
+        rejected.presented = false;
+        rejected.succeeded = false;
+        rejected.diagnostic =
+            "Render execution did not reach successful submission and presentation";
+        m_lastAttemptedRenderExecutionReceipt = std::move(rejected);
+        m_pendingRenderExecutionReceipt.reset();
+        m_frameDiagnostics.attemptedExecutionReceipt =
+            m_lastAttemptedRenderExecutionReceipt;
+        m_toolDiagnosticsSnapshot.frame.attemptedExecutionReceipt =
+            m_lastAttemptedRenderExecutionReceipt;
+    }
     const bool hadUnsubmittedRecording = m_submissionBatch != nullptr ||
         m_hasRecordingSubmissionBoundary;
     m_submissionQualifiedFrameDiagnostics = false;
@@ -3010,6 +3090,10 @@ void SceneRenderer::RetireOwnerSnapshots(
 
 void SceneRenderer::MarkAcceptedFramePresented()
 {
+    const uint64 presentedFrameSequence =
+        m_renderScene.GetAcceptedHeader().sequence;
+    const RenderViewIdentity presentedViewIdentity =
+        m_renderScene.GetView().identity;
     m_renderScene.MarkAcceptedFrameRendered();
     // Motion history is presentation-qualified. Recording, submission, or
     // Present failure must leave the prior presented transforms intact.
@@ -3046,6 +3130,47 @@ void SceneRenderer::MarkAcceptedFramePresented()
             m_viewHistoryCoordinator->HasPendingReset();
     }
     m_activeViewHistoryCandidate.reset();
+
+    const bool receiptMatches =
+        m_pendingRenderExecutionReceipt.has_value() &&
+        m_pendingRenderExecutionReceipt->executionSucceeded &&
+        m_pendingRenderExecutionReceipt->frameIdentity.frameSequence ==
+            presentedFrameSequence &&
+        m_pendingRenderExecutionReceipt->viewIdentity ==
+            presentedViewIdentity;
+    if (receiptMatches && historyCommitted)
+    {
+        RenderExecutionReceipt presented =
+            *m_pendingRenderExecutionReceipt;
+        presented.presented = true;
+        presented.succeeded = true;
+        presented.diagnostic.clear();
+        m_completedRenderExecutionReceipt = presented;
+        m_lastAttemptedRenderExecutionReceipt = std::move(presented);
+    }
+    else
+    {
+        RenderExecutionReceipt rejected =
+            m_pendingRenderExecutionReceipt.has_value()
+                ? *m_pendingRenderExecutionReceipt
+                : m_lastAttemptedRenderExecutionReceipt;
+        rejected.presented = true;
+        rejected.succeeded = false;
+        rejected.diagnostic = !receiptMatches
+            ? "Presented frame did not match a completed render execution receipt"
+            : "Presented frame failed temporal history qualification";
+        m_lastAttemptedRenderExecutionReceipt = std::move(rejected);
+    }
+    m_pendingRenderExecutionReceipt.reset();
+    m_frameDiagnostics.attemptedExecutionReceipt =
+        m_lastAttemptedRenderExecutionReceipt;
+    m_frameDiagnostics.presentedExecutionReceipt =
+        m_completedRenderExecutionReceipt;
+    m_toolDiagnosticsSnapshot.frame.attemptedExecutionReceipt =
+        m_lastAttemptedRenderExecutionReceipt;
+    m_toolDiagnosticsSnapshot.frame.presentedExecutionReceipt =
+        m_completedRenderExecutionReceipt;
+
     FreezeMutationEvidenceForPresentedFrame();
     FreezePresentedMaterialBindingsForPresentedFrame();
 }
@@ -5220,6 +5345,19 @@ void SceneRenderer::Render()
         static_cast<uint64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - graphBuildStart)
                                  .count());
+    if (!m_featureCompositionFailureReason.empty())
+    {
+        RVX_RENDER_ERROR(
+            "SceneRenderer: render feature composition failed for frame {}: {}",
+            m_renderScene.GetAcceptedHeader().sequence,
+            m_featureCompositionFailureReason);
+        RefreshFrameDiagnostics(true,
+                                false,
+                                true,
+                                false,
+                                m_featureCompositionFailureReason.c_str());
+        return;
+    }
     if (m_gpuDrivenFrameFailure)
     {
         m_renderPolicyDiagnostics.reportAvailable =
@@ -5465,7 +5603,45 @@ void SceneRenderer::Render()
             std::chrono::steady_clock::now() - graphRealizeRecordStart)
                                  .count());
 
+    if (m_renderFeatureRegistry && graphExecuted && graphCompileValid)
+    {
+        const RenderFeatureRegistryCode evidenceCode =
+            m_renderFeatureRegistry->FinalizeGraphExecution(*m_renderGraph);
+        if (evidenceCode != RenderFeatureRegistryCode::Success &&
+            executionSkippedReason == nullptr)
+        {
+            executionSkippedReason =
+                "Render feature graph execution evidence could not be finalized";
+        }
+    }
+
     FinalizeRenderExecutionReportStatus(graphExecuted);
+
+    if (m_renderFeatureRegistry)
+    {
+        RenderExecutionReceipt receipt =
+            m_renderFeatureRegistry->CollectExecutionReceipt(
+                m_executionBuildIdentity);
+        receipt.executionSucceeded =
+            receipt.executionSucceeded && graphExecuted && graphCompileValid;
+        receipt.presented = false;
+        receipt.succeeded = false;
+        if (!receipt.executionSucceeded && receipt.diagnostic.empty())
+        {
+            receipt.diagnostic = executionSkippedReason != nullptr
+                ? executionSkippedReason
+                : "Render feature execution did not complete";
+        }
+        m_lastAttemptedRenderExecutionReceipt = receipt;
+        if (receipt.executionSucceeded && receipt.IsStructurallyValid())
+        {
+            m_pendingRenderExecutionReceipt = receipt;
+        }
+        else
+        {
+            m_pendingRenderExecutionReceipt.reset();
+        }
+    }
 
     RefreshFrameDiagnostics(true,
                             graphExecuted && graphCompileValid,
@@ -7054,6 +7230,7 @@ void SceneRenderer::UpdateEnvironmentIBLBindingDiagnostics(
 
 void SceneRenderer::BuildRenderGraph()
 {
+    m_featureCompositionFailureReason.clear();
     // RenderContext's logical frame slot may advance independently from the
     // physical RHI device slot used by the Direct resident streams. Freeze the
     // latter before graph recording and retain it through submission closure.
@@ -7484,6 +7661,15 @@ void SceneRenderer::BuildRenderGraph()
         ++m_renderPassRecordEpoch;
     }
     passRecordContext.identity.recordEpoch = m_renderPassRecordEpoch;
+    const RenderFrameHeaderV5& recordHeader =
+        m_renderScene.GetAcceptedHeader();
+    passRecordContext.featureFrameIdentity = RenderFrameIdentity{
+        recordHeader.sequence,
+        recordHeader.requiredSceneRevision,
+        recordHeader.surfaceGeneration,
+        recordHeader.configurationRevision};
+    passRecordContext.featureViewIdentity =
+        m_renderScene.GetView().identity;
     AddGPUDrivenCullingPass(passRecordContext.identity);
     passRecordContext.executionPlan = m_viewData.renderFrameExecutionPlan;
     passRecordContext.meshPassPreparation = m_viewData.meshPassPreparation;
@@ -7541,84 +7727,150 @@ void SceneRenderer::BuildRenderGraph()
     passRecordContext.opaqueGPUDriven = makeGPUDrivenInputs(
         m_opaqueGPUCullingRecordedState, m_opaqueGPUCullingGraphHandles);
 
-    // Register each render pass with the RenderGraph
-    // Passes are sorted by priority, so they will be added in correct order
-    if (!m_passRegistry)
-        return;
-
-    m_passChainStats.frameCount++;
-    m_passChainStats.passStatuses = m_passRegistry->GetPassStatuses();
-    m_passChainStats.registeredPassCount = m_passChainStats.passStatuses.size();
-    m_passChainStats.graphPassCount = 0;
-    m_passChainStats.skippedDisabledPassCount = 0;
-    m_passChainStats.skippedUnsupportedPassCount = 0;
-
-    for (auto& pass : m_passRegistry->GetPasses())
+    // GFX02 keeps the established priority-ordered pass chain behind one
+    // sealed ForwardStandard feature. Resource phases validate composition;
+    // the existing RenderGraph resource edges still determine execution.
+    if (m_passRegistry != nullptr &&
+        (m_renderFeatureRegistry == nullptr ||
+         m_legacyForwardFeature == nullptr) &&
+        !EnsureLegacyForwardComposition())
     {
-        if (!pass)
-            continue;
+        m_featureCompositionFailureReason =
+            "ForwardStandard render feature composition could not be established";
+        return;
+    }
+    if (!m_passRegistry || !m_renderFeatureRegistry ||
+        !m_legacyForwardFeature)
+    {
+        m_featureCompositionFailureReason =
+            "ForwardStandard render feature composition is unavailable";
+        return;
+    }
 
-        const RenderPassStatus status = pass->GetStatus();
-        if (!status.requestedEnabled)
-        {
-            m_passChainStats.skippedDisabledPassCount++;
-            continue;
-        }
+    m_legacyForwardFeature->SetRecordContext(passRecordContext);
 
-        if (!status.supported)
-        {
-            m_passChainStats.skippedUnsupportedPassCount++;
-            const bool alreadyLogged = std::find(m_loggedUnsupportedPassNames.begin(),
-                                                 m_loggedUnsupportedPassNames.end(),
-                                                 status.name) != m_loggedUnsupportedPassNames.end();
-            if (!alreadyLogged)
+    const RenderFrameHeaderV5& acceptedHeader =
+        m_renderScene.GetAcceptedHeader();
+    const RenderViewFamilySnapshot& acceptedViewFamily =
+        m_renderScene.GetViewFamily();
+    const RenderViewSnapshot& acceptedView = m_renderScene.GetView();
+    IRHIDevice* const featureDevice =
+        m_renderContext != nullptr
+            ? m_renderContext->GetDevice()
+            : m_featureReportDeviceForTesting;
+
+    RenderFeatureContext featureContext;
+    featureContext.frameIdentity = RenderFrameIdentity{
+        acceptedHeader.sequence,
+        acceptedHeader.requiredSceneRevision,
+        acceptedHeader.surfaceGeneration,
+        acceptedHeader.configurationRevision};
+    featureContext.frameStamp = acceptedViewFamily.frame;
+    featureContext.effectTime = acceptedViewFamily.effectTime;
+    featureContext.outputExtent = acceptedViewFamily.extent;
+    featureContext.viewFamilyId = acceptedViewFamily.familyId;
+    featureContext.primaryViewIndex =
+        acceptedViewFamily.primaryViewIndex;
+    featureContext.viewCount =
+        static_cast<uint32>(acceptedViewFamily.views.size());
+    featureContext.viewIdentity = acceptedView.identity;
+    featureContext.recordingViewOrdinal =
+        passRecordContext.identity.viewOrdinal;
+    featureContext.recordEpoch = passRecordContext.identity.recordEpoch;
+    featureContext.pipeline = m_renderScene.GetSettings().pipelineRequest;
+    featureContext.viewFamily =
+        std::make_shared<const RenderViewFamilySnapshot>(acceptedViewFamily);
+    featureContext.snapshotInputs = RenderFeatureSnapshotView(
+        m_featureSnapshot,
+        GetBuiltinRenderFeatureChannelRegistry());
+    if (featureDevice != nullptr)
+    {
+        const RHICapabilities& capabilities =
+            featureDevice->GetCapabilities();
+        featureContext.backend = capabilities.backendType;
+        featureContext.hardwareCapabilities =
+            BuildRenderFeatureCapabilityMask(capabilities);
+    }
+
+    const RenderFeatureFramePrepareResult featurePrepare =
+        m_renderFeatureRegistry->PrepareFrame(featureContext);
+    if (!featurePrepare.Succeeded())
+    {
+        m_featureCompositionFailureReason =
+            featurePrepare.diagnostic.empty()
+                ? GetRenderFeatureRegistryCodeName(featurePrepare.code)
+                : featurePrepare.diagnostic;
+        m_lastAttemptedRenderExecutionReceipt =
+            m_renderFeatureRegistry->CollectExecutionReceipt(
+                m_executionBuildIdentity);
+        return;
+    }
+
+    const RenderGraphBlackboardProvenance provenance{
+        passRecordContext.identity.graphIdentity,
+        passRecordContext.identity.graphRecordingGeneration,
+        passRecordContext.identity.frameSequence,
+        passRecordContext.identity.viewOrdinal,
+        passRecordContext.identity.recordEpoch};
+    RenderGraphBlackboard blackboard(provenance);
+    RenderFeatureGraphBuilder featureGraphBuilder(*m_renderGraph, provenance);
+    const RenderFeatureRegistryCode compositionCode =
+        m_renderFeatureRegistry->AddPasses(featureGraphBuilder, blackboard);
+
+    const LegacyForwardFeaturePassChainStats passChain =
+        m_legacyForwardFeature->GetPassChainStatsSnapshot();
+    ++m_passChainStats.frameCount;
+    m_passChainStats.passStatuses = passChain.passStatuses;
+    m_passChainStats.registeredPassCount = passChain.registeredPassCount;
+    m_passChainStats.graphPassCount = passChain.graphPassCount;
+    m_passChainStats.skippedDisabledPassCount =
+        passChain.skippedDisabledPassCount;
+    m_passChainStats.skippedUnsupportedPassCount =
+        passChain.skippedUnsupportedPassCount;
+
+    for (const std::string& unsupportedName :
+         passChain.unsupportedPassNames)
+    {
+        const auto statusIt = std::find_if(
+            passChain.passStatuses.begin(),
+            passChain.passStatuses.end(),
+            [&unsupportedName](const RenderPassStatus& status)
             {
-                RVX_CORE_WARN("SceneRenderer: Skipping unsupported requested pass '{}': {}",
-                              status.name,
-                              status.unsupportedReason.empty() ? "Unsupported" : status.unsupportedReason);
-                m_loggedUnsupportedPassNames.push_back(status.name);
-            }
-            continue;
-        }
-
-        if (!status.enabled)
+                return status.name == unsupportedName;
+            });
+        const bool alreadyLogged = std::find(
+            m_loggedUnsupportedPassNames.begin(),
+            m_loggedUnsupportedPassNames.end(),
+            unsupportedName) != m_loggedUnsupportedPassNames.end();
+        if (!alreadyLogged)
         {
-            m_passChainStats.skippedDisabledPassCount++;
-            continue;
+            const std::string reason =
+                statusIt != passChain.passStatuses.end() &&
+                        !statusIt->unsupportedReason.empty()
+                    ? statusIt->unsupportedReason
+                    : "Unsupported";
+            RVX_CORE_WARN(
+                "SceneRenderer: Skipping unsupported requested pass '{}': {}",
+                unsupportedName,
+                reason);
+            m_loggedUnsupportedPassNames.push_back(unsupportedName);
         }
+    }
 
-        // The Shadow producer has registered its graph writes by the time the
-        // opaque pass is reached. Consume only this recording's graph-owned
-        // output; Opaque callbacks never query a mutable ShadowPass instance.
-        if (pass.get() == m_opaquePass)
+    if (compositionCode != RenderFeatureRegistryCode::Success)
+    {
+        m_featureCompositionFailureReason =
+            GetRenderFeatureRegistryCodeName(compositionCode);
+        const RenderFeatureReadiness readiness =
+            m_legacyForwardFeature->ResolveReadiness();
+        if (!readiness.diagnostic.empty())
         {
-            passRecordContext.directionalShadow =
-                passRecordContext.results->directionalShadowOutput;
-            if (passRecordContext.directionalShadow.identity !=
-                passRecordContext.identity)
-            {
-                passRecordContext.directionalShadow = {};
-                passRecordContext.directionalShadow.identity =
-                    passRecordContext.identity;
-            }
-
-            passRecordContext.rayTracedShadow =
-                passRecordContext.results->rayTracedShadowOutput;
-            if (passRecordContext.rayTracedShadow.identity !=
-                passRecordContext.identity)
-            {
-                passRecordContext.rayTracedShadow = {};
-                passRecordContext.rayTracedShadow.identity =
-                    passRecordContext.identity;
-            }
+            m_featureCompositionFailureReason = readiness.diagnostic;
         }
-
-        // Every registered pass receives the same immutable, graph-specific
-        // context. Unmigrated passes use IRenderPass' value-capturing adapter;
-        // no production path may retain a mutable ViewData or frame-state
-        // mailbox.
-        pass->AddToGraph(*m_renderGraph, passRecordContext);
-        m_passChainStats.graphPassCount++;
+        m_lastAttemptedRenderExecutionReceipt =
+            m_renderFeatureRegistry->CollectExecutionReceipt(
+                m_executionBuildIdentity);
+        return;
     }
 
     if (m_postProcessStats.sceneColorStagingUsed && sceneColorTarget.IsValid() && backBufferTarget.IsValid() &&
@@ -7687,12 +7939,78 @@ void SceneRenderer::RefreshFrameDiagnosticsForTesting(bool graphBuilt)
 bool SceneRenderer::RemovePass(const char* name)
 {
     InvalidateRenderFramePlan();
-    return m_passRegistry ? m_passRegistry->RemovePass(name) : false;
+    if (!m_passRegistry || name == nullptr)
+    {
+        return false;
+    }
+
+    IRenderPass* removed = nullptr;
+    for (const std::unique_ptr<IRenderPass>& pass :
+         m_passRegistry->GetPasses())
+    {
+        if (pass != nullptr && std::strcmp(pass->GetName(), name) == 0)
+        {
+            removed = pass.get();
+            break;
+        }
+    }
+    if (removed == nullptr)
+    {
+        return false;
+    }
+
+    if (removed == m_rayTracedReflectionPass)
+    {
+        if (m_rayTracedReflectionDenoisePass)
+        {
+            m_rayTracedReflectionDenoisePass->SetReflectionSource(nullptr);
+        }
+        if (m_rayTracedReflectionCompositePass)
+        {
+            m_rayTracedReflectionCompositePass->SetReflectionSource(nullptr);
+        }
+        m_rayTracedReflectionPass = nullptr;
+    }
+    if (removed == m_rayTracedReflectionDenoisePass)
+    {
+        if (m_rayTracedReflectionCompositePass)
+        {
+            m_rayTracedReflectionCompositePass
+                ->SetDenoisedReflectionSource(nullptr);
+        }
+        m_rayTracedReflectionDenoisePass = nullptr;
+    }
+    if (removed == m_rayTracedReflectionCompositePass)
+    {
+        m_rayTracedReflectionCompositePass = nullptr;
+    }
+    if (removed == m_opaquePass)
+    {
+        m_opaquePass = nullptr;
+        if (m_legacyForwardFeature)
+        {
+            m_legacyForwardFeature->SetOpaquePass(nullptr);
+        }
+    }
+    if (removed == m_depthPrepass) m_depthPrepass = nullptr;
+    if (removed == m_shadowPass) m_shadowPass = nullptr;
+    if (removed == m_rayTracedShadowPass) m_rayTracedShadowPass = nullptr;
+    if (removed == m_cameraVelocityPass) m_cameraVelocityPass = nullptr;
+    if (removed == m_objectVelocityPass) m_objectVelocityPass = nullptr;
+    if (removed == m_particleFeaturePass) m_particleFeaturePass = nullptr;
+    if (removed == m_transparentPass) m_transparentPass = nullptr;
+    if (removed == m_skyboxPass) m_skyboxPass = nullptr;
+
+    return m_passRegistry->RemovePass(name);
 }
 
 void SceneRenderer::ClearPasses()
 {
     InvalidateRenderFramePlan();
+    if (m_legacyForwardFeature)
+    {
+        m_legacyForwardFeature->SetOpaquePass(nullptr);
+    }
     if (m_passRegistry)
         m_passRegistry->Clear();
 
@@ -7702,6 +8020,7 @@ void SceneRenderer::ClearPasses()
     m_rayTracedShadowPass = nullptr;
     m_cameraVelocityPass = nullptr;
     m_objectVelocityPass = nullptr;
+    m_particleFeaturePass = nullptr;
     m_rayTracedReflectionPass = nullptr;
     m_rayTracedReflectionDenoisePass = nullptr;
     m_rayTracedReflectionCompositePass = nullptr;
@@ -7839,107 +8158,6 @@ void SceneRenderer::SetupDefaultPostProcess()
     }
 
     ApplyPostProcessSettings(MakeDefaultRuntimePostProcessSettings());
-}
-
-void SceneRenderer::SetupDefaultPasses()
-{
-    auto depthPrepass = std::make_unique<DepthPrepass>();
-    depthPrepass->SetResources(m_pipelineCache.get());
-    depthPrepass->SetMaterialSystem(m_materialSystem.get());
-    depthPrepass->SetResourceRegistry(m_renderResourceRegistry);
-    m_depthPrepass = depthPrepass.get();
-    AddPass(std::move(depthPrepass));
-
-    auto shadowPass = std::make_unique<ShadowPass>();
-    shadowPass->SetResources(m_pipelineCache.get());
-    shadowPass->SetResourceRegistry(m_renderResourceRegistry);
-    shadowPass->SetConfig(m_shadowPassConfig);
-    m_shadowPass = shadowPass.get();
-    AddPass(std::move(shadowPass));
-
-    auto rayTracedShadowPass = std::make_unique<RayTracedShadowPass>();
-    rayTracedShadowPass->SetResources(
-        m_pipelineCache.get(),
-        m_resourceViewCache.get());
-    rayTracedShadowPass->SetResourceRegistry(m_renderResourceRegistry);
-    rayTracedShadowPass->SetRayTracingScene(m_rayTracingSceneManager.get());
-    rayTracedShadowPass->SetSubmissionTracker(
-        m_renderContext
-            ? RenderContextInternalAccess::GetSubmissionTracker(*m_renderContext)
-            : nullptr);
-    rayTracedShadowPass->SetConfig(m_shadowPassConfig);
-    m_rayTracedShadowPass = rayTracedShadowPass.get();
-    AddPass(std::move(rayTracedShadowPass));
-
-    auto cameraVelocityPass = std::make_unique<CameraVelocityPass>();
-    cameraVelocityPass->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
-    m_cameraVelocityPass = cameraVelocityPass.get();
-    AddPass(std::move(cameraVelocityPass));
-    auto objectVelocityPass = std::make_unique<ObjectVelocityPass>();
-    objectVelocityPass->SetResources(
-        m_pipelineCache.get(),
-        m_resourceViewCache.get(),
-        m_materialSystem.get());
-    objectVelocityPass->SetResourceRegistry(m_renderResourceRegistry);
-    m_objectVelocityPass = objectVelocityPass.get();
-    AddPass(std::move(objectVelocityPass));
-
-    auto rayTracedReflectionPass = std::make_unique<RayTracedReflectionPass>();
-    rayTracedReflectionPass->SetResources(
-        m_pipelineCache.get(),
-        m_resourceViewCache.get());
-    rayTracedReflectionPass->SetResourceRegistry(m_renderResourceRegistry);
-    rayTracedReflectionPass->SetRayTracingScene(m_rayTracingSceneManager.get());
-    m_rayTracedReflectionPass = rayTracedReflectionPass.get();
-    AddPass(std::move(rayTracedReflectionPass));
-
-    auto rayTracedReflectionDenoisePass = std::make_unique<RayTracedReflectionDenoisePass>();
-    rayTracedReflectionDenoisePass->SetResources(
-        m_pipelineCache.get(),
-        m_resourceViewCache.get());
-    rayTracedReflectionDenoisePass->SetReflectionSource(m_rayTracedReflectionPass);
-    m_rayTracedReflectionDenoisePass = rayTracedReflectionDenoisePass.get();
-    AddPass(std::move(rayTracedReflectionDenoisePass));
-
-    auto rayTracedReflectionCompositePass = std::make_unique<RayTracedReflectionCompositePass>();
-    rayTracedReflectionCompositePass->SetResources(
-        m_pipelineCache.get(),
-        m_resourceViewCache.get());
-    rayTracedReflectionCompositePass->SetReflectionSource(m_rayTracedReflectionPass);
-    rayTracedReflectionCompositePass->SetDenoisedReflectionSource(m_rayTracedReflectionDenoisePass);
-    m_rayTracedReflectionCompositePass = rayTracedReflectionCompositePass.get();
-    AddPass(std::move(rayTracedReflectionCompositePass));
-
-    auto opaquePass = std::make_unique<OpaquePass>();
-    opaquePass->SetResources(m_pipelineCache.get(),
-                             m_materialSystem.get(),
-                             m_lightManager.get(),
-                             m_clusteredLighting.get());
-    opaquePass->SetResourceRegistry(m_renderResourceRegistry);
-    m_opaquePass = opaquePass.get();
-    AddPass(std::move(opaquePass));
-
-    auto skyboxPass = std::make_unique<SkyboxPass>();
-    skyboxPass->SetResources(m_pipelineCache.get());
-    skyboxPass->SetResourceRegistry(m_renderResourceRegistry);
-    m_skyboxPass = skyboxPass.get();
-    AddPass(std::move(skyboxPass));
-
-    auto transparentPass = std::make_unique<TransparentPass>();
-    transparentPass->SetResources(m_pipelineCache.get(),
-                                  m_materialSystem.get(),
-                                  m_lightManager.get(),
-                                  m_clusteredLighting.get());
-    transparentPass->SetResourceRegistry(m_renderResourceRegistry);
-    m_transparentPass = transparentPass.get();
-    AddPass(std::move(transparentPass));
-
-    auto particleFeaturePass = std::make_unique<ParticleFeaturePass>();
-    particleFeaturePass->SetSnapshot(&m_featureSnapshot.particles);
-    m_particleFeaturePass = particleFeaturePass.get();
-    AddPass(std::move(particleFeaturePass));
-
-    RVX_CORE_DEBUG("SceneRenderer: Default passes setup complete");
 }
 
 } // namespace RVX

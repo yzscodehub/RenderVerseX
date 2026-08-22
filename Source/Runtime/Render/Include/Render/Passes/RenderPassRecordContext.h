@@ -717,6 +717,10 @@ namespace RVX
         ViewData view{};
         PrimaryDirectionalLightRecordInput primaryDirectionalLight{};
         RenderPassRecordIdentity identity{};
+        /** Full accepted-frame identity paired with this recording. */
+        RenderFrameIdentity featureFrameIdentity{};
+        /** Exact logical view identity paired with this recording. */
+        RenderViewIdentity featureViewIdentity{};
         const RenderFrameExecutionPlan* executionPlan = nullptr;
         const SceneMeshPassPreparation* meshPassPreparation = nullptr;
         const SceneRenderInstanceBatchPlans* instanceBatchPlans = nullptr;
