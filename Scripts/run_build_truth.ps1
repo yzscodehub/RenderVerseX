@@ -15,8 +15,9 @@ $ErrorActionPreference = "Stop"
 if ($env:OS -eq "Windows_NT")
 {
     $canonicalPath = $env:Path
-    Remove-Item Env:PATH -ErrorAction SilentlyContinue
-    $env:Path = $canonicalPath
+    [Environment]::SetEnvironmentVariable("PATH", $null, "Process")
+    [Environment]::SetEnvironmentVariable("Path", $null, "Process")
+    [Environment]::SetEnvironmentVariable("PATH", $canonicalPath, "Process")
 }
 
 Import-Module (Join-Path $PSScriptRoot "BuildTruth\BuildTruthV3.psm1") -Force
