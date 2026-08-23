@@ -115,7 +115,9 @@ namespace RVX
         static std::unique_ptr<const RenderFramePacketV5>
             MakeEmptyFrameForTesting(
             RenderSceneDatabase& sceneDatabase,
-            uint64 frameSequence)
+            uint64 frameSequence,
+            RenderPipelineRecipe recipe =
+                RenderPipelineRecipe::ForwardStandard)
         {
             RenderSceneMutationAccumulator accumulator;
             accumulator.Begin(0, true);
@@ -156,21 +158,25 @@ namespace RVX
             RenderExtractionDiagnostics extraction;
             extraction.code = RenderExtractionCode::Complete;
             extraction.complete = true;
+            RenderFrameSettings settings;
+            settings.pipelineRequest.recipe = recipe;
             return RenderFramePacketV5::Create(
                 header,
                 view,
-                RenderFrameSettings{},
+                settings,
                 RenderFrameCaptureRequest{},
                 extraction);
         }
 
         static bool AcceptEmptyFrameForTesting(
             SceneRenderer& renderer,
-            uint64 frameSequence)
+            uint64 frameSequence,
+            RenderPipelineRecipe recipe =
+                RenderPipelineRecipe::ForwardStandard)
         {
             RenderSceneDatabase sceneDatabase;
             const std::unique_ptr<const RenderFramePacketV5> frame =
-                MakeEmptyFrameForTesting(sceneDatabase, frameSequence);
+                MakeEmptyFrameForTesting(sceneDatabase, frameSequence, recipe);
             if (!frame)
             {
                 return false;
@@ -179,6 +185,38 @@ namespace RVX
             RenderResourceRegistry registry;
             return renderer.m_renderScene.ApplyFrameV5(
                 *frame, sceneDatabase, registry).IsApplied();
+        }
+
+        static void InstallPostProcessStack(
+            SceneRenderer& renderer,
+            std::unique_ptr<PostProcessStack> stack)
+        {
+            renderer.m_postProcessStack = std::move(stack);
+        }
+
+        static std::string GetFeatureCompositionFailureReason(
+            const SceneRenderer& renderer)
+        {
+            return renderer.m_featureCompositionFailureReason;
+        }
+
+        static bool ValidateDeferredToneMappingPresentation(
+            const PostProcessStackExecuteStats& stats,
+            RHIFormat backBufferFormat,
+            std::string& outDiagnostic)
+        {
+            return SceneRenderer::ValidateDeferredToneMappingPresentationContract(
+                stats, backBufferFormat, outDiagnostic);
+        }
+
+        static bool ValidateDeferredToneMappingSemanticEvidence(
+            const RenderGraph& graph,
+            const PostProcessStackExecuteStats& stats,
+            RHIFormat backBufferFormat,
+            std::string& outDiagnostic)
+        {
+            return SceneRenderer::ValidateDeferredToneMappingSemanticEvidence(
+                graph, stats, backBufferFormat, outDiagnostic);
         }
 
         static bool RejectDuplicateFrameForTesting(SceneRenderer& renderer)
@@ -2139,6 +2177,11 @@ namespace
         item.material = RenderResourceHandle{
             static_cast<uint32>(mode) + 1U, 1};
         item.renderMode = mode;
+        item.packet.pipelineKey.materialPolicyValid = true;
+        item.packet.pipelineKey.surfacePathEligibility =
+            mode == MaterialRenderMode::Transparent
+                ? SurfacePathEligibility::ForwardTranslucency
+                : SurfacePathEligibility::DeferredOpaque;
         return item;
     }
 
@@ -2292,6 +2335,14 @@ namespace
             materialMode == RenderMaterialMode::Masked
                 ? MaterialPipelineVariant::Masked
                 : MaterialPipelineVariant::Opaque;
+        // These focused raster fixtures bypass MaterialSystem's normal
+        // classification.  Declare the intended path instead of relying on
+        // the default Unsupported eligibility: regular opaque and masked
+        // fixtures are DeferredOpaque unless a test explicitly models a
+        // ForwardSpecialOpaque material.
+        packet.pipelineKey.surfacePathEligibility =
+            SurfacePathEligibility::DeferredOpaque;
+        packet.pipelineKey.materialPolicyValid = true;
         packet.pipelineKey.topology = MeshUploadPrimitiveTopology::Triangles;
         packet.pipelineKey.skinned =
             (static_cast<uint32>(flags) &
@@ -3085,6 +3136,15 @@ namespace
             item.material = RenderResourceHandle{
                 static_cast<uint32>(mode) + 1U, 1};
             item.renderMode = mode;
+            // This fixture bypasses the SceneRenderer material-classification
+            // stage. Its default items therefore carry a concrete immutable
+            // surface route; individual tests override it when exercising a
+            // non-default material path.
+            item.packet.pipelineKey.materialPolicyValid = true;
+            item.packet.pipelineKey.surfacePathEligibility =
+                mode == MaterialRenderMode::Transparent
+                    ? SurfacePathEligibility::ForwardTranslucency
+                    : SurfacePathEligibility::DeferredOpaque;
             return item;
         }
 
@@ -8834,6 +8894,16 @@ TEST_F(RenderPassValidationFixture,
     // the immutable plan.
     EXPECT_EQ(0u, ctx.drawCount);
     EXPECT_TRUE(ctx.renderPasses.empty());
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(1u, diagnostics.passes.size());
+    // Texture views are realized transactionally before any pass callback is
+    // entered. A realization failure therefore rejects the frame at the
+    // graph boundary; the required feature receipt fails because its pass did
+    // not execute, rather than by pretending the callback observed a failure.
+    EXPECT_FALSE(diagnostics.passes[0].executedLastRun);
+    EXPECT_TRUE(diagnostics.passes[0].semanticExecutionSucceededLastRun);
+    EXPECT_TRUE(diagnostics.passes[0].semanticExecutionDiagnostic.empty());
+    EXPECT_EQ(1u, diagnostics.execution.partialRollbackCount);
     const auto descriptorIt = std::find_if(
         device.createdDescriptorSetDescs.begin(),
         device.createdDescriptorSetDescs.end(),
@@ -10377,6 +10447,13 @@ TEST_F(RenderPassValidationFixture, ToneMappingAddsLiveGraphPassAndDrawsFullscre
     RecordingCommandContext ctx;
     RenderGraphValidationAccess::Execute(graph, ctx);
 
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(diagnostics.passes.size(), static_cast<size_t>(1));
+    EXPECT_EQ(diagnostics.passes[0].name, "ToneMapping");
+    EXPECT_TRUE(diagnostics.passes[0].executedLastRun);
+    EXPECT_TRUE(diagnostics.passes[0].semanticExecutionSucceededLastRun);
+    EXPECT_TRUE(diagnostics.passes[0].semanticExecutionDiagnostic.empty());
+
     EXPECT_EQ(ctx.beginRenderPassCount, 1u);
     EXPECT_EQ(ctx.endRenderPassCount, 1u);
     ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
@@ -10492,6 +10569,229 @@ TEST_F(RenderPassValidationFixture, ToneMappingSkipsDrawWhenConstantsCannotMap)
 
     EXPECT_EQ(ctx.drawCount, 0u);
     EXPECT_EQ(ctx.beginRenderPassCount, 0u);
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(diagnostics.passes.size(), static_cast<size_t>(1));
+    EXPECT_EQ(diagnostics.passes[0].name, "ToneMapping");
+    EXPECT_TRUE(diagnostics.passes[0].executedLastRun);
+    EXPECT_FALSE(diagnostics.passes[0].semanticExecutionSucceededLastRun);
+    EXPECT_NE(diagnostics.passes[0].semanticExecutionDiagnostic.find("constants"),
+              std::string::npos);
+}
+
+TEST_F(RenderPassValidationFixture,
+       DeferredPresentationRequiresScheduledToneMappingSemanticEvidence)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    PostProcessStack stack;
+    auto* toneMapping = stack.AddEffect<ToneMappingPass>();
+    PostProcessSettings settings;
+    settings.enableToneMapping = true;
+    toneMapping->Configure(settings);
+    toneMapping->SetResources(&pipelineCache, &viewCache);
+    ASSERT_TRUE(toneMapping->IsSupported()) << toneMapping->GetUnsupportedReason();
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RHITextureRef inputTexture = device.CreateTexture(
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef outputTexture = device.CreateTexture(
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    const RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(
+        graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    const RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(
+        graph, outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+    stack.Execute(graph, input, output);
+
+    const PostProcessStackExecuteStats& stats = stack.GetLastExecuteStats();
+    EXPECT_EQ(stats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
+    EXPECT_TRUE(stats.toneMappingBoundaryValid);
+    EXPECT_FALSE(stats.fallbackCopyApplied);
+    EXPECT_EQ(stats.requestedToneMappingEffectCount, 1u);
+    EXPECT_EQ(stats.supportedToneMappingEffectCount, 1u);
+    EXPECT_EQ(stats.enabledToneMappingEffectCount, 1u);
+    EXPECT_EQ(stats.scheduledToneMappingEffectCount, 1u);
+
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    RecordingCommandContext ctx;
+    RenderGraphValidationAccess::Execute(graph, ctx);
+    EXPECT_EQ(ctx.drawCount, 1u);
+
+    std::string diagnostic;
+    EXPECT_TRUE(SceneRendererTestAccess::ValidateDeferredToneMappingSemanticEvidence(
+        graph, stats, RHIFormat::RGBA8_UNORM, diagnostic)) << diagnostic;
+}
+
+TEST_F(RenderPassValidationFixture,
+       DeferredPresentationRejectsToneMappingWithoutFullscreenSemanticEvidence)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
+
+    PostProcessStack stack;
+    auto* toneMapping = stack.AddEffect<ToneMappingPass>();
+    PostProcessSettings settings;
+    settings.enableToneMapping = true;
+    toneMapping->Configure(settings);
+    toneMapping->SetResources(&pipelineCache, &viewCache);
+    ASSERT_TRUE(toneMapping->IsSupported()) << toneMapping->GetUnsupportedReason();
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RHITextureRef inputTexture = device.CreateTexture(
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef outputTexture = device.CreateTexture(
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    const RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(
+        graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    const RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(
+        graph, outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+    stack.Execute(graph, input, output);
+    const PostProcessStackExecuteStats& stats = stack.GetLastExecuteStats();
+    ASSERT_EQ(stats.scheduledToneMappingEffectCount, 1u);
+
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    RecordingCommandContext ctx;
+    RenderGraphValidationAccess::Execute(graph, ctx);
+    EXPECT_EQ(ctx.drawCount, 0u);
+
+    std::string diagnostic;
+    EXPECT_FALSE(SceneRendererTestAccess::ValidateDeferredToneMappingSemanticEvidence(
+        graph, stats, RHIFormat::RGBA8_UNORM, diagnostic));
+    EXPECT_NE(diagnostic.find("constants"), std::string::npos);
+}
+
+TEST(RenderPostProcessStackValidation,
+     DeferredPresentationRejectsMultipleToneMappingTransforms)
+{
+    PostProcessStack stack;
+    (void)stack.AddEffect<RecordingPostProcessPass>("ToneMapping", 900);
+    (void)stack.AddEffect<RecordingPostProcessPass>("ToneMapping", 901);
+
+    const PostProcessStackExecuteStats stats =
+        stack.EvaluateEffects(RHIFormat::RGBA8_UNORM);
+    EXPECT_FALSE(stats.toneMappingBoundaryValid);
+    EXPECT_EQ(stats.requestedToneMappingEffectCount, 2u);
+    EXPECT_EQ(stats.supportedToneMappingEffectCount, 2u);
+    EXPECT_EQ(stats.enabledToneMappingEffectCount, 2u);
+    EXPECT_NE(stats.toneMappingBoundaryWarning.find("exactly one"),
+              std::string::npos);
+}
+
+TEST_F(RenderPassValidationFixture,
+       DeferredSceneRendererLocallyOverridesDisabledToneMappingForPresentation)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    SceneRenderer renderer;
+    renderer.SetRenderFeatureReportDeviceForTesting(&device);
+    auto graph = std::make_unique<RenderGraph>();
+    RenderGraphValidationAccess::SetDevice(*graph, &device);
+    renderer.SetRenderGraphForTesting(std::move(graph));
+
+    auto stack = std::make_unique<PostProcessStack>();
+    auto* toneMapping = stack->AddEffect<ToneMappingPass>();
+    toneMapping->SetResources(&pipelineCache, &viewCache);
+    SceneRendererTestAccess::InstallPostProcessStack(renderer, std::move(stack));
+
+    PostProcessSettings userSettings;
+    userSettings.enableToneMapping = false;
+    renderer.ApplyPostProcessSettings(userSettings);
+    ASSERT_FALSE(renderer.GetPostProcessSettings().enableToneMapping);
+
+    ASSERT_TRUE(SceneRendererTestAccess::AcceptEmptyFrameForTesting(
+        renderer, 711u, RenderPipelineRecipe::DeferredQuality));
+
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(
+        32, 32, RHIFormat::RGBA8_UNORM);
+    colorDesc.usage = RHITextureUsage::RenderTarget |
+        RHITextureUsage::ShaderResource;
+    RHITextureRef colorTarget = device.CreateTexture(colorDesc);
+    RHITextureRef depthTarget = device.CreateTexture(
+        RHITextureDesc::DepthStencil(
+            32, 32, PipelineCache::GetDefaultDepthStencilFormat()));
+    ASSERT_TRUE(colorTarget);
+    ASSERT_TRUE(depthTarget);
+
+    SceneRendererExternalTargetDesc externalTarget;
+    externalTarget.colorTarget = colorTarget;
+    externalTarget.depthTarget = depthTarget;
+    externalTarget.colorInitialState = RHIResourceState::ShaderResource;
+    externalTarget.colorFinalState = RHIResourceState::ShaderResource;
+    externalTarget.depthInitialState = RHIResourceState::DepthRead;
+    externalTarget.depthFinalState = RHIResourceState::DepthRead;
+    renderer.SetExternalRenderTarget(externalTarget);
+    renderer.BuildRenderGraphForTesting();
+
+    const SceneRenderPostProcessStats& stats = renderer.GetPostProcessStats();
+    EXPECT_FALSE(renderer.GetPostProcessSettings().enableToneMapping);
+    EXPECT_EQ(stats.backBufferFormat, RHIFormat::RGBA8_UNORM);
+    EXPECT_EQ(stats.stackStats.requestedToneMappingEffectCount, 1u);
+    EXPECT_EQ(stats.stackStats.supportedToneMappingEffectCount, 1u);
+    EXPECT_EQ(stats.stackStats.enabledToneMappingEffectCount, 1u);
+    EXPECT_TRUE(stats.sceneColorStagingUsed);
+}
+
+TEST(SceneRendererDeferredPresentationValidation,
+     UnavailableToneMappingFailsClosedBeforeHDRStagingAndCannotSucceed)
+{
+    FakeDevice device;
+    device.EnableBasicCapabilities();
+    SceneRenderer renderer;
+    renderer.SetRenderFeatureReportDeviceForTesting(&device);
+    auto graph = std::make_unique<RenderGraph>();
+    RenderGraphValidationAccess::SetDevice(*graph, &device);
+    renderer.SetRenderGraphForTesting(std::move(graph));
+
+    auto stack = std::make_unique<PostProcessStack>();
+    (void)stack->AddEffect<ToneMappingPass>();
+    SceneRendererTestAccess::InstallPostProcessStack(renderer, std::move(stack));
+
+    PostProcessSettings userSettings;
+    userSettings.enableToneMapping = false;
+    renderer.ApplyPostProcessSettings(userSettings);
+    ASSERT_TRUE(SceneRendererTestAccess::AcceptEmptyFrameForTesting(
+        renderer, 712u, RenderPipelineRecipe::DeferredQuality));
+
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(
+        32, 32, RHIFormat::RGBA8_UNORM);
+    colorDesc.usage = RHITextureUsage::RenderTarget |
+        RHITextureUsage::ShaderResource;
+    RHITextureRef colorTarget = device.CreateTexture(colorDesc);
+    RHITextureRef depthTarget = device.CreateTexture(
+        RHITextureDesc::DepthStencil(
+            32, 32, PipelineCache::GetDefaultDepthStencilFormat()));
+    ASSERT_TRUE(colorTarget);
+    ASSERT_TRUE(depthTarget);
+
+    SceneRendererExternalTargetDesc externalTarget;
+    externalTarget.colorTarget = colorTarget;
+    externalTarget.depthTarget = depthTarget;
+    externalTarget.colorInitialState = RHIResourceState::ShaderResource;
+    externalTarget.colorFinalState = RHIResourceState::ShaderResource;
+    externalTarget.depthInitialState = RHIResourceState::DepthRead;
+    externalTarget.depthFinalState = RHIResourceState::DepthRead;
+    renderer.SetExternalRenderTarget(externalTarget);
+    renderer.BuildRenderGraphForTesting();
+
+    const SceneRenderPostProcessStats& stats = renderer.GetPostProcessStats();
+    EXPECT_FALSE(stats.sceneColorStagingUsed);
+    EXPECT_FALSE(stats.hdrSceneColorEnabled);
+    EXPECT_EQ(stats.stackStats.requestedToneMappingEffectCount, 1u);
+    EXPECT_EQ(stats.stackStats.supportedToneMappingEffectCount, 0u);
+    EXPECT_FALSE(SceneRendererTestAccess::GetFeatureCompositionFailureReason(renderer).empty());
+    EXPECT_FALSE(renderer.GetFrameDiagnostics().attemptedExecutionReceipt.executionSucceeded);
+    EXPECT_FALSE(renderer.GetFrameDiagnostics().attemptedExecutionReceipt.presented);
+    EXPECT_FALSE(renderer.GetFrameDiagnostics().attemptedExecutionReceipt.succeeded);
 }
 
 TEST_F(RenderPassValidationFixture, BloomRequiresResourcesBeforeReportingSupported)
@@ -14947,6 +15247,8 @@ TEST(RenderPassValidation,
     input.packet.geometryKey.mesh = {1, 1};
     input.packet.arguments.indexCount = 3;
     input.packet.pipelineKey.materialPolicyValid = true;
+    input.packet.pipelineKey.surfacePathEligibility =
+        SurfacePathEligibility::DeferredOpaque;
     input.packet.pipelineKey.shadowPolicy = MaterialShadowPolicy::Receive;
     input.packet.flags = receiveOnly;
     const MeshPassProcessorResult opaque =
@@ -18497,6 +18799,674 @@ TEST_F(RenderPassValidationFixture, OpaquePassResolvesRenderGraphColorTargetView
     ASSERT_NE(resolvedView, nullptr);
     EXPECT_NE(resolvedView, colorView.Get());
     EXPECT_NE(resolvedView->GetTexture(), colorTexture.Get());
+}
+
+TEST_F(RenderPassValidationFixture,
+       OpaquePassDeferredGBufferRecordsExactFourTargetRenderPass)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    const MeshGPUBuffers buffers =
+        gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    RenderDrawItem opaqueItem = MakeDrawItem(MaterialRenderMode::Opaque);
+    opaqueItem.packet = MakeOpaquePacket(
+        scene, 0, 0, buffers, opaqueItem.material,
+        RenderMaterialMode::Opaque, RenderDrawFlags::None);
+    const std::vector<RenderDrawItem> opaqueDrawItems = {opaqueItem};
+    const std::vector<RenderDrawItem> maskedDrawItems;
+    const SceneMeshPassPreparation preparation = PrepareOpaquePackets(
+        opaqueDrawItems, maskedDrawItems);
+    const RenderFramePlanCompileResult compiled = CompileForcedDirectPlan(
+        preparation, 642);
+    ASSERT_TRUE(compiled.succeeded);
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+
+    constexpr std::array<RHIFormat, 4> expectedFormats = {
+        RHIFormat::RGBA8_UNORM_SRGB,
+        RHIFormat::RGBA8_UNORM,
+        RHIFormat::RGBA16_FLOAT,
+        RHIFormat::R32_UINT};
+    OpaqueDeferredGBufferTargets targets;
+    for (uint32 index = 0; index < expectedFormats.size(); ++index)
+    {
+        RHITextureDesc desc = RHITextureDesc::RenderTarget(
+            64, 64, expectedFormats[index]);
+        desc.debugName = "OpaquePassDeferredGBuffer";
+        targets.color[index] = graph.CreateTexture(desc);
+        ASSERT_TRUE(targets.color[index].IsValid());
+        graph.SetExportState(targets.color[index],
+                             RHIResourceState::RenderTarget);
+    }
+    targets.depth = graph.CreateTexture(RHITextureDesc::DepthStencil(
+        64, 64, RHIFormat::D32_FLOAT));
+    ASSERT_TRUE(targets.depth.IsValid());
+    graph.SetExportState(targets.depth, RHIResourceState::DepthWrite);
+
+    ViewData deferredView = view;
+    deferredView.viewportWidth = 64;
+    deferredView.viewportHeight = 64;
+    RenderPassRecordContext context = MakeMainSceneRecordContext(
+        graph, deferredView, scene, opaqueDrawItems, maskedDrawItems,
+        compiled.plan, preparation, report, compiled.plan.frameSequence);
+    ASSERT_TRUE(context.MatchesTargetGraph(graph));
+    ASSERT_TRUE(context.IsFrameIdentityValid());
+
+    OpaquePass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    pass.AddDeferredToGraph(graph, context, targets);
+    RenderGraphValidationAccess::Compile(graph);
+
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    ASSERT_EQ(1u, graph.GetCompileStats().totalPasses);
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(1u, diagnostics.passes.size());
+    EXPECT_EQ("GBufferPass", diagnostics.passes[0].name);
+    EXPECT_EQ(5u, diagnostics.passes[0].usages.size());
+    for (const RenderGraph::ResourceUsageDiagnostic& usage :
+         diagnostics.passes[0].usages)
+    {
+        EXPECT_EQ(RenderGraph::DiagnosticAccessType::Write, usage.access);
+    }
+
+    RecordingCommandContext commands;
+    RenderGraphValidationAccess::Execute(graph, commands);
+
+    ASSERT_EQ(1u, commands.renderPasses.size());
+    const RHIRenderPassDesc& renderPass = commands.renderPasses.front();
+    ASSERT_EQ(4u, renderPass.colorAttachmentCount);
+    ASSERT_TRUE(renderPass.hasDepthStencil);
+    ASSERT_NE(nullptr, renderPass.depthStencilAttachment.view);
+    EXPECT_EQ(RHIFormat::D32_FLOAT,
+              renderPass.depthStencilAttachment.view->GetTexture()->GetFormat());
+    EXPECT_EQ(RHILoadOp::Clear, renderPass.depthStencilAttachment.depthLoadOp);
+    EXPECT_EQ(RHIStoreOp::Store, renderPass.depthStencilAttachment.depthStoreOp);
+
+    constexpr std::array<RHIClearColor, 4> expectedClears = {{
+        {0.0f, 0.0f, 0.0f, 1.0f},
+        {0.5f, 0.5f, 1.0f, 0.0f},
+        {0.0f, 0.0f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 0.0f, 0.0f}}};
+    for (uint32 index = 0; index < expectedFormats.size(); ++index)
+    {
+        const RHIRenderTargetAttachment& attachment =
+            renderPass.colorAttachments[index];
+        ASSERT_NE(nullptr, attachment.view);
+        EXPECT_EQ(expectedFormats[index], attachment.view->GetTexture()->GetFormat());
+        EXPECT_EQ(RHILoadOp::Clear, attachment.loadOp);
+        EXPECT_EQ(RHIStoreOp::Store, attachment.storeOp);
+        EXPECT_TRUE(AreRHIClearColorsEqual(expectedClears[index],
+                                            attachment.clearColor));
+    }
+    EXPECT_EQ(0u, commands.drawCount);
+    EXPECT_EQ(1u, commands.drawIndexedCount);
+}
+
+TEST_F(RenderPassValidationFixture,
+       OpaquePassDeferredPipelinePreflightResolvesFrozenRigidMaskedAndSkinnedRequests)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    const MeshGPUBuffers rigidBuffers =
+        gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(rigidBuffers.IsValid());
+
+    auto skinnedMesh = CreateTwoSubmeshMeshResource(645);
+    skinnedMesh->GetMesh()->SetBoneData(
+        std::vector<IVec4>(6, IVec4(0, 0, 0, 0)),
+        std::vector<Vec4>(6, Vec4(1.0f, 0.0f, 0.0f, 0.0f)));
+    ASSERT_TRUE(gpuResources.UploadImmediate(skinnedMesh.get()));
+    const MeshGPUBuffers skinnedBuffers =
+        gpuResources.GetMeshBuffers(skinnedMesh->GetId());
+    ASSERT_TRUE(skinnedBuffers.HasSkinningVertexData());
+
+    RenderObject skinnedObject = MakeRenderObject(*skinnedMesh, gpuResources);
+    skinnedObject.entityId = 645;
+    skinnedObject.skinningMatrices.push_back(Mat4Identity());
+    scene.AddObject(skinnedObject);
+
+    RenderDrawItem rigidItem = MakeDrawItem(MaterialRenderMode::Opaque);
+    rigidItem.packet = MakeOpaquePacket(
+        scene, 0, 0, rigidBuffers, rigidItem.material,
+        RenderMaterialMode::Opaque, RenderDrawFlags::None);
+
+    RenderDrawItem maskedItem = MakeDrawItem(MaterialRenderMode::Masked);
+    maskedItem.packet = MakeOpaquePacket(
+        scene, 0, 0, rigidBuffers, maskedItem.material,
+        RenderMaterialMode::Masked, RenderDrawFlags::Masked);
+
+    RenderDrawItem skinnedItem = MakeDrawItem(MaterialRenderMode::Opaque);
+    skinnedItem.objectIndex = 1;
+    skinnedItem.submeshIndex = 1;
+    skinnedItem.mesh = skinnedObject.mesh;
+    skinnedItem.packet = MakeOpaquePacket(
+        scene, 1, 1, skinnedBuffers, skinnedItem.material,
+        RenderMaterialMode::Opaque, RenderDrawFlags::Skinned);
+
+    const std::vector<RenderDrawItem> opaqueDrawItems = {
+        rigidItem, skinnedItem};
+    const std::vector<RenderDrawItem> maskedDrawItems = {maskedItem};
+    const SceneMeshPassPreparation preparation = PrepareOpaquePackets(
+        opaqueDrawItems, maskedDrawItems);
+    const RenderFramePlanCompileResult compiled = CompileForcedDirectPlan(
+        preparation, 645);
+    ASSERT_TRUE(compiled.succeeded);
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RenderPassRecordContext context = MakeMainSceneRecordContext(
+        graph, view, scene, opaqueDrawItems, maskedDrawItems, compiled.plan,
+        preparation, report, compiled.plan.frameSequence);
+
+    OpaquePass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    const OpaqueRasterPipelinePreflightResult preflight =
+        pass.PreflightRasterPipelines(
+            context,
+            OpaqueRasterOutputFamily::DeferredGBuffer,
+            OpaqueRasterSurfaceRoute::DeferredOpaque);
+
+    EXPECT_EQ(OpaqueRasterPipelinePreflightCode::Ready, preflight.code)
+        << preflight.diagnostic;
+    EXPECT_TRUE(preflight.Succeeded());
+    EXPECT_EQ(3u, preflight.selectedDirectPacketCount);
+    EXPECT_EQ(0u, preflight.selectedGPUDrivenPacketCount);
+    EXPECT_EQ(0u, preflight.matchedGPUGroupCount);
+    EXPECT_EQ(3u, preflight.uniquePipelineRequestCount);
+    EXPECT_FALSE(preflight.hasFailedRequest);
+}
+
+TEST_F(RenderPassValidationFixture,
+       OpaquePassDeferredPipelinePreflightFailsForTheExactFrozenPipelineRequest)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    const MeshGPUBuffers buffers =
+        gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Opaque);
+    item.packet = MakeOpaquePacket(
+        scene, 0, 0, buffers, item.material,
+        RenderMaterialMode::Opaque, RenderDrawFlags::None);
+    const std::vector<RenderDrawItem> opaqueDrawItems = {item};
+    const std::vector<RenderDrawItem> maskedDrawItems;
+    const SceneMeshPassPreparation preparation = PrepareOpaquePackets(
+        opaqueDrawItems, maskedDrawItems);
+    const RenderFramePlanCompileResult compiled = CompileForcedDirectPlan(
+        preparation, 646);
+    ASSERT_TRUE(compiled.succeeded);
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RenderPassRecordContext context = MakeMainSceneRecordContext(
+        graph, view, scene, opaqueDrawItems, maskedDrawItems, compiled.plan,
+        preparation, report, compiled.plan.frameSequence);
+
+    device.failGraphicsPipelineDebugName = "GBufferOpaqueRigidPipeline";
+    OpaquePass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    const OpaqueRasterPipelinePreflightResult preflight =
+        pass.PreflightRasterPipelines(
+            context,
+            OpaqueRasterOutputFamily::DeferredGBuffer,
+            OpaqueRasterSurfaceRoute::DeferredOpaque);
+
+    EXPECT_EQ(OpaqueRasterPipelinePreflightCode::PipelineUnavailable,
+              preflight.code);
+    EXPECT_FALSE(preflight.Succeeded());
+    EXPECT_TRUE(preflight.hasFailedRequest);
+    EXPECT_EQ(OpaqueRasterOutputFamily::DeferredGBuffer,
+              preflight.failedRequest.outputFamily);
+    EXPECT_EQ(OpaqueRasterSubmissionRoute::Direct,
+              preflight.failedRequest.route);
+    EXPECT_EQ(MaterialPipelineVariant::Opaque,
+              preflight.failedRequest.materialVariant);
+    EXPECT_FALSE(preflight.failedRequest.skinned);
+    EXPECT_NE(preflight.diagnostic.find("unavailable"), std::string::npos);
+}
+
+TEST_F(RenderPassValidationFixture,
+       OpaquePassDeferredPipelinePreflightUsesSealedGPUDrivenRoute)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    const MeshGPUBuffers buffers =
+        gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Opaque);
+    item.packet = MakeOpaquePacket(
+        scene, 0, 0, buffers, item.material,
+        RenderMaterialMode::Opaque, RenderDrawFlags::None);
+    const std::vector<RenderDrawItem> opaqueDrawItems = {item};
+    const std::vector<RenderDrawItem> maskedDrawItems;
+    const SceneMeshPassPreparation preparation = PrepareOpaquePackets(
+        opaqueDrawItems, maskedDrawItems);
+    const RenderFramePlanCompileResult compiled = CompileForcedGPUPlan(
+        preparation, 647);
+    ASSERT_TRUE(compiled.succeeded);
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+    GPUCulling culling(&RVX::Tests::GetDeterministicShaderProgramProvider());
+    GPUCullingConfig cullingConfig;
+    cullingConfig.maxInstances = 1;
+    cullingConfig.enableOcclusionCulling = false;
+    cullingConfig.enableDistanceCulling = false;
+    culling.Initialize(&device, cullingConfig);
+    culling.BeginFrame();
+    GPUIndexedDrawDesc drawDesc;
+    drawDesc.indexCount = buffers.submeshes[0].indexCount;
+    drawDesc.firstIndex = buffers.submeshes[0].indexOffset;
+    drawDesc.vertexOffset = buffers.submeshes[0].baseVertex;
+    ASSERT_EQ(1u, preparation.opaque.groups.size());
+    const RenderDrawGroupKey& batchKey = preparation.opaque.groups.front().key;
+    const uint64 meshId =
+        (static_cast<uint64>(batchKey.geometry.mesh.slot) << 32U) |
+        batchKey.geometry.mesh.generation;
+    const uint64 materialId =
+        (static_cast<uint64>(item.packet.materialKey.material.slot) << 32U) |
+        item.packet.materialKey.material.generation;
+    ASSERT_EQ(0u, culling.BeginDrawGroup(
+        meshId,
+        materialId,
+        batchKey.pipeline.materialVariant,
+        batchKey.geometry.mesh,
+        item.packet.materialKey.material,
+        batchKey));
+    EXPECT_NE(RVX_INVALID_INDEX,
+              culling.AddDrawItemInstance(scene, item, drawDesc, 0));
+    culling.EndDrawGroup();
+    culling.EndFrame();
+    culling.CullCpuFallback(view.viewMatrix, view.projectionMatrix);
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RenderPassRecordContext context = MakeMainSceneRecordContext(
+        graph, view, scene, opaqueDrawItems, maskedDrawItems, compiled.plan,
+        preparation, report, compiled.plan.frameSequence);
+    context.opaqueGPUDriven = MakeMainSceneGPUDrivenInputs(
+        graph, context.identity, culling);
+    ASSERT_TRUE(context.opaqueGPUDriven.IsCompatibleWith(context.identity));
+
+    OpaquePass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    const OpaqueRasterPipelinePreflightResult preflight =
+        pass.PreflightRasterPipelines(
+            context,
+            OpaqueRasterOutputFamily::DeferredGBuffer,
+            OpaqueRasterSurfaceRoute::DeferredOpaque);
+
+    EXPECT_EQ(OpaqueRasterPipelinePreflightCode::Ready, preflight.code)
+        << preflight.diagnostic;
+    EXPECT_TRUE(preflight.Succeeded());
+    EXPECT_EQ(0u, preflight.selectedDirectPacketCount);
+    EXPECT_EQ(1u, preflight.selectedGPUDrivenPacketCount);
+    EXPECT_EQ(1u, preflight.matchedGPUGroupCount);
+    EXPECT_EQ(1u, preflight.uniquePipelineRequestCount);
+    EXPECT_FALSE(preflight.hasFailedRequest);
+
+    // A sealed GPU recording is part of the frozen plan contract. A stale
+    // identity must fail during recipe readiness, before any GBuffer callback
+    // can be registered against the graph.
+    ++context.opaqueGPUDriven.identity.recordEpoch;
+    const OpaqueRasterPipelinePreflightResult stalePreflight =
+        pass.PreflightRasterPipelines(
+            context,
+            OpaqueRasterOutputFamily::DeferredGBuffer,
+            OpaqueRasterSurfaceRoute::DeferredOpaque);
+    EXPECT_EQ(OpaqueRasterPipelinePreflightCode::StaleGPURecording,
+              stalePreflight.code);
+    EXPECT_FALSE(stalePreflight.Succeeded());
+    EXPECT_NE(stalePreflight.diagnostic.find("stale"), std::string::npos);
+}
+
+TEST_F(RenderPassValidationFixture,
+       OpaquePassDeferredRoutesDeferredAndForwardSpecialExactlyOnce)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    const MeshGPUBuffers buffers =
+        gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+
+    RenderDrawItem deferredItem = MakeDrawItem(MaterialRenderMode::Opaque);
+    deferredItem.packet = MakeOpaquePacket(
+        scene, 0, 0, buffers, deferredItem.material,
+        RenderMaterialMode::Opaque, RenderDrawFlags::None);
+    ASSERT_EQ(SurfacePathEligibility::DeferredOpaque,
+              deferredItem.packet.pipelineKey.surfacePathEligibility);
+
+    RenderDrawItem forwardSpecialItem = deferredItem;
+    forwardSpecialItem.packet.pipelineKey.surfacePathEligibility =
+        SurfacePathEligibility::ForwardSpecialOpaque;
+    ASSERT_TRUE(forwardSpecialItem.packet.pipelineKey.materialPolicyValid);
+
+    const std::vector<RenderDrawItem> opaqueDrawItems = {
+        deferredItem, forwardSpecialItem};
+    const std::vector<RenderDrawItem> maskedDrawItems;
+    const SceneMeshPassPreparation preparation = PrepareOpaquePackets(
+        opaqueDrawItems, maskedDrawItems);
+    const RenderFramePlanCompileResult compiled = CompileForcedDirectPlan(
+        preparation, 643);
+    ASSERT_TRUE(compiled.succeeded);
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+
+    constexpr std::array<RHIFormat, 4> gbufferFormats = {
+        RHIFormat::RGBA8_UNORM_SRGB,
+        RHIFormat::RGBA8_UNORM,
+        RHIFormat::RGBA16_FLOAT,
+        RHIFormat::R32_UINT};
+    OpaqueDeferredGBufferTargets targets;
+    for (uint32 index = 0; index < gbufferFormats.size(); ++index)
+    {
+        targets.color[index] = graph.CreateTexture(
+            RHITextureDesc::RenderTarget(64, 64, gbufferFormats[index]));
+        ASSERT_TRUE(targets.color[index].IsValid());
+        graph.SetExportState(targets.color[index],
+                             RHIResourceState::RenderTarget);
+    }
+    targets.depth = graph.CreateTexture(RHITextureDesc::DepthStencil(
+        64, 64, RHIFormat::D32_FLOAT));
+    ASSERT_TRUE(targets.depth.IsValid());
+    graph.SetExportState(targets.depth, RHIResourceState::DepthWrite);
+
+    const RGTextureHandle sceneHDR = graph.CreateTexture(
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT));
+    ASSERT_TRUE(sceneHDR.IsValid());
+    graph.SetExportState(sceneHDR, RHIResourceState::RenderTarget);
+
+    ViewData deferredView = view;
+    deferredView.viewportWidth = 64;
+    deferredView.viewportHeight = 64;
+    deferredView.colorTarget = sceneHDR;
+    deferredView.depthTarget = targets.depth;
+    RenderPassRecordContext context = MakeMainSceneRecordContext(
+        graph, deferredView, scene, opaqueDrawItems, maskedDrawItems,
+        compiled.plan, preparation, report, compiled.plan.frameSequence);
+    ASSERT_TRUE(context.MatchesTargetGraph(graph));
+    ASSERT_TRUE(context.IsFrameIdentityValid());
+
+    OpaquePass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    pass.AddDeferredToGraph(graph, context, targets);
+
+    struct DeferredLightingBridgePassData
+    {
+        RGTextureHandle gbuffer0;
+        RGTextureHandle sceneHDR;
+    };
+    graph.AddPass<DeferredLightingBridgePassData>(
+        "DeferredLightingBridge",
+        RenderGraphPassType::Graphics,
+        [gbuffer0 = targets.color[0], sceneHDR](RenderGraphBuilder& builder,
+                                                DeferredLightingBridgePassData& data)
+        {
+            data.gbuffer0 = builder.Read(gbuffer0,
+                                         RHIResourceState::ShaderResource);
+            data.sceneHDR = builder.Write(sceneHDR,
+                                          RHIResourceState::RenderTarget);
+        },
+        [](const DeferredLightingBridgePassData&, RHICommandContext&) {});
+    pass.AddForwardSpecialToGraph(graph, context);
+
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(3u, diagnostics.passes.size());
+    EXPECT_EQ("GBufferPass", diagnostics.passes[0].name);
+    EXPECT_EQ("DeferredLightingBridge", diagnostics.passes[1].name);
+    EXPECT_EQ("ForwardSpecialOpaquePass", diagnostics.passes[2].name);
+
+    RecordingCommandContext commands;
+    RenderGraphValidationAccess::Execute(graph, commands);
+
+    ASSERT_EQ(2u, commands.renderPasses.size());
+    EXPECT_EQ(4u, commands.renderPasses[0].colorAttachmentCount);
+    EXPECT_EQ(1u, commands.renderPasses[1].colorAttachmentCount);
+    EXPECT_EQ(RHIFormat::RGBA16_FLOAT,
+              commands.renderPasses[1].colorAttachments[0]
+                  .view->GetTexture()->GetFormat());
+    EXPECT_EQ(RHILoadOp::Load,
+              commands.renderPasses[1].colorAttachments[0].loadOp);
+    EXPECT_EQ(RHILoadOp::Load,
+              commands.renderPasses[1]
+                  .depthStencilAttachment.depthLoadOp);
+    EXPECT_EQ(2u, commands.drawIndexedCount);
+
+    ASSERT_TRUE(context.results->deferredOpaqueRoute.available);
+    EXPECT_EQ(OpaqueRasterSurfaceRoute::DeferredOpaque,
+              context.results->deferredOpaqueRoute.route);
+    EXPECT_EQ(RenderExecutionStatus::Completed,
+              context.results->deferredOpaqueRoute.status);
+    EXPECT_EQ(1u,
+              context.results->deferredOpaqueRoute.drawStats
+                  .plannedPacketCount);
+    EXPECT_EQ(1u,
+              context.results->deferredOpaqueRoute.drawStats
+                  .executedPacketCount);
+
+    ASSERT_TRUE(context.results->forwardSpecialOpaqueRoute.available);
+    EXPECT_EQ(OpaqueRasterSurfaceRoute::ForwardSpecialOpaque,
+              context.results->forwardSpecialOpaqueRoute.route);
+    EXPECT_EQ(RenderExecutionStatus::Completed,
+              context.results->forwardSpecialOpaqueRoute.status);
+    EXPECT_EQ(1u,
+              context.results->forwardSpecialOpaqueRoute.drawStats
+                  .plannedPacketCount);
+    EXPECT_EQ(1u,
+              context.results->forwardSpecialOpaqueRoute.drawStats
+                  .executedPacketCount);
+
+    EXPECT_EQ(2u, context.results->opaqueStats.plannedPacketCount);
+    EXPECT_EQ(2u, context.results->opaqueStats.executedPacketCount);
+    EXPECT_EQ(2u, context.results->opaqueStats.directDrawCount);
+}
+
+TEST_F(RenderPassValidationFixture,
+       OpaquePassDeferredGBufferRejectsInvalidAttachmentContractsBeforeRecording)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    enum class InvalidContract : uint8
+    {
+        GBuffer0Format,
+        GBuffer1Format,
+        GBuffer2Format,
+        GBuffer3Format,
+        GBufferExtent,
+        GBufferSampleCount,
+        DepthFormat,
+        DepthExtent,
+        DepthSampleCount,
+    };
+    constexpr std::array<InvalidContract, 9> invalidContracts = {
+        InvalidContract::GBuffer0Format,
+        InvalidContract::GBuffer1Format,
+        InvalidContract::GBuffer2Format,
+        InvalidContract::GBuffer3Format,
+        InvalidContract::GBufferExtent,
+        InvalidContract::GBufferSampleCount,
+        InvalidContract::DepthFormat,
+        InvalidContract::DepthExtent,
+        InvalidContract::DepthSampleCount};
+    constexpr std::array<RHIFormat, 4> expectedFormats = {
+        RHIFormat::RGBA8_UNORM_SRGB,
+        RHIFormat::RGBA8_UNORM,
+        RHIFormat::RGBA16_FLOAT,
+        RHIFormat::R32_UINT};
+
+    const MeshGPUBuffers buffers =
+        gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    RenderDrawItem opaqueItem = MakeDrawItem(MaterialRenderMode::Opaque);
+    opaqueItem.packet = MakeOpaquePacket(
+        scene, 0, 0, buffers, opaqueItem.material,
+        RenderMaterialMode::Opaque, RenderDrawFlags::None);
+    const std::vector<RenderDrawItem> opaqueDrawItems = {opaqueItem};
+    const std::vector<RenderDrawItem> maskedDrawItems;
+    const SceneMeshPassPreparation preparation = PrepareOpaquePackets(
+        opaqueDrawItems, maskedDrawItems);
+
+    for (const InvalidContract invalidContract : invalidContracts)
+    {
+        SCOPED_TRACE(static_cast<uint32>(invalidContract));
+        const RenderFramePlanCompileResult compiled = CompileForcedDirectPlan(
+            preparation, 650 + static_cast<uint64>(invalidContract));
+        ASSERT_TRUE(compiled.succeeded);
+        RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+        RenderGraph graph;
+        RenderGraphValidationAccess::SetDevice(graph, &device);
+        std::array<RHITextureDesc, 4> colorDescs = {
+            RHITextureDesc::RenderTarget(64, 64, expectedFormats[0]),
+            RHITextureDesc::RenderTarget(64, 64, expectedFormats[1]),
+            RHITextureDesc::RenderTarget(64, 64, expectedFormats[2]),
+            RHITextureDesc::RenderTarget(64, 64, expectedFormats[3])};
+        RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(
+            64, 64, RHIFormat::D32_FLOAT);
+
+        switch (invalidContract)
+        {
+            case InvalidContract::GBuffer0Format:
+                colorDescs[0].format = RHIFormat::RGBA8_UNORM;
+                break;
+            case InvalidContract::GBuffer1Format:
+                colorDescs[1].format = RHIFormat::RGBA16_FLOAT;
+                break;
+            case InvalidContract::GBuffer2Format:
+                colorDescs[2].format = RHIFormat::RGBA8_UNORM;
+                break;
+            case InvalidContract::GBuffer3Format:
+                colorDescs[3].format = RHIFormat::R32_FLOAT;
+                break;
+            case InvalidContract::GBufferExtent:
+                colorDescs[2].width = 63;
+                break;
+            case InvalidContract::GBufferSampleCount:
+                colorDescs[1].sampleCount = RHISampleCount::Count4;
+                break;
+            case InvalidContract::DepthFormat:
+                depthDesc.format = RHIFormat::D24_UNORM_S8_UINT;
+                break;
+            case InvalidContract::DepthExtent:
+                depthDesc.height = 63;
+                break;
+            case InvalidContract::DepthSampleCount:
+                depthDesc.sampleCount = RHISampleCount::Count4;
+                break;
+        }
+
+        OpaqueDeferredGBufferTargets targets;
+        for (uint32 index = 0; index < colorDescs.size(); ++index)
+        {
+            targets.color[index] = graph.CreateTexture(colorDescs[index]);
+        }
+        targets.depth = graph.CreateTexture(depthDesc);
+
+        ViewData deferredView = view;
+        deferredView.viewportWidth = 64;
+        deferredView.viewportHeight = 64;
+        RenderPassRecordContext context = MakeMainSceneRecordContext(
+            graph, deferredView, scene, opaqueDrawItems, maskedDrawItems,
+            compiled.plan, preparation, report, compiled.plan.frameSequence);
+
+        OpaquePass pass;
+        ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+        pass.AddDeferredToGraph(graph, context, targets);
+        RenderGraphValidationAccess::Compile(graph);
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+        EXPECT_EQ(1u, graph.GetCompileStats().totalPasses);
+        EXPECT_EQ(1u, graph.GetCompileStats().culledPasses);
+        const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+        ASSERT_EQ(1u, diagnostics.passes.size());
+        EXPECT_EQ("GBufferPass", diagnostics.passes[0].name);
+        const bool attachmentWriteDeclared = std::any_of(
+            diagnostics.passes[0].usages.begin(),
+            diagnostics.passes[0].usages.end(),
+            [](const RenderGraph::ResourceUsageDiagnostic& usage)
+            {
+                return usage.access != RenderGraph::DiagnosticAccessType::Read &&
+                       (usage.desiredState == RHIResourceState::RenderTarget ||
+                        usage.desiredState == RHIResourceState::DepthWrite);
+            });
+        EXPECT_FALSE(attachmentWriteDeclared);
+
+        RecordingCommandContext commands;
+        RenderGraphValidationAccess::Execute(graph, commands);
+        EXPECT_EQ(0u, commands.beginRenderPassCount);
+        EXPECT_EQ(0u, commands.drawCount);
+        EXPECT_EQ(0u, commands.drawIndexedCount);
+    }
+}
+
+TEST_F(RenderPassValidationFixture,
+       OpaquePassForwardRecordingRemainsSingleRenderTarget)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    const MeshGPUBuffers buffers =
+        gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    RenderDrawItem opaqueItem = MakeDrawItem(MaterialRenderMode::Opaque);
+    opaqueItem.packet = MakeOpaquePacket(
+        scene, 0, 0, buffers, opaqueItem.material,
+        RenderMaterialMode::Opaque, RenderDrawFlags::None);
+    const std::vector<RenderDrawItem> opaqueDrawItems = {opaqueItem};
+    const std::vector<RenderDrawItem> maskedDrawItems;
+    const SceneMeshPassPreparation preparation = PrepareOpaquePackets(
+        opaqueDrawItems, maskedDrawItems);
+    const RenderFramePlanCompileResult compiled = CompileForcedDirectPlan(
+        preparation, 660);
+    ASSERT_TRUE(compiled.succeeded);
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(
+        64, 64, RHIFormat::RGBA16_FLOAT);
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(
+        64, 64, RHIFormat::D32_FLOAT);
+    ViewData forwardView = view;
+    forwardView.viewportWidth = 64;
+    forwardView.viewportHeight = 64;
+    forwardView.colorTarget = graph.CreateTexture(colorDesc);
+    forwardView.depthTarget = graph.CreateTexture(depthDesc);
+    graph.SetExportState(forwardView.colorTarget,
+                         RHIResourceState::RenderTarget);
+    graph.SetExportState(forwardView.depthTarget,
+                         RHIResourceState::DepthWrite);
+
+    RenderPassRecordContext context = MakeMainSceneRecordContext(
+        graph, forwardView, scene, opaqueDrawItems, maskedDrawItems,
+        compiled.plan, preparation, report, compiled.plan.frameSequence);
+    ASSERT_TRUE(context.MatchesTargetGraph(graph));
+    ASSERT_TRUE(context.IsFrameIdentityValid());
+    OpaquePass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    pass.AddToGraph(graph, context);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    RecordingCommandContext commands;
+    RenderGraphValidationAccess::Execute(graph, commands);
+
+    ASSERT_EQ(1u, commands.renderPasses.size());
+    const RHIRenderPassDesc& renderPass = commands.renderPasses.front();
+    ASSERT_EQ(1u, renderPass.colorAttachmentCount);
+    ASSERT_NE(nullptr, renderPass.colorAttachments[0].view);
+    EXPECT_EQ(RHIFormat::RGBA16_FLOAT,
+              renderPass.colorAttachments[0].view->GetTexture()->GetFormat());
+    ASSERT_TRUE(renderPass.hasDepthStencil);
+    ASSERT_NE(nullptr, renderPass.depthStencilAttachment.view);
+    EXPECT_EQ(RHIFormat::D32_FLOAT,
+              renderPass.depthStencilAttachment.view->GetTexture()->GetFormat());
 }
 
 TEST_F(RenderPassValidationFixture,

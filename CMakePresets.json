@@ -134,6 +134,7 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "RVX_ENABLE_P0_QUALIFICATION_MATRIX": "ON",
         "RVX_ENABLE_P1_QUALIFICATION_MATRIX": "ON",
+        "RVX_ENABLE_GFX07_DEFERRED_NATIVE": "ON",
         "RVX_ENABLE_PR_SMOKE": "OFF"
       }
     },
@@ -720,6 +721,17 @@
       "inherits": "win_x64_qualification_lane_base",
       "output": { "outputOnFailure": true },
       "filter": { "include": { "label": "^lane\\.qualification$" } }
+    },
+    {
+      "name": "win_x64_qualification_debug_gfx07_deferred",
+      "inherits": "win_x64_qualification_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx07-deferred$" } }
     },
     {
       "name": "linux_x64_debug_lane_base",

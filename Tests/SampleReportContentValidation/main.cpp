@@ -105,6 +105,7 @@ namespace
         std::string sampleName;
         std::string category;
         std::string backend;
+        std::string requiredRenderPipeline;
         std::string requestedBackend;
         std::string actualBackend;
         std::string quality;
@@ -129,6 +130,7 @@ namespace
         std::vector<std::string> requiredEnabledFeatures;
         std::vector<std::string> requiredUnsupportedFeatures;
         std::vector<std::string> requiredSupportedFeatures;
+        std::vector<uint32_t> requiredExecutedRenderFeatureIds;
         std::vector<std::string> requiredFallbackReasons;
         std::vector<std::string> forbiddenFallbackReasons;
         std::vector<std::string> requiredResourceDiagnostics;
@@ -148,6 +150,9 @@ namespace
         bool forbidMaterialFallback = false;
         bool requireTextureIBL = false;
         bool requireReady = false;
+        bool requireNoFallbackReasons = false;
+        bool forbidRenderFeatureFallbacks = false;
+        bool requireDeferredOpaqueExecution = false;
         bool requireReadinessWait = false;
         bool requireGPUDrivenExecution = false;
         bool requireDirectExecution = false;
@@ -732,6 +737,12 @@ namespace
                 if (!value) return false;
                 options.backend = value;
             }
+            else if (arg == "--require-render-pipeline")
+            {
+                const char* value = requireValue("--require-render-pipeline");
+                if (!value) return false;
+                options.requiredRenderPipeline = value;
+            }
             else if (arg == "--require-requested-backend")
             {
                 const char* value = requireValue("--require-requested-backend");
@@ -917,6 +928,22 @@ namespace
                 if (!value) return false;
                 options.requiredSupportedFeatures.emplace_back(value);
             }
+            else if (arg == "--require-render-feature-executed")
+            {
+                const char* value = requireValue(
+                    "--require-render-feature-executed");
+                uint32_t featureId = 0;
+                if (!value || !ParseUInt(value, featureId) || featureId == 0)
+                {
+                    std::cerr << "Invalid --require-render-feature-executed value\n";
+                    return false;
+                }
+                options.requiredExecutedRenderFeatureIds.push_back(featureId);
+            }
+            else if (arg == "--require-deferred-opaque-execution")
+            {
+                options.requireDeferredOpaqueExecution = true;
+            }
             else if (arg == "--require-phase")
             {
                 const char* value = requireValue("--require-phase");
@@ -994,6 +1021,10 @@ namespace
                 const char* value = requireValue("--forbid-fallback-reason");
                 if (!value) return false;
                 options.forbiddenFallbackReasons.emplace_back(value);
+            }
+            else if (arg == "--forbid-fallback-reasons")
+            {
+                options.requireNoFallbackReasons = true;
             }
             else if (arg == "--require-resource-diagnostic")
             {
@@ -1078,6 +1109,10 @@ namespace
             else if (arg == "--require-ready")
             {
                 options.requireReady = true;
+            }
+            else if (arg == "--forbid-render-feature-fallbacks")
+            {
+                options.forbidRenderFeatureFallbacks = true;
             }
             else if (arg == "--require-readiness-wait")
             {
@@ -2384,9 +2419,19 @@ namespace
         const std::string& requestedPipeline,
         const std::string& observedPipeline,
         const std::string& visualQuality,
-        const ValidationBuildIdentity& expectedBuildIdentity)
+        const ValidationBuildIdentity& expectedBuildIdentity,
+        const Options* options = nullptr)
     {
-        const std::set<std::string> expectedFields = {
+        if (!execution.is_object())
+        {
+            std::cerr << "Render execution receipt v21 is not an object\n";
+            return false;
+        }
+
+        uint64_t schemaVersion = 0;
+        bool passed = ReadUnsignedField(execution, "schemaVersion", schemaVersion,
+                                        "Render execution receipt v21");
+        std::set<std::string> expectedFields = {
             "schemaVersion",
             "available",
             "graphComposed",
@@ -2404,14 +2449,13 @@ namespace
             "diagnostic",
             "features",
         };
-        bool passed = ValidateExactObjectFields(
-            execution, expectedFields, "Render execution receipt v21");
-        if (!execution.is_object())
+        if (schemaVersion == 2)
         {
-            return false;
+            expectedFields.insert("deferredOpaque");
         }
+        passed &= ValidateExactObjectFields(
+            execution, expectedFields, "Render execution receipt v21");
 
-        uint64_t schemaVersion = 0;
         uint64_t profileHash = 0;
         bool available = false;
         bool graphComposed = false;
@@ -2423,8 +2467,6 @@ namespace
         std::string resolvedRecipe;
         std::string quality;
         std::string diagnostic;
-        passed &= ReadUnsignedField(execution, "schemaVersion", schemaVersion,
-                                    "Render execution receipt v21");
         passed &= ReadBooleanField(execution, "available", available,
                                    "Render execution receipt v21");
         passed &= ReadBooleanField(execution, "graphComposed", graphComposed,
@@ -2450,15 +2492,93 @@ namespace
                                     "Render execution receipt v21");
         passed &= ReadStringField(execution, "diagnostic", diagnostic,
                                   "Render execution receipt v21");
-        if (schemaVersion != 1 || !available || !graphComposed ||
+        if ((schemaVersion != 1 && schemaVersion != 2) || !available ||
+            !graphComposed ||
             !executionSucceeded || !presented || !succeeded)
         {
             std::cerr << "Render execution receipt v21 is not a successful presented execution\n";
             passed = false;
         }
+        if (schemaVersion == 2)
+        {
+            const auto deferredOpaque = execution.find("deferredOpaque");
+            if (deferredOpaque == execution.end() ||
+                !deferredOpaque->is_object())
+            {
+                std::cerr << "Render execution receipt v21 missing DeferredOpaque evidence\n";
+                passed = false;
+            }
+            else
+            {
+                passed &= ValidateExactObjectFields(
+                    *deferredOpaque,
+                    {"available", "status", "plannedPacketCount",
+                     "executedPacketCount"},
+                    "DeferredOpaque execution receipt v2");
+                bool deferredAvailable = false;
+                uint64_t plannedPacketCount = 0;
+                uint64_t executedPacketCount = 0;
+                std::string deferredStatus;
+                passed &= ReadBooleanField(*deferredOpaque, "available",
+                                           deferredAvailable,
+                                           "DeferredOpaque execution receipt v2");
+                passed &= ReadStringField(*deferredOpaque, "status",
+                                          deferredStatus,
+                                          "DeferredOpaque execution receipt v2",
+                                          true);
+                passed &= ReadUnsignedField(*deferredOpaque,
+                                            "plannedPacketCount",
+                                            plannedPacketCount,
+                                            "DeferredOpaque execution receipt v2");
+                passed &= ReadUnsignedField(*deferredOpaque,
+                                            "executedPacketCount",
+                                            executedPacketCount,
+                                            "DeferredOpaque execution receipt v2");
+                const bool statusKnown = IsOneOf(
+                    deferredStatus, {"not-attempted", "completed", "failed"});
+                const bool structurallyValid = deferredAvailable
+                    ? deferredStatus != "not-attempted" &&
+                          plannedPacketCount <=
+                              std::numeric_limits<uint32_t>::max() &&
+                          executedPacketCount <= plannedPacketCount
+                    : deferredStatus == "not-attempted" &&
+                          plannedPacketCount == 0 &&
+                          executedPacketCount == 0;
+                if (!statusKnown || !structurallyValid)
+                {
+                    std::cerr << "DeferredOpaque execution receipt v2 is structurally invalid\n";
+                    passed = false;
+                }
+                if (options != nullptr &&
+                    options->requireDeferredOpaqueExecution &&
+                    (!deferredAvailable || deferredStatus != "completed" ||
+                     plannedPacketCount == 0 ||
+                     executedPacketCount != plannedPacketCount))
+                {
+                    std::cerr << "Render execution receipt v21 did not complete "
+                              << "required DeferredOpaque work\n";
+                    passed = false;
+                }
+            }
+        }
+        else if (options != nullptr &&
+                 options->requireDeferredOpaqueExecution)
+        {
+            std::cerr << "Render execution receipt v21 predates required "
+                      << "DeferredOpaque evidence\n";
+            passed = false;
+        }
         if (!diagnostic.empty() || diagnostic.size() > 4096)
         {
             std::cerr << "Successful render execution receipt v21 has a diagnostic\n";
+            passed = false;
+        }
+        if (options != nullptr && !options->requiredRenderPipeline.empty() &&
+            (requestedRecipe != options->requiredRenderPipeline ||
+             resolvedRecipe != options->requiredRenderPipeline))
+        {
+            std::cerr << "Render execution receipt v21 did not execute the required "
+                      << options->requiredRenderPipeline << " pipeline\n";
             passed = false;
         }
 
@@ -2612,6 +2732,14 @@ namespace
         }
 
         std::set<uint64_t> featureIds;
+        std::set<uint64_t> requiredExecutedFeatureIds;
+        if (options != nullptr)
+        {
+            requiredExecutedFeatureIds.insert(
+                options->requiredExecutedRenderFeatureIds.begin(),
+                options->requiredExecutedRenderFeatureIds.end());
+        }
+        std::set<uint64_t> observedRequiredExecutedFeatureIds;
         const std::set<std::string> expectedFeatureFields = {
             "featureId",
             "featureSchemaVersion",
@@ -2790,6 +2918,34 @@ namespace
                 std::cerr << "Render feature readiness v21 is inconsistent with successful execution\n";
                 passed = false;
             }
+            if (options != nullptr && options->forbidRenderFeatureFallbacks &&
+                fallbackUsed)
+            {
+                std::cerr << "Render execution receipt v21 records a forbidden "
+                          << "feature fallback for id " << featureId << "\n";
+                passed = false;
+            }
+            if (requiredExecutedFeatureIds.contains(featureId))
+            {
+                observedRequiredExecutedFeatureIds.insert(featureId);
+                if (requirement != "required" || !selected || fallbackUsed ||
+                    !executed || !ready || graphPassCount == 0 ||
+                    executedGraphPassCount != graphPassCount)
+                {
+                    std::cerr << "Render execution receipt v21 did not fully execute "
+                              << "required feature id " << featureId << "\n";
+                    passed = false;
+                }
+            }
+        }
+        for (const uint64_t featureId : requiredExecutedFeatureIds)
+        {
+            if (!observedRequiredExecutedFeatureIds.contains(featureId))
+            {
+                std::cerr << "Render execution receipt v21 is missing required "
+                          << "executed feature id " << featureId << "\n";
+                passed = false;
+            }
         }
         for (const auto& [featureId, relation] : fallbackRelations)
         {
@@ -2821,7 +2977,8 @@ namespace
     bool ValidateVisualContractReceiptSchemaV21(
         const Json& report,
         uint64_t presentedFrameSequence,
-        const ValidationBuildIdentity& expectedBuildIdentity)
+        const ValidationBuildIdentity& expectedBuildIdentity,
+        const Options* options = nullptr)
     {
         const auto iterator = report.find("visualContractReceipt");
         if (iterator == report.end() || !iterator->is_object())
@@ -2951,13 +3108,15 @@ namespace
             requestedPipeline,
             observedPipeline,
             quality,
-            expectedBuildIdentity);
+            expectedBuildIdentity,
+            options);
         return passed;
     }
 
     bool ValidateSampleReportV12Root(
         const Json& report,
-        const ValidationBuildIdentity& expectedBuildIdentity = {})
+        const ValidationBuildIdentity& expectedBuildIdentity = {},
+        const Options* options = nullptr)
     {
         bool passed = true;
         std::string schemaId;
@@ -3044,7 +3203,7 @@ namespace
         if (schemaVersion >= 21)
         {
             passed &= ValidateVisualContractReceiptSchemaV21(
-                report, presentedFrameSequence, expectedBuildIdentity);
+                report, presentedFrameSequence, expectedBuildIdentity, options);
         }
         else if (schemaVersion >= 20)
         {
@@ -3612,6 +3771,20 @@ namespace
             {
                 std::cerr << "Report does not support required feature: "
                           << feature << "\n";
+                passed = false;
+            }
+        }
+        if (options.requireNoFallbackReasons)
+        {
+            std::set<std::string> fallbackReasons;
+            if (!ReadExactStringArray(
+                    report, "fallbackReasons", fallbackReasons, "Report"))
+            {
+                passed = false;
+            }
+            else if (!fallbackReasons.empty())
+            {
+                std::cerr << "Report records fallback reasons when none are allowed\n";
                 passed = false;
             }
         }
@@ -4287,7 +4460,7 @@ namespace
         schema21Report["visualContractReceipt"]
                       ["captureConfigurationRevision"] = 3;
         schema21Report["visualContractReceipt"]["renderExecutionReceipt"] = {
-            {"schemaVersion", 1},
+            {"schemaVersion", 2},
             {"available", true},
             {"graphComposed", true},
             {"executionSucceeded", true},
@@ -4308,6 +4481,10 @@ namespace
             {"resolvedRecipe", "deferred"},
             {"quality", "high"},
             {"profileHash", ComputeRenderPipelineProfileHash(2, 2)},
+            {"deferredOpaque", {{"available", true},
+                                 {"status", "completed"},
+                                 {"plannedPacketCount", 1},
+                                 {"executedPacketCount", 1}}},
             {"diagnostic", ""},
             {"features",
              Json::array({{{"featureId", 1},
@@ -4339,6 +4516,78 @@ namespace
             return false;
         }
 
+        // The GFX07 native Deferred gate selects a specific recipe and exact
+        // feature evidence.  Keep those optional command-line contracts
+        // covered here so a report cannot satisfy the generic schema while
+        // silently omitting, falling back from, or failing one required
+        // renderer feature.
+        schema21Report["fallbackReasons"] = Json::array();
+        Options strictDeferredReceipt;
+        strictDeferredReceipt.requiredRenderPipeline = "deferred";
+        strictDeferredReceipt.requireNoFallbackReasons = true;
+        strictDeferredReceipt.forbidRenderFeatureFallbacks = true;
+        strictDeferredReceipt.requireDeferredOpaqueExecution = true;
+        strictDeferredReceipt.requiredExecutedRenderFeatureIds = {1};
+        if (!ValidateSampleReportV12Root(
+                schema21Report,
+                expectedBuildIdentity,
+                &strictDeferredReceipt) ||
+            !ValidateFeatureRequirements(schema21Report, strictDeferredReceipt))
+        {
+            return false;
+        }
+
+        Options wrongRequiredPipeline = strictDeferredReceipt;
+        wrongRequiredPipeline.requiredRenderPipeline = "forward-plus";
+        Options missingRequiredFeature = strictDeferredReceipt;
+        missingRequiredFeature.requiredExecutedRenderFeatureIds = {2};
+        Json fallbackRequiredFeature = schema21Report;
+        fallbackRequiredFeature["visualContractReceipt"]
+                               ["renderExecutionReceipt"]
+                               ["features"][0]["fallbackUsed"] = true;
+        Json unexecutedRequiredFeature = schema21Report;
+        unexecutedRequiredFeature["visualContractReceipt"]
+                                ["renderExecutionReceipt"]
+                                ["features"][0]["readiness"]["executed"] = false;
+        Json unavailableDeferredOpaque = schema21Report;
+        unavailableDeferredOpaque["visualContractReceipt"]
+                               ["renderExecutionReceipt"]
+                               ["deferredOpaque"] = {
+            {"available", false},
+            {"status", "not-attempted"},
+            {"plannedPacketCount", 0},
+            {"executedPacketCount", 0},
+        };
+        Json reportWithFallbackReason = schema21Report;
+        reportWithFallbackReason["fallbackReasons"] =
+            Json::array({"DeferredRecipeFallback"});
+        if (ValidateSampleReportV12Root(
+                schema21Report,
+                expectedBuildIdentity,
+                &wrongRequiredPipeline) ||
+            ValidateSampleReportV12Root(
+                schema21Report,
+                expectedBuildIdentity,
+                &missingRequiredFeature) ||
+            ValidateSampleReportV12Root(
+                fallbackRequiredFeature,
+                expectedBuildIdentity,
+                &strictDeferredReceipt) ||
+            ValidateSampleReportV12Root(
+                unexecutedRequiredFeature,
+                expectedBuildIdentity,
+                &strictDeferredReceipt) ||
+            ValidateSampleReportV12Root(
+                unavailableDeferredOpaque,
+                expectedBuildIdentity,
+                &strictDeferredReceipt) ||
+            ValidateFeatureRequirements(
+                reportWithFallbackReason,
+                strictDeferredReceipt))
+        {
+            return false;
+        }
+
         const auto expectInvalidSchema21 =
             [&expectedBuildIdentity](Json invalid)
         {
@@ -4348,6 +4597,10 @@ namespace
         Json missingExecutionReceipt = schema21Report;
         missingExecutionReceipt["visualContractReceipt"].erase(
             "renderExecutionReceipt");
+        Json missingDeferredOpaqueEvidence = schema21Report;
+        missingDeferredOpaqueEvidence["visualContractReceipt"]
+                                     ["renderExecutionReceipt"].erase(
+                                         "deferredOpaque");
         Json executionNotPresented = schema21Report;
         executionNotPresented["visualContractReceipt"]
                              ["renderExecutionReceipt"]["presented"] = false;
@@ -4444,6 +4697,7 @@ namespace
                             ["renderExecutionReceipt"]["features"] =
             Json::array();
         if (!expectInvalidSchema21(std::move(missingExecutionReceipt)) ||
+            !expectInvalidSchema21(std::move(missingDeferredOpaqueEvidence)) ||
             !expectInvalidSchema21(std::move(executionNotPresented)) ||
             !expectInvalidSchema21(std::move(executionUnavailable)) ||
             !expectInvalidSchema21(std::move(graphNotComposed)) ||
@@ -4793,7 +5047,13 @@ namespace
                "cook.accepted to be true and compares package, declared, and "
                "observed identities exactly using typed JSON traversal. Asset "
                "receipt identities use the same Resource identity contract and "
-               "require a loaded, verified runtime receipt.\n";
+               "require a loaded, verified runtime receipt.\n\n"
+            << "Deferred/native receipt gates:\n"
+            << "  --require-render-pipeline <forward-plus|deferred|hybrid-rt>\n"
+            << "  --require-deferred-opaque-execution\n"
+            << "  --require-render-feature-executed <feature-id>\n"
+            << "  --forbid-fallback-reasons\n"
+            << "  --forbid-render-feature-fallbacks\n";
     }
 } // namespace
 
@@ -4837,7 +5097,7 @@ int main(int argc, char* argv[])
     const ValidationBuildIdentity expectedBuildIdentity =
         ReadExpectedValidationBuildIdentity();
     const bool rootValid = ValidateSampleReportV12Root(
-        report, expectedBuildIdentity);
+        report, expectedBuildIdentity, &options);
     passed &= rootValid;
     const bool scenarioValid = ValidateScenario(report);
     passed &= scenarioValid;

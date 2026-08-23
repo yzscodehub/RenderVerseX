@@ -825,7 +825,13 @@ namespace RVX
             [](const GraphPassData& data,
                RenderGraphPassContext& context)
             {
-                if (data.results == nullptr || data.results->transparentStats.noWork)
+                if (data.results == nullptr)
+                {
+                    context.MarkExecutionFailed(
+                        "TransparentPass has no recording-results owner");
+                    return;
+                }
+                if (data.results->transparentStats.noWork)
                 {
                     return;
                 }
@@ -841,6 +847,8 @@ namespace RVX
                         stats,
                         RenderExecutionStatus::Failed,
                         stats.failureReason);
+                    context.MarkExecutionFailed(
+                        "TransparentPass failed after graph registration");
                     return;
                 }
                 TransparentPassDrawStats& stats = data.results->transparentStats;

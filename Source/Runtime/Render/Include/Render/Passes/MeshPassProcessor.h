@@ -249,6 +249,7 @@ namespace RVX
         uint8 pipelineVariant = 0;
         uint8 cullMode = 0;
         uint8 shadowPolicy = 0;
+        uint8 surfacePathEligibility = 0;
         uint8 topology = 0;
         uint8 skinned = 0;
         uint8 materialPolicyValid = 1;

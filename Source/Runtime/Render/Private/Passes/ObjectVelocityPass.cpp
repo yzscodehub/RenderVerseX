@@ -446,11 +446,20 @@ namespace RVX
         {
             if (!data.results || data.results->identity != data.identity)
             {
+                context.MarkExecutionFailed(
+                    "ObjectVelocityPass has no matching recording-results owner");
                 return;
             }
             ObjectVelocityPassStats stats = data.results->objectVelocityStats;
             stats.velocityRecorded = false;
-            if (!data.contextValid || !stats.outputDeclared || data.draws.empty() ||
+            if (data.draws.empty())
+            {
+                // The typed motion list may legitimately be empty for a
+                // static scene or reset history.
+                data.results->objectVelocityStats = stats;
+                return;
+            }
+            if (!data.contextValid || !stats.outputDeclared ||
                 !data.identity.IsValid() || data.identity.graph == nullptr ||
                 !data.identity.Matches(*data.identity.graph) ||
                 !data.velocityHandle.IsValid() || !data.depthHandle.IsValid() ||
@@ -468,6 +477,8 @@ namespace RVX
                     data.identity.graphRecordingGeneration)
             {
                 data.results->objectVelocityStats = stats;
+                context.MarkExecutionFailed(
+                    "ObjectVelocityPass graph recording prerequisites are unavailable");
                 return;
             }
 
@@ -477,6 +488,8 @@ namespace RVX
             if (!velocityTexture || !depthTexture || !data.bindings.IsValid())
             {
                 data.results->objectVelocityStats = stats;
+                context.MarkExecutionFailed(
+                    "ObjectVelocityPass could not realize a required graph texture or binding");
                 return;
             }
             RHITextureView* velocityView =
@@ -487,6 +500,8 @@ namespace RVX
             {
                 RVX_CORE_WARN("ObjectVelocityPass: failed to resolve velocity RTV or depth DSV");
                 data.results->objectVelocityStats = stats;
+                context.MarkExecutionFailed(
+                    "ObjectVelocityPass could not realize a required graph texture view");
                 return;
             }
 
@@ -503,6 +518,8 @@ namespace RVX
             if (drawableCount == 0)
             {
                 data.results->objectVelocityStats = stats;
+                context.MarkExecutionFailed(
+                    "ObjectVelocityPass prepared motion records but none remained drawable");
                 return;
             }
 

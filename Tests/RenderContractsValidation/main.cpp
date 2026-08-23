@@ -3,6 +3,7 @@
 #include "RenderContracts/RenderFrameValidation.h"
 #include "RenderContracts/RenderFeatureChannelRegistry.h"
 #include "RenderContracts/RenderIdentity.h"
+#include "RenderContracts/RenderMaterial.h"
 #include "RenderContracts/RenderPipelineProfile.h"
 #include "RenderContracts/RenderSceneUpdate.h"
 #include "RenderContracts/ResourceUploadRequest.h"
@@ -2002,6 +2003,177 @@ namespace
         EXPECT_TRUE(HasRenderHistoryResetReason(
             decision.resetReasons,
             RenderHistoryResetReason::HistoryUnavailable));
+    }
+
+    MaterialStaticDescriptor MakeSurfacePathDescriptor(
+        MaterialShadingModel shadingModel,
+        MaterialBlendMode blendMode,
+        MaterialTranslucencyPhase translucencyPhase)
+    {
+        MaterialStaticDescriptor descriptor;
+        descriptor.shadingModel = shadingModel;
+        descriptor.blendMode = blendMode;
+        descriptor.translucencyPhase = translucencyPhase;
+        descriptor.programFamily =
+            std::string(GetMaterialProgramFamily(shadingModel));
+        return descriptor;
+    }
+
+    TEST(RenderContractsValidation,
+         SurfacePathEligibilityRoutesTheSupportedMaterialMatrix)
+    {
+        struct Case
+        {
+            MaterialShadingModel shadingModel;
+            MaterialBlendMode blendMode;
+            MaterialTranslucencyPhase translucencyPhase;
+            SurfacePathEligibility expected;
+        };
+
+        const std::vector<Case> cases = {
+            {MaterialShadingModel::StandardLit, MaterialBlendMode::Opaque,
+             MaterialTranslucencyPhase::Opaque,
+             SurfacePathEligibility::DeferredOpaque},
+            {MaterialShadingModel::StandardLit, MaterialBlendMode::Masked,
+             MaterialTranslucencyPhase::Opaque,
+             SurfacePathEligibility::DeferredOpaque},
+            {MaterialShadingModel::Unlit, MaterialBlendMode::Opaque,
+             MaterialTranslucencyPhase::Opaque,
+             SurfacePathEligibility::ForwardSpecialOpaque},
+            {MaterialShadingModel::Unlit, MaterialBlendMode::Masked,
+             MaterialTranslucencyPhase::Opaque,
+             SurfacePathEligibility::ForwardSpecialOpaque},
+            {MaterialShadingModel::StandardLit, MaterialBlendMode::AlphaBlend,
+             MaterialTranslucencyPhase::Standard,
+             SurfacePathEligibility::ForwardTranslucency},
+            {MaterialShadingModel::StandardLit,
+             MaterialBlendMode::Premultiplied,
+             MaterialTranslucencyPhase::AfterToneMap,
+             SurfacePathEligibility::ForwardTranslucency},
+            {MaterialShadingModel::Unlit, MaterialBlendMode::Additive,
+             MaterialTranslucencyPhase::Standard,
+             SurfacePathEligibility::ForwardTranslucency},
+            {MaterialShadingModel::ThinTransmission,
+             MaterialBlendMode::AlphaBlend,
+             MaterialTranslucencyPhase::Standard,
+             SurfacePathEligibility::ForwardTranslucency},
+            {MaterialShadingModel::ThinTransmission,
+             MaterialBlendMode::Premultiplied,
+             MaterialTranslucencyPhase::Standard,
+             SurfacePathEligibility::ForwardTranslucency},
+            {MaterialShadingModel::ThinTransmission, MaterialBlendMode::Additive,
+             MaterialTranslucencyPhase::Standard,
+             SurfacePathEligibility::ForwardTranslucency},
+        };
+
+        for (const Case& testCase : cases)
+        {
+            const MaterialStaticDescriptor descriptor =
+                MakeSurfacePathDescriptor(testCase.shadingModel,
+                                          testCase.blendMode,
+                                          testCase.translucencyPhase);
+            std::string error;
+            EXPECT_TRUE(ValidateMaterialStaticDescriptor(descriptor, error))
+                << error;
+            EXPECT_EQ(ClassifySurfacePathEligibility(descriptor),
+                      testCase.expected);
+        }
+    }
+
+    TEST(RenderContractsValidation,
+         SurfacePathEligibilityKeepsToonUnsupportedUntilItsFeatureExists)
+    {
+        for (const auto [blendMode, translucencyPhase] :
+             {std::pair{MaterialBlendMode::Opaque,
+                        MaterialTranslucencyPhase::Opaque},
+              std::pair{MaterialBlendMode::Masked,
+                        MaterialTranslucencyPhase::Opaque},
+              std::pair{MaterialBlendMode::AlphaBlend,
+                        MaterialTranslucencyPhase::Standard},
+              std::pair{MaterialBlendMode::Premultiplied,
+                        MaterialTranslucencyPhase::Standard},
+              std::pair{MaterialBlendMode::Additive,
+                        MaterialTranslucencyPhase::Standard}})
+        {
+            const MaterialStaticDescriptor descriptor =
+                MakeSurfacePathDescriptor(MaterialShadingModel::ToonLit,
+                                          blendMode,
+                                          translucencyPhase);
+            std::string error;
+            EXPECT_TRUE(ValidateMaterialStaticDescriptor(descriptor, error))
+                << error;
+            EXPECT_EQ(ClassifySurfacePathEligibility(descriptor),
+                      SurfacePathEligibility::Unsupported);
+        }
+    }
+
+    TEST(RenderContractsValidation,
+         SurfacePathEligibilityFailsClosedForInvalidOrContradictoryDescriptors)
+    {
+        const MaterialStaticDescriptor valid = MakeSurfacePathDescriptor(
+            MaterialShadingModel::StandardLit, MaterialBlendMode::Opaque,
+            MaterialTranslucencyPhase::Opaque);
+
+        std::vector<MaterialStaticDescriptor> invalidDescriptors;
+
+        MaterialStaticDescriptor unknownDomain = valid;
+        unknownDomain.domain = static_cast<MaterialDomain>(255);
+        invalidDescriptors.push_back(std::move(unknownDomain));
+
+        MaterialStaticDescriptor unknownBlend = valid;
+        unknownBlend.blendMode = static_cast<MaterialBlendMode>(255);
+        invalidDescriptors.push_back(std::move(unknownBlend));
+
+        MaterialStaticDescriptor contradictoryPhase = valid;
+        contradictoryPhase.translucencyPhase =
+            MaterialTranslucencyPhase::Standard;
+        invalidDescriptors.push_back(std::move(contradictoryPhase));
+
+        MaterialStaticDescriptor invalidThinTransmission =
+            MakeSurfacePathDescriptor(MaterialShadingModel::ThinTransmission,
+                                      MaterialBlendMode::Opaque,
+                                      MaterialTranslucencyPhase::Opaque);
+        invalidDescriptors.push_back(std::move(invalidThinTransmission));
+
+        MaterialStaticDescriptor wrongProgramFamily = valid;
+        wrongProgramFamily.programFamily = "unknown-program";
+        invalidDescriptors.push_back(std::move(wrongProgramFamily));
+
+        MaterialStaticDescriptor wrongLayout = valid;
+        wrongLayout.parameterLayoutHash ^= 0x1ull;
+        invalidDescriptors.push_back(std::move(wrongLayout));
+
+        MaterialStaticDescriptor unknownFeature = valid;
+        unknownFeature.featureMask = 1ull << 63u;
+        invalidDescriptors.push_back(std::move(unknownFeature));
+
+        for (const MaterialStaticDescriptor& descriptor : invalidDescriptors)
+        {
+            std::string error;
+            EXPECT_FALSE(ValidateMaterialStaticDescriptor(descriptor, error));
+            EXPECT_FALSE(error.empty());
+            EXPECT_EQ(ClassifySurfacePathEligibility(descriptor),
+                      SurfacePathEligibility::Unsupported);
+        }
+    }
+
+    TEST(RenderContractsValidation, SurfacePathEligibilityNamesAreStable)
+    {
+        EXPECT_EQ(GetSurfacePathEligibilityName(
+                      SurfacePathEligibility::DeferredOpaque),
+                  "DeferredOpaque");
+        EXPECT_EQ(GetSurfacePathEligibilityName(
+                      SurfacePathEligibility::ForwardSpecialOpaque),
+                  "ForwardSpecialOpaque");
+        EXPECT_EQ(GetSurfacePathEligibilityName(
+                      SurfacePathEligibility::ForwardTranslucency),
+                  "ForwardTranslucency");
+        EXPECT_EQ(GetSurfacePathEligibilityName(
+                      SurfacePathEligibility::Unsupported),
+                  "Unsupported");
+        EXPECT_EQ(GetSurfacePathEligibilityName(
+                      static_cast<SurfacePathEligibility>(255)),
+                  "Unknown");
     }
 
 } // namespace

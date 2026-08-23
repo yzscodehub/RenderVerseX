@@ -7,6 +7,8 @@
     {"asset":"DefaultLit.hlsl","stage":"Vertex","entry":"VSMainGPUDriven","backends":["DX11","DX12","Vulkan","Metal","OpenGL"]},
     {"asset":"DefaultLit.hlsl","stage":"Vertex","entry":"VSMainInstancedMaterial","backends":["DX11","DX12","Vulkan","Metal","OpenGL"]},
     {"asset":"DefaultLit.hlsl","stage":"Pixel","entry":"PSMain","backends":["DX11","DX12","Vulkan","Metal","OpenGL"]},
+    {"asset":"DefaultLit.hlsl","stage":"Pixel","entry":"PSGBuffer","backends":["DX12","Vulkan","Metal"]},
+    {"asset":"DeferredLighting.hlsl","stage":"Compute","entry":"CSMain","backends":["DX12","Vulkan","Metal"]},
     {"asset":"DefaultLit.hlsl","stage":"Vertex","entry":"VSMainGPUScene","backends":["DX12","Vulkan","Metal"],"defines":[{"name":"RVX_GPU_SCENE_RASTER","value":"1"}]},
     {"asset":"DefaultLit.hlsl","stage":"Vertex","entry":"VSMainGPUSceneInstancedMaterial","backends":["DX12","Vulkan","Metal"],"defines":[{"name":"RVX_GPU_SCENE_RASTER","value":"1"}]},
 

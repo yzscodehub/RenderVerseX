@@ -328,6 +328,7 @@ void ShadowPass::AddToGraph(
         std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache;
         std::unique_ptr<ShadowPass> recorder;
         bool contextValid = false;
+        bool noWork = false;
     };
 
     const bool sourcePlanValid = context.executionPlan != nullptr &&
@@ -449,6 +450,9 @@ void ShadowPass::AddToGraph(
             }
             if (!primaryLight.IsShadowEligible())
             {
+                // No shadow-casting primary directional light is an explicit
+                // no-work outcome, not an execution failure.
+                data.noWork = true;
                 return;
             }
             data.recorder->Setup(builder, data.execution.view, primaryLight);
@@ -461,13 +465,25 @@ void ShadowPass::AddToGraph(
         [results, primaryLight](const GraphPassData& data,
                                 RenderGraphPassContext& context)
         {
+            if (data.noWork)
+            {
+                return;
+            }
             if (!data.contextValid || !data.recorder || !results)
             {
+                context.MarkExecutionFailed(
+                    "ShadowPass graph recording prerequisites are unavailable");
                 return;
             }
             data.recorder->Execute(
                 context, data.execution.view, primaryLight);
             results->shadowStats = data.recorder->GetStats();
+            if (results->shadowStats.shadowCasterCount != 0 &&
+                results->shadowStats.drawCount == 0)
+            {
+                context.MarkExecutionFailed(
+                    "ShadowPass had shadow casters but recorded no shadow draw");
+            }
         });
 }
 
@@ -1358,6 +1374,8 @@ void ShadowPass::Execute(
         if (IsRequestedEnabled())
         {
             RVX_CORE_WARN("ShadowPass: unsupported pass skipped: {}", GetUnsupportedReason());
+            context.MarkExecutionFailed(
+                "ShadowPass was requested but its required capability is unavailable");
         }
         return;
     }
@@ -1369,6 +1387,8 @@ void ShadowPass::Execute(
     {
         RVX_RENDER_ERROR(
             "ShadowPass: immutable directional cascade bindings are unavailable at execution");
+        context.MarkExecutionFailed(
+            "ShadowPass graph recording prerequisites are unavailable");
         return;
     }
 
@@ -1381,6 +1401,8 @@ void ShadowPass::Execute(
         {
             RVX_CORE_WARN(
                 "ShadowPass: explicit cascade view was not realized");
+            context.MarkExecutionFailed(
+                "ShadowPass could not realize a required cascade view");
             return;
         }
         ++m_stats.resolvedCascadeViewCount;
@@ -1403,7 +1425,9 @@ void ShadowPass::RenderCascade(
 {
     if (cascadeIndex >= m_cascadeViewHandles.size())
     {
-        return;  // Cascade view not created
+        context.MarkExecutionFailed(
+            "ShadowPass attempted to record a cascade without a graph view");
+        return;
     }
     if (!m_cascadeFrameBindings ||
         cascadeIndex >= m_cascadeFrameBindings->frameDescriptorSets.size() ||
@@ -1411,12 +1435,18 @@ void ShadowPass::RenderCascade(
     {
         RVX_RENDER_ERROR(
             "ShadowPass: immutable directional cascade binding is unavailable");
+        context.MarkExecutionFailed(
+            "ShadowPass could not resolve a required cascade descriptor set");
         return;
     }
     RHITextureView* const cascadeView =
         context.GetTextureView(m_cascadeViewHandles[cascadeIndex]);
     if (!cascadeView)
+    {
+        context.MarkExecutionFailed(
+            "ShadowPass could not realize a required cascade texture view");
         return;
+    }
     RHICommandContext& ctx = context.Commands();
 
     // Begin shadow render pass for this cascade

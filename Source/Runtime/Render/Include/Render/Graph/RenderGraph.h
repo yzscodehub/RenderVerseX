@@ -17,7 +17,7 @@
 namespace RVX
 {
     inline constexpr const char* RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID = "RVX.RenderGraph.Diagnostics";
-    inline constexpr uint32 RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION = 7;
+    inline constexpr uint32 RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION = 8;
 
     class RenderGraph;
     class RenderGraphCompiler;
@@ -57,6 +57,8 @@ namespace RVX
         bool hasCapabilitySnapshot = false;
         bool enableMemoryAliasing = false;
         bool enableParallelRecording = false;
+        /** @brief Return implicit pool-eligible transients as Graphics/Common. */
+        bool canonicalizeTransientPoolAccess = false;
     };
 
     /** @brief Execution-only dependencies; never consulted by graph compilation. */
@@ -128,7 +130,9 @@ namespace RVX
         /** @brief Internal executor constructor; callers receive this in pass callbacks. */
         RenderGraphPassContext(
             RenderGraph& graph,
-            RHICommandContext& commands);
+            RHICommandContext& commands,
+            bool* semanticExecutionSucceeded = nullptr,
+            std::string* semanticExecutionDiagnostic = nullptr);
         RHICommandContext& Commands() const;
         RHITexture* GetTexture(RGTextureHandle handle) const;
         RHIBuffer* GetBuffer(RGBufferHandle handle) const;
@@ -136,9 +140,20 @@ namespace RVX
         [[nodiscard]] bool RetainSubmissionResource(
             Ref<RefCounted> resource) const;
 
+        /**
+         * @brief Mark a callback that ran but failed to record its required work.
+         *
+         * RenderGraph still records that the callback was entered. Feature
+         * receipts additionally require this semantic result so an early
+         * return cannot be mistaken for a successful draw or dispatch.
+         */
+        void MarkExecutionFailed(const char* diagnostic = nullptr) const noexcept;
+
     private:
         RenderGraph* m_graph = nullptr;
         RHICommandContext* m_commands = nullptr;
+        bool* m_semanticExecutionSucceeded = nullptr;
+        std::string* m_semanticExecutionDiagnostic = nullptr;
     };
 
     // =============================================================================
@@ -486,6 +501,8 @@ namespace RVX
             DiagnosticExecutionQueue plannedExecutionQueue =
                 DiagnosticExecutionQueue::Graphics;
             bool executedLastRun = false;
+            bool semanticExecutionSucceededLastRun = true;
+            std::string semanticExecutionDiagnostic;
             DiagnosticExecutionQueue executionQueue = DiagnosticExecutionQueue::Unknown;
             uint32 executionSerial = RVX_INVALID_INDEX;
             uint64 cpuDurationNanoseconds = 0;

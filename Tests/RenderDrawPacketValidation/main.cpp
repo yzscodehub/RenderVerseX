@@ -165,6 +165,11 @@ TEST(RenderDrawPacketValidation, KeysUseCompleteExactIdentityAndStableHashing)
     pipelineB.reverseWinding = true;
     EXPECT_NE(pipelineA, pipelineB);
     EXPECT_NE(GetStableHash(pipelineA), GetStableHash(pipelineB));
+    pipelineB = pipelineA;
+    pipelineB.surfacePathEligibility =
+        SurfacePathEligibility::DeferredOpaque;
+    EXPECT_NE(pipelineA, pipelineB);
+    EXPECT_NE(GetStableHash(pipelineA), GetStableHash(pipelineB));
 
     GeometryBindingKey geometryA{
         RenderResourceHandle{8, 2}, 1, MeshUploadIndexType::UInt16};
@@ -189,6 +194,8 @@ TEST(RenderDrawPacketValidation, KeysUseCompleteExactIdentityAndStableHashing)
     EXPECT_EQ(first.materialKey, repeated.materialKey);
     EXPECT_EQ(first.arguments, repeated.arguments);
     EXPECT_EQ(first, repeated);
+    EXPECT_EQ(SurfacePathEligibility::ForwardSpecialOpaque,
+              first.pipelineKey.surfacePathEligibility);
 }
 
 TEST(RenderDrawPacketValidation,

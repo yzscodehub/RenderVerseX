@@ -129,6 +129,37 @@ namespace RVX
         uint64 parameterLayoutHash = GetMaterialParameterLayoutHashV1();
     };
 
+    /**
+     * @brief The only legal raster route for a validated surface descriptor.
+     *
+     * This is intentionally a material-contract decision rather than a
+     * renderer-local heuristic. A descriptor that is malformed, contradictory,
+     * or not implemented by the current graphics foundation is never routed to
+     * a fallback path implicitly.
+     */
+    enum class SurfacePathEligibility : uint8
+    {
+        DeferredOpaque = 0,
+        ForwardSpecialOpaque,
+        ForwardTranslucency,
+        Unsupported
+    };
+
+    /**
+     * @brief Classify one immutable material descriptor into exactly one path.
+     *
+     * StandardLit opaque and masked surfaces are deferred eligible. Unlit
+     * opaque and masked surfaces retain the forward-special path. All supported
+     * translucent descriptors use the forward translucency path. Toon is kept
+     * unsupported until its GFX14 renderer contract exists.
+     */
+    [[nodiscard]] SurfacePathEligibility ClassifySurfacePathEligibility(
+        const MaterialStaticDescriptor& descriptor);
+
+    /** @brief Stable diagnostic name for a surface-path classification. */
+    [[nodiscard]] std::string_view GetSurfacePathEligibilityName(
+        SurfacePathEligibility eligibility) noexcept;
+
     enum class RenderMaterialMode : uint8
     {
         Opaque = 0,

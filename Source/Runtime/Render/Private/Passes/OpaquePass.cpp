@@ -5,6 +5,7 @@
 
 #include "Render/Passes/OpaquePass.h"
 #include "Render/Submission/DirectRasterReadbackQualification.h"
+#include "Render/Submission/OpaqueRasterSubmission.h"
 
 #include "Passes/MaterialTextureGraphBindings.h"
 #include "Core/Log.h"
@@ -35,6 +36,34 @@ namespace RVX
 
 namespace
 {
+    class RequiredOpaqueExecutionGuard final
+    {
+    public:
+        explicit RequiredOpaqueExecutionGuard(
+            RenderGraphPassContext& context) noexcept
+            : m_context(context)
+        {
+        }
+
+        ~RequiredOpaqueExecutionGuard()
+        {
+            if (!m_succeeded)
+            {
+                m_context.MarkExecutionFailed(
+                    "Opaque raster pass did not record its required workload");
+            }
+        }
+
+        void MarkSucceeded() noexcept
+        {
+            m_succeeded = true;
+        }
+
+    private:
+        RenderGraphPassContext& m_context;
+        bool m_succeeded = false;
+    };
+
     std::span<const Mat4> ResolveSkinningMatrices(const RenderObject& object, const MeshGPUBuffers& buffers)
     {
         if (!object.HasSkinningData() || !buffers.HasSkinningVertexData())
@@ -77,6 +106,85 @@ namespace
     {
         return HasDrawFlag(packet.flags, RenderDrawFlags::Skinned) ||
             packet.pipelineKey.skinned;
+    }
+
+    [[nodiscard]] bool IsOpaqueSurfaceEligibility(
+        SurfacePathEligibility eligibility) noexcept
+    {
+        return eligibility == SurfacePathEligibility::DeferredOpaque ||
+            eligibility == SurfacePathEligibility::ForwardSpecialOpaque;
+    }
+
+    [[nodiscard]] bool IsSurfaceEligibilitySelectedForRoute(
+        SurfacePathEligibility eligibility,
+        OpaqueRasterSurfaceRoute route) noexcept
+    {
+        switch (route)
+        {
+            case OpaqueRasterSurfaceRoute::AllOpaque:
+                return IsOpaqueSurfaceEligibility(eligibility);
+            case OpaqueRasterSurfaceRoute::DeferredOpaque:
+                return eligibility == SurfacePathEligibility::DeferredOpaque;
+            case OpaqueRasterSurfaceRoute::ForwardSpecialOpaque:
+                return eligibility == SurfacePathEligibility::ForwardSpecialOpaque;
+            default:
+                return false;
+        }
+    }
+
+    [[nodiscard]] bool IsPacketSelectedForSurfaceRoute(
+        const RenderDrawPacket& packet,
+        OpaqueRasterSurfaceRoute route) noexcept
+    {
+        if (!packet.pipelineKey.materialPolicyValid ||
+            !IsOpaqueSurfaceEligibility(packet.pipelineKey.surfacePathEligibility))
+        {
+            return false;
+        }
+
+        return IsSurfaceEligibilitySelectedForRoute(
+            packet.pipelineKey.surfacePathEligibility, route);
+    }
+
+    [[nodiscard]] bool IsPacketInvalidForOpaqueRoute(
+        const RenderDrawPacket& packet) noexcept
+    {
+        return packet.pass != RenderPassKind::Opaque ||
+            packet.pipelineKey.materialVariant ==
+                MaterialPipelineVariant::Transparent ||
+            !packet.pipelineKey.materialPolicyValid ||
+            !IsOpaqueSurfaceEligibility(packet.pipelineKey.surfacePathEligibility);
+    }
+
+    [[nodiscard]] bool IsDrawItemSelectedForSurfaceRoute(
+        const RenderDrawItem& item,
+        OpaqueRasterSurfaceRoute route) noexcept
+    {
+        return IsPacketSelectedForSurfaceRoute(item.packet, route);
+    }
+
+    OpaqueRasterPipelineRequest MakeOpaquePipelineRequest(
+        OpaqueRasterOutputFamily outputFamily,
+        OpaqueRasterSurfaceRoute surfaceRoute,
+        OpaqueRasterSubmissionRoute route,
+        MaterialPipelineVariant materialVariant,
+        RHIFormat colorTargetFormat,
+        MaterialCullMode cullMode,
+        bool reverseWinding,
+        bool skinned,
+        bool usesMaterialParameterTable) noexcept
+    {
+        OpaqueRasterPipelineRequest request;
+        request.outputFamily = outputFamily;
+        request.surfaceRoute = surfaceRoute;
+        request.route = route;
+        request.materialVariant = materialVariant;
+        request.cullMode = cullMode;
+        request.colorTargetFormat = colorTargetFormat;
+        request.reverseWinding = reverseWinding;
+        request.skinned = skinned;
+        request.usesMaterialParameterTable = usesMaterialParameterTable;
+        return request;
     }
 
     RenderSubmissionLayout MakeExpectedDirectLayout(
@@ -203,6 +311,68 @@ namespace
                passPlan->partition.gpuDrivenPacketCount != 0;
     }
 
+    struct OpaqueRoutePlanCounts
+    {
+        uint32 gpuPacketCount = 0;
+        uint32 directPacketCount = 0;
+        uint32 skippedPacketCount = 0;
+        uint32 gpuDrawGroupCount = 0;
+        bool valid = true;
+    };
+
+    [[nodiscard]] bool CountOpaqueRoutePackets(
+        const RenderFrameExecutionPlan& plan,
+        const RenderPassExecutionPlan& opaquePlan,
+        OpaqueRasterSurfaceRoute route,
+        OpaqueRoutePlanCounts& outCounts) noexcept
+    {
+        outCounts = {};
+        const auto countRange = [&plan, route, &outCounts](
+                                    DrawPacketRange range,
+                                    uint32& destination) noexcept
+        {
+            const uint64 end = static_cast<uint64>(range.first) + range.count;
+            if (end > plan.packetReferences.size())
+            {
+                outCounts.valid = false;
+                return;
+            }
+            for (uint64 index = range.first; index < end; ++index)
+            {
+                const RenderDrawPacketReference& reference =
+                    plan.packetReferences[static_cast<size_t>(index)];
+                const RenderDrawPacket& packet = reference.sourceSignature.packet;
+                if (reference.pass != RenderPassKind::Opaque ||
+                    IsPacketInvalidForOpaqueRoute(packet))
+                {
+                    outCounts.valid = false;
+                    return;
+                }
+                if (IsPacketSelectedForSurfaceRoute(packet, route))
+                {
+                    ++destination;
+                }
+            }
+        };
+
+        countRange(opaquePlan.gpuEligiblePackets, outCounts.gpuPacketCount);
+        if (!outCounts.valid)
+        {
+            return false;
+        }
+        countRange(opaquePlan.directPackets, outCounts.directPacketCount);
+        if (!outCounts.valid)
+        {
+            return false;
+        }
+        countRange(opaquePlan.skippedPackets, outCounts.skippedPacketCount);
+        if (!outCounts.valid)
+        {
+            return false;
+        }
+        return true;
+    }
+
     void PublishOpaqueContextFailure(const RenderPassExecutionData& execution,
                                      OpaquePassDrawStats& stats)
     {
@@ -256,6 +426,249 @@ namespace
         }
     }
 
+    [[nodiscard]] OpaquePassDrawStats CombineOpaqueRouteDrawStats(
+        const OpaquePassDrawStats& lhs,
+        const OpaquePassDrawStats& rhs) noexcept
+    {
+        OpaquePassDrawStats result = lhs;
+        result.instancingMode = lhs.instancingMode == rhs.instancingMode
+            ? lhs.instancingMode
+            : RenderInstancingMode::Disabled;
+        result.instancingPlanAvailable = lhs.instancingPlanAvailable ||
+            rhs.instancingPlanAvailable;
+        result.instancingPreflightSucceeded = lhs.instancingPreflightSucceeded &&
+            rhs.instancingPreflightSucceeded;
+        result.plannedInstancingPacketCount += rhs.plannedInstancingPacketCount;
+        result.plannedInstancingDrawCount += rhs.plannedInstancingDrawCount;
+        result.plannedInstancingInstanceCount += rhs.plannedInstancingInstanceCount;
+        result.plannedInstancingBatchCount += rhs.plannedInstancingBatchCount;
+        result.directDrawCount += rhs.directDrawCount;
+        result.submittedDrawCount += rhs.submittedDrawCount;
+        result.submittedInstanceCount += rhs.submittedInstanceCount;
+        result.instancedBatchCount += rhs.instancedBatchCount;
+        result.instancingFallbackBatchCount += rhs.instancingFallbackBatchCount;
+        result.directInstanceUploadBytes += rhs.directInstanceUploadBytes;
+        result.directInstanceIndexUploadBytes += rhs.directInstanceIndexUploadBytes;
+        result.directInstancePatchedRowCount += rhs.directInstancePatchedRowCount;
+        result.directInstanceIndexPatchedRowCount +=
+            rhs.directInstanceIndexPatchedRowCount;
+        result.directInstanceActiveCount += rhs.directInstanceActiveCount;
+        result.directInstanceActiveCapacity = std::max(
+            result.directInstanceActiveCapacity,
+            rhs.directInstanceActiveCapacity);
+        result.directInstanceFullMaterialization =
+            lhs.directInstanceFullMaterialization ||
+            rhs.directInstanceFullMaterialization;
+        result.directInstanceIndexFullMaterialization =
+            lhs.directInstanceIndexFullMaterialization ||
+            rhs.directInstanceIndexFullMaterialization;
+        // A single transcript cannot represent two independently recorded
+        // surface routes. Leave it unavailable rather than publishing one
+        // route as if it described the aggregate.
+        result.directRasterTranscript = {};
+        result.directMutationTotals = {};
+        result.directMutationTotalsSaturated =
+            lhs.directMutationTotalsSaturated || rhs.directMutationTotalsSaturated;
+        result.gpuDrivenRequested = lhs.gpuDrivenRequested ||
+            rhs.gpuDrivenRequested;
+        result.gpuDrivenCullingReady = lhs.gpuDrivenCullingReady ||
+            rhs.gpuDrivenCullingReady;
+        result.gpuDrivenPipelineReady = lhs.gpuDrivenPipelineReady ||
+            rhs.gpuDrivenPipelineReady;
+        result.gpuDrivenEligible = lhs.gpuDrivenEligible ||
+            rhs.gpuDrivenEligible;
+        result.gpuDrivenSubmitted = lhs.gpuDrivenSubmitted ||
+            rhs.gpuDrivenSubmitted;
+        result.gpuDrivenIndirectBatchCount += rhs.gpuDrivenIndirectBatchCount;
+        result.gpuDrivenIndirectSubmittedDrawUpperBound +=
+            rhs.gpuDrivenIndirectSubmittedDrawUpperBound;
+        result.gpuDrivenIndirectExecutedDrawCountAvailable =
+            lhs.gpuDrivenIndirectExecutedDrawCountAvailable &&
+            rhs.gpuDrivenIndirectExecutedDrawCountAvailable;
+        result.gpuDrivenIndirectDrawCount =
+            result.gpuDrivenIndirectExecutedDrawCountAvailable
+                ? lhs.gpuDrivenIndirectDrawCount + rhs.gpuDrivenIndirectDrawCount
+                : 0;
+        if (lhs.gpuDrivenFallbackReason == GPUDrivenDrawFallbackReason::None ||
+            lhs.gpuDrivenFallbackReason == GPUDrivenDrawFallbackReason::Disabled)
+        {
+            result.gpuDrivenFallbackReason = rhs.gpuDrivenFallbackReason;
+        }
+        result.skippedMaterialBindingCount += rhs.skippedMaterialBindingCount;
+        result.materialBindingCount += rhs.materialBindingCount;
+        result.materialFallbackBindingCount += rhs.materialFallbackBindingCount;
+        result.materialTextureFlags |= rhs.materialTextureFlags;
+        result.materialFallbackTextureFlags |= rhs.materialFallbackTextureFlags;
+        result.planRequested = lhs.planRequested || rhs.planRequested;
+        result.planValidated = lhs.planValidated && rhs.planValidated;
+        result.directPacketPathUsed = lhs.directPacketPathUsed ||
+            rhs.directPacketPathUsed;
+        result.plannedPacketCount += rhs.plannedPacketCount;
+        result.compiledPacketCount += rhs.compiledPacketCount;
+        result.executedPacketCount += rhs.executedPacketCount;
+        result.failureReason = lhs.failureReason == RenderPolicyReason::None &&
+            rhs.failureReason == RenderPolicyReason::None
+                ? RenderPolicyReason::None
+                : lhs.failureReason != RenderPolicyReason::None
+                    ? lhs.failureReason
+                    : rhs.failureReason;
+        return result;
+    }
+
+    [[nodiscard]] OpaquePassShadowStats CombineOpaqueRouteShadowStats(
+        const OpaquePassShadowStats& lhs,
+        const OpaquePassShadowStats& rhs) noexcept
+    {
+        OpaquePassShadowStats result;
+        result.requested = lhs.requested || rhs.requested;
+        result.renderGraphReadDeclared = lhs.renderGraphReadDeclared ||
+            rhs.renderGraphReadDeclared;
+        result.frameShadowReady = lhs.frameShadowReady || rhs.frameShadowReady;
+        result.rayTracedRequested = lhs.rayTracedRequested || rhs.rayTracedRequested;
+        result.rayTracedRenderGraphReadDeclared =
+            lhs.rayTracedRenderGraphReadDeclared ||
+            rhs.rayTracedRenderGraphReadDeclared;
+        result.rayTracedFrameMaskReady = lhs.rayTracedFrameMaskReady ||
+            rhs.rayTracedFrameMaskReady;
+        result.rayTracedExecutionReady = lhs.rayTracedExecutionReady ||
+            rhs.rayTracedExecutionReady;
+        result.rayTracedExecutionFailed = lhs.rayTracedExecutionFailed ||
+            rhs.rayTracedExecutionFailed;
+        result.receiverCandidateDrawItemCount =
+            lhs.receiverCandidateDrawItemCount + rhs.receiverCandidateDrawItemCount;
+        result.shadowReceivingDrawItemCount =
+            lhs.shadowReceivingDrawItemCount + rhs.shadowReceivingDrawItemCount;
+        result.shadowReceiverOptOutDrawItemCount =
+            lhs.shadowReceiverOptOutDrawItemCount +
+            rhs.shadowReceiverOptOutDrawItemCount;
+        return result;
+    }
+
+    void PublishOpaqueRouteResults(
+        RenderPassRecordResults& results,
+        OpaqueRasterSurfaceRoute route,
+        const OpaquePassDrawStats& drawStats,
+        const OpaquePassShadowStats& shadowStats,
+        RenderExecutionStatus status)
+    {
+        if (route == OpaqueRasterSurfaceRoute::AllOpaque)
+        {
+            results.opaqueStats = drawStats;
+            results.opaqueShadowStats = shadowStats;
+            results.deferredOpaqueRoute = {};
+            results.forwardSpecialOpaqueRoute = {};
+            return;
+        }
+
+        OpaqueSurfaceRouteExecutionEvidence* evidence =
+            route == OpaqueRasterSurfaceRoute::DeferredOpaque
+                ? &results.deferredOpaqueRoute
+                : route == OpaqueRasterSurfaceRoute::ForwardSpecialOpaque
+                    ? &results.forwardSpecialOpaqueRoute
+                    : nullptr;
+        if (evidence == nullptr)
+        {
+            return;
+        }
+        evidence->route = route;
+        evidence->drawStats = drawStats;
+        evidence->shadowStats = shadowStats;
+        evidence->status = status;
+        evidence->available = true;
+
+        if (results.deferredOpaqueRoute.available &&
+            results.forwardSpecialOpaqueRoute.available)
+        {
+            results.opaqueStats = CombineOpaqueRouteDrawStats(
+                results.deferredOpaqueRoute.drawStats,
+                results.forwardSpecialOpaqueRoute.drawStats);
+            results.opaqueShadowStats = CombineOpaqueRouteShadowStats(
+                results.deferredOpaqueRoute.shadowStats,
+                results.forwardSpecialOpaqueRoute.shadowStats);
+        }
+        else
+        {
+            // Do not expose a partial route as the complete opaque aggregate.
+            results.opaqueStats = {};
+            results.opaqueShadowStats = {};
+        }
+    }
+
+    void PublishDeferredOpaqueAggregateExecutionReport(
+        const ViewData& view,
+        const RenderPassRecordResults& results)
+    {
+        if (view.renderFrameExecutionReport == nullptr ||
+            !results.deferredOpaqueRoute.available ||
+            !results.forwardSpecialOpaqueRoute.available)
+        {
+            return;
+        }
+
+        const bool completed =
+            results.deferredOpaqueRoute.status == RenderExecutionStatus::Completed &&
+            results.forwardSpecialOpaqueRoute.status ==
+                RenderExecutionStatus::Completed;
+        const OpaquePassDrawStats& aggregate = results.opaqueStats;
+        for (RenderPassExecutionReport& report :
+             view.renderFrameExecutionReport->passes)
+        {
+            if (report.pass != RenderPassKind::Opaque)
+            {
+                continue;
+            }
+            report.status = completed
+                ? RenderExecutionStatus::Completed
+                : RenderExecutionStatus::Failed;
+            report.reason = completed
+                ? RenderPolicyReason::None
+                : aggregate.failureReason;
+            report.materialBindingsAvailable = completed;
+            report.materialBindingCount = aggregate.materialBindingCount;
+            report.materialFallbackBindingCount =
+                aggregate.materialFallbackBindingCount;
+            report.materialTextureFlags = aggregate.materialTextureFlags;
+            report.materialFallbackTextureFlags =
+                aggregate.materialFallbackTextureFlags;
+            report.gpuDrivenLane.status = aggregate.gpuDrivenRequested
+                ? (aggregate.gpuDrivenSubmitted
+                       ? RenderExecutionStatus::Completed
+                       : RenderExecutionStatus::Failed)
+                : RenderExecutionStatus::NotAttempted;
+            report.gpuDrivenLane.reason =
+                report.gpuDrivenLane.status == RenderExecutionStatus::Failed
+                    ? RenderPolicyReason::UnexpectedRecordingFailure
+                    : RenderPolicyReason::None;
+            report.gpuDrivenLane.executedCountsAvailable =
+                aggregate.gpuDrivenIndirectExecutedDrawCountAvailable;
+            report.gpuDrivenLane.executedPacketCount =
+                aggregate.gpuDrivenIndirectExecutedDrawCountAvailable
+                    ? aggregate.gpuDrivenIndirectDrawCount
+                    : 0;
+            report.gpuDrivenLane.executedDrawCount =
+                report.gpuDrivenLane.executedPacketCount;
+            report.directLane.status = aggregate.directPacketPathUsed
+                ? RenderExecutionStatus::Completed
+                : RenderExecutionStatus::NotAttempted;
+            report.directLane.reason = RenderPolicyReason::None;
+            report.directLane.executedCountsAvailable =
+                aggregate.directPacketPathUsed;
+            report.directLane.executedPacketCount =
+                aggregate.executedPacketCount;
+            report.directLane.executedDrawCount = aggregate.directDrawCount;
+            if (!completed)
+            {
+                view.renderFrameExecutionReport->status =
+                    RenderExecutionStatus::Failed;
+            }
+            break;
+        }
+        view.renderFrameExecutionReport->frameSequence =
+            view.renderFrameExecutionPlan != nullptr
+                ? view.renderFrameExecutionPlan->frameSequence
+                : 0;
+    }
+
 } // namespace
 
 struct OpaquePass::PlannedOpaqueDraw
@@ -263,7 +676,7 @@ struct OpaquePass::PlannedOpaqueDraw
     DirectDrawPacket packet;
     MeshGPUBuffers buffers;
     SubmeshGPUInfo submesh;
-    RHIPipeline* pipeline = nullptr;
+    OpaqueRasterPreparedSubmission rasterSubmission;
     RHIDescriptorSet* frameSet = nullptr;
     ObjectConstantBinding objectBinding;
     MaterialBindingResult materialBinding;
@@ -281,9 +694,370 @@ struct OpaquePass::PlannedGPUDrivenOpaqueDraw
 {
     uint32 groupIndex = 0;
     MeshGPUBuffers buffers;
-    RHIPipeline* pipeline = nullptr;
+    OpaqueRasterPreparedSubmission rasterSubmission;
     MaterialBindingResult materialBinding;
 };
+
+OpaqueRasterPipelinePreflightResult OpaquePass::PreflightRasterPipelines(
+    const RenderPassRecordContext& context,
+    OpaqueRasterOutputFamily outputFamily,
+    OpaqueRasterSurfaceRoute surfaceRoute) const
+{
+    OpaqueRasterPipelinePreflightResult result;
+    const auto fail = [&result](OpaqueRasterPipelinePreflightCode code,
+                                std::string diagnostic)
+    {
+        result.code = code;
+        result.diagnostic = std::move(diagnostic);
+        return result;
+    };
+    const auto requestsMatch = [](
+                                   const OpaqueRasterPipelineRequest& lhs,
+                                   const OpaqueRasterPipelineRequest& rhs) noexcept
+    {
+        return lhs.outputFamily == rhs.outputFamily &&
+               lhs.surfaceRoute == rhs.surfaceRoute &&
+               lhs.route == rhs.route &&
+               lhs.materialVariant == rhs.materialVariant &&
+               lhs.cullMode == rhs.cullMode &&
+               lhs.colorTargetFormat == rhs.colorTargetFormat &&
+               lhs.reverseWinding == rhs.reverseWinding &&
+               lhs.skinned == rhs.skinned &&
+               lhs.usesMaterialParameterTable == rhs.usesMaterialParameterTable;
+    };
+    const auto preflightRequest = [this, &result, &requestsMatch](
+                                      const OpaqueRasterPipelineRequest& request,
+                                      std::vector<OpaqueRasterPipelineRequest>& requests)
+    {
+        if (!request.IsValid())
+        {
+            result.hasFailedRequest = true;
+            result.failedRequest = request;
+            result.code = OpaqueRasterPipelinePreflightCode::InvalidPacketPartition;
+            result.diagnostic =
+                "Frozen opaque plan produced an invalid raster pipeline request";
+            return false;
+        }
+        if (std::any_of(requests.begin(), requests.end(),
+                        [&requestsMatch, &request](
+                            const OpaqueRasterPipelineRequest& existing)
+                        {
+                            return requestsMatch(existing, request);
+                        }))
+        {
+            return true;
+        }
+
+        const OpaqueRasterPipelineSelector selector(*m_pipelineCache);
+        if (!selector.Prepare(request).IsReady())
+        {
+            result.hasFailedRequest = true;
+            result.failedRequest = request;
+            result.code = OpaqueRasterPipelinePreflightCode::PipelineUnavailable;
+            result.diagnostic =
+                "Frozen opaque plan requires an unavailable raster pipeline";
+            return false;
+        }
+        requests.push_back(request);
+        ++result.uniquePipelineRequestCount;
+        return true;
+    };
+
+    if (m_pipelineCache == nullptr || m_pipelineCache->GetDevice() == nullptr)
+    {
+        return fail(OpaqueRasterPipelinePreflightCode::DependenciesUnavailable,
+                    "Opaque raster pipeline cache dependency is unavailable");
+    }
+    if (outputFamily == OpaqueRasterOutputFamily::DeferredGBuffer &&
+        (!m_pipelineCache->IsGBufferPipelineFamilyReady() ||
+         surfaceRoute != OpaqueRasterSurfaceRoute::DeferredOpaque))
+    {
+        return fail(OpaqueRasterPipelinePreflightCode::PipelineUnavailable,
+                    "Deferred opaque GBuffer pipeline family metadata is unavailable");
+    }
+    if (outputFamily == OpaqueRasterOutputFamily::ForwardSceneHDR &&
+        surfaceRoute == OpaqueRasterSurfaceRoute::DeferredOpaque)
+    {
+        return fail(OpaqueRasterPipelinePreflightCode::InvalidPacketPartition,
+                    "DeferredOpaque surface route requires the GBuffer output family");
+    }
+    if (context.legacyAdapter || !context.identity.IsValid() ||
+        context.identity.graph == nullptr ||
+        !context.MatchesTargetGraph(*context.identity.graph) ||
+        !context.IsFrameIdentityValid())
+    {
+        return fail(OpaqueRasterPipelinePreflightCode::InvalidRecordContext,
+                    "Frozen opaque pipeline preflight requires a current typed record context");
+    }
+
+    RHIFormat colorTargetFormat = RHIFormat::RGBA8_UNORM_SRGB;
+    if (outputFamily == OpaqueRasterOutputFamily::ForwardSceneHDR)
+    {
+        const RHITextureDesc* const colorTargetDesc =
+            context.view.colorTarget.IsValid()
+                ? context.identity.graph->GetTextureDesc(context.view.colorTarget)
+                : nullptr;
+        if (colorTargetDesc == nullptr)
+        {
+            return fail(OpaqueRasterPipelinePreflightCode::InvalidRecordContext,
+                        "Frozen forward opaque pipeline preflight has no color target");
+        }
+        colorTargetFormat = colorTargetDesc->format;
+    }
+    if (context.executionPlan == nullptr ||
+        context.executionPlan->frameSequence != context.identity.frameSequence ||
+        context.executionPlan->viewOrdinal != context.identity.viewOrdinal ||
+        !ValidateRenderFrameExecutionPlan(*context.executionPlan))
+    {
+        return fail(OpaqueRasterPipelinePreflightCode::InvalidExecutionPlan,
+                    "Frozen opaque pipeline preflight received an invalid execution plan");
+    }
+
+    const RenderPassExecutionPlan* const opaquePlan = FindPassExecutionPlan(
+        context.executionPlan, RenderPassKind::Opaque);
+    if (opaquePlan == nullptr)
+    {
+        return fail(OpaqueRasterPipelinePreflightCode::InvalidExecutionPlan,
+                    "Frozen execution plan has no opaque pass partition");
+    }
+
+    std::vector<OpaqueRasterPipelineRequest> requests;
+    try
+    {
+        requests.reserve(static_cast<size_t>(opaquePlan->directPackets.count) +
+                         opaquePlan->partition.drawGroupCount);
+    }
+    catch (...)
+    {
+        return fail(OpaqueRasterPipelinePreflightCode::PipelineUnavailable,
+                    "Frozen opaque pipeline preflight could not retain request state");
+    }
+
+    const auto preflightPacketRange = [&context,
+                                       &result,
+                                       &preflightRequest,
+                                       &requests,
+                                       outputFamily,
+                                       colorTargetFormat,
+                                       surfaceRoute](DrawPacketRange range,
+                                                     OpaqueRasterSubmissionRoute route)
+    {
+        for (uint32 offset = 0; offset < range.count; ++offset)
+        {
+            const uint64 referenceIndex = static_cast<uint64>(range.first) + offset;
+            if (referenceIndex >= context.executionPlan->packetReferences.size())
+            {
+                result.code = OpaqueRasterPipelinePreflightCode::InvalidPacketPartition;
+                result.diagnostic =
+                    "Frozen opaque pipeline range escapes the execution-plan packet table";
+                return false;
+            }
+
+            const RenderDrawPacketReference& reference =
+                context.executionPlan->packetReferences[
+                    static_cast<size_t>(referenceIndex)];
+            const RenderDrawPacket& packet = reference.sourceSignature.packet;
+            if (reference.pass != RenderPassKind::Opaque ||
+                IsPacketInvalidForOpaqueRoute(packet))
+            {
+                result.code = OpaqueRasterPipelinePreflightCode::InvalidPacketPartition;
+                result.diagnostic =
+                    "Frozen opaque pipeline partition contains an invalid opaque packet";
+                return false;
+            }
+            if (!IsPacketSelectedForSurfaceRoute(packet, surfaceRoute))
+            {
+                continue;
+            }
+
+            if (route == OpaqueRasterSubmissionRoute::Direct)
+            {
+                ++result.selectedDirectPacketCount;
+            }
+            else
+            {
+                ++result.selectedGPUDrivenPacketCount;
+            }
+            if (!preflightRequest(MakeOpaquePipelineRequest(
+                                      outputFamily,
+                                      surfaceRoute,
+                                      route,
+                                      packet.pipelineKey.materialVariant,
+                                      colorTargetFormat,
+                                      packet.pipelineKey.cullMode,
+                                      packet.pipelineKey.reverseWinding,
+                                      route == OpaqueRasterSubmissionRoute::Direct &&
+                                          IsSkinnedPacket(packet),
+                                      false),
+                                  requests))
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    // Deferred geometry intentionally does not infer CPU direct-instancing
+    // from the view's batch plan. The published Direct lane is preflighted as
+    // Direct; only a sealed GPU lane may select a GPU submission route.
+    if (!preflightPacketRange(opaquePlan->directPackets,
+                              OpaqueRasterSubmissionRoute::Direct))
+    {
+        return result;
+    }
+
+    // Skipped packets never require a pipeline. Their immutable identities do
+    // still need to uphold the opaque policy, otherwise this route's frozen
+    // partition is malformed even though it has no work to submit.
+    for (uint32 offset = 0; offset < opaquePlan->skippedPackets.count; ++offset)
+    {
+        const uint64 referenceIndex =
+            static_cast<uint64>(opaquePlan->skippedPackets.first) + offset;
+        if (referenceIndex >= context.executionPlan->packetReferences.size())
+        {
+            return fail(OpaqueRasterPipelinePreflightCode::InvalidPacketPartition,
+                        "Frozen skipped opaque range escapes the execution-plan packet table");
+        }
+        const RenderDrawPacketReference& reference =
+            context.executionPlan->packetReferences[
+                static_cast<size_t>(referenceIndex)];
+        if (reference.pass != RenderPassKind::Opaque ||
+            IsPacketInvalidForOpaqueRoute(reference.sourceSignature.packet))
+        {
+            return fail(OpaqueRasterPipelinePreflightCode::InvalidPacketPartition,
+                        "Frozen skipped opaque partition contains an invalid opaque packet");
+        }
+    }
+
+    if (opaquePlan->gpuEligiblePackets.count != 0)
+    {
+        // Count the selected frozen packet set before asking for a GPU
+        // recording. A route with only ForwardSpecial packets does not make
+        // DeferredGeometry depend on their later GPU submission.
+        uint32 selectedGPUPlanPackets = 0;
+        for (uint32 offset = 0; offset < opaquePlan->gpuEligiblePackets.count;
+             ++offset)
+        {
+            const uint64 referenceIndex =
+                static_cast<uint64>(opaquePlan->gpuEligiblePackets.first) + offset;
+            if (referenceIndex >= context.executionPlan->packetReferences.size())
+            {
+                return fail(OpaqueRasterPipelinePreflightCode::InvalidPacketPartition,
+                            "Frozen GPU opaque range escapes the execution-plan packet table");
+            }
+            const RenderDrawPacketReference& reference =
+                context.executionPlan->packetReferences[
+                    static_cast<size_t>(referenceIndex)];
+            const RenderDrawPacket& packet = reference.sourceSignature.packet;
+            if (reference.pass != RenderPassKind::Opaque ||
+                IsPacketInvalidForOpaqueRoute(packet))
+            {
+                return fail(OpaqueRasterPipelinePreflightCode::InvalidPacketPartition,
+                            "Frozen GPU opaque partition contains an invalid opaque packet");
+            }
+            if (IsPacketSelectedForSurfaceRoute(packet, surfaceRoute))
+            {
+                ++selectedGPUPlanPackets;
+            }
+        }
+
+        if (selectedGPUPlanPackets != 0)
+        {
+            const RenderPassGPUDrivenInputs& inputs = context.opaqueGPUDriven;
+            if (inputs.recordedState == nullptr || !inputs.HasCompleteHandles())
+            {
+                return fail(OpaqueRasterPipelinePreflightCode::MissingGPURecording,
+                            "Frozen deferred opaque GPU lane has no complete sealed recording");
+            }
+            if (inputs.identity != context.identity ||
+                !inputs.recordedState->Matches(GPUCullingRecordingIdentity{
+                    context.identity.graphIdentity,
+                    context.identity.graphRecordingGeneration,
+                    context.identity.frameSequence,
+                    context.identity.viewOrdinal,
+                    context.identity.recordEpoch}))
+            {
+                return fail(OpaqueRasterPipelinePreflightCode::StaleGPURecording,
+                            "Frozen deferred opaque GPU recording identity is stale");
+            }
+            if (!inputs.IsCompatibleWith(context.identity))
+            {
+                return fail(OpaqueRasterPipelinePreflightCode::StaleGPURecording,
+                            "Frozen deferred opaque GPU recording is not valid for this graph");
+            }
+            if (inputs.gpuSceneRasterEnabled && inputs.gpuSceneRecordingFailure &&
+                inputs.gpuSceneRecordingFailure->load())
+            {
+                return fail(OpaqueRasterPipelinePreflightCode::StaleGPURecording,
+                            "Frozen deferred opaque GPU-scene recording is already failed");
+            }
+            if (context.meshPassPreparation == nullptr ||
+                !ValidatePlannedGPUDrivenPacketRange(
+                    *context.executionPlan,
+                    RenderPassKind::Opaque,
+                    context.meshPassPreparation->opaque))
+            {
+                return fail(OpaqueRasterPipelinePreflightCode::InvalidPacketPartition,
+                            "Frozen deferred opaque GPU lane does not match its prepared packet stream");
+            }
+
+            const GPUCulling& culling = inputs.recordedState->GetCulling();
+            const std::vector<GPUCullingDrawGroup>& groups = culling.GetDrawGroups();
+            for (const GPUCullingDrawGroup& group : groups)
+            {
+                const PipelineKey& pipeline = group.batchKey.pipeline;
+                // GPU groups retain the routing and pipeline key required for
+                // submission, while material-policy validation belongs to the
+                // frozen packet signatures checked above. Do not invent a
+                // second group-local material-policy bit here: older sealed
+                // GPU snapshots do not carry it.
+                if (pipeline.materialVariant == MaterialPipelineVariant::Transparent ||
+                    !IsOpaqueSurfaceEligibility(pipeline.surfacePathEligibility) ||
+                    group.pipelineVariant != pipeline.materialVariant)
+                {
+                    return fail(OpaqueRasterPipelinePreflightCode::InvalidGPUGroup,
+                                "Sealed deferred opaque GPU recording has an invalid draw group");
+                }
+                if (!IsSurfaceEligibilitySelectedForRoute(
+                        pipeline.surfacePathEligibility, surfaceRoute))
+                {
+                    continue;
+                }
+
+                ++result.matchedGPUGroupCount;
+                const OpaqueRasterSubmissionRoute route =
+                    inputs.gpuSceneRasterEnabled
+                        ? OpaqueRasterSubmissionRoute::GPUScene
+                        : OpaqueRasterSubmissionRoute::GPUDriven;
+                if (!preflightRequest(MakeOpaquePipelineRequest(
+                                          outputFamily,
+                                          surfaceRoute,
+                                          route,
+                                          group.pipelineVariant,
+                                          colorTargetFormat,
+                                          pipeline.cullMode,
+                                          pipeline.reverseWinding,
+                                          false,
+                                          group.batchKey.usesMaterialParameterTable),
+                                      requests))
+                {
+                    return result;
+                }
+            }
+            if (result.matchedGPUGroupCount == 0)
+            {
+                return fail(OpaqueRasterPipelinePreflightCode::InvalidGPUGroup,
+                            "Frozen deferred opaque GPU lane has no group for its selected route");
+            }
+            result.selectedGPUDrivenPacketCount = selectedGPUPlanPackets;
+        }
+    }
+
+    result.code = requests.empty()
+        ? OpaqueRasterPipelinePreflightCode::ReadyNoWork
+        : OpaqueRasterPipelinePreflightCode::Ready;
+    return result;
+}
 
 void OpaquePass::OnAdd(IRHIDevice* device)
 {
@@ -338,7 +1112,10 @@ void OpaquePass::InitializeGraphRecorder(
     std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache,
     DirectRasterReadbackQualification* directReadbackQualification,
     const RenderPassRecordIdentity& recordIdentity,
-    uint32 sourceFrameSlot)
+    uint32 sourceFrameSlot,
+    OpaqueRasterOutputFamily outputFamily,
+    OpaqueRasterSurfaceRoute surfaceRoute,
+    OpaqueDeferredGBufferTargets deferredTargets)
 {
     m_renderScene = scene;
     m_opaqueDrawItems = opaqueDrawItems;
@@ -362,11 +1139,54 @@ void OpaquePass::InitializeGraphRecorder(
     m_directReadbackQualification = directReadbackQualification;
     m_recordIdentity = recordIdentity;
     m_directReadbackSourceFrameSlot = sourceFrameSlot;
+    m_outputFamily = outputFamily;
+    m_surfaceRoute = surfaceRoute;
+    m_deferredTargets = std::move(deferredTargets);
 }
 
 void OpaquePass::AddToGraph(
     RenderGraph& graph,
     const RenderPassRecordContext& context)
+{
+    AddToGraphInternal(
+        graph,
+        context,
+        OpaqueRasterOutputFamily::ForwardSceneHDR,
+        OpaqueRasterSurfaceRoute::AllOpaque,
+        {});
+}
+
+void OpaquePass::AddDeferredToGraph(
+    RenderGraph& graph,
+    const RenderPassRecordContext& context,
+    const OpaqueDeferredGBufferTargets& targets)
+{
+    AddToGraphInternal(
+        graph,
+        context,
+        OpaqueRasterOutputFamily::DeferredGBuffer,
+        OpaqueRasterSurfaceRoute::DeferredOpaque,
+        targets);
+}
+
+void OpaquePass::AddForwardSpecialToGraph(
+    RenderGraph& graph,
+    const RenderPassRecordContext& context)
+{
+    AddToGraphInternal(
+        graph,
+        context,
+        OpaqueRasterOutputFamily::ForwardSceneHDR,
+        OpaqueRasterSurfaceRoute::ForwardSpecialOpaque,
+        {});
+}
+
+void OpaquePass::AddToGraphInternal(
+    RenderGraph& graph,
+    const RenderPassRecordContext& context,
+    OpaqueRasterOutputFamily outputFamily,
+    OpaqueRasterSurfaceRoute surfaceRoute,
+    const OpaqueDeferredGBufferTargets& deferredTargets)
 {
     struct GraphPassData
     {
@@ -379,10 +1199,30 @@ void OpaquePass::AddToGraph(
         bool contextValid = false;
     };
 
-    const auto hasCurrentGraphAttachments = [&graph](
+    const auto hasCurrentGraphAttachments = [
+                                                &graph,
+                                                outputFamily,
+                                                deferredTargets](
                                                 const ViewData& view,
                                                 const RenderPassRecordIdentity& identity)
     {
+        if (outputFamily == OpaqueRasterOutputFamily::DeferredGBuffer)
+        {
+            if (!deferredTargets.IsValid() ||
+                !HasCurrentGraphProvenance(deferredTargets.depth, identity) ||
+                graph.GetTextureDesc(deferredTargets.depth) == nullptr)
+            {
+                return false;
+            }
+            return std::all_of(
+                deferredTargets.color.begin(), deferredTargets.color.end(),
+                [&graph, &identity](const RGTextureHandle& target)
+                {
+                    return HasCurrentGraphProvenance(target, identity) &&
+                           graph.GetTextureDesc(target) != nullptr;
+                });
+        }
+
         const bool colorValid = view.colorTarget.IsValid() &&
             HasCurrentGraphProvenance(view.colorTarget, identity) &&
             graph.GetTextureDesc(view.colorTarget) != nullptr;
@@ -503,7 +1343,11 @@ void OpaquePass::AddToGraph(
         resultOwnershipValid ? execution.results : nullptr;
 
     graph.AddPass<GraphPassData>(
-        GetName(),
+        outputFamily == OpaqueRasterOutputFamily::DeferredGBuffer
+            ? "GBufferPass"
+            : surfaceRoute == OpaqueRasterSurfaceRoute::ForwardSpecialOpaque
+                  ? "ForwardSpecialOpaquePass"
+                  : GetName(),
         GetPassType(),
         [execution,
          gpuInputs,
@@ -523,6 +1367,9 @@ void OpaquePass::AddToGraph(
          directInstanceStreamCache,
          directReadbackQualification,
          directReadbackSourceFrameSlot,
+         outputFamily,
+         surfaceRoute,
+         deferredTargets,
          results](RenderGraphBuilder& builder, GraphPassData& data)
         {
             data.execution = execution;
@@ -535,8 +1382,14 @@ void OpaquePass::AddToGraph(
             {
                 if (results != nullptr)
                 {
-                    PublishOpaqueContextFailure(data.execution, results->opaqueStats);
-                    results->opaqueShadowStats = {};
+                    OpaquePassDrawStats failedStats;
+                    PublishOpaqueContextFailure(data.execution, failedStats);
+                    PublishOpaqueRouteResults(
+                        *results,
+                        surfaceRoute,
+                        failedStats,
+                        {},
+                        RenderExecutionStatus::Failed);
                 }
                 return;
             }
@@ -554,7 +1407,10 @@ void OpaquePass::AddToGraph(
                 data.directInstanceStreamCache,
                 data.directReadbackQualification,
                 data.execution.identity,
-                data.directReadbackSourceFrameSlot);
+                data.directReadbackSourceFrameSlot,
+                outputFamily,
+                surfaceRoute,
+                deferredTargets);
             const auto declareDrawTextures = [&](
                 const std::vector<RenderDrawItem>* drawItems)
             {
@@ -564,6 +1420,11 @@ void OpaquePass::AddToGraph(
                 }
                 for (const RenderDrawItem& item : *drawItems)
                 {
+                    if (!IsDrawItemSelectedForSurfaceRoute(
+                            item, surfaceRoute))
+                    {
+                        continue;
+                    }
                     if (!DeclareMaterialTextureGraphReads(
                             builder,
                             resourceRegistry,
@@ -583,6 +1444,13 @@ void OpaquePass::AddToGraph(
                 for (const GPUCullingDrawGroup& group :
                      gpuCulling->GetDrawGroups())
                 {
+                    if (surfaceRoute != OpaqueRasterSurfaceRoute::AllOpaque &&
+                        !IsSurfaceEligibilitySelectedForRoute(
+                            group.batchKey.pipeline.surfacePathEligibility,
+                            surfaceRoute))
+                    {
+                        continue;
+                    }
                     if (!DeclareMaterialTextureGraphReads(
                             builder,
                             resourceRegistry,
@@ -597,8 +1465,14 @@ void OpaquePass::AddToGraph(
             if (!materialReadsDeclared)
             {
                 data.contextValid = false;
-                PublishOpaqueContextFailure(
-                    data.execution, results->opaqueStats);
+                OpaquePassDrawStats failedStats;
+                PublishOpaqueContextFailure(data.execution, failedStats);
+                PublishOpaqueRouteResults(
+                    *results,
+                    surfaceRoute,
+                    failedStats,
+                    {},
+                    RenderExecutionStatus::Failed);
                 return;
             }
             data.recorder->Setup(builder, data.execution.view);
@@ -606,28 +1480,54 @@ void OpaquePass::AddToGraph(
             // recording. Publish them immediately so callers observing the
             // compiled graph do not have to wait for Execute to discover
             // whether shadow inputs were requested and declared.
-            results->opaqueShadowStats = data.recorder->GetShadowStats();
+            if (surfaceRoute == OpaqueRasterSurfaceRoute::AllOpaque)
+            {
+                results->opaqueShadowStats = data.recorder->GetShadowStats();
+            }
         },
-        [results](const GraphPassData& data,
+        [results, surfaceRoute](const GraphPassData& data,
                   RenderGraphPassContext& context)
         {
             if (!data.contextValid || !data.recorder)
             {
                 if (results != nullptr)
                 {
-                    PublishOpaqueContextFailure(data.execution, results->opaqueStats);
-                    results->opaqueShadowStats = {};
+                    OpaquePassDrawStats failedStats;
+                    PublishOpaqueContextFailure(data.execution, failedStats);
+                    PublishOpaqueRouteResults(
+                        *results,
+                        surfaceRoute,
+                        failedStats,
+                        {},
+                        RenderExecutionStatus::Failed);
                 }
+                context.MarkExecutionFailed(
+                    "Opaque raster graph inputs failed validation");
                 return;
             }
             if (results == nullptr)
             {
+                context.MarkExecutionFailed(
+                    "Opaque raster execution has no recording results owner");
                 return;
             }
             data.recorder->Execute(
                 context, data.execution.view, results.get());
-            results->opaqueStats = data.recorder->GetDrawStats();
-            results->opaqueShadowStats = data.recorder->GetShadowStats();
+            const OpaquePassDrawStats& drawStats = data.recorder->GetDrawStats();
+            PublishOpaqueRouteResults(
+                *results,
+                surfaceRoute,
+                drawStats,
+                data.recorder->GetShadowStats(),
+                drawStats.failureReason == RenderPolicyReason::None
+                    ? RenderExecutionStatus::Completed
+                    : RenderExecutionStatus::Failed);
+            if (surfaceRoute ==
+                OpaqueRasterSurfaceRoute::ForwardSpecialOpaque)
+            {
+                PublishDeferredOpaqueAggregateExecutionReport(
+                    data.execution.view, *results);
+            }
         });
 }
 
@@ -639,6 +1539,8 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     m_depthTargetViewHandle = {};
     m_directionalShadowViewHandle = {};
     m_rayTracedShadowMaskViewHandle = {};
+    m_gBufferTargetHandles = {};
+    m_gBufferTargetViewHandles = {};
     m_colorTargetFormat = RHIFormat::Unknown;
     m_shadowStats = {};
     m_directInstancePlan = {};
@@ -670,7 +1572,8 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 
         for (const RenderDrawItem& item : *drawItems)
         {
-            if (item.objectIndex >= m_renderScene->GetObjectCount())
+            if (!IsDrawItemSelectedForSurfaceRoute(item, m_surfaceRoute) ||
+                item.objectIndex >= m_renderScene->GetObjectCount())
             {
                 continue;
             }
@@ -690,8 +1593,131 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     accumulateShadowReceivers(m_opaqueDrawItems);
     accumulateShadowReceivers(m_maskedDrawItems);
 
-    // Declare that we write to the color target
-    if (view.colorTarget.IsValid())
+    const RGTextureHandle selectedDepth =
+        m_outputFamily == OpaqueRasterOutputFamily::DeferredGBuffer
+            ? m_deferredTargets.depth
+            : view.depthTarget;
+
+    // Deferred validation is deliberately two-phase. No graph write is
+    // declared until all four colors and the depth target satisfy the entire
+    // canonical contract; a later invalid attachment must not leave a partial
+    // producer edge behind for lighting to consume.
+    if (m_outputFamily == OpaqueRasterOutputFamily::DeferredGBuffer)
+    {
+        constexpr std::array<RHIFormat, 4> expectedFormats = {
+            RHIFormat::RGBA8_UNORM_SRGB,
+            RHIFormat::RGBA8_UNORM,
+            RHIFormat::RGBA16_FLOAT,
+            RHIFormat::R32_UINT};
+        constexpr std::array<const char*, 4> viewNames = {
+            "GBuffer0RTV", "GBuffer1RTV", "GBuffer2RTV", "GBuffer3RTV"};
+        std::array<const RHITextureDesc*, 4> colorDescs{};
+        bool validTargets = m_deferredTargets.IsValid();
+        uint32 deferredWidth = 0;
+        uint32 deferredHeight = 0;
+        for (uint32 index = 0; index < expectedFormats.size() && validTargets;
+             ++index)
+        {
+            const RGTextureHandle target = m_deferredTargets.color[index];
+            const RHITextureDesc* desc = builder.GetTextureDesc(target);
+            if (desc == nullptr || desc->format != expectedFormats[index] ||
+                desc->sampleCount != RHISampleCount::Count1 ||
+                desc->dimension != RHITextureDimension::Texture2D ||
+                desc->depth != 1 || desc->mipLevels != 1 ||
+                desc->arraySize != 1 ||
+                !HasFlag(desc->usage, RHITextureUsage::RenderTarget) ||
+                desc->width == 0 || desc->height == 0 ||
+                (index != 0 &&
+                 (desc->width != deferredWidth ||
+                  desc->height != deferredHeight)))
+            {
+                validTargets = false;
+                break;
+            }
+            if (index == 0)
+            {
+                deferredWidth = desc->width;
+                deferredHeight = desc->height;
+            }
+            colorDescs[index] = desc;
+        }
+        const RHITextureDesc* depthDesc = validTargets
+            ? builder.GetTextureDesc(selectedDepth)
+            : nullptr;
+        validTargets = validTargets && depthDesc != nullptr &&
+            depthDesc->format == RHIFormat::D32_FLOAT &&
+            depthDesc->sampleCount == RHISampleCount::Count1 &&
+            depthDesc->dimension == RHITextureDimension::Texture2D &&
+            depthDesc->depth == 1 && depthDesc->mipLevels == 1 &&
+            depthDesc->arraySize == 1 &&
+            HasFlag(depthDesc->usage, RHITextureUsage::DepthStencil) &&
+            depthDesc->width == deferredWidth &&
+            depthDesc->height == deferredHeight;
+        if (!validTargets)
+        {
+            return;
+        }
+
+        for (uint32 index = 0; index < expectedFormats.size(); ++index)
+        {
+            const RGTextureHandle target = m_deferredTargets.color[index];
+            const RHITextureDesc& desc = *colorDescs[index];
+            m_gBufferTargetHandles[index] = target;
+            RHITextureViewDesc viewDesc;
+            viewDesc.format = desc.format;
+            viewDesc.dimension = desc.dimension;
+            viewDesc.subresourceRange = RHISubresourceRange::All();
+            viewDesc.type = RHITextureViewType::RenderTarget;
+            viewDesc.debugName = viewNames[index];
+            m_gBufferTargetViewHandles[index] = builder.CreateTextureView(
+                target, viewDesc);
+        }
+
+        m_depthTargetHandle = selectedDepth;
+        RHITextureViewDesc depthViewDesc;
+        depthViewDesc.format = depthDesc->format;
+        depthViewDesc.dimension = depthDesc->dimension;
+        depthViewDesc.subresourceRange = RHISubresourceRange::All();
+        depthViewDesc.subresourceRange.aspect = RHITextureAspect::Depth;
+        depthViewDesc.type = RHITextureViewType::DepthStencil;
+        depthViewDesc.debugName = "OpaqueDepthDSV";
+        m_depthTargetViewHandle = builder.CreateTextureView(
+            m_depthTargetHandle, depthViewDesc);
+
+        if (!m_depthTargetViewHandle.IsValid() ||
+            !std::all_of(
+                m_gBufferTargetViewHandles.begin(),
+                m_gBufferTargetViewHandles.end(),
+                [](const RGTextureViewHandle& handle)
+                {
+                    return handle.IsValid();
+                }))
+        {
+            m_gBufferTargetHandles = {};
+            m_gBufferTargetViewHandles = {};
+            m_depthTargetHandle = {};
+            m_depthTargetViewHandle = {};
+            return;
+        }
+
+        for (uint32 index = 0; index < expectedFormats.size(); ++index)
+        {
+            m_gBufferTargetViewHandles[index] = builder.Write(
+                m_gBufferTargetViewHandles[index],
+                MakeRGAccessDesc(
+                    RHIResourceState::RenderTarget,
+                    RHIShaderStage::None));
+        }
+        m_depthTargetViewHandle = builder.Write(
+            m_depthTargetViewHandle,
+            MakeRGAccessDesc(
+                RHIResourceState::DepthWrite,
+                RHIShaderStage::None));
+        m_colorTargetHandle = m_gBufferTargetHandles[0];
+        m_colorTargetViewHandle = m_gBufferTargetViewHandles[0];
+        m_colorTargetFormat = expectedFormats[0];
+    }
+    else if (view.colorTarget.IsValid())
     {
         m_colorTargetHandle = view.colorTarget;
         if (const RHITextureDesc* desc =
@@ -714,12 +1740,15 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
         }
     }
 
-    // Declare that we write to the depth target
-    if (view.depthTarget.IsValid())
+    // Forward retains its optional depth declaration. Deferred already
+    // committed depth atomically with the four GBuffer attachments above.
+    if (m_outputFamily != OpaqueRasterOutputFamily::DeferredGBuffer &&
+        selectedDepth.IsValid())
     {
-        m_depthTargetHandle = view.depthTarget;
-        if (const RHITextureDesc* desc =
-                builder.GetTextureDesc(m_depthTargetHandle))
+        m_depthTargetHandle = selectedDepth;
+        const RHITextureDesc* desc =
+            builder.GetTextureDesc(m_depthTargetHandle);
+        if (desc != nullptr)
         {
             RHITextureViewDesc viewDesc;
             viewDesc.format = desc->format;
@@ -930,7 +1959,13 @@ bool OpaquePass::PrepareDirectInstanceStream(RenderGraphBuilder& builder,
                                              const ViewData& view)
 {
     if (m_renderScene == nullptr ||
-        view.instancingMode == RenderInstancingMode::Disabled)
+        view.instancingMode == RenderInstancingMode::Disabled ||
+        // The existing instance stream is keyed to the complete Opaque draw
+        // plan.  A deferred frame records two strict subsets of that plan, so
+        // reusing its slot map here would make either route claim another
+        // route's rows.  Submit the split routes Direct until a route-aware
+        // instance-plan artifact exists.
+        m_surfaceRoute != OpaqueRasterSurfaceRoute::AllOpaque)
     {
         return true;
     }
@@ -1224,27 +2259,48 @@ bool OpaquePass::AreGPUDrivenOpaqueGroupsDrawable(
     {
         return false;
     }
-    if (expectedGroupCount != 0 && groups.size() != expectedGroupCount)
-    {
-        return false;
-    }
-
     uint32 sourceDrawItemCount = 0;
-    const auto countDrawItems = [&sourceDrawItemCount](const std::vector<RenderDrawItem>* drawItems)
+    const auto countDrawItems = [this, &sourceDrawItemCount](
+                                    const std::vector<RenderDrawItem>* drawItems)
     {
-        sourceDrawItemCount += drawItems ? static_cast<uint32>(drawItems->size()) : 0;
+        if (drawItems == nullptr)
+        {
+            return;
+        }
+        for (const RenderDrawItem& item : *drawItems)
+        {
+            if (IsDrawItemSelectedForSurfaceRoute(item, m_surfaceRoute))
+            {
+                ++sourceDrawItemCount;
+            }
+        }
     };
     countDrawItems(m_opaqueDrawItems);
     countDrawItems(m_maskedDrawItems);
 
+    uint32 matchingGroupCount = 0;
     for (const GPUCullingDrawGroup& group : groups)
     {
+        if (m_surfaceRoute != OpaqueRasterSurfaceRoute::AllOpaque &&
+            !IsOpaqueSurfaceEligibility(
+                group.batchKey.pipeline.surfacePathEligibility))
+        {
+            return false;
+        }
+        if (m_surfaceRoute != OpaqueRasterSurfaceRoute::AllOpaque &&
+            !IsSurfaceEligibilitySelectedForRoute(
+                group.batchKey.pipeline.surfacePathEligibility,
+                m_surfaceRoute))
+        {
+            continue;
+        }
         if (group.pipelineVariant != MaterialPipelineVariant::Opaque &&
             group.pipelineVariant != MaterialPipelineVariant::Masked)
         {
             return false;
         }
 
+        ++matchingGroupCount;
         outDrawItemCount += group.maxDrawCount;
         MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
             m_resourceRegistry, group.mesh);
@@ -1259,11 +2315,15 @@ bool OpaquePass::AreGPUDrivenOpaqueGroupsDrawable(
         }
     }
 
+    if (expectedGroupCount != 0 && matchingGroupCount != expectedGroupCount)
+    {
+        return false;
+    }
     const uint32 requiredPacketCount =
         expectedPacketCount != 0 ? expectedPacketCount : sourceDrawItemCount;
     return outDrawItemCount > 0 &&
         outDrawItemCount == requiredPacketCount &&
-        m_gpuCulling->GetInstanceCount() == outDrawItemCount;
+        matchingGroupCount != 0;
 }
 
 bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
@@ -1315,10 +2375,31 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
     m_drawStats.gpuDrivenCullingReady = true;
 
     const auto& groups = m_gpuCulling->GetDrawGroups();
-    if ((expectedGroupCount != 0 && groups.size() != expectedGroupCount) ||
-        plannedBatches.size() != groups.size() ||
-        (expectedPacketCount != 0 &&
-         m_gpuCulling->GetInstanceCount() != expectedPacketCount))
+    uint32 matchingGroupCount = 0;
+    uint32 matchingPacketCount = 0;
+    for (const GPUCullingDrawGroup& group : groups)
+    {
+        if (m_surfaceRoute != OpaqueRasterSurfaceRoute::AllOpaque &&
+            !IsOpaqueSurfaceEligibility(
+                group.batchKey.pipeline.surfacePathEligibility))
+        {
+            m_drawStats.gpuDrivenFallbackReason =
+                GPUDrivenDrawFallbackReason::DrawGroupsUnavailable;
+            return false;
+        }
+        if (m_surfaceRoute != OpaqueRasterSurfaceRoute::AllOpaque &&
+            !IsSurfaceEligibilitySelectedForRoute(
+                group.batchKey.pipeline.surfacePathEligibility,
+                m_surfaceRoute))
+        {
+            continue;
+        }
+        ++matchingGroupCount;
+        matchingPacketCount += group.maxDrawCount;
+    }
+    if ((expectedGroupCount != 0 && matchingGroupCount != expectedGroupCount) ||
+        plannedBatches.size() != matchingGroupCount ||
+        (expectedPacketCount != 0 && matchingPacketCount != expectedPacketCount))
     {
         m_drawStats.gpuDrivenFallbackReason =
             GPUDrivenDrawFallbackReason::DrawGroupsUnavailable;
@@ -1363,7 +2444,13 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
     bool submittedAny = false;
     for (const PlannedGPUDrivenOpaqueDraw& batch : plannedBatches)
     {
-        ctx.SetPipeline(batch.pipeline);
+        if (!batch.rasterSubmission.IsReady())
+        {
+            m_drawStats.gpuDrivenFallbackReason =
+                GPUDrivenDrawFallbackReason::PipelineCacheUnavailable;
+            return false;
+        }
+        ctx.SetPipeline(batch.rasterSubmission.GetPipeline());
         if (frameSet)
         {
             ctx.SetDescriptorSet(0, frameSet);
@@ -1490,20 +2577,28 @@ bool OpaquePass::BuildPlannedDirectBatch(
         return false;
     }
 
-    m_drawStats.planValidated = true;
-    uint32 plannedPacketCount = 0;
-    for (const RenderPassExecutionPlan& passPlan :
-         view.renderFrameExecutionPlan->passes)
+    std::vector<const DirectDrawPacket*> selectedPackets;
+    selectedPackets.reserve(built.batch.packets.size());
+    for (const DirectDrawPacket& candidate : built.batch.packets)
     {
-        if (passPlan.pass == RenderPassKind::Opaque)
+        if (IsPacketInvalidForOpaqueRoute(candidate.packet))
         {
-            plannedPacketCount = passPlan.directPackets.count;
-            break;
+            RVX_RENDER_ERROR(
+                "OpaquePass: Direct packet {} is invalid for the opaque surface routes",
+                candidate.sourceOrdinal);
+            return false;
+        }
+        if (IsPacketSelectedForSurfaceRoute(
+                candidate.packet, m_surfaceRoute))
+        {
+            selectedPackets.push_back(&candidate);
         }
     }
-    m_drawStats.plannedPacketCount = plannedPacketCount;
-    m_drawStats.compiledPacketCount =
-        static_cast<uint32>(built.batch.packets.size());
+
+    m_drawStats.planValidated = true;
+    m_drawStats.plannedPacketCount =
+        static_cast<uint32>(selectedPackets.size());
+    m_drawStats.compiledPacketCount = m_drawStats.plannedPacketCount;
 
     if (!ValidateRetainedObjectIdentityIndex(*m_renderScene))
     {
@@ -1512,9 +2607,10 @@ bool OpaquePass::BuildPlannedDirectBatch(
         return false;
     }
 
-    outPlannedDraws.reserve(built.batch.packets.size());
-    for (const DirectDrawPacket& draw : built.batch.packets)
+    outPlannedDraws.reserve(selectedPackets.size());
+    for (const DirectDrawPacket* drawPtr : selectedPackets)
     {
+        const DirectDrawPacket& draw = *drawPtr;
         const RenderDrawPacket& packet = draw.packet;
         if (packet.pass != RenderPassKind::Opaque ||
             !packet.pipelineKey.materialPolicyValid ||
@@ -1709,8 +2805,11 @@ bool OpaquePass::BuildPlannedDirectBatch(
         outPlannedDraws.push_back(std::move(planned));
     }
 
-    ApplyDirectInstancePlan(
-        context, view, colorTargetFormat, outPlannedDraws);
+    if (m_surfaceRoute == OpaqueRasterSurfaceRoute::AllOpaque)
+    {
+        ApplyDirectInstancePlan(
+            context, view, colorTargetFormat, outPlannedDraws);
+    }
 
     // Resolve the copying MeshGPUBuffers view only after the transactional
     // instance-plan compaction. A failed compaction leaves every source packet
@@ -1771,7 +2870,7 @@ bool OpaquePass::BuildPlannedDirectBatch(
         planned.buffers = std::move(buffers);
         if (planned.instanced)
         {
-            if (planned.pipeline == nullptr)
+            if (!planned.rasterSubmission.IsReady())
             {
                 RVX_RENDER_ERROR(
                     "OpaquePass: Direct instanced packet {} lost its graphics pipeline",
@@ -1782,16 +2881,21 @@ bool OpaquePass::BuildPlannedDirectBatch(
             continue;
         }
 
-        planned.pipeline = m_pipelineCache->GetPipelineForVariant(
-            packet.pipelineKey.materialVariant,
-            colorTargetFormat,
-                            planned.skinned ? DefaultLitDirectVertexInputMode::Skinned
-                                            : DefaultLitDirectVertexInputMode::Rigid,
-            packet.pipelineKey.cullMode,
-            packet.pipelineKey.reverseWinding);
-        if (planned.pipeline == nullptr ||
+        const OpaqueRasterPipelineSelector pipelineSelector(*m_pipelineCache);
+        planned.rasterSubmission = pipelineSelector.Prepare(
+            MakeOpaquePipelineRequest(
+                m_outputFamily,
+                m_surfaceRoute,
+                OpaqueRasterSubmissionRoute::Direct,
+                packet.pipelineKey.materialVariant,
+                colorTargetFormat,
+                packet.pipelineKey.cullMode,
+                packet.pipelineKey.reverseWinding,
+                planned.skinned,
+                false));
+        if (!planned.rasterSubmission.IsReady() ||
             !context.RetainSubmissionResource(
-                Ref<RefCounted>(planned.pipeline)))
+                Ref<RefCounted>(planned.rasterSubmission.GetPipeline())))
         {
             RVX_RENDER_ERROR(
                 "OpaquePass: Direct packet {} has no compatible graphics pipeline",
@@ -2008,7 +3112,7 @@ void OpaquePass::ApplyDirectInstancePlan(
     struct InstancedBinding
     {
         uint32 leaderIndex = 0;
-        RHIPipeline* pipeline = nullptr;
+        OpaqueRasterPreparedSubmission rasterSubmission;
         ObjectConstantBinding objectBinding;
     };
     std::vector<InstancedBinding> bindings;
@@ -2022,21 +3126,22 @@ void OpaquePass::ApplyDirectInstancePlan(
 
         const uint32 leaderIndex = batch.members.front().directPacketIndex;
         const PlannedOpaqueDraw& leader = plannedDraws[leaderIndex];
-        RHIPipeline* pipeline = batch.key.usesMaterialParameterTable
-            ? m_pipelineCache->GetInstancedMaterialPipelineForVariant(
-                  leader.packet.packet.pipelineKey.materialVariant,
-                  colorTargetFormat,
-                  leader.packet.packet.pipelineKey.cullMode,
-                  leader.packet.packet.pipelineKey.reverseWinding)
-            : m_pipelineCache->GetGPUDrivenPipelineForVariant(
-                  leader.packet.packet.pipelineKey.materialVariant,
-                  colorTargetFormat,
-                  leader.packet.packet.pipelineKey.cullMode,
-                  leader.packet.packet.pipelineKey.reverseWinding);
+        const OpaqueRasterPipelineSelector pipelineSelector(*m_pipelineCache);
+        OpaqueRasterPreparedSubmission rasterSubmission = pipelineSelector.Prepare(
+            MakeOpaquePipelineRequest(
+                m_outputFamily,
+                m_surfaceRoute,
+                OpaqueRasterSubmissionRoute::Instanced,
+                leader.packet.packet.pipelineKey.materialVariant,
+                colorTargetFormat,
+                leader.packet.packet.pipelineKey.cullMode,
+                leader.packet.packet.pipelineKey.reverseWinding,
+                false,
+                batch.key.usesMaterialParameterTable));
         ObjectConstantBinding objectBinding;
-        if (pipeline == nullptr || leader.skinned ||
+        if (!rasterSubmission.IsReady() || leader.skinned ||
             !context.RetainSubmissionResource(
-                Ref<RefCounted>(pipeline)) ||
+                Ref<RefCounted>(rasterSubmission.GetPipeline())) ||
             !m_pipelineCache->CreateObjectConstantBinding(
                 Mat4Identity(),
                 Mat4Identity(),
@@ -2057,7 +3162,8 @@ void OpaquePass::ApplyDirectInstancePlan(
             fallback();
             return;
         }
-        bindings.push_back({leaderIndex, pipeline, std::move(objectBinding)});
+        bindings.push_back(
+            {leaderIndex, std::move(rasterSubmission), std::move(objectBinding)});
     }
 
     std::vector<PlannedOpaqueDraw> batched;
@@ -2076,7 +3182,8 @@ void OpaquePass::ApplyDirectInstancePlan(
         PlannedOpaqueDraw leader = std::move(plannedDraws[leaderIndex]);
         const RasterInstanceStreamBatchBinding& streamBinding =
             m_directInstanceStream.batchBindings[committedBatchBindingIndex++];
-        leader.pipeline = bindings[bindingIndex].pipeline;
+        leader.rasterSubmission =
+            std::move(bindings[bindingIndex].rasterSubmission);
         leader.objectBinding = std::move(bindings[bindingIndex].objectBinding);
         leader.instanceIndexBuffer = m_directInstanceStream.instanceIndices;
         leader.packet.packet.arguments.instanceCount =
@@ -2101,7 +3208,11 @@ bool OpaquePass::TryDrawPlannedDirect(
     static const DirectRenderSubmissionStrategy strategy;
     for (const PlannedOpaqueDraw& planned : plannedDraws)
     {
-        ctx.SetPipeline(planned.pipeline);
+        if (!planned.rasterSubmission.IsReady())
+        {
+            return false;
+        }
+        ctx.SetPipeline(planned.rasterSubmission.GetPipeline());
         ctx.SetDescriptorSet(0, planned.frameSet);
         ctx.SetDescriptorSet(1,
                              planned.objectBinding.descriptorSet.Get(),
@@ -2183,6 +3294,7 @@ void OpaquePass::Execute(
     RenderPassRecordResults* results)
 {
     RHICommandContext& ctx = context.Commands();
+    RequiredOpaqueExecutionGuard executionGuard(context);
     m_drawStats = {};
     m_drawStats.directInstanceUploadBytes =
         m_directInstanceStream.instanceUploadBytes;
@@ -2268,6 +3380,14 @@ void OpaquePass::Execute(
         {
             return;
         }
+        // Deferred routes publish their own evidence to RenderPassRecordResults
+        // and are aggregated only after both have recorded.  Updating this
+        // legacy one-pass report here would overwrite the first route with
+        // the second and make the result look complete when it is not.
+        if (m_surfaceRoute != OpaqueRasterSurfaceRoute::AllOpaque)
+        {
+            return;
+        }
         for (RenderPassExecutionReport& report :
              view.renderFrameExecutionReport->passes)
         {
@@ -2325,6 +3445,24 @@ void OpaquePass::Execute(
                                     : RenderVisibilityMode::Cpu);
     };
 
+    OpaqueRoutePlanCounts routePlan;
+    if (opaquePlan != nullptr &&
+        !CountOpaqueRoutePackets(
+            *view.renderFrameExecutionPlan,
+            *opaquePlan,
+            m_surfaceRoute,
+            routePlan))
+    {
+        m_drawStats.failureReason = RenderPolicyReason::InconsistentFacts;
+        updatePlanReport(
+            RenderExecutionStatus::Failed,
+            m_drawStats.failureReason,
+            0,
+            false,
+            opaquePlan->visibility);
+        return;
+    }
+
     if (hasPublishedPlan &&
         (opaquePlan == nullptr || view.meshPassPreparation == nullptr))
     {
@@ -2343,21 +3481,47 @@ void OpaquePass::Execute(
     {
         RVX_CORE_WARN("OpaquePass: PipelineCache not available (initialized: {})",
                       m_pipelineCache ? m_pipelineCache->IsInitialized() : false);
-        reportPlannedFailure(opaquePlan != nullptr &&
-                             opaquePlan->partition.gpuDrivenPacketCount != 0);
+        reportPlannedFailure(routePlan.gpuPacketCount != 0);
         return;
     }
 
     if (!m_materialSystem || !m_materialSystem->IsInitialized())
     {
         RVX_CORE_WARN("OpaquePass: MaterialSystem not available");
-        reportPlannedFailure(opaquePlan != nullptr &&
-                             opaquePlan->partition.gpuDrivenPacketCount != 0);
+        reportPlannedFailure(routePlan.gpuPacketCount != 0);
         return;
     }
 
+    std::array<RHITextureView*, 4> gBufferTargetViews{};
+    if (m_outputFamily == OpaqueRasterOutputFamily::DeferredGBuffer)
+    {
+        for (uint32 index = 0; index < gBufferTargetViews.size(); ++index)
+        {
+            if (!m_gBufferTargetViewHandles[index].IsValid())
+            {
+                RVX_CORE_WARN(
+                    "OpaquePass: deferred GBuffer target {} was not declared",
+                    index);
+                reportPlannedFailure(routePlan.gpuPacketCount != 0);
+                return;
+            }
+            gBufferTargetViews[index] =
+                context.GetTextureView(m_gBufferTargetViewHandles[index]);
+            if (gBufferTargetViews[index] == nullptr)
+            {
+                RVX_CORE_WARN(
+                    "OpaquePass: failed to resolve deferred GBuffer target {}",
+                    index);
+                reportPlannedFailure(routePlan.gpuPacketCount != 0);
+                return;
+            }
+        }
+    }
+
     RHITextureView* colorTargetView =
-        context.GetTextureView(m_colorTargetViewHandle);
+        m_outputFamily == OpaqueRasterOutputFamily::DeferredGBuffer
+            ? gBufferTargetViews[0]
+            : context.GetTextureView(m_colorTargetViewHandle);
     const RHIFormat colorTargetFormat = m_colorTargetFormat;
     RHITextureView* depthTargetView = m_depthTargetViewHandle.IsValid()
         ? context.GetTextureView(m_depthTargetViewHandle)
@@ -2366,16 +3530,14 @@ void OpaquePass::Execute(
     if (!colorTargetView)
     {
         RVX_CORE_WARN("OpaquePass: No color target view set");
-        reportPlannedFailure(opaquePlan != nullptr &&
-                             opaquePlan->partition.gpuDrivenPacketCount != 0);
+        reportPlannedFailure(routePlan.gpuPacketCount != 0);
         return;
     }
 
     if (m_depthTargetHandle.IsValid() && !depthTargetView)
     {
         RVX_CORE_WARN("OpaquePass: failed to resolve graph-owned depth target view");
-        reportPlannedFailure(opaquePlan != nullptr &&
-                             opaquePlan->partition.gpuDrivenPacketCount != 0);
+        reportPlannedFailure(routePlan.gpuPacketCount != 0);
         return;
     }
 
@@ -2515,18 +3677,17 @@ void OpaquePass::Execute(
         RVX_RENDER_WARN("OpaquePass: submission ownership rejected frame bindings");
         drawView.rayTracedShadowEnabled = 0;
         m_shadowStats.rayTracedFrameMaskReady = false;
-        reportPlannedFailure(opaquePlan != nullptr &&
-                             opaquePlan->partition.gpuDrivenPacketCount != 0);
+        reportPlannedFailure(routePlan.gpuPacketCount != 0);
         return;
     }
 
     // A sealed plan owns lane selection. Preflight the full Direct lane before
     // recording anything, and never replay Direct after a GPU-lane failure.
     {
-        const uint32 plannedGPUCount =
-            opaquePlan->partition.gpuDrivenPacketCount;
-        const uint32 plannedDirectCount =
-            opaquePlan->partition.directPacketCount;
+        const uint32 plannedGPUCount = routePlan.gpuPacketCount;
+        const uint32 plannedDirectCount = routePlan.directPacketCount;
+        const uint32 plannedInputCount = plannedGPUCount + plannedDirectCount +
+            routePlan.skippedPacketCount;
         const bool plannedGPU = plannedGPUCount != 0;
         const bool plannedDirect = plannedDirectCount != 0;
         if (plannedGPU && !ValidatePlannedGPUDrivenPacketRange(
@@ -2545,7 +3706,7 @@ void OpaquePass::Execute(
 
         const bool validateDirectPlan = plannedDirect || !plannedGPU;
         const bool executeDirectLane = plannedDirect ||
-            (!plannedGPU && opaquePlan->partition.inputPacketCount == 0);
+            (!plannedGPU && plannedInputCount == 0);
         std::vector<PlannedOpaqueDraw> plannedDraws;
         if (validateDirectPlan &&
             !BuildPlannedDirectBatch(context,
@@ -2640,7 +3801,7 @@ void OpaquePass::Execute(
                 !m_gpuCulling->GetVisibleInstanceBuffer() ||
                 !AreGPUDrivenOpaqueGroupsDrawable(
                     plannedGPUCount,
-                     opaquePlan->partition.drawGroupCount,
+                     0,
                      gpuDrawItemCount))
             {
                 gpuPreflightReady = false;
@@ -2671,45 +3832,43 @@ void OpaquePass::Execute(
             if (gpuPreflightReady)
             {
                 const auto& groups = m_gpuCulling->GetDrawGroups();
+                const OpaqueRasterPipelineSelector pipelineSelector(*m_pipelineCache);
                 plannedGPUBatches.reserve(groups.size());
                 for (uint32 groupIndex = 0;
                      groupIndex < static_cast<uint32>(groups.size());
                      ++groupIndex)
                 {
                     const GPUCullingDrawGroup& group = groups[groupIndex];
+                    if (m_surfaceRoute != OpaqueRasterSurfaceRoute::AllOpaque &&
+                        !IsOpaqueSurfaceEligibility(
+                            group.batchKey.pipeline.surfacePathEligibility))
+                    {
+                        gpuPreflightReady = false;
+                        break;
+                    }
+                    if (m_surfaceRoute != OpaqueRasterSurfaceRoute::AllOpaque &&
+                        !IsSurfaceEligibilitySelectedForRoute(
+                            group.batchKey.pipeline.surfacePathEligibility,
+                            m_surfaceRoute))
+                    {
+                        continue;
+                    }
                     const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
                         m_resourceRegistry, group.mesh);
-                    RHIPipeline* pipeline = nullptr;
-                    if (usesGPUSceneRaster)
-                    {
-                        pipeline = group.batchKey.usesMaterialParameterTable
-                            ? m_pipelineCache
-                                  ->GetGPUSceneInstancedMaterialPipelineForVariant(
-                                      group.pipelineVariant,
-                                      colorTargetFormat,
-                                      group.batchKey.pipeline.cullMode,
-                                      group.batchKey.pipeline.reverseWinding)
-                            : m_pipelineCache->GetGPUScenePipelineForVariant(
-                                  group.pipelineVariant,
-                                  colorTargetFormat,
-                                  group.batchKey.pipeline.cullMode,
-                                  group.batchKey.pipeline.reverseWinding);
-                    }
-                    else
-                    {
-                        pipeline = group.batchKey.usesMaterialParameterTable
-                            ? m_pipelineCache
-                                  ->GetInstancedMaterialPipelineForVariant(
-                                      group.pipelineVariant,
-                                      colorTargetFormat,
-                                      group.batchKey.pipeline.cullMode,
-                                      group.batchKey.pipeline.reverseWinding)
-                            : m_pipelineCache->GetGPUDrivenPipelineForVariant(
-                                  group.pipelineVariant,
-                                  colorTargetFormat,
-                                  group.batchKey.pipeline.cullMode,
-                                  group.batchKey.pipeline.reverseWinding);
-                    }
+                    const OpaqueRasterSubmissionRoute route = usesGPUSceneRaster
+                        ? OpaqueRasterSubmissionRoute::GPUScene
+                        : OpaqueRasterSubmissionRoute::GPUDriven;
+                    OpaqueRasterPreparedSubmission rasterSubmission =
+                        pipelineSelector.Prepare(MakeOpaquePipelineRequest(
+                            m_outputFamily,
+                            m_surfaceRoute,
+                            route,
+                            group.pipelineVariant,
+                            colorTargetFormat,
+                            group.batchKey.pipeline.cullMode,
+                            group.batchKey.pipeline.reverseWinding,
+                            false,
+                            group.batchKey.usesMaterialParameterTable));
                     MaterialBindingOptions options;
                     options.allowNormalMap = buffers.HasNormalMapTangentBasis();
                     options.materialParameterTable =
@@ -2719,9 +3878,9 @@ void OpaquePass::Execute(
                     if (!buffers.IsValid() || !buffers.uvBuffer ||
                         (group.batchKey.pipeline.requiresUV1 &&
                          !buffers.HasTextureCoordinateSet(1)) ||
-                        pipeline == nullptr || !binding.IsDrawable() ||
+                        !rasterSubmission.IsReady() || !binding.IsDrawable() ||
                         !context.RetainSubmissionResource(
-                            Ref<RefCounted>(pipeline)) ||
+                            Ref<RefCounted>(rasterSubmission.GetPipeline())) ||
                         !context.RetainSubmissionResource(
                             Ref<RefCounted>(binding.constantBuffer)) ||
                         !context.RetainSubmissionResource(
@@ -2741,12 +3900,14 @@ void OpaquePass::Execute(
                     PlannedGPUDrivenOpaqueDraw planned;
                     planned.groupIndex = groupIndex;
                     planned.buffers = buffers;
-                    planned.pipeline = pipeline;
+                    planned.rasterSubmission = std::move(rasterSubmission);
                     planned.materialBinding = std::move(binding);
                     plannedGPUBatches.emplace_back(std::move(planned));
                 }
             }
-            if (gpuPreflightReady && !usesGPUSceneRaster &&
+            if (gpuPreflightReady &&
+                m_surfaceRoute == OpaqueRasterSurfaceRoute::AllOpaque &&
+                !usesGPUSceneRaster &&
                 m_gpuCullingRecordedState != nullptr &&
                 m_resourceRegistry != nullptr)
             {
@@ -2812,14 +3973,48 @@ void OpaquePass::Execute(
             ResolveRenderViewClearActions(drawView.clearPolicy,
                                           drawView.clearColor);
         RHIRenderPassDesc rpDesc;
-        rpDesc.AddColorAttachment(colorTargetView,
-                                  clearActions.colorLoadOp,
-                                  RHIStoreOp::Store,
-                                  clearActions.colorClearValue);
+        if (m_outputFamily == OpaqueRasterOutputFamily::DeferredGBuffer)
+        {
+            constexpr std::array<RHIClearColor, 4> clearValues = {{
+                {0.0f, 0.0f, 0.0f, 1.0f},
+                {0.5f, 0.5f, 1.0f, 0.0f},
+                {0.0f, 0.0f, 0.0f, 0.0f},
+                {0.0f, 0.0f, 0.0f, 0.0f}}};
+            for (uint32 index = 0; index < gBufferTargetViews.size(); ++index)
+            {
+                rpDesc.AddColorAttachment(
+                    gBufferTargetViews[index],
+                    RHILoadOp::Clear,
+                    RHIStoreOp::Store,
+                    clearValues[index]);
+            }
+        }
+        else
+        {
+            // Deferred ForwardSpecialOpaque is a continuation of the frame's
+            // already-lit HDR/depth surfaces.  Reusing the camera clear
+            // policy here would erase DeferredLighting and the opaque depth
+            // before the special surfaces are recorded.  The regular
+            // ForwardStandard pass remains the owner of camera clear policy.
+            const bool preserveDeferredSurfaces =
+                m_surfaceRoute ==
+                OpaqueRasterSurfaceRoute::ForwardSpecialOpaque;
+            rpDesc.AddColorAttachment(colorTargetView,
+                                      preserveDeferredSurfaces
+                                          ? RHILoadOp::Load
+                                          : clearActions.colorLoadOp,
+                                      RHIStoreOp::Store,
+                                      clearActions.colorClearValue);
+        }
         if (depthTargetView)
         {
+            const bool preserveDeferredDepth =
+                m_surfaceRoute ==
+                OpaqueRasterSurfaceRoute::ForwardSpecialOpaque;
             rpDesc.SetDepthStencil(depthTargetView,
-                                   clearActions.depthLoadOp,
+                                   preserveDeferredDepth
+                                       ? RHILoadOp::Load
+                                       : clearActions.depthLoadOp,
                                    RHIStoreOp::Store,
                                    m_pipelineCache->GetDepthClearValue(),
                                    0);
@@ -2840,7 +4035,7 @@ void OpaquePass::Execute(
                 plannedGPUBatches,
                 results,
                 plannedGPUCount,
-                opaquePlan->partition.drawGroupCount);
+                0);
             if (!gpuRecorded && m_gpuSceneRasterEnabled &&
                 m_gpuSceneRecordingFailure)
             {
@@ -2895,7 +4090,8 @@ void OpaquePass::Execute(
             ? RenderPolicyReason::None
             : RenderPolicyReason::UnexpectedRecordingFailure;
 
-        if (view.renderFrameExecutionReport != nullptr)
+        if (view.renderFrameExecutionReport != nullptr &&
+            m_surfaceRoute == OpaqueRasterSurfaceRoute::AllOpaque)
         {
             for (RenderPassExecutionReport& report :
                  view.renderFrameExecutionReport->passes)
@@ -2910,7 +4106,7 @@ void OpaquePass::Execute(
                         ? opaquePlan->reason
                         : m_drawStats.failureReason;
                     report.skippedPacketCount =
-                        opaquePlan->partition.skippedPacketCount;
+                        routePlan.skippedPacketCount;
                     report.materialBindingsAvailable = true;
                     report.materialBindingCount =
                         m_drawStats.materialBindingCount;
@@ -2971,6 +4167,10 @@ void OpaquePass::Execute(
             }
             view.renderFrameExecutionReport->frameSequence =
                 view.renderFrameExecutionPlan->frameSequence;
+        }
+        if (passRecorded)
+        {
+            executionGuard.MarkSucceeded();
         }
         return;
     }

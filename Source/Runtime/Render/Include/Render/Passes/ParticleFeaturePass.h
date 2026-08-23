@@ -51,6 +51,8 @@ namespace RVX
 
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void Execute(RenderGraphPassContext& context,
+                     const ViewData& view) override;
 
     private:
         void RebuildStats();

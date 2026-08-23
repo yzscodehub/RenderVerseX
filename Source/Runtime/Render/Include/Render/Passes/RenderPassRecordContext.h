@@ -17,6 +17,7 @@
 #include "Render/RenderUploadWorkDiagnostics.h"
 #include "Render/RenderDiagnostics.h"
 #include "Render/Submission/RenderInstanceBatchPlan.h"
+#include "Render/Submission/OpaqueRasterSubmission.h"
 #include "Render/Visibility/RenderVisibility.h"
 
 #include <algorithm>
@@ -241,6 +242,22 @@ namespace RVX
         uint32 executedPacketCount = 0;
         RenderPolicyReason failureReason =
             RenderPolicyReason::ConservativeDefault;
+    };
+
+    /**
+     * @brief Per-route evidence for a split deferred opaque recording.
+     *
+     * The legacy aggregate remains available for existing diagnostics, but a
+     * deferred frame preserves these two independently recorded subsets so a
+     * caller cannot mistake GBuffer work for post-lighting forward work.
+     */
+    struct OpaqueSurfaceRouteExecutionEvidence
+    {
+        OpaqueRasterSurfaceRoute route = OpaqueRasterSurfaceRoute::AllOpaque;
+        OpaquePassDrawStats drawStats{};
+        OpaquePassShadowStats shadowStats{};
+        RenderExecutionStatus status = RenderExecutionStatus::NotAttempted;
+        bool available = false;
     };
 
     /** @brief Graph-owned transparent-pass recording and execution facts. */
@@ -597,6 +614,8 @@ namespace RVX
         RayTracedShadowPassStats rayTracedShadowStats{};
         OpaquePassDrawStats opaqueStats{};
         OpaquePassShadowStats opaqueShadowStats{};
+        OpaqueSurfaceRouteExecutionEvidence deferredOpaqueRoute{};
+        OpaqueSurfaceRouteExecutionEvidence forwardSpecialOpaqueRoute{};
         TransparentPassDrawStats transparentStats{};
         ObjectVelocityPassStats objectVelocityStats{};
         /** Sorted and de-duplicated by exact slot/generation. */

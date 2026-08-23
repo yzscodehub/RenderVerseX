@@ -213,12 +213,28 @@ namespace RVX
         const ViewData& view)
     {
         RHICommandContext& ctx = context.Commands();
-        if (!m_stats.outputDeclared ||
-            !m_pipelineCache ||
+        if (!m_stats.outputDeclared)
+        {
+            m_stats.compositeRecorded = false;
+            // A reflection source may be legitimately absent for this view.
+            // Once a source was selected, lack of an output declaration is a
+            // real graph-registration failure.
+            if (!m_stats.requested || !m_stats.sourcePassEnabled ||
+                !m_stats.reflectionHandleAvailable)
+            {
+                return;
+            }
+            context.MarkExecutionFailed(
+                "RayTracedReflectionCompositePass did not declare its required graph output");
+            return;
+        }
+        if (!m_pipelineCache ||
             !m_reflectionReadHandle.IsValid() ||
             !m_colorTargetHandle.IsValid())
         {
             m_stats.compositeRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionCompositePass graph recording prerequisites are unavailable");
             return;
         }
 
@@ -228,6 +244,8 @@ namespace RVX
         if (!reflectionTexture || !colorTarget)
         {
             m_stats.compositeRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionCompositePass could not realize a required graph texture");
             return;
         }
 
@@ -239,6 +257,8 @@ namespace RVX
         {
             RVX_CORE_WARN("RayTracedReflectionCompositePass: failed to resolve reflection SRV or color RTV");
             m_stats.compositeRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionCompositePass could not realize a required graph texture view");
             return;
         }
 
@@ -251,12 +271,16 @@ namespace RVX
         {
             RVX_CORE_WARN("RayTracedReflectionCompositePass: pipeline resources are unavailable");
             m_stats.compositeRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionCompositePass pipeline resources are unavailable");
             return;
         }
 
         if (!EnsureRuntimeResources() || !UpdateConstants())
         {
             m_stats.compositeRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionCompositePass could not prepare runtime resources or constants");
             return;
         }
 
@@ -278,6 +302,8 @@ namespace RVX
         {
             RVX_CORE_WARN("RayTracedReflectionCompositePass: failed to create descriptor set");
             m_stats.compositeRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionCompositePass descriptor creation failed");
             return;
         }
 
@@ -289,6 +315,8 @@ namespace RVX
         {
             RVX_CORE_WARN("RayTracedReflectionCompositePass: submission ownership rejected descriptor set");
             m_stats.compositeRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionCompositePass submission resource retention failed");
             return;
         }
 

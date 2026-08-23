@@ -18,6 +18,15 @@ if(RVX_ENABLE_P1_QUALIFICATION_MATRIX)
 elseif(NOT WIN32)
     message(STATUS "P1 qualification matrix: Unavailable (requires Windows DX12 and Vulkan backends)")
 endif()
+option(RVX_ENABLE_GFX07_DEFERRED_NATIVE
+    "Register the fail-closed DX12/Vulkan GFX07 DeferredQuality native sample gate" OFF)
+if(RVX_ENABLE_GFX07_DEFERRED_NATIVE)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_GFX07_DEFERRED_NATIVE requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "GFX07 Deferred qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
 option(RVX_ENABLE_PR_SMOKE
     "Register only the fixed primary-backend SceneLifecycle PR smoke" OFF)
 option(RVX_ENABLE_COMPATIBILITY_SMOKE
@@ -41,9 +50,10 @@ if(RVX_DEDICATED_QUALIFICATION_MODE_COUNT GREATER 0 AND
         "Dedicated PR/compatibility/soak modes require P0/P1 matrices disabled")
 endif()
 
-if((RVX_ENABLE_P0_QUALIFICATION_MATRIX OR RVX_ENABLE_P1_QUALIFICATION_MATRIX)
+if((RVX_ENABLE_P0_QUALIFICATION_MATRIX OR RVX_ENABLE_P1_QUALIFICATION_MATRIX
+    OR RVX_ENABLE_GFX07_DEFERRED_NATIVE)
    AND (NOT TARGET VisualGoldenValidation OR NOT TARGET ImageContentValidation OR NOT TARGET SampleReportContentValidation))
-    message(FATAL_ERROR "Enabled P0/P1 qualification matrices require visual and SampleReport validators")
+    message(FATAL_ERROR "Enabled qualification matrices require visual and SampleReport validators")
 endif()
 
 function(rvx_add_renderverse_primary_smoke SAMPLE_ID SAMPLE_LABEL ASSET_ID BACKEND_NAME BACKEND_LABEL)
@@ -204,6 +214,124 @@ function(rvx_add_renderverse_primary_smoke SAMPLE_ID SAMPLE_LABEL ASSET_ID BACKE
         TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME}
             suite.${RVX_SAMPLE_SUITE}
         SUITE ${RVX_SAMPLE_SUITE}
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+# GFX07 intentionally has its own opt-in suite: it uses the same producer,
+# fixture, image, and structured-report contract as other qualifications, but
+# validates a native DeferredQuality frame rather than changing the fixed PR
+# SceneLifecycle smoke.  Do not mark a missing Windows Vulkan device skippable:
+# the required-suite runner turns a skipped/disabled/not-run CTest case into a
+# gate failure together with its JUnit evidence.
+function(rvx_add_renderverse_gfx07_deferred_native BACKEND_NAME BACKEND_LABEL)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation)
+        message(FATAL_ERROR "GFX07 Deferred qualification requires RenderVerseSamples and report/image validators")
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix "RenderVerseSamples${BACKEND_LABEL}GFX07DeferredModelViewer")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(startup_report
+        "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}Capture
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample model-viewer
+            --backend ${BACKEND_NAME}
+            --pipeline deferred
+            --quality high
+            --smoke
+            --frames 8
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 120
+            --width 640
+            --height 360
+            --screenshot "${capture}"
+            --report "${report}"
+            --startup-report "${startup_report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS RenderVerseSamples ImageContentValidation SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            backend.${BACKEND_NAME} suite.gfx07
+        SUITE gfx07-deferred
+        TIMEOUT 180
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            backend.${BACKEND_NAME} suite.gfx07
+        SUITE gfx07-deferred
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ReceiptValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name model-viewer
+            --category visual
+            --backend ${BACKEND_NAME}
+            --require-requested-backend ${BACKEND_NAME}
+            --require-actual-backend ${BACKEND_NAME}
+            --quality high
+            --min-frame-count 8
+            --min-visible-objects 1
+            --require-ready
+            --require-readiness-wait
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-render-pipeline deferred
+            --require-deferred-opaque-execution
+            --forbid-fallback-reasons
+            --forbid-render-feature-fallbacks
+            --require-render-feature-executed 4
+            --require-render-feature-executed 5
+            --require-render-feature-executed 6
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            backend.${BACKEND_NAME} suite.gfx07
+        SUITE gfx07-deferred
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         FIXTURES_REQUIRED "${test_prefix}FreshCapture"
@@ -2307,6 +2435,13 @@ function(rvx_add_renderverse_gpu_driven_cross_backend_parity)
                 "RenderVerseSamplesDX12GPUDriven${path_label}FreshCapture;RenderVerseSamplesVulkanGPUDriven${path_label}FreshCapture")
     endforeach()
 endfunction()
+
+if(RVX_ENABLE_GFX07_DEFERRED_NATIVE)
+    # The suite target is RVXValidationSuiteGfx07Deferred; its CTest label is
+    # suite.gfx07-deferred (and the narrower suite.gfx07 tag) for local runs.
+    rvx_add_renderverse_gfx07_deferred_native(dx12 DX12)
+    rvx_add_renderverse_gfx07_deferred_native(vulkan Vulkan)
+endif()
 
 if(WIN32
     AND RVX_ENABLE_DX12

@@ -46,6 +46,18 @@ namespace
                    : RenderPassKind::Opaque;
     }
 
+    SurfacePathEligibility ToLegacySurfacePathEligibility(
+        RenderMaterialMode mode) noexcept
+    {
+        // MeshBatch intentionally carries no static material descriptor.  A
+        // resource-neutral legacy packet therefore takes the conservative
+        // forward route until MaterialSystem freezes the authoritative route
+        // from the descriptor during render-scene classification.
+        return mode == RenderMaterialMode::Transparent
+                   ? SurfacePathEligibility::ForwardTranslucency
+                   : SurfacePathEligibility::ForwardSpecialOpaque;
+    }
+
     RenderDrawFlags ToDrawFlags(RenderBatchFlags flags) noexcept
     {
         RenderDrawFlags result = RenderDrawFlags::None;
@@ -102,6 +114,7 @@ bool PipelineKey::operator==(const PipelineKey& other) const noexcept
     return materialVariant == other.materialVariant &&
            cullMode == other.cullMode &&
            shadowPolicy == other.shadowPolicy &&
+           surfacePathEligibility == other.surfacePathEligibility &&
            topology == other.topology &&
            skinned == other.skinned &&
            materialPolicyValid == other.materialPolicyValid &&
@@ -126,6 +139,7 @@ uint64 GetStableHash(const PipelineKey& key) noexcept
     HashValue(hash, static_cast<uint8>(key.materialVariant));
     HashValue(hash, static_cast<uint8>(key.cullMode));
     HashValue(hash, static_cast<uint8>(key.shadowPolicy));
+    HashValue(hash, static_cast<uint8>(key.surfacePathEligibility));
     HashValue(hash, static_cast<uint8>(key.topology));
     HashValue(hash, static_cast<uint8>(key.skinned));
     HashValue(hash, static_cast<uint8>(key.materialPolicyValid));
@@ -265,6 +279,8 @@ RenderDrawPacket BuildLegacyMaterialDrawPacket(const MeshBatch& batch) noexcept
     packet.submeshIndex = batch.submeshIndex;
     packet.pass = ToMaterialPass(batch.materialMode);
     packet.pipelineKey.materialVariant = ToPipelineVariant(batch.materialMode);
+    packet.pipelineKey.surfacePathEligibility =
+        ToLegacySurfacePathEligibility(batch.materialMode);
     packet.pipelineKey.topology = batch.geometry.topology;
     packet.pipelineKey.skinned = HasRenderBatchFlag(
         batch.flags, RenderBatchFlags::Skinned);

@@ -40,6 +40,12 @@ namespace RVX
         inline constexpr RenderFeatureId LegacyForwardMainChain{1};
         inline constexpr RenderFeatureId LegacyPostProcess{2};
         inline constexpr RenderFeatureId FrameSetup{3};
+        /** Deferred opaque geometry publishes the canonical GBuffer surface. */
+        inline constexpr RenderFeatureId DeferredGeometry{4};
+        /** Deferred compute lighting consumes the GBuffer and produces HDR. */
+        inline constexpr RenderFeatureId DeferredLighting{5};
+        /** Legacy special surfaces retained after deferred opaque lighting. */
+        inline constexpr RenderFeatureId DeferredForwardSpecialChain{6};
     } // namespace BuiltinRenderFeatureIds
 
     /** @brief Legal feature bands. Resource edges determine actual execution order. */
@@ -107,6 +113,8 @@ namespace RVX
         RayTracing = 1u << 3u,
         AccelerationStructureUpdate = 1u << 4u,
         IndependentFloatBlend = 1u << 5u,
+        MultipleRenderTargets = 1u << 6u,
+        StorageTexture = 1u << 7u,
     };
 
     using RenderFeatureCapabilityMask = uint32;
@@ -350,10 +358,63 @@ namespace RVX
                                const RenderExecutionBuildIdentity&) = default;
     };
 
+    /** @brief Completion status for the DeferredQuality opaque GBuffer route. */
+    enum class RenderDeferredOpaqueExecutionStatus : uint8
+    {
+        NotAttempted = 0,
+        Completed = 1,
+        Failed = 2,
+    };
+
+    inline const char* GetRenderDeferredOpaqueExecutionStatusName(
+        RenderDeferredOpaqueExecutionStatus status) noexcept
+    {
+        switch (status)
+        {
+            case RenderDeferredOpaqueExecutionStatus::NotAttempted:
+                return "not-attempted";
+            case RenderDeferredOpaqueExecutionStatus::Completed:
+                return "completed";
+            case RenderDeferredOpaqueExecutionStatus::Failed:
+                return "failed";
+            default: return "invalid";
+        }
+    }
+
+    /**
+     * @brief Presentation-bound evidence for the DeferredQuality opaque route.
+     *
+     * A false @ref available value is the expected state for recipes that do
+     * not select the deferred route. A completed route may legally contain no
+     * packets; qualifications that require visible deferred geometry must
+     * impose their own non-zero planned-work gate.
+     */
+    struct RenderDeferredOpaqueExecutionReceipt
+    {
+        bool available = false;
+        RenderDeferredOpaqueExecutionStatus status =
+            RenderDeferredOpaqueExecutionStatus::NotAttempted;
+        uint32 plannedPacketCount = 0;
+        uint32 executedPacketCount = 0;
+
+        [[nodiscard]] bool IsStructurallyValid() const noexcept
+        {
+            if (!available)
+            {
+                return status ==
+                           RenderDeferredOpaqueExecutionStatus::NotAttempted &&
+                       plannedPacketCount == 0 && executedPacketCount == 0;
+            }
+            return (status == RenderDeferredOpaqueExecutionStatus::Completed ||
+                    status == RenderDeferredOpaqueExecutionStatus::Failed) &&
+                   executedPacketCount <= plannedPacketCount;
+        }
+    };
+
     /** @brief Candidate or presentation-qualified evidence for one frame/view. */
     struct RenderExecutionReceipt
     {
-        uint32 schemaVersion = 1;
+        uint32 schemaVersion = 2;
         bool available = false;
         bool graphComposed = false;
         bool executionSucceeded = false;
@@ -369,12 +430,15 @@ namespace RVX
             RenderPipelineRecipe::ForwardStandard;
         RenderQualityTier quality = RenderQualityTier::Medium;
         uint64 profileHash = 0;
+        /** Exact route evidence when DeferredQuality records opaque GBuffer work. */
+        RenderDeferredOpaqueExecutionReceipt deferredOpaque{};
         std::vector<RenderFeatureExecutionReceipt> features{};
         std::string diagnostic{};
 
         [[nodiscard]] bool IsStructurallyValid() const noexcept
         {
-            if (schemaVersion != 1 || !frameIdentity.IsValid() ||
+            if ((schemaVersion != 1 && schemaVersion != 2) ||
+                !frameIdentity.IsValid() ||
                 !viewIdentity.IsValid() || backend == RHIBackendType::None ||
                 !IsDeclaredRenderPipelineRecipe(requestedRecipe) ||
                 !IsDeclaredRenderPipelineRecipe(resolvedRecipe) ||
@@ -385,6 +449,17 @@ namespace RVX
                 return false;
             }
             if (!build.IsEmpty() && !build.IsStructurallyValid())
+            {
+                return false;
+            }
+            if ((schemaVersion == 1 &&
+                 (deferredOpaque.available ||
+                  deferredOpaque.status !=
+                      RenderDeferredOpaqueExecutionStatus::NotAttempted ||
+                  deferredOpaque.plannedPacketCount != 0 ||
+                  deferredOpaque.executedPacketCount != 0)) ||
+                (schemaVersion == 2 &&
+                 !deferredOpaque.IsStructurallyValid()))
             {
                 return false;
             }

@@ -427,9 +427,26 @@ bool MaterialSystem::ResolveSurfacePipelinePolicy(
     MaterialShadowPolicy& outShadowPolicy,
     bool& outRequiresUV1) const noexcept
 {
+    SurfacePathEligibility ignoredEligibility =
+        SurfacePathEligibility::Unsupported;
+    return ResolveSurfacePipelinePolicy(material,
+                                        outCullMode,
+                                        outShadowPolicy,
+                                        outRequiresUV1,
+                                        ignoredEligibility);
+}
+
+bool MaterialSystem::ResolveSurfacePipelinePolicy(
+    RenderResourceHandle material,
+    MaterialCullMode& outCullMode,
+    MaterialShadowPolicy& outShadowPolicy,
+    bool& outRequiresUV1,
+    SurfacePathEligibility& outSurfacePathEligibility) const noexcept
+{
     outCullMode = MaterialCullMode::Back;
     outShadowPolicy = MaterialShadowPolicy::CastAndReceive;
     outRequiresUV1 = false;
+    outSurfacePathEligibility = SurfacePathEligibility::Unsupported;
     if (!material.IsValid() || m_resourceRegistry == nullptr)
     {
         return false;
@@ -444,6 +461,12 @@ bool MaterialSystem::ResolveSurfacePipelinePolicy(
 
     const MaterialStaticDescriptor& descriptor =
         materialData->staticDescriptor;
+    const SurfacePathEligibility surfacePathEligibility =
+        ClassifySurfacePathEligibility(descriptor);
+    if (surfacePathEligibility == SurfacePathEligibility::Unsupported)
+    {
+        return false;
+    }
     const bool implementedShadingModel =
         descriptor.shadingModel == MaterialShadingModel::StandardLit ||
         descriptor.shadingModel == MaterialShadingModel::Unlit;
@@ -516,6 +539,7 @@ bool MaterialSystem::ResolveSurfacePipelinePolicy(
         }
         outRequiresUV1 = outRequiresUV1 || binding.uvSet == 1;
     }
+    outSurfacePathEligibility = surfacePathEligibility;
     return true;
 }
 

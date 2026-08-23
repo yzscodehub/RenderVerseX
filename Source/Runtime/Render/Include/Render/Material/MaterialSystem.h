@@ -243,6 +243,20 @@ namespace RVX
             bool& outRequiresUV1) const noexcept;
 
         /**
+         * Resolve the complete immutable raster policy, including the single
+         * forward/deferred route selected from MaterialStaticDescriptor.
+         *
+         * A failed result always leaves @p outSurfacePathEligibility as
+         * Unsupported, so callers cannot accidentally retain a prior route.
+         */
+        [[nodiscard]] bool ResolveSurfacePipelinePolicy(
+            RenderResourceHandle material,
+            MaterialCullMode& outCullMode,
+            MaterialShadowPolicy& outShadowPolicy,
+            bool& outRequiresUV1,
+            SurfacePathEligibility& outSurfacePathEligibility) const noexcept;
+
+        /**
          * @brief Materialize exact-generation parameters at stable handle slots.
          *
          * Duplicate slot generations or incompatible per-mesh normal-map

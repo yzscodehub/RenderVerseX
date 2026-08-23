@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstddef>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -29,6 +30,32 @@ namespace
             packet.arguments.vertexOffset += 3;
             packet.materialInstanceKey.textureBindingHash = 0x9a71U;
             packet.materialInstanceKey.parameterTableCompatible = true;
+        }
+    };
+
+    class SurfacePathBindingResolver final
+        : public IRenderDrawClassificationBindingResolver
+    {
+    public:
+        void Resolve(RenderDrawPacket& packet) const override
+        {
+            switch (packet.objectId)
+            {
+                case 101:
+                case 102:
+                    packet.pipelineKey.surfacePathEligibility =
+                        SurfacePathEligibility::DeferredOpaque;
+                    break;
+                case 103:
+                case 104:
+                    packet.pipelineKey.surfacePathEligibility =
+                        SurfacePathEligibility::ForwardTranslucency;
+                    break;
+                default:
+                    packet.pipelineKey.surfacePathEligibility =
+                        SurfacePathEligibility::Unsupported;
+                    break;
+            }
         }
     };
 
@@ -534,6 +561,101 @@ TEST(RenderDrawPlanValidation,
     const RenderViewDrawPlan directOnly =
         MakeDrawPlan(classification, directPreparation, visibility);
     EXPECT_EQ(first.semanticHash, directOnly.semanticHash);
+}
+
+TEST(RenderDrawPlanValidation,
+     ForwardAndDeferredSurfacePathsAreExclusiveAndPreserveVisibleDrawCounts)
+{
+    const RenderScene scene = MakeScene();
+    const SurfacePathBindingResolver bindingResolver;
+    RenderSceneDrawClassification classification;
+    ASSERT_TRUE(BuildRenderSceneDrawClassification(
+        scene,
+        RenderSceneDrawClassificationSources{&bindingResolver},
+        classification));
+    ASSERT_TRUE(classification.IsValid());
+
+    const SceneMeshPassPreparation preparation = MakePreparation(classification);
+    RenderVisibilityResult visibility = MakeVisibility();
+    constexpr std::array<uint8, 2> allOpaqueVisible = {1, 1};
+    SetVisibility(visibility, RenderPassKind::Depth, allOpaqueVisible);
+    SetVisibility(visibility, RenderPassKind::Opaque, allOpaqueVisible);
+    const RenderViewDrawPlanBuildResult buildResult = BuildRenderViewDrawPlan(
+        kFrameSequence, kViewOrdinal, classification, preparation, visibility);
+    ASSERT_TRUE(buildResult.IsSuccess());
+    const RenderViewDrawPlan& drawPlan = buildResult.plan;
+
+    const RenderPassDrawPlan* opaque = drawPlan.FindPass(RenderPassKind::Opaque);
+    const RenderPassDrawPlan* transparent =
+        drawPlan.FindPass(RenderPassKind::Transparent);
+    ASSERT_NE(nullptr, opaque);
+    ASSERT_NE(nullptr, transparent);
+
+    struct RouteCounts
+    {
+        uint32 drawCount = 0;
+        std::set<PrimitiveDataIndex> primitives;
+        std::set<RenderResourceHandle> materials;
+    };
+    RouteCounts deferred;
+    RouteCounts forward;
+    std::set<PrimitiveDataIndex> sourcePrimitives;
+    std::set<RenderResourceHandle> sourceMaterials;
+    uint32 sourceDrawCount = 0;
+
+    const auto classify = [&](const RenderPassDrawPlan& pass)
+    {
+        for (const RenderPassDrawPlanEntry& entry : pass.entries)
+        {
+            if (!entry.passRelevant || !entry.cpuVisible)
+            {
+                continue;
+            }
+
+            ++sourceDrawCount;
+            sourcePrimitives.insert(entry.packet.primitiveData);
+            sourceMaterials.insert(entry.packet.materialKey.material);
+            RouteCounts* destination = nullptr;
+            switch (entry.packet.pipelineKey.surfacePathEligibility)
+            {
+                case SurfacePathEligibility::DeferredOpaque:
+                    destination = &deferred;
+                    break;
+                case SurfacePathEligibility::ForwardSpecialOpaque:
+                case SurfacePathEligibility::ForwardTranslucency:
+                    destination = &forward;
+                    break;
+                case SurfacePathEligibility::Unsupported:
+                    ADD_FAILURE() << "A visible draw has no legal surface path";
+                    continue;
+            }
+            ASSERT_NE(nullptr, destination);
+            ++destination->drawCount;
+            destination->primitives.insert(entry.packet.primitiveData);
+            destination->materials.insert(entry.packet.materialKey.material);
+        }
+    };
+    classify(*opaque);
+    classify(*transparent);
+
+    EXPECT_EQ(2U, deferred.drawCount);
+    EXPECT_EQ(2U, forward.drawCount);
+    EXPECT_EQ(sourceDrawCount, deferred.drawCount + forward.drawCount);
+    EXPECT_EQ(sourcePrimitives.size(),
+              deferred.primitives.size() + forward.primitives.size());
+    EXPECT_EQ(sourceMaterials.size(),
+              deferred.materials.size() + forward.materials.size());
+
+    std::set<PrimitiveDataIndex> overlappingPrimitives = deferred.primitives;
+    for (PrimitiveDataIndex primitive : forward.primitives)
+    {
+        EXPECT_EQ(0U, overlappingPrimitives.count(primitive));
+    }
+    std::set<RenderResourceHandle> overlappingMaterials = deferred.materials;
+    for (RenderResourceHandle material : forward.materials)
+    {
+        EXPECT_EQ(0U, overlappingMaterials.count(material));
+    }
 }
 
 TEST(RenderDrawPlanValidation,

@@ -243,14 +243,30 @@ namespace RVX
         const ViewData& view)
     {
         RHICommandContext& ctx = context.Commands();
-        if (!m_stats.outputDeclared ||
-            !m_pipelineCache ||
+        if (!m_stats.outputDeclared)
+        {
+            m_stats.denoiseRecorded = false;
+            // The optional reflection source can validly have no output for
+            // this view. Do not turn that ReadyNoWork case into a renderer
+            // failure; any declared output must, however, be realizable.
+            if (!m_stats.requested || !m_stats.sourcePassEnabled ||
+                !m_stats.reflectionHandleAvailable)
+            {
+                return;
+            }
+            context.MarkExecutionFailed(
+                "RayTracedReflectionDenoisePass did not declare its required graph output");
+            return;
+        }
+        if (!m_pipelineCache ||
             !m_reflectionReadHandle.IsValid() ||
             !m_depthReadHandle.IsValid() ||
             !m_normalGuideReadHandle.IsValid() ||
             !m_denoisedReflectionHandle.IsValid())
         {
             m_stats.denoiseRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionDenoisePass graph recording prerequisites are unavailable");
             return;
         }
 
@@ -261,6 +277,8 @@ namespace RVX
         if (!reflectionTexture || !depthTexture || !normalGuideTexture || !outputTexture)
         {
             m_stats.denoiseRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionDenoisePass could not realize a required graph texture");
             return;
         }
 
@@ -275,6 +293,8 @@ namespace RVX
             RVX_CORE_WARN(
                 "RayTracedReflectionDenoisePass: failed to resolve reflection SRV, depth SRV, normal SRV, or output RTV");
             m_stats.denoiseRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionDenoisePass could not realize a required graph texture view");
             return;
         }
 
@@ -287,12 +307,16 @@ namespace RVX
         {
             RVX_CORE_WARN("RayTracedReflectionDenoisePass: pipeline resources are unavailable");
             m_stats.denoiseRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionDenoisePass pipeline resources are unavailable");
             return;
         }
 
         if (!EnsureRuntimeResources() || !UpdateConstants(view, outputTexture->GetWidth(), outputTexture->GetHeight()))
         {
             m_stats.denoiseRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionDenoisePass could not prepare runtime resources or constants");
             return;
         }
 
@@ -314,6 +338,8 @@ namespace RVX
         {
             RVX_CORE_WARN("RayTracedReflectionDenoisePass: failed to create descriptor set");
             m_stats.denoiseRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionDenoisePass descriptor creation failed");
             return;
         }
 
@@ -323,6 +349,8 @@ namespace RVX
         {
             RVX_CORE_WARN("RayTracedReflectionDenoisePass: submission ownership rejected descriptor set");
             m_stats.denoiseRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionDenoisePass submission resource retention failed");
             return;
         }
 

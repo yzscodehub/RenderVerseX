@@ -76,10 +76,10 @@ namespace
                                      PostProcessStackExecuteStats& stats,
                                      bool logWarnings)
     {
-        bool seenToneMapping = false;
+        uint32 toneMappingCount = 0;
         for (IPostProcessPass* effect : enabledEffects)
         {
-            if (IsLDRPostToneMappingEffect(effect) && !seenToneMapping)
+            if (IsLDRPostToneMappingEffect(effect) && toneMappingCount == 0)
             {
                 stats.toneMappingBoundaryValid = false;
                 stats.toneMappingBoundaryWarning =
@@ -93,11 +93,22 @@ namespace
 
             if (IsToneMappingEffect(effect))
             {
-                seenToneMapping = true;
+                ++toneMappingCount;
+                if (toneMappingCount > 1)
+                {
+                    stats.toneMappingBoundaryValid = false;
+                    stats.toneMappingBoundaryWarning =
+                        "Post-process output supports exactly one ToneMapping transform";
+                    if (logWarnings)
+                    {
+                        RVX_CORE_WARN("PostProcessStack: {}", stats.toneMappingBoundaryWarning);
+                    }
+                    return false;
+                }
                 continue;
             }
 
-            if (seenToneMapping && !IsLDRPostToneMappingEffect(effect))
+            if (toneMappingCount != 0 && !IsLDRPostToneMappingEffect(effect))
             {
                 stats.toneMappingBoundaryValid = false;
                 stats.toneMappingBoundaryWarning =
@@ -110,7 +121,7 @@ namespace
             }
         }
 
-        if (!seenToneMapping && IsLDROutputFormat(finalOutputFormat))
+        if (toneMappingCount == 0 && IsLDROutputFormat(finalOutputFormat))
         {
             stats.toneMappingBoundaryValid = false;
             stats.toneMappingBoundaryWarning =
@@ -405,6 +416,16 @@ std::vector<IPostProcessPass*> PostProcessStack::GatherEnabledEffects(PostProces
         if (effect->IsRequestedEnabled())
         {
             stats.requestedEffectCount++;
+            if (IsToneMappingEffect(effect.get()))
+            {
+                ++stats.requestedToneMappingEffectCount;
+            }
+        }
+
+        if (IsToneMappingEffect(effect.get()) &&
+            effect->IsRequestedEnabled() && effect->IsSupported())
+        {
+            ++stats.supportedToneMappingEffectCount;
         }
 
         if (effect->IsRequestedEnabled() && !effect->IsSupported())
@@ -450,6 +471,10 @@ std::vector<IPostProcessPass*> PostProcessStack::GatherEnabledEffects(PostProces
         if (effect->IsEnabled() && (!frameInputs || plan.frameInputsSatisfied))
         {
             enabledEffects.push_back(effect.get());
+            if (IsToneMappingEffect(effect.get()))
+            {
+                ++stats.enabledToneMappingEffectCount;
+            }
         }
 
         stats.effectPlans.push_back(std::move(plan));
@@ -466,12 +491,19 @@ std::vector<IPostProcessPass*> PostProcessStack::GatherEnabledEffects(PostProces
 
 PostProcessStackExecuteStats PostProcessStack::EvaluateEffects() const
 {
+    return EvaluateEffects(RHIFormat::Unknown);
+}
+
+PostProcessStackExecuteStats PostProcessStack::EvaluateEffects(
+    RHIFormat finalOutputFormat) const
+{
     PostProcessStackExecuteStats stats;
     SetQualityPresetStats(stats, m_settings);
+    stats.finalOutputFormat = finalOutputFormat;
     std::vector<IPostProcessPass*> enabledEffects = GatherEnabledEffects(stats, false, nullptr);
-    if (!enabledEffects.empty())
+    if (!enabledEffects.empty() || finalOutputFormat != RHIFormat::Unknown)
     {
-        (void)ValidateToneMappingBoundary(enabledEffects, RHIFormat::Unknown, stats, false);
+        (void)ValidateToneMappingBoundary(enabledEffects, finalOutputFormat, stats, false);
     }
     return stats;
 }
@@ -594,6 +626,10 @@ void PostProcessStack::Execute(RenderGraph& graph,
             const RHITextureDesc* outputDesc = graph.GetTextureDesc(currentOutput);
             plan->scheduled = true;
             m_lastExecuteStats.scheduledEffectCount++;
+            if (IsToneMappingEffect(enabledEffects[i]))
+            {
+                ++m_lastExecuteStats.scheduledToneMappingEffectCount;
+            }
             plan->inputFormat = inputDesc ? inputDesc->format : RHIFormat::Unknown;
             plan->outputFormat = outputDesc ? outputDesc->format : RHIFormat::Unknown;
             plan->inputDomain = GetColorDomainForFormat(plan->inputFormat);

@@ -164,6 +164,11 @@ namespace
     constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_SCENE_DEPTH = 0x47534450u; // GSDP
     constexpr uint32 RVX_PIPELINE_PURPOSE_MASKED_DEPTH = 0x4D444550u; // MDEP
     constexpr uint32 RVX_PIPELINE_PURPOSE_UI = 0x5549504Cu; // UIPL
+    constexpr uint32 RVX_PIPELINE_PURPOSE_GBUFFER_DIRECT = 0x47424452u; // GBDR
+    constexpr uint32 RVX_PIPELINE_PURPOSE_GBUFFER_GPU_DRIVEN = 0x47424744u; // GBGD
+    constexpr uint32 RVX_PIPELINE_PURPOSE_GBUFFER_INSTANCED = 0x4742494Du; // GBIM
+    constexpr uint32 RVX_PIPELINE_PURPOSE_GBUFFER_GPU_SCENE = 0x47424753u; // GBGS
+    constexpr uint32 RVX_PIPELINE_PURPOSE_GBUFFER_GPU_SCENE_INSTANCED = 0x47425349u; // GBSI
     constexpr float RVX_MAX_SHADOW_CASTER_DEPTH_BIAS = 10000.0f;
     constexpr float RVX_MAX_SHADOW_CASTER_SLOPE_BIAS = 16.0f;
     constexpr const char* RVX_PIPELINE_MANIFEST_MAGIC = "RVX_PIPELINE_CACHE_MANIFEST";
@@ -172,6 +177,14 @@ namespace
     {
         return cullMode == MaterialCullMode::Back ||
                cullMode == MaterialCullMode::NoCull;
+    }
+
+    [[nodiscard]] bool IsProductionDeferredBackend(
+        RHIBackendType backend) noexcept
+    {
+        return backend == RHIBackendType::DX12 ||
+               backend == RHIBackendType::Vulkan ||
+               backend == RHIBackendType::Metal;
     }
 
     [[nodiscard]] RHICullMode ToRHICullMode(MaterialCullMode cullMode) noexcept
@@ -1135,6 +1148,7 @@ void PipelineCache::Shutdown()
     m_gpuSceneInstancedMaterialOpaquePipeline.Reset();
     m_gpuSceneMaskedPipeline.Reset();
     m_gpuSceneDepthOnlyPipeline.Reset();
+    m_deferredLightingPipeline.Reset();
     m_skyboxPipeline.Reset();
     m_toneMappingPipeline.Reset();
     m_bloomPipeline.Reset();
@@ -1209,6 +1223,8 @@ void PipelineCache::Shutdown()
     m_rayTracedShadowSetLayout.Reset();
     m_rayTracedReflectionPipelineLayout.Reset();
     m_rayTracedReflectionSetLayout.Reset();
+    m_deferredLightingPipelineLayout.Reset();
+    m_deferredLightingSetLayout.Reset();
     m_gpuSceneRasterPipelineLayout.Reset();
     m_gpuSceneRasterObjectSetLayout.Reset();
     m_pipelineLayout.Reset();
@@ -1220,6 +1236,8 @@ void PipelineCache::Shutdown()
     m_gpuSceneVertexShader.Reset();
     m_gpuSceneInstancedMaterialVertexShader.Reset();
     m_pixelShader.Reset();
+    m_gBufferPixelShader.Reset();
+    m_deferredLightingComputeShader.Reset();
     m_depthOnlyVertexShader.Reset();
     m_rigidDepthOnlyVertexShader.Reset();
     m_maskedDepthOnlyVertexShader.Reset();
@@ -1273,6 +1291,8 @@ void PipelineCache::Shutdown()
     m_gpuSceneVsCompileResult.reset();
     m_gpuSceneInstancedMaterialVsCompileResult.reset();
     m_psCompileResult.reset();
+    m_gBufferPsCompileResult.reset();
+    m_deferredLightingCsCompileResult.reset();
     m_depthOnlyVsCompileResult.reset();
     m_rigidDepthOnlyVsCompileResult.reset();
     m_maskedDepthOnlyVsCompileResult.reset();
@@ -1350,6 +1370,8 @@ bool PipelineCache::CompileShaders()
 {
     std::string shaderPath = m_shaderDir + "/DefaultLit.hlsl";
     std::string depthOnlyShaderPath = m_shaderDir + "/DepthOnly.hlsl";
+    std::string deferredLightingShaderPath =
+        m_shaderDir + "/DeferredLighting.hlsl";
     std::string toneMappingShaderPath = m_shaderDir + "/PostProcess/ToneMapping.hlsl";
     std::string bloomShaderPath = m_shaderDir + "/PostProcess/Bloom.hlsl";
     std::string ssaoShaderPath = m_shaderDir + "/PostProcess/SSAO.hlsl";
@@ -1486,6 +1508,55 @@ bool PipelineCache::CompileShaders()
     }
     m_pixelShader = psResult.shader;
     m_psCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(psResult.compileResult));
+
+    // Deferred is an explicit production capability of DX12, Vulkan and
+    // Metal. Compatibility backends do not compile or advertise this family.
+    if (IsProductionDeferredBackend(backend))
+    {
+        RenderShaderLoadDesc gBufferPsDesc = psDesc;
+        gBufferPsDesc.entryPoint = "PSGBuffer";
+        auto gBufferPsResult = m_shaderProgramLoader->LoadFromFile(
+            m_device, gBufferPsDesc);
+        if (!gBufferPsResult.compileResult.success)
+        {
+            SetLastError("Failed to compile GBuffer pixel shader: " +
+                         gBufferPsResult.compileResult.errorMessage);
+            return false;
+        }
+        if (!gBufferPsResult.shader)
+        {
+            SetLastError("Failed to create GBuffer pixel shader");
+            return false;
+        }
+        m_gBufferPixelShader = gBufferPsResult.shader;
+        m_gBufferPsCompileResult =
+            std::make_unique<ShaderProgramMetadata>(
+                std::move(gBufferPsResult.compileResult));
+
+        RenderShaderLoadDesc deferredLightingCsDesc;
+        deferredLightingCsDesc.path = deferredLightingShaderPath;
+        deferredLightingCsDesc.entryPoint = "CSMain";
+        deferredLightingCsDesc.stage = RHIShaderStage::Compute;
+        deferredLightingCsDesc.backend = backend;
+        deferredLightingCsDesc.enableDebugInfo = true;
+        auto deferredLightingCsResult = m_shaderProgramLoader->LoadFromFile(
+            m_device, deferredLightingCsDesc);
+        if (!deferredLightingCsResult.compileResult.success)
+        {
+            SetLastError("Failed to compile deferred-lighting compute shader: " +
+                         deferredLightingCsResult.compileResult.errorMessage);
+            return false;
+        }
+        if (!deferredLightingCsResult.shader)
+        {
+            SetLastError("Failed to create deferred-lighting compute shader");
+            return false;
+        }
+        m_deferredLightingComputeShader = deferredLightingCsResult.shader;
+        m_deferredLightingCsCompileResult =
+            std::make_unique<ShaderProgramMetadata>(
+                std::move(deferredLightingCsResult.compileResult));
+    }
 
     RenderShaderLoadDesc depthVsDesc = vsDesc;
     depthVsDesc.path = depthOnlyShaderPath;
@@ -2688,6 +2759,63 @@ bool PipelineCache::CreateGPUSceneRasterPipelineLayout()
         return false;
     }
 
+    return true;
+}
+
+bool PipelineCache::CreateDeferredLightingPipelineLayout()
+{
+    if (!m_device ||
+        !IsProductionDeferredBackend(m_device->GetBackendType()) ||
+        !m_device->GetCapabilities().supportsComputePipeline)
+    {
+        return false;
+    }
+
+    if (m_deferredLightingSetLayout && m_deferredLightingPipelineLayout)
+    {
+        return true;
+    }
+
+    RHIDescriptorSetLayoutDesc setLayoutDesc;
+    setLayoutDesc.debugName = "DeferredLightingSetLayout";
+    setLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer,
+                             RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(1, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(2, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(3, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(4, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(5, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(6, RHIBindingType::StorageTexture,
+                             RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(7, RHIBindingType::ShaderResourceBuffer,
+                             RHIShaderStage::Compute);
+
+    RHIDescriptorSetLayoutRef setLayout =
+        m_device->CreateDescriptorSetLayout(setLayoutDesc);
+    if (!setLayout)
+    {
+        SetLastError("Failed to create deferred-lighting descriptor set layout");
+        return false;
+    }
+
+    RHIPipelineLayoutDesc pipelineLayoutDesc;
+    pipelineLayoutDesc.debugName = "DeferredLightingPipelineLayout";
+    pipelineLayoutDesc.setLayouts.push_back(setLayout.Get());
+    RHIPipelineLayoutRef pipelineLayout =
+        m_device->CreatePipelineLayout(pipelineLayoutDesc);
+    if (!pipelineLayout)
+    {
+        SetLastError("Failed to create deferred-lighting pipeline layout");
+        return false;
+    }
+
+    m_deferredLightingSetLayout = std::move(setLayout);
+    m_deferredLightingPipelineLayout = std::move(pipelineLayout);
     return true;
 }
 
@@ -4854,6 +4982,258 @@ RHIPipeline* PipelineCache::GetGPUSceneInstancedMaterialPipelineForVariant(
         return m_gpuSceneInstancedMaterialOpaquePipeline.Get();
     }
     return pipeline.Get();
+}
+
+RHIGraphicsPipelineDesc PipelineCache::MakeGBufferPipelineDesc(
+    RHIGraphicsPipelineDesc pipelineDesc,
+    const char* debugName) const
+{
+    pipelineDesc.pixelShader = m_gBufferPixelShader.Get();
+    pipelineDesc.debugName = debugName;
+    pipelineDesc.blendState = RHIBlendState::Default();
+    pipelineDesc.numRenderTargets = 4;
+    for (RHIFormat& format : pipelineDesc.renderTargetFormats)
+    {
+        format = RHIFormat::Unknown;
+    }
+    pipelineDesc.renderTargetFormats[0] = RHIFormat::RGBA8_UNORM_SRGB;
+    pipelineDesc.renderTargetFormats[1] = RHIFormat::RGBA8_UNORM;
+    pipelineDesc.renderTargetFormats[2] = RHIFormat::RGBA16_FLOAT;
+    pipelineDesc.renderTargetFormats[3] = RHIFormat::R32_UINT;
+    return pipelineDesc;
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateGBufferPipeline(
+    RHIGraphicsPipelineDesc pipelineDesc,
+    MaterialPipelineVariant variant,
+    uint32 purposeSalt,
+    const char* debugName)
+{
+    if (!IsProductionDeferredBackend(
+            m_device ? m_device->GetBackendType() : RHIBackendType::None) ||
+        !m_gBufferPixelShader ||
+        (variant != MaterialPipelineVariant::Opaque &&
+         variant != MaterialPipelineVariant::Masked))
+    {
+        SetLastError(
+            "Deferred GBuffer is unavailable for this backend or material variant");
+        return {};
+    }
+
+    pipelineDesc = MakeGBufferPipelineDesc(
+        std::move(pipelineDesc), debugName);
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
+        !pipelineDesc.pipelineLayout || pipelineDesc.numRenderTargets != 4 ||
+        pipelineDesc.depthStencilFormat != RHIFormat::D32_FLOAT)
+    {
+        SetLastError("Cannot create an incomplete canonical GBuffer pipeline");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc, variant, purposeSalt);
+    m_stats.lastPipelineStateHash = stateHash;
+    const auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create canonical GBuffer pipeline '" +
+                     std::string(debugName ? debugName : "") + "'");
+        return {};
+    }
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIPipeline* PipelineCache::GetGBufferPipelineForVariant(
+    MaterialPipelineVariant variant,
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
+{
+    if ((inputMode != DefaultLitDirectVertexInputMode::Rigid &&
+         inputMode != DefaultLitDirectVertexInputMode::Skinned) ||
+        !IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError("Invalid direct GBuffer pipeline request");
+        return nullptr;
+    }
+    const char* debugName = inputMode == DefaultLitDirectVertexInputMode::Rigid
+        ? (variant == MaterialPipelineVariant::Masked
+               ? "GBufferMaskedRigidPipeline"
+               : "GBufferOpaqueRigidPipeline")
+        : (variant == MaterialPipelineVariant::Masked
+               ? "GBufferMaskedPipeline"
+               : "GBufferOpaquePipeline");
+    RHIGraphicsPipelineDesc desc = BuildDefaultLitPipelineDesc(
+        debugName,
+        BuildDepthStencilState(m_config.reverseZ, true),
+        RHIBlendState::Default(),
+        RHIFormat::RGBA8_UNORM_SRGB,
+        inputMode,
+        cullMode,
+        reverseWinding);
+    return GetOrCreateGBufferPipeline(
+        std::move(desc), variant,
+        RVX_PIPELINE_PURPOSE_GBUFFER_DIRECT, debugName).Get();
+}
+
+bool PipelineCache::EnsureDeferredLightingPipeline()
+{
+    if (m_deferredLightingPipeline)
+    {
+        return true;
+    }
+    if (!m_initialized || !m_device ||
+        !IsProductionDeferredBackend(m_device->GetBackendType()))
+    {
+        SetLastError(
+            "Deferred lighting is only implemented for DX12, Vulkan, and Metal");
+        return false;
+    }
+    if (!m_device->GetCapabilities().supportsComputePipeline)
+    {
+        SetLastError("Deferred lighting requires an RHI compute pipeline");
+        return false;
+    }
+    if (!m_deferredLightingComputeShader)
+    {
+        SetLastError("Deferred-lighting compute shader is unavailable");
+        return false;
+    }
+    if (!CreateDeferredLightingPipelineLayout())
+    {
+        return false;
+    }
+
+    RHIComputePipelineDesc pipelineDesc;
+    pipelineDesc.computeShader = m_deferredLightingComputeShader.Get();
+    pipelineDesc.pipelineLayout = m_deferredLightingPipelineLayout.Get();
+    pipelineDesc.debugName = "DeferredLightingComputePipeline";
+    m_deferredLightingPipeline = m_device->CreateComputePipeline(pipelineDesc);
+    if (!m_deferredLightingPipeline)
+    {
+        SetLastError("Backend failed to create deferred-lighting compute pipeline");
+        return false;
+    }
+    ++m_stats.pipelineCreateCount;
+    return true;
+}
+
+RHIPipeline* PipelineCache::GetDeferredLightingPipeline()
+{
+    return EnsureDeferredLightingPipeline()
+        ? m_deferredLightingPipeline.Get()
+        : nullptr;
+}
+
+RHIPipeline* PipelineCache::GetGPUDrivenGBufferPipelineForVariant(
+    MaterialPipelineVariant variant,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
+{
+    if (!IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError("Invalid GPU-driven GBuffer pipeline request");
+        return nullptr;
+    }
+    const char* debugName = variant == MaterialPipelineVariant::Masked
+        ? "GPUDrivenGBufferMaskedPipeline"
+        : "GPUDrivenGBufferOpaquePipeline";
+    RHIGraphicsPipelineDesc desc = BuildGPUDrivenDefaultLitPipelineDesc(
+        debugName,
+        BuildDepthStencilState(m_config.reverseZ, true),
+        RHIBlendState::Default(),
+        RHIFormat::RGBA8_UNORM_SRGB,
+        cullMode,
+        reverseWinding);
+    return GetOrCreateGBufferPipeline(
+        std::move(desc), variant,
+        RVX_PIPELINE_PURPOSE_GBUFFER_GPU_DRIVEN, debugName).Get();
+}
+
+RHIPipeline* PipelineCache::GetInstancedMaterialGBufferPipelineForVariant(
+    MaterialPipelineVariant variant,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
+{
+    if (!IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError("Invalid instanced GBuffer pipeline request");
+        return nullptr;
+    }
+    const char* debugName = variant == MaterialPipelineVariant::Masked
+        ? "InstancedGBufferMaskedPipeline"
+        : "InstancedGBufferOpaquePipeline";
+    RHIGraphicsPipelineDesc desc =
+        BuildInstancedMaterialDefaultLitPipelineDesc(
+            debugName,
+            BuildDepthStencilState(m_config.reverseZ, true),
+            RHIBlendState::Default(),
+            RHIFormat::RGBA8_UNORM_SRGB,
+            cullMode,
+            reverseWinding);
+    return GetOrCreateGBufferPipeline(
+        std::move(desc), variant,
+        RVX_PIPELINE_PURPOSE_GBUFFER_INSTANCED, debugName).Get();
+}
+
+RHIPipeline* PipelineCache::GetGPUSceneGBufferPipelineForVariant(
+    MaterialPipelineVariant variant,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
+{
+    if (!IsGPUSceneRasterReady() || !IsValidSurfaceCullMode(cullMode))
+    {
+        return nullptr;
+    }
+    const char* debugName = variant == MaterialPipelineVariant::Masked
+        ? "GPUSceneGBufferMaskedPipeline"
+        : "GPUSceneGBufferOpaquePipeline";
+    RHIGraphicsPipelineDesc desc = BuildGPUSceneDefaultLitPipelineDesc(
+        debugName,
+        BuildDepthStencilState(m_config.reverseZ, true),
+        RHIBlendState::Default(),
+        RHIFormat::RGBA8_UNORM_SRGB,
+        false,
+        cullMode,
+        reverseWinding);
+    return GetOrCreateGBufferPipeline(
+        std::move(desc), variant,
+        RVX_PIPELINE_PURPOSE_GBUFFER_GPU_SCENE, debugName).Get();
+}
+
+RHIPipeline* PipelineCache::GetGPUSceneInstancedMaterialGBufferPipelineForVariant(
+    MaterialPipelineVariant variant,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
+{
+    if (!IsGPUSceneRasterReady() || !IsValidSurfaceCullMode(cullMode))
+    {
+        return nullptr;
+    }
+    const char* debugName = variant == MaterialPipelineVariant::Masked
+        ? "GPUSceneInstancedGBufferMaskedPipeline"
+        : "GPUSceneInstancedGBufferOpaquePipeline";
+    RHIGraphicsPipelineDesc desc = BuildGPUSceneDefaultLitPipelineDesc(
+        debugName,
+        BuildDepthStencilState(m_config.reverseZ, true),
+        RHIBlendState::Default(),
+        RHIFormat::RGBA8_UNORM_SRGB,
+        true,
+        cullMode,
+        reverseWinding);
+    return GetOrCreateGBufferPipeline(
+        std::move(desc), variant,
+        RVX_PIPELINE_PURPOSE_GBUFFER_GPU_SCENE_INSTANCED, debugName).Get();
 }
 
 const char* PipelineCache::GetEnvironmentIBLFallbackReasonName(

@@ -383,6 +383,16 @@ namespace
                           RenderGraphPassContext& context)
     {
         RHICommandContext& ctx = context.Commands();
+        // A disabled sky mode and a view that deliberately suppresses sky are
+        // successful no-work cases. Every other early return below means an
+        // enabled SkyboxPass failed after graph registration and must not be
+        // mistaken for a semantic draw.
+        if (data.frameSnapshot &&
+            (data.frameSnapshot->sky.mode == RenderSkyMode::Disabled ||
+             !data.execution.view.AllowsSkybox()))
+        {
+            return;
+        }
         if (!data.contextValid || !data.frameSnapshot || !data.identity.IsValid() ||
             data.identity.graph == nullptr ||
             !data.identity.Matches(*data.identity.graph) ||
@@ -404,6 +414,8 @@ namespace
               data.depthHandle.recordingGeneration !=
                   data.identity.graphRecordingGeneration)))
         {
+            context.MarkExecutionFailed(
+                "SkyboxPass graph recording prerequisites are unavailable");
             return;
         }
 
@@ -412,6 +424,8 @@ namespace
             ? context.GetTexture(data.depthHandle) : nullptr;
         if (colorTexture == nullptr || (data.depthAvailable && depthTexture == nullptr))
         {
+            context.MarkExecutionFailed(
+                "SkyboxPass could not realize a required graph texture");
             return;
         }
 
@@ -423,6 +437,8 @@ namespace
             context.GetTextureView(data.skyTextureViewHandle);
         if (!colorView || !skyView || (data.depthAvailable && !depthView))
         {
+            context.MarkExecutionFailed(
+                "SkyboxPass could not realize a required graph texture view");
             return;
         }
 
@@ -443,6 +459,8 @@ namespace
             !context.RetainSubmissionResource(
                 Ref<RefCounted>(descriptorSet)))
         {
+            context.MarkExecutionFailed(
+                "SkyboxPass descriptor creation or submission ownership failed");
             return;
         }
 

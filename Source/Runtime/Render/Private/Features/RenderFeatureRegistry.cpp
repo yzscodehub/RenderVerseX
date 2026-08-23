@@ -34,7 +34,25 @@ namespace
     [[nodiscard]] constexpr uint32 GetResourceSchemaVersion(
         RenderBlackboardResourceId resource) noexcept
     {
-        return IsDeclaredResource(resource) ? 1U : 0U;
+        switch (resource)
+        {
+            case RenderBlackboardResourceId::SceneTextures:
+                return SceneTextures::SchemaVersion;
+            case RenderBlackboardResourceId::VisibilityOutputs:
+                return VisibilityOutputs::SchemaVersion;
+            case RenderBlackboardResourceId::ShadowOutputs:
+                return ShadowOutputs::SchemaVersion;
+            case RenderBlackboardResourceId::LightingOutputs:
+                return LightingOutputs::SchemaVersion;
+            case RenderBlackboardResourceId::ReflectionOutputs:
+                return ReflectionOutputs::SchemaVersion;
+            case RenderBlackboardResourceId::TranslucencyOutputs:
+                return TranslucencyOutputs::SchemaVersion;
+            case RenderBlackboardResourceId::PostProcessOutputs:
+                return PostProcessOutputs::SchemaVersion;
+            default:
+                return 0U;
+        }
     }
 
     [[nodiscard]] bool ContainsResource(
@@ -860,6 +878,7 @@ RenderFeatureRegistryCode RenderFeatureRegistry::FinalizeGraphExecution(
         registration.observedGraphPassCount = 0;
         registration.observedExecutedGraphPassCount = 0;
         registration.observedGraphPassNames.clear();
+        registration.semanticExecutionDiagnostic.clear();
         registration.executionEvidenceFinalized = false;
 
         for (size_t offset = 0; offset < registration.passIndices.size();
@@ -892,9 +911,18 @@ RenderFeatureRegistryCode RenderFeatureRegistry::FinalizeGraphExecution(
 
             ++registration.observedGraphPassCount;
             registration.observedGraphPassNames.push_back(pass.name);
-            if (pass.executedLastRun)
+            if (pass.executedLastRun &&
+                pass.semanticExecutionSucceededLastRun)
             {
                 ++registration.observedExecutedGraphPassCount;
+            }
+            else if (pass.executedLastRun &&
+                     registration.semanticExecutionDiagnostic.empty())
+            {
+                registration.semanticExecutionDiagnostic =
+                    pass.semanticExecutionDiagnostic.empty()
+                        ? "RenderGraph pass reported semantic execution failure"
+                        : pass.semanticExecutionDiagnostic;
             }
         }
 
@@ -979,6 +1007,12 @@ RenderExecutionReceipt RenderFeatureRegistry::CollectExecutionReceipt(
                     featureReceipt.graphPassCount != 0 &&
                     featureReceipt.executedGraphPassCount ==
                         featureReceipt.graphPassCount;
+                if (!featureReceipt.readiness.executed &&
+                    !registration->semanticExecutionDiagnostic.empty())
+                {
+                    featureReceipt.diagnostic =
+                        registration->semanticExecutionDiagnostic;
+                }
             }
             else
             {

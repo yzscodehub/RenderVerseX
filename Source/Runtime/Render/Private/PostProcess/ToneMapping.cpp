@@ -438,6 +438,8 @@ void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTe
             if (!m_pipelineCache)
             {
                 RVX_CORE_WARN("ToneMapping: missing resources during execution");
+                context.MarkExecutionFailed(
+                    "ToneMapping requires an initialized PipelineCache");
                 return;
             }
 
@@ -447,6 +449,8 @@ void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTe
             if (!pipeline || !setLayout || !device)
             {
                 RVX_CORE_WARN("ToneMapping: fullscreen pipeline resources are unavailable");
+                context.MarkExecutionFailed(
+                    "ToneMapping fullscreen pipeline resources are unavailable");
                 return;
             }
 
@@ -455,6 +459,8 @@ void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTe
             if (!inputTexture || !outputTexture)
             {
                 RVX_CORE_WARN("ToneMapping: input or output texture is unavailable");
+                context.MarkExecutionFailed(
+                    "ToneMapping input or output texture is unavailable");
                 return;
             }
 
@@ -463,6 +469,8 @@ void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTe
             if (!inputView || !outputView)
             {
                 RVX_CORE_WARN("ToneMapping: failed to resolve input SRV or output RTV");
+                context.MarkExecutionFailed(
+                    "ToneMapping failed to resolve input SRV or output RTV");
                 return;
             }
 
@@ -475,6 +483,8 @@ void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTe
                                  data.gamma,
                                  data.whitePoint))
             {
+                context.MarkExecutionFailed(
+                    "ToneMapping runtime resources or constants are unavailable");
                 return;
             }
 
@@ -493,12 +503,16 @@ void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTe
             if (!descriptorSet)
             {
                 RVX_CORE_WARN("ToneMapping: failed to create descriptor set");
+                context.MarkExecutionFailed(
+                    "ToneMapping failed to create descriptor set");
                 return;
             }
             if (!context.RetainSubmissionResource(
                     Ref<RefCounted>(descriptorSet)))
             {
                 RVX_CORE_WARN("ToneMapping: submission ownership rejected descriptor set");
+                context.MarkExecutionFailed(
+                    "ToneMapping submission ownership rejected descriptor set");
                 return;
             }
 

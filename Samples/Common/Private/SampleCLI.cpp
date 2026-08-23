@@ -309,6 +309,20 @@ namespace RVX
                    << ",\n";
             stream << "      \"profileHash\": " << receipt.profileHash
                    << ",\n";
+            if (receipt.schemaVersion == 2)
+            {
+                stream << "      \"deferredOpaque\": {\"available\": "
+                       << Diagnostics::JsonBool(receipt.deferredOpaque.available)
+                       << ", \"status\": "
+                       << Diagnostics::JsonString(
+                              GetRenderDeferredOpaqueExecutionStatusName(
+                                  receipt.deferredOpaque.status))
+                       << ", \"plannedPacketCount\": "
+                       << receipt.deferredOpaque.plannedPacketCount
+                       << ", \"executedPacketCount\": "
+                       << receipt.deferredOpaque.executedPacketCount
+                       << "},\n";
+            }
             stream << "      \"diagnostic\": "
                    << Diagnostics::JsonString(receipt.diagnostic) << ",\n";
             stream << "      \"features\": [\n";

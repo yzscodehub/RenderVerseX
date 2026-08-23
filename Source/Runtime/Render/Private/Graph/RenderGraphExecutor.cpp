@@ -151,6 +151,8 @@ namespace RVX
             for (Pass& pass : graph.passes)
             {
                 pass.executedLastRun = false;
+                pass.semanticExecutionSucceededLastRun = true;
+                pass.semanticExecutionDiagnostic.clear();
                 pass.lastExecutionQueue = RenderGraph::DiagnosticExecutionQueue::Unknown;
                 pass.lastExecutionSerial = RVX_INVALID_INDEX;
                 pass.lastCpuDurationNanoseconds = 0;
@@ -392,7 +394,11 @@ namespace RVX
             {
                 RVX_ASSERT_MSG(graph.owner != nullptr,
                                "RenderGraph execution has no owning graph");
-                RenderGraphPassContext passContext(*graph.owner, ctx);
+                RenderGraphPassContext passContext(
+                    *graph.owner,
+                    ctx,
+                    &pass.semanticExecutionSucceededLastRun,
+                    &pass.semanticExecutionDiagnostic);
                 pass.execute(passContext);
             }
             if (!pass.postBufferBarriers.empty() ||
@@ -449,10 +455,15 @@ namespace RVX
 
             for (auto& resource : graph.textures)
             {
-                if (!resource.exportAccess || !resource.GetTexture())
+                const RHIAccessSnapshot* terminalAccess = resource.exportAccess
+                    ? &*resource.exportAccess
+                    : resource.poolTerminalAccess
+                        ? &*resource.poolTerminalAccess
+                        : nullptr;
+                if (terminalAccess == nullptr || !resource.GetTexture())
                     continue;
 
-                RHIAccessSnapshot desired = *resource.exportAccess;
+                RHIAccessSnapshot desired = *terminalAccess;
                 if (resource.hasSubresourceTracking)
                 {
                     uint32 baseMip = 0;
@@ -532,10 +543,15 @@ namespace RVX
 
             for (auto& resource : graph.buffers)
             {
-                if (!resource.exportAccess || !resource.GetBuffer())
+                const RHIAccessSnapshot* terminalAccess = resource.exportAccess
+                    ? &*resource.exportAccess
+                    : resource.poolTerminalAccess
+                        ? &*resource.poolTerminalAccess
+                        : nullptr;
+                if (terminalAccess == nullptr || !resource.GetBuffer())
                     continue;
 
-                RHIAccessSnapshot desired = *resource.exportAccess;
+                RHIAccessSnapshot desired = *terminalAccess;
                 if (resource.hasRangeTracking)
                 {
                     bool hasRealizedValidity = false;
@@ -1155,7 +1171,8 @@ namespace RVX
                                          graph);
                 }
             }
-            if (plannedBatch.syntheticTerminal)
+            if (plannedBatch.syntheticTerminal ||
+                batchIndex == planned.terminalGraphicsBatchIndex)
                 EmitExportBarriers(graph, *context);
             context->End();
         };

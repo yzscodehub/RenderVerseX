@@ -73,6 +73,56 @@ std::string_view GetMaterialProgramFamily(
     return {};
 }
 
+SurfacePathEligibility ClassifySurfacePathEligibility(
+    const MaterialStaticDescriptor& descriptor)
+{
+    std::string validationError;
+    if (!ValidateMaterialStaticDescriptor(descriptor, validationError))
+    {
+        return SurfacePathEligibility::Unsupported;
+    }
+
+    switch (descriptor.shadingModel)
+    {
+        case MaterialShadingModel::StandardLit:
+            return descriptor.blendMode == MaterialBlendMode::Opaque ||
+                           descriptor.blendMode == MaterialBlendMode::Masked
+                       ? SurfacePathEligibility::DeferredOpaque
+                       : SurfacePathEligibility::ForwardTranslucency;
+
+        case MaterialShadingModel::Unlit:
+            return descriptor.blendMode == MaterialBlendMode::Opaque ||
+                           descriptor.blendMode == MaterialBlendMode::Masked
+                       ? SurfacePathEligibility::ForwardSpecialOpaque
+                       : SurfacePathEligibility::ForwardTranslucency;
+
+        case MaterialShadingModel::ThinTransmission:
+            return SurfacePathEligibility::ForwardTranslucency;
+
+        // Toon lighting and its outline inputs are added in GFX14. Until that
+        // contract is present, preserving the descriptor as unsupported is
+        // safer than silently routing it through StandardLit.
+        case MaterialShadingModel::ToonLit:
+            return SurfacePathEligibility::Unsupported;
+    }
+    return SurfacePathEligibility::Unsupported;
+}
+
+std::string_view GetSurfacePathEligibilityName(
+    SurfacePathEligibility eligibility) noexcept
+{
+    switch (eligibility)
+    {
+        case SurfacePathEligibility::DeferredOpaque: return "DeferredOpaque";
+        case SurfacePathEligibility::ForwardSpecialOpaque:
+            return "ForwardSpecialOpaque";
+        case SurfacePathEligibility::ForwardTranslucency:
+            return "ForwardTranslucency";
+        case SurfacePathEligibility::Unsupported: return "Unsupported";
+    }
+    return "Unknown";
+}
+
 bool ValidateMaterialDefinition(
     const MaterialDefinition& definition,
     std::string& outError)

@@ -2709,6 +2709,46 @@ namespace RVX
             }
         }
 
+        // A pooled transient can be reused by a graph whose first physical
+        // queue is not known until after compilation. Leaving an implicit
+        // transient owned by Compute/Copy would require the next graph to
+        // retroactively add a release on that old queue after it acquires the
+        // physical lease. Keep the public export contract separate and make
+        // the private pool boundary deterministic instead: implicit,
+        // pool-eligible resources finish in Graphics/Common. Imported,
+        // explicitly exported, and placed/aliased resources keep their
+        // existing lifetime contracts.
+        for (TextureResource& resource : graph.textures)
+            resource.poolTerminalAccess.reset();
+        for (BufferResource& resource : graph.buffers)
+            resource.poolTerminalAccess.reset();
+        if (graph.canonicalizeTransientPoolAccess &&
+            !graph.enableMemoryAliasing)
+        {
+            const RHIAccessSnapshot pooledBoundaryAccess =
+                MakeRHIAccessSnapshot(
+                    RHIResourceState::Common,
+                    RHIShaderStage::None,
+                    GPUQueueDomain::Graphics,
+                    RHIContentValidity::Unknown);
+            for (TextureResource& resource : graph.textures)
+            {
+                if (!resource.imported && resource.lifetime.isUsed &&
+                    !resource.exportAccess)
+                {
+                    resource.poolTerminalAccess = pooledBoundaryAccess;
+                }
+            }
+            for (BufferResource& resource : graph.buffers)
+            {
+                if (!resource.imported && resource.lifetime.isUsed &&
+                    !resource.exportAccess)
+                {
+                    resource.poolTerminalAccess = pooledBoundaryAccess;
+                }
+            }
+        }
+
         // Export transitions execute on the synthetic terminal Graphics batch.
         // Publish the release half on the last in-graph owner now; the executor
         // records the matching acquire half on the terminal context.
@@ -2717,9 +2757,14 @@ namespace RVX
              ++resourceIndex)
         {
             TextureResource& resource = graph.textures[resourceIndex];
-            if (!resource.exportAccess)
+            const RHIAccessSnapshot* terminalAccess = resource.exportAccess
+                ? &*resource.exportAccess
+                : resource.poolTerminalAccess
+                    ? &*resource.poolTerminalAccess
+                    : nullptr;
+            if (terminalAccess == nullptr)
                 continue;
-            RHIAccessSnapshot desired = *resource.exportAccess;
+            RHIAccessSnapshot desired = *terminalAccess;
             const auto appendRelease = [&](const RHIAccessSnapshot& current,
                                            const RHISubresourceRange& range)
             {
@@ -2809,9 +2854,14 @@ namespace RVX
              ++resourceIndex)
         {
             BufferResource& resource = graph.buffers[resourceIndex];
-            if (!resource.exportAccess)
+            const RHIAccessSnapshot* terminalAccess = resource.exportAccess
+                ? &*resource.exportAccess
+                : resource.poolTerminalAccess
+                    ? &*resource.poolTerminalAccess
+                    : nullptr;
+            if (terminalAccess == nullptr)
                 continue;
-            RHIAccessSnapshot desired = *resource.exportAccess;
+            RHIAccessSnapshot desired = *terminalAccess;
             const auto appendRelease = [&](const RHIAccessSnapshot& current,
                                            uint64 offset,
                                            uint64 size)

@@ -61,6 +61,11 @@ namespace
         {
             return MeshPassEligibilityReason::ResourceUnavailable;
         }
+        if (packet.pipelineKey.surfacePathEligibility ==
+            SurfacePathEligibility::Unsupported)
+        {
+            return MeshPassEligibilityReason::ResourceUnavailable;
+        }
         if (packet.pipelineKey.shadowPolicy !=
             MaterialShadowPolicy::CastAndReceive)
         {
@@ -123,6 +128,7 @@ namespace
             static_cast<uint8>(key.pipeline.materialVariant),
             static_cast<uint8>(key.pipeline.cullMode),
             static_cast<uint8>(key.pipeline.shadowPolicy),
+            static_cast<uint8>(key.pipeline.surfacePathEligibility),
             static_cast<uint8>(key.pipeline.topology),
             key.pipeline.skinned,
             key.pipeline.materialPolicyValid,
@@ -197,6 +203,7 @@ CanonicalRasterGroupOrderKey MakeCanonicalRasterGroupOrderKey(
         static_cast<uint8>(key.pipeline.materialVariant),
         static_cast<uint8>(key.pipeline.cullMode),
         static_cast<uint8>(key.pipeline.shadowPolicy),
+        static_cast<uint8>(key.pipeline.surfacePathEligibility),
         static_cast<uint8>(key.pipeline.topology),
         static_cast<uint8>(key.pipeline.skinned),
         static_cast<uint8>(key.pipeline.materialPolicyValid),

@@ -352,6 +352,10 @@ namespace RVX
                 passDiagnostic.culled = pass.culled;
                 passDiagnostic.plannedExecutionQueue = pass.plannedExecutionQueue;
                 passDiagnostic.executedLastRun = pass.executedLastRun;
+                passDiagnostic.semanticExecutionSucceededLastRun =
+                    pass.semanticExecutionSucceededLastRun;
+                passDiagnostic.semanticExecutionDiagnostic =
+                    pass.semanticExecutionDiagnostic;
                 passDiagnostic.executionQueue = pass.lastExecutionQueue;
                 passDiagnostic.executionSerial = pass.lastExecutionSerial;
                 passDiagnostic.cpuDurationNanoseconds = pass.lastCpuDurationNanoseconds;
@@ -1085,9 +1089,13 @@ namespace RVX
 
     RenderGraphPassContext::RenderGraphPassContext(
         RenderGraph& graph,
-        RHICommandContext& commands)
+        RHICommandContext& commands,
+        bool* semanticExecutionSucceeded,
+        std::string* semanticExecutionDiagnostic)
         : m_graph(&graph)
         , m_commands(&commands)
+        , m_semanticExecutionSucceeded(semanticExecutionSucceeded)
+        , m_semanticExecutionDiagnostic(semanticExecutionDiagnostic)
     {
     }
 
@@ -1680,6 +1688,29 @@ namespace RVX
         }
 
         m_impl->passes.push_back(std::move(pass));
+    }
+
+    void RenderGraphPassContext::MarkExecutionFailed(
+        const char* diagnostic) const noexcept
+    {
+        if (m_semanticExecutionSucceeded != nullptr)
+        {
+            *m_semanticExecutionSucceeded = false;
+        }
+        if (m_semanticExecutionDiagnostic == nullptr)
+        {
+            return;
+        }
+        try
+        {
+            *m_semanticExecutionDiagnostic = diagnostic != nullptr
+                ? diagnostic
+                : "RenderGraph pass did not record its required work";
+        }
+        catch (...)
+        {
+            m_semanticExecutionDiagnostic->clear();
+        }
     }
 
     RGTextureHandle RenderGraphBuilder::CreateTexture(
@@ -2423,6 +2454,8 @@ namespace RVX
             options.capabilities.supportsExplicitAliasingBarriers;
         m_impl->parallelRecordingEnabled =
             options.enableParallelRecording;
+        m_impl->canonicalizeTransientPoolAccess =
+            options.canonicalizeTransientPoolAccess;
         CompilePlanInternal();
     }
 
@@ -3142,6 +3175,8 @@ namespace RVX
                << " type=" << ToDiagnosticString(pass.type)
                << " culled=" << (pass.culled ? "true" : "false")
                << " executed=" << (pass.executedLastRun ? "true" : "false")
+               << " semanticSuccess="
+               << (pass.semanticExecutionSucceededLastRun ? "true" : "false")
                << " queue=" << ToDiagnosticString(pass.executionQueue)
                << " serial=";
             if (pass.executionSerial == RVX_INVALID_INDEX)
@@ -3384,6 +3419,10 @@ namespace RVX
             ss << "      \"plannedExecutionQueue\": "
                << JsonString(ToDiagnosticString(pass.plannedExecutionQueue)) << ",\n";
             ss << "      \"executedLastRun\": " << JsonBool(pass.executedLastRun) << ",\n";
+            ss << "      \"semanticExecutionSucceededLastRun\": "
+               << JsonBool(pass.semanticExecutionSucceededLastRun) << ",\n";
+            ss << "      \"semanticExecutionDiagnostic\": "
+               << JsonString(pass.semanticExecutionDiagnostic) << ",\n";
             ss << "      \"executionQueue\": " << JsonString(ToDiagnosticString(pass.executionQueue)) << ",\n";
             ss << "      \"executionSerial\": ";
             WriteOptionalIndex(ss, pass.executionSerial);
@@ -3651,6 +3690,7 @@ namespace RVX
         m_impl->runtimeState = RenderGraphRuntimeState::Recording;
         m_impl->memoryAliasingRequested = false;
         m_impl->enableMemoryAliasing = false;
+        m_impl->canonicalizeTransientPoolAccess = false;
         m_impl->recordingGeneration =
             AdvanceRecordingGeneration(m_impl->recordingGeneration);
     }

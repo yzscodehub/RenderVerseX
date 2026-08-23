@@ -1002,8 +1002,9 @@ namespace RVX
                 {
                     data->reservation->graphPassExecuted = true;
                 }
-                const auto failClosed = [&data](const char* reason)
+                const auto failClosed = [&data, &context](const char* reason)
                 {
+                    context.MarkExecutionFailed(reason);
                     if (!data)
                     {
                         return;

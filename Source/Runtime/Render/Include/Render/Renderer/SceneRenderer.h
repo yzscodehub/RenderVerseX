@@ -75,6 +75,10 @@ namespace RVX
     class OpaquePass;
     class ParticleFeaturePass;
     class LegacyForwardFeatureAdapter;
+    class DeferredGeometryFeatureAdapter;
+    class DeferredLightingFeatureAdapter;
+    class DeferredForwardSpecialFeatureAdapter;
+    class DeferredLightingPass;
     class RenderFeatureRegistry;
     class RenderPassRegistry;
     class RenderRetirementQueue;
@@ -1600,10 +1604,21 @@ namespace RVX
                                    bool denoiseRequested);
         void SetupDefaultPostProcess();
         [[nodiscard]] bool SetupDefaultRenderFeatures();
-        [[nodiscard]] bool EnsureLegacyForwardComposition();
+        [[nodiscard]] bool EnsureDefaultRenderComposition();
         SceneColorFormatPolicy ResolveSceneColorFormatPolicy(RHIFormat backBufferFormat,
                                                              bool postProcessActive) const;
         ToneMappingOutputColorSpace ResolveToneMappingOutputColorSpace(RHIFormat outputFormat) const;
+        /** Validate the required Deferred HDR-to-surface presentation boundary. */
+        [[nodiscard]] static bool ValidateDeferredToneMappingPresentationContract(
+            const PostProcessStackExecuteStats& stats,
+            RHIFormat backBufferFormat,
+            std::string& outDiagnostic);
+        /** Validate graph-owned execution evidence for the Deferred presentation transform. */
+        [[nodiscard]] static bool ValidateDeferredToneMappingSemanticEvidence(
+            const RenderGraph& graph,
+            const PostProcessStackExecuteStats& stats,
+            RHIFormat backBufferFormat,
+            std::string& outDiagnostic);
         bool SupportsHDRSceneColor() const;
         void ResolveRenderTargetExtent(uint32& width, uint32& height) const;
         void RunPreGraphPrepareCallbacks();
@@ -1649,11 +1664,16 @@ namespace RVX
         std::unique_ptr<MaterialSystem> m_materialSystem;
         std::unique_ptr<LightManager> m_lightManager;
         std::unique_ptr<ClusteredLighting> m_clusteredLighting;
+        std::unique_ptr<DeferredLightingPass> m_deferredLightingPass;
         std::unique_ptr<TransientResourcePool> m_transientResourcePool;
         std::unique_ptr<ResourceViewCache> m_resourceViewCache;
         std::unique_ptr<RenderPassRegistry> m_passRegistry;
         std::unique_ptr<RenderFeatureRegistry> m_renderFeatureRegistry;
         LegacyForwardFeatureAdapter* m_legacyForwardFeature = nullptr;
+        DeferredGeometryFeatureAdapter* m_deferredGeometryFeature = nullptr;
+        DeferredLightingFeatureAdapter* m_deferredLightingFeature = nullptr;
+        DeferredForwardSpecialFeatureAdapter*
+            m_deferredForwardSpecialFeature = nullptr;
         // Each GPU-capable pass owns its instance/group/indirect/count stream.
         // Candidate extraction remains shared, but compaction and resource
         // lifetime are intentionally pass-local.

@@ -38,6 +38,29 @@ namespace RVX
         m_stats.drawSubmitted = false;
     }
 
+    void ParticleFeaturePass::Execute(RenderGraphPassContext& context,
+                                      const ViewData& view)
+    {
+        (void)view;
+        RebuildStats();
+
+        if (!m_stats.requested)
+        {
+            // No extracted particle payload is an explicit no-work state.
+            return;
+        }
+
+        // The feature is currently correctly reported as unsupported and is
+        // therefore normally omitted by the legacy adapter. Keep the graph
+        // override fail-closed in case a caller registers it directly or a
+        // future support predicate changes before a draw implementation lands.
+        m_stats.drawSubmitted = false;
+        context.MarkExecutionFailed(
+            m_stats.supported
+                ? "ParticleFeaturePass has no renderer-owned draw implementation"
+                : "ParticleFeaturePass was executed despite unsupported particle payloads");
+    }
+
     void ParticleFeaturePass::RebuildStats()
     {
         ParticleFeaturePassStats stats;

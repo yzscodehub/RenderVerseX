@@ -8,6 +8,7 @@
 #include "Context/RenderContextInternal.h"
 #include "GPUScene/GPUSceneUpdate.h"
 #include "GPUScene/GPUSceneUploader.h"
+#include "Features/DeferredRecipeFeatureAdapter.h"
 #include "Features/LegacyForwardFeatureAdapter.h"
 #include "Render/Features/RenderFeatureGraphBuilder.h"
 #include "Render/Features/RenderFeatureRegistry.h"
@@ -21,6 +22,7 @@
 #include "Core/PathUtils.h"
 #include "Render/Passes/CameraVelocityPass.h"
 #include "Render/Passes/DepthPrepass.h"
+#include "Render/Passes/DeferredLightingPass.h"
 #include "Render/Passes/DirectDrawPacketBatch.h"
 #include "Render/Passes/ObjectVelocityPass.h"
 #include "Render/Passes/IRenderPass.h"
@@ -92,7 +94,34 @@ namespace
             mask |= ToMask(
                 RenderFeatureCapability::AccelerationStructureUpdate);
         }
+        if (capabilities.maxColorAttachments >= 4)
+        {
+            mask |= ToMask(RenderFeatureCapability::MultipleRenderTargets);
+        }
+        // Exact RGBA16F UAV support remains an implementation/pipeline
+        // readiness fact. This hardware bit only states that the backend has
+        // the compute and descriptor primitives needed to attempt it.
+        if (capabilities.supportsComputePipeline &&
+            capabilities.supportsDescriptorSets)
+        {
+            mask |= ToMask(RenderFeatureCapability::StorageTexture);
+        }
         return mask;
+    }
+
+    [[nodiscard]] RenderDeferredOpaqueExecutionStatus
+    ToDeferredOpaqueExecutionStatus(RenderExecutionStatus status) noexcept
+    {
+        switch (status)
+        {
+            case RenderExecutionStatus::Completed:
+                return RenderDeferredOpaqueExecutionStatus::Completed;
+            case RenderExecutionStatus::Failed:
+                return RenderDeferredOpaqueExecutionStatus::Failed;
+            case RenderExecutionStatus::NotAttempted:
+            default:
+                return RenderDeferredOpaqueExecutionStatus::NotAttempted;
+        }
     }
 
     [[nodiscard]] const std::shared_ptr<const RenderFeatureChannelRegistry>&
@@ -536,7 +565,8 @@ namespace
                     packet.materialKey.material,
                     packet.pipelineKey.cullMode,
                     packet.pipelineKey.shadowPolicy,
-                    packet.pipelineKey.requiresUV1);
+                    packet.pipelineKey.requiresUV1,
+                    packet.pipelineKey.surfacePathEligibility);
             packet.flags = ApplyMaterialShadowPolicy(
                 packet.flags,
                 packet.pipelineKey.materialPolicyValid,
@@ -553,6 +583,10 @@ namespace
                 MaterialShadowPolicy::CastAndReceive;
             packet.pipelineKey.materialPolicyValid = true;
             packet.pipelineKey.requiresUV1 = false;
+            packet.pipelineKey.surfacePathEligibility =
+                packet.materialKey.materialMode == RenderMaterialMode::Transparent
+                    ? SurfacePathEligibility::ForwardTranslucency
+                    : SurfacePathEligibility::ForwardSpecialOpaque;
         }
     }
 
@@ -1032,6 +1066,125 @@ ToneMappingOutputColorSpace SceneRenderer::ResolveToneMappingOutputColorSpace(RH
     }
 }
 
+bool SceneRenderer::ValidateDeferredToneMappingPresentationContract(
+    const PostProcessStackExecuteStats& stats,
+    RHIFormat backBufferFormat,
+    std::string& outDiagnostic)
+{
+    outDiagnostic.clear();
+    if (backBufferFormat == RHIFormat::Unknown ||
+        stats.finalOutputFormat != backBufferFormat)
+    {
+        outDiagnostic =
+            "DeferredQuality requires ToneMapping validation against the real backbuffer format";
+        return false;
+    }
+    if (!stats.toneMappingBoundaryValid)
+    {
+        outDiagnostic = stats.toneMappingBoundaryWarning.empty()
+            ? "DeferredQuality ToneMapping boundary is invalid"
+            : stats.toneMappingBoundaryWarning;
+        return false;
+    }
+    if (stats.fallbackCopyApplied)
+    {
+        outDiagnostic =
+            "DeferredQuality cannot present HDR scene color through a fallback copy";
+        return false;
+    }
+    if (stats.requestedToneMappingEffectCount != 1 ||
+        stats.supportedToneMappingEffectCount != 1 ||
+        stats.enabledToneMappingEffectCount != 1)
+    {
+        outDiagnostic =
+            "DeferredQuality requires exactly one requested, supported, and enabled ToneMapping transform";
+        return false;
+    }
+
+    const auto toneMappingPlan = std::find_if(
+        stats.effectPlans.begin(), stats.effectPlans.end(),
+        [](const PostProcessEffectExecutionPlan& plan)
+        {
+            return plan.effectName == "ToneMapping";
+        });
+    if (toneMappingPlan == stats.effectPlans.end() ||
+        !toneMappingPlan->requested || !toneMappingPlan->supported ||
+        !toneMappingPlan->enabled || !toneMappingPlan->pipelineReady)
+    {
+        outDiagnostic =
+            "DeferredQuality ToneMapping pipeline is unavailable for the presentation boundary";
+        return false;
+    }
+    return true;
+}
+
+bool SceneRenderer::ValidateDeferredToneMappingSemanticEvidence(
+    const RenderGraph& graph,
+    const PostProcessStackExecuteStats& stats,
+    RHIFormat backBufferFormat,
+    std::string& outDiagnostic)
+{
+    if (!ValidateDeferredToneMappingPresentationContract(
+            stats, backBufferFormat, outDiagnostic))
+    {
+        return false;
+    }
+    if (stats.scheduledToneMappingEffectCount != 1)
+    {
+        outDiagnostic =
+            "DeferredQuality did not schedule exactly one ToneMapping transform";
+        return false;
+    }
+
+    const auto scheduledPlan = std::find_if(
+        stats.effectPlans.begin(), stats.effectPlans.end(),
+        [backBufferFormat](const PostProcessEffectExecutionPlan& plan)
+        {
+            return plan.effectName == "ToneMapping" && plan.scheduled &&
+                   plan.inputFormat == RHIFormat::RGBA16_FLOAT &&
+                   plan.outputFormat == backBufferFormat;
+        });
+    if (scheduledPlan == stats.effectPlans.end())
+    {
+        outDiagnostic =
+            "DeferredQuality ToneMapping did not schedule the RGBA16F-to-backbuffer transform";
+        return false;
+    }
+
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    const auto toneMappingPass = std::find_if(
+        diagnostics.passes.begin(), diagnostics.passes.end(),
+        [](const RenderGraph::PassDiagnostic& pass)
+        {
+            return pass.name == "ToneMapping";
+        });
+    if (toneMappingPass == diagnostics.passes.end())
+    {
+        outDiagnostic =
+            "DeferredQuality ToneMapping has no RenderGraph execution evidence";
+        return false;
+    }
+    if (std::count_if(diagnostics.passes.begin(), diagnostics.passes.end(),
+                      [](const RenderGraph::PassDiagnostic& pass)
+                      {
+                          return pass.name == "ToneMapping";
+                      }) != 1)
+    {
+        outDiagnostic =
+            "DeferredQuality RenderGraph contains multiple ToneMapping transforms";
+        return false;
+    }
+    if (toneMappingPass->culled || !toneMappingPass->executedLastRun ||
+        !toneMappingPass->semanticExecutionSucceededLastRun)
+    {
+        outDiagnostic = toneMappingPass->semanticExecutionDiagnostic.empty()
+            ? "DeferredQuality ToneMapping did not record its required fullscreen draw"
+            : toneMappingPass->semanticExecutionDiagnostic;
+        return false;
+    }
+    return true;
+}
+
 SceneColorFormatPolicy SceneRenderer::ResolveSceneColorFormatPolicy(RHIFormat backBufferFormat,
                                                                     bool postProcessActive) const
 {
@@ -1262,6 +1415,10 @@ void SceneRenderer::Shutdown()
 
     m_renderFeatureRegistry.reset();
     m_legacyForwardFeature = nullptr;
+    m_deferredGeometryFeature = nullptr;
+    m_deferredLightingFeature = nullptr;
+    m_deferredForwardSpecialFeature = nullptr;
+    m_deferredLightingPass.reset();
     ClearPasses();
     m_depthPrepass = nullptr;
     m_opaquePass = nullptr;
@@ -3890,12 +4047,16 @@ void SceneRenderer::CompileRenderFramePlan()
         const PostProcessStackExecuteStats stackStats = m_postProcessStack
             ? m_postProcessStack->EvaluateEffects()
             : PostProcessStackExecuteStats{};
+        const bool deferredRecipeRequested =
+            m_renderScene.GetSettings().pipelineRequest.recipe ==
+            RenderPipelineRecipe::DeferredQuality;
         const bool postProcessActive =
             stackStats.enabledEffectCount > 0 &&
             stackStats.toneMappingBoundaryValid;
         const SceneColorFormatPolicy formatPolicy =
             ResolveSceneColorFormatPolicy(backBufferFormat,
-                                          postProcessActive);
+                                          postProcessActive ||
+                                              deferredRecipeRequested);
         opaqueGPUPipelineReady =
             formatPolicy.actualSceneColorFormat != RHIFormat::Unknown;
         for (const RenderDrawGroupRange& group :
@@ -5594,6 +5755,9 @@ void SceneRenderer::Render()
     // resources are deliberately unavailable during this stage.
     RenderGraphCompileOptions compileOptions;
     compileOptions.queuePolicy = RGQueuePolicy::PreferMultiQueue;
+    compileOptions.canonicalizeTransientPoolAccess =
+        m_transientResourcePool != nullptr &&
+        m_transientResourcePool->IsInitialized();
     if (IRHIDevice* device = m_renderContext->GetDevice())
     {
         compileOptions.capabilities = device->GetCapabilities();
@@ -5621,6 +5785,7 @@ void SceneRenderer::Render()
     RHICommandContext* ctx = m_renderContext->GetGraphicsContext();
     bool graphExecuted = false;
     const char* executionSkippedReason = nullptr;
+    std::string deferredToneMappingSemanticDiagnostic;
     if (ctx && graphCompileValid)
     {
         RenderGraphExecutionEnvironment executionEnvironment;
@@ -5818,6 +5983,21 @@ void SceneRenderer::Render()
                                      : "RenderGraph compile reported validation errors";
     }
 
+    if (graphExecuted && graphCompileValid &&
+        m_renderScene.GetSettings().pipelineRequest.recipe ==
+            RenderPipelineRecipe::DeferredQuality &&
+        !ValidateDeferredToneMappingSemanticEvidence(
+            *m_renderGraph,
+            m_postProcessStats.stackStats,
+            m_postProcessStats.backBufferFormat,
+            deferredToneMappingSemanticDiagnostic))
+    {
+        graphExecuted = false;
+        executionSkippedReason = deferredToneMappingSemanticDiagnostic.empty()
+            ? "DeferredQuality ToneMapping semantic execution did not complete"
+            : deferredToneMappingSemanticDiagnostic.c_str();
+    }
+
     m_currentCpuFrameTiming.graphRealizeRecord =
         static_cast<uint64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - graphRealizeRecordStart)
@@ -5842,6 +6022,21 @@ void SceneRenderer::Render()
         RenderExecutionReceipt receipt =
             m_renderFeatureRegistry->CollectExecutionReceipt(
                 m_executionBuildIdentity);
+        if (m_activeRenderPassResults != nullptr &&
+            m_activeRenderPassResults->identity == m_activeRenderPassIdentity &&
+            m_activeRenderPassIdentity.frameSequence ==
+                receipt.frameIdentity.frameSequence)
+        {
+            const OpaqueSurfaceRouteExecutionEvidence& deferredRoute =
+                m_activeRenderPassResults->deferredOpaqueRoute;
+            receipt.deferredOpaque.available = deferredRoute.available;
+            receipt.deferredOpaque.status =
+                ToDeferredOpaqueExecutionStatus(deferredRoute.status);
+            receipt.deferredOpaque.plannedPacketCount =
+                deferredRoute.drawStats.plannedPacketCount;
+            receipt.deferredOpaque.executedPacketCount =
+                deferredRoute.drawStats.executedPacketCount;
+        }
         receipt.executionSucceeded =
             receipt.executionSucceeded && graphExecuted && graphCompileValid;
         receipt.presented = false;
@@ -7776,23 +7971,48 @@ void SceneRenderer::BuildRenderGraph()
         velocityDesc.debugName = "SceneCameraVelocity";
         m_viewData.velocityTarget = m_renderGraph->CreateTexture(velocityDesc);
     }
-    if (m_postProcessStack)
-    {
-        m_postProcessStats.stackStats = m_postProcessStack->EvaluateEffects();
-    }
-
     const RHITextureDesc* backBufferDesc = backBufferTarget.IsValid()
                                                ? m_renderGraph->GetTextureDesc(backBufferTarget)
                                                : nullptr;
     const RHIFormat backBufferFormat = backBufferDesc ? backBufferDesc->format : RHIFormat::Unknown;
-    const bool postProcessActive = m_postProcessStats.stackStats.enabledEffectCount > 0 &&
-                                   m_postProcessStats.stackStats.toneMappingBoundaryValid;
-    m_sceneColorFormatPolicy = ResolveSceneColorFormatPolicy(backBufferFormat, postProcessActive);
-    m_postProcessSettings.toneMappingOutputColorSpace = m_sceneColorFormatPolicy.toneMappingOutputColorSpace;
+    const bool deferredRecipeRequested =
+        m_renderScene.GetSettings().pipelineRequest.recipe ==
+        RenderPipelineRecipe::DeferredQuality;
+
+    // Deferred lighting always writes linear RGBA16F. Tone mapping is the
+    // required presentation transform for that color domain, not an optional
+    // visual effect. GFX10 will expose this as a dedicated typed stage; until
+    // then the existing stack owns the one HDR-to-surface boundary.
+    PostProcessSettings effectivePostProcessSettings = m_postProcessSettings;
+    if (deferredRecipeRequested)
+    {
+        effectivePostProcessSettings.enableToneMapping = true;
+    }
+    std::string deferredToneMappingPresentationDiagnostic;
     if (m_postProcessStack)
     {
-        m_postProcessStack->ApplySettings(m_postProcessSettings);
-        m_postProcessStats.stackStats = m_postProcessStack->EvaluateEffects();
+        m_postProcessStack->ApplySettings(effectivePostProcessSettings);
+        m_postProcessStats.stackStats =
+            m_postProcessStack->EvaluateEffects(backBufferFormat);
+    }
+    const bool deferredToneMappingPresentationReady =
+        !deferredRecipeRequested ||
+        ValidateDeferredToneMappingPresentationContract(
+            m_postProcessStats.stackStats,
+            backBufferFormat,
+            deferredToneMappingPresentationDiagnostic);
+    const bool postProcessActive = m_postProcessStats.stackStats.enabledEffectCount > 0 &&
+                                   m_postProcessStats.stackStats.toneMappingBoundaryValid &&
+                                   deferredToneMappingPresentationReady;
+    m_sceneColorFormatPolicy = ResolveSceneColorFormatPolicy(backBufferFormat, postProcessActive);
+    m_postProcessSettings.toneMappingOutputColorSpace = m_sceneColorFormatPolicy.toneMappingOutputColorSpace;
+    effectivePostProcessSettings.toneMappingOutputColorSpace =
+        m_sceneColorFormatPolicy.toneMappingOutputColorSpace;
+    if (m_postProcessStack)
+    {
+        m_postProcessStack->ApplySettings(effectivePostProcessSettings);
+        m_postProcessStats.stackStats =
+            m_postProcessStack->EvaluateEffects(backBufferFormat);
     }
 
     m_postProcessStats.requestedSceneColorFormat = m_sceneColorFormatPolicy.requestedSceneColorFormat;
@@ -7802,6 +8022,14 @@ void SceneRenderer::BuildRenderGraph()
     m_postProcessStats.toneMappingOutputColorSpace = m_sceneColorFormatPolicy.toneMappingOutputColorSpace;
     m_postProcessStats.hdrSceneColorEnabled = m_sceneColorFormatPolicy.hdrSceneColorEnabled;
     m_postProcessStats.hdrFallbackReason = m_sceneColorFormatPolicy.hdrFallbackReason;
+    if (!deferredToneMappingPresentationReady)
+    {
+        m_featureCompositionFailureReason =
+            deferredToneMappingPresentationDiagnostic.empty()
+                ? "DeferredQuality ToneMapping presentation contract is unavailable"
+                : deferredToneMappingPresentationDiagnostic;
+        return;
+    }
     if (m_pipelineCache)
     {
         m_pipelineCache->SetRenderTargetFormats(m_sceneColorFormatPolicy.actualSceneColorFormat,
@@ -7813,13 +8041,18 @@ void SceneRenderer::BuildRenderGraph()
     m_postProcessStats.frameInputTemporalHistoryAvailable =
         !m_viewData.resetTemporalHistory && m_viewData.previousViewProjectionValid != 0;
 
-    if (backBufferTarget.IsValid() && m_postProcessStats.stackStats.enabledEffectCount > 0)
+    if (backBufferTarget.IsValid() && postProcessActive)
     {
         if (backBufferDesc)
         {
             RHITextureDesc sceneColorDesc = *backBufferDesc;
             sceneColorDesc.format = m_sceneColorFormatPolicy.actualSceneColorFormat;
             sceneColorDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+            if (deferredRecipeRequested)
+            {
+                sceneColorDesc.usage = sceneColorDesc.usage |
+                    RHITextureUsage::UnorderedAccess;
+            }
             const RenderViewClearActions clearActions =
                 ResolveRenderViewClearActions(m_viewData.clearPolicy,
                                               m_viewData.clearColor);
@@ -7948,27 +8181,47 @@ void SceneRenderer::BuildRenderGraph()
     passRecordContext.opaqueGPUDriven = makeGPUDrivenInputs(
         m_opaqueGPUCullingRecordedState, m_opaqueGPUCullingGraphHandles);
 
-    // GFX02 keeps the established priority-ordered pass chain behind one
-    // sealed ForwardStandard feature. Resource phases validate composition;
-    // the existing RenderGraph resource edges still determine execution.
-    if (m_passRegistry != nullptr &&
-        (m_renderFeatureRegistry == nullptr ||
-         m_legacyForwardFeature == nullptr) &&
-        !EnsureLegacyForwardComposition())
+    // ForwardStandard retains the established chain. DeferredQuality splits
+    // that same inventory around shared opaque submission and real compute
+    // lighting; RenderGraph edges remain the authoritative execution order.
+    const bool selectedCompositionMissing =
+        m_renderFeatureRegistry == nullptr ||
+        m_legacyForwardFeature == nullptr ||
+        (deferredRecipeRequested &&
+         (m_deferredGeometryFeature == nullptr ||
+          m_deferredLightingFeature == nullptr ||
+          m_deferredForwardSpecialFeature == nullptr));
+    if (m_passRegistry != nullptr && selectedCompositionMissing &&
+        !EnsureDefaultRenderComposition())
     {
         m_featureCompositionFailureReason =
-            "ForwardStandard render feature composition could not be established";
+            "Raster render feature composition could not be established";
         return;
     }
     if (!m_passRegistry || !m_renderFeatureRegistry ||
-        !m_legacyForwardFeature)
+        !m_legacyForwardFeature ||
+        (deferredRecipeRequested &&
+         (!m_deferredGeometryFeature || !m_deferredLightingFeature ||
+          !m_deferredForwardSpecialFeature)))
     {
         m_featureCompositionFailureReason =
-            "ForwardStandard render feature composition is unavailable";
+            "Raster render feature composition is unavailable";
         return;
     }
 
     m_legacyForwardFeature->SetRecordContext(passRecordContext);
+    if (m_deferredGeometryFeature != nullptr)
+    {
+        m_deferredGeometryFeature->SetRecordContext(passRecordContext);
+    }
+    if (m_deferredLightingFeature != nullptr)
+    {
+        m_deferredLightingFeature->SetRecordContext(passRecordContext);
+    }
+    if (m_deferredForwardSpecialFeature != nullptr)
+    {
+        m_deferredForwardSpecialFeature->SetRecordContext(passRecordContext);
+    }
 
     const RenderFrameHeaderV5& acceptedHeader =
         m_renderScene.GetAcceptedHeader();
@@ -8038,8 +8291,42 @@ void SceneRenderer::BuildRenderGraph()
     const RenderFeatureRegistryCode compositionCode =
         m_renderFeatureRegistry->AddPasses(featureGraphBuilder, blackboard);
 
-    const LegacyForwardFeaturePassChainStats passChain =
-        m_legacyForwardFeature->GetPassChainStatsSnapshot();
+    LegacyForwardFeaturePassChainStats passChain;
+    if (featurePrepare.pipeline.resolvedRecipe ==
+        RenderPipelineRecipe::DeferredQuality)
+    {
+        const DeferredRecipeFeaturePassChainStats geometryChain =
+            m_deferredGeometryFeature->GetPassChainStatsSnapshot();
+        const DeferredRecipeFeaturePassChainStats postLightingChain =
+            m_deferredForwardSpecialFeature->GetPassChainStatsSnapshot();
+        passChain.frameSequence = geometryChain.frameSequence != 0
+            ? geometryChain.frameSequence : postLightingChain.frameSequence;
+        passChain.registeredPassCount = geometryChain.registeredPassCount;
+        passChain.graphPassCount = geometryChain.graphPassCount +
+            postLightingChain.graphPassCount + 1U;
+        passChain.skippedDisabledPassCount =
+            geometryChain.skippedDisabledPassCount +
+            postLightingChain.skippedDisabledPassCount;
+        passChain.skippedUnsupportedPassCount =
+            geometryChain.skippedUnsupportedPassCount +
+            postLightingChain.skippedUnsupportedPassCount;
+        passChain.passStatuses = geometryChain.passStatuses;
+        passChain.graphPassNames = geometryChain.graphPassNames;
+        passChain.graphPassNames.emplace_back("DeferredLightingPass");
+        passChain.graphPassNames.insert(
+            passChain.graphPassNames.end(),
+            postLightingChain.graphPassNames.begin(),
+            postLightingChain.graphPassNames.end());
+        passChain.unsupportedPassNames = geometryChain.unsupportedPassNames;
+        passChain.unsupportedPassNames.insert(
+            passChain.unsupportedPassNames.end(),
+            postLightingChain.unsupportedPassNames.begin(),
+            postLightingChain.unsupportedPassNames.end());
+    }
+    else
+    {
+        passChain = m_legacyForwardFeature->GetPassChainStatsSnapshot();
+    }
     ++m_passChainStats.frameCount;
     m_passChainStats.passStatuses = passChain.passStatuses;
     m_passChainStats.registeredPassCount = passChain.registeredPassCount;
@@ -8082,11 +8369,30 @@ void SceneRenderer::BuildRenderGraph()
     {
         m_featureCompositionFailureReason =
             GetRenderFeatureRegistryCodeName(compositionCode);
-        const RenderFeatureReadiness readiness =
-            m_legacyForwardFeature->ResolveReadiness();
-        if (!readiness.diagnostic.empty())
+        std::vector<RenderFeatureReadiness> readinessCandidates;
+        if (featurePrepare.pipeline.resolvedRecipe ==
+            RenderPipelineRecipe::DeferredQuality)
         {
-            m_featureCompositionFailureReason = readiness.diagnostic;
+            readinessCandidates = {
+                m_deferredGeometryFeature->ResolveReadiness(),
+                m_deferredLightingFeature->ResolveReadiness(),
+                m_deferredForwardSpecialFeature->ResolveReadiness()};
+        }
+        else
+        {
+            readinessCandidates.push_back(
+                m_legacyForwardFeature->ResolveReadiness());
+        }
+        const auto failedReadiness = std::find_if(
+            readinessCandidates.begin(), readinessCandidates.end(),
+            [](const RenderFeatureReadiness& readiness)
+            {
+                return !readiness.IsReadyToExecute() &&
+                       !readiness.diagnostic.empty();
+            });
+        if (failedReadiness != readinessCandidates.end())
+        {
+            m_featureCompositionFailureReason = failedReadiness->diagnostic;
         }
         m_lastAttemptedRenderExecutionReceipt =
             m_renderFeatureRegistry->CollectExecutionReceipt(
@@ -8110,6 +8416,25 @@ void SceneRenderer::BuildRenderGraph()
         frameInputs.resetTemporalHistory = m_viewData.resetTemporalHistory;
         m_postProcessStack->Execute(*m_renderGraph, frameInputs, backBufferTarget);
         m_postProcessStats.stackStats = m_postProcessStack->GetLastExecuteStats();
+        if (deferredRecipeRequested &&
+            !ValidateDeferredToneMappingPresentationContract(
+                m_postProcessStats.stackStats,
+                backBufferFormat,
+                deferredToneMappingPresentationDiagnostic))
+        {
+            m_featureCompositionFailureReason =
+                deferredToneMappingPresentationDiagnostic.empty()
+                    ? "DeferredQuality ToneMapping could not be scheduled"
+                    : deferredToneMappingPresentationDiagnostic;
+            return;
+        }
+        if (deferredRecipeRequested &&
+            m_postProcessStats.stackStats.scheduledToneMappingEffectCount != 1)
+        {
+            m_featureCompositionFailureReason =
+                "DeferredQuality did not schedule exactly one ToneMapping transform";
+            return;
+        }
     }
 }
 
@@ -8212,6 +8537,14 @@ bool SceneRenderer::RemovePass(const char* name)
         {
             m_legacyForwardFeature->SetOpaquePass(nullptr);
         }
+        if (m_deferredGeometryFeature)
+        {
+            m_deferredGeometryFeature->SetOpaquePass(nullptr);
+        }
+        if (m_deferredForwardSpecialFeature)
+        {
+            m_deferredForwardSpecialFeature->SetOpaquePass(nullptr);
+        }
     }
     if (removed == m_depthPrepass) m_depthPrepass = nullptr;
     if (removed == m_shadowPass) m_shadowPass = nullptr;
@@ -8231,6 +8564,14 @@ void SceneRenderer::ClearPasses()
     if (m_legacyForwardFeature)
     {
         m_legacyForwardFeature->SetOpaquePass(nullptr);
+    }
+    if (m_deferredGeometryFeature)
+    {
+        m_deferredGeometryFeature->SetOpaquePass(nullptr);
+    }
+    if (m_deferredForwardSpecialFeature)
+    {
+        m_deferredForwardSpecialFeature->SetOpaquePass(nullptr);
     }
     if (m_passRegistry)
         m_passRegistry->Clear();

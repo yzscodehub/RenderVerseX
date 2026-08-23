@@ -6,10 +6,12 @@
 #include "Render/Passes/OpaquePass.h"
 #include "RHI/RHICommandContext.h"
 
+#include "Features/DeferredRecipeFeatureAdapter.h"
 #include "Features/LegacyForwardFeatureAdapter.h"
 #include "Renderer/RenderPassRegistry.h"
 #include "../Common/RenderGraphValidationAccess.h"
 
+#include <algorithm>
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -28,6 +30,9 @@ namespace
     constexpr RenderFeatureResourceContract VisibilityOutputsContract{
         RenderBlackboardResourceId::VisibilityOutputs,
         VisibilityOutputs::SchemaVersion};
+    constexpr RenderFeatureResourceContract LightingOutputsContract{
+        RenderBlackboardResourceId::LightingOutputs,
+        LightingOutputs::SchemaVersion};
 
     class ScopedTestLog final
     {
@@ -265,10 +270,45 @@ namespace
             return m_readiness;
         }
 
-        void AddPasses(RenderFeatureGraphBuilder&,
+        void AddPasses(RenderFeatureGraphBuilder& builder,
                        RenderGraphBlackboard& blackboard) override
         {
             ++m_addPassesCount;
+            if (m_addSemanticPass)
+            {
+                struct SemanticPassData
+                {
+                    RHIBufferRef buffer{};
+                    RGBufferHandle handle{};
+                    bool failExecution = false;
+                };
+                static_cast<void>(builder.AddPass<SemanticPassData>(
+                    "SemanticEvidence",
+                    RenderGraphPassType::Graphics,
+                    [buffer = m_semanticBuffer,
+                     failExecution = m_failSemanticPass](
+                        RenderGraphBuilder& graphBuilder,
+                        SemanticPassData& data)
+                    {
+                        data.buffer = buffer;
+                        data.failExecution = failExecution;
+                        data.handle = graphBuilder.ImportBuffer(
+                            data.buffer, RHIResourceState::Common);
+                        data.handle = graphBuilder.Write(
+                            data.handle, RHIResourceState::UnorderedAccess);
+                        graphBuilder.SetExportState(
+                            data.handle, RHIResourceState::ShaderResource);
+                    },
+                    [](const SemanticPassData& data,
+                       RenderGraphPassContext& context)
+                    {
+                        if (data.failExecution)
+                        {
+                            context.MarkExecutionFailed(
+                                "required semantic workload was not recorded");
+                        }
+                    }));
+            }
             if (m_publishSceneTextures)
             {
                 SceneTextures outputs;
@@ -337,6 +377,12 @@ namespace
             m_claimExecutionInReceipt = enabled;
         }
 
+        void SetSemanticPass(bool failExecution) noexcept
+        {
+            m_addSemanticPass = true;
+            m_failSemanticPass = failExecution;
+        }
+
     private:
         RenderFeatureDescriptor m_descriptor{};
         RenderFeatureReadiness m_readiness{};
@@ -350,6 +396,9 @@ namespace
         bool m_consumeSceneTextures = false;
         bool m_replaceReadinessAfterAddPasses = false;
         bool m_claimExecutionInReceipt = false;
+        bool m_addSemanticPass = false;
+        bool m_failSemanticPass = false;
+        RHIBufferRef m_semanticBuffer{new TestBuffer()};
     };
 
     [[nodiscard]] RenderFeatureDescriptor MakeDescriptor(
@@ -481,6 +530,66 @@ namespace
             13,
             0,
             14};
+    }
+
+    [[nodiscard]] RGTextureHandle MakeTextureHandle(
+        const RenderGraphBlackboardProvenance& provenance,
+        uint32 index)
+    {
+        RGTextureHandle handle;
+        handle.index = index;
+        handle.graphIdentity = provenance.graphIdentity;
+        handle.recordingGeneration = provenance.recordingGeneration;
+        return handle;
+    }
+
+    [[nodiscard]] RGBufferHandle MakeBufferHandle(
+        const RenderGraphBlackboardProvenance& provenance,
+        uint32 index)
+    {
+        RGBufferHandle handle;
+        handle.index = index;
+        handle.graphIdentity = provenance.graphIdentity;
+        handle.recordingGeneration = provenance.recordingGeneration;
+        return handle;
+    }
+
+    [[nodiscard]] SceneTextures::Metadata MakeSceneTextureMetadata(
+        SceneTextures::FormatContract contract,
+        RenderOutputExtent extent = RenderOutputExtent{320, 180})
+    {
+        return SceneTextures::Metadata{
+            extent, contract.format, contract.sampleCount};
+    }
+
+    [[nodiscard]] SceneTextures MakeDeferredSceneTextures(
+        const RenderGraphBlackboardProvenance& provenance = MakeProvenance())
+    {
+        SceneTextures textures;
+        textures.provenance = provenance;
+        textures.hdrSceneColor = MakeTextureHandle(provenance, 1);
+        textures.hdrSceneColorMetadata = MakeSceneTextureMetadata(
+            SceneTextures::HDRSceneColorContract);
+        textures.deviceDepth = MakeTextureHandle(provenance, 2);
+        textures.deviceDepthMetadata = MakeSceneTextureMetadata(
+            SceneTextures::DeviceDepthContract);
+        textures.velocity = MakeTextureHandle(provenance, 3);
+        textures.velocityMetadata = MakeSceneTextureMetadata(
+            SceneTextures::VelocityContract);
+        textures.gBuffer0 = MakeTextureHandle(provenance, 4);
+        textures.gBuffer0Metadata = MakeSceneTextureMetadata(
+            SceneTextures::GBuffer0Contract);
+        textures.gBuffer1 = MakeTextureHandle(provenance, 5);
+        textures.gBuffer1Metadata = MakeSceneTextureMetadata(
+            SceneTextures::GBuffer1Contract);
+        textures.gBuffer2 = MakeTextureHandle(provenance, 6);
+        textures.gBuffer2Metadata = MakeSceneTextureMetadata(
+            SceneTextures::GBuffer2Contract);
+        textures.gBuffer3 = MakeTextureHandle(provenance, 7);
+        textures.gBuffer3Metadata = MakeSceneTextureMetadata(
+            SceneTextures::GBuffer3Contract);
+        textures.materialTable = MakeBufferHandle(provenance, 8);
+        return textures;
     }
 
     TEST(RenderFeatureValidation,
@@ -858,6 +967,104 @@ namespace
         EXPECT_EQ(required.code,
                   RenderFeatureRegistryCode::RequiredFeatureUnavailable);
         EXPECT_EQ(required.diagnostic, "pipeline missing");
+    }
+
+    TEST(RenderFeatureValidation,
+         RegistryFailsRequiredDeferredFeatureWithoutMrtOrStorageTexture)
+    {
+        const auto prepare = [](RenderFeatureCapabilityMask capabilities)
+        {
+            RenderFeatureRegistry registry;
+            RenderFeatureDescriptor descriptor = MakeDescriptor(
+                1, "deferred-geometry");
+            descriptor.requiredRecipes = ToMask(
+                RenderPipelineRecipe::DeferredQuality);
+            descriptor.requiredCapabilities =
+                ToMask(RenderFeatureCapability::Graphics) |
+                ToMask(RenderFeatureCapability::MultipleRenderTargets) |
+                ToMask(RenderFeatureCapability::StorageTexture);
+            EXPECT_EQ(registry.Register(MakeFeature(std::move(descriptor))),
+                      RenderFeatureRegistryCode::Success);
+            EXPECT_EQ(registry.DeclareImplementedRecipe(
+                          RenderPipelineRecipe::DeferredQuality),
+                      RenderFeatureRegistryCode::Success);
+            EXPECT_EQ(registry.Seal(), RenderFeatureRegistryCode::Success);
+
+            RenderFeatureContext context = MakeValidContext(
+                RenderPipelineRecipe::DeferredQuality);
+            context.hardwareCapabilities = capabilities;
+            const RenderFeatureFramePrepareResult result =
+                registry.PrepareFrame(std::move(context));
+            EXPECT_EQ(result.code,
+                      RenderFeatureRegistryCode::RequiredFeatureUnavailable);
+            EXPECT_EQ(result.diagnostic,
+                      "Required RHI capabilities are unavailable");
+            const RenderExecutionReceipt receipt =
+                registry.CollectExecutionReceipt();
+            ASSERT_EQ(receipt.features.size(), 1U);
+            EXPECT_FALSE(receipt.features[0].readiness.hardwareSupported);
+            EXPECT_FALSE(receipt.features[0].readiness.executed);
+        };
+
+        prepare(ToMask(RenderFeatureCapability::Graphics));
+        prepare(ToMask(RenderFeatureCapability::Graphics) |
+                ToMask(RenderFeatureCapability::MultipleRenderTargets));
+        prepare(ToMask(RenderFeatureCapability::Graphics) |
+                ToMask(RenderFeatureCapability::StorageTexture));
+    }
+
+    TEST(RenderFeatureValidation,
+         DeferredRecipeAdaptersDeclareOneWayGBufferLightingAndSpecialSurfaceFlow)
+    {
+        DeferredGeometryFeatureAdapter geometry(nullptr, nullptr, nullptr);
+        DeferredLightingFeatureAdapter lighting(nullptr, nullptr);
+        DeferredForwardSpecialFeatureAdapter special(nullptr, nullptr);
+
+        const RenderFeatureDescriptor geometryDescriptor = geometry.Describe();
+        const RenderFeatureDescriptor lightingDescriptor = lighting.Describe();
+        const RenderFeatureDescriptor specialDescriptor = special.Describe();
+
+        EXPECT_EQ(geometryDescriptor.featureId,
+                  BuiltinRenderFeatureIds::DeferredGeometry);
+        EXPECT_EQ(lightingDescriptor.featureId,
+                  BuiltinRenderFeatureIds::DeferredLighting);
+        EXPECT_EQ(specialDescriptor.featureId,
+                  BuiltinRenderFeatureIds::DeferredForwardSpecialChain);
+        EXPECT_EQ(geometryDescriptor.requiredRecipes,
+                  ToMask(RenderPipelineRecipe::DeferredQuality));
+        EXPECT_EQ(lightingDescriptor.requiredRecipes,
+                  ToMask(RenderPipelineRecipe::DeferredQuality));
+        EXPECT_EQ(specialDescriptor.requiredRecipes,
+                  ToMask(RenderPipelineRecipe::DeferredQuality));
+        EXPECT_EQ(geometryDescriptor.optionalRecipes, 0U);
+        EXPECT_EQ(lightingDescriptor.optionalRecipes, 0U);
+        EXPECT_EQ(specialDescriptor.optionalRecipes, 0U);
+        EXPECT_TRUE(std::find(geometryDescriptor.producedResources.begin(),
+                              geometryDescriptor.producedResources.end(),
+                              SceneTexturesContract) !=
+                    geometryDescriptor.producedResources.end());
+        EXPECT_TRUE(std::find(lightingDescriptor.consumedResources.begin(),
+                              lightingDescriptor.consumedResources.end(),
+                              SceneTexturesContract) !=
+                    lightingDescriptor.consumedResources.end());
+        EXPECT_TRUE(std::find(lightingDescriptor.producedResources.begin(),
+                              lightingDescriptor.producedResources.end(),
+                              LightingOutputsContract) !=
+                    lightingDescriptor.producedResources.end());
+        EXPECT_TRUE(std::find(specialDescriptor.consumedResources.begin(),
+                              specialDescriptor.consumedResources.end(),
+                              LightingOutputsContract) !=
+                    specialDescriptor.consumedResources.end());
+
+        EXPECT_NE(geometryDescriptor.requiredCapabilities &
+                      ToMask(RenderFeatureCapability::MultipleRenderTargets),
+                  0U);
+        EXPECT_NE(lightingDescriptor.requiredCapabilities &
+                      ToMask(RenderFeatureCapability::Compute),
+                  0U);
+        EXPECT_NE(lightingDescriptor.requiredCapabilities &
+                      ToMask(RenderFeatureCapability::StorageTexture),
+                  0U);
     }
 
     TEST(RenderFeatureValidation,
@@ -1363,12 +1570,73 @@ namespace
                                           staleEntry),
                   RenderGraphBlackboardCode::StaleGraphResource);
 
+        RenderGraphBlackboard staleGBufferBlackboard(provenance);
+        SceneTextures staleGBufferEntry;
+        staleGBufferEntry.provenance = provenance;
+        staleGBufferEntry.gBuffer3.index = 1;
+        staleGBufferEntry.gBuffer3.graphIdentity = provenance.graphIdentity;
+        staleGBufferEntry.gBuffer3.recordingGeneration =
+            provenance.recordingGeneration + 1;
+        EXPECT_EQ(staleGBufferBlackboard.Publish(RenderFeatureId{1},
+                                                  producer,
+                                                  staleGBufferEntry),
+                  RenderGraphBlackboardCode::StaleGraphResource);
+
         RenderGraphBlackboard wrongProvenanceBlackboard(provenance);
         SceneTextures wrongProvenance = entry;
         ++wrongProvenance.provenance.recordEpoch;
         EXPECT_EQ(wrongProvenanceBlackboard.Publish(RenderFeatureId{1}, producer,
                                                     wrongProvenance),
                   RenderGraphBlackboardCode::InvalidProvenance);
+    }
+
+    TEST(RenderFeatureValidation,
+         DeferredSceneTexturesRejectMissingAndIncompatibleOutputs)
+    {
+        SceneTextures textures = MakeDeferredSceneTextures();
+        EXPECT_EQ(ValidateDeferredSceneTextures(textures),
+                  DeferredSceneTexturesValidationCode::Success);
+
+        SceneTextures withoutVelocity = textures;
+        withoutVelocity.velocity = {};
+        withoutVelocity.velocityMetadata = {};
+        EXPECT_EQ(ValidateDeferredSceneTextures(withoutVelocity),
+                  DeferredSceneTexturesValidationCode::Success);
+
+        SceneTextures incompatibleVelocity = textures;
+        incompatibleVelocity.velocityMetadata.format = RHIFormat::RGBA16_FLOAT;
+        EXPECT_EQ(ValidateDeferredSceneTextures(incompatibleVelocity),
+                  DeferredSceneTexturesValidationCode::FormatMismatch);
+
+        SceneTextures missingHandle = textures;
+        missingHandle.gBuffer2 = {};
+        EXPECT_EQ(ValidateDeferredSceneTextures(missingHandle),
+                  DeferredSceneTexturesValidationCode::MissingRequiredHandle);
+
+        SceneTextures missingMaterialTable = textures;
+        missingMaterialTable.materialTable = {};
+        EXPECT_EQ(ValidateDeferredSceneTextures(missingMaterialTable),
+                  DeferredSceneTexturesValidationCode::MissingMaterialTable);
+
+        SceneTextures invalidExtent = textures;
+        invalidExtent.gBuffer0Metadata.extent = {};
+        EXPECT_EQ(ValidateDeferredSceneTextures(invalidExtent),
+                  DeferredSceneTexturesValidationCode::InvalidExtent);
+
+        SceneTextures incompatibleFormat = textures;
+        incompatibleFormat.gBuffer0Metadata.format = RHIFormat::RGBA8_UNORM;
+        EXPECT_EQ(ValidateDeferredSceneTextures(incompatibleFormat),
+                  DeferredSceneTexturesValidationCode::FormatMismatch);
+
+        SceneTextures mismatchedExtent = textures;
+        mismatchedExtent.gBuffer1Metadata.extent = RenderOutputExtent{640, 360};
+        EXPECT_EQ(ValidateDeferredSceneTextures(mismatchedExtent),
+                  DeferredSceneTexturesValidationCode::ExtentMismatch);
+
+        SceneTextures multisampled = textures;
+        multisampled.gBuffer3Metadata.sampleCount = RHISampleCount::Count4;
+        EXPECT_EQ(ValidateDeferredSceneTextures(multisampled),
+                  DeferredSceneTexturesValidationCode::SampleCountMismatch);
     }
 
     TEST(RenderFeatureValidation,
@@ -1580,6 +1848,56 @@ namespace
         EXPECT_EQ(receipt.diagnostic,
                   "Render feature self-reported execution; graph evidence is "
                   "registry-owned");
+    }
+
+    TEST(RenderFeatureValidation,
+         RegistryRejectsExecutedCallbackThatReportsSemanticFailure)
+    {
+        RenderFeatureRegistry registry;
+        auto feature = MakeFeature(
+            MakeDescriptor(1, "semantic-evidence"), MakeReadyReadiness());
+        feature->SetSemanticPass(true);
+        ASSERT_EQ(registry.Register(std::move(feature)),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(registry.DeclareImplementedRecipe(
+                      RenderPipelineRecipe::ForwardStandard),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(registry.Seal(), RenderFeatureRegistryCode::Success);
+        ASSERT_TRUE(registry.PrepareFrame(MakeValidContext()).Succeeded());
+
+        RenderGraph graph;
+        const RenderGraphBlackboardProvenance provenance{
+            graph.GetGraphIdentity(), graph.GetRecordingGeneration(), 1, 0, 1};
+        RenderFeatureGraphBuilder builder(graph, provenance);
+        RenderGraphBlackboard blackboard(provenance);
+        ASSERT_EQ(registry.AddPasses(builder, blackboard),
+                  RenderFeatureRegistryCode::Success);
+        RenderGraphValidationAccess::Compile(graph);
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+        NoOpCommandContext commands;
+        RenderGraphValidationAccess::Execute(graph, commands);
+
+        const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+        ASSERT_EQ(diagnostics.passes.size(), 1U);
+        EXPECT_TRUE(diagnostics.passes[0].executedLastRun);
+        EXPECT_FALSE(
+            diagnostics.passes[0].semanticExecutionSucceededLastRun);
+        EXPECT_EQ(diagnostics.passes[0].semanticExecutionDiagnostic,
+                  "required semantic workload was not recorded");
+        ASSERT_EQ(registry.FinalizeGraphExecution(graph),
+                  RenderFeatureRegistryCode::Success);
+
+        const RenderExecutionReceipt receipt =
+            registry.CollectExecutionReceipt();
+        ASSERT_EQ(receipt.features.size(), 1U);
+        EXPECT_EQ(receipt.features[0].graphPassCount, 1U);
+        EXPECT_EQ(receipt.features[0].executedGraphPassCount, 0U);
+        EXPECT_FALSE(receipt.features[0].readiness.executed);
+        EXPECT_EQ(receipt.features[0].diagnostic,
+                  "required semantic workload was not recorded");
+        EXPECT_FALSE(receipt.executionSucceeded);
+        EXPECT_EQ(receipt.diagnostic,
+                  "required semantic workload was not recorded");
     }
 
     TEST(RenderFeatureValidation,

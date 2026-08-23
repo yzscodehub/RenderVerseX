@@ -608,8 +608,15 @@ namespace RVX
         const ViewData& view)
     {
         RHICommandContext& ctx = context.Commands();
-        if (!m_stats.outputDeclared ||
-            !m_pipelineCache ||
+        if (!m_stats.outputDeclared)
+        {
+            // Optional RT reflections may have no eligible scene/TLAS output
+            // for a view. The absence of an output declaration is the
+            // explicit ReadyNoWork state for that case.
+            m_stats.dispatchRecorded = false;
+            return;
+        }
+        if (!m_pipelineCache ||
             !m_sceneManager ||
             !m_sceneColorReadHandle.IsValid() ||
             !m_depthReadHandle.IsValid() ||
@@ -621,6 +628,8 @@ namespace RVX
             !m_reflectionHandle.IsValid())
         {
             m_stats.dispatchRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionPass graph recording prerequisites are unavailable");
             return;
         }
 
@@ -631,6 +640,8 @@ namespace RVX
         if (!pipeline || !shaderTable || !setLayout || !device)
         {
             m_stats.dispatchRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionPass pipeline resources are unavailable");
             return;
         }
 
@@ -655,6 +666,8 @@ namespace RVX
             !currentNormalHistory || !reflectionOutput)
         {
             m_stats.dispatchRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionPass could not realize a required graph resource");
             return;
         }
 
@@ -681,6 +694,8 @@ namespace RVX
             !currentNormalHistoryUAV)
         {
             m_stats.dispatchRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionPass could not realize a required graph texture view");
             return;
         }
 
@@ -688,6 +703,8 @@ namespace RVX
         if (!ResolveMaterialTextureViews(materialTextureViews))
         {
             m_stats.dispatchRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionPass could not resolve material texture views");
             return;
         }
 
@@ -702,6 +719,8 @@ namespace RVX
                 geometryTangentBuffers))
         {
             m_stats.dispatchRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionPass could not resolve geometry buffers");
             return;
         }
 
@@ -710,6 +729,8 @@ namespace RVX
         if (!EnsureConstantBuffer() || !UpdateConstants(view))
         {
             m_stats.dispatchRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionPass could not prepare its constant buffer");
             return;
         }
 
@@ -808,6 +829,8 @@ namespace RVX
         if (!descriptorSet)
         {
             m_stats.dispatchRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionPass descriptor creation failed");
             return;
         }
 
@@ -819,6 +842,8 @@ namespace RVX
         {
             RVX_CORE_WARN("RayTracedReflectionPass: submission ownership rejected descriptor set");
             m_stats.dispatchRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionPass submission resource retention failed");
             return;
         }
 

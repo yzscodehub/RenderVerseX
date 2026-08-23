@@ -336,6 +336,14 @@ namespace RVX
         uint32 unsupportedSkippedCount = 0;
         uint32 enabledEffectCount = 0;
         uint32 scheduledEffectCount = 0;
+        /** Number of requested ToneMapping transforms seen in this plan. */
+        uint32 requestedToneMappingEffectCount = 0;
+        /** Number of supported ToneMapping transforms eligible for scheduling. */
+        uint32 supportedToneMappingEffectCount = 0;
+        /** Number of enabled ToneMapping transforms in the selected chain. */
+        uint32 enabledToneMappingEffectCount = 0;
+        /** Number of ToneMapping transforms actually added to this graph. */
+        uint32 scheduledToneMappingEffectCount = 0;
         uint32 graphPassCount = 0;
         uint32 transientIntermediateCount = 0;
         uint32 hdrIntermediateCount = 0;
@@ -435,6 +443,15 @@ namespace RVX
          * @brief Evaluate currently configured effects without adding graph passes
          */
         PostProcessStackExecuteStats EvaluateEffects() const;
+
+        /**
+         * @brief Evaluate the selected chain against its concrete presentation format.
+         *
+         * Unlike the format-agnostic overload, this validates the HDR-to-output
+         * boundary using the exact surface format that will receive the chain.
+         */
+        PostProcessStackExecuteStats EvaluateEffects(
+            RHIFormat finalOutputFormat) const;
 
         /**
          * @brief Get current settings

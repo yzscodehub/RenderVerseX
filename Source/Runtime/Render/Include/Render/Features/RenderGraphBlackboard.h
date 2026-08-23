@@ -40,21 +40,186 @@ namespace RVX
     {
         static constexpr RenderBlackboardResourceId ResourceId =
             RenderBlackboardResourceId::SceneTextures;
-        static constexpr uint32 SchemaVersion = 1;
+        static constexpr uint32 SchemaVersion = 2;
+
+        /**
+         * @brief Graph-independent description for one scene texture.
+         *
+         * This is deliberately a compact value contract rather than an RHI
+         * resource reference. Features can validate their negotiated scene
+         * surface layout while graph provenance still protects every handle.
+         */
+        struct Metadata
+        {
+            RenderOutputExtent extent{};
+            RHIFormat format = RHIFormat::Unknown;
+            RHISampleCount sampleCount = RHISampleCount::Count1;
+
+            friend constexpr bool operator==(const Metadata&,
+                                             const Metadata&) = default;
+        };
+
+        struct FormatContract
+        {
+            RHIFormat format = RHIFormat::Unknown;
+            RHISampleCount sampleCount = RHISampleCount::Count1;
+
+            friend constexpr bool operator==(const FormatContract&,
+                                             const FormatContract&) = default;
+        };
+
+        // The renderer's fixed deferred layout. RHI names the requested
+        // RGBA8_SRGB storage format as RGBA8_UNORM_SRGB.
+        inline static constexpr FormatContract HDRSceneColorContract{
+            RHIFormat::RGBA16_FLOAT, RHISampleCount::Count1};
+        inline static constexpr FormatContract GBuffer0Contract{
+            RHIFormat::RGBA8_UNORM_SRGB, RHISampleCount::Count1};
+        inline static constexpr FormatContract GBuffer1Contract{
+            RHIFormat::RGBA8_UNORM, RHISampleCount::Count1};
+        inline static constexpr FormatContract GBuffer2Contract{
+            RHIFormat::RGBA16_FLOAT, RHISampleCount::Count1};
+        inline static constexpr FormatContract GBuffer3Contract{
+            RHIFormat::R32_UINT, RHISampleCount::Count1};
+        inline static constexpr FormatContract VelocityContract{
+            RHIFormat::RG16_FLOAT, RHISampleCount::Count1};
+        inline static constexpr FormatContract DeviceDepthContract{
+            RHIFormat::D32_FLOAT, RHISampleCount::Count1};
 
         RenderGraphBlackboardProvenance provenance{};
         RGTextureHandle hdrSceneColor{};
+        Metadata hdrSceneColorMetadata{};
         RGTextureHandle deviceDepth{};
+        Metadata deviceDepthMetadata{};
         RGTextureHandle linearDepth{};
+        Metadata linearDepthMetadata{};
         RGTextureHandle worldNormal{};
+        Metadata worldNormalMetadata{};
         RGTextureHandle roughnessMetallic{};
+        Metadata roughnessMetallicMetadata{};
+        // Optional until a velocity-producing feature is selected.  When
+        // present it remains subject to the exact RG16F scene contract below;
+        // Deferred geometry must not publish an uninitialized stand-in merely
+        // to satisfy temporal consumers that are not part of this recipe.
         RGTextureHandle velocity{};
+        Metadata velocityMetadata{};
         RGTextureHandle ambientOcclusion{};
+        Metadata ambientOcclusionMetadata{};
         RGTextureHandle reactiveMask{};
+        Metadata reactiveMaskMetadata{};
         RGTextureHandle distortionVectors{};
+        Metadata distortionVectorsMetadata{};
         RGBufferHandle exposureState{};
         RGTextureHandle opaqueSceneSnapshot{};
+        Metadata opaqueSceneSnapshotMetadata{};
+
+        // Deferred opaque geometry. GBuffer1 carries octahedral normal plus
+        // roughness/metallic, while GBuffer3 indexes the material table.
+        RGTextureHandle gBuffer0{};
+        Metadata gBuffer0Metadata{};
+        RGTextureHandle gBuffer1{};
+        Metadata gBuffer1Metadata{};
+        RGTextureHandle gBuffer2{};
+        Metadata gBuffer2Metadata{};
+        RGTextureHandle gBuffer3{};
+        Metadata gBuffer3Metadata{};
+        RGBufferHandle materialTable{};
     };
+
+    enum class DeferredSceneTexturesValidationCode : uint8
+    {
+        Success = 0,
+        MissingRequiredHandle,
+        MissingMaterialTable,
+        InvalidExtent,
+        FormatMismatch,
+        ExtentMismatch,
+        SampleCountMismatch,
+    };
+
+    /**
+     * @brief Fail-closed value validation of Deferred opaque scene outputs.
+     *
+     * The function is intentionally graph-independent and side-effect-free:
+     * publication validates graph generation/provenance separately. Deferred
+     * composition must call this after creating the resources and before
+     * declaring the GBuffer/lighting dependency edge.
+     */
+    [[nodiscard]] inline DeferredSceneTexturesValidationCode
+    ValidateDeferredSceneTextures(const SceneTextures& textures) noexcept
+    {
+        if (!textures.hdrSceneColor.IsValid() ||
+            !textures.deviceDepth.IsValid() ||
+            !textures.gBuffer0.IsValid() || !textures.gBuffer1.IsValid() ||
+            !textures.gBuffer2.IsValid() || !textures.gBuffer3.IsValid())
+        {
+            return DeferredSceneTexturesValidationCode::MissingRequiredHandle;
+        }
+        if (!textures.materialTable.IsValid())
+        {
+            return DeferredSceneTexturesValidationCode::MissingMaterialTable;
+        }
+
+        const RenderOutputExtent extent = textures.hdrSceneColorMetadata.extent;
+        if (!extent.IsValid())
+        {
+            return DeferredSceneTexturesValidationCode::InvalidExtent;
+        }
+
+        const auto validate = [extent](const SceneTextures::Metadata& metadata,
+                                       SceneTextures::FormatContract contract)
+            -> DeferredSceneTexturesValidationCode
+        {
+            if (!metadata.extent.IsValid())
+            {
+                return DeferredSceneTexturesValidationCode::InvalidExtent;
+            }
+            if (metadata.extent != extent)
+            {
+                return DeferredSceneTexturesValidationCode::ExtentMismatch;
+            }
+            if (metadata.sampleCount != contract.sampleCount)
+            {
+                return DeferredSceneTexturesValidationCode::SampleCountMismatch;
+            }
+            if (metadata.format != contract.format)
+            {
+                return DeferredSceneTexturesValidationCode::FormatMismatch;
+            }
+            return DeferredSceneTexturesValidationCode::Success;
+        };
+
+        for (const auto [metadata, contract] : std::array{
+                 std::pair{textures.hdrSceneColorMetadata,
+                           SceneTextures::HDRSceneColorContract},
+                 std::pair{textures.deviceDepthMetadata,
+                           SceneTextures::DeviceDepthContract},
+                 std::pair{textures.gBuffer0Metadata,
+                           SceneTextures::GBuffer0Contract},
+                 std::pair{textures.gBuffer1Metadata,
+                           SceneTextures::GBuffer1Contract},
+                 std::pair{textures.gBuffer2Metadata,
+                           SceneTextures::GBuffer2Contract},
+                 std::pair{textures.gBuffer3Metadata,
+                           SceneTextures::GBuffer3Contract}})
+        {
+            const DeferredSceneTexturesValidationCode result =
+                validate(metadata, contract);
+            if (result != DeferredSceneTexturesValidationCode::Success)
+            {
+                return result;
+            }
+        }
+        if (textures.velocity.IsValid())
+        {
+            const DeferredSceneTexturesValidationCode result = validate(
+                textures.velocityMetadata, SceneTextures::VelocityContract);
+            if (result != DeferredSceneTexturesValidationCode::Success)
+            {
+                return result;
+            }
+        }
+        return DeferredSceneTexturesValidationCode::Success;
+    }
 
     struct VisibilityOutputs
     {
@@ -416,7 +581,12 @@ namespace RVX
                        HandleMatchesGraph(entry.distortionVectors, provenance) &&
                        HandleMatchesGraph(entry.exposureState, provenance) &&
                        HandleMatchesGraph(
-                           entry.opaqueSceneSnapshot, provenance);
+                           entry.opaqueSceneSnapshot, provenance) &&
+                       HandleMatchesGraph(entry.gBuffer0, provenance) &&
+                       HandleMatchesGraph(entry.gBuffer1, provenance) &&
+                       HandleMatchesGraph(entry.gBuffer2, provenance) &&
+                       HandleMatchesGraph(entry.gBuffer3, provenance) &&
+                       HandleMatchesGraph(entry.materialTable, provenance);
             }
             else if constexpr (std::is_same_v<Entry, VisibilityOutputs>)
             {

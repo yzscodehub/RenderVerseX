@@ -1272,6 +1272,103 @@ namespace
     }
 
     TEST(MaterialSystemValidation,
+         SurfacePipelinePolicyFreezesDescriptorOwnedSurfacePathEligibility)
+    {
+        FakeDevice device;
+        RenderRuntimeTestHarness gpuResources;
+        ASSERT_TRUE(gpuResources.Initialize(&device));
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(
+            &device, &materialLayout, &gpuResources.GetRegistry()));
+
+        const auto uploadDefinition = [&](uint64 id,
+                                          const char* name,
+                                          const MaterialDefinition& definition)
+        {
+            Resource::MaterialResource resource;
+            resource.SetId(id);
+            resource.SetName(name);
+            EXPECT_TRUE(resource.SetMaterialDefinition(definition));
+            return gpuResources.ResolveOrUpload(&resource);
+        };
+        const auto resolvePath = [&](RenderResourceHandle handle,
+                                     SurfacePathEligibility& outPath)
+        {
+            MaterialCullMode cullMode = MaterialCullMode::Back;
+            MaterialShadowPolicy shadowPolicy =
+                MaterialShadowPolicy::CastAndReceive;
+            bool requiresUV1 = true;
+            return materialSystem.ResolveSurfacePipelinePolicy(
+                handle,
+                cullMode,
+                shadowPolicy,
+                requiresUV1,
+                outPath);
+        };
+
+        MaterialDefinition standardOpaque;
+        const RenderResourceHandle standardOpaqueHandle = uploadDefinition(
+            9161, "StandardOpaque", standardOpaque);
+        ASSERT_TRUE(standardOpaqueHandle.IsValid());
+        SurfacePathEligibility path = SurfacePathEligibility::Unsupported;
+        EXPECT_TRUE(resolvePath(standardOpaqueHandle, path));
+        EXPECT_EQ(SurfacePathEligibility::DeferredOpaque, path);
+
+        MaterialDefinition standardMasked;
+        standardMasked.descriptor.blendMode = MaterialBlendMode::Masked;
+        standardMasked.parameters.alphaMode = MaterialSourceAlphaMode::Mask;
+        const RenderResourceHandle standardMaskedHandle = uploadDefinition(
+            9162, "StandardMasked", standardMasked);
+        ASSERT_TRUE(standardMaskedHandle.IsValid());
+        path = SurfacePathEligibility::Unsupported;
+        EXPECT_TRUE(resolvePath(standardMaskedHandle, path));
+        EXPECT_EQ(SurfacePathEligibility::DeferredOpaque, path);
+
+        MaterialDefinition unlitOpaque;
+        unlitOpaque.descriptor.shadingModel = MaterialShadingModel::Unlit;
+        unlitOpaque.descriptor.programFamily = std::string(
+            GetMaterialProgramFamily(MaterialShadingModel::Unlit));
+        unlitOpaque.parameters.workflow = MaterialSourceWorkflow::Unlit;
+        const RenderResourceHandle unlitOpaqueHandle = uploadDefinition(
+            9163, "UnlitOpaque", unlitOpaque);
+        ASSERT_TRUE(unlitOpaqueHandle.IsValid());
+        path = SurfacePathEligibility::Unsupported;
+        EXPECT_TRUE(resolvePath(unlitOpaqueHandle, path));
+        EXPECT_EQ(SurfacePathEligibility::ForwardSpecialOpaque, path);
+
+        MaterialDefinition standardTranslucent;
+        standardTranslucent.descriptor.blendMode =
+            MaterialBlendMode::AlphaBlend;
+        standardTranslucent.descriptor.translucencyPhase =
+            MaterialTranslucencyPhase::Standard;
+        standardTranslucent.descriptor.shadowPolicy =
+            MaterialShadowPolicy::Receive;
+        standardTranslucent.parameters.alphaMode =
+            MaterialSourceAlphaMode::Blend;
+        const RenderResourceHandle standardTranslucentHandle = uploadDefinition(
+            9164, "StandardTranslucent", standardTranslucent);
+        ASSERT_TRUE(standardTranslucentHandle.IsValid());
+        path = SurfacePathEligibility::Unsupported;
+        EXPECT_TRUE(resolvePath(standardTranslucentHandle, path));
+        EXPECT_EQ(SurfacePathEligibility::ForwardTranslucency, path);
+
+        MaterialDefinition toon;
+        toon.descriptor.shadingModel = MaterialShadingModel::ToonLit;
+        toon.descriptor.programFamily = std::string(
+            GetMaterialProgramFamily(MaterialShadingModel::ToonLit));
+        const RenderResourceHandle toonHandle = uploadDefinition(
+            9165, "DeferredToonMaterial", toon);
+        ASSERT_TRUE(toonHandle.IsValid());
+        path = SurfacePathEligibility::DeferredOpaque;
+        EXPECT_FALSE(resolvePath(toonHandle, path));
+        EXPECT_EQ(SurfacePathEligibility::Unsupported, path);
+
+        materialSystem.Shutdown();
+        gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation,
          SurfacePipelinePolicyUsesOnlyImplementedAndSamplableMaterialState)
     {
         FakeDevice device;

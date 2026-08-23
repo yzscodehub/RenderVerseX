@@ -131,6 +131,20 @@ def resolve_contract_path(
     return resolved
 
 
+INTERNAL_VALIDATION_PRESET_VENDOR = "renderversex.com/validation/1.0"
+
+
+def is_internal_validation_preset(value: dict[str, Any]) -> bool:
+    vendor = value.get("vendor")
+    if not isinstance(vendor, dict):
+        return False
+    metadata = vendor.get(INTERNAL_VALIDATION_PRESET_VENDOR)
+    return (
+        isinstance(metadata, dict)
+        and metadata.get("visibility") == "internal"
+    )
+
+
 def public_preset_names(presets: dict[str, Any], key: str) -> list[str]:
     values = presets.get(key, [])
     if not isinstance(values, list):
@@ -141,6 +155,7 @@ def public_preset_names(presets: dict[str, Any], key: str) -> list[str]:
         if isinstance(value, dict)
         and isinstance(value.get("name"), str)
         and value.get("hidden") is not True
+        and not is_internal_validation_preset(value)
     ]
 
 

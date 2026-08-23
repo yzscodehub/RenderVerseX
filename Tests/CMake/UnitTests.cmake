@@ -741,6 +741,7 @@ rvx_add_gtest(
     LIBS
         RVX::Core
         RVX::RenderFoundation
+        RVX::RenderLighting
         RVX::RHI
         RVX::ShaderContracts
         RVX::AssetPipeline

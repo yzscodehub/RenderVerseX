@@ -791,6 +791,127 @@ MaterialParameterData ResolveMaterialParameters(uint materialSlot)
     return material;
 }
 
+struct GBufferOutput
+{
+    float4 baseColorAO : SV_Target0;
+    float4 normalRoughnessMetallic : SV_Target1;
+    float4 emissiveReserved : SV_Target2;
+    uint materialTableIndex : SV_Target3;
+};
+
+float2 EncodeGBufferOctNormal(float3 normal)
+{
+    normal /= max(abs(normal.x) + abs(normal.y) + abs(normal.z), 1.0e-6f);
+    float2 encoded = normal.xy;
+    if (normal.z < 0.0f)
+    {
+        encoded = (1.0f - abs(encoded.yx)) *
+                  float2(encoded.x >= 0.0f ? 1.0f : -1.0f,
+                         encoded.y >= 0.0f ? 1.0f : -1.0f);
+    }
+    return encoded * 0.5f + 0.5f;
+}
+
+/**
+ * Canonical deferred surface export. It deliberately uses the same typed UV,
+ * alpha-mask, front-face and normal-map helpers as PSMain. CPU routing permits
+ * only StandardLit opaque/masked packets to reach this entry point; the
+ * workflow guard is the shader-side fail-closed backstop.
+ */
+GBufferOutput PSGBuffer(PSInput input, bool isFrontFace : SV_IsFrontFace)
+{
+    const MaterialParameterData material = ResolveMaterialParameters(
+        input.MaterialParameterSlot);
+    const float2 baseColorUV = RVXResolveMaterialUV(
+        material, MATERIAL_TEXTURE_SLOT_BASE_COLOR,
+        input.TexCoord, input.TexCoord1);
+    float4 baseColor = material.BaseColorFactor;
+    if ((material.TextureFlags & MATERIAL_TEXTURE_BASE_COLOR) != 0)
+    {
+        baseColor *= BaseColorTexture.Sample(BaseColorSampler, baseColorUV);
+    }
+    RVXApplyAlphaMask(material, baseColor.a);
+
+    if (material.Workflow != MATERIAL_WORKFLOW_METALLIC_ROUGHNESS)
+    {
+        clip(-1.0f);
+    }
+
+    float metallic = material.MetallicFactor;
+    float roughness = material.RoughnessFactor;
+    if ((material.TextureFlags & MATERIAL_TEXTURE_METALLIC_ROUGHNESS) != 0)
+    {
+        const float2 uv = RVXResolveMaterialUV(
+            material, MATERIAL_TEXTURE_SLOT_METALLIC_ROUGHNESS,
+            input.TexCoord, input.TexCoord1);
+        const float4 mr = MetallicRoughnessTexture.Sample(
+            MetallicRoughnessSampler, uv);
+        roughness *= mr.g;
+        metallic *= mr.b;
+    }
+
+    float occlusion = 1.0f;
+    if ((material.TextureFlags & MATERIAL_TEXTURE_OCCLUSION) != 0)
+    {
+        occlusion = lerp(
+            1.0f,
+            OcclusionTexture.Sample(
+                OcclusionSampler,
+                RVXResolveMaterialUV(
+                    material, MATERIAL_TEXTURE_SLOT_OCCLUSION,
+                    input.TexCoord, input.TexCoord1)).r,
+            material.OcclusionStrength);
+    }
+
+    float3 emissive = material.EmissiveColor_Strength.xyz *
+                      material.EmissiveColor_Strength.w;
+    if ((material.TextureFlags & MATERIAL_TEXTURE_EMISSIVE) != 0)
+    {
+        emissive *= EmissiveTexture.Sample(
+            EmissiveSampler,
+            RVXResolveMaterialUV(
+                material, MATERIAL_TEXTURE_SLOT_EMISSIVE,
+                input.TexCoord, input.TexCoord1)).rgb;
+    }
+
+    float3 normal = SafeNormalize(
+        input.WorldNormal, float3(0.0f, 0.0f, 1.0f));
+    float4 doubleSidedTangent = input.WorldTangent;
+    RVXResolveFrontFaceBasis(
+        isFrontFace,
+        material.DoubleSided_MaterialPaddingBits.x,
+        normal,
+        doubleSidedTangent);
+    if ((material.TextureFlags & MATERIAL_TEXTURE_NORMAL) != 0)
+    {
+        normal = RVXSampleNormalMap(
+            NormalTexture,
+            NormalSampler,
+            RVXResolveMaterialUV(
+                material, MATERIAL_TEXTURE_SLOT_NORMAL,
+                input.TexCoord, input.TexCoord1),
+            input.WorldPos,
+            normal,
+            doubleSidedTangent,
+            material.NormalScale);
+    }
+
+    GBufferOutput output;
+    output.baseColorAO = float4(baseColor.rgb, saturate(occlusion));
+    output.normalRoughnessMetallic = float4(
+        EncodeGBufferOctNormal(SafeNormalize(
+            normal, float3(0.0f, 0.0f, 1.0f))),
+        clamp(roughness, 0.04f, 1.0f),
+        saturate(metallic));
+    output.emissiveReserved = float4(emissive, 0.0f);
+    // GFX07 has one renderer-owned StandardLit classification row.  Runtime
+    // material parameter slots are intentionally not a deferred table ABI;
+    // carrying one through here would make the compute pass read arbitrary
+    // rows from the fixed one-row classification table.
+    output.materialTableIndex = 0u;
+    return output;
+}
+
 float4 PSMain(PSInput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
 {
     const MaterialParameterData material = ResolveMaterialParameters(

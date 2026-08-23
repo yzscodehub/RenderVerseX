@@ -1,6 +1,9 @@
 #include "Common/DeterministicShaderProgramProvider.h"
+#include "Common/RenderGraphValidationAccess.h"
 #include "Core/Log.h"
+#include "Render/Features/RenderFeatureGraphBuilder.h"
 #include "Render/GPUDriven/GPUCulling.h"
+#include "Render/Passes/DeferredLightingPass.h"
 #include "Render/PipelineCache.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
@@ -119,10 +122,20 @@ namespace
     class FakeBuffer final : public RVX::RHIBuffer
     {
     public:
-        explicit FakeBuffer(const RVX::RHIBufferDesc& desc)
+        explicit FakeBuffer(const RVX::RHIBufferDesc& desc,
+                            int* destructionCount = nullptr)
             : m_desc(desc)
             , m_storage(static_cast<size_t>(desc.size))
+            , m_destructionCount(destructionCount)
         {
+        }
+
+        ~FakeBuffer() override
+        {
+            if (m_destructionCount != nullptr)
+            {
+                ++*m_destructionCount;
+            }
         }
 
         RVX::uint64 GetSize() const override { return m_desc.size; }
@@ -136,6 +149,7 @@ namespace
     private:
         RVX::RHIBufferDesc m_desc;
         std::vector<RVX::uint8> m_storage;
+        int* m_destructionCount = nullptr;
     };
 
     class FakeTexture final : public RVX::RHITexture
@@ -347,7 +361,15 @@ namespace
     class FakePipeline final : public RVX::RHIPipeline
     {
     public:
-        bool IsCompute() const override { return false; }
+        explicit FakePipeline(bool compute = false)
+            : m_compute(compute)
+        {
+        }
+
+        bool IsCompute() const override { return m_compute; }
+
+    private:
+        bool m_compute = false;
     };
 
     class FakeDescriptorSet final : public RVX::RHIDescriptorSet
@@ -383,7 +405,14 @@ namespace
         {
             if (failBufferCreation)
                 return {};
-            auto buffer = RVX::MakeRef<FakeBuffer>(desc);
+            int* destructionCount = nullptr;
+            if (trackDeferredLightingConstantDestruction && desc.debugName &&
+                std::string_view(desc.debugName) ==
+                    "DeferredLightingFrameConstants")
+            {
+                destructionCount = &deferredLightingConstantDestructionCount;
+            }
+            auto buffer = RVX::MakeRef<FakeBuffer>(desc, destructionCount);
             capturedBufferDescs.push_back(desc);
             capturedBuffers.push_back(buffer.Get());
             return buffer;
@@ -428,6 +457,11 @@ namespace
         RVX::RHIDescriptorSetLayoutRef CreateDescriptorSetLayout(const RVX::RHIDescriptorSetLayoutDesc& desc) override
         {
             capturedSetLayouts.push_back(desc);
+            if (failDeferredLightingSetLayoutCreation && desc.debugName &&
+                std::string_view(desc.debugName) == "DeferredLightingSetLayout")
+            {
+                return {};
+            }
             if (rejectGPUSceneRasterObjectSetLayout && desc.debugName &&
                 std::string(desc.debugName) == "GPUSceneRasterObjectSetLayout")
             {
@@ -455,10 +489,23 @@ namespace
             return RVX::MakeRef<FakePipeline>();
         }
 
-        RVX::RHIPipelineRef CreateComputePipeline(const RVX::RHIComputePipelineDesc&) override { return {}; }
+        RVX::RHIPipelineRef CreateComputePipeline(
+            const RVX::RHIComputePipelineDesc& desc) override
+        {
+            capturedComputePipelines.push_back(desc);
+            if (failComputePipelineCreation)
+            {
+                return {};
+            }
+            return RVX::MakeRef<FakePipeline>(true);
+        }
         RVX::RHIDescriptorSetRef CreateDescriptorSet(const RVX::RHIDescriptorSetDesc& desc) override
         {
             capturedDescriptorSetDescs.push_back(desc);
+            if (failDescriptorSetCreation)
+            {
+                return {};
+            }
             auto descriptorSet = RVX::MakeRef<FakeDescriptorSet>(desc);
             capturedDescriptorSets.push_back(descriptorSet.Get());
             return descriptorSet;
@@ -507,6 +554,11 @@ namespace
             m_capabilities.queueTopology.activeDomainCount = 3;
         }
 
+        void SetSupportsExplicitResourceBarriers(bool enabled)
+        {
+            m_capabilities.supportsExplicitResourceBarriers = enabled;
+        }
+
         void CompleteTrackedFences(RVX::uint64 value)
         {
             for (const RVX::RHIFenceRef& fence : trackedFences)
@@ -520,12 +572,17 @@ namespace
         RVX::uint32 failShaderCreationAtIndex = std::numeric_limits<RVX::uint32>::max();
         bool failPipelineLayoutCreation = false;
         bool failPipelineCreation = false;
+        bool failComputePipelineCreation = false;
+        bool failDescriptorSetCreation = false;
+        bool failDeferredLightingSetLayoutCreation = false;
         bool rejectGPUSceneRasterObjectSetLayout = false;
         RVX::uint32 failPipelineCreationAtIndex = std::numeric_limits<RVX::uint32>::max();
         RVX::uint32 shaderCreateCount = 0;
         RVX::uint32 capturedPipelineLayoutSetCount = 0;
         bool trackNextTextureViewDestruction = false;
         int trackedTextureViewDestructionCount = 0;
+        bool trackDeferredLightingConstantDestruction = false;
+        int deferredLightingConstantDestructionCount = 0;
         std::vector<RVX::uint32> capturedPipelineLayoutSetCounts;
         std::vector<RVX::RHIPipelineLayoutDesc> capturedPipelineLayoutDescs;
         std::vector<RVX::RHIBufferDesc> capturedBufferDescs;
@@ -537,11 +594,100 @@ namespace
         std::vector<FakeDescriptorSet*> capturedDescriptorSets;
         std::vector<RVX::RHIDescriptorSetLayoutDesc> capturedSetLayouts;
         std::vector<RVX::RHIGraphicsPipelineDesc> capturedGraphicsPipelines;
+        std::vector<RVX::RHIComputePipelineDesc> capturedComputePipelines;
         std::vector<RVX::RHIFenceRef> trackedFences;
 
     private:
         RVX::RHIBackendType m_backend = RVX::RHIBackendType::DX12;
         RVX::RHICapabilities m_capabilities;
+    };
+
+    class DeferredLightingRecordingCommandContext final
+        : public RVX::RHICommandContext
+    {
+    public:
+        struct DispatchRecord
+        {
+            RVX::uint32 groupCountX = 0;
+            RVX::uint32 groupCountY = 0;
+            RVX::uint32 groupCountZ = 0;
+        };
+
+        void Begin() override {}
+        void End() override {}
+        void Reset() override {}
+        void BeginEvent(const char*, RVX::uint32 = 0) override {}
+        void EndEvent() override {}
+        void SetMarker(const char*, RVX::uint32 = 0) override {}
+        void BufferBarrier(const RVX::RHIBufferBarrier&) override {}
+        void TextureBarrier(const RVX::RHITextureBarrier&) override {}
+        void Barriers(std::span<const RVX::RHIBufferBarrier>,
+                      std::span<const RVX::RHITextureBarrier>) override {}
+        void BeginBarrier(const RVX::RHIBufferBarrier&) override {}
+        void BeginBarrier(const RVX::RHITextureBarrier&) override {}
+        void EndBarrier(const RVX::RHIBufferBarrier&) override {}
+        void EndBarrier(const RVX::RHITextureBarrier&) override {}
+        void BeginRenderPass(const RVX::RHIRenderPassDesc&) override {}
+        void EndRenderPass() override {}
+        void SetPipeline(RVX::RHIPipeline* pipeline) override
+        {
+            boundPipelines.push_back(pipeline);
+        }
+        void SetVertexBuffer(RVX::uint32, RVX::RHIBuffer*, RVX::uint64 = 0) override {}
+        void SetVertexBuffers(RVX::uint32,
+                              std::span<RVX::RHIBuffer* const>,
+                              std::span<const RVX::uint64> = {}) override {}
+        void SetIndexBuffer(RVX::RHIBuffer*, RVX::RHIFormat, RVX::uint64 = 0) override {}
+        void SetDescriptorSet(RVX::uint32 slot,
+                              RVX::RHIDescriptorSet* descriptorSet,
+                              std::span<const RVX::uint32> = {}) override
+        {
+            boundDescriptorSetSlots.push_back(slot);
+            boundDescriptorSets.push_back(descriptorSet);
+        }
+        void SetPushConstants(const void*, RVX::uint32, RVX::uint32 = 0) override {}
+        void SetViewport(const RVX::RHIViewport&) override {}
+        void SetViewports(std::span<const RVX::RHIViewport>) override {}
+        void SetScissor(const RVX::RHIRect&) override {}
+        void SetScissors(std::span<const RVX::RHIRect>) override {}
+        void Draw(RVX::uint32, RVX::uint32 = 1, RVX::uint32 = 0, RVX::uint32 = 0) override {}
+        void DrawIndexed(RVX::uint32,
+                         RVX::uint32 = 1,
+                         RVX::uint32 = 0,
+                         RVX::int32 = 0,
+                         RVX::uint32 = 0) override {}
+        void DrawIndirect(RVX::RHIBuffer*, RVX::uint64, RVX::uint32, RVX::uint32) override {}
+        void DrawIndexedIndirect(RVX::RHIBuffer*, RVX::uint64, RVX::uint32, RVX::uint32) override {}
+        void Dispatch(RVX::uint32 groupCountX,
+                      RVX::uint32 groupCountY,
+                      RVX::uint32 groupCountZ) override
+        {
+            dispatches.push_back({groupCountX, groupCountY, groupCountZ});
+        }
+        void DispatchIndirect(RVX::RHIBuffer*, RVX::uint64) override {}
+        void CopyBuffer(RVX::RHIBuffer*, RVX::RHIBuffer*, RVX::uint64, RVX::uint64, RVX::uint64) override {}
+        void CopyTexture(RVX::RHITexture*, RVX::RHITexture*, const RVX::RHITextureCopyDesc& = {}) override {}
+        void CopyBufferToTexture(RVX::RHIBuffer*, RVX::RHITexture*, const RVX::RHIBufferTextureCopyDesc&) override {}
+        void CopyTextureToBuffer(RVX::RHITexture*, RVX::RHIBuffer*, const RVX::RHIBufferTextureCopyDesc&) override {}
+        void BeginQuery(RVX::RHIQueryPool*, RVX::uint32) override {}
+        void EndQuery(RVX::RHIQueryPool*, RVX::uint32) override {}
+        void WriteTimestamp(RVX::RHIQueryPool*, RVX::uint32) override {}
+        void ResolveQueries(RVX::RHIQueryPool*, RVX::uint32, RVX::uint32,
+                            RVX::RHIBuffer*, RVX::uint64) override {}
+        void ResetQueries(RVX::RHIQueryPool*, RVX::uint32, RVX::uint32) override {}
+        void SetStencilReference(RVX::uint32) override {}
+        void SetBlendConstants(const float[4]) override {}
+        void SetDepthBias(float, float, float = 0.0f) override {}
+        void SetDepthBounds(float, float) override {}
+        void SetStencilReferenceSeparate(RVX::uint32, RVX::uint32) override {}
+        void SetLineWidth(float) override {}
+        void SignalFence(RVX::RHIFence*, RVX::uint64) override {}
+        void WaitFence(RVX::RHIFence*, RVX::uint64) override {}
+
+        std::vector<RVX::RHIPipeline*> boundPipelines;
+        std::vector<RVX::uint32> boundDescriptorSetSlots;
+        std::vector<RVX::RHIDescriptorSet*> boundDescriptorSets;
+        std::vector<DispatchRecord> dispatches;
     };
 
     void ExpectGPUSceneRasterUnavailablePreservesBaseCache(
@@ -610,6 +756,89 @@ namespace
         auto shaderDir = FindShaderDirectory();
         return !shaderDir.empty();
     }
+
+    class DeferredLightingGraphInputs final
+    {
+    public:
+        DeferredLightingGraphInputs(FakeDevice& device,
+                                   RVX::uint32 width,
+                                   RVX::uint32 height)
+        {
+            RVX::RenderGraphValidationAccess::SetDevice(graph, &device);
+
+            const auto createTexture =
+                [&device, width, height](RVX::RHIFormat format,
+                                         RVX::RHITextureUsage usage,
+                                         const char* debugName)
+            {
+                RVX::RHITextureDesc desc =
+                    RVX::RHITextureDesc::Texture2D(width, height, format, usage);
+                desc.debugName = debugName;
+                return device.CreateTexture(desc);
+            };
+
+            gBuffer0 = createTexture(
+                RVX::RHIFormat::RGBA8_UNORM_SRGB,
+                RVX::RHITextureUsage::ShaderResource,
+                "DeferredLightingValidationGBuffer0");
+            gBuffer1 = createTexture(
+                RVX::RHIFormat::RGBA8_UNORM,
+                RVX::RHITextureUsage::ShaderResource,
+                "DeferredLightingValidationGBuffer1");
+            gBuffer2 = createTexture(
+                RVX::RHIFormat::RGBA16_FLOAT,
+                RVX::RHITextureUsage::ShaderResource,
+                "DeferredLightingValidationGBuffer2");
+            gBuffer3 = createTexture(
+                RVX::RHIFormat::R32_UINT,
+                RVX::RHITextureUsage::ShaderResource,
+                "DeferredLightingValidationGBuffer3");
+            deviceDepth = createTexture(
+                RVX::RHIFormat::D32_FLOAT,
+                RVX::RHITextureUsage::DepthStencil |
+                    RVX::RHITextureUsage::ShaderResource,
+                "DeferredLightingValidationDepth");
+            hdrSceneColor = createTexture(
+                RVX::RHIFormat::RGBA16_FLOAT,
+                RVX::RHITextureUsage::ShaderResource |
+                    RVX::RHITextureUsage::UnorderedAccess,
+                "DeferredLightingValidationHDR");
+
+            inputs.gBuffer0 = graph.ImportTexture(
+                gBuffer0, RVX::RHIResourceState::ShaderResource);
+            inputs.gBuffer1 = graph.ImportTexture(
+                gBuffer1, RVX::RHIResourceState::ShaderResource);
+            inputs.gBuffer2 = graph.ImportTexture(
+                gBuffer2, RVX::RHIResourceState::ShaderResource);
+            inputs.gBuffer3 = graph.ImportTexture(
+                gBuffer3, RVX::RHIResourceState::ShaderResource);
+            inputs.deviceDepth = graph.ImportTexture(
+                deviceDepth, RVX::RHIResourceState::ShaderResource);
+            inputs.hdrSceneColor = graph.ImportTexture(
+                hdrSceneColor, RVX::RHIResourceState::Common);
+            materialTableCreated = RVX::CreateDeferredStandardLitMaterialTable(
+                device, materialTable, materialTableError);
+            if (materialTableCreated)
+            {
+                inputs.materialTable = graph.ImportBuffer(
+                    materialTable, RVX::RHIResourceState::ShaderResource);
+            }
+        }
+
+        RVX::RenderGraph graph;
+        RVX::DeferredLightingInputs inputs{};
+        RVX::RHIBufferRef materialTable;
+        std::string materialTableError;
+        bool materialTableCreated = false;
+
+    private:
+        RVX::RHITextureRef gBuffer0;
+        RVX::RHITextureRef gBuffer1;
+        RVX::RHITextureRef gBuffer2;
+        RVX::RHITextureRef gBuffer3;
+        RVX::RHITextureRef deviceDepth;
+        RVX::RHITextureRef hdrSceneColor;
+    };
 
     void WriteTextFile(const fs::path& path, const std::string& contents)
     {
@@ -10463,4 +10692,575 @@ TEST_F(PipelineCacheValidationFixture,
     EXPECT_EQ(reusedPageIdentity, reused.pageIdentity);
     EXPECT_EQ(cachedDescriptor, reused.descriptorSet.Get());
     EXPECT_EQ(descriptorsAfterFirst, countPagedObjectDescriptors());
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       DeferredGBufferPipelineFamilyUsesCanonicalMRTABIAndCookedPixelEntry)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    RecordingShaderProgramProvider provider;
+    FakeDevice device(RVX::RHIBackendType::DX12);
+    PipelineCacheForValidation cache(provider);
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+    ASSERT_TRUE(cache.IsGBufferPipelineFamilyReady());
+
+    const auto gBufferPixelRequest = std::find_if(
+        provider.requests.begin(), provider.requests.end(),
+        [](const RVX::ShaderProgramRequest& request)
+        {
+            return request.stage == RVX::RHIShaderStage::Pixel &&
+                   request.entryPoint == "PSGBuffer";
+        });
+    ASSERT_NE(provider.requests.end(), gBufferPixelRequest);
+    EXPECT_EQ("DefaultLit.hlsl", gBufferPixelRequest->logicalAssetId);
+
+    const size_t pipelineStart = device.capturedGraphicsPipelines.size();
+    RVX::RHIPipeline* const rigid = cache.GetGBufferPipelineForVariant(
+        RVX::MaterialPipelineVariant::Opaque,
+        RVX::DefaultLitDirectVertexInputMode::Rigid);
+    RVX::RHIPipeline* const skinned = cache.GetGBufferPipelineForVariant(
+        RVX::MaterialPipelineVariant::Masked,
+        RVX::DefaultLitDirectVertexInputMode::Skinned);
+    RVX::RHIPipeline* const gpuDriven =
+        cache.GetGPUDrivenGBufferPipelineForVariant(
+            RVX::MaterialPipelineVariant::Opaque);
+    RVX::RHIPipeline* const instanced =
+        cache.GetInstancedMaterialGBufferPipelineForVariant(
+            RVX::MaterialPipelineVariant::Opaque);
+    RVX::RHIPipeline* const gpuScene =
+        cache.GetGPUSceneGBufferPipelineForVariant(
+            RVX::MaterialPipelineVariant::Opaque);
+    RVX::RHIPipeline* const gpuSceneInstanced =
+        cache.GetGPUSceneInstancedMaterialGBufferPipelineForVariant(
+            RVX::MaterialPipelineVariant::Opaque);
+
+    ASSERT_NE(nullptr, rigid);
+    ASSERT_NE(nullptr, skinned);
+    ASSERT_NE(nullptr, gpuDriven);
+    ASSERT_NE(nullptr, instanced);
+    ASSERT_NE(nullptr, gpuScene);
+    ASSERT_NE(nullptr, gpuSceneInstanced);
+    ASSERT_EQ(pipelineStart + 6u, device.capturedGraphicsPipelines.size());
+
+    const std::array<RVX::RHIFormat, 4> expectedFormats = {
+        RVX::RHIFormat::RGBA8_UNORM_SRGB,
+        RVX::RHIFormat::RGBA8_UNORM,
+        RVX::RHIFormat::RGBA16_FLOAT,
+        RVX::RHIFormat::R32_UINT};
+    for (size_t index = pipelineStart;
+         index < device.capturedGraphicsPipelines.size(); ++index)
+    {
+        const RVX::RHIGraphicsPipelineDesc& desc =
+            device.capturedGraphicsPipelines[index];
+        EXPECT_EQ(4u, desc.numRenderTargets) << desc.debugName;
+        EXPECT_EQ(RVX::RHIFormat::D32_FLOAT, desc.depthStencilFormat)
+            << desc.debugName;
+        EXPECT_NE(nullptr, desc.pixelShader) << desc.debugName;
+        for (size_t targetIndex = 0; targetIndex < expectedFormats.size();
+             ++targetIndex)
+        {
+            EXPECT_EQ(expectedFormats[targetIndex],
+                      desc.renderTargetFormats[targetIndex])
+                << desc.debugName << " target=" << targetIndex;
+        }
+    }
+
+    const size_t pipelineCountBeforeCacheHit =
+        device.capturedGraphicsPipelines.size();
+    EXPECT_EQ(rigid,
+              cache.GetGBufferPipelineForVariant(
+                  RVX::MaterialPipelineVariant::Opaque,
+                  RVX::DefaultLitDirectVertexInputMode::Rigid));
+    EXPECT_EQ(pipelineCountBeforeCacheHit,
+              device.capturedGraphicsPipelines.size());
+
+    const size_t pipelineCountBeforeRejectedRequests =
+        device.capturedGraphicsPipelines.size();
+    EXPECT_EQ(nullptr, cache.GetGBufferPipelineForVariant(
+                           RVX::MaterialPipelineVariant::Transparent,
+                           RVX::DefaultLitDirectVertexInputMode::Rigid));
+    EXPECT_EQ(nullptr, cache.GetGPUDrivenGBufferPipelineForVariant(
+                           RVX::MaterialPipelineVariant::Transparent));
+    EXPECT_EQ(nullptr, cache.GetInstancedMaterialGBufferPipelineForVariant(
+                           RVX::MaterialPipelineVariant::Transparent));
+    EXPECT_EQ(nullptr, cache.GetGPUSceneGBufferPipelineForVariant(
+                           RVX::MaterialPipelineVariant::Transparent));
+    EXPECT_EQ(nullptr,
+              cache.GetGPUSceneInstancedMaterialGBufferPipelineForVariant(
+                  RVX::MaterialPipelineVariant::Transparent));
+    EXPECT_EQ(nullptr, cache.GetGBufferPipelineForVariant(
+                           static_cast<RVX::MaterialPipelineVariant>(255),
+                           RVX::DefaultLitDirectVertexInputMode::Rigid));
+    EXPECT_EQ(pipelineCountBeforeRejectedRequests,
+              device.capturedGraphicsPipelines.size());
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       CompatibilityBackendsDoNotLoadOrCreateDeferredGBufferPipelines)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    const std::array<RVX::RHIBackendType, 2> compatibilityBackends = {
+        RVX::RHIBackendType::DX11, RVX::RHIBackendType::OpenGL};
+    for (const RVX::RHIBackendType backend : compatibilityBackends)
+    {
+        RecordingShaderProgramProvider provider;
+        FakeDevice device(backend);
+        PipelineCacheForValidation cache(provider);
+        ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+            << cache.GetLastError();
+        EXPECT_FALSE(cache.IsGBufferPipelineFamilyReady());
+        EXPECT_EQ(provider.requests.end(), std::find_if(
+                                              provider.requests.begin(),
+                                              provider.requests.end(),
+                                              [](const RVX::ShaderProgramRequest& request)
+                                              {
+                                                  return request.stage ==
+                                                             RVX::RHIShaderStage::Pixel &&
+                                                         request.entryPoint == "PSGBuffer";
+                                              }));
+
+        const size_t pipelineCount = device.capturedGraphicsPipelines.size();
+        EXPECT_EQ(nullptr, cache.GetGBufferPipelineForVariant(
+                               RVX::MaterialPipelineVariant::Opaque,
+                               RVX::DefaultLitDirectVertexInputMode::Rigid));
+        EXPECT_EQ(nullptr, cache.GetGPUDrivenGBufferPipelineForVariant(
+                               RVX::MaterialPipelineVariant::Opaque));
+        EXPECT_EQ(nullptr, cache.GetInstancedMaterialGBufferPipelineForVariant(
+                               RVX::MaterialPipelineVariant::Opaque));
+        EXPECT_EQ(nullptr, cache.GetGPUSceneGBufferPipelineForVariant(
+                               RVX::MaterialPipelineVariant::Opaque));
+        EXPECT_EQ(nullptr,
+                  cache.GetGPUSceneInstancedMaterialGBufferPipelineForVariant(
+                      RVX::MaterialPipelineVariant::Opaque));
+        EXPECT_EQ(pipelineCount, device.capturedGraphicsPipelines.size());
+    }
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       ProductionDeferredBackendsLoadDeferredLightingShaderAndLazilyCreateComputePipeline)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    const std::array<RVX::RHIBackendType, 3> productionBackends = {
+        RVX::RHIBackendType::DX12,
+        RVX::RHIBackendType::Vulkan,
+        RVX::RHIBackendType::Metal};
+    for (const RVX::RHIBackendType backend : productionBackends)
+    {
+        RecordingShaderProgramProvider provider;
+        FakeDevice device(backend);
+        device.EnableNativeTimelineCompletion();
+        // The lightweight Vulkan fake has no native command context.  Its
+        // fallback-resource bootstrap may only use the no-barrier route;
+        // concrete Vulkan native coverage belongs to the backend test suite.
+        if (backend == RVX::RHIBackendType::Vulkan)
+        {
+            device.SetSupportsExplicitResourceBarriers(false);
+        }
+        PipelineCacheForValidation cache(provider);
+        ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+            << cache.GetLastError();
+
+        const auto deferredShader = std::find_if(
+            provider.requests.begin(), provider.requests.end(),
+            [](const RVX::ShaderProgramRequest& request)
+            {
+                return request.logicalAssetId == "DeferredLighting.hlsl" &&
+                       request.stage == RVX::RHIShaderStage::Compute &&
+                       request.entryPoint == "CSMain";
+            });
+        ASSERT_NE(provider.requests.end(), deferredShader)
+            << static_cast<int>(backend);
+        EXPECT_FALSE(cache.IsDeferredLightingPipelineReady());
+        EXPECT_EQ(nullptr, cache.GetDeferredLightingSetLayout());
+        EXPECT_TRUE(device.capturedComputePipelines.empty());
+
+        const size_t layoutsBefore = device.capturedSetLayouts.size();
+        RVX::RHIPipeline* const pipeline = cache.GetDeferredLightingPipeline();
+        ASSERT_NE(nullptr, pipeline) << cache.GetLastError();
+        EXPECT_TRUE(pipeline->IsCompute());
+        ASSERT_TRUE(cache.IsDeferredLightingPipelineReady());
+        ASSERT_NE(nullptr, cache.GetDeferredLightingSetLayout());
+        ASSERT_EQ(1u, device.capturedComputePipelines.size());
+        ASSERT_EQ(layoutsBefore + 1u, device.capturedSetLayouts.size());
+
+        const RVX::RHIDescriptorSetLayoutDesc& setLayout =
+            device.capturedSetLayouts.back();
+        ASSERT_STREQ("DeferredLightingSetLayout", setLayout.debugName);
+        ASSERT_EQ(8u, setLayout.entries.size());
+        for (RVX::uint32 binding = 0; binding < 8; ++binding)
+        {
+            const RVX::RHIBindingLayoutEntry* entry =
+                FindBinding(setLayout, binding);
+            ASSERT_NE(nullptr, entry) << binding;
+            EXPECT_EQ(1u, entry->count) << binding;
+            EXPECT_EQ(RVX::RHIShaderStage::Compute, entry->visibility)
+                << binding;
+            const RVX::RHIBindingType expectedType = binding == 0
+                ? RVX::RHIBindingType::UniformBuffer
+                : (binding == 6 ? RVX::RHIBindingType::StorageTexture
+                                : (binding == 7
+                                       ? RVX::RHIBindingType::ShaderResourceBuffer
+                                       : RVX::RHIBindingType::SampledTexture));
+            EXPECT_EQ(expectedType, entry->type) << binding;
+        }
+
+        const RVX::RHIComputePipelineDesc& computePipeline =
+            device.capturedComputePipelines.front();
+        EXPECT_STREQ("DeferredLightingComputePipeline", computePipeline.debugName);
+        EXPECT_NE(nullptr, computePipeline.computeShader);
+        EXPECT_NE(nullptr, computePipeline.pipelineLayout);
+        EXPECT_EQ(cache.GetDeferredLightingSetLayout(),
+                  computePipeline.pipelineLayout->GetDescriptorSetLayouts().front());
+
+        EXPECT_EQ(pipeline, cache.GetDeferredLightingPipeline());
+        EXPECT_EQ(1u, device.capturedComputePipelines.size());
+    }
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       CompatibilityBackendsDoNotLoadOrCreateDeferredLightingResources)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    const std::array<RVX::RHIBackendType, 2> compatibilityBackends = {
+        RVX::RHIBackendType::DX11, RVX::RHIBackendType::OpenGL};
+    for (const RVX::RHIBackendType backend : compatibilityBackends)
+    {
+        RecordingShaderProgramProvider provider;
+        FakeDevice device(backend);
+        device.EnableNativeTimelineCompletion();
+        PipelineCacheForValidation cache(provider);
+        ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+            << cache.GetLastError();
+
+        EXPECT_EQ(provider.requests.end(), std::find_if(
+                                              provider.requests.begin(),
+                                              provider.requests.end(),
+                                              [](const RVX::ShaderProgramRequest& request)
+                                              {
+                                                  return request.logicalAssetId ==
+                                                             "DeferredLighting.hlsl" ||
+                                                         request.entryPoint == "CSMain";
+                                              }));
+        const size_t setLayoutCount = device.capturedSetLayouts.size();
+        EXPECT_EQ(nullptr, cache.GetDeferredLightingSetLayout());
+        EXPECT_EQ(nullptr, cache.GetDeferredLightingPipeline());
+        EXPECT_FALSE(cache.IsDeferredLightingPipelineReady());
+        EXPECT_EQ(setLayoutCount, device.capturedSetLayouts.size());
+        EXPECT_TRUE(device.capturedComputePipelines.empty());
+    }
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       DeferredStandardLitMaterialTableIsPublishedAsOneCanonicalStructuredSrv)
+{
+    FakeDevice device(RVX::RHIBackendType::DX12);
+    RVX::RHIBufferRef materialTable;
+    std::string error;
+    ASSERT_TRUE(RVX::CreateDeferredStandardLitMaterialTable(
+        device, materialTable, error)) << error;
+    ASSERT_TRUE(static_cast<bool>(materialTable));
+
+    EXPECT_EQ(sizeof(RVX::DeferredMaterialClassification), materialTable->GetSize());
+    EXPECT_EQ(sizeof(RVX::DeferredMaterialClassification), materialTable->GetStride());
+    EXPECT_EQ(RVX::RHIMemoryType::Upload, materialTable->GetMemoryType());
+    EXPECT_TRUE(HasFlag(materialTable->GetUsage(),
+                        RVX::RHIBufferUsage::Structured));
+    EXPECT_TRUE(HasFlag(materialTable->GetUsage(),
+                        RVX::RHIBufferUsage::ShaderResource));
+
+    const auto* const fakeTable = static_cast<const FakeBuffer*>(materialTable.Get());
+    ASSERT_EQ(sizeof(RVX::DeferredMaterialClassification),
+              fakeTable->GetStorage().size());
+    RVX::DeferredMaterialClassification row{};
+    std::memcpy(&row, fakeTable->GetStorage().data(), sizeof(row));
+    EXPECT_EQ(static_cast<RVX::uint32>(
+                  RVX::DeferredMaterialShadingModel::StandardLit),
+              row.shadingModel);
+    EXPECT_EQ(RVX::DeferredMaterialClassification::SchemaVersion,
+              row.schemaVersion);
+    EXPECT_EQ(0u, row.reserved0);
+    EXPECT_EQ(0u, row.reserved1);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       DeferredLightingGraphDispatchesCanonicalBindingsAndRetainsFrameConstants)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    FakeDevice device(RVX::RHIBackendType::DX12);
+    device.EnableNativeTimelineCompletion();
+    device.trackDeferredLightingConstantDestruction = true;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    RVX::ViewData view;
+    constexpr RVX::uint32 width = 17;
+    constexpr RVX::uint32 height = 9;
+    {
+        DeferredLightingGraphInputs graphInputs(device, width, height);
+        RVX::RenderFeatureGraphBuilder featureBuilder(graphInputs.graph);
+        RVX::DeferredLightingPass deferredLighting;
+        deferredLighting.SetPipelineCache(&cache);
+        ASSERT_TRUE(deferredLighting.AddToGraph(
+            featureBuilder, view, graphInputs.inputs))
+            << deferredLighting.GetUnsupportedReason();
+
+        RVX::RenderGraphValidationAccess::Compile(graphInputs.graph);
+        ASSERT_TRUE(graphInputs.graph.GetCompileStats().compileValid);
+        DeferredLightingRecordingCommandContext commands;
+        RVX::RenderGraphValidationAccess::Execute(graphInputs.graph, commands);
+
+        ASSERT_EQ(1u, commands.boundPipelines.size());
+        ASSERT_EQ(cache.GetDeferredLightingPipeline(), commands.boundPipelines.front());
+        ASSERT_EQ(1u, commands.boundDescriptorSets.size());
+        ASSERT_EQ(1u, commands.boundDescriptorSetSlots.size());
+        EXPECT_EQ(0u, commands.boundDescriptorSetSlots.front());
+        ASSERT_EQ(1u, commands.dispatches.size());
+        EXPECT_EQ(3u, commands.dispatches.front().groupCountX);
+        EXPECT_EQ(2u, commands.dispatches.front().groupCountY);
+        EXPECT_EQ(1u, commands.dispatches.front().groupCountZ);
+
+        const auto descriptor = std::find_if(
+            device.capturedDescriptorSetDescs.begin(),
+            device.capturedDescriptorSetDescs.end(),
+            [](const RVX::RHIDescriptorSetDesc& desc)
+            {
+                return desc.debugName != nullptr &&
+                       std::string_view(desc.debugName) ==
+                           "DeferredLightingDescriptorSet";
+            });
+        ASSERT_NE(device.capturedDescriptorSetDescs.end(), descriptor);
+        ASSERT_EQ(cache.GetDeferredLightingSetLayout(), descriptor->layout);
+        ASSERT_EQ(8u, descriptor->bindings.size());
+        const RVX::RHIDescriptorBinding* constants =
+            FindDescriptorBinding(*descriptor, 0);
+        ASSERT_NE(nullptr, constants);
+        EXPECT_NE(nullptr, constants->buffer);
+        EXPECT_EQ(0u, constants->offset);
+        EXPECT_EQ(256u, constants->range);
+        for (RVX::uint32 binding = 1; binding <= 6; ++binding)
+        {
+            const RVX::RHIDescriptorBinding* texture =
+                FindDescriptorBinding(*descriptor, binding);
+            ASSERT_NE(nullptr, texture) << binding;
+            EXPECT_NE(nullptr, texture->textureView) << binding;
+            EXPECT_EQ(nullptr, texture->buffer) << binding;
+        }
+        const RVX::RHIDescriptorBinding* materialTable =
+            FindDescriptorBinding(*descriptor, 7);
+        ASSERT_NE(nullptr, materialTable);
+        EXPECT_EQ(graphInputs.materialTable.Get(), materialTable->buffer);
+        EXPECT_EQ(0u, materialTable->offset);
+        EXPECT_EQ(sizeof(RVX::DeferredMaterialClassification),
+                  materialTable->range);
+        EXPECT_EQ(nullptr, materialTable->textureView);
+
+        EXPECT_EQ(0, device.deferredLightingConstantDestructionCount)
+            << "The graph must own the frame constants until this execution ends";
+    }
+    EXPECT_EQ(1, device.deferredLightingConstantDestructionCount);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       DeferredLightingFailsClosedForPipelineDescriptorAndConstantAllocationFailures)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    {
+        FakeDevice device(RVX::RHIBackendType::DX12);
+        device.EnableNativeTimelineCompletion();
+        PipelineCacheForValidation cache;
+        ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+            << cache.GetLastError();
+        device.failComputePipelineCreation = true;
+
+        DeferredLightingGraphInputs graphInputs(device, 8, 8);
+        RVX::RenderFeatureGraphBuilder featureBuilder(graphInputs.graph);
+        RVX::DeferredLightingPass deferredLighting;
+        deferredLighting.SetPipelineCache(&cache);
+        EXPECT_FALSE(deferredLighting.AddToGraph(
+            featureBuilder, RVX::ViewData{}, graphInputs.inputs));
+        EXPECT_TRUE(graphInputs.graph.GetDiagnostics().passes.empty());
+        EXPECT_EQ(1u, device.capturedComputePipelines.size());
+    }
+
+    const auto expectExecutionFailureWithoutDispatch =
+        [](bool failDescriptorSet, bool failConstantBuffer)
+        {
+            FakeDevice device(RVX::RHIBackendType::DX12);
+            device.EnableNativeTimelineCompletion();
+            PipelineCacheForValidation cache;
+            EXPECT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+                << cache.GetLastError();
+
+            DeferredLightingGraphInputs graphInputs(device, 8, 8);
+            RVX::RenderFeatureGraphBuilder featureBuilder(graphInputs.graph);
+            RVX::DeferredLightingPass deferredLighting;
+            deferredLighting.SetPipelineCache(&cache);
+            EXPECT_TRUE(deferredLighting.AddToGraph(
+                featureBuilder, RVX::ViewData{}, graphInputs.inputs))
+                << deferredLighting.GetUnsupportedReason();
+            RVX::RenderGraphValidationAccess::Compile(graphInputs.graph);
+            EXPECT_TRUE(graphInputs.graph.GetCompileStats().compileValid);
+
+            device.failDescriptorSetCreation = failDescriptorSet;
+            device.failBufferCreation = failConstantBuffer;
+            DeferredLightingRecordingCommandContext commands;
+            RVX::RenderGraphValidationAccess::Execute(graphInputs.graph, commands);
+            EXPECT_TRUE(commands.boundPipelines.empty());
+            EXPECT_TRUE(commands.boundDescriptorSets.empty());
+            EXPECT_TRUE(commands.dispatches.empty());
+            if (failDescriptorSet)
+            {
+                EXPECT_EQ(1u, std::count_if(
+                                  device.capturedDescriptorSetDescs.begin(),
+                                  device.capturedDescriptorSetDescs.end(),
+                                  [](const RVX::RHIDescriptorSetDesc& desc)
+                                  {
+                                      return desc.debugName != nullptr &&
+                                             std::string_view(desc.debugName) ==
+                                                 "DeferredLightingDescriptorSet";
+                                  }));
+            }
+            if (failConstantBuffer)
+            {
+                EXPECT_EQ(0u, std::count_if(
+                                  device.capturedDescriptorSetDescs.begin(),
+                                  device.capturedDescriptorSetDescs.end(),
+                                  [](const RVX::RHIDescriptorSetDesc& desc)
+                                  {
+                                      return desc.debugName != nullptr &&
+                                             std::string_view(desc.debugName) ==
+                                                 "DeferredLightingDescriptorSet";
+                                  }));
+            }
+        };
+
+    expectExecutionFailureWithoutDispatch(true, false);
+    expectExecutionFailureWithoutDispatch(false, true);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       DeferredLightingFailsClosedForMissingOrInvalidMaterialClassificationTable)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    FakeDevice device(RVX::RHIBackendType::DX12);
+    device.EnableNativeTimelineCompletion();
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    {
+        DeferredLightingGraphInputs graphInputs(device, 8, 8);
+        ASSERT_TRUE(graphInputs.materialTableCreated)
+            << graphInputs.materialTableError;
+        graphInputs.inputs.materialTable = {};
+        RVX::RenderFeatureGraphBuilder featureBuilder(graphInputs.graph);
+        RVX::DeferredLightingPass deferredLighting;
+        deferredLighting.SetPipelineCache(&cache);
+        EXPECT_FALSE(deferredLighting.AddToGraph(
+            featureBuilder, RVX::ViewData{}, graphInputs.inputs));
+        EXPECT_TRUE(graphInputs.graph.GetDiagnostics().passes.empty());
+    }
+
+    {
+        DeferredLightingGraphInputs graphInputs(device, 8, 8);
+        ASSERT_TRUE(graphInputs.materialTableCreated)
+            << graphInputs.materialTableError;
+        RVX::RHIBufferDesc invalidDesc;
+        invalidDesc.size = sizeof(RVX::DeferredMaterialClassification) - 4u;
+        invalidDesc.stride = sizeof(RVX::DeferredMaterialClassification) - 4u;
+        invalidDesc.usage = RVX::RHIBufferUsage::Structured |
+            RVX::RHIBufferUsage::ShaderResource;
+        invalidDesc.memoryType = RVX::RHIMemoryType::Upload;
+        invalidDesc.debugName = "InvalidDeferredMaterialTable";
+        RVX::RHIBufferRef invalidTable = device.CreateBuffer(invalidDesc);
+        ASSERT_TRUE(static_cast<bool>(invalidTable));
+        graphInputs.inputs.materialTable = graphInputs.graph.ImportBuffer(
+            invalidTable, RVX::RHIResourceState::ShaderResource);
+
+        RVX::RenderFeatureGraphBuilder featureBuilder(graphInputs.graph);
+        RVX::DeferredLightingPass deferredLighting;
+        deferredLighting.SetPipelineCache(&cache);
+        ASSERT_TRUE(deferredLighting.AddToGraph(
+            featureBuilder, RVX::ViewData{}, graphInputs.inputs))
+            << deferredLighting.GetUnsupportedReason();
+        RVX::RenderGraphValidationAccess::Compile(graphInputs.graph);
+        ASSERT_TRUE(graphInputs.graph.GetCompileStats().compileValid);
+
+        DeferredLightingRecordingCommandContext commands;
+        RVX::RenderGraphValidationAccess::Execute(graphInputs.graph, commands);
+        EXPECT_TRUE(commands.dispatches.empty());
+        const RVX::RenderGraph::Diagnostics diagnostics =
+            graphInputs.graph.GetDiagnostics();
+        ASSERT_EQ(1u, diagnostics.passes.size());
+        EXPECT_TRUE(diagnostics.passes.front().executedLastRun);
+        EXPECT_FALSE(
+            diagnostics.passes.front().semanticExecutionSucceededLastRun);
+        EXPECT_EQ("DeferredLighting did not record its required compute dispatch",
+                  diagnostics.passes.front().semanticExecutionDiagnostic);
+    }
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       DeferredLightingShaderContractUsesEightByEightDispatchAndExplicitBackgroundDepthRule)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    const std::string source = ReadTextFile(
+        FindShaderDirectory() / "DeferredLighting.hlsl");
+    EXPECT_NE(std::string::npos, source.find("[numthreads(8, 8, 1)]"));
+    EXPECT_NE(std::string::npos, source.find("bool IsBackgroundDepth"));
+    EXPECT_NE(std::string::npos,
+              source.find("deviceDepth <= DepthBackgroundValue + DepthBackgroundEpsilon"));
+    EXPECT_NE(std::string::npos,
+              source.find("deviceDepth >= DepthBackgroundValue - DepthBackgroundEpsilon"));
+    EXPECT_NE(std::string::npos,
+              source.find("HDRSceneColor[pixel] = float4(0.0, 0.0, 0.0, 1.0)"));
+    EXPECT_NE(std::string::npos,
+              source.find("StructuredBuffer<DeferredMaterialClassification> MaterialClassificationTable"));
+    EXPECT_NE(std::string::npos,
+              source.find(": register(t7, space0)"));
+    EXPECT_NE(std::string::npos,
+              source.find("MaterialClassificationTable[materialTableIndex]"));
+    EXPECT_NE(std::string::npos,
+              source.find("materialTableIndex != 0u"));
+
+    const std::string defaultLit = ReadTextFile(
+        FindShaderDirectory() / "DefaultLit.hlsl");
+    EXPECT_NE(std::string::npos,
+              defaultLit.find("output.materialTableIndex = 0u;"));
+    EXPECT_EQ(std::string::npos,
+              defaultLit.find("? 0u\n        : input.MaterialParameterSlot"));
 }

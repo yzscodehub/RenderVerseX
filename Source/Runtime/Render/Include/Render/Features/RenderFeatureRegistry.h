@@ -149,6 +149,7 @@ namespace RVX
             uint32 observedGraphPassCount = 0;
             uint32 observedExecutedGraphPassCount = 0;
             std::vector<std::string> observedGraphPassNames{};
+            std::string semanticExecutionDiagnostic{};
             bool executionEvidenceFinalized = false;
         };
 

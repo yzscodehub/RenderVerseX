@@ -25,6 +25,11 @@ namespace
         direct.packet.pass = pass;
         direct.packet.pipelineKey.materialVariant =
             RVX::MaterialPipelineVariant::Opaque;
+        direct.packet.pipelineKey.materialPolicyValid = true;
+        direct.packet.pipelineKey.shadowPolicy =
+            RVX::MaterialShadowPolicy::CastAndReceive;
+        direct.packet.pipelineKey.surfacePathEligibility =
+            RVX::SurfacePathEligibility::DeferredOpaque;
         direct.packet.pipelineKey.topology =
             RVX::MeshUploadPrimitiveTopology::Triangles;
         direct.packet.geometryKey.mesh = {3, 1};

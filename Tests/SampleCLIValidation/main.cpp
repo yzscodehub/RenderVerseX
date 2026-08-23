@@ -186,6 +186,11 @@ namespace
         receipt.quality = RVX::RenderQualityTier::High;
         receipt.profileHash = RVX::ComputeRenderPipelineProfileHash(
             receipt.resolvedRecipe, receipt.quality);
+        receipt.deferredOpaque.available = true;
+        receipt.deferredOpaque.status =
+            RVX::RenderDeferredOpaqueExecutionStatus::Completed;
+        receipt.deferredOpaque.plannedPacketCount = 2;
+        receipt.deferredOpaque.executedPacketCount = 2;
 
         RVX::RenderFeatureExecutionReceipt feature;
         feature.featureId = RVX::BuiltinRenderFeatureIds::LegacyForwardMainChain;
@@ -532,6 +537,14 @@ namespace
         EXPECT_NE(json.find("\"resolvedRecipe\": \"deferred\""),
                   std::string::npos);
         EXPECT_NE(json.find("\"profileHash\": "), std::string::npos);
+        EXPECT_NE(json.find("\"deferredOpaque\": {"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"status\": \"completed\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"plannedPacketCount\": 2"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"executedPacketCount\": 2"),
+                  std::string::npos);
         EXPECT_NE(json.find("\"executionSucceeded\": true"),
                   std::string::npos);
         EXPECT_NE(json.find("\"presented\": true"), std::string::npos);

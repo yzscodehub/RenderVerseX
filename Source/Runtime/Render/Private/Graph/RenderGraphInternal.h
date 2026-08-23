@@ -85,6 +85,7 @@ namespace RVX
         bool hasSubresourceTracking = false;
         std::optional<RHIResourceState> exportState;
         std::optional<RHIAccessSnapshot> exportAccess;
+        std::optional<RHIAccessSnapshot> poolTerminalAccess;
         bool imported = false;
         
         // Memory aliasing
@@ -124,6 +125,7 @@ namespace RVX
         RHIBufferAccessSnapshot currentAccessSnapshot;
         std::optional<RHIResourceState> exportState;
         std::optional<RHIAccessSnapshot> exportAccess;
+        std::optional<RHIAccessSnapshot> poolTerminalAccess;
         struct RangeState
         {
             uint64 offset = 0;
@@ -226,6 +228,8 @@ namespace RVX
         std::vector<uint32> writeBuffers;
         bool culled = false;
         bool executedLastRun = false;
+        bool semanticExecutionSucceededLastRun = true;
+        std::string semanticExecutionDiagnostic;
         RenderGraph::DiagnosticExecutionQueue lastExecutionQueue = RenderGraph::DiagnosticExecutionQueue::Unknown;
         uint32 lastExecutionSerial = RVX_INVALID_INDEX;
         uint64 lastCpuDurationNanoseconds = 0;
@@ -299,6 +303,7 @@ namespace RVX
         std::vector<TransientHeap> transientHeaps;
         bool enableMemoryAliasing = false;
         bool memoryAliasingRequested = false;
+        bool canonicalizeTransientPoolAccess = false;
         TransientResourcePool::Stats executionPoolStats;
         RHIDescriptorDiagnostics executionDescriptorDiagnostics;
 

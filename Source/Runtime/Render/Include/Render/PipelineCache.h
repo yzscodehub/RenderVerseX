@@ -475,6 +475,63 @@ namespace RVX
             bool reverseWinding = false);
 
         /**
+         * @brief Deferred GBuffer pipelines using the canonical four-target ABI.
+         *
+         * The formats are fixed by the renderer contract: RGBA8_UNORM_SRGB,
+         * RGBA8_UNORM, RGBA16_FLOAT and R32_UINT. Only opaque and masked
+         * StandardLit packets may select this family.
+         */
+        RHIPipeline* GetGBufferPipelineForVariant(
+            MaterialPipelineVariant variant,
+            DefaultLitDirectVertexInputMode inputMode,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
+        RHIPipeline* GetGPUDrivenGBufferPipelineForVariant(
+            MaterialPipelineVariant variant,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
+        RHIPipeline* GetInstancedMaterialGBufferPipelineForVariant(
+            MaterialPipelineVariant variant,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
+        RHIPipeline* GetGPUSceneGBufferPipelineForVariant(
+            MaterialPipelineVariant variant,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
+        RHIPipeline* GetGPUSceneInstancedMaterialGBufferPipelineForVariant(
+            MaterialPipelineVariant variant,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
+
+        [[nodiscard]] bool IsGBufferPipelineFamilyReady() const noexcept
+        {
+            return m_initialized && m_gBufferPixelShader && m_pipelineLayout;
+        }
+
+        /**
+         * @brief Return the deferred opaque-lighting compute pipeline.
+         *
+         * The pipeline is created lazily so compatibility-path startup never
+         * requests a compute pipeline.  DX12, Vulkan, and Metal callers must
+         * treat a null result as a required deferred-recipe failure.
+         */
+        RHIPipeline* GetDeferredLightingPipeline();
+
+        /** @brief Descriptor layout for deferred GBuffer SRVs and HDR UAV. */
+        RHIDescriptorSetLayout* GetDeferredLightingSetLayout() const
+        {
+            return m_deferredLightingSetLayout.Get();
+        }
+
+        /** @brief True only after a native deferred-lighting compute pipeline exists. */
+        [[nodiscard]] bool IsDeferredLightingPipelineReady() const noexcept
+        {
+            return m_initialized && m_deferredLightingPipeline &&
+                   m_deferredLightingSetLayout &&
+                   m_deferredLightingPipelineLayout;
+        }
+
+        /**
          * @brief Get the depth-only pipeline for depth prepass
          * @return Depth-only pipeline or nullptr if not available
          */
@@ -1045,6 +1102,7 @@ namespace RVX
         bool CompileShaders();
         bool CreatePipelineLayout();
         bool CreateGPUSceneRasterPipelineLayout();
+        bool CreateDeferredLightingPipelineLayout();
         bool CreatePostProcessPipelineLayout();
         bool CreateUIPipelineLayout();
         bool CreateRayTracedReflectionDenoisePipelineLayout();
@@ -1084,6 +1142,15 @@ namespace RVX
                                                               bool instancedMaterial,
                                                               MaterialCullMode cullMode,
                                                               bool reverseWinding);
+        RHIPipelineRef GetOrCreateGBufferPipeline(
+            RHIGraphicsPipelineDesc pipelineDesc,
+            MaterialPipelineVariant variant,
+            uint32 purposeSalt,
+            const char* debugName);
+        bool EnsureDeferredLightingPipeline();
+        [[nodiscard]] RHIGraphicsPipelineDesc MakeGBufferPipelineDesc(
+            RHIGraphicsPipelineDesc pipelineDesc,
+            const char* debugName) const;
         RHIPipelineRef GetOrCreateDepthOnlyPipeline(
             MaterialCullMode cullMode = MaterialCullMode::Back,
             bool reverseWinding = false);
@@ -1286,6 +1353,8 @@ namespace RVX
         RHIShaderRef m_gpuSceneVertexShader;
         RHIShaderRef m_gpuSceneInstancedMaterialVertexShader;
         RHIShaderRef m_pixelShader;
+        RHIShaderRef m_gBufferPixelShader;
+        RHIShaderRef m_deferredLightingComputeShader;
         RHIShaderRef m_depthOnlyVertexShader;
         RHIShaderRef m_rigidDepthOnlyVertexShader;
         RHIShaderRef m_maskedDepthOnlyVertexShader;
@@ -1339,6 +1408,8 @@ namespace RVX
         std::unique_ptr<ShaderProgramMetadata> m_gpuSceneVsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_gpuSceneInstancedMaterialVsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_psCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_gBufferPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_deferredLightingCsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_depthOnlyVsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_rigidDepthOnlyVsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_maskedDepthOnlyVsCompileResult;
@@ -1391,6 +1462,8 @@ namespace RVX
         RHIPipelineLayoutRef m_pipelineLayout;
         RHIDescriptorSetLayoutRef m_gpuSceneRasterObjectSetLayout;
         RHIPipelineLayoutRef m_gpuSceneRasterPipelineLayout;
+        RHIDescriptorSetLayoutRef m_deferredLightingSetLayout;
+        RHIPipelineLayoutRef m_deferredLightingPipelineLayout;
         RHIDescriptorSetLayoutRef m_postProcessSetLayout;
         RHIPipelineLayoutRef m_postProcessPipelineLayout;
         RHIDescriptorSetLayoutRef m_uiTextureSetLayout;
@@ -1417,6 +1490,7 @@ namespace RVX
         RHIPipelineRef m_gpuSceneInstancedMaterialOpaquePipeline;
         RHIPipelineRef m_gpuSceneMaskedPipeline;
         RHIPipelineRef m_gpuSceneDepthOnlyPipeline;
+        RHIPipelineRef m_deferredLightingPipeline;
         // Every GPU-scene raster pipeline is tracked independently from the
         // Back-cull convenience members above.  Cull variants are created on
         // demand, so those members alone cannot describe the complete set

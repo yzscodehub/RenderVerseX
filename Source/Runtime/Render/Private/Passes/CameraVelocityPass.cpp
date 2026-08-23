@@ -182,12 +182,26 @@ namespace RVX
                                      const ViewData& view)
     {
         RHICommandContext& ctx = context.Commands();
-        if (!m_stats.outputDeclared ||
-            !m_pipelineCache ||
+        if (!m_stats.outputDeclared)
+        {
+            m_stats.velocityRecorded = false;
+            // A camera cut, reset, or first frame deliberately has no prior
+            // transform to reproject. It is a valid no-work pass.
+            if (!m_stats.requested || !m_stats.previousViewProjectionAvailable)
+            {
+                return;
+            }
+            context.MarkExecutionFailed(
+                "CameraVelocityPass did not declare its required graph output");
+            return;
+        }
+        if (!m_pipelineCache ||
             !m_depthReadHandle.IsValid() ||
             !m_velocityWriteHandle.IsValid())
         {
             m_stats.velocityRecorded = false;
+            context.MarkExecutionFailed(
+                "CameraVelocityPass graph recording prerequisites are unavailable");
             return;
         }
 
@@ -196,6 +210,8 @@ namespace RVX
         if (!depthTexture || !velocityTexture)
         {
             m_stats.velocityRecorded = false;
+            context.MarkExecutionFailed(
+                "CameraVelocityPass could not realize a required graph texture");
             return;
         }
 
@@ -206,6 +222,8 @@ namespace RVX
         {
             RVX_CORE_WARN("CameraVelocityPass: failed to resolve depth SRV or velocity RTV");
             m_stats.velocityRecorded = false;
+            context.MarkExecutionFailed(
+                "CameraVelocityPass could not realize a required graph texture view");
             return;
         }
 
@@ -218,6 +236,8 @@ namespace RVX
         {
             RVX_CORE_WARN("CameraVelocityPass: pipeline resources are unavailable");
             m_stats.velocityRecorded = false;
+            context.MarkExecutionFailed(
+                "CameraVelocityPass pipeline resources are unavailable");
             return;
         }
 
@@ -225,6 +245,8 @@ namespace RVX
             !UpdateConstants(view, velocityTexture->GetWidth(), velocityTexture->GetHeight()))
         {
             m_stats.velocityRecorded = false;
+            context.MarkExecutionFailed(
+                "CameraVelocityPass could not prepare runtime resources or constants");
             return;
         }
 
@@ -245,6 +267,8 @@ namespace RVX
         {
             RVX_CORE_WARN("CameraVelocityPass: failed to create descriptor set");
             m_stats.velocityRecorded = false;
+            context.MarkExecutionFailed(
+                "CameraVelocityPass descriptor creation failed");
             return;
         }
 
@@ -256,6 +280,8 @@ namespace RVX
         {
             RVX_CORE_WARN("CameraVelocityPass: submission ownership rejected descriptor set");
             m_stats.velocityRecorded = false;
+            context.MarkExecutionFailed(
+                "CameraVelocityPass submission resource retention failed");
             return;
         }
 

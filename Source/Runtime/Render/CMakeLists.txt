@@ -187,11 +187,11 @@ add_library(RVX::RenderFoundation ALIAS RVX_RenderFoundation)
 add_library(RVX_RenderSurface STATIC)
 target_sources(RVX_RenderSurface PRIVATE
     Private/Passes/OpaquePass.cpp
+    Private/Submission/OpaqueRasterSubmission.cpp
     Private/Passes/DepthPrepass.cpp
     Private/Passes/TransparentPass.cpp
     Private/Passes/SkyboxPass.cpp
     Private/Passes/TerrainPass.cpp
-    Private/Passes/GBufferPass.cpp
     Private/Passes/UIPass.cpp
     Private/Decal/DecalRenderer.cpp
     Private/Sky/AtmosphericScattering.cpp
@@ -208,6 +208,7 @@ add_library(RVX::RenderSurface ALIAS RVX_RenderSurface)
 add_library(RVX_RenderLighting STATIC)
 target_sources(RVX_RenderLighting PRIVATE
     Private/Passes/ShadowPass.cpp
+    Private/Passes/DeferredLightingPass.cpp
 )
 rvx_configure_render_component(RVX_RenderLighting)
 target_link_libraries(RVX_RenderLighting PUBLIC
@@ -298,6 +299,7 @@ target_sources(RVX_RenderComposition PRIVATE
     Private/Renderer/RenderPassRegistry.cpp
     Private/Renderer/SceneRenderer.cpp
     Private/Features/DefaultForwardComposition.cpp
+    Private/Features/DeferredRecipeFeatureAdapter.cpp
     Private/Features/LegacyForwardFeatureAdapter.cpp
     Private/Features/RenderFeatureRegistry.cpp
     Private/Diagnostics/RenderFeatureReport.cpp

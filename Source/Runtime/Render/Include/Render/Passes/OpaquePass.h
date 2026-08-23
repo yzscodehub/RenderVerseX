@@ -11,13 +11,16 @@
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Submission/RasterInstanceStream.h"
 #include "Render/Submission/RenderInstanceBatchPlan.h"
+#include "Render/Submission/OpaqueRasterSubmission.h"
 #include "RHI/RHICommandContext.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace RVX
@@ -36,7 +39,66 @@ namespace RVX
     struct ObjectConstantBinding;
     struct GPUCullingDrawGroup;
     struct GPUSceneRasterBindingSnapshot;
+    struct RenderPassRecordContext;
     struct RenderPassRecordResults;
+
+    /** @brief Result of resolving every frozen opaque-raster pipeline request. */
+    enum class OpaqueRasterPipelinePreflightCode : uint8
+    {
+        Ready = 0,
+        ReadyNoWork,
+        DependenciesUnavailable,
+        InvalidRecordContext,
+        InvalidExecutionPlan,
+        InvalidPacketPartition,
+        MissingGPURecording,
+        StaleGPURecording,
+        InvalidGPUGroup,
+        PipelineUnavailable,
+    };
+
+    /**
+     * @brief Fail-closed readiness for one immutable opaque-raster route.
+     *
+     * This is deliberately evaluated from the published frame plan, not from
+     * mutable scene lists.  It lets a recipe reject a required route before a
+     * graph callback or attachment write is registered.
+     */
+    struct OpaqueRasterPipelinePreflightResult
+    {
+        OpaqueRasterPipelinePreflightCode code =
+            OpaqueRasterPipelinePreflightCode::DependenciesUnavailable;
+        uint32 selectedDirectPacketCount = 0;
+        uint32 selectedGPUDrivenPacketCount = 0;
+        uint32 matchedGPUGroupCount = 0;
+        uint32 uniquePipelineRequestCount = 0;
+        bool hasFailedRequest = false;
+        OpaqueRasterPipelineRequest failedRequest{};
+        std::string diagnostic{};
+
+        [[nodiscard]] bool Succeeded() const noexcept
+        {
+            return code == OpaqueRasterPipelinePreflightCode::Ready ||
+                   code == OpaqueRasterPipelinePreflightCode::ReadyNoWork;
+        }
+    };
+
+    /** @brief Graph-owned attachments consumed by the deferred opaque path. */
+    struct OpaqueDeferredGBufferTargets
+    {
+        std::array<RGTextureHandle, 4> color{};
+        RGTextureHandle depth{};
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return depth.IsValid() &&
+                   std::all_of(color.begin(), color.end(),
+                               [](const RGTextureHandle& handle)
+                               {
+                                   return handle.IsValid();
+                               });
+        }
+    };
 
     /**
      * @brief Opaque geometry render pass
@@ -63,6 +125,35 @@ namespace RVX
 
         void AddToGraph(RenderGraph& graph,
                         const RenderPassRecordContext& context) override;
+
+        /** @brief Register the shared opaque submission against four GBuffer targets. */
+        void AddDeferredToGraph(
+            RenderGraph& graph,
+            const RenderPassRecordContext& context,
+            const OpaqueDeferredGBufferTargets& targets);
+
+        /**
+         * @brief Record only ForwardSpecialOpaque packets into an existing HDR
+         * scene color after deferred lighting.
+         */
+        void AddForwardSpecialToGraph(
+            RenderGraph& graph,
+            const RenderPassRecordContext& context);
+
+        /**
+         * @brief Resolve every pipeline used by the frozen opaque-plan route.
+         *
+         * A successful empty route returns ReadyNoWork and checks only the
+         * canonical family metadata. Direct instancing is intentionally not
+         * inferred here: deferred geometry records ordinary frozen Direct
+         * packets, while GPU requests are derived solely from sealed culling
+         * groups.
+         */
+        [[nodiscard]] OpaqueRasterPipelinePreflightResult
+        PreflightRasterPipelines(
+            const RenderPassRecordContext& context,
+            OpaqueRasterOutputFamily outputFamily,
+            OpaqueRasterSurfaceRoute surfaceRoute) const;
 
         // =====================================================================
         // Resource Dependencies
@@ -118,7 +209,16 @@ namespace RVX
             std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache,
             DirectRasterReadbackQualification* directReadbackQualification,
             const RenderPassRecordIdentity& recordIdentity,
-            uint32 sourceFrameSlot);
+            uint32 sourceFrameSlot,
+            OpaqueRasterOutputFamily outputFamily,
+            OpaqueRasterSurfaceRoute surfaceRoute,
+            OpaqueDeferredGBufferTargets deferredTargets);
+        void AddToGraphInternal(
+            RenderGraph& graph,
+            const RenderPassRecordContext& context,
+            OpaqueRasterOutputFamily outputFamily,
+            OpaqueRasterSurfaceRoute surfaceRoute,
+            const OpaqueDeferredGBufferTargets& deferredTargets);
 
         RGTextureHandle m_colorTargetHandle;
         RGTextureHandle m_depthTargetHandle;
@@ -128,6 +228,8 @@ namespace RVX
         RGTextureViewHandle m_depthTargetViewHandle;
         RGTextureViewHandle m_directionalShadowViewHandle;
         RGTextureViewHandle m_rayTracedShadowMaskViewHandle;
+        std::array<RGTextureHandle, 4> m_gBufferTargetHandles{};
+        std::array<RGTextureViewHandle, 4> m_gBufferTargetViewHandles{};
         RHIFormat m_colorTargetFormat = RHIFormat::Unknown;
         RGBufferHandle m_gpuDrivenInstanceHandle;
         RGBufferHandle m_gpuSceneCandidateHandle;
@@ -161,6 +263,11 @@ namespace RVX
         DirectionalShadowRecordOutput m_directionalShadowInputs;
         RayTracedShadowRecordOutput m_rayTracedShadowInputs;
         std::shared_ptr<RenderPassRecordResults> m_publishedRecordResults;
+        OpaqueRasterOutputFamily m_outputFamily =
+            OpaqueRasterOutputFamily::ForwardSceneHDR;
+        OpaqueRasterSurfaceRoute m_surfaceRoute =
+            OpaqueRasterSurfaceRoute::AllOpaque;
+        OpaqueDeferredGBufferTargets m_deferredTargets{};
 
         // Resource dependencies
         const RenderResourceRegistry* m_resourceRegistry = nullptr;

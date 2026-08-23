@@ -22,6 +22,14 @@ namespace RVX
         MaterialCullMode cullMode = MaterialCullMode::Back;
         MaterialShadowPolicy shadowPolicy =
             MaterialShadowPolicy::CastAndReceive;
+        /**
+         * The one renderer path selected from the immutable material
+         * descriptor.  It is deliberately part of the frozen packet identity:
+         * a draw must never drift between deferred and forward after scene
+         * classification.
+         */
+        SurfacePathEligibility surfacePathEligibility =
+            SurfacePathEligibility::Unsupported;
         MeshUploadPrimitiveTopology topology =
             MeshUploadPrimitiveTopology::Triangles;
         bool skinned = false;
