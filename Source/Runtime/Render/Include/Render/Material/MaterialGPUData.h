@@ -11,6 +11,9 @@
 #include "Core/Types.h"
 #include "Core/MathTypes.h"
 
+#include <array>
+#include <cstddef>
+
 namespace RVX
 {
     /**
@@ -58,6 +61,19 @@ namespace RVX
         Unlit = 2,
     };
 
+    inline constexpr uint32 RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT = 5;
+
+    /** @brief Packed affine UV transform for one fixed material texture slot. */
+    struct MaterialGPUUVTransform
+    {
+        /** xy = scale, zw = offset. */
+        Vec4 scaleOffset = {1.0f, 1.0f, 0.0f, 0.0f};
+        /** xy = cos/sin(rotation), z = UV set (0 or 1), w reserved. */
+        Vec4 rotationUVSet = {1.0f, 0.0f, 0.0f, 0.0f};
+    };
+
+    static_assert(sizeof(MaterialGPUUVTransform) == 32);
+
     /**
      * @brief GPU constant buffer layout for PBR materials
      * 
@@ -90,9 +106,31 @@ namespace RVX
 
         uint32 doubleSided = 0;
         Vec3 padding = {0.0f, 0.0f, 0.0f};
+
+        std::array<MaterialGPUUVTransform,
+                   RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT> uvTransforms{};
     };
 
-    static_assert(sizeof(MaterialGPUConstants) == 80,
+    static_assert(sizeof(MaterialGPUConstants) == 240,
                   "MaterialGPUConstants must match the HLSL cbuffer layout");
+    static_assert(offsetof(MaterialGPUConstants, baseColorFactor) == 0);
+    static_assert(offsetof(MaterialGPUConstants, metallicFactor) == 16);
+    static_assert(offsetof(MaterialGPUConstants, roughnessFactor) == 20);
+    static_assert(offsetof(MaterialGPUConstants, normalScale) == 24);
+    static_assert(offsetof(MaterialGPUConstants, occlusionStrength) == 28);
+    static_assert(offsetof(MaterialGPUConstants, emissiveColor) == 32);
+    static_assert(offsetof(MaterialGPUConstants, emissiveStrength) == 44);
+    static_assert(offsetof(MaterialGPUConstants, textureFlags) == 48);
+    static_assert(offsetof(MaterialGPUConstants, alphaMode) == 52);
+    static_assert(offsetof(MaterialGPUConstants, alphaCutoff) == 56);
+    static_assert(offsetof(MaterialGPUConstants, workflow) == 60);
+    static_assert(offsetof(MaterialGPUConstants, doubleSided) == 64);
+    static_assert(offsetof(MaterialGPUConstants, padding) == 68);
+    static_assert(offsetof(MaterialGPUConstants, uvTransforms) == 80);
+    static_assert(
+        offsetof(MaterialGPUConstants, uvTransforms) +
+            sizeof(MaterialGPUUVTransform) *
+                RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT ==
+        sizeof(MaterialGPUConstants));
 
 } // namespace RVX

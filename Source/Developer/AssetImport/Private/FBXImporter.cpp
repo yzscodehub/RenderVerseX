@@ -355,6 +355,88 @@ namespace
         return 0;
     }
 
+    bool RequiresTangentSpace(const ufbx_mesh& source)
+    {
+        for (size_t materialIndex = 0; materialIndex < source.materials.count;
+             ++materialIndex)
+        {
+            const ufbx_material* material = source.materials.data[materialIndex];
+            if (material && (material->pbr.normal_map.texture ||
+                             material->fbx.normal_map.texture))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool CopyGeneratedNormals(const Mesh& mesh,
+                              std::vector<VertexKey>& corners,
+                              std::string& outError)
+    {
+        const VertexAttribute* attribute =
+            mesh.GetAttribute(VertexBufferNames::Normal);
+        if (!attribute || attribute->GetType() != AttributeType::Float ||
+            attribute->GetComponents() != 3u ||
+            attribute->GetVertexCount() != corners.size() ||
+            !attribute->GetData())
+        {
+            outError = "FBX mesh normal generation produced an invalid attribute.";
+            return false;
+        }
+
+        const float* values = static_cast<const float*>(attribute->GetData());
+        for (size_t index = 0; index < corners.size(); ++index)
+        {
+            const Vec3 normal(values[index * 3u],
+                              values[index * 3u + 1u],
+                              values[index * 3u + 2u]);
+            if (!IsFinite(normal) || glm::dot(normal, normal) <= 0.0f)
+            {
+                outError = "FBX mesh normal generation produced an invalid normal.";
+                return false;
+            }
+            corners[index].normal = glm::normalize(normal);
+            corners[index].attributeMask |= 0x01u;
+        }
+        return true;
+    }
+
+    bool CopyGeneratedTangents(const Mesh& mesh,
+                               std::vector<VertexKey>& corners,
+                               std::string& outError)
+    {
+        const VertexAttribute* attribute =
+            mesh.GetAttribute(VertexBufferNames::Tangent);
+        if (!attribute || attribute->GetType() != AttributeType::Float ||
+            attribute->GetComponents() != 4u ||
+            attribute->GetVertexCount() != corners.size() ||
+            !attribute->GetData())
+        {
+            outError = "FBX mesh tangent generation produced an invalid attribute.";
+            return false;
+        }
+
+        const float* values = static_cast<const float*>(attribute->GetData());
+        for (size_t index = 0; index < corners.size(); ++index)
+        {
+            const Vec4 tangent(values[index * 4u],
+                               values[index * 4u + 1u],
+                               values[index * 4u + 2u],
+                               values[index * 4u + 3u]);
+            const Vec3 direction(tangent.x, tangent.y, tangent.z);
+            if (!IsFinite(tangent) || glm::dot(direction, direction) <= 0.0f ||
+                tangent.w == 0.0f)
+            {
+                outError = "FBX mesh tangent generation produced an invalid tangent.";
+                return false;
+            }
+            corners[index].tangent = tangent;
+            corners[index].attributeMask |= 0x04u;
+        }
+        return true;
+    }
+
     Mesh::Ptr ConvertMesh(const ufbx_scene& scene,
                           const ufbx_mesh& source,
                           const FBXImportOptions& options,
@@ -374,12 +456,13 @@ namespace
         }
         mesh->SetPrimitiveType(PrimitiveType::Triangles);
 
-        std::vector<VertexKey> vertices;
-        std::vector<std::uint32_t> indices;
+        // Preserve an independent stream for every triangulated polygon corner
+        // until tangent-space generation has completed. MikkTSpace is allowed to
+        // assign a distinct basis to corners that otherwise share their source
+        // position/normal/UV tuple (for example across a mirrored UV seam).
+        std::vector<VertexKey> corners;
         std::vector<SubMesh> subMeshes;
-        std::unordered_map<VertexKey, std::uint32_t, VertexKeyHash> vertexMap;
-        vertices.reserve(source.num_indices);
-        indices.reserve(source.num_triangles * 3u);
+        corners.reserve(source.num_indices);
 
         std::vector<std::uint32_t> triangulated(source.max_face_triangles * 3u);
         if (triangulated.empty())
@@ -395,7 +478,7 @@ namespace
             {
                 continue;
             }
-            if (indices.size() > std::numeric_limits<std::uint32_t>::max())
+            if (corners.size() > std::numeric_limits<std::uint32_t>::max())
             {
                 outError = "FBX mesh index offset exceeds the engine limit.";
                 return nullptr;
@@ -403,7 +486,7 @@ namespace
 
             SubMesh subMesh;
             subMesh.name = mesh->name + "_material_" + std::to_string(partIndex);
-            subMesh.indexOffset = static_cast<std::uint32_t>(indices.size());
+            subMesh.indexOffset = static_cast<std::uint32_t>(corners.size());
             subMesh.materialId = ResolveMaterialId(scene, source, partIndex);
             subMesh.primitive = PrimitiveType::Triangles;
 
@@ -445,22 +528,17 @@ namespace
                     {
                         return nullptr;
                     }
-                    const auto [it, inserted] = vertexMap.emplace(
-                        vertex, static_cast<std::uint32_t>(vertices.size()));
-                    if (inserted)
+                    if (corners.size() >=
+                        std::numeric_limits<std::uint32_t>::max())
                     {
-                        if (vertices.size() >= std::numeric_limits<std::uint32_t>::max())
-                        {
-                            outError = "FBX mesh vertex count exceeds the engine limit.";
-                            return nullptr;
-                        }
-                        vertices.push_back(vertex);
+                        outError = "FBX mesh corner count exceeds the engine limit.";
+                        return nullptr;
                     }
-                    indices.push_back(it->second);
+                    corners.push_back(vertex);
                 }
             }
 
-            const size_t partIndexCount = indices.size() - subMesh.indexOffset;
+            const size_t partIndexCount = corners.size() - subMesh.indexOffset;
             if (partIndexCount != part.num_triangles * 3u ||
                 partIndexCount > std::numeric_limits<std::uint32_t>::max())
             {
@@ -471,10 +549,147 @@ namespace
             subMeshes.push_back(std::move(subMesh));
         }
 
-        if (indices.empty() || vertices.empty() || subMeshes.empty())
+        if (corners.empty() || subMeshes.empty())
         {
             outError = "FBX static mesh produced no renderable triangles.";
             return nullptr;
+        }
+
+        std::uint8_t attributeMask = corners.front().attributeMask;
+        for (const VertexKey& corner : corners)
+        {
+            if (corner.attributeMask != attributeMask)
+            {
+                outError = "FBX vertex attribute presence is inconsistent across polygon corners.";
+                return nullptr;
+            }
+        }
+
+        std::vector<std::uint32_t> cornerIndices(corners.size());
+        std::vector<Vec3> cornerPositions;
+        std::vector<Vec3> cornerNormals;
+        std::vector<Vec2> cornerUvs;
+        std::vector<Vec4> cornerTangents;
+        std::vector<Vec4> cornerColors;
+        cornerPositions.reserve(corners.size());
+        if ((attributeMask & 0x01u) != 0) cornerNormals.reserve(corners.size());
+        if ((attributeMask & 0x02u) != 0) cornerUvs.reserve(corners.size());
+        if ((attributeMask & 0x04u) != 0) cornerTangents.reserve(corners.size());
+        if ((attributeMask & 0x08u) != 0) cornerColors.reserve(corners.size());
+        for (size_t index = 0; index < corners.size(); ++index)
+        {
+            const VertexKey& corner = corners[index];
+            cornerIndices[index] = static_cast<std::uint32_t>(index);
+            cornerPositions.push_back(corner.position);
+            if ((attributeMask & 0x01u) != 0) cornerNormals.push_back(corner.normal);
+            if ((attributeMask & 0x02u) != 0) cornerUvs.push_back(corner.uv);
+            if ((attributeMask & 0x04u) != 0) cornerTangents.push_back(corner.tangent);
+            if ((attributeMask & 0x08u) != 0) cornerColors.push_back(corner.color);
+        }
+
+        Mesh cornerMesh;
+        cornerMesh.SetPrimitiveType(PrimitiveType::Triangles);
+        cornerMesh.SetPositions(cornerPositions);
+        cornerMesh.SetIndices(cornerIndices);
+        if (!cornerNormals.empty()) cornerMesh.SetNormals(cornerNormals);
+        if (!cornerUvs.empty()) cornerMesh.SetUVs(cornerUvs);
+        if (!cornerTangents.empty()) cornerMesh.SetTangents(cornerTangents);
+        if (!cornerColors.empty()) cornerMesh.SetColors(cornerColors);
+
+        const bool requiresTangentSpace = RequiresTangentSpace(source);
+        if (!cornerMesh.HasAttribute(VertexBufferNames::Normal) &&
+            options.generateNormals)
+        {
+            if (!cornerMesh.GenerateNormals() ||
+                !CopyGeneratedNormals(cornerMesh, corners, outError))
+            {
+                if (outError.empty())
+                {
+                    outError = "FBX mesh normal generation failed.";
+                }
+                return nullptr;
+            }
+        }
+        if (requiresTangentSpace &&
+            !cornerMesh.HasAttribute(VertexBufferNames::Normal))
+        {
+            outError = "FBX normal-mapped mesh requires normals; normal generation is disabled.";
+            return nullptr;
+        }
+        if (requiresTangentSpace &&
+            !cornerMesh.HasAttribute(VertexBufferNames::UV))
+        {
+            outError = "FBX normal-mapped mesh requires texture coordinates.";
+            return nullptr;
+        }
+
+        if (!cornerMesh.HasAttribute(VertexBufferNames::Tangent))
+        {
+            const bool canGenerateTangents =
+                cornerMesh.HasAttribute(VertexBufferNames::Normal) &&
+                cornerMesh.HasAttribute(VertexBufferNames::UV);
+            if (options.generateTangents && canGenerateTangents)
+            {
+                std::string tangentError;
+                if (cornerMesh.GenerateTangents() &&
+                    CopyGeneratedTangents(cornerMesh, corners, tangentError))
+                {
+                    attributeMask |= 0x04u;
+                }
+                else if (requiresTangentSpace)
+                {
+                    outError = tangentError.empty()
+                        ? "FBX normal-mapped mesh tangent generation failed."
+                        : tangentError;
+                    return nullptr;
+                }
+            }
+            else if (requiresTangentSpace)
+            {
+                if (!options.generateTangents)
+                {
+                    outError = "FBX normal-mapped mesh requires tangent generation, but it is disabled.";
+                }
+                else if (!cornerMesh.HasAttribute(VertexBufferNames::UV))
+                {
+                    outError = "FBX normal-mapped mesh requires texture coordinates.";
+                }
+                else
+                {
+                    outError = "FBX normal-mapped mesh requires normals.";
+                }
+                return nullptr;
+            }
+        }
+        if (requiresTangentSpace &&
+            !cornerMesh.HasAttribute(VertexBufferNames::Tangent))
+        {
+            outError = "FBX normal-mapped mesh requires a valid tangent basis.";
+            return nullptr;
+        }
+
+        // Incorporate generated per-corner tangent/sign values into the full
+        // deduplication key only after MikkTSpace has finished.
+        std::vector<VertexKey> vertices;
+        std::vector<std::uint32_t> indices;
+        std::unordered_map<VertexKey, std::uint32_t, VertexKeyHash> vertexMap;
+        vertices.reserve(corners.size());
+        indices.reserve(corners.size());
+        for (const VertexKey& corner : corners)
+        {
+            const auto [it, inserted] = vertexMap.emplace(
+                corner, static_cast<std::uint32_t>(vertices.size()));
+            if (inserted)
+            {
+                if (vertices.size() >=
+                    std::numeric_limits<std::uint32_t>::max())
+                {
+                    outError = "FBX mesh vertex count exceeds the engine limit.";
+                    return nullptr;
+                }
+                vertices.push_back(corner);
+            }
+            indices.push_back(it->second);
         }
 
         std::vector<Vec3> positions;
@@ -483,7 +698,7 @@ namespace
         std::vector<Vec4> tangents;
         std::vector<Vec4> colors;
         positions.reserve(vertices.size());
-        const std::uint8_t attributeMask = vertices.front().attributeMask;
+        attributeMask = vertices.front().attributeMask;
         if ((attributeMask & 0x01u) != 0) normals.reserve(vertices.size());
         if ((attributeMask & 0x02u) != 0) uvs.reserve(vertices.size());
         if ((attributeMask & 0x04u) != 0) tangents.reserve(vertices.size());
@@ -511,19 +726,6 @@ namespace
         if (!colors.empty()) mesh->SetColors(colors);
         mesh->SetSubMeshes(std::move(subMeshes));
 
-        if (normals.empty() && options.generateNormals && !mesh->GenerateNormals())
-        {
-            outError = "FBX mesh normal generation failed.";
-            return nullptr;
-        }
-        if (tangents.empty() && options.generateTangents &&
-            mesh->HasAttribute(VertexBufferNames::Normal) &&
-            mesh->HasAttribute(VertexBufferNames::UV) &&
-            !mesh->GenerateTangents())
-        {
-            outError = "FBX mesh tangent generation failed.";
-            return nullptr;
-        }
         if (!mesh->ComputeBoundingBox())
         {
             outError = "FBX mesh bounds could not be computed.";

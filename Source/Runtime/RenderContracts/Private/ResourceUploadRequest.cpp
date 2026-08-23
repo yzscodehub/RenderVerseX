@@ -2,6 +2,7 @@
 
 #include "ResourceUploadRequestInternal.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <type_traits>
@@ -31,34 +32,6 @@ namespace
     bool IsFinite(const Vec2& value)
     {
         return IsFinite(value.x) && IsFinite(value.y);
-    }
-
-    bool IsFinite(const Vec3& value)
-    {
-        return IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
-    }
-
-    bool IsFinite(const Vec4& value)
-    {
-        return IsFinite(value.x) && IsFinite(value.y) &&
-               IsFinite(value.z) && IsFinite(value.w);
-    }
-
-    bool IsUnitRange(float32 value)
-    {
-        return IsFinite(value) && value >= 0.0f && value <= 1.0f;
-    }
-
-    bool IsUnitRange(const Vec3& value)
-    {
-        return IsUnitRange(value.x) && IsUnitRange(value.y) &&
-               IsUnitRange(value.z);
-    }
-
-    bool IsUnitRange(const Vec4& value)
-    {
-        return IsUnitRange(value.x) && IsUnitRange(value.y) &&
-               IsUnitRange(value.z) && IsUnitRange(value.w);
     }
 
     bool IsDeclared(RenderResourceKind value)
@@ -166,19 +139,12 @@ namespace
         return false;
     }
 
-    bool IsDeclared(MaterialSourceAlphaMode value)
-    {
-        return value == MaterialSourceAlphaMode::Opaque ||
-               value == MaterialSourceAlphaMode::Mask ||
-               value == MaterialSourceAlphaMode::Blend;
-    }
+    constexpr uint32 RVX_LEGACY_MATERIAL_UPLOAD_TEXTURE_FLAGS =
+        (1U << (static_cast<uint32>(MaterialUploadTextureSlot::Emissive) + 1U)) -
+        1U;
 
-    bool IsDeclared(MaterialSourceWorkflow value)
-    {
-        return value == MaterialSourceWorkflow::MetallicRoughness ||
-               value == MaterialSourceWorkflow::SpecularGlossiness ||
-               value == MaterialSourceWorkflow::Unlit;
-    }
+    constexpr uint64 RVX_LEGACY_MATERIAL_UPLOAD_FEATURE_MASK =
+        static_cast<uint64>(RVX_LEGACY_MATERIAL_UPLOAD_TEXTURE_FLAGS);
 
     bool IsCanonicalEmpty(const UploadByteRange& range)
     {
@@ -240,6 +206,30 @@ namespace
         return ResourceUploadRequestCreateCode::Created;
     }
 
+    ResourceUploadRequestCreateCode ValidateTextureCoordinateShape(
+        const UploadByteRange& range,
+        uint64 vertexCount)
+    {
+        if (!IsNonempty(range))
+        {
+            return IsCanonicalEmpty(range)
+                       ? ResourceUploadRequestCreateCode::Created
+                       : ResourceUploadRequestCreateCode::InvalidPayload;
+        }
+        if (range.stride != sizeof(Vec2))
+        {
+            return ResourceUploadRequestCreateCode::InvalidPayload;
+        }
+        if (vertexCount >
+            std::numeric_limits<uint64>::max() / sizeof(Vec2))
+        {
+            return ResourceUploadRequestCreateCode::PayloadRangeOverflow;
+        }
+        return range.size == vertexCount * sizeof(Vec2)
+                   ? ResourceUploadRequestCreateCode::Created
+                   : ResourceUploadRequestCreateCode::InvalidPayload;
+    }
+
     ResourceUploadRequestCreateCode ValidateMeshShape(
         const MeshUploadPayload& payload)
     {
@@ -265,7 +255,6 @@ namespace
 
         const UploadByteRange* optionalRanges[] = {
             &payload.normalRange,
-            &payload.uvRange,
             &payload.tangentRange,
             &payload.boneIndexRange,
             &payload.boneWeightRange};
@@ -276,6 +265,20 @@ namespace
             {
                 return ResourceUploadRequestCreateCode::InvalidPayload;
             }
+        }
+        const ResourceUploadRequestCreateCode uvCode =
+            ValidateTextureCoordinateShape(payload.uvRange,
+                                           createInfo.vertexCount);
+        if (uvCode != ResourceUploadRequestCreateCode::Created)
+        {
+            return uvCode;
+        }
+        const ResourceUploadRequestCreateCode uv1Code =
+            ValidateTextureCoordinateShape(payload.uv1Range,
+                                           createInfo.vertexCount);
+        if (uv1Code != ResourceUploadRequestCreateCode::Created)
+        {
+            return uv1Code;
         }
 
         if (IsNonempty(payload.boneIndexRange) !=
@@ -327,7 +330,6 @@ namespace
 
         const UploadByteRange* optionalRanges[] = {
             &payload.normalRange,
-            &payload.uvRange,
             &payload.tangentRange,
             &payload.boneIndexRange,
             &payload.boneWeightRange};
@@ -339,6 +341,16 @@ namespace
             {
                 return code;
             }
+        }
+        code = ValidateRange(payload.uvRange, byteCount, true);
+        if (code != ResourceUploadRequestCreateCode::Created)
+        {
+            return code;
+        }
+        code = ValidateRange(payload.uv1Range, byteCount, true);
+        if (code != ResourceUploadRequestCreateCode::Created)
+        {
+            return code;
         }
 
         if (payload.createInfo.indexCount != 0)
@@ -457,49 +469,82 @@ namespace
         return ResourceUploadRequestCreateCode::Created;
     }
 
-    ResourceUploadRequestCreateCode ValidateMaterialShape(
-        const MaterialUploadPayload& payload)
+    bool ValidateMaterialUploadPayloadInternal(
+        const MaterialUploadPayload& payload,
+        std::string& outError)
     {
-        const MaterialSourceData& source = payload.sourceData;
-        if (!IsUnitRange(source.baseColorFactor) ||
-            !IsUnitRange(source.metallicFactor) ||
-            !IsUnitRange(source.roughnessFactor) ||
-            !IsFinite(source.normalScale) || source.normalScale < 0.0f ||
-            !IsUnitRange(source.occlusionStrength) ||
-            !IsUnitRange(source.emissiveColor) ||
-            !IsFinite(source.emissiveStrength) ||
-            source.emissiveStrength < 0.0f ||
-            !IsDeclared(source.alphaMode) ||
-            !IsUnitRange(source.alphaCutoff) ||
-            !IsDeclared(source.workflow))
+        if (!ValidateMaterialStaticDescriptor(payload.staticDescriptor,
+                                              outError))
         {
-            return ResourceUploadRequestCreateCode::InvalidPayload;
+            return false;
         }
 
+        const MaterialSourceData& source = payload.sourceData;
+        if (!ValidateMaterialSourceData(source, outError))
+        {
+            return false;
+        }
+        if (!ValidateMaterialDescriptorSourceCompatibility(
+                payload.staticDescriptor, source, outError))
+        {
+            return false;
+        }
+        if ((payload.staticDescriptor.featureMask &
+             ~RVX_LEGACY_MATERIAL_UPLOAD_FEATURE_MASK) != 0)
+        {
+            outError =
+                "Material descriptor enables texture slots outside the v3 upload contract";
+            return false;
+        }
+
+        uint32 observedTextureFlags = 0;
         for (size_t index = 0; index < payload.textureBindings.size(); ++index)
         {
             const MaterialUploadTextureBinding& binding =
                 payload.textureBindings[index];
             if (!IsDeclared(binding.slot) || !binding.texture.IsValid() ||
-                binding.uvSet < 0 || !IsFinite(binding.offset) ||
-                !IsFinite(binding.scale) || binding.scale.x == 0.0f ||
-                binding.scale.y == 0.0f || !IsFinite(binding.rotation) ||
+                binding.uvSet < 0 || binding.uvSet > 1 ||
+                !IsFinite(binding.offset) ||
+                !IsFinite(binding.scale) || !IsFinite(binding.rotation) ||
                 !IsDeclared(binding.wrapS) || !IsDeclared(binding.wrapT) ||
                 !IsDeclared(binding.minFilter) || !IsDeclared(binding.magFilter) ||
                 (binding.magFilter != MaterialUploadFilterMode::Nearest &&
                  binding.magFilter != MaterialUploadFilterMode::Linear))
             {
-                return ResourceUploadRequestCreateCode::InvalidPayload;
+                outError = "Material upload contains an invalid texture binding";
+                return false;
             }
             for (size_t previous = 0; previous < index; ++previous)
             {
                 if (payload.textureBindings[previous].slot == binding.slot)
                 {
-                    return ResourceUploadRequestCreateCode::InvalidPayload;
+                    outError = "Material upload contains a duplicate texture binding";
+                    return false;
                 }
             }
+            observedTextureFlags |=
+                1U << static_cast<uint32>(binding.slot);
         }
-        return ResourceUploadRequestCreateCode::Created;
+        if (source.textureFlags != observedTextureFlags ||
+            (payload.staticDescriptor.featureMask &
+             RVX_LEGACY_MATERIAL_UPLOAD_FEATURE_MASK) !=
+                static_cast<uint64>(observedTextureFlags))
+        {
+            outError =
+                "Material source and descriptor texture feature masks do not match upload bindings";
+            return false;
+        }
+        outError.clear();
+        return true;
+    }
+
+    ResourceUploadRequestCreateCode ValidateMaterialShape(
+        const MaterialUploadPayload& payload)
+    {
+        std::string error;
+        return ValidateMaterialUploadPayloadInternal(payload, error)
+                   ? ResourceUploadRequestCreateCode::Created
+                   : ResourceUploadRequestCreateCode::InvalidPayload;
     }
 
     ResourceUploadRequestCreateCode ValidatePayloadShape(
@@ -616,6 +661,13 @@ namespace
             sizeof(RenderResourceHandle), total);
     }
 } // namespace
+
+bool ValidateMaterialUploadPayload(
+    const MaterialUploadPayload& payload,
+    std::string& outError)
+{
+    return ValidateMaterialUploadPayloadInternal(payload, outError);
+}
 
 namespace Detail
 {
@@ -735,6 +787,37 @@ ResourceUploadRequestCreateResult ResourceUploadRequest::Create(
             if (info.dependencies[previous] == dependency)
             {
                 return fail(ResourceUploadRequestCreateCode::DuplicateDependency);
+            }
+        }
+    }
+
+    if (const auto* material =
+            std::get_if<MaterialUploadPayload>(&info.payload))
+    {
+        // Material texture bindings are executable resource references, not
+        // diagnostics. Require the dependency set to be exactly the unique
+        // set of bound texture handles so RequireAll readiness cannot be
+        // bypassed by omitting a binding or diluted with unrelated handles.
+        for (const MaterialUploadTextureBinding& binding :
+             material->textureBindings)
+        {
+            if (std::find(info.dependencies.begin(), info.dependencies.end(),
+                          binding.texture) == info.dependencies.end())
+            {
+                return fail(ResourceUploadRequestCreateCode::InvalidDependency);
+            }
+        }
+        for (const RenderResourceHandle dependency : info.dependencies)
+        {
+            if (std::none_of(material->textureBindings.begin(),
+                             material->textureBindings.end(),
+                             [dependency](
+                                 const MaterialUploadTextureBinding& binding)
+                             {
+                                 return binding.texture == dependency;
+                             }))
+            {
+                return fail(ResourceUploadRequestCreateCode::InvalidDependency);
             }
         }
     }

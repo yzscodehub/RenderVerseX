@@ -903,6 +903,700 @@ TEST(CookedModelProductValidation, IncompleteSkinWithoutAnimationFailsAtCookTime
     EXPECT_FALSE(fs::exists(temporary.Get() / "Skinned.rvdeps"));
 }
 
+TEST(CookedModelProductValidation,
+     GLTFTextureTransformPreservesSupportedValuesAndRejectsMalformedValues)
+{
+    LogGuard logGuard;
+    const fs::path baseSource =
+        fs::path(RVX_SOURCE_DIR) /
+        "Tests/Fixtures/ModelViewer/R7Triangle.gltf";
+    std::ifstream baseFile(baseSource, std::ios::binary);
+    ASSERT_TRUE(baseFile.is_open());
+    std::string gltf{std::istreambuf_iterator<char>(baseFile),
+                     std::istreambuf_iterator<char>()};
+
+    const size_t uv0Attribute = gltf.find("\"TEXCOORD_0\": 2");
+    ASSERT_NE(uv0Attribute, std::string::npos);
+    gltf.replace(
+        uv0Attribute,
+        std::string_view("\"TEXCOORD_0\": 2").size(),
+        "\"TEXCOORD_0\": 2,\n            \"TEXCOORD_1\": 2");
+
+    const size_t materialsStart = gltf.find("  \"materials\": ");
+    const size_t buffersStart = gltf.find("  \"buffers\": ");
+    ASSERT_NE(materialsStart, std::string::npos);
+    ASSERT_NE(buffersStart, std::string::npos);
+    ASSERT_LT(materialsStart, buffersStart);
+
+    constexpr std::string_view materialAndTextureSection = R"json(  "materials": [
+    {
+      "name": "TextureTransformMaterial",
+      "pbrMetallicRoughness": {
+        "baseColorTexture": {
+          "index": 0,
+          "texCoord": 0,
+          "extensions": {
+            "KHR_texture_transform": {
+              "offset": [0.125, -0.25],
+              "scale": [-2.0, 0.5],
+              "rotation": 0.25,
+              "texCoord": 1,
+              "extensions": {},
+              "extras": { "authoringTag": "fixture-metadata" },
+              "futureOptionalProperty": { "ignored": true }
+            }
+          }
+        },
+        "metallicRoughnessTexture": {
+          "index": 0,
+          "texCoord": 1,
+          "extensions": {
+            "KHR_texture_transform": {
+              "offset": [-0.5, 0.75],
+              "scale": [0.25, -1.5],
+              "rotation": -0.5
+            }
+          }
+        }
+      },
+      "normalTexture": {
+        "index": 0,
+        "texCoord": 1,
+        "extensions": {
+          "KHR_texture_transform": {
+            "offset": [0.0, 0.5],
+            "scale": [1.0, 1.0],
+            "rotation": 1.0
+          }
+        }
+      },
+      "occlusionTexture": {
+        "index": 0,
+        "texCoord": 1,
+        "extensions": {
+          "KHR_texture_transform": {
+            "offset": [0.25, 0.0],
+            "scale": [1.0, 1.0],
+            "texCoord": 0
+          }
+        }
+      },
+      "emissiveTexture": {
+        "index": 0,
+        "texCoord": 0,
+        "extensions": {
+          "KHR_texture_transform": {
+            "offset": [0.0, -0.25],
+            "scale": [1.0, -1.0],
+            "rotation": -0.75
+          }
+        }
+      }
+    }
+  ],
+  "textures": [{ "source": 0 }],
+  "images": [{
+    "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+  }],
+  "extensionsUsed": ["KHR_texture_transform"],
+  "extensionsRequired": ["KHR_texture_transform"],
+)json";
+    gltf.replace(materialsStart,
+                 buffersStart - materialsStart,
+                 materialAndTextureSection);
+
+    const auto writeVariant =
+        [](const fs::path& path, const std::string& source)
+    {
+        std::ofstream output(path, std::ios::binary);
+        output.write(source.data(), static_cast<std::streamsize>(source.size()));
+        return output.good();
+    };
+
+    TemporaryDirectory temporary;
+    const fs::path validSource = temporary.Get() / "TextureTransform.gltf";
+    ASSERT_TRUE(writeVariant(validSource, gltf));
+
+    RVX::Resource::GLTFImporter importer;
+    const RVX::Resource::GLTFImportResult valid = importer.Import(validSource.string());
+    ASSERT_TRUE(valid.success) << valid.errorMessage;
+    ASSERT_EQ(valid.materials.size(), 1u);
+    ASSERT_NE(valid.materials[0], nullptr);
+
+    const RVX::Material& material = *valid.materials[0];
+    const auto expectTexture = [](const std::optional<RVX::TextureInfo>& texture,
+                                  RVX::int32 uvSet,
+                                  const RVX::Vec2& offset,
+                                  const RVX::Vec2& scale,
+                                  float rotation)
+    {
+        ASSERT_TRUE(texture.has_value());
+        EXPECT_EQ(texture->uvSet, uvSet);
+        EXPECT_FLOAT_EQ(texture->offset.x, offset.x);
+        EXPECT_FLOAT_EQ(texture->offset.y, offset.y);
+        EXPECT_FLOAT_EQ(texture->scale.x, scale.x);
+        EXPECT_FLOAT_EQ(texture->scale.y, scale.y);
+        EXPECT_FLOAT_EQ(texture->rotation, rotation);
+    };
+    expectTexture(material.GetBaseColorTexture(),
+                  1,
+                  RVX::Vec2(0.125f, -0.25f),
+                  RVX::Vec2(-2.0f, 0.5f),
+                  0.25f);
+    expectTexture(material.GetMetallicRoughnessTexture(),
+                  1,
+                  RVX::Vec2(-0.5f, 0.75f),
+                  RVX::Vec2(0.25f, -1.5f),
+                  -0.5f);
+    expectTexture(material.GetNormalTexture(),
+                  1,
+                  RVX::Vec2(0.0f, 0.5f),
+                  RVX::Vec2(1.0f),
+                  1.0f);
+    expectTexture(material.GetOcclusionTexture(),
+                  0,
+                  RVX::Vec2(0.25f, 0.0f),
+                  RVX::Vec2(1.0f),
+                  0.0f);
+    expectTexture(material.GetEmissiveTexture(),
+                  0,
+                  RVX::Vec2(0.0f, -0.25f),
+                  RVX::Vec2(1.0f, -1.0f),
+                  -0.75f);
+
+    const fs::path cookedOutput = temporary.Get() / "TextureTransform.rva";
+    RVX::Tools::ModelImporter productImporter;
+    const RVX::Tools::ImportResult cooked =
+        productImporter.Import(validSource, cookedOutput);
+    ASSERT_TRUE(cooked.success) << cooked.error;
+    RVX::Resource::CookedModelArtifact cookedModel;
+    std::string cookedError;
+    ASSERT_TRUE(RVX::Resource::DeserializeCookedModelArtifact(
+        ReadBytes(cookedOutput), cookedModel, cookedError)) << cookedError;
+    ASSERT_EQ(cookedModel.materialArtifacts.size(), 1u);
+    const fs::path cookedMaterialPath =
+        cookedOutput.parent_path() /
+        cookedModel.materialArtifacts.front().packageRelativePath;
+    RVX::Resource::CookedMaterialArtifact cookedMaterial;
+    ASSERT_TRUE(RVX::Resource::DeserializeCookedMaterialArtifact(
+        ReadBytes(cookedMaterialPath), cookedMaterial, cookedError))
+        << cookedError;
+    const auto baseColorBinding = std::find_if(
+        cookedMaterial.textureBindings.begin(),
+        cookedMaterial.textureBindings.end(),
+        [](const RVX::Resource::CookedMaterialTextureBinding& binding)
+        {
+            return binding.definition.slot ==
+                   RVX::MaterialTextureSlot::BaseColor;
+        });
+    ASSERT_NE(baseColorBinding, cookedMaterial.textureBindings.end());
+    EXPECT_EQ(baseColorBinding->definition.uvSet, 1u);
+    EXPECT_EQ(baseColorBinding->definition.offset,
+              RVX::Vec2(0.125f, -0.25f));
+    EXPECT_EQ(baseColorBinding->definition.scale,
+              RVX::Vec2(-2.0f, 0.5f));
+    EXPECT_FLOAT_EQ(baseColorBinding->definition.rotation, 0.25f);
+
+    RVX::Resource::GLTFImportOptions flippedOptions;
+    flippedOptions.flipUVs = true;
+    const RVX::Resource::GLTFImportResult flipped =
+        importer.Import(validSource.string(), flippedOptions);
+    EXPECT_FALSE(flipped.success);
+    EXPECT_NE(flipped.errorMessage.find(
+                  "flipUVs cannot be combined with KHR_texture_transform"),
+              std::string::npos)
+        << flipped.errorMessage;
+
+    std::string unsupportedRequired = gltf;
+    const size_t requiredExtension = unsupportedRequired.find(
+        "\"extensionsRequired\": [\"KHR_texture_transform\"]");
+    ASSERT_NE(requiredExtension, std::string::npos);
+    unsupportedRequired.replace(
+        requiredExtension,
+        std::string_view(
+            "\"extensionsRequired\": [\"KHR_texture_transform\"]").size(),
+        "\"extensionsRequired\": [\"KHR_materials_transmission\"]");
+    const fs::path unsupportedRequiredSource =
+        temporary.Get() / "UnsupportedRequiredExtension.gltf";
+    ASSERT_TRUE(writeVariant(unsupportedRequiredSource, unsupportedRequired));
+    const RVX::Tools::ImportResult unsupportedRequiredCook =
+        productImporter.Import(
+            unsupportedRequiredSource,
+            temporary.Get() / "UnsupportedRequiredExtension.rva");
+    EXPECT_FALSE(unsupportedRequiredCook.success);
+    EXPECT_NE(unsupportedRequiredCook.error.find(
+                  "cannot satisfy required glTF extension: "
+                  "KHR_materials_transmission"),
+              std::string::npos)
+        << unsupportedRequiredCook.error;
+
+    std::string malformed = gltf;
+    const size_t validOffset = malformed.find("[0.125, -0.25]");
+    ASSERT_NE(validOffset, std::string::npos);
+    malformed.replace(validOffset,
+                      std::string_view("[0.125, -0.25]").size(),
+                      "[0.125]");
+    const fs::path malformedSource = temporary.Get() / "MalformedTransform.gltf";
+    ASSERT_TRUE(writeVariant(malformedSource, malformed));
+    const RVX::Resource::GLTFImportResult malformedResult =
+        importer.Import(malformedSource.string());
+    EXPECT_FALSE(malformedResult.success);
+    EXPECT_NE(malformedResult.errorMessage.find("KHR_texture_transform.offset"),
+              std::string::npos)
+        << malformedResult.errorMessage;
+
+    std::string unsupportedUvSet = gltf;
+    const size_t transformUvSet = unsupportedUvSet.find("\"texCoord\": 1");
+    ASSERT_NE(transformUvSet, std::string::npos);
+    unsupportedUvSet.replace(transformUvSet,
+                             std::string_view("\"texCoord\": 1").size(),
+                             "\"texCoord\": 2");
+    const fs::path unsupportedUvSource = temporary.Get() / "UnsupportedUvSet.gltf";
+    ASSERT_TRUE(writeVariant(unsupportedUvSource, unsupportedUvSet));
+    const RVX::Resource::GLTFImportResult unsupportedUvResult =
+        importer.Import(unsupportedUvSource.string());
+    EXPECT_FALSE(unsupportedUvResult.success);
+    EXPECT_NE(unsupportedUvResult.errorMessage.find(
+                  "KHR_texture_transform.texCoord must be UV set 0 or 1"),
+              std::string::npos)
+        << unsupportedUvResult.errorMessage;
+
+    std::string zeroScale = gltf;
+    const size_t normalScale = zeroScale.find("\"scale\": [1.0, 1.0]");
+    ASSERT_NE(normalScale, std::string::npos);
+    zeroScale.replace(normalScale,
+                      std::string_view("\"scale\": [1.0, 1.0]").size(),
+                      "\"scale\": [0.0, 1.0]");
+    const fs::path zeroScaleSource = temporary.Get() / "ZeroScale.gltf";
+    ASSERT_TRUE(writeVariant(zeroScaleSource, zeroScale));
+    const RVX::Resource::GLTFImportResult zeroScaleResult =
+        importer.Import(zeroScaleSource.string());
+    ASSERT_TRUE(zeroScaleResult.success) << zeroScaleResult.errorMessage;
+    ASSERT_EQ(zeroScaleResult.materials.size(), 1u);
+    ASSERT_TRUE(zeroScaleResult.materials[0]->GetNormalTexture().has_value());
+    EXPECT_EQ(zeroScaleResult.materials[0]->GetNormalTexture()->scale,
+              RVX::Vec2(0.0f, 1.0f));
+    const RVX::Tools::ImportResult zeroScaleCook = productImporter.Import(
+        zeroScaleSource, temporary.Get() / "ZeroScale.rva");
+    EXPECT_TRUE(zeroScaleCook.success) << zeroScaleCook.error;
+
+}
+
+TEST(CookedModelProductValidation,
+     MissingTangentsUseNormalTextureEffectiveUVSetAndSurviveCook)
+{
+    TemporaryDirectory temporary;
+    const fs::path geometryPath = temporary.Get() / "TangentUV.bin";
+    const std::vector<float> positions = {
+        0.0f, 0.0f, 0.0f,
+        1.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f};
+    const std::vector<float> normals = {
+        0.0f, 0.0f, 1.0f,
+        0.0f, 0.0f, 1.0f,
+        0.0f, 0.0f, 1.0f};
+    const std::vector<float> uv0 = {
+        0.0f, 0.0f,
+        1.0f, 0.0f,
+        0.0f, 1.0f};
+    // Rotating the authored coordinate axes makes a UV1-generated tangent
+    // point along +Y instead of the +X tangent produced from UV0.
+    const std::vector<float> uv1 = {
+        0.0f, 0.0f,
+        0.0f, 1.0f,
+        1.0f, 0.0f};
+    const std::vector<RVX::uint16> indices = {0, 1, 2};
+    std::vector<RVX::uint8> geometry;
+    const auto appendBytes = [&geometry](const auto& values)
+    {
+        const auto* begin = reinterpret_cast<const RVX::uint8*>(values.data());
+        geometry.insert(
+            geometry.end(),
+            begin,
+            begin + values.size() * sizeof(values.front()));
+    };
+    appendBytes(positions);
+    appendBytes(normals);
+    appendBytes(uv0);
+    appendBytes(uv1);
+    appendBytes(indices);
+    ASSERT_EQ(geometry.size(), 126u);
+    {
+        std::ofstream output(geometryPath, std::ios::binary);
+        output.write(
+            reinterpret_cast<const char*>(geometry.data()),
+            static_cast<std::streamsize>(geometry.size()));
+        ASSERT_TRUE(output.good());
+    }
+
+    constexpr std::string_view source = R"json({
+  "asset": {"version": "2.0"},
+  "scene": 0,
+  "scenes": [{"nodes": [0]}],
+  "nodes": [{"mesh": 0}],
+  "meshes": [{"primitives": [{
+    "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1,
+      "TEXCOORD_0": 2,
+      "TEXCOORD_1": 3
+    },
+    "indices": 4,
+    "material": 0,
+    "mode": 4
+  }]}],
+  "materials": [{
+    "normalTexture": {
+      "index": 0,
+      "texCoord": 0,
+      "extensions": {
+        "KHR_texture_transform": {
+          "texCoord": 1,
+          "offset": [0.125, 0.25],
+          "rotation": 0.25,
+          "scale": [1.5, -0.75]
+        }
+      }
+    }
+  }],
+  "textures": [{"source": 0}],
+  "images": [{
+    "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+  }],
+  "extensionsUsed": ["KHR_texture_transform"],
+  "extensionsRequired": ["KHR_texture_transform"],
+  "buffers": [{"byteLength": 126, "uri": "TangentUV.bin"}],
+  "bufferViews": [
+    {"buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962},
+    {"buffer": 0, "byteOffset": 36, "byteLength": 36, "target": 34962},
+    {"buffer": 0, "byteOffset": 72, "byteLength": 24, "target": 34962},
+    {"buffer": 0, "byteOffset": 96, "byteLength": 24, "target": 34962},
+    {"buffer": 0, "byteOffset": 120, "byteLength": 6, "target": 34963}
+  ],
+  "accessors": [
+    {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0,0,0], "max": [1,1,0]},
+    {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
+    {"bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC2"},
+    {"bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC2"},
+    {"bufferView": 4, "componentType": 5123, "count": 3, "type": "SCALAR"}
+  ]
+})json";
+    const fs::path sourcePath = temporary.Get() / "TangentUV.gltf";
+    {
+        std::ofstream output(sourcePath, std::ios::binary);
+        output.write(source.data(), static_cast<std::streamsize>(source.size()));
+        ASSERT_TRUE(output.good());
+    }
+
+    const auto expectUV1Tangent = [](const RVX::Mesh& mesh)
+    {
+        const RVX::VertexAttribute* tangent =
+            mesh.GetAttribute(RVX::VertexBufferNames::Tangent);
+        ASSERT_NE(tangent, nullptr);
+        ASSERT_EQ(tangent->GetVertexCount(), 3u);
+        const auto* values = static_cast<const float*>(tangent->GetData());
+        ASSERT_NE(values, nullptr);
+        EXPECT_NEAR(values[0], 0.0f, 1.0e-5f);
+        EXPECT_NEAR(values[1], 1.0f, 1.0e-5f);
+        EXPECT_NEAR(values[2], 0.0f, 1.0e-5f);
+        EXPECT_NEAR(values[3], -1.0f, 1.0e-5f);
+    };
+
+    RVX::Resource::GLTFImporter importer;
+    const RVX::Resource::GLTFImportResult imported =
+        importer.Import(sourcePath.string());
+    ASSERT_TRUE(imported.success) << imported.errorMessage;
+    ASSERT_EQ(imported.meshes.size(), 1u);
+    ASSERT_NE(imported.meshes[0], nullptr);
+    expectUV1Tangent(*imported.meshes[0]);
+
+    std::vector<RVX::uint8> degenerateUvGeometry = geometry;
+    ASSERT_GE(degenerateUvGeometry.size(), 120u);
+    std::fill(
+        degenerateUvGeometry.begin() + 96u,
+        degenerateUvGeometry.begin() + 120u,
+        static_cast<RVX::uint8>(0u));
+    const fs::path degenerateUvGeometryPath =
+        temporary.Get() / "DegenerateUV.bin";
+    {
+        std::ofstream output(degenerateUvGeometryPath, std::ios::binary);
+        output.write(
+            reinterpret_cast<const char*>(degenerateUvGeometry.data()),
+            static_cast<std::streamsize>(degenerateUvGeometry.size()));
+        ASSERT_TRUE(output.good());
+    }
+
+    std::string degenerateNormalMappedSource(source);
+    const size_t tangentUvUri =
+        degenerateNormalMappedSource.find("TangentUV.bin");
+    ASSERT_NE(tangentUvUri, std::string::npos);
+    degenerateNormalMappedSource.replace(
+        tangentUvUri,
+        std::string_view("TangentUV.bin").size(),
+        "DegenerateUV.bin");
+    const fs::path degenerateNormalMappedPath =
+        temporary.Get() / "DegenerateNormalMapped.gltf";
+    {
+        std::ofstream output(degenerateNormalMappedPath, std::ios::binary);
+        output.write(
+            degenerateNormalMappedSource.data(),
+            static_cast<std::streamsize>(degenerateNormalMappedSource.size()));
+        ASSERT_TRUE(output.good());
+    }
+    const RVX::Resource::GLTFImportResult degenerateNormalMappedRejected =
+        importer.Import(degenerateNormalMappedPath.string());
+    EXPECT_FALSE(degenerateNormalMappedRejected.success);
+    EXPECT_NE(degenerateNormalMappedRejected.errorMessage.find(
+                  "Failed to generate a tangent basis from uv1"),
+              std::string::npos)
+        << degenerateNormalMappedRejected.errorMessage;
+
+    std::string degenerateCorePbrSource = degenerateNormalMappedSource;
+    const size_t degenerateMaterialStart =
+        degenerateCorePbrSource.find("  \"materials\": [{");
+    const size_t degenerateTextureStart =
+        degenerateCorePbrSource.find("  \"textures\":", degenerateMaterialStart);
+    ASSERT_NE(degenerateMaterialStart, std::string::npos);
+    ASSERT_NE(degenerateTextureStart, std::string::npos);
+    degenerateCorePbrSource.replace(
+        degenerateMaterialStart,
+        degenerateTextureStart - degenerateMaterialStart,
+        "  \"materials\": [{}],\n");
+    const fs::path degenerateCorePbrPath =
+        temporary.Get() / "DegenerateCorePbr.gltf";
+    {
+        std::ofstream output(degenerateCorePbrPath, std::ios::binary);
+        output.write(
+            degenerateCorePbrSource.data(),
+            static_cast<std::streamsize>(degenerateCorePbrSource.size()));
+        ASSERT_TRUE(output.good());
+    }
+    const RVX::Resource::GLTFImportResult degenerateCorePbrImported =
+        importer.Import(degenerateCorePbrPath.string());
+    ASSERT_TRUE(degenerateCorePbrImported.success)
+        << degenerateCorePbrImported.errorMessage;
+    ASSERT_EQ(degenerateCorePbrImported.meshes.size(), 1u);
+    ASSERT_NE(degenerateCorePbrImported.meshes[0], nullptr);
+    EXPECT_FALSE(degenerateCorePbrImported.meshes[0]->HasAttribute(
+        RVX::VertexBufferNames::Tangent));
+
+    std::string vertexColorSource(source);
+    const size_t uv1Attribute =
+        vertexColorSource.find("      \"TEXCOORD_1\": 3\n");
+    ASSERT_NE(uv1Attribute, std::string::npos);
+    vertexColorSource.replace(
+        uv1Attribute,
+        std::string_view("      \"TEXCOORD_1\": 3\n").size(),
+        "      \"TEXCOORD_1\": 3,\n      \"COLOR_0\": 3\n");
+    const fs::path vertexColorPath = temporary.Get() / "VertexColor.gltf";
+    {
+        std::ofstream output(vertexColorPath, std::ios::binary);
+        output.write(
+            vertexColorSource.data(),
+            static_cast<std::streamsize>(vertexColorSource.size()));
+        ASSERT_TRUE(output.good());
+    }
+    const RVX::Resource::GLTFImportResult vertexColorRejected =
+        importer.Import(vertexColorPath.string());
+    EXPECT_FALSE(vertexColorRejected.success);
+    EXPECT_NE(vertexColorRejected.errorMessage.find("COLOR_0"),
+              std::string::npos)
+        << vertexColorRejected.errorMessage;
+    RVX::Tools::ModelImporter vertexColorProductImporter;
+    const RVX::Tools::ImportResult vertexColorCookRejected =
+        vertexColorProductImporter.Import(
+            vertexColorPath, temporary.Get() / "VertexColor.rva");
+    EXPECT_FALSE(vertexColorCookRejected.success);
+    EXPECT_NE(vertexColorCookRejected.error.find("COLOR_0"),
+              std::string::npos)
+        << vertexColorCookRejected.error;
+
+    RVX::Resource::GLTFImportOptions noGeneration;
+    noGeneration.generateTangents = false;
+    const RVX::Resource::GLTFImportResult rejected =
+        importer.Import(sourcePath.string(), noGeneration);
+    EXPECT_FALSE(rejected.success);
+    EXPECT_NE(rejected.errorMessage.find("tangent generation is disabled"),
+              std::string::npos)
+        << rejected.errorMessage;
+
+    std::string missingNormal(source);
+    const size_t normalAttribute = missingNormal.find("      \"NORMAL\": 1,\n");
+    ASSERT_NE(normalAttribute, std::string::npos);
+    missingNormal.erase(
+        normalAttribute,
+        std::string_view("      \"NORMAL\": 1,\n").size());
+    const fs::path missingNormalPath = temporary.Get() / "MissingNormal.gltf";
+    {
+        std::ofstream output(missingNormalPath, std::ios::binary);
+        output.write(
+            missingNormal.data(),
+            static_cast<std::streamsize>(missingNormal.size()));
+        ASSERT_TRUE(output.good());
+    }
+    RVX::Resource::GLTFImportOptions noNormalGeneration;
+    noNormalGeneration.generateNormals = false;
+    const RVX::Resource::GLTFImportResult missingNormalRejected =
+        importer.Import(missingNormalPath.string(), noNormalGeneration);
+    EXPECT_FALSE(missingNormalRejected.success);
+    EXPECT_NE(missingNormalRejected.errorMessage.find(
+                  "normal generation is disabled"),
+              std::string::npos)
+        << missingNormalRejected.errorMessage;
+
+    std::string unlitMissingNormal = missingNormal;
+    const size_t materialStart =
+        unlitMissingNormal.find("  \"materials\": [{");
+    const size_t textureStart =
+        unlitMissingNormal.find("  \"textures\":", materialStart);
+    ASSERT_NE(materialStart, std::string::npos);
+    ASSERT_NE(textureStart, std::string::npos);
+    unlitMissingNormal.replace(
+        materialStart,
+        textureStart - materialStart,
+        "  \"materials\": [{}],\n");
+    const fs::path unlitMissingNormalPath =
+        temporary.Get() / "UnlitMissingNormal.gltf";
+    {
+        std::ofstream output(unlitMissingNormalPath, std::ios::binary);
+        output.write(
+            unlitMissingNormal.data(),
+            static_cast<std::streamsize>(unlitMissingNormal.size()));
+        ASSERT_TRUE(output.good());
+    }
+    const RVX::Resource::GLTFImportResult unlitMissingNormalRejected =
+        importer.Import(unlitMissingNormalPath.string(), noNormalGeneration);
+    EXPECT_FALSE(unlitMissingNormalRejected.success);
+    EXPECT_NE(unlitMissingNormalRejected.errorMessage.find(
+                  "flat-normal generation is disabled"),
+              std::string::npos)
+        << unlitMissingNormalRejected.errorMessage;
+
+    std::vector<RVX::uint8> geometryWithAuthoredTangents = geometry;
+    const std::vector<float> authoredTangents = {
+        1.0f, 0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 1.0f};
+    const auto* tangentBegin = reinterpret_cast<const RVX::uint8*>(
+        authoredTangents.data());
+    geometryWithAuthoredTangents.insert(
+        geometryWithAuthoredTangents.end(),
+        tangentBegin,
+        tangentBegin + authoredTangents.size() * sizeof(float));
+    ASSERT_EQ(geometryWithAuthoredTangents.size(), 174u);
+    const fs::path authoredTangentGeometryPath =
+        temporary.Get() / "MissingNormalAuthoredTangent.bin";
+    {
+        std::ofstream output(authoredTangentGeometryPath, std::ios::binary);
+        output.write(
+            reinterpret_cast<const char*>(geometryWithAuthoredTangents.data()),
+            static_cast<std::streamsize>(geometryWithAuthoredTangents.size()));
+        ASSERT_TRUE(output.good());
+    }
+
+    std::string rebuildTangent = missingNormal;
+    const size_t positionProperty =
+        rebuildTangent.find("      \"POSITION\": 0,\n");
+    ASSERT_NE(positionProperty, std::string::npos);
+    rebuildTangent.insert(
+        positionProperty + std::string_view("      \"POSITION\": 0,\n").size(),
+        "      \"TANGENT\": 5,\n");
+    const size_t bufferDeclaration = rebuildTangent.find(
+        "{\"byteLength\": 126, \"uri\": \"TangentUV.bin\"}");
+    ASSERT_NE(bufferDeclaration, std::string::npos);
+    rebuildTangent.replace(
+        bufferDeclaration,
+        std::string_view(
+            "{\"byteLength\": 126, \"uri\": \"TangentUV.bin\"}").size(),
+        "{\"byteLength\": 174, \"uri\": "
+        "\"MissingNormalAuthoredTangent.bin\"}");
+    const size_t lastBufferView = rebuildTangent.find(
+        "    {\"buffer\": 0, \"byteOffset\": 120, \"byteLength\": 6, "
+        "\"target\": 34963}\n");
+    ASSERT_NE(lastBufferView, std::string::npos);
+    rebuildTangent.insert(
+        lastBufferView + std::string_view(
+            "    {\"buffer\": 0, \"byteOffset\": 120, \"byteLength\": 6, "
+            "\"target\": 34963}").size(),
+        ",\n    {\"buffer\": 0, \"byteOffset\": 126, \"byteLength\": 48, "
+        "\"target\": 34962}");
+    const size_t lastAccessor = rebuildTangent.find(
+        "    {\"bufferView\": 4, \"componentType\": 5123, \"count\": 3, "
+        "\"type\": \"SCALAR\"}\n");
+    ASSERT_NE(lastAccessor, std::string::npos);
+    rebuildTangent.insert(
+        lastAccessor + std::string_view(
+            "    {\"bufferView\": 4, \"componentType\": 5123, \"count\": 3, "
+            "\"type\": \"SCALAR\"}").size(),
+        ",\n    {\"bufferView\": 5, \"componentType\": 5126, \"count\": 3, "
+        "\"type\": \"VEC4\"}");
+    const fs::path rebuildTangentPath =
+        temporary.Get() / "MissingNormalAuthoredTangent.gltf";
+    {
+        std::ofstream output(rebuildTangentPath, std::ios::binary);
+        output.write(
+            rebuildTangent.data(),
+            static_cast<std::streamsize>(rebuildTangent.size()));
+        ASSERT_TRUE(output.good());
+    }
+    const RVX::Resource::GLTFImportResult rebuiltTangentResult =
+        importer.Import(rebuildTangentPath.string());
+    ASSERT_TRUE(rebuiltTangentResult.success)
+        << rebuiltTangentResult.errorMessage;
+    ASSERT_EQ(rebuiltTangentResult.meshes.size(), 1u);
+    ASSERT_NE(rebuiltTangentResult.meshes[0], nullptr);
+    expectUV1Tangent(*rebuiltTangentResult.meshes[0]);
+
+    std::string failedNormalGeneration = missingNormal;
+    const size_t indicesProperty =
+        failedNormalGeneration.find("    \"indices\": 4,\n");
+    ASSERT_NE(indicesProperty, std::string::npos);
+    failedNormalGeneration.erase(
+        indicesProperty,
+        std::string_view("    \"indices\": 4,\n").size());
+    const size_t triangleMode = failedNormalGeneration.find("    \"mode\": 4");
+    ASSERT_NE(triangleMode, std::string::npos);
+    failedNormalGeneration.replace(
+        triangleMode,
+        std::string_view("    \"mode\": 4").size(),
+        "    \"mode\": 1");
+    const fs::path failedNormalPath =
+        temporary.Get() / "FailedNormalGeneration.gltf";
+    {
+        std::ofstream output(failedNormalPath, std::ios::binary);
+        output.write(
+            failedNormalGeneration.data(),
+            static_cast<std::streamsize>(failedNormalGeneration.size()));
+        ASSERT_TRUE(output.good());
+    }
+    const RVX::Resource::GLTFImportResult failedNormalRejected =
+        importer.Import(failedNormalPath.string());
+    EXPECT_FALSE(failedNormalRejected.success);
+    EXPECT_NE(failedNormalRejected.errorMessage.find(
+                  "Failed to generate flat vertex normals"),
+              std::string::npos)
+        << failedNormalRejected.errorMessage;
+
+    const fs::path cookedPath = temporary.Get() / "TangentUV.rva";
+    RVX::Tools::ModelImporter productImporter;
+    const RVX::Tools::ImportResult cooked =
+        productImporter.Import(sourcePath, cookedPath);
+    ASSERT_TRUE(cooked.success) << cooked.error;
+    RVX::Resource::CookedModelArtifact modelArtifact;
+    std::string error;
+    ASSERT_TRUE(RVX::Resource::DeserializeCookedModelArtifact(
+        ReadBytes(cookedPath), modelArtifact, error)) << error;
+    std::vector<RVX::Resource::CookedMeshRecord> cookedMeshes;
+    ASSERT_TRUE(RVX::Resource::CookedMeshArtifactReader::ReadFile(
+        (cookedPath.parent_path() / modelArtifact.meshArtifactPath).string(),
+        cookedMeshes,
+        error)) << error;
+    ASSERT_EQ(cookedMeshes.size(), 1u);
+    ASSERT_FALSE(cookedMeshes[0].lodMeshes.empty());
+    ASSERT_NE(cookedMeshes[0].lodMeshes[0], nullptr);
+    expectUV1Tangent(*cookedMeshes[0].lodMeshes[0]);
+}
+
 TEST(CookedModelProductValidation, TextureProductsUseModelPlatformCompressionContract)
 {
     const fs::path source =

@@ -11,6 +11,8 @@
 
 add_library(RVX_Geometry STATIC)
 
+find_package(mikktspace CONFIG REQUIRED)
+
 # Source files
 target_sources(RVX_Geometry PRIVATE
     Private/Geometry.cpp
@@ -28,6 +30,8 @@ target_include_directories(RVX_Geometry PUBLIC
 
 target_link_libraries(RVX_Geometry PUBLIC
     RVX::Core
+    PRIVATE
+        mikktspace::mikktspace
 )
 
 target_compile_features(RVX_Geometry PUBLIC cxx_std_20)

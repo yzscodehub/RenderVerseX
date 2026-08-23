@@ -123,7 +123,6 @@ namespace RVX
         bool TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
                                       RHIDescriptorSet* frameSet,
                                       const ObjectConstantBinding* tier1ObjectBinding,
-                                      RHIPipeline* pipeline,
                                       std::span<const PlannedGPUDrivenDepthDraw> plannedBatches,
                                       uint32 expectedPacketCount = 0,
                                       uint32 expectedGroupCount = 0);

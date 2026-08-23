@@ -86,6 +86,72 @@ namespace
         return info;
     }
 
+    TEST(RenderContractsValidation, UV1RangesAreValidatedAndRemainOptional)
+    {
+        auto validInfo = MakeValidMeshRequestInfo();
+        auto& validPayload = std::get<MeshUploadPayload>(validInfo.payload);
+        validPayload.bytes.resize(60U, 7U);
+        validPayload.uv1Range = UploadByteRange{36U, 24U, 8U};
+        validInfo.declaredPayloadBytes = 60U;
+        EXPECT_EQ(ResourceUploadRequest::Create(std::move(validInfo)).code,
+                  ResourceUploadRequestCreateCode::Created);
+
+        auto invalidInfo = MakeValidMeshRequestInfo();
+        auto& invalidPayload = std::get<MeshUploadPayload>(invalidInfo.payload);
+        invalidPayload.bytes.resize(60U, 7U);
+        invalidPayload.uv1Range = UploadByteRange{36U, 12U, 8U};
+        invalidInfo.declaredPayloadBytes = 60U;
+        EXPECT_EQ(ResourceUploadRequest::Create(std::move(invalidInfo)).code,
+                  ResourceUploadRequestCreateCode::InvalidPayload);
+
+        auto wrongStrideInfo = MakeValidMeshRequestInfo();
+        auto& wrongStridePayload =
+            std::get<MeshUploadPayload>(wrongStrideInfo.payload);
+        wrongStridePayload.bytes.resize(60U, 7U);
+        wrongStridePayload.uv1Range = UploadByteRange{36U, 24U, 4U};
+        wrongStrideInfo.declaredPayloadBytes = 60U;
+        EXPECT_EQ(ResourceUploadRequest::Create(std::move(wrongStrideInfo)).code,
+                  ResourceUploadRequestCreateCode::InvalidPayload);
+
+        auto shortRangeInfo = MakeValidMeshRequestInfo();
+        auto& shortRangePayload =
+            std::get<MeshUploadPayload>(shortRangeInfo.payload);
+        shortRangePayload.bytes.resize(60U, 7U);
+        shortRangePayload.uv1Range = UploadByteRange{36U, 23U, 8U};
+        shortRangeInfo.declaredPayloadBytes = 60U;
+        EXPECT_EQ(ResourceUploadRequest::Create(std::move(shortRangeInfo)).code,
+                  ResourceUploadRequestCreateCode::InvalidPayload);
+
+        auto longRangeInfo = MakeValidMeshRequestInfo();
+        auto& longRangePayload =
+            std::get<MeshUploadPayload>(longRangeInfo.payload);
+        longRangePayload.bytes.resize(61U, 7U);
+        longRangePayload.uv1Range = UploadByteRange{36U, 25U, 8U};
+        longRangeInfo.declaredPayloadBytes = 61U;
+        EXPECT_EQ(ResourceUploadRequest::Create(std::move(longRangeInfo)).code,
+                  ResourceUploadRequestCreateCode::InvalidPayload);
+
+        auto wrongUV0StrideInfo = MakeValidMeshRequestInfo();
+        auto& wrongUV0StridePayload =
+            std::get<MeshUploadPayload>(wrongUV0StrideInfo.payload);
+        wrongUV0StridePayload.bytes.resize(60U, 7U);
+        wrongUV0StridePayload.uvRange = UploadByteRange{36U, 24U, 4U};
+        wrongUV0StrideInfo.declaredPayloadBytes = 60U;
+        EXPECT_EQ(ResourceUploadRequest::Create(std::move(wrongUV0StrideInfo)).code,
+                  ResourceUploadRequestCreateCode::InvalidPayload);
+
+        auto overflowInfo = MakeValidMeshRequestInfo();
+        auto& overflowPayload = std::get<MeshUploadPayload>(overflowInfo.payload);
+        overflowPayload.createInfo.vertexCount = 1U;
+        overflowPayload.bytes.resize(12U, 7U);
+        overflowPayload.positionRange = UploadByteRange{0U, 12U, 12U};
+        overflowPayload.uv1Range = UploadByteRange{
+            std::numeric_limits<uint64>::max() - 7U, 8U, 8U};
+        overflowInfo.declaredPayloadBytes = 12U;
+        EXPECT_EQ(ResourceUploadRequest::Create(std::move(overflowInfo)).code,
+                  ResourceUploadRequestCreateCode::PayloadRangeOverflow);
+    }
+
     RenderViewSnapshot MakeValidView()
     {
         RenderViewSnapshot view;
@@ -520,10 +586,172 @@ namespace
         EXPECT_EQ(result.request->GetDeclaredPayloadBytes(), 0U);
     }
 
+    TEST(RenderContractsValidation,
+         MaterialTextureDependenciesExactlyMatchBoundTextures)
+    {
+        auto valid = MakeValidMaterialRequestInfo();
+        auto& payload = std::get<MaterialUploadPayload>(valid.payload);
+        MaterialUploadTextureBinding binding;
+        binding.texture = RenderResourceHandle{2, 1};
+        payload.textureBindings.push_back(binding);
+        payload.sourceData.textureFlags = 1U;
+        payload.staticDescriptor.featureMask = 1U;
+        valid.dependencies.push_back(binding.texture);
+        valid.declaredPayloadBytes =
+            sizeof(MaterialUploadTextureBinding) +
+            sizeof(RenderResourceHandle);
+        ExpectCreationCode(valid, ResourceUploadRequestCreateCode::Created);
+
+        auto omitted = valid;
+        omitted.dependencies.clear();
+        omitted.declaredPayloadBytes = sizeof(MaterialUploadTextureBinding);
+        ExpectCreationCode(
+            omitted, ResourceUploadRequestCreateCode::InvalidDependency);
+
+        auto extraneous = valid;
+        extraneous.dependencies.push_back(RenderResourceHandle{3, 1});
+        extraneous.declaredPayloadBytes += sizeof(RenderResourceHandle);
+        ExpectCreationCode(
+            extraneous, ResourceUploadRequestCreateCode::InvalidDependency);
+    }
+
+    TEST(RenderContractsValidation,
+         CanonicalMaterialAllowsMirroredAndZeroTextureScale)
+    {
+        MaterialDefinition definition;
+        MaterialTextureSlotDefinition slot;
+        slot.slot = MaterialTextureSlot::Normal;
+        slot.scale = Vec2{-1.0f, 1.0f};
+        definition.textureSlots.push_back(slot);
+        definition.descriptor.featureMask =
+            1ull << static_cast<uint8>(slot.slot);
+        definition.parameters.textureFlags =
+            1u << static_cast<uint8>(slot.slot);
+
+        std::string error;
+        EXPECT_TRUE(ValidateMaterialDefinition(definition, error)) << error;
+        definition.textureSlots.front().scale.x = 0.0f;
+        EXPECT_TRUE(ValidateMaterialDefinition(definition, error)) << error;
+
+        auto uploadInfo = MakeValidMaterialRequestInfo();
+        auto& payload = std::get<MaterialUploadPayload>(uploadInfo.payload);
+        MaterialUploadTextureBinding binding;
+        binding.texture = RenderResourceHandle{2, 1};
+        binding.scale = Vec2{0.0f, 1.0f};
+        payload.textureBindings.push_back(binding);
+        payload.sourceData.textureFlags = 1U;
+        payload.staticDescriptor.featureMask = 1U;
+        uploadInfo.dependencies.push_back(binding.texture);
+        uploadInfo.declaredPayloadBytes =
+            sizeof(MaterialUploadTextureBinding) +
+            sizeof(RenderResourceHandle);
+        ExpectCreationCode(
+            uploadInfo, ResourceUploadRequestCreateCode::Created);
+    }
+
+    TEST(RenderContractsValidation, RejectsMaterialDescriptorLayoutMismatch)
+    {
+        auto info = MakeValidMaterialRequestInfo();
+        auto& descriptor =
+            std::get<MaterialUploadPayload>(info.payload).staticDescriptor;
+        descriptor.parameterLayoutHash ^= 0x1ull;
+
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidPayload);
+    }
+
+    TEST(RenderContractsValidation, RejectsMaterialDescriptorProgramMismatch)
+    {
+        auto info = MakeValidMaterialRequestInfo();
+        std::get<MaterialUploadPayload>(info.payload)
+            .staticDescriptor.programFamily = "wrong-family";
+
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidPayload);
+    }
+
+    TEST(RenderContractsValidation, RejectsMaterialDescriptorAlphaMismatch)
+    {
+        auto info = MakeValidMaterialRequestInfo();
+        std::get<MaterialUploadPayload>(info.payload)
+            .staticDescriptor.blendMode = MaterialBlendMode::Masked;
+
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidPayload);
+    }
+
+    TEST(RenderContractsValidation, RejectsMaterialDescriptorWorkflowMismatch)
+    {
+        auto info = MakeValidMaterialRequestInfo();
+        auto& descriptor =
+            std::get<MaterialUploadPayload>(info.payload).staticDescriptor;
+        descriptor.shadingModel = MaterialShadingModel::Unlit;
+        descriptor.programFamily =
+            std::string(GetMaterialProgramFamily(descriptor.shadingModel));
+
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidPayload);
+    }
+
+    TEST(RenderContractsValidation, RejectsMaterialDescriptorCullMismatch)
+    {
+        auto info = MakeValidMaterialRequestInfo();
+        std::get<MaterialUploadPayload>(info.payload)
+            .staticDescriptor.cullMode = MaterialCullMode::NoCull;
+
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidPayload);
+    }
+
+    TEST(RenderContractsValidation,
+         RejectsMaterialTextureBindingOutsideUVSetContract)
+    {
+        auto info = MakeValidMaterialRequestInfo();
+        auto& payload = std::get<MaterialUploadPayload>(info.payload);
+        MaterialUploadTextureBinding binding;
+        binding.texture = RenderResourceHandle{2, 1};
+        binding.uvSet = 2;
+        payload.textureBindings.push_back(binding);
+        payload.sourceData.textureFlags = 1U;
+        payload.staticDescriptor.featureMask = 1U;
+        info.declaredPayloadBytes = sizeof(MaterialUploadTextureBinding);
+
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidPayload);
+    }
+
+    TEST(RenderContractsValidation,
+         RejectsMaterialTextureBindingFeatureMaskMismatch)
+    {
+        auto info = MakeValidMaterialRequestInfo();
+        auto& payload = std::get<MaterialUploadPayload>(info.payload);
+        MaterialUploadTextureBinding binding;
+        binding.texture = RenderResourceHandle{2, 1};
+        payload.textureBindings.push_back(binding);
+        payload.sourceData.textureFlags = 1U;
+        info.declaredPayloadBytes = sizeof(MaterialUploadTextureBinding);
+
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidPayload);
+
+        payload.staticDescriptor.featureMask = 1U;
+        payload.sourceData.textureFlags = 0U;
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidPayload);
+
+        payload.textureBindings.clear();
+        payload.sourceData.textureFlags = 0U;
+        payload.staticDescriptor.featureMask =
+            1ull << static_cast<uint32>(MaterialTextureSlot::ToonRamp);
+        info.declaredPayloadBytes = 0U;
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidPayload);
+    }
+
     TEST(RenderContractsValidation, RejectsSchema)
     {
         auto info = MakeValidTextureRequestInfo();
         info.schemaVersion = RVX_RESOURCE_UPLOAD_REQUEST_SCHEMA_VERSION + 1U;
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidSchema);
+    }
+
+    TEST(RenderContractsValidation, RejectsPreUV1AndMaterialDescriptorSchema)
+    {
+        auto info = MakeValidMeshRequestInfo();
+        // Version 2 has neither the UV1 mesh-stream range nor the immutable
+        // material descriptor contract. It must not cross the v3 boundary.
+        info.schemaVersion = 2U;
         ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidSchema);
     }
 
@@ -656,7 +884,14 @@ namespace
         binding.offset = Vec2(0.25f, 0.5f);
         std::get<MaterialUploadPayload>(materialInfo.payload)
             .textureBindings.push_back(binding);
-        materialInfo.declaredPayloadBytes = sizeof(MaterialUploadTextureBinding);
+        std::get<MaterialUploadPayload>(materialInfo.payload)
+            .sourceData.textureFlags = 1U;
+        std::get<MaterialUploadPayload>(materialInfo.payload)
+            .staticDescriptor.featureMask = 1U;
+        materialInfo.dependencies.push_back(binding.texture);
+        materialInfo.declaredPayloadBytes =
+            sizeof(MaterialUploadTextureBinding) +
+            sizeof(RenderResourceHandle);
 
         const auto mesh = ResourceUploadRequest::Create(meshInfo);
         const auto texture = ResourceUploadRequest::Create(textureInfo);
@@ -1109,6 +1344,197 @@ namespace
         ExpectCreationCode(arrayInfo, ResourceUploadRequestCreateCode::Created);
     }
 
+    enum class MaterialSourceValidationCase : uint8
+    {
+        FiniteHdrAndNegativeColors,
+        NormalScaleUpperBoundary,
+        NormalScaleAboveBoundary,
+        EmissiveStrengthUpperBoundary,
+        EmissiveStrengthAboveBoundary,
+        NonFiniteBaseColor,
+        MetallicBelowRange,
+        RoughnessAboveRange,
+        OcclusionBelowRange,
+        NonFiniteEmissiveColor,
+        AlphaCutoffAboveRange,
+        InvalidAlphaMode,
+        InvalidWorkflow,
+        ToonBandsBelowRange,
+        ToonSpecularThresholdAboveRange,
+        ToonRimStrengthAboveRange,
+        ToonOutlineWidthAboveRange,
+        NonFiniteToonShadowTint,
+        TransmissionAboveRange,
+        IndexOfRefractionBelowRange,
+        ThicknessAboveRange,
+        NonFiniteAttenuationColor,
+        ZeroAttenuationDistance
+    };
+
+    struct MaterialSourceValidationParameter
+    {
+        MaterialSourceValidationCase testCase;
+        bool expectedValid;
+    };
+
+    class RenderContractsValidationMaterialSourceConsistency :
+        public testing::TestWithParam<MaterialSourceValidationParameter>
+    {
+    };
+
+    TEST_P(RenderContractsValidationMaterialSourceConsistency,
+           DefinitionAndUploadUseTheSameCanonicalParameterContract)
+    {
+        const MaterialSourceValidationParameter parameter = GetParam();
+        MaterialSourceData source;
+        const float32 nan = std::numeric_limits<float32>::quiet_NaN();
+        switch (parameter.testCase)
+        {
+            case MaterialSourceValidationCase::FiniteHdrAndNegativeColors:
+                source.baseColorFactor = Vec4{-2.0f, 4.0f, 0.5f, 1.0f};
+                source.emissiveColor = Vec3{-1.0f, 8.0f, 0.25f};
+                break;
+            case MaterialSourceValidationCase::NormalScaleUpperBoundary:
+                source.normalScale = 8.0f;
+                break;
+            case MaterialSourceValidationCase::NormalScaleAboveBoundary:
+                source.normalScale = 8.01f;
+                break;
+            case MaterialSourceValidationCase::EmissiveStrengthUpperBoundary:
+                source.emissiveStrength = 65504.0f;
+                break;
+            case MaterialSourceValidationCase::EmissiveStrengthAboveBoundary:
+                source.emissiveStrength = 65505.0f;
+                break;
+            case MaterialSourceValidationCase::NonFiniteBaseColor:
+                source.baseColorFactor.x = nan;
+                break;
+            case MaterialSourceValidationCase::MetallicBelowRange:
+                source.metallicFactor = -0.01f;
+                break;
+            case MaterialSourceValidationCase::RoughnessAboveRange:
+                source.roughnessFactor = 1.01f;
+                break;
+            case MaterialSourceValidationCase::OcclusionBelowRange:
+                source.occlusionStrength = -0.01f;
+                break;
+            case MaterialSourceValidationCase::NonFiniteEmissiveColor:
+                source.emissiveColor.y = nan;
+                break;
+            case MaterialSourceValidationCase::AlphaCutoffAboveRange:
+                source.alphaCutoff = 1.01f;
+                break;
+            case MaterialSourceValidationCase::InvalidAlphaMode:
+                source.alphaMode = static_cast<MaterialSourceAlphaMode>(255);
+                break;
+            case MaterialSourceValidationCase::InvalidWorkflow:
+                source.workflow = static_cast<MaterialSourceWorkflow>(255);
+                break;
+            case MaterialSourceValidationCase::ToonBandsBelowRange:
+                source.toonBands = 0.0f;
+                break;
+            case MaterialSourceValidationCase::ToonSpecularThresholdAboveRange:
+                source.toonSpecularThreshold = 1.01f;
+                break;
+            case MaterialSourceValidationCase::ToonRimStrengthAboveRange:
+                source.toonRimStrength = 64.01f;
+                break;
+            case MaterialSourceValidationCase::ToonOutlineWidthAboveRange:
+                source.toonOutlineWidth = 64.01f;
+                break;
+            case MaterialSourceValidationCase::NonFiniteToonShadowTint:
+                source.toonShadowTint.z = nan;
+                break;
+            case MaterialSourceValidationCase::TransmissionAboveRange:
+                source.transmission = 1.01f;
+                break;
+            case MaterialSourceValidationCase::IndexOfRefractionBelowRange:
+                source.indexOfRefraction = 0.99f;
+                break;
+            case MaterialSourceValidationCase::ThicknessAboveRange:
+                source.thickness = 100001.0f;
+                break;
+            case MaterialSourceValidationCase::NonFiniteAttenuationColor:
+                source.attenuationColor.x = nan;
+                break;
+            case MaterialSourceValidationCase::ZeroAttenuationDistance:
+                source.attenuationDistance = 0.0f;
+                break;
+        }
+
+        std::string sourceError;
+        const bool sourceValid = ValidateMaterialSourceData(source, sourceError);
+
+        MaterialDefinition definition;
+        definition.parameters = source;
+        std::string definitionError;
+        const bool definitionValid =
+            ValidateMaterialDefinition(definition, definitionError);
+
+        auto uploadInfo = MakeValidMaterialRequestInfo();
+        std::get<MaterialUploadPayload>(uploadInfo.payload).sourceData = source;
+        const ResourceUploadRequestCreateResult uploadResult =
+            ResourceUploadRequest::Create(std::move(uploadInfo));
+        const bool uploadValid =
+            uploadResult.code == ResourceUploadRequestCreateCode::Created;
+
+        EXPECT_EQ(sourceValid, parameter.expectedValid) << sourceError;
+        EXPECT_EQ(definitionValid, sourceValid) << definitionError;
+        EXPECT_EQ(uploadValid, sourceValid);
+    }
+
+    INSTANTIATE_TEST_SUITE_P(
+        CanonicalMaterialSourceParameters,
+        RenderContractsValidationMaterialSourceConsistency,
+        testing::Values(
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::FiniteHdrAndNegativeColors, true},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::NormalScaleUpperBoundary, true},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::NormalScaleAboveBoundary, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::EmissiveStrengthUpperBoundary, true},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::EmissiveStrengthAboveBoundary, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::NonFiniteBaseColor, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::MetallicBelowRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::RoughnessAboveRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::OcclusionBelowRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::NonFiniteEmissiveColor, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::AlphaCutoffAboveRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::InvalidAlphaMode, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::InvalidWorkflow, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::ToonBandsBelowRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::ToonSpecularThresholdAboveRange,
+                false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::ToonRimStrengthAboveRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::ToonOutlineWidthAboveRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::NonFiniteToonShadowTint, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::TransmissionAboveRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::IndexOfRefractionBelowRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::ThicknessAboveRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::NonFiniteAttenuationColor, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::ZeroAttenuationDistance, false}));
+
     enum class MaterialRuleCase : uint8
     {
         NonFiniteBaseColor,
@@ -1119,7 +1545,6 @@ namespace
         NonFiniteEmissiveColor,
         NonFiniteEmissiveStrength,
         NonFiniteAlphaCutoff,
-        BaseColorBelowRange,
         MetallicAboveRange,
         RoughnessBelowRange,
         OcclusionAboveRange,
@@ -1130,8 +1555,6 @@ namespace
         InvalidWorkflow,
         InvalidBindingHandle,
         NegativeUvSet,
-        ZeroScaleX,
-        ZeroScaleY,
         NonFiniteOffset,
         NonFiniteScale,
         NonFiniteRotation,
@@ -1175,7 +1598,6 @@ namespace
             case MaterialRuleCase::NonFiniteEmissiveColor: source.emissiveColor.x = nan; break;
             case MaterialRuleCase::NonFiniteEmissiveStrength: source.emissiveStrength = nan; break;
             case MaterialRuleCase::NonFiniteAlphaCutoff: source.alphaCutoff = nan; break;
-            case MaterialRuleCase::BaseColorBelowRange: source.baseColorFactor.x = -0.1f; break;
             case MaterialRuleCase::MetallicAboveRange: source.metallicFactor = 1.1f; break;
             case MaterialRuleCase::RoughnessBelowRange: source.roughnessFactor = -0.1f; break;
             case MaterialRuleCase::OcclusionAboveRange: source.occlusionStrength = 1.1f; break;
@@ -1193,12 +1615,6 @@ namespace
                 break;
             case MaterialRuleCase::NegativeUvSet:
                 payload.textureBindings.front().uvSet = -1;
-                break;
-            case MaterialRuleCase::ZeroScaleX:
-                payload.textureBindings.front().scale.x = 0.0f;
-                break;
-            case MaterialRuleCase::ZeroScaleY:
-                payload.textureBindings.front().scale.y = 0.0f;
                 break;
             case MaterialRuleCase::NonFiniteOffset:
                 payload.textureBindings.front().offset.x = nan;
@@ -1254,7 +1670,6 @@ namespace
             MaterialRuleCase::NonFiniteEmissiveColor,
             MaterialRuleCase::NonFiniteEmissiveStrength,
             MaterialRuleCase::NonFiniteAlphaCutoff,
-            MaterialRuleCase::BaseColorBelowRange,
             MaterialRuleCase::MetallicAboveRange,
             MaterialRuleCase::RoughnessBelowRange,
             MaterialRuleCase::OcclusionAboveRange,
@@ -1265,8 +1680,6 @@ namespace
             MaterialRuleCase::InvalidWorkflow,
             MaterialRuleCase::InvalidBindingHandle,
             MaterialRuleCase::NegativeUvSet,
-            MaterialRuleCase::ZeroScaleX,
-            MaterialRuleCase::ZeroScaleY,
             MaterialRuleCase::NonFiniteOffset,
             MaterialRuleCase::NonFiniteScale,
             MaterialRuleCase::NonFiniteRotation,

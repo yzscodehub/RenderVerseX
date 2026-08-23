@@ -443,11 +443,19 @@ namespace RVX
         RHIPipeline* GetPipelineForVariant(MaterialPipelineVariant variant, RHIFormat renderTargetFormat);
         RHIPipeline* GetPipelineForVariant(MaterialPipelineVariant variant,
                                            RHIFormat renderTargetFormat,
-                                           DefaultLitDirectVertexInputMode inputMode);
-        RHIPipeline* GetGPUDrivenPipelineForVariant(MaterialPipelineVariant variant, RHIFormat renderTargetFormat);
+                                           DefaultLitDirectVertexInputMode inputMode,
+                                           MaterialCullMode cullMode = MaterialCullMode::Back,
+                                           bool reverseWinding = false);
+        RHIPipeline* GetGPUDrivenPipelineForVariant(
+            MaterialPipelineVariant variant,
+            RHIFormat renderTargetFormat,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
         RHIPipeline* GetInstancedMaterialPipelineForVariant(
             MaterialPipelineVariant variant,
-            RHIFormat renderTargetFormat);
+            RHIFormat renderTargetFormat,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
 
         /**
          * @brief Get the GPU-scene raster pipeline for opaque or masked materials.
@@ -456,11 +464,15 @@ namespace RVX
          * object descriptor set or its instance-buffer binding.
          */
         RHIPipeline* GetGPUScenePipelineForVariant(MaterialPipelineVariant variant,
-                                                    RHIFormat renderTargetFormat);
+                                                    RHIFormat renderTargetFormat,
+                                                    MaterialCullMode cullMode = MaterialCullMode::Back,
+                                                    bool reverseWinding = false);
         /** @brief GPU-scene opaque pipeline sourcing scalar material parameters per instance. */
         RHIPipeline* GetGPUSceneInstancedMaterialPipelineForVariant(
             MaterialPipelineVariant variant,
-            RHIFormat renderTargetFormat);
+            RHIFormat renderTargetFormat,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
 
         /**
          * @brief Get the depth-only pipeline for depth prepass
@@ -468,17 +480,25 @@ namespace RVX
          */
         RHIPipeline* GetDepthOnlyPipeline() const { return m_depthOnlyPipeline.Get(); }
         RHIPipeline* GetDepthOnlyPipeline(
-            DefaultLitDirectVertexInputMode inputMode);
+            DefaultLitDirectVertexInputMode inputMode,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
         /** @brief Get the alpha-masked depth-only pipeline. */
         RHIPipeline* GetMaskedDepthOnlyPipeline() const
         {
             return m_maskedDepthOnlyPipeline.Get();
         }
         RHIPipeline* GetMaskedDepthOnlyPipeline(
-            DefaultLitDirectVertexInputMode inputMode);
-        RHIPipeline* GetGPUDrivenDepthOnlyPipeline();
+            DefaultLitDirectVertexInputMode inputMode,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
+        RHIPipeline* GetGPUDrivenDepthOnlyPipeline(
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
         /** @brief Get the GPU-scene depth-only raster pipeline. */
-        RHIPipeline* GetGPUSceneDepthOnlyPipeline();
+        RHIPipeline* GetGPUSceneDepthOnlyPipeline(
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
 
         /** @brief Whether the independent GPU-scene raster shader/layout substrate is usable. */
         [[nodiscard]] bool IsGPUSceneRasterReady() const;
@@ -494,9 +514,19 @@ namespace RVX
         RHIPipeline* GetShadowDepthPipeline(const ShadowDepthBiasState& biasState);
         RHIPipeline* GetShadowDepthPipeline(
             const ShadowDepthBiasState& biasState,
-            DefaultLitDirectVertexInputMode inputMode);
+            DefaultLitDirectVertexInputMode inputMode,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
+        /** @brief Alpha-tested shadow depth pipeline with material set 2. */
+        RHIPipeline* GetMaskedShadowDepthPipeline(
+            const ShadowDepthBiasState& biasState,
+            DefaultLitDirectVertexInputMode inputMode,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
         RHIPipeline* GetInstancedShadowDepthPipeline(
-            const ShadowDepthBiasState& biasState);
+            const ShadowDepthBiasState& biasState,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
         static ShadowDepthBiasState SanitizeShadowDepthBiasState(const ShadowDepthBiasState& biasState);
 
         /**
@@ -538,12 +568,16 @@ namespace RVX
         RHIPipeline* GetObjectVelocityPipeline(RHIFormat outputFormat);
         RHIPipeline* GetObjectVelocityPipeline(
             RHIFormat outputFormat,
-            DefaultLitDirectVertexInputMode inputMode);
+            DefaultLitDirectVertexInputMode inputMode,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
         RHIPipeline* GetMaskedObjectVelocityPipeline() const { return m_maskedObjectVelocityPipeline.Get(); }
         RHIPipeline* GetMaskedObjectVelocityPipeline(RHIFormat outputFormat);
         RHIPipeline* GetMaskedObjectVelocityPipeline(
             RHIFormat outputFormat,
-            DefaultLitDirectVertexInputMode inputMode);
+            DefaultLitDirectVertexInputMode inputMode,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
 
         /**
          * @brief Get the fullscreen alpha-composite pipeline for ray-traced reflections
@@ -1022,38 +1056,65 @@ namespace RVX
                                                      const char* debugName,
                                                      const RHIDepthStencilState& depthStencilState,
                                                      const RHIBlendState& blendState,
-                                                     RHIFormat renderTargetFormat,
-                                                     DefaultLitDirectVertexInputMode inputMode,
-                                                     bool updatePrimaryStats);
+                                                      RHIFormat renderTargetFormat,
+                                                      DefaultLitDirectVertexInputMode inputMode,
+                                                      MaterialCullMode cullMode,
+                                                      bool reverseWinding,
+                                                      bool updatePrimaryStats);
         RHIPipelineRef GetOrCreateGPUDrivenDefaultLitPipeline(MaterialPipelineVariant variant,
                                                               const char* debugName,
                                                               const RHIDepthStencilState& depthStencilState,
                                                               const RHIBlendState& blendState,
-                                                              RHIFormat renderTargetFormat);
+                                                              RHIFormat renderTargetFormat,
+                                                              MaterialCullMode cullMode,
+                                                              bool reverseWinding);
         RHIPipelineRef GetOrCreateInstancedMaterialDefaultLitPipeline(
             MaterialPipelineVariant variant,
             const char* debugName,
             const RHIDepthStencilState& depthStencilState,
             const RHIBlendState& blendState,
-            RHIFormat renderTargetFormat);
+            RHIFormat renderTargetFormat,
+            MaterialCullMode cullMode,
+            bool reverseWinding);
         RHIPipelineRef GetOrCreateGPUSceneDefaultLitPipeline(MaterialPipelineVariant variant,
                                                               const char* debugName,
                                                               const RHIDepthStencilState& depthStencilState,
                                                               const RHIBlendState& blendState,
                                                               RHIFormat renderTargetFormat,
-                                                              bool instancedMaterial = false);
-        RHIPipelineRef GetOrCreateDepthOnlyPipeline();
-        RHIPipelineRef GetOrCreateRigidDepthOnlyPipeline();
+                                                              bool instancedMaterial,
+                                                              MaterialCullMode cullMode,
+                                                              bool reverseWinding);
+        RHIPipelineRef GetOrCreateDepthOnlyPipeline(
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
+        RHIPipelineRef GetOrCreateRigidDepthOnlyPipeline(
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
         RHIPipelineRef GetOrCreateMaskedDepthOnlyPipeline(
             DefaultLitDirectVertexInputMode inputMode =
-                DefaultLitDirectVertexInputMode::Skinned);
-        RHIPipelineRef GetOrCreateGPUDrivenDepthOnlyPipeline();
-        RHIPipelineRef GetOrCreateGPUSceneDepthOnlyPipeline();
+                DefaultLitDirectVertexInputMode::Skinned,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
+        RHIPipelineRef GetOrCreateGPUDrivenDepthOnlyPipeline(
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
+        RHIPipelineRef GetOrCreateGPUSceneDepthOnlyPipeline(
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
         RHIPipelineRef GetOrCreateShadowDepthPipeline(
             const ShadowDepthBiasState& biasState,
-            DefaultLitDirectVertexInputMode inputMode);
+            DefaultLitDirectVertexInputMode inputMode,
+            MaterialCullMode cullMode,
+            bool reverseWinding);
+        RHIPipelineRef GetOrCreateMaskedShadowDepthPipeline(
+            const ShadowDepthBiasState& biasState,
+            DefaultLitDirectVertexInputMode inputMode,
+            MaterialCullMode cullMode,
+            bool reverseWinding);
         RHIPipelineRef GetOrCreateInstancedShadowDepthPipeline(
-            const ShadowDepthBiasState& biasState);
+            const ShadowDepthBiasState& biasState,
+            MaterialCullMode cullMode,
+            bool reverseWinding);
         RHIPipelineRef GetOrCreateSkyboxPipeline(RHIFormat outputFormat,
                                                  bool depthTest = true,
                                                  bool updatePrimaryStats = true);
@@ -1065,11 +1126,15 @@ namespace RVX
         RHIPipelineRef GetOrCreateObjectVelocityPipeline(
             RHIFormat outputFormat,
             DefaultLitDirectVertexInputMode inputMode =
-                DefaultLitDirectVertexInputMode::Skinned);
+                DefaultLitDirectVertexInputMode::Skinned,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
         RHIPipelineRef GetOrCreateMaskedObjectVelocityPipeline(
             RHIFormat outputFormat,
             DefaultLitDirectVertexInputMode inputMode =
-                DefaultLitDirectVertexInputMode::Skinned);
+                DefaultLitDirectVertexInputMode::Skinned,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
         RHIPipelineRef GetOrCreateRayTracedReflectionCompositePipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateRayTracedReflectionDenoisePipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateColorGradingPipeline(RHIFormat outputFormat);
@@ -1084,32 +1149,59 @@ namespace RVX
                                                             const RHIDepthStencilState& depthStencilState,
                                                             const RHIBlendState& blendState,
                                                             RHIFormat renderTargetFormat,
-                                                            DefaultLitDirectVertexInputMode inputMode) const;
+                                                            DefaultLitDirectVertexInputMode inputMode,
+                                                            MaterialCullMode cullMode,
+                                                            bool reverseWinding) const;
         RHIGraphicsPipelineDesc BuildGPUDrivenDefaultLitPipelineDesc(const char* debugName,
                                                                      const RHIDepthStencilState& depthStencilState,
                                                                      const RHIBlendState& blendState,
-                                                                     RHIFormat renderTargetFormat) const;
+                                                                     RHIFormat renderTargetFormat,
+                                                                     MaterialCullMode cullMode,
+                                                                     bool reverseWinding) const;
         RHIGraphicsPipelineDesc BuildInstancedMaterialDefaultLitPipelineDesc(
             const char* debugName,
             const RHIDepthStencilState& depthStencilState,
             const RHIBlendState& blendState,
-            RHIFormat renderTargetFormat) const;
+            RHIFormat renderTargetFormat,
+            MaterialCullMode cullMode,
+            bool reverseWinding) const;
         RHIGraphicsPipelineDesc BuildGPUSceneDefaultLitPipelineDesc(const char* debugName,
                                                                      const RHIDepthStencilState& depthStencilState,
                                                                      const RHIBlendState& blendState,
                                                                      RHIFormat renderTargetFormat,
-                                                                     bool instancedMaterial = false) const;
-        RHIGraphicsPipelineDesc BuildDepthOnlyPipelineDesc() const;
-        RHIGraphicsPipelineDesc BuildRigidDepthOnlyPipelineDesc() const;
+                                                                     bool instancedMaterial,
+                                                                     MaterialCullMode cullMode,
+                                                                     bool reverseWinding) const;
+        RHIGraphicsPipelineDesc BuildDepthOnlyPipelineDesc(
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false) const;
+        RHIGraphicsPipelineDesc BuildRigidDepthOnlyPipelineDesc(
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false) const;
         RHIGraphicsPipelineDesc BuildMaskedDepthOnlyPipelineDesc(
-            DefaultLitDirectVertexInputMode inputMode) const;
-        RHIGraphicsPipelineDesc BuildGPUDrivenDepthOnlyPipelineDesc() const;
-        RHIGraphicsPipelineDesc BuildGPUSceneDepthOnlyPipelineDesc() const;
+            DefaultLitDirectVertexInputMode inputMode,
+            MaterialCullMode cullMode,
+            bool reverseWinding) const;
+        RHIGraphicsPipelineDesc BuildGPUDrivenDepthOnlyPipelineDesc(
+            MaterialCullMode cullMode,
+            bool reverseWinding) const;
+        RHIGraphicsPipelineDesc BuildGPUSceneDepthOnlyPipelineDesc(
+            MaterialCullMode cullMode,
+            bool reverseWinding) const;
         RHIGraphicsPipelineDesc BuildShadowDepthPipelineDesc(
             const ShadowDepthBiasState& biasState,
-            DefaultLitDirectVertexInputMode inputMode) const;
+            DefaultLitDirectVertexInputMode inputMode,
+            MaterialCullMode cullMode,
+            bool reverseWinding) const;
+        RHIGraphicsPipelineDesc BuildMaskedShadowDepthPipelineDesc(
+            const ShadowDepthBiasState& biasState,
+            DefaultLitDirectVertexInputMode inputMode,
+            MaterialCullMode cullMode,
+            bool reverseWinding) const;
         RHIGraphicsPipelineDesc BuildInstancedShadowDepthPipelineDesc(
-            const ShadowDepthBiasState& biasState) const;
+            const ShadowDepthBiasState& biasState,
+            MaterialCullMode cullMode,
+            bool reverseWinding) const;
         RHIGraphicsPipelineDesc BuildSkyboxPipelineDesc(RHIFormat outputFormat, bool depthTest = true) const;
         RHIGraphicsPipelineDesc BuildToneMappingPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildBloomPipelineDesc(RHIFormat outputFormat) const;
@@ -1118,10 +1210,14 @@ namespace RVX
         RHIGraphicsPipelineDesc BuildCameraVelocityPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildObjectVelocityPipelineDesc(
             RHIFormat outputFormat,
-            DefaultLitDirectVertexInputMode inputMode) const;
+            DefaultLitDirectVertexInputMode inputMode,
+            MaterialCullMode cullMode,
+            bool reverseWinding) const;
         RHIGraphicsPipelineDesc BuildMaskedObjectVelocityPipelineDesc(
             RHIFormat outputFormat,
-            DefaultLitDirectVertexInputMode inputMode) const;
+            DefaultLitDirectVertexInputMode inputMode,
+            MaterialCullMode cullMode,
+            bool reverseWinding) const;
         RHIGraphicsPipelineDesc BuildRayTracedReflectionCompositePipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildRayTracedReflectionDenoisePipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildColorGradingPipelineDesc(RHIFormat outputFormat) const;
@@ -1159,6 +1255,8 @@ namespace RVX
         bool ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSetLayoutDesc>& layouts);
         void ProcessPipelineManifest();
         void SetLastError(std::string message);
+        RHIPipelineRef TrackGPUSceneRasterPipeline(uint64 stateHash,
+                                                   RHIPipelineRef pipeline);
         void ResetGPUSceneRasterState();
         void DisableGPUSceneRaster(std::string reason);
         uint64 ComputePipelineStateHash(const RHIGraphicsPipelineDesc& desc, MaterialPipelineVariant variant) const;
@@ -1319,6 +1417,11 @@ namespace RVX
         RHIPipelineRef m_gpuSceneInstancedMaterialOpaquePipeline;
         RHIPipelineRef m_gpuSceneMaskedPipeline;
         RHIPipelineRef m_gpuSceneDepthOnlyPipeline;
+        // Every GPU-scene raster pipeline is tracked independently from the
+        // Back-cull convenience members above.  Cull variants are created on
+        // demand, so those members alone cannot describe the complete set
+        // whose layout/shader substrate must be retired together.
+        std::unordered_map<uint64, RHIPipelineRef> m_gpuSceneRasterPipelines;
         RHIPipelineRef m_skyboxPipeline;
         RHIPipelineRef m_toneMappingPipeline;
         RHIPipelineRef m_bloomPipeline;

@@ -87,6 +87,10 @@ namespace
             MeshPassVertexStreams::Normal |
             MeshPassVertexStreams::TexCoord |
             MeshPassVertexStreams::Tangent;
+        if (packet.pipelineKey.requiresUV1)
+        {
+            layout.vertexStreams |= MeshPassVertexStreams::TexCoord1;
+        }
         layout.bindings = MeshPassBindingRequirements::Frame |
             MeshPassBindingRequirements::Object |
             MeshPassBindingRequirements::Geometry;
@@ -672,8 +676,8 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
             }
 
             m_shadowStats.receiverCandidateDrawItemCount++;
-            const RenderObject& object = m_renderScene->GetObject(item.objectIndex);
-            if (object.receivesShadow)
+            if (HasDrawFlag(
+                    item.packet.flags, RenderDrawFlags::ReceivesShadow))
             {
                 m_shadowStats.shadowReceivingDrawItemCount++;
             }
@@ -1375,6 +1379,13 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
         if (batch.buffers.uvBuffer)
         {
             ctx.SetVertexBuffer(2, batch.buffers.uvBuffer);
+            const GPUCullingDrawGroup& group =
+                m_gpuCulling->GetDrawGroups()[batch.groupIndex];
+            ctx.SetVertexBuffer(
+                7,
+                group.batchKey.pipeline.requiresUV1
+                    ? batch.buffers.uv1Buffer
+                    : batch.buffers.uvBuffer);
         }
         if (batch.buffers.tangentBuffer)
         {
@@ -1506,6 +1517,7 @@ bool OpaquePass::BuildPlannedDirectBatch(
     {
         const RenderDrawPacket& packet = draw.packet;
         if (packet.pass != RenderPassKind::Opaque ||
+            !packet.pipelineKey.materialPolicyValid ||
             packet.primitiveData == RVX_INVALID_PRIMITIVE_DATA_INDEX ||
             !packet.geometryKey.mesh.IsValid() ||
             packet.geometryKey.indexType != MeshUploadIndexType::UInt32 ||
@@ -1515,7 +1527,7 @@ bool OpaquePass::BuildPlannedDirectBatch(
             packet.arguments.firstInstance != 0)
         {
             RVX_RENDER_ERROR(
-                "OpaquePass: Direct packet {} failed draw-argument preflight",
+                "OpaquePass: Direct packet {} failed draw/material-policy preflight",
                 draw.sourceOrdinal);
             outPlannedDraws.clear();
             return false;
@@ -1564,9 +1576,15 @@ bool OpaquePass::BuildPlannedDirectBatch(
             missingMaterial !=
                 HasDrawFlag(packet.flags, RenderDrawFlags::MissingMaterial) ||
             HasDrawFlag(packet.flags, RenderDrawFlags::CastsShadow) !=
-                object->castsShadow ||
+                (packet.pipelineKey.materialPolicyValid &&
+                 object->castsShadow &&
+                 MaterialShadowPolicyCasts(
+                     packet.pipelineKey.shadowPolicy)) ||
             HasDrawFlag(packet.flags, RenderDrawFlags::ReceivesShadow) !=
-                object->receivesShadow)
+                (packet.pipelineKey.materialPolicyValid &&
+                 object->receivesShadow &&
+                 MaterialShadowPolicyReceives(
+                     packet.pipelineKey.shadowPolicy)))
         {
             RVX_RENDER_ERROR(
                 "OpaquePass: Direct packet {} failed material/layout semantic preflight",
@@ -1583,6 +1601,8 @@ bool OpaquePass::BuildPlannedDirectBatch(
             *mesh, RenderMeshBufferSemantic::Normal);
         const bool hasUV = mesh != nullptr && HasMeshBufferSemantic(
             *mesh, RenderMeshBufferSemantic::UV);
+        const bool hasUV1 = mesh != nullptr && HasMeshBufferSemantic(
+            *mesh, RenderMeshBufferSemantic::UV1);
         const bool hasTangent = mesh != nullptr && HasMeshBufferSemantic(
             *mesh, RenderMeshBufferSemantic::Tangent);
         const bool hasIndex = mesh != nullptr && HasMeshBufferSemantic(
@@ -1593,12 +1613,13 @@ bool OpaquePass::BuildPlannedDirectBatch(
                                  syntheticSubmesh)
             : nullptr;
         if (!hasPosition || !hasNormal || !hasUV || !hasTangent || !hasIndex ||
+            (packet.pipelineKey.requiresUV1 && !hasUV1) ||
             submesh == nullptr)
         {
             RVX_RENDER_ERROR(
                 "OpaquePass: Direct packet {} has incomplete uploaded mesh buffers "
                 "(mesh={}:{}, submesh={}, valid={}, position={}, normal={}, "
-                "uv={}, tangent={}, index={}, submeshCount={})",
+                "uv={}, uv1={}, requiresUV1={}, tangent={}, index={}, submeshCount={})",
                 draw.sourceOrdinal,
                 packet.geometryKey.mesh.slot,
                 packet.geometryKey.mesh.generation,
@@ -1607,6 +1628,8 @@ bool OpaquePass::BuildPlannedDirectBatch(
                 hasPosition,
                 hasNormal,
                 hasUV,
+                hasUV1,
+                packet.pipelineKey.requiresUV1,
                 hasTangent,
                 hasIndex,
                 mesh != nullptr
@@ -1708,10 +1731,16 @@ bool OpaquePass::BuildPlannedDirectBatch(
              !object->HasValidSkinningPalette()) ||
             planned.skinned != IsSkinnedPacket(packet) ||
             planned.skinned != object->HasSkinningData() ||
-            planned.receivesShadow != object->receivesShadow ||
+            planned.receivesShadow !=
+                (packet.pipelineKey.materialPolicyValid &&
+                 object->receivesShadow &&
+                 MaterialShadowPolicyReceives(
+                     packet.pipelineKey.shadowPolicy)) ||
             !buffers.IsValid() || buffers.positionBuffer == nullptr ||
             buffers.normalBuffer == nullptr || !buffers.hasNormals ||
             buffers.uvBuffer == nullptr || !buffers.hasUVs ||
+            (packet.pipelineKey.requiresUV1 &&
+             !buffers.HasTextureCoordinateSet(1)) ||
             buffers.tangentBuffer == nullptr || buffers.indexBuffer == nullptr ||
             packet.geometryKey.submeshIndex >= buffers.submeshes.size())
         {
@@ -1756,9 +1785,13 @@ bool OpaquePass::BuildPlannedDirectBatch(
         planned.pipeline = m_pipelineCache->GetPipelineForVariant(
             packet.pipelineKey.materialVariant,
             colorTargetFormat,
-            planned.skinned ? DefaultLitDirectVertexInputMode::Skinned
-                            : DefaultLitDirectVertexInputMode::Rigid);
-        if (planned.pipeline == nullptr)
+                            planned.skinned ? DefaultLitDirectVertexInputMode::Skinned
+                                            : DefaultLitDirectVertexInputMode::Rigid,
+            packet.pipelineKey.cullMode,
+            packet.pipelineKey.reverseWinding);
+        if (planned.pipeline == nullptr ||
+            !context.RetainSubmissionResource(
+                Ref<RefCounted>(planned.pipeline)))
         {
             RVX_RENDER_ERROR(
                 "OpaquePass: Direct packet {} has no compatible graphics pipeline",
@@ -1992,12 +2025,18 @@ void OpaquePass::ApplyDirectInstancePlan(
         RHIPipeline* pipeline = batch.key.usesMaterialParameterTable
             ? m_pipelineCache->GetInstancedMaterialPipelineForVariant(
                   leader.packet.packet.pipelineKey.materialVariant,
-                  colorTargetFormat)
+                  colorTargetFormat,
+                  leader.packet.packet.pipelineKey.cullMode,
+                  leader.packet.packet.pipelineKey.reverseWinding)
             : m_pipelineCache->GetGPUDrivenPipelineForVariant(
                   leader.packet.packet.pipelineKey.materialVariant,
-                  colorTargetFormat);
+                  colorTargetFormat,
+                  leader.packet.packet.pipelineKey.cullMode,
+                  leader.packet.packet.pipelineKey.reverseWinding);
         ObjectConstantBinding objectBinding;
         if (pipeline == nullptr || leader.skinned ||
+            !context.RetainSubmissionResource(
+                Ref<RefCounted>(pipeline)) ||
             !m_pipelineCache->CreateObjectConstantBinding(
                 Mat4Identity(),
                 Mat4Identity(),
@@ -2074,6 +2113,11 @@ bool OpaquePass::TryDrawPlannedDirect(
         ctx.SetVertexBuffer(1, planned.buffers.normalBuffer);
         ctx.SetVertexBuffer(2, planned.buffers.uvBuffer);
         ctx.SetVertexBuffer(3, planned.buffers.tangentBuffer);
+        ctx.SetVertexBuffer(
+            7,
+            planned.packet.packet.pipelineKey.requiresUV1
+                ? planned.buffers.uv1Buffer
+                : planned.buffers.uvBuffer);
         if (planned.skinned)
         {
             ctx.SetVertexBuffer(4, planned.buffers.boneIndicesBuffer);
@@ -2639,20 +2683,17 @@ void OpaquePass::Execute(
                     if (usesGPUSceneRaster)
                     {
                         pipeline = group.batchKey.usesMaterialParameterTable
-                            ? (m_gpuSceneRasterBinding
-                                ? m_gpuSceneRasterBinding
-                                      ->instancedMaterialOpaquePipeline.Get()
-                                : nullptr)
-                            : (group.pipelineVariant ==
-                                       MaterialPipelineVariant::Masked
-                                ? (m_gpuSceneRasterBinding
-                                    ? m_gpuSceneRasterBinding
-                                          ->maskedPipeline.Get()
-                                    : nullptr)
-                                : (m_gpuSceneRasterBinding
-                                    ? m_gpuSceneRasterBinding
-                                          ->opaquePipeline.Get()
-                                    : nullptr));
+                            ? m_pipelineCache
+                                  ->GetGPUSceneInstancedMaterialPipelineForVariant(
+                                      group.pipelineVariant,
+                                      colorTargetFormat,
+                                      group.batchKey.pipeline.cullMode,
+                                      group.batchKey.pipeline.reverseWinding)
+                            : m_pipelineCache->GetGPUScenePipelineForVariant(
+                                  group.pipelineVariant,
+                                  colorTargetFormat,
+                                  group.batchKey.pipeline.cullMode,
+                                  group.batchKey.pipeline.reverseWinding);
                     }
                     else
                     {
@@ -2660,10 +2701,14 @@ void OpaquePass::Execute(
                             ? m_pipelineCache
                                   ->GetInstancedMaterialPipelineForVariant(
                                       group.pipelineVariant,
-                                      colorTargetFormat)
+                                      colorTargetFormat,
+                                      group.batchKey.pipeline.cullMode,
+                                      group.batchKey.pipeline.reverseWinding)
                             : m_pipelineCache->GetGPUDrivenPipelineForVariant(
                                   group.pipelineVariant,
-                                  colorTargetFormat);
+                                  colorTargetFormat,
+                                  group.batchKey.pipeline.cullMode,
+                                  group.batchKey.pipeline.reverseWinding);
                     }
                     MaterialBindingOptions options;
                     options.allowNormalMap = buffers.HasNormalMapTangentBasis();
@@ -2671,7 +2716,12 @@ void OpaquePass::Execute(
                         m_gpuMaterialParameterTable.Get();
                     MaterialBindingResult binding = m_materialSystem->PrepareMaterialBinding(
                         group.material, nullptr, options);
-                    if (!buffers.IsValid() || pipeline == nullptr || !binding.IsDrawable() ||
+                    if (!buffers.IsValid() || !buffers.uvBuffer ||
+                        (group.batchKey.pipeline.requiresUV1 &&
+                         !buffers.HasTextureCoordinateSet(1)) ||
+                        pipeline == nullptr || !binding.IsDrawable() ||
+                        !context.RetainSubmissionResource(
+                            Ref<RefCounted>(pipeline)) ||
                         !context.RetainSubmissionResource(
                             Ref<RefCounted>(binding.constantBuffer)) ||
                         !context.RetainSubmissionResource(

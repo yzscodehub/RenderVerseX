@@ -40,7 +40,8 @@ bool SceneRenderer::SetupDefaultRenderFeatures()
     AddPass(std::move(depthPrepass));
 
     auto shadowPass = std::make_unique<ShadowPass>();
-    shadowPass->SetResources(m_pipelineCache.get());
+    shadowPass->SetResources(
+        m_pipelineCache.get(), m_materialSystem.get());
     shadowPass->SetResourceRegistry(m_renderResourceRegistry);
     shadowPass->SetConfig(m_shadowPassConfig);
     m_shadowPass = shadowPass.get();

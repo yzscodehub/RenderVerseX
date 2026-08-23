@@ -3,6 +3,7 @@
 #include "Core/Log.h"
 #include "Geometry/Asset/Material.h"
 #include "Geometry/Asset/Mesh.h"
+#include "Resource/Cooked/CookedMaterialArtifact.h"
 #include "Resource/RenderUploadRequestBuilder.h"
 #include "Resource/ResourceManager.h"
 #include "Resource/ResourceSubsystem.h"
@@ -1894,6 +1895,9 @@ TEST(ResourceRuntimePolicyValidation,
         EXPECT_FLOAT_EQ(uv.x, 0.0f);
         EXPECT_FLOAT_EQ(uv.y, 0.0f);
     }
+    EXPECT_EQ(missingUVPayload.uv1Range.offset, 0U);
+    EXPECT_EQ(missingUVPayload.uv1Range.size, 0U);
+    EXPECT_EQ(missingUVPayload.uv1Range.stride, 0U);
 
     const std::vector<uint8> ownedMissingUVBytes(missingUVBytes.begin(),
                                                   missingUVBytes.end());
@@ -1939,6 +1943,28 @@ TEST(ResourceRuntimePolicyValidation,
                           authoredUVPayload.uvRange.size),
               0);
 
+    const std::vector<Vec2> authoredUV1s = {
+        {0.0f, 0.125f},
+        {0.75f, 0.5f},
+        {0.25f, 1.0f}};
+    authoredUVMesh->SetUVs(authoredUV1s, VertexBufferNames::UV1);
+    const RenderUploadRequestBuildResult authoredUV1Build =
+        RenderUploadRequestBuilder::Build(authoredUVResource, {7, 1}, 7, {});
+    ASSERT_EQ(authoredUV1Build.code, RenderUploadRequestBuildCode::Built);
+    ASSERT_NE(authoredUV1Build.request, nullptr);
+    const auto& authoredUV1Payload =
+        std::get<MeshUploadPayload>(authoredUV1Build.request->GetPayload());
+    const std::span<const uint8> authoredUV1Bytes =
+        GetUploadPayloadBytes(authoredUV1Payload);
+    ASSERT_EQ(authoredUV1Payload.uv1Range.stride, sizeof(Vec2));
+    ASSERT_EQ(authoredUV1Payload.uv1Range.size,
+              authoredUV1s.size() * sizeof(Vec2));
+    ASSERT_EQ(std::memcmp(authoredUV1Bytes.data() +
+                              authoredUV1Payload.uv1Range.offset,
+                          authoredUV1s.data(),
+                          authoredUV1Payload.uv1Range.size),
+              0);
+
     MeshResource malformedUVResource;
     malformedUVResource.SetId(105);
     auto malformedUVMesh = std::make_shared<Mesh>();
@@ -1961,6 +1987,30 @@ TEST(ResourceRuntimePolicyValidation,
     EXPECT_EQ(malformedUVBuild.code,
               RenderUploadRequestBuildCode::InvalidResource);
     EXPECT_EQ(malformedUVBuild.request, nullptr);
+
+    MeshResource malformedUV1Resource;
+    malformedUV1Resource.SetId(106);
+    auto malformedUV1Mesh = std::make_shared<Mesh>();
+    malformedUV1Mesh->SetPositions(positions);
+    malformedUV1Mesh->SetNormals(std::vector<Vec3>(
+        positions.size(), Vec3{0.0f, 0.0f, 1.0f}));
+    malformedUV1Mesh->SetUVs(authoredUVs);
+    malformedUV1Mesh->AddAttribute(
+        VertexBufferNames::UV1,
+        std::vector<float>{0.0f, 0.0f, 0.0f,
+                           1.0f, 0.0f, 0.0f,
+                           0.5f, 1.0f, 0.0f},
+        3);
+    malformedUV1Mesh->SetIndices(std::vector<uint16>{0, 1, 2});
+    malformedUV1Mesh->SetBoundingBox(
+        {-1.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 0.0f});
+    malformedUV1Resource.SetMesh(malformedUV1Mesh);
+
+    const RenderUploadRequestBuildResult malformedUV1Build =
+        RenderUploadRequestBuilder::Build(malformedUV1Resource, {8, 1}, 8, {});
+    EXPECT_EQ(malformedUV1Build.code,
+              RenderUploadRequestBuildCode::InvalidResource);
+    EXPECT_EQ(malformedUV1Build.request, nullptr);
 }
 
 TEST(ResourceRuntimePolicyValidation, RenderUploadBuilderResolvesMaterialTextureHandles)
@@ -2005,6 +2055,123 @@ TEST(ResourceRuntimePolicyValidation, RenderUploadBuilderResolvesMaterialTexture
     EXPECT_EQ(build.request->GetDependencies(),
               std::vector<RenderResourceHandle>{textureHandle});
     EXPECT_NE(payload.sourceData.textureFlags, 0U);
+}
+
+TEST(ResourceRuntimePolicyValidation,
+     RenderUploadBuilderPreservesMaterialStaticDescriptor)
+{
+    MaterialResource material;
+    material.SetId(204);
+
+    MaterialDefinition definition;
+    definition.descriptor.shadingModel = MaterialShadingModel::ToonLit;
+    definition.descriptor.programFamily =
+        std::string(GetMaterialProgramFamily(MaterialShadingModel::ToonLit));
+    definition.descriptor.cullMode = MaterialCullMode::NoCull;
+    definition.descriptor.shadowPolicy = MaterialShadowPolicy::Receive;
+    definition.descriptor.sortPriority = 17;
+    definition.parameters.doubleSided = true;
+    ASSERT_TRUE(material.SetMaterialDefinition(definition));
+
+    const RenderUploadRequestBuildResult build =
+        RenderUploadRequestBuilder::Build(material, {9, 2}, 5, {});
+    ASSERT_EQ(build.code, RenderUploadRequestBuildCode::Built);
+    ASSERT_NE(build.request, nullptr);
+
+    const auto& payload =
+        std::get<MaterialUploadPayload>(build.request->GetPayload());
+    const MaterialStaticDescriptor& descriptor = payload.staticDescriptor;
+    EXPECT_EQ(descriptor.domain, definition.descriptor.domain);
+    EXPECT_EQ(descriptor.shadingModel, definition.descriptor.shadingModel);
+    EXPECT_EQ(descriptor.blendMode, definition.descriptor.blendMode);
+    EXPECT_EQ(descriptor.cullMode, definition.descriptor.cullMode);
+    EXPECT_EQ(descriptor.shadowPolicy, definition.descriptor.shadowPolicy);
+    EXPECT_EQ(descriptor.translucencyPhase,
+              definition.descriptor.translucencyPhase);
+    EXPECT_EQ(descriptor.sortPriority, definition.descriptor.sortPriority);
+    EXPECT_EQ(descriptor.featureMask, definition.descriptor.featureMask);
+    EXPECT_EQ(descriptor.programFamily, definition.descriptor.programFamily);
+    EXPECT_EQ(descriptor.parameterLayoutHash,
+              definition.descriptor.parameterLayoutHash);
+}
+
+TEST(ResourceRuntimePolicyValidation,
+     SourceAndCookedTransparentMaterialDefinitionsUseReceiveOnlyPolicy)
+{
+    auto source = std::make_shared<Material>("SourceTransparent");
+    source->SetAlphaMode(Material::AlphaMode::Blend);
+    source->SetDoubleSided(true);
+
+    MaterialResource sourceResource;
+    sourceResource.SetId(206);
+    ASSERT_TRUE(sourceResource.SetMaterialData(source));
+    const MaterialDefinition sourceDefinition =
+        sourceResource.GetMaterialDefinition();
+    EXPECT_EQ(MaterialBlendMode::AlphaBlend,
+              sourceDefinition.descriptor.blendMode);
+    EXPECT_EQ(MaterialShadowPolicy::Receive,
+              sourceDefinition.descriptor.shadowPolicy);
+    EXPECT_EQ(MaterialTranslucencyPhase::Standard,
+              sourceDefinition.descriptor.translucencyPhase);
+    EXPECT_EQ(MaterialCullMode::NoCull, sourceDefinition.descriptor.cullMode);
+
+    CookedMaterialArtifact artifact;
+    artifact.logicalMaterialId = "Materials/SourceTransparent";
+    artifact.material = sourceDefinition;
+    std::string error;
+    ASSERT_TRUE(FinalizeCookedMaterialArtifact(artifact, error)) << error;
+    std::vector<uint8> bytes;
+    ASSERT_TRUE(SerializeCookedMaterialArtifact(artifact, bytes, error))
+        << error;
+    CookedMaterialArtifact decoded;
+    ASSERT_TRUE(DeserializeCookedMaterialArtifact(bytes, decoded, error))
+        << error;
+
+    MaterialResource cookedResource;
+    cookedResource.SetId(207);
+    ASSERT_TRUE(cookedResource.SetMaterialDefinition(decoded.material));
+    const MaterialStaticDescriptor& cooked =
+        cookedResource.GetMaterialDefinition().descriptor;
+    EXPECT_EQ(sourceDefinition.descriptor.blendMode, cooked.blendMode);
+    EXPECT_EQ(sourceDefinition.descriptor.shadowPolicy, cooked.shadowPolicy);
+    EXPECT_EQ(sourceDefinition.descriptor.translucencyPhase,
+              cooked.translucencyPhase);
+    EXPECT_EQ(sourceDefinition.descriptor.cullMode, cooked.cullMode);
+
+    MaterialDefinition disabledTextureBinding = sourceDefinition;
+    MaterialTextureSlotDefinition uv1Binding;
+    uv1Binding.slot = MaterialTextureSlot::BaseColor;
+    uv1Binding.uvSet = 1;
+    disabledTextureBinding.textureSlots.push_back(uv1Binding);
+    disabledTextureBinding.parameters.textureFlags = 1u;
+    // A descriptor-disabled binding may never reach the renderer. This makes
+    // the policy resolver's inactive-slot handling a defensive fallback, not
+    // a way to accept an incoherent public material contract.
+    EXPECT_FALSE(disabledTextureBinding.descriptor.featureMask & 1ull);
+    EXPECT_FALSE(cookedResource.SetMaterialDefinition(disabledTextureBinding));
+}
+
+TEST(ResourceRuntimePolicyValidation,
+     RenderUploadBuilderRejectsCanonicalTextureSlotsOutsideUploadContract)
+{
+    MaterialResource material;
+    material.SetId(205);
+
+    MaterialDefinition definition;
+    definition.descriptor.shadingModel = MaterialShadingModel::ToonLit;
+    definition.descriptor.programFamily =
+        std::string(GetMaterialProgramFamily(MaterialShadingModel::ToonLit));
+    MaterialTextureSlotDefinition toonRamp;
+    toonRamp.slot = MaterialTextureSlot::ToonRamp;
+    definition.textureSlots.push_back(toonRamp);
+    definition.descriptor.featureMask =
+        1ull << static_cast<uint32>(MaterialTextureSlot::ToonRamp);
+    ASSERT_TRUE(material.SetMaterialDefinition(definition));
+
+    const RenderUploadRequestBuildResult build =
+        RenderUploadRequestBuilder::Build(material, {10, 2}, 6, {});
+    EXPECT_EQ(build.code, RenderUploadRequestBuildCode::InvalidResource);
+    EXPECT_EQ(build.request, nullptr);
 }
 
 TEST(ResourceRuntimePolicyValidation, RenderUploadBuilderDescribesCubemapMipStorageExactly)

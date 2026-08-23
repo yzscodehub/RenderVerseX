@@ -13,7 +13,9 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -68,6 +70,271 @@ namespace
         fs::create_directories(path.parent_path());
         std::ofstream file(path, std::ios::binary);
         file << text;
+    }
+
+    std::string ReadTextFile(const fs::path& path)
+    {
+        std::ifstream file(path, std::ios::binary);
+        return {
+            std::istreambuf_iterator<char>(file),
+            std::istreambuf_iterator<char>()};
+    }
+
+    bool HasTrackedInclude(
+        const RVX::ShaderCompileResult& result,
+        const char* filename)
+    {
+        return std::any_of(
+            result.sourceInfo.includeFiles.begin(),
+            result.sourceInfo.includeFiles.end(),
+            [filename](const std::string& include)
+            {
+                return fs::path(include).filename() == filename;
+            });
+    }
+
+    bool HasVertexInput(
+        const RVX::ShaderCompileResult& result,
+        const char* semantic,
+        RVX::uint32 semanticIndex)
+    {
+        return std::any_of(
+            result.reflection.inputs.begin(),
+            result.reflection.inputs.end(),
+            [semantic, semanticIndex](
+                const RVX::ShaderReflection::InputAttribute& input)
+            {
+                return input.semantic == semantic &&
+                       input.semanticIndex == semanticIndex &&
+                       !input.systemValue;
+            });
+    }
+
+    bool HasResourceBinding(
+        const RVX::ShaderCompileResult& result,
+        const char* name)
+    {
+        return std::any_of(
+            result.reflection.resources.begin(),
+            result.reflection.resources.end(),
+            [name](const RVX::ShaderReflection::ResourceBinding& resource)
+            {
+                return resource.name == name;
+            });
+    }
+
+    bool HasDXILContainerHeader(const std::vector<RVX::uint8>& bytecode)
+    {
+        return bytecode.size() >= 4 &&
+               bytecode[0] == static_cast<RVX::uint8>('D') &&
+               bytecode[1] == static_cast<RVX::uint8>('X') &&
+               bytecode[2] == static_cast<RVX::uint8>('B') &&
+               bytecode[3] == static_cast<RVX::uint8>('C');
+    }
+
+    bool HasDXBCContainerHeader(const std::vector<RVX::uint8>& bytecode)
+    {
+        return HasDXILContainerHeader(bytecode);
+    }
+
+    bool HasSPIRVHeader(const std::vector<RVX::uint8>& bytecode)
+    {
+        if (bytecode.size() < sizeof(RVX::uint32))
+        {
+            return false;
+        }
+
+        RVX::uint32 magic = 0;
+        std::memcpy(&magic, bytecode.data(), sizeof(magic));
+        return magic == 0x07230203u;
+    }
+
+    struct SurfaceShaderCompileCase
+    {
+        const char* label = nullptr;
+        const char* filename = nullptr;
+        RVX::RHIShaderStage stage = RVX::RHIShaderStage::None;
+        const char* entryPoint = nullptr;
+        bool requiresTexCoord1 = false;
+        const char* defineName = nullptr;
+        const char* defineValue = nullptr;
+        bool gpuSceneRasterOnly = false;
+        const char* requiredResource = nullptr;
+    };
+
+    constexpr std::array<SurfaceShaderCompileCase, 20> GFX06_SURFACE_SHADER_CASES = {{
+        // DefaultLit is used by direct, GPU-driven, and GPU-scene raster paths.
+        {"DefaultLit PS", "DefaultLit.hlsl", RVX::RHIShaderStage::Pixel, "PSMain", false},
+        {"DefaultLit VS direct", "DefaultLit.hlsl", RVX::RHIShaderStage::Vertex, "VSMain", true},
+        {"DefaultLit VS rigid", "DefaultLit.hlsl", RVX::RHIShaderStage::Vertex, "VSMainRigid", true},
+        {"DefaultLit VS GPU-driven", "DefaultLit.hlsl", RVX::RHIShaderStage::Vertex, "VSMainGPUDriven", true, nullptr, nullptr, false, "GPUDrivenInstances"},
+        {"DefaultLit VS instanced material", "DefaultLit.hlsl", RVX::RHIShaderStage::Vertex, "VSMainInstancedMaterial", true, nullptr, nullptr, false, "GPUDrivenInstances"},
+        {"DefaultLit VS GPU-scene", "DefaultLit.hlsl", RVX::RHIShaderStage::Vertex, "VSMainGPUScene", true, "RVX_GPU_SCENE_RASTER", "1", true, "GPUSceneRasterCandidates"},
+        {"DefaultLit VS GPU-scene instanced material", "DefaultLit.hlsl", RVX::RHIShaderStage::Vertex, "VSMainGPUSceneInstancedMaterial", true, "RVX_GPU_SCENE_RASTER", "1", true, "GPUSceneRasterCandidates"},
+
+        // DepthOnly supplies both the depth-prepass and raster shadow caster.
+        {"Shadow VS direct", "DepthOnly.hlsl", RVX::RHIShaderStage::Vertex, "VSMain", false},
+        {"Shadow VS rigid", "DepthOnly.hlsl", RVX::RHIShaderStage::Vertex, "VSMainRigid", false},
+        {"Shadow VS GPU-driven", "DepthOnly.hlsl", RVX::RHIShaderStage::Vertex, "VSMainGPUDriven", false, nullptr, nullptr, false, "GPUDrivenInstances"},
+        {"Shadow VS GPU-scene", "DepthOnly.hlsl", RVX::RHIShaderStage::Vertex, "VSMainGPUScene", false, "RVX_GPU_SCENE_RASTER", "1", true, "GPUSceneRasterCandidates"},
+        {"Shadow VS masked", "DepthOnly.hlsl", RVX::RHIShaderStage::Vertex, "VSMainMasked", true},
+        {"Shadow VS masked rigid", "DepthOnly.hlsl", RVX::RHIShaderStage::Vertex, "VSMainMaskedRigid", true},
+        {"Shadow PS masked", "DepthOnly.hlsl", RVX::RHIShaderStage::Pixel, "PSMainMasked", false},
+
+        // ObjectVelocity has a direct/skinned family; it intentionally does not
+        // advertise a GPU-scene entry point until motion history is published
+        // through that path as well.
+        {"ObjectVelocity VS skinned", "ObjectVelocity.hlsl", RVX::RHIShaderStage::Vertex, "VSMain", false},
+        {"ObjectVelocity VS rigid", "ObjectVelocity.hlsl", RVX::RHIShaderStage::Vertex, "VSMainRigid", false},
+        {"ObjectVelocity VS masked", "ObjectVelocity.hlsl", RVX::RHIShaderStage::Vertex, "VSMainMasked", true},
+        {"ObjectVelocity VS masked rigid", "ObjectVelocity.hlsl", RVX::RHIShaderStage::Vertex, "VSMainMaskedRigid", true},
+        {"ObjectVelocity PS", "ObjectVelocity.hlsl", RVX::RHIShaderStage::Pixel, "PSMain", false},
+        {"ObjectVelocity PS masked", "ObjectVelocity.hlsl", RVX::RHIShaderStage::Pixel, "PSMainMasked", false},
+    }};
+
+    bool SupportsGPUSceneRaster(RVX::RHIBackendType backend)
+    {
+        return backend == RVX::RHIBackendType::DX12 ||
+               backend == RVX::RHIBackendType::Vulkan ||
+               backend == RVX::RHIBackendType::Metal;
+    }
+
+    void VerifyGFX06SurfaceShaderMatrix(
+        RVX::IShaderCompiler& compiler,
+        RVX::RHIBackendType backend)
+    {
+        const fs::path shaderDirectory =
+            fs::path(RVX_SOURCE_DIR) / "Source" / "Runtime" / "Render" /
+            "Shaders";
+        size_t expectedCaseCount = 0;
+        size_t compiledCaseCount = 0;
+        for (const SurfaceShaderCompileCase& shaderCase : GFX06_SURFACE_SHADER_CASES)
+        {
+            if (!shaderCase.gpuSceneRasterOnly || SupportsGPUSceneRaster(backend))
+            {
+                ++expectedCaseCount;
+            }
+        }
+
+        for (const SurfaceShaderCompileCase& shaderCase : GFX06_SURFACE_SHADER_CASES)
+        {
+            const fs::path shaderPath = shaderDirectory / shaderCase.filename;
+            SCOPED_TRACE(
+                std::string(shaderCase.label) + " for backend " +
+                std::to_string(static_cast<RVX::uint32>(backend)));
+
+            // GPU-scene raster is deliberately not a compatibility-backend
+            // fallback. The feature is only a production permutation on the
+            // backends with the qualified GPU-scene resource model.
+            if (shaderCase.gpuSceneRasterOnly && !SupportsGPUSceneRaster(backend))
+            {
+                continue;
+            }
+            ++compiledCaseCount;
+
+            if (!fs::exists(shaderPath))
+            {
+                ADD_FAILURE() << "Missing renderer shader: " << shaderPath.string();
+                continue;
+            }
+
+            const std::string source = ReadTextFile(shaderPath);
+            if (source.empty())
+            {
+                ADD_FAILURE() << "Failed to read renderer shader: " << shaderPath.string();
+                continue;
+            }
+
+            const std::string shaderPathString = shaderPath.string();
+            RVX::ShaderCompileOptions options;
+            options.stage = shaderCase.stage;
+            options.entryPoint = shaderCase.entryPoint;
+            options.sourceCode = source.c_str();
+            options.sourcePath = shaderPathString.c_str();
+            options.targetBackend = backend;
+            options.enableOptimization = false;
+            if (shaderCase.defineName != nullptr)
+            {
+                options.defines.push_back({shaderCase.defineName, shaderCase.defineValue});
+            }
+
+            const RVX::ShaderCompileSupport support = compiler.QuerySupport(options);
+            ASSERT_TRUE(support.IsSupported())
+                << "Compiler does not support " << shaderCase.label
+                << ": " << support.reason;
+
+            const RVX::ShaderCompileResult result = compiler.Compile(options);
+            ASSERT_TRUE(result.success)
+                << "Failed to compile " << shaderCase.label
+                << ": " << result.errorMessage;
+
+            ASSERT_TRUE(result.reflection.valid)
+                << shaderCase.label << " did not produce reflection";
+            ASSERT_FALSE(result.bytecode.empty())
+                << shaderCase.label << " did not produce bytecode";
+            // FXC's standard include handler does not expose an include
+            // dependency transcript. DX11 still verifies a real DXBC artifact;
+            // compilers that can report dependencies must prove that the shared
+            // surface contract was consumed.
+            if (backend != RVX::RHIBackendType::DX11)
+            {
+                ASSERT_TRUE(HasTrackedInclude(result, "SurfaceMaterial.hlsli"))
+                    << shaderCase.label
+                    << " did not track the shared material surface contract";
+            }
+
+            if (backend == RVX::RHIBackendType::DX12)
+            {
+                EXPECT_TRUE(HasDXILContainerHeader(result.bytecode))
+                    << shaderCase.label << " did not produce a DXIL container";
+            }
+            else if (backend == RVX::RHIBackendType::DX11)
+            {
+                EXPECT_TRUE(HasDXBCContainerHeader(result.bytecode))
+                    << shaderCase.label << " did not produce DX11 shader bytecode";
+            }
+            else if (backend == RVX::RHIBackendType::Vulkan ||
+                     backend == RVX::RHIBackendType::OpenGL)
+            {
+                EXPECT_TRUE(HasSPIRVHeader(result.bytecode))
+                    << shaderCase.label << " did not produce SPIR-V";
+            }
+
+            if (backend == RVX::RHIBackendType::OpenGL)
+            {
+                EXPECT_FALSE(result.glslSource.empty())
+                    << shaderCase.label << " did not produce GLSL";
+                EXPECT_NE(result.glslSource.find("#version"), std::string::npos)
+                    << shaderCase.label << " did not produce versioned GLSL";
+                EXPECT_EQ(result.glslVersion, 450u)
+                    << shaderCase.label << " used an unexpected GLSL version";
+            }
+            else if (backend == RVX::RHIBackendType::Metal)
+            {
+                EXPECT_FALSE(result.mslSource.empty())
+                    << shaderCase.label << " did not produce MSL";
+                EXPECT_EQ(result.mslEntryPoint, shaderCase.entryPoint)
+                    << shaderCase.label << " produced an unexpected MSL entry point";
+            }
+
+            if (shaderCase.requiresTexCoord1)
+            {
+                EXPECT_TRUE(HasVertexInput(result, "TEXCOORD", 1))
+                    << shaderCase.label
+                    << " lost the authored UV1 / vertex-slot-7 contract";
+            }
+
+            if (shaderCase.requiredResource != nullptr)
+            {
+                EXPECT_TRUE(HasResourceBinding(result, shaderCase.requiredResource))
+                    << shaderCase.label << " did not retain the expected "
+                    << shaderCase.requiredResource << " permutation resource";
+            }
+        }
+
+        // Keep compatibility-backend exclusions explicit and measurable. A
+        // GPU-scene permutation is not silently replaced by a direct shader.
+        EXPECT_EQ(compiledCaseCount, expectedCaseCount);
     }
 
     std::string TestVertexShaderSource()
@@ -303,7 +570,7 @@ TEST_F(ShaderCompilerValidationFixture, QuerySupportProvidesStructuredFailureFor
     EXPECT_EQ(result.errorMessage, support.reason);
 }
 
-#if defined(_WIN32)
+#if RVX_ENABLE_DX12
 TEST_F(ShaderCompilerValidationFixture,
        DX12RayLibraryReflectionSelectsTheRequestedEntryPoint)
 {
@@ -572,6 +839,7 @@ TEST_F(
         RVX::RVX_INVALID_INDEX);
 }
 
+#if RVX_ENABLE_DX12
 TEST_F(ShaderCompilerValidationFixture, DX12CompileProducesReflectionAndSourceInfo)
 {
     TempDirectory temp("rvx_shader_compile_dx12");
@@ -595,10 +863,7 @@ TEST_F(ShaderCompilerValidationFixture, DX12CompileProducesReflectionAndSourceIn
     options.enableOptimization = false;
 
     const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
-    if (!support.IsSupported())
-    {
-        GTEST_SKIP() << support.reason;
-    }
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
 
     RVX::ShaderCompileResult result = compiler->Compile(options);
     ASSERT_TRUE(result.success) << result.errorMessage;
@@ -680,7 +945,9 @@ TEST_F(ShaderCompilerValidationFixture, DX12CompileProducesReflectionAndSourceIn
     ASSERT_FALSE(layout.setLayouts[0].entries.empty());
     EXPECT_EQ(layout.setLayouts[0].entries[0].type, RVX::RHIBindingType::UniformBuffer);
 }
+#endif
 
+#if RVX_ENABLE_VULKAN
 TEST_F(
     ShaderCompilerValidationFixture,
     VulkanCompilePreservesPortableInterfaceSemantics)
@@ -710,10 +977,7 @@ TEST_F(
 
     const RVX::ShaderCompileSupport support =
         compiler->QuerySupport(options);
-    if (!support.IsSupported())
-    {
-        GTEST_SKIP() << support.reason;
-    }
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
 
     const RVX::ShaderCompileResult result =
         compiler->Compile(options);
@@ -795,10 +1059,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     const RVX::ShaderCompileSupport support =
         compiler->QuerySupport(options);
-    if (!support.IsSupported())
-    {
-        GTEST_SKIP() << support.reason;
-    }
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
 
     const RVX::ShaderCompileResult result = compiler->Compile(options);
     ASSERT_TRUE(result.success) << result.errorMessage;
@@ -838,7 +1099,9 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         readWriteIt->type,
         RVX::RHIBindingType::StorageBuffer);
 }
+#endif
 
+#if RVX_ENABLE_OPENGL
 TEST_F(
     ShaderCompilerValidationFixture,
     OpenGLReflectionDistinguishesReadOnlyAndWritableStructuredBuffers)
@@ -866,10 +1129,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     options.enableOptimization = false;
 
     const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
-    if (!support.IsSupported())
-    {
-        GTEST_SKIP() << support.reason;
-    }
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
 
     const RVX::ShaderCompileResult result = compiler->Compile(options);
     ASSERT_TRUE(result.success) << result.errorMessage;
@@ -892,7 +1152,9 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     ASSERT_NE(readWriteIt, result.reflection.resources.end());
     EXPECT_EQ(readWriteIt->type, RVX::RHIBindingType::StorageBuffer);
 }
+#endif
 
+#if RVX_ENABLE_DX11
 TEST_F(ShaderCompilerValidationFixture, DX11DefaultProfileSupportsRegisterSpaces)
 {
     const std::string source = R"(
@@ -936,10 +1198,7 @@ VSOutput main(VSInput input)
     options.enableOptimization = false;
 
     const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
-    if (!support.IsSupported())
-    {
-        GTEST_SKIP() << support.reason;
-    }
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
 
     RVX::ShaderCompileResult result = compiler->Compile(options);
     ASSERT_TRUE(result.success) << result.errorMessage;
@@ -1002,10 +1261,7 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
     options.enableOptimization = false;
 
     const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
-    if (!support.IsSupported())
-    {
-        GTEST_SKIP() << support.reason;
-    }
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
 
     const RVX::ShaderCompileResult result = compiler->Compile(options);
     ASSERT_TRUE(result.success) << result.errorMessage;
@@ -1086,10 +1342,7 @@ TEST_F(ShaderCompilerValidationFixture,
     options.enableOptimization = false;
 
     const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
-    if (!support.IsSupported())
-    {
-        GTEST_SKIP() << support.reason;
-    }
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
 
     const RVX::ShaderCompileResult result = compiler->Compile(options);
     ASSERT_TRUE(result.success) << result.errorMessage;
@@ -1111,6 +1364,114 @@ TEST_F(ShaderCompilerValidationFixture,
     }
 }
 
+#endif
+
+#if RVX_ENABLE_DX12
+TEST_F(ShaderCompilerValidationFixture,
+       GFX06SurfaceShadersCompileAsDXIL)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    RVX::ShaderCompileOptions supportOptions;
+    supportOptions.stage = RVX::RHIShaderStage::Pixel;
+    supportOptions.entryPoint = "PSMain";
+    supportOptions.sourceCode = "float4 PSMain() : SV_TARGET { return 0.0f; }";
+    supportOptions.targetBackend = RVX::RHIBackendType::DX12;
+
+    const RVX::ShaderCompileSupport support =
+        compiler->QuerySupport(supportOptions);
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
+
+    VerifyGFX06SurfaceShaderMatrix(*compiler, RVX::RHIBackendType::DX12);
+}
+#endif
+
+#if RVX_ENABLE_DX11
+TEST_F(ShaderCompilerValidationFixture,
+       GFX06SurfaceShadersCompileAsDXBC)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    RVX::ShaderCompileOptions supportOptions;
+    supportOptions.stage = RVX::RHIShaderStage::Pixel;
+    supportOptions.entryPoint = "PSMain";
+    supportOptions.sourceCode = "float4 PSMain() : SV_TARGET { return 0.0f; }";
+    supportOptions.targetBackend = RVX::RHIBackendType::DX11;
+
+    const RVX::ShaderCompileSupport support =
+        compiler->QuerySupport(supportOptions);
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
+
+    VerifyGFX06SurfaceShaderMatrix(*compiler, RVX::RHIBackendType::DX11);
+}
+#endif
+
+#if RVX_ENABLE_VULKAN
+TEST_F(ShaderCompilerValidationFixture,
+       GFX06SurfaceShadersCompileAsSPIRV)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    RVX::ShaderCompileOptions supportOptions;
+    supportOptions.stage = RVX::RHIShaderStage::Pixel;
+    supportOptions.entryPoint = "PSMain";
+    supportOptions.sourceCode = "float4 PSMain() : SV_TARGET { return 0.0f; }";
+    supportOptions.targetBackend = RVX::RHIBackendType::Vulkan;
+
+    const RVX::ShaderCompileSupport support =
+        compiler->QuerySupport(supportOptions);
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
+
+    VerifyGFX06SurfaceShaderMatrix(*compiler, RVX::RHIBackendType::Vulkan);
+}
+#endif
+
+#if RVX_ENABLE_OPENGL
+TEST_F(ShaderCompilerValidationFixture,
+       GFX06SurfaceShadersCompileAsOpenGLGLSL)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    RVX::ShaderCompileOptions supportOptions;
+    supportOptions.stage = RVX::RHIShaderStage::Pixel;
+    supportOptions.entryPoint = "PSMain";
+    supportOptions.sourceCode = "float4 PSMain() : SV_TARGET { return 0.0f; }";
+    supportOptions.targetBackend = RVX::RHIBackendType::OpenGL;
+
+    const RVX::ShaderCompileSupport support =
+        compiler->QuerySupport(supportOptions);
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
+
+    VerifyGFX06SurfaceShaderMatrix(*compiler, RVX::RHIBackendType::OpenGL);
+}
+#endif
+
+#if RVX_ENABLE_METAL
+TEST_F(ShaderCompilerValidationFixture,
+       GFX06SurfaceShadersCompileAsMSL)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    RVX::ShaderCompileOptions supportOptions;
+    supportOptions.stage = RVX::RHIShaderStage::Pixel;
+    supportOptions.entryPoint = "PSMain";
+    supportOptions.sourceCode = "float4 PSMain() : SV_TARGET { return 0.0f; }";
+    supportOptions.targetBackend = RVX::RHIBackendType::Metal;
+
+    const RVX::ShaderCompileSupport support =
+        compiler->QuerySupport(supportOptions);
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
+
+    VerifyGFX06SurfaceShaderMatrix(*compiler, RVX::RHIBackendType::Metal);
+}
+#endif
+
+#if RVX_ENABLE_OPENGL
 TEST_F(ShaderCompilerValidationFixture,
        OpenGLToneMappingPixelCompileSupportsPortableCBufferLayout)
 {
@@ -1137,10 +1498,7 @@ TEST_F(ShaderCompilerValidationFixture,
     options.defines.push_back({"RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y", "1"});
 
     const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
-    if (!support.IsSupported())
-    {
-        GTEST_SKIP() << support.reason;
-    }
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
 
     const RVX::ShaderCompileResult result = compiler->Compile(options);
     ASSERT_TRUE(result.success) << result.errorMessage;
@@ -1170,10 +1528,7 @@ TEST_F(ShaderCompilerValidationFixture, OpenGLCompileProducesGLSLSource)
     options.enableOptimization = false;
 
     const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
-    if (!support.IsSupported())
-    {
-        GTEST_SKIP() << support.reason;
-    }
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
 
     RVX::ShaderCompileResult result = compiler->Compile(options);
     ASSERT_TRUE(result.success) << result.errorMessage;
@@ -1182,6 +1537,68 @@ TEST_F(ShaderCompilerValidationFixture, OpenGLCompileProducesGLSLSource)
     EXPECT_NE(result.glslSource.find("#version"), std::string::npos);
     EXPECT_FALSE(result.reflection.resources.empty());
     EXPECT_FALSE(result.sourceInfo.IsEmpty());
+}
+
+TEST_F(ShaderCompilerValidationFixture,
+       OpenGLCompileProducesCompleteRuntimeArtifacts)
+{
+    TempDirectory temp("rvx_shader_compile_gl_runtime_artifacts");
+    const fs::path shaderPath = temp.Path() / "Main.hlsl";
+    const fs::path includePath = temp.Path() / "Common.hlsli";
+    const std::string source = R"(
+#include "Common.hlsli"
+
+struct PushConstants
+{
+    float4 PushTint;
+};
+[[vk::push_constant]] PushConstants gPushConstants;
+
+cbuffer FrameConstants : register(b0, space0)
+{
+    float4 FrameTint;
+};
+
+Texture2D<float4> BaseTexture : register(t1, space2);
+SamplerState BaseSampler : register(s6, space2);
+
+float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
+{
+    return RVXApplyIdentity(BaseTexture.Sample(BaseSampler, uv)) *
+        gPushConstants.PushTint * FrameTint;
+}
+)";
+    WriteTextFile(includePath, "float4 RVXApplyIdentity(float4 value) { return value; }\n");
+    WriteTextFile(shaderPath, source);
+
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    const std::string shaderPathString = shaderPath.string();
+    RVX::ShaderCompileOptions options;
+    options.stage = RVX::RHIShaderStage::Pixel;
+    options.entryPoint = "main";
+    options.sourceCode = source.c_str();
+    options.sourcePath = shaderPathString.c_str();
+    options.targetBackend = RVX::RHIBackendType::OpenGL;
+    options.enableOptimization = false;
+
+    const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
+
+    const RVX::ShaderCompileResult result = compiler->Compile(options);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    EXPECT_TRUE(HasSPIRVHeader(result.bytecode));
+    EXPECT_FALSE(result.glslSource.empty());
+    EXPECT_EQ(result.glslVersion, 450u);
+    EXPECT_TRUE(result.reflection.valid);
+    EXPECT_FALSE(result.glslBindings.uboBindings.empty());
+    EXPECT_FALSE(result.glslBindings.textureBindings.empty());
+    EXPECT_FALSE(result.glslBindings.samplerBindings.empty());
+    ASSERT_TRUE(result.glslPushConstant.has_value());
+    EXPECT_GT(result.glslPushConstant->size, 0u);
+    EXPECT_FALSE(result.sourceInfo.IsEmpty());
+    EXPECT_TRUE(HasTrackedInclude(result, "Common.hlsli"));
 }
 
 TEST_F(ShaderCompilerValidationFixture, OpenGLRemapsDescriptorSetsByStableSetBindingOrder)
@@ -1231,10 +1648,7 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
     options.enableOptimization = false;
 
     const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
-    if (!support.IsSupported())
-    {
-        GTEST_SKIP() << support.reason;
-    }
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
 
     RVX::ShaderCompileResult result = compiler->Compile(options);
     ASSERT_TRUE(result.success) << result.errorMessage;
@@ -1407,6 +1821,32 @@ TEST_F(ShaderCompilerValidationFixture, OpenGLPermutationUsesGeneratedGLSLSource
     EXPECT_EQ(device.lastShaderSource, glslSource);
     EXPECT_NE(device.lastShaderSource, spirvBytes);
 }
+#endif
+
+#if !defined(__APPLE__)
+TEST_F(ShaderCompilerValidationFixture,
+       GFX06MetalShaderCapabilityIsExplicitlyUnsupportedOnNonApple)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    const std::string source =
+        "float4 main() : SV_TARGET { return float4(0.0f, 0.0f, 0.0f, 1.0f); }";
+    RVX::ShaderCompileOptions options;
+    options.stage = RVX::RHIShaderStage::Pixel;
+    options.entryPoint = "main";
+    options.sourceCode = source.c_str();
+    options.sourcePath = "GFX06MetalCapability.hlsl";
+    options.targetBackend = RVX::RHIBackendType::Metal;
+
+    const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
+    EXPECT_FALSE(support.IsSupported());
+    EXPECT_EQ(
+        support.code,
+        RVX::ShaderCompileSupportCode::BackendUnsupported);
+    EXPECT_FALSE(support.reason.empty());
+}
+#endif
 
 TEST(ShaderCompilerPolicyValidation, DebugInformationDoesNotChangeOptimizationMode)
 {

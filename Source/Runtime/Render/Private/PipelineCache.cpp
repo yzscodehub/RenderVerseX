@@ -156,6 +156,7 @@ namespace
     constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_SCENE_INSTANCED_MATERIAL = 0x4753494Du; // GSIM
     constexpr uint32 RVX_PIPELINE_PURPOSE_SHADOW_DEPTH = 0x53484457u; // SHDW
     constexpr uint32 RVX_PIPELINE_PURPOSE_RIGID_SHADOW_DEPTH = 0x52534844u; // RSHD
+    constexpr uint32 RVX_PIPELINE_PURPOSE_MASKED_SHADOW_DEPTH = 0x4D534844u; // MSHD
     constexpr uint32 RVX_PIPELINE_PURPOSE_INSTANCED_SHADOW_DEPTH = 0x49534844u; // ISHD
     constexpr uint32 RVX_PIPELINE_PURPOSE_OBJECT_VELOCITY = 0x4F56454Cu; // OVEL
     constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_DRIVEN_DEPTH = 0x47444550u; // GDEP
@@ -166,6 +167,42 @@ namespace
     constexpr float RVX_MAX_SHADOW_CASTER_DEPTH_BIAS = 10000.0f;
     constexpr float RVX_MAX_SHADOW_CASTER_SLOPE_BIAS = 16.0f;
     constexpr const char* RVX_PIPELINE_MANIFEST_MAGIC = "RVX_PIPELINE_CACHE_MANIFEST";
+
+    [[nodiscard]] bool IsValidSurfaceCullMode(MaterialCullMode cullMode) noexcept
+    {
+        return cullMode == MaterialCullMode::Back ||
+               cullMode == MaterialCullMode::NoCull;
+    }
+
+    [[nodiscard]] RHICullMode ToRHICullMode(MaterialCullMode cullMode) noexcept
+    {
+        return cullMode == MaterialCullMode::NoCull
+            ? RHICullMode::None
+            : RHICullMode::Back;
+    }
+
+    [[nodiscard]] RHIFrontFace ToRHIFrontFace(
+        RHIBackendType backend,
+        bool reverseWinding) noexcept
+    {
+        // Engine mesh assets use counter-clockwise object-space winding. The
+        // RHI convention remains counter-clockwise on every backend. Vulkan's
+        // positive-height viewport would classify an unadjusted clip-space CCW
+        // triangle as clockwise, but ApplyBackendClipConvention() negates clip
+        // Y before rasterization and restores the canonical RHI classification.
+        // Invert it only for a negative world-space determinant. This remains
+        // observable for no-cull materials because surface shaders consume
+        // SV_IsFrontFace for double-sided lighting.
+        (void)backend;
+        const RHIFrontFace canonical = RHIFrontFace::CounterClockwise;
+        if (!reverseWinding)
+        {
+            return canonical;
+        }
+        return canonical == RHIFrontFace::Clockwise
+            ? RHIFrontFace::CounterClockwise
+            : RHIFrontFace::Clockwise;
+    }
 
     bool PrepareVulkanSampledTexture(IRHIDevice* device, RHITexture* texture)
     {
@@ -4454,12 +4491,19 @@ RHIPipeline* PipelineCache::GetPipelineForVariant(MaterialPipelineVariant varian
 RHIPipeline* PipelineCache::GetPipelineForVariant(
     MaterialPipelineVariant variant,
     RHIFormat renderTargetFormat,
-    DefaultLitDirectVertexInputMode inputMode)
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
     if (inputMode != DefaultLitDirectVertexInputMode::Rigid &&
         inputMode != DefaultLitDirectVertexInputMode::Skinned)
     {
         SetLastError("Invalid DefaultLit direct vertex input mode");
+        return nullptr;
+    }
+    if (!IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError("Invalid material cull mode");
         return nullptr;
     }
 
@@ -4491,9 +4535,11 @@ RHIPipeline* PipelineCache::GetPipelineForVariant(
                                                  maskedDebugName,
                                                  writableDepthState,
                                                  RHIBlendState::Default(),
-                                                 renderTargetFormat,
-                                                 inputMode,
-                                                 false).Get();
+                                                  renderTargetFormat,
+                                                  inputMode,
+                                                  cullMode,
+                                                  reverseWinding,
+                                                  false).Get();
         case MaterialPipelineVariant::Transparent:
         {
             RHIBlendState transparentBlend = RHIBlendState::Default();
@@ -4502,9 +4548,11 @@ RHIPipeline* PipelineCache::GetPipelineForVariant(
                                                  transparentDebugName,
                                                  readOnlyDepthState,
                                                  transparentBlend,
-                                                 renderTargetFormat,
-                                                 inputMode,
-                                                 false).Get();
+                                                  renderTargetFormat,
+                                                  inputMode,
+                                                  cullMode,
+                                                  reverseWinding,
+                                                  false).Get();
         }
         case MaterialPipelineVariant::Opaque:
         default:
@@ -4512,14 +4560,25 @@ RHIPipeline* PipelineCache::GetPipelineForVariant(
                                                  opaqueDebugName,
                                                  writableDepthState,
                                                  RHIBlendState::Default(),
-                                                 renderTargetFormat,
-                                                 inputMode,
-                                                 false).Get();
+                                                  renderTargetFormat,
+                                                  inputMode,
+                                                  cullMode,
+                                                  reverseWinding,
+                                                  false).Get();
     }
 }
 
-RHIPipeline* PipelineCache::GetGPUDrivenPipelineForVariant(MaterialPipelineVariant variant, RHIFormat renderTargetFormat)
+RHIPipeline* PipelineCache::GetGPUDrivenPipelineForVariant(
+    MaterialPipelineVariant variant,
+    RHIFormat renderTargetFormat,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
+    if (!IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError("Invalid GPU-driven material cull mode");
+        return nullptr;
+    }
     if (renderTargetFormat == RHIFormat::Unknown)
     {
         renderTargetFormat = m_renderTargetFormat;
@@ -4534,8 +4593,10 @@ RHIPipeline* PipelineCache::GetGPUDrivenPipelineForVariant(MaterialPipelineVaria
             return GetOrCreateGPUDrivenDefaultLitPipeline(MaterialPipelineVariant::Masked,
                                                           "GPUDrivenMaskedPipeline",
                                                           writableDepthState,
-                                                          RHIBlendState::Default(),
-                                                          renderTargetFormat).Get();
+                                                           RHIBlendState::Default(),
+                                                           renderTargetFormat,
+                                                           cullMode,
+                                                           reverseWinding).Get();
         case MaterialPipelineVariant::Transparent:
         {
             RHIBlendState transparentBlend = RHIBlendState::Default();
@@ -4543,34 +4604,58 @@ RHIPipeline* PipelineCache::GetGPUDrivenPipelineForVariant(MaterialPipelineVaria
             return GetOrCreateGPUDrivenDefaultLitPipeline(MaterialPipelineVariant::Transparent,
                                                           "GPUDrivenTransparentPipeline",
                                                           readOnlyDepthState,
-                                                          transparentBlend,
-                                                          renderTargetFormat).Get();
+                                                           transparentBlend,
+                                                           renderTargetFormat,
+                                                           cullMode,
+                                                           reverseWinding).Get();
         }
         case MaterialPipelineVariant::Opaque:
         default:
             return GetOrCreateGPUDrivenDefaultLitPipeline(MaterialPipelineVariant::Opaque,
                                                           "GPUDrivenOpaquePipeline",
                                                           writableDepthState,
-                                                          RHIBlendState::Default(),
-                                                          renderTargetFormat).Get();
+                                                           RHIBlendState::Default(),
+                                                           renderTargetFormat,
+                                                           cullMode,
+                                                           reverseWinding).Get();
     }
 }
 
-RHIPipeline* PipelineCache::GetGPUDrivenDepthOnlyPipeline()
+RHIPipeline* PipelineCache::GetGPUDrivenDepthOnlyPipeline(
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
-    if (m_gpuDrivenDepthOnlyPipeline)
+    if (!IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError("Invalid GPU-driven depth cull mode");
+        return nullptr;
+    }
+    if (cullMode == MaterialCullMode::Back && !reverseWinding &&
+        m_gpuDrivenDepthOnlyPipeline)
     {
         return m_gpuDrivenDepthOnlyPipeline.Get();
     }
 
-    m_gpuDrivenDepthOnlyPipeline = GetOrCreateGPUDrivenDepthOnlyPipeline();
-    return m_gpuDrivenDepthOnlyPipeline.Get();
+    RHIPipelineRef pipeline = GetOrCreateGPUDrivenDepthOnlyPipeline(
+        cullMode, reverseWinding);
+    if (cullMode == MaterialCullMode::Back && !reverseWinding)
+    {
+        m_gpuDrivenDepthOnlyPipeline = pipeline;
+    }
+    return pipeline.Get();
 }
 
 RHIPipeline* PipelineCache::GetInstancedMaterialPipelineForVariant(
     MaterialPipelineVariant variant,
-    RHIFormat renderTargetFormat)
+    RHIFormat renderTargetFormat,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
+    if (!IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError("Invalid instanced material cull mode");
+        return nullptr;
+    }
     if (renderTargetFormat == RHIFormat::Unknown)
     {
         renderTargetFormat = m_renderTargetFormat;
@@ -4586,36 +4671,69 @@ RHIPipeline* PipelineCache::GetInstancedMaterialPipelineForVariant(
         "InstancedMaterialOpaquePipeline",
         BuildDepthStencilState(m_config.reverseZ, true),
         RHIBlendState::Default(),
-        renderTargetFormat).Get();
+        renderTargetFormat,
+        cullMode,
+        reverseWinding).Get();
 }
 
 RHIPipeline* PipelineCache::GetDepthOnlyPipeline(
-    DefaultLitDirectVertexInputMode inputMode)
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
-    if (inputMode == DefaultLitDirectVertexInputMode::Skinned)
+    if (!IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError("Invalid depth cull mode");
+        return nullptr;
+    }
+    if (cullMode == MaterialCullMode::Back && !reverseWinding &&
+        inputMode == DefaultLitDirectVertexInputMode::Skinned)
     {
         return m_depthOnlyPipeline.Get();
     }
-    if (!m_rigidDepthOnlyPipeline)
+    if (cullMode == MaterialCullMode::Back && !reverseWinding &&
+        inputMode == DefaultLitDirectVertexInputMode::Rigid)
     {
-        m_rigidDepthOnlyPipeline = GetOrCreateRigidDepthOnlyPipeline();
+        if (!m_rigidDepthOnlyPipeline)
+        {
+            m_rigidDepthOnlyPipeline = GetOrCreateRigidDepthOnlyPipeline(
+                cullMode, false);
+        }
+        return m_rigidDepthOnlyPipeline.Get();
     }
-    return m_rigidDepthOnlyPipeline.Get();
+    return inputMode == DefaultLitDirectVertexInputMode::Skinned
+        ? GetOrCreateDepthOnlyPipeline(cullMode, reverseWinding).Get()
+        : GetOrCreateRigidDepthOnlyPipeline(cullMode, reverseWinding).Get();
 }
 
 RHIPipeline* PipelineCache::GetMaskedDepthOnlyPipeline(
-    DefaultLitDirectVertexInputMode inputMode)
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
-    if (inputMode == DefaultLitDirectVertexInputMode::Skinned)
+    if (!IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError("Invalid masked depth cull mode");
+        return nullptr;
+    }
+    if (cullMode == MaterialCullMode::Back && !reverseWinding &&
+        inputMode == DefaultLitDirectVertexInputMode::Skinned)
     {
         return m_maskedDepthOnlyPipeline.Get();
     }
-    if (!m_rigidMaskedDepthOnlyPipeline)
+    if (cullMode == MaterialCullMode::Back && !reverseWinding &&
+        inputMode == DefaultLitDirectVertexInputMode::Rigid)
     {
-        m_rigidMaskedDepthOnlyPipeline =
-            GetOrCreateMaskedDepthOnlyPipeline(inputMode);
+        if (!m_rigidMaskedDepthOnlyPipeline)
+        {
+            m_rigidMaskedDepthOnlyPipeline =
+                GetOrCreateMaskedDepthOnlyPipeline(
+                    inputMode, cullMode, false);
+        }
+        return m_rigidMaskedDepthOnlyPipeline.Get();
     }
-    return m_rigidMaskedDepthOnlyPipeline.Get();
+    return GetOrCreateMaskedDepthOnlyPipeline(
+        inputMode, cullMode, reverseWinding).Get();
 }
 
 bool PipelineCache::IsGPUSceneRasterReady() const
@@ -4629,9 +4747,11 @@ bool PipelineCache::IsGPUSceneRasterReady() const
 
 RHIPipeline* PipelineCache::GetGPUScenePipelineForVariant(
     MaterialPipelineVariant variant,
-    RHIFormat renderTargetFormat)
+    RHIFormat renderTargetFormat,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
-    if (!IsGPUSceneRasterReady())
+    if (!IsGPUSceneRasterReady() || !IsValidSurfaceCullMode(cullMode))
     {
         return nullptr;
     }
@@ -4651,14 +4771,21 @@ RHIPipeline* PipelineCache::GetGPUScenePipelineForVariant(
                 "GPUSceneMaskedPipeline",
                 writableDepthState,
                 RHIBlendState::Default(),
-                renderTargetFormat);
+                renderTargetFormat,
+                false,
+                cullMode,
+                reverseWinding);
             if (!pipeline)
             {
                 DisableGPUSceneRaster("Failed to create GPU-scene masked pipeline");
                 return nullptr;
             }
-            m_gpuSceneMaskedPipeline = std::move(pipeline);
-            return m_gpuSceneMaskedPipeline.Get();
+            if (cullMode == MaterialCullMode::Back && !reverseWinding)
+            {
+                m_gpuSceneMaskedPipeline = std::move(pipeline);
+                return m_gpuSceneMaskedPipeline.Get();
+            }
+            return pipeline.Get();
         }
         case MaterialPipelineVariant::Transparent:
             // D2 does not establish transparent GPU-scene raster semantics.
@@ -4671,24 +4798,34 @@ RHIPipeline* PipelineCache::GetGPUScenePipelineForVariant(
                 "GPUSceneOpaquePipeline",
                 writableDepthState,
                 RHIBlendState::Default(),
-                renderTargetFormat);
+                renderTargetFormat,
+                false,
+                cullMode,
+                reverseWinding);
             if (!pipeline)
             {
                 DisableGPUSceneRaster("Failed to create GPU-scene opaque pipeline");
                 return nullptr;
             }
-            m_gpuSceneOpaquePipeline = std::move(pipeline);
-            return m_gpuSceneOpaquePipeline.Get();
+            if (cullMode == MaterialCullMode::Back && !reverseWinding)
+            {
+                m_gpuSceneOpaquePipeline = std::move(pipeline);
+                return m_gpuSceneOpaquePipeline.Get();
+            }
+            return pipeline.Get();
         }
     }
 }
 
 RHIPipeline* PipelineCache::GetGPUSceneInstancedMaterialPipelineForVariant(
     MaterialPipelineVariant variant,
-    RHIFormat renderTargetFormat)
+    RHIFormat renderTargetFormat,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
     if (!IsGPUSceneRasterReady() ||
-        variant != MaterialPipelineVariant::Opaque)
+        variant != MaterialPipelineVariant::Opaque ||
+        !IsValidSurfaceCullMode(cullMode))
     {
         return nullptr;
     }
@@ -4702,15 +4839,21 @@ RHIPipeline* PipelineCache::GetGPUSceneInstancedMaterialPipelineForVariant(
         BuildDepthStencilState(m_config.reverseZ, true),
         RHIBlendState::Default(),
         renderTargetFormat,
-        true);
+        true,
+        cullMode,
+        reverseWinding);
     if (!pipeline)
     {
         DisableGPUSceneRaster(
             "Failed to create GPU-scene instanced-material pipeline");
         return nullptr;
     }
-    m_gpuSceneInstancedMaterialOpaquePipeline = std::move(pipeline);
-    return m_gpuSceneInstancedMaterialOpaquePipeline.Get();
+    if (cullMode == MaterialCullMode::Back && !reverseWinding)
+    {
+        m_gpuSceneInstancedMaterialOpaquePipeline = std::move(pipeline);
+        return m_gpuSceneInstancedMaterialOpaquePipeline.Get();
+    }
+    return pipeline.Get();
 }
 
 const char* PipelineCache::GetEnvironmentIBLFallbackReasonName(
@@ -4734,10 +4877,26 @@ void PipelineCache::ResetGPUSceneRasterState()
     const auto isGPUScenePipeline = [this](const RHIPipelineRef& pipeline)
     {
         const RHIPipeline* const candidate = pipeline.Get();
-        return candidate && (candidate == m_gpuSceneOpaquePipeline.Get() ||
-                             candidate == m_gpuSceneInstancedMaterialOpaquePipeline.Get() ||
-                             candidate == m_gpuSceneMaskedPipeline.Get() ||
-                             candidate == m_gpuSceneDepthOnlyPipeline.Get());
+        if (!candidate)
+        {
+            return false;
+        }
+
+        if (candidate == m_gpuSceneOpaquePipeline.Get() ||
+            candidate == m_gpuSceneInstancedMaterialOpaquePipeline.Get() ||
+            candidate == m_gpuSceneMaskedPipeline.Get() ||
+            candidate == m_gpuSceneDepthOnlyPipeline.Get())
+        {
+            return true;
+        }
+
+        return std::any_of(
+            m_gpuSceneRasterPipelines.begin(),
+            m_gpuSceneRasterPipelines.end(),
+            [candidate](const auto& entry)
+            {
+                return entry.second.Get() == candidate;
+            });
     };
     for (auto it = m_pipelineCache.begin(); it != m_pipelineCache.end();)
     {
@@ -4755,6 +4914,7 @@ void PipelineCache::ResetGPUSceneRasterState()
     m_gpuSceneInstancedMaterialOpaquePipeline.Reset();
     m_gpuSceneMaskedPipeline.Reset();
     m_gpuSceneDepthOnlyPipeline.Reset();
+    m_gpuSceneRasterPipelines.clear();
     m_gpuSceneRasterPipelineLayout.Reset();
     m_gpuSceneRasterObjectSetLayout.Reset();
     m_gpuSceneVertexShader.Reset();
@@ -4773,15 +4933,19 @@ void PipelineCache::DisableGPUSceneRaster(std::string reason)
                     m_gpuSceneRasterUnavailableReason);
 }
 
-RHIPipeline* PipelineCache::GetGPUSceneDepthOnlyPipeline()
+RHIPipeline* PipelineCache::GetGPUSceneDepthOnlyPipeline(
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
-    if (!IsGPUSceneRasterReady())
+    if (!IsGPUSceneRasterReady() || !IsValidSurfaceCullMode(cullMode))
     {
         return nullptr;
     }
-    if (!m_gpuSceneDepthOnlyPipeline)
+    if (cullMode == MaterialCullMode::Back && !reverseWinding &&
+        !m_gpuSceneDepthOnlyPipeline)
     {
-        RHIPipelineRef pipeline = GetOrCreateGPUSceneDepthOnlyPipeline();
+        RHIPipelineRef pipeline = GetOrCreateGPUSceneDepthOnlyPipeline(
+            cullMode, false);
         if (!pipeline)
         {
             DisableGPUSceneRaster("Failed to create GPU-scene depth-only pipeline");
@@ -4789,7 +4953,11 @@ RHIPipeline* PipelineCache::GetGPUSceneDepthOnlyPipeline()
         }
         m_gpuSceneDepthOnlyPipeline = std::move(pipeline);
     }
-    return m_gpuSceneDepthOnlyPipeline.Get();
+    if (cullMode == MaterialCullMode::Back && !reverseWinding)
+    {
+        return m_gpuSceneDepthOnlyPipeline.Get();
+    }
+    return GetOrCreateGPUSceneDepthOnlyPipeline(cullMode, reverseWinding).Get();
 }
 
 ShadowDepthBiasState PipelineCache::SanitizeShadowDepthBiasState(const ShadowDepthBiasState& biasState)
@@ -4818,15 +4986,59 @@ RHIPipeline* PipelineCache::GetShadowDepthPipeline(const ShadowDepthBiasState& b
 
 RHIPipeline* PipelineCache::GetShadowDepthPipeline(
     const ShadowDepthBiasState& biasState,
-    DefaultLitDirectVertexInputMode inputMode)
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
-    return GetOrCreateShadowDepthPipeline(biasState, inputMode).Get();
+    if (!IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError("Invalid shadow cull mode");
+        return nullptr;
+    }
+    return GetOrCreateShadowDepthPipeline(
+        biasState, inputMode, cullMode, reverseWinding).Get();
+}
+
+RHIPipelineRef PipelineCache::TrackGPUSceneRasterPipeline(
+    uint64 stateHash,
+    RHIPipelineRef pipeline)
+{
+    if (!pipeline)
+    {
+        return {};
+    }
+
+    m_gpuSceneRasterPipelines.insert_or_assign(stateHash, pipeline);
+    return pipeline;
+}
+
+RHIPipeline* PipelineCache::GetMaskedShadowDepthPipeline(
+    const ShadowDepthBiasState& biasState,
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
+{
+    if (!IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError("Invalid masked shadow cull mode");
+        return nullptr;
+    }
+    return GetOrCreateMaskedShadowDepthPipeline(
+        biasState, inputMode, cullMode, reverseWinding).Get();
 }
 
 RHIPipeline* PipelineCache::GetInstancedShadowDepthPipeline(
-    const ShadowDepthBiasState& biasState)
+    const ShadowDepthBiasState& biasState,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
-    return GetOrCreateInstancedShadowDepthPipeline(biasState).Get();
+    if (!IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError("Invalid instanced shadow cull mode");
+        return nullptr;
+    }
+    return GetOrCreateInstancedShadowDepthPipeline(
+        biasState, cullMode, reverseWinding).Get();
 }
 
 RHIPipeline* PipelineCache::GetSkyboxPipeline(RHIFormat outputFormat)
@@ -4922,10 +5134,18 @@ RHIPipeline* PipelineCache::GetObjectVelocityPipeline(RHIFormat outputFormat)
 
 RHIPipeline* PipelineCache::GetObjectVelocityPipeline(
     RHIFormat outputFormat,
-    DefaultLitDirectVertexInputMode inputMode)
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
+    if (!IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError("Invalid object velocity cull mode");
+        return nullptr;
+    }
     const RHIFormat resolvedFormat = outputFormat == RHIFormat::Unknown ? RHIFormat::RG16_FLOAT : outputFormat;
-    if (resolvedFormat == RHIFormat::RG16_FLOAT)
+    if (resolvedFormat == RHIFormat::RG16_FLOAT &&
+        cullMode == MaterialCullMode::Back && !reverseWinding)
     {
         RHIPipelineRef& cached =
             inputMode == DefaultLitDirectVertexInputMode::Rigid
@@ -4934,13 +5154,13 @@ RHIPipeline* PipelineCache::GetObjectVelocityPipeline(
         if (!cached)
         {
             cached = GetOrCreateObjectVelocityPipeline(
-                resolvedFormat, inputMode);
+                resolvedFormat, inputMode, cullMode, false);
         }
         return cached.Get();
     }
 
     return GetOrCreateObjectVelocityPipeline(
-        resolvedFormat, inputMode).Get();
+        resolvedFormat, inputMode, cullMode, reverseWinding).Get();
 }
 
 RHIPipeline* PipelineCache::GetMaskedObjectVelocityPipeline(RHIFormat outputFormat)
@@ -4951,10 +5171,18 @@ RHIPipeline* PipelineCache::GetMaskedObjectVelocityPipeline(RHIFormat outputForm
 
 RHIPipeline* PipelineCache::GetMaskedObjectVelocityPipeline(
     RHIFormat outputFormat,
-    DefaultLitDirectVertexInputMode inputMode)
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
+    if (!IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError("Invalid masked object velocity cull mode");
+        return nullptr;
+    }
     const RHIFormat resolvedFormat = outputFormat == RHIFormat::Unknown ? RHIFormat::RG16_FLOAT : outputFormat;
-    if (resolvedFormat == RHIFormat::RG16_FLOAT)
+    if (resolvedFormat == RHIFormat::RG16_FLOAT &&
+        cullMode == MaterialCullMode::Back && !reverseWinding)
     {
         RHIPipelineRef& cached =
             inputMode == DefaultLitDirectVertexInputMode::Rigid
@@ -4963,13 +5191,13 @@ RHIPipeline* PipelineCache::GetMaskedObjectVelocityPipeline(
         if (!cached)
         {
             cached = GetOrCreateMaskedObjectVelocityPipeline(
-                resolvedFormat, inputMode);
+                resolvedFormat, inputMode, cullMode, false);
         }
         return cached.Get();
     }
 
     return GetOrCreateMaskedObjectVelocityPipeline(
-        resolvedFormat, inputMode).Get();
+        resolvedFormat, inputMode, cullMode, reverseWinding).Get();
 }
 
 RHIPipeline* PipelineCache::GetRayTracedReflectionCompositePipeline(RHIFormat outputFormat)
@@ -5651,9 +5879,11 @@ bool PipelineCache::CreatePipeline()
                                                      "DefaultOpaquePipeline",
                                                      writableDepthState,
                                                      RHIBlendState::Default(),
-                                                     m_renderTargetFormat,
-                                                     DefaultLitDirectVertexInputMode::Skinned,
-                                                     true);
+                                                      m_renderTargetFormat,
+                                                      DefaultLitDirectVertexInputMode::Skinned,
+                                                      MaterialCullMode::Back,
+                                                      false,
+                                                      true);
     if (!m_opaquePipeline)
     {
         if (m_lastError.empty())
@@ -5667,9 +5897,11 @@ bool PipelineCache::CreatePipeline()
                                                      "DefaultMaskedPipeline",
                                                      writableDepthState,
                                                      RHIBlendState::Default(),
-                                                     m_renderTargetFormat,
-                                                     DefaultLitDirectVertexInputMode::Skinned,
-                                                     true);
+                                                      m_renderTargetFormat,
+                                                      DefaultLitDirectVertexInputMode::Skinned,
+                                                      MaterialCullMode::Back,
+                                                      false,
+                                                      true);
     if (!m_maskedPipeline)
     {
         if (m_lastError.empty())
@@ -5686,9 +5918,11 @@ bool PipelineCache::CreatePipeline()
                                                           "DefaultTransparentPipeline",
                                                           readOnlyDepthState,
                                                           transparentBlend,
-                                                          m_renderTargetFormat,
-                                                          DefaultLitDirectVertexInputMode::Skinned,
-                                                          true);
+                                                           m_renderTargetFormat,
+                                                           DefaultLitDirectVertexInputMode::Skinned,
+                                                           MaterialCullMode::Back,
+                                                           false,
+                                                           true);
     if (!m_transparentPipeline)
     {
         if (m_lastError.empty())
@@ -6005,15 +6239,19 @@ RHIPipelineRef PipelineCache::GetOrCreateDefaultLitPipeline(MaterialPipelineVari
                                                             const char* debugName,
                                                             const RHIDepthStencilState& depthStencilState,
                                                             const RHIBlendState& blendState,
-                                                            RHIFormat renderTargetFormat,
-                                                            DefaultLitDirectVertexInputMode inputMode,
-                                                            bool updatePrimaryStats)
+                                                             RHIFormat renderTargetFormat,
+                                                             DefaultLitDirectVertexInputMode inputMode,
+                                                             MaterialCullMode cullMode,
+                                                             bool reverseWinding,
+                                                             bool updatePrimaryStats)
 {
     RHIGraphicsPipelineDesc pipelineDesc = BuildDefaultLitPipelineDesc(debugName,
                                                                        depthStencilState,
                                                                        blendState,
-                                                                       renderTargetFormat,
-                                                                       inputMode);
+                                                                        renderTargetFormat,
+                                                                        inputMode,
+                                                                        cullMode,
+                                                                        reverseWinding);
     if (!pipelineDesc.vertexShader)
     {
         SetLastError("Cannot create pipeline without vertex shader");
@@ -6070,13 +6308,17 @@ RHIPipelineRef PipelineCache::GetOrCreateDefaultLitPipeline(MaterialPipelineVari
 RHIPipelineRef PipelineCache::GetOrCreateGPUDrivenDefaultLitPipeline(MaterialPipelineVariant variant,
                                                                      const char* debugName,
                                                                      const RHIDepthStencilState& depthStencilState,
-                                                                     const RHIBlendState& blendState,
-                                                                     RHIFormat renderTargetFormat)
+                                                                      const RHIBlendState& blendState,
+                                                                      RHIFormat renderTargetFormat,
+                                                                      MaterialCullMode cullMode,
+                                                                      bool reverseWinding)
 {
     RHIGraphicsPipelineDesc pipelineDesc = BuildGPUDrivenDefaultLitPipelineDesc(debugName,
                                                                                depthStencilState,
-                                                                               blendState,
-                                                                               renderTargetFormat);
+                                                                                blendState,
+                                                                                renderTargetFormat,
+                                                                                cullMode,
+                                                                                reverseWinding);
     if (!pipelineDesc.vertexShader)
     {
         SetLastError("Cannot create GPU-driven pipeline without vertex shader");
@@ -6129,9 +6371,12 @@ RHIPipelineRef PipelineCache::GetOrCreateGPUDrivenDefaultLitPipeline(MaterialPip
     return pipeline;
 }
 
-RHIPipelineRef PipelineCache::GetOrCreateDepthOnlyPipeline()
+RHIPipelineRef PipelineCache::GetOrCreateDepthOnlyPipeline(
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildDepthOnlyPipelineDesc();
+    RHIGraphicsPipelineDesc pipelineDesc = BuildDepthOnlyPipelineDesc(
+        cullMode, reverseWinding);
     if (!pipelineDesc.vertexShader)
     {
         SetLastError("Cannot create depth-only pipeline without vertex shader");
@@ -6176,14 +6421,18 @@ RHIPipelineRef PipelineCache::GetOrCreateInstancedMaterialDefaultLitPipeline(
     const char* debugName,
     const RHIDepthStencilState& depthStencilState,
     const RHIBlendState& blendState,
-    RHIFormat renderTargetFormat)
+    RHIFormat renderTargetFormat,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
     RHIGraphicsPipelineDesc pipelineDesc =
         BuildInstancedMaterialDefaultLitPipelineDesc(
             debugName,
             depthStencilState,
             blendState,
-            renderTargetFormat);
+            renderTargetFormat,
+            cullMode,
+            reverseWinding);
     if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
         !pipelineDesc.pipelineLayout || pipelineDesc.numRenderTargets == 0 ||
         pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown ||
@@ -6216,9 +6465,12 @@ RHIPipelineRef PipelineCache::GetOrCreateInstancedMaterialDefaultLitPipeline(
     return pipeline;
 }
 
-RHIPipelineRef PipelineCache::GetOrCreateRigidDepthOnlyPipeline()
+RHIPipelineRef PipelineCache::GetOrCreateRigidDepthOnlyPipeline(
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildRigidDepthOnlyPipelineDesc();
+    RHIGraphicsPipelineDesc pipelineDesc = BuildRigidDepthOnlyPipelineDesc(
+        cullMode, reverseWinding);
     if (!pipelineDesc.vertexShader)
     {
         SetLastError(
@@ -6268,14 +6520,18 @@ RHIPipelineRef PipelineCache::GetOrCreateGPUSceneDefaultLitPipeline(
     const RHIDepthStencilState& depthStencilState,
     const RHIBlendState& blendState,
     RHIFormat renderTargetFormat,
-    bool instancedMaterial)
+    bool instancedMaterial,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
     RHIGraphicsPipelineDesc pipelineDesc = BuildGPUSceneDefaultLitPipelineDesc(
         debugName,
         depthStencilState,
         blendState,
         renderTargetFormat,
-        instancedMaterial);
+        instancedMaterial,
+        cullMode,
+        reverseWinding);
     if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
         !pipelineDesc.pipelineLayout || pipelineDesc.numRenderTargets == 0 ||
         pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown ||
@@ -6295,7 +6551,7 @@ RHIPipelineRef PipelineCache::GetOrCreateGPUSceneDefaultLitPipeline(
     if (cached != m_pipelineCache.end())
     {
         ++m_stats.pipelineCacheHitCount;
-        return cached->second;
+        return TrackGPUSceneRasterPipeline(stateHash, cached->second);
     }
 
     ++m_stats.pipelineCacheMissCount;
@@ -6307,14 +6563,16 @@ RHIPipelineRef PipelineCache::GetOrCreateGPUSceneDefaultLitPipeline(
 
     ++m_stats.pipelineCreateCount;
     m_pipelineCache[stateHash] = pipeline;
-    return pipeline;
+    return TrackGPUSceneRasterPipeline(stateHash, std::move(pipeline));
 }
 
 RHIPipelineRef PipelineCache::GetOrCreateMaskedDepthOnlyPipeline(
-    DefaultLitDirectVertexInputMode inputMode)
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
     RHIGraphicsPipelineDesc pipelineDesc =
-        BuildMaskedDepthOnlyPipelineDesc(inputMode);
+        BuildMaskedDepthOnlyPipelineDesc(inputMode, cullMode, reverseWinding);
     if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader)
     {
         SetLastError(
@@ -6358,9 +6616,12 @@ RHIPipelineRef PipelineCache::GetOrCreateMaskedDepthOnlyPipeline(
     return pipeline;
 }
 
-RHIPipelineRef PipelineCache::GetOrCreateGPUDrivenDepthOnlyPipeline()
+RHIPipelineRef PipelineCache::GetOrCreateGPUDrivenDepthOnlyPipeline(
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildGPUDrivenDepthOnlyPipelineDesc();
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildGPUDrivenDepthOnlyPipelineDesc(cullMode, reverseWinding);
     if (!pipelineDesc.vertexShader)
     {
         SetLastError("Cannot create GPU-driven depth-only pipeline without vertex shader");
@@ -6402,9 +6663,12 @@ RHIPipelineRef PipelineCache::GetOrCreateGPUDrivenDepthOnlyPipeline()
     return pipeline;
 }
 
-RHIPipelineRef PipelineCache::GetOrCreateGPUSceneDepthOnlyPipeline()
+RHIPipelineRef PipelineCache::GetOrCreateGPUSceneDepthOnlyPipeline(
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildGPUSceneDepthOnlyPipelineDesc();
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildGPUSceneDepthOnlyPipelineDesc(cullMode, reverseWinding);
     if (!pipelineDesc.vertexShader || !pipelineDesc.pipelineLayout ||
         pipelineDesc.depthStencilFormat == RHIFormat::Unknown)
     {
@@ -6420,7 +6684,7 @@ RHIPipelineRef PipelineCache::GetOrCreateGPUSceneDepthOnlyPipeline()
     if (cached != m_pipelineCache.end())
     {
         ++m_stats.pipelineCacheHitCount;
-        return cached->second;
+        return TrackGPUSceneRasterPipeline(stateHash, cached->second);
     }
 
     ++m_stats.pipelineCacheMissCount;
@@ -6432,16 +6696,19 @@ RHIPipelineRef PipelineCache::GetOrCreateGPUSceneDepthOnlyPipeline()
 
     ++m_stats.pipelineCreateCount;
     m_pipelineCache[stateHash] = pipeline;
-    return pipeline;
+    return TrackGPUSceneRasterPipeline(stateHash, std::move(pipeline));
 }
 
 RHIPipelineRef PipelineCache::GetOrCreateShadowDepthPipeline(
     const ShadowDepthBiasState& biasState,
-    DefaultLitDirectVertexInputMode inputMode)
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
     const ShadowDepthBiasState sanitizedBias = SanitizeShadowDepthBiasState(biasState);
     RHIGraphicsPipelineDesc pipelineDesc =
-        BuildShadowDepthPipelineDesc(sanitizedBias, inputMode);
+        BuildShadowDepthPipelineDesc(
+            sanitizedBias, inputMode, cullMode, reverseWinding);
     if (!pipelineDesc.vertexShader)
     {
         SetLastError("Cannot create shadow depth pipeline without vertex shader");
@@ -6486,13 +6753,59 @@ RHIPipelineRef PipelineCache::GetOrCreateShadowDepthPipeline(
     return pipeline;
 }
 
-RHIPipelineRef PipelineCache::GetOrCreateInstancedShadowDepthPipeline(
-    const ShadowDepthBiasState& biasState)
+RHIPipelineRef PipelineCache::GetOrCreateMaskedShadowDepthPipeline(
+    const ShadowDepthBiasState& biasState,
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
     const ShadowDepthBiasState sanitizedBias =
         SanitizeShadowDepthBiasState(biasState);
     RHIGraphicsPipelineDesc pipelineDesc =
-        BuildInstancedShadowDepthPipelineDesc(sanitizedBias);
+        BuildMaskedShadowDepthPipelineDesc(
+            sanitizedBias, inputMode, cullMode, reverseWinding);
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
+        !pipelineDesc.pipelineLayout ||
+        pipelineDesc.depthStencilFormat == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create masked shadow depth pipeline");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc,
+        MaterialPipelineVariant::Masked,
+        RVX_PIPELINE_PURPOSE_MASKED_SHADOW_DEPTH);
+    m_stats.lastPipelineStateHash = stateHash;
+    const auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create masked shadow depth pipeline");
+        return {};
+    }
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateInstancedShadowDepthPipeline(
+    const ShadowDepthBiasState& biasState,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
+{
+    const ShadowDepthBiasState sanitizedBias =
+        SanitizeShadowDepthBiasState(biasState);
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildInstancedShadowDepthPipelineDesc(
+            sanitizedBias, cullMode, reverseWinding);
     if (!pipelineDesc.vertexShader || !pipelineDesc.pipelineLayout ||
         pipelineDesc.depthStencilFormat == RHIFormat::Unknown)
     {
@@ -6815,10 +7128,13 @@ RHIPipelineRef PipelineCache::GetOrCreateCameraVelocityPipeline(RHIFormat output
 
 RHIPipelineRef PipelineCache::GetOrCreateObjectVelocityPipeline(
     RHIFormat outputFormat,
-    DefaultLitDirectVertexInputMode inputMode)
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
     RHIGraphicsPipelineDesc pipelineDesc =
-        BuildObjectVelocityPipelineDesc(outputFormat, inputMode);
+        BuildObjectVelocityPipelineDesc(
+            outputFormat, inputMode, cullMode, reverseWinding);
     if (!pipelineDesc.vertexShader)
     {
         SetLastError("Cannot create ObjectVelocity pipeline without vertex shader");
@@ -6872,10 +7188,13 @@ RHIPipelineRef PipelineCache::GetOrCreateObjectVelocityPipeline(
 
 RHIPipelineRef PipelineCache::GetOrCreateMaskedObjectVelocityPipeline(
     RHIFormat outputFormat,
-    DefaultLitDirectVertexInputMode inputMode)
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
 {
     RHIGraphicsPipelineDesc pipelineDesc =
-        BuildMaskedObjectVelocityPipelineDesc(outputFormat, inputMode);
+        BuildMaskedObjectVelocityPipelineDesc(
+            outputFormat, inputMode, cullMode, reverseWinding);
     if (!pipelineDesc.vertexShader)
     {
         SetLastError("Cannot create masked ObjectVelocity pipeline without vertex shader");
@@ -7315,7 +7634,9 @@ RHIGraphicsPipelineDesc PipelineCache::BuildDefaultLitPipelineDesc(const char* d
                                                                    const RHIDepthStencilState& depthStencilState,
                                                                    const RHIBlendState& blendState,
                                                                    RHIFormat renderTargetFormat,
-                                                                   DefaultLitDirectVertexInputMode inputMode) const
+                                                                   DefaultLitDirectVertexInputMode inputMode,
+                                                                   MaterialCullMode cullMode,
+                                                                   bool reverseWinding) const
 {
     RHIGraphicsPipelineDesc pipelineDesc;
 
@@ -7335,10 +7656,18 @@ RHIGraphicsPipelineDesc PipelineCache::BuildDefaultLitPipelineDesc(const char* d
         pipelineDesc.inputLayout.AddElement("BLENDINDICES", RHIFormat::RGBA32_UINT, 4);
         pipelineDesc.inputLayout.AddElement("BLENDWEIGHT", RHIFormat::RGBA32_FLOAT, 5);
     }
+    pipelineDesc.inputLayout.AddElementAtLocation(
+        inputMode == DefaultLitDirectVertexInputMode::Skinned ? 6u : 4u,
+        "TEXCOORD",
+        1,
+        RHIFormat::RG32_FLOAT,
+        7);
 
     pipelineDesc.rasterizerState = RHIRasterizerState::Default();
-    pipelineDesc.rasterizerState.frontFace = RHIFrontFace::Clockwise;
-    pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
+    pipelineDesc.rasterizerState.frontFace = ToRHIFrontFace(
+        m_device ? m_device->GetBackendType() : RHIBackendType::None,
+        reverseWinding);
+    pipelineDesc.rasterizerState.cullMode = ToRHICullMode(cullMode);
 
     pipelineDesc.depthStencilState = depthStencilState;
     pipelineDesc.blendState = blendState;
@@ -7355,14 +7684,18 @@ RHIGraphicsPipelineDesc PipelineCache::BuildGPUDrivenDefaultLitPipelineDesc(
     const char* debugName,
     const RHIDepthStencilState& depthStencilState,
     const RHIBlendState& blendState,
-    RHIFormat renderTargetFormat) const
+    RHIFormat renderTargetFormat,
+    MaterialCullMode cullMode,
+    bool reverseWinding) const
 {
     RHIGraphicsPipelineDesc pipelineDesc =
         BuildDefaultLitPipelineDesc(debugName,
                                     depthStencilState,
                                     blendState,
-                                    renderTargetFormat,
-                                    DefaultLitDirectVertexInputMode::Rigid);
+                                     renderTargetFormat,
+                                     DefaultLitDirectVertexInputMode::Rigid,
+                                     cullMode,
+                                     reverseWinding);
     pipelineDesc.vertexShader = m_gpuDrivenVertexShader.Get();
     std::erase_if(pipelineDesc.inputLayout.elements,
                   [](const RHIInputElement& element)
@@ -7376,7 +7709,9 @@ RHIGraphicsPipelineDesc PipelineCache::BuildGPUDrivenDefaultLitPipelineDesc(
     return pipelineDesc;
 }
 
-RHIGraphicsPipelineDesc PipelineCache::BuildDepthOnlyPipelineDesc() const
+RHIGraphicsPipelineDesc PipelineCache::BuildDepthOnlyPipelineDesc(
+    MaterialCullMode cullMode,
+    bool reverseWinding) const
 {
     RHIGraphicsPipelineDesc pipelineDesc;
 
@@ -7390,8 +7725,10 @@ RHIGraphicsPipelineDesc PipelineCache::BuildDepthOnlyPipelineDesc() const
     pipelineDesc.inputLayout.AddElement("BLENDWEIGHT", RHIFormat::RGBA32_FLOAT, 5);
 
     pipelineDesc.rasterizerState = RHIRasterizerState::Default();
-    pipelineDesc.rasterizerState.frontFace = RHIFrontFace::Clockwise;
-    pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
+    pipelineDesc.rasterizerState.frontFace = ToRHIFrontFace(
+        m_device ? m_device->GetBackendType() : RHIBackendType::None,
+        reverseWinding);
+    pipelineDesc.rasterizerState.cullMode = ToRHICullMode(cullMode);
 
     pipelineDesc.depthStencilState = BuildDepthStencilState(m_config.reverseZ, true);
     pipelineDesc.blendState = RHIBlendState::Default();
@@ -7410,21 +7747,28 @@ RHIGraphicsPipelineDesc PipelineCache::BuildInstancedMaterialDefaultLitPipelineD
     const char* debugName,
     const RHIDepthStencilState& depthStencilState,
     const RHIBlendState& blendState,
-    RHIFormat renderTargetFormat) const
+    RHIFormat renderTargetFormat,
+    MaterialCullMode cullMode,
+    bool reverseWinding) const
 {
     RHIGraphicsPipelineDesc pipelineDesc =
         BuildGPUDrivenDefaultLitPipelineDesc(
             debugName,
             depthStencilState,
             blendState,
-            renderTargetFormat);
+            renderTargetFormat,
+            cullMode,
+            reverseWinding);
     pipelineDesc.vertexShader = m_instancedMaterialVertexShader.Get();
     return pipelineDesc;
 }
 
-RHIGraphicsPipelineDesc PipelineCache::BuildRigidDepthOnlyPipelineDesc() const
+RHIGraphicsPipelineDesc PipelineCache::BuildRigidDepthOnlyPipelineDesc(
+    MaterialCullMode cullMode,
+    bool reverseWinding) const
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildDepthOnlyPipelineDesc();
+    RHIGraphicsPipelineDesc pipelineDesc = BuildDepthOnlyPipelineDesc(
+        cullMode, reverseWinding);
     pipelineDesc.vertexShader = m_rigidDepthOnlyVertexShader.Get();
     pipelineDesc.debugName = "RigidDepthOnlyPipeline";
     std::erase_if(pipelineDesc.inputLayout.elements,
@@ -7440,10 +7784,17 @@ RHIGraphicsPipelineDesc PipelineCache::BuildGPUSceneDefaultLitPipelineDesc(
     const RHIDepthStencilState& depthStencilState,
     const RHIBlendState& blendState,
     RHIFormat renderTargetFormat,
-    bool instancedMaterial) const
+    bool instancedMaterial,
+    MaterialCullMode cullMode,
+    bool reverseWinding) const
 {
     RHIGraphicsPipelineDesc pipelineDesc = BuildGPUDrivenDefaultLitPipelineDesc(
-        debugName, depthStencilState, blendState, renderTargetFormat);
+        debugName,
+        depthStencilState,
+        blendState,
+        renderTargetFormat,
+        cullMode,
+        reverseWinding);
     pipelineDesc.vertexShader = instancedMaterial
         ? m_gpuSceneInstancedMaterialVertexShader.Get()
         : m_gpuSceneVertexShader.Get();
@@ -7452,9 +7803,12 @@ RHIGraphicsPipelineDesc PipelineCache::BuildGPUSceneDefaultLitPipelineDesc(
 }
 
 RHIGraphicsPipelineDesc PipelineCache::BuildMaskedDepthOnlyPipelineDesc(
-    DefaultLitDirectVertexInputMode inputMode) const
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding) const
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildDepthOnlyPipelineDesc();
+    RHIGraphicsPipelineDesc pipelineDesc = BuildDepthOnlyPipelineDesc(
+        cullMode, reverseWinding);
     pipelineDesc.vertexShader =
         inputMode == DefaultLitDirectVertexInputMode::Rigid
             ? m_rigidMaskedDepthOnlyVertexShader.Get()
@@ -7466,19 +7820,24 @@ RHIGraphicsPipelineDesc PipelineCache::BuildMaskedDepthOnlyPipelineDesc(
         0, "POSITION", 0, RHIFormat::RGB32_FLOAT, 0);
     pipelineDesc.inputLayout.AddElementAtLocation(
         1, "TEXCOORD", 0, RHIFormat::RG32_FLOAT, 2);
+    pipelineDesc.inputLayout.AddElementAtLocation(
+        2, "TEXCOORD", 1, RHIFormat::RG32_FLOAT, 7);
     if (inputMode == DefaultLitDirectVertexInputMode::Skinned)
     {
         pipelineDesc.inputLayout.AddElementAtLocation(
-            2, "BLENDINDICES", 0, RHIFormat::RGBA32_UINT, 4);
+            3, "BLENDINDICES", 0, RHIFormat::RGBA32_UINT, 4);
         pipelineDesc.inputLayout.AddElementAtLocation(
-            3, "BLENDWEIGHT", 0, RHIFormat::RGBA32_FLOAT, 5);
+            4, "BLENDWEIGHT", 0, RHIFormat::RGBA32_FLOAT, 5);
     }
     return pipelineDesc;
 }
 
-RHIGraphicsPipelineDesc PipelineCache::BuildGPUDrivenDepthOnlyPipelineDesc() const
+RHIGraphicsPipelineDesc PipelineCache::BuildGPUDrivenDepthOnlyPipelineDesc(
+    MaterialCullMode cullMode,
+    bool reverseWinding) const
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildDepthOnlyPipelineDesc();
+    RHIGraphicsPipelineDesc pipelineDesc = BuildDepthOnlyPipelineDesc(
+        cullMode, reverseWinding);
     pipelineDesc.vertexShader = m_gpuDrivenDepthOnlyVertexShader.Get();
     pipelineDesc.debugName = "GPUDrivenDepthOnlyPipeline";
     std::erase_if(pipelineDesc.inputLayout.elements,
@@ -7495,16 +7854,37 @@ RHIGraphicsPipelineDesc PipelineCache::BuildGPUDrivenDepthOnlyPipelineDesc() con
 
 RHIGraphicsPipelineDesc PipelineCache::BuildShadowDepthPipelineDesc(
     const ShadowDepthBiasState& biasState,
-    DefaultLitDirectVertexInputMode inputMode) const
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding) const
 {
     RHIGraphicsPipelineDesc pipelineDesc =
         inputMode == DefaultLitDirectVertexInputMode::Rigid
-            ? BuildRigidDepthOnlyPipelineDesc()
-            : BuildDepthOnlyPipelineDesc();
+            ? BuildRigidDepthOnlyPipelineDesc(cullMode, reverseWinding)
+            : BuildDepthOnlyPipelineDesc(cullMode, reverseWinding);
     const ShadowDepthBiasState sanitizedBias = SanitizeShadowDepthBiasState(biasState);
     pipelineDesc.debugName = "ShadowDepthPipeline";
     pipelineDesc.rasterizerState.depthBias = sanitizedBias.constantBias;
     pipelineDesc.rasterizerState.slopeScaledDepthBias = sanitizedBias.slopeScaledBias;
+    pipelineDesc.rasterizerState.depthBiasClamp = sanitizedBias.biasClamp;
+    return pipelineDesc;
+}
+
+RHIGraphicsPipelineDesc PipelineCache::BuildMaskedShadowDepthPipelineDesc(
+    const ShadowDepthBiasState& biasState,
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding) const
+{
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildMaskedDepthOnlyPipelineDesc(
+            inputMode, cullMode, reverseWinding);
+    const ShadowDepthBiasState sanitizedBias =
+        SanitizeShadowDepthBiasState(biasState);
+    pipelineDesc.debugName = "MaskedShadowDepthPipeline";
+    pipelineDesc.rasterizerState.depthBias = sanitizedBias.constantBias;
+    pipelineDesc.rasterizerState.slopeScaledDepthBias =
+        sanitizedBias.slopeScaledBias;
     pipelineDesc.rasterizerState.depthBiasClamp = sanitizedBias.biasClamp;
     return pipelineDesc;
 }
@@ -7635,7 +8015,9 @@ RHIGraphicsPipelineDesc PipelineCache::BuildCameraVelocityPipelineDesc(RHIFormat
 
 RHIGraphicsPipelineDesc PipelineCache::BuildObjectVelocityPipelineDesc(
     RHIFormat outputFormat,
-    DefaultLitDirectVertexInputMode inputMode) const
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding) const
 {
     RHIGraphicsPipelineDesc pipelineDesc;
 
@@ -7657,8 +8039,10 @@ RHIGraphicsPipelineDesc PipelineCache::BuildObjectVelocityPipelineDesc(
     }
 
     pipelineDesc.rasterizerState = RHIRasterizerState::Default();
-    pipelineDesc.rasterizerState.frontFace = RHIFrontFace::Clockwise;
-    pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
+    pipelineDesc.rasterizerState.frontFace = ToRHIFrontFace(
+        m_device ? m_device->GetBackendType() : RHIBackendType::None,
+        reverseWinding);
+    pipelineDesc.rasterizerState.cullMode = ToRHICullMode(cullMode);
 
     pipelineDesc.depthStencilState = BuildDepthStencilState(m_config.reverseZ, false);
     pipelineDesc.depthStencilState.depthCompareOp = m_config.reverseZ ? RHICompareOp::GreaterEqual
@@ -7674,10 +8058,13 @@ RHIGraphicsPipelineDesc PipelineCache::BuildObjectVelocityPipelineDesc(
 
 RHIGraphicsPipelineDesc PipelineCache::BuildMaskedObjectVelocityPipelineDesc(
     RHIFormat outputFormat,
-    DefaultLitDirectVertexInputMode inputMode) const
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding) const
 {
     RHIGraphicsPipelineDesc pipelineDesc =
-        BuildObjectVelocityPipelineDesc(outputFormat, inputMode);
+        BuildObjectVelocityPipelineDesc(
+            outputFormat, inputMode, cullMode, reverseWinding);
     pipelineDesc.vertexShader =
         inputMode == DefaultLitDirectVertexInputMode::Rigid
             ? m_rigidMaskedObjectVelocityVertexShader.Get()
@@ -7689,21 +8076,25 @@ RHIGraphicsPipelineDesc PipelineCache::BuildMaskedObjectVelocityPipelineDesc(
         0, "POSITION", 0, RHIFormat::RGB32_FLOAT, 0);
     pipelineDesc.inputLayout.AddElementAtLocation(
         1, "TEXCOORD", 0, RHIFormat::RG32_FLOAT, 2);
+    pipelineDesc.inputLayout.AddElementAtLocation(
+        2, "TEXCOORD", 1, RHIFormat::RG32_FLOAT, 7);
     if (inputMode == DefaultLitDirectVertexInputMode::Skinned)
     {
         pipelineDesc.inputLayout.AddElementAtLocation(
-            2, "BLENDINDICES", 0, RHIFormat::RGBA32_UINT, 4);
+            3, "BLENDINDICES", 0, RHIFormat::RGBA32_UINT, 4);
         pipelineDesc.inputLayout.AddElementAtLocation(
-            3, "BLENDWEIGHT", 0, RHIFormat::RGBA32_FLOAT, 5);
+            4, "BLENDWEIGHT", 0, RHIFormat::RGBA32_FLOAT, 5);
     }
     return pipelineDesc;
 }
 
 RHIGraphicsPipelineDesc PipelineCache::BuildInstancedShadowDepthPipelineDesc(
-    const ShadowDepthBiasState& biasState) const
+    const ShadowDepthBiasState& biasState,
+    MaterialCullMode cullMode,
+    bool reverseWinding) const
 {
     RHIGraphicsPipelineDesc pipelineDesc =
-        BuildGPUDrivenDepthOnlyPipelineDesc();
+        BuildGPUDrivenDepthOnlyPipelineDesc(cullMode, reverseWinding);
     const ShadowDepthBiasState sanitizedBias =
         SanitizeShadowDepthBiasState(biasState);
     pipelineDesc.debugName = "InstancedShadowDepthPipeline";
@@ -7714,9 +8105,12 @@ RHIGraphicsPipelineDesc PipelineCache::BuildInstancedShadowDepthPipelineDesc(
     return pipelineDesc;
 }
 
-RHIGraphicsPipelineDesc PipelineCache::BuildGPUSceneDepthOnlyPipelineDesc() const
+RHIGraphicsPipelineDesc PipelineCache::BuildGPUSceneDepthOnlyPipelineDesc(
+    MaterialCullMode cullMode,
+    bool reverseWinding) const
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildGPUDrivenDepthOnlyPipelineDesc();
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildGPUDrivenDepthOnlyPipelineDesc(cullMode, reverseWinding);
     pipelineDesc.vertexShader = m_gpuSceneDepthOnlyVertexShader.Get();
     pipelineDesc.pipelineLayout = m_gpuSceneRasterPipelineLayout.Get();
     pipelineDesc.debugName = "GPUSceneDepthOnlyPipeline";

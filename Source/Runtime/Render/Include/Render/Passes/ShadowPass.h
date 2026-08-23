@@ -24,6 +24,7 @@ namespace RVX
 {
     class RenderResourceRegistry;
     class RenderScene;
+    class MaterialSystem;
     class PipelineCache;
     struct DirectionalShadowCascadeBindingSnapshot;
     struct ObjectConstantBinding;
@@ -101,7 +102,8 @@ namespace RVX
         // Configuration
         // =========================================================================
 
-        void SetResources(PipelineCache* pipelineCache);
+        void SetResources(PipelineCache* pipelineCache,
+                          MaterialSystem* materialSystem = nullptr);
         void SetResourceRegistry(const RenderResourceRegistry* registry)
         {
             m_resourceRegistry = registry;
@@ -172,6 +174,7 @@ namespace RVX
         mutable std::string m_unsupportedReason = "ShadowPass has not been configured";
         const RenderResourceRegistry* m_resourceRegistry = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
+        MaterialSystem* m_materialSystem = nullptr;
         const RenderScene* m_renderScene = nullptr;
 
         ShadowPassConfig m_config;

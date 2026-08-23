@@ -19,10 +19,9 @@
 namespace RVX
 {
     inline constexpr uint32 RVX_RESOURCE_UPLOAD_REQUEST_SCHEMA_ID = 0x52565855U;
-    // Schema v2 adds transactional content replacement. Existing source
-    // builders remain compatible by using the default Create operation and
-    // the current schema constant.
-    inline constexpr uint32 RVX_RESOURCE_UPLOAD_REQUEST_SCHEMA_VERSION = 2;
+    // Schema v3 adds authored UV1 mesh streams and immutable material
+    // descriptors to the upload boundary.
+    inline constexpr uint32 RVX_RESOURCE_UPLOAD_REQUEST_SCHEMA_VERSION = 3;
 
     enum class RenderResourceContentOperation : uint8
     {
@@ -128,7 +127,12 @@ namespace RVX
         UploadByteRange indexRange;
         UploadByteRange positionRange;
         UploadByteRange normalRange;
+        // UV0 remains the compatibility primary texture-coordinate stream.
         UploadByteRange uvRange;
+        // Optional authored UV1 stream. It is deliberately never synthesized
+        // from UV0 because material requests for UV1 must fail closed when a
+        // mesh does not provide it.
+        UploadByteRange uv1Range;
         UploadByteRange tangentRange;
         UploadByteRange boneIndexRange;
         UploadByteRange boneWeightRange;
@@ -185,7 +189,26 @@ namespace RVX
     {
         MaterialSourceData sourceData;
         std::vector<MaterialUploadTextureBinding> textureBindings;
+        /**
+         * @brief Immutable pipeline policy copied from the canonical resource.
+         *
+         * Render must never infer this policy from legacy source parameters or
+         * texture bindings, because doing so can silently alter culling,
+         * blending, shadow participation, or the program/layout contract.
+         */
+        MaterialStaticDescriptor staticDescriptor;
     };
+
+    /**
+     * @brief Validate material upload metadata at every trust boundary.
+     *
+     * ResourceUploadRequest validates the render contract before publication;
+     * RenderResourceRegistry repeats this validation for render-private callers
+     * that construct pending resource metadata directly.
+     */
+    [[nodiscard]] bool ValidateMaterialUploadPayload(
+        const MaterialUploadPayload& payload,
+        std::string& outError);
 
     using ResourceUploadPayload = std::variant<
         MeshUploadPayload,

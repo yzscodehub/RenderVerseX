@@ -19,9 +19,22 @@ namespace RVX
     {
         MaterialPipelineVariant materialVariant =
             MaterialPipelineVariant::Opaque;
+        MaterialCullMode cullMode = MaterialCullMode::Back;
+        MaterialShadowPolicy shadowPolicy =
+            MaterialShadowPolicy::CastAndReceive;
         MeshUploadPrimitiveTopology topology =
             MeshUploadPrimitiveTopology::Triangles;
         bool skinned = false;
+        /** True when the canonical material policy was resolved successfully. */
+        bool materialPolicyValid = true;
+        /** True when at least one active material texture selects TEXCOORD1. */
+        bool requiresUV1 = false;
+        /**
+         * True only for a back-face culled packet whose object-to-world
+         * transform reverses triangle winding.  This selects the opposite RHI
+         * front-face convention without weakening material culling policy.
+         */
+        bool reverseWinding = false;
 
         [[nodiscard]] bool operator==(const PipelineKey& other) const noexcept;
     };
@@ -71,6 +84,12 @@ namespace RVX
         return static_cast<RenderDrawFlags>(
             static_cast<uint32>(lhs) | static_cast<uint32>(rhs));
     }
+
+    /** @brief Apply immutable material shadow policy to object-level flags. */
+    [[nodiscard]] RenderDrawFlags ApplyMaterialShadowPolicy(
+        RenderDrawFlags flags,
+        bool materialPolicyValid,
+        MaterialShadowPolicy shadowPolicy) noexcept;
 
     struct RenderDrawPacket
     {

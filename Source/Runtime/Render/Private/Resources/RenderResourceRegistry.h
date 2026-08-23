@@ -29,6 +29,9 @@ namespace RVX
         Position = 0,
         Normal,
         UV,
+        // TEXCOORD1 occupies vertex buffer slot 7; slot 6 is reserved for
+        // the GPU-driven instance index stream.
+        UV1,
         Tangent,
         BoneIndices,
         BoneWeights,
@@ -73,9 +76,10 @@ namespace RVX
             RHIResourceState::Common,
             RHIShaderStage::All,
             GPUQueueDomain::Graphics,
-            RHIContentValidity::Valid);
+        RHIContentValidity::Valid);
         MaterialSourceData sourceData;
         std::vector<MaterialUploadTextureBinding> textureBindings;
+        MaterialStaticDescriptor staticDescriptor;
         std::vector<RHISamplerRef> samplers;
         bool metadataValid = false;
     };

@@ -55,6 +55,22 @@ namespace RVX
         CastAndReceive
     };
 
+    /** @brief Whether a material policy permits the primitive to cast shadows. */
+    [[nodiscard]] constexpr bool MaterialShadowPolicyCasts(
+        MaterialShadowPolicy policy) noexcept
+    {
+        return policy == MaterialShadowPolicy::Cast ||
+               policy == MaterialShadowPolicy::CastAndReceive;
+    }
+
+    /** @brief Whether a material policy permits the primitive to receive shadows. */
+    [[nodiscard]] constexpr bool MaterialShadowPolicyReceives(
+        MaterialShadowPolicy policy) noexcept
+    {
+        return policy == MaterialShadowPolicy::Receive ||
+               policy == MaterialShadowPolicy::CastAndReceive;
+    }
+
     /** @brief Legal renderer phase for a surface material. */
     enum class MaterialTranslucencyPhase : uint8
     {
@@ -207,6 +223,33 @@ namespace RVX
     /** @brief Required program family for one fixed shading model. */
     [[nodiscard]] std::string_view GetMaterialProgramFamily(
         MaterialShadingModel shadingModel) noexcept;
+
+    /** @brief Validate immutable pipeline-affecting material metadata. */
+    [[nodiscard]] bool ValidateMaterialStaticDescriptor(
+        const MaterialStaticDescriptor& descriptor,
+        std::string& outError);
+
+    /**
+     * @brief Validate the complete fixed-layout material parameter block.
+     *
+     * Texture feature masks are validated by the owning definition or upload
+     * payload because those checks require the corresponding binding metadata.
+     */
+    [[nodiscard]] bool ValidateMaterialSourceData(
+        const MaterialSourceData& sourceData,
+        std::string& outError);
+
+    /**
+     * @brief Validate the explicit compatibility mapping to legacy source data.
+     *
+     * The descriptor remains the pipeline authority. Legacy values only carry
+     * parameters for the declared model and must never describe contradictory
+     * blend, workflow, or culling behavior.
+     */
+    [[nodiscard]] bool ValidateMaterialDescriptorSourceCompatibility(
+        const MaterialStaticDescriptor& descriptor,
+        const MaterialSourceData& sourceData,
+        std::string& outError);
 
     /** @brief Validate the complete backend-neutral material contract. */
     [[nodiscard]] bool ValidateMaterialDefinition(

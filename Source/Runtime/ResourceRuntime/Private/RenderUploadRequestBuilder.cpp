@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <utility>
 
@@ -237,34 +238,62 @@ namespace
         };
 
         const auto& indexData = mesh->GetIndexData();
-        const char* uvNames[] = {
-            VertexBufferNames::UV, "uv", "texcoord0", "texcoord"};
-        const VertexAttribute* uv = nullptr;
-        for (const char* uvName : uvNames)
+        const auto findValidatedUVAttribute =
+            [&mesh](const char* const* names,
+                    size_t nameCount,
+                    const VertexAttribute*& outAttribute)
         {
-            const VertexAttribute* candidate = mesh->GetAttribute(uvName);
-            if (candidate == nullptr)
+            outAttribute = nullptr;
+            for (size_t index = 0; index < nameCount; ++index)
             {
-                continue;
-            }
+                const VertexAttribute* candidate =
+                    mesh->GetAttribute(names[index]);
+                if (candidate == nullptr)
+                {
+                    continue;
+                }
 
-            const bool isValidUV =
-                candidate->GetData() != nullptr &&
-                candidate->GetVertexCount() == mesh->GetVertexCount() &&
-                candidate->GetComponents() == 2 &&
-                candidate->GetType() == AttributeType::Float &&
-                candidate->GetStride() == sizeof(Vec2) &&
-                candidate->GetTotalSize() ==
-                    mesh->GetVertexCount() * sizeof(Vec2);
-            if (!isValidUV)
-            {
-                return {RenderUploadRequestBuildCode::InvalidResource};
-            }
+                const bool isValidUV =
+                    candidate->GetData() != nullptr &&
+                    candidate->GetVertexCount() == mesh->GetVertexCount() &&
+                    candidate->GetComponents() == 2 &&
+                    candidate->GetType() == AttributeType::Float &&
+                    candidate->GetStride() == sizeof(Vec2) &&
+                    candidate->GetTotalSize() ==
+                        mesh->GetVertexCount() * sizeof(Vec2);
+                if (!isValidUV)
+                {
+                    return false;
+                }
 
-            if (uv == nullptr)
-            {
-                uv = candidate;
+                if (outAttribute == nullptr)
+                {
+                    outAttribute = candidate;
+                }
             }
+            return true;
+        };
+
+        const char* const uv0Names[] = {
+            VertexBufferNames::UV0,
+            VertexBufferNames::UV,
+            "texcoord0",
+            "TEXCOORD_0",
+            "texcoord"};
+        const char* const uv1Names[] = {
+            VertexBufferNames::UV1,
+            "texcoord1",
+            "TEXCOORD_1"};
+        const VertexAttribute* uv = nullptr;
+        const VertexAttribute* uv1 = nullptr;
+        if (!findValidatedUVAttribute(uv0Names,
+                                      std::size(uv0Names),
+                                      uv) ||
+            !findValidatedUVAttribute(uv1Names,
+                                      std::size(uv1Names),
+                                      uv1))
+        {
+            return {RenderUploadRequestBuildCode::InvalidResource};
         }
 
         std::vector<Vec2> fallbackUVs;
@@ -306,6 +335,11 @@ namespace
                                        : fallbackUVs.size() * sizeof(Vec2),
                          uv != nullptr ? uv->GetStride() : sizeof(Vec2),
                          payload.uvRange) ||
+            !AppendRange(payload.bytes,
+                         uv1 != nullptr ? uv1->GetData() : nullptr,
+                         uv1 != nullptr ? uv1->GetTotalSize() : 0,
+                         uv1 != nullptr ? uv1->GetStride() : 0,
+                         payload.uv1Range) ||
             !AppendRange(payload.bytes,
                          hasTangentBasis ? tangent->GetData()
                                              : fallbackTangents.data(),
@@ -501,9 +535,23 @@ namespace
             return {RenderUploadRequestBuildCode::InvalidResource};
         }
 
+        constexpr uint64 supportedTextureFeatureMask =
+            (1ull <<
+             (static_cast<uint32>(MaterialTextureSlot::Emissive) + 1U)) -
+            1ull;
+        if ((definition.descriptor.featureMask &
+             ~supportedTextureFeatureMask) != 0)
+        {
+            // The v3 upload enum carries only the five legacy texture slots.
+            // Do not silently drop an active canonical slot until the upload
+            // contract and render bindings have an explicit representation.
+            return {RenderUploadRequestBuildCode::InvalidResource};
+        }
+
         MaterialUploadPayload payload;
         payload.sourceData = definition.parameters;
         payload.sourceData.textureFlags = 0;
+        payload.staticDescriptor = definition.descriptor;
 
         struct UploadSlot
         {

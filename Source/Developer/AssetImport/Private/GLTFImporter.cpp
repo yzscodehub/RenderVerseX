@@ -53,6 +53,206 @@ namespace RVX::Resource
             }
         }
 
+        constexpr std::string_view KHR_TEXTURE_TRANSFORM_EXTENSION =
+            "KHR_texture_transform";
+
+        template <typename TextureInfoType>
+        bool HasTextureTransform(const TextureInfoType& textureInfo)
+        {
+            return textureInfo.extensions.find(
+                       std::string(KHR_TEXTURE_TRANSFORM_EXTENSION)) !=
+                   textureInfo.extensions.end();
+        }
+
+        bool UsesTextureTransform(const tinygltf::Model& model)
+        {
+            return std::any_of(
+                model.materials.begin(),
+                model.materials.end(),
+                [](const tinygltf::Material& material)
+                {
+                    const auto& pbr = material.pbrMetallicRoughness;
+                    return HasTextureTransform(pbr.baseColorTexture) ||
+                           HasTextureTransform(pbr.metallicRoughnessTexture) ||
+                           HasTextureTransform(material.normalTexture) ||
+                           HasTextureTransform(material.occlusionTexture) ||
+                           HasTextureTransform(material.emissiveTexture);
+                });
+        }
+
+        bool IsFiniteFloatRepresentable(double value)
+        {
+            return std::isfinite(value) &&
+                   value >= static_cast<double>(std::numeric_limits<float>::lowest()) &&
+                   value <= static_cast<double>(std::numeric_limits<float>::max());
+        }
+
+        bool ParseTextureTransformVector(const tinygltf::Value& transform,
+                                         std::string_view memberName,
+                                         Vec2& outValue,
+                                         std::string& error)
+        {
+            if (!transform.Has(std::string(memberName)))
+                return true;
+
+            const tinygltf::Value& sourceValue =
+                transform.Get(std::string(memberName));
+            if (!sourceValue.IsArray() || sourceValue.ArrayLen() != 2u)
+            {
+                error = "KHR_texture_transform." + std::string(memberName) +
+                        " must be an array of exactly two finite numbers.";
+                return false;
+            }
+
+            const tinygltf::Value::Array& components =
+                sourceValue.Get<tinygltf::Value::Array>();
+            if (!components[0].IsNumber() || !components[1].IsNumber())
+            {
+                error = "KHR_texture_transform." + std::string(memberName) +
+                        " must contain only finite numbers.";
+                return false;
+            }
+
+            const double x = components[0].GetNumberAsDouble();
+            const double y = components[1].GetNumberAsDouble();
+            if (!IsFiniteFloatRepresentable(x) || !IsFiniteFloatRepresentable(y))
+            {
+                error = "KHR_texture_transform." + std::string(memberName) +
+                        " must contain finite float-representable numbers.";
+                return false;
+            }
+
+            const Vec2 value(static_cast<float>(x), static_cast<float>(y));
+            outValue = value;
+            return true;
+        }
+
+        bool ParseTextureTransform(const tinygltf::Value* textureTransform,
+                                   int sourceUvSet,
+                                   TextureInfo& outInfo,
+                                   std::string& error)
+        {
+            if (sourceUvSet < 0 || sourceUvSet > 1)
+            {
+                error = "glTF texture-info texCoord must be UV set 0 or 1.";
+                return false;
+            }
+
+            outInfo.uvSet = sourceUvSet;
+            if (textureTransform == nullptr)
+                return true;
+
+            if (!textureTransform->IsObject())
+            {
+                error = "KHR_texture_transform must be an object.";
+                return false;
+            }
+
+            // KHR_texture_transform derives from glTFProperty, so the standard
+            // extensions/extras containers and forward-compatible optional
+            // properties remain legal. This importer validates and consumes
+            // only offset, scale, rotation and texCoord. Required extensions
+            // are still governed by the document-level extensionsRequired
+            // policy before a product can be cooked.
+            if (textureTransform->Has("extensions") &&
+                !textureTransform->Get("extensions").IsObject())
+            {
+                error = "KHR_texture_transform.extensions must be an object.";
+                return false;
+            }
+
+            if (!ParseTextureTransformVector(*textureTransform,
+                                             "offset",
+                                             outInfo.offset,
+                                             error) ||
+                !ParseTextureTransformVector(*textureTransform,
+                                             "scale",
+                                             outInfo.scale,
+                                             error))
+            {
+                return false;
+            }
+
+            if (textureTransform->Has("rotation"))
+            {
+                const tinygltf::Value& rotation =
+                    textureTransform->Get("rotation");
+                if (!rotation.IsNumber() ||
+                    !IsFiniteFloatRepresentable(rotation.GetNumberAsDouble()))
+                {
+                    error = "KHR_texture_transform.rotation must be a finite "
+                            "float-representable number.";
+                    return false;
+                }
+                outInfo.rotation =
+                    static_cast<float>(rotation.GetNumberAsDouble());
+            }
+
+            if (textureTransform->Has("texCoord"))
+            {
+                const tinygltf::Value& texCoord =
+                    textureTransform->Get("texCoord");
+                if (!texCoord.IsNumber())
+                {
+                    error = "KHR_texture_transform.texCoord must be an integer "
+                            "UV set index.";
+                    return false;
+                }
+
+                const double numericUvSet = texCoord.GetNumberAsDouble();
+                if (!std::isfinite(numericUvSet) ||
+                    std::floor(numericUvSet) != numericUvSet ||
+                    numericUvSet < 0.0 || numericUvSet > 1.0)
+                {
+                    error = "KHR_texture_transform.texCoord must be UV set 0 or 1.";
+                    return false;
+                }
+                outInfo.uvSet = static_cast<int32_t>(numericUvSet);
+            }
+
+            return true;
+        }
+
+        bool ResolvePrimitiveTangentUVSet(
+            const tinygltf::Model& gltf,
+            const tinygltf::Primitive& primitive,
+            uint32& outUVSet,
+            bool& outNormalTexturePresent,
+            std::string& error)
+        {
+            outUVSet = 0;
+            outNormalTexturePresent = false;
+            if (primitive.material < 0)
+                return true;
+            if (primitive.material >= static_cast<int>(gltf.materials.size()))
+            {
+                error = "glTF primitive references a material outside the material array.";
+                return false;
+            }
+
+            const tinygltf::NormalTextureInfo& normalTexture =
+                gltf.materials[primitive.material].normalTexture;
+            if (normalTexture.index < 0)
+                return true;
+
+            outNormalTexturePresent = true;
+            const auto transform = normalTexture.extensions.find(
+                std::string(KHR_TEXTURE_TRANSFORM_EXTENSION));
+            const tinygltf::Value* transformValue =
+                transform == normalTexture.extensions.end()
+                    ? nullptr
+                    : &transform->second;
+            TextureInfo parsed;
+            if (!ParseTextureTransform(
+                    transformValue, normalTexture.texCoord, parsed, error))
+            {
+                error = "normal texture: " + error;
+                return false;
+            }
+            outUVSet = static_cast<uint32>(parsed.uvSet);
+            return true;
+        }
+
         int ResolveTextureImageIndex(const tinygltf::Model& gltf, int textureIndex)
         {
             if (textureIndex < 0 || textureIndex >= static_cast<int>(gltf.textures.size()))
@@ -692,6 +892,11 @@ namespace RVX::Resource
             return value;
         }
 
+        bool IsFinite(const Vec2& value)
+        {
+            return std::isfinite(value.x) && std::isfinite(value.y);
+        }
+
         bool IsFinite(const Vec3& value)
         {
             return std::isfinite(value.x) && std::isfinite(value.y) &&
@@ -1001,6 +1206,15 @@ namespace RVX::Resource
         result.hasAnimations = !gltfModel.animations.empty();
         result.extensionsUsed = gltfModel.extensionsUsed;
         result.extensionsRequired = gltfModel.extensionsRequired;
+        if (options.flipUVs && UsesTextureTransform(gltfModel))
+        {
+            result.success = false;
+            result.errorMessage =
+                "flipUVs cannot be combined with KHR_texture_transform; "
+                "pre-convert the source UV convention before import.";
+            parseSpan.SetAttribute("result", "unsupported-uv-convention-composition");
+            return result;
+        }
         for (const tinygltf::Mesh& mesh : gltfModel.meshes)
         {
             for (const tinygltf::Primitive& primitive : mesh.primitives)
@@ -1019,7 +1233,14 @@ namespace RVX::Resource
         ExtractTextures(gltfModel, path, result);
 
         ReportProgress(0.3f, "Parsing materials");
-        ParseMaterials(gltfModel, result);
+        if (!ParseMaterials(gltfModel, result, error))
+        {
+            result.success = false;
+            result.errorMessage = error;
+            DiscardImportedPayload(result);
+            parseSpan.SetAttribute("result", "material-data-invalid");
+            return result;
+        }
 
         ReportProgress(0.45f, "Parsing skeleton and animation clips");
         if (!ParseSkeletalData(gltfModel, result, options, error))
@@ -1238,7 +1459,9 @@ namespace RVX::Resource
     // Material Parsing
     // =========================================================================
 
-    void GLTFImporter::ParseMaterials(const tinygltf::Model& gltf, GLTFImportResult& result)
+    bool GLTFImporter::ParseMaterials(const tinygltf::Model& gltf,
+                                      GLTFImportResult& result,
+                                      std::string& error)
     {
         result.materials.reserve(gltf.materials.size());
         std::vector<bool> textureUsageAssigned(result.textures.size(), false);
@@ -1246,7 +1469,15 @@ namespace RVX::Resource
         for (size_t i = 0; i < gltf.materials.size(); ++i)
         {
             const tinygltf::Material& material = gltf.materials[i];
-            result.materials.push_back(ConvertMaterial(gltf, material, static_cast<int>(i)));
+            Material::Ptr converted = ConvertMaterial(
+                gltf, material, static_cast<int>(i), error);
+            if (!converted)
+            {
+                error = "glTF material " + std::to_string(i) + ": " + error;
+                result.materials.clear();
+                return false;
+            }
+            result.materials.push_back(std::move(converted));
             MarkMaterialTextureUsages(gltf, material, result, textureUsageAssigned);
         }
 
@@ -1257,14 +1488,47 @@ namespace RVX::Resource
             defaultMat->SetMaterialId(0);
             result.materials.push_back(defaultMat);
         }
+
+        return true;
     }
 
     Material::Ptr GLTFImporter::ConvertMaterial(const tinygltf::Model& gltf,
                                                   const tinygltf::Material& mat,
-                                                  int materialIndex)
+                                                  int materialIndex,
+                                                  std::string& error)
     {
         auto material = std::make_shared<Material>(mat.name.empty() ? "Material_" + std::to_string(materialIndex) : mat.name);
         material->SetMaterialId(static_cast<uint32_t>(materialIndex));
+
+        const auto extractTextureInfo =
+            [this, &gltf, &error](const auto& sourceInfo,
+                                  TextureInfo& outInfo,
+                                  std::string_view slotName)
+        {
+            const auto transform = sourceInfo.extensions.find(
+                std::string(KHR_TEXTURE_TRANSFORM_EXTENSION));
+            const tinygltf::Value* transformValue =
+                transform == sourceInfo.extensions.end() ? nullptr :
+                &transform->second;
+            if (ExtractTextureInfo(gltf,
+                                   sourceInfo.index,
+                                   sourceInfo.texCoord,
+                                   transformValue,
+                                   outInfo,
+                                   error))
+            {
+                return true;
+            }
+
+            error = "texture slot '" + std::string(slotName) + "': " + error;
+            return false;
+        };
+        const auto hasTextureTransform = [](const auto& sourceInfo)
+        {
+            return sourceInfo.extensions.find(
+                       std::string(KHR_TEXTURE_TRANSFORM_EXTENSION)) !=
+                   sourceInfo.extensions.end();
+        };
 
         // PBR Metallic-Roughness
         const auto& pbr = mat.pbrMetallicRoughness;
@@ -1277,31 +1541,50 @@ namespace RVX::Resource
             static_cast<float>(pbr.baseColorFactor[3])
         );
 
-        if (pbr.baseColorTexture.index >= 0)
+        if (pbr.baseColorTexture.index >= 0 ||
+            hasTextureTransform(pbr.baseColorTexture))
         {
-            material->SetBaseColorTexture(ExtractTextureInfo(gltf, pbr.baseColorTexture.index, pbr.baseColorTexture.texCoord));
+            TextureInfo textureInfo;
+            if (!extractTextureInfo(pbr.baseColorTexture, textureInfo, "baseColor"))
+                return nullptr;
+            material->SetBaseColorTexture(textureInfo);
         }
 
         // Metallic and roughness
         material->SetMetallicFactor(static_cast<float>(pbr.metallicFactor));
         material->SetRoughnessFactor(static_cast<float>(pbr.roughnessFactor));
 
-        if (pbr.metallicRoughnessTexture.index >= 0)
+        if (pbr.metallicRoughnessTexture.index >= 0 ||
+            hasTextureTransform(pbr.metallicRoughnessTexture))
         {
-            material->SetMetallicRoughnessTexture(ExtractTextureInfo(gltf, pbr.metallicRoughnessTexture.index, pbr.metallicRoughnessTexture.texCoord));
+            TextureInfo textureInfo;
+            if (!extractTextureInfo(pbr.metallicRoughnessTexture,
+                                    textureInfo,
+                                    "metallicRoughness"))
+            {
+                return nullptr;
+            }
+            material->SetMetallicRoughnessTexture(textureInfo);
         }
 
         // Normal map
-        if (mat.normalTexture.index >= 0)
+        if (mat.normalTexture.index >= 0 || hasTextureTransform(mat.normalTexture))
         {
-            material->SetNormalTexture(ExtractTextureInfo(gltf, mat.normalTexture.index, mat.normalTexture.texCoord));
+            TextureInfo textureInfo;
+            if (!extractTextureInfo(mat.normalTexture, textureInfo, "normal"))
+                return nullptr;
+            material->SetNormalTexture(textureInfo);
             material->SetNormalScale(static_cast<float>(mat.normalTexture.scale));
         }
 
         // Occlusion
-        if (mat.occlusionTexture.index >= 0)
+        if (mat.occlusionTexture.index >= 0 ||
+            hasTextureTransform(mat.occlusionTexture))
         {
-            material->SetOcclusionTexture(ExtractTextureInfo(gltf, mat.occlusionTexture.index, mat.occlusionTexture.texCoord));
+            TextureInfo textureInfo;
+            if (!extractTextureInfo(mat.occlusionTexture, textureInfo, "occlusion"))
+                return nullptr;
+            material->SetOcclusionTexture(textureInfo);
             material->SetOcclusionStrength(static_cast<float>(mat.occlusionTexture.strength));
         }
 
@@ -1312,9 +1595,13 @@ namespace RVX::Resource
             static_cast<float>(mat.emissiveFactor[2])
         ));
 
-        if (mat.emissiveTexture.index >= 0)
+        if (mat.emissiveTexture.index >= 0 ||
+            hasTextureTransform(mat.emissiveTexture))
         {
-            material->SetEmissiveTexture(ExtractTextureInfo(gltf, mat.emissiveTexture.index, mat.emissiveTexture.texCoord));
+            TextureInfo textureInfo;
+            if (!extractTextureInfo(mat.emissiveTexture, textureInfo, "emissive"))
+                return nullptr;
+            material->SetEmissiveTexture(textureInfo);
         }
 
         // Alpha mode
@@ -1337,14 +1624,21 @@ namespace RVX::Resource
         return material;
     }
 
-    TextureInfo GLTFImporter::ExtractTextureInfo(const tinygltf::Model& gltf, int textureIndex, int uvSet)
+    bool GLTFImporter::ExtractTextureInfo(const tinygltf::Model& gltf,
+                                          int textureIndex,
+                                          int uvSet,
+                                          const tinygltf::Value* textureTransform,
+                                          TextureInfo& outInfo,
+                                          std::string& error)
     {
         TextureInfo info;
-        info.uvSet = uvSet;
+        if (!ParseTextureTransform(textureTransform, uvSet, info, error))
+            return false;
 
         if (textureIndex < 0 || textureIndex >= static_cast<int>(gltf.textures.size()))
         {
-            return info;
+            error = "glTF texture-info references a texture outside the texture array.";
+            return false;
         }
 
         const auto& texture = gltf.textures[textureIndex];
@@ -1406,7 +1700,8 @@ namespace RVX::Resource
             info.magFilter = convertMagFilter(sampler.magFilter);
         }
 
-        return info;
+        outInfo = std::move(info);
+        return true;
     }
 
     // =========================================================================
@@ -2047,6 +2342,33 @@ namespace RVX::Resource
             error = "glTF primitive must provide JOINTS_0 and WEIGHTS_0 together.";
             return nullptr;
         }
+        if (!primitive.attributes.contains("POSITION"))
+        {
+            error = "glTF mesh primitive requires a POSITION attribute.";
+            return nullptr;
+        }
+        for (const auto& [attributeName, accessorIndex] : primitive.attributes)
+        {
+            (void)accessorIndex;
+            if (attributeName == "COLOR_0")
+            {
+                error = "glTF COLOR_0 is not supported by the cooked mesh "
+                        "upload contract; refusing to drop vertex color or "
+                        "alpha semantics.";
+                return nullptr;
+            }
+            if (attributeName != "POSITION" && attributeName != "NORMAL" &&
+                attributeName != "TANGENT" &&
+                attributeName != "TEXCOORD_0" &&
+                attributeName != "TEXCOORD_1" &&
+                attributeName != "JOINTS_0" &&
+                attributeName != "WEIGHTS_0")
+            {
+                error = "Unsupported glTF vertex attribute semantic: " +
+                        attributeName + ".";
+                return nullptr;
+            }
+        }
         if (hasJoints0)
         {
             if (m_skinJointRemap.empty())
@@ -2189,8 +2511,12 @@ namespace RVX::Resource
             else if (attrName == "TANGENT") ourAttrName = VertexBufferNames::Tangent;
             else if (attrName == "TEXCOORD_0") ourAttrName = VertexBufferNames::UV;
             else if (attrName == "TEXCOORD_1") ourAttrName = VertexBufferNames::UV1;
-            else if (attrName == "COLOR_0") ourAttrName = VertexBufferNames::Color;
-            else ourAttrName = attrName;
+            else
+            {
+                error = "Unsupported glTF vertex attribute semantic: " +
+                        attrName + ".";
+                return nullptr;
+            }
 
             // Extract data based on component type
             if (view.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT)
@@ -2208,6 +2534,12 @@ namespace RVX::Resource
                                                  ourAttrName == VertexBufferNames::UV1)
                                             ? 1.0f - y
                                             : y);
+                        if (!IsFinite(data[i]))
+                        {
+                            error = "glTF FLOAT VEC2 vertex attribute contains "
+                                    "a non-finite value.";
+                            return nullptr;
+                        }
                     }
                     mesh->AddAttribute(ourAttrName, data);
                 }
@@ -2222,11 +2554,28 @@ namespace RVX::Resource
                                        ReadUnaligned<float>(ptr + 2 * sizeof(float)));
                         if (ourAttrName == VertexBufferNames::Position)
                             data[i] *= options.scaleFactor;
+                        if (!IsFinite(data[i]))
+                        {
+                            error = "glTF FLOAT VEC3 vertex attribute contains "
+                                    "a non-finite value.";
+                            return nullptr;
+                        }
                     }
                     // Don't scale normals
                     if (ourAttrName == VertexBufferNames::Normal)
                     {
-                        for (auto& v : data) v = glm::normalize(v);
+                        for (Vec3& normal : data)
+                        {
+                            const float lengthSquared = dot(normal, normal);
+                            if (!std::isfinite(lengthSquared) ||
+                                lengthSquared <= 1.0e-8f)
+                            {
+                                error = "glTF NORMAL must contain a finite, "
+                                        "non-zero direction.";
+                                return nullptr;
+                            }
+                            normal *= glm::inversesqrt(lengthSquared);
+                        }
                     }
                     mesh->AddAttribute(ourAttrName, data);
                 }
@@ -2240,6 +2589,35 @@ namespace RVX::Resource
                                        ReadUnaligned<float>(ptr + sizeof(float)),
                                        ReadUnaligned<float>(ptr + 2 * sizeof(float)),
                                        ReadUnaligned<float>(ptr + 3 * sizeof(float)));
+                        if (!IsFinite(data[i]))
+                        {
+                            error = "glTF FLOAT VEC4 vertex attribute contains "
+                                    "a non-finite value.";
+                            return nullptr;
+                        }
+                    }
+                    if (ourAttrName == VertexBufferNames::Tangent)
+                    {
+                        for (Vec4& tangent : data)
+                        {
+                            const float tangentLengthSquared =
+                                glm::dot(Vec3(tangent), Vec3(tangent));
+                            if (!IsFinite(tangent) ||
+                                !std::isfinite(tangentLengthSquared) ||
+                                tangentLengthSquared <= 1.0e-8f ||
+                                std::abs(std::abs(tangent.w) - 1.0f) > 1.0e-4f)
+                            {
+                                error = "glTF TANGENT must contain a finite, "
+                                        "non-zero XYZ direction and W of -1 or +1.";
+                                return nullptr;
+                            }
+                            const Vec3 direction =
+                                Vec3(tangent) * glm::inversesqrt(tangentLengthSquared);
+                            tangent = Vec4(
+                                direction,
+                                (tangent.w < 0.0f ? -1.0f : 1.0f) *
+                                    (options.flipUVs ? -1.0f : 1.0f));
+                        }
                     }
                     mesh->AddAttribute(ourAttrName, data);
                 }
@@ -2310,17 +2688,86 @@ namespace RVX::Resource
             }
         }
 
-        // Generate normals if needed
-        if (options.generateNormals && !mesh->HasAttribute(VertexBufferNames::Normal))
+        uint32 tangentUVSet = 0;
+        bool normalTexturePresent = false;
+        if (!ResolvePrimitiveTangentUVSet(
+                gltf,
+                primitive,
+                tangentUVSet,
+                normalTexturePresent,
+                error))
         {
-            mesh->GenerateNormals();
+            return nullptr;
         }
 
-        // Generate tangents if needed
-        if (options.generateTangents && !mesh->HasAttribute(VertexBufferNames::Tangent) &&
-            mesh->HasAttribute(VertexBufferNames::Normal) && mesh->HasAttribute(VertexBufferNames::UV))
+        const bool trianglePrimitive =
+            mesh->GetPrimitiveType() == PrimitiveType::Triangles ||
+            mesh->GetPrimitiveType() == PrimitiveType::TriangleStrip ||
+            mesh->GetPrimitiveType() == PrimitiveType::TriangleFan;
+        if (!mesh->HasAttribute(VertexBufferNames::Normal))
         {
-            mesh->GenerateTangents();
+            if (!options.generateNormals)
+            {
+                if (trianglePrimitive || normalTexturePresent)
+                {
+                    error = "glTF triangle or normal-mapped primitive has no "
+                            "authored vertex normals and flat-normal generation "
+                            "is disabled.";
+                    return nullptr;
+                }
+            }
+            else if ((trianglePrimitive || normalTexturePresent) &&
+                     !mesh->GenerateFlatNormalsTriList())
+            {
+                error = "Failed to generate flat vertex normals for the glTF "
+                        "triangle list.";
+                return nullptr;
+            }
+        }
+
+        if (normalTexturePresent &&
+            !mesh->HasAttribute(VertexBufferNames::Normal))
+        {
+            error = "glTF normal texture requires a valid vertex normal basis.";
+            return nullptr;
+        }
+
+        const std::string tangentUVAttribute = tangentUVSet == 1
+            ? VertexBufferNames::UV1
+            : VertexBufferNames::UV;
+        if (normalTexturePresent && !mesh->HasAttribute(tangentUVAttribute))
+        {
+            error = "glTF normal texture requires missing " +
+                    tangentUVAttribute + " vertex coordinates.";
+            return nullptr;
+        }
+
+        // glTF requires a tangent basis associated with the normal texture's
+        // effective coordinate set. Authored tangents remain authoritative;
+        // only a missing TANGENT attribute enters the shared Geometry generator.
+        if (!mesh->HasAttribute(VertexBufferNames::Tangent) &&
+            mesh->HasAttribute(VertexBufferNames::Normal))
+        {
+            if (normalTexturePresent && !options.generateTangents)
+            {
+                error = "glTF normal texture has no authored tangent basis and "
+                        "tangent generation is disabled.";
+                return nullptr;
+            }
+            if (normalTexturePresent && options.generateTangents &&
+                mesh->HasAttribute(tangentUVAttribute) &&
+                !mesh->GenerateTangents(tangentUVSet))
+            {
+                error = "Failed to generate a tangent basis from " +
+                        tangentUVAttribute + ".";
+                return nullptr;
+            }
+        }
+        if (normalTexturePresent &&
+            !mesh->HasAttribute(VertexBufferNames::Tangent))
+        {
+            error = "glTF normal texture requires a valid tangent basis.";
+            return nullptr;
         }
 
         // Compute bounding box

@@ -134,6 +134,26 @@ namespace
         HashBindingFloat(hash, constants.alphaCutoff);
         HashBindingValue(hash, constants.workflow);
         HashBindingValue(hash, constants.doubleSided);
+        const MaterialGPUUVTransform identityTransform{};
+        for (uint32 slot = 0;
+             slot < static_cast<uint32>(constants.uvTransforms.size());
+             ++slot)
+        {
+            HashBindingValue(hash, slot);
+            const uint32 textureFlag = 1u << slot;
+            const MaterialGPUUVTransform& transform =
+                (constants.textureFlags & textureFlag) != 0u
+                    ? constants.uvTransforms[slot]
+                    : identityTransform;
+            HashBindingFloat(hash, transform.scaleOffset.x);
+            HashBindingFloat(hash, transform.scaleOffset.y);
+            HashBindingFloat(hash, transform.scaleOffset.z);
+            HashBindingFloat(hash, transform.scaleOffset.w);
+            HashBindingFloat(hash, transform.rotationUVSet.x);
+            HashBindingFloat(hash, transform.rotationUVSet.y);
+            HashBindingFloat(hash, transform.rotationUVSet.z);
+            HashBindingFloat(hash, transform.rotationUVSet.w);
+        }
     }
 
     void SetSuccessfulMaterialBindingIdentity(
@@ -401,6 +421,104 @@ MaterialInstanceBindingKey MaterialSystem::ResolveInstanceBindingKey(
     return result;
 }
 
+bool MaterialSystem::ResolveSurfacePipelinePolicy(
+    RenderResourceHandle material,
+    MaterialCullMode& outCullMode,
+    MaterialShadowPolicy& outShadowPolicy,
+    bool& outRequiresUV1) const noexcept
+{
+    outCullMode = MaterialCullMode::Back;
+    outShadowPolicy = MaterialShadowPolicy::CastAndReceive;
+    outRequiresUV1 = false;
+    if (!material.IsValid() || m_resourceRegistry == nullptr)
+    {
+        return false;
+    }
+
+    const RenderMaterialResourceData* materialData =
+        m_resourceRegistry->ResolveMaterial(material);
+    if (materialData == nullptr || !materialData->metadataValid)
+    {
+        return false;
+    }
+
+    const MaterialStaticDescriptor& descriptor =
+        materialData->staticDescriptor;
+    const bool implementedShadingModel =
+        descriptor.shadingModel == MaterialShadingModel::StandardLit ||
+        descriptor.shadingModel == MaterialShadingModel::Unlit;
+    const bool implementedBlendMode =
+        descriptor.blendMode == MaterialBlendMode::Opaque ||
+        descriptor.blendMode == MaterialBlendMode::Masked ||
+        descriptor.blendMode == MaterialBlendMode::AlphaBlend;
+    const bool implementedPhase =
+        descriptor.translucencyPhase == MaterialTranslucencyPhase::Opaque ||
+        descriptor.translucencyPhase == MaterialTranslucencyPhase::Standard;
+    if (descriptor.domain != MaterialDomain::Surface ||
+        !implementedShadingModel || !implementedBlendMode ||
+        !implementedPhase ||
+        (descriptor.shadingModel == MaterialShadingModel::StandardLit &&
+         materialData->sourceData.workflow !=
+             MaterialSourceWorkflow::MetallicRoughness) ||
+        (descriptor.blendMode == MaterialBlendMode::AlphaBlend &&
+         MaterialShadowPolicyCasts(descriptor.shadowPolicy)) ||
+        descriptor.programFamily !=
+            GetMaterialProgramFamily(descriptor.shadingModel) ||
+        descriptor.parameterLayoutHash != GetMaterialParameterLayoutHashV1())
+    {
+        // StandardLit currently implements only Metallic-Roughness. Toon,
+        // thin transmission, premultiplied/additive blending and after-tone-
+        // map surfaces are transport contracts only until their dedicated
+        // renderer features are implemented. Transparent casters also have no
+        // supported shadow path yet. Never shade any of these as an
+        // approximate StandardLit material.
+        return false;
+    }
+
+    switch (descriptor.cullMode)
+    {
+        case MaterialCullMode::Back:
+        case MaterialCullMode::NoCull:
+            outCullMode = descriptor.cullMode;
+            break;
+        default:
+            return false;
+    }
+    switch (descriptor.shadowPolicy)
+    {
+        case MaterialShadowPolicy::None:
+        case MaterialShadowPolicy::Cast:
+        case MaterialShadowPolicy::Receive:
+        case MaterialShadowPolicy::CastAndReceive:
+            outShadowPolicy = descriptor.shadowPolicy;
+            break;
+        default:
+            return false;
+    }
+
+    for (const MaterialUploadTextureBinding& binding :
+         materialData->textureBindings)
+    {
+        const uint64 featureBit =
+            1ull << static_cast<uint32>(binding.slot);
+        // Pipeline vertex requirements must represent the texture bindings
+        // that the shader can actually sample. Default semantic resources and
+        // descriptor-disabled slots resolve to an identity texture and do not
+        // require an authored secondary UV stream.
+        if (binding.isDefaultFallback || !binding.texture.IsValid() ||
+            (descriptor.featureMask & featureBit) == 0)
+        {
+            continue;
+        }
+        if (binding.uvSet < 0 || binding.uvSet > 1)
+        {
+            return false;
+        }
+        outRequiresUV1 = outRequiresUV1 || binding.uvSet == 1;
+    }
+    return true;
+}
+
 bool MaterialSystem::CreateMaterialParameterTableSnapshot(
     std::span<const MaterialParameterTableEntryRequest> requests,
     ResourceViewCache* viewCache,
@@ -465,7 +583,8 @@ bool MaterialSystem::CreateMaterialParameterTableSnapshot(
         }
         MaterialSourceData source = materialData->sourceData;
         source.textureFlags = textures.textureFlags;
-        const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(source);
+        const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(
+            source, textures.textureBindings);
         const uint64 semanticKey = BuildSemanticDescriptorContentKey(
             request.material, constants, textures.textureEntries);
         table[slot] = constants;
@@ -580,7 +699,8 @@ bool MaterialSystem::CreateMaterialBindingSnapshot(
     }
 
     source.textureFlags = textures.textureFlags;
-    const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(source);
+    const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(
+        source, textures.textureBindings);
     const uint64 stride = m_materialConstantStride != 0
         ? m_materialConstantStride : AlignConstantBufferSize(sizeof(MaterialGPUConstants));
     RHIBufferDesc bufferDesc;
@@ -689,7 +809,8 @@ MaterialBindingResult MaterialSystem::PrepareResolvedMaterialBinding(
     std::string materialName)
 {
     source.textureFlags = textures.textureFlags;
-    const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(source);
+    const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(
+        source, textures.textureBindings);
 
     FrameConstantUploadAllocation allocation;
     if (!m_materialConstantUploadArena ||
@@ -1072,6 +1193,7 @@ MaterialSystem::ResolvedMaterialTextures MaterialSystem::ResolveMaterialTextures
     }
     else
     {
+        textures.textureBindings = materialData->textureBindings;
         for (size_t bindingIndex = 0;
              bindingIndex < materialData->textureBindings.size();
              ++bindingIndex)

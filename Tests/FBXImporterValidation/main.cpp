@@ -154,6 +154,48 @@ TEST(FBXImporterValidation, UsesGeometryNormalAndTangentGenerationPath)
     }
 }
 
+TEST(FBXImporterValidation, NormalMappedMeshesRequireAValidTangentBasis)
+{
+    TemporaryDirectory temporary;
+    const fs::path sourcePath = temporary.Get() / "normal-mapped.fbx";
+    std::ifstream input(Fixture("external-textures.fbx"), std::ios::binary);
+    ASSERT_TRUE(input.is_open());
+    std::string source((std::istreambuf_iterator<char>(input)),
+                       std::istreambuf_iterator<char>());
+    const std::string connectionMarker = "}\n;Takes and animation section";
+    const size_t connectionOffset = source.rfind(connectionMarker);
+    ASSERT_NE(connectionOffset, std::string::npos);
+    source.insert(connectionOffset,
+                  "\tConnect: \"OP\", \"Texture::file1\", \"Material::phong1\", \"NormalMap\"\n");
+    std::ofstream output(sourcePath, std::ios::binary);
+    output.write(source.data(), static_cast<std::streamsize>(source.size()));
+    output.close();
+    ASSERT_TRUE(output.good());
+    fs::copy(Fixture("textures"),
+             temporary.Get() / "textures",
+             fs::copy_options::recursive);
+
+    RVX::Resource::FBXImporter importer;
+    const RVX::Resource::FBXImportResult generated = importer.Import(sourcePath.string());
+    ExpectStaticResult(generated);
+    ASSERT_FALSE(generated.materials.empty());
+    EXPECT_TRUE(generated.materials.front()->GetNormalTexture().has_value());
+    for (const RVX::Mesh::Ptr& mesh : generated.meshes)
+    {
+        EXPECT_TRUE(mesh->HasAttribute(RVX::VertexBufferNames::Normal));
+        EXPECT_TRUE(mesh->HasAttribute(RVX::VertexBufferNames::UV));
+        EXPECT_TRUE(mesh->HasAttribute(RVX::VertexBufferNames::Tangent));
+    }
+
+    RVX::Resource::FBXImportOptions disabledTangents;
+    disabledTangents.generateTangents = false;
+    const RVX::Resource::FBXImportResult rejected =
+        importer.Import(sourcePath.string(), disabledTangents);
+    EXPECT_FALSE(rejected.success);
+    EXPECT_NE(rejected.errorMessage.find("tangent generation"), std::string::npos)
+        << rejected.errorMessage;
+}
+
 TEST(FBXImporterValidation, CapturesOnlyContainedExternalTextures)
 {
     const RVX::Resource::FBXImportResult result = Import("external-textures.fbx");

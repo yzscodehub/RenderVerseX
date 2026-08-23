@@ -1,11 +1,16 @@
 #include "Geometry/Asset/Mesh.h"
+
+#include <mikktspace.h>
+
 #include <cmath>
+#include <limits>
 
 namespace RVX
 {
     namespace
     {
         constexpr float RVX_TANGENT_EPSILON = 1.0e-8f;
+        constexpr float RVX_UV_DETERMINANT_EPSILON = 1.0e-12f;
 
         bool IsFiniteVec3(const Vec3& value)
         {
@@ -35,6 +40,119 @@ namespace RVX
             const Vec3 axis = std::abs(n.z) < 0.999f ? Vec3(0.0f, 0.0f, 1.0f)
                                                      : Vec3(0.0f, 1.0f, 0.0f);
             return NormalizeOr(cross(axis, n), Vec3(1.0f, 0.0f, 0.0f));
+        }
+
+        struct MikkMeshData
+        {
+            const float* positions = nullptr;
+            const float* normals = nullptr;
+            const float* uvs = nullptr;
+            const std::vector<uint32>* indices = nullptr;
+            std::vector<Vec4>* tangents = nullptr;
+            std::vector<bool>* assigned = nullptr;
+            bool invalidOutput = false;
+            bool conflictingCornerBasis = false;
+        };
+
+        MikkMeshData& GetMikkMeshData(const SMikkTSpaceContext* context)
+        {
+            return *static_cast<MikkMeshData*>(context->m_pUserData);
+        }
+
+        uint32 GetMikkVertexIndex(const MikkMeshData& data,
+                                  int face,
+                                  int vertex)
+        {
+            return (*data.indices)[static_cast<size_t>(face) * 3u +
+                                   static_cast<size_t>(vertex)];
+        }
+
+        int MikkGetNumFaces(const SMikkTSpaceContext* context)
+        {
+            return static_cast<int>(GetMikkMeshData(context).indices->size() / 3u);
+        }
+
+        int MikkGetNumVerticesOfFace(const SMikkTSpaceContext*, int)
+        {
+            return 3;
+        }
+
+        void MikkGetPosition(const SMikkTSpaceContext* context,
+                             float output[],
+                             int face,
+                             int vertex)
+        {
+            const MikkMeshData& data = GetMikkMeshData(context);
+            const uint32 index = GetMikkVertexIndex(data, face, vertex);
+            output[0] = data.positions[index * 3u];
+            output[1] = data.positions[index * 3u + 1u];
+            output[2] = data.positions[index * 3u + 2u];
+        }
+
+        void MikkGetNormal(const SMikkTSpaceContext* context,
+                           float output[],
+                           int face,
+                           int vertex)
+        {
+            const MikkMeshData& data = GetMikkMeshData(context);
+            const uint32 index = GetMikkVertexIndex(data, face, vertex);
+            const Vec3 normal = NormalizeOr(
+                Vec3(data.normals[index * 3u],
+                     data.normals[index * 3u + 1u],
+                     data.normals[index * 3u + 2u]),
+                Vec3(0.0f, 0.0f, 1.0f));
+            output[0] = normal.x;
+            output[1] = normal.y;
+            output[2] = normal.z;
+        }
+
+        void MikkGetTexCoord(const SMikkTSpaceContext* context,
+                             float output[],
+                             int face,
+                             int vertex)
+        {
+            const MikkMeshData& data = GetMikkMeshData(context);
+            const uint32 index = GetMikkVertexIndex(data, face, vertex);
+            output[0] = data.uvs[index * 2u];
+            output[1] = data.uvs[index * 2u + 1u];
+        }
+
+        void MikkSetTSpaceBasic(const SMikkTSpaceContext* context,
+                                const float tangentValue[],
+                                float signValue,
+                                int face,
+                                int vertex)
+        {
+            MikkMeshData& data = GetMikkMeshData(context);
+            const uint32 index = GetMikkVertexIndex(data, face, vertex);
+            const Vec3 tangent(
+                tangentValue[0], tangentValue[1], tangentValue[2]);
+            const float lengthSquared = glm::dot(tangent, tangent);
+            if (!IsFiniteVec3(tangent) || !std::isfinite(signValue) ||
+                !std::isfinite(lengthSquared) ||
+                lengthSquared <= RVX_TANGENT_EPSILON)
+            {
+                data.invalidOutput = true;
+                return;
+            }
+
+            const Vec3 normalized = tangent * glm::inversesqrt(lengthSquared);
+            const float sign = signValue < 0.0f ? -1.0f : 1.0f;
+            if ((*data.assigned)[index])
+            {
+                const Vec4& existing = (*data.tangents)[index];
+                if (glm::dot(Vec3(existing), normalized) < 0.999f ||
+                    existing.w != sign)
+                {
+                    // One indexed vertex cannot represent distinct per-corner
+                    // tangent frames. The source must split its UV/normal seam.
+                    data.conflictingCornerBasis = true;
+                }
+                return;
+            }
+
+            (*data.tangents)[index] = Vec4(normalized, sign);
+            (*data.assigned)[index] = true;
         }
     } // namespace
 
@@ -226,90 +344,285 @@ namespace RVX
         return true;
     }
 
-    bool Mesh::GenerateTangents()
+    bool Mesh::GenerateFlatNormalsTriList()
     {
-        // Tangent generation requires position, normal, uv, and indices
-        const VertexAttribute* posAttr = GetAttribute(VertexBufferNames::Position);
-        const VertexAttribute* normAttr = GetAttribute(VertexBufferNames::Normal);
-        const VertexAttribute* uvAttr = GetAttribute(VertexBufferNames::UV);
-
-        if (!posAttr || !normAttr || !uvAttr || m_indexCount == 0 ||
-            m_primitiveType != PrimitiveType::Triangles)
+        const VertexAttribute* positionAttribute =
+            GetAttribute(VertexBufferNames::Position);
+        const std::vector<uint32> sourceIndices = GetIndices32();
+        if (!positionAttribute ||
+            positionAttribute->GetType() != AttributeType::Float ||
+            positionAttribute->GetComponents() != 3u ||
+            positionAttribute->GetVertexCount() == 0u ||
+            !m_subMeshes.empty() ||
+            m_primitiveType != PrimitiveType::Triangles ||
+            sourceIndices.empty() || sourceIndices.size() % 3u != 0u)
         {
             return false;
         }
-        size_t vertexCount = posAttr->GetVertexCount();
-        std::vector<Vec3> tangents(vertexCount, Vec3(0.0f));
-        std::vector<Vec3> bitangents(vertexCount, Vec3(0.0f));
 
-        const float* positions = static_cast<const float*>(posAttr->GetData());
-        const float* normals = static_cast<const float*>(normAttr->GetData());
-        const float* uvs = static_cast<const float*>(uvAttr->GetData());
-        std::vector<uint32_t> indices = GetIndices32();
-
-        // Compute tangents per triangle
-        for (size_t i = 0; i + 2 < indices.size(); i += 3)
+        const size_t sourceVertexCount = positionAttribute->GetVertexCount();
+        const float* sourcePositions =
+            static_cast<const float*>(positionAttribute->GetData());
+        if (!sourcePositions)
         {
-            uint32_t i0 = indices[i];
-            uint32_t i1 = indices[i + 1];
-            uint32_t i2 = indices[i + 2];
+            return false;
+        }
 
-            if (i0 >= vertexCount || i1 >= vertexCount || i2 >= vertexCount)
+        std::vector<Vec3> flatNormals(sourceIndices.size());
+        for (size_t triangle = 0; triangle < sourceIndices.size(); triangle += 3u)
+        {
+            const uint32 index0 = sourceIndices[triangle];
+            const uint32 index1 = sourceIndices[triangle + 1u];
+            const uint32 index2 = sourceIndices[triangle + 2u];
+            if (index0 >= sourceVertexCount || index1 >= sourceVertexCount ||
+                index2 >= sourceVertexCount)
+            {
+                return false;
+            }
+
+            const Vec3 position0(
+                sourcePositions[index0 * 3u],
+                sourcePositions[index0 * 3u + 1u],
+                sourcePositions[index0 * 3u + 2u]);
+            const Vec3 position1(
+                sourcePositions[index1 * 3u],
+                sourcePositions[index1 * 3u + 1u],
+                sourcePositions[index1 * 3u + 2u]);
+            const Vec3 position2(
+                sourcePositions[index2 * 3u],
+                sourcePositions[index2 * 3u + 1u],
+                sourcePositions[index2 * 3u + 2u]);
+            if (!IsFiniteVec3(position0) || !IsFiniteVec3(position1) ||
+                !IsFiniteVec3(position2))
+            {
+                return false;
+            }
+
+            const Vec3 faceNormal = cross(
+                position1 - position0, position2 - position0);
+            const float lengthSquared = dot(faceNormal, faceNormal);
+            if (!std::isfinite(lengthSquared) ||
+                lengthSquared <= RVX_TANGENT_EPSILON)
+            {
+                return false;
+            }
+            const Vec3 normalized = faceNormal * glm::inversesqrt(lengthSquared);
+            flatNormals[triangle] = normalized;
+            flatNormals[triangle + 1u] = normalized;
+            flatNormals[triangle + 2u] = normalized;
+        }
+
+        std::unordered_map<std::string, std::unique_ptr<VertexAttribute>>
+            expandedAttributes;
+        expandedAttributes.reserve(m_attributes.size() + 1u);
+        for (const auto& [attributeName, attribute] : m_attributes)
+        {
+            if (!attribute || attributeName == VertexBufferNames::Normal ||
+                attributeName == VertexBufferNames::Tangent)
             {
                 continue;
             }
-
-            Vec3 v0(positions[i0 * 3], positions[i0 * 3 + 1], positions[i0 * 3 + 2]);
-            Vec3 v1(positions[i1 * 3], positions[i1 * 3 + 1], positions[i1 * 3 + 2]);
-            Vec3 v2(positions[i2 * 3], positions[i2 * 3 + 1], positions[i2 * 3 + 2]);
-
-            Vec2 uv0(uvs[i0 * 2], uvs[i0 * 2 + 1]);
-            Vec2 uv1(uvs[i1 * 2], uvs[i1 * 2 + 1]);
-            Vec2 uv2(uvs[i2 * 2], uvs[i2 * 2 + 1]);
-
-            Vec3 edge1 = v1 - v0;
-            Vec3 edge2 = v2 - v0;
-            Vec2 deltaUV1 = uv1 - uv0;
-            Vec2 deltaUV2 = uv2 - uv0;
-
-            float denom = deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y;
-            if (std::abs(denom) < 1e-8f) continue;
-
-            float f = 1.0f / denom;
-            Vec3 tangent = (edge1 * deltaUV2.y - edge2 * deltaUV1.y) * f;
-            Vec3 bitangent = (edge2 * deltaUV1.x - edge1 * deltaUV2.x) * f;
-
-            tangents[i0] += tangent;
-            tangents[i1] += tangent;
-            tangents[i2] += tangent;
-            bitangents[i0] += bitangent;
-            bitangents[i1] += bitangent;
-            bitangents[i2] += bitangent;
-        }
-
-        // Orthonormalize and compute handedness
-        std::vector<Vec4> finalTangents(vertexCount);
-        for (size_t i = 0; i < vertexCount; ++i)
-        {
-            Vec3 n = NormalizeOr(Vec3(normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2]),
-                                 Vec3(0.0f, 0.0f, 1.0f));
-            Vec3 t = tangents[i];
-
-            // Gram-Schmidt orthogonalize
-            t = t - n * dot(n, t);
-            t = NormalizeOr(t, BuildFallbackTangent(n));
-
-            // Calculate handedness
-            const Vec3 bitangent = bitangents[i];
-            float w = 1.0f;
-            if (IsFiniteVec3(bitangent) && dot(bitangent, bitangent) > RVX_TANGENT_EPSILON)
+            if (attribute->GetVertexCount() != sourceVertexCount ||
+                attribute->GetComponents() == 0u ||
+                attribute->GetComponents() > 4u || !attribute->GetData())
             {
-                w = (dot(cross(n, t), bitangent) < 0.0f) ? -1.0f : 1.0f;
+                return false;
             }
 
-            finalTangents[i] = Vec4(t.x, t.y, t.z, w);
+            const size_t stride = attribute->GetStride();
+            if (stride == 0u ||
+                sourceIndices.size() >
+                    std::numeric_limits<size_t>::max() / stride)
+            {
+                return false;
+            }
+            std::vector<uint8> expandedBytes(sourceIndices.size() * stride);
+            const auto* sourceBytes =
+                static_cast<const uint8*>(attribute->GetData());
+            for (size_t corner = 0; corner < sourceIndices.size(); ++corner)
+            {
+                std::memcpy(
+                    expandedBytes.data() + corner * stride,
+                    sourceBytes + static_cast<size_t>(sourceIndices[corner]) *
+                                      stride,
+                    stride);
+            }
+            expandedAttributes.emplace(
+                attributeName,
+                std::make_unique<VertexAttribute>(
+                    expandedBytes.data(),
+                    sourceIndices.size(),
+                    attribute->GetComponents(),
+                    attribute->GetType(),
+                    attribute->IsNormalized()));
+        }
+        expandedAttributes.emplace(
+            VertexBufferNames::Normal,
+            std::make_unique<VertexAttribute>(flatNormals));
+
+        if (sourceIndices.size() >
+            static_cast<size_t>(std::numeric_limits<uint32>::max()) + 1u)
+        {
+            return false;
+        }
+        std::vector<uint32> expandedIndices(sourceIndices.size());
+        for (size_t index = 0; index < expandedIndices.size(); ++index)
+        {
+            expandedIndices[index] = static_cast<uint32>(index);
         }
 
+        m_attributes = std::move(expandedAttributes);
+        m_vertexCount = sourceIndices.size();
+        SetIndices(expandedIndices);
+        m_boundingBox.reset();
+        return true;
+    }
+
+    bool Mesh::GenerateTangents(uint32 uvSet)
+    {
+        if (uvSet > 1u)
+        {
+            return false;
+        }
+        const std::string uvAttributeName = uvSet == 1u
+            ? VertexBufferNames::UV1
+            : VertexBufferNames::UV;
+        const VertexAttribute* posAttr = GetAttribute(VertexBufferNames::Position);
+        const VertexAttribute* normAttr = GetAttribute(VertexBufferNames::Normal);
+        const VertexAttribute* uvAttr = GetAttribute(uvAttributeName);
+
+        if (!posAttr || !normAttr || !uvAttr || m_indexCount == 0 ||
+            m_primitiveType != PrimitiveType::Triangles ||
+            posAttr->GetType() != AttributeType::Float ||
+            normAttr->GetType() != AttributeType::Float ||
+            uvAttr->GetType() != AttributeType::Float ||
+            posAttr->GetComponents() != 3u ||
+            normAttr->GetComponents() != 3u ||
+            uvAttr->GetComponents() != 2u ||
+            posAttr->GetVertexCount() == 0u ||
+            normAttr->GetVertexCount() != posAttr->GetVertexCount() ||
+            uvAttr->GetVertexCount() != posAttr->GetVertexCount())
+        {
+            return false;
+        }
+
+        const size_t vertexCount = posAttr->GetVertexCount();
+        const float* positions = static_cast<const float*>(posAttr->GetData());
+        const float* normals = static_cast<const float*>(normAttr->GetData());
+        const float* uvs = static_cast<const float*>(uvAttr->GetData());
+        const std::vector<uint32> indices = GetIndices32();
+        if (!positions || !normals || !uvs || indices.empty() ||
+            indices.size() % 3u != 0u ||
+            indices.size() / 3u > static_cast<size_t>(std::numeric_limits<int>::max()))
+        {
+            return false;
+        }
+
+        std::vector<bool> referenced(vertexCount, false);
+        for (uint32 index : indices)
+        {
+            if (index >= vertexCount)
+            {
+                return false;
+            }
+            referenced[index] = true;
+            const Vec3 position(
+                positions[index * 3u],
+                positions[index * 3u + 1u],
+                positions[index * 3u + 2u]);
+            const Vec3 normal(
+                normals[index * 3u],
+                normals[index * 3u + 1u],
+                normals[index * 3u + 2u]);
+            const Vec2 uv(uvs[index * 2u], uvs[index * 2u + 1u]);
+            if (!IsFiniteVec3(position) || !IsFiniteVec3(normal) ||
+                !std::isfinite(uv.x) || !std::isfinite(uv.y) ||
+                glm::dot(normal, normal) <= RVX_TANGENT_EPSILON)
+            {
+                return false;
+            }
+        }
+        for (size_t triangle = 0; triangle < indices.size(); triangle += 3u)
+        {
+            const uint32 index0 = indices[triangle];
+            const uint32 index1 = indices[triangle + 1u];
+            const uint32 index2 = indices[triangle + 2u];
+            const Vec3 position0(
+                positions[index0 * 3u],
+                positions[index0 * 3u + 1u],
+                positions[index0 * 3u + 2u]);
+            const Vec3 position1(
+                positions[index1 * 3u],
+                positions[index1 * 3u + 1u],
+                positions[index1 * 3u + 2u]);
+            const Vec3 position2(
+                positions[index2 * 3u],
+                positions[index2 * 3u + 1u],
+                positions[index2 * 3u + 2u]);
+            const Vec2 uv0(uvs[index0 * 2u], uvs[index0 * 2u + 1u]);
+            const Vec2 uv1(uvs[index1 * 2u], uvs[index1 * 2u + 1u]);
+            const Vec2 uv2(uvs[index2 * 2u], uvs[index2 * 2u + 1u]);
+            const Vec3 geometricNormal =
+                cross(position1 - position0, position2 - position0);
+            const Vec2 uvEdge1 = uv1 - uv0;
+            const Vec2 uvEdge2 = uv2 - uv0;
+            const float uvDeterminant =
+                uvEdge1.x * uvEdge2.y - uvEdge1.y * uvEdge2.x;
+            const float geometricAreaSquared =
+                dot(geometricNormal, geometricNormal);
+            if (!std::isfinite(geometricAreaSquared) ||
+                !std::isfinite(uvDeterminant) ||
+                geometricAreaSquared <=
+                    RVX_TANGENT_EPSILON ||
+                std::abs(uvDeterminant) <=
+                    RVX_UV_DETERMINANT_EPSILON)
+            {
+                return false;
+            }
+        }
+
+        std::vector<Vec4> finalTangents(vertexCount, Vec4(0.0f));
+        std::vector<bool> assigned(vertexCount, false);
+        MikkMeshData data{
+            positions,
+            normals,
+            uvs,
+            &indices,
+            &finalTangents,
+            &assigned};
+        SMikkTSpaceInterface interface{
+            MikkGetNumFaces,
+            MikkGetNumVerticesOfFace,
+            MikkGetPosition,
+            MikkGetNormal,
+            MikkGetTexCoord,
+            MikkSetTSpaceBasic,
+            nullptr};
+        const SMikkTSpaceContext context{&interface, &data};
+        if (genTangSpaceDefault(&context) == 0 || data.invalidOutput ||
+            data.conflictingCornerBasis)
+        {
+            return false;
+        }
+
+        for (size_t index = 0; index < vertexCount; ++index)
+        {
+            if (referenced[index] && !assigned[index])
+            {
+                // Degenerate UV triangles do not silently become a fabricated
+                // tangent-space normal basis.
+                return false;
+            }
+            if (!referenced[index])
+            {
+                const Vec3 normal(
+                    normals[index * 3u],
+                    normals[index * 3u + 1u],
+                    normals[index * 3u + 2u]);
+                finalTangents[index] = Vec4(
+                    BuildFallbackTangent(normal), 1.0f);
+            }
+        }
         SetTangents(finalTangents);
         return true;
     }

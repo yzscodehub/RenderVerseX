@@ -57,6 +57,18 @@ namespace
         MeshPassEligibilityReason intrinsicDirectReason) noexcept
     {
         const RenderDrawPacket& packet = input.packet;
+        if (!packet.pipelineKey.materialPolicyValid)
+        {
+            return MeshPassEligibilityReason::ResourceUnavailable;
+        }
+        if (packet.pipelineKey.shadowPolicy !=
+            MaterialShadowPolicy::CastAndReceive)
+        {
+            // GPUScene currently stores receive-shadow at object granularity.
+            // Route per-material shadow policies through exact per-draw
+            // constants until the GPUScene schema carries this policy.
+            return MeshPassEligibilityReason::SpecialMaterial;
+        }
         if (packet.pipelineKey.materialVariant ==
             MaterialPipelineVariant::Transparent)
         {
@@ -109,8 +121,13 @@ namespace
         return std::tuple{
             static_cast<uint8>(key.pass),
             static_cast<uint8>(key.pipeline.materialVariant),
+            static_cast<uint8>(key.pipeline.cullMode),
+            static_cast<uint8>(key.pipeline.shadowPolicy),
             static_cast<uint8>(key.pipeline.topology),
             key.pipeline.skinned,
+            key.pipeline.materialPolicyValid,
+            key.pipeline.requiresUV1,
+            key.pipeline.reverseWinding,
             key.geometry.mesh.slot,
             key.geometry.mesh.generation,
             key.geometry.submeshIndex,
@@ -178,8 +195,13 @@ CanonicalRasterGroupOrderKey MakeCanonicalRasterGroupOrderKey(
     return CanonicalRasterGroupOrderKey{
         static_cast<uint8>(key.pass),
         static_cast<uint8>(key.pipeline.materialVariant),
+        static_cast<uint8>(key.pipeline.cullMode),
+        static_cast<uint8>(key.pipeline.shadowPolicy),
         static_cast<uint8>(key.pipeline.topology),
         static_cast<uint8>(key.pipeline.skinned),
+        static_cast<uint8>(key.pipeline.materialPolicyValid),
+        static_cast<uint8>(key.pipeline.requiresUV1),
+        static_cast<uint8>(key.pipeline.reverseWinding),
         geometryAssetId.value,
         key.geometry.submeshIndex,
         static_cast<uint8>(key.geometry.indexType),

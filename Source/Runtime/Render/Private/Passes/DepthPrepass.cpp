@@ -74,6 +74,10 @@ namespace
         if (IsMaskedPacket(packet))
         {
             layout.vertexStreams |= MeshPassVertexStreams::TexCoord;
+            if (packet.pipelineKey.requiresUV1)
+            {
+                layout.vertexStreams |= MeshPassVertexStreams::TexCoord1;
+            }
             const bool missingMaterial =
                 HasDrawFlag(packet.flags, RenderDrawFlags::MissingMaterial) ||
                 !packet.materialKey.material.IsValid();
@@ -255,6 +259,7 @@ struct DepthPrepass::PlannedGPUDrivenDepthDraw
 {
     uint32 groupIndex = 0;
     MeshGPUBuffers buffers;
+    RHIPipelineRef pipeline;
 };
 
 DepthPrepass::DepthPrepass()
@@ -706,10 +711,9 @@ bool DepthPrepass::AreGPUDrivenDepthGroupsDrawable(
 }
 
 bool DepthPrepass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
-                                            RHIDescriptorSet* frameSet,
-                                            const ObjectConstantBinding* tier1ObjectBinding,
-                                            RHIPipeline* pipeline,
-                                            std::span<const PlannedGPUDrivenDepthDraw> plannedBatches,
+                                             RHIDescriptorSet* frameSet,
+                                             const ObjectConstantBinding* tier1ObjectBinding,
+                                             std::span<const PlannedGPUDrivenDepthDraw> plannedBatches,
                                             uint32 expectedPacketCount,
                                             uint32 expectedGroupCount)
 {
@@ -739,18 +743,11 @@ bool DepthPrepass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
     }
     m_drawStats.gpuDrivenEligible = true;
 
-    if (!pipeline)
-    {
-        return false;
-    }
-
     if (!usesGPUSceneRaster &&
         (tier1ObjectBinding == nullptr || !tier1ObjectBinding->IsValid()))
     {
         return false;
     }
-
-    ctx.SetPipeline(pipeline);
 
     if (usesGPUSceneRaster && !frameSet)
     {
@@ -780,6 +777,11 @@ bool DepthPrepass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
     bool submittedAnyGroup = false;
     for (const PlannedGPUDrivenDepthDraw& batch : plannedBatches)
     {
+        if (!batch.pipeline)
+        {
+            return false;
+        }
+        ctx.SetPipeline(batch.pipeline.Get());
         ctx.SetVertexBuffer(0, batch.buffers.positionBuffer);
         ctx.SetVertexBuffer(6, m_gpuCulling->GetVisibleInstanceBuffer());
         if (batch.buffers.boneIndicesBuffer)
@@ -879,6 +881,7 @@ bool DepthPrepass::BuildPlannedDirectBatch(
     {
         const RenderDrawPacket& packet = draw.packet;
         if (packet.pass != RenderPassKind::Depth ||
+            !packet.pipelineKey.materialPolicyValid ||
             packet.primitiveData == RVX_INVALID_PRIMITIVE_DATA_INDEX ||
             !packet.geometryKey.mesh.IsValid() ||
             packet.geometryKey.indexType != MeshUploadIndexType::UInt32 ||
@@ -939,6 +942,8 @@ bool DepthPrepass::BuildPlannedDirectBatch(
             *mesh, RenderMeshBufferSemantic::Index);
         const bool hasUV = mesh != nullptr && HasMeshBufferSemantic(
             *mesh, RenderMeshBufferSemantic::UV);
+        const bool hasUV1 = mesh != nullptr && HasMeshBufferSemantic(
+            *mesh, RenderMeshBufferSemantic::UV1);
         MeshUploadSubmesh syntheticSubmesh;
         const MeshUploadSubmesh* const submesh = mesh != nullptr
             ? ResolveMeshSubmesh(*mesh, packet.geometryKey.submeshIndex,
@@ -970,7 +975,8 @@ bool DepthPrepass::BuildPlannedDirectBatch(
             outPlannedDraws.clear();
             return false;
         }
-        if (masked && !hasUV)
+        if (masked &&
+            (!hasUV || (packet.pipelineKey.requiresUV1 && !hasUV1)))
         {
             m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
             ++m_drawStats.skippedMissingUVCount;
@@ -1023,7 +1029,10 @@ bool DepthPrepass::BuildPlannedDirectBatch(
             !buffers.IsValid() || buffers.positionBuffer == nullptr ||
             buffers.indexBuffer == nullptr ||
             packet.geometryKey.submeshIndex >= buffers.submeshes.size() ||
-            (planned.masked && (!buffers.uvBuffer || !buffers.hasUVs)))
+            (planned.masked &&
+             (!buffers.uvBuffer || !buffers.hasUVs ||
+              (packet.pipelineKey.requiresUV1 &&
+               !buffers.HasTextureCoordinateSet(1)))))
         {
             m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
             outPlannedDraws.clear();
@@ -1061,9 +1070,17 @@ bool DepthPrepass::BuildPlannedDirectBatch(
             ? DefaultLitDirectVertexInputMode::Skinned
             : DefaultLitDirectVertexInputMode::Rigid;
         planned.pipeline = planned.masked
-            ? m_pipelineCache->GetMaskedDepthOnlyPipeline(inputMode)
-            : m_pipelineCache->GetDepthOnlyPipeline(inputMode);
-        if (planned.pipeline == nullptr)
+            ? m_pipelineCache->GetMaskedDepthOnlyPipeline(
+                  inputMode,
+                  packet.pipelineKey.cullMode,
+                  packet.pipelineKey.reverseWinding)
+            : m_pipelineCache->GetDepthOnlyPipeline(
+                  inputMode,
+                  packet.pipelineKey.cullMode,
+                  packet.pipelineKey.reverseWinding);
+        if (planned.pipeline == nullptr ||
+            !context.RetainSubmissionResource(
+                Ref<RefCounted>(planned.pipeline)))
         {
             m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
             outPlannedDraws.clear();
@@ -1248,9 +1265,13 @@ void DepthPrepass::ApplyDirectInstancePlan(
 
         const uint32 leaderIndex = batch.members.front().directPacketIndex;
         const PlannedDepthDraw& leader = plannedDraws[leaderIndex];
-        RHIPipeline* pipeline = m_pipelineCache->GetGPUDrivenDepthOnlyPipeline();
+        RHIPipeline* pipeline = m_pipelineCache->GetGPUDrivenDepthOnlyPipeline(
+            leader.packet.packet.pipelineKey.cullMode,
+            leader.packet.packet.pipelineKey.reverseWinding);
         ObjectConstantBinding binding;
         if (pipeline == nullptr || leader.masked || leader.skinned ||
+            !context.RetainSubmissionResource(
+                Ref<RefCounted>(pipeline)) ||
             !m_pipelineCache->CreateObjectConstantBinding(
                 Mat4Identity(),
                 Mat4Identity(),
@@ -1321,6 +1342,11 @@ bool DepthPrepass::TryDrawPlannedDirect(
         if (planned.masked)
         {
             ctx.SetVertexBuffer(2, planned.buffers.uvBuffer);
+            ctx.SetVertexBuffer(
+                7,
+                planned.packet.packet.pipelineKey.requiresUV1
+                    ? planned.buffers.uv1Buffer
+                    : planned.buffers.uvBuffer);
             ctx.SetDescriptorSet(2,
                                  planned.materialBinding.descriptorSet,
                                  planned.materialBinding.dynamicOffsets);
@@ -1561,7 +1587,6 @@ void DepthPrepass::Execute(RenderGraphPassContext& context,
         }
 
         ObjectConstantBinding tier1ObjectBinding;
-        RHIPipeline* gpuPipeline = nullptr;
         RHIDescriptorSetRef gpuFrameDescriptorSet;
         std::vector<PlannedGPUDrivenDepthDraw> plannedGPUBatches;
         bool gpuPreflightReady = plannedGPU;
@@ -1576,9 +1601,7 @@ void DepthPrepass::Execute(RenderGraphPassContext& context,
                     plannedGPUCount,
                     depthPlan->partition.drawGroupCount,
                     gpuDrawItemCount) ||
-                (!usesGPUSceneRaster &&
-                 m_pipelineCache->GetGPUDrivenDepthOnlyPipeline() == nullptr) ||
-                 (usesGPUSceneRaster &&
+                (usesGPUSceneRaster &&
                   (!m_gpuSceneRasterBinding ||
                    !m_gpuSceneRasterBinding->IsReadyForBinding() ||
                    !m_gpuSceneRasterBinding->depthPipeline)))
@@ -1587,9 +1610,6 @@ void DepthPrepass::Execute(RenderGraphPassContext& context,
             }
             if (gpuPreflightReady)
             {
-                gpuPipeline = usesGPUSceneRaster
-                    ? m_gpuSceneRasterBinding->depthPipeline.Get()
-                    : m_pipelineCache->GetGPUDrivenDepthOnlyPipeline();
                 gpuFrameDescriptorSet = m_pipelineCache->GetFrameDescriptorSetSnapshot();
                 const auto& groups = m_gpuCulling->GetDrawGroups();
                 plannedGPUBatches.reserve(groups.size());
@@ -1602,7 +1622,21 @@ void DepthPrepass::Execute(RenderGraphPassContext& context,
                         m_resourceRegistry, group.mesh);
                     if (!buffers.IsValid() ||
                         (usesGPUSceneRaster &&
-                         group.pipelineVariant != MaterialPipelineVariant::Opaque))
+                          group.pipelineVariant != MaterialPipelineVariant::Opaque))
+                    {
+                        gpuPreflightReady = false;
+                        break;
+                    }
+                    RHIPipeline* const pipeline = usesGPUSceneRaster
+                        ? m_pipelineCache->GetGPUSceneDepthOnlyPipeline(
+                              group.batchKey.pipeline.cullMode,
+                              group.batchKey.pipeline.reverseWinding)
+                        : m_pipelineCache->GetGPUDrivenDepthOnlyPipeline(
+                              group.batchKey.pipeline.cullMode,
+                              group.batchKey.pipeline.reverseWinding);
+                    if (pipeline == nullptr ||
+                        !context.RetainSubmissionResource(
+                            Ref<RefCounted>(pipeline)))
                     {
                         gpuPreflightReady = false;
                         break;
@@ -1610,11 +1644,12 @@ void DepthPrepass::Execute(RenderGraphPassContext& context,
                     PlannedGPUDrivenDepthDraw planned;
                     planned.groupIndex = groupIndex;
                     planned.buffers = buffers;
+                    planned.pipeline = RHIPipelineRef(pipeline);
                     plannedGPUBatches.emplace_back(std::move(planned));
                 }
             }
             if (gpuPreflightReady &&
-                (gpuPipeline == nullptr || !gpuFrameDescriptorSet ||
+                (!gpuFrameDescriptorSet ||
                 !context.RetainSubmissionResource(
                     Ref<RefCounted>(gpuFrameDescriptorSet))))
             {
@@ -1681,7 +1716,6 @@ void DepthPrepass::Execute(RenderGraphPassContext& context,
                 ctx,
                 gpuFrameDescriptorSet.Get(),
                 m_gpuSceneRasterEnabled ? nullptr : &tier1ObjectBinding,
-                gpuPipeline,
                 plannedGPUBatches,
                 plannedGPUCount,
                 depthPlan->partition.drawGroupCount);

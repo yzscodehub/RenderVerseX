@@ -39,13 +39,22 @@ namespace RVX
                                          object.skinningMatrices.size());
         }
 
+        [[nodiscard]] bool HasDrawFlag(RenderDrawFlags flags,
+                                       RenderDrawFlags flag) noexcept
+        {
+            return (static_cast<uint32>(flags) &
+                    static_cast<uint32>(flag)) != 0;
+        }
+
         struct DrawRecord
         {
             MeshGPUBuffers buffers{};
             SubmeshGPUInfo submesh{};
             std::array<uint32, 1> objectDynamicOffsets{0};
             MaterialBindingSnapshot material{};
+            RHIPipelineRef pipeline;
             bool skinned = false;
+            bool requiresUV1 = false;
         };
 
         struct GraphPassData
@@ -209,10 +218,12 @@ namespace RVX
                 if (!RetainResource(builder, draw.buffers.positionBuffer) ||
                     !RetainResource(builder, draw.buffers.normalBuffer) ||
                     !RetainResource(builder, draw.buffers.uvBuffer) ||
+                    !RetainResource(builder, draw.buffers.uv1Buffer) ||
                     !RetainResource(builder, draw.buffers.tangentBuffer) ||
                     !RetainResource(builder, draw.buffers.boneIndicesBuffer) ||
                     !RetainResource(builder, draw.buffers.boneWeightsBuffer) ||
                     !RetainResource(builder, draw.buffers.indexBuffer) ||
+                    !RetainResource(builder, draw.pipeline.Get()) ||
                     !RetainResource(builder, draw.material.constantBuffer.Get()) ||
                     !RetainResource(builder, draw.material.descriptorSet.Get()) ||
                     !RetainResource(builder, draw.material.layout.Get()))
@@ -259,6 +270,9 @@ namespace RVX
                 data.resourceRegistry, object.mesh);
             if (!buffers.IsValid() || !buffers.normalBuffer ||
                 !buffers.uvBuffer || !buffers.tangentBuffer ||
+                !item.packet.pipelineKey.materialPolicyValid ||
+                (item.packet.pipelineKey.requiresUV1 &&
+                 !buffers.HasTextureCoordinateSet(1)) ||
                 item.submeshIndex >= buffers.submeshes.size())
             {
                 return DrawPreparationResult::SkippedResource;
@@ -273,6 +287,19 @@ namespace RVX
             record.buffers = buffers;
             record.submesh = buffers.submeshes[item.submeshIndex];
             record.skinned = skinned;
+            record.requiresUV1 = item.packet.pipelineKey.requiresUV1;
+            record.pipeline = RHIPipelineRef(
+                data.pipelineCache->GetPipelineForVariant(
+                    MaterialPipelineVariant::Transparent,
+                    data.colorFormat,
+                    skinned ? DefaultLitDirectVertexInputMode::Skinned
+                            : DefaultLitDirectVertexInputMode::Rigid,
+                    item.packet.pipelineKey.cullMode,
+                    item.packet.pipelineKey.reverseWinding));
+            if (!record.pipeline)
+            {
+                return DrawPreparationResult::SkippedResource;
+            }
             MaterialBindingOptions materialOptions;
             materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis();
             if (!data.materialSystem->CreateMaterialBindingSnapshot(
@@ -304,7 +331,9 @@ namespace RVX
                     object.previousWorldMatrix,
                     view.previousViewProjectionMatrix,
                     previousWorldViewProjectionValid,
-                    object.receivesShadow,
+                    HasDrawFlag(
+                        item.packet.flags,
+                        RenderDrawFlags::ReceivesShadow),
                     ResolveSkinningMatrices(object, buffers)))
             {
                 return DrawPreparationResult::SkippedResource;
@@ -606,9 +635,7 @@ namespace RVX
                     continue;
                 }
 
-                RHIPipeline* pipeline = draw.skinned
-                    ? data.skinnedPipeline.Get()
-                    : data.rigidPipeline.Get();
+                RHIPipeline* pipeline = draw.pipeline.Get();
                 if (pipeline != currentPipeline)
                 {
                     ctx.SetPipeline(pipeline);
@@ -626,7 +653,14 @@ namespace RVX
                 if (draw.buffers.normalBuffer)
                     ctx.SetVertexBuffer(1, draw.buffers.normalBuffer);
                 if (draw.buffers.uvBuffer)
+                {
                     ctx.SetVertexBuffer(2, draw.buffers.uvBuffer);
+                    ctx.SetVertexBuffer(
+                        7,
+                        draw.requiresUV1
+                            ? draw.buffers.uv1Buffer
+                            : draw.buffers.uvBuffer);
+                }
                 if (draw.buffers.tangentBuffer)
                     ctx.SetVertexBuffer(3, draw.buffers.tangentBuffer);
                 if (draw.skinned)

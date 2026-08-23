@@ -38,8 +38,10 @@ namespace RVX
             SubmeshGPUInfo submesh{};
             std::array<uint32, 1> objectDynamicOffsets{0};
             MaterialBindingSnapshot material{};
+            RHIPipelineRef pipeline;
             bool masked = false;
             bool skinned = false;
+            bool requiresUV1 = false;
         };
 
         struct GraphPassData
@@ -165,6 +167,8 @@ namespace RVX
                 if (!RetainResource(builder, draw.buffers.positionBuffer) ||
                     !RetainResource(builder, draw.buffers.indexBuffer) ||
                     !RetainResource(builder, draw.buffers.uvBuffer) ||
+                    !RetainResource(builder, draw.buffers.uv1Buffer) ||
+                    !RetainResource(builder, draw.pipeline.Get()) ||
                     !RetainResource(builder, draw.buffers.boneIndicesBuffer) ||
                     !RetainResource(builder, draw.buffers.boneWeightsBuffer) ||
                     !RetainResource(builder, draw.material.constantBuffer.Get()) ||
@@ -229,6 +233,13 @@ namespace RVX
                 ++stats.skippedMissingUVCount;
                 return false;
             }
+            if (!item.packet.pipelineKey.materialPolicyValid ||
+                (item.packet.pipelineKey.requiresUV1 &&
+                 !buffers.HasTextureCoordinateSet(1)))
+            {
+                ++stats.skippedMissingUVCount;
+                return false;
+            }
             const bool skinned = object.HasSkinningData();
             if (skinned && !buffers.HasSkinningVertexData())
             {
@@ -241,6 +252,26 @@ namespace RVX
             record.submesh = buffers.submeshes[item.submeshIndex];
             record.masked = masked;
             record.skinned = skinned;
+            record.requiresUV1 = item.packet.pipelineKey.requiresUV1;
+            const DefaultLitDirectVertexInputMode inputMode = skinned
+                ? DefaultLitDirectVertexInputMode::Skinned
+                : DefaultLitDirectVertexInputMode::Rigid;
+            record.pipeline = RHIPipelineRef(masked
+                ? data.pipelineCache->GetMaskedObjectVelocityPipeline(
+                      stats.outputFormat,
+                      inputMode,
+                      item.packet.pipelineKey.cullMode,
+                      item.packet.pipelineKey.reverseWinding)
+                : data.pipelineCache->GetObjectVelocityPipeline(
+                      stats.outputFormat,
+                      inputMode,
+                      item.packet.pipelineKey.cullMode,
+                      item.packet.pipelineKey.reverseWinding));
+            if (!record.pipeline)
+            {
+                ++stats.skippedMissingResourceCount;
+                return false;
+            }
             if (masked)
             {
                 MaterialBindingOptions materialOptions;
@@ -506,19 +537,7 @@ namespace RVX
                     ++stats.skippedMissingResourceCount;
                     continue;
                 }
-                RHIPipeline* pipeline = nullptr;
-                if (draw.masked)
-                {
-                    pipeline = draw.skinned
-                        ? data.maskedPipeline.Get()
-                        : data.rigidMaskedPipeline.Get();
-                }
-                else
-                {
-                    pipeline = draw.skinned
-                        ? data.opaquePipeline.Get()
-                        : data.rigidOpaquePipeline.Get();
-                }
+                RHIPipeline* pipeline = draw.pipeline.Get();
                 if (pipeline != currentPipeline)
                 {
                     ctx.SetPipeline(pipeline);
@@ -534,7 +553,14 @@ namespace RVX
                 }
                 ctx.SetVertexBuffer(0, draw.buffers.positionBuffer);
                 if (draw.masked)
+                {
                     ctx.SetVertexBuffer(2, draw.buffers.uvBuffer);
+                    ctx.SetVertexBuffer(
+                        7,
+                        draw.requiresUV1
+                            ? draw.buffers.uv1Buffer
+                            : draw.buffers.uvBuffer);
+                }
                 if (draw.skinned)
                 {
                     ctx.SetVertexBuffer(4, draw.buffers.boneIndicesBuffer);

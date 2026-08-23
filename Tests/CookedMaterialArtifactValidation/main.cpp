@@ -166,6 +166,13 @@ TEST(CookedMaterialArtifactValidation, TextureDependenciesAreStrict)
     {
         auto artifact = MakeArtifact();
         artifact.textureBindings[0].definition.scale.x = 0.0f;
+        EXPECT_TRUE(RVX::Resource::FinalizeCookedMaterialArtifact(
+            artifact, error)) << error;
+    }
+    {
+        auto artifact = MakeArtifact();
+        artifact.textureBindings[0].definition.scale.x =
+            std::numeric_limits<float>::quiet_NaN();
         EXPECT_FALSE(RVX::Resource::FinalizeCookedMaterialArtifact(
             artifact, error));
     }

@@ -163,7 +163,7 @@ namespace RVX
             UploadOwnershipTransfers& ownershipTransfers);
         [[nodiscard]] bool RecordMaterialConstants(
             RenderResourceHandle handle,
-            const MaterialSourceData& sourceData,
+            const MaterialUploadPayload& payload,
             RHICommandContext& context,
             std::vector<RHIStagingBufferRef>& stagingBuffers,
             UploadOwnershipTransfers& ownershipTransfers);

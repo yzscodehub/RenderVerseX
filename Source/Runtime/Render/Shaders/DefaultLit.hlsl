@@ -22,21 +22,8 @@
 #include "Include/BRDF.hlsli"
 #include "Include/GPUInstanceData.hlsli"
 #include "Include/Lighting.hlsli"
+#include "Include/SurfaceMaterial.hlsli"
 #include "GPUDriven/GPUSceneRaster.hlsli"
-
-#define MATERIAL_TEXTURE_BASE_COLOR 0x01
-#define MATERIAL_TEXTURE_NORMAL 0x02
-#define MATERIAL_TEXTURE_METALLIC_ROUGHNESS 0x04
-#define MATERIAL_TEXTURE_OCCLUSION 0x08
-#define MATERIAL_TEXTURE_EMISSIVE 0x10
-
-#define MATERIAL_ALPHA_OPAQUE 0
-#define MATERIAL_ALPHA_MASK 1
-#define MATERIAL_ALPHA_BLEND 2
-
-#define MATERIAL_WORKFLOW_METALLIC_ROUGHNESS 0
-#define MATERIAL_WORKFLOW_SPECULAR_GLOSSINESS 1
-#define MATERIAL_WORKFLOW_UNLIT 2
 
 // =============================================================================
 // Constant Buffers
@@ -99,32 +86,7 @@ struct GPUCluster
 
 cbuffer MaterialConstants : register(b0, space2)
 {
-    float4 BaseColorFactor;
-    float MetallicFactor;
-    float RoughnessFactor;
-    float NormalScale;
-    float OcclusionStrength;
-    float4 EmissiveColor_Strength;
-    uint TextureFlags;
-    uint AlphaMode;
-    float AlphaCutoff;
-    uint Workflow;
-    uint4 DoubleSided_MaterialPaddingBits;
-};
-
-struct MaterialParameterData
-{
-    float4 BaseColorFactor;
-    float MetallicFactor;
-    float RoughnessFactor;
-    float NormalScale;
-    float OcclusionStrength;
-    float4 EmissiveColor_Strength;
-    uint TextureFlags;
-    uint AlphaMode;
-    float AlphaCutoff;
-    uint Workflow;
-    uint4 DoubleSided_MaterialPaddingBits;
+    RVX_MATERIAL_PARAMETER_FIELDS;
 };
 
 #define CameraPosition CameraPosition_Time.xyz
@@ -190,6 +152,7 @@ struct VSInput
     float4 Tangent  : TANGENT;
     uint4 BoneIndices : BLENDINDICES;
     float4 BoneWeights : BLENDWEIGHT;
+    float2 TexCoord1 : TEXCOORD1;
 };
 
 // Direct rigid draws do not bind skinning or GPU-driven instance streams.
@@ -199,6 +162,7 @@ struct RigidDirectVSInput
     float3 Normal   : NORMAL;
     float2 TexCoord : TEXCOORD0;
     float4 Tangent  : TANGENT;
+    float2 TexCoord1 : TEXCOORD1;
 };
 
 struct RigidVSInput
@@ -207,6 +171,7 @@ struct RigidVSInput
     float3 Normal   : NORMAL;
     float2 TexCoord : TEXCOORD0;
     float4 Tangent  : TANGENT;
+    float2 TexCoord1 : TEXCOORD1;
     uint InstanceIndex : INSTANCE_INDEX;
 };
 
@@ -219,6 +184,7 @@ struct PSInput
     float4 WorldTangent : TEXCOORD3;
     nointerpolation float ReceivesShadowValue : TEXCOORD4;
     nointerpolation uint MaterialParameterSlot : TEXCOORD5;
+    float2 TexCoord1 : TEXCOORD6;
 };
 
 // =============================================================================
@@ -289,7 +255,10 @@ PSInput VSMain(VSInput input)
     output.Position = mul(ViewProjection, worldPos);
     output.WorldNormal = normalize(mul((float3x3)NormalMatrix, localNormal));
     output.TexCoord = input.TexCoord;
-    output.WorldTangent = float4(normalize(mul((float3x3)World, localTangent)), input.Tangent.w);
+    output.TexCoord1 = input.TexCoord1;
+    output.WorldTangent = float4(
+        normalize(mul((float3x3)World, localTangent)),
+        input.Tangent.w * RVXResolveTransformHandedness((float3x3)World));
     output.ReceivesShadowValue = ReceivesShadow;
     output.MaterialParameterSlot = 0xFFFFFFFFu;
 
@@ -306,7 +275,10 @@ PSInput VSMainRigid(RigidDirectVSInput input)
     output.Position = mul(ViewProjection, worldPos);
     output.WorldNormal = normalize(mul((float3x3)NormalMatrix, input.Normal));
     output.TexCoord = input.TexCoord;
-    output.WorldTangent = float4(normalize(mul((float3x3)World, input.Tangent.xyz)), input.Tangent.w);
+    output.TexCoord1 = input.TexCoord1;
+    output.WorldTangent = float4(
+        normalize(mul((float3x3)World, input.Tangent.xyz)),
+        input.Tangent.w * RVXResolveTransformHandedness((float3x3)World));
     output.ReceivesShadowValue = ReceivesShadow;
     output.MaterialParameterSlot = 0xFFFFFFFFu;
 
@@ -330,7 +302,11 @@ PSInput VSMainGPUDriven(
     output.Position = mul(ViewProjection, worldPos);
     output.WorldNormal = normalize(mul((float3x3)instance.normalMatrix, input.Normal));
     output.TexCoord = input.TexCoord;
-    output.WorldTangent = float4(normalize(mul((float3x3)instance.worldMatrix, input.Tangent.xyz)), input.Tangent.w);
+    output.TexCoord1 = input.TexCoord1;
+    output.WorldTangent = float4(
+        normalize(mul((float3x3)instance.worldMatrix, input.Tangent.xyz)),
+        input.Tangent.w * RVXResolveTransformHandedness(
+            (float3x3)instance.worldMatrix));
     output.ReceivesShadowValue = ReceivesShadow;
     output.MaterialParameterSlot = 0xFFFFFFFFu;
 
@@ -352,9 +328,11 @@ PSInput VSMainInstancedMaterial(
     output.Position = mul(ViewProjection, worldPos);
     output.WorldNormal = normalize(mul((float3x3)instance.normalMatrix, input.Normal));
     output.TexCoord = input.TexCoord;
+    output.TexCoord1 = input.TexCoord1;
     output.WorldTangent = float4(
         normalize(mul((float3x3)instance.worldMatrix, input.Tangent.xyz)),
-        input.Tangent.w);
+        input.Tangent.w * RVXResolveTransformHandedness(
+            (float3x3)instance.worldMatrix));
     output.ReceivesShadowValue = ReceivesShadow;
     output.MaterialParameterSlot = instance.materialId;
     return output;
@@ -378,6 +356,7 @@ PSInput VSMainGPUScene(RigidVSInput input)
         output.WorldPos = float3(0.0f, 0.0f, 0.0f);
         output.WorldNormal = float3(0.0f, 0.0f, 0.0f);
         output.TexCoord = float2(0.0f, 0.0f);
+        output.TexCoord1 = float2(0.0f, 0.0f);
         output.WorldTangent = float4(0.0f, 0.0f, 0.0f, 0.0f);
         output.ReceivesShadowValue = 0.0f;
         output.MaterialParameterSlot = 0xFFFFFFFFu;
@@ -391,10 +370,14 @@ PSInput VSMainGPUScene(RigidVSInput input)
         GPUSceneTransformNormal(transform, input.Normal),
         float3(0.0f, 0.0f, 1.0f));
     output.TexCoord = input.TexCoord;
+    output.TexCoord1 = input.TexCoord1;
     output.WorldTangent = float4(
         GPUSceneSafeNormalize(GPUSceneTransformTangent(transform, input.Tangent.xyz),
                                float3(1.0f, 0.0f, 0.0f)),
-        input.Tangent.w);
+        input.Tangent.w * RVXResolveTransformHandedness(float3x3(
+            transform.worldFromLocal[0].xyz,
+            transform.worldFromLocal[1].xyz,
+            transform.worldFromLocal[2].xyz)));
     output.ReceivesShadowValue =
         (primitiveFlags & RVX_GPU_SCENE_PRIMITIVE_RECEIVES_SHADOW) != 0u
             ? 1.0f
@@ -429,25 +412,6 @@ float3 SafeNormalize(float3 value, float3 fallback)
 {
     float lenSq = dot(value, value);
     return lenSq > 1.0e-8 ? value * rsqrt(lenSq) : fallback;
-}
-
-float3 SampleNormalMap(float2 uv,
-                       float3 worldNormal,
-                       float4 worldTangent,
-                       float normalScale)
-{
-    float3 tangentNormal = NormalTexture.Sample(NormalSampler, uv).xyz * 2.0 - 1.0;
-    tangentNormal.xy *= normalScale;
-
-    float3 n = SafeNormalize(worldNormal, float3(0.0, 0.0, 1.0));
-    float3 t = SafeNormalize(worldTangent.xyz, float3(1.0, 0.0, 0.0));
-    t = SafeNormalize(t - n * dot(n, t), float3(1.0, 0.0, 0.0));
-
-    float tangentSign = worldTangent.w >= 0.0 ? 1.0 : -1.0;
-    float3 b = SafeNormalize(cross(n, t) * tangentSign, float3(0.0, 1.0, 0.0));
-    float3x3 tbn = float3x3(t, b, n);
-
-    return SafeNormalize(mul(tangentNormal, tbn), n);
 }
 
 int SelectDirectionalShadowCascade(float3 worldPos)
@@ -812,30 +776,43 @@ MaterialParameterData ResolveMaterialParameters(uint materialSlot)
     material.Workflow = Workflow;
     material.DoubleSided_MaterialPaddingBits =
         DoubleSided_MaterialPaddingBits;
+    material.BaseColorUVScaleOffset = BaseColorUVScaleOffset;
+    material.BaseColorUVRotationSet = BaseColorUVRotationSet;
+    material.NormalUVScaleOffset = NormalUVScaleOffset;
+    material.NormalUVRotationSet = NormalUVRotationSet;
+    material.MetallicRoughnessUVScaleOffset =
+        MetallicRoughnessUVScaleOffset;
+    material.MetallicRoughnessUVRotationSet =
+        MetallicRoughnessUVRotationSet;
+    material.OcclusionUVScaleOffset = OcclusionUVScaleOffset;
+    material.OcclusionUVRotationSet = OcclusionUVRotationSet;
+    material.EmissiveUVScaleOffset = EmissiveUVScaleOffset;
+    material.EmissiveUVRotationSet = EmissiveUVRotationSet;
     return material;
 }
 
-float4 PSMain(PSInput input) : SV_TARGET
+float4 PSMain(PSInput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
 {
     const MaterialParameterData material = ResolveMaterialParameters(
         input.MaterialParameterSlot);
+    const float2 baseColorUV = RVXResolveMaterialUV(
+        material, MATERIAL_TEXTURE_SLOT_BASE_COLOR,
+        input.TexCoord, input.TexCoord1);
     float4 baseColor = material.BaseColorFactor;
     if ((material.TextureFlags & MATERIAL_TEXTURE_BASE_COLOR) != 0)
     {
-        baseColor *= BaseColorTexture.Sample(BaseColorSampler, input.TexCoord);
+        baseColor *= BaseColorTexture.Sample(BaseColorSampler, baseColorUV);
     }
-
-    if (material.AlphaMode == MATERIAL_ALPHA_MASK &&
-        baseColor.a < material.AlphaCutoff)
-    {
-        discard;
-    }
+    RVXApplyAlphaMask(material, baseColor.a);
 
     float metallic = material.MetallicFactor;
     float roughness = material.RoughnessFactor;
     if ((material.TextureFlags & MATERIAL_TEXTURE_METALLIC_ROUGHNESS) != 0)
     {
-        float4 mr = MetallicRoughnessTexture.Sample(MetallicRoughnessSampler, input.TexCoord);
+        const float2 uv = RVXResolveMaterialUV(
+            material, MATERIAL_TEXTURE_SLOT_METALLIC_ROUGHNESS,
+            input.TexCoord, input.TexCoord1);
+        float4 mr = MetallicRoughnessTexture.Sample(MetallicRoughnessSampler, uv);
         roughness *= mr.g;
         metallic *= mr.b;
     }
@@ -844,7 +821,11 @@ float4 PSMain(PSInput input) : SV_TARGET
     if ((material.TextureFlags & MATERIAL_TEXTURE_OCCLUSION) != 0)
     {
         occlusion = lerp(1.0,
-                         OcclusionTexture.Sample(OcclusionSampler, input.TexCoord).r,
+                         OcclusionTexture.Sample(
+                             OcclusionSampler,
+                             RVXResolveMaterialUV(
+                                 material, MATERIAL_TEXTURE_SLOT_OCCLUSION,
+                                 input.TexCoord, input.TexCoord1)).r,
                          material.OcclusionStrength);
     }
 
@@ -852,7 +833,11 @@ float4 PSMain(PSInput input) : SV_TARGET
                       material.EmissiveColor_Strength.w;
     if ((material.TextureFlags & MATERIAL_TEXTURE_EMISSIVE) != 0)
     {
-        emissive *= EmissiveTexture.Sample(EmissiveSampler, input.TexCoord).rgb;
+        emissive *= EmissiveTexture.Sample(
+            EmissiveSampler,
+            RVXResolveMaterialUV(
+                material, MATERIAL_TEXTURE_SLOT_EMISSIVE,
+                input.TexCoord, input.TexCoord1)).rgb;
     }
 
     if (material.Workflow == MATERIAL_WORKFLOW_UNLIT)
@@ -860,28 +845,39 @@ float4 PSMain(PSInput input) : SV_TARGET
         return float4(baseColor.rgb + emissive, baseColor.a);
     }
 
-    if (material.Workflow == MATERIAL_WORKFLOW_SPECULAR_GLOSSINESS)
+    if (material.Workflow != MATERIAL_WORKFLOW_METALLIC_ROUGHNESS)
     {
-        // Compatibility fallback until explicit specular/glossiness factors and textures exist.
-        metallic = 0.0;
+        // Unsupported workflows must never be approximated as StandardLit.
+        // The CPU policy rejects these before recording; clip is a defensive
+        // shader-side fail-closed guard for malformed/stale material data.
+        clip(-1.0f);
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
     }
 
     float3 viewDir = SafeNormalize(CameraPosition - input.WorldPos, float3(0.0, 0.0, 1.0));
     float3 normal = SafeNormalize(input.WorldNormal, float3(0.0, 0.0, 1.0));
     float4 doubleSidedTangent = input.WorldTangent;
-    if (material.DoubleSided_MaterialPaddingBits.x != 0 &&
-        dot(normal, viewDir) < 0.0)
-    {
-        normal = -normal;
-        doubleSidedTangent.w = -doubleSidedTangent.w;
-    }
+    RVXResolveFrontFaceBasis(
+        isFrontFace,
+        material.DoubleSided_MaterialPaddingBits.x,
+        normal,
+        doubleSidedTangent);
 
     if ((material.TextureFlags & MATERIAL_TEXTURE_NORMAL) != 0)
     {
-        normal = SampleNormalMap(input.TexCoord,
-                                 normal,
-                                 doubleSidedTangent,
-                                 material.NormalScale);
+        const float2 normalUV = RVXResolveMaterialUV(
+            material,
+            MATERIAL_TEXTURE_SLOT_NORMAL,
+            input.TexCoord,
+            input.TexCoord1);
+        normal = RVXSampleNormalMap(
+            NormalTexture,
+            NormalSampler,
+            normalUV,
+            input.WorldPos,
+            normal,
+            doubleSidedTangent,
+            material.NormalScale);
     }
 
     float3 toLight = SafeNormalize(-LightDirection, float3(0.0, 1.0, 0.0));

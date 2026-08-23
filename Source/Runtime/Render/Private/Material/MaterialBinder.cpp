@@ -4,6 +4,7 @@
  */
 
 #include "Render/Material/MaterialBinder.h"
+#include "Render/Material/MaterialGPUEncoding.h"
 #include "Core/Log.h"
 #include "Resources/RenderResourceRegistry.h"
 
@@ -190,47 +191,14 @@ void MaterialBinder::BindDefault(RHICommandContext& ctx, uint32 setIndex)
 
 MaterialGPUConstants MaterialBinder::ConvertToGPU(const MaterialSourceData& material)
 {
-    MaterialGPUConstants constants;
-    constants.baseColorFactor = material.baseColorFactor;
-    constants.metallicFactor = material.metallicFactor;
-    constants.roughnessFactor = material.roughnessFactor;
-    constants.normalScale = material.normalScale;
-    constants.occlusionStrength = material.occlusionStrength;
-    constants.emissiveColor = material.emissiveColor;
-    constants.emissiveStrength = material.emissiveStrength;
-    constants.textureFlags = material.textureFlags;
-    constants.alphaCutoff = material.alphaCutoff;
-    constants.doubleSided = material.doubleSided ? 1u : 0u;
+    return EncodeMaterialGPUConstants(material);
+}
 
-    switch (material.alphaMode)
-    {
-        case MaterialSourceAlphaMode::Mask:
-            constants.alphaMode = static_cast<uint32>(MaterialGPUAlphaMode::Mask);
-            break;
-        case MaterialSourceAlphaMode::Blend:
-            constants.alphaMode = static_cast<uint32>(MaterialGPUAlphaMode::Blend);
-            break;
-        case MaterialSourceAlphaMode::Opaque:
-        default:
-            constants.alphaMode = static_cast<uint32>(MaterialGPUAlphaMode::Opaque);
-            break;
-    }
-
-    switch (material.workflow)
-    {
-        case MaterialSourceWorkflow::SpecularGlossiness:
-            constants.workflow = static_cast<uint32>(MaterialGPUWorkflow::SpecularGlossiness);
-            break;
-        case MaterialSourceWorkflow::Unlit:
-            constants.workflow = static_cast<uint32>(MaterialGPUWorkflow::Unlit);
-            break;
-        case MaterialSourceWorkflow::MetallicRoughness:
-        default:
-            constants.workflow = static_cast<uint32>(MaterialGPUWorkflow::MetallicRoughness);
-            break;
-    }
-
-    return constants;
+MaterialGPUConstants MaterialBinder::ConvertToGPU(
+    const MaterialSourceData& material,
+    std::span<const MaterialUploadTextureBinding> textureBindings)
+{
+    return EncodeMaterialGPUConstants(material, textureBindings);
 }
 
 MaterialGPUConstants MaterialBinder::GetDefaultConstants()

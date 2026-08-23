@@ -292,6 +292,8 @@ TEST(MeshPassProcessorValidation,
     changed.push_back(base);
     changed.back().pipeline.topology = MeshUploadPrimitiveTopology::Lines;
     changed.push_back(base);
+    changed.back().pipeline.reverseWinding = true;
+    changed.push_back(base);
     ++changed.back().geometry.mesh.generation;
     changed.push_back(base);
     ++changed.back().geometry.submeshIndex;
@@ -312,6 +314,42 @@ TEST(MeshPassProcessorValidation,
         EXPECT_NE(key, base);
         EXPECT_NE(GetStableHash(key), baseHash);
         EXPECT_NE(less(key, base), less(base, key));
+    }
+}
+
+TEST(MeshPassProcessorValidation,
+     MirroredAndCanonicalPacketsFormExactlyTwoContiguousGroups)
+{
+    OpaqueMeshPassProcessor processor;
+    std::vector<MeshPassProcessorResult> inputs;
+    // Interleave object identities so a comparator that omits handedness
+    // would alternate false/true groups after its packet tie-break.
+    for (uint32 objectId : {10U, 20U, 30U, 40U})
+    {
+        MeshPassProcessorInput input = MakeInput();
+        input.packet.objectId = objectId;
+        input.packet.pipelineKey.reverseWinding = (objectId % 20U) == 0U;
+        input.sourceOrdinal = objectId;
+        inputs.push_back(processor.Process(input));
+    }
+
+    std::vector<MeshPassProcessorResult> sorted;
+    std::vector<RenderDrawGroupRange> groups;
+    BuildDeterministicRenderDrawGroups(inputs, sorted, groups);
+
+    ASSERT_EQ(2U, groups.size());
+    EXPECT_EQ(2U, groups[0].count);
+    EXPECT_EQ(2U, groups[1].count);
+    EXPECT_NE(groups[0].key.pipeline.reverseWinding,
+              groups[1].key.pipeline.reverseWinding);
+    for (const RenderDrawGroupRange& group : groups)
+    {
+        for (uint32 offset = 0; offset < group.count; ++offset)
+        {
+            EXPECT_EQ(group.key.pipeline.reverseWinding,
+                      sorted[group.first + offset]
+                          .packet.pipelineKey.reverseWinding);
+        }
     }
 }
 

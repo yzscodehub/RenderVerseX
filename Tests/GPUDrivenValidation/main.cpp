@@ -1172,13 +1172,25 @@ namespace
             const MaterialSourceData& source,
             const std::vector<MaterialUploadTextureBinding>& bindings)
         {
+            uint32 textureFeatureMask = 0;
+            for (const MaterialUploadTextureBinding& binding : bindings)
+            {
+                textureFeatureMask |= 1U << static_cast<uint8>(binding.slot);
+            }
+
+            MaterialUploadPayload payload;
+            payload.sourceData = source;
+            payload.sourceData.textureFlags = textureFeatureMask;
+            payload.textureBindings = bindings;
+            payload.staticDescriptor.featureMask = textureFeatureMask;
+
             if (!BeginUploading(handle) ||
                 !m_registry.BeginPending(handle,
                                          RenderResourceKind::Material,
                                          {},
                                          assetId) ||
                 !m_registry.SetPendingMaterialMetadata(
-                    handle, MaterialUploadPayload{source, bindings}) ||
+                    handle, payload) ||
                 !m_registry.Commit(handle))
             {
                 return false;
@@ -6724,6 +6736,7 @@ TEST_F(GPUDrivenValidationFixture, OpaquePassDeclaresGPUDrivenDefaultLitIndirect
     EXPECT_NE(qualificationTestsCMake.find("--max-different-pixels 0"), std::string::npos);
 }
 
+#if RVX_ENABLE_DX12
 TEST_F(GPUDrivenValidationFixture, GPUCullingComputeShaderEntriesCompileForDX12)
 {
     const std::filesystem::path root = FindWorkspaceRoot();
@@ -6748,10 +6761,7 @@ TEST_F(GPUDrivenValidationFixture, GPUCullingComputeShaderEntriesCompileForDX12)
     options.enableOptimization = true;
 
     const ShaderCompileSupport support = compiler->QuerySupport(options);
-    if (!support.IsSupported())
-    {
-        GTEST_SKIP() << support.reason;
-    }
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
 
     options.entryPoint = "CSFrustumCull";
     ShaderCompileResult frustumResult = compiler->Compile(options);
@@ -6768,7 +6778,9 @@ TEST_F(GPUDrivenValidationFixture, GPUCullingComputeShaderEntriesCompileForDX12)
     ASSERT_TRUE(finalizeResult.success) << finalizeResult.errorMessage;
     EXPECT_FALSE(finalizeResult.bytecode.empty());
 }
+#endif
 
+#if RVX_ENABLE_VULKAN
 TEST_F(GPUDrivenValidationFixture,
        GPUCullingComputeShaderEntriesCompileForVulkanWithExpectedLayout)
 {
@@ -6794,10 +6806,7 @@ TEST_F(GPUDrivenValidationFixture,
     options.enableOptimization = true;
 
     const ShaderCompileSupport support = compiler->QuerySupport(options);
-    if (!support.IsSupported())
-    {
-        GTEST_SKIP() << support.reason;
-    }
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
 
     options.entryPoint = "CSFrustumCull";
     ShaderCompileResult frustumResult = compiler->Compile(options);
@@ -6871,6 +6880,7 @@ TEST_F(GPUDrivenValidationFixture,
     ASSERT_TRUE(finalizeResult.success) << finalizeResult.errorMessage;
     EXPECT_FALSE(finalizeResult.bytecode.empty());
 }
+#endif
 
 TEST_F(GPUDrivenValidationFixture,
        GPUSceneCandidateAbiAndSealedInputPlumbingRemainRendererPrivate)
@@ -8287,6 +8297,7 @@ TEST_F(GPUDrivenValidationFixture,
               culling.GetAccessSnapshots().constants.uniformAccess.contentValidity);
 }
 
+#if RVX_ENABLE_DX12
 TEST_F(GPUDrivenValidationFixture, GPUSceneCullingShaderEntriesCompileForDX12)
 {
     const std::filesystem::path root = FindWorkspaceRoot();
@@ -8311,10 +8322,7 @@ TEST_F(GPUDrivenValidationFixture, GPUSceneCullingShaderEntriesCompileForDX12)
     options.enableOptimization = true;
 
     const ShaderCompileSupport support = compiler->QuerySupport(options);
-    if (!support.IsSupported())
-    {
-        GTEST_SKIP() << support.reason;
-    }
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
 
     options.entryPoint = "CSGPUSceneFrustumCull";
     ShaderCompileResult frustumResult = compiler->Compile(options);
@@ -8358,10 +8366,7 @@ TEST_F(GPUDrivenValidationFixture, GPUDrivenVertexShaderEntriesCompileForDX12SM6
         options.enableOptimization = true;
 
         const ShaderCompileSupport support = compiler->QuerySupport(options);
-        if (!support.IsSupported())
-        {
-            GTEST_SKIP() << support.reason;
-        }
+        ASSERT_TRUE(support.IsSupported()) << support.reason;
 
         const ShaderCompileResult result = compiler->Compile(options);
         ASSERT_TRUE(result.success) << result.errorMessage;
@@ -8397,10 +8402,7 @@ TEST_F(GPUDrivenValidationFixture, GPUDrivenVertexShaderEntriesCompileForDX12SM6
         options.enableOptimization = true;
 
         const ShaderCompileSupport support = compiler->QuerySupport(options);
-        if (!support.IsSupported())
-        {
-            GTEST_SKIP() << support.reason;
-        }
+        ASSERT_TRUE(support.IsSupported()) << support.reason;
 
         const ShaderCompileResult result = compiler->Compile(options);
         ASSERT_TRUE(result.success) << result.errorMessage;
@@ -8428,7 +8430,9 @@ TEST_F(GPUDrivenValidationFixture, GPUDrivenVertexShaderEntriesCompileForDX12SM6
     compileGPUSceneVertexEntry(
         root / "Source" / "Runtime" / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainGPUScene");
 }
+#endif
 
+#if RVX_ENABLE_VULKAN
 TEST_F(GPUDrivenValidationFixture,
        RigidVertexShaderEntriesCompileForVulkanSM60)
 {
@@ -8461,10 +8465,7 @@ TEST_F(GPUDrivenValidationFixture,
         options.enableOptimization = true;
 
         const ShaderCompileSupport support = compiler->QuerySupport(options);
-        if (!support.IsSupported())
-        {
-            GTEST_SKIP() << support.reason;
-        }
+        ASSERT_TRUE(support.IsSupported()) << support.reason;
 
         const ShaderCompileResult result = compiler->Compile(options);
         ASSERT_TRUE(result.success) << result.errorMessage;
@@ -8480,6 +8481,7 @@ TEST_F(GPUDrivenValidationFixture,
     compileVertexEntry(
         root / "Source" / "Runtime" / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainGPUScene", true);
 }
+#endif
 
 TEST_F(GPUDrivenValidationFixture,
        GPUSceneRasterShaderUsesSharedAffineTransformAndFailClosedResolution)

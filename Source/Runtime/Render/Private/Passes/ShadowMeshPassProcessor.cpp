@@ -34,6 +34,10 @@ MeshPassProcessorResult ShadowMeshPassProcessor::Process(
     {
         bindings |= MeshPassBindingRequirements::Material;
         streams |= MeshPassVertexStreams::TexCoord;
+        if (input.packet.pipelineKey.requiresUV1)
+        {
+            streams |= MeshPassVertexStreams::TexCoord1;
+        }
     }
     return MakeRelevant(input,
                         RenderPassKind::Shadow,

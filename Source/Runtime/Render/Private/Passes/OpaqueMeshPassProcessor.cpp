@@ -16,6 +16,14 @@ MeshPassProcessorResult OpaqueMeshPassProcessor::Process(
         return MakeSkipped(input);
     }
 
+    MeshPassVertexStreams streams = MeshPassVertexStreams::Position |
+        MeshPassVertexStreams::Normal |
+        MeshPassVertexStreams::TexCoord |
+        MeshPassVertexStreams::Tangent;
+    if (input.packet.pipelineKey.requiresUV1)
+    {
+        streams |= MeshPassVertexStreams::TexCoord1;
+    }
     return MakeRelevant(
         input,
         RenderPassKind::Opaque,
@@ -23,10 +31,7 @@ MeshPassProcessorResult OpaqueMeshPassProcessor::Process(
             MeshPassBindingRequirements::Object |
             MeshPassBindingRequirements::Geometry |
             MeshPassBindingRequirements::Material,
-        MeshPassVertexStreams::Position |
-            MeshPassVertexStreams::Normal |
-            MeshPassVertexStreams::TexCoord |
-            MeshPassVertexStreams::Tangent,
+        streams,
         MeshPassEligibilityReason::None);
 }
 } // namespace RVX

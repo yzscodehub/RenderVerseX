@@ -17,6 +17,7 @@
 #define RVX_MAX_OBJECT_SKINNING_MATRICES 128
 
 #include "Include/GPUInstanceData.hlsli"
+#include "Include/SurfaceMaterial.hlsli"
 #include "GPUDriven/GPUSceneRaster.hlsli"
 
 cbuffer ViewConstants : register(b0, space0)
@@ -74,6 +75,7 @@ struct MaskedVSInput
 {
     float3 Position : POSITION;
     float2 TexCoord : TEXCOORD0;
+    float2 TexCoord1 : TEXCOORD1;
     uint4 BoneIndices : BLENDINDICES;
     float4 BoneWeights : BLENDWEIGHT;
 };
@@ -82,27 +84,19 @@ struct MaskedRigidVSInput
 {
     float3 Position : POSITION;
     float2 TexCoord : TEXCOORD0;
+    float2 TexCoord1 : TEXCOORD1;
 };
 
 struct MaskedVSOutput
 {
     float4 Position : SV_POSITION;
     float2 TexCoord : TEXCOORD0;
+    float2 TexCoord1 : TEXCOORD1;
 };
 
 cbuffer MaterialConstants : register(b0, space2)
 {
-    float4 BaseColorFactor;
-    float MetallicFactor;
-    float RoughnessFactor;
-    float NormalScale;
-    float OcclusionStrength;
-    float4 EmissiveColor_Strength;
-    uint TextureFlags;
-    uint AlphaMode;
-    float AlphaCutoff;
-    uint Workflow;
-    uint4 DoubleSided_MaterialPaddingBits;
+    RVX_MATERIAL_PARAMETER_FIELDS;
 };
 
 Texture2D BaseColorTexture : register(t1, space2);
@@ -194,6 +188,7 @@ MaskedVSOutput VSMainMasked(MaskedVSInput input)
         ResolveSkinningPosition(input.Position, input.BoneIndices, input.BoneWeights));
     output.Position = mul(ViewProjection, worldPosition);
     output.TexCoord = input.TexCoord;
+    output.TexCoord1 = input.TexCoord1;
     return output;
 }
 
@@ -204,15 +199,62 @@ MaskedVSOutput VSMainMaskedRigid(MaskedRigidVSInput input)
         World[0], World[1], World[2], input.Position);
     output.Position = mul(ViewProjection, worldPosition);
     output.TexCoord = input.TexCoord;
+    output.TexCoord1 = input.TexCoord1;
     return output;
 }
 
-void PSMainMasked(MaskedVSOutput input)
+MaterialParameterData ResolveMaterialParameters()
 {
-    float alpha = BaseColorFactor.a;
-    if ((TextureFlags & 0x01u) != 0u)
-    {
-        alpha *= BaseColorTexture.Sample(MaterialSampler, input.TexCoord).a;
-    }
-    clip(alpha - AlphaCutoff);
+    MaterialParameterData material;
+    material.BaseColorFactor = BaseColorFactor;
+    material.MetallicFactor = MetallicFactor;
+    material.RoughnessFactor = RoughnessFactor;
+    material.NormalScale = NormalScale;
+    material.OcclusionStrength = OcclusionStrength;
+    material.EmissiveColor_Strength = EmissiveColor_Strength;
+    material.TextureFlags = TextureFlags;
+    material.AlphaMode = AlphaMode;
+    material.AlphaCutoff = AlphaCutoff;
+    material.Workflow = Workflow;
+    material.DoubleSided_MaterialPaddingBits = DoubleSided_MaterialPaddingBits;
+    material.BaseColorUVScaleOffset = BaseColorUVScaleOffset;
+    material.BaseColorUVRotationSet = BaseColorUVRotationSet;
+    material.NormalUVScaleOffset = NormalUVScaleOffset;
+    material.NormalUVRotationSet = NormalUVRotationSet;
+    material.MetallicRoughnessUVScaleOffset = MetallicRoughnessUVScaleOffset;
+    material.MetallicRoughnessUVRotationSet = MetallicRoughnessUVRotationSet;
+    material.OcclusionUVScaleOffset = OcclusionUVScaleOffset;
+    material.OcclusionUVRotationSet = OcclusionUVRotationSet;
+    material.EmissiveUVScaleOffset = EmissiveUVScaleOffset;
+    material.EmissiveUVRotationSet = EmissiveUVRotationSet;
+    return material;
+}
+
+void PSMainMasked(
+    MaskedVSOutput input,
+    bool isFrontFace : SV_IsFrontFace)
+{
+    const MaterialParameterData material = ResolveMaterialParameters();
+    const float2 baseColorUV = RVXResolveMaterialUV(
+        material,
+        MATERIAL_TEXTURE_SLOT_BASE_COLOR,
+        input.TexCoord,
+        input.TexCoord1);
+    const float sampledAlpha =
+        (material.TextureFlags & MATERIAL_TEXTURE_BASE_COLOR) != 0u
+            ? BaseColorTexture.Sample(MaterialSampler, baseColorUV).a
+            : 1.0f;
+
+    // Keep the face-orientation contract identical to the color path even
+    // though depth-only shading does not consume the resulting basis.
+    float3 faceNormal = float3(0.0f, 0.0f, 1.0f);
+    float4 faceTangent = float4(1.0f, 0.0f, 0.0f, 1.0f);
+    RVXResolveFrontFaceBasis(
+        isFrontFace,
+        material.DoubleSided_MaterialPaddingBits.x,
+        faceNormal,
+        faceTangent);
+    RVXApplyAlphaMask(
+        material,
+        RVXResolveBaseColorAlpha(material, sampledAlpha));
 }

@@ -6,6 +6,7 @@
 #include <glslang/Public/ResourceLimits.h>
 #include <glslang/SPIRV/GlslangToSpv.h>
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -145,6 +146,11 @@ namespace RVX
                 return m_sourcePath;
             }
 
+            const std::vector<std::filesystem::path>& GetIncludedPaths() const
+            {
+                return m_includedPaths;
+            }
+
         private:
             struct IncludeContents
             {
@@ -209,6 +215,14 @@ namespace RVX
                     return nullptr;
                 }
 
+                if (std::find(
+                        m_includedPaths.begin(),
+                        m_includedPaths.end(),
+                        resolvedPath) == m_includedPaths.end())
+                {
+                    m_includedPaths.push_back(resolvedPath);
+                }
+
                 return new IncludeResult(
                     resolvedPath.generic_string(),
                     contents->text.data(),
@@ -218,12 +232,113 @@ namespace RVX
 
             std::filesystem::path m_sourcePath;
             std::filesystem::path m_includeRoot;
+            std::vector<std::filesystem::path> m_includedPaths;
         };
+
+        void PopulateSourceInfo(
+            const ShaderCompileOptions& options,
+            const ShaderFileIncluder& includer,
+            ShaderSourceInfo& outSourceInfo)
+        {
+            outSourceInfo.Clear();
+
+            const std::filesystem::path& canonicalSourcePath =
+                includer.GetSourcePath();
+            if (!canonicalSourcePath.empty())
+            {
+                outSourceInfo.mainFile = canonicalSourcePath.generic_string();
+            }
+            else if (options.sourcePath && options.sourcePath[0])
+            {
+                outSourceInfo.mainFile = options.sourcePath;
+            }
+
+            if (!outSourceInfo.mainFile.empty())
+            {
+                uint64 mainSourceHash =
+                    ShaderSourceInfo::ComputeFileHash(outSourceInfo.mainFile);
+                if (mainSourceHash == 0 && options.sourceCode)
+                {
+                    // Generated and non-local sources have no file-backed
+                    // hash. Bind their declared identity to the exact input
+                    // text so HasChanged cannot mistake a missing file for an
+                    // unchanged generated source.
+                    mainSourceHash =
+                        ShaderSourceInfo::ComputeStringHash(options.sourceCode);
+                }
+                outSourceInfo.fileHashes[outSourceInfo.mainFile] =
+                    mainSourceHash;
+            }
+
+            for (const std::filesystem::path& includePath :
+                 includer.GetIncludedPaths())
+            {
+                const std::string includeName = includePath.generic_string();
+                outSourceInfo.AddInclude(
+                    includeName,
+                    ShaderSourceInfo::ComputeFileHash(includePath));
+            }
+
+            outSourceInfo.combinedHash =
+                outSourceInfo.ComputeCombinedHash();
+        }
+
+        void PopulateGLSLBindings(
+            const SPIRVToGLSLResult& glslResult,
+            ShaderCompileResult& outResult)
+        {
+            for (const GLSLBindingRemap& remap : glslResult.bindingRemaps)
+            {
+                const uint32 key =
+                    ShaderCompileResult::GLSLBindingInfo::MakeKey(
+                        remap.originalSet,
+                        remap.originalBinding);
+                outResult.glslBindings.setBindingToGLBinding[key] =
+                    remap.glBinding;
+
+                switch (remap.type)
+                {
+                    case RHIBindingType::UniformBuffer:
+                        outResult.glslBindings.uboBindings[remap.name] =
+                            remap.glBinding;
+                        break;
+                    case RHIBindingType::StorageBuffer:
+                    case RHIBindingType::ShaderResourceBuffer:
+                        outResult.glslBindings.ssboBindings[remap.name] =
+                            remap.glBinding;
+                        break;
+                    case RHIBindingType::SampledTexture:
+                    case RHIBindingType::CombinedTextureSampler:
+                        outResult.glslBindings.textureBindings[remap.name] =
+                            remap.glBinding;
+                        break;
+                    case RHIBindingType::Sampler:
+                        outResult.glslBindings.samplerBindings[remap.name] =
+                            remap.glBinding;
+                        break;
+                    case RHIBindingType::StorageTexture:
+                        outResult.glslBindings.imageBindings[remap.name] =
+                            remap.glBinding;
+                        break;
+                    default:
+                        break;
+                }
+            }
+
+            if (glslResult.pushConstantInfo)
+            {
+                outResult.glslPushConstant =
+                    ShaderCompileResult::GLSLPushConstant{
+                        glslResult.pushConstantInfo->glBinding,
+                        glslResult.pushConstantInfo->size};
+            }
+        }
     }
 
     // =============================================================================
-    // Portable non-Windows shader compiler using glslang. It emits SPIR-V directly for
-    // Vulkan and, on Apple platforms, translates SPIR-V to MSL.
+    // Portable non-Windows shader compiler using glslang. It emits SPIR-V directly
+    // for Vulkan, translates SPIR-V to GLSL for OpenGL, and on Apple platforms
+    // translates SPIR-V to MSL.
     // =============================================================================
     class GlslangShaderCompiler final : public IShaderCompiler
     {
@@ -240,7 +355,8 @@ namespace RVX
         ShaderCompileSupport QuerySupport(
             const ShaderCompileOptions& options) const override
         {
-            if (options.targetBackend != RHIBackendType::Vulkan
+            if (options.targetBackend != RHIBackendType::Vulkan &&
+                options.targetBackend != RHIBackendType::OpenGL
 #if defined(__APPLE__)
                 && options.targetBackend != RHIBackendType::Metal
 #endif
@@ -289,7 +405,11 @@ namespace RVX
             std::vector<uint8_t> spirvBytecode;
             std::string compileError;
 
-            if (!CompileHLSLToSPIRV(options, spirvBytecode, compileError))
+            if (!CompileHLSLToSPIRV(
+                    options,
+                    spirvBytecode,
+                    result.sourceInfo,
+                    compileError))
             {
                 result.errorMessage = compileError;
                 return result;
@@ -311,6 +431,39 @@ namespace RVX
                 }
                 result.success = true;
                 result.bytecode = std::move(spirvBytecode);
+                return result;
+            }
+
+            if (options.targetBackend == RHIBackendType::OpenGL)
+            {
+                SPIRVCrossTranslator translator;
+                SPIRVToGLSLOptions glslOptions;
+                glslOptions.glslVersion = 450;
+                glslOptions.es = false;
+                glslOptions.vulkanSemantics = false;
+                glslOptions.enable420Pack = true;
+                glslOptions.emitPushConstantAsUBO = true;
+                glslOptions.forceZeroInit = true;
+
+                SPIRVToGLSLResult glslResult = translator.TranslateToGLSL(
+                    spirvBytecode,
+                    options.stage,
+                    options.entryPoint,
+                    glslOptions);
+                if (!glslResult.success)
+                {
+                    result.errorMessage =
+                        "SPIR-V to GLSL translation failed: " +
+                        glslResult.errorMessage;
+                    return result;
+                }
+
+                result.success = true;
+                result.bytecode = std::move(spirvBytecode);
+                PopulateGLSLBindings(glslResult, result);
+                result.glslSource = std::move(glslResult.glslSource);
+                result.glslVersion = glslOptions.glslVersion;
+                result.reflection = std::move(glslResult.reflection);
                 return result;
             }
 
@@ -354,6 +507,7 @@ namespace RVX
     private:
         bool CompileHLSLToSPIRV(const ShaderCompileOptions& options,
                                 std::vector<uint8_t>& outSPIRV,
+                                ShaderSourceInfo& outSourceInfo,
                                 std::string& outError)
         {
             EShLanguage stage = GetGlslangStage(options.stage);
@@ -450,6 +604,7 @@ namespace RVX
             // Convert to bytes
             outSPIRV.resize(spirv.size() * sizeof(uint32_t));
             std::memcpy(outSPIRV.data(), spirv.data(), outSPIRV.size());
+            PopulateSourceInfo(options, includer, outSourceInfo);
 
             RVX_CORE_DEBUG("glslang: Compiled HLSL to {} bytes of SPIR-V", outSPIRV.size());
             return true;

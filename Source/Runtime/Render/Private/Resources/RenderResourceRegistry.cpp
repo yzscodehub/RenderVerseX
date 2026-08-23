@@ -6,6 +6,7 @@
 #include "RHI/RHICommandContext.h"
 
 #include <algorithm>
+#include <string>
 #include <type_traits>
 
 namespace RVX
@@ -283,6 +284,11 @@ namespace
         RenderResourceHandle handle,
         const MaterialUploadPayload& payload)
     {
+        std::string validationError;
+        if (!ValidateMaterialUploadPayload(payload, validationError))
+        {
+            return false;
+        }
         Entry* entry = FindExact(handle);
         if (entry == nullptr || !entry->pending)
         {
@@ -295,6 +301,7 @@ namespace
         }
         data->sourceData = payload.sourceData;
         data->textureBindings = payload.textureBindings;
+        data->staticDescriptor = payload.staticDescriptor;
         data->metadataValid = true;
         return true;
     }
@@ -548,6 +555,10 @@ namespace
                 case RenderMeshBufferSemantic::UV:
                     buffers.uvBuffer = buffer;
                     buffers.hasUVs = true;
+                    break;
+                case RenderMeshBufferSemantic::UV1:
+                    buffers.uv1Buffer = buffer;
+                    buffers.hasUV1 = true;
                     break;
                 case RenderMeshBufferSemantic::Tangent:
                     buffers.tangentBuffer = buffer;

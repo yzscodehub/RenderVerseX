@@ -79,6 +79,71 @@ bool ValidateMaterialDefinition(
 {
     const MaterialStaticDescriptor& descriptor = definition.descriptor;
     const MaterialSourceData& parameters = definition.parameters;
+    if (!ValidateMaterialStaticDescriptor(descriptor, outError))
+    {
+        return false;
+    }
+    if (!ValidateMaterialSourceData(parameters, outError))
+    {
+        return false;
+    }
+    if (!ValidateMaterialDescriptorSourceCompatibility(descriptor,
+                                                       parameters,
+                                                       outError))
+    {
+        return false;
+    }
+
+    std::vector<MaterialTextureSlot> observedSlots;
+    uint64 observedTextureFeatures = 0;
+    observedSlots.reserve(definition.textureSlots.size());
+    for (const MaterialTextureSlotDefinition& slot : definition.textureSlots)
+    {
+        if (!IsEnumInRange(slot.slot, MaterialTextureSlot::Thickness) ||
+            slot.uvSet > 1u || !IsFinite(slot.offset) || !IsFinite(slot.scale) ||
+            !IsFinite(slot.rotation) ||
+            !IsEnumInRange(slot.wrapS, MaterialSamplerWrap::ClampToBorder) ||
+            !IsEnumInRange(slot.wrapT, MaterialSamplerWrap::ClampToBorder) ||
+            !IsEnumInRange(slot.minFilter,
+                           MaterialSamplerFilter::LinearMipmapLinear) ||
+            !IsEnumInRange(slot.magFilter,
+                           MaterialSamplerFilter::LinearMipmapLinear))
+        {
+            outError = "Material texture slot metadata is invalid";
+            return false;
+        }
+        if (std::find(observedSlots.begin(), observedSlots.end(), slot.slot) !=
+            observedSlots.end())
+        {
+            outError = "Material definition contains a duplicate texture slot";
+            return false;
+        }
+        observedSlots.push_back(slot.slot);
+        observedTextureFeatures |= 1ull << static_cast<uint8>(slot.slot);
+    }
+    constexpr uint64 textureFeatureBits =
+        (1ull << (static_cast<uint8>(MaterialTextureSlot::Thickness) + 1u)) - 1u;
+    constexpr uint32 legacyTextureFeatureBits =
+        (1u << (static_cast<uint8>(MaterialTextureSlot::Emissive) + 1u)) - 1u;
+    if ((descriptor.featureMask & textureFeatureBits) !=
+            observedTextureFeatures ||
+        parameters.textureFlags !=
+            (static_cast<uint32>(observedTextureFeatures) &
+             legacyTextureFeatureBits))
+    {
+        outError =
+            "Material feature masks do not match the declared texture slots";
+        return false;
+    }
+
+    outError.clear();
+    return true;
+}
+
+bool ValidateMaterialStaticDescriptor(
+    const MaterialStaticDescriptor& descriptor,
+    std::string& outError)
+{
     if (!IsEnumInRange(descriptor.domain, MaterialDomain::Surface) ||
         !IsEnumInRange(descriptor.shadingModel,
                        MaterialShadingModel::ThinTransmission) ||
@@ -114,77 +179,98 @@ bool ValidateMaterialDefinition(
         outError = "Thin transmission requires a translucent blend mode";
         return false;
     }
-    if (!IsFinite(parameters.baseColorFactor) ||
-        !IsInRange(parameters.metallicFactor, 0.0f, 1.0f) ||
-        !IsInRange(parameters.roughnessFactor, 0.0f, 1.0f) ||
-        !IsInRange(parameters.normalScale, 0.0f, 8.0f) ||
-        !IsInRange(parameters.occlusionStrength, 0.0f, 1.0f) ||
-        !IsFinite(parameters.emissiveColor) ||
-        !IsInRange(parameters.emissiveStrength, 0.0f, 65504.0f) ||
-        !IsInRange(parameters.alphaCutoff, 0.0f, 1.0f) ||
-        !IsInRange(parameters.toonBands, 1.0f, 64.0f) ||
-        !IsInRange(parameters.toonSpecularThreshold, 0.0f, 1.0f) ||
-        !IsInRange(parameters.toonRimStrength, 0.0f, 64.0f) ||
-        !IsInRange(parameters.toonOutlineWidth, 0.0f, 64.0f) ||
-        !IsFinite(parameters.toonShadowTint) ||
-        !IsInRange(parameters.transmission, 0.0f, 1.0f) ||
-        !IsInRange(parameters.indexOfRefraction, 1.0f, 3.0f) ||
-        !IsInRange(parameters.thickness, 0.0f, 100000.0f) ||
-        !IsFinite(parameters.attenuationColor) ||
-        !IsInRange(parameters.attenuationDistance,
+    constexpr uint64 textureFeatureBits =
+        (1ull << (static_cast<uint8>(MaterialTextureSlot::Thickness) + 1u)) - 1u;
+    if ((descriptor.featureMask & ~textureFeatureBits) != 0)
+    {
+        outError = "Material descriptor contains unsupported feature bits";
+        return false;
+    }
+
+    outError.clear();
+    return true;
+}
+
+bool ValidateMaterialSourceData(
+    const MaterialSourceData& sourceData,
+    std::string& outError)
+{
+    if (!IsFinite(sourceData.baseColorFactor) ||
+        !IsInRange(sourceData.metallicFactor, 0.0f, 1.0f) ||
+        !IsInRange(sourceData.roughnessFactor, 0.0f, 1.0f) ||
+        !IsInRange(sourceData.normalScale, 0.0f, 8.0f) ||
+        !IsInRange(sourceData.occlusionStrength, 0.0f, 1.0f) ||
+        !IsFinite(sourceData.emissiveColor) ||
+        !IsInRange(sourceData.emissiveStrength, 0.0f, 65504.0f) ||
+        !IsInRange(sourceData.alphaCutoff, 0.0f, 1.0f) ||
+        !IsInRange(sourceData.toonBands, 1.0f, 64.0f) ||
+        !IsInRange(sourceData.toonSpecularThreshold, 0.0f, 1.0f) ||
+        !IsInRange(sourceData.toonRimStrength, 0.0f, 64.0f) ||
+        !IsInRange(sourceData.toonOutlineWidth, 0.0f, 64.0f) ||
+        !IsFinite(sourceData.toonShadowTint) ||
+        !IsInRange(sourceData.transmission, 0.0f, 1.0f) ||
+        !IsInRange(sourceData.indexOfRefraction, 1.0f, 3.0f) ||
+        !IsInRange(sourceData.thickness, 0.0f, 100000.0f) ||
+        !IsFinite(sourceData.attenuationColor) ||
+        !IsInRange(sourceData.attenuationDistance,
                    std::numeric_limits<float32>::min(), 1000000.0f))
     {
         outError = "Material parameter block contains an invalid value";
         return false;
     }
-    if (parameters.alphaMode >
-            MaterialSourceAlphaMode::Blend ||
-        parameters.workflow > MaterialSourceWorkflow::Unlit)
+    if (sourceData.alphaMode > MaterialSourceAlphaMode::Blend ||
+        sourceData.workflow > MaterialSourceWorkflow::Unlit)
     {
         outError = "Material parameter block contains an unknown legacy enum";
         return false;
     }
 
-    std::vector<MaterialTextureSlot> observedSlots;
-    uint64 observedTextureFeatures = 0;
-    observedSlots.reserve(definition.textureSlots.size());
-    for (const MaterialTextureSlotDefinition& slot : definition.textureSlots)
+    outError.clear();
+    return true;
+}
+
+bool ValidateMaterialDescriptorSourceCompatibility(
+    const MaterialStaticDescriptor& descriptor,
+    const MaterialSourceData& sourceData,
+    std::string& outError)
+{
+    const bool descriptorOpaque =
+        descriptor.blendMode == MaterialBlendMode::Opaque;
+    const bool descriptorMasked =
+        descriptor.blendMode == MaterialBlendMode::Masked;
+    const bool descriptorTranslucent = !descriptorOpaque && !descriptorMasked;
+    const bool sourceOpaque =
+        sourceData.alphaMode == MaterialSourceAlphaMode::Opaque;
+    const bool sourceMasked =
+        sourceData.alphaMode == MaterialSourceAlphaMode::Mask;
+    const bool sourceBlended =
+        sourceData.alphaMode == MaterialSourceAlphaMode::Blend;
+    if ((descriptorOpaque && !sourceOpaque) ||
+        (descriptorMasked && !sourceMasked) ||
+        (descriptorTranslucent && !sourceBlended))
     {
-        if (!IsEnumInRange(slot.slot, MaterialTextureSlot::Thickness) ||
-            slot.uvSet > 1u || !IsFinite(slot.offset) || !IsFinite(slot.scale) ||
-            slot.scale.x <= 0.0f || slot.scale.y <= 0.0f ||
-            !IsFinite(slot.rotation) ||
-            !IsEnumInRange(slot.wrapS, MaterialSamplerWrap::ClampToBorder) ||
-            !IsEnumInRange(slot.wrapT, MaterialSamplerWrap::ClampToBorder) ||
-            !IsEnumInRange(slot.minFilter,
-                           MaterialSamplerFilter::LinearMipmapLinear) ||
-            !IsEnumInRange(slot.magFilter,
-                           MaterialSamplerFilter::LinearMipmapLinear))
-        {
-            outError = "Material texture slot metadata is invalid";
-            return false;
-        }
-        if (std::find(observedSlots.begin(), observedSlots.end(), slot.slot) !=
-            observedSlots.end())
-        {
-            outError = "Material definition contains a duplicate texture slot";
-            return false;
-        }
-        observedSlots.push_back(slot.slot);
-        observedTextureFeatures |= 1ull << static_cast<uint8>(slot.slot);
+        outError = "Material descriptor blend mode and source alpha mode disagree";
+        return false;
     }
-    constexpr uint64 textureFeatureBits =
-        (1ull << (static_cast<uint8>(MaterialTextureSlot::Thickness) + 1u)) - 1u;
-    constexpr uint32 legacyTextureFeatureBits =
-        (1u << (static_cast<uint8>(MaterialTextureSlot::Emissive) + 1u)) - 1u;
-    if ((descriptor.featureMask & textureFeatureBits) !=
-            observedTextureFeatures ||
-        parameters.textureFlags !=
-            (static_cast<uint32>(observedTextureFeatures) &
-             legacyTextureFeatureBits))
+
+    const bool descriptorIsUnlit =
+        descriptor.shadingModel == MaterialShadingModel::Unlit;
+    const bool sourceIsUnlit =
+        sourceData.workflow == MaterialSourceWorkflow::Unlit;
+    // Toon and thin-transmission use their descriptor-selected program family;
+    // legacy source data has no equivalent workflow, so either non-Unlit
+    // workflow is the explicit parameter-carrier mapping for those models.
+    if (descriptorIsUnlit != sourceIsUnlit)
     {
-        outError =
-            "Material feature masks do not match the declared texture slots";
+        outError = "Material descriptor shading model and source workflow disagree";
+        return false;
+    }
+
+    const bool descriptorNoCull =
+        descriptor.cullMode == MaterialCullMode::NoCull;
+    if (descriptorNoCull != sourceData.doubleSided)
+    {
+        outError = "Material descriptor cull mode and source double-sided flag disagree";
         return false;
     }
 

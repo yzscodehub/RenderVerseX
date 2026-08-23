@@ -231,6 +231,18 @@ namespace RVX
             RenderResourceHandle material) const noexcept;
 
         /**
+         * @brief Resolve immutable raster policy from the canonical material descriptor.
+         *
+         * A valid material with absent/invalid metadata returns false. Callers
+         * must not substitute a permissive raster state in that case.
+         */
+        [[nodiscard]] bool ResolveSurfacePipelinePolicy(
+            RenderResourceHandle material,
+            MaterialCullMode& outCullMode,
+            MaterialShadowPolicy& outShadowPolicy,
+            bool& outRequiresUV1) const noexcept;
+
+        /**
          * @brief Materialize exact-generation parameters at stable handle slots.
          *
          * Duplicate slot generations or incompatible per-mesh normal-map
@@ -275,6 +287,7 @@ namespace RVX
             uint64 viewGeneration = 0;
             uint64 pageIdentity = 0;
             std::vector<MaterialBindingTextureEntry> textureEntries;
+            std::vector<MaterialUploadTextureBinding> textureBindings;
             bool usedFallback = false;
             bool normalMapDisabled = false;
         };

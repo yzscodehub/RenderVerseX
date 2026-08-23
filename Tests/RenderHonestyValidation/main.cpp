@@ -56,6 +56,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -2534,6 +2535,142 @@ TEST_F(RenderHonestyValidationFixture, MeshGenerateTangentsUsesUInt16Indices)
     EXPECT_NEAR(std::abs(tangentData[3]), 1.0f, 1.0e-4f);
 }
 
+TEST_F(RenderHonestyValidationFixture,
+       MeshFlatNormalsSplitCornersAndInvalidateAuthoredTangents)
+{
+    RVX::Mesh mesh;
+    mesh.SetPositions({
+        {0.0f, 0.0f, 0.0f},
+        {1.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f},
+        {0.0f, 1.0f, 1.0f},
+    });
+    mesh.SetUVs({
+        {0.0f, 0.0f},
+        {1.0f, 0.0f},
+        {0.0f, 1.0f},
+        {1.0f, 1.0f},
+    });
+    mesh.SetTangents({
+        {0.0f, 1.0f, 0.0f, 1.0f},
+        {0.0f, 1.0f, 0.0f, 1.0f},
+        {0.0f, 1.0f, 0.0f, 1.0f},
+        {0.0f, 1.0f, 0.0f, 1.0f},
+    });
+    mesh.SetIndices(
+        std::vector<RVX::uint32>{0u, 1u, 2u, 0u, 2u, 3u});
+
+    ASSERT_TRUE(mesh.GenerateFlatNormalsTriList());
+    EXPECT_EQ(mesh.GetVertexCount(), 6u);
+    EXPECT_EQ(mesh.GetIndices32(),
+              (std::vector<RVX::uint32>{0u, 1u, 2u, 3u, 4u, 5u}));
+    EXPECT_FALSE(mesh.HasAttribute(RVX::VertexBufferNames::Tangent));
+
+    const RVX::VertexAttribute* normals =
+        mesh.GetAttribute(RVX::VertexBufferNames::Normal);
+    ASSERT_NE(normals, nullptr);
+    ASSERT_EQ(normals->GetVertexCount(), 6u);
+    const float* values = static_cast<const float*>(normals->GetData());
+    for (size_t corner = 0; corner < 3u; ++corner)
+    {
+        EXPECT_NEAR(values[corner * 3u], 0.0f, 1.0e-6f);
+        EXPECT_NEAR(values[corner * 3u + 1u], 0.0f, 1.0e-6f);
+        EXPECT_NEAR(values[corner * 3u + 2u], 1.0f, 1.0e-6f);
+    }
+    for (size_t corner = 3u; corner < 6u; ++corner)
+    {
+        EXPECT_NEAR(values[corner * 3u], 1.0f, 1.0e-6f);
+        EXPECT_NEAR(values[corner * 3u + 1u], 0.0f, 1.0e-6f);
+        EXPECT_NEAR(values[corner * 3u + 2u], 0.0f, 1.0e-6f);
+    }
+
+    RVX::SubMesh existingSubMesh;
+    existingSubMesh.indexOffset = 0u;
+    existingSubMesh.indexCount = 3u;
+    existingSubMesh.baseVertex = 2;
+    mesh.AddSubMesh(existingSubMesh);
+    const std::vector<RVX::uint32> indicesBeforeRejectedRegeneration =
+        mesh.GetIndices32();
+    EXPECT_FALSE(mesh.GenerateFlatNormalsTriList());
+    EXPECT_EQ(mesh.GetVertexCount(), 6u);
+    EXPECT_EQ(mesh.GetIndices32(), indicesBeforeRejectedRegeneration);
+    ASSERT_EQ(mesh.GetSubMeshes().size(), 1u);
+    EXPECT_EQ(mesh.GetSubMeshes()[0].baseVertex, 2);
+}
+
+TEST_F(RenderHonestyValidationFixture,
+       MeshGenerateTangentsRejectsMalformedOrAmbiguousGeometry)
+{
+    const auto makeTriangle = []()
+    {
+        auto mesh = std::make_unique<RVX::Mesh>();
+        mesh->SetPositions({
+            {0.0f, 0.0f, 0.0f},
+            {1.0f, 0.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f},
+        });
+        mesh->SetNormals({
+            {0.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f},
+            {0.0f, 0.0f, 1.0f},
+        });
+        mesh->SetUVs({
+            {0.0f, 0.0f},
+            {1.0f, 0.0f},
+            {0.0f, 1.0f},
+        });
+        mesh->SetIndices(std::vector<RVX::uint32>{0u, 1u, 2u});
+        return mesh;
+    };
+
+    {
+        auto mesh = makeTriangle();
+        EXPECT_FALSE(mesh->GenerateTangents(2u));
+        EXPECT_FALSE(mesh->GenerateTangents(1u));
+    }
+    {
+        auto mesh = makeTriangle();
+        mesh->SetPrimitiveType(RVX::PrimitiveType::TriangleStrip);
+        EXPECT_FALSE(mesh->GenerateTangents());
+    }
+    {
+        auto mesh = makeTriangle();
+        mesh->SetUVs({{0.0f, 0.0f}, {1.0f, 0.0f}});
+        EXPECT_FALSE(mesh->GenerateTangents());
+    }
+    {
+        auto mesh = makeTriangle();
+        mesh->AddAttribute(
+            RVX::VertexBufferNames::UV,
+            std::vector<RVX::uint32>{0u, 0u, 1u, 0u, 0u, 1u},
+            2u);
+        EXPECT_FALSE(mesh->GenerateTangents());
+    }
+    {
+        auto mesh = makeTriangle();
+        mesh->SetUVs({
+            {0.0f, 0.0f},
+            {0.0f, 0.0f},
+            {0.0f, 0.0f},
+        });
+        EXPECT_FALSE(mesh->GenerateTangents());
+    }
+    {
+        auto mesh = makeTriangle();
+        mesh->SetIndices(std::vector<RVX::uint32>{0u, 1u, 3u});
+        EXPECT_FALSE(mesh->GenerateTangents());
+    }
+    {
+        auto mesh = makeTriangle();
+        mesh->SetUVs({
+            {0.0f, 0.0f},
+            {std::numeric_limits<float>::infinity(), 0.0f},
+            {0.0f, 1.0f},
+        });
+        EXPECT_FALSE(mesh->GenerateTangents());
+    }
+}
+
 TEST_F(RenderHonestyValidationFixture, MeshImporterWritesCookedTangentArtifact)
 {
     fs::path dir = MakeTempDir("rvx_mesh_importer_artifact");
@@ -2604,7 +2741,10 @@ TEST_F(RenderHonestyValidationFixture, AssetDatabaseReimportAcceptsModelImporter
     EXPECT_NE(artifact.find("RVX_MODEL_ARTIFACT_V3"), std::string::npos);
     const std::string meshArtifact =
         ReadBinaryFile(importedRoot / "Meshes" / "Quad.rvdeps" / "meshes.rva");
-    EXPECT_NE(meshArtifact.find("mesh.0.hasTangents=1"), std::string::npos);
+    // Model products only require tangent-space data when their material
+    // consumes it. This fixture has no normal texture, so generic reimport
+    // must not fabricate an otherwise unused tangent payload.
+    EXPECT_NE(meshArtifact.find("mesh.0.hasTangents=0"), std::string::npos);
 
     const RVX::Tools::AssetEntry* afterImport = database.GetAsset(guid);
     ASSERT_NE(afterImport, nullptr);

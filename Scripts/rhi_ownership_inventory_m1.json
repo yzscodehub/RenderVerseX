@@ -715,6 +715,15 @@
     {
       "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
+      "symbol": "m_gpuSceneRasterPipelines",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
       "symbol": "m_bloomPipeline",
       "policy": "OwnerSnapshot",
       "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
@@ -5285,6 +5294,24 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
+      "path": "Source/Runtime/Render/Private/Passes/DepthPrepass.cpp",
+      "owner": "DepthPrepass",
+      "symbol": "pipeline",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/ObjectVelocityPass.cpp",
+      "owner": "DrawRecord",
+      "symbol": "pipeline",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "submission batch transfer to retirement after token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
       "path": "Source/Runtime/Render/Private/Passes/ObjectVelocityPass.cpp",
       "owner": "GraphPassData",
       "symbol": "maskedPipeline",
@@ -5693,6 +5720,15 @@
       "path": "Source/Runtime/Render/Private/Passes/SkyboxPass.cpp",
       "owner": "GraphPassData",
       "symbol": "setLayout",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "submission batch transfer to retirement after token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/TransparentPass.cpp",
+      "owner": "DrawRecord",
+      "symbol": "pipeline",
       "policy": "SubmissionBatch",
       "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
       "normalRelease": "submission batch transfer to retirement after token completion",

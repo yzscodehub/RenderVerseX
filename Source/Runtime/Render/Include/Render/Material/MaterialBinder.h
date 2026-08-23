@@ -8,7 +8,9 @@
 #include "Render/Material/MaterialGPUData.h"
 #include "Render/Material/MaterialSourceData.h"
 #include "RenderContracts/RenderIdentity.h"
+#include "RenderContracts/ResourceUploadRequest.h"
 #include "RHI/RHI.h"
+#include <span>
 #include <string>
 #include <unordered_map>
 
@@ -98,6 +100,9 @@ namespace RVX
          * @return GPU constant buffer data
          */
         static MaterialGPUConstants ConvertToGPU(const MaterialSourceData& material);
+        static MaterialGPUConstants ConvertToGPU(
+            const MaterialSourceData& material,
+            std::span<const MaterialUploadTextureBinding> textureBindings);
 
         // =========================================================================
         // Default Material

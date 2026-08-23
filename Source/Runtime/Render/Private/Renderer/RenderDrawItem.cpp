@@ -38,6 +38,13 @@ namespace RVX
             AppendHash(hash, std::bit_cast<uint32>(value));
         }
 
+        [[nodiscard]] bool HasDrawFlag(RenderDrawFlags flags,
+                                       RenderDrawFlags flag) noexcept
+        {
+            return (static_cast<uint32>(flags) &
+                    static_cast<uint32>(flag)) != 0;
+        }
+
         [[nodiscard]] uint64 ComputeClassificationSemanticHash(
             const RenderSceneDrawClassification& classification) noexcept
         {
@@ -137,7 +144,7 @@ namespace RVX
         }
 
         MaterialRenderMode ResolveMaterialRenderMode(const RenderObject& object,
-                                                     size_t submeshIndex)
+                                                      size_t submeshIndex)
         {
             if (submeshIndex < object.materialModes.size())
             {
@@ -145,6 +152,12 @@ namespace RVX
             }
 
             return MaterialRenderMode::Opaque;
+        }
+
+        [[nodiscard]] bool HasMirroredWinding(const Mat4& worldMatrix) noexcept
+        {
+            const float32 determinant = glm::determinant(Mat3(worldMatrix));
+            return std::isfinite(determinant) && determinant < 0.0f;
         }
 
         MeshBatch MakeLegacyBatch(const RenderObject& object,
@@ -204,6 +217,12 @@ namespace RVX
             item.packet.objectId = object.entityId;
             item.packet.primitiveData = objectIndex;
             item.packet.submeshIndex = batch.submeshIndex;
+            // A negative affine determinant reverses triangle winding.  Keep
+            // that fact in the packet identity so all raster lanes choose a
+            // matching front-face pipeline rather than silently dropping the
+            // object or relaxing it to no-cull.
+            item.packet.pipelineKey.reverseWinding =
+                HasMirroredWinding(object.worldMatrix);
             return item;
         }
 
@@ -326,7 +345,8 @@ bool BuildRenderSceneDrawClassification(
         entry.worldPosition = Vec3(object.worldMatrix[3]);
         entry.sceneVisible = object.visible;
         entry.drawable = object.drawable;
-        entry.castsShadow = object.castsShadow;
+        entry.castsShadow = HasDrawFlag(
+            entry.draw.packet.flags, RenderDrawFlags::CastsShadow);
         entry.skinned = object.HasSkinningData();
         primitives.insert(objectIndex);
         materials.insert(entry.draw.material);

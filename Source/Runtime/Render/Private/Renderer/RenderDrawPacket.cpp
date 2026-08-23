@@ -65,10 +65,48 @@ namespace
     }
 } // namespace
 
+RenderDrawFlags ApplyMaterialShadowPolicy(
+    RenderDrawFlags flags,
+    bool materialPolicyValid,
+    MaterialShadowPolicy shadowPolicy) noexcept
+{
+    const auto setFlag = [](RenderDrawFlags source,
+                            RenderDrawFlags flag,
+                            bool enabled) noexcept
+    {
+        const uint32 sourceBits = static_cast<uint32>(source);
+        const uint32 flagBits = static_cast<uint32>(flag);
+        return static_cast<RenderDrawFlags>(
+            enabled ? sourceBits | flagBits : sourceBits & ~flagBits);
+    };
+    const bool objectCasts =
+        (static_cast<uint32>(flags) &
+         static_cast<uint32>(RenderDrawFlags::CastsShadow)) != 0;
+    const bool objectReceives =
+        (static_cast<uint32>(flags) &
+         static_cast<uint32>(RenderDrawFlags::ReceivesShadow)) != 0;
+    flags = setFlag(
+        flags,
+        RenderDrawFlags::CastsShadow,
+        materialPolicyValid && objectCasts &&
+            MaterialShadowPolicyCasts(shadowPolicy));
+    return setFlag(
+        flags,
+        RenderDrawFlags::ReceivesShadow,
+        materialPolicyValid && objectReceives &&
+            MaterialShadowPolicyReceives(shadowPolicy));
+}
+
 bool PipelineKey::operator==(const PipelineKey& other) const noexcept
 {
-    return materialVariant == other.materialVariant && topology == other.topology &&
-           skinned == other.skinned;
+    return materialVariant == other.materialVariant &&
+           cullMode == other.cullMode &&
+           shadowPolicy == other.shadowPolicy &&
+           topology == other.topology &&
+           skinned == other.skinned &&
+           materialPolicyValid == other.materialPolicyValid &&
+           requiresUV1 == other.requiresUV1 &&
+           reverseWinding == other.reverseWinding;
 }
 
 bool GeometryBindingKey::operator==(const GeometryBindingKey& other) const noexcept
@@ -86,8 +124,13 @@ uint64 GetStableHash(const PipelineKey& key) noexcept
 {
     uint64 hash = FNV_OFFSET;
     HashValue(hash, static_cast<uint8>(key.materialVariant));
+    HashValue(hash, static_cast<uint8>(key.cullMode));
+    HashValue(hash, static_cast<uint8>(key.shadowPolicy));
     HashValue(hash, static_cast<uint8>(key.topology));
     HashValue(hash, static_cast<uint8>(key.skinned));
+    HashValue(hash, static_cast<uint8>(key.materialPolicyValid));
+    HashValue(hash, static_cast<uint8>(key.requiresUV1));
+    HashValue(hash, static_cast<uint8>(key.reverseWinding));
     return hash;
 }
 

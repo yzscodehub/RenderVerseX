@@ -248,6 +248,18 @@ namespace RVX
             return renderer.m_renderDrawPlan.IsValid();
         }
 
+        static RenderScene& MutableSceneForTesting(SceneRenderer& renderer)
+        {
+            return renderer.m_renderScene;
+        }
+
+        static const MeshPassPacketStream& BuildShadowPacketsForTesting(
+            SceneRenderer& renderer)
+        {
+            renderer.BuildMaterialDrawLists();
+            return renderer.m_meshPassPreparation.shadow;
+        }
+
         static void ConfigureGPUDrivenPlan(
             SceneRenderer& renderer,
             GPUDrivenTier selectedTier,
@@ -1387,8 +1399,8 @@ namespace
         std::vector<uint32> drawIndexedInstanceCounts;
         std::vector<uint32> drawIndexedFirstInstances;
         std::vector<uint32> drawIndexedFirstIndices;
-        std::array<RHIBuffer*, 7> currentVertexBuffers{};
-        std::vector<std::array<RHIBuffer*, 7>> drawIndexedVertexBuffers;
+        std::array<RHIBuffer*, 8> currentVertexBuffers{};
+        std::vector<std::array<RHIBuffer*, 8>> drawIndexedVertexBuffers;
         uint32 drawIndexedIndirectCount = 0;
         uint32 buildBottomLevelASCount = 0;
         uint32 buildTopLevelASCount = 0;
@@ -2132,9 +2144,10 @@ namespace
 
     void ConfigureResources(ShadowPass& pass,
                             RenderRuntimeTestHarness& gpuResources,
-                            PipelineCache& pipelineCache)
+                            PipelineCache& pipelineCache,
+                            MaterialSystem* materialSystem = nullptr)
     {
-        pass.SetResources(&pipelineCache);
+        pass.SetResources(&pipelineCache, materialSystem);
         pass.SetResourceRegistry(&gpuResources.GetRegistry());
     }
 
@@ -3398,6 +3411,54 @@ namespace
         }
     };
 } // namespace
+
+TEST(RenderPassValidation,
+     MirroredAuthoritativeAndLegacyObjectsKeepShadowWindingParity)
+{
+    SceneRenderer renderer;
+    RenderScene& renderScene =
+        SceneRendererTestAccess::MutableSceneForTesting(renderer);
+
+    RenderObject authoritative;
+    authoritative.entityId = 8101;
+    authoritative.mesh = {81, 1};
+    authoritative.drawable = true;
+    authoritative.visible = true;
+    authoritative.castsShadow = true;
+    authoritative.meshBatchesAuthoritative = true;
+    authoritative.worldMatrix = Mat4Identity();
+    authoritative.worldMatrix[0][0] = -1.0f;
+    MeshBatch batch;
+    batch.objectId = authoritative.entityId;
+    batch.mesh = authoritative.mesh;
+    batch.primitiveData = 0;
+    batch.geometry.indexCount = 3;
+    batch.geometry.topology = MeshUploadPrimitiveTopology::Triangles;
+    batch.flags = RenderBatchFlags::CastsShadow |
+                  RenderBatchFlags::MissingMaterial;
+    authoritative.meshBatches.push_back(batch);
+    renderScene.AddObject(authoritative);
+
+    RenderObject legacy;
+    legacy.entityId = 8102;
+    legacy.mesh = {82, 1};
+    legacy.drawable = true;
+    legacy.visible = true;
+    legacy.castsShadow = true;
+    legacy.meshBatchesAuthoritative = false;
+    legacy.worldMatrix = Mat4Identity();
+    legacy.worldMatrix[0][0] = -1.0f;
+    renderScene.AddObject(legacy);
+
+    const MeshPassPacketStream& shadow =
+        SceneRendererTestAccess::BuildShadowPacketsForTesting(renderer);
+    ASSERT_EQ(2U, shadow.packets.size());
+    for (const MeshPassProcessorResult& result : shadow.packets)
+    {
+        EXPECT_TRUE(result.packet.pipelineKey.reverseWinding);
+        EXPECT_EQ(RenderPassKind::Shadow, result.packet.pass);
+    }
+}
 
 TEST_F(RenderPassValidationFixture,
        SceneRendererD4b2IndirectGroupedUsesOnlyTierOneWithReadyResidentInputs)
@@ -14560,6 +14621,605 @@ TEST_F(RenderPassValidationFixture,
 }
 
 TEST_F(RenderPassValidationFixture,
+       UnsupportedSurfaceWorkflowFailsBeforeAnyRasterDraw)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    Resource::MaterialResource material;
+    material.SetId(759);
+    material.SetName("UnsupportedSpecularGlossinessSurface");
+    auto parameters = std::make_shared<Material>(
+        "UnsupportedSpecularGlossinessSurface");
+    parameters->SetWorkflow(MaterialWorkflow::SpecularGlossiness);
+    ASSERT_TRUE(material.SetMaterialData(parameters));
+    ASSERT_TRUE(gpuResources.UploadImmediate(&material));
+    const RenderResourceHandle materialHandle =
+        gpuResources.GetHandle(material.GetId());
+    ASSERT_TRUE(materialHandle.IsValid());
+
+    MaterialCullMode cullMode = MaterialCullMode::Back;
+    MaterialShadowPolicy shadowPolicy =
+        MaterialShadowPolicy::CastAndReceive;
+    bool requiresUV1 = false;
+    EXPECT_FALSE(materialSystem.ResolveSurfacePipelinePolicy(
+        materialHandle, cullMode, shadowPolicy, requiresUV1));
+
+    const MeshGPUBuffers buffers =
+        gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Opaque);
+    item.material = materialHandle;
+    item.packet = MakeOpaquePacket(
+        scene,
+        0,
+        0,
+        buffers,
+        materialHandle,
+        MaterialRenderMode::Opaque,
+        RenderDrawFlags::None);
+    item.packet.pipelineKey.materialPolicyValid = false;
+    const std::vector<RenderDrawItem> opaqueItems = {item};
+    const std::vector<RenderDrawItem> maskedItems;
+    const SceneMeshPassPreparation preparation =
+        PrepareRigidRasterPackets(opaqueItems);
+    ASSERT_EQ(1U, preparation.depth.stats.directPacketCount);
+    ASSERT_EQ(1U, preparation.opaque.stats.directPacketCount);
+    const RenderFramePlanCompileResult compiled =
+        CompileForcedDirectPlan(preparation, 759);
+    ASSERT_TRUE(compiled.succeeded);
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+
+    RHITextureRef depthTexture = device.CreateTexture(
+        RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
+    RHITextureViewRef depthView = device.CreateTextureView(depthTexture.Get());
+    ASSERT_TRUE(depthView);
+
+    RenderFrameExecutionReport depthReport =
+        MakeExecutionReport(compiled.plan);
+    DepthPrepass depthPass;
+    depthPass.SetEnabled(true);
+    ConfigureResources(depthPass, gpuResources, pipelineCache);
+    depthPass.SetMaterialSystem(&materialSystem);
+    RecordingCommandContext depthCommands;
+    ExecuteTypedDepthRecording(
+        depthPass,
+        view,
+        opaqueItems,
+        maskedItems,
+        compiled.plan,
+        preparation,
+        depthReport,
+        depthView.Get(),
+        nullptr,
+        depthCommands);
+    EXPECT_EQ(0U, depthCommands.drawIndexedCount);
+    const RenderPassExecutionReport* depthExecution =
+        FindPassExecutionReport(depthReport, RenderPassKind::Depth);
+    ASSERT_NE(nullptr, depthExecution);
+    EXPECT_EQ(RenderExecutionStatus::Failed, depthExecution->status);
+
+    RenderFrameExecutionReport opaqueReport =
+        MakeExecutionReport(compiled.plan);
+    OpaquePass opaquePass;
+    ConfigureResources(
+        opaquePass, gpuResources, pipelineCache, materialSystem);
+    RecordingCommandContext opaqueCommands;
+    ExecuteTypedOpaqueRecording(
+        opaquePass,
+        view,
+        opaqueItems,
+        maskedItems,
+        compiled.plan,
+        preparation,
+        opaqueReport,
+        colorView.Get(),
+        depthView.Get(),
+        nullptr,
+        opaqueCommands);
+    EXPECT_EQ(0U, opaqueCommands.drawIndexedCount);
+    const RenderPassExecutionReport* opaqueExecution =
+        FindPassExecutionReport(opaqueReport, RenderPassKind::Opaque);
+    ASSERT_NE(nullptr, opaqueExecution);
+    EXPECT_EQ(RenderExecutionStatus::Failed, opaqueExecution->status);
+}
+
+TEST_F(RenderPassValidationFixture,
+       SurfacePassesRejectUV1MaterialWhenMeshHasNoAuthoredUV1)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    Resource::TextureHandle alphaTexture = CreateTextureResource(760);
+    ASSERT_TRUE(gpuResources.UploadImmediate(alphaTexture.Get()));
+    Resource::MaterialResource material;
+    material.SetId(761);
+    material.SetName("UV1MaskedMissingMeshMaterial");
+    auto parameters = std::make_shared<Material>(
+        "UV1MaskedMissingMeshMaterial");
+    parameters->SetAlphaMode(Material::AlphaMode::Mask);
+    parameters->SetDoubleSided(true);
+    ASSERT_TRUE(material.SetMaterialData(parameters));
+    ASSERT_TRUE(material.SetTexture("albedo", alphaTexture));
+    MaterialDefinition definition = material.GetMaterialDefinition();
+    const auto baseColorSlot = std::find_if(
+        definition.textureSlots.begin(),
+        definition.textureSlots.end(),
+        [](const MaterialTextureSlotDefinition& slot)
+        {
+            return slot.slot == MaterialTextureSlot::BaseColor;
+        });
+    ASSERT_NE(definition.textureSlots.end(), baseColorSlot);
+    baseColorSlot->uvSet = 1;
+    ASSERT_TRUE(material.SetMaterialDefinition(definition));
+    ASSERT_TRUE(gpuResources.UploadImmediate(&material));
+    const RenderResourceHandle materialHandle =
+        gpuResources.GetHandle(material.GetId());
+    ASSERT_TRUE(materialHandle.IsValid());
+
+    const MeshGPUBuffers buffers =
+        gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    ASSERT_TRUE(buffers.HasTextureCoordinateSet(0));
+    ASSERT_FALSE(buffers.HasTextureCoordinateSet(1));
+
+    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Masked);
+    item.material = materialHandle;
+    item.packet = MakeOpaquePacket(
+        scene,
+        0,
+        0,
+        buffers,
+        materialHandle,
+        RenderMaterialMode::Masked,
+        RenderDrawFlags::Masked);
+    item.packet.pipelineKey.requiresUV1 = true;
+    item.packet.pipelineKey.cullMode = MaterialCullMode::NoCull;
+    item.packet.pipelineKey.materialPolicyValid = true;
+    const std::vector<RenderDrawItem> opaqueItems;
+    const std::vector<RenderDrawItem> maskedItems = {item};
+    const SceneMeshPassPreparation preparation =
+        PrepareRigidRasterPackets(maskedItems);
+    const RenderFramePlanCompileResult compiled =
+        CompileForcedDirectPlan(preparation, 761);
+    ASSERT_TRUE(compiled.succeeded);
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+
+    RHITextureRef depthTexture = device.CreateTexture(
+        RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
+    RHITextureViewRef depthView = device.CreateTextureView(depthTexture.Get());
+    ASSERT_TRUE(depthView);
+
+    RenderFrameExecutionReport depthReport =
+        MakeExecutionReport(compiled.plan);
+    DepthPrepass depthPass;
+    depthPass.SetEnabled(true);
+    ConfigureResources(depthPass, gpuResources, pipelineCache);
+    depthPass.SetMaterialSystem(&materialSystem);
+    RecordingCommandContext depthCommands;
+    ExecuteTypedDepthRecording(
+        depthPass,
+        view,
+        opaqueItems,
+        maskedItems,
+        compiled.plan,
+        preparation,
+        depthReport,
+        depthView.Get(),
+        nullptr,
+        depthCommands);
+    EXPECT_EQ(0u, depthCommands.drawIndexedCount);
+
+    RenderFrameExecutionReport opaqueReport =
+        MakeExecutionReport(compiled.plan);
+    OpaquePass opaquePass;
+    ConfigureResources(
+        opaquePass, gpuResources, pipelineCache, materialSystem);
+    RecordingCommandContext opaqueCommands;
+    ExecuteTypedOpaqueRecording(
+        opaquePass,
+        view,
+        opaqueItems,
+        maskedItems,
+        compiled.plan,
+        preparation,
+        opaqueReport,
+        colorView.Get(),
+        depthView.Get(),
+        nullptr,
+        opaqueCommands);
+    EXPECT_EQ(0u, opaqueCommands.drawIndexedCount);
+
+    RenderFrameExecutionReport shadowReport =
+        MakeExecutionReport(compiled.plan);
+    ShadowPass shadowPass;
+    ConfigureResources(
+        shadowPass, gpuResources, pipelineCache, &materialSystem);
+    ShadowPassConfig shadowConfig;
+    shadowConfig.numCascades = 1;
+    shadowConfig.shadowMapSize = 64;
+    shadowPass.SetConfig(shadowConfig);
+    shadowPass.SetEnabled(true);
+    RecordingCommandContext shadowCommands;
+    ExecuteTypedShadowRecording(
+        shadowPass,
+        view,
+        opaqueItems,
+        maskedItems,
+        compiled.plan,
+        preparation,
+        shadowReport,
+        shadowCommands,
+        MakeShadowPrimaryLight());
+    EXPECT_EQ(0u, shadowCommands.drawIndexedCount);
+
+    scene.GetMutableObject(0).previousWorldMatrix = Mat4Identity();
+    scene.GetMutableObject(0).previousWorldMatrix[3][0] = -1.0f;
+    scene.GetMutableObject(0).previousWorldMatrixValid = 1;
+    RenderGraph velocityGraph;
+    RenderGraphValidationAccess::SetDevice(velocityGraph, &device);
+    RHITextureRef velocityTexture = device.CreateTexture(
+        RHITextureDesc::RenderTarget(
+            64, 64, RHIFormat::RG16_FLOAT));
+    RHITextureRef velocityDepthTexture = device.CreateTexture(
+        RHITextureDesc::DepthStencil(
+            64, 64, PipelineCache::GetDefaultDepthStencilFormat()));
+    ASSERT_TRUE(velocityTexture);
+    ASSERT_TRUE(velocityDepthTexture);
+    ViewData velocityView = view;
+    velocityView.velocityTarget = RenderGraphValidationAccess::ImportTexture(
+        velocityGraph,
+        velocityTexture.Get(),
+        RHIResourceState::RenderTarget);
+    velocityView.depthTarget = RenderGraphValidationAccess::ImportTexture(
+        velocityGraph,
+        velocityDepthTexture.Get(),
+        RHIResourceState::DepthRead);
+    velocityView.previousViewProjectionMatrix = Mat4Identity();
+    velocityView.previousViewProjectionValid = 1;
+    velocityView.resetTemporalHistory = false;
+    RenderPassRecordContext velocityContext;
+    velocityContext.view = velocityView;
+    velocityContext.identity.graph = &velocityGraph;
+    velocityContext.identity.graphIdentity = velocityGraph.GetGraphIdentity();
+    velocityContext.identity.graphRecordingGeneration =
+        velocityGraph.GetRecordingGeneration();
+    velocityContext.identity.frameSequence = 765;
+    velocityContext.identity.recordEpoch = 765;
+    velocityContext.renderScene = &scene;
+    velocityContext.opaqueDrawItems = &opaqueItems;
+    velocityContext.maskedDrawItems = &maskedItems;
+    velocityContext.results = std::make_shared<RenderPassRecordResults>();
+    velocityContext.frameSnapshot = MakeRenderPassFrameSnapshot(
+        velocityContext, *velocityContext.results);
+    ObjectVelocityPass velocityPass;
+    ConfigureResources(
+        velocityPass,
+        gpuResources,
+        pipelineCache,
+        viewCache,
+        materialSystem);
+    velocityPass.SetEnabled(true);
+    velocityPass.AddToGraph(velocityGraph, velocityContext);
+    RenderGraphValidationAccess::Compile(velocityGraph);
+    ASSERT_TRUE(velocityGraph.GetCompileStats().compileValid);
+    RecordingCommandContext velocityCommands;
+    RenderGraphValidationAccess::Execute(
+        velocityGraph, velocityCommands);
+    velocityPass.PublishRecordResults(
+        velocityContext.results, velocityContext.identity);
+    EXPECT_EQ(0u, velocityCommands.drawIndexedCount);
+    EXPECT_EQ(1u, velocityPass.GetStats().skippedMissingUVCount);
+}
+
+TEST(RenderPassValidation,
+     MaterialShadowPolicyFiltersFlagsAndUsesExactDirectSubmission)
+{
+    const auto hasFlag = [](RenderDrawFlags flags, RenderDrawFlags flag)
+    {
+        return (static_cast<uint32>(flags) &
+                static_cast<uint32>(flag)) != 0;
+    };
+    const RenderDrawFlags objectFlags =
+        RenderDrawFlags::CastsShadow | RenderDrawFlags::ReceivesShadow;
+
+    const RenderDrawFlags receiveOnly = ApplyMaterialShadowPolicy(
+        objectFlags, true, MaterialShadowPolicy::Receive);
+    EXPECT_FALSE(hasFlag(receiveOnly, RenderDrawFlags::CastsShadow));
+    EXPECT_TRUE(hasFlag(receiveOnly, RenderDrawFlags::ReceivesShadow));
+    const RenderDrawFlags castOnly = ApplyMaterialShadowPolicy(
+        objectFlags, true, MaterialShadowPolicy::Cast);
+    EXPECT_TRUE(hasFlag(castOnly, RenderDrawFlags::CastsShadow));
+    EXPECT_FALSE(hasFlag(castOnly, RenderDrawFlags::ReceivesShadow));
+    const RenderDrawFlags none = ApplyMaterialShadowPolicy(
+        objectFlags, true, MaterialShadowPolicy::None);
+    EXPECT_FALSE(hasFlag(none, RenderDrawFlags::CastsShadow));
+    EXPECT_FALSE(hasFlag(none, RenderDrawFlags::ReceivesShadow));
+    EXPECT_EQ(none,
+              ApplyMaterialShadowPolicy(
+                  objectFlags,
+                  false,
+                  MaterialShadowPolicy::CastAndReceive));
+
+    MeshPassProcessorInput input;
+    input.packet.objectId = 1;
+    input.packet.primitiveData = 0;
+    input.packet.geometryKey.mesh = {1, 1};
+    input.packet.arguments.indexCount = 3;
+    input.packet.pipelineKey.materialPolicyValid = true;
+    input.packet.pipelineKey.shadowPolicy = MaterialShadowPolicy::Receive;
+    input.packet.flags = receiveOnly;
+    const MeshPassProcessorResult opaque =
+        OpaqueMeshPassProcessor{}.Process(input);
+    EXPECT_EQ(MeshPassDisposition::Direct, opaque.disposition);
+    EXPECT_EQ(MeshPassEligibilityReason::SpecialMaterial, opaque.reason);
+    EXPECT_EQ(MeshPassDisposition::Skip,
+              ShadowMeshPassProcessor{}.Process(input).disposition);
+
+    input.packet.pipelineKey.shadowPolicy = MaterialShadowPolicy::Cast;
+    input.packet.flags = castOnly;
+    const MeshPassProcessorResult shadow =
+        ShadowMeshPassProcessor{}.Process(input);
+    EXPECT_EQ(MeshPassDisposition::Direct, shadow.disposition);
+    EXPECT_TRUE(shadow.IsRelevant());
+}
+
+TEST_F(RenderPassValidationFixture,
+       MaskedSurfacePassesBindAuthoredUV1AndNoCullPipelines)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    auto uv1MeshResource = CreateMeshResource(762);
+    ASSERT_NE(nullptr, uv1MeshResource->GetMesh());
+    uv1MeshResource->GetMesh()->SetUVs(
+        {{0.125f, 0.25f}, {0.875f, 0.25f}, {0.5f, 0.875f}},
+        VertexBufferNames::UV1);
+    ASSERT_TRUE(gpuResources.UploadImmediate(uv1MeshResource.get()));
+    const MeshGPUBuffers buffers =
+        gpuResources.GetMeshBuffers(uv1MeshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    ASSERT_TRUE(buffers.HasTextureCoordinateSet(0));
+    ASSERT_TRUE(buffers.HasTextureCoordinateSet(1));
+    ASSERT_NE(nullptr, buffers.uv1Buffer);
+
+    RenderObject uv1Object =
+        MakeRenderObject(*uv1MeshResource, gpuResources);
+    uv1Object.entityId = 762;
+    uv1Object.previousWorldMatrix = Mat4Identity();
+    uv1Object.previousWorldMatrix[3][0] = -1.0f;
+    uv1Object.previousWorldMatrixValid = 1;
+    scene.AddObject(uv1Object);
+
+    Resource::TextureHandle alphaTexture = CreateTextureResource(763);
+    ASSERT_TRUE(gpuResources.UploadImmediate(alphaTexture.Get()));
+    Resource::MaterialResource material;
+    material.SetId(764);
+    material.SetName("UV1MaskedSurfaceMaterial");
+    auto parameters =
+        std::make_shared<Material>("UV1MaskedSurfaceMaterial");
+    parameters->SetAlphaMode(Material::AlphaMode::Mask);
+    parameters->SetDoubleSided(true);
+    ASSERT_TRUE(material.SetMaterialData(parameters));
+    ASSERT_TRUE(material.SetTexture("albedo", alphaTexture));
+    MaterialDefinition definition = material.GetMaterialDefinition();
+    const auto baseColorSlot = std::find_if(
+        definition.textureSlots.begin(),
+        definition.textureSlots.end(),
+        [](const MaterialTextureSlotDefinition& slot)
+        {
+            return slot.slot == MaterialTextureSlot::BaseColor;
+        });
+    ASSERT_NE(definition.textureSlots.end(), baseColorSlot);
+    baseColorSlot->uvSet = 1;
+    ASSERT_EQ(MaterialCullMode::NoCull, definition.descriptor.cullMode);
+    ASSERT_TRUE(material.SetMaterialDefinition(definition));
+    ASSERT_TRUE(gpuResources.UploadImmediate(&material));
+    const RenderResourceHandle materialHandle =
+        gpuResources.GetHandle(material.GetId());
+    ASSERT_TRUE(materialHandle.IsValid());
+
+    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Masked);
+    item.objectIndex = 1;
+    item.mesh = scene.GetObject(1).mesh;
+    item.material = materialHandle;
+    item.packet = MakeOpaquePacket(
+        scene,
+        1,
+        0,
+        buffers,
+        materialHandle,
+        RenderMaterialMode::Masked,
+        RenderDrawFlags::Masked);
+    item.packet.pipelineKey.requiresUV1 = true;
+    item.packet.pipelineKey.cullMode = MaterialCullMode::NoCull;
+    item.packet.pipelineKey.materialPolicyValid = true;
+    const std::vector<RenderDrawItem> opaqueItems;
+    const std::vector<RenderDrawItem> maskedItems = {item};
+    const SceneMeshPassPreparation preparation =
+        PrepareRigidRasterPackets(maskedItems);
+    const RenderFramePlanCompileResult compiled =
+        CompileForcedDirectPlan(preparation, 764);
+    ASSERT_TRUE(compiled.succeeded);
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+
+    RHITextureRef depthTexture = device.CreateTexture(
+        RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
+    RHITextureViewRef depthView = device.CreateTextureView(depthTexture.Get());
+    ASSERT_TRUE(depthView);
+
+    RenderFrameExecutionReport depthReport =
+        MakeExecutionReport(compiled.plan);
+    DepthPrepass depthPass;
+    depthPass.SetEnabled(true);
+    ConfigureResources(depthPass, gpuResources, pipelineCache);
+    depthPass.SetMaterialSystem(&materialSystem);
+    RecordingCommandContext depthCommands;
+    ExecuteTypedDepthRecording(
+        depthPass,
+        view,
+        opaqueItems,
+        maskedItems,
+        compiled.plan,
+        preparation,
+        depthReport,
+        depthView.Get(),
+        nullptr,
+        depthCommands);
+    ASSERT_EQ(1u, depthCommands.drawIndexedCount);
+    ASSERT_EQ(1u, depthCommands.drawIndexedVertexBuffers.size());
+    EXPECT_EQ(buffers.uvBuffer,
+              depthCommands.drawIndexedVertexBuffers[0][2]);
+    EXPECT_EQ(buffers.uv1Buffer,
+              depthCommands.drawIndexedVertexBuffers[0][7]);
+    ASSERT_FALSE(depthCommands.pipelineSequence.empty());
+    EXPECT_EQ(pipelineCache.GetMaskedDepthOnlyPipeline(
+                  DefaultLitDirectVertexInputMode::Rigid,
+                  MaterialCullMode::NoCull),
+              depthCommands.pipelineSequence.front());
+
+    RenderFrameExecutionReport opaqueReport =
+        MakeExecutionReport(compiled.plan);
+    OpaquePass opaquePass;
+    ConfigureResources(
+        opaquePass, gpuResources, pipelineCache, materialSystem);
+    RecordingCommandContext opaqueCommands;
+    ExecuteTypedOpaqueRecording(
+        opaquePass,
+        view,
+        opaqueItems,
+        maskedItems,
+        compiled.plan,
+        preparation,
+        opaqueReport,
+        colorView.Get(),
+        depthView.Get(),
+        nullptr,
+        opaqueCommands);
+    ASSERT_EQ(1u, opaqueCommands.drawIndexedCount);
+    ASSERT_EQ(1u, opaqueCommands.drawIndexedVertexBuffers.size());
+    EXPECT_EQ(buffers.uvBuffer,
+              opaqueCommands.drawIndexedVertexBuffers[0][2]);
+    EXPECT_EQ(buffers.uv1Buffer,
+              opaqueCommands.drawIndexedVertexBuffers[0][7]);
+    ASSERT_FALSE(opaqueCommands.pipelineSequence.empty());
+    EXPECT_EQ(pipelineCache.GetPipelineForVariant(
+                  MaterialPipelineVariant::Masked,
+                  RHIFormat::RGBA8_UNORM,
+                  DefaultLitDirectVertexInputMode::Rigid,
+                  MaterialCullMode::NoCull),
+              opaqueCommands.pipelineSequence.front());
+
+    RenderFrameExecutionReport shadowReport =
+        MakeExecutionReport(compiled.plan);
+    ShadowPass shadowPass;
+    ConfigureResources(
+        shadowPass, gpuResources, pipelineCache, &materialSystem);
+    ShadowPassConfig shadowConfig;
+    shadowConfig.numCascades = 1;
+    shadowConfig.shadowMapSize = 64;
+    shadowPass.SetConfig(shadowConfig);
+    shadowPass.SetEnabled(true);
+    RecordingCommandContext shadowCommands;
+    ExecuteTypedShadowRecording(
+        shadowPass,
+        view,
+        opaqueItems,
+        maskedItems,
+        compiled.plan,
+        preparation,
+        shadowReport,
+        shadowCommands,
+        MakeShadowPrimaryLight());
+    ASSERT_EQ(1u, shadowCommands.drawIndexedCount);
+    ASSERT_EQ(1u, shadowCommands.drawIndexedVertexBuffers.size());
+    EXPECT_EQ(buffers.uvBuffer,
+              shadowCommands.drawIndexedVertexBuffers[0][2]);
+    EXPECT_EQ(buffers.uv1Buffer,
+              shadowCommands.drawIndexedVertexBuffers[0][7]);
+    EXPECT_TRUE(std::any_of(
+        shadowCommands.descriptorSetSequence.begin(),
+        shadowCommands.descriptorSetSequence.end(),
+        [](uint32 set) { return set == 2; }));
+    ASSERT_FALSE(shadowCommands.pipelineSequence.empty());
+    ShadowDepthBiasState bias;
+    EXPECT_EQ(pipelineCache.GetMaskedShadowDepthPipeline(
+                  bias,
+                  DefaultLitDirectVertexInputMode::Rigid,
+                  MaterialCullMode::NoCull),
+              shadowCommands.pipelineSequence.front());
+
+    RenderGraph velocityGraph;
+    RenderGraphValidationAccess::SetDevice(velocityGraph, &device);
+    RHITextureRef velocityTexture = device.CreateTexture(
+        RHITextureDesc::RenderTarget(
+            64, 64, RHIFormat::RG16_FLOAT));
+    RHITextureRef velocityDepthTexture = device.CreateTexture(
+        RHITextureDesc::DepthStencil(
+            64, 64, PipelineCache::GetDefaultDepthStencilFormat()));
+    ASSERT_TRUE(velocityTexture);
+    ASSERT_TRUE(velocityDepthTexture);
+    ViewData velocityView = view;
+    velocityView.velocityTarget = RenderGraphValidationAccess::ImportTexture(
+        velocityGraph,
+        velocityTexture.Get(),
+        RHIResourceState::RenderTarget);
+    velocityView.depthTarget = RenderGraphValidationAccess::ImportTexture(
+        velocityGraph,
+        velocityDepthTexture.Get(),
+        RHIResourceState::DepthRead);
+    velocityView.previousViewProjectionMatrix = Mat4Identity();
+    velocityView.previousViewProjectionValid = 1;
+    velocityView.resetTemporalHistory = false;
+    RenderPassRecordContext velocityContext;
+    velocityContext.view = velocityView;
+    velocityContext.identity.graph = &velocityGraph;
+    velocityContext.identity.graphIdentity = velocityGraph.GetGraphIdentity();
+    velocityContext.identity.graphRecordingGeneration =
+        velocityGraph.GetRecordingGeneration();
+    velocityContext.identity.frameSequence = 766;
+    velocityContext.identity.recordEpoch = 766;
+    velocityContext.renderScene = &scene;
+    velocityContext.opaqueDrawItems = &opaqueItems;
+    velocityContext.maskedDrawItems = &maskedItems;
+    velocityContext.results = std::make_shared<RenderPassRecordResults>();
+    velocityContext.frameSnapshot = MakeRenderPassFrameSnapshot(
+        velocityContext, *velocityContext.results);
+    ObjectVelocityPass velocityPass;
+    ConfigureResources(
+        velocityPass,
+        gpuResources,
+        pipelineCache,
+        viewCache,
+        materialSystem);
+    velocityPass.SetEnabled(true);
+    velocityPass.AddToGraph(velocityGraph, velocityContext);
+    RenderGraphValidationAccess::Compile(velocityGraph);
+    ASSERT_TRUE(velocityGraph.GetCompileStats().compileValid);
+    RecordingCommandContext velocityCommands;
+    RenderGraphValidationAccess::Execute(
+        velocityGraph, velocityCommands);
+    velocityPass.PublishRecordResults(
+        velocityContext.results, velocityContext.identity);
+    ASSERT_EQ(1u, velocityCommands.drawIndexedCount);
+    ASSERT_EQ(1u, velocityCommands.drawIndexedVertexBuffers.size());
+    EXPECT_EQ(buffers.uvBuffer,
+              velocityCommands.drawIndexedVertexBuffers[0][2]);
+    EXPECT_EQ(buffers.uv1Buffer,
+              velocityCommands.drawIndexedVertexBuffers[0][7]);
+    EXPECT_TRUE(std::any_of(
+        velocityCommands.descriptorSetSequence.begin(),
+        velocityCommands.descriptorSetSequence.end(),
+        [](uint32 set) { return set == 2; }));
+    ASSERT_FALSE(velocityCommands.pipelineSequence.empty());
+    EXPECT_EQ(pipelineCache.GetMaskedObjectVelocityPipeline(
+                  RHIFormat::RG16_FLOAT,
+                  DefaultLitDirectVertexInputMode::Rigid,
+                  MaterialCullMode::NoCull),
+              velocityCommands.pipelineSequence.front());
+}
+
+TEST_F(RenderPassValidationFixture,
        DirectInstancingUsesOneSharedBatchAcrossOpaqueDepthAndShadow)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
@@ -17752,6 +18412,15 @@ TEST_F(RenderPassValidationFixture, OpaquePassReportsShadowReceiverOptOutDrawIte
 
     RenderDrawItem firstItem = MakeDrawItem(MaterialRenderMode::Opaque);
     RenderDrawItem secondItem = MakeDrawItem(MaterialRenderMode::Masked);
+    // Production draw items carry the material-filtered shadow flags from the
+    // frozen scene classification.  This focused fixture constructs packets
+    // directly, so model that resolved contract explicitly.
+    firstItem.packet.flags = RenderDrawFlags::ReceivesShadow;
+    firstItem.packet.pipelineKey.shadowPolicy =
+        MaterialShadowPolicy::CastAndReceive;
+    secondItem.packet.flags = RenderDrawFlags::None;
+    secondItem.packet.pipelineKey.shadowPolicy =
+        MaterialShadowPolicy::CastAndReceive;
     secondItem.objectIndex = 1;
 
     std::vector<RenderDrawItem> opaqueItems = {firstItem};

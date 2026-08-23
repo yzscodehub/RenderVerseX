@@ -73,7 +73,8 @@ namespace RVX
         Tangent = 1U << 3U,
         BoneIndices = 1U << 4U,
         BoneWeights = 1U << 5U,
-        InstanceIndex = 1U << 6U
+        InstanceIndex = 1U << 6U,
+        TexCoord1 = 1U << 7U
     };
 
     constexpr MeshPassBindingRequirements operator|(
@@ -246,8 +247,13 @@ namespace RVX
     {
         uint8 pass = 0;
         uint8 pipelineVariant = 0;
+        uint8 cullMode = 0;
+        uint8 shadowPolicy = 0;
         uint8 topology = 0;
         uint8 skinned = 0;
+        uint8 materialPolicyValid = 1;
+        uint8 requiresUV1 = 0;
+        uint8 reverseWinding = 0;
         uint64 geometryAssetId = 0;
         uint32 geometrySubmeshIndex = 0;
         uint8 geometryIndexType = 0;

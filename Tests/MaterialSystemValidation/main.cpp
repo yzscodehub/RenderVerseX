@@ -1184,6 +1184,183 @@ namespace
                   GetPipelineVariantForRenderMode(MaterialRenderMode::Transparent));
     }
 
+    TEST(MaterialSystemValidation,
+         SurfacePipelinePolicyRejectsUnimplementedModelsAndBlendModes)
+    {
+        FakeDevice device;
+        RenderRuntimeTestHarness gpuResources;
+        ASSERT_TRUE(gpuResources.Initialize(&device));
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(
+            &device, &materialLayout, &gpuResources.GetRegistry()));
+
+        const auto uploadDefinition = [&](uint64 id,
+                                          const char* name,
+                                          const MaterialDefinition& definition)
+        {
+            Resource::MaterialResource resource;
+            resource.SetId(id);
+            resource.SetName(name);
+            EXPECT_TRUE(resource.SetMaterialDefinition(definition));
+            return gpuResources.ResolveOrUpload(&resource);
+        };
+        const auto resolvePolicy = [&](RenderResourceHandle handle,
+                                       MaterialShadowPolicy& outShadow)
+        {
+            MaterialCullMode cull = MaterialCullMode::Back;
+            bool requiresUV1 = false;
+            return materialSystem.ResolveSurfacePipelinePolicy(
+                handle, cull, outShadow, requiresUV1);
+        };
+
+        MaterialDefinition toon;
+        toon.descriptor.shadingModel = MaterialShadingModel::ToonLit;
+        toon.descriptor.programFamily =
+            std::string(GetMaterialProgramFamily(
+                MaterialShadingModel::ToonLit));
+        const RenderResourceHandle toonHandle = uploadDefinition(
+            9101, "DeferredToonMaterial", toon);
+        ASSERT_TRUE(toonHandle.IsValid());
+        MaterialShadowPolicy shadow =
+            MaterialShadowPolicy::CastAndReceive;
+        EXPECT_FALSE(resolvePolicy(toonHandle, shadow));
+
+        MaterialDefinition thin;
+        thin.descriptor.shadingModel =
+            MaterialShadingModel::ThinTransmission;
+        thin.descriptor.programFamily =
+            std::string(GetMaterialProgramFamily(
+                MaterialShadingModel::ThinTransmission));
+        thin.descriptor.blendMode = MaterialBlendMode::AlphaBlend;
+        thin.descriptor.translucencyPhase =
+            MaterialTranslucencyPhase::Standard;
+        thin.parameters.alphaMode = MaterialSourceAlphaMode::Blend;
+        thin.parameters.transmission = 1.0f;
+        const RenderResourceHandle thinHandle = uploadDefinition(
+            9102, "DeferredThinTransmissionMaterial", thin);
+        ASSERT_TRUE(thinHandle.IsValid());
+        EXPECT_FALSE(resolvePolicy(thinHandle, shadow));
+
+        MaterialDefinition premultiplied;
+        premultiplied.descriptor.blendMode =
+            MaterialBlendMode::Premultiplied;
+        premultiplied.descriptor.translucencyPhase =
+            MaterialTranslucencyPhase::Standard;
+        premultiplied.parameters.alphaMode =
+            MaterialSourceAlphaMode::Blend;
+        const RenderResourceHandle premultipliedHandle = uploadDefinition(
+            9103, "DeferredPremultipliedMaterial", premultiplied);
+        ASSERT_TRUE(premultipliedHandle.IsValid());
+        EXPECT_FALSE(resolvePolicy(premultipliedHandle, shadow));
+
+        MaterialDefinition unlit;
+        unlit.descriptor.shadingModel = MaterialShadingModel::Unlit;
+        unlit.descriptor.programFamily =
+            std::string(GetMaterialProgramFamily(
+                MaterialShadingModel::Unlit));
+        unlit.descriptor.shadowPolicy = MaterialShadowPolicy::Receive;
+        unlit.parameters.workflow = MaterialSourceWorkflow::Unlit;
+        const RenderResourceHandle unlitHandle = uploadDefinition(
+            9104, "ImplementedUnlitReceiveMaterial", unlit);
+        ASSERT_TRUE(unlitHandle.IsValid());
+        EXPECT_TRUE(resolvePolicy(unlitHandle, shadow));
+        EXPECT_EQ(MaterialShadowPolicy::Receive, shadow);
+
+        materialSystem.Shutdown();
+        gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation,
+         SurfacePipelinePolicyUsesOnlyImplementedAndSamplableMaterialState)
+    {
+        FakeDevice device;
+        RenderRuntimeTestHarness gpuResources;
+        ASSERT_TRUE(gpuResources.Initialize(&device));
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(
+            &device, &materialLayout, &gpuResources.GetRegistry()));
+
+        const auto resolvePolicy = [&](RenderResourceHandle handle,
+                                       MaterialShadowPolicy& outShadow,
+                                       bool& outRequiresUV1)
+        {
+            MaterialCullMode cull = MaterialCullMode::Back;
+            return materialSystem.ResolveSurfacePipelinePolicy(
+                handle, cull, outShadow, outRequiresUV1);
+        };
+
+        auto specularGlossiness = std::make_shared<Material>(
+            "UnsupportedSpecularGlossiness");
+        specularGlossiness->SetWorkflow(MaterialWorkflow::SpecularGlossiness);
+        Resource::MaterialResource specularGlossinessResource;
+        specularGlossinessResource.SetId(9111);
+        ASSERT_TRUE(specularGlossinessResource.SetMaterialData(
+            specularGlossiness));
+        const RenderResourceHandle specularGlossinessHandle =
+            gpuResources.ResolveOrUpload(&specularGlossinessResource);
+        ASSERT_TRUE(specularGlossinessHandle.IsValid());
+        MaterialShadowPolicy shadow = MaterialShadowPolicy::CastAndReceive;
+        bool requiresUV1 = true;
+        EXPECT_FALSE(resolvePolicy(specularGlossinessHandle,
+                                   shadow,
+                                   requiresUV1));
+
+        auto transparent = std::make_shared<Material>(
+            "SourceTransparentReceiveOnly");
+        transparent->SetAlphaMode(Material::AlphaMode::Blend);
+        Resource::MaterialResource transparentResource;
+        transparentResource.SetId(9112);
+        ASSERT_TRUE(transparentResource.SetMaterialData(transparent));
+        EXPECT_EQ(MaterialShadowPolicy::Receive,
+                  transparentResource.GetMaterialDefinition()
+                      .descriptor.shadowPolicy);
+        const RenderResourceHandle transparentHandle =
+            gpuResources.ResolveOrUpload(&transparentResource);
+        ASSERT_TRUE(transparentHandle.IsValid());
+        requiresUV1 = true;
+        EXPECT_TRUE(resolvePolicy(transparentHandle, shadow, requiresUV1));
+        EXPECT_EQ(MaterialShadowPolicy::Receive, shadow);
+        EXPECT_FALSE(requiresUV1);
+
+        MaterialDefinition transparentCaster;
+        transparentCaster.descriptor.blendMode = MaterialBlendMode::AlphaBlend;
+        transparentCaster.descriptor.translucencyPhase =
+            MaterialTranslucencyPhase::Standard;
+        transparentCaster.parameters.alphaMode = MaterialSourceAlphaMode::Blend;
+        Resource::MaterialResource transparentCasterResource;
+        transparentCasterResource.SetId(9113);
+        ASSERT_TRUE(transparentCasterResource.SetMaterialDefinition(
+            transparentCaster));
+        const RenderResourceHandle transparentCasterHandle =
+            gpuResources.ResolveOrUpload(&transparentCasterResource);
+        ASSERT_TRUE(transparentCasterHandle.IsValid());
+        EXPECT_FALSE(resolvePolicy(transparentCasterHandle,
+                                   shadow,
+                                   requiresUV1));
+
+        auto fallbackUV1Material = std::make_shared<Material>(
+            "FallbackUV1Material");
+        fallbackUV1Material->SetBaseColorTexture(TextureInfo("fallback.png", 1));
+        Resource::MaterialResource fallbackUV1Resource;
+        fallbackUV1Resource.SetId(9114);
+        ASSERT_TRUE(fallbackUV1Resource.SetMaterialData(fallbackUV1Material));
+        const Resource::TextureHandle fallbackTexture = CreateTextureResource(9115);
+        fallbackTexture->MarkDefaultFallback("test fallback UV1");
+        ASSERT_TRUE(gpuResources.UploadImmediate(fallbackTexture.Get()));
+        ASSERT_TRUE(fallbackUV1Resource.SetTexture("albedo", fallbackTexture));
+        const RenderResourceHandle fallbackUV1Handle =
+            gpuResources.ResolveOrUpload(&fallbackUV1Resource);
+        ASSERT_TRUE(fallbackUV1Handle.IsValid());
+        requiresUV1 = true;
+        EXPECT_TRUE(resolvePolicy(fallbackUV1Handle, shadow, requiresUV1));
+        EXPECT_FALSE(requiresUV1);
+
+        materialSystem.Shutdown();
+        gpuResources.Shutdown();
+    }
+
     TEST(MaterialSystemValidation, MaterialBinderConvertToGPUUsesMaterialProperties)
     {
         Material material("gpu-material");
@@ -1217,6 +1394,43 @@ namespace
         EXPECT_EQ(constants.alphaMode, static_cast<uint32>(MaterialGPUAlphaMode::Blend));
         EXPECT_EQ(constants.workflow, static_cast<uint32>(MaterialGPUWorkflow::SpecularGlossiness));
         EXPECT_EQ(constants.doubleSided, 1u);
+    }
+
+    TEST(MaterialSystemValidation,
+         MaterialBinderPacksPerSlotUVTransformsIntoTheSharedGPUABI)
+    {
+        MaterialSourceData source;
+        std::array<MaterialUploadTextureBinding, 2> bindings{};
+        bindings[0].slot = MaterialUploadTextureSlot::BaseColor;
+        bindings[0].uvSet = 0;
+        bindings[0].scale = Vec2(2.0f, 3.0f);
+        bindings[0].offset = Vec2(0.25f, 0.5f);
+        bindings[0].rotation = 0.0f;
+        bindings[1].slot = MaterialUploadTextureSlot::Normal;
+        bindings[1].uvSet = 1;
+        bindings[1].scale = Vec2(0.5f, 0.75f);
+        bindings[1].offset = Vec2(-0.25f, 0.125f);
+        bindings[1].rotation = 1.57079632679f;
+
+        const MaterialGPUConstants constants =
+            MaterialBinder::ConvertToGPU(source, bindings);
+        static_assert(sizeof(MaterialGPUConstants) == 240);
+        ASSERT_EQ(RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT,
+                  constants.uvTransforms.size());
+        EXPECT_FLOAT_EQ(2.0f, constants.uvTransforms[0].scaleOffset.x);
+        EXPECT_FLOAT_EQ(3.0f, constants.uvTransforms[0].scaleOffset.y);
+        EXPECT_FLOAT_EQ(0.25f, constants.uvTransforms[0].scaleOffset.z);
+        EXPECT_FLOAT_EQ(0.5f, constants.uvTransforms[0].scaleOffset.w);
+        EXPECT_NEAR(0.0f,
+                    constants.uvTransforms[1].rotationUVSet.x,
+                    0.00001f);
+        EXPECT_NEAR(1.0f,
+                    constants.uvTransforms[1].rotationUVSet.y,
+                    0.00001f);
+        EXPECT_FLOAT_EQ(1.0f,
+                        constants.uvTransforms[1].rotationUVSet.z);
+        EXPECT_FLOAT_EQ(1.0f, constants.uvTransforms[4].scaleOffset.x);
+        EXPECT_FLOAT_EQ(0.0f, constants.uvTransforms[4].rotationUVSet.z);
     }
 
     TEST(MaterialSystemValidation, MaterialBinderConvertToGPUTextureFlagsReflectOptionalTextures)
@@ -1775,6 +1989,7 @@ namespace
         const auto makeNormalKey = [](
                                        Resource::ResourceId textureId,
                                        float32 normalScale,
+                                       float32 normalRotation,
                                        bool allowNormalMap) -> uint64
         {
             FakeDevice device;
@@ -1801,6 +2016,29 @@ namespace
             material.SetName("RasterNormalSemantic");
             material.SetMaterialData(materialData);
             material.SetTexture("normal", texture);
+            MaterialDefinition definition = material.GetMaterialDefinition();
+            const auto normalSlot = std::find_if(
+                definition.textureSlots.begin(),
+                definition.textureSlots.end(),
+                [](const MaterialTextureSlotDefinition& slot)
+                {
+                    return slot.slot == MaterialTextureSlot::Normal;
+                });
+            if (normalSlot == definition.textureSlots.end())
+            {
+                system.Shutdown();
+                viewCache.Shutdown();
+                resources.Shutdown();
+                return 0;
+            }
+            normalSlot->rotation = normalRotation;
+            if (!material.SetMaterialDefinition(definition))
+            {
+                system.Shutdown();
+                viewCache.Shutdown();
+                resources.Shutdown();
+                return 0;
+            }
             MaterialBindingOptions options;
             options.allowNormalMap = allowNormalMap;
             uint64 key = 0;
@@ -1821,10 +2059,14 @@ namespace
             return key;
         };
 
-        const uint64 disabledFirst = makeNormalKey(9302u, 0.25f, false);
-        const uint64 disabledChanged = makeNormalKey(9303u, 2.0f, false);
-        const uint64 enabledFirst = makeNormalKey(9302u, 0.25f, true);
-        const uint64 enabledChanged = makeNormalKey(9303u, 2.0f, true);
+        const uint64 disabledFirst =
+            makeNormalKey(9302u, 0.25f, 0.0f, false);
+        const uint64 disabledChanged =
+            makeNormalKey(9302u, 2.0f, 0.75f, false);
+        const uint64 enabledFirst =
+            makeNormalKey(9302u, 0.25f, 0.0f, true);
+        const uint64 enabledChanged =
+            makeNormalKey(9302u, 0.25f, 0.75f, true);
         ASSERT_NE(0u, disabledFirst);
         ASSERT_NE(0u, enabledFirst);
         EXPECT_EQ(disabledFirst, disabledChanged);

@@ -29,6 +29,7 @@
     },
     "gtest",
     "glm",
+    "mikktspace",
     "tinygltf",
     "stb",
     "asio",

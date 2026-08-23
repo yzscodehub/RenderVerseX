@@ -492,6 +492,23 @@ namespace
         }
     }
 
+    RenderDrawFlags SetRenderDrawFlag(RenderDrawFlags flags,
+                                      RenderDrawFlags flag,
+                                      bool enabled)
+    {
+        const uint32 flagBits = static_cast<uint32>(flag);
+        const uint32 resultBits = enabled
+                                      ? static_cast<uint32>(flags) | flagBits
+                                      : static_cast<uint32>(flags) & ~flagBits;
+        return static_cast<RenderDrawFlags>(resultBits);
+    }
+
+    [[nodiscard]] bool HasMirroredWinding(const Mat4& worldMatrix) noexcept
+    {
+        const float32 determinant = glm::determinant(Mat3(worldMatrix));
+        return std::isfinite(determinant) && determinant < 0.0f;
+    }
+
     void ResolveDrawPacketPreparationBindings(
         RenderDrawPacket& packet,
         const RenderResourceRegistry* registry,
@@ -512,6 +529,31 @@ namespace
             ? materialSystem->ResolveInstanceBindingKey(
                   packet.materialKey.material)
             : MaterialInstanceBindingKey{};
+        if (packet.materialKey.material.IsValid())
+        {
+            packet.pipelineKey.materialPolicyValid = materialSystem != nullptr &&
+                materialSystem->ResolveSurfacePipelinePolicy(
+                    packet.materialKey.material,
+                    packet.pipelineKey.cullMode,
+                    packet.pipelineKey.shadowPolicy,
+                    packet.pipelineKey.requiresUV1);
+            packet.flags = ApplyMaterialShadowPolicy(
+                packet.flags,
+                packet.pipelineKey.materialPolicyValid,
+                packet.pipelineKey.shadowPolicy);
+            // Preserve object handedness even for no-cull surfaces. The
+            // material shader consumes SV_IsFrontFace to orient the TBN for
+            // double-sided lighting, so front-face selection remains part of
+            // the observable pipeline contract when raster culling is off.
+        }
+        else
+        {
+            packet.pipelineKey.cullMode = MaterialCullMode::Back;
+            packet.pipelineKey.shadowPolicy =
+                MaterialShadowPolicy::CastAndReceive;
+            packet.pipelineKey.materialPolicyValid = true;
+            packet.pipelineKey.requiresUV1 = false;
+        }
     }
 
     class RenderDrawClassificationBindingResolver final
@@ -575,17 +617,6 @@ namespace
         return input;
     }
 
-    RenderDrawFlags SetRenderDrawFlag(RenderDrawFlags flags,
-                                      RenderDrawFlags flag,
-                                      bool enabled)
-    {
-        const uint32 flagBits = static_cast<uint32>(flag);
-        const uint32 resultBits = enabled
-                                      ? static_cast<uint32>(flags) | flagBits
-                                      : static_cast<uint32>(flags) & ~flagBits;
-        return static_cast<RenderDrawFlags>(resultBits);
-    }
-
     [[nodiscard]] uint32 GetGPUSceneCullingCandidatePassMask(
         RenderPassKind pass) noexcept
     {
@@ -618,8 +649,18 @@ namespace
         {
             packet = BuildLegacyMaterialDrawPacket(batch);
         }
+        packet.pipelineKey.reverseWinding =
+            HasMirroredWinding(object.worldMatrix);
         packet.flags = SetRenderDrawFlag(
-            packet.flags, RenderDrawFlags::CastsShadow, object.castsShadow);
+            packet.flags,
+            RenderDrawFlags::CastsShadow,
+            packet.pipelineKey.materialPolicyValid && object.castsShadow &&
+                MaterialShadowPolicyCasts(
+                    packet.pipelineKey.shadowPolicy));
+        packet.flags = ApplyMaterialShadowPolicy(
+            packet.flags,
+            packet.pipelineKey.materialPolicyValid,
+            packet.pipelineKey.shadowPolicy);
         const bool skinned = object.HasSkinningData();
         packet.flags = SetRenderDrawFlag(
             packet.flags, RenderDrawFlags::Skinned, skinned);
@@ -3660,7 +3701,8 @@ void SceneRenderer::PrepareMeshPassPackets()
         // shadow-only draws outside the frozen classification.
         const MeshBatch batch = BuildLegacyShadowBatch(
             object, objectIndex, 0, nullptr);
-        const RenderDrawPacket packet = BuildLegacyMaterialDrawPacket(batch);
+        const RenderDrawPacket packet = BuildShadowPacket(
+            m_renderScene, object, batch);
         const MeshPassProcessorInput input = MakeMeshPassProcessorInput(
             packet,
             m_renderResourceRegistry,
@@ -3862,7 +3904,9 @@ void SceneRenderer::CompileRenderFramePlan()
             opaqueGPUPipelineReady = opaqueGPUPipelineReady &&
                 m_pipelineCache->GetGPUDrivenPipelineForVariant(
                     group.key.pipeline.materialVariant,
-                    formatPolicy.actualSceneColorFormat) != nullptr;
+                    formatPolicy.actualSceneColorFormat,
+                    group.key.pipeline.cullMode,
+                    group.key.pipeline.reverseWinding) != nullptr;
         }
     }
     input.passes = {

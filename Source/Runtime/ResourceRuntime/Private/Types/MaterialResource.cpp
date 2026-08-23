@@ -189,6 +189,11 @@ namespace
                 break;
             case Material::AlphaMode::Blend:
                 descriptor.blendMode = MaterialBlendMode::AlphaBlend;
+                // The current raster shadow path has correct alpha testing
+                // only for Masked material. Keep compatibility/source
+                // construction aligned with cooked products and do not turn
+                // transparent surfaces into unsupported shadow casters.
+                descriptor.shadowPolicy = MaterialShadowPolicy::Receive;
                 descriptor.translucencyPhase = MaterialTranslucencyPhase::Standard;
                 parameters.alphaMode = MaterialSourceAlphaMode::Blend;
                 break;

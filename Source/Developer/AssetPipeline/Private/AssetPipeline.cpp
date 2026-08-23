@@ -4062,8 +4062,18 @@ ImportResult MeshImporter::Import(const fs::path& sourcePath,
             mesh &&
             !mesh->HasAttribute(VertexBufferNames::Tangent))
         {
-            result.warnings.push_back("Tangent generation requested but no tangent attribute was produced for mesh: " +
-                                      mesh->name);
+            // GLTFImporter only synthesizes a basis required by a normal
+            // texture. MeshImporter has a separate, explicit prebake request:
+            // honor it here and fail closed instead of writing an artifact
+            // whose requestedTangents metadata disagrees with its payload.
+            if (!mesh->GenerateTangents())
+            {
+                result.error =
+                    "Mesh tangent prebake was requested but the geometry/UV "
+                    "stream cannot produce an unambiguous basis: " +
+                    mesh->name;
+                return result;
+            }
         }
 
         meshLods.push_back(mesh
@@ -4379,30 +4389,44 @@ ImportResult ModelImporter::Import(const fs::path& sourcePath,
         return result;
     }
 
-    // These material extensions are intentionally accepted because the current
-    // source runtime imports the same core metallic/roughness subset. Keeping
-    // them source-compatible preserves Source/Cooked parity for the Porsche
-    // qualification asset. Geometry, compression and required runtime
-    // extensions remain fail-closed.
+    // Fully implemented extensions are translated into the canonical cooked
+    // contracts. Source-compatible extensions intentionally retain the current
+    // core metallic/roughness interpretation and therefore emit a diagnostic.
+    // Geometry, compression and every unlisted extension remain fail-closed.
+    const std::unordered_set<std::string> fullyImplementedExtensions = {
+        "KHR_texture_transform",
+    };
     const std::unordered_set<std::string> sourceCompatibleExtensions = {
         "KHR_materials_specular",
         "KHR_materials_clearcoat",
         "KHR_materials_transmission",
     };
+    const auto supportsExtension =
+        [&fullyImplementedExtensions,
+         &sourceCompatibleExtensions](const std::string& extension)
+    {
+        return fullyImplementedExtensions.contains(extension) ||
+               sourceCompatibleExtensions.contains(extension);
+    };
     for (const std::string& used : imported.extensionsUsed)
     {
-        if (!sourceCompatibleExtensions.contains(used))
+        if (!supportsExtension(used))
         {
             result.error = "Cooked model products do not support glTF extension: " + used;
             return result;
         }
-        result.warnings.push_back(
-            "Cooked model preserves current source-runtime core PBR semantics and does not add extension-specific shading for " +
-            used);
+        if (sourceCompatibleExtensions.contains(used))
+        {
+            result.warnings.push_back(
+                "Cooked model preserves current source-runtime core PBR semantics and does not add extension-specific shading for " +
+                used);
+        }
     }
     for (const std::string& required : imported.extensionsRequired)
     {
-        if (!sourceCompatibleExtensions.contains(required))
+        // extensionsRequired removes the legal core-PBR fallback: every
+        // required extension must have a complete canonical cooked mapping.
+        if (!fullyImplementedExtensions.contains(required))
         {
             result.error = "Cooked model products cannot satisfy required glTF extension: " + required;
             return result;

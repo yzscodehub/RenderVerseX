@@ -9,6 +9,7 @@
 
 #include "Geometry/Asset/VertexAttribute.h"
 #include "Core/Math/AABB.h"
+#include "Core/Types.h"
 #include <unordered_map>
 #include <vector>
 #include <memory>
@@ -244,7 +245,18 @@ namespace RVX
 
         bool IsValid() const;
         bool GenerateNormals();
-        bool GenerateTangents();
+        /**
+         * @brief Expand an indexed triangle list to face corners and generate
+         *        one flat normal per corner.
+         * @note Existing tangent data is discarded because it is no longer
+         *       valid after the normal basis changes.
+         */
+        bool GenerateFlatNormalsTriList();
+        /**
+         * @brief Generate one tangent basis from the texture-coordinate set
+         * associated with the normal texture.
+         */
+        bool GenerateTangents(uint32 uvSet = 0);
         Ptr Clone() const;
 
         /**

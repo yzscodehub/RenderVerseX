@@ -3747,17 +3747,22 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitConsumesMaterialWorkflowAndDoub
     }
 
     const std::string shader = ReadTextFile(FindShaderDirectory() / "DefaultLit.hlsl");
-    EXPECT_NE(shader.find("#define MATERIAL_WORKFLOW_METALLIC_ROUGHNESS 0"), std::string::npos);
-    EXPECT_NE(shader.find("#define MATERIAL_WORKFLOW_SPECULAR_GLOSSINESS 1"), std::string::npos);
-    EXPECT_NE(shader.find("#define MATERIAL_WORKFLOW_UNLIT 2"), std::string::npos);
+    const std::string surface = ReadTextFile(
+        FindShaderDirectory() / "Include" / "SurfaceMaterial.hlsli");
+    EXPECT_NE(surface.find("#define MATERIAL_WORKFLOW_METALLIC_ROUGHNESS 0"), std::string::npos);
+    EXPECT_NE(surface.find("#define MATERIAL_WORKFLOW_SPECULAR_GLOSSINESS 1"), std::string::npos);
+    EXPECT_NE(surface.find("#define MATERIAL_WORKFLOW_UNLIT 2"), std::string::npos);
     EXPECT_NE(shader.find("if (material.Workflow == MATERIAL_WORKFLOW_UNLIT)"), std::string::npos);
     EXPECT_NE(shader.find("return float4(baseColor.rgb + emissive, baseColor.a);"), std::string::npos);
-    EXPECT_NE(shader.find("if (material.Workflow == MATERIAL_WORKFLOW_SPECULAR_GLOSSINESS)"), std::string::npos);
-    EXPECT_NE(shader.find("metallic = 0.0;"), std::string::npos);
+    EXPECT_NE(shader.find("if (material.Workflow != MATERIAL_WORKFLOW_METALLIC_ROUGHNESS)"), std::string::npos);
+    EXPECT_NE(shader.find("clip(-1.0f);"), std::string::npos);
+    EXPECT_EQ(shader.find("Compatibility fallback"), std::string::npos);
     EXPECT_NE(shader.find("float4 doubleSidedTangent = input.WorldTangent;"), std::string::npos);
-    EXPECT_NE(shader.find("if (material.DoubleSided_MaterialPaddingBits.x != 0 &&"), std::string::npos);
-    EXPECT_NE(shader.find("normal = -normal;"), std::string::npos);
-    EXPECT_NE(shader.find("doubleSidedTangent.w = -doubleSidedTangent.w;"), std::string::npos);
+    EXPECT_NE(shader.find("bool isFrontFace : SV_IsFrontFace"), std::string::npos);
+    EXPECT_NE(shader.find("RVXResolveFrontFaceBasis("), std::string::npos);
+    EXPECT_NE(surface.find("if (doubleSided != 0u && !isFrontFace)"), std::string::npos);
+    EXPECT_NE(surface.find("normal = -normal;"), std::string::npos);
+    EXPECT_NE(surface.find("tangent = -tangent;"), std::string::npos);
     EXPECT_NE(shader.find("material.NormalScale"), std::string::npos);
     EXPECT_NE(shader.find("StructuredBuffer<MaterialParameterData> MaterialParameterTable"),
               std::string::npos);
@@ -7781,12 +7786,12 @@ TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
     EXPECT_NE(shaderSource.find(
                   "VSMaskedOutput VSMainMaskedRigid(VSMaskedRigidInput input)"),
               std::string::npos);
-    EXPECT_NE(shaderSource.find("float2 PSMainMasked(VSMaskedOutput input) : SV_TARGET"), std::string::npos);
+    EXPECT_NE(shaderSource.find("bool isFrontFace : SV_IsFrontFace"), std::string::npos);
     EXPECT_NE(shaderSource.find("Texture2D BaseColorTexture : register(t1, space2);"), std::string::npos);
     EXPECT_NE(shaderSource.find("SamplerState MaterialSampler : register(s6, space2);"), std::string::npos);
-    EXPECT_NE(shaderSource.find("BaseColorTexture.Sample(MaterialSampler, input.TexCoord)"), std::string::npos);
-    EXPECT_NE(shaderSource.find("AlphaMode == MATERIAL_ALPHA_MASK && baseColor.a < AlphaCutoff"), std::string::npos);
-    EXPECT_NE(shaderSource.find("discard;"), std::string::npos);
+    EXPECT_NE(shaderSource.find("RVXResolveMaterialUV("), std::string::npos);
+    EXPECT_NE(shaderSource.find("RVXResolveBaseColorAlpha("), std::string::npos);
+    EXPECT_NE(shaderSource.find("RVXApplyAlphaMask("), std::string::npos);
 }
 TEST_F(PipelineCacheValidationFixture, CameraVelocityPipelineIsLazyAndUsesRG16F)
 {
@@ -7876,7 +7881,7 @@ TEST_F(PipelineCacheValidationFixture, ObjectVelocityPipelineIsLazyAndUsesRG16FD
     EXPECT_EQ(maskedVelocityDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::LessEqual);
     EXPECT_NE(maskedVelocityDesc.vertexShader, nullptr);
     EXPECT_NE(maskedVelocityDesc.pixelShader, nullptr);
-    ASSERT_EQ(maskedVelocityDesc.inputLayout.elements.size(), 4u);
+    ASSERT_EQ(maskedVelocityDesc.inputLayout.elements.size(), 5u);
 
     EXPECT_STREQ(maskedVelocityDesc.inputLayout.elements[0].semanticName, "POSITION");
     EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[0].semanticIndex, 0u);
@@ -7888,16 +7893,16 @@ TEST_F(PipelineCacheValidationFixture, ObjectVelocityPipelineIsLazyAndUsesRG16FD
     EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[1].format, RVX::RHIFormat::RG32_FLOAT);
     EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[1].inputSlot, 2u);
     EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[1].location, 1u);
-    EXPECT_STREQ(maskedVelocityDesc.inputLayout.elements[2].semanticName, "BLENDINDICES");
-    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[2].semanticIndex, 0u);
-    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[2].format, RVX::RHIFormat::RGBA32_UINT);
-    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[2].inputSlot, 4u);
+    EXPECT_STREQ(maskedVelocityDesc.inputLayout.elements[2].semanticName, "TEXCOORD");
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[2].semanticIndex, 1u);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[2].inputSlot, 7u);
     EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[2].location, 2u);
-    EXPECT_STREQ(maskedVelocityDesc.inputLayout.elements[3].semanticName, "BLENDWEIGHT");
-    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[3].semanticIndex, 0u);
-    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[3].format, RVX::RHIFormat::RGBA32_FLOAT);
-    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[3].inputSlot, 5u);
+    EXPECT_STREQ(maskedVelocityDesc.inputLayout.elements[3].semanticName, "BLENDINDICES");
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[3].inputSlot, 4u);
     EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[3].location, 3u);
+    EXPECT_STREQ(maskedVelocityDesc.inputLayout.elements[4].semanticName, "BLENDWEIGHT");
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[4].inputSlot, 5u);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[4].location, 4u);
 
     EXPECT_EQ(cache.GetObjectVelocityPipeline(RVX::RHIFormat::RG16_FLOAT), velocityPipeline);
     EXPECT_EQ(cache.GetMaskedObjectVelocityPipeline(RVX::RHIFormat::RG16_FLOAT), maskedVelocityPipeline);
@@ -8186,7 +8191,7 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_NE(maskedDepthOnlyDesc.vertexShader, nullptr);
     EXPECT_NE(maskedDepthOnlyDesc.pixelShader, nullptr);
     ASSERT_EQ(maskedDepthOnlyDesc.inputLayout.elements.size(),
-              static_cast<size_t>(4));
+              static_cast<size_t>(5));
     EXPECT_STREQ(maskedDepthOnlyDesc.inputLayout.elements[0].semanticName,
                  "POSITION");
     EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[0].semanticIndex, 0u);
@@ -8202,19 +8207,21 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[1].inputSlot, 2u);
     EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[1].location, 1u);
     EXPECT_STREQ(maskedDepthOnlyDesc.inputLayout.elements[2].semanticName,
-                 "BLENDINDICES");
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[2].semanticIndex, 0u);
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[2].format,
-              RVX::RHIFormat::RGBA32_UINT);
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[2].inputSlot, 4u);
+                 "TEXCOORD");
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[2].semanticIndex, 1u);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[2].inputSlot, 7u);
     EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[2].location, 2u);
     EXPECT_STREQ(maskedDepthOnlyDesc.inputLayout.elements[3].semanticName,
-                 "BLENDWEIGHT");
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[3].semanticIndex, 0u);
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[3].format,
-              RVX::RHIFormat::RGBA32_FLOAT);
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[3].inputSlot, 5u);
+                 "BLENDINDICES");
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[3].inputSlot, 4u);
     EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[3].location, 3u);
+    EXPECT_STREQ(maskedDepthOnlyDesc.inputLayout.elements[4].semanticName,
+                 "BLENDWEIGHT");
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[4].semanticIndex, 0u);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[4].format,
+              RVX::RHIFormat::RGBA32_FLOAT);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[4].inputSlot, 5u);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[4].location, 4u);
 
     ASSERT_NE(cache.GetSkyboxPipeline(), nullptr);
     EXPECT_EQ(skyboxDesc.numRenderTargets, 1u);
@@ -9667,18 +9674,20 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitDirectVertexInputModesUseDistin
     ASSERT_NE(rigidRGBA8Desc, nullptr);
 
     EXPECT_NE(skinnedDesc->vertexShader, rigidRGBA16Desc->vertexShader);
-    ASSERT_EQ(skinnedDesc->inputLayout.elements.size(), 6u);
-    ASSERT_EQ(rigidRGBA16Desc->inputLayout.elements.size(), 4u);
-    for (size_t index = 0; index < rigidRGBA16Desc->inputLayout.elements.size(); ++index)
-    {
-        EXPECT_EQ(rigidRGBA16Desc->inputLayout.elements[index].inputSlot, index);
-    }
+    ASSERT_EQ(skinnedDesc->inputLayout.elements.size(), 7u);
+    ASSERT_EQ(rigidRGBA16Desc->inputLayout.elements.size(), 5u);
     EXPECT_STREQ(rigidRGBA16Desc->inputLayout.elements[0].semanticName, "POSITION");
     EXPECT_STREQ(rigidRGBA16Desc->inputLayout.elements[1].semanticName, "NORMAL");
     EXPECT_STREQ(rigidRGBA16Desc->inputLayout.elements[2].semanticName, "TEXCOORD");
     EXPECT_STREQ(rigidRGBA16Desc->inputLayout.elements[3].semanticName, "TANGENT");
+    EXPECT_STREQ(rigidRGBA16Desc->inputLayout.elements[4].semanticName, "TEXCOORD");
+    EXPECT_EQ(rigidRGBA16Desc->inputLayout.elements[4].semanticIndex, 1u);
+    EXPECT_EQ(rigidRGBA16Desc->inputLayout.elements[4].inputSlot, 7u);
     EXPECT_STREQ(skinnedDesc->inputLayout.elements[4].semanticName, "BLENDINDICES");
     EXPECT_STREQ(skinnedDesc->inputLayout.elements[5].semanticName, "BLENDWEIGHT");
+    EXPECT_STREQ(skinnedDesc->inputLayout.elements[6].semanticName, "TEXCOORD");
+    EXPECT_EQ(skinnedDesc->inputLayout.elements[6].semanticIndex, 1u);
+    EXPECT_EQ(skinnedDesc->inputLayout.elements[6].inputSlot, 7u);
     EXPECT_EQ(rigidRGBA16Desc->renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(rigidRGBA8Desc->renderTargetFormats[0], RVX::RHIFormat::RGBA8_UNORM);
 
@@ -9692,6 +9701,403 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitDirectVertexInputModesUseDistin
     const std::string shader = ReadTextFile(FindShaderDirectory() / "DefaultLit.hlsl");
     EXPECT_NE(shader.find("struct RigidDirectVSInput"), std::string::npos);
     EXPECT_NE(shader.find("PSInput VSMainRigid(RigidDirectVSInput input)"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       SurfaceCullVariantsAreDistinctAcrossDirectAndIndirectPipelines)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    const auto expectNoCullVariant = [&device](
+                                         RVX::RHIPipeline* back,
+                                         RVX::RHIPipeline* noCull,
+                                         size_t pipelineCountBefore)
+    {
+        ASSERT_NE(nullptr, back);
+        ASSERT_NE(nullptr, noCull);
+        EXPECT_NE(back, noCull);
+        ASSERT_EQ(pipelineCountBefore + 1u,
+                  device.capturedGraphicsPipelines.size());
+        EXPECT_EQ(RVX::RHICullMode::None,
+                  device.capturedGraphicsPipelines.back()
+                      .rasterizerState.cullMode);
+    };
+
+    RVX::RHIPipeline* const directBack = cache.GetPipelineForVariant(
+        RVX::MaterialPipelineVariant::Opaque,
+        RVX::RHIFormat::RGBA8_UNORM,
+        RVX::DefaultLitDirectVertexInputMode::Rigid,
+        RVX::MaterialCullMode::Back);
+    ASSERT_NE(nullptr, directBack);
+    ASSERT_FALSE(device.capturedGraphicsPipelines.empty());
+    EXPECT_EQ(RVX::RHIFrontFace::CounterClockwise,
+              device.capturedGraphicsPipelines.back()
+                  .rasterizerState.frontFace);
+    size_t pipelineCount = device.capturedGraphicsPipelines.size();
+    RVX::RHIPipeline* const directMirrored = cache.GetPipelineForVariant(
+        RVX::MaterialPipelineVariant::Opaque,
+        RVX::RHIFormat::RGBA8_UNORM,
+        RVX::DefaultLitDirectVertexInputMode::Rigid,
+        RVX::MaterialCullMode::Back,
+        true);
+    ASSERT_NE(nullptr, directBack);
+    ASSERT_NE(nullptr, directMirrored);
+    EXPECT_NE(directBack, directMirrored);
+    ASSERT_EQ(pipelineCount + 1u, device.capturedGraphicsPipelines.size());
+    EXPECT_EQ(RVX::RHICullMode::Back,
+              device.capturedGraphicsPipelines.back().rasterizerState.cullMode);
+    EXPECT_EQ(RVX::RHIFrontFace::Clockwise,
+              device.capturedGraphicsPipelines.back().rasterizerState.frontFace);
+    pipelineCount = device.capturedGraphicsPipelines.size();
+    RVX::RHIPipeline* const directNoCull = cache.GetPipelineForVariant(
+        RVX::MaterialPipelineVariant::Opaque,
+        RVX::RHIFormat::RGBA8_UNORM,
+        RVX::DefaultLitDirectVertexInputMode::Rigid,
+        RVX::MaterialCullMode::NoCull);
+    expectNoCullVariant(directBack, directNoCull, pipelineCount);
+    EXPECT_EQ(directNoCull,
+              cache.GetPipelineForVariant(
+                  RVX::MaterialPipelineVariant::Opaque,
+                  RVX::RHIFormat::RGBA8_UNORM,
+                  RVX::DefaultLitDirectVertexInputMode::Rigid,
+                  RVX::MaterialCullMode::NoCull));
+    pipelineCount = device.capturedGraphicsPipelines.size();
+    RVX::RHIPipeline* const directMirroredNoCull =
+        cache.GetPipelineForVariant(
+            RVX::MaterialPipelineVariant::Opaque,
+            RVX::RHIFormat::RGBA8_UNORM,
+            RVX::DefaultLitDirectVertexInputMode::Rigid,
+            RVX::MaterialCullMode::NoCull,
+            true);
+    ASSERT_NE(nullptr, directMirroredNoCull);
+    EXPECT_NE(directNoCull, directMirroredNoCull);
+    ASSERT_EQ(pipelineCount + 1u, device.capturedGraphicsPipelines.size());
+    EXPECT_EQ(RVX::RHIFrontFace::Clockwise,
+              device.capturedGraphicsPipelines.back()
+                  .rasterizerState.frontFace);
+
+    RVX::RHIPipeline* const gpuBack = cache.GetGPUDrivenPipelineForVariant(
+        RVX::MaterialPipelineVariant::Opaque,
+        RVX::RHIFormat::RGBA8_UNORM,
+        RVX::MaterialCullMode::Back);
+    pipelineCount = device.capturedGraphicsPipelines.size();
+    RVX::RHIPipeline* const gpuMirrored = cache.GetGPUDrivenPipelineForVariant(
+        RVX::MaterialPipelineVariant::Opaque,
+        RVX::RHIFormat::RGBA8_UNORM,
+        RVX::MaterialCullMode::Back,
+        true);
+    ASSERT_NE(nullptr, gpuBack);
+    ASSERT_NE(nullptr, gpuMirrored);
+    EXPECT_NE(gpuBack, gpuMirrored);
+    ASSERT_EQ(pipelineCount + 1u, device.capturedGraphicsPipelines.size());
+    EXPECT_EQ(RVX::RHIFrontFace::Clockwise,
+              device.capturedGraphicsPipelines.back().rasterizerState.frontFace);
+    pipelineCount = device.capturedGraphicsPipelines.size();
+    RVX::RHIPipeline* const gpuNoCull = cache.GetGPUDrivenPipelineForVariant(
+        RVX::MaterialPipelineVariant::Opaque,
+        RVX::RHIFormat::RGBA8_UNORM,
+        RVX::MaterialCullMode::NoCull);
+    expectNoCullVariant(gpuBack, gpuNoCull, pipelineCount);
+    pipelineCount = device.capturedGraphicsPipelines.size();
+    RVX::RHIPipeline* const gpuMirroredNoCull =
+        cache.GetGPUDrivenPipelineForVariant(
+            RVX::MaterialPipelineVariant::Opaque,
+            RVX::RHIFormat::RGBA8_UNORM,
+            RVX::MaterialCullMode::NoCull,
+            true);
+    ASSERT_NE(nullptr, gpuMirroredNoCull);
+    EXPECT_NE(gpuNoCull, gpuMirroredNoCull);
+    ASSERT_EQ(pipelineCount + 1u, device.capturedGraphicsPipelines.size());
+    EXPECT_EQ(RVX::RHIFrontFace::Clockwise,
+              device.capturedGraphicsPipelines.back()
+                  .rasterizerState.frontFace);
+
+    RVX::RHIPipeline* const gpuSceneBack =
+        cache.GetGPUScenePipelineForVariant(
+            RVX::MaterialPipelineVariant::Opaque,
+            RVX::RHIFormat::RGBA8_UNORM,
+            RVX::MaterialCullMode::Back);
+    pipelineCount = device.capturedGraphicsPipelines.size();
+    RVX::RHIPipeline* const gpuSceneMirrored =
+        cache.GetGPUScenePipelineForVariant(
+            RVX::MaterialPipelineVariant::Opaque,
+            RVX::RHIFormat::RGBA8_UNORM,
+            RVX::MaterialCullMode::Back,
+            true);
+    ASSERT_NE(nullptr, gpuSceneBack);
+    ASSERT_NE(nullptr, gpuSceneMirrored);
+    EXPECT_NE(gpuSceneBack, gpuSceneMirrored);
+    ASSERT_EQ(pipelineCount + 1u, device.capturedGraphicsPipelines.size());
+    EXPECT_EQ(RVX::RHIFrontFace::Clockwise,
+              device.capturedGraphicsPipelines.back().rasterizerState.frontFace);
+    pipelineCount = device.capturedGraphicsPipelines.size();
+    RVX::RHIPipeline* const gpuSceneNoCull =
+        cache.GetGPUScenePipelineForVariant(
+            RVX::MaterialPipelineVariant::Opaque,
+            RVX::RHIFormat::RGBA8_UNORM,
+            RVX::MaterialCullMode::NoCull);
+    expectNoCullVariant(gpuSceneBack, gpuSceneNoCull, pipelineCount);
+    pipelineCount = device.capturedGraphicsPipelines.size();
+    RVX::RHIPipeline* const gpuSceneMirroredNoCull =
+        cache.GetGPUScenePipelineForVariant(
+            RVX::MaterialPipelineVariant::Opaque,
+            RVX::RHIFormat::RGBA8_UNORM,
+            RVX::MaterialCullMode::NoCull,
+            true);
+    ASSERT_NE(nullptr, gpuSceneMirroredNoCull);
+    EXPECT_NE(gpuSceneNoCull, gpuSceneMirroredNoCull);
+    ASSERT_EQ(pipelineCount + 1u, device.capturedGraphicsPipelines.size());
+    EXPECT_EQ(RVX::RHIFrontFace::Clockwise,
+              device.capturedGraphicsPipelines.back()
+                  .rasterizerState.frontFace);
+
+    EXPECT_EQ(nullptr,
+              cache.GetPipelineForVariant(
+                  RVX::MaterialPipelineVariant::Opaque,
+                  RVX::RHIFormat::RGBA8_UNORM,
+                  RVX::DefaultLitDirectVertexInputMode::Rigid,
+                  static_cast<RVX::MaterialCullMode>(255)));
+    EXPECT_NE(cache.GetLastError().find("cull mode"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       OpenGLSurfaceWindingUsesItsBackendFrontFaceConvention)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    FakeDevice device(RVX::RHIBackendType::OpenGL);
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    RVX::RHIPipeline* const canonical = cache.GetPipelineForVariant(
+        RVX::MaterialPipelineVariant::Opaque,
+        RVX::RHIFormat::RGBA8_UNORM,
+        RVX::DefaultLitDirectVertexInputMode::Rigid,
+        RVX::MaterialCullMode::Back,
+        false);
+    ASSERT_NE(nullptr, canonical);
+    ASSERT_FALSE(device.capturedGraphicsPipelines.empty());
+    EXPECT_EQ(RVX::RHIFrontFace::CounterClockwise,
+              device.capturedGraphicsPipelines.back()
+                  .rasterizerState.frontFace);
+
+    RVX::RHIPipeline* const mirrored = cache.GetPipelineForVariant(
+        RVX::MaterialPipelineVariant::Opaque,
+        RVX::RHIFormat::RGBA8_UNORM,
+        RVX::DefaultLitDirectVertexInputMode::Rigid,
+        RVX::MaterialCullMode::Back,
+        true);
+    ASSERT_NE(nullptr, mirrored);
+    EXPECT_NE(canonical, mirrored);
+    EXPECT_EQ(RVX::RHIFrontFace::Clockwise,
+              device.capturedGraphicsPipelines.back()
+                  .rasterizerState.frontFace);
+
+    RVX::RHIPipeline* const noCull = cache.GetPipelineForVariant(
+        RVX::MaterialPipelineVariant::Opaque,
+        RVX::RHIFormat::RGBA8_UNORM,
+        RVX::DefaultLitDirectVertexInputMode::Rigid,
+        RVX::MaterialCullMode::NoCull,
+        false);
+    RVX::RHIPipeline* const mirroredNoCull = cache.GetPipelineForVariant(
+        RVX::MaterialPipelineVariant::Opaque,
+        RVX::RHIFormat::RGBA8_UNORM,
+        RVX::DefaultLitDirectVertexInputMode::Rigid,
+        RVX::MaterialCullMode::NoCull,
+        true);
+    ASSERT_NE(nullptr, noCull);
+    ASSERT_NE(nullptr, mirroredNoCull);
+    EXPECT_NE(noCull, mirroredNoCull);
+    EXPECT_EQ(RVX::RHICullMode::None,
+              device.capturedGraphicsPipelines.back()
+                  .rasterizerState.cullMode);
+    EXPECT_EQ(RVX::RHIFrontFace::Clockwise,
+              device.capturedGraphicsPipelines.back()
+                  .rasterizerState.frontFace);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       GPUSceneCullVariantsAreRetiredBeforeTheirRasterSubstrateIsReinitialized)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    const auto requestAllGPUSceneCullVariants = [&cache]()
+    {
+        return std::array<RVX::RHIPipeline*, 8>{
+            cache.GetGPUScenePipelineForVariant(
+                RVX::MaterialPipelineVariant::Opaque,
+                RVX::RHIFormat::RGBA8_UNORM,
+                RVX::MaterialCullMode::Back),
+            cache.GetGPUScenePipelineForVariant(
+                RVX::MaterialPipelineVariant::Opaque,
+                RVX::RHIFormat::RGBA8_UNORM,
+                RVX::MaterialCullMode::NoCull),
+            cache.GetGPUScenePipelineForVariant(
+                RVX::MaterialPipelineVariant::Masked,
+                RVX::RHIFormat::RGBA8_UNORM,
+                RVX::MaterialCullMode::Back),
+            cache.GetGPUScenePipelineForVariant(
+                RVX::MaterialPipelineVariant::Masked,
+                RVX::RHIFormat::RGBA8_UNORM,
+                RVX::MaterialCullMode::NoCull),
+            cache.GetGPUSceneInstancedMaterialPipelineForVariant(
+                RVX::MaterialPipelineVariant::Opaque,
+                RVX::RHIFormat::RGBA8_UNORM,
+                RVX::MaterialCullMode::Back),
+            cache.GetGPUSceneInstancedMaterialPipelineForVariant(
+                RVX::MaterialPipelineVariant::Opaque,
+                RVX::RHIFormat::RGBA8_UNORM,
+                RVX::MaterialCullMode::NoCull),
+            cache.GetGPUSceneDepthOnlyPipeline(RVX::MaterialCullMode::Back),
+            cache.GetGPUSceneDepthOnlyPipeline(RVX::MaterialCullMode::NoCull)};
+    };
+
+    const size_t firstRequestStart = device.capturedGraphicsPipelines.size();
+    const auto firstPipelines = requestAllGPUSceneCullVariants();
+    for (RVX::RHIPipeline* pipeline : firstPipelines)
+    {
+        ASSERT_NE(nullptr, pipeline);
+    }
+    ASSERT_EQ(firstRequestStart + firstPipelines.size(),
+              device.capturedGraphicsPipelines.size());
+
+    // This exercises ResetGPUSceneRasterState through the public lifecycle.
+    // All lazy cull variants must leave the shared cache before its GPU-scene
+    // layout and shader substrate are released.
+    cache.Shutdown();
+    EXPECT_FALSE(cache.IsGPUSceneRasterReady());
+
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+    const size_t secondRequestStart = device.capturedGraphicsPipelines.size();
+    const RVX::uint64 secondRequestCreateCount =
+        cache.GetStats().pipelineCreateCount;
+    const auto secondPipelines = requestAllGPUSceneCullVariants();
+    for (RVX::RHIPipeline* pipeline : secondPipelines)
+    {
+        ASSERT_NE(nullptr, pipeline);
+    }
+    EXPECT_EQ(secondRequestStart + secondPipelines.size(),
+              device.capturedGraphicsPipelines.size());
+    EXPECT_EQ(secondRequestCreateCount + secondPipelines.size(),
+              cache.GetStats().pipelineCreateCount);
+
+    // The freshly built variants are cached only within the new substrate.
+    const size_t stablePipelineCount = device.capturedGraphicsPipelines.size();
+    EXPECT_EQ(secondPipelines, requestAllGPUSceneCullVariants());
+    EXPECT_EQ(stablePipelineCount, device.capturedGraphicsPipelines.size());
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       MaskedShadowPipelineOwnsAlphaPixelStageUV1AndCullVariant)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    RVX::ShadowDepthBiasState bias;
+    RVX::RHIPipeline* const back = cache.GetMaskedShadowDepthPipeline(
+        bias,
+        RVX::DefaultLitDirectVertexInputMode::Rigid,
+        RVX::MaterialCullMode::Back);
+    const size_t pipelineCount = device.capturedGraphicsPipelines.size();
+    RVX::RHIPipeline* const noCull = cache.GetMaskedShadowDepthPipeline(
+        bias,
+        RVX::DefaultLitDirectVertexInputMode::Rigid,
+        RVX::MaterialCullMode::NoCull);
+    ASSERT_NE(nullptr, back);
+    ASSERT_NE(nullptr, noCull);
+    EXPECT_NE(back, noCull);
+    ASSERT_EQ(pipelineCount + 1u, device.capturedGraphicsPipelines.size());
+
+    const RVX::RHIGraphicsPipelineDesc& desc =
+        device.capturedGraphicsPipelines.back();
+    EXPECT_STREQ("MaskedShadowDepthPipeline", desc.debugName);
+    EXPECT_NE(nullptr, desc.pixelShader);
+    EXPECT_EQ(RVX::RHICullMode::None, desc.rasterizerState.cullMode);
+    ASSERT_EQ(3u, desc.inputLayout.elements.size());
+    EXPECT_EQ(0u, desc.inputLayout.elements[0].inputSlot);
+    EXPECT_EQ(2u, desc.inputLayout.elements[1].inputSlot);
+    EXPECT_EQ(7u, desc.inputLayout.elements[2].inputSlot);
+    EXPECT_STREQ("TEXCOORD", desc.inputLayout.elements[2].semanticName);
+    EXPECT_EQ(1u, desc.inputLayout.elements[2].semanticIndex);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       SurfaceRasterShadersShareUVAlphaAndFrontFaceContract)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    const fs::path shaderDir = FindShaderDirectory();
+    const std::string shared = ReadTextFile(
+        shaderDir / "Include" / "SurfaceMaterial.hlsli");
+    const std::array shaderNames = {
+        "DefaultLit.hlsl", "DepthOnly.hlsl", "ObjectVelocity.hlsl"};
+    EXPECT_NE(shared.find("RVXResolveMaterialUV"), std::string::npos);
+    EXPECT_NE(shared.find("RVXResolveBaseColorAlpha"), std::string::npos);
+    EXPECT_NE(shared.find("RVXApplyAlphaMask"), std::string::npos);
+    EXPECT_NE(shared.find("RVXResolveFrontFaceBasis"), std::string::npos);
+    EXPECT_NE(shared.find("RVXResolveTransformHandedness"),
+              std::string::npos);
+    EXPECT_NE(shared.find("RVXSampleNormalMap"), std::string::npos);
+    EXPECT_NE(shared.find("ddx(transformedNormalUV)"), std::string::npos);
+    EXPECT_NE(shared.find("ddy(transformedNormalUV)"), std::string::npos);
+    EXPECT_NE(shared.find("const float determinantSign ="),
+              std::string::npos);
+    EXPECT_NE(shared.find("const float3 rawTangent = determinantSign *"),
+              std::string::npos);
+    EXPECT_NE(shared.find("float2 uv1"), std::string::npos);
+    for (const char* shaderName : shaderNames)
+    {
+        const std::string shader = ReadTextFile(shaderDir / shaderName);
+        EXPECT_NE(shader.find("Include/SurfaceMaterial.hlsli"),
+                  std::string::npos)
+            << shaderName;
+        EXPECT_NE(shader.find("SV_IsFrontFace"), std::string::npos)
+            << shaderName;
+        EXPECT_NE(shader.find("RVXResolveMaterialUV"), std::string::npos)
+            << shaderName;
+        EXPECT_NE(shader.find("RVXApplyAlphaMask"), std::string::npos)
+            << shaderName;
+        EXPECT_NE(shader.find("TEXCOORD1"), std::string::npos)
+            << shaderName;
+    }
+    const std::string defaultLit = ReadTextFile(shaderDir / "DefaultLit.hlsl");
+    EXPECT_NE(defaultLit.find("normalUV = RVXResolveMaterialUV"),
+              std::string::npos);
+    EXPECT_NE(defaultLit.find("RVXSampleNormalMap("), std::string::npos);
+    EXPECT_NE(defaultLit.find(
+                  "input.Tangent.w * RVXResolveTransformHandedness"),
+              std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture,

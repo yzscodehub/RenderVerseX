@@ -31,6 +31,7 @@
 namespace tinygltf
 {
     class Model;
+    class Value;
     struct Mesh;
     struct Material;
     struct Primitive;
@@ -119,13 +120,16 @@ namespace RVX::Resource
      */
     struct GLTFImportOptions
     {
-        /// Flip UVs vertically (some renderers need this)
+        /// Flip UVs vertically. Rejected when KHR_texture_transform is present
+        /// because silently composing the two conventions changes its affine
+        /// transform semantics.
         bool flipUVs = false;
 
         /// Generate normals if not present
         bool generateNormals = true;
 
-        /// Generate tangents if not present (requires normals and UVs)
+        /// Generate a missing tangent basis when a normal texture requires one
+        /// (requires normals and the normal texture's effective UV set).
         bool generateTangents = true;
 
         /// Merge meshes with the same material
@@ -203,7 +207,9 @@ namespace RVX::Resource
                          GLTFImportResult& result,
                          const GLTFImportOptions& options,
                          std::string& error);
-        void ParseMaterials(const tinygltf::Model& gltf, GLTFImportResult& result);
+        bool ParseMaterials(const tinygltf::Model& gltf,
+                            GLTFImportResult& result,
+                            std::string& error);
         void ExtractTextures(tinygltf::Model& gltf, const std::string& basePath, GLTFImportResult& result);
         bool ParseNodes(const tinygltf::Model& gltf,
                         GLTFImportResult& result,
@@ -227,7 +233,8 @@ namespace RVX::Resource
 
         Material::Ptr ConvertMaterial(const tinygltf::Model& gltf,
                                        const tinygltf::Material& mat,
-                                       int materialIndex);
+                                       int materialIndex,
+                                       std::string& error);
 
         Node::Ptr ConvertNode(const tinygltf::Model& gltf,
                                int nodeIndex,
@@ -240,7 +247,12 @@ namespace RVX::Resource
 
         std::vector<uint32_t> ExtractIndices(const tinygltf::Model& gltf, int accessorIndex);
 
-        TextureInfo ExtractTextureInfo(const tinygltf::Model& gltf, int textureIndex, int uvSet = 0);
+        bool ExtractTextureInfo(const tinygltf::Model& gltf,
+                                int textureIndex,
+                                int uvSet,
+                                const tinygltf::Value* textureTransform,
+                                TextureInfo& outInfo,
+                                std::string& error);
 
         // Utility
         PrimitiveType ConvertPrimitiveMode(int mode);

@@ -2,6 +2,7 @@
 
 #include "Core/Assert.h"
 #include "Core/Log.h"
+#include "Render/Material/MaterialGPUEncoding.h"
 #include "RHI/RHIDevice.h"
 #include "Runtime/RenderResourceStatusTable.h"
 
@@ -1327,6 +1328,7 @@ namespace
             {RenderMeshBufferSemantic::Position, RHIBufferUsage::Vertex, payload.positionRange},
             {RenderMeshBufferSemantic::Normal, RHIBufferUsage::Vertex, payload.normalRange},
             {RenderMeshBufferSemantic::UV, RHIBufferUsage::Vertex, payload.uvRange},
+            {RenderMeshBufferSemantic::UV1, RHIBufferUsage::Vertex, payload.uv1Range},
             {RenderMeshBufferSemantic::Tangent, RHIBufferUsage::Vertex, payload.tangentRange},
             {RenderMeshBufferSemantic::BoneIndices, RHIBufferUsage::Vertex, payload.boneIndexRange},
             {RenderMeshBufferSemantic::BoneWeights, RHIBufferUsage::Vertex, payload.boneWeightRange},
@@ -1606,7 +1608,7 @@ namespace
     {
         if (!m_registry->SetPendingMaterialMetadata(handle, payload) ||
             !RecordMaterialConstants(handle,
-                                     payload.sourceData,
+                                     payload,
                                      context,
                                      stagingBuffers,
                                      ownershipTransfers))
@@ -1713,13 +1715,15 @@ namespace
 
     bool RenderUploadProcessor::RecordMaterialConstants(
         RenderResourceHandle handle,
-        const MaterialSourceData& sourceData,
+        const MaterialUploadPayload& payload,
         RHICommandContext& context,
         std::vector<RHIStagingBufferRef>& stagingBuffers,
         UploadOwnershipTransfers& ownershipTransfers)
     {
-        static_assert(std::is_trivially_copyable_v<MaterialSourceData>);
-        const uint64 constantBytes = AlignUp(sizeof(MaterialSourceData), 256);
+        static_assert(std::is_trivially_copyable_v<MaterialGPUConstants>);
+        const MaterialGPUConstants constants = EncodeMaterialGPUConstants(
+            payload.sourceData, payload.textureBindings);
+        const uint64 constantBytes = AlignUp(sizeof(MaterialGPUConstants), 256);
         RHIBufferDesc bufferDesc;
         bufferDesc.size = constantBytes;
         bufferDesc.usage = RHIBufferUsage::Constant | RHIBufferUsage::CopyDst;
@@ -1739,19 +1743,19 @@ namespace
         }
 
         RHIStagingBufferDesc stagingDesc;
-        stagingDesc.size = sizeof(MaterialSourceData);
+        stagingDesc.size = sizeof(MaterialGPUConstants);
         RHIStagingBufferRef staging =
             m_device->CreateStagingBuffer(stagingDesc);
         if (!staging)
         {
             return false;
         }
-        void* mapped = staging->Map(0, sizeof(MaterialSourceData));
+        void* mapped = staging->Map(0, sizeof(MaterialGPUConstants));
         if (mapped == nullptr)
         {
             return false;
         }
-        std::memcpy(mapped, &sourceData, sizeof(MaterialSourceData));
+        std::memcpy(mapped, &constants, sizeof(MaterialGPUConstants));
         if (!staging->CommitMappedWrite())
         {
             return false;
@@ -1760,7 +1764,7 @@ namespace
                            buffer.Get(),
                            0,
                            0,
-                           sizeof(MaterialSourceData));
+                           sizeof(MaterialGPUConstants));
         const RHIBufferBarrier finalBarrier =
             MakeUploadFinalBarrier(m_device, buffer.Get());
         context.BufferBarrier(finalBarrier);
