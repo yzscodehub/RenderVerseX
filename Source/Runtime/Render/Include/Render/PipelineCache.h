@@ -171,6 +171,38 @@ namespace RVX
         RHIBuffer* clusterLightIndexBuffer = nullptr;
     };
 
+    /**
+     * @brief Value-owned, byte-frozen realization of one frame light selection.
+     *
+     * Source light buffers are mutable upload allocations. This structure owns
+     * copies made before graph composition, so graph imports and descriptor
+     * binding snapshots can reference the exact same allocations.
+     */
+    struct FrozenFrameLightResources
+    {
+        RHIBufferRef lightConstantsBuffer;
+        RHIBufferRef pointLightsBuffer;
+        RHIBufferRef spotLightsBuffer;
+        RHIBufferRef clusterConstantsBuffer;
+        RHIBufferRef clusterBuffer;
+        RHIBufferRef clusterLightIndexBuffer;
+
+        [[nodiscard]] bool IsComplete() const noexcept
+        {
+            return lightConstantsBuffer && pointLightsBuffer &&
+                   spotLightsBuffer && clusterConstantsBuffer &&
+                   clusterBuffer && clusterLightIndexBuffer;
+        }
+
+        [[nodiscard]] FrameLightResources Borrow() const noexcept
+        {
+            return FrameLightResources{
+                lightConstantsBuffer.Get(), pointLightsBuffer.Get(),
+                spotLightsBuffer.Get(), clusterConstantsBuffer.Get(),
+                clusterBuffer.Get(), clusterLightIndexBuffer.Get()};
+        }
+    };
+
     struct FrameLightBindingResult
     {
         bool lightResourcesBound = false;
@@ -178,6 +210,70 @@ namespace RVX
         FrameLightFallbackReason fallbackReason = FrameLightFallbackReason::FallbackUnavailable;
         FrameClusteredLightFallbackReason clusteredFallbackReason =
             FrameClusteredLightFallbackReason::FallbackUnavailable;
+    };
+
+    /**
+     * @brief All explicit inputs for one immutable record-owned lighting binding.
+     *
+     * The caller supplies the exact resources selected by its per-view lighting
+     * plan.  This deliberately does not read PipelineCache's mutable current
+     * frame bindings: a later frame may update those bindings before this
+     * record executes.
+     */
+    struct LightingBindingSnapshotRequest
+    {
+        uint64 lightingPlanIdentity = 0;
+        FrozenFrameLightResources frozenLightResources{};
+        DirectionalShadowFrameResources directionalShadow{};
+        RayTracedShadowFrameResources rayTracedShadow{};
+        EnvironmentIBLFrameResources environmentIBL{};
+    };
+
+    /**
+     * @brief Strongly-owned set-0 lighting state for one exact lighting plan.
+     *
+     * The descriptor contains the frame view constants, CSM, local/clustered
+     * lights, the mandatory fallback ray-traced mask, and IBL.  Every raw RHI
+     * binding is paired with a strong owner here, so the descriptor remains
+     * valid even when PipelineCache moves on to another frame.
+     */
+    struct LightingBindingSnapshot
+    {
+        uint64 lightingPlanIdentity = 0;
+        RHIBufferRef viewConstantBuffer;
+        RHITextureViewRef directionalShadowView;
+        RHISamplerRef directionalShadowSampler;
+        RHIBufferRef lightConstantsBuffer;
+        RHIBufferRef pointLightsBuffer;
+        RHIBufferRef spotLightsBuffer;
+        RHITextureViewRef rayTracedShadowMaskView;
+        bool rayTracedShadowEnabled = false;
+        RHIBufferRef clusterConstantsBuffer;
+        RHIBufferRef clusterBuffer;
+        RHIBufferRef clusterLightIndexBuffer;
+        RHITextureViewRef environmentIBLIrradianceView;
+        RHITextureViewRef environmentIBLPrefilteredView;
+        RHITextureViewRef environmentIBLBRDFLUTView;
+        RHISamplerRef environmentIBLSampler;
+        RHIDescriptorSetLayoutRef frameSetLayout;
+        RHIDescriptorSetRef frameDescriptorSet;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return lightingPlanIdentity != 0 && viewConstantBuffer &&
+                   directionalShadowView && directionalShadowSampler &&
+                   lightConstantsBuffer && pointLightsBuffer &&
+                   spotLightsBuffer && rayTracedShadowMaskView &&
+                   clusterConstantsBuffer && clusterBuffer &&
+                   clusterLightIndexBuffer && environmentIBLIrradianceView &&
+                   environmentIBLPrefilteredView && environmentIBLBRDFLUTView &&
+                   environmentIBLSampler && frameSetLayout && frameDescriptorSet;
+        }
+
+        [[nodiscard]] bool MatchesLightingPlan(uint64 expectedIdentity) const noexcept
+        {
+            return expectedIdentity != 0 && lightingPlanIdentity == expectedIdentity;
+        }
     };
 
     struct ShadowDepthBiasState
@@ -273,6 +369,29 @@ namespace RVX
         {
             return viewConstantBuffer && objectConstantBuffer &&
                    frameDescriptorSet && objectDescriptorSet &&
+                   objectConstantStride != 0 && objectCapacity != 0;
+        }
+    };
+
+    /**
+     * @brief Record-owned set-1 bindings with no set-0/frame dependency.
+     *
+     * Transparent raster work binds a LightingBindingSnapshot at set 0. This
+     * companion owns only object constants and its optional instance fallback,
+     * so it cannot observe mutable frame descriptors or IBL state.
+     */
+    struct RasterObjectBindingSnapshot
+    {
+        RHIBufferRef objectConstantBuffer;
+        RHIDescriptorSetRef objectDescriptorSet;
+        std::vector<Ref<RefCounted>> retainedResources;
+        uint64 objectConstantStride = 0;
+        uint32 objectCapacity = 0;
+        uint32 objectCursor = 0;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return objectConstantBuffer && objectDescriptorSet &&
                    objectConstantStride != 0 && objectCapacity != 0;
         }
     };
@@ -841,6 +960,28 @@ namespace RVX
          */
         FrameLightBindingResult UpdateFrameLightResources(const FrameLightResources& resources);
 
+        /**
+         * @brief Create a complete immutable set-0 snapshot for one lighting plan.
+         *
+         * `view.directionalShadowEnabled` and `view.textureIBLEnabled` are
+         * readiness declarations.  When either is enabled, its matching
+         * request resources must be complete; otherwise creation fails without
+         * publishing a partial snapshot.  Disabled shadow/IBL paths bind only
+         * stable internal fallbacks.  Local and clustered-light buffers are
+         * always required, including frames with zero admitted lights.  The
+         * output argument changes only after a complete descriptor set is
+         * ready for binding.
+         */
+        [[nodiscard]] bool CreateLightingBindingSnapshot(
+            const ViewData& view,
+            const LightingBindingSnapshotRequest& request,
+            LightingBindingSnapshot& outSnapshot);
+
+        /** @brief Freeze the six required upload buffers before graph composition. */
+        [[nodiscard]] bool FreezeFrameLightResources(
+            const FrameLightResources& source,
+            FrozenFrameLightResources& outFrozenResources);
+
         const DirectionalShadowFrameBindingResult& GetLastDirectionalShadowFrameBindingResult() const
         {
             return m_lastDirectionalShadowFrameBindingResult;
@@ -917,6 +1058,11 @@ namespace RVX
                                              uint32 objectCapacity,
                                              RasterDrawBindingSnapshot& outSnapshot) const;
 
+        /** @brief Create record-owned set-1 bindings without reading set 0. */
+        bool CreateRasterObjectBindingSnapshot(
+            uint32 objectCapacity,
+            RasterObjectBindingSnapshot& outSnapshot) const;
+
         /**
          * @brief Create immutable set-0 bindings for every directional-shadow cascade.
          *
@@ -957,6 +1103,17 @@ namespace RVX
         /** @brief Upload one object slot in a recording-owned snapshot. */
         bool UpdateRasterDrawBindingSnapshotObject(
             RasterDrawBindingSnapshot& snapshot,
+            const Mat4& worldMatrix,
+            const Mat4& normalMatrix,
+            const Mat4& previousWorldMatrix,
+            const Mat4& previousViewProjectionMatrix,
+            bool previousWorldViewProjectionValid,
+            bool receivesShadow,
+            std::span<const Mat4> skinningMatrices = {}) const;
+
+        /** @brief Upload an object slot in a set-1-only recording snapshot. */
+        bool UpdateRasterObjectBindingSnapshotObject(
+            RasterObjectBindingSnapshot& snapshot,
             const Mat4& worldMatrix,
             const Mat4& normalMatrix,
             const Mat4& previousWorldMatrix,

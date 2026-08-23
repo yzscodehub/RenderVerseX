@@ -4,8 +4,11 @@
  */
 
 #include "Render/Lighting/LightManager.h"
+#include "Render/Lighting/LightingFramePlan.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Core/Log.h"
+
+#include <cstring>
 
 namespace RVX
 {
@@ -18,6 +21,36 @@ namespace
         return (size + alignment - 1) & ~(alignment - 1);
     }
 } // namespace
+
+const char* GetLightingGpuUploadCodeName(LightingGpuUploadCode code) noexcept
+{
+    switch (code)
+    {
+        case LightingGpuUploadCode::NotAttempted: return "NotAttempted";
+        case LightingGpuUploadCode::Ready: return "Ready";
+        case LightingGpuUploadCode::NotInitialized: return "NotInitialized";
+        case LightingGpuUploadCode::PlanNotStaged: return "PlanNotStaged";
+        case LightingGpuUploadCode::MissingLightConstantsBuffer:
+            return "MissingLightConstantsBuffer";
+        case LightingGpuUploadCode::MissingPointLightsBuffer:
+            return "MissingPointLightsBuffer";
+        case LightingGpuUploadCode::MissingSpotLightsBuffer:
+            return "MissingSpotLightsBuffer";
+        case LightingGpuUploadCode::InvalidLightConstantsBufferSize:
+            return "InvalidLightConstantsBufferSize";
+        case LightingGpuUploadCode::InvalidPointLightsBufferSize:
+            return "InvalidPointLightsBufferSize";
+        case LightingGpuUploadCode::InvalidSpotLightsBufferSize:
+            return "InvalidSpotLightsBufferSize";
+        case LightingGpuUploadCode::MapLightConstantsFailed:
+            return "MapLightConstantsFailed";
+        case LightingGpuUploadCode::MapPointLightsFailed:
+            return "MapPointLightsFailed";
+        case LightingGpuUploadCode::MapSpotLightsFailed:
+            return "MapSpotLightsFailed";
+        default: return "Unknown";
+    }
+}
 
 LightManager::~LightManager()
 {
@@ -130,6 +163,176 @@ void LightManager::CollectLights(const RenderScene& scene,
     }
 }
 
+bool LightManager::CollectLights(const LightingFramePlan& plan)
+{
+    Clear();
+
+    if (!plan.IsValid())
+    {
+        m_lightingPlanCollectionCode = LightingPlanCollectionCode::InvalidPlan;
+        if (Log::GetCoreLogger())
+        {
+            RVX_CORE_ERROR("LightManager: Refusing invalid lighting frame plan");
+        }
+        return false;
+    }
+
+    const LightingFramePlanCapacityEvidence& evidence =
+        plan.GetCapacityEvidence();
+    const std::vector<LightingLightCandidate>& localLights =
+        plan.GetLocalLights();
+    if (evidence.selectedLocalLightCount != localLights.size() ||
+        evidence.requestedLocalLightCount < evidence.selectedLocalLightCount ||
+        evidence.overflowLocalLightCount !=
+            evidence.requestedLocalLightCount - evidence.selectedLocalLightCount ||
+        evidence.localLightCapacity !=
+            evidence.pointLightCapacity + evidence.spotLightCapacity ||
+        evidence.selectedLocalLightCount !=
+            evidence.selectedPointLightCount + evidence.selectedSpotLightCount ||
+        evidence.requestedLocalLightCount !=
+            evidence.requestedPointLightCount + evidence.requestedSpotLightCount ||
+        evidence.overflowLocalLightCount !=
+            evidence.overflowPointLightCount + evidence.overflowSpotLightCount ||
+        evidence.requestedPointLightCount < evidence.selectedPointLightCount ||
+        evidence.overflowPointLightCount !=
+            evidence.requestedPointLightCount - evidence.selectedPointLightCount ||
+        evidence.requestedSpotLightCount < evidence.selectedSpotLightCount ||
+        evidence.overflowSpotLightCount !=
+            evidence.requestedSpotLightCount - evidence.selectedSpotLightCount ||
+        evidence.overflowed != (evidence.overflowLocalLightCount != 0))
+    {
+        m_lightingPlanCollectionCode = LightingPlanCollectionCode::InvalidEvidence;
+        if (Log::GetCoreLogger())
+        {
+            RVX_CORE_ERROR("LightManager: Lighting frame plan capacity evidence is inconsistent");
+        }
+        return false;
+    }
+
+    uint32 selectedPointLightCount = 0;
+    uint32 selectedSpotLightCount = 0;
+    for (const LightingLightCandidate& light : localLights)
+    {
+        switch (light.type)
+        {
+            case RenderLightType::Point:
+                ++selectedPointLightCount;
+                break;
+            case RenderLightType::Spot:
+                ++selectedSpotLightCount;
+                break;
+            case RenderLightType::Directional:
+            default:
+                m_lightingPlanCollectionCode =
+                    LightingPlanCollectionCode::InvalidPlan;
+                if (Log::GetCoreLogger())
+                {
+                    RVX_CORE_ERROR("LightManager: Lighting frame plan selected a non-local light");
+                }
+                return false;
+        }
+    }
+
+    if (selectedPointLightCount != evidence.selectedPointLightCount ||
+        selectedSpotLightCount != evidence.selectedSpotLightCount)
+    {
+        m_lightingPlanCollectionCode = LightingPlanCollectionCode::InvalidEvidence;
+        if (Log::GetCoreLogger())
+        {
+            RVX_CORE_ERROR(
+                "LightManager: Lighting frame plan selected per-type counts do not match its evidence");
+        }
+        return false;
+    }
+
+    if (selectedPointLightCount > MaxPointLights ||
+        selectedSpotLightCount > MaxSpotLights)
+    {
+        m_lightingPlanCollectionCode =
+            LightingPlanCollectionCode::PerTypeCapacityExceeded;
+        if (Log::GetCoreLogger())
+        {
+            RVX_CORE_ERROR(
+                "LightManager: Lighting frame plan exceeds per-type GPU light capacity "
+                "(points {} / {}, spots {} / {})",
+                selectedPointLightCount,
+                MaxPointLights,
+                selectedSpotLightCount,
+                MaxSpotLights);
+        }
+        return false;
+    }
+
+    if (const LightingLightCandidate* primary =
+            plan.GetPrimaryDirectionalLight();
+        primary != nullptr)
+    {
+        m_mainLight.direction = primary->direction;
+        m_mainLight.color = primary->color;
+        m_mainLight.intensity = primary->normalizedIntensity;
+        m_primaryDirectionalLightId = primary->lightId;
+        m_primaryDirectionalShadowRequested = primary->castsShadows;
+    }
+    else
+    {
+        m_mainLight.intensity = 0.0f;
+        m_mainLight.color = Vec3(0.0f);
+    }
+
+    m_pointLights.reserve(selectedPointLightCount);
+    m_spotLights.reserve(selectedSpotLightCount);
+    for (const LightingLightCandidate& light : localLights)
+    {
+        if (light.type == RenderLightType::Point)
+        {
+            GPUPointLight gpuLight;
+            gpuLight.position = light.position;
+            gpuLight.color = light.color;
+            gpuLight.intensity = light.normalizedIntensity;
+            gpuLight.range = light.range;
+            m_pointLights.push_back(gpuLight);
+            if (light.castsShadows)
+            {
+                ++m_pointShadowRequestCount;
+            }
+        }
+        else
+        {
+            GPUSpotLight gpuLight;
+            gpuLight.position = light.position;
+            gpuLight.direction = light.direction;
+            gpuLight.color = light.color;
+            gpuLight.intensity = light.normalizedIntensity;
+            gpuLight.range = light.range;
+            gpuLight.innerConeAngle = std::cos(light.innerConeRadians);
+            gpuLight.outerConeAngle = std::cos(light.outerConeRadians);
+            m_spotLights.push_back(gpuLight);
+            if (light.castsShadows)
+            {
+                ++m_spotShadowRequestCount;
+            }
+        }
+    }
+
+    // The immutable plan is the source of truth for requested/admitted/overflow
+    // evidence. The selected GPU vectors above are checked against it before
+    // publishing any plan-bound state.
+    m_pointLightRequestedCount = evidence.requestedPointLightCount;
+    m_spotLightRequestedCount = evidence.requestedSpotLightCount;
+    m_pointLightOverflowCount = evidence.overflowPointLightCount;
+    m_spotLightOverflowCount = evidence.overflowSpotLightCount;
+    m_planLocalLightRequestedCount = evidence.requestedLocalLightCount;
+    m_planLocalLightAdmittedCount = evidence.selectedLocalLightCount;
+    m_planLocalLightOverflowCount = evidence.overflowLocalLightCount;
+    // Collection only stages CPU data.  The identity becomes bindable only
+    // after all three upload buffers map and receive a complete replacement.
+    m_stagedLightingPlanIdentity = plan.GetIdentityHash();
+    m_lightingPlanIdentity = 0;
+    m_gpuUploadResult = {};
+    m_lightingPlanCollectionCode = LightingPlanCollectionCode::Staged;
+    return true;
+}
+
 void LightManager::SetMainLight(const Vec3& direction, const Vec3& color, float intensity)
 {
     m_mainLight.direction = direction;
@@ -187,48 +390,134 @@ void LightManager::Clear()
     m_spotLightOverflowCount = 0;
     m_pointShadowRequestCount = 0;
     m_spotShadowRequestCount = 0;
+    m_lightingPlanCollectionCode = LightingPlanCollectionCode::NotBound;
+    m_gpuUploadResult = {};
+    m_stagedLightingPlanIdentity = 0;
+    m_lightingPlanIdentity = 0;
+    m_primaryDirectionalLightId = 0;
+    m_primaryDirectionalShadowRequested = false;
+    m_planLocalLightRequestedCount = 0;
+    m_planLocalLightAdmittedCount = 0;
+    m_planLocalLightOverflowCount = 0;
     m_mainLight = GPUDirectionalLight{};
 }
 
-void LightManager::UpdateGPUBuffers()
+LightingGpuUploadResult LightManager::FailGpuUpload(LightingGpuUploadCode code)
 {
-    // Update light constants
-    if (m_lightConstantsBuffer)
+    m_lightingPlanCollectionCode = LightingPlanCollectionCode::UploadFailed;
+    m_stagedLightingPlanIdentity = 0;
+    m_lightingPlanIdentity = 0;
+    m_gpuUploadResult = {code, 0};
+    if (Log::GetCoreLogger())
     {
-        LightConstants constants;
-        constants.mainLight = m_mainLight;
-        constants.numPointLights = static_cast<uint32>(m_pointLights.size());
-        constants.numSpotLights = static_cast<uint32>(m_spotLights.size());
+        RVX_CORE_ERROR("LightManager: GPU light upload failed: {}",
+                       GetLightingGpuUploadCodeName(code));
+    }
+    return m_gpuUploadResult;
+}
 
-        void* data = m_lightConstantsBuffer->Map();
-        if (data)
-        {
-            memcpy(data, &constants, sizeof(LightConstants));
-            m_lightConstantsBuffer->Unmap();
-        }
+LightingGpuUploadResult LightManager::UpdateGPUBuffers()
+{
+    if (!m_device)
+    {
+        return FailGpuUpload(LightingGpuUploadCode::NotInitialized);
     }
 
-    // Update point lights buffer
-    if (m_pointLightsBuffer && !m_pointLights.empty())
+    if (m_lightingPlanCollectionCode != LightingPlanCollectionCode::Staged ||
+        m_stagedLightingPlanIdentity == 0)
     {
-        void* data = m_pointLightsBuffer->Map();
-        if (data)
-        {
-            memcpy(data, m_pointLights.data(), m_pointLights.size() * sizeof(GPUPointLight));
-            m_pointLightsBuffer->Unmap();
-        }
+        return FailGpuUpload(LightingGpuUploadCode::PlanNotStaged);
     }
 
-    // Update spot lights buffer
-    if (m_spotLightsBuffer && !m_spotLights.empty())
+    if (!m_lightConstantsBuffer)
     {
-        void* data = m_spotLightsBuffer->Map();
-        if (data)
-        {
-            memcpy(data, m_spotLights.data(), m_spotLights.size() * sizeof(GPUSpotLight));
-            m_spotLightsBuffer->Unmap();
-        }
+        return FailGpuUpload(LightingGpuUploadCode::MissingLightConstantsBuffer);
     }
+    if (!m_pointLightsBuffer)
+    {
+        return FailGpuUpload(LightingGpuUploadCode::MissingPointLightsBuffer);
+    }
+    if (!m_spotLightsBuffer)
+    {
+        return FailGpuUpload(LightingGpuUploadCode::MissingSpotLightsBuffer);
+    }
+
+    const uint64 constantsSize = AlignLightConstantsSize(sizeof(LightConstants));
+    const uint64 pointBufferSize = sizeof(GPUPointLight) * MaxPointLights;
+    const uint64 spotBufferSize = sizeof(GPUSpotLight) * MaxSpotLights;
+    if (m_lightConstantsBuffer->GetSize() < constantsSize)
+    {
+        return FailGpuUpload(
+            LightingGpuUploadCode::InvalidLightConstantsBufferSize);
+    }
+    if (m_pointLightsBuffer->GetSize() < pointBufferSize)
+    {
+        return FailGpuUpload(LightingGpuUploadCode::InvalidPointLightsBufferSize);
+    }
+    if (m_spotLightsBuffer->GetSize() < spotBufferSize)
+    {
+        return FailGpuUpload(LightingGpuUploadCode::InvalidSpotLightsBufferSize);
+    }
+
+    // Map all buffers before writing any of them. This avoids publishing a
+    // partially updated light set when an individual Map fails.
+    void* constantsData = m_lightConstantsBuffer->Map();
+    if (!constantsData)
+    {
+        return FailGpuUpload(LightingGpuUploadCode::MapLightConstantsFailed);
+    }
+
+    void* pointLightsData = m_pointLightsBuffer->Map();
+    if (!pointLightsData)
+    {
+        m_lightConstantsBuffer->Unmap();
+        return FailGpuUpload(LightingGpuUploadCode::MapPointLightsFailed);
+    }
+
+    void* spotLightsData = m_spotLightsBuffer->Map();
+    if (!spotLightsData)
+    {
+        m_pointLightsBuffer->Unmap();
+        m_lightConstantsBuffer->Unmap();
+        return FailGpuUpload(LightingGpuUploadCode::MapSpotLightsFailed);
+    }
+
+    LightConstants constants;
+    constants.mainLight = m_mainLight;
+    constants.numPointLights = static_cast<uint32>(m_pointLights.size());
+    constants.numSpotLights = static_cast<uint32>(m_spotLights.size());
+
+    // Every successful frame clears full buffer capacity before copying its
+    // exact staged payload. A recovery frame therefore cannot bind old local
+    // lights from the failed frame, including when this frame has zero lights.
+    std::memset(constantsData, 0,
+                static_cast<size_t>(m_lightConstantsBuffer->GetSize()));
+    std::memset(pointLightsData, 0,
+                static_cast<size_t>(m_pointLightsBuffer->GetSize()));
+    std::memset(spotLightsData, 0,
+                static_cast<size_t>(m_spotLightsBuffer->GetSize()));
+    std::memcpy(constantsData, &constants, sizeof(constants));
+    if (!m_pointLights.empty())
+    {
+        std::memcpy(pointLightsData, m_pointLights.data(),
+                    m_pointLights.size() * sizeof(GPUPointLight));
+    }
+    if (!m_spotLights.empty())
+    {
+        std::memcpy(spotLightsData, m_spotLights.data(),
+                    m_spotLights.size() * sizeof(GPUSpotLight));
+    }
+
+    m_spotLightsBuffer->Unmap();
+    m_pointLightsBuffer->Unmap();
+    m_lightConstantsBuffer->Unmap();
+
+    m_lightingPlanIdentity = m_stagedLightingPlanIdentity;
+    m_lightingPlanCollectionCode = LightingPlanCollectionCode::Ready;
+    m_gpuUploadResult = {
+        LightingGpuUploadCode::Ready,
+        m_lightingPlanIdentity};
+    return m_gpuUploadResult;
 }
 
 } // namespace RVX

@@ -1,5 +1,6 @@
 #include "GPUScene/GPUSceneUpdate.h"
 #include "Render/Lighting/LightManager.h"
+#include "Render/Lighting/LightingFramePlan.h"
 #include "Render/Passes/RenderPassRecordContext.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderDrawPacket.h"
@@ -638,6 +639,11 @@ TEST(RenderSceneValidation,
 {
     RenderScene scene;
 
+    RenderLight unitless;
+    unitless.lightId = 99;
+    EXPECT_FALSE(scene.AddLight(unitless));
+    EXPECT_EQ(scene.GetLightCount(), 0U);
+
     RenderObject includedObject;
     includedObject.entityId = 1;
     includedObject.drawable = true;
@@ -656,26 +662,30 @@ TEST(RenderSceneValidation,
     excludedDirectional.lightId = 3;
     excludedDirectional.type = RenderLight::Type::Directional;
     excludedDirectional.intensity = 8.0F;
+    excludedDirectional.intensityUnit = RenderLightIntensityUnit::Lux;
+    excludedDirectional.canonicalIntensityUnit = RenderLightIntensityUnit::Lux;
     excludedDirectional.layerMask = 0x00000002U;
     excludedDirectional.castsShadow = true;
-    scene.AddLight(excludedDirectional);
+    EXPECT_TRUE(scene.AddLight(excludedDirectional));
 
     RenderLight includedDirectional = excludedDirectional;
     includedDirectional.lightId = 4;
     includedDirectional.intensity = 2.0F;
     includedDirectional.layerMask = 0x00000001U;
-    scene.AddLight(includedDirectional);
+    EXPECT_TRUE(scene.AddLight(includedDirectional));
 
     RenderLight excludedPoint;
     excludedPoint.lightId = 5;
     excludedPoint.type = RenderLight::Type::Point;
+    excludedPoint.intensityUnit = RenderLightIntensityUnit::Candela;
+    excludedPoint.canonicalIntensityUnit = RenderLightIntensityUnit::Candela;
     excludedPoint.layerMask = 0x00000002U;
-    scene.AddLight(excludedPoint);
+    EXPECT_TRUE(scene.AddLight(excludedPoint));
 
     RenderLight includedPoint = excludedPoint;
     includedPoint.lightId = 6;
     includedPoint.layerMask = 0x00000001U;
-    scene.AddLight(includedPoint);
+    EXPECT_TRUE(scene.AddLight(includedPoint));
 
     RenderViewSnapshot view;
     view.cullingMask = 0x00000001U;
@@ -702,6 +712,248 @@ TEST(RenderSceneValidation,
     EXPECT_FLOAT_EQ(2.0F, lights.GetMainLight().intensity);
     EXPECT_EQ(1U, lights.GetPointLightCount());
     EXPECT_EQ(0U, lights.GetPointShadowRequestCount());
+}
+
+TEST(RenderSceneValidation,
+     NormalizesRetainedLightIntensityAndPreservesAuthoringMetadata)
+{
+    RegistryFixture resources;
+    RenderLightSnapshot snapshot;
+    snapshot.lightId = 88;
+    snapshot.source = {
+        .sceneRuntimeId = 1,
+        .entitySlot = 88,
+        .entityGeneration = 0,
+    };
+    snapshot.type = RenderLightType::Point;
+    snapshot.intensityUnit = RenderLightIntensityUnit::Lumen;
+    snapshot.intensity = 12.5663706144F;
+    snapshot.colorTemperatureKelvin = 5000.0F;
+
+    RenderSceneMutationAccumulator accumulator;
+    accumulator.Begin(0, true);
+    ASSERT_TRUE(accumulator.UpsertLight(snapshot, true));
+    accumulator.UpsertSky({});
+    accumulator.UpsertEnvironment({});
+    RenderSceneDatabase database;
+    ASSERT_TRUE(database.Apply(accumulator.Build(1)).IsApplied());
+
+    const std::unique_ptr<const RenderFramePacketV5> frame =
+        MakeFramePacketV5(1, 1);
+    ASSERT_NE(frame, nullptr);
+    RenderScene scene;
+    ASSERT_TRUE(scene.ApplyFrameV5(*frame, database, resources.registry).IsApplied());
+
+    ASSERT_EQ(scene.GetLightCount(), 1U);
+    const RenderLight& light = scene.GetLight(0);
+    EXPECT_NEAR(light.intensity, 1.0F, 1.0e-5F);
+    EXPECT_EQ(light.intensityUnit, RenderLightIntensityUnit::Lumen);
+    EXPECT_EQ(light.canonicalIntensityUnit,
+              RenderLightIntensityUnit::Candela);
+    ASSERT_TRUE(light.colorTemperatureKelvin.has_value());
+    EXPECT_FLOAT_EQ(*light.colorTemperatureKelvin, 5000.0F);
+}
+
+TEST(RenderSceneValidation,
+     RejectsInvalidPhotometricLightAtMutationBoundary)
+{
+    RenderLightSnapshot snapshot;
+    snapshot.lightId = 89;
+    snapshot.source = {
+        .sceneRuntimeId = 1,
+        .entitySlot = 89,
+        .entityGeneration = 0,
+    };
+    snapshot.type = RenderLightType::Directional;
+    snapshot.intensityUnit = RenderLightIntensityUnit::Lumen;
+
+    RenderSceneMutationAccumulator accumulator;
+    accumulator.Begin(0, true);
+    EXPECT_FALSE(accumulator.UpsertLight(snapshot, true));
+    EXPECT_TRUE(accumulator.Build(1).lights.empty());
+}
+
+TEST(RenderSceneValidation,
+     LightManagerCollectsExactlyTheImmutableLightingPlanSelection)
+{
+    LightingFramePlanRequest request;
+    request.frameIdentity = {
+        .frameSequence = 1,
+        .sceneRevision = 2,
+        .surfaceGeneration = 3,
+        .configurationRevision = 4,
+    };
+    request.viewIdentity = {
+        .sceneRuntimeId = 5,
+        .cameraEntityPacked = 6,
+    };
+    request.sceneLightStateHash = 7;
+    request.lightingConfigurationRevision = 8;
+    request.qualityRevision = 9;
+    request.pointLightCapacity = 3;
+    request.spotLightCapacity = 3;
+    request.lightCandidates = {
+        {.lightId = 40,
+         .type = RenderLightType::Directional,
+         .priority = 20,
+         .direction = {0.0F, -1.0F, 0.0F},
+         .color = {1.0F, 0.9F, 0.8F},
+         .normalizedIntensity = 120000.0F,
+         .castsShadows = true},
+        {.lightId = 41,
+         .type = RenderLightType::Directional,
+         .priority = 10,
+         .normalizedIntensity = 30000.0F},
+        {.lightId = 1,
+         .type = RenderLightType::Point,
+         .priority = 5,
+         .position = {1.0F, 0.0F, 0.0F},
+         .normalizedIntensity = 4.0F,
+         .range = 2.0F,
+         .castsShadows = true},
+        {.lightId = 2,
+         .type = RenderLightType::Spot,
+         .priority = 9,
+         .position = {2.0F, 0.0F, 0.0F},
+         .normalizedIntensity = 3.0F,
+         .range = 3.0F,
+         .innerConeRadians = 0.25F,
+         .outerConeRadians = 0.50F,
+         .castsShadows = true},
+        {.lightId = 3,
+         .type = RenderLightType::Point,
+         .priority = 6,
+         .position = {3.0F, 0.0F, 0.0F},
+         .normalizedIntensity = 2.0F,
+         .range = 4.0F},
+    };
+
+    const LightingFramePlanBuildResult built =
+        LightingFramePlanBuilder{}.Build(request);
+    ASSERT_TRUE(built.Succeeded()) << built.diagnostic;
+    ASSERT_TRUE(built.plan.IsValid());
+
+    LightManager lights;
+    ASSERT_TRUE(lights.CollectLights(built.plan));
+    // CPU collection only stages immutable data.  A plan becomes bindable
+    // after LightManager maps and fully replaces all GPU upload buffers.
+    EXPECT_FALSE(lights.IsLightingPlanBound());
+    EXPECT_EQ(lights.GetLightingPlanCollectionCode(),
+              LightingPlanCollectionCode::Staged);
+    EXPECT_EQ(lights.GetLightingPlanIdentity(), 0U);
+    EXPECT_EQ(lights.GetPrimaryDirectionalLightId(), 40U);
+    EXPECT_TRUE(lights.HasPrimaryDirectionalShadowRequest());
+    EXPECT_FLOAT_EQ(lights.GetMainLight().intensity, 120000.0F);
+    ASSERT_EQ(lights.GetPointLights().size(), 2U);
+    EXPECT_FLOAT_EQ(lights.GetPointLights()[0].position.x, 3.0F);
+    EXPECT_FLOAT_EQ(lights.GetPointLights()[1].position.x, 1.0F);
+    EXPECT_EQ(lights.GetSpotLightCount(), 1U);
+    EXPECT_EQ(lights.GetPointShadowRequestCount(), 1U);
+    EXPECT_EQ(lights.GetSpotShadowRequestCount(), 1U);
+    EXPECT_EQ(lights.GetPlanLocalLightRequestedCount(), 3U);
+    EXPECT_EQ(lights.GetPlanLocalLightAdmittedCount(), 3U);
+    EXPECT_EQ(lights.GetPlanLocalLightOverflowCount(), 0U);
+}
+
+TEST(RenderSceneValidation,
+     LightManagerUsesPlanAggregateAndPerTypeOverflowEvidence)
+{
+    LightingFramePlanRequest request;
+    request.frameIdentity = {
+        .frameSequence = 1,
+        .sceneRevision = 2,
+        .surfaceGeneration = 3,
+        .configurationRevision = 4,
+    };
+    request.viewIdentity = {
+        .sceneRuntimeId = 5,
+        .cameraEntityPacked = 6,
+    };
+    request.sceneLightStateHash = 7;
+    request.lightingConfigurationRevision = 8;
+    request.qualityRevision = 9;
+    request.pointLightCapacity = 1;
+    request.spotLightCapacity = 1;
+    request.allowLocalLightTruncation = true;
+    request.lightCandidates = {
+        {.lightId = 1,
+         .type = RenderLightType::Point,
+         .priority = 1,
+         .normalizedIntensity = 1.0F,
+         .range = 1.0F},
+        {.lightId = 2,
+         .type = RenderLightType::Spot,
+         .priority = 2,
+         .normalizedIntensity = 1.0F,
+         .range = 1.0F,
+         .innerConeRadians = 0.25F,
+         .outerConeRadians = 0.50F},
+        {.lightId = 3,
+         .type = RenderLightType::Point,
+         .priority = 0,
+         .normalizedIntensity = 1.0F,
+         .range = 1.0F},
+    };
+
+    const LightingFramePlanBuildResult built =
+        LightingFramePlanBuilder{}.Build(request);
+    ASSERT_TRUE(built.Succeeded()) << built.diagnostic;
+    ASSERT_TRUE(built.plan.GetCapacityEvidence().overflowed);
+
+    LightManager lights;
+    ASSERT_TRUE(lights.CollectLights(built.plan));
+    EXPECT_EQ(lights.GetPlanLocalLightRequestedCount(), 3U);
+    EXPECT_EQ(lights.GetPlanLocalLightAdmittedCount(), 2U);
+    EXPECT_EQ(lights.GetPlanLocalLightOverflowCount(), 1U);
+    EXPECT_EQ(lights.GetPointLightCount(), 1U);
+    EXPECT_EQ(lights.GetSpotLightCount(), 1U);
+    EXPECT_EQ(lights.GetPointLightRequestedCount(), 2U);
+    EXPECT_EQ(lights.GetSpotLightRequestedCount(), 1U);
+    EXPECT_EQ(lights.GetPointLightOverflowCount(), 1U);
+    EXPECT_EQ(lights.GetSpotLightOverflowCount(), 0U);
+}
+
+TEST(RenderSceneValidation,
+     LightManagerFailsClosedWhenLightingPlanCannotFitPerTypeBuffers)
+{
+    LightingFramePlanRequest request;
+    request.frameIdentity = {
+        .frameSequence = 1,
+        .sceneRevision = 2,
+        .surfaceGeneration = 3,
+        .configurationRevision = 4,
+    };
+    request.viewIdentity = {
+        .sceneRuntimeId = 5,
+        .cameraEntityPacked = 6,
+    };
+    request.sceneLightStateHash = 7;
+    request.lightingConfigurationRevision = 8;
+    request.qualityRevision = 9;
+    request.pointLightCapacity = LightManager::MaxPointLights + 1U;
+    request.spotLightCapacity = 1;
+    request.lightCandidates.reserve(request.pointLightCapacity);
+    for (uint32 index = 0; index < request.pointLightCapacity; ++index)
+    {
+        request.lightCandidates.push_back(
+            {.lightId = static_cast<uint64>(index) + 1U,
+             .type = RenderLightType::Point,
+             .position = {static_cast<float32>(index), 0.0F, 0.0F},
+             .normalizedIntensity = 1.0F,
+             .range = 1.0F});
+    }
+
+    const LightingFramePlanBuildResult built =
+        LightingFramePlanBuilder{}.Build(request);
+    ASSERT_TRUE(built.Succeeded()) << built.diagnostic;
+
+    LightManager lights;
+    EXPECT_FALSE(lights.CollectLights(built.plan));
+    EXPECT_EQ(lights.GetLightingPlanCollectionCode(),
+              LightingPlanCollectionCode::PerTypeCapacityExceeded);
+    EXPECT_FALSE(lights.IsLightingPlanBound());
+    EXPECT_EQ(lights.GetPointLightCount(), 0U);
+    EXPECT_EQ(lights.GetPlanLocalLightAdmittedCount(), 0U);
 }
 
 TEST(RenderSceneValidation,

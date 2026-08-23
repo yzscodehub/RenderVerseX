@@ -3,6 +3,7 @@
 #include "Render/Features/RenderFeatureRegistry.h"
 #include "Render/Features/RenderGraphBlackboard.h"
 #include "Render/Graph/RenderGraph.h"
+#include "Render/Lighting/LightingFramePlan.h"
 #include "Render/Passes/OpaquePass.h"
 #include "RHI/RHICommandContext.h"
 
@@ -512,6 +513,26 @@ namespace
         return context;
     }
 
+    [[nodiscard]] std::shared_ptr<const LightingFramePlan>
+    MakeValidLightingPlan()
+    {
+        LightingFramePlanRequest request;
+        request.frameIdentity = RenderFrameIdentity{1, 2, 3, 4};
+        request.viewIdentity = RenderViewIdentity{5, 6, 0, ViewRole::Main};
+        request.sceneLightStateHash = 7;
+        request.lightingConfigurationRevision = 8;
+        request.qualityRevision = 9;
+        request.quality = RenderQualityTier::Medium;
+        request.pointLightCapacity = 1;
+        request.spotLightCapacity = 1;
+
+        const LightingFramePlanBuildResult result =
+            LightingFramePlanBuilder{}.Build(request);
+        return result.Succeeded()
+            ? std::make_shared<const LightingFramePlan>(result.plan)
+            : nullptr;
+    }
+
     [[nodiscard]] std::unique_ptr<FakeRenderFeature> MakeFeature(
         RenderFeatureDescriptor descriptor,
         RenderFeatureReadiness readiness = MakeReadyReadiness())
@@ -590,6 +611,83 @@ namespace
             SceneTextures::GBuffer3Contract);
         textures.materialTable = MakeBufferHandle(provenance, 8);
         return textures;
+    }
+
+    [[nodiscard]] LightingOutputs MakeLightingOutputs(
+        const RenderGraphBlackboardProvenance& provenance,
+        uint64 lightingPlanIdentity)
+    {
+        LightingOutputs outputs;
+        outputs.provenance = provenance;
+        outputs.lightingPlanIdentity = lightingPlanIdentity;
+        outputs.hdrSceneColor = MakeTextureHandle(provenance, 1);
+        outputs.clusteredLights = MakeBufferHandle(provenance, 2);
+        return outputs;
+    }
+
+    TEST(RenderFeatureValidation,
+         DeferredLightingRequiresValidLightingPlanBeforePipelinePreparation)
+    {
+        RenderGraph graph;
+        DeferredLightingFeatureAdapter adapter(nullptr, nullptr);
+        adapter.SetRecordContext(MakeValidRecordContext(graph));
+
+        RenderFeatureContext context = MakeValidContext(
+            RenderPipelineRecipe::DeferredQuality);
+        context.resolvedRecipe = RenderPipelineRecipe::DeferredQuality;
+        adapter.Prepare(context);
+        EXPECT_FALSE(adapter.ResolveReadiness().inputsReady);
+        EXPECT_FALSE(adapter.ResolveReadiness().pipelineReady);
+        EXPECT_EQ(adapter.ResolveReadiness().diagnostic,
+                  "Deferred lighting requires a valid LightingFramePlan for the current frame and view");
+
+        RenderPassRecordContext planned = MakeValidRecordContext(graph);
+        planned.lightingPlan = MakeValidLightingPlan();
+        ASSERT_NE(nullptr, planned.lightingPlan);
+        adapter.SetRecordContext(std::move(planned));
+        adapter.Prepare(context);
+        EXPECT_FALSE(adapter.ResolveReadiness().inputsReady);
+        EXPECT_EQ(adapter.ResolveReadiness().diagnostic,
+                  "Deferred lighting composition dependencies are unavailable");
+    }
+
+    TEST(RenderFeatureValidation,
+         LightingOutputsV2RejectsZeroAndValidatesDeferredPlanIdentity)
+    {
+        const std::shared_ptr<const LightingFramePlan> plan =
+            MakeValidLightingPlan();
+        ASSERT_NE(nullptr, plan);
+        ASSERT_NE(0U, plan->GetIdentityHash());
+        EXPECT_EQ(2U, LightingOutputs::SchemaVersion);
+
+        DeferredLightingFeatureAdapter producer(nullptr, nullptr);
+        DeferredForwardSpecialFeatureAdapter consumer(nullptr, nullptr);
+        const RenderGraphBlackboardProvenance provenance = MakeProvenance();
+
+        RenderGraphBlackboard zeroIdentityBlackboard(provenance);
+        EXPECT_EQ(zeroIdentityBlackboard.Publish(
+                      BuiltinRenderFeatureIds::DeferredLighting,
+                      producer.Describe(),
+                      MakeLightingOutputs(provenance, 0)),
+                  RenderGraphBlackboardCode::StaleGraphResource);
+
+        RenderGraphBlackboard blackboard(provenance);
+        ASSERT_EQ(blackboard.Publish(
+                      BuiltinRenderFeatureIds::DeferredLighting,
+                      producer.Describe(),
+                      MakeLightingOutputs(provenance, plan->GetIdentityHash())),
+                  RenderGraphBlackboardCode::Success);
+
+        RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
+        const LightingOutputs* const outputs = blackboard.Require<LightingOutputs>(
+            BuiltinRenderFeatureIds::DeferredForwardSpecialChain,
+            consumer.Describe(),
+            &code);
+        ASSERT_EQ(RenderGraphBlackboardCode::Success, code);
+        ASSERT_NE(nullptr, outputs);
+        EXPECT_TRUE(outputs->IsCompatibleWithLightingPlan(plan->GetIdentityHash()));
+        EXPECT_FALSE(outputs->IsCompatibleWithLightingPlan(
+            plan->GetIdentityHash() + 1U));
     }
 
     TEST(RenderFeatureValidation,
@@ -2003,6 +2101,23 @@ namespace
         candidate.quality = RenderQualityTier::Medium;
         candidate.profileHash = ComputeRenderPipelineProfileHash(
             candidate.resolvedRecipe, candidate.quality);
+        candidate.lighting.lightingPlanIdentity = 0x105ULL;
+        candidate.lighting.sceneLightStateHash = 0x206ULL;
+        candidate.lighting.primaryDirectionalLightId = 0x307ULL;
+        candidate.lighting.pointLightRequestedCount = 3;
+        candidate.lighting.pointLightAdmittedCount = 2;
+        candidate.lighting.pointLightCapacity = 2;
+        candidate.lighting.pointLightOverflowCount = 1;
+        candidate.lighting.spotLightRequestedCount = 2;
+        candidate.lighting.spotLightAdmittedCount = 2;
+        candidate.lighting.spotLightCapacity = 4;
+        candidate.lighting.spotLightOverflowCount = 0;
+        candidate.lighting.csmRequested = true;
+        candidate.lighting.csmInputsReady = true;
+        candidate.lighting.csmExecutionReady = true;
+        candidate.lighting.iblRequested = true;
+        candidate.lighting.iblInputsReady = true;
+        candidate.lighting.iblExecutionReady = true;
         RenderFeatureExecutionReceipt executedFeature;
         executedFeature.featureId = RenderFeatureId{1};
         executedFeature.featureSchemaVersion = 1;
@@ -2020,6 +2135,14 @@ namespace
         presented.succeeded = true;
         EXPECT_TRUE(presented.IsStructurallyValid());
         EXPECT_TRUE(presented.succeeded);
+
+        RenderExecutionReceipt rejectedPresentation = presented;
+        rejectedPresentation.presented = false;
+        rejectedPresentation.succeeded = false;
+        rejectedPresentation.diagnostic =
+            "Presented frame failed temporal history qualification";
+        EXPECT_TRUE(rejectedPresentation.IsStructurallyValid());
+        EXPECT_FALSE(rejectedPresentation.succeeded);
 
         RenderExecutionReceipt forgedSuccess = candidate;
         forgedSuccess.succeeded = true;
@@ -2042,9 +2165,79 @@ namespace
         invalidPassCounts.features[0].executedGraphPassCount = 2;
         EXPECT_FALSE(invalidPassCounts.IsStructurallyValid());
 
+        RenderExecutionReceipt missingLightingIdentity = candidate;
+        missingLightingIdentity.lighting.lightingPlanIdentity = 0;
+        EXPECT_FALSE(missingLightingIdentity.IsStructurallyValid());
+
+        RenderExecutionReceipt presentedWithoutLighting = candidate;
+        presentedWithoutLighting.lighting = {};
+        presentedWithoutLighting.presented = true;
+        presentedWithoutLighting.succeeded = true;
+        EXPECT_FALSE(presentedWithoutLighting.IsStructurallyValid());
+
+        RenderExecutionReceipt executedWithoutLighting = candidate;
+        executedWithoutLighting.lighting = {};
+        EXPECT_FALSE(executedWithoutLighting.IsStructurallyValid());
+
+        RenderExecutionReceipt forgedLightingOverflow = candidate;
+        ++forgedLightingOverflow.lighting.pointLightOverflowCount;
+        EXPECT_FALSE(forgedLightingOverflow.IsStructurallyValid());
+
+        RenderExecutionReceipt forgedLightingReadiness = candidate;
+        forgedLightingReadiness.lighting.iblRequested = false;
+        EXPECT_FALSE(forgedLightingReadiness.IsStructurallyValid());
+
+        RenderExecutionReceipt executedWithoutLightingInputs = candidate;
+        executedWithoutLightingInputs.lighting.csmInputsReady = false;
+        EXPECT_FALSE(executedWithoutLightingInputs.IsStructurallyValid());
+
+        RenderExecutionReceipt legacyV2 = candidate;
+        legacyV2.schemaVersion = 2;
+        legacyV2.lighting = {};
+        EXPECT_TRUE(legacyV2.IsStructurallyValid());
+        legacyV2.lighting = candidate.lighting;
+        EXPECT_FALSE(legacyV2.IsStructurallyValid());
+
+        RenderExecutionReceipt unreleasedV3 = candidate;
+        unreleasedV3.schemaVersion = 3;
+        EXPECT_FALSE(unreleasedV3.IsStructurallyValid());
+
+        RenderExecutionReceipt legacyV1 = candidate;
+        legacyV1.schemaVersion = 1;
+        legacyV1.deferredOpaque = {};
+        legacyV1.lighting = {};
+        EXPECT_TRUE(legacyV1.IsStructurallyValid());
+        legacyV1.lighting = candidate.lighting;
+        EXPECT_FALSE(legacyV1.IsStructurallyValid());
+
         RenderExecutionReceipt emptySuccessful = candidate;
         emptySuccessful.features.clear();
         EXPECT_FALSE(emptySuccessful.IsStructurallyValid());
+    }
+
+    TEST(RenderFeatureValidation,
+         LightingSurfaceEvidenceRejectsDuplicateRouteReceipts)
+    {
+        RenderPassRecordResults results;
+        RenderLightingSurfaceExecutionEvidence first;
+        first.lightingPlanIdentity = 7;
+        first.route = RenderLightingSurfaceRoute::DeferredOpaque;
+        first.frozenBufferMask = 0x3fu;
+        first.workCount = 11;
+        first.executed = true;
+        ASSERT_TRUE(results.RecordLightingSurfaceExecution(first));
+
+        RenderLightingSurfaceExecutionEvidence replacement = first;
+        replacement.workCount = 13;
+        EXPECT_FALSE(results.RecordLightingSurfaceExecution(replacement));
+
+        const size_t deferredIndex = static_cast<size_t>(
+            RenderLightingSurfaceRoute::DeferredOpaque);
+        EXPECT_EQ(11U, results.lightingSurfaceEvidence[deferredIndex].workCount);
+
+        RenderLightingSurfaceExecutionEvidence separateRoute = first;
+        separateRoute.route = RenderLightingSurfaceRoute::Transparent;
+        EXPECT_TRUE(results.RecordLightingSurfaceExecution(separateRoute));
     }
 
     TEST(RenderFeatureValidation,

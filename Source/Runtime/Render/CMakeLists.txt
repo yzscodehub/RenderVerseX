@@ -157,6 +157,7 @@ target_sources(RVX_RenderFoundation PRIVATE
     Private/Material/MaterialSystem.cpp
     Private/Lighting/LightManager.cpp
     Private/Lighting/ClusteredLighting.cpp
+    Private/Lighting/LightingFramePlan.cpp
     Private/GPUDriven/GPUCulling.cpp
 )
 

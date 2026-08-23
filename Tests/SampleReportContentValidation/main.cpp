@@ -153,6 +153,11 @@ namespace
         bool requireNoFallbackReasons = false;
         bool forbidRenderFeatureFallbacks = false;
         bool requireDeferredOpaqueExecution = false;
+        bool requireLightingPlan = false;
+        bool requireCSMRequested = false;
+        bool requireCSMExecutionReady = false;
+        bool requireIBLRequested = false;
+        bool requireIBLExecutionReady = false;
         bool requireReadinessWait = false;
         bool requireGPUDrivenExecution = false;
         bool requireDirectExecution = false;
@@ -943,6 +948,26 @@ namespace
             else if (arg == "--require-deferred-opaque-execution")
             {
                 options.requireDeferredOpaqueExecution = true;
+            }
+            else if (arg == "--require-lighting-plan")
+            {
+                options.requireLightingPlan = true;
+            }
+            else if (arg == "--require-csm-requested")
+            {
+                options.requireCSMRequested = true;
+            }
+            else if (arg == "--require-csm-execution-ready")
+            {
+                options.requireCSMExecutionReady = true;
+            }
+            else if (arg == "--require-ibl-requested")
+            {
+                options.requireIBLRequested = true;
+            }
+            else if (arg == "--require-ibl-execution-ready")
+            {
+                options.requireIBLExecutionReady = true;
             }
             else if (arg == "--require-phase")
             {
@@ -2449,9 +2474,13 @@ namespace
             "diagnostic",
             "features",
         };
-        if (schemaVersion == 2)
+        if (schemaVersion == 2 || schemaVersion == 4)
         {
             expectedFields.insert("deferredOpaque");
+        }
+        if (schemaVersion == 4)
+        {
+            expectedFields.insert("lighting");
         }
         passed &= ValidateExactObjectFields(
             execution, expectedFields, "Render execution receipt v21");
@@ -2492,14 +2521,15 @@ namespace
                                     "Render execution receipt v21");
         passed &= ReadStringField(execution, "diagnostic", diagnostic,
                                   "Render execution receipt v21");
-        if ((schemaVersion != 1 && schemaVersion != 2) || !available ||
+        if ((schemaVersion != 1 && schemaVersion != 2 &&
+             schemaVersion != 4) || !available ||
             !graphComposed ||
             !executionSucceeded || !presented || !succeeded)
         {
             std::cerr << "Render execution receipt v21 is not a successful presented execution\n";
             passed = false;
         }
-        if (schemaVersion == 2)
+        if (schemaVersion == 2 || schemaVersion == 4)
         {
             const auto deferredOpaque = execution.find("deferredOpaque");
             if (deferredOpaque == execution.end() ||
@@ -2566,6 +2596,143 @@ namespace
         {
             std::cerr << "Render execution receipt v21 predates required "
                       << "DeferredOpaque evidence\n";
+            passed = false;
+        }
+        if (schemaVersion == 4)
+        {
+            const auto lighting = execution.find("lighting");
+            if (lighting == execution.end() || !lighting->is_object())
+            {
+                std::cerr << "Render execution receipt v4 missing lighting evidence\n";
+                passed = false;
+            }
+            else
+            {
+                passed &= ValidateExactObjectFields(
+                    *lighting,
+                    {"lightingPlanIdentity", "sceneLightStateHash",
+                     "primaryDirectionalLightId", "pointLightRequestedCount",
+                     "pointLightAdmittedCount", "pointLightCapacity",
+                     "pointLightOverflowCount", "spotLightRequestedCount",
+                     "spotLightAdmittedCount", "spotLightCapacity",
+                     "spotLightOverflowCount", "csmRequested",
+                     "csmInputsReady", "csmExecutionReady", "iblRequested",
+                     "iblInputsReady", "iblExecutionReady"},
+                    "Render lighting execution receipt v4");
+
+                uint64_t lightingPlanIdentity = 0;
+                uint64_t sceneLightStateHash = 0;
+                uint64_t primaryDirectionalLightId = 0;
+                uint64_t pointLightRequestedCount = 0;
+                uint64_t pointLightAdmittedCount = 0;
+                uint64_t pointLightCapacity = 0;
+                uint64_t pointLightOverflowCount = 0;
+                uint64_t spotLightRequestedCount = 0;
+                uint64_t spotLightAdmittedCount = 0;
+                uint64_t spotLightCapacity = 0;
+                uint64_t spotLightOverflowCount = 0;
+                bool csmRequested = false;
+                bool csmInputsReady = false;
+                bool csmExecutionReady = false;
+                bool iblRequested = false;
+                bool iblInputsReady = false;
+                bool iblExecutionReady = false;
+                constexpr const char* context =
+                    "Render lighting execution receipt v4";
+                passed &= ReadUnsignedField(*lighting, "lightingPlanIdentity",
+                                            lightingPlanIdentity, context);
+                passed &= ReadUnsignedField(*lighting, "sceneLightStateHash",
+                                            sceneLightStateHash, context);
+                passed &= ReadUnsignedField(*lighting,
+                                            "primaryDirectionalLightId",
+                                            primaryDirectionalLightId, context);
+                passed &= ReadUnsignedField(*lighting,
+                                            "pointLightRequestedCount",
+                                            pointLightRequestedCount, context);
+                passed &= ReadUnsignedField(*lighting,
+                                            "pointLightAdmittedCount",
+                                            pointLightAdmittedCount, context);
+                passed &= ReadUnsignedField(*lighting, "pointLightCapacity",
+                                            pointLightCapacity, context);
+                passed &= ReadUnsignedField(*lighting,
+                                            "pointLightOverflowCount",
+                                            pointLightOverflowCount, context);
+                passed &= ReadUnsignedField(*lighting,
+                                            "spotLightRequestedCount",
+                                            spotLightRequestedCount, context);
+                passed &= ReadUnsignedField(*lighting,
+                                            "spotLightAdmittedCount",
+                                            spotLightAdmittedCount, context);
+                passed &= ReadUnsignedField(*lighting, "spotLightCapacity",
+                                            spotLightCapacity, context);
+                passed &= ReadUnsignedField(*lighting,
+                                            "spotLightOverflowCount",
+                                            spotLightOverflowCount, context);
+                passed &= ReadBooleanField(*lighting, "csmRequested",
+                                           csmRequested, context);
+                passed &= ReadBooleanField(*lighting, "csmInputsReady",
+                                           csmInputsReady, context);
+                passed &= ReadBooleanField(*lighting, "csmExecutionReady",
+                                           csmExecutionReady, context);
+                passed &= ReadBooleanField(*lighting, "iblRequested",
+                                           iblRequested, context);
+                passed &= ReadBooleanField(*lighting, "iblInputsReady",
+                                           iblInputsReady, context);
+                passed &= ReadBooleanField(*lighting, "iblExecutionReady",
+                                           iblExecutionReady, context);
+
+                const auto countsAreConsistent =
+                    [](uint64_t requested,
+                       uint64_t admitted,
+                       uint64_t capacity,
+                       uint64_t overflow)
+                {
+                    return requested <= std::numeric_limits<uint32_t>::max() &&
+                           admitted <= std::numeric_limits<uint32_t>::max() &&
+                           capacity <= std::numeric_limits<uint32_t>::max() &&
+                           overflow <= std::numeric_limits<uint32_t>::max() &&
+                           admitted <= requested && admitted <= capacity &&
+                           overflow == requested - admitted;
+                };
+                if (lightingPlanIdentity == 0 || sceneLightStateHash == 0 ||
+                    !countsAreConsistent(
+                        pointLightRequestedCount, pointLightAdmittedCount,
+                        pointLightCapacity, pointLightOverflowCount) ||
+                    !countsAreConsistent(
+                        spotLightRequestedCount, spotLightAdmittedCount,
+                        spotLightCapacity, spotLightOverflowCount) ||
+                    (csmInputsReady && !csmRequested) ||
+                    (csmExecutionReady && !csmInputsReady) ||
+                    (iblInputsReady && !iblRequested) ||
+                    (iblExecutionReady && !iblInputsReady))
+                {
+                    std::cerr << "Render lighting execution receipt v4 is structurally invalid\n";
+                    passed = false;
+                }
+                if (options != nullptr &&
+                    ((options->requireLightingPlan &&
+                      lightingPlanIdentity == 0) ||
+                     (options->requireCSMRequested && !csmRequested) ||
+                     (options->requireCSMExecutionReady &&
+                      !csmExecutionReady) ||
+                     (options->requireIBLRequested && !iblRequested) ||
+                     (options->requireIBLExecutionReady &&
+                      !iblExecutionReady)))
+                {
+                    std::cerr << "Render lighting execution receipt v4 does not satisfy required lighting evidence\n";
+                    passed = false;
+                }
+                static_cast<void>(primaryDirectionalLightId);
+            }
+        }
+        else if (options != nullptr &&
+                 (options->requireLightingPlan ||
+                  options->requireCSMRequested ||
+                  options->requireCSMExecutionReady ||
+                  options->requireIBLRequested ||
+                  options->requireIBLExecutionReady))
+        {
+            std::cerr << "Render execution receipt predates required lighting evidence\n";
             passed = false;
         }
         if (!diagnostic.empty() || diagnostic.size() > 4096)
@@ -3964,6 +4131,28 @@ namespace
 
     bool RunScenarioSelfTest()
     {
+        char parserArg0[] = "SampleReportContentValidation";
+        char parserArg1[] = "--self-test";
+        char parserArg2[] = "--require-lighting-plan";
+        char parserArg3[] = "--require-csm-requested";
+        char parserArg4[] = "--require-csm-execution-ready";
+        char parserArg5[] = "--require-ibl-requested";
+        char parserArg6[] = "--require-ibl-execution-ready";
+        char* parserArguments[] = {
+            parserArg0, parserArg1, parserArg2, parserArg3,
+            parserArg4, parserArg5, parserArg6};
+        Options parsedLightingOptions;
+        if (!ParseOptions(7, parserArguments, parsedLightingOptions) ||
+            !parsedLightingOptions.selfTest ||
+            !parsedLightingOptions.requireLightingPlan ||
+            !parsedLightingOptions.requireCSMRequested ||
+            !parsedLightingOptions.requireCSMExecutionReady ||
+            !parsedLightingOptions.requireIBLRequested ||
+            !parsedLightingOptions.requireIBLExecutionReady)
+        {
+            return false;
+        }
+
         ScenarioMetricEqualityRequirement parsedRequirement;
         if (!ParseMetricEqualityRequirement("draw-count=4", parsedRequirement) ||
             parsedRequirement.name != "draw-count" ||
@@ -4460,7 +4649,7 @@ namespace
         schema21Report["visualContractReceipt"]
                       ["captureConfigurationRevision"] = 3;
         schema21Report["visualContractReceipt"]["renderExecutionReceipt"] = {
-            {"schemaVersion", 2},
+            {"schemaVersion", 4},
             {"available", true},
             {"graphComposed", true},
             {"executionSucceeded", true},
@@ -4485,6 +4674,23 @@ namespace
                                  {"status", "completed"},
                                  {"plannedPacketCount", 1},
                                  {"executedPacketCount", 1}}},
+            {"lighting", {{"lightingPlanIdentity", 101},
+                           {"sceneLightStateHash", 202},
+                           {"primaryDirectionalLightId", 303},
+                           {"pointLightRequestedCount", 3},
+                           {"pointLightAdmittedCount", 2},
+                           {"pointLightCapacity", 2},
+                           {"pointLightOverflowCount", 1},
+                           {"spotLightRequestedCount", 2},
+                           {"spotLightAdmittedCount", 2},
+                           {"spotLightCapacity", 4},
+                           {"spotLightOverflowCount", 0},
+                           {"csmRequested", true},
+                           {"csmInputsReady", true},
+                           {"csmExecutionReady", true},
+                           {"iblRequested", true},
+                           {"iblInputsReady", true},
+                           {"iblExecutionReady", true}}},
             {"diagnostic", ""},
             {"features",
              Json::array({{{"featureId", 1},
@@ -4512,6 +4718,96 @@ namespace
             std::string(40, 'e'), "win_x64_pr_debug"};
         if (!ValidateSampleReportV12Root(
                 schema21Report, expectedBuildIdentity))
+        {
+            return false;
+        }
+
+        // Execution receipt schemas one and two remain intentionally
+        // lighting-free.  The schema-v21 report envelope accepts both legacy
+        // receipt shapes so long as it does not require newer evidence.
+        Json schema2ExecutionReceipt = schema21Report;
+        schema2ExecutionReceipt["visualContractReceipt"]
+                               ["renderExecutionReceipt"]["schemaVersion"] = 2;
+        schema2ExecutionReceipt["visualContractReceipt"]
+                               ["renderExecutionReceipt"].erase("lighting");
+        if (!ValidateSampleReportV12Root(
+                schema2ExecutionReceipt, expectedBuildIdentity))
+        {
+            return false;
+        }
+        Json schema1ExecutionReceipt = schema2ExecutionReceipt;
+        schema1ExecutionReceipt["visualContractReceipt"]
+                               ["renderExecutionReceipt"]["schemaVersion"] = 1;
+        schema1ExecutionReceipt["visualContractReceipt"]
+                               ["renderExecutionReceipt"].erase(
+                                   "deferredOpaque");
+        if (!ValidateSampleReportV12Root(
+                schema1ExecutionReceipt, expectedBuildIdentity))
+        {
+            return false;
+        }
+
+        // Schema three was never published. Do not accept an otherwise
+        // well-formed receipt that claims its reserved version number.
+        Json unreleasedSchema3ExecutionReceipt = schema21Report;
+        unreleasedSchema3ExecutionReceipt["visualContractReceipt"]
+                                      ["renderExecutionReceipt"]["schemaVersion"] = 3;
+        if (ValidateSampleReportV12Root(
+                unreleasedSchema3ExecutionReceipt, expectedBuildIdentity))
+        {
+            return false;
+        }
+
+        Options strictLightingEvidence;
+        strictLightingEvidence.requireLightingPlan = true;
+        strictLightingEvidence.requireCSMRequested = true;
+        strictLightingEvidence.requireCSMExecutionReady = true;
+        strictLightingEvidence.requireIBLRequested = true;
+        strictLightingEvidence.requireIBLExecutionReady = true;
+        if (!ValidateSampleReportV12Root(
+                schema21Report,
+                expectedBuildIdentity,
+                &strictLightingEvidence))
+        {
+            return false;
+        }
+
+        Json missingRequiredCSM = schema21Report;
+        missingRequiredCSM["visualContractReceipt"]
+                          ["renderExecutionReceipt"]
+                          ["lighting"]["csmRequested"] = false;
+        Json missingReadyCSM = schema21Report;
+        missingReadyCSM["visualContractReceipt"]
+                       ["renderExecutionReceipt"]
+                       ["lighting"]["csmExecutionReady"] = false;
+        Json missingRequiredIBL = schema21Report;
+        missingRequiredIBL["visualContractReceipt"]
+                          ["renderExecutionReceipt"]
+                          ["lighting"]["iblRequested"] = false;
+        Json missingReadyIBL = schema21Report;
+        missingReadyIBL["visualContractReceipt"]
+                       ["renderExecutionReceipt"]
+                       ["lighting"]["iblExecutionReady"] = false;
+        if (ValidateSampleReportV12Root(
+                schema2ExecutionReceipt,
+                expectedBuildIdentity,
+                &strictLightingEvidence) ||
+            ValidateSampleReportV12Root(
+                missingRequiredCSM,
+                expectedBuildIdentity,
+                &strictLightingEvidence) ||
+            ValidateSampleReportV12Root(
+                missingReadyCSM,
+                expectedBuildIdentity,
+                &strictLightingEvidence) ||
+            ValidateSampleReportV12Root(
+                missingRequiredIBL,
+                expectedBuildIdentity,
+                &strictLightingEvidence) ||
+            ValidateSampleReportV12Root(
+                missingReadyIBL,
+                expectedBuildIdentity,
+                &strictLightingEvidence))
         {
             return false;
         }
@@ -4601,6 +4897,29 @@ namespace
         missingDeferredOpaqueEvidence["visualContractReceipt"]
                                      ["renderExecutionReceipt"].erase(
                                          "deferredOpaque");
+        Json missingLightingEvidence = schema21Report;
+        missingLightingEvidence["visualContractReceipt"]
+                              ["renderExecutionReceipt"].erase("lighting");
+        Json zeroLightingPlanIdentity = schema21Report;
+        zeroLightingPlanIdentity["visualContractReceipt"]
+                                ["renderExecutionReceipt"]
+                                ["lighting"]["lightingPlanIdentity"] = 0;
+        Json invalidLightingOverflow = schema21Report;
+        invalidLightingOverflow["visualContractReceipt"]
+                               ["renderExecutionReceipt"]
+                               ["lighting"]["pointLightOverflowCount"] = 2;
+        Json invalidLightingReadiness = schema21Report;
+        invalidLightingReadiness["visualContractReceipt"]
+                                ["renderExecutionReceipt"]
+                                ["lighting"]["iblRequested"] = false;
+        Json csmExecutedWithoutInputs = schema21Report;
+        csmExecutedWithoutInputs["visualContractReceipt"]
+                                ["renderExecutionReceipt"]
+                                ["lighting"]["csmInputsReady"] = false;
+        Json iblExecutedWithoutInputs = schema21Report;
+        iblExecutedWithoutInputs["visualContractReceipt"]
+                                ["renderExecutionReceipt"]
+                                ["lighting"]["iblInputsReady"] = false;
         Json executionNotPresented = schema21Report;
         executionNotPresented["visualContractReceipt"]
                              ["renderExecutionReceipt"]["presented"] = false;
@@ -4698,6 +5017,12 @@ namespace
             Json::array();
         if (!expectInvalidSchema21(std::move(missingExecutionReceipt)) ||
             !expectInvalidSchema21(std::move(missingDeferredOpaqueEvidence)) ||
+            !expectInvalidSchema21(std::move(missingLightingEvidence)) ||
+            !expectInvalidSchema21(std::move(zeroLightingPlanIdentity)) ||
+            !expectInvalidSchema21(std::move(invalidLightingOverflow)) ||
+            !expectInvalidSchema21(std::move(invalidLightingReadiness)) ||
+            !expectInvalidSchema21(std::move(csmExecutedWithoutInputs)) ||
+            !expectInvalidSchema21(std::move(iblExecutedWithoutInputs)) ||
             !expectInvalidSchema21(std::move(executionNotPresented)) ||
             !expectInvalidSchema21(std::move(executionUnavailable)) ||
             !expectInvalidSchema21(std::move(graphNotComposed)) ||
@@ -5051,6 +5376,11 @@ namespace
             << "Deferred/native receipt gates:\n"
             << "  --require-render-pipeline <forward-plus|deferred|hybrid-rt>\n"
             << "  --require-deferred-opaque-execution\n"
+            << "  --require-lighting-plan\n"
+            << "  --require-csm-requested\n"
+            << "  --require-csm-execution-ready\n"
+            << "  --require-ibl-requested\n"
+            << "  --require-ibl-execution-ready\n"
             << "  --require-render-feature-executed <feature-id>\n"
             << "  --forbid-fallback-reasons\n"
             << "  --forbid-render-feature-fallbacks\n";

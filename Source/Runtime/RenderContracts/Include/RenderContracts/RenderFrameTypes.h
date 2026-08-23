@@ -14,6 +14,7 @@
 #include "RenderContracts/RenderPipelineProfile.h"
 
 #include <limits>
+#include <optional>
 #include <span>
 #include <type_traits>
 #include <vector>
@@ -25,6 +26,51 @@ namespace RVX
         Directional = 0,
         Point = 1,
         Spot = 2
+    };
+
+    /**
+     * @brief Authoring unit carried by RenderLightSnapshot::intensity.
+     *
+     * Unspecified is a construction sentinel only. It is rejected at the
+     * extraction, mutation, and RenderScene boundaries so unitless lights
+     * cannot enter a runtime lighting plan.
+     */
+    enum class RenderLightIntensityUnit : uint8
+    {
+        Unspecified = 0,
+        Lux = 1,
+        Candela = 2,
+        Lumen = 3,
+    };
+
+    enum class RenderLightCanonicalizationCode : uint8
+    {
+        Success = 0,
+        InvalidLightType,
+        UnspecifiedIntensityUnit,
+        InvalidIntensityUnit,
+        InvalidIntensity,
+        IncompatibleIntensityUnit,
+        InvalidSpotCone,
+        InvalidColorTemperature,
+        IntensityOverflow,
+    };
+
+    /** @brief Canonical photometric result consumed by LightingFramePlan. */
+    struct RenderLightCanonicalizationResult
+    {
+        RenderLightCanonicalizationCode code =
+            RenderLightCanonicalizationCode::InvalidLightType;
+        /** Directional lights canonicalize to Lux; local lights to Candela. */
+        RenderLightIntensityUnit canonicalUnit = RenderLightIntensityUnit::Lux;
+        float32 canonicalIntensity = 0.0f;
+        /** Validated, but not color-transformed, authoring temperature. */
+        std::optional<float32> colorTemperatureKelvin{};
+
+        [[nodiscard]] bool Succeeded() const noexcept
+        {
+            return code == RenderLightCanonicalizationCode::Success;
+        }
     };
 
     enum class RenderSkyMode : uint8
@@ -424,7 +470,22 @@ namespace RVX
         /** @brief View-layer membership used during lighting/shadow selection. */
         uint32 layerMask = ~0U;
         bool castsShadows = false;
+        /** Explicit authoring unit for intensity; Unspecified is rejected. */
+        RenderLightIntensityUnit intensityUnit =
+            RenderLightIntensityUnit::Unspecified;
+        /** Optional blackbody authoring temperature in the closed [1000, 40000] K range. */
+        std::optional<float32> colorTemperatureKelvin{};
     };
+
+    /**
+     * @brief Convert one light's intensity to the canonical photometric unit.
+     *
+     * Directional values become Lux. Point and Spot values become Candela.
+     * Spot outerConeRadians is a half-opening angle; Lumen conversion uses
+     * its cone solid angle 2*pi*(1-cos(outerConeRadians)).
+     */
+    [[nodiscard]] RenderLightCanonicalizationResult
+    CanonicalizeRenderLightSnapshot(const RenderLightSnapshot& light) noexcept;
 
     struct RenderSkySnapshot
     {
@@ -640,6 +701,10 @@ namespace RVX
     static_assert(static_cast<uint8>(RenderLightType::Directional) == 0);
     static_assert(static_cast<uint8>(RenderLightType::Point) == 1);
     static_assert(static_cast<uint8>(RenderLightType::Spot) == 2);
+    static_assert(static_cast<uint8>(RenderLightIntensityUnit::Unspecified) == 0);
+    static_assert(static_cast<uint8>(RenderLightIntensityUnit::Lux) == 1);
+    static_assert(static_cast<uint8>(RenderLightIntensityUnit::Candela) == 2);
+    static_assert(static_cast<uint8>(RenderLightIntensityUnit::Lumen) == 3);
     static_assert(static_cast<uint8>(RenderFrameCaptureKind::None) == 0);
     static_assert(static_cast<uint8>(RenderFrameCaptureKind::Color) == 1);
     static_assert(static_cast<uint8>(RenderFrameCaptureKind::Depth) == 2);

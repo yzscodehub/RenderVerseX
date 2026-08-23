@@ -30,6 +30,7 @@ namespace RVX
         InvalidSkinningPalette,
         MultipleSkyboxes,
         SelectedCameraMissing,
+        InvalidLightSource,
     };
 
     /**

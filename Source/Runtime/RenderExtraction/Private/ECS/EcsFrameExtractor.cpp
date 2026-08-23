@@ -101,6 +101,32 @@ namespace
         {
             return false;
         }
+
+        if (light.colorTemperatureKelvin.has_value() &&
+            (!IsFinite(*light.colorTemperatureKelvin) ||
+             *light.colorTemperatureKelvin < 1000.0f ||
+             *light.colorTemperatureKelvin > 40000.0f))
+        {
+            return false;
+        }
+
+        switch (light.type)
+        {
+            case RenderLightProxy::Type::Directional:
+                if (light.intensityUnit != RenderLightIntensityUnit::Lux)
+                    return false;
+                break;
+            case RenderLightProxy::Type::Point:
+            case RenderLightProxy::Type::Spot:
+                if (light.intensityUnit != RenderLightIntensityUnit::Candela &&
+                    light.intensityUnit != RenderLightIntensityUnit::Lumen)
+                {
+                    return false;
+                }
+                break;
+            default: return false;
+        }
+
         if (light.type == RenderLightProxy::Type::Point ||
             light.type == RenderLightProxy::Type::Spot)
         {
@@ -281,6 +307,8 @@ namespace
                left.type == right.type && left.position == right.position &&
                left.direction == right.direction && left.color == right.color &&
                left.intensity == right.intensity && left.range == right.range &&
+               left.intensityUnit == right.intensityUnit &&
+               left.colorTemperatureKelvin == right.colorTemperatureKelvin &&
                left.innerConeAngle == right.innerConeAngle &&
                left.outerConeAngle == right.outerConeAngle &&
                left.castsShadow == right.castsShadow;
@@ -829,6 +857,8 @@ EcsFrameExtractionResult EcsFrameExtractor::Extract(
         light.direction = value.proxy.direction;
         light.color = value.proxy.color;
         light.intensity = value.proxy.intensity;
+        light.intensityUnit = value.proxy.intensityUnit;
+        light.colorTemperatureKelvin = value.proxy.colorTemperatureKelvin;
         light.range = value.proxy.range;
         light.innerConeRadians = value.proxy.innerConeAngle;
         light.outerConeRadians = value.proxy.outerConeAngle;

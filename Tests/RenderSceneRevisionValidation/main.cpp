@@ -121,11 +121,14 @@ TEST(RenderSceneRevisionValidation,
     first.source = MakeSource(2, 10);
     first.color = RVX::Vec3(1.0f, 0.5f, 0.25f);
     first.intensity = 2.0f;
+    first.intensityUnit = RVX::RenderLightIntensityUnit::Lux;
     RVX::RenderLightSnapshot second;
     second.lightId = 20;
     second.source = MakeSource(2, 20);
     second.type = RVX::RenderLightType::Point;
     second.position = RVX::Vec3(1.0f, 2.0f, 3.0f);
+    second.intensityUnit = RVX::RenderLightIntensityUnit::Candela;
+    second.range = 10.0f;
 
     RVX::RenderSceneMutationAccumulator firstOrder;
     firstOrder.Begin(0, true);
@@ -158,6 +161,7 @@ TEST(RenderSceneRevisionValidation,
     RVX::RenderLightSnapshot light;
     light.lightId = 9;
     light.source = MakeSource(2, 9);
+    light.intensityUnit = RVX::RenderLightIntensityUnit::Lux;
     light.layerMask = 0x00000001U;
 
     RVX::RenderSceneMutationAccumulator reset;
@@ -176,6 +180,64 @@ TEST(RenderSceneRevisionValidation,
     EXPECT_NE(before, database.ComputeLightStateHash());
     ASSERT_NE(database.FindLight(9), nullptr);
     EXPECT_EQ(0x00000002U, database.FindLight(9)->layerMask);
+}
+
+TEST(RenderSceneRevisionValidation,
+     LightPhotometricMetadataChangesProduceDistinctIncrementalMutations)
+{
+    RVX::RenderLightSnapshot light;
+    light.lightId = 42;
+    light.source = MakeSource(2, 42);
+    light.type = RVX::RenderLightType::Point;
+    light.intensity = 20.0f;
+    light.intensityUnit = RVX::RenderLightIntensityUnit::Candela;
+    light.range = 15.0f;
+
+    RVX::RenderSceneMutationAccumulator reset;
+    reset.Begin(0, true);
+    ASSERT_TRUE(reset.UpsertLight(light, true));
+
+    RVX::RenderSceneDatabase database;
+    ASSERT_TRUE(database.Apply(reset.Build(1)).IsApplied());
+    const RVX::uint64 initialHash = database.ComputeLightStateHash();
+    const RVX::RenderSceneDatabaseChanges initialChanges =
+        database.CollectChangesSince(0);
+    ASSERT_TRUE(initialChanges.available);
+
+    light.intensityUnit = RVX::RenderLightIntensityUnit::Lumen;
+    RVX::RenderSceneMutationAccumulator unitUpdate;
+    unitUpdate.Begin(1);
+    ASSERT_TRUE(unitUpdate.UpsertLight(light));
+    ASSERT_TRUE(database.Apply(unitUpdate.Build(2)).IsApplied());
+    EXPECT_NE(initialHash, database.ComputeLightStateHash());
+    ASSERT_NE(database.FindLight(42), nullptr);
+    EXPECT_EQ(database.FindLight(42)->intensityUnit,
+              RVX::RenderLightIntensityUnit::Lumen);
+    const RVX::RenderSceneDatabaseChanges unitChanges =
+        database.CollectChangesSince(1);
+    ASSERT_TRUE(unitChanges.available);
+    ASSERT_EQ(unitChanges.lights.size(), 1U);
+    EXPECT_EQ(unitChanges.lights.front(), 42U);
+    EXPECT_NE(initialChanges.canonicalMutationDigest,
+              unitChanges.canonicalMutationDigest);
+
+    const RVX::uint64 unitHash = database.ComputeLightStateHash();
+    light.colorTemperatureKelvin = 4500.0f;
+    RVX::RenderSceneMutationAccumulator temperatureUpdate;
+    temperatureUpdate.Begin(2);
+    ASSERT_TRUE(temperatureUpdate.UpsertLight(light));
+    ASSERT_TRUE(database.Apply(temperatureUpdate.Build(3)).IsApplied());
+    EXPECT_NE(unitHash, database.ComputeLightStateHash());
+    ASSERT_NE(database.FindLight(42), nullptr);
+    ASSERT_TRUE(database.FindLight(42)->colorTemperatureKelvin.has_value());
+    EXPECT_FLOAT_EQ(*database.FindLight(42)->colorTemperatureKelvin, 4500.0f);
+    const RVX::RenderSceneDatabaseChanges temperatureChanges =
+        database.CollectChangesSince(2);
+    ASSERT_TRUE(temperatureChanges.available);
+    ASSERT_EQ(temperatureChanges.lights.size(), 1U);
+    EXPECT_EQ(temperatureChanges.lights.front(), 42U);
+    EXPECT_NE(unitChanges.canonicalMutationDigest,
+              temperatureChanges.canonicalMutationDigest);
 }
 
 TEST(RenderSceneRevisionValidation, AppliesIncrementalUpsertAndRemoveAtomically)
@@ -266,6 +328,7 @@ TEST(RenderSceneRevisionValidation,
     RVX::RenderLightSnapshot light;
     light.lightId = 7;
     light.source = MakeSource(2, 7);
+    light.intensityUnit = RVX::RenderLightIntensityUnit::Lux;
     ASSERT_TRUE(second.UpsertLight(light, true));
     ASSERT_TRUE(database.Apply(second.Build(2)).IsApplied());
     EXPECT_EQ(database.GetPrimitiveRevision(11), 2U);
@@ -336,6 +399,7 @@ TEST(RenderSceneRevisionValidation,
     RVX::RenderLightSnapshot light;
     light.lightId = 17;
     light.source = MakeSource(2, 17);
+    light.intensityUnit = RVX::RenderLightIntensityUnit::Lux;
 
     RVX::RenderSceneMutationAccumulator firstOrder;
     firstOrder.Begin(0, true);
@@ -464,6 +528,7 @@ TEST(RenderSceneRevisionValidation, ExposesAuthoritativeSceneAndV5FrameState)
     light.lightId = 7;
     light.source = MakeSource(2, 7);
     light.intensity = 4.0f;
+    light.intensityUnit = RVX::RenderLightIntensityUnit::Lux;
     ASSERT_TRUE(reset.UpsertLight(light, true));
 
     RVX::ParticleRenderSnapshotItem particle;

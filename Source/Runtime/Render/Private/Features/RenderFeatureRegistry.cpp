@@ -937,6 +937,10 @@ RenderExecutionReceipt RenderFeatureRegistry::CollectExecutionReceipt(
     const RenderExecutionBuildIdentity& buildIdentity) const
 {
     RenderExecutionReceipt receipt;
+    // The registry owns feature-graph evidence only. SceneRenderer upgrades
+    // this intermediate candidate to schema four after it has bound exact
+    // LightingFramePlan and render-pass evidence.
+    receipt.schemaVersion = 2;
     receipt.available = m_frameAttempted;
     receipt.graphComposed = m_framePrepared && m_graphCompositionSucceeded;
     receipt.executionSucceeded = receipt.graphComposed;

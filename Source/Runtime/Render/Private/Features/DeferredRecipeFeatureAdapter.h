@@ -98,6 +98,8 @@ namespace RVX
     private:
         [[nodiscard]] bool HasMatchingRecordContext(
             const RenderFeatureContext& context) const noexcept;
+        [[nodiscard]] bool HasValidLightingPlan(
+            const RenderFeatureContext& context) const noexcept;
         void SetCompositionFailure(std::string diagnostic);
 
         DeferredLightingPass* m_lightingPass = nullptr;
@@ -134,6 +136,8 @@ namespace RVX
 
     private:
         [[nodiscard]] bool HasMatchingRecordContext(
+            const RenderFeatureContext& context) const noexcept;
+        [[nodiscard]] bool HasValidLightingPlan(
             const RenderFeatureContext& context) const noexcept;
         void SetCompositionFailure(std::string diagnostic);
 

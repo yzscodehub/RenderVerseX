@@ -232,6 +232,152 @@ namespace
     }
 
     TEST(RenderContractsValidation,
+         LightCanonicalizationUsesOnlyExplicitPhotometricUnits)
+    {
+        constexpr float32 pi = 3.14159265358979323846f;
+
+        RenderLightSnapshot directional;
+        directional.type = RenderLightType::Directional;
+        directional.intensity = 120000.0f;
+        directional.intensityUnit = RenderLightIntensityUnit::Lux;
+        directional.colorTemperatureKelvin = 6500.0f;
+        const RenderLightCanonicalizationResult luxDirectional =
+            CanonicalizeRenderLightSnapshot(directional);
+        ASSERT_TRUE(luxDirectional.Succeeded());
+        EXPECT_EQ(luxDirectional.canonicalUnit,
+                  RenderLightIntensityUnit::Lux);
+        EXPECT_FLOAT_EQ(luxDirectional.canonicalIntensity, 120000.0f);
+        ASSERT_TRUE(luxDirectional.colorTemperatureKelvin.has_value());
+        EXPECT_FLOAT_EQ(*luxDirectional.colorTemperatureKelvin, 6500.0f);
+
+        RenderLightSnapshot point;
+        point.type = RenderLightType::Point;
+        point.intensityUnit = RenderLightIntensityUnit::Lumen;
+        point.intensity = 4.0f * pi;
+        const RenderLightCanonicalizationResult lumenPoint =
+            CanonicalizeRenderLightSnapshot(point);
+        ASSERT_TRUE(lumenPoint.Succeeded());
+        EXPECT_EQ(lumenPoint.canonicalUnit,
+                  RenderLightIntensityUnit::Candela);
+        EXPECT_NEAR(lumenPoint.canonicalIntensity, 1.0f, 1.0e-5f);
+
+        RenderLightSnapshot spot;
+        spot.type = RenderLightType::Spot;
+        spot.innerConeRadians = pi / 6.0f;
+        spot.outerConeRadians = pi / 3.0f;
+        spot.intensityUnit = RenderLightIntensityUnit::Lumen;
+        // For a pi/3 half-angle, omega is pi steradians.
+        spot.intensity = pi;
+        const RenderLightCanonicalizationResult lumenSpot =
+            CanonicalizeRenderLightSnapshot(spot);
+        ASSERT_TRUE(lumenSpot.Succeeded());
+        EXPECT_EQ(lumenSpot.canonicalUnit,
+                  RenderLightIntensityUnit::Candela);
+        EXPECT_NEAR(lumenSpot.canonicalIntensity, 1.0f, 1.0e-5f);
+    }
+
+    TEST(RenderContractsValidation,
+         LightCanonicalizationRejectsInvalidUnitsConesAndTemperatures)
+    {
+        RenderLightSnapshot unspecified;
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(unspecified).code,
+                  RenderLightCanonicalizationCode::UnspecifiedIntensityUnit);
+
+        RenderLightSnapshot directional;
+        directional.type = RenderLightType::Directional;
+        directional.intensityUnit = RenderLightIntensityUnit::Lumen;
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(directional).code,
+                  RenderLightCanonicalizationCode::IncompatibleIntensityUnit);
+
+        RenderLightSnapshot point;
+        point.type = RenderLightType::Point;
+        point.intensityUnit = RenderLightIntensityUnit::Lux;
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(point).code,
+                  RenderLightCanonicalizationCode::IncompatibleIntensityUnit);
+
+        RenderLightSnapshot spot;
+        spot.type = RenderLightType::Spot;
+        spot.intensityUnit = RenderLightIntensityUnit::Candela;
+        spot.outerConeRadians = 0.0f;
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(spot).code,
+                  RenderLightCanonicalizationCode::InvalidSpotCone);
+        spot.outerConeRadians = 0.5f;
+        spot.innerConeRadians = 0.75f;
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(spot).code,
+                  RenderLightCanonicalizationCode::InvalidSpotCone);
+
+        RenderLightSnapshot negativeIntensity;
+        negativeIntensity.intensityUnit = RenderLightIntensityUnit::Lux;
+        negativeIntensity.intensity = -0.1f;
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(negativeIntensity).code,
+                  RenderLightCanonicalizationCode::InvalidIntensity);
+        negativeIntensity.intensity =
+            std::numeric_limits<float32>::infinity();
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(negativeIntensity).code,
+                  RenderLightCanonicalizationCode::InvalidIntensity);
+
+        RenderLightSnapshot invalidTemperature;
+        invalidTemperature.intensityUnit = RenderLightIntensityUnit::Lux;
+        invalidTemperature.colorTemperatureKelvin = 999.0f;
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(invalidTemperature).code,
+                  RenderLightCanonicalizationCode::InvalidColorTemperature);
+        invalidTemperature.colorTemperatureKelvin =
+            std::numeric_limits<float32>::quiet_NaN();
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(invalidTemperature).code,
+                  RenderLightCanonicalizationCode::InvalidColorTemperature);
+
+        RenderLightSnapshot invalidUnit;
+        invalidUnit.intensityUnit =
+            static_cast<RenderLightIntensityUnit>(255U);
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(invalidUnit).code,
+                  RenderLightCanonicalizationCode::InvalidIntensityUnit);
+        RenderLightSnapshot invalidType;
+        invalidType.intensityUnit = RenderLightIntensityUnit::Lux;
+        invalidType.type = static_cast<RenderLightType>(255U);
+        EXPECT_EQ(CanonicalizeRenderLightSnapshot(invalidType).code,
+                  RenderLightCanonicalizationCode::InvalidLightType);
+    }
+
+    TEST(RenderContractsValidation,
+         LightSnapshotEqualityIncludesPhotometricAuthoringContract)
+    {
+        RenderLightSnapshot baseline;
+        baseline.intensityUnit = RenderLightIntensityUnit::Lux;
+        RenderLightSnapshot equal = baseline;
+        EXPECT_TRUE(AreRenderLightSnapshotsEqual(baseline, equal));
+
+        equal.intensityUnit = RenderLightIntensityUnit::Candela;
+        EXPECT_FALSE(AreRenderLightSnapshotsEqual(baseline, equal));
+        equal = baseline;
+        equal.colorTemperatureKelvin = 5600.0f;
+        EXPECT_FALSE(AreRenderLightSnapshotsEqual(baseline, equal));
+    }
+
+    TEST(RenderContractsValidation,
+         LightMutationAccumulatorRejectsUnspecifiedAndIncompatibleUnits)
+    {
+        RenderLightSnapshot light;
+        light.lightId = 71;
+        light.source = {
+            .sceneRuntimeId = 1,
+            .entitySlot = 71,
+            .entityGeneration = 0,
+        };
+        light.type = RenderLightType::Directional;
+
+        RenderSceneMutationAccumulator accumulator;
+        accumulator.Begin(0, true);
+        EXPECT_FALSE(accumulator.UpsertLight(light, true));
+
+        light.intensityUnit = RenderLightIntensityUnit::Lumen;
+        EXPECT_FALSE(accumulator.UpsertLight(light, true));
+
+        light.intensityUnit = RenderLightIntensityUnit::Lux;
+        EXPECT_TRUE(accumulator.UpsertLight(light, true));
+        EXPECT_TRUE(accumulator.Build(1).IsStructurallyValid());
+    }
+
+    TEST(RenderContractsValidation,
          PipelineProfileUsesStableMachineValuesAndNonZeroHashes)
     {
         static_assert(static_cast<uint8>(RenderPipelineRecipe::Minimal) == 0U);

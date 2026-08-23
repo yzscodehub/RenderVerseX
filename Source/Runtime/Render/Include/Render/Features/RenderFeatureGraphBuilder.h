@@ -88,6 +88,16 @@ namespace RVX
                 : RGBufferHandle{};
         }
 
+        /** @brief Import an owned texture into this exact feature recording. */
+        [[nodiscard]] RGTextureHandle ImportTexture(
+            RHITextureRef texture,
+            RHIResourceState initialState)
+        {
+            return IsValid() && texture
+                ? m_graph->ImportTexture(std::move(texture), initialState)
+                : RGTextureHandle{};
+        }
+
         template<typename Data>
         [[nodiscard]] bool AddPass(
             const char* name,

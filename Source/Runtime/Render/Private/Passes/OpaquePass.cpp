@@ -12,6 +12,7 @@
 #include "Render/GPUDriven/GPUCulling.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Lighting/ClusteredLighting.h"
+#include "Render/Lighting/LightingFramePlan.h"
 #include "Render/Lighting/LightManager.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/PipelineCache.h"
@@ -74,22 +75,71 @@ namespace
         return std::span<const Mat4>(object.skinningMatrices.data(), object.skinningMatrices.size());
     }
 
-    float SanitizeUnitRatio(float value)
+    [[nodiscard]] bool RetainLightingBindingSnapshot(
+        RenderGraphPassContext& context,
+        const LightingBindingSnapshot& bindings)
     {
-        return std::isfinite(value) ? clamp(value, 0.0f, 1.0f) : 0.0f;
+        return bindings.IsValid() &&
+            context.RetainSubmissionResource(
+                Ref<RefCounted>(bindings.viewConstantBuffer.Get())) &&
+            context.RetainSubmissionResource(
+                Ref<RefCounted>(bindings.directionalShadowView.Get())) &&
+            context.RetainSubmissionResource(
+                Ref<RefCounted>(bindings.directionalShadowSampler.Get())) &&
+            context.RetainSubmissionResource(
+                Ref<RefCounted>(bindings.lightConstantsBuffer.Get())) &&
+            context.RetainSubmissionResource(
+                Ref<RefCounted>(bindings.pointLightsBuffer.Get())) &&
+            context.RetainSubmissionResource(
+                Ref<RefCounted>(bindings.spotLightsBuffer.Get())) &&
+            context.RetainSubmissionResource(
+                Ref<RefCounted>(bindings.rayTracedShadowMaskView.Get())) &&
+            context.RetainSubmissionResource(
+                Ref<RefCounted>(bindings.clusterConstantsBuffer.Get())) &&
+            context.RetainSubmissionResource(
+                Ref<RefCounted>(bindings.clusterBuffer.Get())) &&
+            context.RetainSubmissionResource(
+                Ref<RefCounted>(bindings.clusterLightIndexBuffer.Get())) &&
+            context.RetainSubmissionResource(
+                Ref<RefCounted>(bindings.environmentIBLIrradianceView.Get())) &&
+            context.RetainSubmissionResource(
+                Ref<RefCounted>(bindings.environmentIBLPrefilteredView.Get())) &&
+            context.RetainSubmissionResource(
+                Ref<RefCounted>(bindings.environmentIBLBRDFLUTView.Get())) &&
+            context.RetainSubmissionResource(
+                Ref<RefCounted>(bindings.environmentIBLSampler.Get())) &&
+            context.RetainSubmissionResource(
+                Ref<RefCounted>(bindings.frameSetLayout.Get())) &&
+            context.RetainSubmissionResource(
+                Ref<RefCounted>(bindings.frameDescriptorSet.Get()));
     }
 
-    void ClearDirectionalShadowViewData(ViewData& drawView)
+    [[nodiscard]] RGTextureViewHandle DeclareExactIBLRead(
+        RenderGraphBuilder& builder,
+        RGTextureHandle texture,
+        const RHITextureViewRef& retainedView,
+        const char* debugName)
     {
-        drawView.directionalShadowEnabled = 0;
-        drawView.directionalShadowCascadeCount = 0;
-        drawView.directionalShadowCascadeSplits = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
-        drawView.directionalShadowCascadeFadeDistances = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
-        drawView.directionalShadowViewProjection = Mat4Identity();
-        for (Mat4& viewProjection : drawView.directionalShadowViewProjections)
+        const RHITextureDesc* const textureDesc =
+            builder.GetTextureDesc(texture);
+        if (!texture.IsValid() || textureDesc == nullptr || !retainedView ||
+            retainedView->GetTexture() == nullptr)
         {
-            viewProjection = Mat4Identity();
+            return {};
         }
+
+        RHITextureViewDesc viewDesc;
+        viewDesc.format = retainedView->GetFormat();
+        viewDesc.dimension = textureDesc->dimension;
+        viewDesc.subresourceRange = retainedView->GetSubresourceRange();
+        viewDesc.type = RHITextureViewType::ShaderResource;
+        viewDesc.debugName = debugName;
+        RGTextureViewHandle view = builder.CreateTextureView(texture, viewDesc);
+        return builder.Read(
+            view,
+            MakeRGAccessDesc(
+                RHIResourceState::ShaderResource,
+                RHIShaderStage::Pixel));
     }
 
     bool HasDrawFlag(RenderDrawFlags flags, RenderDrawFlags flag) noexcept
@@ -1107,6 +1157,8 @@ void OpaquePass::InitializeGraphRecorder(
     const GPUCulling* gpuCulling,
     const RenderPassGPUDrivenInputs& gpuInputs,
     bool gpuDrivenPlanned,
+    std::shared_ptr<const LightingFramePlan> lightingPlan,
+    std::shared_ptr<const RenderLightingFrameResourceSnapshot> lightingResources,
     const DirectionalShadowRecordOutput& directionalShadow,
     const RayTracedShadowRecordOutput& rayTracedShadow,
     std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache,
@@ -1133,6 +1185,9 @@ void OpaquePass::InitializeGraphRecorder(
     m_gpuSceneRecordingFailure = gpuInputs.gpuSceneRecordingFailure;
     m_gpuDrivenOpaqueIndirectEnabled = gpuDrivenPlanned;
     m_gpuSceneRasterEnabled = gpuInputs.gpuSceneRasterEnabled;
+    m_lightingPlan = std::move(lightingPlan);
+    m_lightingResources = std::move(lightingResources);
+    m_lightingBindingSnapshot.reset();
     m_directionalShadowInputs = directionalShadow;
     m_rayTracedShadowInputs = rayTracedShadow;
     m_directInstanceStreamCache = std::move(directInstanceStreamCache);
@@ -1293,12 +1348,31 @@ void OpaquePass::AddToGraphInternal(
         execution.identity.recordEpoch};
     const bool executionAttachmentsValid =
         hasCurrentGraphAttachments(execution.view, execution.identity);
+    const bool lightingInputsValid = execution.lightingPlan != nullptr &&
+        execution.lightingPlan->IsValid() &&
+        execution.lightingPlan->GetIdentityHash() != 0 &&
+        execution.lightingResources != nullptr &&
+        execution.lightingResources->IsComplete() &&
+        execution.lightingResources->lightingPlanIdentity ==
+            execution.lightingPlan->GetIdentityHash() &&
+        execution.frameSnapshot != nullptr &&
+        execution.frameSnapshot->lightingPlan == execution.lightingPlan &&
+        execution.frameSnapshot->lightingResources == execution.lightingResources &&
+        execution.view.textureIBLEnabled ==
+            static_cast<uint32>(execution.lightingResources->textureIBLEnabled) &&
+        execution.lightingPlan->GetIBLRequest().inputsReady ==
+            execution.lightingResources->textureIBLEnabled &&
+        execution.lightingPlan->GetCSMRequest().inputsReady ==
+            execution.directionalShadow.enabled;
     const bool contextValid = sourceContextValid && hasPlan &&
         execution.MatchesTargetGraph(graph) &&
         execution.IsFrameIdentityValid() &&
         execution.frameSnapshot != nullptr && execution.results != nullptr &&
         executionAttachmentsValid &&
-        execution.directionalShadow.IsCompatibleWith(execution.identity) &&
+        lightingInputsValid &&
+        execution.directionalShadow.IsCompatibleWith(
+            execution.identity,
+            execution.lightingPlan->GetIdentityHash()) &&
         execution.rayTracedShadow.IsCompatibleWith(execution.identity) &&
         (!gpuPlanned || (gpuInputs.IsCompatibleWith(execution.identity) &&
                          gpuInputs.recordedState->Matches(gpuRecordingIdentity)));
@@ -1317,8 +1391,6 @@ void OpaquePass::AddToGraphInternal(
     const RenderResourceRegistry* const resourceRegistry = m_resourceRegistry;
     PipelineCache* const pipelineCache = m_pipelineCache;
     MaterialSystem* const materialSystem = m_materialSystem;
-    LightManager* const lightManager = m_lightManager;
-    ClusteredLighting* const clusteredLighting = m_clusteredLighting;
     const RenderScene* const renderScene = execution.frameSnapshot
         ? &execution.frameSnapshot->scene : nullptr;
     const GPUCulling* const gpuCulling = gpuInputs.recordedState != nullptr
@@ -1331,6 +1403,10 @@ void OpaquePass::AddToGraphInternal(
         execution.directionalShadow;
     const RayTracedShadowRecordOutput rayTracedShadow =
         execution.rayTracedShadow;
+    const std::shared_ptr<const LightingFramePlan> lightingPlan =
+        execution.lightingPlan;
+    const std::shared_ptr<const RenderLightingFrameResourceSnapshot>
+        lightingResources = execution.lightingResources;
     const std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache =
         m_directInstanceStreamCache;
     DirectRasterReadbackQualification* const directReadbackQualification =
@@ -1355,9 +1431,9 @@ void OpaquePass::AddToGraphInternal(
          resourceRegistry,
          pipelineCache,
          materialSystem,
-         lightManager,
-         clusteredLighting,
          renderScene,
+         lightingPlan,
+         lightingResources,
          directionalShadow,
          rayTracedShadow,
          gpuCulling,
@@ -1398,12 +1474,13 @@ void OpaquePass::AddToGraphInternal(
             data.recorder->SetResources(
                 pipelineCache,
                 materialSystem,
-                lightManager,
-                clusteredLighting);
+                nullptr,
+                nullptr);
             data.recorder->SetResourceRegistry(resourceRegistry);
             data.recorder->InitializeGraphRecorder(
                 renderScene, opaqueDrawItems, maskedDrawItems, gpuCulling,
-                data.gpuInputs, gpuPlanned, directionalShadow, rayTracedShadow,
+                data.gpuInputs, gpuPlanned, lightingPlan, lightingResources,
+                directionalShadow, rayTracedShadow,
                 data.directInstanceStreamCache,
                 data.directReadbackQualification,
                 data.execution.identity,
@@ -1535,14 +1612,24 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 {
     m_directionalShadowReadHandle = {};
     m_rayTracedShadowMaskReadHandle = {};
+    m_lightConstantsReadHandle = {};
+    m_pointLightsReadHandle = {};
+    m_spotLightsReadHandle = {};
+    m_clusterConstantsReadHandle = {};
+    m_clusterDataReadHandle = {};
+    m_clusterLightIndicesReadHandle = {};
     m_colorTargetViewHandle = {};
     m_depthTargetViewHandle = {};
     m_directionalShadowViewHandle = {};
     m_rayTracedShadowMaskViewHandle = {};
+    m_environmentIBLIrradianceViewHandle = {};
+    m_environmentIBLPrefilteredViewHandle = {};
+    m_environmentIBLBRDFLUTViewHandle = {};
     m_gBufferTargetHandles = {};
     m_gBufferTargetViewHandles = {};
     m_colorTargetFormat = RHIFormat::Unknown;
     m_shadowStats = {};
+    m_lightingBindingSnapshot.reset();
     m_directInstancePlan = {};
     m_directInstanceStream.instanceUploadBytes = 0;
     m_directInstanceStream.indexUploadBytes = 0;
@@ -1561,6 +1648,85 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     m_gpuMaterialParameterTable.Reset();
     m_gpuRasterMaterialSemanticKeysBySlot.clear();
     m_directInstancingPreflightFailed = false;
+
+    // Every opaque route is bound to the same immutable lighting selection.
+    // Deferred GBuffer does not consume the descriptor, but it still rejects a
+    // stale or unpaired plan before declaring any graph-visible writes.
+    if (m_lightingPlan == nullptr || !m_lightingPlan->IsValid() ||
+        m_lightingPlan->GetIdentityHash() == 0 ||
+        m_lightingResources == nullptr || !m_lightingResources->IsComplete() ||
+        !m_lightingResources->HasCurrentGraphResources(m_recordIdentity) ||
+        m_lightingResources->lightingPlanIdentity !=
+            m_lightingPlan->GetIdentityHash() ||
+        m_lightingPlan->GetCSMRequest().inputsReady !=
+            m_directionalShadowInputs.enabled ||
+        m_lightingPlan->GetIBLRequest().inputsReady !=
+            m_lightingResources->textureIBLEnabled ||
+        view.textureIBLEnabled !=
+            static_cast<uint32>(m_lightingResources->textureIBLEnabled) ||
+        !m_directionalShadowInputs.IsCompatibleWith(
+            m_recordIdentity,
+            m_lightingPlan->GetIdentityHash()) ||
+        !m_rayTracedShadowInputs.IsCompatibleWith(m_recordIdentity))
+    {
+        return;
+    }
+
+    // Forward surface paths bind these six exact frozen allocations through
+    // their descriptor snapshot. Declare the same allocations to RenderGraph
+    // so state/lifetime validation cannot be bypassed by raw descriptor use.
+    // Deferred GBuffer writes no lighting and leaves these reads to the
+    // DeferredLighting feature.
+    if (m_outputFamily != OpaqueRasterOutputFamily::DeferredGBuffer)
+    {
+        const bool descriptionsReady =
+            builder.GetBufferDesc(m_lightingResources->lightConstants) != nullptr &&
+            builder.GetBufferDesc(m_lightingResources->pointLights) != nullptr &&
+            builder.GetBufferDesc(m_lightingResources->spotLights) != nullptr &&
+            builder.GetBufferDesc(m_lightingResources->clusterConstants) != nullptr &&
+            builder.GetBufferDesc(m_lightingResources->clusterData) != nullptr &&
+            builder.GetBufferDesc(
+                m_lightingResources->clusterLightIndices) != nullptr;
+        if (!descriptionsReady)
+        {
+            return;
+        }
+
+        m_lightConstantsReadHandle = builder.Read(
+            m_lightingResources->lightConstants,
+            RHIResourceState::ConstantBuffer,
+            RHIShaderStage::Pixel);
+        m_pointLightsReadHandle = builder.Read(
+            m_lightingResources->pointLights,
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Pixel);
+        m_spotLightsReadHandle = builder.Read(
+            m_lightingResources->spotLights,
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Pixel);
+        m_clusterConstantsReadHandle = builder.Read(
+            m_lightingResources->clusterConstants,
+            RHIResourceState::ConstantBuffer,
+            RHIShaderStage::Pixel);
+        m_clusterDataReadHandle = builder.Read(
+            m_lightingResources->clusterData,
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Pixel);
+        m_clusterLightIndicesReadHandle = builder.Read(
+            m_lightingResources->clusterLightIndices,
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Pixel);
+        if (!m_lightConstantsReadHandle.IsValid() ||
+            !m_pointLightsReadHandle.IsValid() ||
+            !m_spotLightsReadHandle.IsValid() ||
+            !m_clusterConstantsReadHandle.IsValid() ||
+            !m_clusterDataReadHandle.IsValid() ||
+            !m_clusterLightIndicesReadHandle.IsValid())
+        {
+            return;
+        }
+    }
+
     m_gpuMaterialTablePreflightFailed = false;
 
     const auto accumulateShadowReceivers = [this](const std::vector<RenderDrawItem>* drawItems)
@@ -1767,7 +1933,8 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
         }
     }
 
-    if (m_directionalShadowInputs.enabled)
+    if (m_outputFamily != OpaqueRasterOutputFamily::DeferredGBuffer &&
+        m_directionalShadowInputs.enabled)
     {
         RGTextureHandle shadowMap = m_directionalShadowInputs.shadowMap;
         if (shadowMap.IsValid())
@@ -1798,7 +1965,8 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
         }
     }
 
-    if (m_rayTracedShadowInputs.enabled)
+    if (m_outputFamily != OpaqueRasterOutputFamily::DeferredGBuffer &&
+        m_rayTracedShadowInputs.enabled)
     {
         RGTextureHandle shadowMask = m_rayTracedShadowInputs.shadowMask;
         if (shadowMask.IsValid())
@@ -1827,25 +1995,34 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
         }
     }
 
-    if (view.textureIBLEnabled != 0)
+    if (m_outputFamily != OpaqueRasterOutputFamily::DeferredGBuffer &&
+        view.textureIBLEnabled != 0)
     {
-        if (view.environmentIrradianceTexture.IsValid())
+        if (!m_lightingResources ||
+            !m_lightingResources->textureIBLEnabled)
         {
-            static_cast<void>(builder.Read(
-                view.environmentIrradianceTexture,
-                RHIShaderStage::Pixel));
+            return;
         }
-        if (view.environmentPrefilteredTexture.IsValid())
+        m_environmentIBLIrradianceViewHandle = DeclareExactIBLRead(
+            builder,
+            m_lightingResources->environmentIBLIrradiance,
+            m_lightingResources->environmentIBLIrradianceView,
+            "OpaqueEnvironmentIrradianceSRV");
+        m_environmentIBLPrefilteredViewHandle = DeclareExactIBLRead(
+            builder,
+            m_lightingResources->environmentIBLPrefiltered,
+            m_lightingResources->environmentIBLPrefilteredView,
+            "OpaqueEnvironmentPrefilteredSRV");
+        m_environmentIBLBRDFLUTViewHandle = DeclareExactIBLRead(
+            builder,
+            m_lightingResources->environmentIBLBRDFLUT,
+            m_lightingResources->environmentIBLBRDFLUTView,
+            "OpaqueEnvironmentBRDFLUTSRV");
+        if (!m_environmentIBLIrradianceViewHandle.IsValid() ||
+            !m_environmentIBLPrefilteredViewHandle.IsValid() ||
+            !m_environmentIBLBRDFLUTViewHandle.IsValid())
         {
-            static_cast<void>(builder.Read(
-                view.environmentPrefilteredTexture,
-                RHIShaderStage::Pixel));
-        }
-        if (view.environmentBRDFLUTTexture.IsValid())
-        {
-            static_cast<void>(builder.Read(
-                view.environmentBRDFLUTTexture,
-                RHIShaderStage::Pixel));
+            return;
         }
     }
 
@@ -3542,89 +3719,58 @@ void OpaquePass::Execute(
     }
 
     ViewData drawView = view;
-    drawView.rayTracedShadowEnabled = 0;
-    drawView.rayTracedShadowMode = RayTracedShadowMode::ComplementRaster;
+    const bool consumesSurfaceLighting =
+        m_outputFamily != OpaqueRasterOutputFamily::DeferredGBuffer;
+    DirectionalShadowRecordOutput resolvedDirectionalShadow =
+        m_directionalShadowInputs;
+    if (!consumesSurfaceLighting)
+    {
+        // GBuffer geometry is identity-bound to the frame lighting plan, but
+        // it must not consume CSM/RT/IBL. Those dependencies belong to the
+        // DeferredLighting feature after GBuffer production; declaring them
+        // here would invert the graph and can form a cycle with future RT
+        // producers that consume depth.
+        resolvedDirectionalShadow.enabled = false;
+        drawView.textureIBLEnabled = 0;
+        drawView.rayTracedShadowEnabled = 0;
+        drawView.rayTracedShadowMode = RayTracedShadowMode::ComplementRaster;
+    }
+    if (m_lightingPlan == nullptr || !m_lightingPlan->IsValid() ||
+        m_lightingResources == nullptr || !m_lightingResources->IsComplete() ||
+        m_lightingResources->lightingPlanIdentity !=
+            m_lightingPlan->GetIdentityHash() ||
+        !ResolveDirectionalShadowViewData(
+            drawView,
+            resolvedDirectionalShadow,
+            m_recordIdentity,
+            m_lightingPlan->GetIdentityHash()))
+    {
+        RVX_RENDER_WARN("OpaquePass: lighting plan or directional-shadow output is invalid");
+        reportPlannedFailure(routePlan.gpuPacketCount != 0);
+        return;
+    }
+
     DirectionalShadowFrameResources shadowResources;
-    if (m_directionalShadowInputs.enabled &&
-        m_directionalShadowReadHandle.IsValid() &&
-        m_directionalShadowViewHandle.IsValid() &&
-        !m_directionalShadowInputs.cascadeViewProjections.empty())
+    if (consumesSurfaceLighting && m_directionalShadowInputs.enabled)
     {
-        RHITextureView* shadowView =
+        if (!m_directionalShadowReadHandle.IsValid() ||
+            !m_directionalShadowViewHandle.IsValid())
+        {
+            RVX_RENDER_WARN("OpaquePass: directional shadow was requested without a graph read");
+            reportPlannedFailure(routePlan.gpuPacketCount != 0);
+            return;
+        }
+        shadowResources.shadowMapView =
             context.GetTextureView(m_directionalShadowViewHandle);
-        const uint32 cascadeCount = std::min(
-            static_cast<uint32>(m_directionalShadowInputs.cascadeViewProjections.size()),
-                                             RVX_MAX_DIRECTIONAL_SHADOW_CASCADES);
-        const float nearClip = std::max(0.001f, view.nearPlane);
-        const float farClip = std::max(nearClip + 1.0f, view.farPlane);
-        const float clipRange = farClip - nearClip;
-        drawView.directionalShadowEnabled = shadowView ? 1 : 0;
-        drawView.directionalShadowCascadeCount = shadowView ? cascadeCount : 0;
-        drawView.directionalShadowCascadeSplits = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
-        drawView.directionalShadowCascadeFadeDistances = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
-        for (uint32 i = 0; i < cascadeCount; ++i)
+        if (shadowResources.shadowMapView == nullptr)
         {
-            drawView.directionalShadowViewProjections[i] =
-                m_directionalShadowInputs.cascadeViewProjections[i];
-            const float splitDepth = i < m_directionalShadowInputs.cascadeSplitDepths.size()
-                ? m_directionalShadowInputs.cascadeSplitDepths[i] : 0.0f;
-            drawView.directionalShadowCascadeSplits[i] =
-                nearClip + splitDepth * clipRange;
+            RVX_RENDER_WARN("OpaquePass: failed to resolve graph-owned directional shadow view");
+            reportPlannedFailure(routePlan.gpuPacketCount != 0);
+            return;
         }
-        const float blendRatio = SanitizeUnitRatio(
-            m_directionalShadowInputs.cascadeBlendRatio);
-        for (uint32 i = 0; i + 1 < cascadeCount; ++i)
-        {
-            const float splitDistance = drawView.directionalShadowCascadeSplits[i];
-            const float previousSplit = i == 0 ? nearClip : drawView.directionalShadowCascadeSplits[i - 1];
-            const float cascadeSpan = std::max(0.0f, splitDistance - previousSplit);
-            drawView.directionalShadowCascadeFadeDistances[i] = std::min(cascadeSpan, cascadeSpan * blendRatio);
-        }
-        drawView.directionalShadowViewProjection = cascadeCount > 0
-            ? m_directionalShadowInputs.cascadeViewProjections[0]
-            : Mat4Identity();
-        drawView.directionalShadowDepthBias = m_directionalShadowInputs.shadowBias;
-        drawView.directionalShadowStrength = 1.0f;
-        drawView.directionalShadowInvMapSize = m_directionalShadowInputs.shadowMapSize > 0
-                                                   ? 1.0f / static_cast<float>(m_directionalShadowInputs.shadowMapSize)
-                                                   : 0.0f;
-        drawView.directionalShadowFilterRadiusTexels =
-            m_directionalShadowInputs.filterRadiusTexels;
-        drawView.directionalShadowNormalBias = m_directionalShadowInputs.normalBias;
         shadowResources.enabled = true;
-        shadowResources.shadowMapView = shadowView;
     }
-    else
-    {
-        ClearDirectionalShadowViewData(drawView);
-    }
-
-    FrameLightResources lightResources;
-    if (m_lightManager)
-    {
-        lightResources.lightConstantsBuffer = m_lightManager->GetLightConstantsBuffer();
-        lightResources.pointLightsBuffer = m_lightManager->GetPointLightsBuffer();
-        lightResources.spotLightsBuffer = m_lightManager->GetSpotLightsBuffer();
-    }
-    if (m_clusteredLighting && m_clusteredLighting->IsInitialized())
-    {
-        lightResources.clusterConstantsBuffer = m_clusteredLighting->GetClusterConstantsBuffer();
-        lightResources.clusterBuffer = m_clusteredLighting->GetClusterBuffer();
-        lightResources.clusterLightIndexBuffer = m_clusteredLighting->GetLightIndexBuffer();
-    }
-    m_pipelineCache->UpdateFrameLightResources(lightResources);
-
-    const DirectionalShadowFrameBindingResult shadowBinding =
-        m_pipelineCache->UpdateDirectionalShadowFrameResources(shadowResources);
-    if (shadowBinding.shadowSamplingEnabled)
-    {
-        drawView.directionalShadowEnabled = 1;
-    }
-    else
-    {
-        ClearDirectionalShadowViewData(drawView);
-    }
-    m_shadowStats.frameShadowReady = shadowBinding.shadowSamplingEnabled;
+    m_shadowStats.frameShadowReady = shadowResources.enabled;
 
     RayTracedShadowFrameResources rayTracedShadowResources;
     RHITextureView* rayTracedShadowMaskView = nullptr;
@@ -3638,7 +3784,8 @@ void OpaquePass::Execute(
         m_rayTracedShadowInputs.executionState->dispatchReady.load(std::memory_order_acquire);
     m_shadowStats.rayTracedExecutionReady = rayTracedExecutionReady;
     m_shadowStats.rayTracedExecutionFailed = rayTracedExecutionFailed;
-    if (rayTracedExecutionReady && m_rayTracedShadowMaskReadHandle.IsValid() &&
+    if (consumesSurfaceLighting && rayTracedExecutionReady &&
+        m_rayTracedShadowMaskReadHandle.IsValid() &&
         m_rayTracedShadowMaskViewHandle.IsValid())
     {
         rayTracedShadowMaskView = context.GetTextureView(
@@ -3650,10 +3797,8 @@ void OpaquePass::Execute(
     {
         RVX_RENDER_WARN("OpaquePass: Ray-traced shadow producer failed for the current recording; using raster-only shadowing");
     }
-    const RayTracedShadowFrameBindingResult rayTracedShadowBinding =
-        m_pipelineCache->UpdateRayTracedShadowFrameResources(rayTracedShadowResources);
-    drawView.rayTracedShadowEnabled = rayTracedShadowBinding.shadowMaskSamplingEnabled ? 1 : 0;
-    if (rayTracedShadowBinding.shadowMaskSamplingEnabled &&
+    drawView.rayTracedShadowEnabled = rayTracedShadowResources.enabled ? 1 : 0;
+    if (consumesSurfaceLighting && rayTracedShadowResources.enabled &&
         m_rayTracedShadowInputs.enabled)
     {
         drawView.rayTracedShadowFilterRadiusPixels =
@@ -3661,25 +3806,92 @@ void OpaquePass::Execute(
         drawView.rayTracedShadowMode = m_rayTracedShadowInputs.mode;
         if (drawView.rayTracedShadowMode == RayTracedShadowMode::ReplaceRaster)
         {
-            ClearDirectionalShadowViewData(drawView);
+            DirectionalShadowRecordOutput disabledDirectionalShadow =
+                m_directionalShadowInputs;
+            disabledDirectionalShadow.enabled = false;
+            if (!ResolveDirectionalShadowViewData(
+                    drawView,
+                    disabledDirectionalShadow,
+                    m_recordIdentity,
+                    m_lightingPlan->GetIdentityHash()))
+            {
+                reportPlannedFailure(routePlan.gpuPacketCount != 0);
+                return;
+            }
+            shadowResources = {};
         }
     }
-    m_shadowStats.rayTracedFrameMaskReady = rayTracedShadowBinding.shadowMaskSamplingEnabled;
+    m_shadowStats.rayTracedFrameMaskReady = rayTracedShadowResources.enabled;
 
-    m_pipelineCache->UpdateViewConstants(drawView);
-    const RHIDescriptorSetRef frameDescriptorSet =
-        m_pipelineCache->GetFrameDescriptorSetSnapshot();
-    const bool retainedFrameDescriptorSet =
-        context.RetainSubmissionResource(
-            Ref<RefCounted>(frameDescriptorSet));
-    if (!retainedFrameDescriptorSet)
+    if (consumesSurfaceLighting)
     {
-        RVX_RENDER_WARN("OpaquePass: submission ownership rejected frame bindings");
-        drawView.rayTracedShadowEnabled = 0;
-        m_shadowStats.rayTracedFrameMaskReady = false;
+        const FrozenFrameLightResources& frozen =
+            m_lightingResources->frozenLightResources;
+        const bool graphBuffersMatchDescriptors =
+            context.GetBuffer(m_lightConstantsReadHandle) ==
+                frozen.lightConstantsBuffer.Get() &&
+            context.GetBuffer(m_pointLightsReadHandle) ==
+                frozen.pointLightsBuffer.Get() &&
+            context.GetBuffer(m_spotLightsReadHandle) ==
+                frozen.spotLightsBuffer.Get() &&
+            context.GetBuffer(m_clusterConstantsReadHandle) ==
+                frozen.clusterConstantsBuffer.Get() &&
+            context.GetBuffer(m_clusterDataReadHandle) ==
+                frozen.clusterBuffer.Get() &&
+            context.GetBuffer(m_clusterLightIndicesReadHandle) ==
+                frozen.clusterLightIndexBuffer.Get();
+        if (!graphBuffersMatchDescriptors)
+        {
+            RVX_RENDER_WARN(
+                "OpaquePass: graph light reads do not match frozen descriptor allocations");
+            reportPlannedFailure(routePlan.gpuPacketCount != 0);
+            return;
+        }
+    }
+
+    EnvironmentIBLFrameResources environmentIBLResources;
+    bool exactIBLViews = !consumesSurfaceLighting ||
+        !m_lightingResources->textureIBLEnabled;
+    if (consumesSurfaceLighting &&
+        m_lightingResources->textureIBLEnabled)
+    {
+        exactIBLViews = m_lightingResources->ResolveEnvironmentResources(
+            context.GetTextureView(m_environmentIBLIrradianceViewHandle),
+            context.GetTextureView(m_environmentIBLPrefilteredViewHandle),
+            context.GetTextureView(m_environmentIBLBRDFLUTViewHandle),
+            environmentIBLResources);
+        if (!exactIBLViews)
+        {
+            RVX_RENDER_WARN(
+                "OpaquePass: graph IBL reads do not match the retained LightingFramePlan allocations");
+            reportPlannedFailure(routePlan.gpuPacketCount != 0);
+            return;
+        }
+    }
+
+    LightingBindingSnapshotRequest lightingRequest;
+    lightingRequest.lightingPlanIdentity = m_lightingPlan->GetIdentityHash();
+    lightingRequest.frozenLightResources =
+        m_lightingResources->frozenLightResources;
+    lightingRequest.directionalShadow = shadowResources;
+    lightingRequest.rayTracedShadow = rayTracedShadowResources;
+    lightingRequest.environmentIBL = consumesSurfaceLighting
+        ? environmentIBLResources
+        : EnvironmentIBLFrameResources{};
+    m_lightingBindingSnapshot = std::make_shared<LightingBindingSnapshot>();
+    if (!m_pipelineCache->CreateLightingBindingSnapshot(
+            drawView, lightingRequest, *m_lightingBindingSnapshot) ||
+        !m_lightingBindingSnapshot->MatchesLightingPlan(
+            m_lightingPlan->GetIdentityHash()) ||
+        !RetainLightingBindingSnapshot(context, *m_lightingBindingSnapshot))
+    {
+        RVX_RENDER_WARN("OpaquePass: could not create record-owned lighting bindings");
+        m_lightingBindingSnapshot.reset();
         reportPlannedFailure(routePlan.gpuPacketCount != 0);
         return;
     }
+    const RHIDescriptorSetRef frameDescriptorSet =
+        m_lightingBindingSnapshot->frameDescriptorSet;
 
     // A sealed plan owns lane selection. Preflight the full Direct lane before
     // recording anything, and never replay Direct after a GPU-lane failure.
@@ -4089,6 +4301,36 @@ void OpaquePass::Execute(
         m_drawStats.failureReason = passRecorded
             ? RenderPolicyReason::None
             : RenderPolicyReason::UnexpectedRecordingFailure;
+
+        if (passRecorded && consumesSurfaceLighting && results != nullptr)
+        {
+            const uint64 lightingWorkCount =
+                static_cast<uint64>(m_drawStats.executedPacketCount) +
+                static_cast<uint64>(
+                    m_drawStats.gpuDrivenIndirectDrawCount);
+            if (lightingWorkCount != 0)
+            {
+                RenderLightingSurfaceExecutionEvidence evidence;
+                evidence.lightingPlanIdentity =
+                    m_lightingPlan->GetIdentityHash();
+                evidence.route = m_surfaceRoute ==
+                        OpaqueRasterSurfaceRoute::ForwardSpecialOpaque
+                    ? RenderLightingSurfaceRoute::ForwardSpecialOpaque
+                    : RenderLightingSurfaceRoute::ForwardOpaque;
+                evidence.frozenBufferMask = 0x3fu;
+                evidence.directionalShadowBound = shadowResources.enabled;
+                evidence.textureIBLBound =
+                    m_lightingResources->textureIBLEnabled;
+                evidence.exactIBLViews = exactIBLViews;
+                evidence.workCount = lightingWorkCount;
+                evidence.executed = true;
+                if (!results->RecordLightingSurfaceExecution(evidence))
+                {
+                    m_drawStats.failureReason =
+                        RenderPolicyReason::UnexpectedRecordingFailure;
+                }
+            }
+        }
 
         if (view.renderFrameExecutionReport != nullptr &&
             m_surfaceRoute == OpaqueRasterSurfaceRoute::AllOpaque)

@@ -75,6 +75,7 @@ TEST(EcsSceneSnapshotValidation, SortsAllSnapshotCategoriesByGenerationQualified
     AddMeshSource(registry, second, 200, 201);
 
     Light light;
+    light.intensityUnit = LightIntensityUnit::Lux;
     EXPECT_TRUE(registry.Add<Light>(third, light));
     EXPECT_TRUE(registry.Add<Light>(first, light));
     EXPECT_TRUE(registry.Add<Light>(second, light));

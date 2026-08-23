@@ -38,6 +38,7 @@ namespace RVX
                 .type = SceneECS::LightType::Directional,
                 .color = Vec3(1.0f, 0.95f, 0.86f),
                 .intensity = intensity,
+                .intensityUnit = SceneECS::LightIntensityUnit::Lux,
                 .shadowBias = 0.001f,
                 .castsShadows = true,
             };

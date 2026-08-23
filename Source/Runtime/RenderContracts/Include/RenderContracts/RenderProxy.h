@@ -13,11 +13,12 @@
 #include "RenderContracts/RenderMaterial.h"
 
 #include <cstddef>
+#include <optional>
 #include <vector>
 
 namespace RVX
 {
-    inline constexpr uint32 RVX_RENDER_PROXY_SNAPSHOT_SCHEMA_VERSION = 1;
+    inline constexpr uint32 RVX_RENDER_PROXY_SNAPSHOT_SCHEMA_VERSION = 2;
 
     struct RenderProxyId
     {
@@ -88,6 +89,11 @@ namespace RVX
         Vec3 direction{0.0f, 0.0f, -1.0f};
         Vec3 color{1.0f, 1.0f, 1.0f};
         float intensity = 1.0f;
+        /** Explicit authoring unit; Unspecified is rejected by extraction. */
+        RenderLightIntensityUnit intensityUnit =
+            RenderLightIntensityUnit::Unspecified;
+        /** Optional blackbody temperature carried unchanged from SceneECS. */
+        std::optional<float32> colorTemperatureKelvin{};
         float range = 10.0f;
         float innerConeAngle = 0.0f;
         float outerConeAngle = 0.7854f;

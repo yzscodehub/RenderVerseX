@@ -427,7 +427,10 @@ namespace
         AddWatchedResourceClosure(watchedResources,
                                   snapshot.shadowResource,
                                   registry);
+        const RenderLightCanonicalizationResult canonicalLight =
+            CanonicalizeRenderLightSnapshot(snapshot);
         if (snapshot.lightId == 0 ||
+            !canonicalLight.Succeeded() ||
             (snapshot.shadowResource.IsValid() &&
              !registry.HasExactEntry(snapshot.shadowResource)))
         {
@@ -440,7 +443,10 @@ namespace
         light.position = snapshot.position;
         light.direction = snapshot.direction;
         light.color = snapshot.color;
-        light.intensity = snapshot.intensity;
+        light.intensity = canonicalLight.canonicalIntensity;
+        light.intensityUnit = snapshot.intensityUnit;
+        light.canonicalIntensityUnit = canonicalLight.canonicalUnit;
+        light.colorTemperatureKelvin = canonicalLight.colorTemperatureKelvin;
         light.range = snapshot.range;
         light.innerConeAngle = snapshot.innerConeRadians;
         light.outerConeAngle = snapshot.outerConeRadians;
@@ -994,35 +1000,16 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
 
     for (const RenderLightSnapshot& snapshot : lights)
     {
-        AddWatchedResourceClosure(candidateWatchedResources,
-                                  snapshot.shadowResource,
-                                  registry);
-        if (snapshot.lightId == 0 ||
-            (snapshot.shadowResource.IsValid() &&
-             !registry.HasExactEntry(snapshot.shadowResource)))
+        RenderLight light;
+        if (!BuildRetainedLight(snapshot,
+                                registry,
+                                result,
+                                light,
+                                candidateWatchedResources))
         {
-            result.code = RenderFrameApplyCode::InvalidPacket;
             return result;
         }
-        RenderLight light;
-        light.lightId = snapshot.lightId;
-        light.type = ToRenderLightType(snapshot.type);
-        light.position = snapshot.position;
-        light.direction = snapshot.direction;
-        light.color = snapshot.color;
-        light.intensity = snapshot.intensity;
-        light.range = snapshot.range;
-        light.innerConeAngle = snapshot.innerConeRadians;
-        light.outerConeAngle = snapshot.outerConeRadians;
-        light.layerMask = snapshot.layerMask;
-        light.castsShadow = snapshot.castsShadows;
-        light.shadowResource =
-            snapshot.shadowResource.IsValid() &&
-                    registry.IsGPUReadyExact(snapshot.shadowResource)
-                ? snapshot.shadowResource
-                : RenderResourceHandle{};
         AddUniqueHandle(candidateReferences, light.shadowResource);
-        AddUniqueHandle(light.referencedResources, light.shadowResource);
         candidateLights.push_back(std::move(light));
     }
 

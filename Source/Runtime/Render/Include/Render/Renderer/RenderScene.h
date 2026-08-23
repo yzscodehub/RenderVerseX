@@ -136,7 +136,16 @@ namespace RVX
         Vec3 position{0.0f};
         Vec3 direction{0.0f, 0.0f, -1.0f};
         Vec3 color{1.0f};
+        /** Canonical photometric intensity consumed by renderer lighting. */
         float intensity = 1.0f;
+        /** Original authoring unit persisted from RenderLightSnapshot. */
+        RenderLightIntensityUnit intensityUnit =
+            RenderLightIntensityUnit::Unspecified;
+        /** Unit of intensity after RenderContracts canonicalization. */
+        RenderLightIntensityUnit canonicalIntensityUnit =
+            RenderLightIntensityUnit::Lux;
+        /** Validated authoring temperature; color conversion remains renderer-owned. */
+        std::optional<float32> colorTemperatureKelvin{};
         float range = 10.0f;
         float innerConeAngle = 0.0f;
         float outerConeAngle = 0.7854f;
@@ -306,11 +315,36 @@ namespace RVX
             m_drawCount += static_cast<uint32>(object.meshBatches.size());
             m_objects.push_back(object);
         }
-        void AddLight(const RenderLight& light)
+        [[nodiscard]] bool AddLight(const RenderLight& light)
         {
+            switch (light.type)
+            {
+                case RenderLight::Type::Directional:
+                    if (light.intensityUnit != RenderLightIntensityUnit::Lux ||
+                        light.canonicalIntensityUnit !=
+                            RenderLightIntensityUnit::Lux)
+                    {
+                        return false;
+                    }
+                    break;
+                case RenderLight::Type::Point:
+                case RenderLight::Type::Spot:
+                    if ((light.intensityUnit !=
+                             RenderLightIntensityUnit::Candela &&
+                         light.intensityUnit !=
+                             RenderLightIntensityUnit::Lumen) ||
+                        light.canonicalIntensityUnit !=
+                            RenderLightIntensityUnit::Candela)
+                    {
+                        return false;
+                    }
+                    break;
+                default: return false;
+            }
             m_lightIndices.insert_or_assign(
                 light.lightId, static_cast<uint32>(m_lights.size()));
             m_lights.push_back(light);
+            return true;
         }
 
     private:

@@ -22,6 +22,45 @@ namespace RVX
     class RHICommandContext;
     class LightManager;
 
+    /** Matches the fixed local-light loop bound in DefaultLit/DeferredLighting. */
+    inline constexpr uint32 RVX_CLUSTERED_LIGHTING_SHADER_MAX_LIGHTS_PER_PIXEL = 100U;
+
+    /**
+     * @brief Device-NDC depth interval represented by the frame projection.
+     *
+     * RenderVerseX's normal desktop projections use ZeroToOne for DX12,
+     * Vulkan, Metal, and the canonical OpenGL projection path.  The explicit
+     * value remains part of the clustering input so tests and future imported
+     * views cannot silently reinterpret a [-1, 1] projection as [0, 1].
+     */
+    enum class ClusterNdcDepthRange : uint8
+    {
+        ZeroToOne = 0,
+        MinusOneToOne,
+    };
+
+    /**
+     * @brief Immutable camera data used to construct one frame's clusters.
+     *
+     * `nearPlane`/`farPlane` deliberately come from the accepted ViewData,
+     * rather than the allocation-time ClusteringConfig.  The matrix pair and
+     * device-depth convention describe how those linear view distances map to
+     * the active projection, including reverse-Z views.
+     */
+    struct ClusteredLightingView
+    {
+        Mat4 viewMatrix = Mat4Identity();
+        Mat4 projectionMatrix = Mat4Identity();
+        Mat4 inverseProjectionMatrix = Mat4Identity();
+        float nearPlane = 0.1f;
+        float farPlane = 1000.0f;
+        uint32 screenWidth = 0;
+        uint32 screenHeight = 0;
+        ClusterNdcDepthRange ndcDepthRange =
+            ClusterNdcDepthRange::ZeroToOne;
+        bool reverseZ = false;
+    };
+
     /**
      * @brief Configuration for clustered lighting
      */
@@ -34,6 +73,10 @@ namespace RVX
         float nearPlane = 0.1f;
         float farPlane = 1000.0f;
         
+        /**
+         * @brief CPU-side cluster cap. It may never exceed the shader's
+         * RVX_MAX_CLUSTERED_LIGHTS_PER_PIXEL loop bound.
+         */
         uint32 maxLightsPerCluster = 100;
         
         /// Total cluster count
@@ -150,8 +193,7 @@ namespace RVX
          * @param screenWidth Screen width in pixels
          * @param screenHeight Screen height in pixels
          */
-        bool BeginFrame(const Mat4& viewMatrix, const Mat4& projMatrix,
-                        uint32 screenWidth, uint32 screenHeight);
+        bool BeginFrame(const ClusteredLightingView& view);
 
         /**
          * @brief Assign lights to clusters
@@ -208,6 +250,10 @@ namespace RVX
             uint32 activeClusters = 0;
             uint32 totalLightAssignments = 0;
             uint32 maxLightsInCluster = 0;
+            /** Clusters whose visible-light set exceeded the declared cap. */
+            uint32 overflowedClusterCount = 0;
+            /** Intersecting light assignments rejected by the cap. */
+            uint32 overflowLightAssignmentCount = 0;
             float avgLightsPerCluster = 0.0f;
         };
 
@@ -226,7 +272,7 @@ namespace RVX
             Vec4 maxPoint;  // .w unused
         };
 
-        void BuildClusterAABBs();
+        bool BuildClusterAABBs();
         void ClearClusters();
         bool IntersectsCluster(const ClusterAABB& cluster, const Vec3& lightPos, float range);
         void ReleaseResources();
@@ -236,6 +282,12 @@ namespace RVX
                             uint64& outLightIndexCapacity);
         bool CreateBuffers(uint64 totalClusters, uint64 lightIndexCapacity);
         bool UploadBuffer(RHIBuffer* buffer, const void* data, uint64 size, const char* label);
+        bool UnprojectDeviceDepth(float ndcX, float ndcY, float deviceDepth,
+                                  Vec3& outViewPosition) const;
+        bool BuildViewSpacePointAtDepth(const Vec3& nearViewPosition,
+                                        const Vec3& farViewPosition,
+                                        float viewDepth,
+                                        Vec3& outViewPosition) const;
 
         IRHIDevice* m_device = nullptr;
         bool m_initialized = false;
@@ -249,6 +301,11 @@ namespace RVX
         Mat4 m_invProjMatrix;
         uint32 m_screenWidth = 0;
         uint32 m_screenHeight = 0;
+        float m_frameNearPlane = 0.1f;
+        float m_frameFarPlane = 1000.0f;
+        ClusterNdcDepthRange m_ndcDepthRange =
+            ClusterNdcDepthRange::ZeroToOne;
+        bool m_reverseZ = false;
 
         // CPU-side cluster data
         std::vector<ClusterAABB> m_clusterAABBs;

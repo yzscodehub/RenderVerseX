@@ -191,6 +191,23 @@ namespace
             RVX::RenderDeferredOpaqueExecutionStatus::Completed;
         receipt.deferredOpaque.plannedPacketCount = 2;
         receipt.deferredOpaque.executedPacketCount = 2;
+        receipt.lighting.lightingPlanIdentity = 0xABCDULL;
+        receipt.lighting.sceneLightStateHash = 0x1234ULL;
+        receipt.lighting.primaryDirectionalLightId = 27;
+        receipt.lighting.pointLightRequestedCount = 3;
+        receipt.lighting.pointLightAdmittedCount = 2;
+        receipt.lighting.pointLightCapacity = 2;
+        receipt.lighting.pointLightOverflowCount = 1;
+        receipt.lighting.spotLightRequestedCount = 2;
+        receipt.lighting.spotLightAdmittedCount = 2;
+        receipt.lighting.spotLightCapacity = 4;
+        receipt.lighting.spotLightOverflowCount = 0;
+        receipt.lighting.csmRequested = true;
+        receipt.lighting.csmInputsReady = true;
+        receipt.lighting.csmExecutionReady = true;
+        receipt.lighting.iblRequested = true;
+        receipt.lighting.iblInputsReady = true;
+        receipt.lighting.iblExecutionReady = true;
 
         RVX::RenderFeatureExecutionReceipt feature;
         feature.featureId = RVX::BuiltinRenderFeatureIds::LegacyForwardMainChain;
@@ -518,6 +535,7 @@ namespace
                   std::string::npos);
         EXPECT_NE(json.find("\"renderExecutionReceipt\": {"),
                   std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 4"), std::string::npos);
         EXPECT_NE(json.find("\"sourceCommit\": \"" + std::string(40, 'a') +
                             "\""),
                   std::string::npos);
@@ -545,6 +563,27 @@ namespace
                   std::string::npos);
         EXPECT_NE(json.find("\"executedPacketCount\": 2"),
                   std::string::npos);
+        EXPECT_NE(json.find("\"lighting\": {"), std::string::npos);
+        EXPECT_NE(json.find("\"lightingPlanIdentity\": 43981"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"sceneLightStateHash\": 4660"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"primaryDirectionalLightId\": 27"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"pointLightRequestedCount\": 3"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"pointLightOverflowCount\": 1"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"spotLightCapacity\": 4"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"csmInputsReady\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"csmExecutionReady\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"iblInputsReady\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"iblExecutionReady\": true"),
+                  std::string::npos);
         EXPECT_NE(json.find("\"executionSucceeded\": true"),
                   std::string::npos);
         EXPECT_NE(json.find("\"presented\": true"), std::string::npos);
@@ -562,6 +601,41 @@ namespace
         EXPECT_NE(json.find("\"executedGraphPassCount\": 2"),
                   std::string::npos);
         EXPECT_NE(json.find("\"satisfied\": true"), std::string::npos);
+
+        RVX::RenderExecutionReceipt legacyV2Receipt =
+            MakeSuccessfulRenderExecutionReceipt(91);
+        legacyV2Receipt.schemaVersion = 2;
+        legacyV2Receipt.lighting = {};
+        report.visualContractReceipt->renderExecutionReceipt = legacyV2Receipt;
+        std::ostringstream legacyV2Stream;
+        RVX::WriteSampleReportJson(legacyV2Stream, report);
+        EXPECT_NE(legacyV2Stream.str().find("\"schemaVersion\": 2"),
+                  std::string::npos);
+        EXPECT_EQ(legacyV2Stream.str().find("\"lighting\":"),
+                  std::string::npos);
+
+        RVX::RenderExecutionReceipt unreleasedV3Receipt = legacyV2Receipt;
+        unreleasedV3Receipt.schemaVersion = 3;
+        report.visualContractReceipt->renderExecutionReceipt = unreleasedV3Receipt;
+        std::ostringstream unreleasedV3Stream;
+        RVX::WriteSampleReportJson(unreleasedV3Stream, report);
+        EXPECT_EQ(unreleasedV3Stream.str().find("\"deferredOpaque\":"),
+                  std::string::npos);
+        EXPECT_EQ(unreleasedV3Stream.str().find("\"lighting\":"),
+                  std::string::npos);
+
+        RVX::RenderExecutionReceipt legacyV1Receipt = legacyV2Receipt;
+        legacyV1Receipt.schemaVersion = 1;
+        legacyV1Receipt.deferredOpaque = {};
+        report.visualContractReceipt->renderExecutionReceipt = legacyV1Receipt;
+        std::ostringstream legacyV1Stream;
+        RVX::WriteSampleReportJson(legacyV1Stream, report);
+        EXPECT_NE(legacyV1Stream.str().find("\"schemaVersion\": 1"),
+                  std::string::npos);
+        EXPECT_EQ(legacyV1Stream.str().find("\"deferredOpaque\":"),
+                  std::string::npos);
+        EXPECT_EQ(legacyV1Stream.str().find("\"lighting\":"),
+                  std::string::npos);
     }
 
     TEST(SampleCLIValidation,

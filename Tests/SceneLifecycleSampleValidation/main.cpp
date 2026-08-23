@@ -91,7 +91,10 @@ namespace RVX
         desc.localTransform.translation = {2.0f, 0.0f, 0.0f};
         const SceneECS::SceneEntityReceipt created = commands.Create(desc);
         const SceneECS::SceneCommandReceipt lightAdded =
-            commands.Add(created, SceneECS::Light{.type = SceneECS::LightType::Point});
+            commands.Add(created, SceneECS::Light{
+                                      .type = SceneECS::LightType::Point,
+                                      .intensityUnit =
+                                          SceneECS::LightIntensityUnit::Candela});
         const SceneECS::SceneCommandBufferReceipt submitted =
             runtime.SubmitCommandBuffer(std::move(commands));
 
@@ -192,7 +195,9 @@ namespace RVX
         const ECS::EntityHandle entity = runtime.CreateEntity();
         ASSERT_TRUE(entity.IsValid());
         ASSERT_TRUE(runtime.AddFragment<SceneECS::Light>(
-            entity, {.type = SceneECS::LightType::Point, .intensity = 2.0f}));
+            entity, {.type = SceneECS::LightType::Point,
+                     .intensity = 2.0f,
+                     .intensityUnit = SceneECS::LightIntensityUnit::Candela}));
 
         SceneECS::MaterialSlots slots;
         slots.count = 1;
@@ -206,6 +211,7 @@ namespace RVX
             entity, {.type = SceneECS::LightType::Point,
                      .color = {0.35f, 0.65f, 1.0f},
                      .intensity = 3.0f,
+                     .intensityUnit = SceneECS::LightIntensityUnit::Candela,
                      .range = 8.0f}));
         ASSERT_TRUE(runtime.SetFragment<SceneECS::MaterialSlots>(entity, slots));
 

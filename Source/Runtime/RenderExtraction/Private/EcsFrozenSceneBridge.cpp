@@ -8,7 +8,9 @@
 #include "Core/Math/AABB.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
+#include <optional>
 #include <unordered_map>
 
 namespace RVX
@@ -66,8 +68,8 @@ namespace
         };
     }
 
-    [[nodiscard]] RenderLightProxy::Type ToRenderLightType(
-        SceneECS::LightType type)
+    [[nodiscard]] std::optional<RenderLightProxy::Type> ToRenderLightType(
+        SceneECS::LightType type) noexcept
     {
         switch (type)
         {
@@ -78,7 +80,47 @@ namespace
             case SceneECS::LightType::Spot:
                 return RenderLightProxy::Type::Spot;
         }
-        return RenderLightProxy::Type::Directional;
+        return std::nullopt;
+    }
+
+    [[nodiscard]] std::optional<RenderLightIntensityUnit>
+    ToRenderLightIntensityUnit(SceneECS::LightIntensityUnit unit) noexcept
+    {
+        switch (unit)
+        {
+            case SceneECS::LightIntensityUnit::Lux:
+                return RenderLightIntensityUnit::Lux;
+            case SceneECS::LightIntensityUnit::Candela:
+                return RenderLightIntensityUnit::Candela;
+            case SceneECS::LightIntensityUnit::Lumen:
+                return RenderLightIntensityUnit::Lumen;
+            case SceneECS::LightIntensityUnit::Unspecified:
+            default: return std::nullopt;
+        }
+    }
+
+    [[nodiscard]] bool IsValidLightPhotometricContract(
+        const SceneECS::Light& light) noexcept
+    {
+        if (!std::isfinite(light.intensity) || light.intensity < 0.0f ||
+            (light.colorTemperatureKelvin.has_value() &&
+             (!std::isfinite(*light.colorTemperatureKelvin) ||
+              *light.colorTemperatureKelvin < 1000.0f ||
+              *light.colorTemperatureKelvin > 40000.0f)))
+        {
+            return false;
+        }
+
+        switch (light.type)
+        {
+            case SceneECS::LightType::Directional:
+                return light.intensityUnit == SceneECS::LightIntensityUnit::Lux;
+            case SceneECS::LightType::Point:
+            case SceneECS::LightType::Spot:
+                return light.intensityUnit == SceneECS::LightIntensityUnit::Candela ||
+                       light.intensityUnit == SceneECS::LightIntensityUnit::Lumen;
+            default: return false;
+        }
     }
 
     [[nodiscard]] RenderSkyMode ToRenderSkyMode(SceneECS::SkyboxMode mode)
@@ -513,15 +555,28 @@ bool EcsFrozenSceneBridge::Build(
             return fail();
         }
 
+        const std::optional<RenderLightProxy::Type> renderLightType =
+            ToRenderLightType(light.source.type);
+        const std::optional<RenderLightIntensityUnit> intensityUnit =
+            ToRenderLightIntensityUnit(light.source.intensityUnit);
+        if (!renderLightType.has_value() || !intensityUnit.has_value() ||
+            !IsValidLightPhotometricContract(light.source))
+        {
+            result.code = EcsFrozenSceneBridgeCode::InvalidLightSource;
+            return fail();
+        }
+
         RenderLightProxy proxy;
         proxy.id.value = lightId;
         proxy.ownerId = lightId;
-        proxy.type = ToRenderLightType(light.source.type);
+        proxy.type = *renderLightType;
         proxy.position = Vec3(light.worldTransform[3]);
         proxy.direction =
             DirectionFromWorldTransform(light.worldTransform, Vec3(0.0f, 0.0f, -1.0f));
         proxy.color = light.source.color;
         proxy.intensity = light.source.intensity;
+        proxy.intensityUnit = *intensityUnit;
+        proxy.colorTemperatureKelvin = light.source.colorTemperatureKelvin;
         proxy.range = light.source.range;
         proxy.innerConeAngle = light.source.innerConeRadians;
         proxy.outerConeAngle = light.source.outerConeRadians;

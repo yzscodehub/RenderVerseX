@@ -13,6 +13,60 @@
 namespace RVX
 {
     class RenderScene;
+    class LightingFramePlan;
+
+    /** @brief Result of binding immutable lighting selection to GPU light buffers. */
+    enum class LightingPlanCollectionCode : uint8
+    {
+        NotBound = 0,
+        /** CPU selection passed all plan checks but has not reached GPU memory. */
+        Staged,
+        Ready,
+        InvalidPlan,
+        InvalidEvidence,
+        PerTypeCapacityExceeded,
+        UploadFailed,
+    };
+
+    /** Exact terminal status of one plan-to-GPU upload attempt. */
+    enum class LightingGpuUploadCode : uint8
+    {
+        NotAttempted = 0,
+        Ready,
+        NotInitialized,
+        PlanNotStaged,
+        MissingLightConstantsBuffer,
+        MissingPointLightsBuffer,
+        MissingSpotLightsBuffer,
+        InvalidLightConstantsBufferSize,
+        InvalidPointLightsBufferSize,
+        InvalidSpotLightsBufferSize,
+        MapLightConstantsFailed,
+        MapPointLightsFailed,
+        MapSpotLightsFailed,
+    };
+
+    [[nodiscard]] const char* GetLightingGpuUploadCodeName(
+        LightingGpuUploadCode code) noexcept;
+
+    /**
+     * @brief Result of atomically publishing one staged light plan to GPU buffers.
+     *
+     * A non-ready result never publishes a plan identity.  Callers must not
+     * freeze or bind the buffers from that frame, even if an older frame's
+     * bytes remain physically resident in an upload allocation.
+     */
+    struct LightingGpuUploadResult
+    {
+        LightingGpuUploadCode code = LightingGpuUploadCode::NotAttempted;
+        uint64 publishedLightingPlanIdentity = 0;
+
+        [[nodiscard]] constexpr bool Succeeded() const noexcept
+        {
+            return code == LightingGpuUploadCode::Ready &&
+                   publishedLightingPlanIdentity != 0;
+        }
+    };
 
     /**
      * @brief GPU light data for directional lights
@@ -96,6 +150,16 @@ namespace RVX
                            uint32 cullingMask = ~0U);
 
         /**
+         * @brief Collect exactly the immutable selection published by one lighting plan.
+         *
+         * The plan's aggregate and per-type capacity evidence are authoritative.
+         * Per-type GPU capacities are an additional hard safety limit; a plan
+         * that exceeds one fails closed rather than silently changing selection.
+         * @return True only when every selected plan light was accepted unchanged.
+         */
+        [[nodiscard]] bool CollectLights(const LightingFramePlan& plan);
+
+        /**
          * @brief Set the main directional light
          */
         void SetMainLight(const Vec3& direction, const Vec3& color, float intensity);
@@ -121,9 +185,13 @@ namespace RVX
         // =========================================================================
 
         /**
-         * @brief Update GPU buffers with current light data
+         * @brief Transactionally upload the staged light plan to GPU buffers.
+         *
+         * All three upload buffers are mapped before any bytes are written.
+         * A failed map unmaps any earlier mapping, invalidates the staged plan,
+         * and returns an explicit error so callers cannot publish stale bytes.
          */
-        void UpdateGPUBuffers();
+        [[nodiscard]] LightingGpuUploadResult UpdateGPUBuffers();
 
         /**
          * @brief Get the light constants buffer
@@ -164,12 +232,52 @@ namespace RVX
         {
             return m_pointShadowRequestCount + m_spotShadowRequestCount;
         }
+        [[nodiscard]] bool IsLightingPlanBound() const noexcept
+        {
+            return m_lightingPlanCollectionCode == LightingPlanCollectionCode::Ready &&
+                   m_gpuUploadResult.Succeeded();
+        }
+        [[nodiscard]] LightingPlanCollectionCode
+            GetLightingPlanCollectionCode() const noexcept
+        {
+            return m_lightingPlanCollectionCode;
+        }
+        [[nodiscard]] uint64 GetLightingPlanIdentity() const noexcept
+        {
+            return m_lightingPlanIdentity;
+        }
+        [[nodiscard]] const LightingGpuUploadResult&
+            GetLastGpuUploadResult() const noexcept
+        {
+            return m_gpuUploadResult;
+        }
+        [[nodiscard]] uint64 GetPrimaryDirectionalLightId() const noexcept
+        {
+            return m_primaryDirectionalLightId;
+        }
+        [[nodiscard]] bool HasPrimaryDirectionalShadowRequest() const noexcept
+        {
+            return m_primaryDirectionalShadowRequested;
+        }
+        [[nodiscard]] uint32 GetPlanLocalLightRequestedCount() const noexcept
+        {
+            return m_planLocalLightRequestedCount;
+        }
+        [[nodiscard]] uint32 GetPlanLocalLightAdmittedCount() const noexcept
+        {
+            return m_planLocalLightAdmittedCount;
+        }
+        [[nodiscard]] uint32 GetPlanLocalLightOverflowCount() const noexcept
+        {
+            return m_planLocalLightOverflowCount;
+        }
 
         static constexpr uint32 MaxPointLights = 256;
         static constexpr uint32 MaxSpotLights = 128;
 
     private:
         void EnsureBuffers();
+        LightingGpuUploadResult FailGpuUpload(LightingGpuUploadCode code);
 
         IRHIDevice* m_device = nullptr;
 
@@ -183,6 +291,18 @@ namespace RVX
         uint32 m_spotLightOverflowCount = 0;
         uint32 m_pointShadowRequestCount = 0;
         uint32 m_spotShadowRequestCount = 0;
+        LightingPlanCollectionCode m_lightingPlanCollectionCode =
+            LightingPlanCollectionCode::NotBound;
+        LightingGpuUploadResult m_gpuUploadResult;
+        /** Selection identity awaiting an all-or-nothing upload. */
+        uint64 m_stagedLightingPlanIdentity = 0;
+        /** Identity currently safe to bind for this frame. */
+        uint64 m_lightingPlanIdentity = 0;
+        uint64 m_primaryDirectionalLightId = 0;
+        bool m_primaryDirectionalShadowRequested = false;
+        uint32 m_planLocalLightRequestedCount = 0;
+        uint32 m_planLocalLightAdmittedCount = 0;
+        uint32 m_planLocalLightOverflowCount = 0;
 
         // GPU buffers
         RHIBufferRef m_lightConstantsBuffer;

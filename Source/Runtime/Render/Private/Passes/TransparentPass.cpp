@@ -10,6 +10,7 @@
 #include "Core/Log.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Lighting/ClusteredLighting.h"
+#include "Render/Lighting/LightingFramePlan.h"
 #include "Render/Lighting/LightManager.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/PipelineCache.h"
@@ -19,7 +20,9 @@
 #include "Resources/RenderResourceResolver.h"
 #include "RHI/RHIRenderPass.h"
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <memory>
 #include <vector>
 
@@ -66,15 +69,27 @@ namespace RVX
             const RenderResourceRegistry* resourceRegistry = nullptr;
             PipelineCache* pipelineCache = nullptr;
             MaterialSystem* materialSystem = nullptr;
-            FrameLightResources lightResources{};
             RHIPipelineRef skinnedPipeline;
             RHIPipelineRef rigidPipeline;
-            RasterDrawBindingSnapshot bindings{};
+            RasterObjectBindingSnapshot bindings{};
             std::vector<DrawRecord> draws;
             RGTextureHandle colorHandle{};
             RGTextureHandle depthHandle{};
+            RGTextureHandle directionalShadowReadHandle{};
+            RGTextureHandle rayTracedShadowMaskReadHandle{};
+            RGBufferHandle lightConstantsReadHandle{};
+            RGBufferHandle pointLightsReadHandle{};
+            RGBufferHandle spotLightsReadHandle{};
+            RGBufferHandle clusterConstantsReadHandle{};
+            RGBufferHandle clusterDataReadHandle{};
+            RGBufferHandle clusterLightIndicesReadHandle{};
             RGTextureViewHandle colorViewHandle{};
             RGTextureViewHandle depthViewHandle{};
+            RGTextureViewHandle directionalShadowViewHandle{};
+            RGTextureViewHandle rayTracedShadowMaskViewHandle{};
+            RGTextureViewHandle environmentIBLIrradianceViewHandle{};
+            RGTextureViewHandle environmentIBLPrefilteredViewHandle{};
+            RGTextureViewHandle environmentIBLBRDFLUTViewHandle{};
             RHIFormat colorFormat = RHIFormat::Unknown;
             bool depthAvailable = false;
             bool requestedEnabled = false;
@@ -194,6 +209,74 @@ namespace RVX
         {
             return !resource ||
                    builder.RetainSubmissionResource(Ref<RefCounted>(resource));
+        }
+
+        [[nodiscard]] bool RetainLightingBindingSnapshot(
+            RenderGraphPassContext& context,
+            const LightingBindingSnapshot& bindings)
+        {
+            return bindings.IsValid() &&
+                context.RetainSubmissionResource(
+                    Ref<RefCounted>(bindings.viewConstantBuffer.Get())) &&
+                context.RetainSubmissionResource(
+                    Ref<RefCounted>(bindings.directionalShadowView.Get())) &&
+                context.RetainSubmissionResource(
+                    Ref<RefCounted>(bindings.directionalShadowSampler.Get())) &&
+                context.RetainSubmissionResource(
+                    Ref<RefCounted>(bindings.lightConstantsBuffer.Get())) &&
+                context.RetainSubmissionResource(
+                    Ref<RefCounted>(bindings.pointLightsBuffer.Get())) &&
+                context.RetainSubmissionResource(
+                    Ref<RefCounted>(bindings.spotLightsBuffer.Get())) &&
+                context.RetainSubmissionResource(
+                    Ref<RefCounted>(bindings.rayTracedShadowMaskView.Get())) &&
+                context.RetainSubmissionResource(
+                    Ref<RefCounted>(bindings.clusterConstantsBuffer.Get())) &&
+                context.RetainSubmissionResource(
+                    Ref<RefCounted>(bindings.clusterBuffer.Get())) &&
+                context.RetainSubmissionResource(
+                    Ref<RefCounted>(bindings.clusterLightIndexBuffer.Get())) &&
+                context.RetainSubmissionResource(
+                    Ref<RefCounted>(bindings.environmentIBLIrradianceView.Get())) &&
+                context.RetainSubmissionResource(
+                    Ref<RefCounted>(bindings.environmentIBLPrefilteredView.Get())) &&
+                context.RetainSubmissionResource(
+                    Ref<RefCounted>(bindings.environmentIBLBRDFLUTView.Get())) &&
+                context.RetainSubmissionResource(
+                    Ref<RefCounted>(bindings.environmentIBLSampler.Get())) &&
+                context.RetainSubmissionResource(
+                    Ref<RefCounted>(bindings.frameSetLayout.Get())) &&
+                context.RetainSubmissionResource(
+                    Ref<RefCounted>(bindings.frameDescriptorSet.Get()));
+        }
+
+        [[nodiscard]] RGTextureViewHandle DeclareExactIBLRead(
+            RenderGraphBuilder& builder,
+            RGTextureHandle texture,
+            const RHITextureViewRef& retainedView,
+            const char* debugName)
+        {
+            const RHITextureDesc* const textureDesc =
+                builder.GetTextureDesc(texture);
+            if (!texture.IsValid() || textureDesc == nullptr || !retainedView ||
+                retainedView->GetTexture() == nullptr)
+            {
+                return {};
+            }
+
+            RHITextureViewDesc viewDesc;
+            viewDesc.format = retainedView->GetFormat();
+            viewDesc.dimension = textureDesc->dimension;
+            viewDesc.subresourceRange = retainedView->GetSubresourceRange();
+            viewDesc.type = RHITextureViewType::ShaderResource;
+            viewDesc.debugName = debugName;
+            RGTextureViewHandle view =
+                builder.CreateTextureView(texture, viewDesc);
+            return builder.Read(
+                view,
+                MakeRGAccessDesc(
+                    RHIResourceState::ShaderResource,
+                    RHIShaderStage::Pixel));
         }
 
         [[nodiscard]] bool RetainDrawResources(
@@ -324,7 +407,7 @@ namespace RVX
                 view.previousViewProjectionValid != 0 &&
                 !view.resetTemporalHistory;
             const uint32 objectSlot = data.bindings.objectCursor;
-            if (!data.pipelineCache->UpdateRasterDrawBindingSnapshotObject(
+            if (!data.pipelineCache->UpdateRasterObjectBindingSnapshotObject(
                     data.bindings,
                     object.worldMatrix,
                     object.normalMatrix,
@@ -398,10 +481,146 @@ namespace RVX
             data.colorFormat = colorDesc->format;
             data.depthAvailable = view.depthTarget.IsValid();
 
+            const uint64 lightingPlanIdentity =
+                data.execution.lightingPlan->GetIdentityHash();
+            const RenderLightingFrameResourceSnapshot& lightingResources =
+                *data.execution.lightingResources;
+            const bool lightingGraphInputsReady =
+                lightingResources.HasCurrentGraphResources(data.identity) &&
+                builder.GetBufferDesc(lightingResources.lightConstants) != nullptr &&
+                builder.GetBufferDesc(lightingResources.pointLights) != nullptr &&
+                builder.GetBufferDesc(lightingResources.spotLights) != nullptr &&
+                builder.GetBufferDesc(lightingResources.clusterConstants) != nullptr &&
+                builder.GetBufferDesc(lightingResources.clusterData) != nullptr &&
+                builder.GetBufferDesc(
+                    lightingResources.clusterLightIndices) != nullptr;
+            if (!lightingGraphInputsReady)
+            {
+                MarkTransparentPreflightFailure(
+                    data, RenderPolicyReason::ResourcesUnavailable);
+                return false;
+            }
+            data.lightConstantsReadHandle = builder.Read(
+                lightingResources.lightConstants,
+                RHIResourceState::ConstantBuffer,
+                RHIShaderStage::Pixel);
+            data.pointLightsReadHandle = builder.Read(
+                lightingResources.pointLights,
+                RHIResourceState::ShaderResource,
+                RHIShaderStage::Pixel);
+            data.spotLightsReadHandle = builder.Read(
+                lightingResources.spotLights,
+                RHIResourceState::ShaderResource,
+                RHIShaderStage::Pixel);
+            data.clusterConstantsReadHandle = builder.Read(
+                lightingResources.clusterConstants,
+                RHIResourceState::ConstantBuffer,
+                RHIShaderStage::Pixel);
+            data.clusterDataReadHandle = builder.Read(
+                lightingResources.clusterData,
+                RHIResourceState::ShaderResource,
+                RHIShaderStage::Pixel);
+            data.clusterLightIndicesReadHandle = builder.Read(
+                lightingResources.clusterLightIndices,
+                RHIResourceState::ShaderResource,
+                RHIShaderStage::Pixel);
+            if (!data.lightConstantsReadHandle.IsValid() ||
+                !data.pointLightsReadHandle.IsValid() ||
+                !data.spotLightsReadHandle.IsValid() ||
+                !data.clusterConstantsReadHandle.IsValid() ||
+                !data.clusterDataReadHandle.IsValid() ||
+                !data.clusterLightIndicesReadHandle.IsValid())
+            {
+                MarkTransparentPreflightFailure(
+                    data, RenderPolicyReason::ResourcesUnavailable);
+                return false;
+            }
+            const DirectionalShadowRecordOutput& directionalShadow =
+                data.execution.directionalShadow;
+            if (!directionalShadow.IsCompatibleWith(
+                    data.identity, lightingPlanIdentity))
+            {
+                MarkTransparentPreflightFailure(
+                    data, RenderPolicyReason::InconsistentFacts);
+                return false;
+            }
+            if (directionalShadow.enabled)
+            {
+                RGTextureHandle shadowMap = directionalShadow.shadowMap;
+                shadowMap.hasSubresourceRange = true;
+                shadowMap.subresourceRange = RHISubresourceRange{
+                    0, RVX_ALL_MIPS, 0, RVX_ALL_LAYERS, RHITextureAspect::Depth};
+                const RHITextureDesc* shadowDesc = builder.GetTextureDesc(shadowMap);
+                if (shadowDesc == nullptr)
+                {
+                    MarkTransparentPreflightFailure(
+                        data, RenderPolicyReason::ResourcesUnavailable);
+                    return false;
+                }
+                RHITextureViewDesc shadowViewDesc;
+                shadowViewDesc.format = shadowDesc->format;
+                shadowViewDesc.dimension = shadowDesc->dimension;
+                shadowViewDesc.subresourceRange = shadowMap.subresourceRange;
+                shadowViewDesc.type = RHITextureViewType::ShaderResource;
+                shadowViewDesc.debugName = "TransparentDirectionalShadowSRV";
+                data.directionalShadowReadHandle = shadowMap;
+                data.directionalShadowViewHandle = builder.CreateTextureView(
+                    shadowMap, shadowViewDesc);
+                data.directionalShadowViewHandle = builder.Read(
+                    data.directionalShadowViewHandle,
+                    MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                                     RHIShaderStage::Pixel));
+                if (!data.directionalShadowViewHandle.IsValid())
+                {
+                    MarkTransparentPreflightFailure(
+                        data, RenderPolicyReason::ResourcesUnavailable);
+                    return false;
+                }
+            }
+
+            const RayTracedShadowRecordOutput& rayTracedShadow =
+                data.execution.rayTracedShadow;
+            if (!rayTracedShadow.IsCompatibleWith(data.identity))
+            {
+                MarkTransparentPreflightFailure(
+                    data, RenderPolicyReason::InconsistentFacts);
+                return false;
+            }
+            if (rayTracedShadow.enabled)
+            {
+                const RHITextureDesc* rayTracedShadowDesc =
+                    builder.GetTextureDesc(rayTracedShadow.shadowMask);
+                if (rayTracedShadowDesc == nullptr)
+                {
+                    MarkTransparentPreflightFailure(
+                        data, RenderPolicyReason::ResourcesUnavailable);
+                    return false;
+                }
+                RHITextureViewDesc rayTracedShadowViewDesc;
+                rayTracedShadowViewDesc.format = rayTracedShadowDesc->format;
+                rayTracedShadowViewDesc.dimension = rayTracedShadowDesc->dimension;
+                rayTracedShadowViewDesc.subresourceRange = RHISubresourceRange::All();
+                rayTracedShadowViewDesc.type = RHITextureViewType::ShaderResource;
+                rayTracedShadowViewDesc.debugName = "TransparentRayTracedShadowMaskSRV";
+                data.rayTracedShadowMaskReadHandle = rayTracedShadow.shadowMask;
+                data.rayTracedShadowMaskViewHandle = builder.CreateTextureView(
+                    data.rayTracedShadowMaskReadHandle, rayTracedShadowViewDesc);
+                data.rayTracedShadowMaskViewHandle = builder.Read(
+                    data.rayTracedShadowMaskViewHandle,
+                    MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                                     RHIShaderStage::Pixel));
+                if (!data.rayTracedShadowMaskViewHandle.IsValid())
+                {
+                    MarkTransparentPreflightFailure(
+                        data, RenderPolicyReason::ResourcesUnavailable);
+                    return false;
+                }
+            }
+
             const uint32 candidateCount = static_cast<uint32>(
                 data.frameSnapshot->transparentDrawItems.size());
-            if (!data.pipelineCache->CreateTransparentRasterDrawBindingSnapshot(
-                    view, candidateCount, data.lightResources, data.bindings))
+            if (!data.pipelineCache->CreateRasterObjectBindingSnapshot(
+                    candidateCount, data.bindings))
             {
                 MarkTransparentPreflightFailure(
                     data, RenderPolicyReason::ResourcesUnavailable);
@@ -476,19 +695,27 @@ namespace RVX
 
             if (view.textureIBLEnabled != 0)
             {
+                const RenderLightingFrameResourceSnapshot& lightingResources =
+                    *data.execution.lightingResources;
+                data.environmentIBLIrradianceViewHandle = DeclareExactIBLRead(
+                    builder,
+                    lightingResources.environmentIBLIrradiance,
+                    lightingResources.environmentIBLIrradianceView,
+                    "TransparentEnvironmentIrradianceSRV");
+                data.environmentIBLPrefilteredViewHandle = DeclareExactIBLRead(
+                    builder,
+                    lightingResources.environmentIBLPrefiltered,
+                    lightingResources.environmentIBLPrefilteredView,
+                    "TransparentEnvironmentPrefilteredSRV");
+                data.environmentIBLBRDFLUTViewHandle = DeclareExactIBLRead(
+                    builder,
+                    lightingResources.environmentIBLBRDFLUT,
+                    lightingResources.environmentIBLBRDFLUTView,
+                    "TransparentEnvironmentBRDFLUTSRV");
                 const bool iblReadsDeclared =
-                    view.environmentIrradianceTexture.IsValid() &&
-                    builder.Read(
-                        view.environmentIrradianceTexture,
-                        RHIShaderStage::Pixel).IsValid() &&
-                    view.environmentPrefilteredTexture.IsValid() &&
-                    builder.Read(
-                        view.environmentPrefilteredTexture,
-                        RHIShaderStage::Pixel).IsValid() &&
-                    view.environmentBRDFLUTTexture.IsValid() &&
-                    builder.Read(
-                        view.environmentBRDFLUTTexture,
-                        RHIShaderStage::Pixel).IsValid();
+                    data.environmentIBLIrradianceViewHandle.IsValid() &&
+                    data.environmentIBLPrefilteredViewHandle.IsValid() &&
+                    data.environmentIBLBRDFLUTViewHandle.IsValid();
                 if (!iblReadsDeclared)
                 {
                     data.draws.clear();
@@ -566,6 +793,26 @@ namespace RVX
                 data.draws.empty() ||
                 !data.skinnedPipeline || !data.rigidPipeline ||
                 !data.bindings.IsValid() ||
+                data.execution.lightingPlan == nullptr ||
+                !data.execution.lightingPlan->IsValid() ||
+                data.execution.lightingPlan->GetIdentityHash() == 0 ||
+                data.execution.lightingResources == nullptr ||
+                !data.execution.lightingResources->IsComplete() ||
+                data.execution.lightingResources->lightingPlanIdentity !=
+                    data.execution.lightingPlan->GetIdentityHash() ||
+                data.execution.frameSnapshot == nullptr ||
+                data.execution.frameSnapshot->lightingPlan !=
+                    data.execution.lightingPlan ||
+                data.execution.frameSnapshot->lightingResources !=
+                    data.execution.lightingResources ||
+                data.execution.view.textureIBLEnabled != static_cast<uint32>(
+                    data.execution.lightingResources->textureIBLEnabled) ||
+                data.execution.lightingPlan->GetCSMRequest().inputsReady !=
+                    data.execution.directionalShadow.enabled ||
+                !data.execution.directionalShadow.IsCompatibleWith(
+                    data.identity,
+                    data.execution.lightingPlan->GetIdentityHash()) ||
+                !data.execution.rayTracedShadow.IsCompatibleWith(data.identity) ||
                 !data.identity.IsValid() || data.identity.graph == nullptr ||
                 !data.identity.Matches(*data.identity.graph) ||
                 !data.colorHandle.IsValid() ||
@@ -595,6 +842,152 @@ namespace RVX
             if (!colorView || (data.depthAvailable && !depthView))
             {
                 RVX_CORE_WARN("TransparentPass: failed to resolve graph-owned attachment views");
+                return false;
+            }
+
+            ViewData drawView = data.execution.view;
+            const uint64 lightingPlanIdentity =
+                data.execution.lightingPlan->GetIdentityHash();
+            if (!ResolveDirectionalShadowViewData(
+                    drawView,
+                    data.execution.directionalShadow,
+                    data.identity,
+                    lightingPlanIdentity))
+            {
+                RVX_CORE_WARN("TransparentPass: invalid directional-shadow output");
+                return false;
+            }
+
+            DirectionalShadowFrameResources directionalShadowResources;
+            if (data.execution.directionalShadow.enabled)
+            {
+                if (!data.directionalShadowReadHandle.IsValid() ||
+                    !data.directionalShadowViewHandle.IsValid())
+                {
+                    RVX_CORE_WARN("TransparentPass: directional shadow has no graph read");
+                    return false;
+                }
+                directionalShadowResources.shadowMapView =
+                    context.GetTextureView(data.directionalShadowViewHandle);
+                if (directionalShadowResources.shadowMapView == nullptr)
+                {
+                    RVX_CORE_WARN("TransparentPass: failed to resolve directional shadow view");
+                    return false;
+                }
+                directionalShadowResources.enabled = true;
+            }
+
+            RayTracedShadowFrameResources rayTracedShadowResources;
+            const RayTracedShadowRecordOutput& rayTracedShadow =
+                data.execution.rayTracedShadow;
+            const bool rayTracedStateMatches =
+                rayTracedShadow.executionState != nullptr &&
+                rayTracedShadow.executionState->identity == rayTracedShadow.identity;
+            const bool rayTracedExecutionFailed = rayTracedStateMatches &&
+                rayTracedShadow.executionState->executionFailed.load(
+                    std::memory_order_acquire);
+            const bool rayTracedExecutionReady = rayTracedStateMatches &&
+                !rayTracedExecutionFailed &&
+                rayTracedShadow.executionState->dispatchReady.load(
+                    std::memory_order_acquire);
+            if (rayTracedExecutionReady &&
+                data.rayTracedShadowMaskReadHandle.IsValid() &&
+                data.rayTracedShadowMaskViewHandle.IsValid())
+            {
+                rayTracedShadowResources.shadowMaskView = context.GetTextureView(
+                    data.rayTracedShadowMaskViewHandle);
+                rayTracedShadowResources.enabled =
+                    rayTracedShadowResources.shadowMaskView != nullptr;
+            }
+            if (rayTracedExecutionFailed)
+            {
+                RVX_RENDER_WARN(
+                    "TransparentPass: ray-traced shadow producer failed; using raster shadowing");
+            }
+            drawView.rayTracedShadowEnabled =
+                rayTracedShadowResources.enabled ? 1 : 0;
+            drawView.rayTracedShadowMode = RayTracedShadowMode::ComplementRaster;
+            if (rayTracedShadowResources.enabled && rayTracedShadow.enabled)
+            {
+                drawView.rayTracedShadowFilterRadiusPixels = std::max(
+                    0.0f, rayTracedShadow.filterRadiusTexels);
+                drawView.rayTracedShadowMode = rayTracedShadow.mode;
+                if (drawView.rayTracedShadowMode ==
+                    RayTracedShadowMode::ReplaceRaster)
+                {
+                    DirectionalShadowRecordOutput disabledDirectionalShadow =
+                        data.execution.directionalShadow;
+                    disabledDirectionalShadow.enabled = false;
+                    if (!ResolveDirectionalShadowViewData(
+                            drawView,
+                            disabledDirectionalShadow,
+                            data.identity,
+                            lightingPlanIdentity))
+                    {
+                        return false;
+                    }
+                    directionalShadowResources = {};
+                }
+            }
+
+            const FrozenFrameLightResources& frozen =
+                data.execution.lightingResources->frozenLightResources;
+            const bool graphBuffersMatchDescriptors =
+                context.GetBuffer(data.lightConstantsReadHandle) ==
+                    frozen.lightConstantsBuffer.Get() &&
+                context.GetBuffer(data.pointLightsReadHandle) ==
+                    frozen.pointLightsBuffer.Get() &&
+                context.GetBuffer(data.spotLightsReadHandle) ==
+                    frozen.spotLightsBuffer.Get() &&
+                context.GetBuffer(data.clusterConstantsReadHandle) ==
+                    frozen.clusterConstantsBuffer.Get() &&
+                context.GetBuffer(data.clusterDataReadHandle) ==
+                    frozen.clusterBuffer.Get() &&
+                context.GetBuffer(data.clusterLightIndicesReadHandle) ==
+                    frozen.clusterLightIndexBuffer.Get();
+            if (!graphBuffersMatchDescriptors)
+            {
+                RVX_RENDER_WARN(
+                    "TransparentPass: graph light reads do not match frozen descriptor allocations");
+                return false;
+            }
+
+            LightingBindingSnapshotRequest lightingRequest;
+            lightingRequest.lightingPlanIdentity = lightingPlanIdentity;
+            lightingRequest.frozenLightResources =
+                data.execution.lightingResources->frozenLightResources;
+            lightingRequest.directionalShadow = directionalShadowResources;
+            lightingRequest.rayTracedShadow = rayTracedShadowResources;
+            EnvironmentIBLFrameResources environmentIBLResources;
+            const bool exactIBLViews =
+                data.execution.lightingResources->ResolveEnvironmentResources(
+                    data.execution.lightingResources->textureIBLEnabled
+                        ? context.GetTextureView(
+                              data.environmentIBLIrradianceViewHandle)
+                        : nullptr,
+                    data.execution.lightingResources->textureIBLEnabled
+                        ? context.GetTextureView(
+                              data.environmentIBLPrefilteredViewHandle)
+                        : nullptr,
+                    data.execution.lightingResources->textureIBLEnabled
+                        ? context.GetTextureView(
+                              data.environmentIBLBRDFLUTViewHandle)
+                        : nullptr,
+                    environmentIBLResources);
+            if (!exactIBLViews)
+            {
+                RVX_CORE_WARN(
+                    "TransparentPass: graph IBL reads do not match the retained LightingFramePlan allocations");
+                return false;
+            }
+            lightingRequest.environmentIBL = environmentIBLResources;
+            LightingBindingSnapshot lightingBindings;
+            if (!data.pipelineCache->CreateLightingBindingSnapshot(
+                    drawView, lightingRequest, lightingBindings) ||
+                !lightingBindings.MatchesLightingPlan(lightingPlanIdentity) ||
+                !RetainLightingBindingSnapshot(context, lightingBindings))
+            {
+                RVX_CORE_WARN("TransparentPass: could not create record-owned lighting bindings");
                 return false;
             }
 
@@ -640,7 +1033,7 @@ namespace RVX
                 {
                     ctx.SetPipeline(pipeline);
                     ctx.SetDescriptorSet(
-                        0, data.bindings.frameDescriptorSet.Get());
+                        0, lightingBindings.frameDescriptorSet.Get());
                     currentPipeline = pipeline;
                 }
 
@@ -680,8 +1073,24 @@ namespace RVX
                 ++stats.executedDrawCount;
             }
             ctx.EndRenderPass();
-            return !executionFailed &&
+            const bool succeeded = !executionFailed &&
                 stats.executedDrawCount == stats.preparedDrawItemCount;
+            if (succeeded && stats.executedDrawCount != 0)
+            {
+                RenderLightingSurfaceExecutionEvidence evidence;
+                evidence.lightingPlanIdentity = lightingPlanIdentity;
+                evidence.route = RenderLightingSurfaceRoute::Transparent;
+                evidence.frozenBufferMask = 0x3fu;
+                evidence.directionalShadowBound =
+                    directionalShadowResources.enabled;
+                evidence.textureIBLBound =
+                    data.execution.lightingResources->textureIBLEnabled;
+                evidence.exactIBLViews = exactIBLViews;
+                evidence.workCount = stats.executedDrawCount;
+                evidence.executed = true;
+                return data.results->RecordLightingSurfaceExecution(evidence);
+            }
+            return succeeded;
         }
     } // namespace
 
@@ -752,32 +1161,36 @@ namespace RVX
         const bool depthValid = !execution.view.depthTarget.IsValid() ||
             (HasCurrentGraphProvenance(execution.view.depthTarget, execution.identity) &&
              graph.GetTextureDesc(execution.view.depthTarget) != nullptr);
+        const bool lightingInputsValid = execution.lightingPlan != nullptr &&
+            execution.lightingPlan->IsValid() &&
+            execution.lightingPlan->GetIdentityHash() != 0 &&
+            execution.lightingResources != nullptr &&
+            execution.lightingResources->IsComplete() &&
+            execution.lightingResources->lightingPlanIdentity ==
+                execution.lightingPlan->GetIdentityHash() &&
+            execution.frameSnapshot != nullptr &&
+            execution.frameSnapshot->lightingPlan == execution.lightingPlan &&
+            execution.frameSnapshot->lightingResources == execution.lightingResources &&
+            execution.view.textureIBLEnabled ==
+                static_cast<uint32>(execution.lightingResources->textureIBLEnabled) &&
+            execution.lightingPlan->GetIBLRequest().inputsReady ==
+                execution.lightingResources->textureIBLEnabled &&
+            execution.lightingPlan->GetCSMRequest().inputsReady ==
+                execution.directionalShadow.enabled &&
+            execution.directionalShadow.IsCompatibleWith(
+                execution.identity,
+                execution.lightingPlan->GetIdentityHash()) &&
+            execution.rayTracedShadow.IsCompatibleWith(execution.identity);
         const bool contextValid = !context.legacyAdapter &&
             context.MatchesTargetGraph(graph) && context.IsFrameIdentityValid() &&
             execution.MatchesTargetGraph(graph) && execution.IsFrameIdentityValid() &&
             execution.frameSnapshot != nullptr && execution.results != nullptr &&
-            colorValid && depthValid;
+            colorValid && depthValid && lightingInputsValid;
         const bool resultOwnershipValid = execution.identity.Matches(graph) &&
             execution.results != nullptr &&
             execution.results->identity == execution.identity &&
             execution.frameSnapshot != nullptr &&
             execution.frameSnapshot->identity == execution.identity;
-
-        FrameLightResources lightResources;
-        if (m_lightManager != nullptr)
-        {
-            lightResources.lightConstantsBuffer = m_lightManager->GetLightConstantsBuffer();
-            lightResources.pointLightsBuffer = m_lightManager->GetPointLightsBuffer();
-            lightResources.spotLightsBuffer = m_lightManager->GetSpotLightsBuffer();
-        }
-        if (m_clusteredLighting != nullptr && m_clusteredLighting->IsInitialized())
-        {
-            lightResources.clusterConstantsBuffer =
-                m_clusteredLighting->GetClusterConstantsBuffer();
-            lightResources.clusterBuffer = m_clusteredLighting->GetClusterBuffer();
-            lightResources.clusterLightIndexBuffer =
-                m_clusteredLighting->GetLightIndexBuffer();
-        }
 
         const bool requestedEnabled = m_enabled;
         PipelineCache* const pipelineCache = m_pipelineCache;
@@ -796,7 +1209,6 @@ namespace RVX
              pipelineCache,
              materialSystem,
              resourceRegistry,
-             lightResources,
              frameSnapshot,
              results,
              resultOwnershipValid](RenderGraphBuilder& builder, GraphPassData& data)
@@ -808,7 +1220,6 @@ namespace RVX
                 data.pipelineCache = pipelineCache;
                 data.materialSystem = materialSystem;
                 data.resourceRegistry = resourceRegistry;
-                data.lightResources = lightResources;
                 data.frameSnapshot = frameSnapshot;
                 data.results = resultOwnershipValid ? results : nullptr;
                 if (!PrepareRecording(data, builder))

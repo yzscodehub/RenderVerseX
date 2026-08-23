@@ -922,6 +922,19 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME LightingFramePlanValidation
+    LANE unit
+    SOURCES LightingFramePlanValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::RenderFoundation
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+    TAGS subsystem.render subsystem.lighting suite.contract
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
     NAME UIValidation
     LANE unit
     SOURCES UIValidation/main.cpp

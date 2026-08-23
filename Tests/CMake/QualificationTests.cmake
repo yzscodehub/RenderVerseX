@@ -27,6 +27,15 @@ if(RVX_ENABLE_GFX07_DEFERRED_NATIVE)
 elseif(NOT WIN32)
     message(STATUS "GFX07 Deferred qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
 endif()
+option(RVX_ENABLE_GFX08_LIGHTING_NATIVE
+    "Register the fail-closed DX12/Vulkan GFX08 Forward+/Deferred lighting gate" OFF)
+if(RVX_ENABLE_GFX08_LIGHTING_NATIVE)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_GFX08_LIGHTING_NATIVE requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "GFX08 lighting qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
 option(RVX_ENABLE_PR_SMOKE
     "Register only the fixed primary-backend SceneLifecycle PR smoke" OFF)
 option(RVX_ENABLE_COMPATIBILITY_SMOKE
@@ -51,7 +60,7 @@ if(RVX_DEDICATED_QUALIFICATION_MODE_COUNT GREATER 0 AND
 endif()
 
 if((RVX_ENABLE_P0_QUALIFICATION_MATRIX OR RVX_ENABLE_P1_QUALIFICATION_MATRIX
-    OR RVX_ENABLE_GFX07_DEFERRED_NATIVE)
+    OR RVX_ENABLE_GFX07_DEFERRED_NATIVE OR RVX_ENABLE_GFX08_LIGHTING_NATIVE)
    AND (NOT TARGET VisualGoldenValidation OR NOT TARGET ImageContentValidation OR NOT TARGET SampleReportContentValidation))
     message(FATAL_ERROR "Enabled qualification matrices require visual and SampleReport validators")
 endif()
@@ -214,6 +223,123 @@ function(rvx_add_renderverse_primary_smoke SAMPLE_ID SAMPLE_LABEL ASSET_ID BACKE
         TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME}
             suite.${RVX_SAMPLE_SUITE}
         SUITE ${RVX_SAMPLE_SUITE}
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+# GFX08 proves that the same immutable lighting selection reaches both raster
+# recipes.  Each producer is paired with image and structured-receipt
+# validators; no backend absence, CSM fallback, or missing lighting receipt is
+# accepted by the required-suite runner.
+function(rvx_add_renderverse_gfx08_lighting_native
+         BACKEND_NAME BACKEND_LABEL PIPELINE_NAME PIPELINE_LABEL)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation)
+        message(FATAL_ERROR "GFX08 lighting qualification requires RenderVerseSamples and report/image validators")
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}GFX08${PIPELINE_LABEL}LightingShadows")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(startup_report
+        "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}Capture
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample lighting-shadows
+            --backend ${BACKEND_NAME}
+            --pipeline ${PIPELINE_NAME}
+            --quality high
+            --smoke
+            --frames 8
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 120
+            --width 640
+            --height 360
+            --screenshot "${capture}"
+            --report "${report}"
+            --startup-report "${startup_report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS RenderVerseSamples ImageContentValidation SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            backend.${BACKEND_NAME} suite.gfx08
+        SUITE gfx08-lighting
+        TIMEOUT 180
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            backend.${BACKEND_NAME} suite.gfx08
+        SUITE gfx08-lighting
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ReceiptValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name lighting-shadows
+            --category visual
+            --backend ${BACKEND_NAME}
+            --require-requested-backend ${BACKEND_NAME}
+            --require-actual-backend ${BACKEND_NAME}
+            --quality high
+            --min-frame-count 8
+            --min-visible-objects 1
+            --require-ready
+            --require-readiness-wait
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-render-pipeline ${PIPELINE_NAME}
+            --require-lighting-plan
+            --require-csm-requested
+            --require-csm-execution-ready
+            --forbid-fallback-reasons
+            --forbid-render-feature-fallbacks
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            backend.${BACKEND_NAME} suite.gfx08
+        SUITE gfx08-lighting
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         FIXTURES_REQUIRED "${test_prefix}FreshCapture"
@@ -2441,6 +2567,19 @@ if(RVX_ENABLE_GFX07_DEFERRED_NATIVE)
     # suite.gfx07-deferred (and the narrower suite.gfx07 tag) for local runs.
     rvx_add_renderverse_gfx07_deferred_native(dx12 DX12)
     rvx_add_renderverse_gfx07_deferred_native(vulkan Vulkan)
+endif()
+
+if(RVX_ENABLE_GFX08_LIGHTING_NATIVE)
+    # The suite target is RVXValidationSuiteGfx08Lighting and its exact CTest
+    # label is suite.gfx08-lighting.
+    rvx_add_renderverse_gfx08_lighting_native(
+        dx12 DX12 forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx08_lighting_native(
+        dx12 DX12 deferred Deferred)
+    rvx_add_renderverse_gfx08_lighting_native(
+        vulkan Vulkan forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx08_lighting_native(
+        vulkan Vulkan deferred Deferred)
 endif()
 
 if(WIN32

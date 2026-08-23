@@ -12,6 +12,7 @@
 #include "RenderContracts/RenderMaterial.h"
 
 #include <array>
+#include <optional>
 
 namespace RVX::SceneECS
 {
@@ -98,12 +99,31 @@ namespace RVX::SceneECS
         Spot,
     };
 
+    /**
+     * @brief Explicit authoring unit for SceneECS::Light::intensity.
+     *
+     * This source-side enum deliberately does not reuse the render contract:
+     * extraction owns the explicit mapping between the authoring and render
+     * domains. Unspecified is a construction sentinel and is rejected before
+     * a light becomes a RenderLightProxy.
+     */
+    enum class LightIntensityUnit : uint8
+    {
+        Unspecified = 0,
+        Lux,
+        Candela,
+        Lumen,
+    };
+
     /** @brief Value-only illumination source. World-space pose comes from RenderWorldTransform. */
     struct Light
     {
         LightType type = LightType::Directional;
         Vec3 color{1.0f};
         float32 intensity = 1.0f;
+        LightIntensityUnit intensityUnit = LightIntensityUnit::Unspecified;
+        /** @brief Optional blackbody temperature in the closed [1000, 40000] K range. */
+        std::optional<float32> colorTemperatureKelvin{};
         float32 range = 10.0f;
         float32 innerConeRadians = 0.0f;
         float32 outerConeRadians = 0.78539816f;

@@ -3900,6 +3900,7 @@ namespace RVX
             .type = SceneECS::LightType::Point,
             .color = Vec3(1.0f, 0.78f, 0.55f),
             .intensity = workloadSpan * workloadSpan * 0.5f,
+            .intensityUnit = SceneECS::LightIntensityUnit::Candela,
             .range = workloadSpan * 2.0f,
             .castsShadows = false,
         };

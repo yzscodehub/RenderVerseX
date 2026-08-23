@@ -117,6 +117,7 @@ namespace RVX
                 .type = SceneECS::LightType::Point,
                 .color = Vec3(1.0f, 0.82f, 0.64f),
                 .intensity = 2.0f,
+                .intensityUnit = SceneECS::LightIntensityUnit::Candela,
                 .range = 6.0f,
                 .castsShadows = false,
             };

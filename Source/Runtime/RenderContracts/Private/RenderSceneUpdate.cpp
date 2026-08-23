@@ -1,6 +1,7 @@
 #include "RenderContracts/RenderSceneUpdate.h"
 
 #include <algorithm>
+#include <cmath>
 #include <unordered_set>
 #include <utility>
 
@@ -8,6 +9,37 @@ namespace RVX
 {
 namespace
 {
+    constexpr float32 RVX_RENDER_LIGHT_TWO_PI = 6.28318530717958647692f;
+    constexpr float32 RVX_RENDER_LIGHT_PI = 3.14159265358979323846f;
+    constexpr float32 RVX_RENDER_LIGHT_MIN_COLOR_TEMPERATURE_KELVIN = 1000.0f;
+    constexpr float32 RVX_RENDER_LIGHT_MAX_COLOR_TEMPERATURE_KELVIN = 40000.0f;
+
+    [[nodiscard]] bool IsFiniteNonNegative(float32 value) noexcept
+    {
+        return std::isfinite(value) && value >= 0.0f;
+    }
+
+    [[nodiscard]] bool IsValidSpotCone(const RenderLightSnapshot& light) noexcept
+    {
+        return std::isfinite(light.innerConeRadians) &&
+               std::isfinite(light.outerConeRadians) &&
+               light.innerConeRadians >= 0.0f &&
+               light.outerConeRadians > 0.0f &&
+               light.innerConeRadians <= light.outerConeRadians &&
+               light.outerConeRadians < RVX_RENDER_LIGHT_PI;
+    }
+
+    [[nodiscard]] bool IsValidColorTemperature(
+        const std::optional<float32>& colorTemperatureKelvin) noexcept
+    {
+        return !colorTemperatureKelvin.has_value() ||
+               (std::isfinite(*colorTemperatureKelvin) &&
+                *colorTemperatureKelvin >=
+                    RVX_RENDER_LIGHT_MIN_COLOR_TEMPERATURE_KELVIN &&
+                *colorTemperatureKelvin <=
+                    RVX_RENDER_LIGHT_MAX_COLOR_TEMPERATURE_KELVIN);
+    }
+
     bool EqualMatrix(const Mat4& left, const Mat4& right) noexcept
     {
         for (uint32 column = 0; column < 4; ++column)
@@ -139,7 +171,128 @@ bool AreRenderLightSnapshotsEqual(const RenderLightSnapshot& left,
            left.outerConeRadians == right.outerConeRadians &&
            left.shadowResource == right.shadowResource &&
            left.layerMask == right.layerMask &&
-           left.castsShadows == right.castsShadows;
+           left.castsShadows == right.castsShadows &&
+           left.intensityUnit == right.intensityUnit &&
+           left.colorTemperatureKelvin == right.colorTemperatureKelvin;
+}
+
+RenderLightCanonicalizationResult CanonicalizeRenderLightSnapshot(
+    const RenderLightSnapshot& light) noexcept
+{
+    RenderLightCanonicalizationResult result;
+    if (!IsFiniteNonNegative(light.intensity))
+    {
+        result.code = RenderLightCanonicalizationCode::InvalidIntensity;
+        return result;
+    }
+    if (!IsValidColorTemperature(light.colorTemperatureKelvin))
+    {
+        result.code =
+            RenderLightCanonicalizationCode::InvalidColorTemperature;
+        return result;
+    }
+
+    result.colorTemperatureKelvin = light.colorTemperatureKelvin;
+    if (light.intensityUnit == RenderLightIntensityUnit::Unspecified)
+    {
+        result.code =
+            RenderLightCanonicalizationCode::UnspecifiedIntensityUnit;
+        return result;
+    }
+    switch (light.type)
+    {
+        case RenderLightType::Directional:
+            result.canonicalUnit = RenderLightIntensityUnit::Lux;
+            switch (light.intensityUnit)
+            {
+                case RenderLightIntensityUnit::Lux:
+                    result.canonicalIntensity = light.intensity;
+                    break;
+                case RenderLightIntensityUnit::Candela:
+                case RenderLightIntensityUnit::Lumen:
+                    result.code =
+                        RenderLightCanonicalizationCode::IncompatibleIntensityUnit;
+                    return result;
+                default:
+                    result.code =
+                        RenderLightCanonicalizationCode::InvalidIntensityUnit;
+                    return result;
+            }
+            break;
+
+        case RenderLightType::Point:
+            result.canonicalUnit = RenderLightIntensityUnit::Candela;
+            switch (light.intensityUnit)
+            {
+                case RenderLightIntensityUnit::Candela:
+                    result.canonicalIntensity = light.intensity;
+                    break;
+                case RenderLightIntensityUnit::Lumen:
+                    result.canonicalIntensity =
+                        light.intensity /
+                        (RVX_RENDER_LIGHT_TWO_PI * 2.0f);
+                    break;
+                case RenderLightIntensityUnit::Lux:
+                    result.code =
+                        RenderLightCanonicalizationCode::IncompatibleIntensityUnit;
+                    return result;
+                default:
+                    result.code =
+                        RenderLightCanonicalizationCode::InvalidIntensityUnit;
+                    return result;
+            }
+            break;
+
+        case RenderLightType::Spot:
+        {
+            if (!IsValidSpotCone(light))
+            {
+                result.code = RenderLightCanonicalizationCode::InvalidSpotCone;
+                return result;
+            }
+            result.canonicalUnit = RenderLightIntensityUnit::Candela;
+            switch (light.intensityUnit)
+            {
+                case RenderLightIntensityUnit::Candela:
+                    result.canonicalIntensity = light.intensity;
+                    break;
+                case RenderLightIntensityUnit::Lumen:
+                {
+                    const float32 solidAngle = RVX_RENDER_LIGHT_TWO_PI *
+                        (1.0f - std::cos(light.outerConeRadians));
+                    if (!std::isfinite(solidAngle) || solidAngle <= 0.0f)
+                    {
+                        result.code =
+                            RenderLightCanonicalizationCode::InvalidSpotCone;
+                        return result;
+                    }
+                    result.canonicalIntensity = light.intensity / solidAngle;
+                    break;
+                }
+                case RenderLightIntensityUnit::Lux:
+                    result.code =
+                        RenderLightCanonicalizationCode::IncompatibleIntensityUnit;
+                    return result;
+                default:
+                    result.code =
+                        RenderLightCanonicalizationCode::InvalidIntensityUnit;
+                    return result;
+            }
+            break;
+        }
+
+        default:
+            result.code = RenderLightCanonicalizationCode::InvalidLightType;
+            return result;
+    }
+
+    if (!std::isfinite(result.canonicalIntensity))
+    {
+        result.code = RenderLightCanonicalizationCode::IntensityOverflow;
+        return result;
+    }
+    result.code = RenderLightCanonicalizationCode::Success;
+    return result;
 }
 
 bool AreRenderDecalSnapshotsEqual(const RenderDecalSnapshot& left,
@@ -363,7 +516,8 @@ bool RenderSceneUpdateBatch::IsStructurallyValid() const noexcept
     {
         if (mutation.operation == RenderSceneMutationOperation::Upsert &&
             (mutation.state.lightId != mutation.lightId ||
-             !mutation.state.source.IsValid()))
+             !mutation.state.source.IsValid() ||
+             !CanonicalizeRenderLightSnapshot(mutation.state).Succeeded()))
             return false;
     }
     for (const auto& mutation : decals)
@@ -491,6 +645,8 @@ bool RenderSceneMutationAccumulator::UpsertPrimitive(RenderPrimitiveSnapshot sta
 bool RenderSceneMutationAccumulator::RemovePrimitive(uint64 id) { return Remove(m_primitives, id); }
 bool RenderSceneMutationAccumulator::UpsertLight(RenderLightSnapshot state, bool created)
 {
+    if (!CanonicalizeRenderLightSnapshot(state).Succeeded())
+        return false;
     return Upsert(m_lights, state.lightId, std::move(state), created);
 }
 bool RenderSceneMutationAccumulator::RemoveLight(uint64 id) { return Remove(m_lights, id); }

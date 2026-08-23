@@ -2794,6 +2794,36 @@ bool PipelineCache::CreateDeferredLightingPipelineLayout()
                              RHIShaderStage::Compute);
     setLayoutDesc.AddBinding(7, RHIBindingType::ShaderResourceBuffer,
                              RHIShaderStage::Compute);
+    // GFX08 deferred lighting consumes the same explicit LightingFramePlan
+    // resources as Forward+.  Its ABI is intentionally independent from the
+    // mutable set-0 raster descriptor so an in-flight graph recording cannot
+    // observe a later frame's bindings.
+    setLayoutDesc.AddBinding(8, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(9, RHIBindingType::Sampler,
+                             RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(10, RHIBindingType::UniformBuffer,
+                             RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(11, RHIBindingType::ShaderResourceBuffer,
+                             RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(12, RHIBindingType::ShaderResourceBuffer,
+                             RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(13, RHIBindingType::UniformBuffer,
+                             RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(14, RHIBindingType::ShaderResourceBuffer,
+                             RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(15, RHIBindingType::ShaderResourceBuffer,
+                             RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(16, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(17, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(18, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(19, RHIBindingType::Sampler,
+                             RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(20, RHIBindingType::UniformBuffer,
+                             RHIShaderStage::Compute);
 
     RHIDescriptorSetLayoutRef setLayout =
         m_device->CreateDescriptorSetLayout(setLayoutDesc);
@@ -3653,6 +3683,299 @@ FrameLightBindingResult PipelineCache::UpdateFrameLightResources(const FrameLigh
     return result;
 }
 
+bool PipelineCache::FreezeFrameLightResources(
+    const FrameLightResources& source,
+    FrozenFrameLightResources& outFrozenResources)
+{
+    if (m_device == nullptr || !m_initialized)
+    {
+        SetLastError("Freezing frame light resources requires an initialized pipeline cache");
+        return false;
+    }
+
+    const std::array<RHIBuffer*, 6> lightSources = {
+        source.lightConstantsBuffer,
+        source.pointLightsBuffer,
+        source.spotLightsBuffer,
+        source.clusterConstantsBuffer,
+        source.clusterBuffer,
+        source.clusterLightIndexBuffer};
+    constexpr std::array<const char*, 6> frozenLightNames = {
+        "FrozenFrameLightConstants",
+        "FrozenFramePointLights",
+        "FrozenFrameSpotLights",
+        "FrozenFrameClusterConstants",
+        "FrozenFrameClusterData",
+        "FrozenFrameClusterLightIndices"};
+
+    std::array<RHIBufferRef, 6> frozenBuffers;
+    for (uint32 index = 0; index < frozenBuffers.size(); ++index)
+    {
+        RHIBuffer* const sourceBuffer = lightSources[index];
+        if (sourceBuffer == nullptr ||
+            sourceBuffer->GetMemoryType() != RHIMemoryType::Upload ||
+            sourceBuffer->GetSize() == 0)
+        {
+            SetLastError("Freezing frame light resources requires six non-empty upload buffers");
+            return false;
+        }
+
+        RHIBufferDesc copyDesc;
+        copyDesc.size = sourceBuffer->GetSize();
+        copyDesc.usage = sourceBuffer->GetUsage();
+        copyDesc.memoryType = RHIMemoryType::Upload;
+        copyDesc.stride = sourceBuffer->GetStride();
+        copyDesc.debugName = frozenLightNames[index];
+        RHIBufferRef copy = m_device->CreateBuffer(copyDesc);
+        if (!copy)
+        {
+            SetLastError("Freezing frame light resources could not allocate a frozen buffer");
+            return false;
+        }
+
+        void* const sourceData = sourceBuffer->Map();
+        if (sourceData == nullptr)
+        {
+            SetLastError("Freezing frame light resources could not map a source buffer");
+            return false;
+        }
+        void* const copyData = copy->Map();
+        if (copyData == nullptr)
+        {
+            sourceBuffer->Unmap();
+            SetLastError("Freezing frame light resources could not map a destination buffer");
+            return false;
+        }
+        std::memcpy(copyData, sourceData, static_cast<size_t>(sourceBuffer->GetSize()));
+        copy->Unmap();
+        sourceBuffer->Unmap();
+        frozenBuffers[index] = std::move(copy);
+    }
+
+    FrozenFrameLightResources frozen;
+    frozen.lightConstantsBuffer = std::move(frozenBuffers[0]);
+    frozen.pointLightsBuffer = std::move(frozenBuffers[1]);
+    frozen.spotLightsBuffer = std::move(frozenBuffers[2]);
+    frozen.clusterConstantsBuffer = std::move(frozenBuffers[3]);
+    frozen.clusterBuffer = std::move(frozenBuffers[4]);
+    frozen.clusterLightIndexBuffer = std::move(frozenBuffers[5]);
+    if (!frozen.IsComplete())
+    {
+        SetLastError("Freezing frame light resources produced an incomplete result");
+        return false;
+    }
+    outFrozenResources = std::move(frozen);
+    m_lastError.clear();
+    return true;
+}
+
+bool PipelineCache::CreateLightingBindingSnapshot(
+    const ViewData& view,
+    const LightingBindingSnapshotRequest& request,
+    LightingBindingSnapshot& outSnapshot)
+{
+    if (request.lightingPlanIdentity == 0)
+    {
+        SetLastError("Lighting binding snapshot requires a non-zero lighting plan identity");
+        return false;
+    }
+    if (!m_device || !m_initialized || m_setLayouts.empty() || !m_setLayouts[0])
+    {
+        SetLastError("Lighting binding snapshot requires an initialized frame descriptor layout");
+        return false;
+    }
+
+    const FrozenFrameLightResources& frozenLightResources = request.frozenLightResources;
+    if (!frozenLightResources.IsComplete())
+    {
+        SetLastError(
+            "Lighting binding snapshot requires complete frozen local and clustered-light buffers");
+        return false;
+    }
+    const FrameLightResources lightResources = frozenLightResources.Borrow();
+    if (lightResources.lightConstantsBuffer->GetSize() <
+            AlignConstantBufferSize(sizeof(LightConstants)) ||
+        lightResources.clusterConstantsBuffer->GetSize() <
+            AlignConstantBufferSize(sizeof(GPUClusterConstants)) ||
+        lightResources.pointLightsBuffer->GetSize() == 0 ||
+        lightResources.spotLightsBuffer->GetSize() == 0 ||
+        lightResources.clusterBuffer->GetSize() == 0 ||
+        lightResources.clusterLightIndexBuffer->GetSize() == 0)
+    {
+        SetLastError(
+            "Lighting binding snapshot received undersized local or clustered-light buffers");
+        return false;
+    }
+
+    const bool directionalShadowRequested = view.directionalShadowEnabled != 0;
+    if (directionalShadowRequested != request.directionalShadow.enabled)
+    {
+        SetLastError(
+            "Lighting binding snapshot directional-shadow readiness disagrees with ViewData");
+        return false;
+    }
+    if (directionalShadowRequested && !request.directionalShadow.shadowMapView)
+    {
+        SetLastError(
+            "Lighting binding snapshot requires a directional-shadow view when shadowing is enabled");
+        return false;
+    }
+
+    const bool rayTracedShadowRequested = view.rayTracedShadowEnabled != 0;
+    if (rayTracedShadowRequested != request.rayTracedShadow.enabled)
+    {
+        SetLastError(
+            "Lighting binding snapshot ray-traced-shadow readiness disagrees with ViewData");
+        return false;
+    }
+    if (rayTracedShadowRequested && !request.rayTracedShadow.shadowMaskView)
+    {
+        SetLastError(
+            "Lighting binding snapshot requires a ray-traced-shadow view when it is enabled");
+        return false;
+    }
+
+    const bool textureIBLRequested = view.textureIBLEnabled != 0;
+    if (textureIBLRequested != request.environmentIBL.enabled)
+    {
+        SetLastError(
+            "Lighting binding snapshot texture-IBL readiness disagrees with ViewData");
+        return false;
+    }
+    if (textureIBLRequested &&
+        (!request.environmentIBL.irradianceView ||
+         !request.environmentIBL.prefilteredEnvironmentView ||
+         !request.environmentIBL.brdfLUTView))
+    {
+        SetLastError(
+            "Lighting binding snapshot requires complete texture-IBL views when texture IBL is enabled");
+        return false;
+    }
+
+    if (!EnsureFrameShadowFallbackResources() ||
+        !EnsureFrameRayTracedShadowFallbackResources() ||
+        !EnsureFrameEnvironmentIBLFallbackResources())
+    {
+        SetLastError(
+            "Lighting binding snapshot could not create stable fallback resources");
+        return false;
+    }
+    if (!m_directionalShadowSampler || !m_environmentIBLSampler ||
+        !m_fallbackDirectionalShadowView || !m_fallbackRayTracedShadowMaskView ||
+        !m_fallbackEnvironmentIBLCubemapView ||
+        !m_fallbackEnvironmentIBLBRDFLUTView)
+    {
+        SetLastError(
+            "Lighting binding snapshot has incomplete fallback bindings");
+        return false;
+    }
+
+    RHIBufferDesc viewBufferDesc;
+    viewBufferDesc.size = AlignConstantBufferSize(sizeof(ViewConstants));
+    viewBufferDesc.usage = RHIBufferUsage::Constant;
+    viewBufferDesc.memoryType = RHIMemoryType::Upload;
+    viewBufferDesc.debugName = "LightingBindingSnapshotViewConstants";
+    RHIBufferRef viewConstantBuffer = m_device->CreateBuffer(viewBufferDesc);
+    if (!viewConstantBuffer)
+    {
+        SetLastError("Lighting binding snapshot could not create record-owned view constants");
+        return false;
+    }
+    void* mappedViewConstants = viewConstantBuffer->Map();
+    if (!mappedViewConstants)
+    {
+        SetLastError("Lighting binding snapshot could not map record-owned view constants");
+        return false;
+    }
+    const ViewConstants constants = BuildViewConstantsSnapshot(
+        view, m_device->GetBackendType(), m_config.reverseZ);
+    std::memcpy(mappedViewConstants, &constants, sizeof(constants));
+    viewConstantBuffer->Unmap();
+
+    LightingBindingSnapshot snapshot;
+    snapshot.lightingPlanIdentity = request.lightingPlanIdentity;
+    snapshot.viewConstantBuffer = std::move(viewConstantBuffer);
+    snapshot.directionalShadowView = directionalShadowRequested
+        ? RHITextureViewRef(request.directionalShadow.shadowMapView)
+        : m_fallbackDirectionalShadowView;
+    snapshot.directionalShadowSampler = m_directionalShadowSampler;
+    snapshot.lightConstantsBuffer = frozenLightResources.lightConstantsBuffer;
+    snapshot.pointLightsBuffer = frozenLightResources.pointLightsBuffer;
+    snapshot.spotLightsBuffer = frozenLightResources.spotLightsBuffer;
+    snapshot.rayTracedShadowMaskView = rayTracedShadowRequested
+        ? RHITextureViewRef(request.rayTracedShadow.shadowMaskView)
+        : m_fallbackRayTracedShadowMaskView;
+    snapshot.rayTracedShadowEnabled = rayTracedShadowRequested;
+    snapshot.clusterConstantsBuffer = frozenLightResources.clusterConstantsBuffer;
+    snapshot.clusterBuffer = frozenLightResources.clusterBuffer;
+    snapshot.clusterLightIndexBuffer = frozenLightResources.clusterLightIndexBuffer;
+    snapshot.environmentIBLIrradianceView = textureIBLRequested
+        ? RHITextureViewRef(request.environmentIBL.irradianceView)
+        : m_fallbackEnvironmentIBLCubemapView;
+    snapshot.environmentIBLPrefilteredView = textureIBLRequested
+        ? RHITextureViewRef(request.environmentIBL.prefilteredEnvironmentView)
+        : m_fallbackEnvironmentIBLCubemapView;
+    snapshot.environmentIBLBRDFLUTView = textureIBLRequested
+        ? RHITextureViewRef(request.environmentIBL.brdfLUTView)
+        : m_fallbackEnvironmentIBLBRDFLUTView;
+    snapshot.environmentIBLSampler = m_environmentIBLSampler;
+    snapshot.frameSetLayout = m_setLayouts[0];
+
+    // The descriptor set is deliberately created only after every resource
+    // owner is complete.  IsValid() additionally requires that published set,
+    // so it cannot be used for this pre-publication check.
+    if (snapshot.lightingPlanIdentity == 0 || !snapshot.viewConstantBuffer ||
+        !snapshot.directionalShadowView || !snapshot.directionalShadowSampler ||
+        !snapshot.lightConstantsBuffer || !snapshot.pointLightsBuffer ||
+        !snapshot.spotLightsBuffer || !snapshot.rayTracedShadowMaskView ||
+        !snapshot.clusterConstantsBuffer || !snapshot.clusterBuffer ||
+        !snapshot.clusterLightIndexBuffer ||
+        !snapshot.environmentIBLIrradianceView ||
+        !snapshot.environmentIBLPrefilteredView ||
+        !snapshot.environmentIBLBRDFLUTView || !snapshot.environmentIBLSampler ||
+        !snapshot.frameSetLayout)
+    {
+        SetLastError("Lighting binding snapshot has incomplete record-owned resources");
+        return false;
+    }
+
+    RHIDescriptorSetDesc descriptorSetDesc;
+    descriptorSetDesc.layout = snapshot.frameSetLayout.Get();
+    descriptorSetDesc.debugName = "LightingBindingSnapshotFrameDescriptorSet";
+    descriptorSetDesc.BindBuffer(
+        0, snapshot.viewConstantBuffer.Get(), 0,
+        AlignConstantBufferSize(sizeof(ViewConstants)));
+    descriptorSetDesc.BindTexture(1, snapshot.directionalShadowView.Get());
+    descriptorSetDesc.BindSampler(2, snapshot.directionalShadowSampler.Get());
+    descriptorSetDesc.BindBuffer(
+        3, snapshot.lightConstantsBuffer.Get(), 0,
+        AlignConstantBufferSize(sizeof(LightConstants)));
+    descriptorSetDesc.BindBuffer(4, snapshot.pointLightsBuffer.Get());
+    descriptorSetDesc.BindBuffer(5, snapshot.spotLightsBuffer.Get());
+    descriptorSetDesc.BindTexture(6, snapshot.rayTracedShadowMaskView.Get());
+    descriptorSetDesc.BindBuffer(
+        7, snapshot.clusterConstantsBuffer.Get(), 0,
+        AlignConstantBufferSize(sizeof(GPUClusterConstants)));
+    descriptorSetDesc.BindBuffer(8, snapshot.clusterBuffer.Get());
+    descriptorSetDesc.BindBuffer(9, snapshot.clusterLightIndexBuffer.Get());
+    descriptorSetDesc.BindTexture(10, snapshot.environmentIBLIrradianceView.Get());
+    descriptorSetDesc.BindTexture(11, snapshot.environmentIBLPrefilteredView.Get());
+    descriptorSetDesc.BindTexture(12, snapshot.environmentIBLBRDFLUTView.Get());
+    descriptorSetDesc.BindSampler(13, snapshot.environmentIBLSampler.Get());
+
+    snapshot.frameDescriptorSet = m_device->CreateDescriptorSet(descriptorSetDesc);
+    if (!snapshot.frameDescriptorSet ||
+        !snapshot.frameDescriptorSet->IsReadyForBinding(snapshot.frameSetLayout.Get()))
+    {
+        SetLastError("Lighting binding snapshot could not create a ready record-owned descriptor set");
+        return false;
+    }
+
+    outSnapshot = std::move(snapshot);
+    m_lastError.clear();
+    return true;
+}
+
 RHIDescriptorSet* PipelineCache::GetObjectDescriptorSet()
 {
     return m_objectDescriptorSet.Get();
@@ -3881,6 +4204,102 @@ bool PipelineCache::CreateRasterDrawBindingSnapshot(
 {
     return CreateRasterDrawBindingSnapshotInternal(
         view, objectCapacity, nullptr, outSnapshot);
+}
+
+bool PipelineCache::CreateRasterObjectBindingSnapshot(
+    uint32 objectCapacity,
+    RasterObjectBindingSnapshot& outSnapshot) const
+{
+    outSnapshot = {};
+    // This deliberately validates only the set-1 contract.  Transparent
+    // recording supplies its own immutable LightingBindingSnapshot at set 0,
+    // and must not consult the mutable frame descriptor family.
+    if (!m_device || !m_initialized || m_setLayouts.size() < 2 ||
+        !m_setLayouts[1])
+    {
+        return false;
+    }
+
+    const uint32 capacity = std::max(1u, objectCapacity);
+    const uint64 objectStride = m_objectConstantStride != 0
+        ? m_objectConstantStride : AlignConstantBufferSize(sizeof(ObjectConstants));
+    if ((capacity > 1 &&
+         objectStride > static_cast<uint64>(std::numeric_limits<uint32>::max()) /
+                            static_cast<uint64>(capacity - 1)) ||
+        objectStride > std::numeric_limits<uint64>::max() /
+                           static_cast<uint64>(capacity))
+    {
+        return false;
+    }
+
+    RHIBufferDesc objectDesc;
+    objectDesc.size = objectStride * capacity;
+    objectDesc.usage = RHIBufferUsage::Constant;
+    objectDesc.memoryType = RHIMemoryType::Upload;
+    objectDesc.debugName = "TransparentRecordObjectConstants";
+    RHIBufferRef objectBuffer = m_device->CreateBuffer(objectDesc);
+    if (!objectBuffer)
+    {
+        return false;
+    }
+
+    RHIBufferRef instanceFallback;
+    if (FindRHIBindingLayoutEntry(*m_setLayouts[1], 1))
+    {
+        RHIBufferDesc instanceDesc;
+        instanceDesc.size = 256;
+        instanceDesc.usage = RHIBufferUsage::Structured |
+            RHIBufferUsage::ShaderResource;
+        instanceDesc.memoryType = RHIMemoryType::Upload;
+        instanceDesc.stride = 16;
+        instanceDesc.debugName = "TransparentRecordObjectInstanceFallback";
+        instanceFallback = m_device->CreateBuffer(instanceDesc);
+        if (!instanceFallback)
+        {
+            return false;
+        }
+        void* mapped = instanceFallback->Map();
+        if (!mapped)
+        {
+            return false;
+        }
+        std::memset(mapped, 0, static_cast<size_t>(instanceDesc.size));
+        instanceFallback->Unmap();
+    }
+
+    RHIDescriptorSetDesc objectSetDesc;
+    objectSetDesc.layout = m_setLayouts[1].Get();
+    objectSetDesc.debugName = "TransparentRecordObjectDescriptorSet";
+    objectSetDesc.BindBuffer(0, objectBuffer.Get(), 0, objectStride);
+    if (FindRHIBindingLayoutEntry(*m_setLayouts[1], 1))
+    {
+        objectSetDesc.BindBuffer(1, instanceFallback.Get());
+    }
+    RHIDescriptorSetRef objectSet = m_device->CreateDescriptorSet(objectSetDesc);
+    if (!objectSet || !objectSet->IsReadyForBinding(m_setLayouts[1].Get()))
+    {
+        return false;
+    }
+
+    RasterObjectBindingSnapshot snapshot;
+    snapshot.objectConstantBuffer = std::move(objectBuffer);
+    snapshot.objectDescriptorSet = std::move(objectSet);
+    snapshot.objectConstantStride = objectStride;
+    snapshot.objectCapacity = capacity;
+    snapshot.objectCursor = 0;
+    snapshot.retainedResources.emplace_back(snapshot.objectConstantBuffer.Get());
+    if (instanceFallback)
+    {
+        snapshot.retainedResources.emplace_back(instanceFallback.Get());
+    }
+    snapshot.retainedResources.emplace_back(snapshot.objectDescriptorSet.Get());
+    snapshot.retainedResources.emplace_back(m_setLayouts[1].Get());
+    if (!snapshot.IsValid())
+    {
+        return false;
+    }
+    outSnapshot = std::move(snapshot);
+    return true;
 }
 
 bool PipelineCache::CreateDirectionalShadowCascadeBindingSnapshot(
@@ -4585,6 +5004,58 @@ bool PipelineCache::UpdateRasterDrawBindingSnapshotObject(
     }
     std::memcpy(static_cast<uint8*>(mapped) + offset,
                 &constants,
+                sizeof(ObjectConstants));
+    snapshot.objectConstantBuffer->Unmap();
+    ++snapshot.objectCursor;
+    return true;
+}
+
+bool PipelineCache::UpdateRasterObjectBindingSnapshotObject(
+    RasterObjectBindingSnapshot& snapshot,
+    const Mat4& worldMatrix,
+    const Mat4& normalMatrix,
+    const Mat4& previousWorldMatrix,
+    const Mat4& previousViewProjectionMatrix,
+    bool previousWorldViewProjectionValid,
+    bool receivesShadow,
+    std::span<const Mat4> skinningMatrices) const
+{
+    if (!snapshot.IsValid() || snapshot.objectCursor >= snapshot.objectCapacity)
+    {
+        return false;
+    }
+
+    ObjectConstants constants{};
+    constants.world = worldMatrix;
+    constants.normalMatrix = normalMatrix;
+    const RHIBackendType backend = m_device ? m_device->GetBackendType() :
+        RHIBackendType::None;
+    constants.previousWorldViewProjection = previousWorldViewProjectionValid
+        ? ApplyBackendClipConvention(previousViewProjectionMatrix, backend) *
+              previousWorldMatrix
+        : Mat4Identity();
+    constants.objectVelocityParams = Vec4(
+        previousWorldViewProjectionValid ? 1.0f : 0.0f,
+        receivesShadow ? 1.0f : 0.0f, 0.0f, 0.0f);
+    const uint32 skinningMatrixCount = static_cast<uint32>(
+        std::min<size_t>(skinningMatrices.size(),
+                         RVX_MAX_OBJECT_SKINNING_MATRICES));
+    constants.skinningParams = Vec4(
+        skinningMatrixCount > 0 ? 1.0f : 0.0f,
+        static_cast<float>(skinningMatrixCount), 0.0f, 0.0f);
+    for (uint32 index = 0; index < skinningMatrixCount; ++index)
+    {
+        constants.skinningMatrices[index] = skinningMatrices[index];
+    }
+
+    const uint64 offset = static_cast<uint64>(snapshot.objectCursor) *
+        snapshot.objectConstantStride;
+    void* mapped = snapshot.objectConstantBuffer->Map();
+    if (!mapped)
+    {
+        return false;
+    }
+    std::memcpy(static_cast<uint8*>(mapped) + offset, &constants,
                 sizeof(ObjectConstants));
     snapshot.objectConstantBuffer->Unmap();
     ++snapshot.objectCursor;

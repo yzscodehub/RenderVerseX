@@ -1392,6 +1392,8 @@ void SceneRenderer::Shutdown()
         m_viewHistoryCoordinator->Clear();
     }
     m_environmentIBLRequested = false;
+    m_lightingFramePlan.reset();
+    m_lightingFramePlanFailureReason.clear();
     if (m_gpuSceneUploader)
     {
         m_gpuSceneUploader->ReleaseUnsubmittedFrame();
@@ -3411,8 +3413,22 @@ void SceneRenderer::MarkAcceptedFramePresented()
         presented.presented = true;
         presented.succeeded = true;
         presented.diagnostic.clear();
-        m_completedRenderExecutionReceipt = presented;
-        m_lastAttemptedRenderExecutionReceipt = std::move(presented);
+        if (presented.IsStructurallyValid())
+        {
+            m_completedRenderExecutionReceipt = presented;
+            m_lastAttemptedRenderExecutionReceipt = std::move(presented);
+        }
+        else
+        {
+            // `presented` is presentation-qualified evidence, not merely the
+            // physical Present call. Keep this rejected receipt in the
+            // execution-complete / presentation-unqualified state.
+            presented.presented = false;
+            presented.succeeded = false;
+            presented.diagnostic =
+                "Presented render execution receipt failed structural validation";
+            m_lastAttemptedRenderExecutionReceipt = std::move(presented);
+        }
     }
     else
     {
@@ -3420,10 +3436,13 @@ void SceneRenderer::MarkAcceptedFramePresented()
             m_pendingRenderExecutionReceipt.has_value()
                 ? *m_pendingRenderExecutionReceipt
                 : m_lastAttemptedRenderExecutionReceipt;
-        rejected.presented = true;
+        // The frame may have reached the platform Present call, but it did
+        // not qualify for a presentation receipt.  Keeping this false also
+        // preserves the receipt invariant for a failed qualification.
+        rejected.presented = false;
         rejected.succeeded = false;
         rejected.diagnostic = !receiptMatches
-            ? "Presented frame did not match a completed render execution receipt"
+            ? "Presented frame did not qualify for a completed render execution receipt"
             : "Presented frame failed temporal history qualification";
         m_lastAttemptedRenderExecutionReceipt = std::move(rejected);
     }
@@ -6022,6 +6041,7 @@ void SceneRenderer::Render()
         RenderExecutionReceipt receipt =
             m_renderFeatureRegistry->CollectExecutionReceipt(
                 m_executionBuildIdentity);
+        receipt.schemaVersion = 4;
         if (m_activeRenderPassResults != nullptr &&
             m_activeRenderPassResults->identity == m_activeRenderPassIdentity &&
             m_activeRenderPassIdentity.frameSequence ==
@@ -6036,6 +6056,110 @@ void SceneRenderer::Render()
                 deferredRoute.drawStats.plannedPacketCount;
             receipt.deferredOpaque.executedPacketCount =
                 deferredRoute.drawStats.executedPacketCount;
+        }
+        const bool lightingPlanMatchesReceipt = m_lightingFramePlan != nullptr &&
+            m_lightingFramePlan->IsValid() &&
+            m_lightingFramePlan->GetFrameIdentity() == receipt.frameIdentity &&
+            m_lightingFramePlan->GetViewIdentity() == receipt.viewIdentity &&
+            m_lightManager != nullptr &&
+            m_lightManager->IsLightingPlanBound() &&
+            m_lightManager->GetLightingPlanIdentity() ==
+                m_lightingFramePlan->GetIdentityHash();
+        const bool exactGraphExecutionSucceeded =
+            receipt.executionSucceeded && graphExecuted && graphCompileValid;
+        const bool activeRenderPassResultsMatchReceipt =
+            m_activeRenderPassResults != nullptr &&
+            m_activeRenderPassResults->identity == m_activeRenderPassIdentity &&
+            m_activeRenderPassIdentity.frameSequence ==
+                receipt.frameIdentity.frameSequence;
+        if (lightingPlanMatchesReceipt)
+        {
+            const LightingFramePlanCapacityEvidence& capacity =
+                m_lightingFramePlan->GetCapacityEvidence();
+            RenderLightingExecutionReceipt lighting;
+            const auto hasLightingConsumer =
+                [this, activeRenderPassResultsMatchReceipt](
+                    uint64 lightingPlanIdentity,
+                    bool requireDirectionalShadow,
+                    bool requireTextureIBL) noexcept
+            {
+                if (!activeRenderPassResultsMatchReceipt)
+                {
+                    return false;
+                }
+                return std::any_of(
+                    m_activeRenderPassResults->lightingSurfaceEvidence.begin(),
+                    m_activeRenderPassResults->lightingSurfaceEvidence.end(),
+                    [lightingPlanIdentity,
+                     requireDirectionalShadow,
+                     requireTextureIBL](
+                        const RenderLightingSurfaceExecutionEvidence& evidence)
+                    {
+                        return evidence.IsValid() &&
+                            evidence.lightingPlanIdentity ==
+                                lightingPlanIdentity &&
+                            (!requireDirectionalShadow ||
+                             evidence.directionalShadowBound) &&
+                            (!requireTextureIBL ||
+                             (evidence.textureIBLBound &&
+                              evidence.exactIBLViews));
+                    });
+            };
+            lighting.lightingPlanIdentity =
+                m_lightingFramePlan->GetIdentityHash();
+            lighting.sceneLightStateHash =
+                m_lightingFramePlan->GetSceneLightStateHash();
+            if (const LightingLightCandidate* primary =
+                    m_lightingFramePlan->GetPrimaryDirectionalLight();
+                primary != nullptr)
+            {
+                lighting.primaryDirectionalLightId = primary->lightId;
+            }
+            lighting.pointLightRequestedCount =
+                capacity.requestedPointLightCount;
+            lighting.pointLightAdmittedCount =
+                capacity.selectedPointLightCount;
+            lighting.pointLightCapacity = capacity.pointLightCapacity;
+            lighting.pointLightOverflowCount =
+                capacity.overflowPointLightCount;
+            lighting.spotLightRequestedCount =
+                capacity.requestedSpotLightCount;
+            lighting.spotLightAdmittedCount =
+                capacity.selectedSpotLightCount;
+            lighting.spotLightCapacity = capacity.spotLightCapacity;
+            lighting.spotLightOverflowCount =
+                capacity.overflowSpotLightCount;
+            lighting.csmRequested =
+                m_lightingFramePlan->GetCSMRequest().requested;
+            lighting.csmInputsReady =
+                m_lightingFramePlan->GetCSMRequest().inputsReady;
+            const uint32 plannedCascadeCount =
+                m_lightingFramePlan->GetCSMRequest().cascadeCount;
+            lighting.csmExecutionReady = exactGraphExecutionSucceeded &&
+                lighting.csmInputsReady &&
+                activeRenderPassResultsMatchReceipt &&
+                m_activeRenderPassResults->directionalShadowOutput.enabled &&
+                m_activeRenderPassResults->directionalShadowOutput.shadowMap.IsValid() &&
+                m_activeRenderPassResults->shadowStats.configuredCascadeCount ==
+                    plannedCascadeCount &&
+                m_activeRenderPassResults->shadowStats.declaredCascadeResourceCount ==
+                    plannedCascadeCount &&
+                m_activeRenderPassResults->shadowStats.resolvedCascadeViewCount ==
+                    plannedCascadeCount &&
+                m_activeRenderPassResults->directionalShadowOutput.IsCompatibleWith(
+                    m_activeRenderPassIdentity,
+                    lighting.lightingPlanIdentity) &&
+                hasLightingConsumer(
+                    lighting.lightingPlanIdentity, true, false);
+            lighting.iblRequested =
+                m_lightingFramePlan->GetIBLRequest().requested;
+            lighting.iblInputsReady =
+                m_lightingFramePlan->GetIBLRequest().inputsReady;
+            lighting.iblExecutionReady = exactGraphExecutionSucceeded &&
+                lighting.iblInputsReady &&
+                hasLightingConsumer(
+                    lighting.lightingPlanIdentity, false, true);
+            receipt.lighting = lighting;
         }
         receipt.executionSucceeded =
             receipt.executionSucceeded && graphExecuted && graphCompileValid;
@@ -6569,11 +6693,213 @@ void SceneRenderer::ApplyRayTracingBudget(ShadowPassConfig& shadowConfig,
     m_rayTracingFrameBudgetStats = budgetStats;
 }
 
+bool SceneRenderer::PrepareLightingFramePlan(std::string& outDiagnostic)
+{
+    outDiagnostic.clear();
+    m_lightingFramePlan.reset();
+
+    const RenderFrameHeaderV5& header = m_renderScene.GetAcceptedHeader();
+    const RenderViewSnapshot& view = m_renderScene.GetView();
+    const RenderFrameSettings& settings = m_renderScene.GetSettings();
+
+    LightingFramePlanRequest request;
+    request.frameIdentity = RenderFrameIdentity{
+        header.sequence,
+        header.requiredSceneRevision,
+        header.surfaceGeneration,
+        header.configurationRevision};
+    request.viewIdentity = view.identity;
+    request.lightingConfigurationRevision = header.configurationRevision;
+    request.quality = settings.pipelineRequest.quality;
+    request.qualityRevision = ComputeRenderPipelineProfileHash(
+        settings.pipelineRequest.recipe,
+        settings.pipelineRequest.quality);
+    request.pointLightCapacity = LightManager::MaxPointLights;
+    request.spotLightCapacity = LightManager::MaxSpotLights;
+    // No quality tier silently drops authored lights. A future recipe may opt
+    // into a declared stable truncation fallback, but required rendering and
+    // qualification remain fail-closed until that policy is machine-visible.
+    request.allowLocalLightTruncation = false;
+
+    request.lightCandidates.reserve(m_renderScene.GetLightCount());
+    for (const RenderLight& light : m_renderScene.GetLights())
+    {
+        if (!(light.intensity > 0.0f) ||
+            !IsRenderLayerVisible(light.layerMask, m_viewData.cullingMask))
+        {
+            continue;
+        }
+
+        LightingLightCandidate candidate;
+        candidate.lightId = light.lightId;
+        switch (light.type)
+        {
+            case RenderLight::Type::Directional:
+                candidate.type = RenderLightType::Directional;
+                break;
+            case RenderLight::Type::Point:
+                candidate.type = RenderLightType::Point;
+                break;
+            case RenderLight::Type::Spot:
+                candidate.type = RenderLightType::Spot;
+                break;
+            default:
+                outDiagnostic = "RenderScene contains an undeclared light type";
+                return false;
+        }
+        // Equal authoring priority is intentional for the first contract:
+        // stable lightId is the deterministic tie-breaker and scene order is
+        // never used as hidden policy.
+        candidate.priority = 0;
+        candidate.position = light.position;
+        candidate.direction = light.direction;
+        candidate.color = light.color;
+        if (light.colorTemperatureKelvin.has_value())
+        {
+            candidate.color *= EvaluateBlackbodyColorTemperature(
+                *light.colorTemperatureKelvin);
+        }
+        candidate.normalizedIntensity = light.intensity;
+        candidate.range = light.range;
+        candidate.innerConeRadians = light.innerConeAngle;
+        candidate.outerConeRadians = light.outerConeAngle;
+        candidate.layerMask = light.layerMask;
+        candidate.castsShadows = light.castsShadow;
+        request.lightCandidates.push_back(std::move(candidate));
+    }
+
+    // The frame's accepted scene revision is the authoritative incremental
+    // lighting-state revision. Candidate values are additionally mixed into
+    // the plan identity by LightingFramePlanBuilder.
+    uint64 sceneLightStateHash = 0xCBF29CE484222325ull;
+    sceneLightStateHash = MixGPUCullingQualificationIdentity(
+        sceneLightStateHash, header.requiredSceneRevision);
+    sceneLightStateHash = MixGPUCullingQualificationIdentity(
+        sceneLightStateHash, request.lightCandidates.size());
+    request.sceneLightStateHash = sceneLightStateHash == 0
+        ? 1 : sceneLightStateHash;
+
+    const auto primaryDirectional = std::min_element(
+        request.lightCandidates.begin(),
+        request.lightCandidates.end(),
+        [](const LightingLightCandidate& left,
+           const LightingLightCandidate& right)
+        {
+            if (left.type != RenderLightType::Directional)
+            {
+                return false;
+            }
+            if (right.type != RenderLightType::Directional)
+            {
+                return true;
+            }
+            return left.priority != right.priority
+                ? left.priority > right.priority
+                : left.lightId < right.lightId;
+        });
+    const bool primaryDirectionalSelected =
+        primaryDirectional != request.lightCandidates.end() &&
+        primaryDirectional->type == RenderLightType::Directional;
+    request.csm.requested = settings.shadows.enabled &&
+        primaryDirectionalSelected && primaryDirectional->castsShadows;
+    if (request.csm.requested)
+    {
+        request.csm.inputsReady = m_shadowPassConfig.shadowMapSize != 0 &&
+            m_shadowPassConfig.numCascades != 0 &&
+            m_shadowPassConfig.numCascades <=
+                RVX_MAX_DIRECTIONAL_SHADOW_CASCADES;
+        request.csm.cascadeCount = m_shadowPassConfig.numCascades;
+        request.csm.configurationRevision = header.configurationRevision;
+    }
+
+    const RenderEnvironmentSnapshot& environment =
+        m_renderScene.GetEnvironment();
+    const bool completeEnvironmentHandles =
+        environment.irradianceTexture.IsValid() &&
+        environment.prefilteredTexture.IsValid() &&
+        environment.brdfLutTexture.IsValid();
+    const RenderTextureResourceData* irradiance = nullptr;
+    const RenderTextureResourceData* prefiltered = nullptr;
+    const RenderTextureResourceData* brdfLUT = nullptr;
+    if (completeEnvironmentHandles && m_renderResourceRegistry)
+    {
+        irradiance = m_renderResourceRegistry->ResolveTexture(
+            environment.irradianceTexture);
+        prefiltered = m_renderResourceRegistry->ResolveTexture(
+            environment.prefilteredTexture);
+        brdfLUT = m_renderResourceRegistry->ResolveTexture(
+            environment.brdfLutTexture);
+    }
+    const bool completeEnvironmentResources = irradiance && irradiance->texture &&
+        prefiltered && prefiltered->texture && brdfLUT && brdfLUT->texture;
+    request.ibl.requested = m_environmentIBLRequested;
+    if (request.ibl.requested)
+    {
+        request.ibl.inputsReady = completeEnvironmentResources;
+        request.ibl.normalizedIntensity = environment.intensity;
+        if (request.ibl.inputsReady)
+        {
+            uint64 resourceRevision = 0xCBF29CE484222325ull;
+            const auto mixHandle = [&resourceRevision](RenderResourceHandle handle)
+            {
+                resourceRevision = MixGPUCullingQualificationIdentity(
+                    resourceRevision,
+                    (static_cast<uint64>(handle.slot) << 32U) |
+                        handle.generation);
+            };
+            mixHandle(environment.irradianceTexture);
+            mixHandle(environment.prefilteredTexture);
+            mixHandle(environment.brdfLutTexture);
+            request.ibl.resourceRevision = resourceRevision == 0
+                ? 1 : resourceRevision;
+            request.ibl.prefilteredMipLevels =
+                std::max(1U, prefiltered->texture->GetMipLevels());
+        }
+    }
+
+    LightingFramePlanBuilder builder;
+    LightingFramePlanBuildResult result = builder.Build(request);
+    if (!result.Succeeded() || !result.plan.IsValid())
+    {
+        outDiagnostic = result.diagnostic.empty()
+            ? GetLightingFramePlanCodeName(result.code)
+            : std::move(result.diagnostic);
+        return false;
+    }
+
+    m_lightingFramePlan =
+        std::make_shared<const LightingFramePlan>(std::move(result.plan));
+    return true;
+}
+
 void SceneRenderer::PreparePassesForFrame()
 {
-    m_primaryDirectionalLight =
-        SelectPrimaryDirectionalLightRecordInput(
-            m_renderScene, m_viewData.cullingMask);
+    m_lightingFramePlanFailureReason.clear();
+    if (!PrepareLightingFramePlan(m_lightingFramePlanFailureReason))
+    {
+        RVX_CORE_ERROR(
+            "SceneRenderer: LightingFramePlan preparation failed: {}",
+            m_lightingFramePlanFailureReason);
+        m_lightingFramePlan.reset();
+    }
+
+    m_primaryDirectionalLight = {};
+    m_primaryDirectionalLight.intensity = 0.0f;
+    m_primaryDirectionalLight.color = Vec3(0.0f);
+    if (m_lightingFramePlan)
+    {
+        if (const LightingLightCandidate* primary =
+                m_lightingFramePlan->GetPrimaryDirectionalLight();
+            primary != nullptr)
+        {
+            m_primaryDirectionalLight.selected = true;
+            m_primaryDirectionalLight.castsShadow = primary->castsShadows;
+            m_primaryDirectionalLight.direction = primary->direction;
+            m_primaryDirectionalLight.color = primary->color;
+            m_primaryDirectionalLight.intensity =
+                primary->normalizedIntensity;
+        }
+    }
     m_viewData.directionalLightDirection = m_primaryDirectionalLight.direction;
     m_viewData.directionalLightIntensity = m_primaryDirectionalLight.intensity;
     m_viewData.directionalLightColor = m_primaryDirectionalLight.color;
@@ -6620,8 +6946,27 @@ void SceneRenderer::PreparePassesForFrame()
 
     if (m_lightManager)
     {
-        m_lightManager->CollectLights(m_renderScene, m_viewData.cullingMask);
-        m_lightManager->UpdateGPUBuffers();
+        if (!m_lightingFramePlan ||
+            !m_lightManager->CollectLights(*m_lightingFramePlan))
+        {
+            m_lightingFramePlanFailureReason =
+                "LightManager rejected the immutable LightingFramePlan";
+        }
+        else
+        {
+            const LightingGpuUploadResult uploadResult =
+                m_lightManager->UpdateGPUBuffers();
+            if (!uploadResult.Succeeded())
+            {
+                m_lightingFramePlanFailureReason =
+                    std::string("LightManager GPU light upload failed: ") +
+                    GetLightingGpuUploadCodeName(uploadResult.code);
+                // An upload failure must not reach clustering, frozen graph
+                // resources, or feature composition.  The next frame starts
+                // from a fresh immutable plan and overwrites every buffer.
+                m_lightingFramePlan.reset();
+            }
+        }
         m_localLightingStats.frameCount++;
         m_localLightingStats.pointLightRequestedCount =
             m_lightManager->GetPointLightRequestedCount();
@@ -6692,38 +7037,71 @@ void SceneRenderer::PreparePassesForFrame()
         {
             m_clusteredLightingStats.fallbackReason = "frame light manager is not available";
         }
-        else if (!m_clusteredLighting->BeginFrame(m_viewData.viewMatrix,
-                                                 m_viewData.projectionMatrix,
-                                                 m_viewData.viewportWidth,
-                                                 m_viewData.viewportHeight))
+        else if (!m_lightingFramePlan || !m_lightManager->IsLightingPlanBound())
         {
-            m_clusteredLightingStats.fallbackReason = m_clusteredLighting->GetLastError();
+            m_clusteredLightingStats.fallbackReason =
+                m_lightingFramePlanFailureReason.empty()
+                    ? "frame light plan is not GPU-published"
+                    : m_lightingFramePlanFailureReason;
         }
         else
         {
-            m_clusteredLightingStats.frameBegun = true;
-            if (!m_clusteredLighting->AssignLights(*m_lightManager))
+            ClusteredLightingView clusteredView;
+            clusteredView.viewMatrix = m_viewData.viewMatrix;
+            clusteredView.projectionMatrix = m_viewData.projectionMatrix;
+            clusteredView.inverseProjectionMatrix =
+                m_viewData.inverseProjectionMatrix;
+            clusteredView.nearPlane = m_viewData.nearPlane;
+            clusteredView.farPlane = m_viewData.farPlane;
+            clusteredView.screenWidth = m_viewData.viewportWidth;
+            clusteredView.screenHeight = m_viewData.viewportHeight;
+            // Core camera extraction is canonical [0, 1] NDC for DX12,
+            // Vulkan, Metal, and the engine's OpenGL compatibility projection.
+            clusteredView.ndcDepthRange = ClusterNdcDepthRange::ZeroToOne;
+            clusteredView.reverseZ = m_pipelineCache &&
+                m_pipelineCache->IsReverseZ();
+
+            if (!m_clusteredLighting->BeginFrame(clusteredView))
             {
                 m_clusteredLightingStats.fallbackReason = m_clusteredLighting->GetLastError();
             }
             else
             {
-                m_clusteredLightingStats.lightsAssigned = true;
-                const ClusteredLighting::Statistics clusteredStats = m_clusteredLighting->GetStatistics();
+                m_clusteredLightingStats.frameBegun = true;
+                const bool lightsAssigned =
+                    m_clusteredLighting->AssignLights(*m_lightManager);
+                const ClusteredLighting::Statistics clusteredStats =
+                    m_clusteredLighting->GetStatistics();
                 m_clusteredLightingStats.clusterCount = clusteredStats.clusterCount;
-                m_clusteredLightingStats.lightIndexCount = clusteredStats.lightIndexCount;
-                m_clusteredLightingStats.activeClusters = clusteredStats.activeClusters;
-                m_clusteredLightingStats.totalLightAssignments = clusteredStats.totalLightAssignments;
-                m_clusteredLightingStats.maxLightsInCluster = clusteredStats.maxLightsInCluster;
-                m_clusteredLightingStats.avgLightsPerCluster = clusteredStats.avgLightsPerCluster;
-
-                if (!m_clusteredLighting->UploadFrameData())
+                m_clusteredLightingStats.lightIndexCount =
+                    clusteredStats.lightIndexCount;
+                m_clusteredLightingStats.activeClusters =
+                    clusteredStats.activeClusters;
+                m_clusteredLightingStats.totalLightAssignments =
+                    clusteredStats.totalLightAssignments;
+                m_clusteredLightingStats.maxLightsInCluster =
+                    clusteredStats.maxLightsInCluster;
+                m_clusteredLightingStats.overflowedClusterCount =
+                    clusteredStats.overflowedClusterCount;
+                m_clusteredLightingStats.overflowLightAssignmentCount =
+                    clusteredStats.overflowLightAssignmentCount;
+                m_clusteredLightingStats.avgLightsPerCluster =
+                    clusteredStats.avgLightsPerCluster;
+                if (!lightsAssigned)
                 {
                     m_clusteredLightingStats.fallbackReason = m_clusteredLighting->GetLastError();
                 }
                 else
                 {
-                    m_clusteredLightingStats.gpuBuffersUploaded = true;
+                    m_clusteredLightingStats.lightsAssigned = true;
+                    if (!m_clusteredLighting->UploadFrameData())
+                    {
+                        m_clusteredLightingStats.fallbackReason = m_clusteredLighting->GetLastError();
+                    }
+                    else
+                    {
+                        m_clusteredLightingStats.gpuBuffersUploaded = true;
+                    }
                 }
             }
         }
@@ -7646,6 +8024,14 @@ void SceneRenderer::UpdateEnvironmentIBLBindingDiagnostics(
 void SceneRenderer::BuildRenderGraph()
 {
     m_featureCompositionFailureReason.clear();
+    if (!m_lightingFramePlan || !m_lightingFramePlan->IsValid())
+    {
+        m_featureCompositionFailureReason =
+            m_lightingFramePlanFailureReason.empty()
+                ? "Renderer has no valid LightingFramePlan for this frame/view"
+                : m_lightingFramePlanFailureReason;
+        return;
+    }
     // RenderContext's logical frame slot may advance independently from the
     // physical RHI device slot used by the Direct resident streams. Freeze the
     // latter before graph recording and retain it through submission closure.
@@ -8090,6 +8476,87 @@ void SceneRenderer::BuildRenderGraph()
 
     AddRayTracingSceneBuildPass();
 
+    auto lightingResources =
+        std::make_shared<RenderLightingFrameResourceSnapshot>();
+    lightingResources->lightingPlanIdentity =
+        m_lightingFramePlan->GetIdentityHash();
+    FrameLightResources mutableLightResources;
+    if (m_lightManager)
+    {
+        mutableLightResources.lightConstantsBuffer =
+            m_lightManager->GetLightConstantsBuffer();
+        mutableLightResources.pointLightsBuffer =
+            m_lightManager->GetPointLightsBuffer();
+        mutableLightResources.spotLightsBuffer =
+            m_lightManager->GetSpotLightsBuffer();
+    }
+    if (m_clusteredLighting && m_clusteredLighting->IsInitialized())
+    {
+        mutableLightResources.clusterConstantsBuffer =
+            m_clusteredLighting->GetClusterConstantsBuffer();
+        mutableLightResources.clusterBuffer =
+            m_clusteredLighting->GetClusterBuffer();
+        mutableLightResources.clusterLightIndexBuffer =
+            m_clusteredLighting->GetLightIndexBuffer();
+    }
+    if (m_pipelineCache &&
+        m_pipelineCache->FreezeFrameLightResources(
+            mutableLightResources,
+            lightingResources->frozenLightResources))
+    {
+        const FrozenFrameLightResources& frozen =
+            lightingResources->frozenLightResources;
+        lightingResources->lightConstants = m_renderGraph->ImportBuffer(
+            frozen.lightConstantsBuffer, RHIResourceState::ConstantBuffer);
+        lightingResources->pointLights = m_renderGraph->ImportBuffer(
+            frozen.pointLightsBuffer, RHIResourceState::ShaderResource);
+        lightingResources->spotLights = m_renderGraph->ImportBuffer(
+            frozen.spotLightsBuffer, RHIResourceState::ShaderResource);
+        lightingResources->clusterConstants = m_renderGraph->ImportBuffer(
+            frozen.clusterConstantsBuffer, RHIResourceState::ConstantBuffer);
+        lightingResources->clusterData = m_renderGraph->ImportBuffer(
+            frozen.clusterBuffer, RHIResourceState::ShaderResource);
+        lightingResources->clusterLightIndices = m_renderGraph->ImportBuffer(
+            frozen.clusterLightIndexBuffer, RHIResourceState::ShaderResource);
+    }
+    lightingResources->textureIBLEnabled =
+        m_viewData.textureIBLEnabled != 0;
+    if (lightingResources->textureIBLEnabled)
+    {
+        lightingResources->environmentIBLIrradianceView = irradianceView;
+        lightingResources->environmentIBLPrefilteredView = prefilteredView;
+        lightingResources->environmentIBLBRDFLUTView = brdfLUTView;
+        lightingResources->environmentIBLIrradiance =
+            m_viewData.environmentIrradianceTexture;
+        lightingResources->environmentIBLPrefiltered =
+            m_viewData.environmentPrefilteredTexture;
+        lightingResources->environmentIBLBRDFLUT =
+            m_viewData.environmentBRDFLUTTexture;
+    }
+    const LightingLightCandidate* const plannedPrimaryDirectional =
+        m_lightingFramePlan->GetPrimaryDirectionalLight();
+    const uint64 plannedPrimaryDirectionalId = plannedPrimaryDirectional
+        ? plannedPrimaryDirectional->lightId : 0;
+    if (!m_lightManager || !m_lightManager->IsLightingPlanBound() ||
+        m_lightManager->GetLightingPlanIdentity() !=
+            m_lightingFramePlan->GetIdentityHash() ||
+        m_lightManager->GetPrimaryDirectionalLightId() !=
+            plannedPrimaryDirectionalId ||
+        m_lightManager->GetPlanLocalLightAdmittedCount() !=
+            m_lightingFramePlan->GetCapacityEvidence()
+                .selectedLocalLightCount ||
+        !m_clusteredLightingStats.frameBegun ||
+        !m_clusteredLightingStats.lightsAssigned ||
+        !m_clusteredLightingStats.gpuBuffersUploaded ||
+        !lightingResources->IsComplete() ||
+        m_lightingFramePlan->GetIBLRequest().inputsReady !=
+            lightingResources->textureIBLEnabled)
+    {
+        m_featureCompositionFailureReason =
+            "LightingFramePlan RHI resources are incomplete or identity-mismatched";
+        return;
+    }
+
     // All main-chain raster passes record from this immutable, graph-specific
     // snapshot.  The epoch advances after every RenderGraph::Clear() / build;
     // a GPU slice from an older recording cannot be accepted by Depth/Opaque.
@@ -8123,6 +8590,8 @@ void SceneRenderer::BuildRenderGraph()
         recordHeader.configurationRevision};
     passRecordContext.featureViewIdentity =
         m_renderScene.GetView().identity;
+    passRecordContext.lightingPlan = m_lightingFramePlan;
+    passRecordContext.lightingResources = std::move(lightingResources);
     AddGPUDrivenCullingPass(passRecordContext.identity);
     passRecordContext.executionPlan = m_viewData.renderFrameExecutionPlan;
     passRecordContext.drawPlan = m_viewData.renderDrawPlan;
@@ -8143,6 +8612,8 @@ void SceneRenderer::BuildRenderGraph()
     passRecordContext.results->directionalShadowOutput = {};
     passRecordContext.results->directionalShadowOutput.identity =
         passRecordContext.identity;
+    passRecordContext.results->directionalShadowOutput.lightingPlanIdentity =
+        m_lightingFramePlan->GetIdentityHash();
     passRecordContext.results->shadowStats = {};
     passRecordContext.frameSnapshot = MakeRenderPassFrameSnapshot(
         passRecordContext, *passRecordContext.results);

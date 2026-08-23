@@ -5850,6 +5850,294 @@
       "completionSource": "provider result is transferred into its runtime owner before any GPU submission",
       "normalRelease": "consumer moves successful shader ownership into its completion-tracked runtime owner",
       "deviceLostRelease": "untransferred provider results release before GPU use; transferred ownership follows the runtime owner"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/Passes/DeferredLightingPass.h",
+      "owner": "DeferredLightingFrameResources",
+      "symbol": "expectedIrradianceView",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "graph pass retains the exact IBL view into the submission batch until token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/Passes/DeferredLightingPass.h",
+      "owner": "DeferredLightingFrameResources",
+      "symbol": "expectedPrefilteredEnvironmentView",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "graph pass retains the exact IBL view into the submission batch until token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/Passes/DeferredLightingPass.h",
+      "owner": "DeferredLightingFrameResources",
+      "symbol": "expectedBRDFLUTView",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "graph pass retains the exact IBL view into the submission batch until token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/Passes/RenderPassRecordContext.h",
+      "owner": "RenderLightingFrameResourceSnapshot",
+      "symbol": "environmentIBLIrradianceView",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "the exact graph view is copied into the record-owned binding snapshot and retained for submission",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/Passes/RenderPassRecordContext.h",
+      "owner": "RenderLightingFrameResourceSnapshot",
+      "symbol": "environmentIBLPrefilteredView",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "the exact graph view is copied into the record-owned binding snapshot and retained for submission",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/Passes/RenderPassRecordContext.h",
+      "owner": "RenderLightingFrameResourceSnapshot",
+      "symbol": "environmentIBLBRDFLUTView",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "the exact graph view is copied into the record-owned binding snapshot and retained for submission",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "FrozenFrameLightResources",
+      "symbol": "lightConstantsBuffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "frozen frame-light allocation is retained by exact graph consumers until token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "FrozenFrameLightResources",
+      "symbol": "pointLightsBuffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "frozen frame-light allocation is retained by exact graph consumers until token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "FrozenFrameLightResources",
+      "symbol": "spotLightsBuffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "frozen frame-light allocation is retained by exact graph consumers until token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "FrozenFrameLightResources",
+      "symbol": "clusterConstantsBuffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "frozen frame-light allocation is retained by exact graph consumers until token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "FrozenFrameLightResources",
+      "symbol": "clusterBuffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "frozen frame-light allocation is retained by exact graph consumers until token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "FrozenFrameLightResources",
+      "symbol": "clusterLightIndexBuffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "frozen frame-light allocation is retained by exact graph consumers until token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshot",
+      "symbol": "viewConstantBuffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "recording transfers the exact frame binding into RenderGraph submission retention",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshot",
+      "symbol": "directionalShadowView",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "recording transfers the exact frame binding into RenderGraph submission retention",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshot",
+      "symbol": "directionalShadowSampler",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "recording transfers the exact frame binding into RenderGraph submission retention",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshot",
+      "symbol": "lightConstantsBuffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "recording transfers the exact frame binding into RenderGraph submission retention",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshot",
+      "symbol": "pointLightsBuffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "recording transfers the exact frame binding into RenderGraph submission retention",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshot",
+      "symbol": "spotLightsBuffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "recording transfers the exact frame binding into RenderGraph submission retention",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshot",
+      "symbol": "rayTracedShadowMaskView",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "recording transfers the exact frame binding into RenderGraph submission retention",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshot",
+      "symbol": "clusterConstantsBuffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "recording transfers the exact frame binding into RenderGraph submission retention",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshot",
+      "symbol": "clusterBuffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "recording transfers the exact frame binding into RenderGraph submission retention",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshot",
+      "symbol": "clusterLightIndexBuffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "recording transfers the exact frame binding into RenderGraph submission retention",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshot",
+      "symbol": "environmentIBLIrradianceView",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "recording transfers the exact frame binding into RenderGraph submission retention",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshot",
+      "symbol": "environmentIBLPrefilteredView",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "recording transfers the exact frame binding into RenderGraph submission retention",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshot",
+      "symbol": "environmentIBLBRDFLUTView",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "recording transfers the exact frame binding into RenderGraph submission retention",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshot",
+      "symbol": "environmentIBLSampler",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "recording transfers the exact frame binding into RenderGraph submission retention",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshot",
+      "symbol": "frameSetLayout",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "recording transfers the exact frame binding into RenderGraph submission retention",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshot",
+      "symbol": "frameDescriptorSet",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "recording transfers the exact frame binding into RenderGraph submission retention",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "RasterObjectBindingSnapshot",
+      "symbol": "objectConstantBuffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "transparent graph recording transfers object bindings into submission retention",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "RasterObjectBindingSnapshot",
+      "symbol": "objectDescriptorSet",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "transparent graph recording transfers object bindings into submission retention",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/DeferredLightingPass.cpp",
+      "owner": "DeferredLightingExecutionResources",
+      "symbol": "pipeline",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "captureless deferred graph callback retains its sealed pipeline until token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/DeferredLightingPass.cpp",
+      "owner": "DeferredLightingExecutionResources",
+      "symbol": "descriptorSetLayout",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "captureless deferred graph callback retains its sealed descriptor layout until token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
     }
   ]
 }

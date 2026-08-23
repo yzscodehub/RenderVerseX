@@ -196,6 +196,7 @@ namespace RVX
                 .type = SceneECS::LightType::Directional,
                 .color = Vec3(1.0f, 0.92f, 0.78f),
                 .intensity = 3.5f,
+                .intensityUnit = SceneECS::LightIntensityUnit::Lux,
                 .shadowBias = 0.0008f,
                 .castsShadows = true,
             };
@@ -208,6 +209,7 @@ namespace RVX
                 .type = SceneECS::LightType::Point,
                 .color = descriptor.color,
                 .intensity = descriptor.intensity,
+                .intensityUnit = SceneECS::LightIntensityUnit::Candela,
                 .range = 5.5f,
                 .castsShadows = false,
             };
@@ -220,6 +222,7 @@ namespace RVX
                 .type = SceneECS::LightType::Spot,
                 .color = descriptor.color,
                 .intensity = descriptor.intensity,
+                .intensityUnit = SceneECS::LightIntensityUnit::Candela,
                 .range = 12.0f,
                 .innerConeRadians = radians(18.0f),
                 .outerConeRadians = radians(32.0f),

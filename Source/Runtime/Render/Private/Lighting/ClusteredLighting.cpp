@@ -35,6 +35,27 @@ namespace
         return std::isfinite(value) && value > RVX_CLUSTERING_EPSILON;
     }
 
+    bool IsFiniteMatrix(const Mat4& matrix)
+    {
+        for (uint32 column = 0; column < 4; ++column)
+        {
+            for (uint32 row = 0; row < 4; ++row)
+            {
+                if (!std::isfinite(matrix[column][row]))
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    bool IsValidNdcDepthRange(ClusterNdcDepthRange range)
+    {
+        return range == ClusterNdcDepthRange::ZeroToOne ||
+               range == ClusterNdcDepthRange::MinusOneToOne;
+    }
+
 } // namespace
 
 ClusteredLighting::~ClusteredLighting()
@@ -110,8 +131,7 @@ bool ClusteredLighting::Reconfigure(const ClusteringConfig& config)
     return Initialize(device, config);
 }
 
-bool ClusteredLighting::BeginFrame(const Mat4& viewMatrix, const Mat4& projMatrix,
-                                    uint32 screenWidth, uint32 screenHeight)
+bool ClusteredLighting::BeginFrame(const ClusteredLightingView& view)
 {
     if (!m_initialized)
     {
@@ -119,21 +139,54 @@ bool ClusteredLighting::BeginFrame(const Mat4& viewMatrix, const Mat4& projMatri
         return false;
     }
 
-    if (screenWidth == 0 || screenHeight == 0)
+    if (view.screenWidth == 0 || view.screenHeight == 0)
     {
         SetLastError("ClusteredLighting requires a non-zero viewport");
         return false;
     }
 
-    m_viewMatrix = viewMatrix;
-    m_projMatrix = projMatrix;
-    m_invProjMatrix = inverse(projMatrix);
-    m_screenWidth = screenWidth;
-    m_screenHeight = screenHeight;
-    m_frameBegun = true;
+    if (!IsFinitePositive(view.nearPlane) || !std::isfinite(view.farPlane) ||
+        view.farPlane <= view.nearPlane)
+    {
+        SetLastError("ClusteredLighting frame view requires finite ordered near/far planes");
+        return false;
+    }
 
-    // Rebuild cluster AABBs if view parameters changed significantly
-    BuildClusterAABBs();
+    if (!IsValidNdcDepthRange(view.ndcDepthRange))
+    {
+        SetLastError("ClusteredLighting frame view has an invalid NDC depth range");
+        return false;
+    }
+
+    if (!IsFiniteMatrix(view.viewMatrix) || !IsFiniteMatrix(view.projectionMatrix) ||
+        !IsFiniteMatrix(view.inverseProjectionMatrix))
+    {
+        SetLastError("ClusteredLighting frame view contains a non-finite projection matrix");
+        return false;
+    }
+
+    m_viewMatrix = view.viewMatrix;
+    m_projMatrix = view.projectionMatrix;
+    m_invProjMatrix = view.inverseProjectionMatrix;
+    m_screenWidth = view.screenWidth;
+    m_screenHeight = view.screenHeight;
+    m_frameNearPlane = view.nearPlane;
+    m_frameFarPlane = view.farPlane;
+    m_ndcDepthRange = view.ndcDepthRange;
+    m_reverseZ = view.reverseZ;
+
+    // Device depth represents the projection's near/far planes, not the
+    // logarithmic view-space depth used for cluster slicing.  BuildClusterAABBs
+    // unprojects both planes and then intersects their view rays at each
+    // logarithmic depth boundary.
+    if (!BuildClusterAABBs())
+    {
+        m_frameBegun = false;
+        ClearClusters();
+        return false;
+    }
+
+    m_frameBegun = true;
     ClearClusters();
     m_lastError.clear();
     return true;
@@ -182,9 +235,12 @@ bool ClusteredLighting::ValidateConfig(const ClusteringConfig& config,
         return false;
     }
 
-    if (config.maxLightsPerCluster == 0)
+    if (config.maxLightsPerCluster == 0 ||
+        config.maxLightsPerCluster >
+            RVX_CLUSTERED_LIGHTING_SHADER_MAX_LIGHTS_PER_PIXEL)
     {
-        SetLastError("ClusteredLighting requires maxLightsPerCluster > 0");
+        SetLastError(
+            "ClusteredLighting maxLightsPerCluster must be within the shader loop bound");
         return false;
     }
 
@@ -291,10 +347,71 @@ bool ClusteredLighting::UploadBuffer(RHIBuffer* buffer, const void* data, uint64
     return true;
 }
 
-void ClusteredLighting::BuildClusterAABBs()
+bool ClusteredLighting::UnprojectDeviceDepth(float ndcX, float ndcY,
+                                             float deviceDepth,
+                                             Vec3& outViewPosition) const
 {
-    float nearZ = m_config.nearPlane;
-    float farZ = m_config.farPlane;
+    const Vec4 clip(ndcX, ndcY, deviceDepth, 1.0f);
+    Vec4 view = m_invProjMatrix * clip;
+    if (!std::isfinite(view.x) || !std::isfinite(view.y) ||
+        !std::isfinite(view.z) || !std::isfinite(view.w) ||
+        std::abs(view.w) <= RVX_CLUSTERING_EPSILON)
+    {
+        return false;
+    }
+
+    view /= view.w;
+    if (!std::isfinite(view.x) || !std::isfinite(view.y) ||
+        !std::isfinite(view.z))
+    {
+        return false;
+    }
+
+    outViewPosition = Vec3(view);
+    return true;
+}
+
+bool ClusteredLighting::BuildViewSpacePointAtDepth(
+    const Vec3& nearViewPosition,
+    const Vec3& farViewPosition,
+    float viewDepth,
+    Vec3& outViewPosition) const
+{
+    const Vec3 ray = farViewPosition - nearViewPosition;
+    if (!std::isfinite(ray.x) || !std::isfinite(ray.y) ||
+        !std::isfinite(ray.z) || std::abs(ray.z) <= RVX_CLUSTERING_EPSILON)
+    {
+        return false;
+    }
+
+    // RenderVerseX view space is right-handed with camera-forward = -Z.  The
+    // z slice is expressed as a positive camera-forward distance, exactly as
+    // ResolveClusterIndex does in both surface shaders.
+    const float targetViewZ = -viewDepth;
+    const float interpolation =
+        (targetViewZ - nearViewPosition.z) / ray.z;
+    if (!std::isfinite(interpolation))
+    {
+        return false;
+    }
+
+    outViewPosition = nearViewPosition + ray * interpolation;
+    return std::isfinite(outViewPosition.x) &&
+           std::isfinite(outViewPosition.y) &&
+           std::isfinite(outViewPosition.z);
+}
+
+bool ClusteredLighting::BuildClusterAABBs()
+{
+    const float nearZ = m_frameNearPlane;
+    const float farZ = m_frameFarPlane;
+
+    const float nearDeviceDepth = m_reverseZ
+        ? (m_ndcDepthRange == ClusterNdcDepthRange::ZeroToOne ? 1.0f : 1.0f)
+        : (m_ndcDepthRange == ClusterNdcDepthRange::ZeroToOne ? 0.0f : -1.0f);
+    const float farDeviceDepth = m_reverseZ
+        ? (m_ndcDepthRange == ClusterNdcDepthRange::ZeroToOne ? 0.0f : -1.0f)
+        : 1.0f;
 
     // Exponential depth slicing for better distribution
     float logNear = std::log(nearZ);
@@ -328,31 +445,52 @@ void ClusteredLighting::BuildClusterAABBs()
                 float minZ = std::exp(logNear + t0 * logRange);
                 float maxZ = std::exp(logNear + t1 * logRange);
 
-                // Compute view-space AABB corners
+                // Compute view-space AABB corners.  A logarithmic cluster
+                // depth is a linear camera-forward distance, never a clip-Z
+                // value.  We first unproject the active near/far device-depth
+                // planes at each NDC corner, then intersect that ray with the
+                // two target view-space depth planes.
                 Vec3 minPoint(std::numeric_limits<float>::max());
                 Vec3 maxPoint(std::numeric_limits<float>::lowest());
-
-                // Unproject 8 corners
-                float corners[8][4] = {
-                    {minX, minY, 0, 1}, {maxX, minY, 0, 1},
-                    {minX, maxY, 0, 1}, {maxX, maxY, 0, 1},
-                    {minX, minY, 1, 1}, {maxX, minY, 1, 1},
-                    {minX, maxY, 1, 1}, {maxX, maxY, 1, 1}
+                const float ndcCorners[4][2] = {
+                    {minX, minY}, {maxX, minY},
+                    {minX, maxY}, {maxX, maxY},
                 };
 
-                for (int i = 0; i < 8; ++i)
+                for (const auto& ndcCorner : ndcCorners)
                 {
-                    float depth = (i < 4) ? minZ : maxZ;
-                    Vec4 clip(corners[i][0], corners[i][1],
-                             (depth - nearZ) / (farZ - nearZ), 1.0f);
-                    Vec4 view = m_invProjMatrix * clip;
-                    if (std::abs(view.w) > RVX_CLUSTERING_EPSILON)
+                    Vec3 nearViewPosition;
+                    Vec3 farViewPosition;
+                    if (!UnprojectDeviceDepth(
+                            ndcCorner[0], ndcCorner[1], nearDeviceDepth,
+                            nearViewPosition) ||
+                        !UnprojectDeviceDepth(
+                            ndcCorner[0], ndcCorner[1], farDeviceDepth,
+                            farViewPosition))
                     {
-                        view /= view.w;
+                        SetLastError(
+                            "ClusteredLighting could not unproject frame depth bounds");
+                        return false;
                     }
 
-                    minPoint = min(minPoint, Vec3(view));
-                    maxPoint = max(maxPoint, Vec3(view));
+                    Vec3 minDepthPoint;
+                    Vec3 maxDepthPoint;
+                    if (!BuildViewSpacePointAtDepth(
+                            nearViewPosition, farViewPosition, minZ,
+                            minDepthPoint) ||
+                        !BuildViewSpacePointAtDepth(
+                            nearViewPosition, farViewPosition, maxZ,
+                            maxDepthPoint))
+                    {
+                        SetLastError(
+                            "ClusteredLighting could not construct a view-space cluster ray");
+                        return false;
+                    }
+
+                    minPoint = min(minPoint, minDepthPoint);
+                    minPoint = min(minPoint, maxDepthPoint);
+                    maxPoint = max(maxPoint, minDepthPoint);
+                    maxPoint = max(maxPoint, maxDepthPoint);
                 }
 
                 m_clusterAABBs[index].minPoint = Vec4(minPoint, 0);
@@ -360,6 +498,8 @@ void ClusteredLighting::BuildClusterAABBs()
             }
         }
     }
+
+    return true;
 }
 
 void ClusteredLighting::ClearClusters()
@@ -410,6 +550,7 @@ bool ClusteredLighting::AssignLights(const LightManager& lightManager)
     {
         m_clusters[i].offset = static_cast<uint32>(m_lightIndices.size());
         m_clusters[i].count = 0;
+        bool clusterOverflowed = false;
 
         const auto& aabb = m_clusterAABBs[i];
 
@@ -426,6 +567,11 @@ bool ClusteredLighting::AssignLights(const LightManager& lightManager)
                     m_lightIndices.push_back(idx);
                     m_clusters[i].count++;
                     m_clusters[i].pointCount++;
+                }
+                else
+                {
+                    clusterOverflowed = true;
+                    ++m_stats.overflowLightAssignmentCount;
                 }
             }
         }
@@ -445,7 +591,17 @@ bool ClusteredLighting::AssignLights(const LightManager& lightManager)
                     m_clusters[i].count++;
                     m_clusters[i].spotCount++;
                 }
+                else
+                {
+                    clusterOverflowed = true;
+                    ++m_stats.overflowLightAssignmentCount;
+                }
             }
+        }
+
+        if (clusterOverflowed)
+        {
+            ++m_stats.overflowedClusterCount;
         }
 
         // Update stats
@@ -463,6 +619,12 @@ bool ClusteredLighting::AssignLights(const LightManager& lightManager)
             static_cast<float>(m_stats.totalLightAssignments) / m_stats.activeClusters;
     }
     m_stats.lightIndexCount = static_cast<uint32>(m_lightIndices.size());
+    if (m_stats.overflowLightAssignmentCount != 0)
+    {
+        SetLastError(
+            "ClusteredLighting visible-light capacity overflowed; refusing a truncated cluster plan");
+        return false;
+    }
     m_lastError.clear();
     return true;
 }
@@ -537,8 +699,8 @@ bool ClusteredLighting::UploadFrameData()
     constants.screenParams = Vec4(
         static_cast<float>(m_screenWidth),
         static_cast<float>(m_screenHeight),
-        m_config.nearPlane,
-        m_config.farPlane
+        m_frameNearPlane,
+        m_frameFarPlane
     );
     constants.invProj = m_invProjMatrix;
 

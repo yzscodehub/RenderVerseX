@@ -151,16 +151,22 @@ void LegacyForwardFeatureAdapter::AddPasses(
             continue;
         }
 
-        // Each legacy registration receives an independent value copy. The
-        // opaque pass sees only graph-owned producer results from this exact
-        // graph recording, matching the prior SceneRenderer behavior.
+        // Each legacy registration receives an independent value copy. Every
+        // consumer at or after the opaque phase must see only graph-owned
+        // producer results from this exact graph recording. Restricting this
+        // refresh to OpaquePass left TransparentPass bound to the pre-graph
+        // placeholder shadow outputs even though both paths share one lighting
+        // plan.
         RenderPassRecordContext passContext = m_recordContext;
-        if (pass.get() == m_opaquePass)
+        const int32 firstLightingConsumerPriority = m_opaquePass != nullptr
+            ? m_opaquePass->GetPriority()
+            : PassPriority::Opaque;
+        if (pass->GetPriority() >= firstLightingConsumerPriority)
         {
             if (passContext.results == nullptr)
             {
                 SetCompositionFailure(
-                    "Opaque pass requires graph-owned record results");
+                    "Main-scene consumer requires graph-owned record results");
                 return;
             }
 

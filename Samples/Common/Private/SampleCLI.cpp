@@ -309,7 +309,7 @@ namespace RVX
                    << ",\n";
             stream << "      \"profileHash\": " << receipt.profileHash
                    << ",\n";
-            if (receipt.schemaVersion == 2)
+            if (receipt.schemaVersion == 2 || receipt.schemaVersion == 4)
             {
                 stream << "      \"deferredOpaque\": {\"available\": "
                        << Diagnostics::JsonBool(receipt.deferredOpaque.available)
@@ -321,6 +321,48 @@ namespace RVX
                        << receipt.deferredOpaque.plannedPacketCount
                        << ", \"executedPacketCount\": "
                        << receipt.deferredOpaque.executedPacketCount
+                       << "},\n";
+            }
+            if (receipt.schemaVersion == 4)
+            {
+                stream << "      \"lighting\": {\"lightingPlanIdentity\": "
+                       << receipt.lighting.lightingPlanIdentity
+                       << ", \"sceneLightStateHash\": "
+                       << receipt.lighting.sceneLightStateHash
+                       << ", \"primaryDirectionalLightId\": "
+                       << receipt.lighting.primaryDirectionalLightId
+                       << ", \"pointLightRequestedCount\": "
+                       << receipt.lighting.pointLightRequestedCount
+                       << ", \"pointLightAdmittedCount\": "
+                       << receipt.lighting.pointLightAdmittedCount
+                       << ", \"pointLightCapacity\": "
+                       << receipt.lighting.pointLightCapacity
+                       << ", \"pointLightOverflowCount\": "
+                       << receipt.lighting.pointLightOverflowCount
+                       << ", \"spotLightRequestedCount\": "
+                       << receipt.lighting.spotLightRequestedCount
+                       << ", \"spotLightAdmittedCount\": "
+                       << receipt.lighting.spotLightAdmittedCount
+                       << ", \"spotLightCapacity\": "
+                       << receipt.lighting.spotLightCapacity
+                       << ", \"spotLightOverflowCount\": "
+                       << receipt.lighting.spotLightOverflowCount
+                       << ", \"csmRequested\": "
+                       << Diagnostics::JsonBool(receipt.lighting.csmRequested)
+                       << ", \"csmInputsReady\": "
+                       << Diagnostics::JsonBool(
+                              receipt.lighting.csmInputsReady)
+                       << ", \"csmExecutionReady\": "
+                       << Diagnostics::JsonBool(
+                              receipt.lighting.csmExecutionReady)
+                       << ", \"iblRequested\": "
+                       << Diagnostics::JsonBool(receipt.lighting.iblRequested)
+                       << ", \"iblInputsReady\": "
+                       << Diagnostics::JsonBool(
+                              receipt.lighting.iblInputsReady)
+                       << ", \"iblExecutionReady\": "
+                       << Diagnostics::JsonBool(
+                              receipt.lighting.iblExecutionReady)
                        << "},\n";
             }
             stream << "      \"diagnostic\": "

@@ -248,11 +248,20 @@ namespace RVX
     {
         static constexpr RenderBlackboardResourceId ResourceId =
             RenderBlackboardResourceId::LightingOutputs;
-        static constexpr uint32 SchemaVersion = 1;
+        static constexpr uint32 SchemaVersion = 2;
 
         RenderGraphBlackboardProvenance provenance{};
+        /** Immutable LightingFramePlan identity shared by every lighting consumer. */
+        uint64 lightingPlanIdentity = 0;
         RGTextureHandle hdrSceneColor{};
         RGBufferHandle clusteredLights{};
+
+        [[nodiscard]] bool IsCompatibleWithLightingPlan(
+            uint64 expectedLightingPlanIdentity) const noexcept
+        {
+            return expectedLightingPlanIdentity != 0 &&
+                   lightingPlanIdentity == expectedLightingPlanIdentity;
+        }
     };
 
     struct ReflectionOutputs
@@ -601,7 +610,8 @@ namespace RVX
             }
             else if constexpr (std::is_same_v<Entry, LightingOutputs>)
             {
-                return HandleMatchesGraph(entry.hdrSceneColor, provenance) &&
+                return entry.lightingPlanIdentity != 0 &&
+                       HandleMatchesGraph(entry.hdrSceneColor, provenance) &&
                        HandleMatchesGraph(entry.clusteredLights, provenance);
             }
             else if constexpr (std::is_same_v<Entry, ReflectionOutputs>)

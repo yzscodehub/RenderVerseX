@@ -7,6 +7,7 @@
 
 #include "Render/Graph/RenderGraph.h"
 #include "Render/GPUDriven/GPUDrivenDiagnostics.h"
+#include "Render/Lighting/LightingFramePlan.h"
 #include "Render/Passes/MeshPassProcessor.h"
 #include "Render/PipelineCache.h"
 #include "Render/Policy/RenderFrameExecutionPlan.h"
@@ -21,6 +22,7 @@
 #include "Render/Visibility/RenderVisibility.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <memory>
 #include <tuple>
@@ -460,10 +462,163 @@ namespace RVX
         return {};
     }
 
+    /**
+     * @brief Strongly-owned RHI inputs derived from one immutable lighting plan.
+     *
+     * The directional shadow view is graph-produced and therefore supplied by
+     * each consumer at execution. Every other mutable frame-light input is
+     * frozen here before graph callbacks are registered.
+     */
+    struct RenderLightingFrameResourceSnapshot
+    {
+        uint64 lightingPlanIdentity = 0;
+        /** Exact byte-frozen allocations shared by graph imports and descriptors. */
+        FrozenFrameLightResources frozenLightResources{};
+        /** Current-recording handles for the six frozen light allocations. */
+        RGBufferHandle lightConstants{};
+        RGBufferHandle pointLights{};
+        RGBufferHandle spotLights{};
+        RGBufferHandle clusterConstants{};
+        RGBufferHandle clusterData{};
+        RGBufferHandle clusterLightIndices{};
+        RHITextureViewRef environmentIBLIrradianceView;
+        RHITextureViewRef environmentIBLPrefilteredView;
+        RHITextureViewRef environmentIBLBRDFLUTView;
+        /** Exact existing graph imports paired with the retained IBL views. */
+        RGTextureHandle environmentIBLIrradiance{};
+        RGTextureHandle environmentIBLPrefiltered{};
+        RGTextureHandle environmentIBLBRDFLUT{};
+        bool textureIBLEnabled = false;
+
+        [[nodiscard]] bool IsComplete() const noexcept
+        {
+            const bool lightsComplete = lightingPlanIdentity != 0 &&
+                frozenLightResources.IsComplete() && lightConstants.IsValid() &&
+                pointLights.IsValid() && spotLights.IsValid() &&
+                clusterConstants.IsValid() && clusterData.IsValid() &&
+                clusterLightIndices.IsValid();
+            const bool iblComplete = !textureIBLEnabled ||
+                (environmentIBLIrradianceView &&
+                 environmentIBLPrefilteredView &&
+                 environmentIBLBRDFLUTView &&
+                 environmentIBLIrradiance.IsValid() &&
+                 environmentIBLPrefiltered.IsValid() &&
+                 environmentIBLBRDFLUT.IsValid());
+            return lightsComplete && iblComplete;
+        }
+
+        [[nodiscard]] bool HasCurrentGraphResources(
+            const RenderPassRecordIdentity& identity) const noexcept
+        {
+            const bool localLightsCurrent =
+                   HasCurrentGraphProvenance(lightConstants, identity) &&
+                   HasCurrentGraphProvenance(pointLights, identity) &&
+                   HasCurrentGraphProvenance(spotLights, identity) &&
+                   HasCurrentGraphProvenance(clusterConstants, identity) &&
+                   HasCurrentGraphProvenance(clusterData, identity) &&
+                   HasCurrentGraphProvenance(clusterLightIndices, identity);
+            const bool iblCurrent = !textureIBLEnabled ||
+                (HasCurrentGraphProvenance(
+                     environmentIBLIrradiance, identity) &&
+                 HasCurrentGraphProvenance(
+                     environmentIBLPrefiltered, identity) &&
+                 HasCurrentGraphProvenance(
+                     environmentIBLBRDFLUT, identity));
+            return localLightsCurrent && iblCurrent;
+        }
+
+        [[nodiscard]] bool MatchesEnvironmentGraphHandles(
+            const ViewData& view) const noexcept
+        {
+            if ((view.textureIBLEnabled != 0) != textureIBLEnabled)
+            {
+                return false;
+            }
+            if (!textureIBLEnabled)
+            {
+                return true;
+            }
+            const auto sameTexture = [](
+                const RGTextureHandle& left,
+                const RGTextureHandle& right) noexcept
+            {
+                return left.IsValid() && right.IsValid() &&
+                    left.index == right.index &&
+                    left.graphIdentity == right.graphIdentity &&
+                    left.recordingGeneration == right.recordingGeneration;
+            };
+            return sameTexture(
+                       view.environmentIrradianceTexture,
+                       environmentIBLIrradiance) &&
+                   sameTexture(
+                       view.environmentPrefilteredTexture,
+                       environmentIBLPrefiltered) &&
+                   sameTexture(
+                       view.environmentBRDFLUTTexture,
+                       environmentIBLBRDFLUT);
+        }
+
+        /**
+         * @brief Resolve graph-owned views and prove that descriptors sample
+         *        the exact allocations whose transitions were declared.
+         */
+        [[nodiscard]] bool ResolveEnvironmentResources(
+            RHITextureView* irradiance,
+            RHITextureView* prefiltered,
+            RHITextureView* brdfLUT,
+            EnvironmentIBLFrameResources& outResources) const noexcept
+        {
+            outResources = {};
+            if (!textureIBLEnabled)
+            {
+                return true;
+            }
+
+            const auto isExactView = [](
+                RHITextureView* graphView,
+                const RHITextureViewRef& retainedView) noexcept
+            {
+                if (graphView == nullptr || !retainedView ||
+                    graphView->GetTexture() != retainedView->GetTexture() ||
+                    graphView->GetFormat() != retainedView->GetFormat())
+                {
+                    return false;
+                }
+                const RHISubresourceRange& graphRange =
+                    graphView->GetSubresourceRange();
+                const RHISubresourceRange& retainedRange =
+                    retainedView->GetSubresourceRange();
+                return graphRange.baseMipLevel == retainedRange.baseMipLevel &&
+                    graphRange.mipLevelCount == retainedRange.mipLevelCount &&
+                    graphRange.baseArrayLayer == retainedRange.baseArrayLayer &&
+                    graphRange.arrayLayerCount == retainedRange.arrayLayerCount &&
+                    graphRange.aspect == retainedRange.aspect;
+            };
+
+            if (!isExactView(irradiance, environmentIBLIrradianceView) ||
+                !isExactView(prefiltered, environmentIBLPrefilteredView) ||
+                !isExactView(brdfLUT, environmentIBLBRDFLUTView))
+            {
+                return false;
+            }
+
+            outResources.enabled = true;
+            outResources.irradianceView = irradiance;
+            outResources.prefilteredEnvironmentView = prefiltered;
+            outResources.brdfLUTView = brdfLUT;
+            return true;
+        }
+    };
+
     /** @brief Value-owned scene state used by typed main-scene pass recording. */
     struct RenderPassFrameSnapshot
     {
         RenderPassRecordIdentity identity{};
+        /** Exact immutable lighting selection shared by every surface path. */
+        std::shared_ptr<const LightingFramePlan> lightingPlan;
+        /** Strong RHI realization of that exact lighting plan. */
+        std::shared_ptr<const RenderLightingFrameResourceSnapshot>
+            lightingResources;
         PrimaryDirectionalLightRecordInput primaryDirectionalLight{};
         ViewData view{};
         RenderFrameExecutionPlan executionPlan{};
@@ -487,6 +642,8 @@ namespace RVX
     struct DirectionalShadowRecordOutput
     {
         RenderPassRecordIdentity identity{};
+        /** Identity of the LightingFramePlan that requested this output. */
+        uint64 lightingPlanIdentity = 0;
         bool enabled = false;
         RGTextureHandle shadowMap{};
         uint32 shadowMapSize = 0;
@@ -515,7 +672,96 @@ namespace RVX
                    cascadeCount <= RVX_MAX_DIRECTIONAL_SHADOW_CASCADES &&
                    cascadeSplitDepths.size() == cascadeCount;
         }
+
+        [[nodiscard]] bool IsCompatibleWith(
+            const RenderPassRecordIdentity& expected,
+            uint64 expectedLightingPlanIdentity) const noexcept
+        {
+            return expectedLightingPlanIdentity != 0 &&
+                   lightingPlanIdentity == expectedLightingPlanIdentity &&
+                   IsCompatibleWith(expected);
+        }
     };
+
+    /**
+     * @brief Project one plan-bound CSM output into shader-visible ViewData.
+     *
+     * Opaque, transparent, and deferred lighting use this single conversion so
+     * cascade splits/fades cannot diverge between surface paths.
+     */
+    [[nodiscard]] inline bool ResolveDirectionalShadowViewData(
+        ViewData& view,
+        const DirectionalShadowRecordOutput& shadow,
+        const RenderPassRecordIdentity& identity,
+        uint64 lightingPlanIdentity) noexcept
+    {
+        view.directionalShadowEnabled = 0;
+        view.directionalShadowCascadeCount = 0;
+        view.directionalShadowCascadeSplits = Vec4(0.0f);
+        view.directionalShadowCascadeFadeDistances = Vec4(0.0f);
+        view.directionalShadowViewProjection = Mat4Identity();
+        view.directionalShadowInvMapSize = 0.0f;
+        view.directionalShadowDepthBias = 0.0f;
+        view.directionalShadowNormalBias = 0.0f;
+        view.directionalShadowFilterRadiusTexels = 1.0f;
+        view.directionalShadowStrength = 1.0f;
+
+        if (!shadow.IsCompatibleWith(identity, lightingPlanIdentity))
+        {
+            return false;
+        }
+        if (!shadow.enabled)
+        {
+            return true;
+        }
+
+        const uint32 cascadeCount = std::min(
+            static_cast<uint32>(shadow.cascadeViewProjections.size()),
+            RVX_MAX_DIRECTIONAL_SHADOW_CASCADES);
+        if (cascadeCount == 0)
+        {
+            return false;
+        }
+        const float32 nearClip = std::max(0.001f, view.nearPlane);
+        const float32 farClip = std::max(nearClip + 1.0f, view.farPlane);
+        const float32 clipRange = farClip - nearClip;
+        view.directionalShadowEnabled = 1;
+        view.directionalShadowCascadeCount = cascadeCount;
+        for (uint32 cascade = 0; cascade < cascadeCount; ++cascade)
+        {
+            view.directionalShadowViewProjections[cascade] =
+                shadow.cascadeViewProjections[cascade];
+            const float32 normalizedSplit = cascade <
+                    shadow.cascadeSplitDepths.size()
+                ? shadow.cascadeSplitDepths[cascade]
+                : 0.0f;
+            view.directionalShadowCascadeSplits[cascade] =
+                nearClip + normalizedSplit * clipRange;
+        }
+        const float32 blendRatio = std::clamp(
+            shadow.cascadeBlendRatio, 0.0f, 1.0f);
+        for (uint32 cascade = 0; cascade + 1 < cascadeCount; ++cascade)
+        {
+            const float32 previousSplit = cascade == 0
+                ? nearClip
+                : view.directionalShadowCascadeSplits[cascade - 1];
+            const float32 span = std::max(
+                0.0f,
+                view.directionalShadowCascadeSplits[cascade] - previousSplit);
+            view.directionalShadowCascadeFadeDistances[cascade] =
+                std::min(span, span * blendRatio);
+        }
+        view.directionalShadowViewProjection =
+            shadow.cascadeViewProjections.front();
+        view.directionalShadowDepthBias = shadow.shadowBias;
+        view.directionalShadowNormalBias = shadow.normalBias;
+        view.directionalShadowInvMapSize = shadow.shadowMapSize != 0
+            ? 1.0f / static_cast<float32>(shadow.shadowMapSize)
+            : 0.0f;
+        view.directionalShadowFilterRadiusTexels =
+            shadow.filterRadiusTexels;
+        return true;
+    }
 
     /** @brief Per-record execution gate shared by producer and consumers. */
     struct RayTracedShadowExecutionState
@@ -602,6 +848,38 @@ namespace RVX
         }
     };
 
+    enum class RenderLightingSurfaceRoute : uint8
+    {
+        ForwardOpaque = 0,
+        DeferredOpaque,
+        ForwardSpecialOpaque,
+        Transparent,
+        Count,
+    };
+
+    /** @brief Actual work evidence emitted only after a lighting consumer ran. */
+    struct RenderLightingSurfaceExecutionEvidence
+    {
+        uint64 lightingPlanIdentity = 0;
+        RenderLightingSurfaceRoute route =
+            RenderLightingSurfaceRoute::ForwardOpaque;
+        /** Bits 0..5 correspond to the six frozen light/cluster buffers. */
+        uint8 frozenBufferMask = 0;
+        bool directionalShadowBound = false;
+        bool textureIBLBound = false;
+        bool exactIBLViews = false;
+        uint64 workCount = 0;
+        bool executed = false;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return lightingPlanIdentity != 0 &&
+                route < RenderLightingSurfaceRoute::Count &&
+                frozenBufferMask == 0x3fu && workCount != 0 && executed &&
+                (!textureIBLBound || exactIBLViews);
+        }
+    };
+
     /** @brief Lifetime-owned mutable outputs for one graph recording. */
     struct RenderPassRecordResults
     {
@@ -618,6 +896,9 @@ namespace RVX
         OpaqueSurfaceRouteExecutionEvidence forwardSpecialOpaqueRoute{};
         TransparentPassDrawStats transparentStats{};
         ObjectVelocityPassStats objectVelocityStats{};
+        std::array<RenderLightingSurfaceExecutionEvidence,
+                   static_cast<size_t>(RenderLightingSurfaceRoute::Count)>
+            lightingSurfaceEvidence{};
         /** Sorted and de-duplicated by exact slot/generation. */
         std::vector<RenderRecordedMaterialBindingReceipt>
             successfulMaterialBindings{};
@@ -628,6 +909,26 @@ namespace RVX
         bool successfulSkinningPalettesOverflow = false;
         std::vector<RenderGraphExternalTextureAccess>
             externalTextureAccesses{};
+
+        [[nodiscard]] bool RecordLightingSurfaceExecution(
+            const RenderLightingSurfaceExecutionEvidence& evidence) noexcept
+        {
+            if (!evidence.IsValid())
+            {
+                return false;
+            }
+            const size_t index = static_cast<size_t>(evidence.route);
+            if (index >= lightingSurfaceEvidence.size())
+            {
+                return false;
+            }
+            if (lightingSurfaceEvidence[index].IsValid())
+            {
+                return false;
+            }
+            lightingSurfaceEvidence[index] = evidence;
+            return true;
+        }
 
         /**
          * Record an exact successful fallback-or-ready material binding. A
@@ -759,6 +1060,10 @@ namespace RVX
         uint32 directOpaqueRasterReadbackSourceFrameSlot = RVX_INVALID_INDEX;
         RenderPassGPUDrivenInputs depthGPUDriven{};
         RenderPassGPUDrivenInputs opaqueGPUDriven{};
+        /** Renderer-issued immutable lighting plan for this exact frame/view. */
+        std::shared_ptr<const LightingFramePlan> lightingPlan;
+        std::shared_ptr<const RenderLightingFrameResourceSnapshot>
+            lightingResources;
         DirectionalShadowRecordOutput directionalShadow{};
         RayTracedShadowRecordOutput rayTracedShadow{};
         std::shared_ptr<const RenderPassFrameSnapshot> frameSnapshot;
@@ -806,6 +1111,23 @@ namespace RVX
             {
                 return false;
             }
+            if (lightingPlan)
+            {
+                if (!lightingPlan->IsValid() ||
+                    lightingPlan->GetFrameIdentity() != featureFrameIdentity ||
+                    lightingPlan->GetViewIdentity() != featureViewIdentity)
+                {
+                    return false;
+                }
+                if (lightingResources &&
+                    (!lightingResources->IsComplete() ||
+                     lightingResources->lightingPlanIdentity !=
+                         lightingPlan->GetIdentityHash() ||
+                     !lightingResources->MatchesEnvironmentGraphHandles(view)))
+                {
+                    return false;
+                }
+            }
             return true;
         }
     };
@@ -817,6 +1139,9 @@ namespace RVX
         RenderPassRecordIdentity identity{};
         std::shared_ptr<const RenderPassFrameSnapshot> frameSnapshot;
         std::shared_ptr<RenderPassRecordResults> results;
+        std::shared_ptr<const LightingFramePlan> lightingPlan;
+        std::shared_ptr<const RenderLightingFrameResourceSnapshot>
+            lightingResources;
         DirectionalShadowRecordOutput directionalShadow{};
         RayTracedShadowRecordOutput rayTracedShadow{};
 
@@ -853,6 +1178,8 @@ namespace RVX
             if (!frameSnapshot || !results ||
                 frameSnapshot->identity != identity ||
                 results->identity != identity ||
+                frameSnapshot->lightingPlan != lightingPlan ||
+                frameSnapshot->lightingResources != lightingResources ||
                 view.renderFrameExecutionPlan != &frameSnapshot->executionPlan ||
                 view.renderDrawPlan != GetDrawPlan() ||
                 view.meshPassPreparation != &frameSnapshot->meshPassPreparation ||
@@ -892,6 +1219,8 @@ namespace RVX
     {
         auto snapshot = std::make_shared<RenderPassFrameSnapshot>();
         snapshot->identity = context.identity;
+        snapshot->lightingPlan = context.lightingPlan;
+        snapshot->lightingResources = context.lightingResources;
         snapshot->primaryDirectionalLight = context.primaryDirectionalLight;
         snapshot->view = context.view;
         snapshot->view.directionalLightDirection =
@@ -952,9 +1281,12 @@ namespace RVX
         results.identity = context.identity;
         results.directionalShadowOutput = {};
         results.directionalShadowOutput.identity = context.identity;
+        results.directionalShadowOutput.lightingPlanIdentity =
+            context.lightingPlan ? context.lightingPlan->GetIdentityHash() : 0;
         results.rayTracedShadowOutput = {};
         results.rayTracedShadowOutput.identity = context.identity;
         results.rayTracedShadowStats = {};
+        results.lightingSurfaceEvidence = {};
         results.externalTextureAccesses.clear();
         results.executionReport = context.executionReport != nullptr
             ? *context.executionReport : RenderFrameExecutionReport{};
@@ -983,6 +1315,14 @@ namespace RVX
         result.frameSnapshot = context.frameSnapshot
             ? context.frameSnapshot
             : MakeRenderPassFrameSnapshot(context, *result.results);
+        result.lightingPlan = context.lightingPlan
+            ? context.lightingPlan
+            : (result.frameSnapshot ? result.frameSnapshot->lightingPlan : nullptr);
+        result.lightingResources = context.lightingResources
+            ? context.lightingResources
+            : (result.frameSnapshot
+                   ? result.frameSnapshot->lightingResources
+                   : nullptr);
         if (result.frameSnapshot)
         {
             result.view = result.frameSnapshot->view;

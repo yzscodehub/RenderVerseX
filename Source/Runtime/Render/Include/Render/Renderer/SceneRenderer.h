@@ -781,6 +781,8 @@ namespace RVX
         uint32 activeClusters = 0;
         uint32 totalLightAssignments = 0;
         uint32 maxLightsInCluster = 0;
+        uint32 overflowedClusterCount = 0;
+        uint32 overflowLightAssignmentCount = 0;
         float avgLightsPerCluster = 0.0f;
         std::string fallbackReason;
     };
@@ -1596,6 +1598,9 @@ namespace RVX
         void ApplyObjectMotionHistory();
         void UpdateObjectMotionHistory();
         void PreparePassesForFrame();
+        /** Build and seal the single lighting selection consumed by all paths. */
+        [[nodiscard]] bool PrepareLightingFramePlan(
+            std::string& outDiagnostic);
         void ApplyRayTracingBudget(ShadowPassConfig& shadowConfig,
                                    RayTracedReflectionPassConfig& reflectionConfig,
                                    RayTracedReflectionDenoisePassConfig& denoiseConfig,
@@ -1761,6 +1766,9 @@ namespace RVX
 
         ViewData m_viewData;
         PrimaryDirectionalLightRecordInput m_primaryDirectionalLight;
+        /** Immutable per-frame/per-view lighting truth shared by every pass. */
+        std::shared_ptr<const LightingFramePlan> m_lightingFramePlan;
+        std::string m_lightingFramePlanFailureReason;
         RenderScene m_renderScene;
         /**
          * @brief Presentation-qualified compatibility state for the current

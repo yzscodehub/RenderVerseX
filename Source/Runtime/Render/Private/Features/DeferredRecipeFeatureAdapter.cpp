@@ -542,12 +542,13 @@ void DeferredLightingFeatureAdapter::Prepare(const RenderFeatureContext& context
     m_readiness.hardwareSupported = HasGraphicsCapability(
         context.hardwareCapabilities) && IsNativeDeferredBackend(context.backend);
     m_readiness.implementationSupported = IsDeferredQuality(context);
-    const bool createdPipeline = m_lightingPass != nullptr &&
+    const bool hasValidLightingPlan = HasValidLightingPlan(context);
+    const bool createdPipeline = hasValidLightingPlan && m_lightingPass != nullptr &&
         m_lightingPass->EnsurePipelineReady();
     m_readiness.pipelineReady = createdPipeline && m_pipelineCache != nullptr &&
         m_pipelineCache->IsDeferredLightingPipelineReady();
     m_readiness.inputsReady = HasMatchingRecordContext(context) &&
-        m_lightingPass != nullptr;
+        hasValidLightingPlan && m_lightingPass != nullptr;
 
     if (!m_readiness.hardwareSupported)
     {
@@ -558,6 +559,11 @@ void DeferredLightingFeatureAdapter::Prepare(const RenderFeatureContext& context
     {
         m_readiness.diagnostic =
             "Deferred lighting only implements DeferredQuality";
+    }
+    else if (!hasValidLightingPlan)
+    {
+        m_readiness.diagnostic =
+            "Deferred lighting requires a valid LightingFramePlan for the current frame and view";
     }
     else if (m_lightingPass == nullptr || m_pipelineCache == nullptr)
     {
@@ -595,6 +601,12 @@ void DeferredLightingFeatureAdapter::AddPasses(
     {
         return;
     }
+    if (!HasValidLightingPlan(m_preparedContext))
+    {
+        SetCompositionFailure(
+            "Deferred lighting record context lost its valid LightingFramePlan");
+        return;
+    }
     RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
     const SceneTextures* const sceneTextures = blackboard.Require<SceneTextures>(
         BuiltinRenderFeatureIds::DeferredLighting, Describe(), &code);
@@ -612,16 +624,125 @@ void DeferredLightingFeatureAdapter::AddPasses(
         return;
     }
 
-    const DeferredLightingInputs inputs{
-        sceneTextures->gBuffer0,
-        sceneTextures->gBuffer1,
-        sceneTextures->gBuffer2,
-        sceneTextures->gBuffer3,
-        sceneTextures->deviceDepth,
-        sceneTextures->hdrSceneColor,
-        sceneTextures->materialTable};
+    const uint64 lightingPlanIdentity =
+        m_recordContext.lightingPlan->GetIdentityHash();
+    const std::shared_ptr<const RenderLightingFrameResourceSnapshot>&
+        lightingResources = m_recordContext.lightingResources;
+    if (!lightingResources || !lightingResources->IsComplete() ||
+        lightingResources->lightingPlanIdentity != lightingPlanIdentity ||
+        !lightingResources->frozenLightResources.IsComplete() ||
+        !HasCurrentGraphProvenance(
+            lightingResources->lightConstants, m_recordContext.identity) ||
+        !HasCurrentGraphProvenance(
+            lightingResources->pointLights, m_recordContext.identity) ||
+        !HasCurrentGraphProvenance(
+            lightingResources->spotLights, m_recordContext.identity) ||
+        !HasCurrentGraphProvenance(
+            lightingResources->clusterConstants, m_recordContext.identity) ||
+        !HasCurrentGraphProvenance(
+            lightingResources->clusterData, m_recordContext.identity) ||
+        !HasCurrentGraphProvenance(
+            lightingResources->clusterLightIndices, m_recordContext.identity))
+    {
+        SetCompositionFailure(
+            "Deferred lighting requires complete frame resources for its LightingFramePlan");
+        return;
+    }
+    if (m_recordContext.results == nullptr)
+    {
+        SetCompositionFailure(
+            "Deferred lighting requires the graph-produced directional-shadow result");
+        return;
+    }
+
+    const DirectionalShadowRecordOutput& directionalShadow =
+        m_recordContext.results->directionalShadowOutput;
+    const LightingCSMRequest& csmRequest =
+        m_recordContext.lightingPlan->GetCSMRequest();
+    if (csmRequest.inputsReady != directionalShadow.enabled ||
+        !directionalShadow.IsCompatibleWith(
+            m_recordContext.identity, lightingPlanIdentity))
+    {
+        SetCompositionFailure(
+            "Deferred lighting CSM readiness does not match its LightingFramePlan");
+        return;
+    }
+
+    ViewData lightingView = m_recordContext.view;
+    if (!ResolveDirectionalShadowViewData(
+            lightingView, directionalShadow, m_recordContext.identity,
+            lightingPlanIdentity))
+    {
+        SetCompositionFailure(
+            "Deferred lighting could not resolve its graph-produced CSM view data");
+        return;
+    }
+
+    const LightingIBLRequest& iblRequest =
+        m_recordContext.lightingPlan->GetIBLRequest();
+    if (iblRequest.inputsReady != lightingResources->textureIBLEnabled)
+    {
+        SetCompositionFailure(
+            "Deferred lighting texture-IBL readiness does not match its LightingFramePlan");
+        return;
+    }
+    if (lightingResources->textureIBLEnabled &&
+        (!HasCurrentGraphProvenance(
+             lightingResources->environmentIBLIrradiance,
+             m_recordContext.identity) ||
+         !HasCurrentGraphProvenance(
+             lightingResources->environmentIBLPrefiltered,
+             m_recordContext.identity) ||
+         !HasCurrentGraphProvenance(
+             lightingResources->environmentIBLBRDFLUT,
+             m_recordContext.identity)))
+    {
+        SetCompositionFailure(
+            "Deferred lighting texture-IBL graph resources are stale or missing");
+        return;
+    }
+
+    DeferredLightingInputs inputs;
+    inputs.gBuffer0 = sceneTextures->gBuffer0;
+    inputs.gBuffer1 = sceneTextures->gBuffer1;
+    inputs.gBuffer2 = sceneTextures->gBuffer2;
+    inputs.gBuffer3 = sceneTextures->gBuffer3;
+    inputs.deviceDepth = sceneTextures->deviceDepth;
+    inputs.hdrSceneColor = sceneTextures->hdrSceneColor;
+    inputs.materialTable = sceneTextures->materialTable;
+    inputs.expectedLightingPlanIdentity = lightingPlanIdentity;
+    inputs.lighting.lightingPlanIdentity = lightingPlanIdentity;
+    inputs.lighting.frozenLightResources =
+        lightingResources->frozenLightResources;
+    inputs.lighting.lightConstants = lightingResources->lightConstants;
+    inputs.lighting.pointLights = lightingResources->pointLights;
+    inputs.lighting.spotLights = lightingResources->spotLights;
+    inputs.lighting.clusterConstants = lightingResources->clusterConstants;
+    inputs.lighting.clusterData = lightingResources->clusterData;
+    inputs.lighting.clusterLightIndices = lightingResources->clusterLightIndices;
+    inputs.lighting.directionalShadowEnabled = directionalShadow.enabled;
+    if (directionalShadow.enabled)
+    {
+        inputs.lighting.directionalShadowMap = directionalShadow.shadowMap;
+    }
+    inputs.lighting.textureIBLEnabled = lightingResources->textureIBLEnabled;
+    inputs.lighting.recordResults = m_recordContext.results;
+    if (lightingResources->textureIBLEnabled)
+    {
+        inputs.lighting.irradiance =
+            lightingResources->environmentIBLIrradiance;
+        inputs.lighting.prefilteredEnvironment =
+            lightingResources->environmentIBLPrefiltered;
+        inputs.lighting.brdfLUT = lightingResources->environmentIBLBRDFLUT;
+        inputs.lighting.expectedIrradianceView =
+            lightingResources->environmentIBLIrradianceView;
+        inputs.lighting.expectedPrefilteredEnvironmentView =
+            lightingResources->environmentIBLPrefilteredView;
+        inputs.lighting.expectedBRDFLUTView =
+            lightingResources->environmentIBLBRDFLUTView;
+    }
     if (!inputs.IsComplete() ||
-        !m_lightingPass->AddToGraph(builder, m_recordContext.view, inputs))
+        !m_lightingPass->AddToGraph(builder, lightingView, inputs))
     {
         SetCompositionFailure(m_lightingPass->GetUnsupportedReason());
         return;
@@ -629,7 +750,18 @@ void DeferredLightingFeatureAdapter::AddPasses(
 
     LightingOutputs lighting;
     lighting.provenance = builder.GetProvenance();
+    lighting.lightingPlanIdentity =
+        m_recordContext.lightingPlan->GetIdentityHash();
     lighting.hdrSceneColor = sceneTextures->hdrSceneColor;
+    lighting.clusteredLights = inputs.lighting.clusterData;
+    if (!lighting.clusteredLights.IsValid() ||
+        !HasCurrentGraphProvenance(
+            lighting.clusteredLights, m_recordContext.identity))
+    {
+        SetCompositionFailure(
+            "Deferred lighting could not publish the current LightingFramePlan cluster output");
+        return;
+    }
     if (blackboard.Publish(BuiltinRenderFeatureIds::DeferredLighting,
                            Describe(), std::move(lighting)) !=
         RenderGraphBlackboardCode::Success)
@@ -666,6 +798,18 @@ bool DeferredLightingFeatureAdapter::HasMatchingRecordContext(
                context.frameIdentity.frameSequence &&
            m_recordContext.identity.viewOrdinal == context.recordingViewOrdinal &&
            m_recordContext.identity.recordEpoch == context.recordEpoch;
+}
+
+bool DeferredLightingFeatureAdapter::HasValidLightingPlan(
+    const RenderFeatureContext& context) const noexcept
+{
+    return m_hasRecordContext && m_recordContext.lightingPlan != nullptr &&
+           m_recordContext.lightingPlan->IsValid() &&
+           m_recordContext.lightingPlan->GetIdentityHash() != 0 &&
+           m_recordContext.lightingPlan->GetFrameIdentity() ==
+               context.frameIdentity &&
+           m_recordContext.lightingPlan->GetViewIdentity() ==
+               context.viewIdentity;
 }
 
 void DeferredLightingFeatureAdapter::SetCompositionFailure(std::string diagnostic)
@@ -729,9 +873,11 @@ void DeferredForwardSpecialFeatureAdapter::Prepare(
     m_readiness.hardwareSupported = HasGraphicsCapability(
         context.hardwareCapabilities) && IsNativeDeferredBackend(context.backend);
     m_readiness.implementationSupported = IsDeferredQuality(context);
+    const bool hasValidLightingPlan = HasValidLightingPlan(context);
     OpaqueRasterPipelinePreflightResult opaquePipelinePreflight;
     if (m_readiness.hardwareSupported &&
-        m_readiness.implementationSupported && m_opaquePass != nullptr)
+        m_readiness.implementationSupported && hasValidLightingPlan &&
+        m_opaquePass != nullptr)
     {
         // The post-lighting opaque subset is still required renderer work.
         // Resolve every pipeline from the same frozen frame plan before the
@@ -744,7 +890,7 @@ void DeferredForwardSpecialFeatureAdapter::Prepare(
     }
     m_readiness.pipelineReady = opaquePipelinePreflight.Succeeded();
     m_readiness.inputsReady = HasMatchingRecordContext(context) &&
-        m_passRegistry != nullptr && m_opaquePass != nullptr;
+        hasValidLightingPlan && m_passRegistry != nullptr && m_opaquePass != nullptr;
     if (!m_readiness.hardwareSupported)
     {
         m_readiness.diagnostic =
@@ -754,6 +900,11 @@ void DeferredForwardSpecialFeatureAdapter::Prepare(
     {
         m_readiness.diagnostic =
             "Deferred forward-special chain only implements DeferredQuality";
+    }
+    else if (!hasValidLightingPlan)
+    {
+        m_readiness.diagnostic =
+            "Deferred forward-special chain requires a valid LightingFramePlan for the current frame and view";
     }
     else if (m_passRegistry == nullptr || m_opaquePass == nullptr)
     {
@@ -791,6 +942,12 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
     {
         return;
     }
+    if (!HasValidLightingPlan(m_preparedContext))
+    {
+        SetCompositionFailure(
+            "Deferred forward-special record context lost its valid LightingFramePlan");
+        return;
+    }
     RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
     const LightingOutputs* const lighting = blackboard.Require<LightingOutputs>(
         BuiltinRenderFeatureIds::DeferredForwardSpecialChain, Describe(), &code);
@@ -800,6 +957,13 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
         SetCompositionFailure("Deferred lighting output is unavailable");
         return;
     }
+    if (!lighting->IsCompatibleWithLightingPlan(
+            m_recordContext.lightingPlan->GetIdentityHash()))
+    {
+        SetCompositionFailure(
+            "Deferred lighting output LightingFramePlan identity mismatches the record context");
+        return;
+    }
     if (!builder.IsValid() || !m_recordContext.MatchesTargetGraph(builder.GetGraph()))
     {
         SetCompositionFailure(
@@ -807,14 +971,14 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
         return;
     }
 
-    bool opaqueContextValid = false;
-    const RenderPassRecordContext opaqueContext = MakeOpaqueRecordContext(
-        m_recordContext, opaqueContextValid);
-    if (!opaqueContextValid ||
+    bool postLightingContextValid = false;
+    const RenderPassRecordContext postLightingContext = MakeOpaqueRecordContext(
+        m_recordContext, postLightingContextValid);
+    if (!postLightingContextValid ||
         !builder.AddGraphCallback(
             "DeferredForwardSpecialOpaque",
-            opaqueContext,
-            [opaque = m_opaquePass, context = opaqueContext](RenderGraph& graph)
+            postLightingContext,
+            [opaque = m_opaquePass, context = postLightingContext](RenderGraph& graph)
             {
                 opaque->AddForwardSpecialToGraph(graph, context);
             }))
@@ -829,7 +993,7 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
     std::string failure;
     if (!AddLegacyPassRange(
             builder,
-            m_recordContext,
+            postLightingContext,
             *m_passRegistry,
             m_opaquePass,
             [](const IRenderPass& pass)
@@ -871,6 +1035,18 @@ bool DeferredForwardSpecialFeatureAdapter::HasMatchingRecordContext(
                context.frameIdentity.frameSequence &&
            m_recordContext.identity.viewOrdinal == context.recordingViewOrdinal &&
            m_recordContext.identity.recordEpoch == context.recordEpoch;
+}
+
+bool DeferredForwardSpecialFeatureAdapter::HasValidLightingPlan(
+    const RenderFeatureContext& context) const noexcept
+{
+    return m_hasRecordContext && m_recordContext.lightingPlan != nullptr &&
+           m_recordContext.lightingPlan->IsValid() &&
+           m_recordContext.lightingPlan->GetIdentityHash() != 0 &&
+           m_recordContext.lightingPlan->GetFrameIdentity() ==
+               context.frameIdentity &&
+           m_recordContext.lightingPlan->GetViewIdentity() ==
+               context.viewIdentity;
 }
 
 void DeferredForwardSpecialFeatureAdapter::SetCompositionFailure(

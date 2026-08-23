@@ -139,6 +139,8 @@ struct TestAssetResolver
                       FrozenSceneObjectType::Light);
     light.source.type = LightType::Point;
     light.source.intensity = 3.0f;
+    light.source.intensityUnit = LightIntensityUnit::Candela;
+    light.source.colorTemperatureKelvin = 5100.0f;
     light.source.range = 25.0f;
     light.visibility.layerMask = 0x04U;
     light.visibility.visible = true;
@@ -355,6 +357,11 @@ TEST(EcsFrameExtractionValidation,
                     primitive.worldTransform[3].x - 1.0f);
     ASSERT_EQ(full.sceneUpdate->lights.size(), 1U);
     EXPECT_EQ(full.sceneUpdate->lights[0].state.layerMask, 0x04U);
+    EXPECT_EQ(full.sceneUpdate->lights[0].state.intensityUnit,
+              RenderLightIntensityUnit::Candela);
+    ASSERT_TRUE(full.sceneUpdate->lights[0].state.colorTemperatureKelvin.has_value());
+    EXPECT_FLOAT_EQ(*full.sceneUpdate->lights[0].state.colorTemperatureKelvin,
+                    5100.0f);
     ASSERT_NE(full.frameV5, nullptr);
     EXPECT_EQ(full.frameV5->GetView().cullingMask, 0x02U);
     EXPECT_EQ(full.frameV5->GetView().viewportWidth, 800U);

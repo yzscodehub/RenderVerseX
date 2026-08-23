@@ -6,6 +6,7 @@
 #include <atomic>
 #include <bit>
 #include <limits>
+#include <optional>
 #include <tuple>
 #include <type_traits>
 #include <unordered_set>
@@ -22,6 +23,14 @@ namespace
         Diagnostics::MixContentHashValue(
             hash,
             static_cast<uint64>(std::bit_cast<uint32>(value)));
+    }
+
+    void MixOptionalFloat(uint64& hash,
+                          const std::optional<float32>& value)
+    {
+        Diagnostics::MixContentHashValue(hash, value.has_value() ? 1U : 0U);
+        if (value.has_value())
+            MixFloat(hash, *value);
     }
 
     void MixVec2(uint64& hash, const Vec2& value)
@@ -196,6 +205,9 @@ namespace
         MixVec3(hash, state.direction);
         MixVec3(hash, state.color);
         MixFloat(hash, state.intensity);
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(state.intensityUnit));
+        MixOptionalFloat(hash, state.colorTemperatureKelvin);
         MixFloat(hash, state.range);
         MixFloat(hash, state.innerConeRadians);
         MixFloat(hash, state.outerConeRadians);
@@ -1088,6 +1100,8 @@ namespace
                left.type == right.type &&
                left.position == right.position && left.direction == right.direction &&
                left.color == right.color && left.intensity == right.intensity &&
+               left.intensityUnit == right.intensityUnit &&
+               left.colorTemperatureKelvin == right.colorTemperatureKelvin &&
                left.range == right.range &&
                left.innerConeRadians == right.innerConeRadians &&
                left.outerConeRadians == right.outerConeRadians &&
@@ -1154,6 +1168,9 @@ uint64 RenderSceneDatabase::ComputeLightStateHash() const noexcept
         MixVec3(hash, light.direction);
         MixVec3(hash, light.color);
         MixFloat(hash, light.intensity);
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(light.intensityUnit));
+        MixOptionalFloat(hash, light.colorTemperatureKelvin);
         MixFloat(hash, light.range);
         MixFloat(hash, light.innerConeRadians);
         MixFloat(hash, light.outerConeRadians);

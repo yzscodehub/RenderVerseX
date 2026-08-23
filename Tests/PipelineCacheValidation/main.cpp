@@ -761,6 +761,7 @@ namespace
     {
     public:
         DeferredLightingGraphInputs(FakeDevice& device,
+                                   RVX::PipelineCache& pipelineCache,
                                    RVX::uint32 width,
                                    RVX::uint32 height)
         {
@@ -823,13 +824,189 @@ namespace
                 inputs.materialTable = graph.ImportBuffer(
                     materialTable, RVX::RHIResourceState::ShaderResource);
             }
+
+            const auto createBuffer = [&device](RVX::uint64 size,
+                                                RVX::RHIBufferUsage usage,
+                                                const char* debugName)
+            {
+                RVX::RHIBufferDesc desc;
+                desc.size = size;
+                desc.usage = usage;
+                desc.memoryType = RVX::RHIMemoryType::Upload;
+                desc.debugName = debugName;
+                return device.CreateBuffer(desc);
+            };
+            lightConstants = createBuffer(
+                256, RVX::RHIBufferUsage::Constant,
+                "DeferredLightingValidationLightConstants");
+            pointLights = createBuffer(
+                16, RVX::RHIBufferUsage::Structured |
+                        RVX::RHIBufferUsage::ShaderResource,
+                "DeferredLightingValidationPointLights");
+            spotLights = createBuffer(
+                16, RVX::RHIBufferUsage::Structured |
+                        RVX::RHIBufferUsage::ShaderResource,
+                "DeferredLightingValidationSpotLights");
+            clusterConstants = createBuffer(
+                256, RVX::RHIBufferUsage::Constant,
+                "DeferredLightingValidationClusterConstants");
+            clusterData = createBuffer(
+                16, RVX::RHIBufferUsage::Structured |
+                        RVX::RHIBufferUsage::ShaderResource,
+                "DeferredLightingValidationClusterData");
+            clusterLightIndices = createBuffer(
+                4, RVX::RHIBufferUsage::Structured |
+                       RVX::RHIBufferUsage::ShaderResource,
+                "DeferredLightingValidationClusterLightIndices");
+            if (lightConstants && pointLights && spotLights && clusterConstants &&
+                clusterData && clusterLightIndices)
+            {
+                constexpr RVX::uint64 kLightingPlanIdentity = 0xD3F3u;
+                inputs.expectedLightingPlanIdentity = kLightingPlanIdentity;
+                inputs.lighting.lightingPlanIdentity = kLightingPlanIdentity;
+                const RVX::FrameLightResources sourceResources{
+                    lightConstants.Get(), pointLights.Get(), spotLights.Get(),
+                    clusterConstants.Get(), clusterData.Get(),
+                    clusterLightIndices.Get()};
+                if (!pipelineCache.FreezeFrameLightResources(
+                        sourceResources, inputs.lighting.frozenLightResources))
+                {
+                    return;
+                }
+                inputs.lighting.lightConstants = graph.ImportBuffer(
+                    inputs.lighting.frozenLightResources.lightConstantsBuffer,
+                    RVX::RHIResourceState::ConstantBuffer);
+                inputs.lighting.pointLights = graph.ImportBuffer(
+                    inputs.lighting.frozenLightResources.pointLightsBuffer,
+                    RVX::RHIResourceState::ShaderResource);
+                inputs.lighting.spotLights = graph.ImportBuffer(
+                    inputs.lighting.frozenLightResources.spotLightsBuffer,
+                    RVX::RHIResourceState::ShaderResource);
+                inputs.lighting.clusterConstants = graph.ImportBuffer(
+                    inputs.lighting.frozenLightResources.clusterConstantsBuffer,
+                    RVX::RHIResourceState::ConstantBuffer);
+                inputs.lighting.clusterData = graph.ImportBuffer(
+                    inputs.lighting.frozenLightResources.clusterBuffer,
+                    RVX::RHIResourceState::ShaderResource);
+                inputs.lighting.clusterLightIndices = graph.ImportBuffer(
+                    inputs.lighting.frozenLightResources.clusterLightIndexBuffer,
+                    RVX::RHIResourceState::ShaderResource);
+            }
         }
 
         RVX::RenderGraph graph;
         RVX::DeferredLightingInputs inputs{};
         RVX::RHIBufferRef materialTable;
+        RVX::RHIBufferRef lightConstants;
+        RVX::RHIBufferRef pointLights;
+        RVX::RHIBufferRef spotLights;
+        RVX::RHIBufferRef clusterConstants;
+        RVX::RHIBufferRef clusterData;
+        RVX::RHIBufferRef clusterLightIndices;
         std::string materialTableError;
         bool materialTableCreated = false;
+
+    bool EnableCSMAndTextureIBL(
+        FakeDevice& device,
+        bool useRestrictedIBLViews = false)
+    {
+            RVX::RHITextureDesc shadowDesc = RVX::RHITextureDesc::DepthStencil(
+                32, 32, RVX::RHIFormat::D32_FLOAT);
+            shadowDesc.arraySize = RVX::RVX_MAX_DIRECTIONAL_SHADOW_CASCADES;
+            shadowDesc.debugName = "DeferredLightingValidationCSM";
+            directionalShadow = device.CreateTexture(shadowDesc);
+            RVX::RHITextureViewDesc directionalShadowViewDesc;
+            directionalShadowViewDesc.format = RVX::RHIFormat::D32_FLOAT;
+            directionalShadowViewDesc.dimension =
+                RVX::RHITextureDimension::Texture2D;
+            directionalShadowViewDesc.subresourceRange =
+                RVX::RHISubresourceRange::All();
+            directionalShadowViewDesc.subresourceRange.aspect =
+                RVX::RHITextureAspect::Depth;
+            directionalShadowViewDesc.type =
+                RVX::RHITextureViewType::ShaderResource;
+
+            RVX::RHITextureDesc cubeDesc = RVX::RHITextureDesc::Texture2D(
+                4, 4, RVX::RHIFormat::RGBA16_FLOAT,
+                RVX::RHITextureUsage::ShaderResource);
+            cubeDesc.dimension = RVX::RHITextureDimension::TextureCube;
+            cubeDesc.mipLevels = useRestrictedIBLViews ? 2U : 1U;
+            cubeDesc.debugName = "DeferredLightingValidationIrradiance";
+            irradiance = device.CreateTexture(cubeDesc);
+            cubeDesc.debugName = "DeferredLightingValidationPrefilteredEnvironment";
+            prefilteredEnvironment = device.CreateTexture(cubeDesc);
+            RVX::RHITextureDesc lutDesc = RVX::RHITextureDesc::Texture2D(
+                4, 4, RVX::RHIFormat::RGBA16_FLOAT,
+                RVX::RHITextureUsage::ShaderResource);
+            lutDesc.mipLevels = useRestrictedIBLViews ? 2U : 1U;
+            lutDesc.debugName = "DeferredLightingValidationBRDFLUT";
+            brdfLUT = device.CreateTexture(lutDesc);
+            RVX::RHITextureViewDesc cubeViewDesc;
+            cubeViewDesc.dimension = RVX::RHITextureDimension::TextureCube;
+            cubeViewDesc.type = RVX::RHITextureViewType::ShaderResource;
+            cubeViewDesc.format = RVX::RHIFormat::RGBA16_FLOAT;
+            cubeViewDesc.subresourceRange = RVX::RHISubresourceRange::All();
+            cubeViewDesc.subresourceRange.aspect = RVX::RHITextureAspect::Color;
+            RVX::RHITextureViewDesc lutViewDesc;
+            lutViewDesc.dimension = RVX::RHITextureDimension::Texture2D;
+            lutViewDesc.type = RVX::RHITextureViewType::ShaderResource;
+            lutViewDesc.format = RVX::RHIFormat::RGBA16_FLOAT;
+            lutViewDesc.subresourceRange = RVX::RHISubresourceRange::All();
+            lutViewDesc.subresourceRange.aspect = RVX::RHITextureAspect::Color;
+            if (useRestrictedIBLViews)
+            {
+                cubeViewDesc.subresourceRange = {
+                    .baseMipLevel = 1,
+                    .mipLevelCount = 1,
+                    .baseArrayLayer = 0,
+                    .arrayLayerCount = RVX::RVX_ALL_LAYERS,
+                    .aspect = RVX::RHITextureAspect::Color};
+                lutViewDesc.subresourceRange = {
+                    .baseMipLevel = 1,
+                    .mipLevelCount = 1,
+                    .baseArrayLayer = 0,
+                    .arrayLayerCount = 1,
+                    .aspect = RVX::RHITextureAspect::Color};
+            }
+            if (!directionalShadow || !irradiance || !prefilteredEnvironment || !brdfLUT)
+            {
+                return false;
+            }
+
+            inputs.lighting.directionalShadowEnabled = true;
+            inputs.lighting.directionalShadowMap = graph.ImportTexture(
+                directionalShadow, RVX::RHIResourceState::ShaderResource);
+            inputs.lighting.textureIBLEnabled = true;
+            inputs.lighting.irradiance = graph.ImportTexture(
+                irradiance, RVX::RHIResourceState::ShaderResource);
+            inputs.lighting.prefilteredEnvironment = graph.ImportTexture(
+                prefilteredEnvironment, RVX::RHIResourceState::ShaderResource);
+            inputs.lighting.brdfLUT = graph.ImportTexture(
+                brdfLUT, RVX::RHIResourceState::ShaderResource);
+            if (!directionalShadow || !irradiance || !prefilteredEnvironment ||
+                !brdfLUT)
+            {
+                return false;
+            }
+            directionalShadowView = device.CreateTextureView(
+                directionalShadow.Get(), directionalShadowViewDesc);
+            irradianceView =
+                device.CreateTextureView(irradiance.Get(), cubeViewDesc);
+            prefilteredEnvironmentView =
+                device.CreateTextureView(prefilteredEnvironment.Get(), cubeViewDesc);
+            brdfLUTView =
+                device.CreateTextureView(brdfLUT.Get(), lutViewDesc);
+            if (!directionalShadowView || !irradianceView ||
+                !prefilteredEnvironmentView || !brdfLUTView)
+            {
+                return false;
+            }
+            inputs.lighting.expectedIrradianceView = irradianceView;
+            inputs.lighting.expectedPrefilteredEnvironmentView =
+                prefilteredEnvironmentView;
+            inputs.lighting.expectedBRDFLUTView = brdfLUTView;
+            return true;
+        }
 
     private:
         RVX::RHITextureRef gBuffer0;
@@ -838,6 +1015,14 @@ namespace
         RVX::RHITextureRef gBuffer3;
         RVX::RHITextureRef deviceDepth;
         RVX::RHITextureRef hdrSceneColor;
+        RVX::RHITextureRef directionalShadow;
+        RVX::RHITextureViewRef directionalShadowView;
+        RVX::RHITextureRef irradiance;
+        RVX::RHITextureRef prefilteredEnvironment;
+        RVX::RHITextureRef brdfLUT;
+        RVX::RHITextureViewRef irradianceView;
+        RVX::RHITextureViewRef prefilteredEnvironmentView;
+        RVX::RHITextureViewRef brdfLUTView;
     };
 
     void WriteTextFile(const fs::path& path, const std::string& contents)
@@ -1244,6 +1429,201 @@ namespace
             }
         }
         return nullptr;
+    }
+
+    struct LightingBindingTestResources
+    {
+        RVX::RHIBufferRef lightConstants;
+        RVX::RHIBufferRef pointLights;
+        RVX::RHIBufferRef spotLights;
+        RVX::RHIBufferRef clusterConstants;
+        RVX::RHIBufferRef clusterData;
+        RVX::RHIBufferRef clusterLightIndices;
+        RVX::RHITextureRef directionalShadowTexture;
+        RVX::RHITextureViewRef directionalShadowView;
+        RVX::RHITextureRef irradianceTexture;
+        RVX::RHITextureViewRef irradianceView;
+        RVX::RHITextureRef prefilteredTexture;
+        RVX::RHITextureViewRef prefilteredView;
+        RVX::RHITextureRef brdfLUTTexture;
+        RVX::RHITextureViewRef brdfLUTView;
+        RVX::RHITextureRef rayTracedShadowTexture;
+        RVX::RHITextureViewRef rayTracedShadowView;
+
+        bool Create(FakeDevice& device, const char* debugPrefix)
+        {
+            RVX::RHIBufferDesc lightConstantsDesc;
+            lightConstantsDesc.size = 256;
+            lightConstantsDesc.usage = RVX::RHIBufferUsage::Constant;
+            lightConstantsDesc.memoryType = RVX::RHIMemoryType::Upload;
+            lightConstantsDesc.debugName = debugPrefix;
+            lightConstants = device.CreateBuffer(lightConstantsDesc);
+
+            RVX::RHIBufferDesc pointLightsDesc;
+            pointLightsDesc.size = sizeof(RVX::GPUPointLight);
+            pointLightsDesc.usage = RVX::RHIBufferUsage::Structured |
+                RVX::RHIBufferUsage::ShaderResource;
+            pointLightsDesc.memoryType = RVX::RHIMemoryType::Upload;
+            pointLightsDesc.stride = sizeof(RVX::GPUPointLight);
+            pointLightsDesc.debugName = debugPrefix;
+            pointLights = device.CreateBuffer(pointLightsDesc);
+
+            RVX::RHIBufferDesc spotLightsDesc;
+            spotLightsDesc.size = sizeof(RVX::GPUSpotLight);
+            spotLightsDesc.usage = RVX::RHIBufferUsage::Structured |
+                RVX::RHIBufferUsage::ShaderResource;
+            spotLightsDesc.memoryType = RVX::RHIMemoryType::Upload;
+            spotLightsDesc.stride = sizeof(RVX::GPUSpotLight);
+            spotLightsDesc.debugName = debugPrefix;
+            spotLights = device.CreateBuffer(spotLightsDesc);
+
+            RVX::RHIBufferDesc clusterConstantsDesc;
+            clusterConstantsDesc.size = 256;
+            clusterConstantsDesc.usage = RVX::RHIBufferUsage::Constant;
+            clusterConstantsDesc.memoryType = RVX::RHIMemoryType::Upload;
+            clusterConstantsDesc.debugName = debugPrefix;
+            clusterConstants = device.CreateBuffer(clusterConstantsDesc);
+
+            RVX::RHIBufferDesc clusterDataDesc;
+            clusterDataDesc.size = sizeof(RVX::GPUCluster);
+            clusterDataDesc.usage = RVX::RHIBufferUsage::Structured |
+                RVX::RHIBufferUsage::ShaderResource;
+            clusterDataDesc.memoryType = RVX::RHIMemoryType::Upload;
+            clusterDataDesc.stride = sizeof(RVX::GPUCluster);
+            clusterDataDesc.debugName = debugPrefix;
+            clusterData = device.CreateBuffer(clusterDataDesc);
+
+            RVX::RHIBufferDesc clusterLightIndexDesc;
+            clusterLightIndexDesc.size = sizeof(RVX::LightIndex);
+            clusterLightIndexDesc.usage = RVX::RHIBufferUsage::Structured |
+                RVX::RHIBufferUsage::ShaderResource;
+            clusterLightIndexDesc.memoryType = RVX::RHIMemoryType::Upload;
+            clusterLightIndexDesc.stride = sizeof(RVX::LightIndex);
+            clusterLightIndexDesc.debugName = debugPrefix;
+            clusterLightIndices = device.CreateBuffer(clusterLightIndexDesc);
+
+            RVX::RHITextureDesc shadowDesc = RVX::RHITextureDesc::DepthStencil(
+                32, 32, RVX::RHIFormat::D32_FLOAT);
+            shadowDesc.arraySize = RVX::RVX_MAX_DIRECTIONAL_SHADOW_CASCADES;
+            shadowDesc.debugName = debugPrefix;
+            directionalShadowTexture = device.CreateTexture(shadowDesc);
+            RVX::RHITextureViewDesc shadowViewDesc;
+            shadowViewDesc.format = RVX::RHIFormat::D32_FLOAT;
+            shadowViewDesc.dimension = RVX::RHITextureDimension::Texture2D;
+            shadowViewDesc.subresourceRange = RVX::RHISubresourceRange::All();
+            shadowViewDesc.subresourceRange.aspect = RVX::RHITextureAspect::Depth;
+            shadowViewDesc.type = RVX::RHITextureViewType::ShaderResource;
+            if (directionalShadowTexture)
+            {
+                directionalShadowView = device.CreateTextureView(
+                    directionalShadowTexture.Get(), shadowViewDesc);
+            }
+
+            RVX::RHITextureDesc cubeDesc = RVX::RHITextureDesc::Texture2D(
+                4, 4, RVX::RHIFormat::RGBA16_FLOAT);
+            cubeDesc.dimension = RVX::RHITextureDimension::TextureCube;
+            cubeDesc.debugName = debugPrefix;
+            irradianceTexture = device.CreateTexture(cubeDesc);
+            prefilteredTexture = device.CreateTexture(cubeDesc);
+            RVX::RHITextureViewDesc cubeViewDesc;
+            cubeViewDesc.dimension = RVX::RHITextureDimension::TextureCube;
+            cubeViewDesc.type = RVX::RHITextureViewType::ShaderResource;
+            if (irradianceTexture)
+            {
+                irradianceView = device.CreateTextureView(
+                    irradianceTexture.Get(), cubeViewDesc);
+            }
+            if (prefilteredTexture)
+            {
+                prefilteredView = device.CreateTextureView(
+                    prefilteredTexture.Get(), cubeViewDesc);
+            }
+
+            RVX::RHITextureDesc lutDesc = RVX::RHITextureDesc::Texture2D(
+                4, 4, RVX::RHIFormat::RGBA16_FLOAT);
+            lutDesc.debugName = debugPrefix;
+            brdfLUTTexture = device.CreateTexture(lutDesc);
+            RVX::RHITextureViewDesc lutViewDesc;
+            lutViewDesc.dimension = RVX::RHITextureDimension::Texture2D;
+            lutViewDesc.type = RVX::RHITextureViewType::ShaderResource;
+            if (brdfLUTTexture)
+            {
+                brdfLUTView = device.CreateTextureView(brdfLUTTexture.Get(), lutViewDesc);
+            }
+
+            RVX::RHITextureDesc rayTracedShadowDesc = RVX::RHITextureDesc::Texture2D(
+                32, 32, RVX::RHIFormat::R32_FLOAT);
+            rayTracedShadowDesc.debugName = debugPrefix;
+            rayTracedShadowTexture = device.CreateTexture(rayTracedShadowDesc);
+            RVX::RHITextureViewDesc rayTracedShadowViewDesc;
+            rayTracedShadowViewDesc.dimension = RVX::RHITextureDimension::Texture2D;
+            rayTracedShadowViewDesc.type = RVX::RHITextureViewType::ShaderResource;
+            if (rayTracedShadowTexture)
+            {
+                rayTracedShadowView = device.CreateTextureView(
+                    rayTracedShadowTexture.Get(), rayTracedShadowViewDesc);
+            }
+
+            return lightConstants && pointLights && spotLights && clusterConstants &&
+                clusterData && clusterLightIndices && directionalShadowTexture &&
+                directionalShadowView && irradianceTexture && irradianceView &&
+                prefilteredTexture && prefilteredView && brdfLUTTexture && brdfLUTView;
+        }
+
+        RVX::FrameLightResources GetSourceResources() const noexcept
+        {
+            return RVX::FrameLightResources{
+                lightConstants.Get(), pointLights.Get(), spotLights.Get(),
+                clusterConstants.Get(), clusterData.Get(),
+                clusterLightIndices.Get()};
+        }
+
+        RVX::LightingBindingSnapshotRequest MakeRequest(
+            RVX::PipelineCache& cache,
+            RVX::uint64 lightingPlanIdentity) const
+        {
+            RVX::LightingBindingSnapshotRequest request;
+            request.lightingPlanIdentity = lightingPlanIdentity;
+            static_cast<void>(cache.FreezeFrameLightResources(
+                GetSourceResources(), request.frozenLightResources));
+            request.directionalShadow.enabled = true;
+            request.directionalShadow.shadowMapView = directionalShadowView.Get();
+            request.rayTracedShadow.enabled = false;
+            request.environmentIBL.enabled = true;
+            request.environmentIBL.irradianceView = irradianceView.Get();
+            request.environmentIBL.prefilteredEnvironmentView = prefilteredView.Get();
+            request.environmentIBL.brdfLUTView = brdfLUTView.Get();
+            return request;
+        }
+
+        void ReleaseExternalOwners()
+        {
+            lightConstants.Reset();
+            pointLights.Reset();
+            spotLights.Reset();
+            clusterConstants.Reset();
+            clusterData.Reset();
+            clusterLightIndices.Reset();
+            directionalShadowView.Reset();
+            directionalShadowTexture.Reset();
+            irradianceView.Reset();
+            irradianceTexture.Reset();
+            prefilteredView.Reset();
+            prefilteredTexture.Reset();
+            brdfLUTView.Reset();
+            brdfLUTTexture.Reset();
+            rayTracedShadowView.Reset();
+            rayTracedShadowTexture.Reset();
+        }
+    };
+
+    RVX::ViewData MakeLightingBindingSnapshotView()
+    {
+        RVX::ViewData view;
+        view.directionalShadowEnabled = 1;
+        view.directionalShadowCascadeCount = 1;
+        view.textureIBLEnabled = 1;
+        return view;
     }
 }
 
@@ -2807,6 +3187,55 @@ TEST_F(PipelineCacheValidationFixture,
 }
 
 TEST_F(PipelineCacheValidationFixture,
+       RasterObjectBindingSnapshotIsSetOneOnlyAndIgnoresMutableFrameBindings)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    RVX::RasterObjectBindingSnapshot snapshot;
+    ASSERT_TRUE(cache.CreateRasterObjectBindingSnapshot(1, snapshot));
+    ASSERT_TRUE(snapshot.IsValid());
+    ASSERT_EQ(1u, snapshot.objectCapacity);
+    const RVX::RHIDescriptorSet* const descriptorBeforeMutation =
+        snapshot.objectDescriptorSet.Get();
+    const RVX::RHIBuffer* const bufferBeforeMutation =
+        snapshot.objectConstantBuffer.Get();
+
+    ASSERT_TRUE(cache.UpdateRasterObjectBindingSnapshotObject(
+        snapshot,
+        RVX::Mat4Identity(),
+        RVX::Mat4Identity(),
+        RVX::Mat4Identity(),
+        RVX::Mat4Identity(),
+        false,
+        true));
+    EXPECT_TRUE(cache.UpdateFrameLightResources({}).lightResourcesBound);
+    cache.UpdateViewConstants(RVX::ViewData{});
+
+    EXPECT_EQ(descriptorBeforeMutation, snapshot.objectDescriptorSet.Get());
+    EXPECT_EQ(bufferBeforeMutation, snapshot.objectConstantBuffer.Get());
+    EXPECT_TRUE(snapshot.IsValid());
+
+    const std::string source = ReadTextFile(
+        FindShaderDirectory().parent_path() / "Private" / "PipelineCache.cpp");
+    const size_t begin = source.find("bool PipelineCache::CreateRasterObjectBindingSnapshot(");
+    const size_t end = source.find(
+        "bool PipelineCache::CreateDirectionalShadowCascadeBindingSnapshot(", begin);
+    ASSERT_NE(std::string::npos, begin);
+    ASSERT_NE(std::string::npos, end);
+    const std::string_view implementation(
+        source.data() + begin, end - begin);
+    EXPECT_EQ(std::string::npos, implementation.find("m_frameDescriptor"));
+    EXPECT_EQ(std::string::npos, implementation.find("m_currentEnvironmentIBL"));
+}
+
+TEST_F(PipelineCacheValidationFixture,
        DirectionalShadowCascadeBindingsUseImmutableAlignedPageRanges)
 {
     if (!HasShaderFixtures())
@@ -3712,6 +4141,325 @@ TEST_F(PipelineCacheValidationFixture, FrameLightResourcesUseFallbacksAndSurvive
     ASSERT_EQ(FindDescriptorBinding(bindingsDesc, 9)->buffer, clusterLightIndices.Get());
 }
 
+TEST_F(PipelineCacheValidationFixture,
+       LightingBindingSnapshotOwnsExplicitResourcesAndMatchesItsPlanIdentity)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    LightingBindingTestResources resources;
+    ASSERT_TRUE(resources.Create(device, "LightingBindingSnapshotOwned"));
+
+    constexpr RVX::uint64 kLightingPlanIdentity = 0x1A11CEu;
+    const RVX::LightingBindingSnapshotRequest request =
+        resources.MakeRequest(cache, kLightingPlanIdentity);
+    ASSERT_TRUE(request.frozenLightResources.IsComplete());
+    RVX::LightingBindingSnapshot snapshot;
+    ASSERT_TRUE(cache.CreateLightingBindingSnapshot(
+        MakeLightingBindingSnapshotView(),
+        request,
+        snapshot)) << cache.GetLastError();
+
+    ASSERT_TRUE(snapshot.IsValid());
+    EXPECT_TRUE(snapshot.MatchesLightingPlan(kLightingPlanIdentity));
+    EXPECT_FALSE(snapshot.MatchesLightingPlan(kLightingPlanIdentity + 1u));
+    EXPECT_FALSE(snapshot.MatchesLightingPlan(0));
+    EXPECT_NE(snapshot.frameDescriptorSet.Get(), cache.GetFrameDescriptorSet());
+
+    const FakeDescriptorSet* descriptorSet =
+        static_cast<const FakeDescriptorSet*>(snapshot.frameDescriptorSet.Get());
+    ASSERT_NE(descriptorSet, nullptr);
+    const RVX::RHIDescriptorSetDesc descriptorSetDesc{
+        nullptr, descriptorSet->GetBindings(), nullptr};
+    ASSERT_EQ(FindDescriptorBinding(descriptorSetDesc, 3)->buffer,
+              request.frozenLightResources.lightConstantsBuffer.Get());
+    ASSERT_EQ(FindDescriptorBinding(descriptorSetDesc, 4)->buffer,
+              request.frozenLightResources.pointLightsBuffer.Get());
+    ASSERT_EQ(FindDescriptorBinding(descriptorSetDesc, 5)->buffer,
+              request.frozenLightResources.spotLightsBuffer.Get());
+    ASSERT_EQ(FindDescriptorBinding(descriptorSetDesc, 7)->buffer,
+              request.frozenLightResources.clusterConstantsBuffer.Get());
+    ASSERT_EQ(FindDescriptorBinding(descriptorSetDesc, 8)->buffer,
+              request.frozenLightResources.clusterBuffer.Get());
+    ASSERT_EQ(FindDescriptorBinding(descriptorSetDesc, 9)->buffer,
+              request.frozenLightResources.clusterLightIndexBuffer.Get());
+    ASSERT_EQ(FindDescriptorBinding(descriptorSetDesc, 1)->textureView,
+              resources.directionalShadowView.Get());
+    ASSERT_EQ(FindDescriptorBinding(descriptorSetDesc, 10)->textureView,
+              resources.irradianceView.Get());
+    ASSERT_EQ(FindDescriptorBinding(descriptorSetDesc, 11)->textureView,
+              resources.prefilteredView.Get());
+    ASSERT_EQ(FindDescriptorBinding(descriptorSetDesc, 12)->textureView,
+              resources.brdfLUTView.Get());
+
+    RVX::RHIBuffer* const sourceLightConstants = resources.lightConstants.Get();
+    RVX::RHIBuffer* const frozenLightConstants =
+        request.frozenLightResources.lightConstantsBuffer.Get();
+    RVX::RHITextureView* const directionalShadowView =
+        resources.directionalShadowView.Get();
+    RVX::RHITextureView* const irradianceView = resources.irradianceView.Get();
+    resources.ReleaseExternalOwners();
+
+    EXPECT_NE(frozenLightConstants, sourceLightConstants);
+    EXPECT_EQ(snapshot.lightConstantsBuffer.Get(), frozenLightConstants);
+    EXPECT_EQ(snapshot.directionalShadowView.Get(), directionalShadowView);
+    EXPECT_EQ(snapshot.environmentIBLIrradianceView.Get(), irradianceView);
+    EXPECT_EQ(FindDescriptorBinding(descriptorSetDesc, 3)->buffer, frozenLightConstants);
+    EXPECT_EQ(FindDescriptorBinding(descriptorSetDesc, 1)->textureView, directionalShadowView);
+    EXPECT_EQ(FindDescriptorBinding(descriptorSetDesc, 10)->textureView, irradianceView);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       LightingBindingSnapshotRejectsInvalidIdentityAndIncompleteReadiness)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    LightingBindingTestResources resources;
+    ASSERT_TRUE(resources.Create(device, "LightingBindingSnapshotRejected"));
+    const RVX::ViewData view = MakeLightingBindingSnapshotView();
+    RVX::LightingBindingSnapshot snapshot;
+    const size_t descriptorSetsBeforeFailure = device.capturedDescriptorSetDescs.size();
+
+    RVX::LightingBindingSnapshotRequest request = resources.MakeRequest(cache, 0);
+    EXPECT_FALSE(cache.CreateLightingBindingSnapshot(view, request, snapshot));
+    EXPECT_FALSE(snapshot.IsValid());
+    EXPECT_NE(cache.GetLastError().find("non-zero"), std::string::npos);
+    EXPECT_EQ(device.capturedDescriptorSetDescs.size(), descriptorSetsBeforeFailure);
+
+    constexpr RVX::uint64 kPublishedLightingPlanIdentity = 0x1A11CEu;
+    ASSERT_TRUE(cache.CreateLightingBindingSnapshot(
+        view,
+        resources.MakeRequest(cache, kPublishedLightingPlanIdentity),
+        snapshot)) << cache.GetLastError();
+    const RVX::RHIDescriptorSet* const publishedDescriptorSet =
+        snapshot.frameDescriptorSet.Get();
+    const size_t descriptorSetsAfterPublication =
+        device.capturedDescriptorSetDescs.size();
+
+    request = resources.MakeRequest(cache, 0x1A11CEu);
+    request.frozenLightResources.clusterBuffer.Reset();
+    EXPECT_FALSE(cache.CreateLightingBindingSnapshot(view, request, snapshot));
+    EXPECT_TRUE(snapshot.IsValid());
+    EXPECT_TRUE(snapshot.MatchesLightingPlan(kPublishedLightingPlanIdentity));
+    EXPECT_EQ(snapshot.frameDescriptorSet.Get(), publishedDescriptorSet);
+    EXPECT_NE(cache.GetLastError().find("complete frozen local and clustered-light"), std::string::npos);
+    EXPECT_EQ(device.capturedDescriptorSetDescs.size(), descriptorSetsAfterPublication);
+
+    request = resources.MakeRequest(cache, 0x1A11CEu);
+    request.directionalShadow.enabled = false;
+    EXPECT_FALSE(cache.CreateLightingBindingSnapshot(view, request, snapshot));
+    EXPECT_TRUE(snapshot.IsValid());
+    EXPECT_TRUE(snapshot.MatchesLightingPlan(kPublishedLightingPlanIdentity));
+    EXPECT_EQ(snapshot.frameDescriptorSet.Get(), publishedDescriptorSet);
+    EXPECT_NE(cache.GetLastError().find("directional-shadow readiness"), std::string::npos);
+    EXPECT_EQ(device.capturedDescriptorSetDescs.size(), descriptorSetsAfterPublication);
+
+    request = resources.MakeRequest(cache, 0x1A11CEu);
+    request.environmentIBL.brdfLUTView = nullptr;
+    EXPECT_FALSE(cache.CreateLightingBindingSnapshot(view, request, snapshot));
+    EXPECT_TRUE(snapshot.IsValid());
+    EXPECT_TRUE(snapshot.MatchesLightingPlan(kPublishedLightingPlanIdentity));
+    EXPECT_EQ(snapshot.frameDescriptorSet.Get(), publishedDescriptorSet);
+    EXPECT_NE(cache.GetLastError().find("complete texture-IBL views"), std::string::npos);
+    EXPECT_EQ(device.capturedDescriptorSetDescs.size(), descriptorSetsAfterPublication);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       LightingBindingSnapshotOwnsRequestedRayTracedShadowAndRejectsReadinessMismatch)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    LightingBindingTestResources resources;
+    ASSERT_TRUE(resources.Create(device, "LightingBindingSnapshotRT"));
+
+    RVX::ViewData view = MakeLightingBindingSnapshotView();
+    view.rayTracedShadowEnabled = 1;
+    RVX::LightingBindingSnapshotRequest request = resources.MakeRequest(cache, 0xA57u);
+    request.rayTracedShadow.enabled = true;
+    request.rayTracedShadow.shadowMaskView = resources.rayTracedShadowView.Get();
+
+    RVX::LightingBindingSnapshot snapshot;
+    ASSERT_TRUE(cache.CreateLightingBindingSnapshot(view, request, snapshot)) << cache.GetLastError();
+    ASSERT_TRUE(snapshot.IsValid());
+    EXPECT_TRUE(snapshot.rayTracedShadowEnabled);
+    EXPECT_EQ(snapshot.rayTracedShadowMaskView.Get(), resources.rayTracedShadowView.Get());
+
+    const FakeDescriptorSet* descriptorSet =
+        static_cast<const FakeDescriptorSet*>(snapshot.frameDescriptorSet.Get());
+    ASSERT_NE(descriptorSet, nullptr);
+    const RVX::RHIDescriptorSetDesc descriptorSetDesc{
+        nullptr, descriptorSet->GetBindings(), nullptr};
+    ASSERT_EQ(FindDescriptorBinding(descriptorSetDesc, 6)->textureView,
+              resources.rayTracedShadowView.Get());
+
+    RVX::RHITextureView* const rayTracedShadowView = resources.rayTracedShadowView.Get();
+    resources.rayTracedShadowView.Reset();
+    resources.rayTracedShadowTexture.Reset();
+    EXPECT_EQ(snapshot.rayTracedShadowMaskView.Get(), rayTracedShadowView);
+
+    request.rayTracedShadow.enabled = false;
+    EXPECT_FALSE(cache.CreateLightingBindingSnapshot(view, request, snapshot));
+    EXPECT_TRUE(snapshot.IsValid());
+    EXPECT_TRUE(snapshot.rayTracedShadowEnabled);
+    EXPECT_NE(cache.GetLastError().find("ray-traced-shadow readiness"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       FrozenFrameLightResourcesRejectNonUploadSourceWithoutPublishingPartialOutput)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    LightingBindingTestResources resources;
+    ASSERT_TRUE(resources.Create(device, "FrozenFrameLightResources"));
+    RVX::FrozenFrameLightResources frozen;
+    ASSERT_TRUE(cache.FreezeFrameLightResources(
+        resources.GetSourceResources(), frozen)) << cache.GetLastError();
+    ASSERT_TRUE(frozen.IsComplete());
+    RVX::RHIBuffer* const publishedPointLights = frozen.pointLightsBuffer.Get();
+
+    RVX::RHIBufferDesc defaultMemoryDesc;
+    defaultMemoryDesc.size = sizeof(RVX::GPUPointLight);
+    defaultMemoryDesc.usage = RVX::RHIBufferUsage::Structured |
+        RVX::RHIBufferUsage::ShaderResource;
+    defaultMemoryDesc.memoryType = RVX::RHIMemoryType::Default;
+    defaultMemoryDesc.stride = sizeof(RVX::GPUPointLight);
+    defaultMemoryDesc.debugName = "FrozenFrameLightResourcesDefaultMemory";
+    RVX::RHIBufferRef nonUploadPointLights = device.CreateBuffer(defaultMemoryDesc);
+    ASSERT_TRUE(nonUploadPointLights);
+
+    RVX::FrameLightResources invalidSource = resources.GetSourceResources();
+    invalidSource.pointLightsBuffer = nonUploadPointLights.Get();
+    EXPECT_FALSE(cache.FreezeFrameLightResources(invalidSource, frozen));
+    EXPECT_TRUE(frozen.IsComplete());
+    EXPECT_EQ(publishedPointLights, frozen.pointLightsBuffer.Get());
+    EXPECT_NE(cache.GetLastError().find("upload"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       LightingBindingSnapshotIsNotPollutedByLaterMutableFrameUpdates)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    LightingBindingTestResources firstResources;
+    ASSERT_TRUE(firstResources.Create(device, "LightingBindingSnapshotFirst"));
+    constexpr RVX::uint64 kFirstLightingPlanIdentity = 0xF1A57u;
+    const RVX::ViewData firstView = MakeLightingBindingSnapshotView();
+    const RVX::LightingBindingSnapshotRequest firstRequest =
+        firstResources.MakeRequest(cache, kFirstLightingPlanIdentity);
+    ASSERT_TRUE(firstRequest.frozenLightResources.IsComplete());
+    RVX::LightingBindingSnapshot firstSnapshot;
+    ASSERT_TRUE(cache.CreateLightingBindingSnapshot(
+        firstView,
+        firstRequest,
+        firstSnapshot)) << cache.GetLastError();
+    const FakeBuffer* firstViewConstants =
+        static_cast<const FakeBuffer*>(firstSnapshot.viewConstantBuffer.Get());
+    ASSERT_NE(firstViewConstants, nullptr);
+    const std::vector<RVX::uint8> firstViewConstantsBefore =
+        firstViewConstants->GetStorage();
+
+    RVX::RHIBuffer* const firstSourceLightConstants =
+        firstResources.lightConstants.Get();
+    RVX::RHIBuffer* const firstFrozenLightConstants =
+        firstRequest.frozenLightResources.lightConstantsBuffer.Get();
+    const FakeBuffer* const firstFrozenLightBuffer =
+        static_cast<const FakeBuffer*>(firstFrozenLightConstants);
+    ASSERT_NE(firstFrozenLightBuffer, nullptr);
+    const std::vector<RVX::uint8> firstFrozenLightBytesBefore =
+        firstFrozenLightBuffer->GetStorage();
+    void* const mutableSourceBytes = firstSourceLightConstants->Map();
+    ASSERT_NE(mutableSourceBytes, nullptr);
+    std::memset(
+        mutableSourceBytes, 0xA5,
+        static_cast<size_t>(firstSourceLightConstants->GetSize()));
+    firstSourceLightConstants->Unmap();
+    RVX::RHITextureView* const firstShadowView = firstResources.directionalShadowView.Get();
+    RVX::RHITextureView* const firstIrradianceView = firstResources.irradianceView.Get();
+
+    LightingBindingTestResources laterResources;
+    ASSERT_TRUE(laterResources.Create(device, "LightingBindingSnapshotLater"));
+    const RVX::LightingBindingSnapshotRequest laterRequest =
+        laterResources.MakeRequest(cache, 0x1A73Eu);
+    ASSERT_TRUE(cache.UpdateFrameLightResources(laterResources.GetSourceResources()).lightResourcesBound);
+    ASSERT_TRUE(
+        cache.UpdateDirectionalShadowFrameResources(laterRequest.directionalShadow)
+            .shadowSamplingEnabled);
+    ASSERT_TRUE(
+        cache.UpdateEnvironmentIBLFrameResources(laterRequest.environmentIBL)
+            .textureIBLSamplingEnabled);
+    RVX::ViewData laterView = firstView;
+    laterView.directionalLightIntensity = 42.0f;
+    cache.UpdateViewConstants(laterView);
+
+    EXPECT_TRUE(firstSnapshot.IsValid());
+    EXPECT_TRUE(firstSnapshot.MatchesLightingPlan(kFirstLightingPlanIdentity));
+    EXPECT_NE(firstFrozenLightConstants, firstSourceLightConstants);
+    EXPECT_EQ(firstSnapshot.lightConstantsBuffer.Get(), firstFrozenLightConstants);
+    EXPECT_EQ(firstSnapshot.directionalShadowView.Get(), firstShadowView);
+    EXPECT_EQ(firstSnapshot.environmentIBLIrradianceView.Get(), firstIrradianceView);
+    EXPECT_EQ(firstViewConstants->GetStorage(), firstViewConstantsBefore);
+    EXPECT_EQ(firstFrozenLightBuffer->GetStorage(), firstFrozenLightBytesBefore);
+
+    const FakeDescriptorSet* firstDescriptorSet =
+        static_cast<const FakeDescriptorSet*>(firstSnapshot.frameDescriptorSet.Get());
+    ASSERT_NE(firstDescriptorSet, nullptr);
+    const RVX::RHIDescriptorSetDesc firstDescriptorSetDesc{
+        nullptr, firstDescriptorSet->GetBindings(), nullptr};
+    EXPECT_EQ(FindDescriptorBinding(firstDescriptorSetDesc, 3)->buffer,
+              firstFrozenLightConstants);
+    EXPECT_EQ(FindDescriptorBinding(firstDescriptorSetDesc, 1)->textureView, firstShadowView);
+    EXPECT_EQ(FindDescriptorBinding(firstDescriptorSetDesc, 10)->textureView, firstIrradianceView);
+
+    const FakeDescriptorSet* currentFrameDescriptorSet =
+        static_cast<const FakeDescriptorSet*>(cache.GetFrameDescriptorSet());
+    ASSERT_NE(currentFrameDescriptorSet, nullptr);
+    const RVX::RHIDescriptorSetDesc currentFrameDescriptorSetDesc{
+        nullptr, currentFrameDescriptorSet->GetBindings(), nullptr};
+    EXPECT_EQ(
+        FindDescriptorBinding(currentFrameDescriptorSetDesc, 3)->buffer,
+        laterResources.lightConstants.Get());
+    EXPECT_EQ(
+        FindDescriptorBinding(currentFrameDescriptorSetDesc, 1)->textureView,
+        laterResources.directionalShadowView.Get());
+    EXPECT_EQ(
+        FindDescriptorBinding(currentFrameDescriptorSetDesc, 10)->textureView,
+        laterResources.irradianceView.Get());
+}
+
 TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsSanitizesInvalidLightingControls)
 {
     if (!HasShaderFixtures())
@@ -3832,54 +4580,48 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
     EXPECT_NE(shader.find("Texture2DArray<float> DirectionalShadowMapTexture : register(t1, space0);"),
               std::string::npos);
     EXPECT_NE(shader.find("SamplerState DirectionalShadowSampler : register(s2, space0);"), std::string::npos);
+    EXPECT_NE(shader.find("float4 DirectionalShadowReceiverParams;"), std::string::npos);
     EXPECT_NE(shader.find("float4 CameraForwardAndShadowCascadeCount;"), std::string::npos);
     EXPECT_NE(shader.find("float4x4 DirectionalShadowViewProjections[4];"), std::string::npos);
     EXPECT_NE(shader.find("float4 DirectionalShadowCascadeSplits;"), std::string::npos);
     EXPECT_NE(shader.find("float4 DirectionalShadowCascadeFadeDistances;"), std::string::npos);
-    EXPECT_NE(shader.find("int SelectDirectionalShadowCascade(float3 worldPos)"), std::string::npos);
-    EXPECT_NE(shader.find("float GetDirectionalShadowViewDepth(float3 worldPos)"), std::string::npos);
-    EXPECT_NE(shader.find("float4 DirectionalShadowReceiverParams;"), std::string::npos);
-    EXPECT_NE(shader.find("float SampleDirectionalShadowCascade(float3 worldPos, float3 worldNormal, int cascadeIndex)"),
-              std::string::npos);
-    EXPECT_NE(shader.find("float SampleDirectionalShadow(float3 worldPos, float3 worldNormal)"), std::string::npos);
-    EXPECT_NE(shader.find("float CompareDirectionalShadowDepth(float2 uv, float compareDepth, int cascadeIndex)"),
-              std::string::npos);
-    EXPECT_NE(shader.find("float SampleDirectionalShadowPCF(float2 shadowUV, float compareDepth, float filterStep, int cascadeIndex)"),
-              std::string::npos);
+    EXPECT_NE(shader.find("#include \"Include/DirectionalShadow.hlsli\""), std::string::npos);
+    const std::string shadowHeader =
+        ReadTextFile(FindShaderDirectory() / "Include" / "DirectionalShadow.hlsli");
+    EXPECT_NE(shadowHeader.find("int SelectDirectionalShadowCascade"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("float GetDirectionalShadowViewDepth"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("float SampleDirectionalShadowCascade"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("float SampleDirectionalShadow"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("float CompareDirectionalShadowDepth"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("float SampleDirectionalShadowPCF"), std::string::npos);
     EXPECT_NE(shader.find("float4 LightDirection_Intensity;"), std::string::npos);
     EXPECT_NE(shader.find("#define DirectionalLightIntensity LightDirection_Intensity.w"), std::string::npos);
     EXPECT_NE(shader.find("if (IBLTextureParams.x > 0.5)"), std::string::npos);
     EXPECT_NE(shader.find("IBLTextureParams.w"), std::string::npos);
-    EXPECT_NE(shader.find("DirectionalShadowParams.w"), std::string::npos);
     EXPECT_NE(shader.find("float4 DirectionalLightColor_Padding;"), std::string::npos);
     EXPECT_NE(shader.find("#define DirectionalLightColor DirectionalLightColor_Padding.xyz"), std::string::npos);
-    EXPECT_NE(shader.find("dot(worldPos - CameraPosition, cameraForward)"), std::string::npos);
-    EXPECT_NE(shader.find("viewDepth > DirectionalShadowCascadeSplits[i]"), std::string::npos);
-    EXPECT_NE(shader.find("float3(uv, (float)cascadeIndex)"), std::string::npos);
-    EXPECT_NE(shader.find("int nextCascadeIndex = cascadeIndex + 1;"), std::string::npos);
-    EXPECT_NE(shader.find("nextCascadeIndex < cascadeCount"), std::string::npos);
-    EXPECT_NE(shader.find(
-                  "float lastCascadeSplit = DirectionalShadowCascadeSplits[cascadeCount - 1];"),
+    EXPECT_NE(shadowHeader.find("dot(worldPos - CameraPosition, cameraForward)"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("DirectionalShadowReceiverParams.x"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("DirectionalShadowCascadeSplits"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("DirectionalShadowCascadeFadeDistances"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("DirectionalShadowParams.w"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("float3(uv, (float)cascadeIndex)"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("nextCascadeIndex = cascadeIndex + 1"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("DirectionalShadowCascadeSplits[cascadeCount - 1]"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("insideFadeBand"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("nextShadow = SampleDirectionalShadowCascade"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("shadow = lerp(shadow, nextShadow, fadeT);"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("receiverNormal * normalBias"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("static const int RVX_DIRECTIONAL_SHADOW_POISSON_TAP_COUNT = 16;"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("static const float2 RVX_DIRECTIONAL_SHADOW_POISSON_DISK[16]"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("for (int i = 0; i < RVX_DIRECTIONAL_SHADOW_POISSON_TAP_COUNT; ++i)"),
               std::string::npos);
-    EXPECT_NE(shader.find("if (viewDepth > lastCascadeSplit)"),
-              std::string::npos);
-    EXPECT_NE(shader.find("bool insideFadeBand = fadeDistance > 1.0e-5"), std::string::npos);
-    EXPECT_NE(shader.find("float nextShadow = SampleDirectionalShadowCascade(worldPos, worldNormal, nextCascadeIndex);"),
-              std::string::npos);
-    EXPECT_NE(shader.find("shadow = lerp(shadow, nextShadow, fadeT);"), std::string::npos);
-    EXPECT_NE(shader.find("float normalBias = max(DirectionalShadowReceiverParams.x, 0.0);"), std::string::npos);
-    EXPECT_NE(shader.find("receiverNormal * normalBias"), std::string::npos);
-    EXPECT_NE(shader.find("static const int RVX_DIRECTIONAL_SHADOW_POISSON_TAP_COUNT = 16;"), std::string::npos);
-    EXPECT_NE(shader.find("static const float2 RVX_DIRECTIONAL_SHADOW_POISSON_DISK[16]"), std::string::npos);
-    EXPECT_NE(shader.find("for (int i = 0; i < RVX_DIRECTIONAL_SHADOW_POISSON_TAP_COUNT; ++i)"),
-              std::string::npos);
-    EXPECT_NE(shader.find("RVX_DIRECTIONAL_SHADOW_POISSON_DISK[i] * filterStepUv"), std::string::npos);
-    EXPECT_NE(shader.find("if (filterStepUv <= 1.0e-7)"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("RVX_DIRECTIONAL_SHADOW_POISSON_DISK[i] * filterStepUv"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("if (filterStepUv <= 1.0e-7)"), std::string::npos);
     EXPECT_EQ(shader.find("for (int y = -1; y <= 1; ++y)"), std::string::npos);
     EXPECT_EQ(shader.find("for (int x = -1; x <= 1; ++x)"), std::string::npos);
-    EXPECT_NE(shader.find("tapCount > 0.5 ? visibility / tapCount : 1.0"), std::string::npos);
-    EXPECT_NE(shader.find("SampleDirectionalShadowPCF(shadowUV, compareDepth, DirectionalShadowParams.w, cascadeIndex)"),
-              std::string::npos);
+    EXPECT_NE(shadowHeader.find("tapCount > 0.5 ? visibility / tapCount : 1.0"), std::string::npos);
+    EXPECT_NE(shadowHeader.find("SampleDirectionalShadowPCF"), std::string::npos);
     EXPECT_NE(shader.find("#define ReceivesShadow ObjectVelocityParams.y"), std::string::npos);
     const auto countShaderOccurrences = [&shader](std::string_view needle)
     {
@@ -4043,7 +4785,9 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresLightManagerIntoDefault
     EXPECT_NE(rendererSource.find("#include \"Render/Lighting/LightManager.h\""), std::string::npos);
     EXPECT_NE(rendererSource.find("m_lightManager = std::make_unique<LightManager>();"), std::string::npos);
     EXPECT_NE(rendererSource.find("m_lightManager->Initialize(renderContext->GetDevice());"), std::string::npos);
-    EXPECT_NE(rendererSource.find("m_lightManager->CollectLights(m_renderScene, m_viewData.cullingMask);"),
+    EXPECT_NE(rendererSource.find("m_lightManager->CollectLights(*m_lightingFramePlan)"),
+              std::string::npos);
+    EXPECT_EQ(rendererSource.find("m_lightManager->CollectLights(m_renderScene, m_viewData.cullingMask);"),
               std::string::npos);
     EXPECT_NE(rendererSource.find("m_lightManager->UpdateGPUBuffers();"), std::string::npos);
     EXPECT_NE(rendererSource.find("m_localLightingStats.pointLightCount = m_lightManager->GetPointLightCount();"),
@@ -4114,6 +4858,26 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresLightManagerIntoDefault
     EXPECT_LT(transparentClusteredLighting, transparentAddPass);
 }
 
+TEST_F(PipelineCacheValidationFixture,
+       LightingShaderMatchesPhotometricNearZeroReferencePolicy)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    const std::string lighting = ReadTextFile(
+        FindShaderDirectory() / "Include" / "Lighting.hlsli");
+    EXPECT_NE(lighting.find(
+                  "RVX_PHOTOMETRIC_MIN_DISTANCE_SQUARED = 1.0e-4"),
+              std::string::npos);
+    EXPECT_NE(lighting.find(
+                  "distance * distance, RVX_PHOTOMETRIC_MIN_DISTANCE_SQUARED"),
+              std::string::npos);
+    EXPECT_NE(lighting.find("distance <= 0.0"), std::string::npos);
+    EXPECT_EQ(lighting.find("distance <= 1.0e-4"), std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture, SceneRendererBuildsClusteredLightingFrameData)
 {
     if (!HasShaderFixtures())
@@ -4133,9 +4897,21 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererBuildsClusteredLightingFrame
               std::string::npos);
     EXPECT_NE(source.find("m_clusteredLighting = std::make_unique<ClusteredLighting>();"), std::string::npos);
     EXPECT_NE(source.find("m_clusteredLighting->Initialize(renderContext->GetDevice())"), std::string::npos);
-    EXPECT_NE(source.find("m_clusteredLighting->BeginFrame(m_viewData.viewMatrix,"), std::string::npos);
+    EXPECT_NE(source.find("ClusteredLightingView clusteredView;"), std::string::npos);
+    EXPECT_NE(source.find("clusteredView.inverseProjectionMatrix ="), std::string::npos);
+    EXPECT_NE(source.find("clusteredView.nearPlane = m_viewData.nearPlane;"),
+              std::string::npos);
+    EXPECT_NE(source.find("clusteredView.farPlane = m_viewData.farPlane;"),
+              std::string::npos);
+    EXPECT_NE(source.find("clusteredView.reverseZ = m_pipelineCache &&"),
+              std::string::npos);
+    EXPECT_NE(source.find("m_clusteredLighting->BeginFrame(clusteredView)"),
+              std::string::npos);
     EXPECT_NE(source.find("m_clusteredLighting->AssignLights(*m_lightManager)"), std::string::npos);
     EXPECT_NE(source.find("m_clusteredLighting->UploadFrameData()"), std::string::npos);
+    EXPECT_NE(source.find("const LightingGpuUploadResult uploadResult ="),
+              std::string::npos);
+    EXPECT_NE(source.find("m_lightingFramePlan.reset();"), std::string::npos);
     EXPECT_NE(source.find("diagnostics.clusteredLightingGpuBuffersUploaded = m_clusteredLightingStats.gpuBuffersUploaded;"),
               std::string::npos);
     EXPECT_NE(source.find("diagnostics.clusteredLightingActiveClusters = m_clusteredLightingStats.activeClusters;"),
@@ -4164,18 +4940,24 @@ TEST_F(PipelineCacheValidationFixture, LightManagerTracksRequestedLocalShadowsSe
 
     RVX::RenderLight point;
     point.type = RVX::RenderLight::Type::Point;
+    point.intensityUnit = RVX::RenderLightIntensityUnit::Candela;
+    point.canonicalIntensityUnit = RVX::RenderLightIntensityUnit::Candela;
     point.castsShadow = true;
-    scene.AddLight(point);
+    ASSERT_TRUE(scene.AddLight(point));
 
     RVX::RenderLight spot;
     spot.type = RVX::RenderLight::Type::Spot;
+    spot.intensityUnit = RVX::RenderLightIntensityUnit::Candela;
+    spot.canonicalIntensityUnit = RVX::RenderLightIntensityUnit::Candela;
     spot.castsShadow = true;
-    scene.AddLight(spot);
+    ASSERT_TRUE(scene.AddLight(spot));
 
     RVX::RenderLight unshadowedPoint;
     unshadowedPoint.type = RVX::RenderLight::Type::Point;
+    unshadowedPoint.intensityUnit = RVX::RenderLightIntensityUnit::Candela;
+    unshadowedPoint.canonicalIntensityUnit = RVX::RenderLightIntensityUnit::Candela;
     unshadowedPoint.castsShadow = false;
-    scene.AddLight(unshadowedPoint);
+    ASSERT_TRUE(scene.AddLight(unshadowedPoint));
 
     RVX::LightManager lights;
     lights.CollectLights(scene);
@@ -4268,7 +5050,9 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererUsesSamePrimaryDirectionalLi
     EXPECT_NE(contextHeader.find("SelectPrimaryDirectionalLightRecordInput("),
               std::string::npos);
     EXPECT_NE(contextHeader.find("later casters"), std::string::npos);
-    EXPECT_NE(source.find("m_renderScene, m_viewData.cullingMask);"),
+    EXPECT_NE(source.find("m_lightManager->CollectLights(*m_lightingFramePlan)"),
+              std::string::npos);
+    EXPECT_EQ(source.find("m_renderScene, m_viewData.cullingMask);"),
               std::string::npos);
     EXPECT_NE(source.find("passRecordContext.primaryDirectionalLight = m_primaryDirectionalLight;"),
               std::string::npos);
@@ -6762,9 +7546,9 @@ TEST_F(PipelineCacheValidationFixture, OpaquePassConsumesRayTracedShadowMask)
               std::string::npos);
     EXPECT_NE(opaqueSource.find("RayTracedShadowFrameResources rayTracedShadowResources;"),
               std::string::npos);
-    EXPECT_NE(opaqueSource.find("UpdateRayTracedShadowFrameResources(rayTracedShadowResources)"),
+    EXPECT_NE(opaqueSource.find("lightingRequest.rayTracedShadow = rayTracedShadowResources;"),
               std::string::npos);
-    EXPECT_NE(opaqueSource.find("drawView.rayTracedShadowEnabled = rayTracedShadowBinding.shadowMaskSamplingEnabled ? 1 : 0;"),
+    EXPECT_NE(opaqueSource.find("drawView.rayTracedShadowEnabled = rayTracedShadowResources.enabled ? 1 : 0;"),
               std::string::npos);
     EXPECT_NE(opaqueSource.find("m_rayTracedShadowInputs.filterRadiusTexels"),
               std::string::npos);
@@ -6772,16 +7556,16 @@ TEST_F(PipelineCacheValidationFixture, OpaquePassConsumesRayTracedShadowMask)
               std::string::npos);
     EXPECT_NE(opaqueSource.find("drawView.rayTracedShadowMode == RayTracedShadowMode::ReplaceRaster"),
               std::string::npos);
-    EXPECT_NE(opaqueSource.find("ClearDirectionalShadowViewData(drawView);"),
+    EXPECT_NE(opaqueSource.find("ResolveDirectionalShadowViewData("),
               std::string::npos);
     EXPECT_NE(opaqueSource.find("dispatchReady.load(std::memory_order_acquire)"),
               std::string::npos);
     EXPECT_NE(opaqueSource.find("rayTracedExecutionFailed"), std::string::npos);
     EXPECT_EQ(sceneRendererSource.find("passRecordContext.rayTracedShadow ="),
               std::string::npos);
-    EXPECT_NE(legacyForwardAdapterSource.find("if (pass.get() == m_opaquePass)"),
+    EXPECT_NE(legacyForwardAdapterSource.find("if (pass->GetPriority() >= firstLightingConsumerPriority)"),
               std::string::npos);
-    EXPECT_NE(legacyForwardAdapterSource.find("Opaque pass requires graph-owned record results"),
+    EXPECT_NE(legacyForwardAdapterSource.find("Main-scene consumer requires graph-owned record results"),
               std::string::npos);
     EXPECT_NE(legacyForwardAdapterSource.find(
                   "passContext.rayTracedShadow =\n"
@@ -6795,8 +7579,8 @@ TEST_F(PipelineCacheValidationFixture, OpaquePassConsumesRayTracedShadowMask)
               std::string::npos);
     EXPECT_EQ(sceneRendererSource.find("SetRayTracedShadowSource("), std::string::npos);
 
-    const size_t opaquePassGate =
-        legacyForwardAdapterSource.find("if (pass.get() == m_opaquePass)");
+    const size_t opaquePassGate = legacyForwardAdapterSource.find(
+        "if (pass->GetPriority() >= firstLightingConsumerPriority)");
     const size_t rayTracedShadowPropagation = legacyForwardAdapterSource.find(
         "passContext.rayTracedShadow =\n"
         "                passContext.results->rayTracedShadowOutput;",
@@ -10432,8 +11216,8 @@ TEST_F(PipelineCacheValidationFixture,
     EXPECT_LT(shadowPassRegistration, opaquePassConstruction);
     EXPECT_LT(opaquePassConstruction, opaquePassRegistration);
 
-    const size_t opaquePassGate =
-        legacyForwardAdapterSource.find("if (pass.get() == m_opaquePass)");
+    const size_t opaquePassGate = legacyForwardAdapterSource.find(
+        "if (pass->GetPriority() >= firstLightingConsumerPriority)");
     const size_t directionalShadowPropagation = legacyForwardAdapterSource.find(
         "passContext.directionalShadow =\n"
         "                passContext.results->directionalShadowOutput;",
@@ -10899,8 +11683,8 @@ TEST_F(PipelineCacheValidationFixture,
         const RVX::RHIDescriptorSetLayoutDesc& setLayout =
             device.capturedSetLayouts.back();
         ASSERT_STREQ("DeferredLightingSetLayout", setLayout.debugName);
-        ASSERT_EQ(8u, setLayout.entries.size());
-        for (RVX::uint32 binding = 0; binding < 8; ++binding)
+        ASSERT_EQ(21u, setLayout.entries.size());
+        for (RVX::uint32 binding = 0; binding < 21; ++binding)
         {
             const RVX::RHIBindingLayoutEntry* entry =
                 FindBinding(setLayout, binding);
@@ -10908,12 +11692,17 @@ TEST_F(PipelineCacheValidationFixture,
             EXPECT_EQ(1u, entry->count) << binding;
             EXPECT_EQ(RVX::RHIShaderStage::Compute, entry->visibility)
                 << binding;
-            const RVX::RHIBindingType expectedType = binding == 0
-                ? RVX::RHIBindingType::UniformBuffer
-                : (binding == 6 ? RVX::RHIBindingType::StorageTexture
-                                : (binding == 7
-                                       ? RVX::RHIBindingType::ShaderResourceBuffer
-                                       : RVX::RHIBindingType::SampledTexture));
+            const RVX::RHIBindingType expectedType =
+                (binding == 0 || binding == 10 || binding == 13 || binding == 20)
+                    ? RVX::RHIBindingType::UniformBuffer
+                    : (binding == 6 ? RVX::RHIBindingType::StorageTexture
+                                    : ((binding == 7 || binding == 11 ||
+                                        binding == 12 || binding == 14 ||
+                                        binding == 15)
+                                           ? RVX::RHIBindingType::ShaderResourceBuffer
+                                           : ((binding == 9 || binding == 19)
+                                                  ? RVX::RHIBindingType::Sampler
+                                                  : RVX::RHIBindingType::SampledTexture)));
             EXPECT_EQ(expectedType, entry->type) << binding;
         }
 
@@ -11018,7 +11807,7 @@ TEST_F(PipelineCacheValidationFixture,
     constexpr RVX::uint32 width = 17;
     constexpr RVX::uint32 height = 9;
     {
-        DeferredLightingGraphInputs graphInputs(device, width, height);
+        DeferredLightingGraphInputs graphInputs(device, cache, width, height);
         RVX::RenderFeatureGraphBuilder featureBuilder(graphInputs.graph);
         RVX::DeferredLightingPass deferredLighting;
         deferredLighting.SetPipelineCache(&cache);
@@ -11052,7 +11841,7 @@ TEST_F(PipelineCacheValidationFixture,
             });
         ASSERT_NE(device.capturedDescriptorSetDescs.end(), descriptor);
         ASSERT_EQ(cache.GetDeferredLightingSetLayout(), descriptor->layout);
-        ASSERT_EQ(8u, descriptor->bindings.size());
+        ASSERT_EQ(21u, descriptor->bindings.size());
         const RVX::RHIDescriptorBinding* constants =
             FindDescriptorBinding(*descriptor, 0);
         ASSERT_NE(nullptr, constants);
@@ -11075,6 +11864,24 @@ TEST_F(PipelineCacheValidationFixture,
         EXPECT_EQ(sizeof(RVX::DeferredMaterialClassification),
                   materialTable->range);
         EXPECT_EQ(nullptr, materialTable->textureView);
+        for (RVX::uint32 binding = 8; binding <= 20; ++binding)
+        {
+            const RVX::RHIDescriptorBinding* lighting =
+                FindDescriptorBinding(*descriptor, binding);
+            ASSERT_NE(nullptr, lighting) << binding;
+        }
+        EXPECT_EQ(graphInputs.inputs.lighting.frozenLightResources.lightConstantsBuffer.Get(),
+                  FindDescriptorBinding(*descriptor, 10)->buffer);
+        EXPECT_EQ(graphInputs.inputs.lighting.frozenLightResources.pointLightsBuffer.Get(),
+                  FindDescriptorBinding(*descriptor, 11)->buffer);
+        EXPECT_EQ(graphInputs.inputs.lighting.frozenLightResources.spotLightsBuffer.Get(),
+                  FindDescriptorBinding(*descriptor, 12)->buffer);
+        EXPECT_EQ(graphInputs.inputs.lighting.frozenLightResources.clusterConstantsBuffer.Get(),
+                  FindDescriptorBinding(*descriptor, 13)->buffer);
+        EXPECT_EQ(graphInputs.inputs.lighting.frozenLightResources.clusterBuffer.Get(),
+                  FindDescriptorBinding(*descriptor, 14)->buffer);
+        EXPECT_EQ(graphInputs.inputs.lighting.frozenLightResources.clusterLightIndexBuffer.Get(),
+                  FindDescriptorBinding(*descriptor, 15)->buffer);
 
         EXPECT_EQ(0, device.deferredLightingConstantDestructionCount)
             << "The graph must own the frame constants until this execution ends";
@@ -11098,7 +11905,7 @@ TEST_F(PipelineCacheValidationFixture,
             << cache.GetLastError();
         device.failComputePipelineCreation = true;
 
-        DeferredLightingGraphInputs graphInputs(device, 8, 8);
+        DeferredLightingGraphInputs graphInputs(device, cache, 8, 8);
         RVX::RenderFeatureGraphBuilder featureBuilder(graphInputs.graph);
         RVX::DeferredLightingPass deferredLighting;
         deferredLighting.SetPipelineCache(&cache);
@@ -11117,7 +11924,7 @@ TEST_F(PipelineCacheValidationFixture,
             EXPECT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
                 << cache.GetLastError();
 
-            DeferredLightingGraphInputs graphInputs(device, 8, 8);
+            DeferredLightingGraphInputs graphInputs(device, cache, 8, 8);
             RVX::RenderFeatureGraphBuilder featureBuilder(graphInputs.graph);
             RVX::DeferredLightingPass deferredLighting;
             deferredLighting.SetPipelineCache(&cache);
@@ -11134,34 +11941,174 @@ TEST_F(PipelineCacheValidationFixture,
             EXPECT_TRUE(commands.boundPipelines.empty());
             EXPECT_TRUE(commands.boundDescriptorSets.empty());
             EXPECT_TRUE(commands.dispatches.empty());
-            if (failDescriptorSet)
-            {
-                EXPECT_EQ(1u, std::count_if(
-                                  device.capturedDescriptorSetDescs.begin(),
-                                  device.capturedDescriptorSetDescs.end(),
-                                  [](const RVX::RHIDescriptorSetDesc& desc)
-                                  {
-                                      return desc.debugName != nullptr &&
-                                             std::string_view(desc.debugName) ==
-                                                 "DeferredLightingDescriptorSet";
-                                  }));
-            }
-            if (failConstantBuffer)
-            {
-                EXPECT_EQ(0u, std::count_if(
-                                  device.capturedDescriptorSetDescs.begin(),
-                                  device.capturedDescriptorSetDescs.end(),
-                                  [](const RVX::RHIDescriptorSetDesc& desc)
-                                  {
-                                      return desc.debugName != nullptr &&
-                                             std::string_view(desc.debugName) ==
-                                                 "DeferredLightingDescriptorSet";
-                                  }));
-            }
+            const auto deferredDescriptorCount = std::count_if(
+                device.capturedDescriptorSetDescs.begin(),
+                device.capturedDescriptorSetDescs.end(),
+                [](const RVX::RHIDescriptorSetDesc& desc)
+                {
+                    return desc.debugName != nullptr &&
+                           std::string_view(desc.debugName) ==
+                               "DeferredLightingDescriptorSet";
+                });
+            // Snapshot sealing precedes descriptor creation. Either failure
+            // must remain fail-closed; only a successful seal may reach the
+            // deferred descriptor allocation.
+            EXPECT_LE(deferredDescriptorCount, 1u);
         };
 
     expectExecutionFailureWithoutDispatch(true, false);
     expectExecutionFailureWithoutDispatch(false, true);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       DeferredLightingConsumesGraphOwnedCSMAndTextureIBLResources)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    FakeDevice device(RVX::RHIBackendType::DX12);
+    device.EnableNativeTimelineCompletion();
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    DeferredLightingGraphInputs graphInputs(device, cache, 8, 8);
+    ASSERT_TRUE(graphInputs.materialTableCreated) << graphInputs.materialTableError;
+    ASSERT_TRUE(graphInputs.EnableCSMAndTextureIBL(device));
+
+    RVX::ViewData view;
+    view.directionalShadowEnabled = 1;
+    view.directionalShadowCascadeCount = 1;
+    view.textureIBLEnabled = 1;
+    RVX::RenderFeatureGraphBuilder featureBuilder(graphInputs.graph);
+    RVX::DeferredLightingPass deferredLighting;
+    deferredLighting.SetPipelineCache(&cache);
+    ASSERT_TRUE(deferredLighting.AddToGraph(
+        featureBuilder, view, graphInputs.inputs))
+        << deferredLighting.GetUnsupportedReason();
+    RVX::RenderGraphValidationAccess::Compile(graphInputs.graph);
+    ASSERT_TRUE(graphInputs.graph.GetCompileStats().compileValid);
+
+    DeferredLightingRecordingCommandContext commands;
+    RVX::RenderGraphValidationAccess::Execute(graphInputs.graph, commands);
+    ASSERT_EQ(1u, commands.dispatches.size());
+
+    const auto descriptor = std::find_if(
+        device.capturedDescriptorSetDescs.begin(),
+        device.capturedDescriptorSetDescs.end(),
+        [](const RVX::RHIDescriptorSetDesc& desc)
+        {
+            return desc.debugName != nullptr &&
+                   std::string_view(desc.debugName) == "DeferredLightingDescriptorSet";
+        });
+    ASSERT_NE(device.capturedDescriptorSetDescs.end(), descriptor);
+    const RVX::RHIDescriptorBinding* const csm =
+        FindDescriptorBinding(*descriptor, 8);
+    const RVX::RHIDescriptorBinding* const irradiance =
+        FindDescriptorBinding(*descriptor, 16);
+    const RVX::RHIDescriptorBinding* const prefiltered =
+        FindDescriptorBinding(*descriptor, 17);
+    const RVX::RHIDescriptorBinding* const brdfLUT =
+        FindDescriptorBinding(*descriptor, 18);
+    const RVX::RHIDescriptorBinding* const csmSampler =
+        FindDescriptorBinding(*descriptor, 9);
+    const RVX::RHIDescriptorBinding* const iblSampler =
+        FindDescriptorBinding(*descriptor, 19);
+    const RVX::RHIDescriptorBinding* const viewConstants =
+        FindDescriptorBinding(*descriptor, 20);
+    ASSERT_NE(nullptr, csm);
+    ASSERT_NE(nullptr, irradiance);
+    ASSERT_NE(nullptr, prefiltered);
+    ASSERT_NE(nullptr, brdfLUT);
+    ASSERT_NE(nullptr, csmSampler);
+    ASSERT_NE(nullptr, iblSampler);
+    ASSERT_NE(nullptr, viewConstants);
+    EXPECT_NE(nullptr, csm->textureView);
+    EXPECT_NE(nullptr, irradiance->textureView);
+    EXPECT_NE(nullptr, prefiltered->textureView);
+    EXPECT_NE(nullptr, brdfLUT->textureView);
+    EXPECT_NE(nullptr, csmSampler->sampler);
+    EXPECT_NE(nullptr, iblSampler->sampler);
+    EXPECT_NE(nullptr, viewConstants->buffer);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       DeferredLightingUsesExactRetainedIBLViewSubresources)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    FakeDevice device(RVX::RHIBackendType::DX12);
+    device.EnableNativeTimelineCompletion();
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    DeferredLightingGraphInputs graphInputs(device, cache, 8, 8);
+    ASSERT_TRUE(graphInputs.materialTableCreated) << graphInputs.materialTableError;
+    ASSERT_TRUE(graphInputs.EnableCSMAndTextureIBL(
+        device, true));
+
+    RVX::ViewData view;
+    view.directionalShadowEnabled = 1;
+    view.directionalShadowCascadeCount = 1;
+    view.textureIBLEnabled = 1;
+    RVX::RenderFeatureGraphBuilder featureBuilder(graphInputs.graph);
+    RVX::DeferredLightingPass deferredLighting;
+    deferredLighting.SetPipelineCache(&cache);
+    ASSERT_TRUE(deferredLighting.AddToGraph(
+        featureBuilder, view, graphInputs.inputs))
+        << deferredLighting.GetUnsupportedReason();
+    RVX::RenderGraphValidationAccess::Compile(graphInputs.graph);
+    ASSERT_TRUE(graphInputs.graph.GetCompileStats().compileValid);
+
+    DeferredLightingRecordingCommandContext commands;
+    RVX::RenderGraphValidationAccess::Execute(graphInputs.graph, commands);
+    ASSERT_EQ(1U, commands.dispatches.size());
+
+    const auto descriptor = std::find_if(
+        device.capturedDescriptorSetDescs.begin(),
+        device.capturedDescriptorSetDescs.end(),
+        [](const RVX::RHIDescriptorSetDesc& desc)
+        {
+            return desc.debugName != nullptr &&
+                   std::string_view(desc.debugName) ==
+                       "DeferredLightingDescriptorSet";
+        });
+    ASSERT_NE(device.capturedDescriptorSetDescs.end(), descriptor);
+
+    const auto expectExactView = [](
+        const RVX::RHIDescriptorBinding* binding,
+        const RVX::RHITextureViewRef& expected)
+    {
+        ASSERT_NE(nullptr, binding);
+        ASSERT_NE(nullptr, binding->textureView);
+        ASSERT_TRUE(expected);
+        EXPECT_EQ(expected->GetTexture(), binding->textureView->GetTexture());
+        EXPECT_EQ(expected->GetFormat(), binding->textureView->GetFormat());
+        const RVX::RHISubresourceRange& actualRange =
+            binding->textureView->GetSubresourceRange();
+        const RVX::RHISubresourceRange& expectedRange =
+            expected->GetSubresourceRange();
+        EXPECT_EQ(expectedRange.baseMipLevel, actualRange.baseMipLevel);
+        EXPECT_EQ(expectedRange.mipLevelCount, actualRange.mipLevelCount);
+        EXPECT_EQ(expectedRange.baseArrayLayer, actualRange.baseArrayLayer);
+        EXPECT_EQ(expectedRange.arrayLayerCount, actualRange.arrayLayerCount);
+        EXPECT_EQ(expectedRange.aspect, actualRange.aspect);
+    };
+    expectExactView(
+        FindDescriptorBinding(*descriptor, 16),
+        graphInputs.inputs.lighting.expectedIrradianceView);
+    expectExactView(
+        FindDescriptorBinding(*descriptor, 17),
+        graphInputs.inputs.lighting.expectedPrefilteredEnvironmentView);
+    expectExactView(
+        FindDescriptorBinding(*descriptor, 18),
+        graphInputs.inputs.lighting.expectedBRDFLUTView);
 }
 
 TEST_F(PipelineCacheValidationFixture,
@@ -11179,7 +12126,7 @@ TEST_F(PipelineCacheValidationFixture,
         << cache.GetLastError();
 
     {
-        DeferredLightingGraphInputs graphInputs(device, 8, 8);
+        DeferredLightingGraphInputs graphInputs(device, cache, 8, 8);
         ASSERT_TRUE(graphInputs.materialTableCreated)
             << graphInputs.materialTableError;
         graphInputs.inputs.materialTable = {};
@@ -11192,7 +12139,7 @@ TEST_F(PipelineCacheValidationFixture,
     }
 
     {
-        DeferredLightingGraphInputs graphInputs(device, 8, 8);
+        DeferredLightingGraphInputs graphInputs(device, cache, 8, 8);
         ASSERT_TRUE(graphInputs.materialTableCreated)
             << graphInputs.materialTableError;
         RVX::RHIBufferDesc invalidDesc;
@@ -11225,9 +12172,42 @@ TEST_F(PipelineCacheValidationFixture,
         EXPECT_TRUE(diagnostics.passes.front().executedLastRun);
         EXPECT_FALSE(
             diagnostics.passes.front().semanticExecutionSucceededLastRun);
-        EXPECT_EQ("DeferredLighting did not record its required compute dispatch",
+    EXPECT_EQ("Deferred lighting graph inputs or sealed native dependencies are invalid",
                   diagnostics.passes.front().semanticExecutionDiagnostic);
+}
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       DeferredLightingRejectsMismatchedPlanIdentityAndMissingFrameResources)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
+
+    FakeDevice device(RVX::RHIBackendType::DX12);
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    DeferredLightingGraphInputs graphInputs(device, cache, 8, 8);
+    ASSERT_TRUE(graphInputs.materialTableCreated) << graphInputs.materialTableError;
+    RVX::RenderFeatureGraphBuilder featureBuilder(graphInputs.graph);
+    RVX::DeferredLightingPass deferredLighting;
+    deferredLighting.SetPipelineCache(&cache);
+
+    graphInputs.inputs.expectedLightingPlanIdentity =
+        graphInputs.inputs.lighting.lightingPlanIdentity + 1u;
+    EXPECT_FALSE(deferredLighting.AddToGraph(
+        featureBuilder, RVX::ViewData{}, graphInputs.inputs));
+    EXPECT_TRUE(graphInputs.graph.GetDiagnostics().passes.empty());
+
+    graphInputs.inputs.expectedLightingPlanIdentity =
+        graphInputs.inputs.lighting.lightingPlanIdentity;
+    graphInputs.inputs.lighting.clusterLightIndices = {};
+    EXPECT_FALSE(deferredLighting.AddToGraph(
+        featureBuilder, RVX::ViewData{}, graphInputs.inputs));
+    EXPECT_TRUE(graphInputs.graph.GetDiagnostics().passes.empty());
 }
 
 TEST_F(PipelineCacheValidationFixture,
@@ -11240,6 +12220,14 @@ TEST_F(PipelineCacheValidationFixture,
 
     const std::string source = ReadTextFile(
         FindShaderDirectory() / "DeferredLighting.hlsl");
+    const std::string defaultLit = ReadTextFile(
+        FindShaderDirectory() / "DefaultLit.hlsl");
+    const std::string shadowHeader = ReadTextFile(
+        FindShaderDirectory() / "Include" / "DirectionalShadow.hlsli");
+    EXPECT_NE(source.find("#include \"Include/DirectionalShadow.hlsli\""),
+              std::string::npos);
+    EXPECT_NE(defaultLit.find("#include \"Include/DirectionalShadow.hlsli\""),
+              std::string::npos);
     EXPECT_NE(std::string::npos, source.find("[numthreads(8, 8, 1)]"));
     EXPECT_NE(std::string::npos, source.find("bool IsBackgroundDepth"));
     EXPECT_NE(std::string::npos,
@@ -11256,11 +12244,128 @@ TEST_F(PipelineCacheValidationFixture,
               source.find("MaterialClassificationTable[materialTableIndex]"));
     EXPECT_NE(std::string::npos,
               source.find("materialTableIndex != 0u"));
+    EXPECT_NE(std::string::npos,
+              shadowHeader.find("RVX_DIRECTIONAL_SHADOW_POISSON_TAP_COUNT = 16"));
+    EXPECT_NE(std::string::npos,
+              shadowHeader.find("float SampleDirectionalShadowPCF("));
+    EXPECT_NE(std::string::npos,
+              shadowHeader.find("DirectionalShadowParams.w"));
+    EXPECT_NE(std::string::npos,
+              shadowHeader.find("DirectionalShadowCascadeFadeDistances[cascadeIndex]"));
+    EXPECT_NE(std::string::npos,
+              shadowHeader.find("float CompareDirectionalShadowDepth("));
+    EXPECT_NE(std::string::npos,
+              shadowHeader.find("float SampleDirectionalShadowCascade("));
 
-    const std::string defaultLit = ReadTextFile(
-        FindShaderDirectory() / "DefaultLit.hlsl");
     EXPECT_NE(std::string::npos,
               defaultLit.find("output.materialTableIndex = 0u;"));
     EXPECT_EQ(std::string::npos,
               defaultLit.find("? 0u\n        : input.MaterialParameterSlot"));
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       DeferredLightingFeatureAdapterImportsOneStrictLightingFramePlan)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    const fs::path renderRoot = FindShaderDirectory().parent_path();
+    const std::string builder = ReadTextFile(
+        renderRoot / "Include" / "Render" / "Features" /
+        "RenderFeatureGraphBuilder.h");
+    const std::string adapter = ReadTextFile(
+        renderRoot / "Private" / "Features" /
+        "DeferredRecipeFeatureAdapter.cpp");
+    const size_t deferredLightingBegin = adapter.find(
+        "void DeferredLightingFeatureAdapter::AddPasses(");
+    const size_t deferredLightingEnd = adapter.find(
+        "RenderFeatureExecutionReceipt\nDeferredLightingFeatureAdapter::CollectReceipt",
+        deferredLightingBegin);
+    ASSERT_NE(std::string::npos, deferredLightingBegin);
+    ASSERT_NE(std::string::npos, deferredLightingEnd);
+    const std::string_view deferredLightingAdapter(
+        adapter.data() + deferredLightingBegin,
+        deferredLightingEnd - deferredLightingBegin);
+
+    EXPECT_NE(std::string::npos,
+              builder.find("RGTextureHandle ImportTexture("));
+    EXPECT_NE(std::string::npos,
+              builder.find("m_graph->ImportTexture(std::move(texture), initialState)"));
+    EXPECT_NE(std::string::npos,
+              adapter.find("inputs.expectedLightingPlanIdentity = lightingPlanIdentity;"));
+    EXPECT_NE(std::string::npos,
+              adapter.find("inputs.lighting.lightingPlanIdentity = lightingPlanIdentity;"));
+    EXPECT_NE(std::string::npos,
+              adapter.find("inputs.lighting.frozenLightResources ="));
+    EXPECT_NE(std::string::npos,
+              adapter.find("inputs.lighting.lightConstants = lightingResources->lightConstants;"));
+    EXPECT_NE(std::string::npos,
+              adapter.find("inputs.lighting.clusterData = lightingResources->clusterData;"));
+    EXPECT_NE(std::string::npos,
+              adapter.find("lighting.clusteredLights = inputs.lighting.clusterData;"));
+    EXPECT_NE(std::string::npos,
+              adapter.find("Deferred lighting could not publish the current LightingFramePlan cluster output"));
+    EXPECT_NE(std::string::npos,
+              adapter.find("lightingResources->lightingPlanIdentity != lightingPlanIdentity"));
+    EXPECT_NE(std::string::npos,
+              adapter.find("ResolveDirectionalShadowViewData("));
+    EXPECT_NE(std::string::npos,
+              adapter.find("csmRequest.inputsReady != directionalShadow.enabled"));
+    EXPECT_NE(std::string::npos,
+              adapter.find("iblRequest.inputsReady != lightingResources->textureIBLEnabled"));
+    EXPECT_EQ(std::string::npos,
+              adapter.find("csmRequest.requested != directionalShadow.enabled"));
+    EXPECT_EQ(std::string::npos,
+              adapter.find("iblRequest.requested != lightingResources->textureIBLEnabled"));
+    EXPECT_NE(std::string::npos,
+              adapter.find("inputs.lighting.irradiance =\n            lightingResources->environmentIBLIrradiance;"));
+    EXPECT_NE(std::string::npos,
+              adapter.find("Deferred lighting texture-IBL graph resources are stale or missing"));
+    EXPECT_NE(std::string::npos,
+              adapter.find("HasCurrentGraphProvenance(\n            lightingResources->clusterData"));
+    EXPECT_EQ(std::string::npos,
+              deferredLightingAdapter.find("builder.ImportBuffer("));
+    EXPECT_EQ(std::string::npos,
+              deferredLightingAdapter.find("builder.ImportTexture("));
+    EXPECT_EQ(std::string::npos,
+              adapter.find("m_pipelineCache->UpdateFrameLightResources"));
+    EXPECT_EQ(std::string::npos,
+              adapter.find("m_pipelineCache->UpdateEnvironmentIBLFrameResources"));
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       DeferredForwardSpecialCarriesRefreshedCSMContextIntoTransparentChain)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    const std::string adapter = ReadTextFile(
+        FindShaderDirectory().parent_path() / "Private" / "Features" /
+        "DeferredRecipeFeatureAdapter.cpp");
+    const size_t begin = adapter.find(
+        "void DeferredForwardSpecialFeatureAdapter::AddPasses(");
+    const size_t end = adapter.find(
+        "RenderFeatureExecutionReceipt\nDeferredForwardSpecialFeatureAdapter::CollectReceipt",
+        begin);
+    ASSERT_NE(std::string::npos, begin);
+    ASSERT_NE(std::string::npos, end);
+    const std::string_view specialAdapter(
+        adapter.data() + begin, end - begin);
+
+    EXPECT_NE(std::string::npos,
+              specialAdapter.find("bool postLightingContextValid = false;"));
+    EXPECT_NE(std::string::npos,
+              specialAdapter.find("const RenderPassRecordContext postLightingContext = MakeOpaqueRecordContext("));
+    EXPECT_NE(std::string::npos,
+              specialAdapter.find("m_recordContext, postLightingContextValid"));
+    EXPECT_NE(std::string::npos,
+              specialAdapter.find("\"DeferredForwardSpecialOpaque\",\n            postLightingContext"));
+    EXPECT_NE(std::string::npos,
+              specialAdapter.find("builder,\n            postLightingContext,\n            *m_passRegistry"));
+    EXPECT_EQ(std::string::npos,
+              specialAdapter.find("builder,\n            m_recordContext,\n            *m_passRegistry"));
 }

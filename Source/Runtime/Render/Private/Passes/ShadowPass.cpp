@@ -207,10 +207,12 @@ namespace
 
     DirectionalShadowRecordOutput MakeDirectionalShadowRecordOutput(
         const RenderPassRecordIdentity& identity,
+        uint64 lightingPlanIdentity,
         const ShadowPass& recorder)
     {
         DirectionalShadowRecordOutput output;
         output.identity = identity;
+        output.lightingPlanIdentity = lightingPlanIdentity;
 
         const ShadowPassStats& stats = recorder.GetStats();
         const ShadowPassConfig& config = recorder.GetConfig();
@@ -254,10 +256,14 @@ namespace
             output.cascadeViewProjections.push_back(cascade.viewProjection);
             output.cascadeSplitDepths.push_back(cascade.splitDepth);
         }
-        if (!output.IsCompatibleWith(identity))
+        const bool compatible = lightingPlanIdentity != 0
+            ? output.IsCompatibleWith(identity, lightingPlanIdentity)
+            : output.IsCompatibleWith(identity);
+        if (!compatible)
         {
             output = {};
             output.identity = identity;
+            output.lightingPlanIdentity = lightingPlanIdentity;
         }
         return output;
     }
@@ -424,6 +430,10 @@ void ShadowPass::AddToGraph(
             }
             results->directionalShadowOutput = {};
             results->directionalShadowOutput.identity = results->identity;
+            results->directionalShadowOutput.lightingPlanIdentity =
+                data.execution.lightingPlan
+                    ? data.execution.lightingPlan->GetIdentityHash()
+                    : 0;
             results->shadowStats = {};
 
             data.recorder = std::make_unique<ShadowPass>();
@@ -460,7 +470,11 @@ void ShadowPass::AddToGraph(
             results->shadowStats = data.recorder->GetStats();
             results->directionalShadowOutput =
                 MakeDirectionalShadowRecordOutput(
-                    data.execution.identity, *data.recorder);
+                    data.execution.identity,
+                    data.execution.lightingPlan
+                        ? data.execution.lightingPlan->GetIdentityHash()
+                        : 0,
+                    *data.recorder);
         },
         [results, primaryLight](const GraphPassData& data,
                                 RenderGraphPassContext& context)

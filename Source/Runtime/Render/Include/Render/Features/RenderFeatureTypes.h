@@ -411,10 +411,80 @@ namespace RVX
         }
     };
 
+    /**
+     * @brief Presentation-bound lighting-plan evidence for one frame/view.
+     *
+     * The immutable LightingFramePlan is the single source of truth for light
+     * selection.  This receipt deliberately records only normalized selection
+     * and readiness evidence so diagnostics and sample reports do not need to
+     * infer results from mutable renderer state.  A zero primary directional
+     * light id is valid: local-light-only and unlit views have no primary
+     * directional light by design.
+     */
+    struct RenderLightingExecutionReceipt
+    {
+        uint64 lightingPlanIdentity = 0;
+        uint64 sceneLightStateHash = 0;
+        uint64 primaryDirectionalLightId = 0;
+        uint32 pointLightRequestedCount = 0;
+        uint32 pointLightAdmittedCount = 0;
+        uint32 pointLightCapacity = 0;
+        uint32 pointLightOverflowCount = 0;
+        uint32 spotLightRequestedCount = 0;
+        uint32 spotLightAdmittedCount = 0;
+        uint32 spotLightCapacity = 0;
+        uint32 spotLightOverflowCount = 0;
+        bool csmRequested = false;
+        bool csmInputsReady = false;
+        bool csmExecutionReady = false;
+        bool iblRequested = false;
+        bool iblInputsReady = false;
+        bool iblExecutionReady = false;
+
+        [[nodiscard]] bool IsEmpty() const noexcept
+        {
+            return lightingPlanIdentity == 0 && sceneLightStateHash == 0 &&
+                   primaryDirectionalLightId == 0 &&
+                   pointLightRequestedCount == 0 &&
+                   pointLightAdmittedCount == 0 && pointLightCapacity == 0 &&
+                   pointLightOverflowCount == 0 &&
+                   spotLightRequestedCount == 0 &&
+                   spotLightAdmittedCount == 0 && spotLightCapacity == 0 &&
+                   spotLightOverflowCount == 0 && !csmRequested &&
+                   !csmInputsReady && !csmExecutionReady && !iblRequested &&
+                   !iblInputsReady && !iblExecutionReady;
+        }
+
+        [[nodiscard]] bool IsStructurallyValid() const noexcept
+        {
+            const auto hasConsistentCapacityEvidence =
+                [](uint32 requested,
+                   uint32 admitted,
+                   uint32 capacity,
+                   uint32 overflow) noexcept
+            {
+                return admitted <= requested && admitted <= capacity &&
+                       overflow == requested - admitted;
+            };
+
+            return lightingPlanIdentity != 0 && sceneLightStateHash != 0 &&
+                   hasConsistentCapacityEvidence(
+                       pointLightRequestedCount, pointLightAdmittedCount,
+                       pointLightCapacity, pointLightOverflowCount) &&
+                   hasConsistentCapacityEvidence(
+                       spotLightRequestedCount, spotLightAdmittedCount,
+                       spotLightCapacity, spotLightOverflowCount) &&
+                   (!csmInputsReady || csmRequested) &&
+                   (!csmExecutionReady || csmInputsReady) &&
+                   (!iblInputsReady || iblRequested) &&
+                   (!iblExecutionReady || iblInputsReady);
+        }
+    };
+
     /** @brief Candidate or presentation-qualified evidence for one frame/view. */
     struct RenderExecutionReceipt
     {
-        uint32 schemaVersion = 2;
+        uint32 schemaVersion = 4;
         bool available = false;
         bool graphComposed = false;
         bool executionSucceeded = false;
@@ -432,12 +502,15 @@ namespace RVX
         uint64 profileHash = 0;
         /** Exact route evidence when DeferredQuality records opaque GBuffer work. */
         RenderDeferredOpaqueExecutionReceipt deferredOpaque{};
+        /** Immutable LightingFramePlan selection and readiness evidence. */
+        RenderLightingExecutionReceipt lighting{};
         std::vector<RenderFeatureExecutionReceipt> features{};
         std::string diagnostic{};
 
         [[nodiscard]] bool IsStructurallyValid() const noexcept
         {
-            if ((schemaVersion != 1 && schemaVersion != 2) ||
+            if ((schemaVersion != 1 && schemaVersion != 2 &&
+                 schemaVersion != 4) ||
                 !frameIdentity.IsValid() ||
                 !viewIdentity.IsValid() || backend == RHIBackendType::None ||
                 !IsDeclaredRenderPipelineRecipe(requestedRecipe) ||
@@ -453,13 +526,19 @@ namespace RVX
                 return false;
             }
             if ((schemaVersion == 1 &&
-                 (deferredOpaque.available ||
+                 (!lighting.IsEmpty() || deferredOpaque.available ||
                   deferredOpaque.status !=
                       RenderDeferredOpaqueExecutionStatus::NotAttempted ||
                   deferredOpaque.plannedPacketCount != 0 ||
                   deferredOpaque.executedPacketCount != 0)) ||
                 (schemaVersion == 2 &&
-                 !deferredOpaque.IsStructurallyValid()))
+                 (!lighting.IsEmpty() ||
+                  !deferredOpaque.IsStructurallyValid())) ||
+                (schemaVersion == 4 &&
+                 (!deferredOpaque.IsStructurallyValid() ||
+                  (!lighting.IsEmpty() && !lighting.IsStructurallyValid()) ||
+                  ((executionSucceeded || presented) &&
+                   !lighting.IsStructurallyValid()))))
             {
                 return false;
             }

@@ -48,24 +48,33 @@ struct SpotLight
 // Attenuation Functions
 // =============================================================================
 
-// Inverse square falloff with range clamping
+// Photometric inverse-square falloff with an independent finite-range window.
+// Point and spot intensities reach this shader in canonical candela.
+// Match PhotometricLighting.h: zero distance has no usable direction, while
+// every positive distance uses the shared denominator clamp.
+static const float RVX_PHOTOMETRIC_MIN_DISTANCE_SQUARED = 1.0e-4;
+
 float AttenuatePoint(float distance, float range)
 {
-    float attenuation = 1.0 / (distance * distance + 1.0);
+    if (range <= 1.0e-4)
+        return 0.0;
+
+    float inverseSquare = 1.0 / max(
+        distance * distance, RVX_PHOTOMETRIC_MIN_DISTANCE_SQUARED);
     
     // Smooth falloff at range edge
     float factor = distance / range;
     float smoothFactor = saturate(1.0 - factor * factor);
     smoothFactor = smoothFactor * smoothFactor;
     
-    return attenuation * smoothFactor;
+    return inverseSquare * smoothFactor;
 }
 
 // Spotlight cone attenuation
 float AttenuateSpot(float3 lightDir, float3 spotDir, float innerCos, float outerCos)
 {
     float theta = dot(lightDir, spotDir);
-    float epsilon = innerCos - outerCos;
+    float epsilon = max(innerCos - outerCos, 1.0e-4);
     return saturate((theta - outerCos) / epsilon);
 }
 
@@ -106,7 +115,7 @@ float3 EvaluatePointLight(
     float distance = length(lightVec);
     
     // Early out if beyond range
-    if (distance > light.range)
+    if (distance > light.range || distance <= 0.0 || light.range <= 1.0e-4)
         return float3(0.0, 0.0, 0.0);
     
     float3 L = lightVec / distance;
@@ -134,7 +143,7 @@ float3 EvaluateSpotLight(
     float distance = length(lightVec);
     
     // Early out if beyond range
-    if (distance > light.range)
+    if (distance > light.range || distance <= 0.0 || light.range <= 1.0e-4)
         return float3(0.0, 0.0, 0.0);
     
     float3 L = lightVec / distance;

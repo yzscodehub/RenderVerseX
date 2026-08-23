@@ -938,11 +938,13 @@ namespace RVX
         };
         ASSERT_TRUE(addLight({.type = SceneECS::LightType::Directional,
                               .intensity = 3.5f,
+                              .intensityUnit = SceneECS::LightIntensityUnit::Lux,
                               .castsShadows = true}));
         for (uint32 index = 0; index < 8u; ++index)
         {
             ASSERT_TRUE(addLight({.type = SceneECS::LightType::Point,
                                   .intensity = 10.0f + index,
+                                  .intensityUnit = SceneECS::LightIntensityUnit::Candela,
                                   .range = 5.5f,
                                   .castsShadows = false}));
         }
@@ -950,6 +952,7 @@ namespace RVX
         {
             ASSERT_TRUE(addLight({.type = SceneECS::LightType::Spot,
                                   .intensity = 18.0f + index,
+                                  .intensityUnit = SceneECS::LightIntensityUnit::Candela,
                                   .range = 12.0f,
                                   .castsShadows = false}));
         }

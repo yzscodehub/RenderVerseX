@@ -134,6 +134,8 @@ using namespace RVX::SceneECS;
     light.source.type = LightType::Spot;
     light.source.color = {0.1f, 0.2f, 0.3f};
     light.source.intensity = 8.0f;
+    light.source.intensityUnit = LightIntensityUnit::Candela;
+    light.source.colorTemperatureKelvin = 4300.0f;
     light.source.range = 42.0f;
     light.source.innerConeRadians = 0.25f;
     light.source.outerConeRadians = 0.5f;
@@ -299,6 +301,9 @@ TEST(EcsFrozenSceneBridgeValidation, MapsFrozenValuesToOneCommonRenderPayload)
     EXPECT_FLOAT_EQ(proxyLight.position.y, 3.0f);
     EXPECT_FLOAT_EQ(proxyLight.direction.z, -1.0f);
     EXPECT_FLOAT_EQ(proxyLight.intensity, 8.0f);
+    EXPECT_EQ(proxyLight.intensityUnit, RenderLightIntensityUnit::Candela);
+    ASSERT_TRUE(proxyLight.colorTemperatureKelvin.has_value());
+    EXPECT_FLOAT_EQ(*proxyLight.colorTemperatureKelvin, 4300.0f);
     EXPECT_FLOAT_EQ(proxyLight.range, 42.0f);
     EXPECT_TRUE(proxyLight.castsShadow);
     ASSERT_EQ(output.lightValues.size(), 1u);
@@ -396,6 +401,26 @@ TEST(EcsFrozenSceneBridgeValidation, MapsFrozenValuesToOneCommonRenderPayload)
               MakeObjectSource(snapshot.sceneRuntimeId, terrain.sourceEntity));
     EXPECT_EQ(terrain.state.header.source,
               MakeFeatureSource(snapshot.sceneRuntimeId, terrain.sourceEntity));
+}
+
+TEST(EcsFrozenSceneBridgeValidation,
+     RejectsUnspecifiedOrIncompatibleSourceLightPhotometricUnits)
+{
+    FrozenSceneSnapshot unspecified = MakeCompleteSnapshot();
+    unspecified.lights.front().source.intensityUnit =
+        LightIntensityUnit::Unspecified;
+
+    EcsFrozenSceneBridgeOutput output;
+    EcsFrozenSceneBridgeResult result;
+    EXPECT_FALSE(EcsFrozenSceneBridge{}.Build(unspecified, output, &result));
+    EXPECT_EQ(result.code, EcsFrozenSceneBridgeCode::InvalidLightSource);
+    EXPECT_FALSE(output.renderProxies.metadata.complete);
+
+    FrozenSceneSnapshot incompatible = MakeCompleteSnapshot();
+    incompatible.lights.front().source.intensityUnit = LightIntensityUnit::Lux;
+    EXPECT_FALSE(EcsFrozenSceneBridge{}.Build(incompatible, output, &result));
+    EXPECT_EQ(result.code, EcsFrozenSceneBridgeCode::InvalidLightSource);
+    EXPECT_FALSE(output.renderProxies.metadata.complete);
 }
 
 TEST(EcsFrozenSceneBridgeValidation,
