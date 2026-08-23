@@ -603,6 +603,92 @@ namespace
         EXPECT_NE(input.frame, nullptr);
         return scene.ApplyFrameV5(*input.frame, input.database, registry);
     }
+
+    RenderPrimitiveSnapshot MakeSkinnedPrimitive(
+        RenderResourceHandle mesh,
+        float32 paletteValue,
+        uint64 poseSequence,
+        uint64 providerComponentId = 0x0000000A00000001ULL,
+        uint64 sourceModelResourceId = 1001,
+        uint32 paletteCount = 2)
+    {
+        RenderPrimitiveSnapshot primitive = MakePrimitive(mesh);
+        primitive.skinMatrices.assign(paletteCount, Mat4Identity());
+        for (uint32 index = 0; index < paletteCount; ++index)
+        {
+            primitive.skinMatrices[index][3] = Vec4(
+                paletteValue + static_cast<float32>(index), 0.0f, 0.0f, 1.0f);
+        }
+        primitive.hasSkinningPaletteProvider = true;
+        primitive.skinningPalette.providerComponentId = providerComponentId;
+        primitive.skinningPalette.sourceModelResourceId = sourceModelResourceId;
+        primitive.skinningPalette.poseSequence = poseSequence;
+        const SkinningPaletteHash hash = ComputeSkinningPaletteHash(
+            primitive.skinMatrices);
+        EXPECT_TRUE(hash.IsValid());
+        primitive.skinningPalette.paletteHash = hash.value;
+        primitive.skinningPalette.paletteCount = hash.matrixCount;
+        return primitive;
+    }
+
+    RenderFrameApplyResult ApplyPersistentPrimitive(
+        RenderScene& scene,
+        RenderSceneDatabase& database,
+        const RenderResourceRegistry& registry,
+        uint64 sequence,
+        RenderPrimitiveSnapshot primitive,
+        bool fullReset = false)
+    {
+        const bool initialPublication = database.GetRevision() == 0;
+        const bool useFullReset = fullReset || initialPublication;
+        RenderSceneMutationAccumulator accumulator;
+        accumulator.Begin(useFullReset ? 0 : database.GetRevision(),
+                          useFullReset);
+        EXPECT_TRUE(accumulator.UpsertPrimitive(std::move(primitive),
+                                                useFullReset));
+        const uint64 revision = database.GetRevision() + 1;
+        EXPECT_TRUE(database.Apply(accumulator.Build(revision)).IsApplied());
+        const std::unique_ptr<const RenderFramePacketV5> frame =
+            MakeFramePacketV5(sequence, revision);
+        EXPECT_NE(frame, nullptr);
+        return frame != nullptr
+            ? scene.ApplyFrameV5(*frame, database, registry)
+            : RenderFrameApplyResult{};
+    }
+
+    RenderFrameApplyResult ApplyPersistentRemoval(
+        RenderScene& scene,
+        RenderSceneDatabase& database,
+        const RenderResourceRegistry& registry,
+        uint64 sequence,
+        uint64 objectId)
+    {
+        RenderSceneMutationAccumulator accumulator;
+        accumulator.Begin(database.GetRevision());
+        EXPECT_TRUE(accumulator.RemovePrimitive(objectId));
+        const uint64 revision = database.GetRevision() + 1;
+        EXPECT_TRUE(database.Apply(accumulator.Build(revision)).IsApplied());
+        const std::unique_ptr<const RenderFramePacketV5> frame =
+            MakeFramePacketV5(sequence, revision);
+        EXPECT_NE(frame, nullptr);
+        return frame != nullptr
+            ? scene.ApplyFrameV5(*frame, database, registry)
+            : RenderFrameApplyResult{};
+    }
+
+    RenderFrameApplyResult ApplyPersistentStaticFrame(
+        RenderScene& scene,
+        const RenderSceneDatabase& database,
+        const RenderResourceRegistry& registry,
+        uint64 sequence)
+    {
+        const std::unique_ptr<const RenderFramePacketV5> frame =
+            MakeFramePacketV5(sequence, database.GetRevision());
+        EXPECT_NE(frame, nullptr);
+        return frame != nullptr
+            ? scene.ApplyFrameV5(*frame, database, registry)
+            : RenderFrameApplyResult{};
+    }
 } // namespace
 
 TEST(RenderSceneValidation, AppliesTransactionallyAndOwnsPacketValues)
@@ -1447,6 +1533,237 @@ TEST(RenderSceneValidation,
         SceneRendererTestAccess::FindObjectMotionHistory(renderer, 42);
     ASSERT_NE(retryPresented, nullptr);
     EXPECT_FLOAT_EQ((*retryPresented)[3].x, 3.0F);
+}
+
+TEST(RenderSceneValidation,
+     SkinningPaletteHistoryUsesOnlyLastSuccessfullyPresentedPalette)
+{
+    RegistryFixture resources;
+    const RenderResourceHandle mesh =
+        resources.Add({905}, RenderResourceKind::Mesh, true);
+    RenderScene scene;
+    RenderSceneDatabase database;
+
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    701,
+                    MakeSkinnedPrimitive(mesh, 1.0f, 1))
+                    .IsApplied());
+    const RenderObject& first = scene.GetObject(0);
+    EXPECT_FALSE(first.HasValidPreviousSkinningPalette());
+
+    scene.MarkAcceptedFrameRendered();
+    // Complete the pre-existing world-transform settle publication before
+    // exercising incremental pose changes.
+    ASSERT_TRUE(ApplyPersistentStaticFrame(
+                    scene, database, resources.registry, 702)
+                    .IsApplied());
+    scene.MarkAcceptedFrameRendered();
+
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    703,
+                    MakeSkinnedPrimitive(mesh, 2.0f, 2))
+                    .IsApplied());
+    const RenderObject& second = scene.GetObject(0);
+    ASSERT_TRUE(second.HasValidPreviousSkinningPalette());
+    EXPECT_EQ(second.previousSkinningPalette.poseSequence, 1U);
+    ASSERT_EQ(second.previousSkinningMatrices.size(), 2U);
+    EXPECT_FLOAT_EQ(second.previousSkinningMatrices[0][3].x, 1.0f);
+
+    // Applying a newer pose without presentation must continue to reference
+    // the first actual presentation, not the previous ApplyFrame call.
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    704,
+                    MakeSkinnedPrimitive(mesh, 3.0f, 3))
+                    .IsApplied());
+    const RenderObject& third = scene.GetObject(0);
+    ASSERT_TRUE(third.HasValidPreviousSkinningPalette());
+    EXPECT_EQ(third.previousSkinningPalette.poseSequence, 1U);
+    EXPECT_FLOAT_EQ(third.previousSkinningMatrices[0][3].x, 1.0f);
+
+    // A rejected packet must not advance the pending palette either.
+    const std::unique_ptr<const RenderFramePacketV5> rejected =
+        MakeFramePacketV5(705, database.GetRevision() + 1U);
+    ASSERT_NE(rejected, nullptr);
+    EXPECT_EQ(scene.ApplyFrameV5(*rejected, database, resources.registry).code,
+              RenderFrameApplyCode::InvalidPacket);
+
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    706,
+                    MakeSkinnedPrimitive(mesh, 4.0f, 4))
+                    .IsApplied());
+    const RenderObject& retry = scene.GetObject(0);
+    ASSERT_TRUE(retry.HasValidPreviousSkinningPalette());
+    EXPECT_EQ(retry.previousSkinningPalette.poseSequence, 1U);
+    EXPECT_FLOAT_EQ(retry.previousSkinningMatrices[0][3].x, 1.0f);
+
+    scene.MarkAcceptedFrameRendered();
+    const RenderObject& settledAfterPresent = scene.GetObject(0);
+    ASSERT_TRUE(settledAfterPresent.HasValidPreviousSkinningPalette());
+    EXPECT_EQ(settledAfterPresent.previousSkinningPalette.poseSequence, 4U);
+    EXPECT_FLOAT_EQ(
+        settledAfterPresent.previousSkinningMatrices[0][3].x, 4.0f);
+
+    // No scene delta means the retained object itself is reused. Its previous
+    // palette must already be the just-presented pose or velocity would repeat
+    // the prior P4-P1 deformation indefinitely.
+    ASSERT_TRUE(ApplyPersistentStaticFrame(
+                    scene, database, resources.registry, 707)
+                    .IsApplied());
+    const RenderObject& retainedStatic = scene.GetObject(0);
+    ASSERT_TRUE(retainedStatic.HasValidPreviousSkinningPalette());
+    EXPECT_EQ(retainedStatic.previousSkinningPalette.poseSequence, 4U);
+    EXPECT_FLOAT_EQ(retainedStatic.previousSkinningMatrices[0][3].x, 4.0f);
+    scene.MarkAcceptedFrameRendered();
+
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    708,
+                    MakeSkinnedPrimitive(mesh, 5.0f, 5))
+                    .IsApplied());
+    const RenderObject& afterPresent = scene.GetObject(0);
+    ASSERT_TRUE(afterPresent.HasValidPreviousSkinningPalette());
+    EXPECT_EQ(afterPresent.previousSkinningPalette.poseSequence, 4U);
+    EXPECT_FLOAT_EQ(afterPresent.previousSkinningMatrices[0][3].x, 4.0f);
+}
+
+TEST(RenderSceneValidation,
+     SkinningPaletteHistoryRejectsIncompatibleProviderModelAndCount)
+{
+    RegistryFixture resources;
+    const RenderResourceHandle mesh =
+        resources.Add({906}, RenderResourceKind::Mesh, true);
+    RenderScene scene;
+    RenderSceneDatabase database;
+    constexpr uint64 provider = 0x0000000B00000001ULL;
+    constexpr uint64 model = 1002;
+
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    801,
+                    MakeSkinnedPrimitive(mesh, 1.0f, 1, provider, model))
+                    .IsApplied());
+    scene.MarkAcceptedFrameRendered();
+    ASSERT_TRUE(ApplyPersistentStaticFrame(
+                    scene, database, resources.registry, 802)
+                    .IsApplied());
+    scene.MarkAcceptedFrameRendered();
+
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    803,
+                    MakeSkinnedPrimitive(mesh, 2.0f, 2, provider + 1U, model))
+                    .IsApplied());
+    EXPECT_FALSE(scene.GetObject(0).HasValidPreviousSkinningPalette());
+
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    804,
+                    MakeSkinnedPrimitive(mesh, 3.0f, 3, provider, model + 1U))
+                    .IsApplied());
+    EXPECT_FALSE(scene.GetObject(0).HasValidPreviousSkinningPalette());
+
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    805,
+                    MakeSkinnedPrimitive(mesh, 4.0f, 4, provider, model, 1))
+                    .IsApplied());
+    EXPECT_FALSE(scene.GetObject(0).HasValidPreviousSkinningPalette());
+}
+
+TEST(RenderSceneValidation,
+     SkinningPaletteHistoryInvalidatesForRemovalFullResetAndClear)
+{
+    RegistryFixture resources;
+    const RenderResourceHandle mesh =
+        resources.Add({907}, RenderResourceKind::Mesh, true);
+    constexpr uint64 provider = 0x0000000C00000001ULL;
+    constexpr uint64 model = 1003;
+
+    RenderScene scene;
+    RenderSceneDatabase database;
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    901,
+                    MakeSkinnedPrimitive(mesh, 1.0f, 1, provider, model))
+                    .IsApplied());
+    scene.MarkAcceptedFrameRendered();
+    ASSERT_TRUE(ApplyPersistentStaticFrame(
+                    scene, database, resources.registry, 902)
+                    .IsApplied());
+    scene.MarkAcceptedFrameRendered();
+
+    ASSERT_TRUE(ApplyPersistentRemoval(
+                    scene, database, resources.registry, 903, 42)
+                    .IsApplied());
+    EXPECT_EQ(scene.GetObjectCount(), 0U);
+    RenderPrimitiveSnapshot rebound =
+        MakeSkinnedPrimitive(mesh, 2.0f, 2, provider, model);
+    rebound.objectId = 43;
+    rebound.source.entitySlot = 43;
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    904,
+                    std::move(rebound))
+                    .IsApplied());
+    EXPECT_FALSE(scene.GetObject(0).HasValidPreviousSkinningPalette());
+
+    scene.MarkAcceptedFrameRendered();
+    RenderPrimitiveSnapshot afterFullReset =
+        MakeSkinnedPrimitive(mesh, 3.0f, 3, provider, model);
+    afterFullReset.objectId = 43;
+    afterFullReset.source.entitySlot = 43;
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    905,
+                    std::move(afterFullReset),
+                    true)
+                    .IsApplied());
+    EXPECT_TRUE(scene.IsTemporalHistoryReset());
+    EXPECT_FALSE(scene.GetObject(0).HasValidPreviousSkinningPalette());
+
+    scene.Clear();
+    RenderPrimitiveSnapshot afterClear =
+        MakeSkinnedPrimitive(mesh, 4.0f, 4, provider, model);
+    afterClear.objectId = 45;
+    afterClear.source.entitySlot = 45;
+    ASSERT_TRUE(ApplyPersistentPrimitive(
+                    scene,
+                    database,
+                    resources.registry,
+                    906,
+                    std::move(afterClear),
+                    true)
+                    .IsApplied());
+    EXPECT_FALSE(scene.GetObject(0).HasValidPreviousSkinningPalette());
+
 }
 
 TEST(RenderSceneValidation,

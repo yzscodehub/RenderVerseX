@@ -3630,6 +3630,27 @@ TEST(VulkanValidation, DescriptorValidationRejectsInvalidInputs)
     ASSERT_NE(nullptr, set.Get());
     EXPECT_TRUE(set->Update({}));
 
+    auto* vulkanDevice = static_cast<VulkanDevice*>(device.get());
+    const VulkanValidationMessageCounts validationBefore =
+        vulkanDevice->GetValidationMessageCounts();
+
+    RHIDescriptorSetDesc zeroRangeSetDesc;
+    zeroRangeSetDesc.SetLayout(layout.Get()).BindBuffer(0, buffer.Get(), 0, 0);
+    EXPECT_EQ(device->CreateDescriptorSet(zeroRangeSetDesc).Get(), nullptr);
+
+    RHIDescriptorSetDesc offsetPastEndSetDesc;
+    offsetPastEndSetDesc.SetLayout(layout.Get()).BindBuffer(0, buffer.Get(), 256);
+    EXPECT_EQ(device->CreateDescriptorSet(offsetPastEndSetDesc).Get(), nullptr);
+
+    RHIDescriptorSetDesc rangePastEndSetDesc;
+    rangePastEndSetDesc.SetLayout(layout.Get()).BindBuffer(0, buffer.Get(), 128, 129);
+    EXPECT_EQ(device->CreateDescriptorSet(rangePastEndSetDesc).Get(), nullptr);
+
+    const VulkanValidationMessageCounts validationAfter =
+        vulkanDevice->GetValidationMessageCounts();
+    EXPECT_EQ(validationAfter.errors, validationBefore.errors);
+    EXPECT_EQ(validationAfter.warnings, validationBefore.warnings);
+
     RHIDescriptorBinding unknownBinding;
     unknownBinding.binding = 99;
     EXPECT_FALSE(set->Update(std::vector<RHIDescriptorBinding>{unknownBinding}));

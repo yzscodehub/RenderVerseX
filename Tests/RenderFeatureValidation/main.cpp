@@ -2118,6 +2118,16 @@ namespace
         candidate.lighting.iblRequested = true;
         candidate.lighting.iblInputsReady = true;
         candidate.lighting.iblExecutionReady = true;
+        candidate.deformation.deformationContentHash = 0x408ULL;
+        candidate.deformation.skinnedObjectCount = 1;
+        candidate.deformation.paletteMatrixCount = 64;
+        candidate.deformation.previousPaletteObjectCount = 1;
+        candidate.deformation.currentPaletteBufferReady = true;
+        candidate.deformation.previousPaletteBufferReady = true;
+        candidate.deformation.opaqueSkinnedDrawCount = 1;
+        candidate.deformation.shadowSkinnedDrawCount = 2;
+        candidate.deformation.velocitySkinnedDrawCount = 1;
+        candidate.deformation.velocityPreviousPaletteDrawCount = 1;
         RenderFeatureExecutionReceipt executedFeature;
         executedFeature.featureId = RenderFeatureId{1};
         executedFeature.featureSchemaVersion = 1;
@@ -2191,9 +2201,32 @@ namespace
         executedWithoutLightingInputs.lighting.csmInputsReady = false;
         EXPECT_FALSE(executedWithoutLightingInputs.IsStructurallyValid());
 
+        RenderExecutionReceipt missingDeformationHash = candidate;
+        missingDeformationHash.deformation.deformationContentHash = 0;
+        EXPECT_FALSE(missingDeformationHash.IsStructurallyValid());
+
+        RenderExecutionReceipt missingCurrentPalette = candidate;
+        missingCurrentPalette.deformation.currentPaletteBufferReady = false;
+        EXPECT_FALSE(missingCurrentPalette.IsStructurallyValid());
+
+        RenderExecutionReceipt missingPreviousHistory = candidate;
+        missingPreviousHistory.deformation.previousPaletteObjectCount = 0;
+        EXPECT_FALSE(missingPreviousHistory.IsStructurallyValid());
+
+        RenderExecutionReceipt mismatchedVelocityEvidence = candidate;
+        mismatchedVelocityEvidence.deformation
+            .velocityPreviousPaletteDrawCount = 0;
+        EXPECT_FALSE(mismatchedVelocityEvidence.IsStructurallyValid());
+
+        RenderExecutionReceipt emptyDeformation = candidate;
+        emptyDeformation.deformation = {};
+        emptyDeformation.deformation.deformationContentHash = 0x409ULL;
+        EXPECT_TRUE(emptyDeformation.IsStructurallyValid());
+
         RenderExecutionReceipt legacyV2 = candidate;
         legacyV2.schemaVersion = 2;
         legacyV2.lighting = {};
+        legacyV2.deformation = {};
         EXPECT_TRUE(legacyV2.IsStructurallyValid());
         legacyV2.lighting = candidate.lighting;
         EXPECT_FALSE(legacyV2.IsStructurallyValid());
@@ -2202,10 +2235,18 @@ namespace
         unreleasedV3.schemaVersion = 3;
         EXPECT_FALSE(unreleasedV3.IsStructurallyValid());
 
+        RenderExecutionReceipt legacyV4 = candidate;
+        legacyV4.schemaVersion = 4;
+        legacyV4.deformation = {};
+        EXPECT_TRUE(legacyV4.IsStructurallyValid());
+        legacyV4.deformation = candidate.deformation;
+        EXPECT_FALSE(legacyV4.IsStructurallyValid());
+
         RenderExecutionReceipt legacyV1 = candidate;
         legacyV1.schemaVersion = 1;
         legacyV1.deferredOpaque = {};
         legacyV1.lighting = {};
+        legacyV1.deformation = {};
         EXPECT_TRUE(legacyV1.IsStructurallyValid());
         legacyV1.lighting = candidate.lighting;
         EXPECT_FALSE(legacyV1.IsStructurallyValid());

@@ -3441,6 +3441,45 @@ namespace
             ASSERT_TRUE(AttachTestLightingFixture(device, context, options));
         }
 
+        [[nodiscard]] bool AttachTestDeformationResources(
+            RenderGraph& graph,
+            RenderPassRecordContext& context)
+        {
+            const bool sceneHasSkinning = std::any_of(
+                scene.GetObjects().begin(), scene.GetObjects().end(),
+                [](const RenderObject& object)
+                {
+                    return object.HasSkinningData();
+                });
+            if (!sceneHasSkinning)
+            {
+                context.deformationResources.reset();
+                return true;
+            }
+            std::string error;
+            return BuildRenderDeformationFrameResources(
+                &device, graph, MakeRenderDeformationFrameIdentity(context.identity),
+                scene, context.deformationResources, error);
+        }
+
+        void SetValidTestSkinningPalette(
+            RenderObject& object,
+            uint64 poseSequence = 1) const
+        {
+            ASSERT_NE(0u, object.entityId);
+            ASSERT_FALSE(object.skinningMatrices.empty());
+            const SkinningPaletteHash paletteHash =
+                ComputeSkinningPaletteHash(object.skinningMatrices);
+            ASSERT_TRUE(paletteHash.IsValid());
+            object.hasSkinningPaletteProvider = true;
+            object.skinningPalette.providerComponentId =
+                0x0000000100000000ULL | object.entityId;
+            object.skinningPalette.sourceModelResourceId = object.mesh.slot;
+            object.skinningPalette.poseSequence = poseSequence;
+            object.skinningPalette.paletteHash = paletteHash.value;
+            object.skinningPalette.paletteCount = paletteHash.matrixCount;
+        }
+
         void ExecuteTypedDepthRecording(
             DepthPrepass& pass,
             ViewData frameView,
@@ -3470,6 +3509,12 @@ namespace
                 context.depthGPUDriven = MakeMainSceneGPUDrivenInputs(
                     graph, context.identity, *culling);
             }
+            if (!AttachTestDeformationResources(graph, context))
+            {
+                ADD_FAILURE() << "failed to create test deformation resources";
+                return;
+            }
+            RebuildTestRecordFrameSnapshot(context);
             pass.AddToGraph(graph, context);
             RenderGraphValidationAccess::Compile(graph);
             EXPECT_TRUE(graph.GetCompileStats().compileValid);
@@ -3528,6 +3573,11 @@ namespace
                 context.opaqueGPUDriven = MakeMainSceneGPUDrivenInputs(
                     graph, context.identity, *culling);
             }
+            if (!AttachTestDeformationResources(graph, context))
+            {
+                ADD_FAILURE() << "failed to create test deformation resources";
+                return {};
+            }
             // The shadow outputs and GPU-driven inputs above are part of the
             // typed record. Rebuild through the same helper used by the
             // lighting fixture so every borrowed pointer is rebound to the
@@ -3562,6 +3612,12 @@ namespace
                 executionPlan.frameSequence, batch);
             context.primaryDirectionalLight = primaryLight;
             AttachDefaultTestLighting(context, {.requestCSM = true});
+            if (!AttachTestDeformationResources(graph, context))
+            {
+                ADD_FAILURE() << "failed to create test deformation resources";
+                return;
+            }
+            RebuildTestRecordFrameSnapshot(context);
             pass.AddToGraph(graph, context);
             RenderGraphValidationAccess::Compile(graph);
             EXPECT_TRUE(graph.GetCompileStats().compileValid);
@@ -3588,6 +3644,12 @@ namespace
                 executionPlan.frameSequence, batch);
             context.primaryDirectionalLight = primaryLight;
             AttachDefaultTestLighting(context, {.requestCSM = true});
+            if (!AttachTestDeformationResources(graph, context))
+            {
+                ADD_FAILURE() << "failed to create test deformation resources";
+                return {};
+            }
+            RebuildTestRecordFrameSnapshot(context);
             pass.AddToGraph(graph, context);
             return context.results;
         }
@@ -4284,7 +4346,6 @@ TEST_F(RenderPassValidationFixture,
     objectConstants.previousWorldViewProjection[1][2] = 3.0f;
     objectConstants.objectVelocityParams = Vec4(1.0f, 0.0f, 1.0f, 0.0f);
     objectConstants.skinningParams = Vec4(4.0f, 3.0f, 2.0f, 1.0f);
-    objectConstants.skinningMatrices[3][2][1] = 8.0f;
 
     FakeBuffer* const candidateBuffer =
         static_cast<FakeBuffer*>(resources.m_candidates.Get());
@@ -4358,7 +4419,7 @@ TEST_F(RenderPassValidationFixture,
               sizeof(GPUSceneRasterObjectConstants));
     GPUSceneRasterObjectConstants uploaded{};
     std::memcpy(&uploaded, privateConstants->GetStorage().data(), sizeof(uploaded));
-    EXPECT_EQ(0, std::memcmp(&objectConstants, &uploaded.objectConstants,
+    EXPECT_EQ(0, std::memcmp(&objectConstants, &uploaded.legacyObjectConstants,
                              sizeof(objectConstants)));
     EXPECT_EQ(resources.m_candidateCount, uploaded.gpuSceneRasterCounts[0]);
     EXPECT_EQ(resources.m_primitiveCapacity, uploaded.gpuSceneRasterCounts[1]);
@@ -13204,6 +13265,356 @@ TEST_F(RenderPassValidationFixture, ObjectVelocityPassDrawsMaskedItemsWithMateri
     EXPECT_EQ(stats.skippedMaterialBindingCount, 0u);
 }
 
+TEST_F(RenderPassValidationFixture,
+       ObjectVelocityPassUsesExactCurrentAndPreviousDeformationPalettes)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    auto skinnedMesh = CreateTwoSubmeshMeshResource(1601);
+    skinnedMesh->GetMesh()->SetBoneData(
+        std::vector<IVec4>(6, IVec4(0, 0, 0, 0)),
+        std::vector<Vec4>(6, Vec4(1.0f, 0.0f, 0.0f, 0.0f)));
+    ASSERT_TRUE(gpuResources.UploadImmediate(skinnedMesh.get()));
+    const MeshGPUBuffers buffers = gpuResources.GetMeshBuffers(skinnedMesh->GetId());
+    ASSERT_TRUE(buffers.HasSkinningVertexData());
+
+    RenderObject object = MakeRenderObject(*skinnedMesh, gpuResources);
+    object.entityId = 1601;
+    object.skinningMatrices = {Mat4Identity(), Mat4Identity()};
+    object.skinningMatrices[1][3][0] = 1.0f;
+    SetValidTestSkinningPalette(object, 1601);
+    object.previousSkinningMatrices = object.skinningMatrices;
+    object.previousSkinningMatrices[1][3][0] = -1.0f;
+    object.previousSkinningPalette = object.skinningPalette;
+    object.previousSkinningPalette.poseSequence = 1600;
+    const SkinningPaletteHash previousPaletteHash =
+        ComputeSkinningPaletteHash(object.previousSkinningMatrices);
+    ASSERT_TRUE(previousPaletteHash.IsValid());
+    object.previousSkinningPalette.paletteHash = previousPaletteHash.value;
+    object.previousSkinningPalette.paletteCount = previousPaletteHash.matrixCount;
+    object.previousSkinningPaletteValid = 1;
+    object.previousWorldMatrix = Mat4Identity();
+    object.previousWorldMatrix[3][0] = -1.0f;
+    object.previousWorldMatrixValid = 1;
+    scene.Clear();
+    scene.AddObject(object);
+
+    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Opaque);
+    item.mesh = object.mesh;
+    item.packet = MakeOpaquePacket(
+        scene, 0, 0, buffers, item.material, RenderMaterialMode::Opaque,
+        RenderDrawFlags::Skinned);
+    const std::vector<RenderDrawItem> opaqueItems = {item};
+    const std::vector<RenderDrawItem> maskedItems;
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RHITextureRef velocityTexture = device.CreateTexture(
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RG16_FLOAT));
+    RHITextureRef depthTexture = device.CreateTexture(
+        RHITextureDesc::DepthStencil(
+            64, 64, PipelineCache::GetDefaultDepthStencilFormat()));
+    ASSERT_TRUE(velocityTexture);
+    ASSERT_TRUE(depthTexture);
+
+    ViewData velocityView = view;
+    velocityView.velocityTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, velocityTexture.Get(), RHIResourceState::RenderTarget);
+    velocityView.depthTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, depthTexture.Get(), RHIResourceState::DepthRead);
+    velocityView.viewportWidth = 64;
+    velocityView.viewportHeight = 64;
+    velocityView.previousViewProjectionMatrix = Mat4Identity();
+    velocityView.previousViewProjectionValid = 1;
+    velocityView.resetTemporalHistory = false;
+
+    RenderPassRecordContext context;
+    context.view = velocityView;
+    context.identity.graph = &graph;
+    context.identity.graphIdentity = graph.GetGraphIdentity();
+    context.identity.graphRecordingGeneration = graph.GetRecordingGeneration();
+    context.identity.frameSequence = 1601;
+    context.identity.viewOrdinal = 0;
+    context.identity.recordEpoch = 1601;
+    context.renderScene = &scene;
+    context.opaqueDrawItems = &opaqueItems;
+    context.maskedDrawItems = &maskedItems;
+    context.results = std::make_shared<RenderPassRecordResults>();
+    ASSERT_TRUE(AttachTestDeformationResources(graph, context));
+    ASSERT_TRUE(context.deformationResources);
+    ASSERT_TRUE(context.deformationResources->GetCurrentPaletteBuffer());
+    ASSERT_TRUE(context.deformationResources->GetPreviousPaletteBuffer());
+    RebuildTestRecordFrameSnapshot(context);
+
+    ObjectVelocityPass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, viewCache, materialSystem);
+    pass.SetEnabled(true);
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    pass.AddToGraph(graph, context);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    const auto passDiagnostic = std::find_if(
+        diagnostics.passes.begin(), diagnostics.passes.end(),
+        [](const RenderGraph::PassDiagnostic& diagnostic)
+        {
+            return diagnostic.name == "ObjectVelocityPass";
+        });
+    ASSERT_NE(diagnostics.passes.end(), passDiagnostic);
+    const auto hasVertexPaletteRead =
+        [&passDiagnostic](RGBufferHandle handle)
+        {
+            return std::any_of(
+                passDiagnostic->usages.begin(), passDiagnostic->usages.end(),
+                [handle](const RenderGraph::ResourceUsageDiagnostic& usage)
+                {
+                    return usage.type == RenderGraph::DiagnosticResourceType::Buffer &&
+                           usage.access == RenderGraph::DiagnosticAccessType::Read &&
+                           usage.resourceIndex == handle.index &&
+                           usage.desiredState == RHIResourceState::ShaderResource &&
+                           usage.stages == RHIShaderStage::Vertex;
+                });
+        };
+    EXPECT_TRUE(hasVertexPaletteRead(
+        context.deformationResources->GetCurrentPaletteHandle()));
+    EXPECT_TRUE(hasVertexPaletteRead(
+        context.deformationResources->GetPreviousPaletteHandle()));
+
+    RecordingCommandContext commands;
+    RenderGraphValidationAccess::Execute(graph, commands);
+    pass.PublishRecordResults(context.results, context.identity);
+    EXPECT_EQ(1u, commands.drawIndexedCount);
+    ASSERT_FALSE(commands.descriptorSetPointers.empty());
+    const auto objectSetPosition = std::find(
+        commands.descriptorSetSequence.begin(), commands.descriptorSetSequence.end(), 1u);
+    ASSERT_NE(commands.descriptorSetSequence.end(), objectSetPosition);
+    const size_t objectSetIndex = static_cast<size_t>(
+        std::distance(commands.descriptorSetSequence.begin(), objectSetPosition));
+    ASSERT_LT(objectSetIndex, commands.descriptorSetPointers.size());
+    const auto* const descriptorSet = static_cast<const FakeDescriptorSet*>(
+        commands.descriptorSetPointers[objectSetIndex]);
+    ASSERT_NE(nullptr, descriptorSet);
+    const auto findBufferBinding =
+        [descriptorSet](uint32 binding) -> RHIBuffer*
+        {
+            const auto position = std::find_if(
+                descriptorSet->bindings.begin(), descriptorSet->bindings.end(),
+                [binding](const RHIDescriptorBinding& candidate)
+                {
+                    return candidate.binding == binding;
+                });
+            return position == descriptorSet->bindings.end()
+                ? nullptr : position->buffer;
+        };
+    EXPECT_EQ(context.deformationResources->GetCurrentPaletteBuffer().Get(),
+              findBufferBinding(2));
+    EXPECT_EQ(context.deformationResources->GetPreviousPaletteBuffer().Get(),
+              findBufferBinding(3));
+
+    const ObjectVelocityPassStats& stats = pass.GetStats();
+    EXPECT_TRUE(stats.velocityRecorded);
+    EXPECT_EQ(1u, stats.skinnedDrawCount);
+    EXPECT_EQ(1u, stats.currentPaletteBoundDrawCount);
+    EXPECT_EQ(1u, stats.previousPaletteBoundDrawCount);
+    EXPECT_EQ(context.deformationResources->GetContentHash(),
+              stats.deformationContentHash);
+
+    // A completed palette snapshot is scoped to one graph recording.  It must
+    // never be reused after the graph's recording generation changes.
+    const uint64 recordedGeneration = context.identity.graphRecordingGeneration;
+    RenderGraphValidationAccess::Reset(graph);
+    EXPECT_NE(recordedGeneration, graph.GetRecordingGeneration());
+    pass.AddToGraph(graph, context);
+    RenderGraphValidationAccess::Compile(graph);
+    EXPECT_TRUE(graph.GetCompileStats().compileValid);
+    ASSERT_EQ(1u, graph.GetCompileStats().totalPasses);
+    const RenderGraph::Diagnostics staleDiagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(1u, staleDiagnostics.passes.size());
+    EXPECT_TRUE(staleDiagnostics.passes.front().culled);
+    RecordingCommandContext staleCommands;
+    RenderGraphValidationAccess::Execute(graph, staleCommands);
+    EXPECT_EQ(0u, staleCommands.drawIndexedCount);
+}
+
+TEST_F(RenderPassValidationFixture,
+       ObjectVelocityPassSkipsSkinnedObjectWithoutPreviousPaletteHistory)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    auto skinnedMesh = CreateTwoSubmeshMeshResource(1602);
+    skinnedMesh->GetMesh()->SetBoneData(
+        std::vector<IVec4>(6, IVec4(0, 0, 0, 0)),
+        std::vector<Vec4>(6, Vec4(1.0f, 0.0f, 0.0f, 0.0f)));
+    ASSERT_TRUE(gpuResources.UploadImmediate(skinnedMesh.get()));
+    const MeshGPUBuffers buffers = gpuResources.GetMeshBuffers(skinnedMesh->GetId());
+    ASSERT_TRUE(buffers.HasSkinningVertexData());
+
+    RenderObject object = MakeRenderObject(*skinnedMesh, gpuResources);
+    object.entityId = 1602;
+    object.skinningMatrices = {Mat4Identity()};
+    SetValidTestSkinningPalette(object, 1602);
+    object.previousWorldMatrix = Mat4Identity();
+    object.previousWorldMatrixValid = 1;
+    scene.Clear();
+    scene.AddObject(object);
+
+    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Opaque);
+    item.mesh = object.mesh;
+    item.packet = MakeOpaquePacket(
+        scene, 0, 0, buffers, item.material, RenderMaterialMode::Opaque,
+        RenderDrawFlags::Skinned);
+    const std::vector<RenderDrawItem> opaqueItems = {item};
+    const std::vector<RenderDrawItem> maskedItems;
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RHITextureRef velocityTexture = device.CreateTexture(
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RG16_FLOAT));
+    RHITextureRef depthTexture = device.CreateTexture(
+        RHITextureDesc::DepthStencil(
+            64, 64, PipelineCache::GetDefaultDepthStencilFormat()));
+    ASSERT_TRUE(velocityTexture);
+    ASSERT_TRUE(depthTexture);
+    ViewData velocityView = view;
+    velocityView.velocityTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, velocityTexture.Get(), RHIResourceState::RenderTarget);
+    velocityView.depthTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, depthTexture.Get(), RHIResourceState::DepthRead);
+    velocityView.viewportWidth = 64;
+    velocityView.viewportHeight = 64;
+    velocityView.previousViewProjectionMatrix = Mat4Identity();
+    velocityView.previousViewProjectionValid = 1;
+    velocityView.resetTemporalHistory = false;
+
+    RenderPassRecordContext context;
+    context.view = velocityView;
+    context.identity.graph = &graph;
+    context.identity.graphIdentity = graph.GetGraphIdentity();
+    context.identity.graphRecordingGeneration = graph.GetRecordingGeneration();
+    context.identity.frameSequence = 1602;
+    context.identity.viewOrdinal = 0;
+    context.identity.recordEpoch = 1602;
+    context.renderScene = &scene;
+    context.opaqueDrawItems = &opaqueItems;
+    context.maskedDrawItems = &maskedItems;
+    context.results = std::make_shared<RenderPassRecordResults>();
+    ASSERT_TRUE(AttachTestDeformationResources(graph, context));
+    ASSERT_TRUE(context.deformationResources);
+    ASSERT_FALSE(context.deformationResources->FindSlice(object.entityId)->previousValid);
+    RebuildTestRecordFrameSnapshot(context);
+
+    ObjectVelocityPass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, viewCache, materialSystem);
+    pass.SetEnabled(true);
+    pass.AddToGraph(graph, context);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    RecordingCommandContext commands;
+    RenderGraphValidationAccess::Execute(graph, commands);
+    pass.PublishRecordResults(context.results, context.identity);
+
+    EXPECT_EQ(0u, commands.drawIndexedCount);
+    const ObjectVelocityPassStats& stats = pass.GetStats();
+    EXPECT_FALSE(stats.velocityRecorded);
+    EXPECT_EQ(1u, stats.skippedNoHistoryCount);
+    EXPECT_EQ(0u, stats.skinnedDrawCount);
+    EXPECT_EQ(0u, stats.currentPaletteBoundDrawCount);
+    EXPECT_EQ(0u, stats.previousPaletteBoundDrawCount);
+    EXPECT_EQ(0u, stats.deformationContentHash);
+}
+
+TEST_F(RenderPassValidationFixture,
+       OpaquePassRejectsMismatchedFrozenDeformationPaletteMetadataAndSlices)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    auto skinnedMesh = CreateTwoSubmeshMeshResource(1603);
+    skinnedMesh->GetMesh()->SetBoneData(
+        std::vector<IVec4>(6, IVec4(0, 0, 0, 0)),
+        std::vector<Vec4>(6, Vec4(1.0f, 0.0f, 0.0f, 0.0f)));
+    ASSERT_TRUE(gpuResources.UploadImmediate(skinnedMesh.get()));
+    const MeshGPUBuffers buffers = gpuResources.GetMeshBuffers(skinnedMesh->GetId());
+    ASSERT_TRUE(buffers.HasSkinningVertexData());
+
+    const auto runMismatch =
+        [this, &buffers, &skinnedMesh](const char* caseName, const auto& mutate)
+        {
+            SCOPED_TRACE(caseName);
+            RenderObject object = MakeRenderObject(*skinnedMesh, gpuResources);
+            object.entityId = 1603;
+            object.skinningMatrices = {Mat4Identity()};
+            SetValidTestSkinningPalette(object, 1603);
+            scene.Clear();
+            scene.AddObject(object);
+
+            RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Opaque);
+            item.mesh = object.mesh;
+            item.packet = MakeOpaquePacket(
+                scene, 0, 0, buffers, item.material,
+                RenderMaterialMode::Opaque, RenderDrawFlags::Skinned);
+            const std::vector<RenderDrawItem> opaqueItems = {item};
+            const std::vector<RenderDrawItem> maskedItems;
+            const SceneMeshPassPreparation preparation =
+                PrepareOpaquePackets(opaqueItems, maskedItems);
+            const RenderFramePlanCompileResult compiled =
+                CompileForcedDirectPlan(preparation, 1603);
+            ASSERT_TRUE(compiled.succeeded);
+            RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+            RenderGraph graph;
+            RenderGraphValidationAccess::SetDevice(graph, &device);
+            RHITextureRef color = device.CreateTexture(
+                RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+            ASSERT_TRUE(color);
+            ViewData caseView = view;
+            caseView.colorTarget = RenderGraphValidationAccess::ImportTexture(
+                graph, color.Get(), RHIResourceState::RenderTarget);
+            caseView.renderFrameExecutionPlan = &compiled.plan;
+            caseView.meshPassPreparation = &preparation;
+            caseView.renderFrameExecutionReport = &report;
+            RenderPassRecordContext context = MakeMainSceneRecordContext(
+                graph, caseView, scene, opaqueItems, maskedItems, compiled.plan,
+                preparation, report, 1603);
+            AttachDefaultTestLighting(context);
+            ASSERT_TRUE(AttachTestDeformationResources(graph, context));
+            ASSERT_TRUE(context.deformationResources);
+            mutate(scene.GetMutableObject(0));
+            RebuildTestRecordFrameSnapshot(context);
+
+            OpaquePass pass;
+            pass.OnAdd(&device);
+            ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+            pass.AddToGraph(graph, context);
+            RenderGraphValidationAccess::Compile(graph);
+            ASSERT_TRUE(graph.GetCompileStats().compileValid);
+            RecordingCommandContext commands;
+            RenderGraphValidationAccess::Execute(graph, commands);
+            pass.PublishRecordResults(context.results, context.identity);
+            EXPECT_EQ(0u, commands.drawIndexedCount);
+            EXPECT_EQ(0u, pass.GetDrawStats().skinnedDrawCount);
+            EXPECT_EQ(0u, pass.GetDrawStats().currentPaletteBoundDrawCount);
+        };
+
+    runMismatch("provider", [](RenderObject& object)
+    {
+        ++object.skinningPalette.providerComponentId;
+    });
+    runMismatch("model", [](RenderObject& object)
+    {
+        ++object.skinningPalette.sourceModelResourceId;
+    });
+    runMismatch("count", [this](RenderObject& object)
+    {
+        object.skinningMatrices.push_back(Mat4Identity());
+        SetValidTestSkinningPalette(object, 1604);
+    });
+    runMismatch("slice", [](RenderObject& object)
+    {
+        ++object.entityId;
+    });
+}
+
 TEST_F(RenderPassValidationFixture, ToneMappingPixelProbeAddsOnePreToneCopyPass)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
@@ -14560,6 +14971,7 @@ TEST_F(RenderPassValidationFixture,
     RenderObject object = MakeRenderObject(*skinnedMesh, gpuResources);
     object.entityId = 72;
     object.skinningMatrices.push_back(Mat4Identity());
+    SetValidTestSkinningPalette(object, 602);
     scene.AddObject(object);
     RenderDrawItem item;
     item.objectIndex = 1;
@@ -14630,6 +15042,7 @@ TEST_F(RenderPassValidationFixture,
     skinnedObject.entityId = 78;
     skinnedObject.bounds = skinnedMesh->GetBounds();
     skinnedObject.skinningMatrices.push_back(Mat4Identity());
+    SetValidTestSkinningPalette(skinnedObject, 608);
     scene.AddObject(skinnedObject);
 
     RenderDrawItem gpuCandidate = MakeDrawItem(MaterialRenderMode::Opaque);
@@ -14765,6 +15178,7 @@ TEST_F(RenderPassValidationFixture,
     skinnedObject.entityId = 80;
     skinnedObject.bounds = skinnedMesh->GetBounds();
     skinnedObject.skinningMatrices.push_back(Mat4Identity());
+    SetValidTestSkinningPalette(skinnedObject, 609);
     scene.AddObject(skinnedObject);
 
     RenderDrawItem gpuCandidate = MakeDrawItem(MaterialRenderMode::Opaque);
@@ -17778,6 +18192,9 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_EQ((std::vector<uint32>{0u, 3u}), ctx.drawIndexedFirstIndices);
     EXPECT_EQ(0u, ctx.drawIndexedIndirectCount);
     EXPECT_EQ(2u, pass.GetDrawStats().executedPacketCount);
+    EXPECT_EQ(2u, pass.GetDrawStats().skinnedDrawCount);
+    EXPECT_EQ(2u, pass.GetDrawStats().currentPaletteBoundDrawCount);
+    EXPECT_NE(0u, pass.GetDrawStats().deformationContentHash);
     ASSERT_TRUE(results);
     ASSERT_EQ(2u, results->successfulMaterialBindings.size());
     for (const RenderRecordedMaterialBindingReceipt& receipt :
@@ -17814,17 +18231,18 @@ TEST_F(RenderPassValidationFixture,
     std::memcpy(&uploaded,
                 objectConstantsBuffer->GetStorage().data(),
                 sizeof(uploaded));
-    EXPECT_FLOAT_EQ(1.0f, uploaded.objectVelocityParams.x);
+    EXPECT_FLOAT_EQ(0.0f, uploaded.objectVelocityParams.x);
     EXPECT_FLOAT_EQ(0.0f, uploaded.objectVelocityParams.y);
     EXPECT_FLOAT_EQ(1.0f, uploaded.skinningParams.x);
     EXPECT_FLOAT_EQ(1.0f, uploaded.skinningParams.y);
 
-    // The receipt hash is for the complete palette. A palette larger than
-    // ObjectConstants can carry must fail before that upload or any draw;
-    // truncating the upload while retaining the complete hash is forbidden.
+    // Direct object constants no longer own a fixed-size matrix array.  The
+    // complete palette is addressed through the recording-owned structured
+    // buffers, so a palette larger than the former legacy 128-matrix tail
+    // must keep its full count and remain drawable.
     RenderObject& oversizedObject = scene.GetMutableObject(0);
     oversizedObject.skinningMatrices.assign(
-        static_cast<size_t>(RVX_MAX_OBJECT_SKINNING_MATRICES) + 1U,
+        129U,
         Mat4Identity());
     const SkinningPaletteHash oversizedHash =
         ComputeSkinningPaletteHash(oversizedObject.skinningMatrices);
@@ -17843,14 +18261,22 @@ TEST_F(RenderPassValidationFixture,
             oversizedPass, oversizedView, opaqueItems, maskedItems,
             compiled.plan, preparation, oversizedReport, colorView.Get(),
             nullptr, nullptr, oversizedContext);
-    EXPECT_EQ(0U, oversizedContext.beginRenderPassCount);
-    EXPECT_EQ(0U, oversizedContext.drawIndexedCount);
+    EXPECT_EQ(1U, oversizedContext.beginRenderPassCount);
+    EXPECT_EQ(2U, oversizedContext.drawIndexedCount);
     ASSERT_TRUE(oversizedResults);
-    EXPECT_TRUE(oversizedResults->successfulSkinningPalettes.empty());
+    ASSERT_EQ(1U, oversizedResults->successfulSkinningPalettes.size());
+    EXPECT_EQ(129U, oversizedResults->successfulSkinningPalettes.front()
+                         .metadata.paletteCount);
+    EXPECT_EQ(oversizedHash.value, oversizedResults->successfulSkinningPalettes
+                                       .front()
+                                       .metadata.paletteHash);
+    EXPECT_EQ(2U, oversizedPass.GetDrawStats().skinnedDrawCount);
+    EXPECT_EQ(2U, oversizedPass.GetDrawStats().currentPaletteBoundDrawCount);
+    EXPECT_NE(0U, oversizedPass.GetDrawStats().deformationContentHash);
     const RenderPassExecutionReport* oversizedOpaqueReport =
         FindPassExecutionReport(oversizedReport, RenderPassKind::Opaque);
     ASSERT_NE(oversizedOpaqueReport, nullptr);
-    EXPECT_EQ(RenderExecutionStatus::Failed,
+    EXPECT_EQ(RenderExecutionStatus::Completed,
               oversizedOpaqueReport->directLane.status);
 }
 
@@ -18112,6 +18538,8 @@ TEST_F(RenderPassValidationFixture,
     RenderPassRecordContext transparentContext = MakeTransparentRecordContext(
         transparentGraph, transparentView, scene, transparentItems, 619, 619);
     AttachDefaultTestLighting(transparentContext);
+    ASSERT_TRUE(AttachTestDeformationResources(transparentGraph, transparentContext));
+    RebuildTestRecordFrameSnapshot(transparentContext);
     transparentPass.AddToGraph(transparentGraph, transparentContext);
     RenderGraphValidationAccess::Compile(transparentGraph);
     ASSERT_TRUE(transparentGraph.GetCompileStats().compileValid);
@@ -19582,6 +20010,7 @@ TEST_F(RenderPassValidationFixture,
     RenderObject skinnedObject = MakeRenderObject(*skinnedMesh, gpuResources);
     skinnedObject.entityId = 645;
     skinnedObject.skinningMatrices.push_back(Mat4Identity());
+    SetValidTestSkinningPalette(skinnedObject, 645);
     scene.AddObject(skinnedObject);
 
     RenderDrawItem rigidItem = MakeDrawItem(MaterialRenderMode::Opaque);
@@ -19618,6 +20047,8 @@ TEST_F(RenderPassValidationFixture,
         graph, view, scene, opaqueDrawItems, maskedDrawItems, compiled.plan,
         preparation, report, compiled.plan.frameSequence);
     AttachDefaultTestLighting(context);
+    ASSERT_TRUE(AttachTestDeformationResources(graph, context));
+    RebuildTestRecordFrameSnapshot(context);
 
     OpaquePass pass;
     ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);

@@ -13,6 +13,7 @@
 #include "Render/Features/RenderFeatureGraphBuilder.h"
 #include "Render/Features/RenderFeatureRegistry.h"
 #include "Render/Features/RenderGraphBlackboard.h"
+#include "Render/Animation/RenderDeformationFrameResources.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
 #include "Render/Graph/RenderGraphCompiler.h"
@@ -1444,6 +1445,7 @@ void SceneRenderer::Shutdown()
     m_pendingRenderExecutionReceipt.reset();
     m_lastAttemptedRenderExecutionReceipt = {};
     m_completedRenderExecutionReceipt = {};
+    m_activeRenderDeformationResources.reset();
     m_featureCompositionFailureReason.clear();
     if (m_postProcessStack)
     {
@@ -3172,6 +3174,7 @@ void SceneRenderer::ReleaseUnsubmittedFrame()
     // zero/failed submission would expose direct-stream receipt evidence as a
     // completed frame and let it bleed into the next diagnostic projection.
     m_activeRenderPassResults.reset();
+    m_activeRenderDeformationResources.reset();
     m_activeRenderPassIdentity = {};
     if (hadUnsubmittedRecording)
     {
@@ -5602,7 +5605,10 @@ void SceneRenderer::Render()
         rayTracedReflectionsRequested && m_postProcessSettings.enableRayTracedReflectionDenoise;
     const bool rayTracedShadowsRequested =
         m_rayTracedShadowPass && m_rayTracedShadowPass->IsRequestedEnabled();
-    const bool cameraVelocityRequested = rayTracedReflectionsRequested && m_postProcessSettings.enableTAA;
+    // Motion vectors are a scene/view temporal input, not a ray-tracing
+    // implementation detail. Any enabled temporal consumer needs both camera
+    // and object velocity; the current public stack exposes that through TAA.
+    const bool cameraVelocityRequested = m_postProcessSettings.enableTAA;
     if (m_cameraVelocityPass)
     {
         m_cameraVelocityPass->SetEnabled(cameraVelocityRequested);
@@ -6041,7 +6047,7 @@ void SceneRenderer::Render()
         RenderExecutionReceipt receipt =
             m_renderFeatureRegistry->CollectExecutionReceipt(
                 m_executionBuildIdentity);
-        receipt.schemaVersion = 4;
+        receipt.schemaVersion = 5;
         if (m_activeRenderPassResults != nullptr &&
             m_activeRenderPassResults->identity == m_activeRenderPassIdentity &&
             m_activeRenderPassIdentity.frameSequence ==
@@ -6072,6 +6078,87 @@ void SceneRenderer::Render()
             m_activeRenderPassResults->identity == m_activeRenderPassIdentity &&
             m_activeRenderPassIdentity.frameSequence ==
                 receipt.frameIdentity.frameSequence;
+        const RenderDeformationFrameIdentity activeDeformationIdentity =
+            MakeRenderDeformationFrameIdentity(m_activeRenderPassIdentity);
+        const bool deformationResourcesMatchReceipt =
+            activeRenderPassResultsMatchReceipt && m_renderGraph != nullptr &&
+            m_activeRenderDeformationResources != nullptr &&
+            m_activeRenderDeformationResources->MatchesIdentity(
+                activeDeformationIdentity) &&
+            m_activeRenderDeformationResources->MatchesGraphProvenance(
+                *m_renderGraph);
+        bool deformationExecutionEvidenceValid = false;
+        if (deformationResourcesMatchReceipt)
+        {
+            const RenderDeformationFrameResources& resources =
+                *m_activeRenderDeformationResources;
+            RenderDeformationExecutionReceipt deformation;
+            deformation.deformationContentHash = resources.GetContentHash();
+            deformation.skinnedObjectCount = static_cast<uint32>(
+                resources.GetSlices().size());
+            deformation.paletteMatrixCount = resources.GetMatrixCount();
+            deformation.previousPaletteObjectCount = static_cast<uint32>(
+                std::count_if(
+                    resources.GetSlices().begin(),
+                    resources.GetSlices().end(),
+                    [](const RenderDeformationPaletteSlice& slice)
+                    {
+                        return slice.previousValid;
+                    }));
+            deformation.currentPaletteBufferReady =
+                resources.GetMatrixCount() != 0 &&
+                resources.GetCurrentPaletteBuffer() != nullptr &&
+                resources.GetCurrentPaletteHandle().IsValid();
+            deformation.previousPaletteBufferReady =
+                resources.GetMatrixCount() != 0 &&
+                resources.GetPreviousPaletteBuffer() != nullptr &&
+                resources.GetPreviousPaletteHandle().IsValid();
+
+            const OpaquePassDrawStats& opaqueDeformationStats =
+                receipt.resolvedRecipe == RenderPipelineRecipe::DeferredQuality
+                    ? m_activeRenderPassResults->deferredOpaqueRoute.drawStats
+                    : m_activeRenderPassResults->opaqueStats;
+            const ShadowPassStats& shadowDeformationStats =
+                m_activeRenderPassResults->shadowStats;
+            const ObjectVelocityPassStats& velocityDeformationStats =
+                m_activeRenderPassResults->objectVelocityStats;
+            deformation.opaqueSkinnedDrawCount =
+                opaqueDeformationStats.skinnedDrawCount;
+            deformation.shadowSkinnedDrawCount =
+                shadowDeformationStats.skinnedDrawCount;
+            deformation.velocitySkinnedDrawCount =
+                velocityDeformationStats.skinnedDrawCount;
+            deformation.velocityPreviousPaletteDrawCount =
+                velocityDeformationStats.previousPaletteBoundDrawCount;
+
+            const auto validatesCurrentPaletteDraws =
+                [&resources](uint32 skinnedDrawCount,
+                             uint32 currentPaletteBoundDrawCount,
+                             uint64 contentHash) noexcept
+            {
+                return skinnedDrawCount == 0 ||
+                    (contentHash == resources.GetContentHash() &&
+                     currentPaletteBoundDrawCount == skinnedDrawCount);
+            };
+            deformationExecutionEvidenceValid =
+                deformation.IsStructurallyValid() &&
+                validatesCurrentPaletteDraws(
+                    opaqueDeformationStats.skinnedDrawCount,
+                    opaqueDeformationStats.currentPaletteBoundDrawCount,
+                    opaqueDeformationStats.deformationContentHash) &&
+                validatesCurrentPaletteDraws(
+                    shadowDeformationStats.skinnedDrawCount,
+                    shadowDeformationStats.currentPaletteBoundDrawCount,
+                    shadowDeformationStats.deformationContentHash) &&
+                validatesCurrentPaletteDraws(
+                    velocityDeformationStats.skinnedDrawCount,
+                    velocityDeformationStats.currentPaletteBoundDrawCount,
+                    velocityDeformationStats.deformationContentHash) &&
+                (velocityDeformationStats.skinnedDrawCount == 0 ||
+                 velocityDeformationStats.previousPaletteBoundDrawCount ==
+                     velocityDeformationStats.skinnedDrawCount);
+            receipt.deformation = deformation;
+        }
         if (lightingPlanMatchesReceipt)
         {
             const LightingFramePlanCapacityEvidence& capacity =
@@ -6161,15 +6248,18 @@ void SceneRenderer::Render()
                     lighting.lightingPlanIdentity, false, true);
             receipt.lighting = lighting;
         }
-        receipt.executionSucceeded =
-            receipt.executionSucceeded && graphExecuted && graphCompileValid;
+        receipt.executionSucceeded = receipt.executionSucceeded &&
+            graphExecuted && graphCompileValid &&
+            deformationExecutionEvidenceValid;
         receipt.presented = false;
         receipt.succeeded = false;
         if (!receipt.executionSucceeded && receipt.diagnostic.empty())
         {
-            receipt.diagnostic = executionSkippedReason != nullptr
-                ? executionSkippedReason
-                : "Render feature execution did not complete";
+            receipt.diagnostic = !deformationExecutionEvidenceValid
+                ? "Render deformation execution evidence did not match the active graph recording"
+                : executionSkippedReason != nullptr
+                    ? executionSkippedReason
+                    : "Render feature execution did not complete";
         }
         m_lastAttemptedRenderExecutionReceipt = receipt;
         if (receipt.executionSucceeded && receipt.IsStructurallyValid())
@@ -8356,6 +8446,21 @@ void SceneRenderer::BuildRenderGraph()
             RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource);
         velocityDesc.debugName = "SceneCameraVelocity";
         m_viewData.velocityTarget = m_renderGraph->CreateTexture(velocityDesc);
+        // Motion vectors are an explicitly requested frame product.  Until a
+        // typed temporal feature consumes SceneTextures in GFX11, keep the
+        // transient velocity chain live through the graph export contract;
+        // otherwise liveness pruning can correctly remove both producers and
+        // leave no execution evidence for skinned deformation.
+        GPUQueueDomain velocityDomain = GPUQueueDomain::Graphics;
+        TryGetGPUQueueDomain(
+            m_renderContext->GetDevice()->GetCapabilities().queueTopology,
+            RHICommandQueueType::Graphics,
+            velocityDomain);
+        m_renderGraph->SetExportAccess(
+            m_viewData.velocityTarget,
+            MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                                  RHIShaderStage::All,
+                                  velocityDomain));
     }
     const RHITextureDesc* backBufferDesc = backBufferTarget.IsValid()
                                                ? m_renderGraph->GetTextureDesc(backBufferTarget)
@@ -8590,6 +8695,27 @@ void SceneRenderer::BuildRenderGraph()
         recordHeader.configurationRevision};
     passRecordContext.featureViewIdentity =
         m_renderScene.GetView().identity;
+    std::shared_ptr<const RenderDeformationFrameResources>
+        deformationResources;
+    std::string deformationFailure;
+    IRHIDevice* const deformationDevice = m_renderContext != nullptr
+        ? m_renderContext->GetDevice()
+        : m_featureReportDeviceForTesting;
+    if (!BuildRenderDeformationFrameResources(
+            deformationDevice,
+            *m_renderGraph,
+            MakeRenderDeformationFrameIdentity(passRecordContext.identity),
+            m_renderScene,
+            deformationResources,
+            deformationFailure))
+    {
+        m_featureCompositionFailureReason =
+            "Render deformation resources are unavailable: " +
+            deformationFailure;
+        return;
+    }
+    passRecordContext.deformationResources =
+        std::move(deformationResources);
     passRecordContext.lightingPlan = m_lightingFramePlan;
     passRecordContext.lightingResources = std::move(lightingResources);
     AddGPUDrivenCullingPass(passRecordContext.identity);
@@ -8618,6 +8744,8 @@ void SceneRenderer::BuildRenderGraph()
     passRecordContext.frameSnapshot = MakeRenderPassFrameSnapshot(
         passRecordContext, *passRecordContext.results);
     m_activeRenderPassResults = passRecordContext.results;
+    m_activeRenderDeformationResources =
+        passRecordContext.deformationResources;
     m_activeRenderPassIdentity = passRecordContext.identity;
     const std::shared_ptr<std::atomic_bool> gpuSceneRasterRecordingFailure =
         m_gpuSceneRasterCommandRecordingFailed;

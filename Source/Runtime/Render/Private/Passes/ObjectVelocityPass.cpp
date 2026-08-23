@@ -1,6 +1,7 @@
 #include "Render/Passes/ObjectVelocityPass.h"
 
 #include "Passes/MaterialTextureGraphBindings.h"
+#include "Render/Animation/RenderDeformationFrameResources.h"
 
 #include "Core/Log.h"
 #include "Render/Graph/ResourceViewCache.h"
@@ -20,16 +21,77 @@ namespace RVX
 {
     namespace
     {
-        std::span<const Mat4> ResolveSkinningMatrices(
-            const RenderObject& object,
-            const MeshGPUBuffers& buffers)
+        [[nodiscard]] bool SamePaletteMetadata(
+            const RenderSkinningPaletteMetadata& left,
+            const RenderSkinningPaletteMetadata& right) noexcept
         {
-            if (!object.HasSkinningData() || !buffers.HasSkinningVertexData())
+            return left.providerComponentId == right.providerComponentId &&
+                   left.sourceModelResourceId == right.sourceModelResourceId &&
+                   left.poseSequence == right.poseSequence &&
+                   left.paletteHash == right.paletteHash &&
+                   left.paletteCount == right.paletteCount;
+        }
+
+        [[nodiscard]] bool ResolveSkinningPaletteBinding(
+            const RenderObject& object,
+            const MeshGPUBuffers& buffers,
+            const RenderDeformationFrameResources* resources,
+            SkinningPaletteBufferBinding& outBuffers,
+            SkinningPaletteSliceBinding& outSlice) noexcept
+        {
+            outBuffers = {};
+            outSlice = {};
+            if (!object.HasSkinningData())
+                return true;
+            if (!buffers.HasSkinningVertexData() || resources == nullptr ||
+                !resources->IsComplete() || object.entityId == 0 ||
+                !object.HasValidSkinningPalette())
             {
-                return {};
+                return false;
             }
-            return std::span<const Mat4>(object.skinningMatrices.data(),
-                                         object.skinningMatrices.size());
+            const RenderDeformationPaletteSlice* const slice =
+                resources->FindSlice(object.entityId);
+            if (slice == nullptr || !slice->IsStructurallyValid() ||
+                slice->matrixCount != object.skinningMatrices.size() ||
+                !SamePaletteMetadata(
+                    slice->currentMetadata, object.skinningPalette) ||
+                slice->currentOffset >
+                    resources->GetMatrixCount() - slice->matrixCount ||
+                slice->previousOffset >
+                    resources->GetMatrixCount() - slice->matrixCount ||
+                (slice->previousValid &&
+                 (!object.HasValidPreviousSkinningPalette() ||
+                  !SamePaletteMetadata(
+                      slice->previousMetadata,
+                      object.previousSkinningPalette))) ||
+                (!slice->previousValid &&
+                 (object.HasValidPreviousSkinningPalette() ||
+                  slice->previousMetadata.paletteCount != 0)))
+            {
+                return false;
+            }
+            outBuffers.currentPaletteBuffer = resources->GetCurrentPaletteBuffer();
+            outBuffers.previousPaletteBuffer = resources->GetPreviousPaletteBuffer();
+            outSlice.currentOffset = slice->currentOffset;
+            outSlice.previousOffset = slice->previousOffset;
+            outSlice.matrixCount = slice->matrixCount;
+            outSlice.previousValid = slice->previousValid;
+            return outBuffers.HasPalettes() && outSlice.IsWellFormed();
+        }
+
+        [[nodiscard]] bool HasExactDeformationBuffers(
+            RenderGraphPassContext& context,
+            const RenderDeformationFrameResources* resources,
+            RGBufferHandle currentHandle,
+            RGBufferHandle previousHandle) noexcept
+        {
+            return resources != nullptr && resources->IsComplete() &&
+                   resources->GetMatrixCount() != 0 &&
+                   currentHandle.IsValid() && previousHandle.IsValid() &&
+                   context.GetBuffer(currentHandle) ==
+                       resources->GetCurrentPaletteBuffer().Get() &&
+                   context.GetBuffer(previousHandle) ==
+                       resources->GetPreviousPaletteBuffer().Get();
         }
 
         struct DrawRecord
@@ -63,6 +125,8 @@ namespace RVX
             RGTextureHandle depthHandle{};
             RGTextureViewHandle velocityViewHandle{};
             RGTextureViewHandle depthViewHandle{};
+            RGBufferHandle currentPaletteReadHandle{};
+            RGBufferHandle previousPaletteReadHandle{};
             bool requestedEnabled = false;
             bool supported = false;
             bool contextValid = false;
@@ -289,6 +353,21 @@ namespace RVX
             }
 
             const uint32 objectSlot = data.bindings.objectCursor;
+            SkinningPaletteBufferBinding skinningBuffers;
+            SkinningPaletteSliceBinding skinningSlice;
+            if (!ResolveSkinningPaletteBinding(
+                    object, buffers,
+                    data.execution.deformationResources.get(),
+                    skinningBuffers, skinningSlice))
+            {
+                ++stats.skippedMissingResourceCount;
+                return false;
+            }
+            if (skinned && !skinningSlice.previousValid)
+            {
+                ++stats.skippedNoHistoryCount;
+                return false;
+            }
             if (!data.pipelineCache->UpdateRasterDrawBindingSnapshotObject(
                     data.bindings,
                     object.worldMatrix,
@@ -297,7 +376,7 @@ namespace RVX
                     data.execution.view.previousViewProjectionMatrix,
                     true,
                     object.receivesShadow,
-                    ResolveSkinningMatrices(object, buffers)))
+                    skinningSlice))
             {
                 ++stats.skippedMissingResourceCount;
                 return false;
@@ -330,8 +409,43 @@ namespace RVX
             }
 
             const uint32 candidateCount = std::max(1u, stats.drawItemCount);
+            SkinningPaletteBufferBinding skinningPalettes;
+            const std::shared_ptr<const RenderDeformationFrameResources>&
+                deformationResources = data.execution.deformationResources;
+            if (deformationResources != nullptr &&
+                deformationResources->GetMatrixCount() != 0)
+            {
+                if (!deformationResources->MatchesIdentity(
+                        MakeRenderDeformationFrameIdentity(data.identity)) ||
+                    !deformationResources->MatchesGraphProvenance(
+                        *data.identity.graph) ||
+                    builder.GetBufferDesc(
+                        deformationResources->GetCurrentPaletteHandle()) == nullptr ||
+                    builder.GetBufferDesc(
+                        deformationResources->GetPreviousPaletteHandle()) == nullptr)
+                {
+                    return false;
+                }
+                data.currentPaletteReadHandle = builder.Read(
+                    deformationResources->GetCurrentPaletteHandle(),
+                    RHIResourceState::ShaderResource,
+                    RHIShaderStage::Vertex);
+                data.previousPaletteReadHandle = builder.Read(
+                    deformationResources->GetPreviousPaletteHandle(),
+                    RHIResourceState::ShaderResource,
+                    RHIShaderStage::Vertex);
+                if (!data.currentPaletteReadHandle.IsValid() ||
+                    !data.previousPaletteReadHandle.IsValid())
+                {
+                    return false;
+                }
+                skinningPalettes.currentPaletteBuffer =
+                    deformationResources->GetCurrentPaletteBuffer();
+                skinningPalettes.previousPaletteBuffer =
+                    deformationResources->GetPreviousPaletteBuffer();
+            }
             if (!data.pipelineCache->CreateRasterDrawBindingSnapshot(
-                    view, candidateCount, data.bindings))
+                    view, candidateCount, skinningPalettes, data.bindings))
             {
                 return false;
             }
@@ -482,6 +596,20 @@ namespace RVX
                 return;
             }
 
+            const bool hasSkinnedDraw = std::any_of(
+                data.draws.begin(), data.draws.end(),
+                [](const DrawRecord& draw) { return draw.skinned; });
+            if (hasSkinnedDraw && !HasExactDeformationBuffers(
+                    context, data.execution.deformationResources.get(),
+                    data.currentPaletteReadHandle,
+                    data.previousPaletteReadHandle))
+            {
+                data.results->objectVelocityStats = stats;
+                context.MarkExecutionFailed(
+                    "ObjectVelocityPass deformation graph resources do not match the recording snapshot");
+                return;
+            }
+
             RHITexture* velocityTexture =
                 context.GetTexture(data.velocityHandle);
             RHITexture* depthTexture = context.GetTexture(data.depthHandle);
@@ -593,6 +721,24 @@ namespace RVX
                 ++stats.drawCount;
                 if (draw.masked)
                     ++stats.maskedDrawCount;
+                if (draw.skinned)
+                {
+                    const uint64 deformationHash =
+                        data.execution.deformationResources->GetContentHash();
+                    if (stats.deformationContentHash != 0 &&
+                        stats.deformationContentHash != deformationHash)
+                    {
+                        ctx.EndRenderPass();
+                        data.results->objectVelocityStats = stats;
+                        context.MarkExecutionFailed(
+                            "ObjectVelocityPass observed inconsistent deformation content hashes");
+                        return;
+                    }
+                    stats.deformationContentHash = deformationHash;
+                    ++stats.skinnedDrawCount;
+                    ++stats.currentPaletteBoundDrawCount;
+                    ++stats.previousPaletteBoundDrawCount;
+                }
             }
             ctx.EndRenderPass();
             stats.velocityRecorded = stats.drawCount > 0;

@@ -481,10 +481,70 @@ namespace RVX
         }
     };
 
+    /**
+     * @brief Presentation-bound proof that skinned raster work consumed the
+     *        immutable deformation resources for this exact frame/view.
+     *
+     * The resource counts describe the complete recording snapshot. Draw
+     * counts are incremented only after the corresponding DrawIndexed command
+     * is recorded, so a non-zero value is execution evidence rather than a
+     * declaration of intent.
+     */
+    struct RenderDeformationExecutionReceipt
+    {
+        uint64 deformationContentHash = 0;
+        uint32 skinnedObjectCount = 0;
+        uint32 paletteMatrixCount = 0;
+        uint32 previousPaletteObjectCount = 0;
+        bool currentPaletteBufferReady = false;
+        bool previousPaletteBufferReady = false;
+        uint32 opaqueSkinnedDrawCount = 0;
+        uint32 shadowSkinnedDrawCount = 0;
+        uint32 velocitySkinnedDrawCount = 0;
+        uint32 velocityPreviousPaletteDrawCount = 0;
+
+        [[nodiscard]] bool IsEmpty() const noexcept
+        {
+            return deformationContentHash == 0 && skinnedObjectCount == 0 &&
+                   paletteMatrixCount == 0 && previousPaletteObjectCount == 0 &&
+                   !currentPaletteBufferReady && !previousPaletteBufferReady &&
+                   opaqueSkinnedDrawCount == 0 && shadowSkinnedDrawCount == 0 &&
+                   velocitySkinnedDrawCount == 0 &&
+                   velocityPreviousPaletteDrawCount == 0;
+        }
+
+        [[nodiscard]] bool IsStructurallyValid() const noexcept
+        {
+            if (deformationContentHash == 0 ||
+                previousPaletteObjectCount > skinnedObjectCount ||
+                velocityPreviousPaletteDrawCount !=
+                    velocitySkinnedDrawCount)
+            {
+                return false;
+            }
+
+            const bool recordedSkinnedDraw = opaqueSkinnedDrawCount != 0 ||
+                shadowSkinnedDrawCount != 0 ||
+                velocitySkinnedDrawCount != 0;
+            if (paletteMatrixCount == 0)
+            {
+                return skinnedObjectCount == 0 &&
+                       previousPaletteObjectCount == 0 &&
+                       !currentPaletteBufferReady &&
+                       !previousPaletteBufferReady && !recordedSkinnedDraw;
+            }
+
+            return skinnedObjectCount != 0 && currentPaletteBufferReady &&
+                   previousPaletteBufferReady &&
+                   (velocityPreviousPaletteDrawCount == 0 ||
+                    previousPaletteObjectCount != 0);
+        }
+    };
+
     /** @brief Candidate or presentation-qualified evidence for one frame/view. */
     struct RenderExecutionReceipt
     {
-        uint32 schemaVersion = 4;
+        uint32 schemaVersion = 5;
         bool available = false;
         bool graphComposed = false;
         bool executionSucceeded = false;
@@ -504,13 +564,15 @@ namespace RVX
         RenderDeferredOpaqueExecutionReceipt deferredOpaque{};
         /** Immutable LightingFramePlan selection and readiness evidence. */
         RenderLightingExecutionReceipt lighting{};
+        /** Immutable palette readiness and actual skinned raster execution. */
+        RenderDeformationExecutionReceipt deformation{};
         std::vector<RenderFeatureExecutionReceipt> features{};
         std::string diagnostic{};
 
         [[nodiscard]] bool IsStructurallyValid() const noexcept
         {
             if ((schemaVersion != 1 && schemaVersion != 2 &&
-                 schemaVersion != 4) ||
+                 schemaVersion != 4 && schemaVersion != 5) ||
                 !frameIdentity.IsValid() ||
                 !viewIdentity.IsValid() || backend == RHIBackendType::None ||
                 !IsDeclaredRenderPipelineRecipe(requestedRecipe) ||
@@ -525,20 +587,32 @@ namespace RVX
             {
                 return false;
             }
-            if ((schemaVersion == 1 &&
-                 (!lighting.IsEmpty() || deferredOpaque.available ||
-                  deferredOpaque.status !=
-                      RenderDeferredOpaqueExecutionStatus::NotAttempted ||
-                  deferredOpaque.plannedPacketCount != 0 ||
-                  deferredOpaque.executedPacketCount != 0)) ||
-                (schemaVersion == 2 &&
-                 (!lighting.IsEmpty() ||
-                  !deferredOpaque.IsStructurallyValid())) ||
-                (schemaVersion == 4 &&
-                 (!deferredOpaque.IsStructurallyValid() ||
-                  (!lighting.IsEmpty() && !lighting.IsStructurallyValid()) ||
-                  ((executionSucceeded || presented) &&
-                   !lighting.IsStructurallyValid()))))
+            const bool schemaOneInvalid = schemaVersion == 1 &&
+                (!lighting.IsEmpty() || !deformation.IsEmpty() ||
+                 deferredOpaque.available ||
+                 deferredOpaque.status !=
+                     RenderDeferredOpaqueExecutionStatus::NotAttempted ||
+                 deferredOpaque.plannedPacketCount != 0 ||
+                 deferredOpaque.executedPacketCount != 0);
+            const bool schemaTwoInvalid = schemaVersion == 2 &&
+                (!lighting.IsEmpty() || !deformation.IsEmpty() ||
+                 !deferredOpaque.IsStructurallyValid());
+            const bool schemaFourInvalid = schemaVersion == 4 &&
+                (!deformation.IsEmpty() ||
+                 !deferredOpaque.IsStructurallyValid() ||
+                 (!lighting.IsEmpty() && !lighting.IsStructurallyValid()) ||
+                 ((executionSucceeded || presented) &&
+                  !lighting.IsStructurallyValid()));
+            const bool schemaFiveInvalid = schemaVersion == 5 &&
+                (!deferredOpaque.IsStructurallyValid() ||
+                 (!lighting.IsEmpty() && !lighting.IsStructurallyValid()) ||
+                 (!deformation.IsEmpty() &&
+                  !deformation.IsStructurallyValid()) ||
+                 ((executionSucceeded || presented) &&
+                  (!lighting.IsStructurallyValid() ||
+                   !deformation.IsStructurallyValid())));
+            if (schemaOneInvalid || schemaTwoInvalid || schemaFourInvalid ||
+                schemaFiveInvalid)
             {
                 return false;
             }

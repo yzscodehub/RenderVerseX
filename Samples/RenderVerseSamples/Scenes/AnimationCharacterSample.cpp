@@ -298,7 +298,10 @@ namespace RVX
         context.renderSettings.shadows.atlasResolution = 1024u;
         context.renderSettings.shadows.cascadeCount = 2u;
         context.renderSettings.postProcess.enabled = true;
-        context.renderSettings.postProcess.enableTAA = false;
+        // GFX09 qualifies presentation-bound current/previous skinning
+        // palettes through the temporal velocity producer.  The renderer owns
+        // pass selection; the Sample only declares the public temporal need.
+        context.renderSettings.postProcess.enableTAA = true;
         context.renderSettings.postProcess.enableBloom = false;
 
         const float32 aspect =

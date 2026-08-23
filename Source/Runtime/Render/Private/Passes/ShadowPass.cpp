@@ -4,6 +4,7 @@
  */
 
 #include "Render/Passes/ShadowPass.h"
+#include "Render/Animation/RenderDeformationFrameResources.h"
 #include "Passes/MaterialTextureGraphBindings.h"
 #include "Core/Log.h"
 #include "Render/Graph/ResourceViewCache.h"
@@ -26,14 +27,73 @@ namespace
 {
     constexpr float RVX_SHADOW_EPSILON = 0.0001f;
 
-    std::span<const Mat4> ResolveSkinningMatrices(const RenderObject& object, const MeshGPUBuffers& buffers)
+    [[nodiscard]] bool SamePaletteMetadata(
+        const RenderSkinningPaletteMetadata& left,
+        const RenderSkinningPaletteMetadata& right) noexcept
     {
-        if (!object.HasSkinningData() || !buffers.HasSkinningVertexData())
-        {
-            return {};
-        }
+        return left.providerComponentId == right.providerComponentId &&
+               left.sourceModelResourceId == right.sourceModelResourceId &&
+               left.poseSequence == right.poseSequence &&
+               left.paletteHash == right.paletteHash &&
+               left.paletteCount == right.paletteCount;
+    }
 
-        return std::span<const Mat4>(object.skinningMatrices.data(), object.skinningMatrices.size());
+    [[nodiscard]] bool ResolveSkinningPaletteBinding(
+        const RenderObject& object,
+        const MeshGPUBuffers& buffers,
+        const RenderDeformationFrameResources* resources,
+        SkinningPaletteBufferBinding& outBuffers,
+        SkinningPaletteSliceBinding& outSlice) noexcept
+    {
+        outBuffers = {};
+        outSlice = {};
+        if (!object.HasSkinningData())
+            return true;
+        if (!buffers.HasSkinningVertexData() || resources == nullptr ||
+            !resources->IsComplete() || object.entityId == 0 ||
+            !object.HasValidSkinningPalette())
+        {
+            return false;
+        }
+        const RenderDeformationPaletteSlice* const slice =
+            resources->FindSlice(object.entityId);
+        if (slice == nullptr || !slice->IsStructurallyValid() ||
+            slice->matrixCount != object.skinningMatrices.size() ||
+            !SamePaletteMetadata(slice->currentMetadata, object.skinningPalette) ||
+            slice->currentOffset > resources->GetMatrixCount() - slice->matrixCount ||
+            slice->previousOffset > resources->GetMatrixCount() - slice->matrixCount ||
+            (slice->previousValid &&
+             (!object.HasValidPreviousSkinningPalette() ||
+              !SamePaletteMetadata(
+                  slice->previousMetadata, object.previousSkinningPalette))) ||
+            (!slice->previousValid &&
+             (object.HasValidPreviousSkinningPalette() ||
+              slice->previousMetadata.paletteCount != 0)))
+        {
+            return false;
+        }
+        outBuffers.currentPaletteBuffer = resources->GetCurrentPaletteBuffer();
+        outBuffers.previousPaletteBuffer = resources->GetPreviousPaletteBuffer();
+        outSlice.currentOffset = slice->currentOffset;
+        outSlice.previousOffset = slice->previousOffset;
+        outSlice.matrixCount = slice->matrixCount;
+        outSlice.previousValid = slice->previousValid;
+        return outBuffers.HasPalettes() && outSlice.IsWellFormed();
+    }
+
+    [[nodiscard]] bool HasExactDeformationBuffers(
+        RenderGraphPassContext& context,
+        const RenderDeformationFrameResources* resources,
+        RGBufferHandle currentHandle,
+        RGBufferHandle previousHandle) noexcept
+    {
+        return resources != nullptr && resources->IsComplete() &&
+               resources->GetMatrixCount() != 0 && currentHandle.IsValid() &&
+               previousHandle.IsValid() &&
+               context.GetBuffer(currentHandle) ==
+                   resources->GetCurrentPaletteBuffer().Get() &&
+               context.GetBuffer(previousHandle) ==
+                   resources->GetPreviousPaletteBuffer().Get();
     }
 
     bool ValidateRetainedObjectIdentityIndex(const RenderScene& scene) noexcept
@@ -282,6 +342,7 @@ struct ShadowPass::PlannedShadowDraw
     uint32 representedPacketCount = 1;
     bool instanced = false;
     bool masked = false;
+    bool skinned = false;
 };
 
 ShadowPass::ShadowPass()
@@ -300,10 +361,14 @@ void ShadowPass::SetResources(PipelineCache* pipelineCache,
 
 void ShadowPass::InitializeGraphRecorder(
     const RenderScene* scene,
-    std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache)
+    std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache,
+    std::shared_ptr<const RenderDeformationFrameResources> deformationResources,
+    const RenderPassRecordIdentity& recordIdentity)
 {
     m_renderScene = scene;
     m_directInstanceStreamCache = std::move(directInstanceStreamCache);
+    m_deformationResources = std::move(deformationResources);
+    m_recordIdentity = recordIdentity;
 }
 
 void ShadowPass::SetConfig(const ShadowPassConfig& config)
@@ -440,7 +505,8 @@ void ShadowPass::AddToGraph(
             data.recorder->SetResources(pipelineCache, materialSystem);
             data.recorder->SetResourceRegistry(resourceRegistry);
             data.recorder->InitializeGraphRecorder(
-                renderScene, data.directInstanceStreamCache);
+                renderScene, data.directInstanceStreamCache,
+                data.execution.deformationResources, data.execution.identity);
             data.recorder->SetConfig(config);
             data.recorder->SetEnabled(requestedEnabled);
             if (data.execution.frameSnapshot != nullptr)
@@ -673,6 +739,8 @@ void ShadowPass::Setup(
     m_cascadeFrameBindings.reset();
     m_directInstanceHandle = {};
     m_directInstanceIndexHandle = {};
+    m_currentPaletteReadHandle = {};
+    m_previousPaletteReadHandle = {};
     m_directInstancePlan = {};
     m_directInstanceStream.instanceUploadBytes = 0;
     m_directInstanceStream.indexUploadBytes = 0;
@@ -685,6 +753,43 @@ void ShadowPass::Setup(
     m_directInstancingPreflightFailed = false;
     m_shadowDrawPreflightValid = false;
     m_cascades.resize(std::max(1u, m_config.numCascades));
+
+    const bool sceneHasSkinning = m_renderScene != nullptr &&
+        std::any_of(m_renderScene->GetObjects().begin(),
+                    m_renderScene->GetObjects().end(),
+                    [](const RenderObject& object)
+                    {
+                        return object.HasSkinningData();
+                    });
+    if (sceneHasSkinning)
+    {
+        const RenderDeformationFrameIdentity deformationIdentity =
+            MakeRenderDeformationFrameIdentity(m_recordIdentity);
+        if (m_deformationResources == nullptr ||
+            !m_deformationResources->MatchesIdentity(deformationIdentity) ||
+            !m_deformationResources->MatchesGraphProvenance(*m_recordIdentity.graph) ||
+            m_deformationResources->GetMatrixCount() == 0 ||
+            builder.GetBufferDesc(
+                m_deformationResources->GetCurrentPaletteHandle()) == nullptr ||
+            builder.GetBufferDesc(
+                m_deformationResources->GetPreviousPaletteHandle()) == nullptr)
+        {
+            return;
+        }
+        m_currentPaletteReadHandle = builder.Read(
+            m_deformationResources->GetCurrentPaletteHandle(),
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Vertex);
+        m_previousPaletteReadHandle = builder.Read(
+            m_deformationResources->GetPreviousPaletteHandle(),
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Vertex);
+        if (!m_currentPaletteReadHandle.IsValid() ||
+            !m_previousPaletteReadHandle.IsValid())
+        {
+            return;
+        }
+    }
 
     const float nearClip = std::max(0.001f, view.nearPlane);
     if (!std::isfinite(m_config.maxDistance) ||
@@ -944,6 +1049,7 @@ bool ShadowPass::BuildPlannedShadowDraws(RenderGraphBuilder& builder,
         PlannedShadowDraw planned;
         planned.packet = draw;
         planned.masked = masked;
+        planned.skinned = IsSkinnedPacket(packet);
         m_plannedShadowDraws.emplace_back(std::move(planned));
     }
     ApplyDirectInstancePlan(builder, view);
@@ -1065,7 +1171,12 @@ bool ShadowPass::BuildPlannedShadowDraws(RenderGraphBuilder& builder,
         }
         const RenderObject* const object = ResolveUniqueObject(
             *m_renderScene, packet.objectId, packet.primitiveData);
+        SkinningPaletteBufferBinding skinningBuffers;
+        SkinningPaletteSliceBinding skinningSlice;
         if (object == nullptr ||
+            !ResolveSkinningPaletteBinding(
+                *object, planned.buffers, m_deformationResources.get(),
+                skinningBuffers, skinningSlice) ||
             !m_pipelineCache->CreateObjectConstantBinding(
                 object->worldMatrix,
                 object->normalMatrix,
@@ -1075,7 +1186,8 @@ bool ShadowPass::BuildPlannedShadowDraws(RenderGraphBuilder& builder,
                     view.previousViewProjectionValid != 0 &&
                     !view.resetTemporalHistory,
                 true,
-                ResolveSkinningMatrices(*object, planned.buffers),
+                skinningBuffers,
+                skinningSlice,
                 nullptr,
                 planned.objectBinding) ||
             !builder.RetainSubmissionResource(
@@ -1319,6 +1431,7 @@ void ShadowPass::ApplyDirectInstancePlan(RenderGraphBuilder& builder,
                 false,
                 true,
                 {},
+                {},
                 m_directInstanceStream.instances.Get(),
                 binding) ||
             !builder.RetainSubmissionResource(
@@ -1403,6 +1516,21 @@ void ShadowPass::Execute(
             "ShadowPass: immutable directional cascade bindings are unavailable at execution");
         context.MarkExecutionFailed(
             "ShadowPass graph recording prerequisites are unavailable");
+        return;
+    }
+
+    const bool sceneHasSkinning = std::any_of(
+        m_renderScene->GetObjects().begin(), m_renderScene->GetObjects().end(),
+        [](const RenderObject& object)
+        {
+            return object.HasSkinningData();
+        });
+    if (sceneHasSkinning && !HasExactDeformationBuffers(
+            context, m_deformationResources.get(), m_currentPaletteReadHandle,
+            m_previousPaletteReadHandle))
+    {
+        context.MarkExecutionFailed(
+            "ShadowPass deformation graph resources do not match the recording snapshot");
         return;
     }
 
@@ -1537,6 +1665,23 @@ void ShadowPass::RenderCascade(
         if (planned.instanced)
         {
             ++m_stats.instancedBatchCount;
+        }
+        if (planned.skinned)
+        {
+            if (m_deformationResources == nullptr ||
+                (m_stats.deformationContentHash != 0 &&
+                 m_stats.deformationContentHash !=
+                     m_deformationResources->GetContentHash()))
+            {
+                context.MarkExecutionFailed(
+                    "ShadowPass observed inconsistent deformation content hashes");
+                ctx.EndRenderPass();
+                return;
+            }
+            m_stats.deformationContentHash =
+                m_deformationResources->GetContentHash();
+            ++m_stats.skinnedDrawCount;
+            ++m_stats.currentPaletteBoundDrawCount;
         }
     }
 

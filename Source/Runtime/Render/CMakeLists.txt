@@ -134,6 +134,7 @@ target_sources(RVX_RenderFoundation PRIVATE
     Private/Renderer/RenderSceneDatabase.cpp
     Private/Renderer/RenderDrawItem.cpp
     Private/Renderer/RenderDrawPlan.cpp
+    Private/Animation/RenderDeformationFrameResources.cpp
     Private/GPUScene/GPUSceneDatabase.cpp
     Private/GPUScene/GPUSceneUpdate.cpp
     Private/GPUScene/GPUSceneUploader.cpp

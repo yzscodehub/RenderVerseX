@@ -6,6 +6,7 @@
  */
 
 #include "Render/Graph/RenderGraph.h"
+#include "Render/Animation/RenderDeformationFrameResources.h"
 #include "Render/GPUDriven/GPUDrivenDiagnostics.h"
 #include "Render/Lighting/LightingFramePlan.h"
 #include "Render/Passes/MeshPassProcessor.h"
@@ -94,6 +95,10 @@ namespace RVX
         RenderUploadWorkDiagnostics directInstanceIndexUploadWork{};
         DirectRasterMutationTotals directMutationTotals{};
         bool directMutationTotalsSaturated = false;
+        /** Exact immutable deformation resource consumed by recorded skin draws. */
+        uint64 deformationContentHash = 0;
+        uint32 skinnedDrawCount = 0;
+        uint32 currentPaletteBoundDrawCount = 0;
     };
 
     struct OpaquePassShadowStats
@@ -134,6 +139,10 @@ namespace RVX
         uint32 skippedMissingResourceCount = 0;
         uint32 skippedMissingUVCount = 0;
         uint32 skippedMaterialBindingCount = 0;
+        uint64 deformationContentHash = 0;
+        uint32 skinnedDrawCount = 0;
+        uint32 currentPaletteBoundDrawCount = 0;
+        uint32 previousPaletteBoundDrawCount = 0;
         RHIFormat outputFormat = RHIFormat::Unknown;
     };
 
@@ -236,6 +245,9 @@ namespace RVX
         uint32 materialFallbackBindingCount = 0;
         uint32 materialTextureFlags = 0;
         uint32 materialFallbackTextureFlags = 0;
+        uint64 deformationContentHash = 0;
+        uint32 skinnedDrawCount = 0;
+        uint32 currentPaletteBoundDrawCount = 0;
         bool planRequested = false;
         bool planValidated = false;
         bool directPacketPathUsed = false;
@@ -610,6 +622,19 @@ namespace RVX
         }
     };
 
+    /** @brief Project a pass-record identity into the deformation resource ABI. */
+    [[nodiscard]] inline RenderDeformationFrameIdentity
+    MakeRenderDeformationFrameIdentity(
+        const RenderPassRecordIdentity& identity) noexcept
+    {
+        return RenderDeformationFrameIdentity{
+            identity.graphIdentity,
+            identity.graphRecordingGeneration,
+            identity.frameSequence,
+            identity.viewOrdinal,
+            identity.recordEpoch};
+    }
+
     /** @brief Value-owned scene state used by typed main-scene pass recording. */
     struct RenderPassFrameSnapshot
     {
@@ -619,6 +644,9 @@ namespace RVX
         /** Strong RHI realization of that exact lighting plan. */
         std::shared_ptr<const RenderLightingFrameResourceSnapshot>
             lightingResources;
+        /** Exact current/previous skin-palette buffers for this recording. */
+        std::shared_ptr<const RenderDeformationFrameResources>
+            deformationResources;
         PrimaryDirectionalLightRecordInput primaryDirectionalLight{};
         ViewData view{};
         RenderFrameExecutionPlan executionPlan{};
@@ -1064,6 +1092,8 @@ namespace RVX
         std::shared_ptr<const LightingFramePlan> lightingPlan;
         std::shared_ptr<const RenderLightingFrameResourceSnapshot>
             lightingResources;
+        std::shared_ptr<const RenderDeformationFrameResources>
+            deformationResources;
         DirectionalShadowRecordOutput directionalShadow{};
         RayTracedShadowRecordOutput rayTracedShadow{};
         std::shared_ptr<const RenderPassFrameSnapshot> frameSnapshot;
@@ -1128,6 +1158,22 @@ namespace RVX
                     return false;
                 }
             }
+            const bool sceneRequiresDeformation = renderScene != nullptr &&
+                std::any_of(renderScene->GetObjects().begin(),
+                            renderScene->GetObjects().end(),
+                            [](const RenderObject& object)
+                            {
+                                return object.HasSkinningData();
+                            });
+            if ((sceneRequiresDeformation && !deformationResources) ||
+                (deformationResources &&
+                 (!deformationResources->MatchesIdentity(
+                      MakeRenderDeformationFrameIdentity(identity)) ||
+                  !deformationResources->MatchesGraphProvenance(
+                      *identity.graph))))
+            {
+                return false;
+            }
             return true;
         }
     };
@@ -1142,6 +1188,8 @@ namespace RVX
         std::shared_ptr<const LightingFramePlan> lightingPlan;
         std::shared_ptr<const RenderLightingFrameResourceSnapshot>
             lightingResources;
+        std::shared_ptr<const RenderDeformationFrameResources>
+            deformationResources;
         DirectionalShadowRecordOutput directionalShadow{};
         RayTracedShadowRecordOutput rayTracedShadow{};
 
@@ -1180,6 +1228,7 @@ namespace RVX
                 results->identity != identity ||
                 frameSnapshot->lightingPlan != lightingPlan ||
                 frameSnapshot->lightingResources != lightingResources ||
+                frameSnapshot->deformationResources != deformationResources ||
                 view.renderFrameExecutionPlan != &frameSnapshot->executionPlan ||
                 view.renderDrawPlan != GetDrawPlan() ||
                 view.meshPassPreparation != &frameSnapshot->meshPassPreparation ||
@@ -1198,6 +1247,11 @@ namespace RVX
             }
             RenderFrameExecutionReport* executionReport = GetExecutionReport();
             return executionReport != nullptr &&
+                   (!deformationResources ||
+                    (deformationResources->MatchesIdentity(
+                         MakeRenderDeformationFrameIdentity(identity)) &&
+                     deformationResources->MatchesGraphProvenance(
+                         *identity.graph))) &&
                    (executionReport->frameSequence == 0 ||
                     executionReport->frameSequence == identity.frameSequence);
         }
@@ -1221,6 +1275,7 @@ namespace RVX
         snapshot->identity = context.identity;
         snapshot->lightingPlan = context.lightingPlan;
         snapshot->lightingResources = context.lightingResources;
+        snapshot->deformationResources = context.deformationResources;
         snapshot->primaryDirectionalLight = context.primaryDirectionalLight;
         snapshot->view = context.view;
         snapshot->view.directionalLightDirection =
@@ -1322,6 +1377,11 @@ namespace RVX
             ? context.lightingResources
             : (result.frameSnapshot
                    ? result.frameSnapshot->lightingResources
+                   : nullptr);
+        result.deformationResources = context.deformationResources
+            ? context.deformationResources
+            : (result.frameSnapshot
+                   ? result.frameSnapshot->deformationResources
                    : nullptr);
         if (result.frameSnapshot)
         {

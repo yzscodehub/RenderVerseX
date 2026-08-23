@@ -165,6 +165,7 @@ namespace
         RVX::uint64 frameSequence = 91)
     {
         RVX::RenderExecutionReceipt receipt;
+        receipt.schemaVersion = 5;
         receipt.available = true;
         receipt.graphComposed = true;
         receipt.executionSucceeded = true;
@@ -208,6 +209,16 @@ namespace
         receipt.lighting.iblRequested = true;
         receipt.lighting.iblInputsReady = true;
         receipt.lighting.iblExecutionReady = true;
+        receipt.deformation.deformationContentHash = 0x5678ULL;
+        receipt.deformation.skinnedObjectCount = 1;
+        receipt.deformation.paletteMatrixCount = 64;
+        receipt.deformation.previousPaletteObjectCount = 1;
+        receipt.deformation.currentPaletteBufferReady = true;
+        receipt.deformation.previousPaletteBufferReady = true;
+        receipt.deformation.opaqueSkinnedDrawCount = 1;
+        receipt.deformation.shadowSkinnedDrawCount = 2;
+        receipt.deformation.velocitySkinnedDrawCount = 1;
+        receipt.deformation.velocityPreviousPaletteDrawCount = 1;
 
         RVX::RenderFeatureExecutionReceipt feature;
         feature.featureId = RVX::BuiltinRenderFeatureIds::LegacyForwardMainChain;
@@ -535,7 +546,7 @@ namespace
                   std::string::npos);
         EXPECT_NE(json.find("\"renderExecutionReceipt\": {"),
                   std::string::npos);
-        EXPECT_NE(json.find("\"schemaVersion\": 4"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 5"), std::string::npos);
         EXPECT_NE(json.find("\"sourceCommit\": \"" + std::string(40, 'a') +
                             "\""),
                   std::string::npos);
@@ -584,6 +595,27 @@ namespace
                   std::string::npos);
         EXPECT_NE(json.find("\"iblExecutionReady\": true"),
                   std::string::npos);
+        EXPECT_NE(json.find("\"deformation\": {"), std::string::npos);
+        EXPECT_NE(json.find("\"deformationContentHash\": 22136"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"skinnedObjectCount\": 1"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"paletteMatrixCount\": 64"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"previousPaletteObjectCount\": 1"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"currentPaletteBufferReady\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"previousPaletteBufferReady\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"opaqueSkinnedDrawCount\": 1"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"shadowSkinnedDrawCount\": 2"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"velocitySkinnedDrawCount\": 1"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"velocityPreviousPaletteDrawCount\": 1"),
+                  std::string::npos);
         EXPECT_NE(json.find("\"executionSucceeded\": true"),
                   std::string::npos);
         EXPECT_NE(json.find("\"presented\": true"), std::string::npos);
@@ -606,12 +638,29 @@ namespace
             MakeSuccessfulRenderExecutionReceipt(91);
         legacyV2Receipt.schemaVersion = 2;
         legacyV2Receipt.lighting = {};
+        legacyV2Receipt.deformation = {};
         report.visualContractReceipt->renderExecutionReceipt = legacyV2Receipt;
         std::ostringstream legacyV2Stream;
         RVX::WriteSampleReportJson(legacyV2Stream, report);
         EXPECT_NE(legacyV2Stream.str().find("\"schemaVersion\": 2"),
                   std::string::npos);
         EXPECT_EQ(legacyV2Stream.str().find("\"lighting\":"),
+                  std::string::npos);
+        EXPECT_EQ(legacyV2Stream.str().find("\"deformation\":"),
+                  std::string::npos);
+
+        RVX::RenderExecutionReceipt legacyV4Receipt =
+            MakeSuccessfulRenderExecutionReceipt(91);
+        legacyV4Receipt.schemaVersion = 4;
+        legacyV4Receipt.deformation = {};
+        report.visualContractReceipt->renderExecutionReceipt = legacyV4Receipt;
+        std::ostringstream legacyV4Stream;
+        RVX::WriteSampleReportJson(legacyV4Stream, report);
+        EXPECT_NE(legacyV4Stream.str().find("\"schemaVersion\": 4"),
+                  std::string::npos);
+        EXPECT_NE(legacyV4Stream.str().find("\"lighting\":"),
+                  std::string::npos);
+        EXPECT_EQ(legacyV4Stream.str().find("\"deformation\":"),
                   std::string::npos);
 
         RVX::RenderExecutionReceipt unreleasedV3Receipt = legacyV2Receipt;

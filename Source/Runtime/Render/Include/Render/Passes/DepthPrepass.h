@@ -26,6 +26,7 @@ namespace RVX
     class GPUCulling;
     class RenderScene;
     class MaterialSystem;
+    class RenderDeformationFrameResources;
     struct ObjectConstantBinding;
     struct GPUSceneRasterBindingSnapshot;
 
@@ -114,7 +115,10 @@ namespace RVX
             const GPUCulling* gpuCulling,
             const RenderPassGPUDrivenInputs& gpuInputs,
             bool gpuDrivenPlanned,
-            std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache);
+            std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache,
+            std::shared_ptr<const RenderDeformationFrameResources>
+                deformationResources,
+            const RenderPassRecordIdentity& recordIdentity);
 
         bool AreGPUDrivenDepthGroupsDrawable(
             uint32 expectedPacketCount,
@@ -160,11 +164,16 @@ namespace RVX
         RGBufferHandle m_gpuDrivenDrawCountHandle;
         RGBufferHandle m_directInstanceHandle;
         RGBufferHandle m_directInstanceIndexHandle;
+        RGBufferHandle m_currentPaletteReadHandle;
+        RGBufferHandle m_previousPaletteReadHandle;
         RenderInstanceBatchPlan m_directInstancePlan;
         std::shared_ptr<RasterInstanceStreamCache> m_directInstanceStreamCache =
             std::make_shared<RasterInstanceStreamCache>();
         RasterInstanceStream m_directInstanceStream;
         bool m_directInstancingPreflightFailed = false;
+        RenderPassRecordIdentity m_recordIdentity{};
+        std::shared_ptr<const RenderDeformationFrameResources>
+            m_deformationResources;
         std::shared_ptr<const GPUSceneRasterBindingSnapshot> m_gpuSceneRasterBinding;
         std::shared_ptr<std::atomic_bool> m_gpuSceneRecordingFailure;
         DepthPrepassDrawStats m_drawStats;

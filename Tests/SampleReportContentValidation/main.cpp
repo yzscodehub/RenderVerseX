@@ -158,6 +158,12 @@ namespace
         bool requireCSMExecutionReady = false;
         bool requireIBLRequested = false;
         bool requireIBLExecutionReady = false;
+        bool requireDeformationPlan = false;
+        bool requireCurrentSkinningPalette = false;
+        bool requirePreviousSkinningPalette = false;
+        bool requireSkinnedOpaqueExecution = false;
+        bool requireSkinnedShadowExecution = false;
+        bool requireSkinnedVelocityExecution = false;
         bool requireReadinessWait = false;
         bool requireGPUDrivenExecution = false;
         bool requireDirectExecution = false;
@@ -968,6 +974,30 @@ namespace
             else if (arg == "--require-ibl-execution-ready")
             {
                 options.requireIBLExecutionReady = true;
+            }
+            else if (arg == "--require-deformation-plan")
+            {
+                options.requireDeformationPlan = true;
+            }
+            else if (arg == "--require-current-skinning-palette")
+            {
+                options.requireCurrentSkinningPalette = true;
+            }
+            else if (arg == "--require-previous-skinning-palette")
+            {
+                options.requirePreviousSkinningPalette = true;
+            }
+            else if (arg == "--require-skinned-opaque-execution")
+            {
+                options.requireSkinnedOpaqueExecution = true;
+            }
+            else if (arg == "--require-skinned-shadow-execution")
+            {
+                options.requireSkinnedShadowExecution = true;
+            }
+            else if (arg == "--require-skinned-velocity-execution")
+            {
+                options.requireSkinnedVelocityExecution = true;
             }
             else if (arg == "--require-phase")
             {
@@ -2474,13 +2504,17 @@ namespace
             "diagnostic",
             "features",
         };
-        if (schemaVersion == 2 || schemaVersion == 4)
+        if (schemaVersion == 2 || schemaVersion == 4 || schemaVersion == 5)
         {
             expectedFields.insert("deferredOpaque");
         }
-        if (schemaVersion == 4)
+        if (schemaVersion == 4 || schemaVersion == 5)
         {
             expectedFields.insert("lighting");
+        }
+        if (schemaVersion == 5)
+        {
+            expectedFields.insert("deformation");
         }
         passed &= ValidateExactObjectFields(
             execution, expectedFields, "Render execution receipt v21");
@@ -2522,14 +2556,14 @@ namespace
         passed &= ReadStringField(execution, "diagnostic", diagnostic,
                                   "Render execution receipt v21");
         if ((schemaVersion != 1 && schemaVersion != 2 &&
-             schemaVersion != 4) || !available ||
+             schemaVersion != 4 && schemaVersion != 5) || !available ||
             !graphComposed ||
             !executionSucceeded || !presented || !succeeded)
         {
             std::cerr << "Render execution receipt v21 is not a successful presented execution\n";
             passed = false;
         }
-        if (schemaVersion == 2 || schemaVersion == 4)
+        if (schemaVersion == 2 || schemaVersion == 4 || schemaVersion == 5)
         {
             const auto deferredOpaque = execution.find("deferredOpaque");
             if (deferredOpaque == execution.end() ||
@@ -2598,7 +2632,7 @@ namespace
                       << "DeferredOpaque evidence\n";
             passed = false;
         }
-        if (schemaVersion == 4)
+        if (schemaVersion == 4 || schemaVersion == 5)
         {
             const auto lighting = execution.find("lighting");
             if (lighting == execution.end() || !lighting->is_object())
@@ -2733,6 +2767,142 @@ namespace
                   options->requireIBLExecutionReady))
         {
             std::cerr << "Render execution receipt predates required lighting evidence\n";
+            passed = false;
+        }
+        const bool requiresDeformationEvidence = options != nullptr &&
+            (options->requireDeformationPlan ||
+             options->requireCurrentSkinningPalette ||
+             options->requirePreviousSkinningPalette ||
+             options->requireSkinnedOpaqueExecution ||
+             options->requireSkinnedShadowExecution ||
+             options->requireSkinnedVelocityExecution);
+        if (schemaVersion == 5)
+        {
+            const auto deformation = execution.find("deformation");
+            if (deformation == execution.end() || !deformation->is_object())
+            {
+                std::cerr << "Render execution receipt v5 missing deformation evidence\n";
+                passed = false;
+            }
+            else
+            {
+                constexpr const char* context =
+                    "Render deformation execution receipt v5";
+                passed &= ValidateExactObjectFields(
+                    *deformation,
+                    {"deformationContentHash", "skinnedObjectCount",
+                     "paletteMatrixCount", "previousPaletteObjectCount",
+                     "currentPaletteBufferReady",
+                     "previousPaletteBufferReady",
+                     "opaqueSkinnedDrawCount", "shadowSkinnedDrawCount",
+                     "velocitySkinnedDrawCount",
+                     "velocityPreviousPaletteDrawCount"},
+                    context);
+
+                uint64_t deformationContentHash = 0;
+                uint64_t skinnedObjectCount = 0;
+                uint64_t paletteMatrixCount = 0;
+                uint64_t previousPaletteObjectCount = 0;
+                uint64_t opaqueSkinnedDrawCount = 0;
+                uint64_t shadowSkinnedDrawCount = 0;
+                uint64_t velocitySkinnedDrawCount = 0;
+                uint64_t velocityPreviousPaletteDrawCount = 0;
+                bool currentPaletteBufferReady = false;
+                bool previousPaletteBufferReady = false;
+                passed &= ReadUnsignedField(
+                    *deformation, "deformationContentHash",
+                    deformationContentHash, context);
+                passed &= ReadUnsignedField(
+                    *deformation, "skinnedObjectCount",
+                    skinnedObjectCount, context);
+                passed &= ReadUnsignedField(
+                    *deformation, "paletteMatrixCount",
+                    paletteMatrixCount, context);
+                passed &= ReadUnsignedField(
+                    *deformation, "previousPaletteObjectCount",
+                    previousPaletteObjectCount, context);
+                passed &= ReadBooleanField(
+                    *deformation, "currentPaletteBufferReady",
+                    currentPaletteBufferReady, context);
+                passed &= ReadBooleanField(
+                    *deformation, "previousPaletteBufferReady",
+                    previousPaletteBufferReady, context);
+                passed &= ReadUnsignedField(
+                    *deformation, "opaqueSkinnedDrawCount",
+                    opaqueSkinnedDrawCount, context);
+                passed &= ReadUnsignedField(
+                    *deformation, "shadowSkinnedDrawCount",
+                    shadowSkinnedDrawCount, context);
+                passed &= ReadUnsignedField(
+                    *deformation, "velocitySkinnedDrawCount",
+                    velocitySkinnedDrawCount, context);
+                passed &= ReadUnsignedField(
+                    *deformation, "velocityPreviousPaletteDrawCount",
+                    velocityPreviousPaletteDrawCount, context);
+
+                const auto fitsUInt32 = [](uint64_t value)
+                {
+                    return value <= std::numeric_limits<uint32_t>::max();
+                };
+                const bool hasAnyDraw = opaqueSkinnedDrawCount != 0 ||
+                    shadowSkinnedDrawCount != 0 ||
+                    velocitySkinnedDrawCount != 0 ||
+                    velocityPreviousPaletteDrawCount != 0;
+                const bool zeroPaletteState = paletteMatrixCount == 0 &&
+                    skinnedObjectCount == 0 &&
+                    previousPaletteObjectCount == 0 &&
+                    !currentPaletteBufferReady &&
+                    !previousPaletteBufferReady && !hasAnyDraw;
+                const bool populatedPaletteState = paletteMatrixCount != 0 &&
+                    skinnedObjectCount != 0 &&
+                    previousPaletteObjectCount <= skinnedObjectCount &&
+                    currentPaletteBufferReady && previousPaletteBufferReady;
+                const bool structurallyValid =
+                    deformationContentHash != 0 &&
+                    fitsUInt32(skinnedObjectCount) &&
+                    fitsUInt32(paletteMatrixCount) &&
+                    fitsUInt32(previousPaletteObjectCount) &&
+                    fitsUInt32(opaqueSkinnedDrawCount) &&
+                    fitsUInt32(shadowSkinnedDrawCount) &&
+                    fitsUInt32(velocitySkinnedDrawCount) &&
+                    fitsUInt32(velocityPreviousPaletteDrawCount) &&
+                    (zeroPaletteState || populatedPaletteState) &&
+                    velocityPreviousPaletteDrawCount ==
+                        velocitySkinnedDrawCount &&
+                    (velocitySkinnedDrawCount == 0 ||
+                     previousPaletteObjectCount != 0);
+                if (!structurallyValid)
+                {
+                    std::cerr << "Render deformation execution receipt v5 is structurally invalid\n";
+                    passed = false;
+                }
+
+                if (options != nullptr &&
+                    ((options->requireDeformationPlan &&
+                      deformationContentHash == 0) ||
+                     (options->requireCurrentSkinningPalette &&
+                      (skinnedObjectCount == 0 || paletteMatrixCount == 0 ||
+                       !currentPaletteBufferReady)) ||
+                     (options->requirePreviousSkinningPalette &&
+                      (previousPaletteObjectCount == 0 ||
+                       !previousPaletteBufferReady)) ||
+                     (options->requireSkinnedOpaqueExecution &&
+                      opaqueSkinnedDrawCount == 0) ||
+                     (options->requireSkinnedShadowExecution &&
+                      shadowSkinnedDrawCount == 0) ||
+                     (options->requireSkinnedVelocityExecution &&
+                      (velocitySkinnedDrawCount == 0 ||
+                       velocityPreviousPaletteDrawCount !=
+                           velocitySkinnedDrawCount))))
+                {
+                    std::cerr << "Render deformation execution receipt v5 does not satisfy required deformation evidence\n";
+                    passed = false;
+                }
+            }
+        }
+        else if (requiresDeformationEvidence)
+        {
+            std::cerr << "Render execution receipt predates required deformation evidence\n";
             passed = false;
         }
         if (!diagnostic.empty() || diagnostic.size() > 4096)
@@ -4138,17 +4308,31 @@ namespace
         char parserArg4[] = "--require-csm-execution-ready";
         char parserArg5[] = "--require-ibl-requested";
         char parserArg6[] = "--require-ibl-execution-ready";
+        char parserArg7[] = "--require-deformation-plan";
+        char parserArg8[] = "--require-current-skinning-palette";
+        char parserArg9[] = "--require-previous-skinning-palette";
+        char parserArg10[] = "--require-skinned-opaque-execution";
+        char parserArg11[] = "--require-skinned-shadow-execution";
+        char parserArg12[] = "--require-skinned-velocity-execution";
         char* parserArguments[] = {
             parserArg0, parserArg1, parserArg2, parserArg3,
-            parserArg4, parserArg5, parserArg6};
+            parserArg4, parserArg5, parserArg6, parserArg7,
+            parserArg8, parserArg9, parserArg10, parserArg11,
+            parserArg12};
         Options parsedLightingOptions;
-        if (!ParseOptions(7, parserArguments, parsedLightingOptions) ||
+        if (!ParseOptions(13, parserArguments, parsedLightingOptions) ||
             !parsedLightingOptions.selfTest ||
             !parsedLightingOptions.requireLightingPlan ||
             !parsedLightingOptions.requireCSMRequested ||
             !parsedLightingOptions.requireCSMExecutionReady ||
             !parsedLightingOptions.requireIBLRequested ||
-            !parsedLightingOptions.requireIBLExecutionReady)
+            !parsedLightingOptions.requireIBLExecutionReady ||
+            !parsedLightingOptions.requireDeformationPlan ||
+            !parsedLightingOptions.requireCurrentSkinningPalette ||
+            !parsedLightingOptions.requirePreviousSkinningPalette ||
+            !parsedLightingOptions.requireSkinnedOpaqueExecution ||
+            !parsedLightingOptions.requireSkinnedShadowExecution ||
+            !parsedLightingOptions.requireSkinnedVelocityExecution)
         {
             return false;
         }
@@ -4649,7 +4833,7 @@ namespace
         schema21Report["visualContractReceipt"]
                       ["captureConfigurationRevision"] = 3;
         schema21Report["visualContractReceipt"]["renderExecutionReceipt"] = {
-            {"schemaVersion", 4},
+            {"schemaVersion", 5},
             {"available", true},
             {"graphComposed", true},
             {"executionSucceeded", true},
@@ -4691,6 +4875,16 @@ namespace
                            {"iblRequested", true},
                            {"iblInputsReady", true},
                            {"iblExecutionReady", true}}},
+            {"deformation", {{"deformationContentHash", 404},
+                              {"skinnedObjectCount", 1},
+                              {"paletteMatrixCount", 64},
+                              {"previousPaletteObjectCount", 1},
+                              {"currentPaletteBufferReady", true},
+                              {"previousPaletteBufferReady", true},
+                              {"opaqueSkinnedDrawCount", 1},
+                              {"shadowSkinnedDrawCount", 2},
+                              {"velocitySkinnedDrawCount", 1},
+                              {"velocityPreviousPaletteDrawCount", 1}}},
             {"diagnostic", ""},
             {"features",
              Json::array({{{"featureId", 1},
@@ -4722,14 +4916,27 @@ namespace
             return false;
         }
 
-        // Execution receipt schemas one and two remain intentionally
-        // lighting-free.  The schema-v21 report envelope accepts both legacy
-        // receipt shapes so long as it does not require newer evidence.
+        // Execution receipt schema four remains deformation-free. Schemas one
+        // and two are additionally lighting-free. The schema-v21 report
+        // envelope accepts all published legacy shapes unless a gate requests
+        // newer evidence.
+        Json schema4ExecutionReceipt = schema21Report;
+        schema4ExecutionReceipt["visualContractReceipt"]
+                               ["renderExecutionReceipt"]["schemaVersion"] = 4;
+        schema4ExecutionReceipt["visualContractReceipt"]
+                               ["renderExecutionReceipt"].erase("deformation");
+        if (!ValidateSampleReportV12Root(
+                schema4ExecutionReceipt, expectedBuildIdentity))
+        {
+            return false;
+        }
         Json schema2ExecutionReceipt = schema21Report;
         schema2ExecutionReceipt["visualContractReceipt"]
                                ["renderExecutionReceipt"]["schemaVersion"] = 2;
         schema2ExecutionReceipt["visualContractReceipt"]
                                ["renderExecutionReceipt"].erase("lighting");
+        schema2ExecutionReceipt["visualContractReceipt"]
+                               ["renderExecutionReceipt"].erase("deformation");
         if (!ValidateSampleReportV12Root(
                 schema2ExecutionReceipt, expectedBuildIdentity))
         {
@@ -4808,6 +5015,47 @@ namespace
                 missingReadyIBL,
                 expectedBuildIdentity,
                 &strictLightingEvidence))
+        {
+            return false;
+        }
+
+        Options strictDeformationEvidence;
+        strictDeformationEvidence.requireDeformationPlan = true;
+        strictDeformationEvidence.requireCurrentSkinningPalette = true;
+        strictDeformationEvidence.requirePreviousSkinningPalette = true;
+        strictDeformationEvidence.requireSkinnedOpaqueExecution = true;
+        strictDeformationEvidence.requireSkinnedShadowExecution = true;
+        strictDeformationEvidence.requireSkinnedVelocityExecution = true;
+        if (!ValidateSampleReportV12Root(
+                schema21Report,
+                expectedBuildIdentity,
+                &strictDeformationEvidence) ||
+            ValidateSampleReportV12Root(
+                schema4ExecutionReceipt,
+                expectedBuildIdentity,
+                &strictDeformationEvidence))
+        {
+            return false;
+        }
+
+        const auto deformationRequirementFails =
+            [&schema21Report,
+             &expectedBuildIdentity,
+             &strictDeformationEvidence](const char* field)
+        {
+            Json candidate = schema21Report;
+            candidate["visualContractReceipt"]
+                     ["renderExecutionReceipt"]
+                     ["deformation"][field] = 0;
+            return !ValidateSampleReportV12Root(
+                candidate,
+                expectedBuildIdentity,
+                &strictDeformationEvidence);
+        };
+        if (!deformationRequirementFails("opaqueSkinnedDrawCount") ||
+            !deformationRequirementFails("shadowSkinnedDrawCount") ||
+            !deformationRequirementFails("velocitySkinnedDrawCount") ||
+            !deformationRequirementFails("previousPaletteObjectCount"))
         {
             return false;
         }
@@ -4900,6 +5148,44 @@ namespace
         Json missingLightingEvidence = schema21Report;
         missingLightingEvidence["visualContractReceipt"]
                               ["renderExecutionReceipt"].erase("lighting");
+        Json missingDeformationEvidence = schema21Report;
+        missingDeformationEvidence["visualContractReceipt"]
+                                  ["renderExecutionReceipt"].erase(
+                                      "deformation");
+        Json unknownDeformationField = schema21Report;
+        unknownDeformationField["visualContractReceipt"]
+                               ["renderExecutionReceipt"]
+                               ["deformation"]["fallback"] = true;
+        Json zeroDeformationContentHash = schema21Report;
+        zeroDeformationContentHash["visualContractReceipt"]
+                                  ["renderExecutionReceipt"]
+                                  ["deformation"]
+                                  ["deformationContentHash"] = 0;
+        Json invalidDeformationHistoryCount = schema21Report;
+        invalidDeformationHistoryCount["visualContractReceipt"]
+                                      ["renderExecutionReceipt"]
+                                      ["deformation"]
+                                      ["previousPaletteObjectCount"] = 2;
+        Json invalidDeformationEmptyState = schema21Report;
+        invalidDeformationEmptyState["visualContractReceipt"]
+                                    ["renderExecutionReceipt"]
+                                    ["deformation"]
+                                    ["paletteMatrixCount"] = 0;
+        Json missingCurrentPaletteBuffer = schema21Report;
+        missingCurrentPaletteBuffer["visualContractReceipt"]
+                                   ["renderExecutionReceipt"]
+                                   ["deformation"]
+                                   ["currentPaletteBufferReady"] = false;
+        Json missingPreviousPaletteBuffer = schema21Report;
+        missingPreviousPaletteBuffer["visualContractReceipt"]
+                                    ["renderExecutionReceipt"]
+                                    ["deformation"]
+                                    ["previousPaletteBufferReady"] = false;
+        Json mismatchedVelocityPaletteDraws = schema21Report;
+        mismatchedVelocityPaletteDraws["visualContractReceipt"]
+                                      ["renderExecutionReceipt"]
+                                      ["deformation"]
+                                      ["velocityPreviousPaletteDrawCount"] = 2;
         Json zeroLightingPlanIdentity = schema21Report;
         zeroLightingPlanIdentity["visualContractReceipt"]
                                 ["renderExecutionReceipt"]
@@ -5018,6 +5304,14 @@ namespace
         if (!expectInvalidSchema21(std::move(missingExecutionReceipt)) ||
             !expectInvalidSchema21(std::move(missingDeferredOpaqueEvidence)) ||
             !expectInvalidSchema21(std::move(missingLightingEvidence)) ||
+            !expectInvalidSchema21(std::move(missingDeformationEvidence)) ||
+            !expectInvalidSchema21(std::move(unknownDeformationField)) ||
+            !expectInvalidSchema21(std::move(zeroDeformationContentHash)) ||
+            !expectInvalidSchema21(std::move(invalidDeformationHistoryCount)) ||
+            !expectInvalidSchema21(std::move(invalidDeformationEmptyState)) ||
+            !expectInvalidSchema21(std::move(missingCurrentPaletteBuffer)) ||
+            !expectInvalidSchema21(std::move(missingPreviousPaletteBuffer)) ||
+            !expectInvalidSchema21(std::move(mismatchedVelocityPaletteDraws)) ||
             !expectInvalidSchema21(std::move(zeroLightingPlanIdentity)) ||
             !expectInvalidSchema21(std::move(invalidLightingOverflow)) ||
             !expectInvalidSchema21(std::move(invalidLightingReadiness)) ||
@@ -5381,6 +5675,12 @@ namespace
             << "  --require-csm-execution-ready\n"
             << "  --require-ibl-requested\n"
             << "  --require-ibl-execution-ready\n"
+            << "  --require-deformation-plan\n"
+            << "  --require-current-skinning-palette\n"
+            << "  --require-previous-skinning-palette\n"
+            << "  --require-skinned-opaque-execution\n"
+            << "  --require-skinned-shadow-execution\n"
+            << "  --require-skinned-velocity-execution\n"
             << "  --require-render-feature-executed <feature-id>\n"
             << "  --forbid-fallback-reasons\n"
             << "  --forbid-render-feature-fallbacks\n";

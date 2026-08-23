@@ -44,6 +44,7 @@ namespace RVX
     struct RenderPassRecordContext;
     struct RenderPassRecordResults;
     struct RenderLightingFrameResourceSnapshot;
+    class RenderDeformationFrameResources;
 
     /** @brief Result of resolving every frozen opaque-raster pipeline request. */
     enum class OpaqueRasterPipelinePreflightCode : uint8
@@ -210,6 +211,8 @@ namespace RVX
             std::shared_ptr<const LightingFramePlan> lightingPlan,
             std::shared_ptr<const RenderLightingFrameResourceSnapshot>
                 lightingResources,
+            std::shared_ptr<const RenderDeformationFrameResources>
+                deformationResources,
             const DirectionalShadowRecordOutput& directionalShadow,
             const RayTracedShadowRecordOutput& rayTracedShadow,
             std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache,
@@ -236,6 +239,8 @@ namespace RVX
         RGBufferHandle m_clusterConstantsReadHandle;
         RGBufferHandle m_clusterDataReadHandle;
         RGBufferHandle m_clusterLightIndicesReadHandle;
+        RGBufferHandle m_currentPaletteReadHandle;
+        RGBufferHandle m_previousPaletteReadHandle;
         RGTextureViewHandle m_colorTargetViewHandle;
         RGTextureViewHandle m_depthTargetViewHandle;
         RGTextureViewHandle m_directionalShadowViewHandle;
@@ -278,6 +283,8 @@ namespace RVX
         std::shared_ptr<const LightingFramePlan> m_lightingPlan;
         std::shared_ptr<const RenderLightingFrameResourceSnapshot>
             m_lightingResources;
+        std::shared_ptr<const RenderDeformationFrameResources>
+            m_deformationResources;
         std::shared_ptr<LightingBindingSnapshot> m_lightingBindingSnapshot;
         DirectionalShadowRecordOutput m_directionalShadowInputs;
         RayTracedShadowRecordOutput m_rayTracedShadowInputs;

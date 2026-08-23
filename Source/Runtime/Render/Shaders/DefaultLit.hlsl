@@ -17,6 +17,8 @@
 //   Slot 6: GPU-driven global instance index buffer (uint)
 // =============================================================================
 
+// GPU-scene's private compatibility cbuffer retains this fixed tail. Direct
+// raster skinning uses Include/Skinning.hlsli and never indexes that tail.
 #define RVX_MAX_OBJECT_SKINNING_MATRICES 128
 
 #include "Include/BRDF.hlsli"
@@ -54,8 +56,7 @@ cbuffer ObjectConstants : register(b0, space1)
     float4x4 NormalMatrix;
     float4x4 PreviousWorldViewProjection;
     float4 ObjectVelocityParams; // x: previous WVP valid, y: receives shadow
-    float4 SkinningParams; // x: enabled, y: matrix count
-    float4x4 SkinningMatrices[RVX_MAX_OBJECT_SKINNING_MATRICES];
+    float4 SkinningParams; // x: enabled, y: matrix count, z/w: current/previous offsets
 };
 #endif
 
@@ -140,6 +141,8 @@ SamplerState IBLLinearClampSampler : register(s13, space0);
 StructuredBuffer<GPUInstanceData> GPUDrivenInstances : register(t1, space1);
 #endif
 
+#include "Include/Skinning.hlsli"
+
 // =============================================================================
 // Vertex Shader Input/Output
 // =============================================================================
@@ -191,64 +194,16 @@ struct PSInput
 // Vertex Shader
 // =============================================================================
 
-float4 ResolveSkinningPosition(float3 position, uint4 boneIndices, float4 boneWeights)
-{
-    if (SkinningParams.x <= 0.5f || SkinningParams.y <= 0.5f)
-    {
-        return float4(position, 1.0f);
-    }
-
-    const float weightSum = boneWeights.x + boneWeights.y + boneWeights.z + boneWeights.w;
-    if (weightSum <= 1.0e-5f)
-    {
-        return float4(position, 1.0f);
-    }
-
-    const float4 weights = boneWeights / weightSum;
-    const uint boneCount = (uint)SkinningParams.y;
-    const uint4 safeIndices = min(boneIndices, boneCount - 1u);
-    const float4 localPosition = float4(position, 1.0f);
-
-    return mul(SkinningMatrices[safeIndices.x], localPosition) * weights.x +
-           mul(SkinningMatrices[safeIndices.y], localPosition) * weights.y +
-           mul(SkinningMatrices[safeIndices.z], localPosition) * weights.z +
-           mul(SkinningMatrices[safeIndices.w], localPosition) * weights.w;
-}
-
-float3 ResolveSkinningVector(float3 vectorValue, uint4 boneIndices, float4 boneWeights)
-{
-    if (SkinningParams.x <= 0.5f || SkinningParams.y <= 0.5f)
-    {
-        return vectorValue;
-    }
-
-    const float weightSum = boneWeights.x + boneWeights.y + boneWeights.z + boneWeights.w;
-    if (weightSum <= 1.0e-5f)
-    {
-        return vectorValue;
-    }
-
-    const float4 weights = boneWeights / weightSum;
-    const uint boneCount = (uint)SkinningParams.y;
-    const uint4 safeIndices = min(boneIndices, boneCount - 1u);
-    const float4 localVector = float4(vectorValue, 0.0f);
-
-    const float4 skinnedVector =
-        mul(SkinningMatrices[safeIndices.x], localVector) * weights.x +
-        mul(SkinningMatrices[safeIndices.y], localVector) * weights.y +
-        mul(SkinningMatrices[safeIndices.z], localVector) * weights.z +
-        mul(SkinningMatrices[safeIndices.w], localVector) * weights.w;
-
-    return skinnedVector.xyz;
-}
-
 PSInput VSMain(VSInput input)
 {
     PSInput output;
 
-    const float4 localPosition = ResolveSkinningPosition(input.Position, input.BoneIndices, input.BoneWeights);
-    const float3 localNormal = ResolveSkinningVector(input.Normal, input.BoneIndices, input.BoneWeights);
-    const float3 localTangent = ResolveSkinningVector(input.Tangent.xyz, input.BoneIndices, input.BoneWeights);
+    const float4 localPosition = RVXResolveCurrentSkinningPosition(
+        input.Position, input.BoneIndices, input.BoneWeights);
+    const float3 localNormal = RVXResolveCurrentSkinningVector(
+        input.Normal, input.BoneIndices, input.BoneWeights);
+    const float3 localTangent = RVXResolveCurrentSkinningVector(
+        input.Tangent.xyz, input.BoneIndices, input.BoneWeights);
 
     float4 worldPos = mul(World, localPosition);
     output.WorldPos = worldPos.xyz;

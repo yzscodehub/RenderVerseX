@@ -95,6 +95,13 @@ namespace RVX
         std::vector<Mat4> skinningMatrices;
         bool hasSkinningPaletteProvider = false;
         RenderSkinningPaletteMetadata skinningPalette{};
+        /**
+         * Last successfully presented compatible palette. This stays renderer
+         * owned so extraction continues to publish only current pose data.
+         */
+        std::vector<Mat4> previousSkinningMatrices;
+        RenderSkinningPaletteMetadata previousSkinningPalette{};
+        uint8 previousSkinningPaletteValid = 0;
         std::vector<RenderResourceHandle> referencedResources;
 
         uint64 entityId = 0;
@@ -119,6 +126,11 @@ namespace RVX
         {
             return hasSkinningPaletteProvider &&
                    skinningPalette.IsValidFor(skinningMatrices);
+        }
+        [[nodiscard]] bool HasValidPreviousSkinningPalette() const noexcept
+        {
+            return previousSkinningPaletteValid != 0 &&
+                   previousSkinningPalette.IsValidFor(previousSkinningMatrices);
         }
     };
 
@@ -348,6 +360,12 @@ namespace RVX
         }
 
     private:
+        struct RenderedSkinningPalette
+        {
+            std::vector<Mat4> matrices;
+            RenderSkinningPaletteMetadata metadata{};
+        };
+
         [[nodiscard]] RenderFrameApplyResult ApplyFrameState(
             const RenderFrameHeaderV5& header,
             const RenderViewFamilySnapshot& viewFamily,
@@ -360,7 +378,8 @@ namespace RVX
             const RenderFeatureSnapshot& features,
             const RenderSceneDatabase& retainedScene,
             const RenderSceneDatabaseChanges& receiptChanges,
-            const RenderResourceRegistry& registry);
+            const RenderResourceRegistry& registry,
+            bool retainedSceneFullReset);
         [[nodiscard]] RenderFrameApplyResult ApplyIncrementalFrameState(
             const RenderFramePacketV5& frame,
             const RenderSceneDatabase& retainedScene,
@@ -371,6 +390,11 @@ namespace RVX
         void RemoveReferences(const std::vector<RenderResourceHandle>& references);
         void RemoveObjectAt(uint32 index);
         void RemoveLightAt(uint32 index);
+        void ResolvePreviousSkinningPalette(
+            const RenderPrimitiveSnapshot& primitive,
+            bool resetHistory,
+            RenderObject& object) const;
+        void CommitAcceptedSkinningPaletteHistory();
         void StagePresentedSceneReceipt(
             const RenderFrameHeaderV5& header,
             const RenderSceneDatabase& retainedScene,
@@ -431,6 +455,8 @@ namespace RVX
         RenderFrameHeaderV5 m_lastRenderedHeader{};
         RenderViewSnapshot m_lastRenderedView{};
         std::unordered_map<uint64, Mat4> m_lastRenderedObjectTransforms;
+        std::unordered_map<uint64, RenderedSkinningPalette>
+            m_lastRenderedSkinningPalettes;
         uint64 m_surfaceCompatibilityKey = 0;
         uint64 m_lastRenderedSurfaceCompatibilityKey = 0;
 

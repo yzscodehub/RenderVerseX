@@ -4,6 +4,7 @@
  */
 
 #include "Render/Passes/OpaquePass.h"
+#include "Render/Animation/RenderDeformationFrameResources.h"
 #include "Render/Submission/DirectRasterReadbackQualification.h"
 #include "Render/Submission/OpaqueRasterSubmission.h"
 
@@ -65,14 +66,82 @@ namespace
         bool m_succeeded = false;
     };
 
-    std::span<const Mat4> ResolveSkinningMatrices(const RenderObject& object, const MeshGPUBuffers& buffers)
+    [[nodiscard]] bool SamePaletteMetadata(
+        const RenderSkinningPaletteMetadata& left,
+        const RenderSkinningPaletteMetadata& right) noexcept
     {
-        if (!object.HasSkinningData() || !buffers.HasSkinningVertexData())
+        return left.providerComponentId == right.providerComponentId &&
+               left.sourceModelResourceId == right.sourceModelResourceId &&
+               left.poseSequence == right.poseSequence &&
+               left.paletteHash == right.paletteHash &&
+               left.paletteCount == right.paletteCount;
+    }
+
+    [[nodiscard]] bool ResolveSkinningPaletteBinding(
+        const RenderObject& object,
+        const MeshGPUBuffers& buffers,
+        const RenderDeformationFrameResources* resources,
+        SkinningPaletteBufferBinding& outBuffers,
+        SkinningPaletteSliceBinding& outSlice) noexcept
+    {
+        outBuffers = {};
+        outSlice = {};
+        if (!object.HasSkinningData())
+            return true;
+
+        if (!buffers.HasSkinningVertexData() || resources == nullptr ||
+            !resources->IsComplete() || object.entityId == 0 ||
+            !object.HasValidSkinningPalette())
         {
-            return {};
+            return false;
+        }
+        const RenderDeformationPaletteSlice* const slice =
+            resources->FindSlice(object.entityId);
+        if (slice == nullptr || !slice->IsStructurallyValid() ||
+            slice->matrixCount != object.skinningMatrices.size() ||
+            !SamePaletteMetadata(slice->currentMetadata, object.skinningPalette) ||
+            slice->currentOffset > resources->GetMatrixCount() - slice->matrixCount ||
+            slice->previousOffset > resources->GetMatrixCount() - slice->matrixCount)
+        {
+            return false;
+        }
+        if (slice->previousValid)
+        {
+            if (!object.HasValidPreviousSkinningPalette() ||
+                !SamePaletteMetadata(
+                    slice->previousMetadata, object.previousSkinningPalette))
+            {
+                return false;
+            }
+        }
+        else if (object.HasValidPreviousSkinningPalette() ||
+                 slice->previousMetadata.paletteCount != 0)
+        {
+            return false;
         }
 
-        return std::span<const Mat4>(object.skinningMatrices.data(), object.skinningMatrices.size());
+        outBuffers.currentPaletteBuffer = resources->GetCurrentPaletteBuffer();
+        outBuffers.previousPaletteBuffer = resources->GetPreviousPaletteBuffer();
+        outSlice.currentOffset = slice->currentOffset;
+        outSlice.previousOffset = slice->previousOffset;
+        outSlice.matrixCount = slice->matrixCount;
+        outSlice.previousValid = slice->previousValid;
+        return outBuffers.HasPalettes() && outSlice.IsWellFormed();
+    }
+
+    [[nodiscard]] bool HasExactDeformationBuffers(
+        RenderGraphPassContext& context,
+        const RenderDeformationFrameResources* resources,
+        RGBufferHandle currentHandle,
+        RGBufferHandle previousHandle) noexcept
+    {
+        return resources != nullptr && resources->IsComplete() &&
+               resources->GetMatrixCount() != 0 &&
+               currentHandle.IsValid() && previousHandle.IsValid() &&
+               context.GetBuffer(currentHandle) ==
+                   resources->GetCurrentPaletteBuffer().Get() &&
+               context.GetBuffer(previousHandle) ==
+                   resources->GetPreviousPaletteBuffer().Get();
     }
 
     [[nodiscard]] bool RetainLightingBindingSnapshot(
@@ -731,6 +800,7 @@ struct OpaquePass::PlannedOpaqueDraw
     ObjectConstantBinding objectBinding;
     MaterialBindingResult materialBinding;
     RenderSkinningPaletteMetadata skinningPalette{};
+    SkinningPaletteSliceBinding skinningSlice{};
     bool allowNormalMap = false;
     bool receivesShadow = false;
     bool skinned = false;
@@ -1137,6 +1207,7 @@ void OpaquePass::OnRemove()
     m_gpuMaterialParameterTable.Reset();
     m_gpuRasterMaterialSemanticKeysBySlot.clear();
     m_directInstancingPreflightFailed = false;
+    m_deformationResources.reset();
 }
 
 void OpaquePass::SetResources(PipelineCache* pipelines,
@@ -1159,6 +1230,7 @@ void OpaquePass::InitializeGraphRecorder(
     bool gpuDrivenPlanned,
     std::shared_ptr<const LightingFramePlan> lightingPlan,
     std::shared_ptr<const RenderLightingFrameResourceSnapshot> lightingResources,
+    std::shared_ptr<const RenderDeformationFrameResources> deformationResources,
     const DirectionalShadowRecordOutput& directionalShadow,
     const RayTracedShadowRecordOutput& rayTracedShadow,
     std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache,
@@ -1187,6 +1259,7 @@ void OpaquePass::InitializeGraphRecorder(
     m_gpuSceneRasterEnabled = gpuInputs.gpuSceneRasterEnabled;
     m_lightingPlan = std::move(lightingPlan);
     m_lightingResources = std::move(lightingResources);
+    m_deformationResources = std::move(deformationResources);
     m_lightingBindingSnapshot.reset();
     m_directionalShadowInputs = directionalShadow;
     m_rayTracedShadowInputs = rayTracedShadow;
@@ -1480,6 +1553,7 @@ void OpaquePass::AddToGraphInternal(
             data.recorder->InitializeGraphRecorder(
                 renderScene, opaqueDrawItems, maskedDrawItems, gpuCulling,
                 data.gpuInputs, gpuPlanned, lightingPlan, lightingResources,
+                data.execution.deformationResources,
                 directionalShadow, rayTracedShadow,
                 data.directInstanceStreamCache,
                 data.directReadbackQualification,
@@ -1618,6 +1692,8 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     m_clusterConstantsReadHandle = {};
     m_clusterDataReadHandle = {};
     m_clusterLightIndicesReadHandle = {};
+    m_currentPaletteReadHandle = {};
+    m_previousPaletteReadHandle = {};
     m_colorTargetViewHandle = {};
     m_depthTargetViewHandle = {};
     m_directionalShadowViewHandle = {};
@@ -1670,6 +1746,43 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
         !m_rayTracedShadowInputs.IsCompatibleWith(m_recordIdentity))
     {
         return;
+    }
+
+    const bool sceneHasSkinning = m_renderScene != nullptr &&
+        std::any_of(m_renderScene->GetObjects().begin(),
+                    m_renderScene->GetObjects().end(),
+                    [](const RenderObject& object)
+                    {
+                        return object.HasSkinningData();
+                    });
+    if (sceneHasSkinning)
+    {
+        const RenderDeformationFrameIdentity deformationIdentity =
+            MakeRenderDeformationFrameIdentity(m_recordIdentity);
+        if (m_deformationResources == nullptr ||
+            !m_deformationResources->MatchesIdentity(deformationIdentity) ||
+            !m_deformationResources->MatchesGraphProvenance(*m_recordIdentity.graph) ||
+            m_deformationResources->GetMatrixCount() == 0 ||
+            builder.GetBufferDesc(
+                m_deformationResources->GetCurrentPaletteHandle()) == nullptr ||
+            builder.GetBufferDesc(
+                m_deformationResources->GetPreviousPaletteHandle()) == nullptr)
+        {
+            return;
+        }
+        m_currentPaletteReadHandle = builder.Read(
+            m_deformationResources->GetCurrentPaletteHandle(),
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Vertex);
+        m_previousPaletteReadHandle = builder.Read(
+            m_deformationResources->GetPreviousPaletteHandle(),
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Vertex);
+        if (!m_currentPaletteReadHandle.IsValid() ||
+            !m_previousPaletteReadHandle.IsValid())
+        {
+            return;
+        }
     }
 
     // Forward surface paths bind these six exact frozen allocations through
@@ -2810,10 +2923,6 @@ bool OpaquePass::BuildPlannedDirectBatch(
             *m_renderScene, packet.objectId, packet.primitiveData);
         if (object == nullptr ||
             object->mesh != packet.geometryKey.mesh ||
-            object->skinningMatrices.size() > std::numeric_limits<uint32>::max() ||
-            (IsSkinnedPacket(packet) &&
-             object->skinningMatrices.size() >
-                 RVX_MAX_OBJECT_SKINNING_MATRICES) ||
             (object->hasSkinningPaletteProvider &&
              !object->HasValidSkinningPalette()))
         {
@@ -3000,9 +3109,6 @@ bool OpaquePass::BuildPlannedDirectBatch(
             m_resourceRegistry, packet.geometryKey.mesh);
         if (object == nullptr ||
             object->mesh != packet.geometryKey.mesh ||
-            object->skinningMatrices.size() > std::numeric_limits<uint32>::max() ||
-            (planned.skinned && object->skinningMatrices.size() >
-                 RVX_MAX_OBJECT_SKINNING_MATRICES) ||
             (object->hasSkinningPaletteProvider &&
              !object->HasValidSkinningPalette()) ||
             planned.skinned != IsSkinnedPacket(packet) ||
@@ -3145,7 +3251,12 @@ bool OpaquePass::BuildPlannedDirectBatch(
             outPlannedDraws.clear();
             return false;
         }
-        if (!m_pipelineCache->CreateObjectConstantBinding(
+        SkinningPaletteBufferBinding skinningBuffers;
+        SkinningPaletteSliceBinding skinningSlice;
+        if (!ResolveSkinningPaletteBinding(
+                *object, planned.buffers, m_deformationResources.get(),
+                skinningBuffers, skinningSlice) ||
+            !m_pipelineCache->CreateObjectConstantBinding(
                 object->worldMatrix,
                 object->normalMatrix,
                 object->previousWorldMatrix,
@@ -3154,7 +3265,8 @@ bool OpaquePass::BuildPlannedDirectBatch(
                     view.previousViewProjectionValid != 0 &&
                     !view.resetTemporalHistory,
                 planned.receivesShadow,
-                ResolveSkinningMatrices(*object, planned.buffers),
+                skinningBuffers,
+                skinningSlice,
                 nullptr,
                 planned.objectBinding) ||
             !context.RetainSubmissionResource(
@@ -3171,6 +3283,7 @@ bool OpaquePass::BuildPlannedDirectBatch(
             outPlannedDraws.clear();
             return false;
         }
+        planned.skinningSlice = skinningSlice;
     }
     return true;
 }
@@ -3327,6 +3440,7 @@ void OpaquePass::ApplyDirectInstancePlan(
                 false,
                 leader.receivesShadow,
                 {},
+                {},
                 m_directInstanceStream.instances.Get(),
                 objectBinding) ||
             !context.RetainSubmissionResource(
@@ -3452,6 +3566,20 @@ bool OpaquePass::TryDrawPlannedDirect(
             {
                 ++m_drawStats.instancedBatchCount;
             }
+            if (planned.skinned)
+            {
+                if (m_deformationResources == nullptr ||
+                    (m_drawStats.deformationContentHash != 0 &&
+                     m_drawStats.deformationContentHash !=
+                         m_deformationResources->GetContentHash()))
+                {
+                    return false;
+                }
+                m_drawStats.deformationContentHash =
+                    m_deformationResources->GetContentHash();
+                ++m_drawStats.skinnedDrawCount;
+                ++m_drawStats.currentPaletteBoundDrawCount;
+            }
         }
     }
     m_drawStats.directPacketPathUsed = true;
@@ -3473,6 +3601,20 @@ void OpaquePass::Execute(
     RHICommandContext& ctx = context.Commands();
     RequiredOpaqueExecutionGuard executionGuard(context);
     m_drawStats = {};
+    const bool sceneHasSkinning = m_renderScene != nullptr &&
+        std::any_of(m_renderScene->GetObjects().begin(),
+                    m_renderScene->GetObjects().end(),
+                    [](const RenderObject& object)
+                    {
+                        return object.HasSkinningData();
+                    });
+    if (sceneHasSkinning && !HasExactDeformationBuffers(
+            context, m_deformationResources.get(), m_currentPaletteReadHandle,
+            m_previousPaletteReadHandle))
+    {
+        m_drawStats.failureReason = RenderPolicyReason::ResourcesUnavailable;
+        return;
+    }
     m_drawStats.directInstanceUploadBytes =
         m_directInstanceStream.instanceUploadBytes;
     m_drawStats.directInstanceIndexUploadBytes =
@@ -4027,6 +4169,7 @@ void OpaquePass::Execute(
                         drawView.previousViewProjectionMatrix,
                         false,
                         true,
+                        {},
                         {},
                         m_gpuCulling->GetInstanceBuffer(),
                         tier1ObjectBinding) ||

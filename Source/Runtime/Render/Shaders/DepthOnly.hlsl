@@ -14,6 +14,8 @@
 //   Slot 2: Masked-depth UVs (float2)
 // =============================================================================
 
+// GPU-scene's private compatibility cbuffer retains this fixed tail. Direct
+// raster skinning uses Include/Skinning.hlsli and never indexes that tail.
 #define RVX_MAX_OBJECT_SKINNING_MATRICES 128
 
 #include "Include/GPUInstanceData.hlsli"
@@ -39,14 +41,15 @@ cbuffer ObjectConstants : register(b0, space1)
     float4x4 NormalMatrix;
     float4x4 PreviousWorldViewProjection;
     float4 ObjectVelocityParams;
-    float4 SkinningParams; // x: enabled, y: matrix count
-    float4x4 SkinningMatrices[RVX_MAX_OBJECT_SKINNING_MATRICES];
+    float4 SkinningParams; // x: enabled, y: matrix count, z/w: current/previous offsets
 };
 #endif
 
 #if !defined(RVX_GPU_SCENE_RASTER)
 StructuredBuffer<GPUInstanceData> GPUDrivenInstances : register(t1, space1);
 #endif
+
+#include "Include/Skinning.hlsli"
 
 struct VSInput
 {
@@ -102,34 +105,13 @@ cbuffer MaterialConstants : register(b0, space2)
 Texture2D BaseColorTexture : register(t1, space2);
 SamplerState MaterialSampler : register(s6, space2);
 
-float4 ResolveSkinningPosition(float3 position, uint4 boneIndices, float4 boneWeights)
-{
-    if (SkinningParams.x <= 0.5f || SkinningParams.y <= 0.5f)
-    {
-        return float4(position, 1.0f);
-    }
-
-    const float weightSum = boneWeights.x + boneWeights.y + boneWeights.z + boneWeights.w;
-    if (weightSum <= 1.0e-5f)
-    {
-        return float4(position, 1.0f);
-    }
-
-    const float4 weights = boneWeights / weightSum;
-    const uint boneCount = (uint)SkinningParams.y;
-    const uint4 safeIndices = min(boneIndices, boneCount - 1u);
-    const float4 localPosition = float4(position, 1.0f);
-
-    return mul(SkinningMatrices[safeIndices.x], localPosition) * weights.x +
-           mul(SkinningMatrices[safeIndices.y], localPosition) * weights.y +
-           mul(SkinningMatrices[safeIndices.z], localPosition) * weights.z +
-           mul(SkinningMatrices[safeIndices.w], localPosition) * weights.w;
-}
-
 VSOutput VSMain(VSInput input)
 {
     VSOutput output;
-    float4 worldPosition = mul(World, ResolveSkinningPosition(input.Position, input.BoneIndices, input.BoneWeights));
+    float4 worldPosition = mul(
+        World,
+        RVXResolveCurrentSkinningPosition(
+            input.Position, input.BoneIndices, input.BoneWeights));
     output.Position = mul(ViewProjection, worldPosition);
     return output;
 }
@@ -185,7 +167,8 @@ MaskedVSOutput VSMainMasked(MaskedVSInput input)
     MaskedVSOutput output;
     float4 worldPosition = mul(
         World,
-        ResolveSkinningPosition(input.Position, input.BoneIndices, input.BoneWeights));
+        RVXResolveCurrentSkinningPosition(
+            input.Position, input.BoneIndices, input.BoneWeights));
     output.Position = mul(ViewProjection, worldPosition);
     output.TexCoord = input.TexCoord;
     output.TexCoord1 = input.TexCoord1;

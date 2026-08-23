@@ -309,7 +309,8 @@ namespace RVX
                    << ",\n";
             stream << "      \"profileHash\": " << receipt.profileHash
                    << ",\n";
-            if (receipt.schemaVersion == 2 || receipt.schemaVersion == 4)
+            if (receipt.schemaVersion == 2 || receipt.schemaVersion == 4 ||
+                receipt.schemaVersion == 5)
             {
                 stream << "      \"deferredOpaque\": {\"available\": "
                        << Diagnostics::JsonBool(receipt.deferredOpaque.available)
@@ -323,7 +324,7 @@ namespace RVX
                        << receipt.deferredOpaque.executedPacketCount
                        << "},\n";
             }
-            if (receipt.schemaVersion == 4)
+            if (receipt.schemaVersion == 4 || receipt.schemaVersion == 5)
             {
                 stream << "      \"lighting\": {\"lightingPlanIdentity\": "
                        << receipt.lighting.lightingPlanIdentity
@@ -363,6 +364,32 @@ namespace RVX
                        << ", \"iblExecutionReady\": "
                        << Diagnostics::JsonBool(
                               receipt.lighting.iblExecutionReady)
+                       << "},\n";
+            }
+            if (receipt.schemaVersion == 5)
+            {
+                stream << "      \"deformation\": {\"deformationContentHash\": "
+                       << receipt.deformation.deformationContentHash
+                       << ", \"skinnedObjectCount\": "
+                       << receipt.deformation.skinnedObjectCount
+                       << ", \"paletteMatrixCount\": "
+                       << receipt.deformation.paletteMatrixCount
+                       << ", \"previousPaletteObjectCount\": "
+                       << receipt.deformation.previousPaletteObjectCount
+                       << ", \"currentPaletteBufferReady\": "
+                       << Diagnostics::JsonBool(
+                              receipt.deformation.currentPaletteBufferReady)
+                       << ", \"previousPaletteBufferReady\": "
+                       << Diagnostics::JsonBool(
+                              receipt.deformation.previousPaletteBufferReady)
+                       << ", \"opaqueSkinnedDrawCount\": "
+                       << receipt.deformation.opaqueSkinnedDrawCount
+                       << ", \"shadowSkinnedDrawCount\": "
+                       << receipt.deformation.shadowSkinnedDrawCount
+                       << ", \"velocitySkinnedDrawCount\": "
+                       << receipt.deformation.velocitySkinnedDrawCount
+                       << ", \"velocityPreviousPaletteDrawCount\": "
+                       << receipt.deformation.velocityPreviousPaletteDrawCount
                        << "},\n";
             }
             stream << "      \"diagnostic\": "

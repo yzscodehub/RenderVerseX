@@ -148,7 +148,10 @@ namespace
     constexpr uint64 RVX_MAX_DRAW_CONSTANTS_PER_FRAME = 8192;
     constexpr uint64 RVX_PIPELINE_HASH_OFFSET_BASIS = 0xcbf29ce484222325ull;
     constexpr uint64 RVX_PIPELINE_HASH_PRIME = 0x100000001b3ull;
-    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 16;
+    // Set-1 now contains two structured skin palette bindings in addition to
+    // the object constants and instance stream; old manifests cannot describe
+    // this pipeline-layout ABI.
+    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 17;
     constexpr uint32 RVX_PIPELINE_PURPOSE_DEFAULT = 0x50445354u; // PDST
     constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_DRIVEN_DEFAULT = 0x47444546u; // GDEF
     constexpr uint32 RVX_PIPELINE_PURPOSE_INSTANCED_MATERIAL = 0x494D4154u; // IMAT
@@ -375,7 +378,7 @@ namespace
             return true;
         }
 
-        if (set == 1 && binding <= 1)
+        if (set == 1 && binding <= 3)
         {
             return true;
         }
@@ -420,6 +423,8 @@ namespace
         objectLayout.debugName = "DefaultObjectSetLayout";
         objectLayout.AddDynamicBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::Vertex);
         objectLayout.AddBinding(1, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
+        objectLayout.AddBinding(2, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
+        objectLayout.AddBinding(3, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
 
         auto& materialLayout = outLayouts[2];
         materialLayout.debugName = "DefaultMaterialSetLayout";
@@ -1096,6 +1101,12 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
         return false;
     }
 
+    if (!EnsureObjectSkinningPaletteFallbackBuffers())
+    {
+        SetLastError("Failed to create object skinning palette fallback buffers");
+        return false;
+    }
+
     if (!CreateViewConstantBuffer())
     {
         SetLastError("Failed to create view constant buffer");
@@ -1179,6 +1190,9 @@ void PipelineCache::Shutdown()
     m_viewConstantBuffer.Reset();
     m_objectConstantBuffer.Reset();
     m_objectInstanceFallbackBuffer.Reset();
+    m_objectSkinningCurrentFallbackBuffer.Reset();
+    m_objectSkinningPreviousFallbackBuffer.Reset();
+    m_objectDescriptorSkinningPalettes = {};
     m_fallbackDirectionalShadowView.Reset();
     m_fallbackDirectionalShadowTexture.Reset();
     m_fallbackRayTracedShadowMaskView.Reset();
@@ -3150,6 +3164,8 @@ bool PipelineCache::BuildReflectedDefaultLitLayouts(std::vector<RHIDescriptorSet
     ensureBinding(outLayouts[0], 8, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
     ensureBinding(outLayouts[0], 9, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
     ensureBinding(outLayouts[1], 1, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
+    ensureBinding(outLayouts[1], 2, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
+    ensureBinding(outLayouts[1], 3, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
     ensureBinding(outLayouts[2], 11, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
 
     for (uint32 setIndex = 0; setIndex < static_cast<uint32>(outLayouts.size()); ++setIndex)
@@ -3256,6 +3272,10 @@ bool PipelineCache::ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSet
     if (!requireBinding(1, 0, RHIBindingType::DynamicUniformBuffer))
         return false;
     if (!requireBinding(1, 1, RHIBindingType::ShaderResourceBuffer))
+        return false;
+    if (!requireBinding(1, 2, RHIBindingType::ShaderResourceBuffer))
+        return false;
+    if (!requireBinding(1, 3, RHIBindingType::ShaderResourceBuffer))
         return false;
     if (!requireBinding(2, 0, RHIBindingType::DynamicUniformBuffer))
         return false;
@@ -4012,6 +4032,13 @@ bool PipelineCache::UpdateObjectInstanceBuffer(RHIBuffer* instanceBuffer)
         instanceBinding = m_objectInstanceFallbackBuffer.Get();
     }
 
+    SkinningPaletteBufferBinding skinningPalettes;
+    if (!ResolveSkinningPaletteBuffers(
+            m_objectDescriptorSkinningPalettes, skinningPalettes))
+    {
+        return false;
+    }
+
     RHIDescriptorSetDesc desc;
     desc.layout = objectLayout;
     desc.debugName = "DefaultObjectDescriptorSet";
@@ -4023,6 +4050,14 @@ bool PipelineCache::UpdateObjectInstanceBuffer(RHIBuffer* instanceBuffer)
             return false;
         }
         desc.BindBuffer(1, instanceBinding);
+    }
+    if (FindRHIBindingLayoutEntry(*objectLayout, 2))
+    {
+        desc.BindBuffer(2, skinningPalettes.currentPaletteBuffer.Get());
+    }
+    if (FindRHIBindingLayoutEntry(*objectLayout, 3))
+    {
+        desc.BindBuffer(3, skinningPalettes.previousPaletteBuffer.Get());
     }
 
     RHIDescriptorSetRef replacement = m_device->CreateDescriptorSet(desc);
@@ -4041,9 +4076,13 @@ RHIDescriptorSetRef PipelineCache::CreateObjectConstantPageDescriptor(
     uint64 pageIdentity,
     RHIBuffer* constantBuffer,
     RHIBuffer* instanceBuffer,
+    RHIBuffer* currentPaletteBuffer,
+    RHIBuffer* previousPaletteBuffer,
     bool cacheFallbackInstance)
 {
-    if (pageIdentity == 0 || constantBuffer == nullptr || m_device == nullptr)
+    if (pageIdentity == 0 || constantBuffer == nullptr ||
+        currentPaletteBuffer == nullptr || previousPaletteBuffer == nullptr ||
+        m_device == nullptr)
     {
         return {};
     }
@@ -4053,7 +4092,8 @@ RHIDescriptorSetRef PipelineCache::CreateObjectConstantPageDescriptor(
         return {};
     }
 
-    const ObjectPageDescriptorKey key{pageIdentity, instanceBuffer};
+    const ObjectPageDescriptorKey key{
+        pageIdentity, instanceBuffer, currentPaletteBuffer, previousPaletteBuffer};
     if (cacheFallbackInstance)
     {
         if (const auto existing = m_objectPageDescriptorCache.find(key);
@@ -4075,6 +4115,14 @@ RHIDescriptorSetRef PipelineCache::CreateObjectConstantPageDescriptor(
         }
         descriptorDesc.BindBuffer(1, instanceBuffer);
     }
+    if (FindRHIBindingLayoutEntry(*objectLayout, 2))
+    {
+        descriptorDesc.BindBuffer(2, currentPaletteBuffer);
+    }
+    if (FindRHIBindingLayoutEntry(*objectLayout, 3))
+    {
+        descriptorDesc.BindBuffer(3, previousPaletteBuffer);
+    }
     RHIDescriptorSetRef descriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
     if (!descriptorSet)
     {
@@ -4094,7 +4142,8 @@ bool PipelineCache::CreateObjectConstantBinding(
     const Mat4& previousViewProjectionMatrix,
     bool previousWorldViewProjectionValid,
     bool receivesShadow,
-    std::span<const Mat4> skinningMatrices,
+    const SkinningPaletteBufferBinding& skinningPalettes,
+    const SkinningPaletteSliceBinding& skinningSlice,
     RHIBuffer* instanceBuffer,
     ObjectConstantBinding& outBinding)
 {
@@ -4134,26 +4183,25 @@ bool PipelineCache::CreateObjectConstantBinding(
         }
     }
 
-    ObjectConstants constants{};
-    constants.world = worldMatrix;
-    constants.normalMatrix = normalMatrix;
-    const RHIBackendType backend = m_device ? m_device->GetBackendType() : RHIBackendType::None;
-    constants.previousWorldViewProjection = previousWorldViewProjectionValid
-        ? ApplyBackendClipConvention(previousViewProjectionMatrix, backend) * previousWorldMatrix
-        : Mat4Identity();
-    constants.objectVelocityParams = Vec4(previousWorldViewProjectionValid ? 1.0f : 0.0f,
-                                          receivesShadow ? 1.0f : 0.0f,
-                                          0.0f,
-                                          0.0f);
-    const uint32 skinningMatrixCount = static_cast<uint32>(
-        std::min<size_t>(skinningMatrices.size(), RVX_MAX_OBJECT_SKINNING_MATRICES));
-    constants.skinningParams = Vec4(skinningMatrixCount != 0 ? 1.0f : 0.0f,
-                                    static_cast<float>(skinningMatrixCount),
-                                    0.0f,
-                                    0.0f);
-    for (uint32 index = 0; index < skinningMatrixCount; ++index)
+    SkinningPaletteBufferBinding resolvedSkinningPalettes;
+    if (!ResolveSkinningPaletteBuffers(skinningPalettes,
+                                       resolvedSkinningPalettes))
     {
-        constants.skinningMatrices[index] = skinningMatrices[index];
+        return false;
+    }
+
+    ObjectConstants constants{};
+    if (!BuildObjectConstants(worldMatrix,
+                              normalMatrix,
+                              previousWorldMatrix,
+                              previousViewProjectionMatrix,
+                              previousWorldViewProjectionValid,
+                              receivesShadow,
+                              skinningPalettes,
+                              skinningSlice,
+                              constants))
+    {
+        return false;
     }
 
     FrameConstantUploadAllocation allocation;
@@ -4166,7 +4214,9 @@ bool PipelineCache::CreateObjectConstantBinding(
         allocation.pageIdentity,
         allocation.buffer.Get(),
         resolvedInstanceBuffer.Get(),
-        instanceBuffer == nullptr);
+        resolvedSkinningPalettes.currentPaletteBuffer.Get(),
+        resolvedSkinningPalettes.previousPaletteBuffer.Get(),
+        instanceBuffer == nullptr && !skinningPalettes.HasPalettes());
     if (!descriptorSet)
     {
         // This page cannot safely be handed to a later frame after descriptor
@@ -4177,6 +4227,7 @@ bool PipelineCache::CreateObjectConstantBinding(
 
     outBinding.constantBuffer = std::move(allocation.buffer);
     outBinding.instanceBuffer = std::move(resolvedInstanceBuffer);
+    outBinding.skinningPalettes = std::move(resolvedSkinningPalettes);
     outBinding.descriptorSet = std::move(descriptorSet);
     outBinding.pageIdentity = allocation.pageIdentity;
     outBinding.dynamicOffsets = {allocation.dynamicOffset};
@@ -4203,11 +4254,30 @@ bool PipelineCache::CreateRasterDrawBindingSnapshot(
     RasterDrawBindingSnapshot& outSnapshot) const
 {
     return CreateRasterDrawBindingSnapshotInternal(
-        view, objectCapacity, nullptr, outSnapshot);
+        view, objectCapacity, nullptr, {}, outSnapshot);
+}
+
+bool PipelineCache::CreateRasterDrawBindingSnapshot(
+    const ViewData& view,
+    uint32 objectCapacity,
+    const SkinningPaletteBufferBinding& skinningPalettes,
+    RasterDrawBindingSnapshot& outSnapshot) const
+{
+    return CreateRasterDrawBindingSnapshotInternal(
+        view, objectCapacity, nullptr, skinningPalettes, outSnapshot);
 }
 
 bool PipelineCache::CreateRasterObjectBindingSnapshot(
     uint32 objectCapacity,
+    RasterObjectBindingSnapshot& outSnapshot) const
+{
+    return CreateRasterObjectBindingSnapshot(
+        objectCapacity, {}, outSnapshot);
+}
+
+bool PipelineCache::CreateRasterObjectBindingSnapshot(
+    uint32 objectCapacity,
+    const SkinningPaletteBufferBinding& skinningPalettes,
     RasterObjectBindingSnapshot& outSnapshot) const
 {
     outSnapshot = {};
@@ -4239,6 +4309,13 @@ bool PipelineCache::CreateRasterObjectBindingSnapshot(
     objectDesc.debugName = "TransparentRecordObjectConstants";
     RHIBufferRef objectBuffer = m_device->CreateBuffer(objectDesc);
     if (!objectBuffer)
+    {
+        return false;
+    }
+
+    SkinningPaletteBufferBinding resolvedSkinningPalettes;
+    if (!ResolveSkinningPaletteBuffers(skinningPalettes,
+                                       resolvedSkinningPalettes))
     {
         return false;
     }
@@ -4275,6 +4352,16 @@ bool PipelineCache::CreateRasterObjectBindingSnapshot(
     {
         objectSetDesc.BindBuffer(1, instanceFallback.Get());
     }
+    if (FindRHIBindingLayoutEntry(*m_setLayouts[1], 2))
+    {
+        objectSetDesc.BindBuffer(
+            2, resolvedSkinningPalettes.currentPaletteBuffer.Get());
+    }
+    if (FindRHIBindingLayoutEntry(*m_setLayouts[1], 3))
+    {
+        objectSetDesc.BindBuffer(
+            3, resolvedSkinningPalettes.previousPaletteBuffer.Get());
+    }
     RHIDescriptorSetRef objectSet = m_device->CreateDescriptorSet(objectSetDesc);
     if (!objectSet || !objectSet->IsReadyForBinding(m_setLayouts[1].Get()))
     {
@@ -4283,15 +4370,21 @@ bool PipelineCache::CreateRasterObjectBindingSnapshot(
 
     RasterObjectBindingSnapshot snapshot;
     snapshot.objectConstantBuffer = std::move(objectBuffer);
+    snapshot.skinningPalettes = std::move(resolvedSkinningPalettes);
     snapshot.objectDescriptorSet = std::move(objectSet);
     snapshot.objectConstantStride = objectStride;
     snapshot.objectCapacity = capacity;
     snapshot.objectCursor = 0;
+    snapshot.hasExplicitSkinningPalettes = skinningPalettes.HasPalettes();
     snapshot.retainedResources.emplace_back(snapshot.objectConstantBuffer.Get());
     if (instanceFallback)
     {
         snapshot.retainedResources.emplace_back(instanceFallback.Get());
     }
+    snapshot.retainedResources.emplace_back(
+        snapshot.skinningPalettes.currentPaletteBuffer.Get());
+    snapshot.retainedResources.emplace_back(
+        snapshot.skinningPalettes.previousPaletteBuffer.Get());
     snapshot.retainedResources.emplace_back(snapshot.objectDescriptorSet.Get());
     snapshot.retainedResources.emplace_back(m_setLayouts[1].Get());
     if (!snapshot.IsValid())
@@ -4492,7 +4585,13 @@ bool PipelineCache::CreateGPUSceneRasterBindingSnapshot(
     }
 
     GPUSceneRasterObjectConstants constants;
-    constants.objectConstants = objectConstants;
+    constants.legacyObjectConstants.world = objectConstants.world;
+    constants.legacyObjectConstants.normalMatrix = objectConstants.normalMatrix;
+    constants.legacyObjectConstants.previousWorldViewProjection =
+        objectConstants.previousWorldViewProjection;
+    constants.legacyObjectConstants.objectVelocityParams =
+        objectConstants.objectVelocityParams;
+    constants.legacyObjectConstants.skinningParams = objectConstants.skinningParams;
     constants.gpuSceneRasterCounts = {
         resources.m_candidateCount,
         resources.m_primitiveCapacity,
@@ -4567,13 +4666,25 @@ bool PipelineCache::CreateTransparentRasterDrawBindingSnapshot(
     RasterDrawBindingSnapshot& outSnapshot) const
 {
     return CreateRasterDrawBindingSnapshotInternal(
-        view, objectCapacity, &lightResources, outSnapshot);
+        view, objectCapacity, &lightResources, {}, outSnapshot);
+}
+
+bool PipelineCache::CreateTransparentRasterDrawBindingSnapshot(
+    const ViewData& view,
+    uint32 objectCapacity,
+    const FrameLightResources& lightResources,
+    const SkinningPaletteBufferBinding& skinningPalettes,
+    RasterDrawBindingSnapshot& outSnapshot) const
+{
+    return CreateRasterDrawBindingSnapshotInternal(
+        view, objectCapacity, &lightResources, skinningPalettes, outSnapshot);
 }
 
 bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
     const ViewData& view,
     uint32 objectCapacity,
     const FrameLightResources* transparentLightResources,
+    const SkinningPaletteBufferBinding& skinningPalettes,
     RasterDrawBindingSnapshot& outSnapshot) const
 {
     outSnapshot = {};
@@ -4653,6 +4764,13 @@ bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
         : "ObjectVelocityRecordObjectConstants";
     RHIBufferRef objectBuffer = m_device->CreateBuffer(objectDesc);
     if (!objectBuffer)
+    {
+        return false;
+    }
+
+    SkinningPaletteBufferBinding resolvedSkinningPalettes;
+    if (!ResolveSkinningPaletteBuffers(skinningPalettes,
+                                       resolvedSkinningPalettes))
     {
         return false;
     }
@@ -4864,6 +4982,16 @@ bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
             }
             objectSetDesc.BindBuffer(1, transparentObjectInstanceFallback.Get());
         }
+        if (FindRHIBindingLayoutEntry(*m_setLayouts[1], 2))
+        {
+            objectSetDesc.BindBuffer(
+                2, resolvedSkinningPalettes.currentPaletteBuffer.Get());
+        }
+        if (FindRHIBindingLayoutEntry(*m_setLayouts[1], 3))
+        {
+            objectSetDesc.BindBuffer(
+                3, resolvedSkinningPalettes.previousPaletteBuffer.Get());
+        }
     }
     else
     {
@@ -4891,6 +5019,34 @@ bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
     {
         objectSetDesc.BindBuffer(0, objectBuffer.Get(), 0, objectStride);
     }
+    const auto replacePaletteBinding = [&objectSetDesc](uint32 binding,
+                                                         RHIBuffer* buffer)
+    {
+        for (RHIDescriptorBinding& existing : objectSetDesc.bindings)
+        {
+            if (existing.binding == binding && existing.arrayElement == 0)
+            {
+                existing.buffer = buffer;
+                existing.offset = 0;
+                existing.range = RVX_WHOLE_SIZE;
+                existing.textureView = nullptr;
+                existing.sampler = nullptr;
+                existing.accelerationStructure = nullptr;
+                return;
+            }
+        }
+        objectSetDesc.BindBuffer(binding, buffer);
+    };
+    if (FindRHIBindingLayoutEntry(*m_setLayouts[1], 2))
+    {
+        replacePaletteBinding(
+            2, resolvedSkinningPalettes.currentPaletteBuffer.Get());
+    }
+    if (FindRHIBindingLayoutEntry(*m_setLayouts[1], 3))
+    {
+        replacePaletteBinding(
+            3, resolvedSkinningPalettes.previousPaletteBuffer.Get());
+    }
     RHIDescriptorSetRef objectSet = m_device->CreateDescriptorSet(objectSetDesc);
     if (!objectSet || !objectSet->IsReadyForBinding(m_setLayouts[1].Get()))
     {
@@ -4911,6 +5067,10 @@ bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
     {
         retainedResources.emplace_back(transparentObjectInstanceFallback.Get());
     }
+    retainedResources.emplace_back(
+        resolvedSkinningPalettes.currentPaletteBuffer.Get());
+    retainedResources.emplace_back(
+        resolvedSkinningPalettes.previousPaletteBuffer.Get());
     retainedResources.emplace_back(frameSet.Get());
     retainedResources.emplace_back(objectSet.Get());
     // Backend descriptor sets and pipelines currently retain only raw layout
@@ -4950,12 +5110,14 @@ bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
 
     outSnapshot.viewConstantBuffer = std::move(viewBuffer);
     outSnapshot.objectConstantBuffer = std::move(objectBuffer);
+    outSnapshot.skinningPalettes = std::move(resolvedSkinningPalettes);
     outSnapshot.frameDescriptorSet = std::move(frameSet);
     outSnapshot.objectDescriptorSet = std::move(objectSet);
     outSnapshot.retainedResources = std::move(retainedResources);
     outSnapshot.objectConstantStride = objectStride;
     outSnapshot.objectCapacity = capacity;
     outSnapshot.objectCursor = 0;
+    outSnapshot.hasExplicitSkinningPalettes = skinningPalettes.HasPalettes();
     return outSnapshot.IsValid();
 }
 
@@ -4967,7 +5129,7 @@ bool PipelineCache::UpdateRasterDrawBindingSnapshotObject(
     const Mat4& previousViewProjectionMatrix,
     bool previousWorldViewProjectionValid,
     bool receivesShadow,
-    std::span<const Mat4> skinningMatrices) const
+    const SkinningPaletteSliceBinding& skinningSlice) const
 {
     if (!snapshot.IsValid() || snapshot.objectCursor >= snapshot.objectCapacity)
     {
@@ -4975,24 +5137,19 @@ bool PipelineCache::UpdateRasterDrawBindingSnapshotObject(
     }
 
     ObjectConstants constants{};
-    constants.world = worldMatrix;
-    constants.normalMatrix = normalMatrix;
-    const RHIBackendType backend = m_device ? m_device->GetBackendType() : RHIBackendType::None;
-    constants.previousWorldViewProjection = previousWorldViewProjectionValid
-        ? ApplyBackendClipConvention(previousViewProjectionMatrix, backend) * previousWorldMatrix
-        : Mat4Identity();
-    constants.objectVelocityParams = Vec4(
-        previousWorldViewProjectionValid ? 1.0f : 0.0f,
-        receivesShadow ? 1.0f : 0.0f,
-        0.0f, 0.0f);
-    const uint32 skinningMatrixCount = static_cast<uint32>(
-        std::min<size_t>(skinningMatrices.size(), RVX_MAX_OBJECT_SKINNING_MATRICES));
-    constants.skinningParams = Vec4(
-        skinningMatrixCount > 0 ? 1.0f : 0.0f,
-        static_cast<float>(skinningMatrixCount), 0.0f, 0.0f);
-    for (uint32 i = 0; i < skinningMatrixCount; ++i)
+    if (!BuildObjectConstants(worldMatrix,
+                              normalMatrix,
+                              previousWorldMatrix,
+                              previousViewProjectionMatrix,
+                              previousWorldViewProjectionValid,
+                              receivesShadow,
+                              snapshot.hasExplicitSkinningPalettes
+                                  ? snapshot.skinningPalettes
+                                  : SkinningPaletteBufferBinding{},
+                              skinningSlice,
+                              constants))
     {
-        constants.skinningMatrices[i] = skinningMatrices[i];
+        return false;
     }
 
     const uint64 offset = static_cast<uint64>(snapshot.objectCursor) *
@@ -5018,7 +5175,7 @@ bool PipelineCache::UpdateRasterObjectBindingSnapshotObject(
     const Mat4& previousViewProjectionMatrix,
     bool previousWorldViewProjectionValid,
     bool receivesShadow,
-    std::span<const Mat4> skinningMatrices) const
+    const SkinningPaletteSliceBinding& skinningSlice) const
 {
     if (!snapshot.IsValid() || snapshot.objectCursor >= snapshot.objectCapacity)
     {
@@ -5026,26 +5183,19 @@ bool PipelineCache::UpdateRasterObjectBindingSnapshotObject(
     }
 
     ObjectConstants constants{};
-    constants.world = worldMatrix;
-    constants.normalMatrix = normalMatrix;
-    const RHIBackendType backend = m_device ? m_device->GetBackendType() :
-        RHIBackendType::None;
-    constants.previousWorldViewProjection = previousWorldViewProjectionValid
-        ? ApplyBackendClipConvention(previousViewProjectionMatrix, backend) *
-              previousWorldMatrix
-        : Mat4Identity();
-    constants.objectVelocityParams = Vec4(
-        previousWorldViewProjectionValid ? 1.0f : 0.0f,
-        receivesShadow ? 1.0f : 0.0f, 0.0f, 0.0f);
-    const uint32 skinningMatrixCount = static_cast<uint32>(
-        std::min<size_t>(skinningMatrices.size(),
-                         RVX_MAX_OBJECT_SKINNING_MATRICES));
-    constants.skinningParams = Vec4(
-        skinningMatrixCount > 0 ? 1.0f : 0.0f,
-        static_cast<float>(skinningMatrixCount), 0.0f, 0.0f);
-    for (uint32 index = 0; index < skinningMatrixCount; ++index)
+    if (!BuildObjectConstants(worldMatrix,
+                              normalMatrix,
+                              previousWorldMatrix,
+                              previousViewProjectionMatrix,
+                              previousWorldViewProjectionValid,
+                              receivesShadow,
+                              snapshot.hasExplicitSkinningPalettes
+                                  ? snapshot.skinningPalettes
+                                  : SkinningPaletteBufferBinding{},
+                              skinningSlice,
+                              constants))
     {
-        constants.skinningMatrices[index] = skinningMatrices[index];
+        return false;
     }
 
     const uint64 offset = static_cast<uint64>(snapshot.objectCursor) *
@@ -6233,6 +6383,144 @@ bool PipelineCache::EnsureObjectInstanceFallbackBuffer()
     return true;
 }
 
+bool PipelineCache::EnsureObjectSkinningPaletteFallbackBuffers()
+{
+    if (m_objectSkinningCurrentFallbackBuffer &&
+        m_objectSkinningPreviousFallbackBuffer)
+    {
+        return true;
+    }
+
+    if (!m_device)
+    {
+        return false;
+    }
+
+    const auto createIdentityPalette = [this](const char* debugName) -> RHIBufferRef
+    {
+        RHIBufferDesc desc;
+        desc.size = sizeof(Mat4);
+        desc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
+        desc.memoryType = RHIMemoryType::Upload;
+        desc.stride = sizeof(Mat4);
+        desc.debugName = debugName;
+
+        RHIBufferRef buffer = m_device->CreateBuffer(desc);
+        if (!buffer)
+        {
+            return {};
+        }
+
+        // Rigid objects never read b2/b3: a non-zero skinning slice is
+        // rejected unless its caller supplied an explicit palette pair.  Some
+        // valid descriptor-only/mock RHIs intentionally do not expose host
+        // mapping during cache initialization, so preserve the usable SRV pair
+        // in that case. Backends that do support the upload receive the exact
+        // identity matrix; a failed publish remains fail-closed.
+        RHIMappedWriteAccess mapped = buffer->MapWriteRange(0, sizeof(Mat4));
+        if (mapped.IsValid())
+        {
+            const Mat4 identity = Mat4Identity();
+            std::memcpy(mapped.GetData(), &identity, sizeof(identity));
+            if (!buffer->CommitMappedWriteRange(std::move(mapped)).committed)
+            {
+                return {};
+            }
+        }
+        return buffer;
+    };
+
+    if (!m_objectSkinningCurrentFallbackBuffer)
+    {
+        m_objectSkinningCurrentFallbackBuffer = createIdentityPalette(
+            "ObjectSkinningCurrentPaletteFallback");
+    }
+    if (!m_objectSkinningPreviousFallbackBuffer)
+    {
+        m_objectSkinningPreviousFallbackBuffer = createIdentityPalette(
+            "ObjectSkinningPreviousPaletteFallback");
+    }
+
+    return m_objectSkinningCurrentFallbackBuffer &&
+           m_objectSkinningPreviousFallbackBuffer;
+}
+
+bool PipelineCache::ResolveSkinningPaletteBuffers(
+    const SkinningPaletteBufferBinding& requested,
+    SkinningPaletteBufferBinding& outResolved) const
+{
+    outResolved = {};
+    if (!requested.IsWellFormed())
+    {
+        return false;
+    }
+
+    if (requested.HasPalettes())
+    {
+        outResolved = requested;
+    }
+    else
+    {
+        outResolved.currentPaletteBuffer = m_objectSkinningCurrentFallbackBuffer;
+        outResolved.previousPaletteBuffer = m_objectSkinningPreviousFallbackBuffer;
+    }
+
+    return outResolved.IsWellFormed() && outResolved.HasPalettes();
+}
+
+bool PipelineCache::BuildObjectConstants(
+    const Mat4& worldMatrix,
+    const Mat4& normalMatrix,
+    const Mat4& previousWorldMatrix,
+    const Mat4& previousViewProjectionMatrix,
+    bool previousWorldViewProjectionValid,
+    bool receivesShadow,
+    const SkinningPaletteBufferBinding& skinningPalettes,
+    const SkinningPaletteSliceBinding& skinningSlice,
+    ObjectConstants& outConstants) const
+{
+    constexpr uint32 kMaxExactlyRepresentablePaletteIndex = 1u << 24u;
+    if (!skinningPalettes.IsWellFormed() || !skinningSlice.IsWellFormed() ||
+        (skinningSlice.matrixCount != 0 && !skinningPalettes.HasPalettes()))
+    {
+        return false;
+    }
+    if (skinningSlice.matrixCount > kMaxExactlyRepresentablePaletteIndex ||
+        skinningSlice.currentOffset > kMaxExactlyRepresentablePaletteIndex ||
+        skinningSlice.previousOffset > kMaxExactlyRepresentablePaletteIndex ||
+        (skinningSlice.matrixCount != 0 &&
+         (skinningSlice.currentOffset + skinningSlice.matrixCount >
+              kMaxExactlyRepresentablePaletteIndex ||
+          skinningSlice.previousOffset + skinningSlice.matrixCount >
+              kMaxExactlyRepresentablePaletteIndex)))
+    {
+        return false;
+    }
+
+    const bool skinned = skinningSlice.matrixCount != 0;
+    const bool historyValid = previousWorldViewProjectionValid &&
+        (!skinned || skinningSlice.previousValid);
+    const RHIBackendType backend = m_device ? m_device->GetBackendType() :
+        RHIBackendType::None;
+
+    outConstants = {};
+    outConstants.world = worldMatrix;
+    outConstants.normalMatrix = normalMatrix;
+    outConstants.previousWorldViewProjection = historyValid
+        ? ApplyBackendClipConvention(previousViewProjectionMatrix, backend) *
+              previousWorldMatrix
+        : Mat4Identity();
+    outConstants.objectVelocityParams = Vec4(historyValid ? 1.0f : 0.0f,
+                                              receivesShadow ? 1.0f : 0.0f,
+                                              0.0f,
+                                              0.0f);
+    outConstants.skinningParams = Vec4(skinned ? 1.0f : 0.0f,
+                                        static_cast<float>(skinningSlice.matrixCount),
+                                        static_cast<float>(skinningSlice.currentOffset),
+                                        static_cast<float>(skinningSlice.previousOffset));
+    return true;
+}
+
 bool PipelineCache::EnsureFrameShadowFallbackResources()
 {
     if (!m_device)
@@ -6708,6 +6996,16 @@ RHIDescriptorSetRef PipelineCache::CreateObjectDescriptorSet()
     {
         return {};
     }
+    if (!EnsureObjectSkinningPaletteFallbackBuffers())
+    {
+        return {};
+    }
+
+    SkinningPaletteBufferBinding skinningPalettes;
+    if (!ResolveSkinningPaletteBuffers({}, skinningPalettes))
+    {
+        return {};
+    }
 
     RHIDescriptorSetDesc descSetDesc;
     descSetDesc.layout = m_setLayouts[1].Get();
@@ -6717,8 +7015,21 @@ RHIDescriptorSetRef PipelineCache::CreateObjectDescriptorSet()
     {
         descSetDesc.BindBuffer(1, m_objectInstanceFallbackBuffer.Get());
     }
+    if (FindRHIBindingLayoutEntry(*m_setLayouts[1], 2))
+    {
+        descSetDesc.BindBuffer(2, skinningPalettes.currentPaletteBuffer.Get());
+    }
+    if (FindRHIBindingLayoutEntry(*m_setLayouts[1], 3))
+    {
+        descSetDesc.BindBuffer(3, skinningPalettes.previousPaletteBuffer.Get());
+    }
 
-    return m_device->CreateDescriptorSet(descSetDesc);
+    RHIDescriptorSetRef descriptorSet = m_device->CreateDescriptorSet(descSetDesc);
+    if (descriptorSet)
+    {
+        m_objectDescriptorSkinningPalettes = std::move(skinningPalettes);
+    }
+    return descriptorSet;
 }
 
 bool PipelineCache::CreatePipeline()
@@ -9487,15 +9798,16 @@ void PipelineCache::UpdateViewConstants(const ViewData& view)
 
 bool PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix, const Mat4& normalMatrix)
 {
-    return UpdateObjectConstants(worldMatrix, normalMatrix, Mat4Identity(), Mat4Identity(), false);
+    return UpdateObjectConstants(
+        worldMatrix, normalMatrix, Mat4Identity(), Mat4Identity(), false, true, {}, {});
 }
 
-bool PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix,
-                                          const Mat4& normalMatrix,
-                                          const Mat4& previousWorldMatrix,
-                                          const Mat4& previousViewProjectionMatrix,
-                                          bool previousWorldViewProjectionValid,
-                                          std::span<const Mat4> skinningMatrices)
+bool PipelineCache::UpdateObjectConstants(
+    const Mat4& worldMatrix,
+    const Mat4& normalMatrix,
+    const Mat4& previousWorldMatrix,
+    const Mat4& previousViewProjectionMatrix,
+    bool previousWorldViewProjectionValid)
 {
     return UpdateObjectConstants(worldMatrix,
                                  normalMatrix,
@@ -9503,41 +9815,123 @@ bool PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix,
                                  previousViewProjectionMatrix,
                                  previousWorldViewProjectionValid,
                                  true,
-                                 skinningMatrices);
+                                 {},
+                                 {});
+}
+
+bool PipelineCache::UpdateObjectConstants(
+    const Mat4& worldMatrix,
+    const Mat4& normalMatrix,
+    const Mat4& previousWorldMatrix,
+    const Mat4& previousViewProjectionMatrix,
+    bool previousWorldViewProjectionValid,
+    bool receivesShadow)
+{
+    return UpdateObjectConstants(worldMatrix,
+                                 normalMatrix,
+                                 previousWorldMatrix,
+                                 previousViewProjectionMatrix,
+                                 previousWorldViewProjectionValid,
+                                 receivesShadow,
+                                 {},
+                                 {});
+}
+
+bool PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix,
+                                          const Mat4& normalMatrix,
+    const Mat4& previousWorldMatrix,
+    const Mat4& previousViewProjectionMatrix,
+    bool previousWorldViewProjectionValid,
+    const SkinningPaletteBufferBinding& skinningPalettes,
+    const SkinningPaletteSliceBinding& skinningSlice)
+{
+    return UpdateObjectConstants(worldMatrix,
+                                 normalMatrix,
+                                 previousWorldMatrix,
+                                 previousViewProjectionMatrix,
+                                 previousWorldViewProjectionValid,
+                                 true,
+                                 skinningPalettes,
+                                 skinningSlice);
 }
 
 bool PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix,
                                           const Mat4& normalMatrix,
                                           const Mat4& previousWorldMatrix,
-                                          const Mat4& previousViewProjectionMatrix,
-                                          bool previousWorldViewProjectionValid,
-                                          bool receivesShadow,
-                                          std::span<const Mat4> skinningMatrices)
+    const Mat4& previousViewProjectionMatrix,
+    bool previousWorldViewProjectionValid,
+    bool receivesShadow,
+    const SkinningPaletteBufferBinding& skinningPalettes,
+    const SkinningPaletteSliceBinding& skinningSlice)
 {
     if (!m_objectConstantBuffer)
         return false;
 
     ObjectConstants constants{};
-    constants.world = worldMatrix;
-    constants.normalMatrix = normalMatrix;
-    const RHIBackendType backend = m_device ? m_device->GetBackendType() : RHIBackendType::None;
-    constants.previousWorldViewProjection = previousWorldViewProjectionValid
-                                                ? ApplyBackendClipConvention(previousViewProjectionMatrix, backend) *
-                                                      previousWorldMatrix
-                                                : Mat4Identity();
-    constants.objectVelocityParams = Vec4(previousWorldViewProjectionValid ? 1.0f : 0.0f,
-                                          receivesShadow ? 1.0f : 0.0f,
-                                          0.0f,
-                                          0.0f);
-    const uint32 skinningMatrixCount = static_cast<uint32>(
-        std::min<size_t>(skinningMatrices.size(), RVX_MAX_OBJECT_SKINNING_MATRICES));
-    constants.skinningParams = Vec4(skinningMatrixCount > 0 ? 1.0f : 0.0f,
-                                    static_cast<float>(skinningMatrixCount),
-                                    0.0f,
-                                    0.0f);
-    for (uint32 i = 0; i < skinningMatrixCount; ++i)
+    if (!BuildObjectConstants(worldMatrix,
+                              normalMatrix,
+                              previousWorldMatrix,
+                              previousViewProjectionMatrix,
+                              previousWorldViewProjectionValid,
+                              receivesShadow,
+                              skinningPalettes,
+                              skinningSlice,
+                              constants))
     {
-        constants.skinningMatrices[i] = skinningMatrices[i];
+        return false;
+    }
+
+    SkinningPaletteBufferBinding resolvedSkinningPalettes;
+    if (!ResolveSkinningPaletteBuffers(skinningPalettes,
+                                       resolvedSkinningPalettes))
+    {
+        return false;
+    }
+
+    if (!m_objectDescriptorSet ||
+        m_objectDescriptorSkinningPalettes.currentPaletteBuffer.Get() !=
+            resolvedSkinningPalettes.currentPaletteBuffer.Get() ||
+        m_objectDescriptorSkinningPalettes.previousPaletteBuffer.Get() !=
+            resolvedSkinningPalettes.previousPaletteBuffer.Get())
+    {
+        RHIDescriptorSetLayout* const objectLayout = GetObjectSetLayout();
+        if (!objectLayout || !m_objectDescriptorSet)
+        {
+            return false;
+        }
+
+        RHIDescriptorSetDesc descriptorDesc;
+        descriptorDesc.layout = objectLayout;
+        descriptorDesc.debugName = "DefaultObjectDescriptorSet";
+        descriptorDesc.bindings = m_objectDescriptorSet->GetDescriptorSnapshot();
+        const auto replacePalette = [&descriptorDesc](uint32 binding,
+                                                       RHIBuffer* buffer)
+        {
+            for (RHIDescriptorBinding& entry : descriptorDesc.bindings)
+            {
+                if (entry.binding == binding && entry.arrayElement == 0)
+                {
+                    entry.buffer = buffer;
+                    entry.offset = 0;
+                    entry.range = RVX_WHOLE_SIZE;
+                    entry.textureView = nullptr;
+                    entry.sampler = nullptr;
+                    entry.accelerationStructure = nullptr;
+                    return;
+                }
+            }
+            descriptorDesc.BindBuffer(binding, buffer);
+        };
+        replacePalette(2, resolvedSkinningPalettes.currentPaletteBuffer.Get());
+        replacePalette(3, resolvedSkinningPalettes.previousPaletteBuffer.Get());
+        RHIDescriptorSetRef replacement = m_device->CreateDescriptorSet(descriptorDesc);
+        if (!replacement)
+        {
+            return false;
+        }
+        QueueRenderOwnerRetirement(m_objectDescriptorSet, m_pendingOwnerRetirements);
+        m_objectDescriptorSet = std::move(replacement);
+        m_objectDescriptorSkinningPalettes = resolvedSkinningPalettes;
     }
 
     const uint64 offset = AllocateObjectConstantSlot();

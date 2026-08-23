@@ -1816,6 +1816,9 @@ namespace RVX
         /// can never be reused after RenderGraph::Clear().
         uint64 m_renderPassRecordEpoch = 0;
         std::shared_ptr<RenderPassRecordResults> m_activeRenderPassResults;
+        /** Exact immutable palette resources consumed by the active recording. */
+        std::shared_ptr<const RenderDeformationFrameResources>
+            m_activeRenderDeformationResources;
         RenderPassRecordIdentity m_activeRenderPassIdentity{};
         /** Frozen physical RHI slot for the active Direct readback recording. */
         uint32 m_directOpaqueRasterReadbackSourceFrameSlot = RVX_INVALID_INDEX;

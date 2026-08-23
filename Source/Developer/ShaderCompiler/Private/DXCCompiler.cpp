@@ -505,11 +505,16 @@ namespace RVX
             const char* sourceCode = dx11Source.c_str();
 
             std::vector<D3D_SHADER_MACRO> macros;
-            macros.reserve(options.defines.size() + 1);
+            macros.reserve(options.defines.size() + 2);
             for (const auto& def : options.defines)
             {
                 macros.push_back({ def.name.c_str(), def.value.c_str() });
             }
+            // FXC expands included files after the root source has passed
+            // through RemapRegisterSpacesForDX11(). Included ABI headers must
+            // therefore select the same flattened register namespace
+            // explicitly; SM5.0 cannot parse register spaces at all.
+            macros.push_back({ "RVX_DX11_FLATTENED_REGISTER_SPACES", "1" });
             macros.push_back({ nullptr, nullptr });
 
             UINT flags = 0;

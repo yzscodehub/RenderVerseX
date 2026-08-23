@@ -6138,6 +6138,60 @@
       "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
       "normalRelease": "captureless deferred graph callback retains its sealed descriptor layout until token completion",
       "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/Animation/RenderDeformationFrameResources.h",
+      "owner": "RenderDeformationFrameResources",
+      "symbol": "m_currentPaletteBuffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "RenderGraph import transfers the exact recording-owned current palette into submission retention",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/Animation/RenderDeformationFrameResources.h",
+      "owner": "RenderDeformationFrameResources",
+      "symbol": "m_previousPaletteBuffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "RenderGraph import transfers the exact recording-owned previous palette into submission retention",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "SkinningPaletteBufferBinding",
+      "symbol": "currentPaletteBuffer",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "descriptor binding snapshots retain the selected current palette until the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "SkinningPaletteBufferBinding",
+      "symbol": "previousPaletteBuffer",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "descriptor binding snapshots retain the selected previous palette until the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_objectSkinningCurrentFallbackBuffer",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "pipeline-cache replacement retires the fallback buffer after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_objectSkinningPreviousFallbackBuffer",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "pipeline-cache replacement retires the fallback buffer after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
     }
   ]
 }

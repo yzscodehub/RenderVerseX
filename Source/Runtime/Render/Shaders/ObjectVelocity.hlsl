@@ -17,8 +17,6 @@
 //   Slot 5: Bone weights buffer (float4)
 // =============================================================================
 
-#define RVX_MAX_OBJECT_SKINNING_MATRICES 128
-
 #include "Include/SurfaceMaterial.hlsli"
 
 cbuffer ViewConstants : register(b0, space0)
@@ -32,9 +30,10 @@ cbuffer ObjectConstants : register(b0, space1)
     float4x4 NormalMatrix;
     float4x4 PreviousWorldViewProjection;
     float4 ObjectVelocityParams; // x: previous object+view history valid
-    float4 SkinningParams; // x: enabled, y: matrix count
-    float4x4 SkinningMatrices[RVX_MAX_OBJECT_SKINNING_MATRICES];
+    float4 SkinningParams; // x: enabled, y: matrix count, z/w: current/previous offsets
 };
+
+#include "Include/Skinning.hlsli"
 
 cbuffer MaterialConstants : register(b0, space2)
 {
@@ -122,36 +121,14 @@ MaterialParameterData ResolveMaterialParameters()
     return material;
 }
 
-float4 ResolveSkinningPosition(float3 position, uint4 boneIndices, float4 boneWeights)
-{
-    if (SkinningParams.x <= 0.5f || SkinningParams.y <= 0.5f)
-    {
-        return float4(position, 1.0f);
-    }
-
-    const float weightSum = boneWeights.x + boneWeights.y + boneWeights.z + boneWeights.w;
-    if (weightSum <= 1.0e-5f)
-    {
-        return float4(position, 1.0f);
-    }
-
-    const float4 weights = boneWeights / weightSum;
-    const uint boneCount = (uint)SkinningParams.y;
-    const uint4 safeIndices = min(boneIndices, boneCount - 1u);
-    const float4 localPosition = float4(position, 1.0f);
-
-    return mul(SkinningMatrices[safeIndices.x], localPosition) * weights.x +
-           mul(SkinningMatrices[safeIndices.y], localPosition) * weights.y +
-           mul(SkinningMatrices[safeIndices.z], localPosition) * weights.z +
-           mul(SkinningMatrices[safeIndices.w], localPosition) * weights.w;
-}
-
-VSOutput BuildVelocityOutput(float4 localPosition)
+VSOutput BuildVelocityOutput(
+    float4 currentLocalPosition,
+    float4 previousLocalPosition)
 {
     VSOutput output;
-    const float4 worldPosition = mul(World, localPosition);
+    const float4 worldPosition = mul(World, currentLocalPosition);
     output.CurrentClip = mul(ViewProjection, worldPosition);
-    output.PreviousClip = mul(PreviousWorldViewProjection, localPosition);
+    output.PreviousClip = mul(PreviousWorldViewProjection, previousLocalPosition);
     output.Position = output.CurrentClip;
     output.HistoryValid = ObjectVelocityParams.x;
     return output;
@@ -171,12 +148,17 @@ float2 ResolveVelocity(float4 currentClip, float4 previousClip, float historyVal
 
 VSOutput VSMain(VSInput input)
 {
-    return BuildVelocityOutput(ResolveSkinningPosition(input.Position, input.BoneIndices, input.BoneWeights));
+    return BuildVelocityOutput(
+        RVXResolveCurrentSkinningPosition(
+            input.Position, input.BoneIndices, input.BoneWeights),
+        RVXResolvePreviousSkinningPosition(
+            input.Position, input.BoneIndices, input.BoneWeights));
 }
 
 VSOutput VSMainRigid(VSRigidInput input)
 {
-    return BuildVelocityOutput(float4(input.Position, 1.0f));
+    const float4 localPosition = float4(input.Position, 1.0f);
+    return BuildVelocityOutput(localPosition, localPosition);
 }
 
 float2 PSMain(
@@ -196,8 +178,11 @@ float2 PSMain(
 
 VSMaskedOutput VSMainMasked(VSMaskedInput input)
 {
-    const VSOutput velocity =
-        BuildVelocityOutput(ResolveSkinningPosition(input.Position, input.BoneIndices, input.BoneWeights));
+    const VSOutput velocity = BuildVelocityOutput(
+        RVXResolveCurrentSkinningPosition(
+            input.Position, input.BoneIndices, input.BoneWeights),
+        RVXResolvePreviousSkinningPosition(
+            input.Position, input.BoneIndices, input.BoneWeights));
 
     VSMaskedOutput output;
     output.Position = velocity.Position;
@@ -211,8 +196,8 @@ VSMaskedOutput VSMainMasked(VSMaskedInput input)
 
 VSMaskedOutput VSMainMaskedRigid(VSMaskedRigidInput input)
 {
-    const VSOutput velocity =
-        BuildVelocityOutput(float4(input.Position, 1.0f));
+    const float4 localPosition = float4(input.Position, 1.0f);
+    const VSOutput velocity = BuildVelocityOutput(localPosition, localPosition);
 
     VSMaskedOutput output;
     output.Position = velocity.Position;

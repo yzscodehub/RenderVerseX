@@ -717,8 +717,8 @@ namespace
         ASSERT_NE(nullptr, cache.GetDefaultLayout());
         ASSERT_NE(nullptr, cache.GetObjectSetLayout());
         ASSERT_NE(nullptr, cache.GetObjectDescriptorSet());
-        EXPECT_EQ(2u, cache.GetObjectSetLayout()->GetEntries().size());
-        EXPECT_EQ(2u, cache.GetObjectDescriptorSet()->GetDescriptorSnapshot().size());
+        EXPECT_EQ(4u, cache.GetObjectSetLayout()->GetEntries().size());
+        EXPECT_EQ(4u, cache.GetObjectDescriptorSet()->GetDescriptorSnapshot().size());
         EXPECT_NE(nullptr, cache.GetOpaquePipeline());
         EXPECT_NE(nullptr, cache.GetDepthOnlyPipeline());
         EXPECT_NE(nullptr, cache.GetGPUDrivenPipelineForVariant(
@@ -749,6 +749,18 @@ namespace
                 return entry.binding == binding;
             });
         return it == desc.bindings.end() ? nullptr : &(*it);
+    }
+
+    const RVX::RHIDescriptorBinding* FindDescriptorBinding(
+        const std::vector<RVX::RHIDescriptorBinding>& bindings,
+        RVX::uint32 binding)
+    {
+        auto it = std::find_if(bindings.begin(), bindings.end(),
+            [binding](const RVX::RHIDescriptorBinding& entry)
+            {
+                return entry.binding == binding;
+            });
+        return it == bindings.end() ? nullptr : &(*it);
     }
 
     bool HasShaderFixtures()
@@ -3100,7 +3112,8 @@ TEST_F(PipelineCacheValidationFixture, ViewConstantsLayoutMatchesDefaultLitCBuff
     EXPECT_EQ(sizeof(RVX::ViewConstants), 512u);
 }
 
-TEST_F(PipelineCacheValidationFixture, ObjectConstantsLayoutMatchesDefaultLitCBufferPacking)
+TEST_F(PipelineCacheValidationFixture,
+       ObjectConstantsAreDirectOnlyWhileGPUScenePreservesItsLegacyTail)
 {
     EXPECT_TRUE(std::is_standard_layout_v<RVX::ObjectConstants>);
     EXPECT_EQ(offsetof(RVX::ObjectConstants, world), 0u);
@@ -3108,9 +3121,21 @@ TEST_F(PipelineCacheValidationFixture, ObjectConstantsLayoutMatchesDefaultLitCBu
     EXPECT_EQ(offsetof(RVX::ObjectConstants, previousWorldViewProjection), 128u);
     EXPECT_EQ(offsetof(RVX::ObjectConstants, objectVelocityParams), 192u);
     EXPECT_EQ(offsetof(RVX::ObjectConstants, skinningParams), 208u);
-    EXPECT_EQ(offsetof(RVX::ObjectConstants, skinningMatrices), 224u);
-    EXPECT_EQ(sizeof(RVX::ObjectConstants),
-              224u + sizeof(RVX::Mat4) * RVX::RVX_MAX_OBJECT_SKINNING_MATRICES);
+    EXPECT_EQ(sizeof(RVX::ObjectConstants), 224u);
+
+    EXPECT_TRUE(std::is_standard_layout_v<RVX::GPUSceneLegacyObjectConstants>);
+    EXPECT_EQ(offsetof(RVX::GPUSceneLegacyObjectConstants, world), 0u);
+    EXPECT_EQ(offsetof(RVX::GPUSceneLegacyObjectConstants, normalMatrix), 64u);
+    EXPECT_EQ(offsetof(RVX::GPUSceneLegacyObjectConstants, previousWorldViewProjection), 128u);
+    EXPECT_EQ(offsetof(RVX::GPUSceneLegacyObjectConstants, objectVelocityParams), 192u);
+    EXPECT_EQ(offsetof(RVX::GPUSceneLegacyObjectConstants, skinningParams), 208u);
+    EXPECT_EQ(offsetof(RVX::GPUSceneLegacyObjectConstants, legacySkinningMatrices), 224u);
+    EXPECT_EQ(sizeof(RVX::GPUSceneLegacyObjectConstants),
+              224u + sizeof(RVX::Mat4) *
+                  RVX::RVX_GPU_SCENE_LEGACY_SKINNING_MATRIX_CAPACITY);
+    EXPECT_EQ(offsetof(RVX::GPUSceneRasterObjectConstants, legacyObjectConstants), 0u);
+    EXPECT_EQ(offsetof(RVX::GPUSceneRasterObjectConstants, gpuSceneRasterCounts),
+              sizeof(RVX::GPUSceneLegacyObjectConstants));
 }
 
 TEST_F(PipelineCacheValidationFixture, ObjectConstantBufferUsesAlignedObjectConstantsStride)
@@ -3129,6 +3154,7 @@ TEST_F(PipelineCacheValidationFixture, ObjectConstantBufferUsesAlignedObjectCons
     const RVX::uint64 expectedStride =
         (sizeof(RVX::ObjectConstants) + kExpectedConstantBufferAlignment - 1u) &
         ~(kExpectedConstantBufferAlignment - 1u);
+    EXPECT_EQ(expectedStride, kExpectedConstantBufferAlignment);
 
     const FakeBuffer* objectBuffer = FindCapturedBuffer(device, "ObjectConstantBuffer");
     ASSERT_NE(objectBuffer, nullptr);
@@ -3145,6 +3171,52 @@ TEST_F(PipelineCacheValidationFixture, ObjectConstantBufferUsesAlignedObjectCons
     const RVX::RHIDescriptorBinding* objectBinding = FindDescriptorBinding(*objectDescIt, 0);
     ASSERT_NE(objectBinding, nullptr);
     EXPECT_EQ(objectBinding->range, expectedStride);
+    const RVX::RHIDescriptorBinding* currentPaletteBinding =
+        FindDescriptorBinding(*objectDescIt, 2);
+    const RVX::RHIDescriptorBinding* previousPaletteBinding =
+        FindDescriptorBinding(*objectDescIt, 3);
+    ASSERT_NE(currentPaletteBinding, nullptr);
+    ASSERT_NE(previousPaletteBinding, nullptr);
+    EXPECT_NE(currentPaletteBinding->buffer, nullptr);
+    EXPECT_NE(previousPaletteBinding->buffer, nullptr);
+
+    const FakeBuffer* const currentFallback = FindCapturedBuffer(
+        device, "ObjectSkinningCurrentPaletteFallback");
+    const FakeBuffer* const previousFallback = FindCapturedBuffer(
+        device, "ObjectSkinningPreviousPaletteFallback");
+    ASSERT_NE(currentFallback, nullptr);
+    ASSERT_NE(previousFallback, nullptr);
+    EXPECT_EQ(currentFallback->GetSize(), sizeof(RVX::Mat4));
+    EXPECT_EQ(previousFallback->GetSize(), sizeof(RVX::Mat4));
+    EXPECT_EQ(currentFallback->GetStride(), sizeof(RVX::Mat4));
+    EXPECT_EQ(previousFallback->GetStride(), sizeof(RVX::Mat4));
+    EXPECT_TRUE(RVX::HasFlag(currentFallback->GetUsage(), RVX::RHIBufferUsage::Structured));
+    EXPECT_TRUE(RVX::HasFlag(currentFallback->GetUsage(), RVX::RHIBufferUsage::ShaderResource));
+    EXPECT_EQ(currentPaletteBinding->buffer, currentFallback);
+    EXPECT_EQ(previousPaletteBinding->buffer, previousFallback);
+
+    const RVX::Mat4 identity = RVX::Mat4Identity();
+    EXPECT_EQ(std::memcmp(currentFallback->GetStorage().data(),
+                          &identity,
+                          sizeof(identity)),
+              0);
+    EXPECT_EQ(std::memcmp(previousFallback->GetStorage().data(),
+                          &identity,
+                          sizeof(identity)),
+              0);
+
+    const RVX::SkinningPaletteSliceBinding invalidSkinnedFallback{
+        .matrixCount = 1u,
+        .previousValid = true};
+    EXPECT_FALSE(cache.UpdateObjectConstants(
+        RVX::Mat4Identity(),
+        RVX::Mat4Identity(),
+        RVX::Mat4Identity(),
+        RVX::Mat4Identity(),
+        true,
+        true,
+        {},
+        invalidSkinnedFallback));
 }
 
 TEST_F(PipelineCacheValidationFixture,
@@ -3184,6 +3256,47 @@ TEST_F(PipelineCacheValidationFixture,
         RVX::Mat4Identity(),
         false,
         true));
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       RasterDrawBindingSnapshotKeepsExplicitPaletteDescriptorRangesValid)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    RVX::RHIBufferDesc paletteDesc;
+    paletteDesc.size = sizeof(RVX::Mat4) * 4u;
+    paletteDesc.usage = RVX::RHIBufferUsage::Structured |
+                        RVX::RHIBufferUsage::ShaderResource;
+    paletteDesc.memoryType = RVX::RHIMemoryType::Upload;
+    paletteDesc.stride = sizeof(RVX::Mat4);
+    paletteDesc.debugName = "ValidationSnapshotCurrentPalette";
+    RVX::RHIBufferRef currentPalette = device.CreateBuffer(paletteDesc);
+    ASSERT_TRUE(currentPalette);
+    paletteDesc.debugName = "ValidationSnapshotPreviousPalette";
+    RVX::RHIBufferRef previousPalette = device.CreateBuffer(paletteDesc);
+    ASSERT_TRUE(previousPalette);
+
+    RVX::RasterDrawBindingSnapshot snapshot;
+    ASSERT_TRUE(cache.CreateRasterDrawBindingSnapshot(
+        RVX::ViewData{}, 1u, {currentPalette, previousPalette}, snapshot));
+    ASSERT_TRUE(snapshot.IsValid());
+
+    const auto& bindings = snapshot.objectDescriptorSet->GetDescriptorSnapshot();
+    const RVX::RHIDescriptorBinding* const currentBinding =
+        FindDescriptorBinding(bindings, 2u);
+    const RVX::RHIDescriptorBinding* const previousBinding =
+        FindDescriptorBinding(bindings, 3u);
+    ASSERT_NE(currentBinding, nullptr);
+    ASSERT_NE(previousBinding, nullptr);
+    EXPECT_EQ(RVX::RVX_WHOLE_SIZE, currentBinding->range);
+    EXPECT_EQ(RVX::RVX_WHOLE_SIZE, previousBinding->range);
 }
 
 TEST_F(PipelineCacheValidationFixture,
@@ -3495,7 +3608,8 @@ TEST_F(PipelineCacheValidationFixture, UpdateObjectConstantsUploadsWorldAndNorma
     EXPECT_FLOAT_EQ(uploaded.objectVelocityParams.y, 0.0f);
 }
 
-TEST_F(PipelineCacheValidationFixture, UpdateObjectConstantsUploadsSkinningMatrices)
+TEST_F(PipelineCacheValidationFixture,
+       ObjectConstantsUseExactStructuredSkinningPaletteSliceWithoutFixedArrayTruncation)
 {
     if (!HasShaderFixtures())
     {
@@ -3506,19 +3620,34 @@ TEST_F(PipelineCacheValidationFixture, UpdateObjectConstantsUploadsSkinningMatri
     PipelineCacheForValidation cache;
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
-    std::array<RVX::Mat4, 2> skinningMatrices = {
-        RVX::Mat4Identity(),
-        RVX::Mat4Identity()
-    };
-    skinningMatrices[0][3][0] = 2.0f;
-    skinningMatrices[1][3][1] = 3.0f;
+    RVX::RHIBufferDesc paletteDesc;
+    paletteDesc.size = sizeof(RVX::Mat4) * 2048u;
+    paletteDesc.usage = RVX::RHIBufferUsage::Structured |
+        RVX::RHIBufferUsage::ShaderResource;
+    paletteDesc.memoryType = RVX::RHIMemoryType::Upload;
+    paletteDesc.stride = sizeof(RVX::Mat4);
+    paletteDesc.debugName = "ValidationCurrentSkinningPalette";
+    RVX::RHIBufferRef currentPalette = device.CreateBuffer(paletteDesc);
+    ASSERT_TRUE(currentPalette);
+    paletteDesc.debugName = "ValidationPreviousSkinningPalette";
+    RVX::RHIBufferRef previousPalette = device.CreateBuffer(paletteDesc);
+    ASSERT_TRUE(previousPalette);
 
-    cache.UpdateObjectConstants(RVX::Mat4Identity(),
-                                RVX::Mat4Identity(),
-                                RVX::Mat4Identity(),
-                                RVX::Mat4Identity(),
-                                false,
-                                skinningMatrices);
+    const RVX::SkinningPaletteBufferBinding palettes{
+        currentPalette, previousPalette};
+    const RVX::SkinningPaletteSliceBinding slice{
+        .currentOffset = 256u,
+        .previousOffset = 1024u,
+        .matrixCount = 512u,
+        .previousValid = true};
+
+    ASSERT_TRUE(cache.UpdateObjectConstants(RVX::Mat4Identity(),
+                                            RVX::Mat4Identity(),
+                                            RVX::Mat4Identity(),
+                                            RVX::Mat4Identity(),
+                                            true,
+                                            palettes,
+                                            slice));
 
     const FakeBuffer* objectBuffer = FindCapturedBuffer(device, "ObjectConstantBuffer");
     ASSERT_NE(objectBuffer, nullptr);
@@ -3527,9 +3656,86 @@ TEST_F(PipelineCacheValidationFixture, UpdateObjectConstantsUploadsSkinningMatri
     RVX::ObjectConstants uploaded{};
     std::memcpy(&uploaded, objectBuffer->GetStorage().data(), sizeof(uploaded));
     EXPECT_FLOAT_EQ(uploaded.skinningParams.x, 1.0f);
-    EXPECT_FLOAT_EQ(uploaded.skinningParams.y, 2.0f);
-    EXPECT_FLOAT_EQ(uploaded.skinningMatrices[0][3][0], 2.0f);
-    EXPECT_FLOAT_EQ(uploaded.skinningMatrices[1][3][1], 3.0f);
+    EXPECT_FLOAT_EQ(uploaded.skinningParams.y, 512.0f);
+    EXPECT_FLOAT_EQ(uploaded.skinningParams.z, 256.0f);
+    EXPECT_FLOAT_EQ(uploaded.skinningParams.w, 1024.0f);
+    EXPECT_FLOAT_EQ(uploaded.objectVelocityParams.x, 1.0f);
+    const auto& globalBindings =
+        cache.GetObjectDescriptorSet()->GetDescriptorSnapshot();
+    const RVX::RHIDescriptorBinding* globalCurrent =
+        FindDescriptorBinding(globalBindings, 2);
+    const RVX::RHIDescriptorBinding* globalPrevious =
+        FindDescriptorBinding(globalBindings, 3);
+    ASSERT_NE(globalCurrent, nullptr);
+    ASSERT_NE(globalPrevious, nullptr);
+    EXPECT_EQ(currentPalette.Get(), globalCurrent->buffer);
+    EXPECT_EQ(previousPalette.Get(), globalPrevious->buffer);
+    EXPECT_EQ(RVX::RVX_WHOLE_SIZE, globalCurrent->range);
+    EXPECT_EQ(RVX::RVX_WHOLE_SIZE, globalPrevious->range);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       ObjectConstantBindingRetainsExactPalettesAndInvalidPreviousDisablesHistory)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    RVX::RHIBufferDesc paletteDesc;
+    paletteDesc.size = sizeof(RVX::Mat4) * 32u;
+    paletteDesc.usage = RVX::RHIBufferUsage::Structured |
+        RVX::RHIBufferUsage::ShaderResource;
+    paletteDesc.memoryType = RVX::RHIMemoryType::Upload;
+    paletteDesc.stride = sizeof(RVX::Mat4);
+    paletteDesc.debugName = "ValidationExactCurrentPalette";
+    RVX::RHIBufferRef currentPalette = device.CreateBuffer(paletteDesc);
+    ASSERT_TRUE(currentPalette);
+    paletteDesc.debugName = "ValidationExactPreviousPalette";
+    RVX::RHIBufferRef previousPalette = device.CreateBuffer(paletteDesc);
+    ASSERT_TRUE(previousPalette);
+
+    RVX::ObjectConstantBinding binding;
+    ASSERT_TRUE(cache.CreateObjectConstantBinding(
+        RVX::Mat4Identity(),
+        RVX::Mat4Identity(),
+        RVX::Mat4Identity(),
+        RVX::Mat4Identity(),
+        true,
+        true,
+        {currentPalette, previousPalette},
+        {.currentOffset = 2u, .previousOffset = 7u, .matrixCount = 16u, .previousValid = false},
+        nullptr,
+        binding));
+    ASSERT_TRUE(binding.IsValid());
+    EXPECT_EQ(currentPalette.Get(), binding.skinningPalettes.currentPaletteBuffer.Get());
+    EXPECT_EQ(previousPalette.Get(), binding.skinningPalettes.previousPaletteBuffer.Get());
+
+    const auto* descriptor = static_cast<const FakeDescriptorSet*>(binding.descriptorSet.Get());
+    ASSERT_NE(descriptor, nullptr);
+    const RVX::RHIDescriptorBinding* currentBinding =
+        FindDescriptorBinding(descriptor->GetBindings(), 2);
+    const RVX::RHIDescriptorBinding* previousBinding =
+        FindDescriptorBinding(descriptor->GetBindings(), 3);
+    ASSERT_NE(currentBinding, nullptr);
+    ASSERT_NE(previousBinding, nullptr);
+    EXPECT_EQ(currentPalette.Get(), currentBinding->buffer);
+    EXPECT_EQ(previousPalette.Get(), previousBinding->buffer);
+
+    const auto* constantPage = static_cast<const FakeBuffer*>(binding.constantBuffer.Get());
+    ASSERT_NE(constantPage, nullptr);
+    RVX::ObjectConstants constants{};
+    std::memcpy(&constants,
+                constantPage->GetStorage().data() + binding.dynamicOffsets[0],
+                sizeof(constants));
+    EXPECT_FLOAT_EQ(constants.skinningParams.y, 16.0f);
+    EXPECT_FLOAT_EQ(constants.skinningParams.z, 2.0f);
+    EXPECT_FLOAT_EQ(constants.skinningParams.w, 7.0f);
+    EXPECT_FLOAT_EQ(constants.objectVelocityParams.x, 0.0f);
 }
 
 TEST_F(PipelineCacheValidationFixture, DefaultLitUsesObjectNormalMatrix)
@@ -3539,10 +3745,11 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesObjectNormalMatrix)
     EXPECT_NE(shader.find("float4x4 PreviousWorldViewProjection;"), std::string::npos);
     EXPECT_NE(shader.find("float4 ObjectVelocityParams;"), std::string::npos);
     EXPECT_NE(shader.find("float4 SkinningParams;"), std::string::npos);
-    EXPECT_NE(shader.find("float4x4 SkinningMatrices[RVX_MAX_OBJECT_SKINNING_MATRICES];"), std::string::npos);
+    EXPECT_NE(shader.find("#include \"Include/Skinning.hlsli\""), std::string::npos);
+    EXPECT_EQ(shader.find("SkinningMatrices["), std::string::npos);
     EXPECT_NE(shader.find("uint4 BoneIndices : BLENDINDICES;"), std::string::npos);
     EXPECT_NE(shader.find("float4 BoneWeights : BLENDWEIGHT;"), std::string::npos);
-    EXPECT_NE(shader.find("ResolveSkinningPosition(input.Position, input.BoneIndices, input.BoneWeights)"),
+    EXPECT_NE(shader.find("RVXResolveCurrentSkinningPosition("),
               std::string::npos);
     EXPECT_NE(shader.find("mul((float3x3)NormalMatrix, localNormal)"), std::string::npos);
     EXPECT_EQ(shader.find("mul((float3x3)World, input.Normal)"), std::string::npos);
@@ -3552,25 +3759,29 @@ TEST_F(PipelineCacheValidationFixture, DrawPassesUploadRenderObjectNormalMatrix)
 {
     const fs::path passesDir = FindShaderDirectory().parent_path() / "Private" / "Passes";
 
-    const std::string opaquePass = ReadTextFile(passesDir / "OpaquePass.cpp");
-    const std::string transparentPass = ReadTextFile(passesDir / "TransparentPass.cpp");
-    const std::string depthPrepass = ReadTextFile(passesDir / "DepthPrepass.cpp");
-    const std::string shadowPass = ReadTextFile(passesDir / "ShadowPass.cpp");
     const std::string objectVelocityPass = ReadTextFile(passesDir / "ObjectVelocityPass.cpp");
 
-    EXPECT_NE(opaquePass.find("object->previousWorldMatrix"), std::string::npos);
-    EXPECT_NE(transparentPass.find("object.previousWorldMatrix"), std::string::npos);
-    EXPECT_NE(depthPrepass.find("object->previousWorldMatrix"), std::string::npos);
-    EXPECT_NE(shadowPass.find("object->previousWorldMatrix"), std::string::npos);
-    EXPECT_NE(opaquePass.find("view.previousViewProjectionMatrix"), std::string::npos);
-    EXPECT_NE(transparentPass.find("view.previousViewProjectionMatrix"), std::string::npos);
-    EXPECT_NE(depthPrepass.find("view.previousViewProjectionMatrix"), std::string::npos);
-    EXPECT_NE(shadowPass.find("view.previousViewProjectionMatrix"), std::string::npos);
-    EXPECT_NE(opaquePass.find("ResolveSkinningMatrices(*object, planned.buffers)"), std::string::npos);
-    EXPECT_NE(transparentPass.find("ResolveSkinningMatrices(object, buffers)"), std::string::npos);
-    EXPECT_NE(depthPrepass.find("ResolveSkinningMatrices(*object, planned.buffers)"), std::string::npos);
-    EXPECT_NE(shadowPass.find("ResolveSkinningMatrices(*object, planned.buffers)"), std::string::npos);
-    EXPECT_NE(objectVelocityPass.find("ResolveSkinningMatrices(object, buffers)"), std::string::npos);
+    EXPECT_NE(objectVelocityPass.find("UpdateRasterDrawBindingSnapshotObject("), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       StructuredSkinningShaderABIUsesCurrentAndPreviousPaletteBuffers)
+{
+    const fs::path shaderDirectory = FindShaderDirectory();
+    const std::string include = ReadTextFile(shaderDirectory / "Include" / "Skinning.hlsli");
+    const std::string depth = ReadTextFile(shaderDirectory / "DepthOnly.hlsl");
+    const std::string velocity = ReadTextFile(shaderDirectory / "ObjectVelocity.hlsl");
+
+    EXPECT_NE(include.find("CurrentSkinningPalette : register(t2, space1)"), std::string::npos);
+    EXPECT_NE(include.find("PreviousSkinningPalette : register(t3, space1)"), std::string::npos);
+    EXPECT_NE(include.find("RVXResolveCurrentSkinningPosition"), std::string::npos);
+    EXPECT_NE(include.find("RVXResolvePreviousSkinningPosition"), std::string::npos);
+    EXPECT_EQ(include.find("SkinningMatrices["), std::string::npos);
+    EXPECT_NE(depth.find("RVXResolveCurrentSkinningPosition("), std::string::npos);
+    EXPECT_NE(velocity.find("RVXResolveCurrentSkinningPosition("), std::string::npos);
+    EXPECT_NE(velocity.find("RVXResolvePreviousSkinningPosition("), std::string::npos);
+    EXPECT_NE(velocity.find("BuildVelocityOutput("), std::string::npos);
+    EXPECT_NE(velocity.find("PreviousWorldViewProjection, previousLocalPosition"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDefaultIBLAmbientValues)
@@ -6061,11 +6272,16 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracedShadowPassAfte
                           "            frameSettings.rayTracing.enableShadows);"),
               std::string::npos);
     EXPECT_NE(source.find("m_cameraVelocityPass->SetEnabled(false);"), std::string::npos);
-    EXPECT_NE(source.find("const bool cameraVelocityRequested = rayTracedReflectionsRequested && m_postProcessSettings.enableTAA;"),
+    EXPECT_NE(source.find("const bool cameraVelocityRequested = m_postProcessSettings.enableTAA;"),
+              std::string::npos);
+    EXPECT_EQ(source.find("rayTracedReflectionsRequested && m_postProcessSettings.enableTAA"),
               std::string::npos);
     EXPECT_NE(source.find("m_cameraVelocityPass->SetEnabled(cameraVelocityRequested);"), std::string::npos);
     EXPECT_NE(source.find("velocityDesc.debugName = \"SceneCameraVelocity\";"), std::string::npos);
     EXPECT_NE(source.find("m_viewData.velocityTarget = m_renderGraph->CreateTexture(velocityDesc);"),
+              std::string::npos);
+    EXPECT_NE(source.find("m_renderGraph->SetExportAccess(\n"
+                          "            m_viewData.velocityTarget,"),
               std::string::npos);
     EXPECT_NE(source.find("void SceneRenderer::RequestTemporalHistoryReset()"), std::string::npos);
     EXPECT_NE(source.find("m_pendingTemporalHistoryReset = true;"), std::string::npos);
@@ -9450,11 +9666,21 @@ TEST_F(PipelineCacheValidationFixture,
     }
 
     const auto& directObjectEntries = cache.GetObjectSetLayout()->GetEntries();
-    ASSERT_EQ(2u, directObjectEntries.size());
+    ASSERT_EQ(4u, directObjectEntries.size());
     EXPECT_NE(nullptr, FindBinding(*gpuSceneLayoutIt, 2u));
-    EXPECT_EQ(directObjectEntries.end(), std::find_if(
-        directObjectEntries.begin(), directObjectEntries.end(),
-        [](const RVX::RHIBindingLayoutEntry& entry) { return entry.binding == 2u; }));
+    for (RVX::uint32 binding = 2u; binding <= 3u; ++binding)
+    {
+        const auto entry = std::find_if(
+            directObjectEntries.begin(),
+            directObjectEntries.end(),
+            [binding](const RVX::RHIBindingLayoutEntry& candidate)
+            {
+                return candidate.binding == binding;
+            });
+        ASSERT_NE(entry, directObjectEntries.end());
+        EXPECT_EQ(RVX::RHIBindingType::ShaderResourceBuffer, entry->type);
+        EXPECT_EQ(RVX::RHIShaderStage::Vertex, entry->visibility);
+    }
 
     const size_t preGPUScenePipelineCount = device.capturedGraphicsPipelines.size();
     RVX::RHIPipeline* opaque = cache.GetGPUScenePipelineForVariant(
@@ -9700,7 +9926,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestMissingIsColdInitAndSavesMetadata
     EXPECT_TRUE(fs::exists(temp.Path() / RVX::PipelineCache::GetManifestFileName()));
 
     const std::string manifest = ReadTextFile(temp.Path() / RVX::PipelineCache::GetManifestFileName());
-    EXPECT_NE(manifest.find("version=16"), std::string::npos);
+    EXPECT_NE(manifest.find("version=17"), std::string::npos);
     EXPECT_NE(manifest.find("skyboxVertexShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("skyboxPixelShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("skyboxPipelineHash="), std::string::npos);
@@ -11267,6 +11493,7 @@ TEST_F(PipelineCacheValidationFixture,
             false,
             true,
             {},
+            {},
             nullptr,
             binding));
         if (index == 0)
@@ -11317,13 +11544,13 @@ TEST_F(PipelineCacheValidationFixture,
     RVX::ObjectConstantBinding rejected;
     ASSERT_TRUE(cache.CreateObjectConstantBinding(
         RVX::Mat4Identity(), RVX::Mat4Identity(), RVX::Mat4Identity(),
-        RVX::Mat4Identity(), false, true, {}, nullptr, rejected));
+        RVX::Mat4Identity(), false, true, {}, {}, nullptr, rejected));
     cache.ReleaseUnsubmittedObjectConstants();
 
     RVX::ObjectConstantBinding retry;
     ASSERT_TRUE(cache.CreateObjectConstantBinding(
         RVX::Mat4Identity(), RVX::Mat4Identity(), RVX::Mat4Identity(),
-        RVX::Mat4Identity(), false, true, {}, nullptr, retry));
+        RVX::Mat4Identity(), false, true, {}, {}, nullptr, retry));
     EXPECT_EQ(rejected.pageIdentity, retry.pageIdentity);
     EXPECT_EQ(0u, retry.dynamicOffsets[0]);
     EXPECT_FALSE(cache.NotifyObjectConstantSubmission(RVX::GPUCompletionToken{}));
@@ -11364,6 +11591,7 @@ TEST_F(PipelineCacheValidationFixture,
             RVX::Mat4Identity(),
             false,
             true,
+            {},
             {},
             instanceBuffer,
             outBinding);
@@ -11448,6 +11676,7 @@ TEST_F(PipelineCacheValidationFixture,
             RVX::Mat4Identity(),
             false,
             true,
+            {},
             {},
             nullptr,
             outBinding);

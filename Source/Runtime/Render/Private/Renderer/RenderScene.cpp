@@ -505,6 +505,7 @@ void RenderScene::Clear()
     m_lastRenderedHeader = {};
     m_lastRenderedView = {};
     m_lastRenderedObjectTransforms.clear();
+    m_lastRenderedSkinningPalettes.clear();
     m_lastRenderedSurfaceCompatibilityKey = m_surfaceCompatibilityKey;
 }
 
@@ -563,6 +564,13 @@ RenderFrameApplyResult RenderScene::ApplyFrameV5(
         : 0;
     const RenderSceneDatabaseChanges receiptChanges =
         scene.CollectChangesSince(receiptBaseRevision);
+    const RenderSceneDatabaseChanges appliedChanges =
+        sameSceneDatabase
+        ? scene.CollectChangesSince(m_appliedSceneRevision)
+        : RenderSceneDatabaseChanges{};
+    const bool retainedSceneFullReset = sameSceneDatabase &&
+        scene.GetRevision() != m_appliedSceneRevision &&
+        appliedChanges.available && appliedChanges.fullReset;
     if (m_hasAcceptedFrame && sameSceneDatabase && !resetHistory &&
         m_requiresTemporalSettle &&
         !m_temporalSettleObjectIds.empty() &&
@@ -700,7 +708,8 @@ RenderFrameApplyResult RenderScene::ApplyFrameV5(
         features,
         scene,
         receiptChanges,
-        registry);
+        registry,
+        retainedSceneFullReset);
 }
 
 RenderFrameApplyResult RenderScene::ApplyFrameState(
@@ -715,7 +724,8 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
     const RenderFeatureSnapshot& features,
     const RenderSceneDatabase& retainedScene,
     const RenderSceneDatabaseChanges& receiptChanges,
-    const RenderResourceRegistry& registry)
+    const RenderResourceRegistry& registry,
+    bool retainedSceneFullReset)
 {
     RenderFrameApplyResult result;
     result.sequence = header.sequence;
@@ -770,6 +780,7 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
         header.worldRevision != m_lastRenderedHeader.worldRevision ||
         header.temporalEpoch != m_lastRenderedHeader.temporalEpoch ||
         header.explicitDiscontinuity ||
+        retainedSceneFullReset ||
         m_surfaceCompatibilityKey !=
             m_lastRenderedSurfaceCompatibilityKey;
 
@@ -837,6 +848,7 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
         object.hasSkinningPaletteProvider =
             primitive.hasSkinningPaletteProvider;
         object.skinningPalette = primitive.skinningPalette;
+        ResolvePreviousSkinningPalette(primitive, resetHistory, object);
         object.sortKey = primitive.sortKey;
         object.layerMask = primitive.layerMask;
         object.flags = primitive.flags;
@@ -1205,6 +1217,7 @@ RenderFrameApplyResult RenderScene::ApplyIncrementalFrameState(
         {
             return result;
         }
+        ResolvePreviousSkinningPalette(*primitive, false, candidate.object);
         objectCandidates.push_back(std::move(candidate));
     }
 
@@ -1317,6 +1330,7 @@ RenderFrameApplyResult RenderScene::ApplyIncrementalFrameState(
             continue;
         RemoveObjectAt(existing->second);
         m_lastRenderedObjectTransforms.erase(objectId);
+        m_lastRenderedSkinningPalettes.erase(objectId);
         m_gpuSceneRemovedObjectIds.push_back(objectId);
         m_pendingRemovedObjectIds.push_back(objectId);
     }
@@ -1514,6 +1528,89 @@ bool RenderScene::CommitPendingPresentedSceneReceipt(
     return true;
 }
 
+void RenderScene::ResolvePreviousSkinningPalette(
+    const RenderPrimitiveSnapshot& primitive,
+    bool resetHistory,
+    RenderObject& object) const
+{
+    object.previousSkinningMatrices.clear();
+    object.previousSkinningPalette = {};
+    object.previousSkinningPaletteValid = 0;
+
+    // A current frame may only borrow history that was actually presented.
+    // Continuity breaks deliberately preserve the stored value until a new
+    // frame presents, but never expose it to the rebuilt scene.
+    if (resetHistory || !object.HasValidSkinningPalette())
+        return;
+
+    const auto previous = m_lastRenderedSkinningPalettes.find(
+        primitive.objectId);
+    if (previous == m_lastRenderedSkinningPalettes.end())
+        return;
+
+    const RenderedSkinningPalette& palette = previous->second;
+    if (!palette.metadata.IsValidFor(palette.matrices) ||
+        palette.metadata.providerComponentId !=
+            object.skinningPalette.providerComponentId ||
+        palette.metadata.sourceModelResourceId !=
+            object.skinningPalette.sourceModelResourceId ||
+        palette.metadata.paletteCount != object.skinningPalette.paletteCount)
+    {
+        return;
+    }
+
+    object.previousSkinningMatrices = palette.matrices;
+    object.previousSkinningPalette = palette.metadata;
+    object.previousSkinningPaletteValid = 1;
+}
+
+void RenderScene::CommitAcceptedSkinningPaletteHistory()
+{
+    const auto publishObject =
+        [this](RenderObject& object)
+        {
+            if (!object.HasValidSkinningPalette())
+            {
+                m_lastRenderedSkinningPalettes.erase(object.entityId);
+                object.previousSkinningMatrices.clear();
+                object.previousSkinningPalette = {};
+                object.previousSkinningPaletteValid = 0;
+                return;
+            }
+
+            RenderedSkinningPalette palette;
+            palette.matrices = object.skinningMatrices;
+            palette.metadata = object.skinningPalette;
+            m_lastRenderedSkinningPalettes.insert_or_assign(
+                object.entityId, std::move(palette));
+
+            // The retained RenderObject survives frames with no scene delta.
+            // Settle its local previous-pose view at the successful Present
+            // boundary so a static following frame emits zero skin velocity.
+            object.previousSkinningMatrices = object.skinningMatrices;
+            object.previousSkinningPalette = object.skinningPalette;
+            object.previousSkinningPaletteValid = 1;
+        };
+
+    if (m_fullRenderedObjectRefresh)
+    {
+        m_lastRenderedSkinningPalettes.clear();
+        m_lastRenderedSkinningPalettes.reserve(m_objects.size());
+        for (RenderObject& object : m_objects)
+            publishObject(object);
+        return;
+    }
+
+    for (uint64 objectId : m_pendingRemovedObjectIds)
+        m_lastRenderedSkinningPalettes.erase(objectId);
+    for (uint64 objectId : m_pendingRenderedObjectIds)
+    {
+        const auto object = m_objectIndices.find(objectId);
+        if (object != m_objectIndices.end() && object->second < m_objects.size())
+            publishObject(m_objects[object->second]);
+    }
+}
+
 void RenderScene::RebuildRetainedIndicesAndReferences()
 {
     m_objectIndices.clear();
@@ -1655,6 +1752,8 @@ void RenderScene::MarkAcceptedFrameRendered()
     m_lastRenderedSurfaceCompatibilityKey = m_surfaceCompatibilityKey;
     if (!m_acceptedSceneMutated)
         return;
+
+    CommitAcceptedSkinningPaletteHistory();
 
     m_temporalSettleObjectIds.clear();
     if (m_fullRenderedObjectRefresh)

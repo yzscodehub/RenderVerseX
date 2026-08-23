@@ -494,7 +494,31 @@ namespace RVX
                     RVX_RHI_ERROR("VulkanDescriptorSet: buffer binding {} has no native buffer", binding.binding);
                     return false;
                 }
-                
+
+                const uint64 bufferSize = vkBuffer->GetSize();
+                if (binding.offset >= bufferSize)
+                {
+                    RVX_RHI_ERROR(
+                        "VulkanDescriptorSet: buffer binding {} offset {} is outside buffer size {}",
+                        binding.binding,
+                        binding.offset,
+                        bufferSize);
+                    return false;
+                }
+
+                if (binding.range != RVX_WHOLE_SIZE &&
+                    (binding.range == 0 ||
+                     binding.range > bufferSize - binding.offset))
+                {
+                    RVX_RHI_ERROR(
+                        "VulkanDescriptorSet: buffer binding {} range {} at offset {} exceeds buffer size {}",
+                        binding.binding,
+                        binding.range,
+                        binding.offset,
+                        bufferSize);
+                    return false;
+                }
+
                 VkDescriptorBufferInfo bufferInfo = {};
                 bufferInfo.buffer = vkBuffer->GetBuffer();
                 bufferInfo.offset = binding.offset;

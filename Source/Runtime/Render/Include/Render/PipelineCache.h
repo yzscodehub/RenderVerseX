@@ -42,7 +42,53 @@ namespace RVX
     struct GPUSceneRasterResourceSnapshot;
     struct ViewData;
 
-    constexpr uint32 RVX_MAX_OBJECT_SKINNING_MATRICES = 128;
+    constexpr uint32 RVX_GPU_SCENE_LEGACY_SKINNING_MATRIX_CAPACITY = 128;
+
+    /**
+     * @brief Strong, immutable palette resources selected for one recording.
+     *
+     * A skinned draw always consumes the two buffers as a pair. An empty pair
+     * denotes the rigid/default binding and is resolved to cache-owned palette
+     * buffers before a descriptor is created. Rigid objects never read them.
+     */
+    struct SkinningPaletteBufferBinding
+    {
+        RHIBufferRef currentPaletteBuffer;
+        RHIBufferRef previousPaletteBuffer;
+
+        [[nodiscard]] bool IsWellFormed() const noexcept
+        {
+            return static_cast<bool>(currentPaletteBuffer) ==
+                   static_cast<bool>(previousPaletteBuffer);
+        }
+
+        [[nodiscard]] bool HasPalettes() const noexcept
+        {
+            return currentPaletteBuffer && previousPaletteBuffer;
+        }
+    };
+
+    /** @brief Per-object view into one current/previous palette pair. */
+    struct SkinningPaletteSliceBinding
+    {
+        uint32 currentOffset = 0;
+        uint32 previousOffset = 0;
+        uint32 matrixCount = 0;
+        bool previousValid = false;
+
+        [[nodiscard]] bool IsRigid() const noexcept { return matrixCount == 0; }
+
+        [[nodiscard]] bool IsWellFormed() const noexcept
+        {
+            if (matrixCount == 0)
+            {
+                return currentOffset == 0 && previousOffset == 0;
+            }
+
+            return currentOffset <= std::numeric_limits<uint32>::max() - matrixCount &&
+                   previousOffset <= std::numeric_limits<uint32>::max() - matrixCount;
+        }
+    };
 
     /** @brief Vertex-stream contract for DefaultLit direct graphics pipelines. */
     enum class DefaultLitDirectVertexInputMode : uint8
@@ -283,9 +329,7 @@ namespace RVX
         float biasClamp = 0.0f;
     };
 
-    /**
-     * @brief Object constants structure (matches HLSL cbuffer)
-     */
+    /** @brief Direct-raster set-1/b0 ABI. */
     struct ObjectConstants
     {
         Mat4 world;
@@ -293,26 +337,47 @@ namespace RVX
         Mat4 previousWorldViewProjection;
         Vec4 objectVelocityParams;
         Vec4 skinningParams;
-        Mat4 skinningMatrices[RVX_MAX_OBJECT_SKINNING_MATRICES];
     };
 
     /**
-     * @brief Private set-1 b0 payload for a sealed GPU-scene raster record.
+     * @brief GPU-scene-only compatibility payload required by its private b0.
      *
-     * The ObjectConstants prefix is intentionally exact because DefaultLit's
-     * pixel shader still reads ObjectVelocityParams from b0.  Only the trailing
-     * counts are GPU-scene specific and they are filled by PipelineCache from a
-     * sealed resource snapshot.
+     * This intentionally preserves GPUSceneRaster.hlsli's historical fixed
+     * palette tail without imposing that storage cost on direct object uploads.
      */
+    struct alignas(16) GPUSceneLegacyObjectConstants
+    {
+        Mat4 world{};
+        Mat4 normalMatrix{};
+        Mat4 previousWorldViewProjection{};
+        Vec4 objectVelocityParams{};
+        Vec4 skinningParams{};
+        Mat4 legacySkinningMatrices[RVX_GPU_SCENE_LEGACY_SKINNING_MATRIX_CAPACITY]{};
+    };
+
+    /** @brief Private set-1/b0 payload for one sealed GPU-scene raster record. */
     struct alignas(16) GPUSceneRasterObjectConstants
     {
-        ObjectConstants objectConstants{};
+        GPUSceneLegacyObjectConstants legacyObjectConstants{};
         std::array<uint32, 4> gpuSceneRasterCounts{};
     };
 
-    static_assert(offsetof(GPUSceneRasterObjectConstants, objectConstants) == 0);
-    static_assert(offsetof(GPUSceneRasterObjectConstants, gpuSceneRasterCounts) ==
+    static_assert(sizeof(ObjectConstants) == 224u);
+    static_assert(offsetof(GPUSceneLegacyObjectConstants, world) ==
+                  offsetof(ObjectConstants, world));
+    static_assert(offsetof(GPUSceneLegacyObjectConstants, normalMatrix) ==
+                  offsetof(ObjectConstants, normalMatrix));
+    static_assert(offsetof(GPUSceneLegacyObjectConstants, previousWorldViewProjection) ==
+                  offsetof(ObjectConstants, previousWorldViewProjection));
+    static_assert(offsetof(GPUSceneLegacyObjectConstants, objectVelocityParams) ==
+                  offsetof(ObjectConstants, objectVelocityParams));
+    static_assert(offsetof(GPUSceneLegacyObjectConstants, skinningParams) ==
+                  offsetof(ObjectConstants, skinningParams));
+    static_assert(offsetof(GPUSceneLegacyObjectConstants, legacySkinningMatrices) ==
                   sizeof(ObjectConstants));
+    static_assert(offsetof(GPUSceneRasterObjectConstants, legacyObjectConstants) == 0);
+    static_assert(offsetof(GPUSceneRasterObjectConstants, gpuSceneRasterCounts) ==
+                  sizeof(GPUSceneLegacyObjectConstants));
 
     /**
      * @brief Strongly-owned private GPU-scene raster binding state for one seal.
@@ -358,16 +423,19 @@ namespace RVX
     {
         RHIBufferRef viewConstantBuffer;
         RHIBufferRef objectConstantBuffer;
+        SkinningPaletteBufferBinding skinningPalettes;
         RHIDescriptorSetRef frameDescriptorSet;
         RHIDescriptorSetRef objectDescriptorSet;
         std::vector<Ref<RefCounted>> retainedResources;
         uint64 objectConstantStride = 0;
         uint32 objectCapacity = 0;
         uint32 objectCursor = 0;
+        bool hasExplicitSkinningPalettes = false;
 
         [[nodiscard]] bool IsValid() const noexcept
         {
             return viewConstantBuffer && objectConstantBuffer &&
+                   skinningPalettes.IsWellFormed() && skinningPalettes.HasPalettes() &&
                    frameDescriptorSet && objectDescriptorSet &&
                    objectConstantStride != 0 && objectCapacity != 0;
         }
@@ -383,15 +451,18 @@ namespace RVX
     struct RasterObjectBindingSnapshot
     {
         RHIBufferRef objectConstantBuffer;
+        SkinningPaletteBufferBinding skinningPalettes;
         RHIDescriptorSetRef objectDescriptorSet;
         std::vector<Ref<RefCounted>> retainedResources;
         uint64 objectConstantStride = 0;
         uint32 objectCapacity = 0;
         uint32 objectCursor = 0;
+        bool hasExplicitSkinningPalettes = false;
 
         [[nodiscard]] bool IsValid() const noexcept
         {
-            return objectConstantBuffer && objectDescriptorSet &&
+            return objectConstantBuffer && skinningPalettes.IsWellFormed() &&
+                   skinningPalettes.HasPalettes() && objectDescriptorSet &&
                    objectConstantStride != 0 && objectCapacity != 0;
         }
     };
@@ -422,6 +493,7 @@ namespace RVX
     {
         RHIBufferRef constantBuffer;
         RHIBufferRef instanceBuffer;
+        SkinningPaletteBufferBinding skinningPalettes;
         RHIDescriptorSetRef descriptorSet;
         uint64 pageIdentity = 0;
         std::array<uint32, 1> dynamicOffsets = {0};
@@ -429,7 +501,8 @@ namespace RVX
 
         [[nodiscard]] bool IsValid() const noexcept
         {
-            return constantBuffer && descriptorSet && pageIdentity != 0 &&
+            return constantBuffer && skinningPalettes.IsWellFormed() &&
+                   skinningPalettes.HasPalettes() && descriptorSet && pageIdentity != 0 &&
                    (!requiresInstanceBuffer || instanceBuffer);
         }
     };
@@ -1031,6 +1104,8 @@ namespace RVX
          *
          * The returned binding owns b0 from the selected page and preserves
          * set-1/b1 as either the supplied instance buffer or the stable fallback.
+         * Set-1/b2 and b3 bind the exact current/previous palette pair selected
+         * for this record (or stable identity buffers for rigid objects).
          */
         bool CreateObjectConstantBinding(
             const Mat4& worldMatrix,
@@ -1039,7 +1114,8 @@ namespace RVX
             const Mat4& previousViewProjectionMatrix,
             bool previousWorldViewProjectionValid,
             bool receivesShadow,
-            std::span<const Mat4> skinningMatrices,
+            const SkinningPaletteBufferBinding& skinningPalettes,
+            const SkinningPaletteSliceBinding& skinningSlice,
             RHIBuffer* instanceBuffer,
             ObjectConstantBinding& outBinding);
 
@@ -1058,9 +1134,22 @@ namespace RVX
                                              uint32 objectCapacity,
                                              RasterDrawBindingSnapshot& outSnapshot) const;
 
+        /** @brief Create immutable per-record frame/object bindings with exact palettes. */
+        bool CreateRasterDrawBindingSnapshot(
+            const ViewData& view,
+            uint32 objectCapacity,
+            const SkinningPaletteBufferBinding& skinningPalettes,
+            RasterDrawBindingSnapshot& outSnapshot) const;
+
         /** @brief Create record-owned set-1 bindings without reading set 0. */
         bool CreateRasterObjectBindingSnapshot(
             uint32 objectCapacity,
+            RasterObjectBindingSnapshot& outSnapshot) const;
+
+        /** @brief Create record-owned set-1 bindings with exact palettes. */
+        bool CreateRasterObjectBindingSnapshot(
+            uint32 objectCapacity,
+            const SkinningPaletteBufferBinding& skinningPalettes,
             RasterObjectBindingSnapshot& outSnapshot) const;
 
         /**
@@ -1100,6 +1189,14 @@ namespace RVX
             const FrameLightResources& lightResources,
             RasterDrawBindingSnapshot& outSnapshot) const;
 
+        /** @brief Create transparent record bindings with exact palette resources. */
+        bool CreateTransparentRasterDrawBindingSnapshot(
+            const ViewData& view,
+            uint32 objectCapacity,
+            const FrameLightResources& lightResources,
+            const SkinningPaletteBufferBinding& skinningPalettes,
+            RasterDrawBindingSnapshot& outSnapshot) const;
+
         /** @brief Upload one object slot in a recording-owned snapshot. */
         bool UpdateRasterDrawBindingSnapshotObject(
             RasterDrawBindingSnapshot& snapshot,
@@ -1109,7 +1206,7 @@ namespace RVX
             const Mat4& previousViewProjectionMatrix,
             bool previousWorldViewProjectionValid,
             bool receivesShadow,
-            std::span<const Mat4> skinningMatrices = {}) const;
+            const SkinningPaletteSliceBinding& skinningSlice = {}) const;
 
         /** @brief Upload an object slot in a set-1-only recording snapshot. */
         bool UpdateRasterObjectBindingSnapshotObject(
@@ -1120,7 +1217,7 @@ namespace RVX
             const Mat4& previousViewProjectionMatrix,
             bool previousWorldViewProjectionValid,
             bool receivesShadow,
-            std::span<const Mat4> skinningMatrices = {}) const;
+            const SkinningPaletteSliceBinding& skinningSlice = {}) const;
 
         /**
          * @brief Build a single dynamic offset span for descriptor sets with one dynamic binding
@@ -1150,8 +1247,24 @@ namespace RVX
                                    const Mat4& normalMatrix,
                                    const Mat4& previousWorldMatrix,
                                    const Mat4& previousViewProjectionMatrix,
+                                   bool previousWorldViewProjectionValid);
+
+        /** @brief Rigid-object convenience overload with explicit shadow policy. */
+        bool UpdateObjectConstants(const Mat4& worldMatrix,
+                                   const Mat4& normalMatrix,
+                                   const Mat4& previousWorldMatrix,
+                                   const Mat4& previousViewProjectionMatrix,
                                    bool previousWorldViewProjectionValid,
-                                   std::span<const Mat4> skinningMatrices = {});
+                                   bool receivesShadow);
+
+        /** @brief Upload per-object constants with structured skin palette metadata. */
+        bool UpdateObjectConstants(const Mat4& worldMatrix,
+                                   const Mat4& normalMatrix,
+                                   const Mat4& previousWorldMatrix,
+                                   const Mat4& previousViewProjectionMatrix,
+                                   bool previousWorldViewProjectionValid,
+                                   const SkinningPaletteBufferBinding& skinningPalettes,
+                                   const SkinningPaletteSliceBinding& skinningSlice);
 
         /**
          * @brief Update per-object constants with previous-frame motion and render flags.
@@ -1163,7 +1276,8 @@ namespace RVX
                                    const Mat4& previousViewProjectionMatrix,
                                    bool previousWorldViewProjectionValid,
                                    bool receivesShadow,
-                                   std::span<const Mat4> skinningMatrices = {});
+                                   const SkinningPaletteBufferBinding& skinningPalettes,
+                                   const SkinningPaletteSliceBinding& skinningSlice);
 
         // =====================================================================
         // Render Target Format
@@ -1458,6 +1572,20 @@ namespace RVX
         bool EnsureFrameLightFallbackResources();
         bool EnsureFrameClusteredLightFallbackResources();
         bool EnsureObjectInstanceFallbackBuffer();
+        bool EnsureObjectSkinningPaletteFallbackBuffers();
+        [[nodiscard]] bool ResolveSkinningPaletteBuffers(
+            const SkinningPaletteBufferBinding& requested,
+            SkinningPaletteBufferBinding& outResolved) const;
+        [[nodiscard]] bool BuildObjectConstants(
+            const Mat4& worldMatrix,
+            const Mat4& normalMatrix,
+            const Mat4& previousWorldMatrix,
+            const Mat4& previousViewProjectionMatrix,
+            bool previousWorldViewProjectionValid,
+            bool receivesShadow,
+            const SkinningPaletteBufferBinding& skinningPalettes,
+            const SkinningPaletteSliceBinding& skinningSlice,
+            ObjectConstants& outConstants) const;
         bool UpdateDefaultFrameDescriptorSet();
         RHIDescriptorSetRef CreateFrameDescriptorSet();
         Ref<FrameDescriptorBindingOwners> CreateFrameDescriptorBindingOwners() const;
@@ -1468,12 +1596,15 @@ namespace RVX
             const ViewData& view,
             uint32 objectCapacity,
             const FrameLightResources* transparentLightResources,
+            const SkinningPaletteBufferBinding& skinningPalettes,
             RasterDrawBindingSnapshot& outSnapshot) const;
         uint64 AllocateObjectConstantSlot();
         RHIDescriptorSetRef CreateObjectConstantPageDescriptor(
             uint64 pageIdentity,
             RHIBuffer* constantBuffer,
             RHIBuffer* instanceBuffer,
+            RHIBuffer* currentPaletteBuffer,
+            RHIBuffer* previousPaletteBuffer,
             bool cacheFallbackInstance);
         bool BuildReflectedDefaultLitLayouts(std::vector<RHIDescriptorSetLayoutDesc>& outLayouts);
         bool ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSetLayoutDesc>& layouts);
@@ -1681,6 +1812,9 @@ namespace RVX
         RHIBufferRef m_viewConstantBuffer;
         RHIBufferRef m_objectConstantBuffer;
         RHIBufferRef m_objectInstanceFallbackBuffer;
+        RHIBufferRef m_objectSkinningCurrentFallbackBuffer;
+        RHIBufferRef m_objectSkinningPreviousFallbackBuffer;
+        SkinningPaletteBufferBinding m_objectDescriptorSkinningPalettes;
         RHIDescriptorSetRef m_frameDescriptorSet;
         Ref<FrameDescriptorBindingOwners> m_frameDescriptorBindingOwners;
         RHIDescriptorSetRef m_objectDescriptorSet;
@@ -1689,9 +1823,14 @@ namespace RVX
         {
             uint64 pageIdentity = 0;
             RHIBuffer* instanceBuffer = nullptr;
+            RHIBuffer* currentPaletteBuffer = nullptr;
+            RHIBuffer* previousPaletteBuffer = nullptr;
             bool operator==(const ObjectPageDescriptorKey& other) const noexcept
             {
-                return pageIdentity == other.pageIdentity && instanceBuffer == other.instanceBuffer;
+                return pageIdentity == other.pageIdentity &&
+                       instanceBuffer == other.instanceBuffer &&
+                       currentPaletteBuffer == other.currentPaletteBuffer &&
+                       previousPaletteBuffer == other.previousPaletteBuffer;
             }
         };
         struct ObjectPageDescriptorKeyHash
@@ -1699,7 +1838,9 @@ namespace RVX
             size_t operator()(const ObjectPageDescriptorKey& key) const noexcept
             {
                 return std::hash<uint64>{}(key.pageIdentity) ^
-                    (std::hash<RHIBuffer*>{}(key.instanceBuffer) << 1);
+                    (std::hash<RHIBuffer*>{}(key.instanceBuffer) << 1) ^
+                    (std::hash<RHIBuffer*>{}(key.currentPaletteBuffer) << 2) ^
+                    (std::hash<RHIBuffer*>{}(key.previousPaletteBuffer) << 3);
             }
         };
         std::unordered_map<ObjectPageDescriptorKey,

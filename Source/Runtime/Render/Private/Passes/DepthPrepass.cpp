@@ -4,6 +4,7 @@
  */
 
 #include "Render/Passes/DepthPrepass.h"
+#include "Render/Animation/RenderDeformationFrameResources.h"
 
 #include "Passes/MaterialTextureGraphBindings.h"
 #include "Core/Log.h"
@@ -31,14 +32,73 @@ namespace RVX
 
 namespace
 {
-    std::span<const Mat4> ResolveSkinningMatrices(const RenderObject& object, const MeshGPUBuffers& buffers)
+    [[nodiscard]] bool SamePaletteMetadata(
+        const RenderSkinningPaletteMetadata& left,
+        const RenderSkinningPaletteMetadata& right) noexcept
     {
-        if (!object.HasSkinningData() || !buffers.HasSkinningVertexData())
-        {
-            return {};
-        }
+        return left.providerComponentId == right.providerComponentId &&
+               left.sourceModelResourceId == right.sourceModelResourceId &&
+               left.poseSequence == right.poseSequence &&
+               left.paletteHash == right.paletteHash &&
+               left.paletteCount == right.paletteCount;
+    }
 
-        return std::span<const Mat4>(object.skinningMatrices.data(), object.skinningMatrices.size());
+    [[nodiscard]] bool ResolveSkinningPaletteBinding(
+        const RenderObject& object,
+        const MeshGPUBuffers& buffers,
+        const RenderDeformationFrameResources* resources,
+        SkinningPaletteBufferBinding& outBuffers,
+        SkinningPaletteSliceBinding& outSlice) noexcept
+    {
+        outBuffers = {};
+        outSlice = {};
+        if (!object.HasSkinningData())
+            return true;
+        if (!buffers.HasSkinningVertexData() || resources == nullptr ||
+            !resources->IsComplete() || object.entityId == 0 ||
+            !object.HasValidSkinningPalette())
+        {
+            return false;
+        }
+        const RenderDeformationPaletteSlice* const slice =
+            resources->FindSlice(object.entityId);
+        if (slice == nullptr || !slice->IsStructurallyValid() ||
+            slice->matrixCount != object.skinningMatrices.size() ||
+            !SamePaletteMetadata(slice->currentMetadata, object.skinningPalette) ||
+            slice->currentOffset > resources->GetMatrixCount() - slice->matrixCount ||
+            slice->previousOffset > resources->GetMatrixCount() - slice->matrixCount ||
+            (slice->previousValid &&
+             (!object.HasValidPreviousSkinningPalette() ||
+              !SamePaletteMetadata(
+                  slice->previousMetadata, object.previousSkinningPalette))) ||
+            (!slice->previousValid &&
+             (object.HasValidPreviousSkinningPalette() ||
+              slice->previousMetadata.paletteCount != 0)))
+        {
+            return false;
+        }
+        outBuffers.currentPaletteBuffer = resources->GetCurrentPaletteBuffer();
+        outBuffers.previousPaletteBuffer = resources->GetPreviousPaletteBuffer();
+        outSlice.currentOffset = slice->currentOffset;
+        outSlice.previousOffset = slice->previousOffset;
+        outSlice.matrixCount = slice->matrixCount;
+        outSlice.previousValid = slice->previousValid;
+        return outBuffers.HasPalettes() && outSlice.IsWellFormed();
+    }
+
+    [[nodiscard]] bool HasExactDeformationBuffers(
+        RenderGraphPassContext& context,
+        const RenderDeformationFrameResources* resources,
+        RGBufferHandle currentHandle,
+        RGBufferHandle previousHandle) noexcept
+    {
+        return resources != nullptr && resources->IsComplete() &&
+               resources->GetMatrixCount() != 0 && currentHandle.IsValid() &&
+               previousHandle.IsValid() &&
+               context.GetBuffer(currentHandle) ==
+                   resources->GetCurrentPaletteBuffer().Get() &&
+               context.GetBuffer(previousHandle) ==
+                   resources->GetPreviousPaletteBuffer().Get();
     }
 
     bool HasDrawFlag(RenderDrawFlags flags, RenderDrawFlags flag) noexcept
@@ -280,7 +340,9 @@ void DepthPrepass::InitializeGraphRecorder(
     const GPUCulling* gpuCulling,
     const RenderPassGPUDrivenInputs& gpuInputs,
     bool gpuDrivenPlanned,
-    std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache)
+    std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache,
+    std::shared_ptr<const RenderDeformationFrameResources> deformationResources,
+    const RenderPassRecordIdentity& recordIdentity)
 {
     m_renderScene = scene;
     m_opaqueDrawItems = opaqueDrawItems;
@@ -298,6 +360,8 @@ void DepthPrepass::InitializeGraphRecorder(
     m_gpuDrivenDepthIndirectEnabled = gpuDrivenPlanned;
     m_gpuSceneRasterEnabled = gpuInputs.gpuSceneRasterEnabled;
     m_directInstanceStreamCache = std::move(directInstanceStreamCache);
+    m_deformationResources = std::move(deformationResources);
+    m_recordIdentity = recordIdentity;
 }
 
 void DepthPrepass::AddToGraph(
@@ -458,7 +522,8 @@ void DepthPrepass::AddToGraph(
             data.recorder->SetEnabled(enabled);
             data.recorder->InitializeGraphRecorder(
                 renderScene, opaqueDrawItems, maskedDrawItems, gpuCulling,
-                data.gpuInputs, gpuPlanned, data.directInstanceStreamCache);
+                data.gpuInputs, gpuPlanned, data.directInstanceStreamCache,
+                data.execution.deformationResources, data.execution.identity);
             if (maskedDrawItems != nullptr)
             {
                 for (const RenderDrawItem& item : *maskedDrawItems)
@@ -511,6 +576,8 @@ void DepthPrepass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     m_depthTargetViewHandle = {};
     m_directInstanceHandle = {};
     m_directInstanceIndexHandle = {};
+    m_currentPaletteReadHandle = {};
+    m_previousPaletteReadHandle = {};
     m_directInstancePlan = {};
     m_directInstanceStream.instanceUploadBytes = 0;
     m_directInstanceStream.indexUploadBytes = 0;
@@ -524,6 +591,43 @@ void DepthPrepass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 
     if (!IsEnabled())
         return;
+
+    const bool sceneHasSkinning = m_renderScene != nullptr &&
+        std::any_of(m_renderScene->GetObjects().begin(),
+                    m_renderScene->GetObjects().end(),
+                    [](const RenderObject& object)
+                    {
+                        return object.HasSkinningData();
+                    });
+    if (sceneHasSkinning)
+    {
+        const RenderDeformationFrameIdentity deformationIdentity =
+            MakeRenderDeformationFrameIdentity(m_recordIdentity);
+        if (m_deformationResources == nullptr ||
+            !m_deformationResources->MatchesIdentity(deformationIdentity) ||
+            !m_deformationResources->MatchesGraphProvenance(*m_recordIdentity.graph) ||
+            m_deformationResources->GetMatrixCount() == 0 ||
+            builder.GetBufferDesc(
+                m_deformationResources->GetCurrentPaletteHandle()) == nullptr ||
+            builder.GetBufferDesc(
+                m_deformationResources->GetPreviousPaletteHandle()) == nullptr)
+        {
+            return;
+        }
+        m_currentPaletteReadHandle = builder.Read(
+            m_deformationResources->GetCurrentPaletteHandle(),
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Vertex);
+        m_previousPaletteReadHandle = builder.Read(
+            m_deformationResources->GetPreviousPaletteHandle(),
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Vertex);
+        if (!m_currentPaletteReadHandle.IsValid() ||
+            !m_previousPaletteReadHandle.IsValid())
+        {
+            return;
+        }
+    }
 
     // Declare depth buffer write (no color output)
     if (view.depthTarget.IsValid())
@@ -1124,7 +1228,12 @@ bool DepthPrepass::BuildPlannedDirectBatch(
             outPlannedDraws.clear();
             return false;
         }
-        if (!m_pipelineCache->CreateObjectConstantBinding(
+        SkinningPaletteBufferBinding skinningBuffers;
+        SkinningPaletteSliceBinding skinningSlice;
+        if (!ResolveSkinningPaletteBinding(
+                *object, planned.buffers, m_deformationResources.get(),
+                skinningBuffers, skinningSlice) ||
+            !m_pipelineCache->CreateObjectConstantBinding(
                 object->worldMatrix,
                 object->normalMatrix,
                 object->previousWorldMatrix,
@@ -1133,7 +1242,8 @@ bool DepthPrepass::BuildPlannedDirectBatch(
                     view.previousViewProjectionValid != 0 &&
                     !view.resetTemporalHistory,
                 true,
-                ResolveSkinningMatrices(*object, planned.buffers),
+                skinningBuffers,
+                skinningSlice,
                 nullptr,
                 planned.objectBinding) ||
             !context.RetainSubmissionResource(
@@ -1280,6 +1390,7 @@ void DepthPrepass::ApplyDirectInstancePlan(
                 false,
                 true,
                 {},
+                {},
                 m_directInstanceStream.instances.Get(),
                 binding) ||
             !context.RetainSubmissionResource(
@@ -1403,6 +1514,22 @@ void DepthPrepass::Execute(RenderGraphPassContext& context,
 {
     RHICommandContext& ctx = context.Commands();
     m_drawStats = {};
+    const bool sceneHasSkinning = m_renderScene != nullptr &&
+        std::any_of(m_renderScene->GetObjects().begin(),
+                    m_renderScene->GetObjects().end(),
+                    [](const RenderObject& object)
+                    {
+                        return object.HasSkinningData();
+                    });
+    if (sceneHasSkinning && !HasExactDeformationBuffers(
+            context, m_deformationResources.get(), m_currentPaletteReadHandle,
+            m_previousPaletteReadHandle))
+    {
+        m_drawStats.failureReason = RenderPolicyReason::ResourcesUnavailable;
+        context.MarkExecutionFailed(
+            "DepthPrepass deformation graph resources do not match the recording snapshot");
+        return;
+    }
     m_drawStats.directInstanceUploadBytes =
         m_directInstanceStream.instanceUploadBytes;
     m_drawStats.directInstanceIndexUploadBytes =
@@ -1663,6 +1790,7 @@ void DepthPrepass::Execute(RenderGraphPassContext& context,
                      view.previousViewProjectionMatrix,
                      false,
                      true,
+                     {},
                      {},
                      m_gpuCulling->GetInstanceBuffer(),
                      tier1ObjectBinding) ||

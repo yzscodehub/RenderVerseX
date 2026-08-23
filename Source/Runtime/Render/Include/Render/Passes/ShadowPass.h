@@ -26,6 +26,7 @@ namespace RVX
     class RenderScene;
     class MaterialSystem;
     class PipelineCache;
+    class RenderDeformationFrameResources;
     struct DirectionalShadowCascadeBindingSnapshot;
     struct ObjectConstantBinding;
 
@@ -146,7 +147,10 @@ namespace RVX
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
         void InitializeGraphRecorder(
             const RenderScene* scene,
-            std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache);
+            std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache,
+            std::shared_ptr<const RenderDeformationFrameResources>
+                deformationResources,
+            const RenderPassRecordIdentity& recordIdentity);
         void CalculateCascades(const ViewData& view,
                                const PrimaryDirectionalLightRecordInput& primaryLight);
         void Setup(RenderGraphBuilder& builder,
@@ -190,12 +194,17 @@ namespace RVX
             m_cascadeFrameBindings;
         RGBufferHandle m_directInstanceHandle;
         RGBufferHandle m_directInstanceIndexHandle;
+        RGBufferHandle m_currentPaletteReadHandle;
+        RGBufferHandle m_previousPaletteReadHandle;
         RenderInstanceBatchPlan m_directInstancePlan;
         std::shared_ptr<RasterInstanceStreamCache> m_directInstanceStreamCache =
             std::make_shared<RasterInstanceStreamCache>();
         RasterInstanceStream m_directInstanceStream;
         bool m_directInstancingPreflightFailed = false;
         bool m_shadowDrawPreflightValid = false;
+        RenderPassRecordIdentity m_recordIdentity{};
+        std::shared_ptr<const RenderDeformationFrameResources>
+            m_deformationResources;
         ShadowPassStats m_stats;
         std::shared_ptr<RenderPassRecordResults> m_publishedRecordResults;
     };
