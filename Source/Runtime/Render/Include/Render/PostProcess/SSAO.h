@@ -228,6 +228,13 @@ namespace RVX
         SSAOPass();
         ~SSAOPass() override = default;
 
+        PostProcessPassDescriptor Describe() const override
+        {
+            return {PostProcessPassId::SSAO, "SSAO", PostProcessStage::HDRPost, 150,
+                    PostProcessColorDomain::SceneLinearHDR,
+                    PostProcessColorDomain::SceneLinearHDR,
+                    PostProcessTransfer::None};
+        }
         const char* GetName() const override { return "SSAO"; }
         int32 GetPriority() const override { return 150; }
 

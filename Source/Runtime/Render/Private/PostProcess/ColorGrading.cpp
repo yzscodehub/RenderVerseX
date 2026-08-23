@@ -62,6 +62,7 @@ bool ColorGradingPass::IsEnabled() const
 
 void ColorGradingPass::Configure(const PostProcessSettings& settings)
 {
+    ConfigurePresentationColorDomain(settings);
     m_enabled = settings.enableColorGrading;
     m_config.mode = ColorGradingMode::LDR;
     m_config.contrast = settings.contrast;
@@ -190,6 +191,8 @@ void ColorGradingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGT
             if (!m_pipelineCache)
             {
                 RVX_CORE_WARN("ColorGrading: missing resources during execution");
+                context.MarkExecutionFailed(
+                    "ColorGrading requires an initialized PipelineCache");
                 return;
             }
 
@@ -199,6 +202,8 @@ void ColorGradingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGT
             if (!pipeline || !setLayout || !device)
             {
                 RVX_CORE_WARN("ColorGrading: fullscreen pipeline resources are unavailable");
+                context.MarkExecutionFailed(
+                    "ColorGrading fullscreen pipeline resources are unavailable");
                 return;
             }
 
@@ -207,6 +212,8 @@ void ColorGradingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGT
             if (!inputTexture || !outputTexture)
             {
                 RVX_CORE_WARN("ColorGrading: input or output texture is unavailable");
+                context.MarkExecutionFailed(
+                    "ColorGrading input or output texture is unavailable");
                 return;
             }
 
@@ -215,12 +222,16 @@ void ColorGradingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGT
             if (!inputView || !outputView)
             {
                 RVX_CORE_WARN("ColorGrading: failed to resolve input SRV or output RTV");
+                context.MarkExecutionFailed(
+                    "ColorGrading failed to resolve input SRV or output RTV");
                 return;
             }
 
             if (!EnsureRuntimeResources() ||
                 !UpdateConstants(inputTexture->GetWidth(), inputTexture->GetHeight(), data.config))
             {
+                context.MarkExecutionFailed(
+                    "ColorGrading runtime resources or constants are unavailable");
                 return;
             }
 
@@ -239,12 +250,15 @@ void ColorGradingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGT
             if (!descriptorSet)
             {
                 RVX_CORE_WARN("ColorGrading: failed to create descriptor set");
+                context.MarkExecutionFailed("ColorGrading failed to create descriptor set");
                 return;
             }
             if (!context.RetainSubmissionResource(
                     Ref<RefCounted>(descriptorSet)))
             {
                 RVX_CORE_WARN("ColorGrading: submission ownership rejected descriptor set");
+                context.MarkExecutionFailed(
+                    "ColorGrading submission ownership rejected descriptor set");
                 return;
             }
 

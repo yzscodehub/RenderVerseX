@@ -225,6 +225,11 @@ namespace RVX
             settings.postProcess.bloomIntensity < 0.0f ||
             !std::isfinite(settings.postProcess.bloomRadius) ||
             settings.postProcess.bloomRadius < 0.0f ||
+            !std::isfinite(settings.postProcess.colorGradingContrast) ||
+            settings.postProcess.colorGradingContrast < 0.0f ||
+            !std::isfinite(settings.postProcess.colorGradingSaturation) ||
+            settings.postProcess.colorGradingSaturation < 0.0f ||
+            !std::isfinite(settings.postProcess.colorGradingBrightness) ||
             !std::isfinite(settings.postProcess.exposure) ||
             settings.postProcess.exposure < 0.0f ||
             !std::isfinite(settings.postProcess.cameraEV100) ||

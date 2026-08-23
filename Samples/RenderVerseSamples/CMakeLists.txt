@@ -15,6 +15,7 @@ add_executable(RenderVerseSamples
     Scenes/ModelViewerSample.cpp
     Scenes/PBRMaterialsSample.cpp
     Scenes/PhysicsSandboxSample.cpp
+    Scenes/PostProcessingShowcaseSample.cpp
     Scenes/RenderPipelineShowcaseSample.cpp
     Scenes/RenderingStressSample.cpp
     Scenes/SceneLifecycleSample.cpp

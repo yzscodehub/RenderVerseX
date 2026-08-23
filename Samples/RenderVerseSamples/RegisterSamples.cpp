@@ -12,6 +12,7 @@
 #include "Scenes/ModelViewerSample.h"
 #include "Scenes/PBRMaterialsSample.h"
 #include "Scenes/PhysicsSandboxSample.h"
+#include "Scenes/PostProcessingShowcaseSample.h"
 #include "Scenes/RenderPipelineShowcaseSample.h"
 #include "Scenes/RenderingStressSample.h"
 #include "Scenes/SceneLifecycleSample.h"
@@ -67,6 +68,8 @@ namespace RVX
                RegisterBuiltInSample<LightingShadowShowcaseSample>(
                    manifest, registry, outError) &&
                RegisterBuiltInSample<AssetGalleryShowcaseSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<PostProcessingShowcaseSample>(
                    manifest, registry, outError) &&
                RegisterBuiltInSample<RenderPipelineShowcaseSample>(
                    manifest, registry, outError) &&

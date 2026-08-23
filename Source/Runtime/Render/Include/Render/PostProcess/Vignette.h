@@ -55,6 +55,13 @@ namespace RVX
         VignettePass();
         ~VignettePass() override = default;
 
+        PostProcessPassDescriptor Describe() const override
+        {
+            return {PostProcessPassId::Vignette, "Vignette", PostProcessStage::LDRPost, 940,
+                    GetPresentationColorDomain(),
+                    GetPresentationColorDomain(),
+                    PostProcessTransfer::None};
+        }
         const char* GetName() const override { return "Vignette"; }
         int32 GetPriority() const override { return 940; }  // LDR, after tone mapping and before FXAA
 

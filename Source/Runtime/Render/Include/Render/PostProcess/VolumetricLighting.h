@@ -110,6 +110,13 @@ namespace RVX
         VolumetricLightingPass();
         ~VolumetricLightingPass() override = default;
 
+        PostProcessPassDescriptor Describe() const override
+        {
+            return {PostProcessPassId::VolumetricLighting, "VolumetricLighting", PostProcessStage::HDRPost, 50,
+                    PostProcessColorDomain::SceneLinearHDR,
+                    PostProcessColorDomain::SceneLinearHDR,
+                    PostProcessTransfer::None};
+        }
         const char* GetName() const override { return "VolumetricLighting"; }
         int32 GetPriority() const override { return 50; }  // Very early, before most effects
 

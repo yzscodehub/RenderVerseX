@@ -300,6 +300,9 @@ namespace RVX
         /** @brief Non-zero resource-recording generation for this definition. */
         uint64 GetRecordingGeneration() const;
 
+        /** @brief Exact number of graph passes recorded in this definition. */
+        [[nodiscard]] size_t GetRecordedPassCount() const noexcept;
+
         // Create transient resources
         RGTextureHandle CreateTexture(const RHITextureDesc& desc);
         RGBufferHandle CreateBuffer(const RHIBufferDesc& desc);

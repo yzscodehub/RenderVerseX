@@ -1196,6 +1196,11 @@ namespace RVX
         return m_impl->recordingGeneration;
     }
 
+    size_t RenderGraph::GetRecordedPassCount() const noexcept
+    {
+        return m_impl->passes.size();
+    }
+
     RGTextureHandle RenderGraph::CreateTexture(const RHITextureDesc& desc)
     {
         if (!CanMutateDefinition(*m_impl, "texture creation"))

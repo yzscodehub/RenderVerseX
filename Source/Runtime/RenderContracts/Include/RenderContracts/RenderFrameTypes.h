@@ -530,10 +530,20 @@ namespace RVX
     struct RenderPostProcessSettings
     {
         bool enabled = true;
-        bool enableTAA = true;
+        /**
+         * @brief Request the renderer-owned velocity output without claiming a
+         * temporal resolve is available.
+         */
+        bool enableVelocityOutput = false;
+        /** @brief Reserved for the real temporal resolve introduced in GFX11. */
+        bool enableTAA = false;
         bool enableBloom = true;
-        bool enableSSAO = true;
-        bool enableSSR = true;
+        bool enableFXAA = true;
+        bool enableColorGrading = true;
+        /** @brief Reserved for the verified GTAO implementation in GFX13. */
+        bool enableSSAO = false;
+        /** @brief Reserved for the verified Hi-Z reflection path in GFX19. */
+        bool enableSSR = false;
         bool enableRayTracedReflectionDenoise = true;
         RenderToneMappingOperator toneMappingOperator =
             RenderToneMappingOperator::ACES;
@@ -545,6 +555,9 @@ namespace RVX
         float32 bloomThreshold = 1.0f;
         float32 bloomIntensity = 1.0f;
         float32 bloomRadius = 0.5f;
+        float32 colorGradingContrast = 1.0f;
+        float32 colorGradingSaturation = 1.0f;
+        float32 colorGradingBrightness = 0.0f;
     };
 
     struct RenderShadowSettings

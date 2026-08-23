@@ -46,6 +46,7 @@ FilmGrainPass::FilmGrainPass()
 
 void FilmGrainPass::Configure(const PostProcessSettings& settings)
 {
+    ConfigurePresentationColorDomain(settings);
     m_enabled = settings.enableFilmGrain;
     m_config.intensity = settings.filmGrainIntensity;
     RefreshSupportState();

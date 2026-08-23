@@ -9,6 +9,7 @@
 #include "Core/Log.h"
 #include "Features/DeferredRecipeFeatureAdapter.h"
 #include "Features/LegacyForwardFeatureAdapter.h"
+#include "Features/PostProcessPipelineFeatureAdapter.h"
 #include "Render/Features/RenderFeatureRegistry.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
@@ -159,6 +160,7 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
     const bool deferredDependenciesReady = m_opaquePass != nullptr &&
         m_pipelineCache != nullptr && m_deferredLightingPass != nullptr;
     const bool fullCompositionReady = m_legacyForwardFeature != nullptr &&
+        m_postProcessFeature != nullptr &&
         m_deferredGeometryFeature != nullptr &&
         m_deferredLightingFeature != nullptr &&
         m_deferredForwardSpecialFeature != nullptr;
@@ -173,6 +175,7 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
     const bool forwardOnlyCompositionReady =
         m_renderFeatureRegistry != nullptr &&
         m_legacyForwardFeature != nullptr &&
+        m_postProcessFeature != nullptr &&
         m_deferredGeometryFeature == nullptr &&
         m_deferredLightingFeature == nullptr &&
         m_deferredForwardSpecialFeature == nullptr;
@@ -184,9 +187,11 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
         }
         m_renderFeatureRegistry.reset();
         m_legacyForwardFeature = nullptr;
+        m_postProcessFeature = nullptr;
     }
 
     if (m_renderFeatureRegistry != nullptr || m_legacyForwardFeature != nullptr ||
+        m_postProcessFeature != nullptr ||
         m_deferredGeometryFeature != nullptr ||
         m_deferredLightingFeature != nullptr ||
         m_deferredForwardSpecialFeature != nullptr)
@@ -248,6 +253,15 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
         return false;
     }
 
+    auto postProcess = std::make_unique<PostProcessPipelineFeatureAdapter>(
+        m_postProcessStack.get());
+    PostProcessPipelineFeatureAdapter* const postProcessFeature =
+        postProcess.get();
+    if (!registerFeature(std::move(postProcess), "PostProcessPipeline"))
+    {
+        return false;
+    }
+
     DeferredGeometryFeatureAdapter* deferredGeometryFeature = nullptr;
     DeferredLightingFeatureAdapter* deferredLightingFeature = nullptr;
     DeferredForwardSpecialFeatureAdapter* deferredForwardSpecialFeature = nullptr;
@@ -284,6 +298,7 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
     }
 
     m_legacyForwardFeature = legacyForwardFeature;
+    m_postProcessFeature = postProcessFeature;
     m_deferredGeometryFeature = deferredGeometryFeature;
     m_deferredLightingFeature = deferredLightingFeature;
     m_deferredForwardSpecialFeature = deferredForwardSpecialFeature;

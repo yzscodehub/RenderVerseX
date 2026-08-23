@@ -10,6 +10,7 @@
 #include "GPUScene/GPUSceneUploader.h"
 #include "Features/DeferredRecipeFeatureAdapter.h"
 #include "Features/LegacyForwardFeatureAdapter.h"
+#include "Features/PostProcessPipelineFeatureAdapter.h"
 #include "Render/Features/RenderFeatureGraphBuilder.h"
 #include "Render/Features/RenderFeatureRegistry.h"
 #include "Render/Features/RenderGraphBlackboard.h"
@@ -1021,7 +1022,9 @@ SceneRenderer::~SceneRenderer()
 
 bool SceneRenderer::SupportsHDRSceneColor() const
 {
-    const IRHIDevice* device = m_renderContext ? m_renderContext->GetDevice() : nullptr;
+    const IRHIDevice* device = m_renderContext
+        ? m_renderContext->GetDevice()
+        : m_featureReportDeviceForTesting;
     if (!device)
     {
         return false;
@@ -1416,8 +1419,15 @@ void SceneRenderer::Shutdown()
         m_submissionBatch.reset();
     }
 
+    // The registry owns the adapter while the stack is SceneRenderer-owned.
+    // Explicitly sever the borrowed binding before either owner is released.
+    if (m_postProcessFeature != nullptr)
+    {
+        m_postProcessFeature->SetStack(nullptr);
+    }
     m_renderFeatureRegistry.reset();
     m_legacyForwardFeature = nullptr;
+    m_postProcessFeature = nullptr;
     m_deferredGeometryFeature = nullptr;
     m_deferredLightingFeature = nullptr;
     m_deferredForwardSpecialFeature = nullptr;
@@ -2610,9 +2620,19 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
     m_postProcessSettings.enableSSR =
         frameSettings.postProcess.enabled &&
         frameSettings.postProcess.enableSSR;
-    m_postProcessSettings.enableTAA =
+    m_postProcessSettings.enableVelocityOutput =
         frameSettings.postProcess.enabled &&
-        frameSettings.postProcess.enableTAA;
+        frameSettings.postProcess.enableVelocityOutput;
+    // GFX10 has no temporal resolve. Preserve the public request as an
+    // unsupported future-facing setting rather than routing it to velocity
+    // production or claiming TAA execution.
+    m_postProcessSettings.enableTAA = false;
+    m_postProcessSettings.enableFXAA =
+        frameSettings.postProcess.enabled &&
+        frameSettings.postProcess.enableFXAA;
+    m_postProcessSettings.enableColorGrading =
+        frameSettings.postProcess.enabled &&
+        frameSettings.postProcess.enableColorGrading;
     m_postProcessSettings.enableRayTracedReflectionDenoise =
         frameSettings.postProcess.enableRayTracedReflectionDenoise;
     m_postProcessSettings.toneMappingOperator =
@@ -2633,6 +2653,12 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
         frameSettings.postProcess.bloomIntensity;
     m_postProcessSettings.bloomRadius =
         frameSettings.postProcess.bloomRadius;
+    m_postProcessSettings.contrast =
+        frameSettings.postProcess.colorGradingContrast;
+    m_postProcessSettings.saturation =
+        frameSettings.postProcess.colorGradingSaturation;
+    m_postProcessSettings.brightness =
+        frameSettings.postProcess.colorGradingBrightness;
     m_postProcessSettings.exposure = m_renderScene.GetView().exposure;
     m_postProcessSettings.enableRayTracedReflections =
         frameSettings.rayTracing.enabled &&
@@ -4067,7 +4093,11 @@ void SceneRenderer::CompileRenderFramePlan()
                 m_renderContext->GetCurrentBackBuffer()->GetFormat();
         }
         const PostProcessStackExecuteStats stackStats = m_postProcessStack
-            ? m_postProcessStack->EvaluateEffects()
+            // The preflight must validate against the same presentation
+            // surface selected for this frame.  In particular, an sRGB
+            // surface expects linear ToneMapping shader output because the
+            // final display encode is performed by the target itself.
+            ? m_postProcessStack->EvaluateEffects(backBufferFormat)
             : PostProcessStackExecuteStats{};
         const bool deferredRecipeRequested =
             m_renderScene.GetSettings().pipelineRequest.recipe ==
@@ -5605,10 +5635,11 @@ void SceneRenderer::Render()
         rayTracedReflectionsRequested && m_postProcessSettings.enableRayTracedReflectionDenoise;
     const bool rayTracedShadowsRequested =
         m_rayTracedShadowPass && m_rayTracedShadowPass->IsRequestedEnabled();
-    // Motion vectors are a scene/view temporal input, not a ray-tracing
-    // implementation detail. Any enabled temporal consumer needs both camera
-    // and object velocity; the current public stack exposes that through TAA.
-    const bool cameraVelocityRequested = m_postProcessSettings.enableTAA;
+    // Motion vectors are an explicit renderer output. GFX10 does not route
+    // an unavailable TAA request through this path; GFX11 owns temporal
+    // resolve selection separately.
+    const bool cameraVelocityRequested =
+        m_postProcessSettings.enableVelocityOutput;
     if (m_cameraVelocityPass)
     {
         m_cameraVelocityPass->SetEnabled(cameraVelocityRequested);
@@ -5645,7 +5676,8 @@ void SceneRenderer::Render()
             std::max(0.0f, m_postProcessSettings.rayTracedReflectionRayMinT);
         reflectionConfig.fireflyClamp =
             std::max(0.0f, m_postProcessSettings.rayTracedReflectionFireflyClamp);
-        reflectionConfig.temporalAccumulation = m_postProcessSettings.enableTAA;
+        reflectionConfig.temporalAccumulation =
+            rayTracedReflectionDenoiseRequested;
         reflectionConfig.temporalBlendFactor =
             std::clamp(m_postProcessSettings.rayTracedReflectionTemporalBlendFactor, 0.0f, 1.0f);
         reflectionConfig.historyDepthThreshold =
@@ -6047,7 +6079,7 @@ void SceneRenderer::Render()
         RenderExecutionReceipt receipt =
             m_renderFeatureRegistry->CollectExecutionReceipt(
                 m_executionBuildIdentity);
-        receipt.schemaVersion = 5;
+        receipt.schemaVersion = 6;
         if (m_activeRenderPassResults != nullptr &&
             m_activeRenderPassResults->identity == m_activeRenderPassIdentity &&
             m_activeRenderPassIdentity.frameSequence ==
@@ -6248,15 +6280,38 @@ void SceneRenderer::Render()
                     lighting.lightingPlanIdentity, false, true);
             receipt.lighting = lighting;
         }
+        const bool postProcessFeatureExecuted = std::any_of(
+            receipt.features.begin(),
+            receipt.features.end(),
+            [](const RenderFeatureExecutionReceipt& feature)
+            {
+                return feature.featureId ==
+                           BuiltinRenderFeatureIds::PostProcessPipeline &&
+                       feature.readiness.executed &&
+                       feature.graphPassCount != 0 &&
+                       feature.executedGraphPassCount ==
+                           feature.graphPassCount;
+            });
+        if (m_postProcessFeature != nullptr)
+        {
+            receipt.postProcess =
+                m_postProcessFeature->GetLastExecutionReceipt();
+        }
+        const bool postProcessExecutionEvidenceValid =
+            exactGraphExecutionSucceeded && postProcessFeatureExecuted &&
+            receipt.postProcess.IsStructurallyValid();
         receipt.executionSucceeded = receipt.executionSucceeded &&
             graphExecuted && graphCompileValid &&
-            deformationExecutionEvidenceValid;
+            deformationExecutionEvidenceValid &&
+            postProcessExecutionEvidenceValid;
         receipt.presented = false;
         receipt.succeeded = false;
         if (!receipt.executionSucceeded && receipt.diagnostic.empty())
         {
             receipt.diagnostic = !deformationExecutionEvidenceValid
                 ? "Render deformation execution evidence did not match the active graph recording"
+                : !postProcessExecutionEvidenceValid
+                    ? "Post-process execution evidence did not match the active graph recording"
                 : executionSkippedReason != nullptr
                     ? executionSkippedReason
                     : "Render feature execution did not complete";
@@ -8472,8 +8527,8 @@ void SceneRenderer::BuildRenderGraph()
 
     // Deferred lighting always writes linear RGBA16F. Tone mapping is the
     // required presentation transform for that color domain, not an optional
-    // visual effect. GFX10 will expose this as a dedicated typed stage; until
-    // then the existing stack owns the one HDR-to-surface boundary.
+    // visual effect. The typed PostProcessPipeline feature owns the single
+    // HDR-to-presentation graph boundary for every presentable recipe.
     PostProcessSettings effectivePostProcessSettings = m_postProcessSettings;
     if (deferredRecipeRequested)
     {
@@ -8786,6 +8841,7 @@ void SceneRenderer::BuildRenderGraph()
     const bool selectedCompositionMissing =
         m_renderFeatureRegistry == nullptr ||
         m_legacyForwardFeature == nullptr ||
+        m_postProcessFeature == nullptr ||
         (deferredRecipeRequested &&
          (m_deferredGeometryFeature == nullptr ||
           m_deferredLightingFeature == nullptr ||
@@ -8798,7 +8854,7 @@ void SceneRenderer::BuildRenderGraph()
         return;
     }
     if (!m_passRegistry || !m_renderFeatureRegistry ||
-        !m_legacyForwardFeature ||
+        !m_legacyForwardFeature || !m_postProcessFeature ||
         (deferredRecipeRequested &&
          (!m_deferredGeometryFeature || !m_deferredLightingFeature ||
           !m_deferredForwardSpecialFeature)))
@@ -8821,6 +8877,44 @@ void SceneRenderer::BuildRenderGraph()
     {
         m_deferredForwardSpecialFeature->SetRecordContext(passRecordContext);
     }
+    PostProcessPipelineRecordContext postProcessRecordContext;
+    postProcessRecordContext.frameIdentity =
+        passRecordContext.featureFrameIdentity;
+    postProcessRecordContext.viewIdentity =
+        passRecordContext.featureViewIdentity;
+    postProcessRecordContext.presentableColor = backBufferTarget;
+    postProcessRecordContext.presentableColorMetadata =
+        SceneTextures::Metadata{
+            RenderOutputExtent{
+                m_viewData.viewportWidth, m_viewData.viewportHeight},
+            m_sceneColorFormatPolicy.toneMappingOutputFormat,
+            RHISampleCount::Count1};
+    postProcessRecordContext.frameInputs.depth = m_viewData.depthTarget;
+    postProcessRecordContext.frameInputs.velocity = m_viewData.velocityTarget;
+    postProcessRecordContext.frameInputs.outputFormat =
+        m_sceneColorFormatPolicy.toneMappingOutputFormat;
+    postProcessRecordContext.frameInputs.frameIndex = m_viewData.frameNumber;
+    postProcessRecordContext.frameInputs.currentViewProjection =
+        m_viewData.viewProjectionMatrix;
+    postProcessRecordContext.frameInputs.previousViewProjection =
+        m_viewData.previousViewProjectionMatrix;
+    postProcessRecordContext.frameInputs.currentViewProjectionValid = true;
+    postProcessRecordContext.frameInputs.previousViewProjectionValid =
+        m_viewData.previousViewProjectionValid != 0;
+    postProcessRecordContext.frameInputs.resetTemporalHistory =
+        m_viewData.resetTemporalHistory;
+    postProcessRecordContext.frameInputs.sceneColorDomain =
+        PostProcessColorDomain::SceneLinearHDR;
+    postProcessRecordContext.frameInputs.outputColorDomain =
+        // sRGB render targets receive linear shader output and apply the
+        // final display encode in hardware. The feature later publishes the
+        // stored encoded presentation contract on the blackboard.
+        IsSRGBFormat(backBufferFormat)
+            ? PostProcessColorDomain::DisplayLinearLDR
+            : PostProcessColorDomain::DisplayEncodedLDR;
+    postProcessRecordContext.passRecordContext = passRecordContext;
+    m_postProcessFeature->SetRecordContext(
+        std::move(postProcessRecordContext));
 
     const RenderFrameHeaderV5& acceptedHeader =
         m_renderScene.GetAcceptedHeader();
@@ -8975,12 +9069,15 @@ void SceneRenderer::BuildRenderGraph()
             readinessCandidates = {
                 m_deferredGeometryFeature->ResolveReadiness(),
                 m_deferredLightingFeature->ResolveReadiness(),
-                m_deferredForwardSpecialFeature->ResolveReadiness()};
+                m_deferredForwardSpecialFeature->ResolveReadiness(),
+                m_postProcessFeature->ResolveReadiness()};
         }
         else
         {
             readinessCandidates.push_back(
                 m_legacyForwardFeature->ResolveReadiness());
+            readinessCandidates.push_back(
+                m_postProcessFeature->ResolveReadiness());
         }
         const auto failedReadiness = std::find_if(
             readinessCandidates.begin(), readinessCandidates.end(),
@@ -8999,42 +9096,11 @@ void SceneRenderer::BuildRenderGraph()
         return;
     }
 
-    if (m_postProcessStats.sceneColorStagingUsed && sceneColorTarget.IsValid() && backBufferTarget.IsValid() &&
-        m_postProcessStack)
-    {
-        PostProcessFrameInputs frameInputs;
-        frameInputs.sceneColor = sceneColorTarget;
-        frameInputs.depth = m_viewData.depthTarget;
-        frameInputs.velocity = m_viewData.velocityTarget;
-        frameInputs.outputFormat = m_sceneColorFormatPolicy.toneMappingOutputFormat;
-        frameInputs.frameIndex = m_viewData.frameNumber;
-        frameInputs.currentViewProjection = m_viewData.viewProjectionMatrix;
-        frameInputs.previousViewProjection = m_viewData.previousViewProjectionMatrix;
-        frameInputs.currentViewProjectionValid = true;
-        frameInputs.previousViewProjectionValid = m_viewData.previousViewProjectionValid != 0;
-        frameInputs.resetTemporalHistory = m_viewData.resetTemporalHistory;
-        m_postProcessStack->Execute(*m_renderGraph, frameInputs, backBufferTarget);
-        m_postProcessStats.stackStats = m_postProcessStack->GetLastExecuteStats();
-        if (deferredRecipeRequested &&
-            !ValidateDeferredToneMappingPresentationContract(
-                m_postProcessStats.stackStats,
-                backBufferFormat,
-                deferredToneMappingPresentationDiagnostic))
-        {
-            m_featureCompositionFailureReason =
-                deferredToneMappingPresentationDiagnostic.empty()
-                    ? "DeferredQuality ToneMapping could not be scheduled"
-                    : deferredToneMappingPresentationDiagnostic;
-            return;
-        }
-        if (deferredRecipeRequested &&
-            m_postProcessStats.stackStats.scheduledToneMappingEffectCount != 1)
-        {
-            m_featureCompositionFailureReason =
-                "DeferredQuality did not schedule exactly one ToneMapping transform";
-            return;
-        }
-    }
+    // The PostProcessPipeline feature is the sole owner of the typed HDR to
+    // presentation boundary. SceneRenderer deliberately has no direct stack
+    // execution bypass: the feature consumes TranslucencyOutputs v2 and
+    // publishes PostProcessOutputs v2 inside the same graph composition.
+    m_postProcessStats.stackStats = m_postProcessFeature->GetLastPlanStats();
 }
 
 void SceneRenderer::AddPass(std::unique_ptr<IRenderPass> pass)
@@ -9319,6 +9385,14 @@ void SceneRenderer::SetupDefaultPostProcess()
     }
 
     ApplyPostProcessSettings(MakeDefaultRuntimePostProcessSettings());
+
+    // SetupDefaultRenderFeatures may seal the registry before this stack is
+    // constructed. Bind only after the stack, its effects, and its settings
+    // are complete; SetStack invalidates any prior frozen graph state.
+    if (m_postProcessFeature != nullptr)
+    {
+        m_postProcessFeature->SetStack(m_postProcessStack.get());
+    }
 }
 
 } // namespace RVX

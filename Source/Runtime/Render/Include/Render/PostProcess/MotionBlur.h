@@ -100,6 +100,13 @@ namespace RVX
         MotionBlurPass();
         ~MotionBlurPass() override = default;
 
+        PostProcessPassDescriptor Describe() const override
+        {
+            return {PostProcessPassId::MotionBlur, "MotionBlur", PostProcessStage::Temporal, 100,
+                    PostProcessColorDomain::SceneLinearHDR,
+                    PostProcessColorDomain::SceneLinearHDR,
+                    PostProcessTransfer::None};
+        }
         const char* GetName() const override { return "MotionBlur"; }
         int32 GetPriority() const override { return 100; }  // Very early, before DOF
 

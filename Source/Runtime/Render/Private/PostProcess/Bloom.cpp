@@ -303,6 +303,7 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
             if (!m_pipelineCache)
             {
                 RVX_CORE_WARN("Bloom: missing resources during execution");
+                context.MarkExecutionFailed("Bloom requires an initialized PipelineCache");
                 return;
             }
 
@@ -314,6 +315,8 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
             if (!pipeline || !setLayout || !device)
             {
                 RVX_CORE_WARN("Bloom: fullscreen pipeline resources are unavailable");
+                context.MarkExecutionFailed(
+                    "Bloom fullscreen pipeline resources are unavailable");
                 return;
             }
 
@@ -322,6 +325,7 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
             if (!inputTexture || !outputTexture)
             {
                 RVX_CORE_WARN("Bloom: input or output texture is unavailable");
+                context.MarkExecutionFailed("Bloom input or output texture is unavailable");
                 return;
             }
 
@@ -330,11 +334,13 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
             if (!inputView || !outputView)
             {
                 RVX_CORE_WARN("Bloom: failed to resolve input SRV or output RTV");
+                context.MarkExecutionFailed("Bloom failed to resolve input SRV or output RTV");
                 return;
             }
 
             if (!EnsureRuntimeResources())
             {
+                context.MarkExecutionFailed("Bloom runtime resources are unavailable");
                 return;
             }
 
@@ -350,12 +356,15 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
                                                              data.mode);
             if (!passConstants)
             {
+                context.MarkExecutionFailed("Bloom failed to allocate immutable pass constants");
                 return;
             }
             if (!context.RetainSubmissionResource(
                     Ref<RefCounted>(passConstants)))
             {
                 RVX_CORE_WARN("Bloom: submission ownership rejected pass constants");
+                context.MarkExecutionFailed(
+                    "Bloom submission ownership rejected pass constants");
                 return;
             }
 
@@ -374,12 +383,15 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
             if (!descriptorSet)
             {
                 RVX_CORE_WARN("Bloom: failed to create descriptor set");
+                context.MarkExecutionFailed("Bloom failed to create descriptor set");
                 return;
             }
             if (!context.RetainSubmissionResource(
                     Ref<RefCounted>(descriptorSet)))
             {
                 RVX_CORE_WARN("Bloom: submission ownership rejected descriptor set");
+                context.MarkExecutionFailed(
+                    "Bloom submission ownership rejected descriptor set");
                 return;
             }
 

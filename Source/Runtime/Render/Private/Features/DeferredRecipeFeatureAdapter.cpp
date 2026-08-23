@@ -856,6 +856,9 @@ RenderFeatureDescriptor DeferredForwardSpecialFeatureAdapter::Describe() const
     descriptor.consumedResources = {
         {RenderBlackboardResourceId::LightingOutputs,
          LightingOutputs::SchemaVersion}};
+    descriptor.producedResources = {
+        {RenderBlackboardResourceId::TranslucencyOutputs,
+         TranslucencyOutputs::SchemaVersion}};
     descriptor.requiredCapabilities = ToMask(RenderFeatureCapability::Graphics);
     descriptor.requiredRecipes = ToMask(RenderPipelineRecipe::DeferredQuality);
     descriptor.qualityTiers = RVX_ALL_RENDER_QUALITY_TIERS;
@@ -1004,6 +1007,38 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
             failure))
     {
         SetCompositionFailure(std::move(failure));
+        return;
+    }
+
+    if (!m_recordContext.view.colorTarget.IsValid())
+    {
+        SetCompositionFailure(
+            "DeferredQuality did not produce the canonical HDR scene color surface");
+        return;
+    }
+
+    TranslucencyOutputs outputs;
+    outputs.provenance = builder.GetProvenance();
+    outputs.frameIdentity = m_preparedContext.frameIdentity;
+    outputs.viewIdentity = m_preparedContext.viewIdentity;
+    outputs.hdrSceneColor = m_recordContext.view.colorTarget;
+    outputs.hdrSceneColorMetadata = MakeMetadata(
+        m_preparedContext.outputExtent, SceneTextures::HDRSceneColorContract);
+    outputs.deviceDepth = m_recordContext.view.depthTarget;
+    outputs.deviceDepthMetadata = MakeMetadata(
+        m_preparedContext.outputExtent, SceneTextures::DeviceDepthContract);
+    outputs.velocity = m_recordContext.view.velocityTarget;
+    outputs.velocityMetadata = MakeMetadata(
+        m_preparedContext.outputExtent, SceneTextures::VelocityContract);
+    outputs.colorDomain = PostProcessColorDomain::SceneLinearHDR;
+    outputs.transfer = PostProcessTransfer::None;
+    if (blackboard.Publish(BuiltinRenderFeatureIds::DeferredForwardSpecialChain,
+                           Describe(),
+                           std::move(outputs)) !=
+        RenderGraphBlackboardCode::Success)
+    {
+        SetCompositionFailure(
+            "DeferredQuality could not publish TranslucencyOutputs v2");
     }
 }
 

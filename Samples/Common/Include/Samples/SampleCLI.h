@@ -25,9 +25,11 @@
 namespace RVX
 {
     /** @brief Current JSON schema version written by sample report producers. */
-    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 21;
+    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 22;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION = 20;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_POST_PROCESS_EXECUTION_SCHEMA_VERSION = 21;
     inline constexpr uint32 RVX_SAMPLE_REPORT_PRE_VISUAL_CONTRACT_SCHEMA_VERSION = 19;
     inline constexpr uint32 RVX_SAMPLE_REPORT_SCENARIO_SCHEMA_VERSION = 12;
     inline constexpr uint32 RVX_SAMPLE_REPORT_ECS_DIAGNOSTICS_SCHEMA_VERSION = 13;
@@ -290,6 +292,114 @@ namespace RVX
         bool showHelp = false;
     };
 
+    /**
+     * @brief Narrow, presentation-bound post-process execution evidence.
+     *
+     * This is deliberately a value projection rather than a copy of
+     * RenderExecutionReceipt. Sample scenarios may evaluate the public
+     * contract without receiving renderer-private graph or pass objects.
+     */
+    struct SamplePostProcessExecutionDiagnostics
+    {
+        bool available = false;
+        uint32 executionReceiptSchemaVersion = 0;
+        bool executionReceiptStructurallyValid = false;
+        bool executionReceiptAvailable = false;
+        bool executionReceiptGraphComposed = false;
+        bool executionReceiptExecutionSucceeded = false;
+        bool executionReceiptPresented = false;
+        bool executionReceiptSucceeded = false;
+        uint64 frameFeatureSequence = 0;
+        uint64 receiptFrameSequence = 0;
+        uint64 lastPresentedFrameSequence = 0;
+        bool presentedFrameAligned = false;
+        bool mainView = false;
+        uint64 sceneRuntimeId = 0;
+        uint64 cameraEntityPacked = 0;
+        uint32 subViewIndex = 0;
+
+        bool postProcessFeatureFound = false;
+        bool postProcessFeatureSelected = false;
+        bool postProcessFeatureExecuted = false;
+        bool postProcessFeatureFallbackUsed = false;
+        uint32 postProcessFeatureGraphPassCount = 0;
+        uint32 postProcessFeatureExecutedGraphPassCount = 0;
+
+        bool postProcessReceiptStructurallyValid = false;
+        uint64 planContentHash = 0;
+        uint32 toneMappingPassCount = 0;
+        uint32 bloomPassCount = 0;
+        uint32 colorGradingPassCount = 0;
+        uint32 fxaaPassCount = 0;
+        uint32 taaPassCount = 0;
+        PostProcessColorDomain inputColorDomain =
+            PostProcessColorDomain::Unknown;
+        PostProcessColorDomain plannedOutputColorDomain =
+            PostProcessColorDomain::Unknown;
+        PostProcessColorDomain storedOutputColorDomain =
+            PostProcessColorDomain::Unknown;
+        RHIFormat finalOutputFormat = RHIFormat::Unknown;
+        PostProcessTransfer toneMappingTransfer = PostProcessTransfer::None;
+        PostProcessTransfer presentationTransfer = PostProcessTransfer::None;
+        bool hdrInputReady = false;
+        bool displayLinearOutputReady = false;
+        bool encodedOutputReady = false;
+        bool fallbackUsed = false;
+        std::string diagnostic;
+
+        /** @brief True only for the exact main view that reached presentation. */
+        [[nodiscard]] bool IsQualificationReady() const noexcept
+        {
+            const bool presentedMainView =
+                presentedFrameAligned && frameFeatureSequence != 0 &&
+                frameFeatureSequence == receiptFrameSequence &&
+                receiptFrameSequence == lastPresentedFrameSequence && mainView;
+            const bool commonColorContract =
+                inputColorDomain == PostProcessColorDomain::SceneLinearHDR &&
+                storedOutputColorDomain ==
+                    PostProcessColorDomain::DisplayEncodedLDR &&
+                finalOutputFormat != RHIFormat::Unknown;
+            const bool srgbPresentationContract =
+                commonColorContract &&
+                plannedOutputColorDomain ==
+                    PostProcessColorDomain::DisplayLinearLDR &&
+                IsSRGBFormat(finalOutputFormat) &&
+                toneMappingTransfer ==
+                    PostProcessTransfer::SceneLinearToDisplayLinear &&
+                presentationTransfer ==
+                    PostProcessTransfer::DisplayLinearToEncoded &&
+                displayLinearOutputReady;
+            const bool unormPresentationContract =
+                commonColorContract &&
+                plannedOutputColorDomain ==
+                    PostProcessColorDomain::DisplayEncodedLDR &&
+                !IsSRGBFormat(finalOutputFormat) &&
+                toneMappingTransfer ==
+                    PostProcessTransfer::SceneLinearToDisplayEncoded &&
+                presentationTransfer ==
+                    PostProcessTransfer::SceneLinearToDisplayEncoded &&
+                !displayLinearOutputReady;
+
+            return available && executionReceiptSchemaVersion == 6 &&
+                   executionReceiptStructurallyValid &&
+                   executionReceiptAvailable && executionReceiptGraphComposed &&
+                   executionReceiptExecutionSucceeded &&
+                   executionReceiptPresented && executionReceiptSucceeded &&
+                   presentedMainView &&
+                   postProcessFeatureFound && postProcessFeatureSelected &&
+                   postProcessFeatureExecuted && !postProcessFeatureFallbackUsed &&
+                   postProcessFeatureGraphPassCount != 0 &&
+                   postProcessFeatureExecutedGraphPassCount ==
+                       postProcessFeatureGraphPassCount &&
+                   postProcessReceiptStructurallyValid &&
+                   planContentHash != 0 && toneMappingPassCount == 1 &&
+                   bloomPassCount == 1 && colorGradingPassCount == 1 &&
+                   fxaaPassCount == 1 && taaPassCount == 0 && hdrInputReady &&
+                   encodedOutputReady && !fallbackUsed &&
+                   (srgbPresentationContract || unormPresentationContract);
+        }
+    };
+
     struct SampleRenderDiagnostics
     {
         bool available = false;
@@ -344,6 +454,8 @@ namespace RVX
         uint32 enabledPostProcessEffectCount = 0;
         uint32 unsupportedPostProcessSkippedCount = 0;
         uint32 postProcessGraphPassCount = 0;
+        /** @brief Exact, main-view execution projection for post-process only. */
+        SamplePostProcessExecutionDiagnostics postProcessActualExecution{};
         bool clusteredLightingInitialized = false;
         uint32 clusteredLightingActiveClusters = 0;
         bool textureIBLEnabled = false;

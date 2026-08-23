@@ -47,6 +47,7 @@ VignettePass::VignettePass()
 
 void VignettePass::Configure(const PostProcessSettings& settings)
 {
+    ConfigurePresentationColorDomain(settings);
     m_enabled = settings.enableVignette;
     m_config.intensity = settings.vignetteIntensity;
     m_config.smoothness = 1.0f - settings.vignetteRadius;  // Convert radius to smoothness

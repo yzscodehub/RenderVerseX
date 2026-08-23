@@ -493,6 +493,47 @@ namespace
     }
 
     TEST(RenderContractsValidation,
+         PostProcessSettingsSeparateVelocityDemandAndValidateColorGrading)
+    {
+        RenderFrameSettings settings;
+        EXPECT_FALSE(settings.postProcess.enableVelocityOutput);
+        EXPECT_FALSE(settings.postProcess.enableTAA);
+        EXPECT_TRUE(settings.postProcess.enableFXAA);
+        EXPECT_TRUE(settings.postProcess.enableColorGrading);
+        EXPECT_FALSE(settings.postProcess.enableSSAO);
+        EXPECT_FALSE(settings.postProcess.enableSSR);
+        EXPECT_TRUE(IsValidRenderFrameSettings(settings));
+
+        settings.postProcess.enableVelocityOutput = true;
+        EXPECT_TRUE(IsValidRenderFrameSettings(settings));
+
+        settings.postProcess.colorGradingContrast = -0.1f;
+        EXPECT_FALSE(IsValidRenderFrameSettings(settings));
+        settings.postProcess.colorGradingContrast = 1.0f;
+
+        settings.postProcess.colorGradingSaturation = -0.1f;
+        EXPECT_FALSE(IsValidRenderFrameSettings(settings));
+        settings.postProcess.colorGradingSaturation = 1.0f;
+
+        settings.postProcess.colorGradingBrightness =
+            std::numeric_limits<float32>::quiet_NaN();
+        EXPECT_FALSE(IsValidRenderFrameSettings(settings));
+        settings.postProcess.colorGradingBrightness = 0.0f;
+
+        settings.postProcess.colorGradingContrast =
+            std::numeric_limits<float32>::infinity();
+        EXPECT_FALSE(IsValidRenderFrameSettings(settings));
+        settings.postProcess.colorGradingContrast = 1.0f;
+
+        settings.postProcess.colorGradingSaturation =
+            std::numeric_limits<float32>::quiet_NaN();
+        EXPECT_FALSE(IsValidRenderFrameSettings(settings));
+        settings.postProcess.colorGradingSaturation = 1.0f;
+
+        EXPECT_TRUE(IsValidRenderFrameSettings(settings));
+    }
+
+    TEST(RenderContractsValidation,
          FeatureChannelCatalogHasStableTypedEntries)
     {
         static_assert(RVX_RENDER_FEATURE_CHANNEL_COUNT == 3);

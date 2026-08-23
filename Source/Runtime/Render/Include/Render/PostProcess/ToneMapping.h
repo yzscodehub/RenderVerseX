@@ -26,6 +26,16 @@ namespace RVX
         ToneMappingPass();
         ~ToneMappingPass() override = default;
 
+        PostProcessPassDescriptor Describe() const override
+        {
+            const bool writesSRGB = m_outputColorSpace == ToneMappingOutputColorSpace::SRGB;
+            return {PostProcessPassId::ToneMapping, "ToneMapping", PostProcessStage::ToneMap, 900,
+                    PostProcessColorDomain::SceneLinearHDR,
+                    writesSRGB ? PostProcessColorDomain::DisplayEncodedLDR
+                               : PostProcessColorDomain::DisplayLinearLDR,
+                    writesSRGB ? PostProcessTransfer::SceneLinearToDisplayEncoded
+                               : PostProcessTransfer::SceneLinearToDisplayLinear};
+        }
         const char* GetName() const override { return "ToneMapping"; }
         int32 GetPriority() const override { return 900; }  // Near the end
 

@@ -6272,7 +6272,8 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracedShadowPassAfte
                           "            frameSettings.rayTracing.enableShadows);"),
               std::string::npos);
     EXPECT_NE(source.find("m_cameraVelocityPass->SetEnabled(false);"), std::string::npos);
-    EXPECT_NE(source.find("const bool cameraVelocityRequested = m_postProcessSettings.enableTAA;"),
+    EXPECT_NE(source.find("const bool cameraVelocityRequested =\n"
+                          "        m_postProcessSettings.enableVelocityOutput;"),
               std::string::npos);
     EXPECT_EQ(source.find("rayTracedReflectionsRequested && m_postProcessSettings.enableTAA"),
               std::string::npos);
@@ -6351,7 +6352,8 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracedShadowPassAfte
     EXPECT_NE(source.find("denoiseConfig.centerWeight ="), std::string::npos);
     EXPECT_NE(source.find("denoiseConfig.lowConfidenceDepthScale ="), std::string::npos);
     EXPECT_NE(source.find("m_rayTracedReflectionPass->SetEnabled(true);"), std::string::npos);
-    EXPECT_NE(source.find("reflectionConfig.temporalAccumulation = m_postProcessSettings.enableTAA;"),
+    EXPECT_NE(source.find("reflectionConfig.temporalAccumulation =\n"
+                          "            rayTracedReflectionDenoiseRequested;"),
               std::string::npos);
     EXPECT_NE(source.find("m_rayTracedReflectionCompositePass->SetEnabled(true);"), std::string::npos);
     EXPECT_NE(source.find("m_postProcessSettings.enableRayTracedReflections"), std::string::npos);

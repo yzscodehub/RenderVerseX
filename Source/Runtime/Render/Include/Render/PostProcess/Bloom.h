@@ -26,6 +26,13 @@ namespace RVX
         BloomPass();
         ~BloomPass() override = default;
 
+        PostProcessPassDescriptor Describe() const override
+        {
+            return {PostProcessPassId::Bloom, "Bloom", PostProcessStage::HDRPost, 500,
+                    PostProcessColorDomain::SceneLinearHDR,
+                    PostProcessColorDomain::SceneLinearHDR,
+                    PostProcessTransfer::None};
+        }
         const char* GetName() const override { return "Bloom"; }
         int32 GetPriority() const override { return 500; }  // Before tone mapping
 

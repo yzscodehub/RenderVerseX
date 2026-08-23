@@ -9,10 +9,12 @@
 
 #include "Features/DeferredRecipeFeatureAdapter.h"
 #include "Features/LegacyForwardFeatureAdapter.h"
+#include "Features/PostProcessPipelineFeatureAdapter.h"
 #include "Renderer/RenderPassRegistry.h"
 #include "../Common/RenderGraphValidationAccess.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -34,6 +36,12 @@ namespace
     constexpr RenderFeatureResourceContract LightingOutputsContract{
         RenderBlackboardResourceId::LightingOutputs,
         LightingOutputs::SchemaVersion};
+    constexpr RenderFeatureResourceContract TranslucencyOutputsContract{
+        RenderBlackboardResourceId::TranslucencyOutputs,
+        TranslucencyOutputs::SchemaVersion};
+    constexpr RenderFeatureResourceContract PostProcessOutputsContract{
+        RenderBlackboardResourceId::PostProcessOutputs,
+        PostProcessOutputs::SchemaVersion};
 
     class ScopedTestLog final
     {
@@ -245,6 +253,68 @@ namespace
         bool m_receivedMatchingContext = false;
     };
 
+    /**
+     * @brief Minimal supported ToneMapping implementation for adapter receipt
+     *        lifecycle tests.
+     *
+     * The test only records graph work and feeds registry-equivalent final
+     * evidence; it intentionally never realizes or dereferences the stack's
+     * device token.
+     */
+    class TestPostProcessToneMappingPass final : public IPostProcessPass
+    {
+    public:
+        explicit TestPostProcessToneMappingPass(
+            PostProcessColorDomain outputDomain) noexcept
+            : m_outputDomain(outputDomain)
+        {
+        }
+
+        [[nodiscard]] PostProcessPassDescriptor Describe() const override
+        {
+            const bool displayLinear =
+                m_outputDomain == PostProcessColorDomain::DisplayLinearLDR;
+            return {PostProcessPassId::ToneMapping,
+                    "ToneMapping",
+                    PostProcessStage::ToneMap,
+                    900,
+                    PostProcessColorDomain::SceneLinearHDR,
+                    m_outputDomain,
+                    displayLinear
+                        ? PostProcessTransfer::SceneLinearToDisplayLinear
+                        : PostProcessTransfer::SceneLinearToDisplayEncoded};
+        }
+
+        void Configure(const PostProcessSettings&) override {}
+
+        void AddToGraph(RenderGraph& graph,
+                        RGTextureHandle input,
+                        RGTextureHandle output) override
+        {
+            struct PassData
+            {
+                RGTextureHandle input{};
+                RGTextureHandle output{};
+            };
+
+            graph.AddPass<PassData>(
+                "TestPostProcessToneMapping",
+                RenderGraphPassType::Graphics,
+                [input, output](RenderGraphBuilder& builder, PassData& data)
+                {
+                    data.input = builder.Read(
+                        input, RHIResourceState::ShaderResource);
+                    data.output = builder.Write(
+                        output, RHIResourceState::RenderTarget);
+                },
+                [](const PassData&, RHICommandContext&) {});
+        }
+
+    private:
+        PostProcessColorDomain m_outputDomain =
+            PostProcessColorDomain::DisplayEncodedLDR;
+    };
+
     class FakeRenderFeature final : public IRenderFeature
     {
     public:
@@ -331,6 +401,13 @@ namespace
             }
         }
 
+        void OnGraphExecutionFinalized(
+            const RenderFeatureGraphExecutionEvidence& evidence) override
+        {
+            ++m_executionEvidenceCount;
+            m_lastExecutionEvidence = evidence;
+        }
+
         [[nodiscard]] RenderFeatureExecutionReceipt CollectReceipt() const override
         {
             RenderFeatureExecutionReceipt receipt;
@@ -355,6 +432,17 @@ namespace
         [[nodiscard]] const RenderFeatureContext& GetLastContext() const noexcept
         {
             return m_lastContext;
+        }
+
+        [[nodiscard]] uint32 GetExecutionEvidenceCount() const noexcept
+        {
+            return m_executionEvidenceCount;
+        }
+
+        [[nodiscard]] const RenderFeatureGraphExecutionEvidence&
+        GetLastExecutionEvidence() const noexcept
+        {
+            return m_lastExecutionEvidence;
         }
 
         void SetReadinessAfterAddPasses(RenderFeatureReadiness readiness)
@@ -400,6 +488,8 @@ namespace
         bool m_addSemanticPass = false;
         bool m_failSemanticPass = false;
         RHIBufferRef m_semanticBuffer{new TestBuffer()};
+        uint32 m_executionEvidenceCount = 0;
+        RenderFeatureGraphExecutionEvidence m_lastExecutionEvidence{};
     };
 
     [[nodiscard]] RenderFeatureDescriptor MakeDescriptor(
@@ -505,6 +595,11 @@ namespace
     {
         ViewData view;
         view.frameNumber = 1;
+        view.viewportWidth = 320;
+        view.viewportHeight = 180;
+        view.colorTarget.index = 1;
+        view.colorTarget.graphIdentity = graph.GetGraphIdentity();
+        view.colorTarget.recordingGeneration = graph.GetRecordingGeneration();
         RenderPassRecordContext context =
             MakeRenderPassRecordContext(graph, view);
         context.featureFrameIdentity = RenderFrameIdentity{1, 2, 3, 4};
@@ -624,6 +719,178 @@ namespace
         outputs.clusteredLights = MakeBufferHandle(provenance, 2);
         return outputs;
     }
+
+    [[nodiscard]] TranslucencyOutputs MakeTranslucencyOutputs(
+        const RenderGraphBlackboardProvenance& provenance)
+    {
+        TranslucencyOutputs outputs;
+        outputs.provenance = provenance;
+        outputs.frameIdentity = RenderFrameIdentity{
+            provenance.frameSequence, 2, 3, 4};
+        outputs.viewIdentity = RenderViewIdentity{
+            5, 6, provenance.viewOrdinal, ViewRole::Main};
+        outputs.hdrSceneColor = MakeTextureHandle(provenance, 1);
+        outputs.hdrSceneColorMetadata = MakeSceneTextureMetadata(
+            SceneTextures::HDRSceneColorContract);
+        outputs.deviceDepth = MakeTextureHandle(provenance, 2);
+        outputs.deviceDepthMetadata = MakeSceneTextureMetadata(
+            SceneTextures::DeviceDepthContract);
+        outputs.velocity = MakeTextureHandle(provenance, 3);
+        outputs.velocityMetadata = MakeSceneTextureMetadata(
+            SceneTextures::VelocityContract);
+        outputs.colorDomain = PostProcessColorDomain::SceneLinearHDR;
+        outputs.transfer = PostProcessTransfer::None;
+        return outputs;
+    }
+
+    [[nodiscard]] PostProcessOutputs MakePostProcessOutputs(
+        const RenderGraphBlackboardProvenance& provenance)
+    {
+        PostProcessOutputs outputs;
+        outputs.provenance = provenance;
+        outputs.frameIdentity = RenderFrameIdentity{
+            provenance.frameSequence, 2, 3, 4};
+        outputs.viewIdentity = RenderViewIdentity{
+            5, 6, provenance.viewOrdinal, ViewRole::Main};
+        outputs.presentableColor = MakeTextureHandle(provenance, 4);
+        outputs.presentableColorMetadata = MakeSceneTextureMetadata(
+            SceneTextures::FormatContract{
+                RHIFormat::RGBA8_UNORM_SRGB, RHISampleCount::Count1});
+        outputs.colorDomain = PostProcessColorDomain::DisplayEncodedLDR;
+        outputs.transfer = PostProcessTransfer::SceneLinearToDisplayEncoded;
+        return outputs;
+    }
+
+    class PostProcessAdapterTestFixture final
+    {
+    public:
+        explicit PostProcessAdapterTestFixture(RHIFormat presentableFormat)
+            : m_context(MakeValidContext())
+            , m_adapter(&m_stack)
+        {
+            // PostProcessStack currently uses device presence solely as its
+            // initialization lifetime token. The test effect has no device
+            // dependencies and the token is never dereferenced.
+            m_stack.Initialize(reinterpret_cast<IRHIDevice*>(
+                static_cast<std::uintptr_t>(1)));
+            m_stack.AddEffect<TestPostProcessToneMappingPass>(
+                IsSRGBFormat(presentableFormat)
+                    ? PostProcessColorDomain::DisplayLinearLDR
+                    : PostProcessColorDomain::DisplayEncodedLDR);
+
+            const RHITextureDesc sceneColorDesc = RHITextureDesc::RenderTarget(
+                m_context.outputExtent.width,
+                m_context.outputExtent.height,
+                RHIFormat::RGBA16_FLOAT);
+            const RHITextureDesc presentableColorDesc =
+                RHITextureDesc::RenderTarget(
+                    m_context.outputExtent.width,
+                    m_context.outputExtent.height,
+                    presentableFormat);
+            m_sceneColor = m_graph.CreateTexture(sceneColorDesc);
+            m_presentableColor = m_graph.CreateTexture(presentableColorDesc);
+
+            m_provenance = {
+                m_graph.GetGraphIdentity(),
+                m_graph.GetRecordingGeneration(),
+                m_context.frameIdentity.frameSequence,
+                m_context.recordingViewOrdinal,
+                m_context.recordEpoch};
+
+            RenderPassRecordContext passContext =
+                MakeValidRecordContext(m_graph);
+            passContext.view.colorTarget = m_presentableColor;
+
+            PostProcessPipelineRecordContext recordContext;
+            recordContext.frameIdentity = m_context.frameIdentity;
+            recordContext.viewIdentity = m_context.viewIdentity;
+            recordContext.presentableColor = m_presentableColor;
+            recordContext.presentableColorMetadata = MakeSceneTextureMetadata(
+                SceneTextures::FormatContract{
+                    presentableFormat, RHISampleCount::Count1},
+                m_context.outputExtent);
+            recordContext.passRecordContext = std::move(passContext);
+            m_adapter.SetRecordContext(std::move(recordContext));
+            m_adapter.Prepare(m_context);
+        }
+
+        ~PostProcessAdapterTestFixture()
+        {
+            m_adapter.SetStack(nullptr);
+            m_stack.Shutdown();
+        }
+
+        [[nodiscard]] bool Compose()
+        {
+            RenderFeatureGraphBuilder builder(m_graph, m_provenance);
+            RenderGraphBlackboard blackboard(m_provenance);
+            TranslucencyOutputs translucency;
+            translucency.provenance = m_provenance;
+            translucency.frameIdentity = m_context.frameIdentity;
+            translucency.viewIdentity = m_context.viewIdentity;
+            translucency.hdrSceneColor = m_sceneColor;
+            translucency.hdrSceneColorMetadata = MakeSceneTextureMetadata(
+                SceneTextures::HDRSceneColorContract,
+                m_context.outputExtent);
+            translucency.colorDomain = PostProcessColorDomain::SceneLinearHDR;
+            translucency.transfer = PostProcessTransfer::None;
+            if (blackboard.Publish(RenderFeatureId{71},
+                                   MakeTranslucencyProducerDescriptor(),
+                                   std::move(translucency)) !=
+                RenderGraphBlackboardCode::Success)
+            {
+                return false;
+            }
+
+            m_adapter.AddPasses(builder, blackboard);
+            return m_adapter.ResolveReadiness().IsReadyToExecute() &&
+                   m_graph.GetRecordedPassCount() != 0;
+        }
+
+        [[nodiscard]] RenderFeatureGraphExecutionEvidence
+        MakeEvidence(bool semanticExecutionSucceeded = true) const
+        {
+            return {BuiltinRenderFeatureIds::PostProcessPipeline,
+                    m_graph.GetGraphIdentity(),
+                    m_graph.GetRecordingGeneration(),
+                    m_context.frameIdentity,
+                    m_context.viewIdentity,
+                    1,
+                    1,
+                    semanticExecutionSucceeded,
+                    semanticExecutionSucceeded ? std::string() :
+                        "test semantic failure"};
+        }
+
+        [[nodiscard]] PostProcessPipelineFeatureAdapter& Adapter() noexcept
+        {
+            return m_adapter;
+        }
+
+        [[nodiscard]] PostProcessStack& Stack() noexcept
+        {
+            return m_stack;
+        }
+
+    private:
+        [[nodiscard]] static RenderFeatureDescriptor
+        MakeTranslucencyProducerDescriptor()
+        {
+            RenderFeatureDescriptor descriptor = MakeDescriptor(
+                71, "translucency", RenderFeaturePhase::Translucency);
+            descriptor.producedResources.push_back(
+                TranslucencyOutputsContract);
+            return descriptor;
+        }
+
+        RenderGraph m_graph{};
+        RenderFeatureContext m_context{};
+        RenderGraphBlackboardProvenance m_provenance{};
+        RGTextureHandle m_sceneColor{};
+        RGTextureHandle m_presentableColor{};
+        PostProcessStack m_stack{};
+        PostProcessPipelineFeatureAdapter m_adapter;
+    };
 
     TEST(RenderFeatureValidation,
          DeferredLightingRequiresValidLightingPlanBeforePipelinePreparation)
@@ -953,6 +1220,36 @@ namespace
     }
 
     TEST(RenderFeatureValidation,
+         RegistryValidatesResourceCoverageOnlyForDeclaredRecipeProfiles)
+    {
+        RenderFeatureRegistry registry;
+
+        RenderFeatureDescriptor forwardProducer = MakeDescriptor(
+            61, "forward-producer", RenderFeaturePhase::Geometry);
+        forwardProducer.producedResources.push_back(
+            TranslucencyOutputsContract);
+        RenderFeatureDescriptor futureHybridConsumer = MakeDescriptor(
+            62, "future-hybrid-consumer", RenderFeaturePhase::HDRPost);
+        futureHybridConsumer.requiredRecipes =
+            ToMask(RenderPipelineRecipe::HybridRayTracing);
+        futureHybridConsumer.consumedResources.push_back(
+            TranslucencyOutputsContract);
+
+        ASSERT_EQ(registry.Register(MakeFeature(std::move(forwardProducer))),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(registry.Register(
+                      MakeFeature(std::move(futureHybridConsumer))),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(registry.DeclareImplementedRecipe(
+                      RenderPipelineRecipe::ForwardStandard),
+                  RenderFeatureRegistryCode::Success);
+
+        // HybridRayTracing is not a composition promise of this registry, so
+        // it must not demand a producer while sealing ForwardStandard.
+        EXPECT_EQ(registry.Seal(), RenderFeatureRegistryCode::Success);
+    }
+
+    TEST(RenderFeatureValidation,
          RegistryRejectsInvalidSchemaAndIllegalPhaseEdges)
     {
         RenderFeatureRegistry invalidSchemaRegistry;
@@ -1153,6 +1450,10 @@ namespace
                               specialDescriptor.consumedResources.end(),
                               LightingOutputsContract) !=
                     specialDescriptor.consumedResources.end());
+        EXPECT_TRUE(std::find(specialDescriptor.producedResources.begin(),
+                              specialDescriptor.producedResources.end(),
+                              TranslucencyOutputsContract) !=
+                    specialDescriptor.producedResources.end());
 
         EXPECT_NE(geometryDescriptor.requiredCapabilities &
                       ToMask(RenderFeatureCapability::MultipleRenderTargets),
@@ -1689,6 +1990,271 @@ namespace
     }
 
     TEST(RenderFeatureValidation,
+         BlackboardV2RejectsStaleAndWrongColorDomainPresentationContracts)
+    {
+        const RenderGraphBlackboardProvenance provenance = MakeProvenance();
+
+        RenderFeatureDescriptor translucencyProducer = MakeDescriptor(
+            71, "translucency", RenderFeaturePhase::Translucency);
+        translucencyProducer.producedResources.push_back(
+            TranslucencyOutputsContract);
+        RenderFeatureDescriptor postProcessProducer = MakeDescriptor(
+            72, "post-process", RenderFeaturePhase::HDRPost);
+        postProcessProducer.producedResources.push_back(
+            PostProcessOutputsContract);
+
+        RenderGraphBlackboard validBlackboard(provenance);
+        EXPECT_EQ(validBlackboard.Publish(
+                      RenderFeatureId{71},
+                      translucencyProducer,
+                      MakeTranslucencyOutputs(provenance)),
+                  RenderGraphBlackboardCode::Success);
+        const RenderFeatureDescriptor postProcessConsumer =
+            PostProcessPipelineFeatureAdapter(nullptr).Describe();
+        RenderGraphBlackboardCode consumedCode =
+            RenderGraphBlackboardCode::Success;
+        EXPECT_NE(validBlackboard.Require<TranslucencyOutputs>(
+                      BuiltinRenderFeatureIds::PostProcessPipeline,
+                      postProcessConsumer,
+                      &consumedCode),
+                  nullptr);
+        EXPECT_EQ(consumedCode, RenderGraphBlackboardCode::Success);
+
+        RenderGraphBlackboard wrongDomainBlackboard(provenance);
+        TranslucencyOutputs wrongDomain = MakeTranslucencyOutputs(provenance);
+        wrongDomain.colorDomain = PostProcessColorDomain::DisplayEncodedLDR;
+        EXPECT_EQ(wrongDomainBlackboard.Publish(
+                      RenderFeatureId{71}, translucencyProducer, wrongDomain),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+
+        RenderGraphBlackboard staleHandleBlackboard(provenance);
+        TranslucencyOutputs staleHandle = MakeTranslucencyOutputs(provenance);
+        ++staleHandle.velocity.recordingGeneration;
+        EXPECT_EQ(staleHandleBlackboard.Publish(
+                      RenderFeatureId{71}, translucencyProducer, staleHandle),
+                  RenderGraphBlackboardCode::StaleGraphResource);
+
+        RenderGraphBlackboard staleFrameBlackboard(provenance);
+        TranslucencyOutputs staleFrame = MakeTranslucencyOutputs(provenance);
+        ++staleFrame.frameIdentity.frameSequence;
+        EXPECT_EQ(staleFrameBlackboard.Publish(
+                      RenderFeatureId{71}, translucencyProducer, staleFrame),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+
+        RenderGraphBlackboard encodedBlackboard(provenance);
+        EXPECT_EQ(encodedBlackboard.Publish(
+                      RenderFeatureId{72},
+                      postProcessProducer,
+                      MakePostProcessOutputs(provenance)),
+                  RenderGraphBlackboardCode::Success);
+
+        RenderGraphBlackboard hardwareSRGBBlackboard(provenance);
+        PostProcessOutputs hardwareSRGB = MakePostProcessOutputs(provenance);
+        hardwareSRGB.transfer = PostProcessTransfer::DisplayLinearToEncoded;
+        EXPECT_EQ(hardwareSRGBBlackboard.Publish(
+                      RenderFeatureId{72},
+                      postProcessProducer,
+                      hardwareSRGB),
+                  RenderGraphBlackboardCode::Success);
+
+        RenderGraphBlackboard omittedTransitionBlackboard(provenance);
+        PostProcessOutputs omittedTransition = MakePostProcessOutputs(provenance);
+        omittedTransition.colorDomain = PostProcessColorDomain::Unknown;
+        omittedTransition.transfer = PostProcessTransfer::None;
+        EXPECT_EQ(omittedTransitionBlackboard.Publish(
+                      RenderFeatureId{72},
+                      postProcessProducer,
+                      omittedTransition),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+
+        RenderGraphBlackboard unencodedBlackboard(provenance);
+        PostProcessOutputs unencoded = MakePostProcessOutputs(provenance);
+        unencoded.colorDomain = PostProcessColorDomain::DisplayLinearLDR;
+        EXPECT_EQ(unencodedBlackboard.Publish(
+                      RenderFeatureId{72}, postProcessProducer, unencoded),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+    }
+
+    TEST(RenderFeatureValidation,
+         PostProcessPipelineUsesStableFeatureContractAndDirectEncodedReceipt)
+    {
+        PostProcessPipelineFeatureAdapter adapter(nullptr);
+        const RenderFeatureDescriptor descriptor = adapter.Describe();
+
+        EXPECT_EQ(descriptor.featureId,
+                  BuiltinRenderFeatureIds::PostProcessPipeline);
+        EXPECT_EQ(descriptor.featureId.value, 2U);
+        EXPECT_EQ(descriptor.phase, RenderFeaturePhase::HDRPost);
+        EXPECT_TRUE(std::find(descriptor.consumedResources.begin(),
+                              descriptor.consumedResources.end(),
+                              TranslucencyOutputsContract) !=
+                    descriptor.consumedResources.end());
+        EXPECT_TRUE(std::find(descriptor.producedResources.begin(),
+                              descriptor.producedResources.end(),
+                              PostProcessOutputsContract) !=
+                    descriptor.producedResources.end());
+        EXPECT_EQ(descriptor.requiredRecipes,
+                  ToMask(RenderPipelineRecipe::ForwardStandard) |
+                      ToMask(RenderPipelineRecipe::DeferredQuality));
+        EXPECT_EQ(descriptor.requiredRecipes &
+                      ToMask(RenderPipelineRecipe::HybridRayTracing),
+                  0U);
+
+        RenderPostProcessExecutionReceipt directEncoded;
+        directEncoded.postProcessContentHash = 0x10U;
+        directEncoded.toneMapPassCount = 1;
+        directEncoded.inputColorDomain =
+            PostProcessColorDomain::SceneLinearHDR;
+        directEncoded.plannedOutputColorDomain =
+            PostProcessColorDomain::DisplayEncodedLDR;
+        directEncoded.storedOutputColorDomain =
+            PostProcessColorDomain::DisplayEncodedLDR;
+        directEncoded.finalOutputFormat = RHIFormat::RGBA8_UNORM;
+        directEncoded.toneMappingTransfer =
+            PostProcessTransfer::SceneLinearToDisplayEncoded;
+        directEncoded.presentationTransfer =
+            PostProcessTransfer::SceneLinearToDisplayEncoded;
+        directEncoded.hdrInputReady = true;
+        directEncoded.encodedOutputReady = true;
+        EXPECT_FALSE(directEncoded.displayLinearOutputReady);
+        EXPECT_TRUE(directEncoded.IsStructurallyValid());
+
+        directEncoded.taaPassCount = 1;
+        EXPECT_FALSE(directEncoded.IsStructurallyValid());
+        directEncoded.taaPassCount = 0;
+        directEncoded.toneMapPassCount = 2;
+        EXPECT_FALSE(directEncoded.IsStructurallyValid());
+        directEncoded.toneMapPassCount = 1;
+        directEncoded.fallbackUsed = true;
+        EXPECT_FALSE(directEncoded.IsStructurallyValid());
+        directEncoded.fallbackUsed = false;
+        directEncoded.presentationTransfer =
+            PostProcessTransfer::DisplayLinearToEncoded;
+        EXPECT_FALSE(directEncoded.IsStructurallyValid());
+    }
+
+    TEST(RenderFeatureValidation,
+         PostProcessPipelineFinalizationBindsColorDomainsAndInvalidatesStaleEvidence)
+    {
+        ScopedTestLog log;
+        const auto verifyColorDomainReceipt = [](RHIFormat format,
+                                                  PostProcessColorDomain plannedDomain,
+                                                  PostProcessTransfer toneMappingTransfer,
+                                                  PostProcessTransfer presentationTransfer,
+                                                  bool displayLinearReady)
+        {
+            PostProcessAdapterTestFixture fixture(format);
+            ASSERT_TRUE(fixture.Compose());
+
+            // Composition plans work, but cannot declare execution before the
+            // registry has inspected the exact graph execution diagnostics.
+            EXPECT_FALSE(fixture.Adapter().ResolveReadiness().executed);
+            EXPECT_TRUE(fixture.Adapter().GetLastExecutionReceipt().IsEmpty());
+            EXPECT_FALSE(fixture.Adapter().CollectReceipt().readiness.executed);
+
+            fixture.Adapter().OnGraphExecutionFinalized(
+                fixture.MakeEvidence());
+            const RenderPostProcessExecutionReceipt& receipt =
+                fixture.Adapter().GetLastExecutionReceipt();
+            EXPECT_TRUE(receipt.IsStructurallyValid());
+            EXPECT_EQ(receipt.inputColorDomain,
+                      PostProcessColorDomain::SceneLinearHDR);
+            EXPECT_EQ(receipt.plannedOutputColorDomain, plannedDomain);
+            EXPECT_EQ(receipt.storedOutputColorDomain,
+                      PostProcessColorDomain::DisplayEncodedLDR);
+            EXPECT_EQ(receipt.finalOutputFormat, format);
+            EXPECT_EQ(receipt.toneMappingTransfer, toneMappingTransfer);
+            EXPECT_EQ(receipt.presentationTransfer, presentationTransfer);
+            EXPECT_EQ(receipt.displayLinearOutputReady, displayLinearReady);
+            EXPECT_TRUE(receipt.encodedOutputReady);
+            EXPECT_FALSE(receipt.fallbackUsed);
+            EXPECT_FALSE(fixture.Adapter().CollectReceipt().readiness.executed);
+        };
+
+        verifyColorDomainReceipt(
+            RHIFormat::RGBA8_UNORM_SRGB,
+            PostProcessColorDomain::DisplayLinearLDR,
+            PostProcessTransfer::SceneLinearToDisplayLinear,
+            PostProcessTransfer::DisplayLinearToEncoded,
+            true);
+        verifyColorDomainReceipt(
+            RHIFormat::RGBA8_UNORM,
+            PostProcessColorDomain::DisplayEncodedLDR,
+            PostProcessTransfer::SceneLinearToDisplayEncoded,
+            PostProcessTransfer::SceneLinearToDisplayEncoded,
+            false);
+
+        PostProcessAdapterTestFixture lifecycle(
+            RHIFormat::RGBA8_UNORM_SRGB);
+        ASSERT_TRUE(lifecycle.Compose());
+        lifecycle.Adapter().OnGraphExecutionFinalized(lifecycle.MakeEvidence());
+        EXPECT_TRUE(
+            lifecycle.Adapter().GetLastExecutionReceipt().IsStructurallyValid());
+
+        RenderFeatureGraphExecutionEvidence staleEvidence =
+            lifecycle.MakeEvidence();
+        ++staleEvidence.graphIdentity;
+        lifecycle.Adapter().OnGraphExecutionFinalized(staleEvidence);
+        EXPECT_TRUE(lifecycle.Adapter().GetLastExecutionReceipt().IsEmpty());
+
+        lifecycle.Adapter().OnGraphExecutionFinalized(lifecycle.MakeEvidence());
+        EXPECT_TRUE(
+            lifecycle.Adapter().GetLastExecutionReceipt().IsStructurallyValid());
+        lifecycle.Adapter().OnGraphExecutionFinalized(
+            lifecycle.MakeEvidence(false));
+        EXPECT_TRUE(lifecycle.Adapter().GetLastExecutionReceipt().IsEmpty());
+
+        lifecycle.Adapter().OnGraphExecutionFinalized(lifecycle.MakeEvidence());
+        EXPECT_TRUE(
+            lifecycle.Adapter().GetLastExecutionReceipt().IsStructurallyValid());
+        PostProcessStack replacementStack;
+        lifecycle.Adapter().SetStack(&replacementStack);
+        EXPECT_TRUE(lifecycle.Adapter().GetLastExecutionReceipt().IsEmpty());
+        EXPECT_FALSE(lifecycle.Adapter().ResolveReadiness().executed);
+        lifecycle.Adapter().SetStack(nullptr);
+    }
+
+    TEST(RenderFeatureValidation,
+         PostProcessPipelineStackRebindingInvalidatesFrozenRecordState)
+    {
+        RenderGraph graph;
+        const RenderPassRecordContext passContext =
+            MakeValidRecordContext(graph);
+        const RenderFeatureContext featureContext = MakeValidContext();
+
+        PostProcessPipelineRecordContext recordContext;
+        recordContext.frameIdentity = featureContext.frameIdentity;
+        recordContext.viewIdentity = featureContext.viewIdentity;
+        recordContext.presentableColor = passContext.view.colorTarget;
+        recordContext.presentableColorMetadata = MakeSceneTextureMetadata(
+            SceneTextures::FormatContract{
+                RHIFormat::RGBA8_UNORM_SRGB, RHISampleCount::Count1});
+        recordContext.passRecordContext = passContext;
+
+        PostProcessPipelineFeatureAdapter adapter(nullptr);
+        adapter.SetRecordContext(recordContext);
+        adapter.Prepare(featureContext);
+        EXPECT_TRUE(adapter.ResolveReadiness().inputsReady);
+        EXPECT_FALSE(adapter.ResolveReadiness().pipelineReady);
+
+        PostProcessStack replacementStack;
+        adapter.SetStack(&replacementStack);
+        EXPECT_FALSE(adapter.ResolveReadiness().inputsReady);
+        EXPECT_FALSE(adapter.ResolveReadiness().pipelineReady);
+
+        adapter.SetRecordContext(recordContext);
+        adapter.Prepare(featureContext);
+        EXPECT_TRUE(adapter.ResolveReadiness().inputsReady);
+        EXPECT_FALSE(adapter.ResolveReadiness().pipelineReady);
+
+        // Teardown must sever the borrowed stack and discard the record context
+        // that was frozen against its prior lifetime.
+        adapter.SetStack(nullptr);
+        EXPECT_FALSE(adapter.ResolveReadiness().inputsReady);
+        EXPECT_FALSE(adapter.ResolveReadiness().pipelineReady);
+    }
+
+    TEST(RenderFeatureValidation,
          DeferredSceneTexturesRejectMissingAndIncompatibleOutputs)
     {
         SceneTextures textures = MakeDeferredSceneTextures();
@@ -1954,6 +2520,7 @@ namespace
         RenderFeatureRegistry registry;
         auto feature = MakeFeature(
             MakeDescriptor(1, "semantic-evidence"), MakeReadyReadiness());
+        FakeRenderFeature* const featureRaw = feature.get();
         feature->SetSemanticPass(true);
         ASSERT_EQ(registry.Register(std::move(feature)),
                   RenderFeatureRegistryCode::Success);
@@ -1970,10 +2537,12 @@ namespace
         RenderGraphBlackboard blackboard(provenance);
         ASSERT_EQ(registry.AddPasses(builder, blackboard),
                   RenderFeatureRegistryCode::Success);
+        EXPECT_EQ(featureRaw->GetExecutionEvidenceCount(), 0U);
         RenderGraphValidationAccess::Compile(graph);
         ASSERT_TRUE(graph.GetCompileStats().compileValid);
         NoOpCommandContext commands;
         RenderGraphValidationAccess::Execute(graph, commands);
+        EXPECT_EQ(featureRaw->GetExecutionEvidenceCount(), 0U);
 
         const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
         ASSERT_EQ(diagnostics.passes.size(), 1U);
@@ -1984,6 +2553,12 @@ namespace
                   "required semantic workload was not recorded");
         ASSERT_EQ(registry.FinalizeGraphExecution(graph),
                   RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(featureRaw->GetExecutionEvidenceCount(), 1U);
+        EXPECT_FALSE(
+            featureRaw->GetLastExecutionEvidence().semanticExecutionSucceeded);
+        EXPECT_FALSE(featureRaw->GetLastExecutionEvidence().HasExactExecution());
+        EXPECT_EQ(featureRaw->GetLastExecutionEvidence().diagnostic,
+                  "required semantic workload was not recorded");
 
         const RenderExecutionReceipt receipt =
             registry.CollectExecutionReceipt();
@@ -1996,6 +2571,57 @@ namespace
         EXPECT_FALSE(receipt.executionSucceeded);
         EXPECT_EQ(receipt.diagnostic,
                   "required semantic workload was not recorded");
+    }
+
+    TEST(RenderFeatureValidation,
+         RegistryFinalizesDetailedFeatureEvidenceOnlyAfterExactGraphExecution)
+    {
+        RenderFeatureRegistry registry;
+        auto feature = MakeFeature(
+            MakeDescriptor(1, "finalized-evidence"), MakeReadyReadiness());
+        FakeRenderFeature* const featureRaw = feature.get();
+        feature->SetSemanticPass(false);
+        ASSERT_EQ(registry.Register(std::move(feature)),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(registry.DeclareImplementedRecipe(
+                      RenderPipelineRecipe::ForwardStandard),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(registry.Seal(), RenderFeatureRegistryCode::Success);
+        const RenderFeatureContext context = MakeValidContext();
+        ASSERT_TRUE(registry.PrepareFrame(context).Succeeded());
+
+        RenderGraph graph;
+        const RenderGraphBlackboardProvenance provenance{
+            graph.GetGraphIdentity(), graph.GetRecordingGeneration(), 1, 0, 1};
+        RenderFeatureGraphBuilder builder(graph, provenance);
+        RenderGraphBlackboard blackboard(provenance);
+        ASSERT_EQ(registry.AddPasses(builder, blackboard),
+                  RenderFeatureRegistryCode::Success);
+        EXPECT_EQ(featureRaw->GetExecutionEvidenceCount(), 0U);
+
+        RenderGraphValidationAccess::Compile(graph);
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+        EXPECT_EQ(featureRaw->GetExecutionEvidenceCount(), 0U);
+
+        NoOpCommandContext commands;
+        RenderGraphValidationAccess::Execute(graph, commands);
+        EXPECT_EQ(featureRaw->GetExecutionEvidenceCount(), 0U);
+
+        ASSERT_EQ(registry.FinalizeGraphExecution(graph),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(featureRaw->GetExecutionEvidenceCount(), 1U);
+        const RenderFeatureGraphExecutionEvidence& evidence =
+            featureRaw->GetLastExecutionEvidence();
+        EXPECT_EQ(evidence.featureId, RenderFeatureId{1});
+        EXPECT_EQ(evidence.graphIdentity, graph.GetGraphIdentity());
+        EXPECT_EQ(evidence.recordingGeneration,
+                  graph.GetRecordingGeneration());
+        EXPECT_EQ(evidence.frameIdentity, context.frameIdentity);
+        EXPECT_EQ(evidence.viewIdentity, context.viewIdentity);
+        EXPECT_EQ(evidence.graphPassCount, 1U);
+        EXPECT_EQ(evidence.executedGraphPassCount, 1U);
+        EXPECT_TRUE(evidence.semanticExecutionSucceeded);
+        EXPECT_TRUE(evidence.HasExactExecution());
     }
 
     TEST(RenderFeatureValidation,
@@ -2128,6 +2754,21 @@ namespace
         candidate.deformation.shadowSkinnedDrawCount = 2;
         candidate.deformation.velocitySkinnedDrawCount = 1;
         candidate.deformation.velocityPreviousPaletteDrawCount = 1;
+        candidate.postProcess.postProcessContentHash = 0x509ULL;
+        candidate.postProcess.toneMapPassCount = 1;
+        candidate.postProcess.inputColorDomain =
+            PostProcessColorDomain::SceneLinearHDR;
+        candidate.postProcess.plannedOutputColorDomain =
+            PostProcessColorDomain::DisplayEncodedLDR;
+        candidate.postProcess.storedOutputColorDomain =
+            PostProcessColorDomain::DisplayEncodedLDR;
+        candidate.postProcess.finalOutputFormat = RHIFormat::RGBA8_UNORM;
+        candidate.postProcess.toneMappingTransfer =
+            PostProcessTransfer::SceneLinearToDisplayEncoded;
+        candidate.postProcess.presentationTransfer =
+            PostProcessTransfer::SceneLinearToDisplayEncoded;
+        candidate.postProcess.hdrInputReady = true;
+        candidate.postProcess.encodedOutputReady = true;
         RenderFeatureExecutionReceipt executedFeature;
         executedFeature.featureId = RenderFeatureId{1};
         executedFeature.featureSchemaVersion = 1;
@@ -2227,6 +2868,7 @@ namespace
         legacyV2.schemaVersion = 2;
         legacyV2.lighting = {};
         legacyV2.deformation = {};
+        legacyV2.postProcess = {};
         EXPECT_TRUE(legacyV2.IsStructurallyValid());
         legacyV2.lighting = candidate.lighting;
         EXPECT_FALSE(legacyV2.IsStructurallyValid());
@@ -2238,6 +2880,7 @@ namespace
         RenderExecutionReceipt legacyV4 = candidate;
         legacyV4.schemaVersion = 4;
         legacyV4.deformation = {};
+        legacyV4.postProcess = {};
         EXPECT_TRUE(legacyV4.IsStructurallyValid());
         legacyV4.deformation = candidate.deformation;
         EXPECT_FALSE(legacyV4.IsStructurallyValid());
@@ -2247,6 +2890,7 @@ namespace
         legacyV1.deferredOpaque = {};
         legacyV1.lighting = {};
         legacyV1.deformation = {};
+        legacyV1.postProcess = {};
         EXPECT_TRUE(legacyV1.IsStructurallyValid());
         legacyV1.lighting = candidate.lighting;
         EXPECT_FALSE(legacyV1.IsStructurallyValid());
@@ -2331,6 +2975,27 @@ namespace
         RenderGraphBlackboard blackboard(provenance);
         ASSERT_EQ(registry.AddPasses(builder, blackboard),
                   RenderFeatureRegistryCode::Success);
+
+        RenderGraphBlackboardCode translucencyCode =
+            RenderGraphBlackboardCode::Success;
+        const TranslucencyOutputs* const translucency =
+            blackboard.Require<TranslucencyOutputs>(
+                BuiltinRenderFeatureIds::PostProcessPipeline,
+                PostProcessPipelineFeatureAdapter(nullptr).Describe(),
+                &translucencyCode);
+        ASSERT_EQ(translucencyCode, RenderGraphBlackboardCode::Success);
+        ASSERT_NE(translucency, nullptr);
+        EXPECT_EQ(translucency->frameIdentity,
+                  MakeValidContext().frameIdentity);
+        EXPECT_EQ(translucency->viewIdentity,
+                  MakeValidContext().viewIdentity);
+        EXPECT_EQ(translucency->colorDomain,
+                  PostProcessColorDomain::SceneLinearHDR);
+        EXPECT_EQ(translucency->transfer, PostProcessTransfer::None);
+        EXPECT_TRUE(translucency->hdrSceneColor.IsValid());
+        EXPECT_EQ(translucency->hdrSceneColorMetadata,
+                  MakeSceneTextureMetadata(
+                      SceneTextures::HDRSceneColorContract));
 
         const LegacyForwardFeaturePassChainStats chain =
             legacyRaw->GetPassChainStatsSnapshot();

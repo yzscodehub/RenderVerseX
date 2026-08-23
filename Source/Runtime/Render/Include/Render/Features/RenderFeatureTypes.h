@@ -6,6 +6,7 @@
  */
 
 #include "Core/Types.h"
+#include "Render/PostProcess/PostProcessTypes.h"
 #include "RenderContracts/FeatureChannelContracts.h"
 #include "RenderContracts/RenderFeatureChannelRegistry.h"
 #include "RenderContracts/RenderFrameTypes.h"
@@ -38,7 +39,8 @@ namespace RVX
     namespace BuiltinRenderFeatureIds
     {
         inline constexpr RenderFeatureId LegacyForwardMainChain{1};
-        inline constexpr RenderFeatureId LegacyPostProcess{2};
+        /** Typed HDR-to-presentation pipeline; stable identity retained. */
+        inline constexpr RenderFeatureId PostProcessPipeline{2};
         inline constexpr RenderFeatureId FrameSetup{3};
         /** Deferred opaque geometry publishes the canonical GBuffer surface. */
         inline constexpr RenderFeatureId DeferredGeometry{4};
@@ -316,6 +318,36 @@ namespace RVX
         std::string diagnostic{};
     };
 
+    /**
+     * @brief Registry-owned final execution evidence for one feature recording.
+     *
+     * This is delivered only after RenderFeatureRegistry has inspected the
+     * exact RenderGraph that was composed for the frozen frame and view. A
+     * feature may use it to finalize detailed receipts, but it must never
+     * infer execution from scheduling alone.
+     */
+    struct RenderFeatureGraphExecutionEvidence
+    {
+        RenderFeatureId featureId{};
+        uint64 graphIdentity = 0;
+        uint64 recordingGeneration = 0;
+        RenderFrameIdentity frameIdentity{};
+        RenderViewIdentity viewIdentity{};
+        uint32 graphPassCount = 0;
+        uint32 executedGraphPassCount = 0;
+        bool semanticExecutionSucceeded = false;
+        std::string diagnostic{};
+
+        [[nodiscard]] bool HasExactExecution() const noexcept
+        {
+            return featureId.IsValid() && graphIdentity != 0 &&
+                   recordingGeneration != 0 && frameIdentity.IsValid() &&
+                   viewIdentity.IsValid() && graphPassCount != 0 &&
+                   executedGraphPassCount == graphPassCount &&
+                   semanticExecutionSucceeded && diagnostic.empty();
+        }
+    };
+
     /** @brief Build/validation identity supplied by the product composition. */
     struct RenderExecutionBuildIdentity
     {
@@ -541,10 +573,103 @@ namespace RVX
         }
     };
 
+    /**
+     * @brief Immutable post-process plan and presentation evidence for one
+     *        frame/view.
+     *
+     * This records the typed plan selected before graph mutation. A positive
+     * count is not inferred from settings: it is filled only after the
+     * corresponding graph work is observed by the feature registry.
+     */
+    struct RenderPostProcessExecutionReceipt
+    {
+        uint64 postProcessContentHash = 0;
+        uint32 toneMapPassCount = 0;
+        uint32 bloomPassCount = 0;
+        uint32 colorGradingPassCount = 0;
+        uint32 fxaaPassCount = 0;
+        /** Reserved for the real temporal resolve introduced by GFX11. */
+        uint32 taaPassCount = 0;
+        /** Semantic domain consumed by the post-process presentation plan. */
+        PostProcessColorDomain inputColorDomain =
+            PostProcessColorDomain::Unknown;
+        /** Shader-visible output domain selected while materializing the plan. */
+        PostProcessColorDomain plannedOutputColorDomain =
+            PostProcessColorDomain::Unknown;
+        /** Domain stored in the presentable resource after any hardware encode. */
+        PostProcessColorDomain storedOutputColorDomain =
+            PostProcessColorDomain::Unknown;
+        /** Exact RHI format of the presentable resource used by this plan. */
+        RHIFormat finalOutputFormat = RHIFormat::Unknown;
+        /** Transfer performed by the single required ToneMapping transform. */
+        PostProcessTransfer toneMappingTransfer = PostProcessTransfer::None;
+        /** Transfer from the planned output to the stored presentable result. */
+        PostProcessTransfer presentationTransfer = PostProcessTransfer::None;
+        bool hdrInputReady = false;
+        bool displayLinearOutputReady = false;
+        bool encodedOutputReady = false;
+        bool fallbackUsed = false;
+
+        [[nodiscard]] bool IsEmpty() const noexcept
+        {
+            return postProcessContentHash == 0 && toneMapPassCount == 0 &&
+                   bloomPassCount == 0 && colorGradingPassCount == 0 &&
+                   fxaaPassCount == 0 && taaPassCount == 0 &&
+                   inputColorDomain == PostProcessColorDomain::Unknown &&
+                   plannedOutputColorDomain ==
+                       PostProcessColorDomain::Unknown &&
+                   storedOutputColorDomain ==
+                       PostProcessColorDomain::Unknown &&
+                   finalOutputFormat == RHIFormat::Unknown &&
+                   toneMappingTransfer == PostProcessTransfer::None &&
+                   presentationTransfer == PostProcessTransfer::None &&
+                   !hdrInputReady && !displayLinearOutputReady &&
+                   !encodedOutputReady && !fallbackUsed;
+        }
+
+        [[nodiscard]] bool IsStructurallyValid() const noexcept
+        {
+            if (postProcessContentHash == 0 || toneMapPassCount != 1 ||
+                taaPassCount != 0 || !hdrInputReady ||
+                !encodedOutputReady || fallbackUsed ||
+                inputColorDomain != PostProcessColorDomain::SceneLinearHDR ||
+                storedOutputColorDomain !=
+                    PostProcessColorDomain::DisplayEncodedLDR ||
+                finalOutputFormat == RHIFormat::Unknown)
+            {
+                return false;
+            }
+
+            if (plannedOutputColorDomain ==
+                PostProcessColorDomain::DisplayLinearLDR)
+            {
+                return IsSRGBFormat(finalOutputFormat) &&
+                       toneMappingTransfer ==
+                           PostProcessTransfer::SceneLinearToDisplayLinear &&
+                       presentationTransfer ==
+                           PostProcessTransfer::DisplayLinearToEncoded &&
+                       displayLinearOutputReady;
+            }
+
+            if (plannedOutputColorDomain ==
+                PostProcessColorDomain::DisplayEncodedLDR)
+            {
+                return !IsSRGBFormat(finalOutputFormat) &&
+                       toneMappingTransfer ==
+                           PostProcessTransfer::SceneLinearToDisplayEncoded &&
+                       presentationTransfer ==
+                           PostProcessTransfer::SceneLinearToDisplayEncoded &&
+                       !displayLinearOutputReady;
+            }
+
+            return false;
+        }
+    };
+
     /** @brief Candidate or presentation-qualified evidence for one frame/view. */
     struct RenderExecutionReceipt
     {
-        uint32 schemaVersion = 5;
+        uint32 schemaVersion = 6;
         bool available = false;
         bool graphComposed = false;
         bool executionSucceeded = false;
@@ -566,13 +691,16 @@ namespace RVX
         RenderLightingExecutionReceipt lighting{};
         /** Immutable palette readiness and actual skinned raster execution. */
         RenderDeformationExecutionReceipt deformation{};
+        /** Typed HDR-to-presentation plan and exact stage evidence. */
+        RenderPostProcessExecutionReceipt postProcess{};
         std::vector<RenderFeatureExecutionReceipt> features{};
         std::string diagnostic{};
 
         [[nodiscard]] bool IsStructurallyValid() const noexcept
         {
             if ((schemaVersion != 1 && schemaVersion != 2 &&
-                 schemaVersion != 4 && schemaVersion != 5) ||
+                 schemaVersion != 4 && schemaVersion != 5 &&
+                 schemaVersion != 6) ||
                 !frameIdentity.IsValid() ||
                 !viewIdentity.IsValid() || backend == RHIBackendType::None ||
                 !IsDeclaredRenderPipelineRecipe(requestedRecipe) ||
@@ -589,6 +717,7 @@ namespace RVX
             }
             const bool schemaOneInvalid = schemaVersion == 1 &&
                 (!lighting.IsEmpty() || !deformation.IsEmpty() ||
+                 !postProcess.IsEmpty() ||
                  deferredOpaque.available ||
                  deferredOpaque.status !=
                      RenderDeferredOpaqueExecutionStatus::NotAttempted ||
@@ -596,23 +725,36 @@ namespace RVX
                  deferredOpaque.executedPacketCount != 0);
             const bool schemaTwoInvalid = schemaVersion == 2 &&
                 (!lighting.IsEmpty() || !deformation.IsEmpty() ||
+                 !postProcess.IsEmpty() ||
                  !deferredOpaque.IsStructurallyValid());
             const bool schemaFourInvalid = schemaVersion == 4 &&
-                (!deformation.IsEmpty() ||
+                (!deformation.IsEmpty() || !postProcess.IsEmpty() ||
                  !deferredOpaque.IsStructurallyValid() ||
                  (!lighting.IsEmpty() && !lighting.IsStructurallyValid()) ||
                  ((executionSucceeded || presented) &&
                   !lighting.IsStructurallyValid()));
             const bool schemaFiveInvalid = schemaVersion == 5 &&
-                (!deferredOpaque.IsStructurallyValid() ||
+                (!postProcess.IsEmpty() ||
+                 !deferredOpaque.IsStructurallyValid() ||
                  (!lighting.IsEmpty() && !lighting.IsStructurallyValid()) ||
                  (!deformation.IsEmpty() &&
                   !deformation.IsStructurallyValid()) ||
                  ((executionSucceeded || presented) &&
                   (!lighting.IsStructurallyValid() ||
                    !deformation.IsStructurallyValid())));
+            const bool schemaSixInvalid = schemaVersion == 6 &&
+                (!deferredOpaque.IsStructurallyValid() ||
+                 (!lighting.IsEmpty() && !lighting.IsStructurallyValid()) ||
+                 (!deformation.IsEmpty() &&
+                  !deformation.IsStructurallyValid()) ||
+                 (!postProcess.IsEmpty() &&
+                  !postProcess.IsStructurallyValid()) ||
+                 ((executionSucceeded || presented) &&
+                  (!lighting.IsStructurallyValid() ||
+                   !deformation.IsStructurallyValid() ||
+                   !postProcess.IsStructurallyValid())));
             if (schemaOneInvalid || schemaTwoInvalid || schemaFourInvalid ||
-                schemaFiveInvalid)
+                schemaFiveInvalid || schemaSixInvalid)
             {
                 return false;
             }

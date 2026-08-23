@@ -120,9 +120,11 @@ namespace
 
     [[nodiscard]] constexpr bool ActivationDomainsOverlap(
         const RenderFeatureDescriptor& left,
-        const RenderFeatureDescriptor& right) noexcept
+        const RenderFeatureDescriptor& right,
+        RenderPipelineRecipeMask implementedRecipes) noexcept
     {
-        return (GetRecipeMask(left) & GetRecipeMask(right)) != 0 &&
+        return (GetRecipeMask(left) & GetRecipeMask(right) &
+                implementedRecipes) != 0 &&
                (left.qualityTiers & right.qualityTiers) != 0;
     }
 
@@ -930,6 +932,39 @@ RenderFeatureRegistryCode RenderFeatureRegistry::FinalizeGraphExecution(
     }
 
     m_executionEvidenceFinalized = true;
+
+    // Features may publish detailed receipts only after the registry has
+    // finalized all graph-owned evidence for this exact recording. This
+    // prevents a scheduled callback from being reported as an executed pass.
+    for (const FeatureGraphRegistration& registration :
+         m_featureGraphRegistrations)
+    {
+        Entry* const entry = FindEntry(registration.featureId);
+        if (entry == nullptr)
+        {
+            m_executionEvidenceFinalized = false;
+            m_activeDiagnostic =
+                "Render feature execution evidence lost its registered feature";
+            return RenderFeatureRegistryCode::GraphCompositionFailed;
+        }
+
+        RenderFeatureGraphExecutionEvidence evidence;
+        evidence.featureId = registration.featureId;
+        evidence.graphIdentity = m_recordedGraphIdentity;
+        evidence.recordingGeneration = m_recordedGraphGeneration;
+        evidence.frameIdentity = m_activeContext.frameIdentity;
+        evidence.viewIdentity = m_activeContext.viewIdentity;
+        evidence.graphPassCount = registration.observedGraphPassCount;
+        evidence.executedGraphPassCount =
+            registration.observedExecutedGraphPassCount;
+        evidence.semanticExecutionSucceeded =
+            evidence.graphPassCount != 0 &&
+            evidence.executedGraphPassCount == evidence.graphPassCount &&
+            registration.semanticExecutionDiagnostic.empty();
+        evidence.diagnostic = registration.semanticExecutionDiagnostic;
+        entry->feature->OnGraphExecutionFinalized(evidence);
+    }
+
     return RenderFeatureRegistryCode::Success;
 }
 
@@ -1208,7 +1243,8 @@ RenderFeatureRegistry::ValidateAndBuildExecutionOrder()
                     m_features[producers[right]].descriptor.featureId;
                 if (ActivationDomainsOverlap(
                         m_features[producers[left]].descriptor,
-                        m_features[producers[right]].descriptor) &&
+                        m_features[producers[right]].descriptor,
+                        m_implementedRecipes) &&
                     !ReachesFallback(leftId, rightId) &&
                     !ReachesFallback(rightId, leftId))
                 {
@@ -1236,6 +1272,10 @@ RenderFeatureRegistry::ValidateAndBuildExecutionOrder()
     {
         const RenderFeatureDescriptor& consumer =
             m_features[consumerIndex].descriptor;
+        if ((GetRecipeMask(consumer) & m_implementedRecipes) == 0)
+        {
+            continue;
+        }
         for (const RenderFeatureResourceContract& consumed :
              consumer.consumedResources)
         {
@@ -1248,7 +1288,8 @@ RenderFeatureRegistry::ValidateAndBuildExecutionOrder()
                 {
                     const RenderFeatureDescriptor& producer =
                         m_features[producerIndex].descriptor;
-                    if (!ActivationDomainsOverlap(producer, consumer))
+                    if (!ActivationDomainsOverlap(
+                            producer, consumer, m_implementedRecipes))
                     {
                         continue;
                     }
@@ -1291,6 +1332,10 @@ RenderFeatureRegistry::ValidateAndBuildExecutionOrder()
                 {
                     const RenderPipelineRecipe recipe =
                         static_cast<RenderPipelineRecipe>(recipeValue);
+                    if ((m_implementedRecipes & ToMask(recipe)) == 0)
+                    {
+                        continue;
+                    }
                     for (uint8 qualityValue = 0;
                          qualityValue < static_cast<uint8>(
                              RenderQualityTier::Count);

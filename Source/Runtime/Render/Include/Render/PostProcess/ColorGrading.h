@@ -90,6 +90,13 @@ namespace RVX
         ColorGradingPass();
         ~ColorGradingPass() override = default;
 
+        PostProcessPassDescriptor Describe() const override
+        {
+            return {PostProcessPassId::ColorGrading, "ColorGrading", PostProcessStage::LDRPost, 930,
+                    GetPresentationColorDomain(),
+                    GetPresentationColorDomain(),
+                    PostProcessTransfer::None};
+        }
         const char* GetName() const override { return "ColorGrading"; }
         int32 GetPriority() const override { return 930; }  // LDR, after tone mapping and before vignette
         bool IsEnabled() const override;

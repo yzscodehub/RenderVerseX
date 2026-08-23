@@ -8,6 +8,7 @@
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
 #include "Render/Graph/RenderGraph.h"
+#include "Render/PostProcess/PostProcessTypes.h"
 #include "Render/PostProcess/ToneMappingTypes.h"
 #include <vector>
 #include <memory>
@@ -31,6 +32,14 @@ namespace RVX
         Vec2 jitterOffset = Vec2(0.0f);
         Mat4 currentViewProjection = Mat4(1.0f);
         Mat4 previousViewProjection = Mat4(1.0f);
+        /**
+         * Semantic domains are supplied by the renderer feature that owns the
+         * view.  They are intentionally independent of RHIFormat: an UNORM
+         * texture alone does not say whether its values are scene-linear or
+         * display encoded.
+         */
+        PostProcessColorDomain sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
+        PostProcessColorDomain outputColorDomain = PostProcessColorDomain::Unknown;
         bool currentViewProjectionValid = false;
         bool previousViewProjectionValid = false;
         bool resetTemporalHistory = false;
@@ -98,6 +107,9 @@ namespace RVX
         // =========================================================================
         // Anti-aliasing
         // =========================================================================
+        // Motion-vector production is opt-in. Temporal resolve remains
+        // unsupported until GFX11, so enableTAA is deliberately false.
+        bool enableVelocityOutput = false;
         bool enableFXAA = true;
         float fxaaQuality = 0.75f;
 
@@ -195,29 +207,47 @@ namespace RVX
         // =========================================================================
         // TAA
         // =========================================================================
-        bool enableTAA = true;
+        // GFX10 keeps temporal AA explicitly disabled: the historical TAA
+        // object has no real resolve implementation. GFX11 introduces the
+        // verified temporal-resolve feature and may enable it by default.
+        bool enableTAA = false;
         float taaJitterScale = 1.0f;
     };
 
     void ApplyRenderVisualQualityPreset(PostProcessSettings& settings, RenderVisualQualityPreset preset);
 
+    [[nodiscard]] constexpr PostProcessColorDomain
+    ResolvePostProcessPresentationColorDomain(
+        ToneMappingOutputColorSpace outputColorSpace) noexcept
+    {
+        return outputColorSpace == ToneMappingOutputColorSpace::Linear
+            ? PostProcessColorDomain::DisplayLinearLDR
+            : PostProcessColorDomain::DisplayEncodedLDR;
+    }
+
     /**
-     * @brief Base interface for post-process effects
+     * @brief Base interface for post-process effects.
+     *
+     * Execution semantics come exclusively from Describe(). GetName() and
+     * GetPriority() are diagnostic compatibility helpers and are never used by
+     * the planner to infer color domains, ordering, or tone-map behavior.
      */
     class IPostProcessPass
     {
     public:
         virtual ~IPostProcessPass() = default;
 
+        virtual PostProcessPassDescriptor Describe() const = 0;
+
         /**
          * @brief Get the effect name
          */
-        virtual const char* GetName() const = 0;
+        virtual const char* GetName() const { return Describe().debugName; }
 
         /**
          * @brief Get execution priority (lower runs first)
          */
-        virtual int32 GetPriority() const { return 0; }
+        virtual int32 GetPriority() const { return Describe().order; }
 
         /**
          * @brief Check if this effect is enabled
@@ -276,6 +306,18 @@ namespace RVX
         }
 
     protected:
+        /** Keep LDR/overlay descriptors in the same domain as ToneMapping. */
+        void ConfigurePresentationColorDomain(const PostProcessSettings& settings)
+        {
+            m_presentationColorDomain = ResolvePostProcessPresentationColorDomain(
+                settings.toneMappingOutputColorSpace);
+        }
+
+        [[nodiscard]] PostProcessColorDomain GetPresentationColorDomain() const noexcept
+        {
+            return m_presentationColorDomain;
+        }
+
         void MarkUnsupported(const char* reason)
         {
             m_supported = false;
@@ -284,20 +326,19 @@ namespace RVX
 
         bool m_enabled = true;
         bool m_supported = true;
+        PostProcessColorDomain m_presentationColorDomain =
+            PostProcessColorDomain::DisplayEncodedLDR;
         std::string m_unsupportedReason;
-    };
-
-    enum class PostProcessColorDomain : uint8
-    {
-        Unknown = 0,
-        HDR,
-        LDR,
     };
 
     struct PostProcessEffectExecutionPlan
     {
+        PostProcessPassId passId = PostProcessPassId::Invalid;
         std::string effectName;
         uint32 sequenceIndex = 0;
+        PostProcessStage stage = PostProcessStage::HDRPost;
+        int32 order = 0;
+        /** @deprecated Use order. Kept for existing diagnostics consumers. */
         int32 priority = 0;
         bool requested = false;
         bool supported = false;
@@ -305,6 +346,7 @@ namespace RVX
         bool scheduled = false;
         PostProcessColorDomain inputDomain = PostProcessColorDomain::Unknown;
         PostProcessColorDomain outputDomain = PostProcessColorDomain::Unknown;
+        PostProcessTransfer transfer = PostProcessTransfer::None;
         RHIFormat inputFormat = RHIFormat::Unknown;
         RHIFormat outputFormat = RHIFormat::Unknown;
         bool inputIsSceneColor = false;
@@ -320,6 +362,20 @@ namespace RVX
         std::string missingFrameInputReason;
         std::string skippedReason;
         std::string reason;
+    };
+
+    /**
+     * @brief Intent-specific invariants for a post-process execution plan.
+     *
+     * Generic stacks may intentionally perform no work when their input and
+     * output share one semantic domain. Presentation is different: it owns
+     * the HDR-to-display boundary and therefore must materialize exactly one
+     * ToneMapping transform.
+     */
+    enum class PostProcessPlanContract : uint8
+    {
+        Generic = 0,
+        Presentation,
     };
 
     /**
@@ -352,6 +408,13 @@ namespace RVX
         RHIFormat hdrIntermediateFormat = RHIFormat::Unknown;
         RHIFormat ldrIntermediateFormat = RHIFormat::Unknown;
         RHIFormat finalOutputFormat = RHIFormat::Unknown;
+        PostProcessColorDomain inputColorDomain = PostProcessColorDomain::Unknown;
+        PostProcessColorDomain outputColorDomain = PostProcessColorDomain::Unknown;
+        PostProcessPlanContract planContract = PostProcessPlanContract::Generic;
+        /** Immutable semantic identity validated again by ExecutePlan(). */
+        uint64 planFingerprint = 0;
+        bool planValid = true;
+        std::string planFailureReason;
         bool toneMappingBoundaryValid = true;
         std::string toneMappingBoundaryWarning;
         bool noEffectNoWork = false;
@@ -440,6 +503,38 @@ namespace RVX
                      RGTextureHandle output);
 
         /**
+         * @brief Build and validate a typed execution plan without mutating a
+         * RenderGraph. Required semantic failures are reported in outStats.
+         */
+        bool BuildPlan(const PostProcessFrameInputs& frameInputs,
+                       RHIFormat finalOutputFormat,
+                       PostProcessStackExecuteStats& outStats) const;
+
+        /**
+         * @brief Build a plan under an explicit consumer contract.
+         *
+         * Presentation plans reject zero or multiple ToneMapping transforms
+         * before a RenderGraph is mutated. Generic plans retain legitimate
+         * no-op use cases when their color domains already match.
+         */
+        bool BuildPlan(const PostProcessFrameInputs& frameInputs,
+                       RHIFormat finalOutputFormat,
+                       PostProcessPlanContract contract,
+                       PostProcessStackExecuteStats& outStats) const;
+
+        /**
+         * @brief Materialize a previously validated typed plan.
+         *
+         * This function never infers semantics from effect names or texture
+         * formats, and it never inserts an identity/fallback copy after a
+         * semantic-plan failure.
+         */
+        bool ExecutePlan(RenderGraph& graph,
+                         const PostProcessFrameInputs& frameInputs,
+                         RGTextureHandle output,
+                         const PostProcessStackExecuteStats& plan);
+
+        /**
          * @brief Evaluate currently configured effects without adding graph passes
          */
         PostProcessStackExecuteStats EvaluateEffects() const;
@@ -468,6 +563,10 @@ namespace RVX
         std::vector<IPostProcessPass*> GatherEnabledEffects(PostProcessStackExecuteStats& stats,
                                                             bool logUnsupported,
                                                             const PostProcessFrameInputs* frameInputs = nullptr) const;
+        bool ValidateDescriptor(const PostProcessPassDescriptor& descriptor,
+                                std::string& outReason) const;
+        bool ResolveLegacyOutputColorDomain(RHIFormat format,
+                                            PostProcessColorDomain& outDomain) const;
         void SortEffects();
 
         IRHIDevice* m_device = nullptr;

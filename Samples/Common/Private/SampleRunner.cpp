@@ -2593,6 +2593,94 @@ namespace
             return result;
         }
 
+        [[nodiscard]] SamplePostProcessExecutionDiagnostics
+            MakeSamplePostProcessExecutionDiagnostics(
+                const RenderDiagnosticsSnapshot& renderDiagnostics)
+        {
+            SamplePostProcessExecutionDiagnostics result;
+            const RenderFrameFeatureDiagnostics& frameFeatures =
+                renderDiagnostics.frameFeatures;
+            const RenderExecutionReceipt& receipt =
+                frameFeatures.executionReceipt;
+
+            result.available = frameFeatures.available && receipt.available;
+            result.executionReceiptSchemaVersion = receipt.schemaVersion;
+            result.executionReceiptStructurallyValid =
+                receipt.IsStructurallyValid();
+            result.executionReceiptAvailable = receipt.available;
+            result.executionReceiptGraphComposed = receipt.graphComposed;
+            result.executionReceiptExecutionSucceeded =
+                receipt.executionSucceeded;
+            result.executionReceiptPresented = receipt.presented;
+            result.executionReceiptSucceeded = receipt.succeeded;
+            result.frameFeatureSequence = frameFeatures.frameSequence;
+            result.receiptFrameSequence = receipt.frameIdentity.frameSequence;
+            result.lastPresentedFrameSequence =
+                renderDiagnostics.lastPresentedFrameSequence;
+            result.presentedFrameAligned =
+                result.frameFeatureSequence != 0 &&
+                result.frameFeatureSequence == result.receiptFrameSequence &&
+                result.receiptFrameSequence ==
+                    result.lastPresentedFrameSequence;
+            result.mainView = receipt.viewIdentity.role == ViewRole::Main &&
+                receipt.viewIdentity.subViewIndex == 0;
+            result.sceneRuntimeId = receipt.viewIdentity.sceneRuntimeId;
+            result.cameraEntityPacked = receipt.viewIdentity.cameraEntityPacked;
+            result.subViewIndex = receipt.viewIdentity.subViewIndex;
+
+            const auto postProcessFeature = std::find_if(
+                receipt.features.begin(), receipt.features.end(),
+                [](const RenderFeatureExecutionReceipt& feature)
+                {
+                    return feature.featureId ==
+                        BuiltinRenderFeatureIds::PostProcessPipeline;
+                });
+            if (postProcessFeature != receipt.features.end())
+            {
+                result.postProcessFeatureFound = true;
+                result.postProcessFeatureSelected = postProcessFeature->selected;
+                result.postProcessFeatureExecuted =
+                    postProcessFeature->readiness.executed;
+                result.postProcessFeatureFallbackUsed =
+                    postProcessFeature->fallbackUsed;
+                result.postProcessFeatureGraphPassCount =
+                    postProcessFeature->graphPassCount;
+                result.postProcessFeatureExecutedGraphPassCount =
+                    postProcessFeature->executedGraphPassCount;
+                result.diagnostic = postProcessFeature->diagnostic;
+            }
+
+            const RenderPostProcessExecutionReceipt& postProcess =
+                receipt.postProcess;
+            result.postProcessReceiptStructurallyValid =
+                postProcess.IsStructurallyValid();
+            result.planContentHash = postProcess.postProcessContentHash;
+            result.toneMappingPassCount = postProcess.toneMapPassCount;
+            result.bloomPassCount = postProcess.bloomPassCount;
+            result.colorGradingPassCount =
+                postProcess.colorGradingPassCount;
+            result.fxaaPassCount = postProcess.fxaaPassCount;
+            result.taaPassCount = postProcess.taaPassCount;
+            result.inputColorDomain = postProcess.inputColorDomain;
+            result.plannedOutputColorDomain =
+                postProcess.plannedOutputColorDomain;
+            result.storedOutputColorDomain =
+                postProcess.storedOutputColorDomain;
+            result.finalOutputFormat = postProcess.finalOutputFormat;
+            result.toneMappingTransfer = postProcess.toneMappingTransfer;
+            result.presentationTransfer = postProcess.presentationTransfer;
+            result.hdrInputReady = postProcess.hdrInputReady;
+            result.displayLinearOutputReady =
+                postProcess.displayLinearOutputReady;
+            result.encodedOutputReady = postProcess.encodedOutputReady;
+            result.fallbackUsed = postProcess.fallbackUsed;
+            if (result.diagnostic.empty())
+            {
+                result.diagnostic = receipt.diagnostic;
+            }
+            return result;
+        }
+
         SampleRenderDiagnostics MakeSampleRenderDiagnostics(
             const RenderDiagnosticsSnapshot& renderDiagnostics,
             const Engine& engine)
@@ -2806,6 +2894,8 @@ namespace
                 diagnostics.unsupportedPostProcessSkippedCount;
             result.postProcessGraphPassCount =
                 diagnostics.postProcessGraphPassCount;
+            result.postProcessActualExecution =
+                MakeSamplePostProcessExecutionDiagnostics(renderDiagnostics);
             result.clusteredLightingInitialized =
                 diagnostics.clusteredLightingInitialized;
             result.clusteredLightingActiveClusters =

@@ -46,6 +46,7 @@ ChromaticAberrationPass::ChromaticAberrationPass()
 
 void ChromaticAberrationPass::Configure(const PostProcessSettings& settings)
 {
+    ConfigurePresentationColorDomain(settings);
     m_enabled = settings.enableChromaticAberration;
     m_config.intensity = settings.chromaticAberrationIntensity;
     RefreshSupportState();

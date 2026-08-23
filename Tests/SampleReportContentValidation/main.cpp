@@ -164,6 +164,12 @@ namespace
         bool requireSkinnedOpaqueExecution = false;
         bool requireSkinnedShadowExecution = false;
         bool requireSkinnedVelocityExecution = false;
+        bool requirePostProcessExecution = false;
+        bool requireExactlyOneToneMap = false;
+        bool requirePostProcessBloomExecution = false;
+        bool requirePostProcessColorGradingExecution = false;
+        bool requirePostProcessFXAAExecution = false;
+        bool requireNoTemporalAAExecution = false;
         bool requireReadinessWait = false;
         bool requireGPUDrivenExecution = false;
         bool requireDirectExecution = false;
@@ -998,6 +1004,30 @@ namespace
             else if (arg == "--require-skinned-velocity-execution")
             {
                 options.requireSkinnedVelocityExecution = true;
+            }
+            else if (arg == "--require-post-process-execution")
+            {
+                options.requirePostProcessExecution = true;
+            }
+            else if (arg == "--require-exactly-one-tone-map")
+            {
+                options.requireExactlyOneToneMap = true;
+            }
+            else if (arg == "--require-post-process-bloom-execution")
+            {
+                options.requirePostProcessBloomExecution = true;
+            }
+            else if (arg == "--require-post-process-color-grading-execution")
+            {
+                options.requirePostProcessColorGradingExecution = true;
+            }
+            else if (arg == "--require-post-process-fxaa-execution")
+            {
+                options.requirePostProcessFXAAExecution = true;
+            }
+            else if (arg == "--require-no-temporal-aa-execution")
+            {
+                options.requireNoTemporalAAExecution = true;
             }
             else if (arg == "--require-phase")
             {
@@ -2198,6 +2228,29 @@ namespace
                            });
     }
 
+    bool IsKnownRHIFormatCanonicalName(const std::string& value)
+    {
+        // Only currently supported presentable formats are legal final LDR
+        // storage. A receipt cannot advertise an arbitrary RHI enum, texture
+        // compression format, or floating-point intermediate as presentation.
+        return IsOneOf(value,
+                       {"rgba8-unorm", "rgba8-unorm-srgb",
+                        "bgra8-unorm", "bgra8-unorm-srgb",
+                        "rgb10a2-unorm"});
+    }
+
+    bool IsSRGBRHIFormatCanonicalName(const std::string& value)
+    {
+        return IsOneOf(value,
+                       {"rgba8-unorm-srgb", "bgra8-unorm-srgb"});
+    }
+
+    bool IsUNORMRHIFormatCanonicalName(const std::string& value)
+    {
+        return IsOneOf(value,
+                       {"rgba8-unorm", "bgra8-unorm", "rgb10a2-unorm"});
+    }
+
     bool IsGitCommitIdentity(const std::string& value)
     {
         return (value.size() == 40 || value.size() == 64) &&
@@ -2504,17 +2557,22 @@ namespace
             "diagnostic",
             "features",
         };
-        if (schemaVersion == 2 || schemaVersion == 4 || schemaVersion == 5)
+        if (schemaVersion == 2 || schemaVersion == 4 || schemaVersion == 5 ||
+            schemaVersion == 6)
         {
             expectedFields.insert("deferredOpaque");
         }
-        if (schemaVersion == 4 || schemaVersion == 5)
+        if (schemaVersion == 4 || schemaVersion == 5 || schemaVersion == 6)
         {
             expectedFields.insert("lighting");
         }
-        if (schemaVersion == 5)
+        if (schemaVersion == 5 || schemaVersion == 6)
         {
             expectedFields.insert("deformation");
+        }
+        if (schemaVersion == 6)
+        {
+            expectedFields.insert("postProcess");
         }
         passed &= ValidateExactObjectFields(
             execution, expectedFields, "Render execution receipt v21");
@@ -2556,14 +2614,16 @@ namespace
         passed &= ReadStringField(execution, "diagnostic", diagnostic,
                                   "Render execution receipt v21");
         if ((schemaVersion != 1 && schemaVersion != 2 &&
-             schemaVersion != 4 && schemaVersion != 5) || !available ||
+             schemaVersion != 4 && schemaVersion != 5 &&
+             schemaVersion != 6) || !available ||
             !graphComposed ||
             !executionSucceeded || !presented || !succeeded)
         {
             std::cerr << "Render execution receipt v21 is not a successful presented execution\n";
             passed = false;
         }
-        if (schemaVersion == 2 || schemaVersion == 4 || schemaVersion == 5)
+        if (schemaVersion == 2 || schemaVersion == 4 || schemaVersion == 5 ||
+            schemaVersion == 6)
         {
             const auto deferredOpaque = execution.find("deferredOpaque");
             if (deferredOpaque == execution.end() ||
@@ -2617,7 +2677,7 @@ namespace
                     options->requireDeferredOpaqueExecution &&
                     (!deferredAvailable || deferredStatus != "completed" ||
                      plannedPacketCount == 0 ||
-                     executedPacketCount != plannedPacketCount))
+                     executedPacketCount == 0))
                 {
                     std::cerr << "Render execution receipt v21 did not complete "
                               << "required DeferredOpaque work\n";
@@ -2632,7 +2692,7 @@ namespace
                       << "DeferredOpaque evidence\n";
             passed = false;
         }
-        if (schemaVersion == 4 || schemaVersion == 5)
+        if (schemaVersion == 4 || schemaVersion == 5 || schemaVersion == 6)
         {
             const auto lighting = execution.find("lighting");
             if (lighting == execution.end() || !lighting->is_object())
@@ -2776,7 +2836,7 @@ namespace
              options->requireSkinnedOpaqueExecution ||
              options->requireSkinnedShadowExecution ||
              options->requireSkinnedVelocityExecution);
-        if (schemaVersion == 5)
+        if (schemaVersion == 5 || schemaVersion == 6)
         {
             const auto deformation = execution.find("deformation");
             if (deformation == execution.end() || !deformation->is_object())
@@ -2903,6 +2963,159 @@ namespace
         else if (requiresDeformationEvidence)
         {
             std::cerr << "Render execution receipt predates required deformation evidence\n";
+            passed = false;
+        }
+
+        const bool requiresPostProcessEvidence = options != nullptr &&
+            (options->requirePostProcessExecution ||
+             options->requireExactlyOneToneMap ||
+             options->requirePostProcessBloomExecution ||
+             options->requirePostProcessColorGradingExecution ||
+             options->requirePostProcessFXAAExecution ||
+             options->requireNoTemporalAAExecution);
+        if (schemaVersion == 6)
+        {
+            const auto postProcess = execution.find("postProcess");
+            if (postProcess == execution.end() || !postProcess->is_object())
+            {
+                std::cerr << "Render execution receipt v6 missing post-process evidence\n";
+                passed = false;
+            }
+            else
+            {
+                constexpr const char* context =
+                    "Render post-process execution receipt v6";
+                passed &= ValidateExactObjectFields(
+                    *postProcess,
+                    {"planContentHash", "toneMappingPassCount", "bloomPassCount",
+                     "colorGradingPassCount", "fxaaPassCount", "taaPassCount",
+                     "inputColorDomain", "plannedOutputColorDomain",
+                     "storedOutputColorDomain", "finalOutputFormat",
+                     "toneMappingTransfer", "presentationTransfer",
+                     "hdrInputReady", "displayLinearOutputReady",
+                     "encodedOutputReady", "fallbackUsed"},
+                    context);
+
+                uint64_t planContentHash = 0;
+                uint64_t toneMappingPassCount = 0;
+                uint64_t bloomPassCount = 0;
+                uint64_t colorGradingPassCount = 0;
+                uint64_t fxaaPassCount = 0;
+                uint64_t taaPassCount = 0;
+                std::string inputColorDomain;
+                std::string plannedOutputColorDomain;
+                std::string storedOutputColorDomain;
+                std::string finalOutputFormat;
+                std::string toneMappingTransfer;
+                std::string presentationTransfer;
+                bool hdrInputReady = false;
+                bool displayLinearOutputReady = false;
+                bool encodedOutputReady = false;
+                bool fallbackUsed = false;
+                passed &= ReadUnsignedField(*postProcess, "planContentHash",
+                                            planContentHash, context);
+                passed &= ReadUnsignedField(*postProcess, "toneMappingPassCount",
+                                            toneMappingPassCount, context);
+                passed &= ReadUnsignedField(*postProcess, "bloomPassCount",
+                                            bloomPassCount, context);
+                passed &= ReadUnsignedField(*postProcess, "colorGradingPassCount",
+                                            colorGradingPassCount, context);
+                passed &= ReadUnsignedField(*postProcess, "fxaaPassCount",
+                                            fxaaPassCount, context);
+                passed &= ReadUnsignedField(*postProcess, "taaPassCount",
+                                            taaPassCount, context);
+                passed &= ReadStringField(*postProcess, "inputColorDomain",
+                                          inputColorDomain, context, true);
+                passed &= ReadStringField(*postProcess,
+                                          "plannedOutputColorDomain",
+                                          plannedOutputColorDomain, context,
+                                          true);
+                passed &= ReadStringField(*postProcess,
+                                          "storedOutputColorDomain",
+                                          storedOutputColorDomain, context,
+                                          true);
+                passed &= ReadStringField(*postProcess, "finalOutputFormat",
+                                          finalOutputFormat, context, true);
+                passed &= ReadStringField(*postProcess, "toneMappingTransfer",
+                                          toneMappingTransfer, context, true);
+                passed &= ReadStringField(*postProcess,
+                                          "presentationTransfer",
+                                          presentationTransfer, context, true);
+                passed &= ReadBooleanField(*postProcess, "hdrInputReady",
+                                           hdrInputReady, context);
+                passed &= ReadBooleanField(*postProcess,
+                                           "displayLinearOutputReady",
+                                           displayLinearOutputReady, context);
+                passed &= ReadBooleanField(*postProcess, "encodedOutputReady",
+                                           encodedOutputReady, context);
+                passed &= ReadBooleanField(*postProcess, "fallbackUsed",
+                                           fallbackUsed, context);
+
+                const auto fitsUInt32 = [](uint64_t value)
+                {
+                    return value <= std::numeric_limits<uint32_t>::max();
+                };
+                const bool usesHardwareSRGBEncode =
+                    IsSRGBRHIFormatCanonicalName(finalOutputFormat);
+                const bool isSRGBPresentationContract =
+                    inputColorDomain == "scene-linear-hdr" &&
+                    plannedOutputColorDomain == "display-linear-ldr" &&
+                    storedOutputColorDomain == "display-encoded-ldr" &&
+                    usesHardwareSRGBEncode &&
+                    toneMappingTransfer ==
+                        "scene-linear-to-display-linear" &&
+                    presentationTransfer == "display-linear-to-encoded" &&
+                    displayLinearOutputReady;
+                const bool isDirectEncodedPresentationContract =
+                    inputColorDomain == "scene-linear-hdr" &&
+                    plannedOutputColorDomain == "display-encoded-ldr" &&
+                    storedOutputColorDomain == "display-encoded-ldr" &&
+                    IsUNORMRHIFormatCanonicalName(finalOutputFormat) &&
+                    toneMappingTransfer ==
+                        "scene-linear-to-display-encoded" &&
+                    presentationTransfer ==
+                        "scene-linear-to-display-encoded" &&
+                    !displayLinearOutputReady;
+                const bool structurallyValid =
+                    planContentHash != 0 && fitsUInt32(toneMappingPassCount) &&
+                    fitsUInt32(bloomPassCount) &&
+                    fitsUInt32(colorGradingPassCount) &&
+                    fitsUInt32(fxaaPassCount) && fitsUInt32(taaPassCount) &&
+                    toneMappingPassCount == 1 && taaPassCount == 0 &&
+                    hdrInputReady && encodedOutputReady && !fallbackUsed &&
+                    IsKnownRHIFormatCanonicalName(finalOutputFormat) &&
+                    (isSRGBPresentationContract ||
+                     isDirectEncodedPresentationContract);
+                if (!structurallyValid)
+                {
+                    std::cerr << "Render post-process execution receipt v6 is structurally invalid\n";
+                    passed = false;
+                }
+
+                if (options != nullptr &&
+                    ((options->requirePostProcessExecution &&
+                      (planContentHash == 0 || !hdrInputReady ||
+                       !encodedOutputReady ||
+                       fallbackUsed)) ||
+                     (options->requireExactlyOneToneMap &&
+                      toneMappingPassCount != 1) ||
+                     (options->requirePostProcessBloomExecution &&
+                      bloomPassCount == 0) ||
+                     (options->requirePostProcessColorGradingExecution &&
+                      colorGradingPassCount == 0) ||
+                     (options->requirePostProcessFXAAExecution &&
+                      fxaaPassCount == 0) ||
+                     (options->requireNoTemporalAAExecution &&
+                      taaPassCount != 0)))
+                {
+                    std::cerr << "Render execution receipt v6 does not satisfy required post-process evidence\n";
+                    passed = false;
+                }
+            }
+        }
+        else if (requiresPostProcessEvidence)
+        {
+            std::cerr << "Render execution receipt predates required post-process evidence\n";
             passed = false;
         }
         if (!diagnostic.empty() || diagnostic.size() > 4096)
@@ -4833,7 +5046,7 @@ namespace
         schema21Report["visualContractReceipt"]
                       ["captureConfigurationRevision"] = 3;
         schema21Report["visualContractReceipt"]["renderExecutionReceipt"] = {
-            {"schemaVersion", 5},
+            {"schemaVersion", 6},
             {"available", true},
             {"graphComposed", true},
             {"executionSucceeded", true},
@@ -4885,6 +5098,26 @@ namespace
                               {"shadowSkinnedDrawCount", 2},
                               {"velocitySkinnedDrawCount", 1},
                               {"velocityPreviousPaletteDrawCount", 1}}},
+            {"postProcess", {{"planContentHash", 505},
+                              {"toneMappingPassCount", 1},
+                              {"bloomPassCount", 1},
+                              {"colorGradingPassCount", 1},
+                              {"fxaaPassCount", 1},
+                              {"taaPassCount", 0},
+                              {"inputColorDomain", "scene-linear-hdr"},
+                              {"plannedOutputColorDomain",
+                               "display-encoded-ldr"},
+                              {"storedOutputColorDomain",
+                               "display-encoded-ldr"},
+                              {"finalOutputFormat", "rgba8-unorm"},
+                              {"toneMappingTransfer",
+                               "scene-linear-to-display-encoded"},
+                              {"presentationTransfer",
+                               "scene-linear-to-display-encoded"},
+                              {"hdrInputReady", true},
+                              {"displayLinearOutputReady", false},
+                              {"encodedOutputReady", true},
+                              {"fallbackUsed", false}}},
             {"diagnostic", ""},
             {"features",
              Json::array({{{"featureId", 1},
@@ -4906,6 +5139,25 @@ namespace
                            {"executedGraphPassCount", 2},
                            {"graphPassNames",
                             Json::array({"DepthPrepass", "OpaquePass"})},
+                           {"diagnostic", ""}},
+                          {{"featureId", 2},
+                           {"featureSchemaVersion", 1},
+                           {"phase", "tone-map"},
+                           {"requirement", "required"},
+                           {"readiness", {{"compiled", true},
+                                          {"hardwareSupported", true},
+                                          {"implementationSupported", true},
+                                          {"pipelineReady", true},
+                                          {"inputsReady", true},
+                                          {"executed", true},
+                                          {"diagnostic", ""}}},
+                           {"selected", true},
+                           {"fallbackUsed", false},
+                           {"selectedFallbackFeatureId", 0},
+                           {"fallbackForFeatureId", 0},
+                           {"graphPassCount", 4},
+                           {"executedGraphPassCount", 4},
+                           {"graphPassNames", Json::array({"Bloom", "ToneMapping", "ColorGrading", "FXAA"})},
                            {"diagnostic", ""}}})},
         };
         const ValidationBuildIdentity expectedBuildIdentity{
@@ -4925,6 +5177,8 @@ namespace
                                ["renderExecutionReceipt"]["schemaVersion"] = 4;
         schema4ExecutionReceipt["visualContractReceipt"]
                                ["renderExecutionReceipt"].erase("deformation");
+        schema4ExecutionReceipt["visualContractReceipt"]
+                               ["renderExecutionReceipt"].erase("postProcess");
         if (!ValidateSampleReportV12Root(
                 schema4ExecutionReceipt, expectedBuildIdentity))
         {
@@ -4937,6 +5191,8 @@ namespace
                                ["renderExecutionReceipt"].erase("lighting");
         schema2ExecutionReceipt["visualContractReceipt"]
                                ["renderExecutionReceipt"].erase("deformation");
+        schema2ExecutionReceipt["visualContractReceipt"]
+                               ["renderExecutionReceipt"].erase("postProcess");
         if (!ValidateSampleReportV12Root(
                 schema2ExecutionReceipt, expectedBuildIdentity))
         {
@@ -5080,11 +5336,145 @@ namespace
         {
             return false;
         }
+        // Planned packets are classified before per-view visibility. A
+        // completed Deferred route may therefore execute a strict, non-empty
+        // subset after frustum/occlusion culling.
+        Json visibilityCulledDeferredOpaque = schema21Report;
+        visibilityCulledDeferredOpaque["visualContractReceipt"]
+                                       ["renderExecutionReceipt"]
+                                       ["deferredOpaque"]
+                                       ["plannedPacketCount"] = 2;
+        visibilityCulledDeferredOpaque["visualContractReceipt"]
+                                       ["renderExecutionReceipt"]
+                                       ["deferredOpaque"]
+                                       ["executedPacketCount"] = 1;
+        if (!ValidateSampleReportV12Root(
+                visibilityCulledDeferredOpaque,
+                expectedBuildIdentity,
+                &strictDeferredReceipt))
+        {
+            return false;
+        }
+
+        // GFX10 requires typed post-process evidence rather than an effect
+        // count or a feature-name string. The receipt admits exactly two
+        // presentation contracts: direct HDR-to-encoded UNORM, or HDR to
+        // display-linear followed by hardware sRGB encoding.
+        Options strictPostProcessReceipt;
+        strictPostProcessReceipt.requirePostProcessExecution = true;
+        strictPostProcessReceipt.requireExactlyOneToneMap = true;
+        strictPostProcessReceipt.requirePostProcessBloomExecution = true;
+        strictPostProcessReceipt.requirePostProcessColorGradingExecution = true;
+        strictPostProcessReceipt.requirePostProcessFXAAExecution = true;
+        strictPostProcessReceipt.requireNoTemporalAAExecution = true;
+        strictPostProcessReceipt.requiredExecutedRenderFeatureIds = {2};
+        if (!ValidateSampleReportV12Root(
+                schema21Report,
+                expectedBuildIdentity,
+                &strictPostProcessReceipt) ||
+            !ValidateFeatureRequirements(
+                schema21Report, strictPostProcessReceipt))
+        {
+            return false;
+        }
+        Json sRGBPostProcessReceipt = schema21Report;
+        Json& sRGBPostProcess = sRGBPostProcessReceipt["visualContractReceipt"]
+                                                   ["renderExecutionReceipt"]
+                                                   ["postProcess"];
+        sRGBPostProcess["plannedOutputColorDomain"] =
+            "display-linear-ldr";
+        sRGBPostProcess["finalOutputFormat"] = "rgba8-unorm-srgb";
+        sRGBPostProcess["toneMappingTransfer"] =
+            "scene-linear-to-display-linear";
+        sRGBPostProcess["presentationTransfer"] =
+            "display-linear-to-encoded";
+        sRGBPostProcess["displayLinearOutputReady"] = true;
+        if (!ValidateSampleReportV12Root(
+                sRGBPostProcessReceipt,
+                expectedBuildIdentity,
+                &strictPostProcessReceipt))
+        {
+            return false;
+        }
+        Json schemaFivePostProcessReceipt = schema21Report;
+        schemaFivePostProcessReceipt["visualContractReceipt"]
+                                    ["renderExecutionReceipt"]["schemaVersion"] = 5;
+        schemaFivePostProcessReceipt["visualContractReceipt"]
+                                    ["renderExecutionReceipt"].erase("postProcess");
+        Json missingPostProcessReceipt = schema21Report;
+        missingPostProcessReceipt["visualContractReceipt"]
+                                 ["renderExecutionReceipt"].erase("postProcess");
+        const auto postProcessRequirementFails =
+            [&schema21Report,
+             &expectedBuildIdentity,
+             &strictPostProcessReceipt](const char* field, const Json& value)
+        {
+            Json candidate = schema21Report;
+            candidate["visualContractReceipt"]
+                     ["renderExecutionReceipt"]
+                     ["postProcess"][field] = value;
+            return !ValidateSampleReportV12Root(
+                candidate,
+                expectedBuildIdentity,
+                &strictPostProcessReceipt);
+        };
+        const auto missingPostProcessFieldFails =
+            [&schema21Report,
+             &expectedBuildIdentity,
+             &strictPostProcessReceipt](const char* field)
+        {
+            Json candidate = schema21Report;
+            candidate["visualContractReceipt"]
+                     ["renderExecutionReceipt"]
+                     ["postProcess"].erase(field);
+            return !ValidateSampleReportV12Root(
+                candidate,
+                expectedBuildIdentity,
+                &strictPostProcessReceipt);
+        };
+        if (ValidateSampleReportV12Root(
+                schemaFivePostProcessReceipt,
+                expectedBuildIdentity,
+                &strictPostProcessReceipt) ||
+            ValidateSampleReportV12Root(
+                missingPostProcessReceipt,
+                expectedBuildIdentity,
+                &strictPostProcessReceipt) ||
+            !postProcessRequirementFails("toneMappingPassCount", 2) ||
+            !postProcessRequirementFails("bloomPassCount", 0) ||
+            !postProcessRequirementFails("colorGradingPassCount", 0) ||
+            !postProcessRequirementFails("fxaaPassCount", 0) ||
+            !postProcessRequirementFails("taaPassCount", 1) ||
+            !postProcessRequirementFails("encodedOutputReady", false) ||
+            !postProcessRequirementFails("fallbackUsed", true) ||
+            !postProcessRequirementFails("inputColorDomain", "unknown") ||
+            !postProcessRequirementFails("plannedOutputColorDomain",
+                                         "unknown") ||
+            !postProcessRequirementFails("storedOutputColorDomain",
+                                         "display-linear-ldr") ||
+            !postProcessRequirementFails("finalOutputFormat", "unknown") ||
+            !postProcessRequirementFails("finalOutputFormat",
+                                         "not-a-rhi-format") ||
+            !postProcessRequirementFails("finalOutputFormat",
+                                         "rgba16-float") ||
+            !postProcessRequirementFails("finalOutputFormat",
+                                         "rgba8-unorm-srgb") ||
+            !postProcessRequirementFails("toneMappingTransfer", "none") ||
+            !postProcessRequirementFails("presentationTransfer", "none") ||
+            !missingPostProcessFieldFails("inputColorDomain") ||
+            !missingPostProcessFieldFails("plannedOutputColorDomain") ||
+            !missingPostProcessFieldFails("storedOutputColorDomain") ||
+            !missingPostProcessFieldFails("finalOutputFormat") ||
+            !missingPostProcessFieldFails("toneMappingTransfer") ||
+            !missingPostProcessFieldFails("presentationTransfer"))
+        {
+            return false;
+        }
 
         Options wrongRequiredPipeline = strictDeferredReceipt;
         wrongRequiredPipeline.requiredRenderPipeline = "forward-plus";
         Options missingRequiredFeature = strictDeferredReceipt;
-        missingRequiredFeature.requiredExecutedRenderFeatureIds = {2};
+        missingRequiredFeature.requiredExecutedRenderFeatureIds = {3};
         Json fallbackRequiredFeature = schema21Report;
         fallbackRequiredFeature["visualContractReceipt"]
                                ["renderExecutionReceipt"]
@@ -5102,6 +5492,11 @@ namespace
             {"plannedPacketCount", 0},
             {"executedPacketCount", 0},
         };
+        Json emptyDeferredOpaqueExecution = schema21Report;
+        emptyDeferredOpaqueExecution["visualContractReceipt"]
+                                    ["renderExecutionReceipt"]
+                                    ["deferredOpaque"]
+                                    ["executedPacketCount"] = 0;
         Json reportWithFallbackReason = schema21Report;
         reportWithFallbackReason["fallbackReasons"] =
             Json::array({"DeferredRecipeFallback"});
@@ -5123,6 +5518,10 @@ namespace
                 &strictDeferredReceipt) ||
             ValidateSampleReportV12Root(
                 unavailableDeferredOpaque,
+                expectedBuildIdentity,
+                &strictDeferredReceipt) ||
+            ValidateSampleReportV12Root(
+                emptyDeferredOpaqueExecution,
                 expectedBuildIdentity,
                 &strictDeferredReceipt) ||
             ValidateFeatureRequirements(
@@ -5681,6 +6080,12 @@ namespace
             << "  --require-skinned-opaque-execution\n"
             << "  --require-skinned-shadow-execution\n"
             << "  --require-skinned-velocity-execution\n"
+            << "  --require-post-process-execution\n"
+            << "  --require-exactly-one-tone-map\n"
+            << "  --require-post-process-bloom-execution\n"
+            << "  --require-post-process-color-grading-execution\n"
+            << "  --require-post-process-fxaa-execution\n"
+            << "  --require-no-temporal-aa-execution\n"
             << "  --require-render-feature-executed <feature-id>\n"
             << "  --forbid-fallback-reasons\n"
             << "  --forbid-render-feature-fallbacks\n";

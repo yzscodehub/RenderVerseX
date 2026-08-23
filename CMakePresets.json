@@ -137,6 +137,7 @@
         "RVX_ENABLE_GFX07_DEFERRED_NATIVE": "ON",
         "RVX_ENABLE_GFX08_LIGHTING_NATIVE": "ON",
         "RVX_ENABLE_GFX09_ANIMATION_NATIVE": "ON",
+        "RVX_ENABLE_GFX10_POST_PROCESS_NATIVE": "ON",
         "RVX_ENABLE_PR_SMOKE": "OFF"
       }
     },
@@ -756,6 +757,17 @@
       },
       "output": { "outputOnFailure": true },
       "filter": { "include": { "label": "^suite\\.gfx09-animation$" } }
+    },
+    {
+      "name": "win_x64_qualification_debug_gfx10_postprocess",
+      "inherits": "win_x64_qualification_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx10-postprocess$" } }
     },
     {
       "name": "linux_x64_debug_lane_base",

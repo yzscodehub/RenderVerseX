@@ -36,6 +36,13 @@ namespace RVX
         FXAAPass();
         ~FXAAPass() override = default;
 
+        PostProcessPassDescriptor Describe() const override
+        {
+            return {PostProcessPassId::FXAA, "FXAA", PostProcessStage::LDRPost, 1000,
+                    GetPresentationColorDomain(),
+                    GetPresentationColorDomain(),
+                    PostProcessTransfer::None};
+        }
         const char* GetName() const override { return "FXAA"; }
         int32 GetPriority() const override { return 1000; }  // After tone mapping
 

@@ -303,6 +303,7 @@ target_sources(RVX_RenderComposition PRIVATE
     Private/Features/DefaultForwardComposition.cpp
     Private/Features/DeferredRecipeFeatureAdapter.cpp
     Private/Features/LegacyForwardFeatureAdapter.cpp
+    Private/Features/PostProcessPipelineFeatureAdapter.cpp
     Private/Features/RenderFeatureRegistry.cpp
     Private/Diagnostics/RenderFeatureReport.cpp
     Private/Diagnostics/RenderToolArtifacts.cpp

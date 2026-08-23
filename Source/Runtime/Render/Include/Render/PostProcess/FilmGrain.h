@@ -55,6 +55,13 @@ namespace RVX
         FilmGrainPass();
         ~FilmGrainPass() override = default;
 
+        PostProcessPassDescriptor Describe() const override
+        {
+            return {PostProcessPassId::FilmGrain, "FilmGrain", PostProcessStage::LDRPost, 950,
+                    GetPresentationColorDomain(),
+                    GetPresentationColorDomain(),
+                    PostProcessTransfer::None};
+        }
         const char* GetName() const override { return "FilmGrain"; }
         int32 GetPriority() const override { return 950; }  // Very late (after most effects)
 

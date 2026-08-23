@@ -45,6 +45,13 @@ namespace RVX
         ChromaticAberrationPass();
         ~ChromaticAberrationPass() override = default;
 
+        PostProcessPassDescriptor Describe() const override
+        {
+            return {PostProcessPassId::ChromaticAberration, "ChromaticAberration", PostProcessStage::LDRPost, 935,
+                    GetPresentationColorDomain(),
+                    GetPresentationColorDomain(),
+                    PostProcessTransfer::None};
+        }
         const char* GetName() const override { return "ChromaticAberration"; }
         int32 GetPriority() const override { return 935; }  // LDR, after color grading and before vignette/FXAA
 

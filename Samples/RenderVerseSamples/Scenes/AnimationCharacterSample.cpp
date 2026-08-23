@@ -299,9 +299,10 @@ namespace RVX
         context.renderSettings.shadows.cascadeCount = 2u;
         context.renderSettings.postProcess.enabled = true;
         // GFX09 qualifies presentation-bound current/previous skinning
-        // palettes through the temporal velocity producer.  The renderer owns
-        // pass selection; the Sample only declares the public temporal need.
-        context.renderSettings.postProcess.enableTAA = true;
+        // palettes through an explicit velocity output request. TAA itself is
+        // not implemented until GFX11 and must not be used as a proxy request.
+        context.renderSettings.postProcess.enableTAA = false;
+        context.renderSettings.postProcess.enableVelocityOutput = true;
         context.renderSettings.postProcess.enableBloom = false;
 
         const float32 aspect =

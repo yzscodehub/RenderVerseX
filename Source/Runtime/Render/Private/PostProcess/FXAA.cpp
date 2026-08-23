@@ -42,6 +42,7 @@ FXAAPass::FXAAPass()
 
 void FXAAPass::Configure(const PostProcessSettings& settings)
 {
+    ConfigurePresentationColorDomain(settings);
     m_enabled = settings.enableFXAA;
     m_subpixelQuality = settings.fxaaQuality;
 }
@@ -161,6 +162,7 @@ void FXAAPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHa
             if (!m_pipelineCache)
             {
                 RVX_CORE_WARN("FXAA: missing resources during execution");
+                context.MarkExecutionFailed("FXAA requires an initialized PipelineCache");
                 return;
             }
 
@@ -170,6 +172,8 @@ void FXAAPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHa
             if (!pipeline || !setLayout || !device)
             {
                 RVX_CORE_WARN("FXAA: fullscreen pipeline resources are unavailable");
+                context.MarkExecutionFailed(
+                    "FXAA fullscreen pipeline resources are unavailable");
                 return;
             }
 
@@ -178,6 +182,7 @@ void FXAAPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHa
             if (!inputTexture || !outputTexture)
             {
                 RVX_CORE_WARN("FXAA: input or output texture is unavailable");
+                context.MarkExecutionFailed("FXAA input or output texture is unavailable");
                 return;
             }
 
@@ -186,6 +191,7 @@ void FXAAPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHa
             if (!inputView || !outputView)
             {
                 RVX_CORE_WARN("FXAA: failed to resolve input SRV or output RTV");
+                context.MarkExecutionFailed("FXAA failed to resolve input SRV or output RTV");
                 return;
             }
 
@@ -196,6 +202,8 @@ void FXAAPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHa
                                  data.edgeThresholdMin,
                                  data.subpixelQuality))
             {
+                context.MarkExecutionFailed(
+                    "FXAA runtime resources or constants are unavailable");
                 return;
             }
 
@@ -214,12 +222,15 @@ void FXAAPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHa
             if (!descriptorSet)
             {
                 RVX_CORE_WARN("FXAA: failed to create descriptor set");
+                context.MarkExecutionFailed("FXAA failed to create descriptor set");
                 return;
             }
             if (!context.RetainSubmissionResource(
                     Ref<RefCounted>(descriptorSet)))
             {
                 RVX_CORE_WARN("FXAA: submission ownership rejected descriptor set");
+                context.MarkExecutionFailed(
+                    "FXAA submission ownership rejected descriptor set");
                 return;
             }
 

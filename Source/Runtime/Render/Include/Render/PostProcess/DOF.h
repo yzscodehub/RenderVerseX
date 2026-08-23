@@ -110,6 +110,13 @@ namespace RVX
         DOFPass();
         ~DOFPass() override = default;
 
+        PostProcessPassDescriptor Describe() const override
+        {
+            return {PostProcessPassId::DepthOfField, "DepthOfField", PostProcessStage::HDRPost, 200,
+                    PostProcessColorDomain::SceneLinearHDR,
+                    PostProcessColorDomain::SceneLinearHDR,
+                    PostProcessTransfer::None};
+        }
         const char* GetName() const override { return "DepthOfField"; }
         int32 GetPriority() const override { return 200; }  // Early in pipeline (after SSAO)
 

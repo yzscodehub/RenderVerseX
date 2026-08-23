@@ -34,6 +34,172 @@ namespace RVX
             return text;
         }
 
+        const char* GetPostProcessColorDomainCanonicalName(
+            PostProcessColorDomain domain) noexcept
+        {
+            switch (domain)
+            {
+            case PostProcessColorDomain::Unknown:
+                return "unknown";
+            case PostProcessColorDomain::SceneLinearHDR:
+                return "scene-linear-hdr";
+            case PostProcessColorDomain::DisplayLinearLDR:
+                return "display-linear-ldr";
+            case PostProcessColorDomain::DisplayEncodedLDR:
+                return "display-encoded-ldr";
+            }
+            return "invalid";
+        }
+
+        const char* GetPostProcessTransferCanonicalName(
+            PostProcessTransfer transfer) noexcept
+        {
+            switch (transfer)
+            {
+            case PostProcessTransfer::None:
+                return "none";
+            case PostProcessTransfer::SceneLinearToDisplayLinear:
+                return "scene-linear-to-display-linear";
+            case PostProcessTransfer::SceneLinearToDisplayEncoded:
+                return "scene-linear-to-display-encoded";
+            case PostProcessTransfer::DisplayLinearToEncoded:
+                return "display-linear-to-encoded";
+            }
+            return "invalid";
+        }
+
+        const char* GetRHIFormatCanonicalName(RHIFormat format) noexcept
+        {
+            switch (format)
+            {
+            case RHIFormat::Unknown:
+                return "unknown";
+            case RHIFormat::R8_UNORM:
+                return "r8-unorm";
+            case RHIFormat::R8_SNORM:
+                return "r8-snorm";
+            case RHIFormat::R8_UINT:
+                return "r8-uint";
+            case RHIFormat::R8_SINT:
+                return "r8-sint";
+            case RHIFormat::R16_FLOAT:
+                return "r16-float";
+            case RHIFormat::R16_UNORM:
+                return "r16-unorm";
+            case RHIFormat::R16_UINT:
+                return "r16-uint";
+            case RHIFormat::R16_SINT:
+                return "r16-sint";
+            case RHIFormat::RG8_UNORM:
+                return "rg8-unorm";
+            case RHIFormat::RG8_SNORM:
+                return "rg8-snorm";
+            case RHIFormat::RG8_UINT:
+                return "rg8-uint";
+            case RHIFormat::RG8_SINT:
+                return "rg8-sint";
+            case RHIFormat::R32_FLOAT:
+                return "r32-float";
+            case RHIFormat::R32_UINT:
+                return "r32-uint";
+            case RHIFormat::R32_SINT:
+                return "r32-sint";
+            case RHIFormat::RG16_FLOAT:
+                return "rg16-float";
+            case RHIFormat::RG16_UNORM:
+                return "rg16-unorm";
+            case RHIFormat::RG16_UINT:
+                return "rg16-uint";
+            case RHIFormat::RG16_SINT:
+                return "rg16-sint";
+            case RHIFormat::RGBA8_UNORM:
+                return "rgba8-unorm";
+            case RHIFormat::RGBA8_UNORM_SRGB:
+                return "rgba8-unorm-srgb";
+            case RHIFormat::RGBA8_SNORM:
+                return "rgba8-snorm";
+            case RHIFormat::RGBA8_UINT:
+                return "rgba8-uint";
+            case RHIFormat::RGBA8_SINT:
+                return "rgba8-sint";
+            case RHIFormat::BGRA8_UNORM:
+                return "bgra8-unorm";
+            case RHIFormat::BGRA8_UNORM_SRGB:
+                return "bgra8-unorm-srgb";
+            case RHIFormat::RGB10A2_UNORM:
+                return "rgb10a2-unorm";
+            case RHIFormat::RGB10A2_UINT:
+                return "rgb10a2-uint";
+            case RHIFormat::RG11B10_FLOAT:
+                return "rg11b10-float";
+            case RHIFormat::RGB32_FLOAT:
+                return "rgb32-float";
+            case RHIFormat::RGB32_UINT:
+                return "rgb32-uint";
+            case RHIFormat::RGB32_SINT:
+                return "rgb32-sint";
+            case RHIFormat::RG32_FLOAT:
+                return "rg32-float";
+            case RHIFormat::RG32_UINT:
+                return "rg32-uint";
+            case RHIFormat::RG32_SINT:
+                return "rg32-sint";
+            case RHIFormat::RGBA16_FLOAT:
+                return "rgba16-float";
+            case RHIFormat::RGBA16_UNORM:
+                return "rgba16-unorm";
+            case RHIFormat::RGBA16_UINT:
+                return "rgba16-uint";
+            case RHIFormat::RGBA16_SINT:
+                return "rgba16-sint";
+            case RHIFormat::RGBA32_FLOAT:
+                return "rgba32-float";
+            case RHIFormat::RGBA32_UINT:
+                return "rgba32-uint";
+            case RHIFormat::RGBA32_SINT:
+                return "rgba32-sint";
+            case RHIFormat::D16_UNORM:
+                return "d16-unorm";
+            case RHIFormat::D24_UNORM_S8_UINT:
+                return "d24-unorm-s8-uint";
+            case RHIFormat::D32_FLOAT:
+                return "d32-float";
+            case RHIFormat::D32_FLOAT_S8_UINT:
+                return "d32-float-s8-uint";
+            case RHIFormat::BC1_UNORM:
+                return "bc1-unorm";
+            case RHIFormat::BC1_UNORM_SRGB:
+                return "bc1-unorm-srgb";
+            case RHIFormat::BC2_UNORM:
+                return "bc2-unorm";
+            case RHIFormat::BC2_UNORM_SRGB:
+                return "bc2-unorm-srgb";
+            case RHIFormat::BC3_UNORM:
+                return "bc3-unorm";
+            case RHIFormat::BC3_UNORM_SRGB:
+                return "bc3-unorm-srgb";
+            case RHIFormat::BC4_UNORM:
+                return "bc4-unorm";
+            case RHIFormat::BC4_SNORM:
+                return "bc4-snorm";
+            case RHIFormat::BC5_UNORM:
+                return "bc5-unorm";
+            case RHIFormat::BC5_SNORM:
+                return "bc5-snorm";
+            case RHIFormat::BC6H_UF16:
+                return "bc6h-uf16";
+            case RHIFormat::BC6H_SF16:
+                return "bc6h-sf16";
+            case RHIFormat::BC7_UNORM:
+                return "bc7-unorm";
+            case RHIFormat::BC7_UNORM_SRGB:
+                return "bc7-unorm-srgb";
+            case RHIFormat::Count:
+                return "count";
+            }
+            return "invalid";
+        }
+
         bool ParsePositiveUInt(const char* text, uint32& outValue)
         {
             if (!text || text[0] == '\0')
@@ -310,7 +476,7 @@ namespace RVX
             stream << "      \"profileHash\": " << receipt.profileHash
                    << ",\n";
             if (receipt.schemaVersion == 2 || receipt.schemaVersion == 4 ||
-                receipt.schemaVersion == 5)
+                receipt.schemaVersion == 5 || receipt.schemaVersion == 6)
             {
                 stream << "      \"deferredOpaque\": {\"available\": "
                        << Diagnostics::JsonBool(receipt.deferredOpaque.available)
@@ -324,7 +490,8 @@ namespace RVX
                        << receipt.deferredOpaque.executedPacketCount
                        << "},\n";
             }
-            if (receipt.schemaVersion == 4 || receipt.schemaVersion == 5)
+            if (receipt.schemaVersion == 4 || receipt.schemaVersion == 5 ||
+                receipt.schemaVersion == 6)
             {
                 stream << "      \"lighting\": {\"lightingPlanIdentity\": "
                        << receipt.lighting.lightingPlanIdentity
@@ -366,7 +533,7 @@ namespace RVX
                               receipt.lighting.iblExecutionReady)
                        << "},\n";
             }
-            if (receipt.schemaVersion == 5)
+            if (receipt.schemaVersion == 5 || receipt.schemaVersion == 6)
             {
                 stream << "      \"deformation\": {\"deformationContentHash\": "
                        << receipt.deformation.deformationContentHash
@@ -390,6 +557,57 @@ namespace RVX
                        << receipt.deformation.velocitySkinnedDrawCount
                        << ", \"velocityPreviousPaletteDrawCount\": "
                        << receipt.deformation.velocityPreviousPaletteDrawCount
+                       << "},\n";
+            }
+            if (receipt.schemaVersion == 6)
+            {
+                stream << "      \"postProcess\": {\"planContentHash\": "
+                       << receipt.postProcess.postProcessContentHash
+                       << ", \"toneMappingPassCount\": "
+                       << receipt.postProcess.toneMapPassCount
+                       << ", \"bloomPassCount\": "
+                       << receipt.postProcess.bloomPassCount
+                       << ", \"colorGradingPassCount\": "
+                       << receipt.postProcess.colorGradingPassCount
+                       << ", \"fxaaPassCount\": "
+                       << receipt.postProcess.fxaaPassCount
+                       << ", \"taaPassCount\": "
+                       << receipt.postProcess.taaPassCount
+                       << ", \"inputColorDomain\": "
+                       << Diagnostics::JsonString(
+                              GetPostProcessColorDomainCanonicalName(
+                                  receipt.postProcess.inputColorDomain))
+                       << ", \"plannedOutputColorDomain\": "
+                       << Diagnostics::JsonString(
+                              GetPostProcessColorDomainCanonicalName(
+                                  receipt.postProcess.plannedOutputColorDomain))
+                       << ", \"storedOutputColorDomain\": "
+                       << Diagnostics::JsonString(
+                              GetPostProcessColorDomainCanonicalName(
+                                  receipt.postProcess.storedOutputColorDomain))
+                       << ", \"finalOutputFormat\": "
+                       << Diagnostics::JsonString(GetRHIFormatCanonicalName(
+                              receipt.postProcess.finalOutputFormat))
+                       << ", \"toneMappingTransfer\": "
+                       << Diagnostics::JsonString(
+                              GetPostProcessTransferCanonicalName(
+                                  receipt.postProcess.toneMappingTransfer))
+                       << ", \"presentationTransfer\": "
+                       << Diagnostics::JsonString(
+                              GetPostProcessTransferCanonicalName(
+                                  receipt.postProcess.presentationTransfer))
+                       << ", \"hdrInputReady\": "
+                       << Diagnostics::JsonBool(
+                              receipt.postProcess.hdrInputReady)
+                       << ", \"displayLinearOutputReady\": "
+                       << Diagnostics::JsonBool(
+                              receipt.postProcess.displayLinearOutputReady)
+                       << ", \"encodedOutputReady\": "
+                       << Diagnostics::JsonBool(
+                              receipt.postProcess.encodedOutputReady)
+                       << ", \"fallbackUsed\": "
+                       << Diagnostics::JsonBool(
+                              receipt.postProcess.fallbackUsed)
                        << "},\n";
             }
             stream << "      \"diagnostic\": "
@@ -1637,6 +1855,141 @@ namespace RVX
         stream << "    \"unsupportedPostProcessSkippedCount\": "
                << renderDiagnostics.unsupportedPostProcessSkippedCount << ",\n";
         stream << "    \"postProcessGraphPassCount\": " << renderDiagnostics.postProcessGraphPassCount << ",\n";
+        if (report.schemaVersion >
+            RVX_SAMPLE_REPORT_PRE_POST_PROCESS_EXECUTION_SCHEMA_VERSION)
+        {
+            const SamplePostProcessExecutionDiagnostics& postProcess =
+                renderDiagnostics.postProcessActualExecution;
+            stream << "    \"postProcessActualExecution\": {\n";
+            stream << "      \"available\": "
+                   << Diagnostics::JsonBool(postProcess.available) << ",\n";
+            stream << "      \"executionReceiptSchemaVersion\": "
+                   << postProcess.executionReceiptSchemaVersion << ",\n";
+            stream << "      \"executionReceiptStructurallyValid\": "
+                   << Diagnostics::JsonBool(
+                          postProcess.executionReceiptStructurallyValid)
+                   << ",\n";
+            stream << "      \"executionReceiptAvailable\": "
+                   << Diagnostics::JsonBool(
+                          postProcess.executionReceiptAvailable)
+                   << ",\n";
+            stream << "      \"executionReceiptGraphComposed\": "
+                   << Diagnostics::JsonBool(
+                          postProcess.executionReceiptGraphComposed)
+                   << ",\n";
+            stream << "      \"executionReceiptExecutionSucceeded\": "
+                   << Diagnostics::JsonBool(
+                          postProcess.executionReceiptExecutionSucceeded)
+                   << ",\n";
+            stream << "      \"executionReceiptPresented\": "
+                   << Diagnostics::JsonBool(
+                          postProcess.executionReceiptPresented)
+                   << ",\n";
+            stream << "      \"executionReceiptSucceeded\": "
+                   << Diagnostics::JsonBool(
+                          postProcess.executionReceiptSucceeded)
+                   << ",\n";
+            stream << "      \"frameFeatureSequence\": "
+                   << postProcess.frameFeatureSequence << ",\n";
+            stream << "      \"receiptFrameSequence\": "
+                   << postProcess.receiptFrameSequence << ",\n";
+            stream << "      \"lastPresentedFrameSequence\": "
+                   << postProcess.lastPresentedFrameSequence << ",\n";
+            stream << "      \"presentedFrameAligned\": "
+                   << Diagnostics::JsonBool(postProcess.presentedFrameAligned)
+                   << ",\n";
+            stream << "      \"mainView\": "
+                   << Diagnostics::JsonBool(postProcess.mainView) << ",\n";
+            stream << "      \"sceneRuntimeId\": "
+                   << postProcess.sceneRuntimeId << ",\n";
+            stream << "      \"cameraEntityPacked\": "
+                   << postProcess.cameraEntityPacked << ",\n";
+            stream << "      \"subViewIndex\": "
+                   << postProcess.subViewIndex << ",\n";
+            stream << "      \"postProcessFeatureFound\": "
+                   << Diagnostics::JsonBool(postProcess.postProcessFeatureFound)
+                   << ",\n";
+            stream << "      \"postProcessFeatureSelected\": "
+                   << Diagnostics::JsonBool(postProcess.postProcessFeatureSelected)
+                   << ",\n";
+            stream << "      \"postProcessFeatureExecuted\": "
+                   << Diagnostics::JsonBool(postProcess.postProcessFeatureExecuted)
+                   << ",\n";
+            stream << "      \"postProcessFeatureFallbackUsed\": "
+                   << Diagnostics::JsonBool(
+                          postProcess.postProcessFeatureFallbackUsed)
+                   << ",\n";
+            stream << "      \"postProcessFeatureGraphPassCount\": "
+                   << postProcess.postProcessFeatureGraphPassCount << ",\n";
+            stream << "      \"postProcessFeatureExecutedGraphPassCount\": "
+                   << postProcess.postProcessFeatureExecutedGraphPassCount
+                   << ",\n";
+            stream << "      \"postProcessReceiptStructurallyValid\": "
+                   << Diagnostics::JsonBool(
+                          postProcess.postProcessReceiptStructurallyValid)
+                   << ",\n";
+            stream << "      \"planContentHash\": "
+                   << postProcess.planContentHash << ",\n";
+            stream << "      \"toneMappingPassCount\": "
+                   << postProcess.toneMappingPassCount << ",\n";
+            stream << "      \"bloomPassCount\": "
+                   << postProcess.bloomPassCount << ",\n";
+            stream << "      \"colorGradingPassCount\": "
+                   << postProcess.colorGradingPassCount << ",\n";
+            stream << "      \"fxaaPassCount\": "
+                   << postProcess.fxaaPassCount << ",\n";
+            stream << "      \"taaPassCount\": "
+                   << postProcess.taaPassCount << ",\n";
+            stream << "      \"inputColorDomain\": "
+                   << Diagnostics::JsonString(
+                          GetPostProcessColorDomainCanonicalName(
+                              postProcess.inputColorDomain))
+                   << ",\n";
+            stream << "      \"plannedOutputColorDomain\": "
+                   << Diagnostics::JsonString(
+                          GetPostProcessColorDomainCanonicalName(
+                              postProcess.plannedOutputColorDomain))
+                   << ",\n";
+            stream << "      \"storedOutputColorDomain\": "
+                   << Diagnostics::JsonString(
+                          GetPostProcessColorDomainCanonicalName(
+                              postProcess.storedOutputColorDomain))
+                   << ",\n";
+            stream << "      \"finalOutputFormat\": "
+                   << Diagnostics::JsonString(
+                          GetRHIFormatCanonicalName(
+                              postProcess.finalOutputFormat))
+                   << ",\n";
+            stream << "      \"toneMappingTransfer\": "
+                   << Diagnostics::JsonString(
+                          GetPostProcessTransferCanonicalName(
+                              postProcess.toneMappingTransfer))
+                   << ",\n";
+            stream << "      \"presentationTransfer\": "
+                   << Diagnostics::JsonString(
+                          GetPostProcessTransferCanonicalName(
+                              postProcess.presentationTransfer))
+                   << ",\n";
+            stream << "      \"hdrInputReady\": "
+                   << Diagnostics::JsonBool(postProcess.hdrInputReady)
+                   << ",\n";
+            stream << "      \"displayLinearOutputReady\": "
+                   << Diagnostics::JsonBool(
+                          postProcess.displayLinearOutputReady)
+                   << ",\n";
+            stream << "      \"encodedOutputReady\": "
+                   << Diagnostics::JsonBool(postProcess.encodedOutputReady)
+                   << ",\n";
+            stream << "      \"fallbackUsed\": "
+                   << Diagnostics::JsonBool(postProcess.fallbackUsed)
+                   << ",\n";
+            stream << "      \"qualified\": "
+                   << Diagnostics::JsonBool(postProcess.IsQualificationReady())
+                   << ",\n";
+            stream << "      \"diagnostic\": "
+                   << Diagnostics::JsonString(postProcess.diagnostic) << "\n";
+            stream << "    },\n";
+        }
         stream << "    \"clusteredLightingInitialized\": "
                << Diagnostics::JsonBool(renderDiagnostics.clusteredLightingInitialized) << ",\n";
         stream << "    \"clusteredLightingActiveClusters\": "

@@ -7,6 +7,7 @@
 
 #include "Render/Features/RenderFeatureTypes.h"
 #include "Render/Graph/RenderGraph.h"
+#include "Render/PostProcess/PostProcessTypes.h"
 
 #include <algorithm>
 #include <array>
@@ -280,22 +281,50 @@ namespace RVX
     {
         static constexpr RenderBlackboardResourceId ResourceId =
             RenderBlackboardResourceId::TranslucencyOutputs;
-        static constexpr uint32 SchemaVersion = 1;
+        static constexpr uint32 SchemaVersion = 2;
 
         RenderGraphBlackboardProvenance provenance{};
+        /** Exact frozen frame/view that produced these graph resources. */
+        RenderFrameIdentity frameIdentity{};
+        RenderViewIdentity viewIdentity{};
+        /** The canonical scene-linear HDR surface after special/transparent work. */
         RGTextureHandle hdrSceneColor{};
+        SceneTextures::Metadata hdrSceneColorMetadata{};
+        /** Optional scene inputs retained for typed post-process planning. */
+        RGTextureHandle deviceDepth{};
+        SceneTextures::Metadata deviceDepthMetadata{};
+        RGTextureHandle worldNormal{};
+        SceneTextures::Metadata worldNormalMetadata{};
+        RGTextureHandle velocity{};
+        SceneTextures::Metadata velocityMetadata{};
         RGTextureHandle reactiveMask{};
+        SceneTextures::Metadata reactiveMaskMetadata{};
         RGTextureHandle distortionVectors{};
+        SceneTextures::Metadata distortionVectorsMetadata{};
+        PostProcessColorDomain colorDomain =
+            PostProcessColorDomain::SceneLinearHDR;
+        PostProcessTransfer transfer = PostProcessTransfer::None;
     };
 
     struct PostProcessOutputs
     {
         static constexpr RenderBlackboardResourceId ResourceId =
             RenderBlackboardResourceId::PostProcessOutputs;
-        static constexpr uint32 SchemaVersion = 1;
+        static constexpr uint32 SchemaVersion = 2;
 
         RenderGraphBlackboardProvenance provenance{};
+        /** Exact frozen frame/view that owns the presentation surface. */
+        RenderFrameIdentity frameIdentity{};
+        RenderViewIdentity viewIdentity{};
         RGTextureHandle presentableColor{};
+        SceneTextures::Metadata presentableColorMetadata{};
+        /**
+         * Presentation publishers must state the final stored domain and the
+         * transfer that produced it. Defaults intentionally make an omitted
+         * transition fail closed instead of fabricating an encode boundary.
+         */
+        PostProcessColorDomain colorDomain = PostProcessColorDomain::Unknown;
+        PostProcessTransfer transfer = PostProcessTransfer::None;
     };
 
     enum class RenderGraphBlackboardCode : uint8
@@ -309,6 +338,7 @@ namespace RVX
         OptionalFallbackNotDeclared,
         SchemaMismatch,
         StaleGraphResource,
+        InvalidSemanticContract,
     };
 
     [[nodiscard]] constexpr const char* GetRenderGraphBlackboardCodeName(
@@ -333,6 +363,8 @@ namespace RVX
                 return "SchemaMismatch";
             case RenderGraphBlackboardCode::StaleGraphResource:
                 return "StaleGraphResource";
+            case RenderGraphBlackboardCode::InvalidSemanticContract:
+                return "InvalidSemanticContract";
             default: return "Unknown";
         }
     }
@@ -382,6 +414,12 @@ namespace RVX
             {
                 return RecordFailure(
                     producer, RenderGraphBlackboardCode::StaleGraphResource);
+            }
+            if (!EntryHasValidSemanticContract(entry, m_provenance))
+            {
+                return RecordFailure(
+                    producer,
+                    RenderGraphBlackboardCode::InvalidSemanticContract);
             }
 
             auto& storage = std::get<std::optional<Entry>>(m_entries);
@@ -623,12 +661,117 @@ namespace RVX
             else if constexpr (std::is_same_v<Entry, TranslucencyOutputs>)
             {
                 return HandleMatchesGraph(entry.hdrSceneColor, provenance) &&
+                       HandleMatchesGraph(entry.deviceDepth, provenance) &&
+                       HandleMatchesGraph(entry.worldNormal, provenance) &&
+                       HandleMatchesGraph(entry.velocity, provenance) &&
                        HandleMatchesGraph(entry.reactiveMask, provenance) &&
                        HandleMatchesGraph(entry.distortionVectors, provenance);
             }
             else
             {
                 return HandleMatchesGraph(entry.presentableColor, provenance);
+            }
+        }
+
+        [[nodiscard]] static bool MetadataMatches(
+            const SceneTextures::Metadata& metadata,
+            SceneTextures::FormatContract contract) noexcept
+        {
+            return metadata.extent.IsValid() &&
+                   metadata.format == contract.format &&
+                   metadata.sampleCount == contract.sampleCount;
+        }
+
+        [[nodiscard]] static bool OptionalMetadataMatches(
+            const RGTextureHandle& handle,
+            const SceneTextures::Metadata& metadata,
+            SceneTextures::FormatContract contract) noexcept
+        {
+            return !handle.IsValid() || MetadataMatches(metadata, contract);
+        }
+
+        [[nodiscard]] static bool HasMatchingFrameViewProvenance(
+            const RenderFrameIdentity& frameIdentity,
+            const RenderViewIdentity& viewIdentity,
+            const RenderGraphBlackboardProvenance& provenance) noexcept
+        {
+            return frameIdentity.IsValid() && viewIdentity.IsValid() &&
+                   frameIdentity.frameSequence == provenance.frameSequence;
+        }
+
+        [[nodiscard]] static bool HasValidTranslucencyOutputs(
+            const TranslucencyOutputs& outputs,
+            const RenderGraphBlackboardProvenance& provenance) noexcept
+        {
+            return HasMatchingFrameViewProvenance(
+                       outputs.frameIdentity, outputs.viewIdentity,
+                       provenance) &&
+                   outputs.hdrSceneColor.IsValid() &&
+                   MetadataMatches(outputs.hdrSceneColorMetadata,
+                                   SceneTextures::HDRSceneColorContract) &&
+                   outputs.colorDomain ==
+                       PostProcessColorDomain::SceneLinearHDR &&
+                   outputs.transfer == PostProcessTransfer::None &&
+                   OptionalMetadataMatches(
+                       outputs.deviceDepth, outputs.deviceDepthMetadata,
+                       SceneTextures::DeviceDepthContract) &&
+                   OptionalMetadataMatches(
+                       outputs.worldNormal, outputs.worldNormalMetadata,
+                       SceneTextures::FormatContract{
+                           RHIFormat::RGBA8_UNORM,
+                           RHISampleCount::Count1}) &&
+                   OptionalMetadataMatches(
+                       outputs.velocity, outputs.velocityMetadata,
+                       SceneTextures::VelocityContract) &&
+                   OptionalMetadataMatches(
+                       outputs.reactiveMask, outputs.reactiveMaskMetadata,
+                       SceneTextures::FormatContract{
+                           RHIFormat::R8_UNORM, RHISampleCount::Count1}) &&
+                   OptionalMetadataMatches(
+                       outputs.distortionVectors,
+                       outputs.distortionVectorsMetadata,
+                       SceneTextures::FormatContract{
+                           RHIFormat::RG16_FLOAT,
+                           RHISampleCount::Count1});
+        }
+
+        [[nodiscard]] static bool HasValidPostProcessOutputs(
+            const PostProcessOutputs& outputs,
+            const RenderGraphBlackboardProvenance& provenance) noexcept
+        {
+            return HasMatchingFrameViewProvenance(
+                       outputs.frameIdentity, outputs.viewIdentity,
+                       provenance) &&
+                   outputs.presentableColor.IsValid() &&
+                   outputs.presentableColorMetadata.extent.IsValid() &&
+                   outputs.presentableColorMetadata.format !=
+                       RHIFormat::Unknown &&
+                   outputs.presentableColorMetadata.sampleCount ==
+                       RHISampleCount::Count1 &&
+                   outputs.colorDomain ==
+                       PostProcessColorDomain::DisplayEncodedLDR &&
+                   (outputs.transfer ==
+                        PostProcessTransfer::DisplayLinearToEncoded ||
+                    outputs.transfer ==
+                        PostProcessTransfer::SceneLinearToDisplayEncoded);
+        }
+
+        template<typename Entry>
+        [[nodiscard]] static bool EntryHasValidSemanticContract(
+            const Entry& entry,
+            const RenderGraphBlackboardProvenance& provenance) noexcept
+        {
+            if constexpr (std::is_same_v<Entry, TranslucencyOutputs>)
+            {
+                return HasValidTranslucencyOutputs(entry, provenance);
+            }
+            else if constexpr (std::is_same_v<Entry, PostProcessOutputs>)
+            {
+                return HasValidPostProcessOutputs(entry, provenance);
+            }
+            else
+            {
+                return true;
             }
         }
 

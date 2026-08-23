@@ -75,6 +75,7 @@ namespace RVX
     class OpaquePass;
     class ParticleFeaturePass;
     class LegacyForwardFeatureAdapter;
+    class PostProcessPipelineFeatureAdapter;
     class DeferredGeometryFeatureAdapter;
     class DeferredLightingFeatureAdapter;
     class DeferredForwardSpecialFeatureAdapter;
@@ -1675,6 +1676,7 @@ namespace RVX
         std::unique_ptr<RenderPassRegistry> m_passRegistry;
         std::unique_ptr<RenderFeatureRegistry> m_renderFeatureRegistry;
         LegacyForwardFeatureAdapter* m_legacyForwardFeature = nullptr;
+        PostProcessPipelineFeatureAdapter* m_postProcessFeature = nullptr;
         DeferredGeometryFeatureAdapter* m_deferredGeometryFeature = nullptr;
         DeferredLightingFeatureAdapter* m_deferredLightingFeature = nullptr;
         DeferredForwardSpecialFeatureAdapter*

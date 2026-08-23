@@ -21,6 +21,14 @@ namespace
         return context.pipeline.recipe == RenderPipelineRecipe::ForwardStandard &&
                context.resolvedRecipe == RenderPipelineRecipe::ForwardStandard;
     }
+
+    [[nodiscard]] SceneTextures::Metadata MakeMetadata(
+        RenderOutputExtent extent,
+        SceneTextures::FormatContract contract) noexcept
+    {
+        return SceneTextures::Metadata{
+            extent, contract.format, contract.sampleCount};
+    }
 } // namespace
 
 LegacyForwardFeatureAdapter::LegacyForwardFeatureAdapter(
@@ -49,6 +57,9 @@ RenderFeatureDescriptor LegacyForwardFeatureAdapter::Describe() const
     descriptor.schemaVersion = 1;
     descriptor.name = "LegacyForwardMainChain";
     descriptor.phase = RenderFeaturePhase::Geometry;
+    descriptor.producedResources = {
+        {RenderBlackboardResourceId::TranslucencyOutputs,
+         TranslucencyOutputs::SchemaVersion}};
     descriptor.requiredCapabilities = ToMask(RenderFeatureCapability::Graphics);
     descriptor.requiredRecipes = ToMask(RenderPipelineRecipe::ForwardStandard);
     descriptor.qualityTiers = RVX_ALL_RENDER_QUALITY_TIERS;
@@ -103,8 +114,6 @@ void LegacyForwardFeatureAdapter::AddPasses(
     RenderFeatureGraphBuilder& builder,
     RenderGraphBlackboard& blackboard)
 {
-    (void)blackboard;
-
     m_lastPassChainStats = {};
     m_lastReceipt = {};
     m_readiness.executed = false;
@@ -201,6 +210,37 @@ void LegacyForwardFeatureAdapter::AddPasses(
 
         ++m_lastPassChainStats.graphPassCount;
         m_lastPassChainStats.graphPassNames.push_back(status.name);
+    }
+
+    if (!m_recordContext.view.colorTarget.IsValid())
+    {
+        SetCompositionFailure(
+            "ForwardStandard did not produce the canonical HDR scene color surface");
+        return;
+    }
+
+    TranslucencyOutputs outputs;
+    outputs.provenance = builder.GetProvenance();
+    outputs.frameIdentity = m_preparedContext.frameIdentity;
+    outputs.viewIdentity = m_preparedContext.viewIdentity;
+    outputs.hdrSceneColor = m_recordContext.view.colorTarget;
+    outputs.hdrSceneColorMetadata = MakeMetadata(
+        m_preparedContext.outputExtent, SceneTextures::HDRSceneColorContract);
+    outputs.deviceDepth = m_recordContext.view.depthTarget;
+    outputs.deviceDepthMetadata = MakeMetadata(
+        m_preparedContext.outputExtent, SceneTextures::DeviceDepthContract);
+    outputs.velocity = m_recordContext.view.velocityTarget;
+    outputs.velocityMetadata = MakeMetadata(
+        m_preparedContext.outputExtent, SceneTextures::VelocityContract);
+    outputs.colorDomain = PostProcessColorDomain::SceneLinearHDR;
+    outputs.transfer = PostProcessTransfer::None;
+    if (blackboard.Publish(BuiltinRenderFeatureIds::LegacyForwardMainChain,
+                           Describe(),
+                           std::move(outputs)) !=
+        RenderGraphBlackboardCode::Success)
+    {
+        SetCompositionFailure(
+            "ForwardStandard could not publish TranslucencyOutputs v2");
     }
 }
 

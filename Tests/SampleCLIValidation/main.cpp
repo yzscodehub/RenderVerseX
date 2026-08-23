@@ -165,7 +165,7 @@ namespace
         RVX::uint64 frameSequence = 91)
     {
         RVX::RenderExecutionReceipt receipt;
-        receipt.schemaVersion = 5;
+        receipt.schemaVersion = 6;
         receipt.available = true;
         receipt.graphComposed = true;
         receipt.executionSucceeded = true;
@@ -219,6 +219,27 @@ namespace
         receipt.deformation.shadowSkinnedDrawCount = 2;
         receipt.deformation.velocitySkinnedDrawCount = 1;
         receipt.deformation.velocityPreviousPaletteDrawCount = 1;
+        receipt.postProcess.postProcessContentHash = 0x9ABCu;
+        receipt.postProcess.toneMapPassCount = 1;
+        receipt.postProcess.bloomPassCount = 1;
+        receipt.postProcess.colorGradingPassCount = 1;
+        receipt.postProcess.fxaaPassCount = 1;
+        receipt.postProcess.taaPassCount = 0;
+        receipt.postProcess.inputColorDomain =
+            RVX::PostProcessColorDomain::SceneLinearHDR;
+        receipt.postProcess.plannedOutputColorDomain =
+            RVX::PostProcessColorDomain::DisplayEncodedLDR;
+        receipt.postProcess.storedOutputColorDomain =
+            RVX::PostProcessColorDomain::DisplayEncodedLDR;
+        receipt.postProcess.finalOutputFormat = RVX::RHIFormat::RGBA8_UNORM;
+        receipt.postProcess.toneMappingTransfer =
+            RVX::PostProcessTransfer::SceneLinearToDisplayEncoded;
+        receipt.postProcess.presentationTransfer =
+            RVX::PostProcessTransfer::SceneLinearToDisplayEncoded;
+        receipt.postProcess.hdrInputReady = true;
+        receipt.postProcess.displayLinearOutputReady = false;
+        receipt.postProcess.encodedOutputReady = true;
+        receipt.postProcess.fallbackUsed = false;
 
         RVX::RenderFeatureExecutionReceipt feature;
         feature.featureId = RVX::BuiltinRenderFeatureIds::LegacyForwardMainChain;
@@ -237,6 +258,58 @@ namespace
         feature.graphPassNames = {"DepthPrepass", "OpaquePass"};
         receipt.features.push_back(std::move(feature));
         return receipt;
+    }
+
+    RVX::SamplePostProcessExecutionDiagnostics
+        MakeQualifiedPostProcessActualExecution(
+            RVX::uint64 frameSequence = 91)
+    {
+        RVX::SamplePostProcessExecutionDiagnostics diagnostics;
+        diagnostics.available = true;
+        diagnostics.executionReceiptSchemaVersion = 6;
+        diagnostics.executionReceiptStructurallyValid = true;
+        diagnostics.executionReceiptAvailable = true;
+        diagnostics.executionReceiptGraphComposed = true;
+        diagnostics.executionReceiptExecutionSucceeded = true;
+        diagnostics.executionReceiptPresented = true;
+        diagnostics.executionReceiptSucceeded = true;
+        diagnostics.frameFeatureSequence = frameSequence;
+        diagnostics.receiptFrameSequence = frameSequence;
+        diagnostics.lastPresentedFrameSequence = frameSequence;
+        diagnostics.presentedFrameAligned = true;
+        diagnostics.mainView = true;
+        diagnostics.sceneRuntimeId = 7;
+        diagnostics.cameraEntityPacked = 0x0000000200000001ULL;
+        diagnostics.subViewIndex = 0;
+        diagnostics.postProcessFeatureFound = true;
+        diagnostics.postProcessFeatureSelected = true;
+        diagnostics.postProcessFeatureExecuted = true;
+        diagnostics.postProcessFeatureFallbackUsed = false;
+        diagnostics.postProcessFeatureGraphPassCount = 4;
+        diagnostics.postProcessFeatureExecutedGraphPassCount = 4;
+        diagnostics.postProcessReceiptStructurallyValid = true;
+        diagnostics.planContentHash = 0x9ABCu;
+        diagnostics.toneMappingPassCount = 1;
+        diagnostics.bloomPassCount = 1;
+        diagnostics.colorGradingPassCount = 1;
+        diagnostics.fxaaPassCount = 1;
+        diagnostics.taaPassCount = 0;
+        diagnostics.inputColorDomain =
+            RVX::PostProcessColorDomain::SceneLinearHDR;
+        diagnostics.plannedOutputColorDomain =
+            RVX::PostProcessColorDomain::DisplayEncodedLDR;
+        diagnostics.storedOutputColorDomain =
+            RVX::PostProcessColorDomain::DisplayEncodedLDR;
+        diagnostics.finalOutputFormat = RVX::RHIFormat::RGBA8_UNORM;
+        diagnostics.toneMappingTransfer =
+            RVX::PostProcessTransfer::SceneLinearToDisplayEncoded;
+        diagnostics.presentationTransfer =
+            RVX::PostProcessTransfer::SceneLinearToDisplayEncoded;
+        diagnostics.hdrInputReady = true;
+        diagnostics.displayLinearOutputReady = false;
+        diagnostics.encodedOutputReady = true;
+        diagnostics.fallbackUsed = false;
+        return diagnostics;
     }
 
     TEST(SampleCLIValidation, ParsesCommonOptions)
@@ -287,6 +360,49 @@ namespace
         EXPECT_EQ(options.quality, "low");
         EXPECT_TRUE(options.diagnostics);
         EXPECT_FALSE(options.enableValidation);
+    }
+
+    TEST(SampleCLIValidation,
+         PostProcessActualExecutionRejectsSchedulingAndReceiptFailures)
+    {
+        RVX::SamplePostProcessExecutionDiagnostics diagnostics =
+            MakeQualifiedPostProcessActualExecution();
+        EXPECT_TRUE(diagnostics.IsQualificationReady());
+
+        // Graph registration alone is not execution evidence.
+        diagnostics.postProcessFeatureExecuted = false;
+        diagnostics.postProcessFeatureExecutedGraphPassCount = 0;
+        EXPECT_FALSE(diagnostics.IsQualificationReady());
+
+        diagnostics = MakeQualifiedPostProcessActualExecution();
+        diagnostics.postProcessReceiptStructurallyValid = false;
+        EXPECT_FALSE(diagnostics.IsQualificationReady());
+
+        diagnostics = MakeQualifiedPostProcessActualExecution();
+        diagnostics.presentedFrameAligned = false;
+        EXPECT_FALSE(diagnostics.IsQualificationReady());
+
+        // A claimed structural result cannot bypass the projected color contract.
+        diagnostics = MakeQualifiedPostProcessActualExecution();
+        diagnostics.plannedOutputColorDomain =
+            RVX::PostProcessColorDomain::DisplayLinearLDR;
+        EXPECT_FALSE(diagnostics.IsQualificationReady());
+
+        diagnostics = MakeQualifiedPostProcessActualExecution();
+        diagnostics.toneMappingTransfer =
+            RVX::PostProcessTransfer::SceneLinearToDisplayLinear;
+        EXPECT_FALSE(diagnostics.IsQualificationReady());
+
+        diagnostics = MakeQualifiedPostProcessActualExecution();
+        diagnostics.plannedOutputColorDomain =
+            RVX::PostProcessColorDomain::DisplayLinearLDR;
+        diagnostics.finalOutputFormat = RVX::RHIFormat::RGBA8_UNORM_SRGB;
+        diagnostics.toneMappingTransfer =
+            RVX::PostProcessTransfer::SceneLinearToDisplayLinear;
+        diagnostics.presentationTransfer =
+            RVX::PostProcessTransfer::DisplayLinearToEncoded;
+        diagnostics.displayLinearOutputReady = true;
+        EXPECT_TRUE(diagnostics.IsQualificationReady());
     }
 
     TEST(SampleCLIValidation, SmokeDefaultsToEightFrames)
@@ -500,7 +616,7 @@ namespace
         std::ostringstream stream;
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
-        EXPECT_NE(json.find("\"schemaVersion\": 21"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 22"), std::string::npos);
         EXPECT_NE(json.find("\"visualContractReceipt\": {"),
                   std::string::npos);
         EXPECT_NE(json.find("\"manifestSchema\": \"RVX.SampleManifest\""),
@@ -546,7 +662,7 @@ namespace
                   std::string::npos);
         EXPECT_NE(json.find("\"renderExecutionReceipt\": {"),
                   std::string::npos);
-        EXPECT_NE(json.find("\"schemaVersion\": 5"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 6"), std::string::npos);
         EXPECT_NE(json.find("\"sourceCommit\": \"" + std::string(40, 'a') +
                             "\""),
                   std::string::npos);
@@ -616,6 +732,36 @@ namespace
                   std::string::npos);
         EXPECT_NE(json.find("\"velocityPreviousPaletteDrawCount\": 1"),
                   std::string::npos);
+        EXPECT_NE(json.find("\"postProcess\": {"), std::string::npos);
+        EXPECT_NE(json.find("\"planContentHash\": 39612"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"toneMappingPassCount\": 1"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"bloomPassCount\": 1"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"colorGradingPassCount\": 1"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"fxaaPassCount\": 1"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"taaPassCount\": 0"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"inputColorDomain\": \"scene-linear-hdr\""),
+                  std::string::npos);
+        EXPECT_NE(json.find(
+                      "\"plannedOutputColorDomain\": \"display-encoded-ldr\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"storedOutputColorDomain\": \"display-encoded-ldr\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"finalOutputFormat\": \"rgba8-unorm\""),
+                  std::string::npos);
+        EXPECT_NE(json.find(
+                      "\"toneMappingTransfer\": \"scene-linear-to-display-encoded\""),
+                  std::string::npos);
+        EXPECT_NE(json.find(
+                      "\"presentationTransfer\": \"scene-linear-to-display-encoded\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"displayLinearOutputReady\": false"),
+                  std::string::npos);
         EXPECT_NE(json.find("\"executionSucceeded\": true"),
                   std::string::npos);
         EXPECT_NE(json.find("\"presented\": true"), std::string::npos);
@@ -639,6 +785,7 @@ namespace
         legacyV2Receipt.schemaVersion = 2;
         legacyV2Receipt.lighting = {};
         legacyV2Receipt.deformation = {};
+        legacyV2Receipt.postProcess = {};
         report.visualContractReceipt->renderExecutionReceipt = legacyV2Receipt;
         std::ostringstream legacyV2Stream;
         RVX::WriteSampleReportJson(legacyV2Stream, report);
@@ -648,11 +795,14 @@ namespace
                   std::string::npos);
         EXPECT_EQ(legacyV2Stream.str().find("\"deformation\":"),
                   std::string::npos);
+        EXPECT_EQ(legacyV2Stream.str().find("\"postProcess\":"),
+                  std::string::npos);
 
         RVX::RenderExecutionReceipt legacyV4Receipt =
             MakeSuccessfulRenderExecutionReceipt(91);
         legacyV4Receipt.schemaVersion = 4;
         legacyV4Receipt.deformation = {};
+        legacyV4Receipt.postProcess = {};
         report.visualContractReceipt->renderExecutionReceipt = legacyV4Receipt;
         std::ostringstream legacyV4Stream;
         RVX::WriteSampleReportJson(legacyV4Stream, report);
@@ -661,6 +811,8 @@ namespace
         EXPECT_NE(legacyV4Stream.str().find("\"lighting\":"),
                   std::string::npos);
         EXPECT_EQ(legacyV4Stream.str().find("\"deformation\":"),
+                  std::string::npos);
+        EXPECT_EQ(legacyV4Stream.str().find("\"postProcess\":"),
                   std::string::npos);
 
         RVX::RenderExecutionReceipt unreleasedV3Receipt = legacyV2Receipt;
@@ -1322,6 +1474,8 @@ namespace
         report.renderDiagnostics.graphBuilt = true;
         report.renderDiagnostics.graphCompiled = true;
         report.renderDiagnostics.renderGraphTotalPasses = 3;
+        report.renderDiagnostics.postProcessActualExecution =
+            MakeQualifiedPostProcessActualExecution(67);
         report.renderDiagnostics.nativeValidationAvailable = true;
         report.renderDiagnostics.nativeValidationEnabled = true;
         report.renderDiagnostics.nativeValidationReadComplete = true;
@@ -1432,7 +1586,7 @@ namespace
         const std::string json = stream.str();
 
         EXPECT_NE(json.find("\"schemaId\": \"RVX.SampleReport\""), std::string::npos);
-        EXPECT_NE(json.find("\"schemaVersion\": 21"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 22"), std::string::npos);
         EXPECT_NE(json.find("\"sampleName\": \"BasicRHI\""), std::string::npos);
         EXPECT_NE(json.find("\"category\": \"sample\""), std::string::npos);
         EXPECT_NE(json.find("\"requestedBackend\": \"dx12\""), std::string::npos);
@@ -1539,6 +1693,32 @@ namespace
                   std::string::npos);
         EXPECT_NE(json.find("\"renderDiagnostics\": {"), std::string::npos);
         EXPECT_NE(json.find("\"renderGraphTotalPasses\": 3"), std::string::npos);
+        EXPECT_NE(json.find("\"postProcessActualExecution\": {"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"executionReceiptSchemaVersion\": 6"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"presentedFrameAligned\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"postProcessFeatureExecuted\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"postProcessReceiptStructurallyValid\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"inputColorDomain\": \"scene-linear-hdr\""),
+                  std::string::npos);
+        EXPECT_NE(json.find(
+                      "\"plannedOutputColorDomain\": \"display-encoded-ldr\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"storedOutputColorDomain\": \"display-encoded-ldr\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"finalOutputFormat\": \"rgba8-unorm\""),
+                  std::string::npos);
+        EXPECT_NE(json.find(
+                      "\"toneMappingTransfer\": \"scene-linear-to-display-encoded\""),
+                  std::string::npos);
+        EXPECT_NE(json.find(
+                      "\"presentationTransfer\": \"scene-linear-to-display-encoded\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"qualified\": true"), std::string::npos);
         EXPECT_NE(json.find("\"nativeValidationAvailable\": true"),
                   std::string::npos);
         EXPECT_NE(json.find("\"nativeValidationEnabled\": true"),
@@ -1679,7 +1859,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 21"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 22"), std::string::npos);
         EXPECT_NE(json.find("\"contractRevision\": 7"), std::string::npos);
         EXPECT_NE(json.find("\"phase\": \"complete\""),
                   std::string::npos);
@@ -2168,7 +2348,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 21"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 22"), std::string::npos);
         EXPECT_NE(json.find("\"packageContentId\""), std::string::npos);
         EXPECT_NE(json.find(asset.packageContentId.digest), std::string::npos);
         EXPECT_NE(json.find("\"cook\": {\"required\": true, \"accepted\": true, \"code\": \"accepted\""),

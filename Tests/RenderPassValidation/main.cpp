@@ -248,6 +248,60 @@ namespace RVX
             return true;
         }
 
+        /**
+         * @brief Install the minimum production-equivalent presentation path
+         *        required by the GFX10 post-process feature.
+         *
+         * Focused SceneRenderer graph tests bypass full renderer initialization,
+         * but ForwardStandard now requires one real HDR-to-presentation
+         * transform. Keep that requirement intact by constructing a genuine
+         * ResourceViewCache, initialized PostProcessStack, and ToneMappingPass
+         * instead of permitting a test-only registry bypass.
+         */
+        static bool InstallMinimalPostProcessRuntimeForGraphBuild(
+            SceneRenderer& renderer,
+            IRHIDevice& device)
+        {
+            if (renderer.m_pipelineCache == nullptr ||
+                renderer.m_resourceViewCache != nullptr ||
+                renderer.m_postProcessStack != nullptr)
+            {
+                return false;
+            }
+
+            auto viewCache = std::make_unique<ResourceViewCache>();
+            viewCache->Initialize(&device);
+            if (!viewCache->IsInitialized())
+            {
+                return false;
+            }
+
+            auto stack = std::make_unique<PostProcessStack>();
+            stack->Initialize(&device);
+            if (!stack->IsInitialized())
+            {
+                return false;
+            }
+
+            ToneMappingPass* const toneMapping =
+                stack->AddEffect<ToneMappingPass>();
+            if (toneMapping == nullptr)
+            {
+                return false;
+            }
+            toneMapping->SetResources(renderer.m_pipelineCache.get(),
+                                      viewCache.get());
+            if (!toneMapping->IsSupported())
+            {
+                return false;
+            }
+
+            stack->ApplySettings(renderer.m_postProcessSettings);
+            renderer.m_resourceViewCache = std::move(viewCache);
+            renderer.m_postProcessStack = std::move(stack);
+            return true;
+        }
+
         static void InstallPostProcessStack(
             SceneRenderer& renderer,
             std::unique_ptr<PostProcessStack> stack)
@@ -1671,6 +1725,10 @@ namespace
         {
             createdGraphicsPipelineDebugNames.emplace_back(
                 desc.debugName ? desc.debugName : "");
+            createdGraphicsPipelineRenderTargetFormats.push_back(
+                desc.numRenderTargets > 0
+                    ? desc.renderTargetFormats[0]
+                    : RHIFormat::Unknown);
             if (!failGraphicsPipelineDebugName.empty() && desc.debugName &&
                 failGraphicsPipelineDebugName == desc.debugName)
             {
@@ -1946,6 +2004,7 @@ namespace
         std::vector<RHIDescriptorSetDesc> createdDescriptorSetDescs;
         std::vector<FakeDescriptorSet*> createdDescriptorSets;
         std::vector<std::string> createdGraphicsPipelineDebugNames;
+        std::vector<RHIFormat> createdGraphicsPipelineRenderTargetFormats;
         std::vector<RHIQueryPoolDesc> createdQueryPoolDescs;
         std::vector<RHITextureDesc> createdTextureDescs;
         std::vector<RHITextureViewDesc> createdTextureViewDescs;
@@ -2333,20 +2392,79 @@ namespace
         uint64 recordedFrameSequence = 0;
     };
 
+    PostProcessPassDescriptor MakeRecordingPostProcessDescriptor(const std::string& name,
+                                                                  int32 order)
+    {
+        const auto make = [order](PostProcessPassId id,
+                                  const char* canonicalName,
+                                  PostProcessStage stage,
+                                  PostProcessColorDomain input,
+                                  PostProcessColorDomain output,
+                                  PostProcessTransfer transfer = PostProcessTransfer::None)
+        {
+            return PostProcessPassDescriptor{id, canonicalName, stage, order, input, output, transfer};
+        };
+
+        if (name == "Bloom")
+            return make(PostProcessPassId::Bloom, "Bloom", PostProcessStage::HDRPost,
+                        PostProcessColorDomain::SceneLinearHDR, PostProcessColorDomain::SceneLinearHDR);
+        if (name == "SSAO")
+            return make(PostProcessPassId::SSAO, "SSAO", PostProcessStage::HDRPost,
+                        PostProcessColorDomain::SceneLinearHDR, PostProcessColorDomain::SceneLinearHDR);
+        if (name == "ToneMapping")
+            return make(PostProcessPassId::ToneMapping, "ToneMapping", PostProcessStage::ToneMap,
+                        PostProcessColorDomain::SceneLinearHDR, PostProcessColorDomain::DisplayEncodedLDR,
+                        PostProcessTransfer::SceneLinearToDisplayEncoded);
+        if (name == "ColorGrading")
+            return make(PostProcessPassId::ColorGrading, "ColorGrading", PostProcessStage::LDRPost,
+                        PostProcessColorDomain::DisplayEncodedLDR, PostProcessColorDomain::DisplayEncodedLDR);
+        if (name == "ChromaticAberration")
+            return make(PostProcessPassId::ChromaticAberration, "ChromaticAberration", PostProcessStage::LDRPost,
+                        PostProcessColorDomain::DisplayEncodedLDR, PostProcessColorDomain::DisplayEncodedLDR);
+        if (name == "Vignette")
+            return make(PostProcessPassId::Vignette, "Vignette", PostProcessStage::LDRPost,
+                        PostProcessColorDomain::DisplayEncodedLDR, PostProcessColorDomain::DisplayEncodedLDR);
+        if (name == "FilmGrain")
+            return make(PostProcessPassId::FilmGrain, "FilmGrain", PostProcessStage::LDRPost,
+                        PostProcessColorDomain::DisplayEncodedLDR, PostProcessColorDomain::DisplayEncodedLDR);
+        if (name == "FXAA")
+            return make(PostProcessPassId::FXAA, "FXAA", PostProcessStage::LDRPost,
+                        PostProcessColorDomain::DisplayEncodedLDR, PostProcessColorDomain::DisplayEncodedLDR);
+        if (name == "DepthOfField")
+            return make(PostProcessPassId::DepthOfField, "DepthOfField", PostProcessStage::HDRPost,
+                        PostProcessColorDomain::SceneLinearHDR, PostProcessColorDomain::SceneLinearHDR);
+        if (name == "MotionBlur")
+            return make(PostProcessPassId::MotionBlur, "MotionBlur", PostProcessStage::Temporal,
+                        PostProcessColorDomain::SceneLinearHDR, PostProcessColorDomain::SceneLinearHDR);
+        if (name == "VolumetricLighting")
+            return make(PostProcessPassId::VolumetricLighting, "VolumetricLighting", PostProcessStage::HDRPost,
+                        PostProcessColorDomain::SceneLinearHDR, PostProcessColorDomain::SceneLinearHDR);
+
+        return {PostProcessPassId::Invalid, "Invalid", PostProcessStage::HDRPost, order,
+                PostProcessColorDomain::Unknown, PostProcessColorDomain::Unknown,
+                PostProcessTransfer::None};
+    }
+
     class RecordingPostProcessPass final : public IPostProcessPass
     {
     public:
         RecordingPostProcessPass(std::string name, int32 priority)
             : m_name(std::move(name))
             , m_priority(priority)
+            , m_descriptor(MakeRecordingPostProcessDescriptor(m_name, priority))
         {
             m_enabled = true;
             m_supported = true;
         }
 
+        PostProcessPassDescriptor Describe() const override { return m_descriptor; }
         const char* GetName() const override { return m_name.c_str(); }
         int32 GetPriority() const override { return m_priority; }
         void Configure(const PostProcessSettings&) override {}
+        void SetDescriptorForTesting(const PostProcessPassDescriptor& descriptor)
+        {
+            m_descriptor = descriptor;
+        }
         PostProcessFrameInputRequirements GetFrameInputRequirements() const override
         {
             return requirements;
@@ -2383,6 +2501,91 @@ namespace
     private:
         std::string m_name;
         int32 m_priority = 0;
+        PostProcessPassDescriptor m_descriptor;
+    };
+
+    /**
+     * @brief One semantic post-process effect that deliberately records two
+     *        physical RenderGraph passes.
+     *
+     * This prevents tests from accidentally treating scheduled effects as the
+     * renderer's real graph-pass count.
+     */
+    class TwoStageRecordingPostProcessPass final : public IPostProcessPass
+    {
+    public:
+        TwoStageRecordingPostProcessPass(std::string name, int32 priority)
+            : m_name(std::move(name))
+            , m_priority(priority)
+            , m_descriptor(MakeRecordingPostProcessDescriptor(m_name, priority))
+        {
+            m_enabled = true;
+            m_supported = true;
+        }
+
+        PostProcessPassDescriptor Describe() const override
+        {
+            return m_descriptor;
+        }
+
+        const char* GetName() const override { return m_name.c_str(); }
+        int32 GetPriority() const override { return m_priority; }
+        void Configure(const PostProcessSettings&) override {}
+
+        void AddToGraph(RenderGraph& graph,
+                        RGTextureHandle input,
+                        RGTextureHandle output) override
+        {
+            const RHITextureDesc* const outputDesc = graph.GetTextureDesc(output);
+            if (outputDesc == nullptr)
+            {
+                return;
+            }
+
+            RHITextureDesc intermediateDesc = *outputDesc;
+            intermediateDesc.usage = RHITextureUsage::RenderTarget |
+                RHITextureUsage::ShaderResource;
+            intermediateDesc.debugName = "TwoStagePostProcessIntermediate";
+            const RGTextureHandle intermediate = graph.CreateTexture(intermediateDesc);
+            if (!intermediate.IsValid())
+            {
+                return;
+            }
+
+            struct PassData
+            {
+                RGTextureHandle input{};
+                RGTextureHandle output{};
+            };
+
+            graph.AddPass<PassData>(
+                "TwoStagePostProcessPrepare",
+                RenderGraphPassType::Graphics,
+                [input, intermediate](RenderGraphBuilder& builder,
+                                      PassData& data)
+                {
+                    data.input = builder.Read(input);
+                    data.output = builder.Write(
+                        intermediate, RHIResourceState::RenderTarget);
+                },
+                [](const PassData&, RHICommandContext&) {});
+            graph.AddPass<PassData>(
+                "TwoStagePostProcessResolve",
+                RenderGraphPassType::Graphics,
+                [intermediate, output](RenderGraphBuilder& builder,
+                                       PassData& data)
+                {
+                    data.input = builder.Read(intermediate);
+                    data.output = builder.Write(
+                        output, RHIResourceState::RenderTarget);
+                },
+                [](const PassData&, RHICommandContext&) {});
+        }
+
+    private:
+        std::string m_name;
+        int32 m_priority = 0;
+        PostProcessPassDescriptor m_descriptor;
     };
 
     std::unique_ptr<Resource::MeshResource> CreateMeshResource(Resource::ResourceId id)
@@ -4288,6 +4491,91 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_NE(nullptr, opaquePlan);
     EXPECT_EQ(0u, depthPlan->gpuEligiblePackets.count);
     EXPECT_EQ(1u, opaquePlan->gpuEligiblePackets.count);
+}
+
+TEST_F(RenderPassValidationFixture,
+       SceneRendererGPUDrivenForwardPreflightUsesSrgbSurfaceForNextFrame)
+{
+    const fs::path shaderDir = FindShaderDirectory();
+    if (shaderDir.empty())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    auto scenePipelineCache = MakeD4b2PipelineCache(device, shaderDir);
+    ASSERT_NE(nullptr, scenePipelineCache);
+    OpaquePass opaquePass;
+    opaquePass.SetResources(scenePipelineCache.get(), nullptr);
+    auto opaqueOwner = MakeD4b2CullingOwner(
+        device, 0u, static_cast<uint32>(GPUScenePassMask::Opaque));
+    ASSERT_NE(nullptr, opaqueOwner);
+    ASSERT_TRUE(opaqueOwner->IsGpuExecutionReady());
+
+    RHITextureRef colorTarget = device.CreateTexture(
+        RHITextureDesc::RenderTarget(
+            32u, 32u, RHIFormat::RGBA8_UNORM_SRGB));
+    ASSERT_TRUE(colorTarget);
+    SceneRendererExternalTargetDesc externalTarget;
+    externalTarget.colorTarget = colorTarget;
+
+    SceneRenderer renderer;
+    renderer.SetRenderFeatureReportDeviceForTesting(&device);
+    renderer.SetExternalRenderTarget(externalTarget);
+    renderer.SetGPUDrivenCullingMode(RenderGPUDrivenMode::ForceEnabled);
+    ASSERT_TRUE(SceneRendererTestAccess::ConfigureLaneAggregationForTesting(
+        renderer,
+        std::move(scenePipelineCache),
+        nullptr,
+        &opaquePass,
+        std::move(opaqueOwner)));
+
+    // This is the state retained after the previous sRGB graph build: the
+    // tone-mapping shader writes display-linear values and the target applies
+    // the final hardware sRGB encode.
+    PostProcessSettings settings = renderer.GetPostProcessSettings();
+    settings.enableToneMapping = true;
+    settings.toneMappingOutputColorSpace = ToneMappingOutputColorSpace::Linear;
+    renderer.ApplyPostProcessSettings(settings);
+    ASSERT_TRUE(
+        SceneRendererTestAccess::InstallMinimalPostProcessRuntimeForGraphBuild(
+            renderer, device));
+
+    const PostProcessStack* const stack = renderer.GetPostProcessStack();
+    ASSERT_NE(nullptr, stack);
+    const PostProcessStackExecuteStats srgbSurfaceStats =
+        stack->EvaluateEffects(RHIFormat::RGBA8_UNORM_SRGB);
+    EXPECT_TRUE(srgbSurfaceStats.toneMappingBoundaryValid);
+    EXPECT_EQ(PostProcessColorDomain::DisplayLinearLDR,
+              srgbSurfaceStats.outputColorDomain);
+    // The legacy format-less overload assumes an encoded UNORM output.  If
+    // GPU preflight used it here, it would select the sRGB backbuffer instead
+    // of the linear HDR scene target.
+    EXPECT_FALSE(stack->EvaluateEffects().toneMappingBoundaryValid);
+
+    const size_t pipelineCountBefore =
+        device.createdGraphicsPipelineDebugNames.size();
+    renderer.CompileRenderFramePlanForTesting();
+
+    const RenderPolicyDiagnostics& diagnostics =
+        renderer.GetRenderPolicyDiagnostics();
+    ASSERT_TRUE(diagnostics.planAvailable);
+    EXPECT_EQ(GPUDrivenTier::IndirectGrouped,
+              diagnostics.selectedPlan.viewPolicy.selectedTier);
+
+    auto opaquePipeline = std::find(
+        device.createdGraphicsPipelineDebugNames.begin() +
+            static_cast<std::ptrdiff_t>(pipelineCountBefore),
+        device.createdGraphicsPipelineDebugNames.end(),
+        "GPUDrivenOpaquePipeline");
+    ASSERT_NE(opaquePipeline, device.createdGraphicsPipelineDebugNames.end());
+    const size_t opaquePipelineIndex = static_cast<size_t>(
+        std::distance(device.createdGraphicsPipelineDebugNames.begin(),
+                      opaquePipeline));
+    ASSERT_LT(opaquePipelineIndex,
+              device.createdGraphicsPipelineRenderTargetFormats.size());
+    EXPECT_EQ(RHIFormat::RGBA16_FLOAT,
+              device.createdGraphicsPipelineRenderTargetFormats[
+                  opaquePipelineIndex]);
 }
 
 TEST_F(RenderPassValidationFixture,
@@ -10253,6 +10541,9 @@ TEST(SceneRendererPassRecordingValidation,
     ASSERT_TRUE(
         SceneRendererTestAccess::InstallMinimalLightingRuntimeForGraphBuild(
             renderer, device, shaderDir.string()));
+    ASSERT_TRUE(
+        SceneRendererTestAccess::InstallMinimalPostProcessRuntimeForGraphBuild(
+            renderer, device));
 
     RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(
         96, 64, RHIFormat::RGBA8_UNORM);
@@ -10372,7 +10663,20 @@ TEST(SceneRendererPassRecordingValidation,
               probePtr->typedSnapshotDepth.graphIdentity);
     EXPECT_EQ(probePtr->typedDepth.recordingGeneration,
               probePtr->typedSnapshotDepth.recordingGeneration);
-    EXPECT_EQ(colorTarget.Get(),
+    // GFX10's required presentation feature stages raster output in a
+    // graph-owned scene texture. The custom legacy registry pass must receive
+    // that typed scene target rather than the caller-owned external surface.
+    const RHITextureDesc* const typedColorDesc =
+        renderer.GetRenderGraph()->GetTextureDesc(probePtr->typedColor);
+    ASSERT_NE(nullptr, typedColorDesc);
+    EXPECT_TRUE(renderer.GetPostProcessStats().sceneColorStagingUsed);
+    EXPECT_FALSE(renderer.GetPostProcessStats().directToBackBuffer);
+    EXPECT_EQ(1u,
+              renderer.GetPostProcessStats()
+                  .stackStats.enabledToneMappingEffectCount);
+    EXPECT_EQ(renderer.GetPostProcessStats().actualSceneColorFormat,
+              typedColorDesc->format);
+    EXPECT_EQ(nullptr,
               RenderGraphValidationAccess::GetTexture(
                   *renderer.GetRenderGraph(),
                   probePtr->typedColor));
@@ -11105,7 +11409,7 @@ TEST(RenderPostProcessStackValidation,
     EXPECT_EQ(stats.requestedToneMappingEffectCount, 2u);
     EXPECT_EQ(stats.supportedToneMappingEffectCount, 2u);
     EXPECT_EQ(stats.enabledToneMappingEffectCount, 2u);
-    EXPECT_NE(stats.toneMappingBoundaryWarning.find("exactly one"),
+    EXPECT_NE(stats.toneMappingBoundaryWarning.find("duplicate"),
               std::string::npos);
 }
 
@@ -12439,7 +12743,10 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomBeforeToneMappingTh
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_FALSE(executeStats.noEffectNoWork);
     EXPECT_EQ(executeStats.enabledEffectCount, 2u);
-    EXPECT_EQ(executeStats.graphPassCount, 2u);
+    // Bloom expands to seven physical graph passes; the stack must report
+    // graph work rather than only the two scheduled semantic effects.
+    EXPECT_EQ(executeStats.graphPassCount, 8u);
+    EXPECT_EQ(executeStats.graphPassCount, graph.GetRecordedPassCount());
     EXPECT_EQ(executeStats.transientIntermediateCount, 1u);
     EXPECT_EQ(executeStats.transientIntermediateFormat, RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
@@ -12521,7 +12828,10 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGra
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_FALSE(executeStats.noEffectNoWork);
     EXPECT_EQ(executeStats.enabledEffectCount, 6u);
-    EXPECT_EQ(executeStats.graphPassCount, 6u);
+    // The six semantic effects expand to Bloom's seven passes plus five
+    // single-pass effects. Keep this bound to the RenderGraph record count.
+    EXPECT_EQ(executeStats.graphPassCount, 12u);
+    EXPECT_EQ(executeStats.graphPassCount, graph.GetRecordedPassCount());
     EXPECT_EQ(executeStats.transientIntermediateCount, 5u);
     EXPECT_EQ(executeStats.hdrIntermediateCount, 1u);
     EXPECT_EQ(executeStats.hdrIntermediateFormat, RHIFormat::RGBA16_FLOAT);
@@ -12622,7 +12932,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackKeepsZeroIntensityVignetteAs
     EXPECT_EQ(ctx.endRenderPassCount, 3u);
 }
 
-TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterToneMapping)
+TEST_F(RenderPassValidationFixture, PostProcessStackSortsHDRPassBeforeToneMapping)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
@@ -12646,11 +12956,11 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterTo
     stack.Execute(graph, input, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
-    EXPECT_FALSE(executeStats.toneMappingBoundaryValid);
-    EXPECT_FALSE(executeStats.toneMappingBoundaryWarning.empty());
-    EXPECT_EQ(executeStats.graphPassCount, 0u);
-    EXPECT_EQ(executeStats.transientIntermediateCount, 0u);
-    EXPECT_EQ(executeStats.transientIntermediateFormat, RHIFormat::Unknown);
+    EXPECT_TRUE(executeStats.toneMappingBoundaryValid);
+    EXPECT_TRUE(executeStats.toneMappingBoundaryWarning.empty());
+    EXPECT_EQ(executeStats.graphPassCount, 2u);
+    EXPECT_EQ(executeStats.transientIntermediateCount, 1u);
+    EXPECT_EQ(executeStats.transientIntermediateFormat, RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(executeStats.ldrIntermediateCount, 0u);
     EXPECT_EQ(executeStats.ldrIntermediateFormat, RHIFormat::Unknown);
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
@@ -12658,10 +12968,10 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterTo
     RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 0u);
+    EXPECT_EQ(graphStats.totalPasses, 2u);
 }
 
-TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterLDRChain)
+TEST_F(RenderPassValidationFixture, PostProcessStackSortsHDRToneMapAndLDRStages)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
@@ -12686,19 +12996,19 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterLD
     stack.Execute(graph, input, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
-    EXPECT_FALSE(executeStats.toneMappingBoundaryValid);
-    EXPECT_FALSE(executeStats.toneMappingBoundaryWarning.empty());
-    EXPECT_EQ(executeStats.graphPassCount, 0u);
-    EXPECT_EQ(executeStats.transientIntermediateCount, 0u);
+    EXPECT_TRUE(executeStats.toneMappingBoundaryValid);
+    EXPECT_TRUE(executeStats.toneMappingBoundaryWarning.empty());
+    EXPECT_EQ(executeStats.graphPassCount, 3u);
+    EXPECT_EQ(executeStats.transientIntermediateCount, 2u);
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
 
     RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 0u);
+    EXPECT_EQ(graphStats.totalPasses, 3u);
 }
 
-TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterColorGradingLDRChain)
+TEST_F(RenderPassValidationFixture, PostProcessStackSortsHDRToneMapAndColorGradeStages)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
@@ -12723,16 +13033,16 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterCo
     stack.Execute(graph, input, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
-    EXPECT_FALSE(executeStats.toneMappingBoundaryValid);
-    EXPECT_FALSE(executeStats.toneMappingBoundaryWarning.empty());
-    EXPECT_EQ(executeStats.graphPassCount, 0u);
-    EXPECT_EQ(executeStats.transientIntermediateCount, 0u);
+    EXPECT_TRUE(executeStats.toneMappingBoundaryValid);
+    EXPECT_TRUE(executeStats.toneMappingBoundaryWarning.empty());
+    EXPECT_EQ(executeStats.graphPassCount, 3u);
+    EXPECT_EQ(executeStats.transientIntermediateCount, 2u);
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
 
     RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 0u);
+    EXPECT_EQ(graphStats.totalPasses, 3u);
 }
 
 TEST_F(RenderPassValidationFixture, PostProcessStackRejectsHDRChainWritingLDROutputWithoutToneMapping)
@@ -12760,7 +13070,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRejectsHDRChainWritingLDROut
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_FALSE(executeStats.toneMappingBoundaryValid);
-    EXPECT_NE(executeStats.toneMappingBoundaryWarning.find("requires ToneMapping"), std::string::npos);
+    EXPECT_NE(executeStats.toneMappingBoundaryWarning.find("exactly one"), std::string::npos);
     EXPECT_EQ(executeStats.enabledEffectCount, 1u);
     EXPECT_EQ(executeStats.graphPassCount, 0u);
     EXPECT_EQ(executeStats.transientIntermediateCount, 0u);
@@ -12773,7 +13083,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRejectsHDRChainWritingLDROut
     EXPECT_EQ(graphStats.totalPasses, 0u);
 }
 
-TEST_F(RenderPassValidationFixture, PostProcessStackAllowsHDRChainWritingHDROutputWithoutToneMapping)
+TEST_F(RenderPassValidationFixture, PostProcessStackRejectsHDRChainWritingHDROutputWithoutToneMapping)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
@@ -12797,18 +13107,18 @@ TEST_F(RenderPassValidationFixture, PostProcessStackAllowsHDRChainWritingHDROutp
     stack.Execute(graph, input, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
-    EXPECT_TRUE(executeStats.toneMappingBoundaryValid);
-    EXPECT_TRUE(executeStats.toneMappingBoundaryWarning.empty());
+    EXPECT_FALSE(executeStats.toneMappingBoundaryValid);
+    EXPECT_NE(executeStats.toneMappingBoundaryWarning.find("exactly one"), std::string::npos);
     EXPECT_EQ(executeStats.enabledEffectCount, 1u);
-    EXPECT_EQ(executeStats.graphPassCount, 1u);
+    EXPECT_EQ(executeStats.graphPassCount, 0u);
     EXPECT_EQ(executeStats.transientIntermediateCount, 0u);
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA16_FLOAT);
-    EXPECT_EQ(bloom->addToGraphCount, 1u);
+    EXPECT_EQ(bloom->addToGraphCount, 0u);
 
     RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 1u);
+    EXPECT_EQ(graphStats.totalPasses, 0u);
 }
 
 TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidLDREffectBeforeToneMapping)
@@ -13064,7 +13374,7 @@ TEST_F(RenderPassValidationFixture, NoSupportedEffectsReportsNoWork)
     EXPECT_EQ(graphStats.totalPasses, 0u);
 }
 
-TEST_F(RenderPassValidationFixture, NoSupportedEffectsCopiesCompatibleSceneColorToOutput)
+TEST_F(RenderPassValidationFixture, NoSupportedEffectsCannotSilentlyChangeColorDomain)
 {
     RenderGraph graph;
     RenderGraphValidationAccess::SetDevice(graph, &device);
@@ -13085,17 +13395,17 @@ TEST_F(RenderPassValidationFixture, NoSupportedEffectsCopiesCompatibleSceneColor
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_TRUE(executeStats.noEffectNoWork);
-    EXPECT_TRUE(executeStats.fallbackCopyApplied);
-    EXPECT_EQ(executeStats.fallbackCopyPassCount, 1u);
-    EXPECT_EQ(executeStats.graphPassCount, 1u);
+    EXPECT_FALSE(executeStats.planValid);
+    EXPECT_FALSE(executeStats.fallbackCopyApplied);
+    EXPECT_EQ(executeStats.fallbackCopyPassCount, 0u);
+    EXPECT_EQ(executeStats.graphPassCount, 0u);
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
 
-    RecordingCommandContext ctx;
-    RenderGraphValidationAccess::Execute(graph, ctx);
-    EXPECT_EQ(ctx.copyTextureCount, 1u);
+    RenderGraphValidationAccess::Compile(graph);
+    EXPECT_EQ(graph.GetCompileStats().totalPasses, 0u);
 }
 
-TEST_F(RenderPassValidationFixture, InvalidToneMappingBoundaryCopiesCompatibleSceneColorToOutput)
+TEST_F(RenderPassValidationFixture, InvalidToneMappingBoundaryDoesNotInsertFallbackCopy)
 {
     RenderGraph graph;
     RenderGraphValidationAccess::SetDevice(graph, &device);
@@ -13117,14 +13427,13 @@ TEST_F(RenderPassValidationFixture, InvalidToneMappingBoundaryCopiesCompatibleSc
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_FALSE(executeStats.toneMappingBoundaryValid);
-    EXPECT_TRUE(executeStats.fallbackCopyApplied);
-    EXPECT_EQ(executeStats.fallbackCopyPassCount, 1u);
-    EXPECT_EQ(executeStats.graphPassCount, 1u);
+    EXPECT_FALSE(executeStats.fallbackCopyApplied);
+    EXPECT_EQ(executeStats.fallbackCopyPassCount, 0u);
+    EXPECT_EQ(executeStats.graphPassCount, 0u);
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
 
-    RecordingCommandContext ctx;
-    RenderGraphValidationAccess::Execute(graph, ctx);
-    EXPECT_EQ(ctx.copyTextureCount, 1u);
+    RenderGraphValidationAccess::Compile(graph);
+    EXPECT_EQ(graph.GetCompileStats().totalPasses, 0u);
 }
 
 TEST(RenderPostProcessStackValidation, MultiPassChainUsesDistinctTransientIntermediate)
@@ -13136,7 +13445,7 @@ TEST(RenderPostProcessStackValidation, MultiPassChainUsesDistinctTransientInterm
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
     RHITextureRef outputTexture =
-        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
@@ -13145,8 +13454,8 @@ TEST(RenderPostProcessStackValidation, MultiPassChainUsesDistinctTransientInterm
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     PostProcessStack stack;
-    auto* first = stack.AddEffect<RecordingPostProcessPass>("FirstPostProcess", 100);
-    auto* second = stack.AddEffect<RecordingPostProcessPass>("SecondPostProcess", 200);
+    auto* first = stack.AddEffect<RecordingPostProcessPass>("Bloom", 100);
+    auto* second = stack.AddEffect<RecordingPostProcessPass>("ToneMapping", 200);
 
     stack.Execute(graph, input, output);
 
@@ -24218,12 +24527,13 @@ TEST(RenderPostProcessStackValidation, RenderVisualQualityPresetAppliesExplicitE
     EXPECT_TRUE(settings.enableBloom);
     EXPECT_TRUE(settings.enableFXAA);
     EXPECT_TRUE(settings.enableFilmGrain);
-    EXPECT_TRUE(settings.enableSSAO);
-    EXPECT_TRUE(settings.enableSSR);
-    EXPECT_TRUE(settings.enableTAA);
-    EXPECT_TRUE(settings.enableDOF);
-    EXPECT_TRUE(settings.enableMotionBlur);
-    EXPECT_TRUE(settings.enableVolumetricLighting);
+    EXPECT_FALSE(settings.enableSSAO);
+    EXPECT_FALSE(settings.enableSSR);
+    EXPECT_FALSE(settings.enableVelocityOutput);
+    EXPECT_FALSE(settings.enableTAA);
+    EXPECT_FALSE(settings.enableDOF);
+    EXPECT_FALSE(settings.enableMotionBlur);
+    EXPECT_FALSE(settings.enableVolumetricLighting);
 }
 
 TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposePostProcessEffectPlans)
@@ -24387,6 +24697,315 @@ TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeFeatur
     EXPECT_NE(renderCMake.find("Private/Passes/ParticleFeaturePass.cpp"), std::string::npos);
 }
 
+TEST(RenderPostProcessStackValidation, TypedPlannerOrdersByStageOrderAndStableId)
+{
+    PostProcessStack stack;
+    (void)stack.AddEffect<RecordingPostProcessPass>("FXAA", 1);
+    (void)stack.AddEffect<RecordingPostProcessPass>("ToneMapping", 1);
+    (void)stack.AddEffect<RecordingPostProcessPass>("Bloom", 999);
+
+    PostProcessFrameInputs inputs;
+    inputs.sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
+    inputs.outputColorDomain = PostProcessColorDomain::DisplayEncodedLDR;
+
+    PostProcessStackExecuteStats plan;
+    ASSERT_TRUE(stack.BuildPlan(inputs, RHIFormat::RGBA8_UNORM, plan)) << plan.planFailureReason;
+    ASSERT_EQ(plan.effectPlans.size(), static_cast<size_t>(3));
+    EXPECT_EQ(plan.effectPlans[0].passId, PostProcessPassId::Bloom);
+    EXPECT_EQ(plan.effectPlans[0].stage, PostProcessStage::HDRPost);
+    EXPECT_EQ(plan.effectPlans[1].passId, PostProcessPassId::ToneMapping);
+    EXPECT_EQ(plan.effectPlans[1].stage, PostProcessStage::ToneMap);
+    EXPECT_EQ(plan.effectPlans[2].passId, PostProcessPassId::FXAA);
+    EXPECT_EQ(plan.effectPlans[2].stage, PostProcessStage::LDRPost);
+    EXPECT_EQ(plan.enabledToneMappingEffectCount, 1u);
+    EXPECT_EQ(plan.scheduledToneMappingEffectCount, 0u);
+    EXPECT_EQ(plan.graphPassCount, 0u);
+}
+
+TEST(RenderPostProcessStackValidation, TypedPlannerRejectsZeroOrTwoToneMapsBeforeGraphMutation)
+{
+    PostProcessFrameInputs inputs;
+    inputs.sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
+    inputs.outputColorDomain = PostProcessColorDomain::DisplayEncodedLDR;
+
+    PostProcessStack zeroToneMaps;
+    (void)zeroToneMaps.AddEffect<RecordingPostProcessPass>("Bloom", 100);
+    PostProcessStackExecuteStats zeroPlan;
+    EXPECT_FALSE(zeroToneMaps.BuildPlan(inputs, RHIFormat::RGBA8_UNORM, zeroPlan));
+    EXPECT_FALSE(zeroPlan.planValid);
+    EXPECT_EQ(zeroPlan.enabledToneMappingEffectCount, 0u);
+    EXPECT_NE(zeroPlan.planFailureReason.find("exactly one"), std::string::npos);
+
+    PostProcessStack twoToneMaps;
+    (void)twoToneMaps.AddEffect<RecordingPostProcessPass>("ToneMapping", 100);
+    (void)twoToneMaps.AddEffect<RecordingPostProcessPass>("ToneMapping", 101);
+    PostProcessStackExecuteStats twoPlan;
+    EXPECT_FALSE(twoToneMaps.BuildPlan(inputs, RHIFormat::RGBA8_UNORM, twoPlan));
+    EXPECT_FALSE(twoPlan.planValid);
+    EXPECT_EQ(twoPlan.enabledToneMappingEffectCount, 2u);
+    EXPECT_NE(twoPlan.planFailureReason.find("duplicate"), std::string::npos);
+}
+
+TEST(RenderPostProcessStackValidation,
+     PresentationContractRejectsZeroToneMapsWithoutRemovingGenericNoOpPlans)
+{
+    PostProcessFrameInputs inputs;
+    inputs.sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
+    inputs.outputColorDomain = PostProcessColorDomain::SceneLinearHDR;
+    inputs.outputFormat = RHIFormat::RGBA16_FLOAT;
+
+    PostProcessStack stack;
+    PostProcessStackExecuteStats genericPlan;
+    ASSERT_TRUE(stack.BuildPlan(inputs, RHIFormat::RGBA16_FLOAT, genericPlan));
+    EXPECT_EQ(genericPlan.planContract, PostProcessPlanContract::Generic);
+    EXPECT_TRUE(genericPlan.noEffectNoWork);
+    EXPECT_NE(genericPlan.planFingerprint, 0u);
+
+    PostProcessStackExecuteStats presentationPlan;
+    EXPECT_FALSE(stack.BuildPlan(inputs,
+                                 RHIFormat::RGBA16_FLOAT,
+                                 PostProcessPlanContract::Presentation,
+                                 presentationPlan));
+    EXPECT_EQ(presentationPlan.planContract,
+              PostProcessPlanContract::Presentation);
+    EXPECT_FALSE(presentationPlan.planValid);
+    EXPECT_EQ(presentationPlan.enabledToneMappingEffectCount, 0u);
+    EXPECT_EQ(presentationPlan.planFingerprint, 0u);
+    EXPECT_NE(presentationPlan.planFailureReason.find("exactly one"),
+              std::string::npos);
+}
+
+TEST(RenderPostProcessStackValidation,
+     LdrDescriptorsFollowTheToneMappingPresentationDomainForSrgbAndUnorm)
+{
+    const auto validatePresentationPlan = [](
+        ToneMappingOutputColorSpace outputColorSpace,
+        PostProcessColorDomain expectedDomain,
+        RHIFormat outputFormat)
+    {
+        PostProcessSettings settings;
+        settings.toneMappingOutputColorSpace = outputColorSpace;
+        settings.enableToneMapping = true;
+        settings.enableColorGrading = true;
+        settings.enableChromaticAberration = true;
+        settings.enableVignette = true;
+        settings.enableFilmGrain = true;
+        settings.enableFXAA = true;
+
+        ToneMappingPass toneMapping;
+        ColorGradingPass colorGrading;
+        ChromaticAberrationPass chromaticAberration;
+        VignettePass vignette;
+        FilmGrainPass filmGrain;
+        FXAAPass fxaa;
+        toneMapping.Configure(settings);
+        colorGrading.Configure(settings);
+        chromaticAberration.Configure(settings);
+        vignette.Configure(settings);
+        filmGrain.Configure(settings);
+        fxaa.Configure(settings);
+
+        EXPECT_EQ(toneMapping.Describe().outputDomain, expectedDomain);
+        EXPECT_EQ(colorGrading.Describe().inputDomain, expectedDomain);
+        EXPECT_EQ(colorGrading.Describe().outputDomain, expectedDomain);
+        EXPECT_EQ(chromaticAberration.Describe().inputDomain, expectedDomain);
+        EXPECT_EQ(chromaticAberration.Describe().outputDomain, expectedDomain);
+        EXPECT_EQ(vignette.Describe().inputDomain, expectedDomain);
+        EXPECT_EQ(vignette.Describe().outputDomain, expectedDomain);
+        EXPECT_EQ(filmGrain.Describe().inputDomain, expectedDomain);
+        EXPECT_EQ(filmGrain.Describe().outputDomain, expectedDomain);
+        EXPECT_EQ(fxaa.Describe().inputDomain, expectedDomain);
+        EXPECT_EQ(fxaa.Describe().outputDomain, expectedDomain);
+
+        PostProcessStack stack;
+        auto* plannedToneMapping =
+            stack.AddEffect<RecordingPostProcessPass>("ToneMapping", 900);
+        auto* plannedColorGrading =
+            stack.AddEffect<RecordingPostProcessPass>("ColorGrading", 930);
+        auto* plannedChromaticAberration =
+            stack.AddEffect<RecordingPostProcessPass>("ChromaticAberration", 935);
+        auto* plannedVignette =
+            stack.AddEffect<RecordingPostProcessPass>("Vignette", 940);
+        auto* plannedFilmGrain =
+            stack.AddEffect<RecordingPostProcessPass>("FilmGrain", 950);
+        auto* plannedFXAA =
+            stack.AddEffect<RecordingPostProcessPass>("FXAA", 1000);
+        plannedToneMapping->SetDescriptorForTesting(toneMapping.Describe());
+        plannedColorGrading->SetDescriptorForTesting(colorGrading.Describe());
+        plannedChromaticAberration->SetDescriptorForTesting(
+            chromaticAberration.Describe());
+        plannedVignette->SetDescriptorForTesting(vignette.Describe());
+        plannedFilmGrain->SetDescriptorForTesting(filmGrain.Describe());
+        plannedFXAA->SetDescriptorForTesting(fxaa.Describe());
+
+        PostProcessFrameInputs inputs;
+        inputs.sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
+        inputs.outputColorDomain = expectedDomain;
+        inputs.outputFormat = outputFormat;
+        PostProcessStackExecuteStats plan;
+        EXPECT_TRUE(stack.BuildPlan(inputs,
+                                    outputFormat,
+                                    PostProcessPlanContract::Presentation,
+                                    plan)) << plan.planFailureReason;
+        EXPECT_EQ(plan.outputColorDomain, expectedDomain);
+        EXPECT_EQ(plan.enabledToneMappingEffectCount, 1u);
+    };
+
+    validatePresentationPlan(ToneMappingOutputColorSpace::Linear,
+                             PostProcessColorDomain::DisplayLinearLDR,
+                             RHIFormat::RGBA8_UNORM_SRGB);
+    validatePresentationPlan(ToneMappingOutputColorSpace::SRGB,
+                             PostProcessColorDomain::DisplayEncodedLDR,
+                             RHIFormat::RGBA8_UNORM);
+}
+
+TEST(RenderPostProcessStackValidation, TypedPlannerRejectsFakeDescriptorsAndIllegalColorTransitions)
+{
+    PostProcessFrameInputs inputs;
+    inputs.sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
+    inputs.outputColorDomain = PostProcessColorDomain::DisplayEncodedLDR;
+
+    PostProcessStack fakeName;
+    auto* fakeBloom = fakeName.AddEffect<RecordingPostProcessPass>("Bloom", 100);
+    fakeBloom->SetDescriptorForTesting({
+        PostProcessPassId::Bloom,
+        "NotBloom",
+        PostProcessStage::HDRPost,
+        100,
+        PostProcessColorDomain::SceneLinearHDR,
+        PostProcessColorDomain::SceneLinearHDR,
+        PostProcessTransfer::None});
+    (void)fakeName.AddEffect<RecordingPostProcessPass>("ToneMapping", 200);
+    PostProcessStackExecuteStats fakePlan;
+    EXPECT_FALSE(fakeName.BuildPlan(inputs, RHIFormat::RGBA8_UNORM, fakePlan));
+    EXPECT_NE(fakePlan.planFailureReason.find("canonical"), std::string::npos);
+
+    PostProcessStack domainMismatch;
+    (void)domainMismatch.AddEffect<RecordingPostProcessPass>("Bloom", 100);
+    (void)domainMismatch.AddEffect<RecordingPostProcessPass>("ToneMapping", 200);
+    PostProcessFrameInputs encodedInput = inputs;
+    encodedInput.sceneColorDomain = PostProcessColorDomain::DisplayEncodedLDR;
+    PostProcessStackExecuteStats mismatchPlan;
+    EXPECT_FALSE(domainMismatch.BuildPlan(encodedInput, RHIFormat::RGBA8_UNORM, mismatchPlan));
+    EXPECT_NE(mismatchPlan.planFailureReason.find("illegal color-domain"), std::string::npos);
+}
+
+TEST_F(RenderPassValidationFixture, TypedPlannerDoesNotInsertFallbackCopyForSemanticFailure)
+{
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    const RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(
+        graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    const RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(
+        graph, outputTexture.Get(), RHIResourceState::RenderTarget);
+
+    PostProcessStack stack;
+    (void)stack.AddEffect<RecordingPostProcessPass>("FXAA", 1);
+    stack.Execute(graph, input, output);
+
+    const PostProcessStackExecuteStats& stats = stack.GetLastExecuteStats();
+    EXPECT_FALSE(stats.planValid);
+    EXPECT_FALSE(stats.fallbackCopyApplied);
+    EXPECT_EQ(stats.graphPassCount, 0u);
+    RenderGraphValidationAccess::Compile(graph);
+    EXPECT_EQ(graph.GetCompileStats().totalPasses, 0u);
+}
+
+TEST_F(RenderPassValidationFixture,
+       TypedPlanRejectsChangedFrameContractBeforeGraphMutation)
+{
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    PostProcessFrameInputs inputs;
+    inputs.sceneColor = RenderGraphValidationAccess::ImportTexture(
+        graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    inputs.outputFormat = RHIFormat::RGBA8_UNORM;
+    inputs.sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
+    inputs.outputColorDomain = PostProcessColorDomain::DisplayEncodedLDR;
+    const RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(
+        graph, outputTexture.Get(), RHIResourceState::RenderTarget);
+
+    PostProcessStack stack;
+    (void)stack.AddEffect<RecordingPostProcessPass>("ToneMapping", 100);
+    PostProcessStackExecuteStats plan;
+    ASSERT_TRUE(stack.BuildPlan(inputs,
+                                RHIFormat::RGBA8_UNORM,
+                                PostProcessPlanContract::Presentation,
+                                plan)) << plan.planFailureReason;
+    ASSERT_NE(plan.planFingerprint, 0u);
+
+    PostProcessFrameInputs changedInputs = inputs;
+    changedInputs.outputColorDomain = PostProcessColorDomain::DisplayLinearLDR;
+    EXPECT_FALSE(stack.ExecutePlan(graph, changedInputs, output, plan));
+    const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
+    EXPECT_FALSE(executeStats.planValid);
+    EXPECT_NE(executeStats.planFailureReason.find("color-domain or format changed"),
+              std::string::npos);
+    RenderGraphValidationAccess::Compile(graph);
+    EXPECT_EQ(graph.GetCompileStats().totalPasses, 0u);
+}
+
+TEST_F(RenderPassValidationFixture,
+       TypedPlanRejectsDescriptorMutationAfterBuildBeforeGraphMutation)
+{
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RHITextureRef inputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef outputTexture =
+        device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    PostProcessFrameInputs inputs;
+    inputs.sceneColor = RenderGraphValidationAccess::ImportTexture(
+        graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    inputs.outputFormat = RHIFormat::RGBA8_UNORM;
+    inputs.sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
+    inputs.outputColorDomain = PostProcessColorDomain::DisplayEncodedLDR;
+    const RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(
+        graph, outputTexture.Get(), RHIResourceState::RenderTarget);
+
+    PostProcessStack stack;
+    auto* bloom = stack.AddEffect<RecordingPostProcessPass>("Bloom", 100);
+    (void)stack.AddEffect<RecordingPostProcessPass>("ToneMapping", 200);
+    PostProcessStackExecuteStats plan;
+    ASSERT_TRUE(stack.BuildPlan(inputs,
+                                RHIFormat::RGBA8_UNORM,
+                                PostProcessPlanContract::Presentation,
+                                plan)) << plan.planFailureReason;
+
+    bloom->SetDescriptorForTesting({
+        PostProcessPassId::Bloom,
+        "NotBloom",
+        PostProcessStage::HDRPost,
+        100,
+        PostProcessColorDomain::SceneLinearHDR,
+        PostProcessColorDomain::SceneLinearHDR,
+        PostProcessTransfer::None});
+    EXPECT_FALSE(stack.ExecutePlan(graph, inputs, output, plan));
+    const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
+    EXPECT_FALSE(executeStats.planValid);
+    EXPECT_NE(executeStats.planFailureReason.find("no longer valid"),
+              std::string::npos);
+    RenderGraphValidationAccess::Compile(graph);
+    EXPECT_EQ(graph.GetCompileStats().totalPasses, 0u);
+}
+
 TEST(RenderPostProcessStackValidation, PostProcessStackReportsEffectExecutionPlanDomainsAndTargets)
 {
     FakeDevice device;
@@ -24431,8 +25050,8 @@ TEST(RenderPostProcessStackValidation, PostProcessStackReportsEffectExecutionPla
     EXPECT_TRUE(bloomPlan.scheduled);
     EXPECT_EQ(bloomPlan.inputFormat, RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(bloomPlan.outputFormat, RHIFormat::RGBA16_FLOAT);
-    EXPECT_EQ(bloomPlan.inputDomain, PostProcessColorDomain::HDR);
-    EXPECT_EQ(bloomPlan.outputDomain, PostProcessColorDomain::HDR);
+    EXPECT_EQ(bloomPlan.inputDomain, PostProcessColorDomain::SceneLinearHDR);
+    EXPECT_EQ(bloomPlan.outputDomain, PostProcessColorDomain::SceneLinearHDR);
     EXPECT_TRUE(bloomPlan.inputIsSceneColor);
     EXPECT_TRUE(bloomPlan.outputIsTransientIntermediate);
     EXPECT_FALSE(bloomPlan.outputIsFinalTarget);
@@ -24444,8 +25063,8 @@ TEST(RenderPostProcessStackValidation, PostProcessStackReportsEffectExecutionPla
     EXPECT_TRUE(toneMappingPlan.scheduled);
     EXPECT_EQ(toneMappingPlan.inputFormat, RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(toneMappingPlan.outputFormat, RHIFormat::RGBA8_UNORM);
-    EXPECT_EQ(toneMappingPlan.inputDomain, PostProcessColorDomain::HDR);
-    EXPECT_EQ(toneMappingPlan.outputDomain, PostProcessColorDomain::LDR);
+    EXPECT_EQ(toneMappingPlan.inputDomain, PostProcessColorDomain::SceneLinearHDR);
+    EXPECT_EQ(toneMappingPlan.outputDomain, PostProcessColorDomain::DisplayEncodedLDR);
     EXPECT_FALSE(toneMappingPlan.inputIsSceneColor);
     EXPECT_TRUE(toneMappingPlan.outputIsTransientIntermediate);
     EXPECT_FALSE(toneMappingPlan.outputIsFinalTarget);
@@ -24455,8 +25074,8 @@ TEST(RenderPostProcessStackValidation, PostProcessStackReportsEffectExecutionPla
     EXPECT_TRUE(fxaaPlan.scheduled);
     EXPECT_EQ(fxaaPlan.inputFormat, RHIFormat::RGBA8_UNORM);
     EXPECT_EQ(fxaaPlan.outputFormat, RHIFormat::RGBA8_UNORM);
-    EXPECT_EQ(fxaaPlan.inputDomain, PostProcessColorDomain::LDR);
-    EXPECT_EQ(fxaaPlan.outputDomain, PostProcessColorDomain::LDR);
+    EXPECT_EQ(fxaaPlan.inputDomain, PostProcessColorDomain::DisplayEncodedLDR);
+    EXPECT_EQ(fxaaPlan.outputDomain, PostProcessColorDomain::DisplayEncodedLDR);
     EXPECT_FALSE(fxaaPlan.outputIsTransientIntermediate);
     EXPECT_TRUE(fxaaPlan.outputIsFinalTarget);
 
@@ -24467,6 +25086,49 @@ TEST(RenderPostProcessStackValidation, PostProcessStackReportsEffectExecutionPla
 
     RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
+    EXPECT_TRUE(graphStats.compileValid);
+    EXPECT_EQ(graphStats.totalPasses, 3u);
+}
+
+TEST(RenderPostProcessStackValidation,
+     PostProcessStackCountsPhysicalGraphPassesRatherThanScheduledEffects)
+{
+    FakeDevice device;
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+
+    RHITextureRef inputTexture = device.CreateTexture(
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef outputTexture = device.CreateTexture(
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+
+    const RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(
+        graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    const RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(
+        graph, outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    PostProcessStack stack;
+    (void)stack.AddEffect<RecordingPostProcessPass>("Bloom", 100);
+    (void)stack.AddEffect<TwoStageRecordingPostProcessPass>(
+        "ToneMapping", 200);
+
+    const size_t recordedPassesBefore = graph.GetRecordedPassCount();
+    stack.Execute(graph, input, output);
+
+    const PostProcessStackExecuteStats& stats = stack.GetLastExecuteStats();
+    EXPECT_TRUE(stats.planValid) << stats.planFailureReason;
+    EXPECT_EQ(stats.enabledEffectCount, 2u);
+    EXPECT_EQ(stats.scheduledEffectCount, 2u);
+    EXPECT_EQ(stats.scheduledToneMappingEffectCount, 1u);
+    EXPECT_EQ(stats.graphPassCount, 3u);
+    EXPECT_EQ(graph.GetRecordedPassCount(), recordedPassesBefore + 3u);
+    EXPECT_NE(stats.graphPassCount, stats.scheduledEffectCount);
+
+    RenderGraphValidationAccess::Compile(graph);
+    const RenderGraph::CompileStats& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
     EXPECT_EQ(graphStats.totalPasses, 3u);
 }
@@ -24517,7 +25179,7 @@ TEST_F(RenderPassValidationFixture, PostProcessFrameInputContractReportsMissingV
     EXPECT_EQ(plan.skippedReason, plan.missingFrameInputReason);
     EXPECT_FALSE(plan.scheduled);
     EXPECT_EQ(plan.reason, plan.missingFrameInputReason);
-    EXPECT_TRUE(executeStats.fallbackCopyApplied);
+    EXPECT_FALSE(executeStats.fallbackCopyApplied);
 }
 
 TEST(RenderPostProcessStackValidation, DOFAndMotionBlurDeclareFrameInputRequirements)
