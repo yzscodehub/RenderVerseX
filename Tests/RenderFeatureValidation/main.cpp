@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -600,6 +601,10 @@ namespace
         view.colorTarget.index = 1;
         view.colorTarget.graphIdentity = graph.GetGraphIdentity();
         view.colorTarget.recordingGeneration = graph.GetRecordingGeneration();
+        view.reactiveMaskTarget.index = 2;
+        view.reactiveMaskTarget.graphIdentity = graph.GetGraphIdentity();
+        view.reactiveMaskTarget.recordingGeneration =
+            graph.GetRecordingGeneration();
         RenderPassRecordContext context =
             MakeRenderPassRecordContext(graph, view);
         context.featureFrameIdentity = RenderFrameIdentity{1, 2, 3, 4};
@@ -777,6 +782,9 @@ namespace
                 IsSRGBFormat(presentableFormat)
                     ? PostProcessColorDomain::DisplayLinearLDR
                     : PostProcessColorDomain::DisplayEncodedLDR);
+            PostProcessSettings noAntiAliasing;
+            noAntiAliasing.antiAliasingMode = RenderAntiAliasingMode::None;
+            m_stack.ApplySettings(noAntiAliasing);
 
             const RHITextureDesc sceneColorDesc = RHITextureDesc::RenderTarget(
                 m_context.outputExtent.width,
@@ -2122,6 +2130,42 @@ namespace
         directEncoded.taaPassCount = 1;
         EXPECT_FALSE(directEncoded.IsStructurallyValid());
         directEncoded.taaPassCount = 0;
+
+        RenderPostProcessExecutionReceipt temporal = directEncoded;
+        temporal.antiAliasingMode = RenderAntiAliasingMode::TAA;
+        temporal.taaRequested = true;
+        temporal.taaPipelineReady = true;
+        temporal.taaInputsReady = true;
+        temporal.taaExecuted = true;
+        temporal.historyAvailableBefore = false;
+        temporal.historySampled = false;
+        temporal.historyCandidateProduced = true;
+        temporal.historyResetReasons = RenderHistoryResetReason::FirstFrame;
+        temporal.taaPassCount = 1;
+        temporal.taaResolveGraphPassCount = 1;
+        temporal.taaHistoryStoreGraphPassCount = 1;
+        EXPECT_TRUE(temporal.IsStructurallyValid());
+
+        temporal.historyCommitted = true;
+        EXPECT_TRUE(temporal.IsStructurallyValid());
+        temporal.historyAbandoned = true;
+        EXPECT_FALSE(temporal.IsStructurallyValid());
+        temporal.historyCommitted = false;
+        EXPECT_TRUE(temporal.IsStructurallyValid());
+        temporal.historyCandidateProduced = false;
+        EXPECT_FALSE(temporal.IsStructurallyValid());
+        temporal.historyAbandoned = false;
+        EXPECT_FALSE(temporal.IsStructurallyValid());
+
+        temporal = directEncoded;
+        temporal.currentJitterPixels.x =
+            std::numeric_limits<float>::quiet_NaN();
+        EXPECT_FALSE(temporal.IsStructurallyValid());
+        temporal = directEncoded;
+        temporal.previousJitterPixels.y =
+            std::numeric_limits<float>::infinity();
+        EXPECT_FALSE(temporal.IsStructurallyValid());
+
         directEncoded.toneMapPassCount = 2;
         EXPECT_FALSE(directEncoded.IsStructurallyValid());
         directEncoded.toneMapPassCount = 1;
@@ -2781,6 +2825,31 @@ namespace
         EXPECT_FALSE(candidate.presented);
         EXPECT_FALSE(candidate.succeeded);
 
+        RenderExecutionReceipt temporalCandidate = candidate;
+        temporalCandidate.postProcess.antiAliasingMode =
+            RenderAntiAliasingMode::TAA;
+        temporalCandidate.postProcess.taaRequested = true;
+        temporalCandidate.postProcess.taaPipelineReady = true;
+        temporalCandidate.postProcess.taaInputsReady = true;
+        temporalCandidate.postProcess.taaExecuted = true;
+        temporalCandidate.postProcess.historyCandidateProduced = true;
+        temporalCandidate.postProcess.historyResetReasons =
+            RenderHistoryResetReason::FirstFrame;
+        temporalCandidate.postProcess.taaPassCount = 1;
+        temporalCandidate.postProcess.taaResolveGraphPassCount = 1;
+        temporalCandidate.postProcess.taaHistoryStoreGraphPassCount = 1;
+        EXPECT_TRUE(temporalCandidate.IsStructurallyValid());
+
+        RenderExecutionReceipt legacySchemaWithTemporal = temporalCandidate;
+        legacySchemaWithTemporal.schemaVersion = 6;
+        EXPECT_FALSE(legacySchemaWithTemporal.IsStructurallyValid());
+
+        temporalCandidate.presented = true;
+        temporalCandidate.succeeded = true;
+        EXPECT_FALSE(temporalCandidate.IsStructurallyValid());
+        temporalCandidate.postProcess.historyCommitted = true;
+        EXPECT_TRUE(temporalCandidate.IsStructurallyValid());
+
         RenderExecutionReceipt presented = candidate;
         presented.presented = true;
         presented.succeeded = true;
@@ -2996,6 +3065,16 @@ namespace
         EXPECT_EQ(translucency->hdrSceneColorMetadata,
                   MakeSceneTextureMetadata(
                       SceneTextures::HDRSceneColorContract));
+        EXPECT_TRUE(translucency->reactiveMask.IsValid());
+        EXPECT_EQ(translucency->reactiveMask.index,
+                  recordContext.view.reactiveMaskTarget.index);
+        EXPECT_EQ(translucency->reactiveMask.graphIdentity,
+                  recordContext.view.reactiveMaskTarget.graphIdentity);
+        EXPECT_EQ(translucency->reactiveMask.recordingGeneration,
+                  recordContext.view.reactiveMaskTarget.recordingGeneration);
+        EXPECT_EQ(translucency->reactiveMaskMetadata,
+                  MakeSceneTextureMetadata(
+                      SceneTextures::ReactiveMaskContract));
 
         const LegacyForwardFeaturePassChainStats chain =
             legacyRaw->GetPassChainStatsSnapshot();

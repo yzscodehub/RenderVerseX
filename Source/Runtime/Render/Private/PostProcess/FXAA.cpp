@@ -43,7 +43,7 @@ FXAAPass::FXAAPass()
 void FXAAPass::Configure(const PostProcessSettings& settings)
 {
     ConfigurePresentationColorDomain(settings);
-    m_enabled = settings.enableFXAA;
+    m_enabled = settings.antiAliasingMode == RenderAntiAliasingMode::FXAA;
     m_subpixelQuality = settings.fxaaQuality;
 }
 

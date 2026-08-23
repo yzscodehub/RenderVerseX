@@ -165,7 +165,7 @@ namespace
         RVX::uint64 frameSequence = 91)
     {
         RVX::RenderExecutionReceipt receipt;
-        receipt.schemaVersion = 6;
+        receipt.schemaVersion = 7;
         receipt.available = true;
         receipt.graphComposed = true;
         receipt.executionSucceeded = true;
@@ -225,6 +225,8 @@ namespace
         receipt.postProcess.colorGradingPassCount = 1;
         receipt.postProcess.fxaaPassCount = 1;
         receipt.postProcess.taaPassCount = 0;
+        receipt.postProcess.antiAliasingMode =
+            RVX::RenderAntiAliasingMode::FXAA;
         receipt.postProcess.inputColorDomain =
             RVX::PostProcessColorDomain::SceneLinearHDR;
         receipt.postProcess.plannedOutputColorDomain =
@@ -266,7 +268,7 @@ namespace
     {
         RVX::SamplePostProcessExecutionDiagnostics diagnostics;
         diagnostics.available = true;
-        diagnostics.executionReceiptSchemaVersion = 6;
+        diagnostics.executionReceiptSchemaVersion = 7;
         diagnostics.executionReceiptStructurallyValid = true;
         diagnostics.executionReceiptAvailable = true;
         diagnostics.executionReceiptGraphComposed = true;
@@ -294,6 +296,7 @@ namespace
         diagnostics.colorGradingPassCount = 1;
         diagnostics.fxaaPassCount = 1;
         diagnostics.taaPassCount = 0;
+        diagnostics.antiAliasingMode = RVX::RenderAntiAliasingMode::FXAA;
         diagnostics.inputColorDomain =
             RVX::PostProcessColorDomain::SceneLinearHDR;
         diagnostics.plannedOutputColorDomain =
@@ -309,6 +312,34 @@ namespace
         diagnostics.displayLinearOutputReady = false;
         diagnostics.encodedOutputReady = true;
         diagnostics.fallbackUsed = false;
+        return diagnostics;
+    }
+
+    RVX::SamplePostProcessExecutionDiagnostics
+        MakeQualifiedTemporalAAActualExecution(
+            RVX::uint64 frameSequence = 92)
+    {
+        RVX::SamplePostProcessExecutionDiagnostics diagnostics =
+            MakeQualifiedPostProcessActualExecution(frameSequence);
+        diagnostics.postProcessFeatureGraphPassCount = 3;
+        diagnostics.postProcessFeatureExecutedGraphPassCount = 3;
+        diagnostics.bloomPassCount = 0;
+        diagnostics.colorGradingPassCount = 0;
+        diagnostics.fxaaPassCount = 0;
+        diagnostics.taaPassCount = 1;
+        diagnostics.antiAliasingMode = RVX::RenderAntiAliasingMode::TAA;
+        diagnostics.taaRequested = true;
+        diagnostics.taaPipelineReady = true;
+        diagnostics.taaInputsReady = true;
+        diagnostics.taaExecuted = true;
+        diagnostics.historyAvailableBefore = true;
+        diagnostics.historySampled = true;
+        diagnostics.historyCandidateProduced = true;
+        diagnostics.historyCommitted = true;
+        diagnostics.currentJitterPixels = RVX::Vec2(0.25f, -0.125f);
+        diagnostics.previousJitterPixels = RVX::Vec2(-0.25f, 0.125f);
+        diagnostics.taaResolveGraphPassCount = 1;
+        diagnostics.taaHistoryStoreGraphPassCount = 1;
         return diagnostics;
     }
 
@@ -403,6 +434,48 @@ namespace
             RVX::PostProcessTransfer::DisplayLinearToEncoded;
         diagnostics.displayLinearOutputReady = true;
         EXPECT_TRUE(diagnostics.IsQualificationReady());
+    }
+
+    TEST(SampleCLIValidation,
+         TemporalAAQualificationRequiresSampledAndPresentedHistory)
+    {
+        RVX::SamplePostProcessExecutionDiagnostics diagnostics =
+            MakeQualifiedTemporalAAActualExecution();
+        EXPECT_TRUE(diagnostics.IsTemporalAAQualificationReady());
+        EXPECT_FALSE(diagnostics.IsQualificationReady());
+
+        diagnostics.historySampled = false;
+        EXPECT_FALSE(diagnostics.IsTemporalAAQualificationReady());
+
+        diagnostics = MakeQualifiedTemporalAAActualExecution();
+        diagnostics.historyCommitted = false;
+        EXPECT_FALSE(diagnostics.IsTemporalAAQualificationReady());
+
+        diagnostics = MakeQualifiedTemporalAAActualExecution();
+        diagnostics.historyAbandoned = true;
+        EXPECT_FALSE(diagnostics.IsTemporalAAQualificationReady());
+
+        diagnostics = MakeQualifiedTemporalAAActualExecution();
+        diagnostics.taaResolveGraphPassCount = 0;
+        EXPECT_FALSE(diagnostics.IsTemporalAAQualificationReady());
+
+        diagnostics = MakeQualifiedTemporalAAActualExecution();
+        diagnostics.fxaaPassCount = 1;
+        EXPECT_FALSE(diagnostics.IsTemporalAAQualificationReady());
+
+        diagnostics = MakeQualifiedTemporalAAActualExecution();
+        diagnostics.previousJitterPixels = diagnostics.currentJitterPixels;
+        EXPECT_FALSE(diagnostics.IsTemporalAAQualificationReady());
+
+        diagnostics = MakeQualifiedTemporalAAActualExecution();
+        diagnostics.currentJitterPixels = RVX::Vec2(0.0f);
+        diagnostics.previousJitterPixels = RVX::Vec2(0.0f);
+        EXPECT_FALSE(diagnostics.IsTemporalAAQualificationReady());
+
+        diagnostics = MakeQualifiedTemporalAAActualExecution();
+        diagnostics.currentJitterPixels.x =
+            std::numeric_limits<RVX::float32>::quiet_NaN();
+        EXPECT_FALSE(diagnostics.IsTemporalAAQualificationReady());
     }
 
     TEST(SampleCLIValidation, SmokeDefaultsToEightFrames)
@@ -575,7 +648,7 @@ namespace
     }
 
     TEST(SampleCLIValidation,
-         VersionTwentyOneReportWritesExactVisualAndRenderExecutionReceipts)
+         CurrentReportWritesExactVisualAndRenderExecutionReceipts)
     {
         RVX::SampleReport report;
         report.schemaVersion = RVX::RVX_SAMPLE_REPORT_SCHEMA_VERSION;
@@ -616,7 +689,7 @@ namespace
         std::ostringstream stream;
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
-        EXPECT_NE(json.find("\"schemaVersion\": 22"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 23"), std::string::npos);
         EXPECT_NE(json.find("\"visualContractReceipt\": {"),
                   std::string::npos);
         EXPECT_NE(json.find("\"manifestSchema\": \"RVX.SampleManifest\""),
@@ -662,7 +735,7 @@ namespace
                   std::string::npos);
         EXPECT_NE(json.find("\"renderExecutionReceipt\": {"),
                   std::string::npos);
-        EXPECT_NE(json.find("\"schemaVersion\": 6"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 7"), std::string::npos);
         EXPECT_NE(json.find("\"sourceCommit\": \"" + std::string(40, 'a') +
                             "\""),
                   std::string::npos);
@@ -744,6 +817,10 @@ namespace
         EXPECT_NE(json.find("\"fxaaPassCount\": 1"),
                   std::string::npos);
         EXPECT_NE(json.find("\"taaPassCount\": 0"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"antiAliasingMode\": \"fxaa\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"taaRequested\": false"),
                   std::string::npos);
         EXPECT_NE(json.find("\"inputColorDomain\": \"scene-linear-hdr\""),
                   std::string::npos);
@@ -1586,7 +1663,7 @@ namespace
         const std::string json = stream.str();
 
         EXPECT_NE(json.find("\"schemaId\": \"RVX.SampleReport\""), std::string::npos);
-        EXPECT_NE(json.find("\"schemaVersion\": 22"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 23"), std::string::npos);
         EXPECT_NE(json.find("\"sampleName\": \"BasicRHI\""), std::string::npos);
         EXPECT_NE(json.find("\"category\": \"sample\""), std::string::npos);
         EXPECT_NE(json.find("\"requestedBackend\": \"dx12\""), std::string::npos);
@@ -1695,7 +1772,7 @@ namespace
         EXPECT_NE(json.find("\"renderGraphTotalPasses\": 3"), std::string::npos);
         EXPECT_NE(json.find("\"postProcessActualExecution\": {"),
                   std::string::npos);
-        EXPECT_NE(json.find("\"executionReceiptSchemaVersion\": 6"),
+        EXPECT_NE(json.find("\"executionReceiptSchemaVersion\": 7"),
                   std::string::npos);
         EXPECT_NE(json.find("\"presentedFrameAligned\": true"),
                   std::string::npos);
@@ -1719,6 +1796,8 @@ namespace
                       "\"presentationTransfer\": \"scene-linear-to-display-encoded\""),
                   std::string::npos);
         EXPECT_NE(json.find("\"qualified\": true"), std::string::npos);
+        EXPECT_NE(json.find("\"temporalAAQualified\": false"),
+                  std::string::npos);
         EXPECT_NE(json.find("\"nativeValidationAvailable\": true"),
                   std::string::npos);
         EXPECT_NE(json.find("\"nativeValidationEnabled\": true"),
@@ -1859,7 +1938,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 22"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 23"), std::string::npos);
         EXPECT_NE(json.find("\"contractRevision\": 7"), std::string::npos);
         EXPECT_NE(json.find("\"phase\": \"complete\""),
                   std::string::npos);
@@ -2348,7 +2427,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 22"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 23"), std::string::npos);
         EXPECT_NE(json.find("\"packageContentId\""), std::string::npos);
         EXPECT_NE(json.find(asset.packageContentId.digest), std::string::npos);
         EXPECT_NE(json.find("\"cook\": {\"required\": true, \"accepted\": true, \"code\": \"accepted\""),

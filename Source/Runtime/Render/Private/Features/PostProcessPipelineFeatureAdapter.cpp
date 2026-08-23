@@ -6,8 +6,10 @@
 #include "Features/PostProcessPipelineFeatureAdapter.h"
 
 #include "Core/Diagnostics/ContentHash.h"
+#include "Render/PostProcess/TAA.h"
 
 #include <algorithm>
+#include <bit>
 #include <utility>
 
 namespace RVX
@@ -54,6 +56,16 @@ namespace
         }
 
         return PostProcessTransfer::None;
+    }
+
+    void MixFloat(uint64& hash, float32 value) noexcept
+    {
+        // Diagnostics must distinguish all temporal jitter samples while
+        // treating the two IEEE zero encodings as the same camera state.
+        const float32 canonicalValue = value == 0.0f ? 0.0f : value;
+        Diagnostics::MixContentHashValue(
+            hash,
+            static_cast<uint64>(std::bit_cast<uint32>(canonicalValue)));
     }
 } // namespace
 
@@ -209,6 +221,7 @@ void PostProcessPipelineFeatureAdapter::AddPasses(
     inputs.depth = translucency->deviceDepth;
     inputs.normal = translucency->worldNormal;
     inputs.velocity = translucency->velocity;
+    inputs.reactiveMask = translucency->reactiveMask;
     inputs.sceneColorDomain = translucency->colorDomain;
     const bool hardwareSRGBEncode = UsesHardwareSRGBEncode(
         m_recordContext.presentableColorMetadata.format);
@@ -325,6 +338,64 @@ void PostProcessPipelineFeatureAdapter::OnGraphExecutionFinalized(
     RefreshExecutionReceipt();
 }
 
+bool PostProcessPipelineFeatureAdapter::CommitTemporalHistoryAfterPresent(
+    const RenderViewHistoryIdentity& identity) noexcept
+{
+    if (!CanCommitTemporalHistoryAfterPresent(identity))
+    {
+        return false;
+    }
+
+    if (!RequiresTemporalHistoryCommit())
+        return true;
+
+    TAA* const taa = m_stack->GetEffect<TAA>();
+    if (taa == nullptr || !taa->CommitHistoryAfterPresent(identity))
+        return false;
+
+    RefreshExecutionReceipt();
+    return m_lastExecutionReceipt.taaRequested &&
+           m_lastExecutionReceipt.historyCommitted;
+}
+
+bool PostProcessPipelineFeatureAdapter::CanCommitTemporalHistoryAfterPresent(
+    const RenderViewHistoryIdentity& identity) noexcept
+{
+    if (!RequiresTemporalHistoryCommit())
+        return true;
+
+    if (m_stack == nullptr || !identity.IsValid())
+        return false;
+
+    TAA* const taa = m_stack->GetEffect<TAA>();
+    return taa != nullptr && taa->CanCommitHistoryAfterPresent(identity);
+}
+
+void PostProcessPipelineFeatureAdapter::AbandonTemporalHistoryCandidate() noexcept
+{
+    if (m_stack == nullptr)
+    {
+        return;
+    }
+
+    if (TAA* const taa = m_stack->GetEffect<TAA>(); taa != nullptr)
+    {
+        taa->AbandonPendingHistory();
+        if (m_lastExecutionReceipt.taaRequested)
+        {
+            RefreshExecutionReceipt();
+        }
+    }
+}
+
+bool PostProcessPipelineFeatureAdapter::RequiresTemporalHistoryCommit() const noexcept
+{
+    return m_lastExecutionReceipt.taaRequested &&
+           m_lastExecutionReceipt.taaExecuted &&
+           m_lastExecutionReceipt.historyCandidateProduced &&
+           !m_lastExecutionReceipt.historyCommitted;
+}
+
 RenderFeatureExecutionReceipt
 PostProcessPipelineFeatureAdapter::CollectReceipt() const
 {
@@ -412,6 +483,9 @@ void PostProcessPipelineFeatureAdapter::RefreshExecutionReceipt()
     receipt.presentationTransfer = m_hardwareSRGBEncodeBoundary
         ? PostProcessTransfer::DisplayLinearToEncoded
         : receipt.toneMappingTransfer;
+    receipt.antiAliasingMode = m_stack != nullptr
+        ? m_stack->GetSettings().antiAliasingMode
+        : RenderAntiAliasingMode::None;
 
     uint64 hash = Diagnostics::RVX_DIAGNOSTICS_FNV1A64_OFFSET_BASIS;
     Diagnostics::MixContentHashValue(hash, m_lastPlanStats.planFingerprint);
@@ -440,6 +514,8 @@ void PostProcessPipelineFeatureAdapter::RefreshExecutionReceipt()
         hash, static_cast<uint64>(receipt.toneMappingTransfer));
     Diagnostics::MixContentHashValue(
         hash, static_cast<uint64>(receipt.presentationTransfer));
+    Diagnostics::MixContentHashValue(
+        hash, static_cast<uint64>(receipt.antiAliasingMode));
 
     for (const PostProcessEffectExecutionPlan& effect :
          m_lastPlanStats.effectPlans)
@@ -475,9 +551,67 @@ void PostProcessPipelineFeatureAdapter::RefreshExecutionReceipt()
             case PostProcessPassId::FXAA:
                 ++receipt.fxaaPassCount;
                 break;
+            case PostProcessPassId::TemporalAntiAliasing:
+                ++receipt.taaPassCount;
+                break;
             default: break;
         }
     }
+
+    if (receipt.antiAliasingMode == RenderAntiAliasingMode::TAA)
+    {
+        const TAA* const taa = m_stack != nullptr
+            ? m_stack->GetEffect<TAA>()
+            : nullptr;
+        if (taa == nullptr)
+        {
+            m_lastExecutionReceipt = {};
+            return;
+        }
+
+        const TAAResolveStats& taaStats = taa->GetLastResolveStats();
+        receipt.taaRequested = taaStats.requested;
+        receipt.taaPipelineReady = taaStats.pipelineReady;
+        receipt.taaInputsReady = taaStats.inputsReady;
+        receipt.taaExecuted = taaStats.executed;
+        receipt.historyAvailableBefore = taaStats.historyAvailableBefore;
+        receipt.historySampled = taaStats.historySampled;
+        // An abandoned candidate was still physically produced by the exact
+        // graph; retain that fact in the receipt even though TAA clears its
+        // mutable pending slot while abandoning it.
+        receipt.historyCandidateProduced =
+            taaStats.historyCandidatePrepared || taaStats.historyAbandoned;
+        receipt.historyCommitted = taaStats.historyCommitted;
+        receipt.historyAbandoned = taaStats.historyAbandoned;
+        receipt.historyResetReasons = taaStats.historyResetReasons;
+        receipt.currentJitterPixels = taaStats.currentJitterPixels;
+        receipt.previousJitterPixels = taaStats.previousJitterPixels;
+        receipt.taaResolveGraphPassCount = taaStats.resolveGraphPassCount;
+        receipt.taaHistoryStoreGraphPassCount = taaStats.historyStoreGraphPassCount;
+    }
+
+    // Temporal state is filled from the actual graph-backed TAA execution,
+    // rather than from settings.  Bind it into the receipt fingerprint only
+    // after that evidence is available, including the post-Present state.
+    Diagnostics::MixContentHashValue(hash, receipt.taaRequested ? 1u : 0u);
+    Diagnostics::MixContentHashValue(hash, receipt.taaPipelineReady ? 1u : 0u);
+    Diagnostics::MixContentHashValue(hash, receipt.taaInputsReady ? 1u : 0u);
+    Diagnostics::MixContentHashValue(hash, receipt.taaExecuted ? 1u : 0u);
+    Diagnostics::MixContentHashValue(
+        hash, receipt.historyAvailableBefore ? 1u : 0u);
+    Diagnostics::MixContentHashValue(hash, receipt.historySampled ? 1u : 0u);
+    Diagnostics::MixContentHashValue(
+        hash, receipt.historyCandidateProduced ? 1u : 0u);
+    Diagnostics::MixContentHashValue(hash, receipt.historyCommitted ? 1u : 0u);
+    Diagnostics::MixContentHashValue(hash, receipt.historyAbandoned ? 1u : 0u);
+    Diagnostics::MixContentHashValue(
+        hash, static_cast<uint64>(receipt.historyResetReasons));
+    MixFloat(hash, receipt.currentJitterPixels.x);
+    MixFloat(hash, receipt.currentJitterPixels.y);
+    MixFloat(hash, receipt.previousJitterPixels.x);
+    MixFloat(hash, receipt.previousJitterPixels.y);
+    Diagnostics::MixContentHashValue(hash, receipt.taaResolveGraphPassCount);
+    Diagnostics::MixContentHashValue(hash, receipt.taaHistoryStoreGraphPassCount);
 
     receipt.postProcessContentHash = hash;
     receipt.hdrInputReady =

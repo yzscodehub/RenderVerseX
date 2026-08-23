@@ -16,6 +16,7 @@
 #include "Scenes/RenderPipelineShowcaseSample.h"
 #include "Scenes/RenderingStressSample.h"
 #include "Scenes/SceneLifecycleSample.h"
+#include "Scenes/TemporalAASample.h"
 #include "Samples/SampleRegistry.h"
 
 #include <memory>
@@ -82,6 +83,8 @@ namespace RVX
                RegisterBuiltInSample<PhysicsSandboxSample>(
                    manifest, registry, outError) &&
                RegisterBuiltInSample<AnimationCharacterSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<TemporalAASample>(
                    manifest, registry, outError) &&
                RegisterBuiltInSample<RenderingStressSample>(
                    manifest, registry, outError) &&

@@ -14,10 +14,17 @@ void ViewData::SetupFromCamera(const Camera& camera, uint32_t width, uint32_t he
     viewMatrix = camera.GetView();
     projectionMatrix = camera.GetProjection();
     viewProjectionMatrix = camera.GetViewProjection();
+    jitteredProjectionMatrix = projectionMatrix;
+    jitteredViewProjectionMatrix = viewProjectionMatrix;
+    previousJitteredViewProjectionMatrix = previousViewProjectionMatrix;
+    currentTemporalJitter = {};
+    previousTemporalJitter = {};
     
     // Inverse matrices
     inverseViewMatrix = inverse(viewMatrix);
     inverseProjectionMatrix = inverse(projectionMatrix);
+    inverseJitteredViewProjectionMatrix =
+        inverseViewMatrix * inverseProjectionMatrix;
     
     // Camera transform
     cameraPosition = camera.GetPosition();
@@ -46,8 +53,12 @@ void ViewData::SetupFromSnapshot(
     viewMatrix = snapshot.viewMatrix;
     projectionMatrix = snapshot.projectionMatrix;
     viewProjectionMatrix = snapshot.viewProjectionMatrix;
+    jitteredProjectionMatrix = projectionMatrix;
+    jitteredViewProjectionMatrix = viewProjectionMatrix;
     inverseViewMatrix = inverse(viewMatrix);
     inverseProjectionMatrix = inverse(projectionMatrix);
+    inverseJitteredViewProjectionMatrix =
+        inverseViewMatrix * inverseProjectionMatrix;
     cameraPosition = snapshot.cameraPosition;
     cameraForward = snapshot.cameraDirection;
     cullingMask = snapshot.cullingMask;
@@ -68,11 +79,45 @@ void ViewData::SetupFromSnapshot(
                                        : previousRenderedViewProjection;
     previousViewProjectionValid =
         static_cast<uint8>(previousRenderedViewValid && !resetHistory);
+    previousJitteredViewProjectionMatrix = previousViewProjectionMatrix;
+    currentTemporalJitter = {};
+    previousTemporalJitter = {};
     resetTemporalHistory = resetHistory;
     // Shader view constants remain float32; the frame contract validates the
     // representable range before this explicit presentation-time projection.
     time = static_cast<float32>(snapshot.absoluteTime);
     deltaTime = snapshot.deltaTime;
+}
+
+void ViewData::SetTemporalJitter(
+    const RenderTemporalJitter& currentJitter,
+    const RenderTemporalJitter& previousJitter,
+    const Mat4& previousPresentedJitteredViewProjection,
+    bool previousPresentedJitteredViewValid)
+{
+    if (!IsValidRenderTemporalJitter(currentJitter))
+    {
+        currentTemporalJitter = {};
+        jitteredProjectionMatrix = projectionMatrix;
+        jitteredViewProjectionMatrix = viewProjectionMatrix;
+    }
+    else
+    {
+        currentTemporalJitter = currentJitter;
+        jitteredProjectionMatrix =
+            ApplyRenderTemporalJitter(projectionMatrix, currentJitter);
+        jitteredViewProjectionMatrix = jitteredProjectionMatrix * viewMatrix;
+    }
+    inverseJitteredViewProjectionMatrix =
+        inverse(jitteredViewProjectionMatrix);
+
+    const bool priorValid = previousViewProjectionValid != 0U &&
+                            previousPresentedJitteredViewValid &&
+                            IsValidRenderTemporalJitter(previousJitter);
+    previousTemporalJitter = priorValid ? previousJitter : RenderTemporalJitter{};
+    previousJitteredViewProjectionMatrix = priorValid
+        ? previousPresentedJitteredViewProjection
+        : previousViewProjectionMatrix;
 }
 
 } // namespace RVX

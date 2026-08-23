@@ -21,6 +21,7 @@ namespace RVX
         Vignette,
         FilmGrain,
         FXAA,
+        TemporalAntiAliasing,
         DepthOfField,
         MotionBlur,
         VolumetricLighting,

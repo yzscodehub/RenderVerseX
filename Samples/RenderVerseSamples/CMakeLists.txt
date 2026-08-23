@@ -19,6 +19,7 @@ add_executable(RenderVerseSamples
     Scenes/RenderPipelineShowcaseSample.cpp
     Scenes/RenderingStressSample.cpp
     Scenes/SceneLifecycleSample.cpp
+    Scenes/TemporalAASample.cpp
 )
 target_include_directories(RenderVerseSamples PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}

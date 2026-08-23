@@ -44,6 +44,7 @@
 #include "Render/PostProcess/FilmGrain.h"
 #include "Render/PostProcess/FXAA.h"
 #include "Render/PostProcess/SSAO.h"
+#include "Render/PostProcess/TAA.h"
 #include "Render/PostProcess/ToneMapping.h"
 #include "Render/PostProcess/Vignette.h"
 #include "Render/RayTracing/RayTracingScene.h"
@@ -864,7 +865,7 @@ namespace
         settings.toneMappingOperator = ToneMappingOperator::ACES;
         settings.enableBloom = true;
         settings.bloomIntensity = 0.0f;
-        settings.enableFXAA = false;
+        settings.antiAliasingMode = RenderAntiAliasingMode::None;
         settings.enableDOF = false;
         settings.enableMotionBlur = false;
         settings.enableColorGrading = false;
@@ -876,7 +877,6 @@ namespace
         settings.enableSSR = false;
         settings.enableRayTracedReflections = false;
         settings.enableRayTracedReflectionDenoise = true;
-        settings.enableTAA = false;
         return settings;
     }
 
@@ -1452,9 +1452,11 @@ void SceneRenderer::Shutdown()
     m_filmGrainPostProcess = nullptr;
     m_ssaoPostProcess = nullptr;
     m_fxaaPostProcess = nullptr;
+    m_taaPostProcess = nullptr;
     m_pendingRenderExecutionReceipt.reset();
     m_lastAttemptedRenderExecutionReceipt = {};
     m_completedRenderExecutionReceipt = {};
+    m_presentedTemporalPresentationState.reset();
     m_activeRenderDeformationResources.reset();
     m_featureCompositionFailureReason.clear();
     if (m_postProcessStack)
@@ -1538,6 +1540,7 @@ void SceneRenderer::Shutdown()
 void SceneRenderer::RequestTemporalHistoryReset()
 {
     m_pendingTemporalHistoryReset = true;
+    m_presentedTemporalPresentationState.reset();
     if (m_viewHistoryCoordinator)
     {
         m_viewHistoryCoordinator->RequestReset(
@@ -1589,17 +1592,24 @@ void SceneRenderer::EvaluateAcceptedFrameHistory(
     if (availability.identity.IsValid())
     {
         m_activeViewHistoryCandidate = availability.identity;
+        m_activeViewHistoryAvailability = availability;
     }
 }
 
 void SceneRenderer::AbandonAcceptedFrameHistory() noexcept
 {
+    if (m_postProcessFeature)
+    {
+        m_postProcessFeature->AbandonTemporalHistoryCandidate();
+    }
     if (m_activeViewHistoryCandidate.has_value() &&
         m_viewHistoryCoordinator)
     {
         m_viewHistoryCoordinator->Abandon(*m_activeViewHistoryCandidate);
     }
     m_activeViewHistoryCandidate.reset();
+    m_activeViewHistoryAvailability.reset();
+    m_pendingTemporalPresentationState.reset();
 }
 
 void SceneRenderer::PrepareForSwapChainResize()
@@ -1642,6 +1652,7 @@ void SceneRenderer::PrepareForSwapChainResize()
     m_viewData.colorTarget = {};
     m_viewData.depthTarget = {};
     m_viewData.velocityTarget = {};
+    m_viewData.reactiveMaskTarget = {};
 
     RequestTemporalHistoryReset();
 }
@@ -2609,6 +2620,46 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
                                  result.temporalHistoryReset);
 
     const RenderFrameSettings& frameSettings = m_renderScene.GetSettings();
+    const RenderAntiAliasingMode requestedAntiAliasingMode =
+        frameSettings.postProcess.antiAliasingMode;
+    const bool temporalAntiAliasingRequested =
+        frameSettings.postProcess.enabled &&
+        requestedAntiAliasingMode == RenderAntiAliasingMode::TAA;
+    const RenderOutputExtent temporalExtent{
+        m_viewData.viewportWidth, m_viewData.viewportHeight};
+    const RenderTemporalJitter currentTemporalJitter =
+        temporalAntiAliasingRequested
+            ? MakeRenderTemporalJitter(
+                  m_renderScene.GetAcceptedHeader().sequence, temporalExtent)
+            : RenderTemporalJitter{};
+    const bool previousTemporalStateReusable =
+        temporalAntiAliasingRequested && !result.temporalHistoryReset &&
+        m_activeViewHistoryAvailability.has_value() &&
+        m_activeViewHistoryAvailability->available &&
+        m_presentedTemporalPresentationState.has_value() &&
+        IsValidRenderTemporalJitter(
+            m_presentedTemporalPresentationState->jitter);
+    const RenderTemporalJitter previousTemporalJitter =
+        previousTemporalStateReusable
+            ? m_presentedTemporalPresentationState->jitter
+            : RenderTemporalJitter{};
+    const Mat4 previousJitteredViewProjection =
+        previousTemporalStateReusable
+            ? m_presentedTemporalPresentationState->jitteredViewProjection
+            : m_viewData.previousViewProjectionMatrix;
+    m_viewData.SetTemporalJitter(
+        currentTemporalJitter,
+        previousTemporalJitter,
+        previousJitteredViewProjection,
+        previousTemporalStateReusable);
+    if (m_activeViewHistoryCandidate.has_value())
+    {
+        m_pendingTemporalPresentationState = PendingTemporalPresentationState{
+            *m_activeViewHistoryCandidate,
+            currentTemporalJitter,
+            m_viewData.jitteredViewProjectionMatrix};
+    }
+
     m_viewData.instancingMode = frameSettings.instancingMode;
     SetGPUDrivenCullingMode(frameSettings.gpuCulling.mode);
     m_postProcessSettings.enableBloom =
@@ -2620,16 +2671,14 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
     m_postProcessSettings.enableSSR =
         frameSettings.postProcess.enabled &&
         frameSettings.postProcess.enableSSR;
+    m_postProcessSettings.antiAliasingMode =
+        frameSettings.postProcess.enabled
+            ? requestedAntiAliasingMode
+            : RenderAntiAliasingMode::None;
     m_postProcessSettings.enableVelocityOutput =
         frameSettings.postProcess.enabled &&
-        frameSettings.postProcess.enableVelocityOutput;
-    // GFX10 has no temporal resolve. Preserve the public request as an
-    // unsupported future-facing setting rather than routing it to velocity
-    // production or claiming TAA execution.
-    m_postProcessSettings.enableTAA = false;
-    m_postProcessSettings.enableFXAA =
-        frameSettings.postProcess.enabled &&
-        frameSettings.postProcess.enableFXAA;
+        (frameSettings.postProcess.enableVelocityOutput ||
+         requestedAntiAliasingMode == RenderAntiAliasingMode::TAA);
     m_postProcessSettings.enableColorGrading =
         frameSettings.postProcess.enabled &&
         frameSettings.postProcess.enableColorGrading;
@@ -3120,6 +3169,15 @@ void SceneRenderer::ReleaseUnsubmittedFrame()
     AbandonAcceptedFrameHistory();
     if (m_pendingRenderExecutionReceipt.has_value())
     {
+        // Abandoning a graph-backed TAA candidate changes its immutable
+        // lifecycle evidence. Copy that post-process receipt before exposing
+        // this failed attempt, otherwise diagnostics could falsely claim an
+        // unpresented candidate was still pending.
+        if (m_postProcessFeature != nullptr)
+        {
+            m_pendingRenderExecutionReceipt->postProcess =
+                m_postProcessFeature->GetLastExecutionReceipt();
+        }
         RenderExecutionReceipt rejected =
             *m_pendingRenderExecutionReceipt;
         rejected.presented = false;
@@ -3396,20 +3454,74 @@ void SceneRenderer::MarkAcceptedFramePresented()
     // Present failure must leave the prior presented transforms intact.
     UpdateObjectMotionHistory();
 
+    const bool receiptMatches =
+        m_pendingRenderExecutionReceipt.has_value() &&
+        m_pendingRenderExecutionReceipt->executionSucceeded &&
+        m_pendingRenderExecutionReceipt->frameIdentity.frameSequence ==
+            presentedFrameSequence &&
+        m_pendingRenderExecutionReceipt->viewIdentity ==
+            presentedViewIdentity;
+    const bool temporalPresentationStateMatches =
+        m_activeViewHistoryCandidate.has_value() &&
+        m_pendingTemporalPresentationState.has_value() &&
+        m_pendingTemporalPresentationState->historyIdentity ==
+            *m_activeViewHistoryCandidate &&
+        m_pendingTemporalPresentationState->historyIdentity.view ==
+            presentedViewIdentity;
+    const std::optional<PendingTemporalPresentationState>
+        presentedTemporalCandidate = m_pendingTemporalPresentationState;
+
+    const bool postProcessRequiresHistoryCommit =
+        m_postProcessFeature != nullptr &&
+        m_postProcessFeature->RequiresTemporalHistoryCommit();
+    const bool coordinatorCanCommit =
+        temporalPresentationStateMatches &&
+        m_viewHistoryCoordinator && m_activeViewHistoryCandidate.has_value() &&
+        (!postProcessRequiresHistoryCommit || receiptMatches) &&
+        m_viewHistoryCoordinator->CanCommitPresented(
+            *m_activeViewHistoryCandidate);
+    // A presentation is a dual temporal transaction when TAA produced a
+    // candidate. Preflight both independently owned stores before advancing
+    // either one: an identity mismatch must abandon both candidates, never
+    // leave the coordinator committed while TAA rejected its history.
+    const bool postProcessCanCommit =
+        !postProcessRequiresHistoryCommit ||
+        (coordinatorCanCommit && m_postProcessFeature != nullptr &&
+         m_activeViewHistoryCandidate.has_value() &&
+         m_postProcessFeature->CanCommitTemporalHistoryAfterPresent(
+             *m_activeViewHistoryCandidate));
+
     bool historyCommitted = false;
-    if (m_viewHistoryCoordinator && m_activeViewHistoryCandidate.has_value())
+    bool postProcessHistoryCommitted = !postProcessRequiresHistoryCommit;
+    if (coordinatorCanCommit && postProcessCanCommit)
     {
-        // RenderSubsystem calls this only after the submitted frame's Present
-        // completed successfully. The coordinator's state is intentionally
-        // advanced at this boundary, never at acceptance or submission.
+        // These commits cannot fail after their side-effect-free exact
+        // candidate preflights while this renderer owns the frame lifecycle.
         historyCommitted = m_viewHistoryCoordinator->CommitPresented(
             *m_activeViewHistoryCandidate);
+        if (historyCommitted && postProcessRequiresHistoryCommit)
+        {
+            postProcessHistoryCommitted =
+                m_postProcessFeature->CommitTemporalHistoryAfterPresent(
+                    *m_activeViewHistoryCandidate);
+        }
     }
-    if (!historyCommitted)
+
+    if (!historyCommitted && m_viewHistoryCoordinator &&
+        m_activeViewHistoryCandidate.has_value())
+    {
+        m_viewHistoryCoordinator->Abandon(*m_activeViewHistoryCandidate);
+    }
+    if (!postProcessHistoryCommitted && m_postProcessFeature != nullptr)
+    {
+        m_postProcessFeature->AbandonTemporalHistoryCandidate();
+    }
+    if (!historyCommitted || !postProcessHistoryCommitted)
     {
         // Preserve correctness if a lifecycle caller violates the accepted /
-        // presented pairing. The next accepted view must start fresh rather
-        // than reuse an identity that was not committed at presentation.
+        // presented pairing or either exact-candidate preflight fails. The
+        // next accepted view starts fresh rather than reusing a partially
+        // qualified temporal state.
         m_pendingTemporalHistoryReset = true;
         if (m_viewHistoryCoordinator)
         {
@@ -3417,7 +3529,7 @@ void SceneRenderer::MarkAcceptedFramePresented()
                 RenderHistoryResetReason::ExplicitDiscontinuity);
         }
         RVX_RENDER_ERROR(
-            "SceneRenderer: presented frame had no matching temporal history candidate");
+            "SceneRenderer: presented frame failed temporal history preflight or commit");
     }
     else
     {
@@ -3426,16 +3538,20 @@ void SceneRenderer::MarkAcceptedFramePresented()
         m_pendingTemporalHistoryReset =
             m_viewHistoryCoordinator->HasPendingReset();
     }
-    m_activeViewHistoryCandidate.reset();
+    if (m_pendingRenderExecutionReceipt.has_value() &&
+        m_postProcessFeature != nullptr)
+    {
+        m_pendingRenderExecutionReceipt->postProcess =
+            m_postProcessFeature->GetLastExecutionReceipt();
+    }
 
-    const bool receiptMatches =
-        m_pendingRenderExecutionReceipt.has_value() &&
-        m_pendingRenderExecutionReceipt->executionSucceeded &&
-        m_pendingRenderExecutionReceipt->frameIdentity.frameSequence ==
-            presentedFrameSequence &&
-        m_pendingRenderExecutionReceipt->viewIdentity ==
-            presentedViewIdentity;
-    if (receiptMatches && historyCommitted)
+    m_activeViewHistoryCandidate.reset();
+    m_activeViewHistoryAvailability.reset();
+    m_pendingTemporalPresentationState.reset();
+
+    const bool presentationQualified =
+        receiptMatches && historyCommitted && postProcessHistoryCommitted;
+    if (presentationQualified)
     {
         RenderExecutionReceipt presented =
             *m_pendingRenderExecutionReceipt;
@@ -3444,6 +3560,11 @@ void SceneRenderer::MarkAcceptedFramePresented()
         presented.diagnostic.clear();
         if (presented.IsStructurallyValid())
         {
+            if (presentedTemporalCandidate.has_value())
+            {
+                m_presentedTemporalPresentationState =
+                    *presentedTemporalCandidate;
+            }
             m_completedRenderExecutionReceipt = presented;
             m_lastAttemptedRenderExecutionReceipt = std::move(presented);
         }
@@ -3472,7 +3593,9 @@ void SceneRenderer::MarkAcceptedFramePresented()
         rejected.succeeded = false;
         rejected.diagnostic = !receiptMatches
             ? "Presented frame did not qualify for a completed render execution receipt"
-            : "Presented frame failed temporal history qualification";
+            : !historyCommitted
+                ? "Presented frame failed temporal history qualification"
+                : "Presented frame failed TAA temporal history qualification";
         m_lastAttemptedRenderExecutionReceipt = std::move(rejected);
     }
     m_pendingRenderExecutionReceipt.reset();
@@ -4092,17 +4215,27 @@ void SceneRenderer::CompileRenderFramePlan()
             backBufferFormat =
                 m_renderContext->GetCurrentBackBuffer()->GetFormat();
         }
-        const PostProcessStackExecuteStats stackStats = m_postProcessStack
-            // The preflight must validate against the same presentation
-            // surface selected for this frame.  In particular, an sRGB
-            // surface expects linear ToneMapping shader output because the
-            // final display encode is performed by the target itself.
-            ? m_postProcessStack->EvaluateEffects(backBufferFormat)
-            : PostProcessStackExecuteStats{};
         const bool deferredRecipeRequested =
             m_renderScene.GetSettings().pipelineRequest.recipe ==
             RenderPipelineRecipe::DeferredQuality;
+        PostProcessStackExecuteStats stackStats;
+        if (m_postProcessStack)
+        {
+            // Derive the presentation transfer from the immutable surface
+            // before evaluating the chain. An sRGB target expects linear
+            // shader output because the target performs the final encode.
+            PostProcessSettings effectiveSettings = m_postProcessSettings;
+            effectiveSettings.toneMappingOutputColorSpace =
+                ResolveToneMappingOutputColorSpace(backBufferFormat);
+            if (deferredRecipeRequested)
+            {
+                effectiveSettings.enableToneMapping = true;
+            }
+            m_postProcessStack->ApplySettings(effectiveSettings);
+            stackStats = m_postProcessStack->EvaluateEffects(backBufferFormat);
+        }
         const bool postProcessActive =
+            stackStats.planValid &&
             stackStats.enabledEffectCount > 0 &&
             stackStats.toneMappingBoundaryValid;
         const SceneColorFormatPolicy formatPolicy =
@@ -6079,7 +6212,7 @@ void SceneRenderer::Render()
         RenderExecutionReceipt receipt =
             m_renderFeatureRegistry->CollectExecutionReceipt(
                 m_executionBuildIdentity);
-        receipt.schemaVersion = 6;
+        receipt.schemaVersion = 7;
         if (m_activeRenderPassResults != nullptr &&
             m_activeRenderPassResults->identity == m_activeRenderPassIdentity &&
             m_activeRenderPassIdentity.frameSequence ==
@@ -8058,37 +8191,38 @@ void SceneRenderer::CommitGPUDrivenAccessSnapshots()
 namespace
 {
     /**
-     * @brief Creates the mandatory first writer for a transient post-process
-     * scene-color target.
+     * @brief Creates a deterministic first writer for a transient color target.
      *
-     * Main-chain passes may legitimately fail closed while an asynchronous
-     * scene update is becoming resident.  A skybox and post-process pass can
-     * still be scheduled in that frame, so a newly-created scene color target
-     * cannot rely on OpaquePass being its first producer.
+     * Transient scene inputs must never rely on allocation contents. Scene
+     * color needs a stable value when Opaque fails closed, while the temporal
+     * reactive mask uses zero as the identity until a later feature writes
+     * unstable pixels.
      */
-    void AddSceneColorInitializationPass(RenderGraph& graph,
-                                         RGTextureHandle sceneColorTarget,
-                                         RHIClearColor clearColor)
+    void AddColorInitializationPass(RenderGraph& graph,
+                                    RGTextureHandle colorTarget,
+                                    RHIClearColor clearColor,
+                                    const char* passName,
+                                    const char* viewName)
     {
-        struct SceneColorInitializationPassData
+        struct ColorInitializationPassData
         {
             RGTextureHandle colorTarget{};
             RGTextureViewHandle colorTargetView{};
         };
 
-        graph.AddPass<SceneColorInitializationPassData>(
-            "SceneColorInitializePass",
+        graph.AddPass<ColorInitializationPassData>(
+            passName,
             RenderGraphPassType::Graphics,
-            [sceneColorTarget, clearColor](RenderGraphBuilder& builder,
-                                           SceneColorInitializationPassData& data)
+            [colorTarget, viewName](RenderGraphBuilder& builder,
+                                    ColorInitializationPassData& data)
             {
-                if (!sceneColorTarget.IsValid())
+                if (!colorTarget.IsValid())
                 {
                     return;
                 }
 
                 const RHITextureDesc* const colorDesc =
-                    builder.GetTextureDesc(sceneColorTarget);
+                    builder.GetTextureDesc(colorTarget);
                 if (colorDesc == nullptr)
                 {
                     return;
@@ -8099,11 +8233,11 @@ namespace
                 colorViewDesc.dimension = colorDesc->dimension;
                 colorViewDesc.subresourceRange = RHISubresourceRange::All();
                 colorViewDesc.type = RHITextureViewType::RenderTarget;
-                colorViewDesc.debugName = "SceneColorInitializeRTV";
+                colorViewDesc.debugName = viewName;
 
-                data.colorTarget = sceneColorTarget;
+                data.colorTarget = colorTarget;
                 data.colorTargetView = builder.CreateTextureView(
-                    sceneColorTarget, colorViewDesc);
+                    colorTarget, colorViewDesc);
                 data.colorTargetView = builder.Write(
                     data.colorTargetView,
                     MakeRGAccessDesc(
@@ -8114,12 +8248,14 @@ namespace
                     data.colorTarget = {};
                 }
             },
-            [clearColor](const SceneColorInitializationPassData& data,
+            [clearColor](const ColorInitializationPassData& data,
                          RenderGraphPassContext& context)
             {
                 if (!data.colorTarget.IsValid() ||
                     !data.colorTargetView.IsValid())
                 {
+                    context.MarkExecutionFailed(
+                        "Color initialization pass has invalid graph resources");
                     return;
                 }
 
@@ -8129,6 +8265,8 @@ namespace
                     context.GetTextureView(data.colorTargetView);
                 if (colorTexture == nullptr || colorView == nullptr)
                 {
+                    context.MarkExecutionFailed(
+                        "Color initialization pass could not resolve graph resources");
                     return;
                 }
 
@@ -8144,6 +8282,30 @@ namespace
                 commands.BeginRenderPass(renderPassDesc);
                 commands.EndRenderPass();
             });
+    }
+
+    void AddSceneColorInitializationPass(RenderGraph& graph,
+                                         RGTextureHandle sceneColorTarget,
+                                         RHIClearColor clearColor)
+    {
+        AddColorInitializationPass(
+            graph,
+            sceneColorTarget,
+            clearColor,
+            "SceneColorInitializePass",
+            "SceneColorInitializeRTV");
+    }
+
+    void AddReactiveMaskInitializationPass(
+        RenderGraph& graph,
+        RGTextureHandle reactiveMaskTarget)
+    {
+        AddColorInitializationPass(
+            graph,
+            reactiveMaskTarget,
+            RHIClearColor{0.0f, 0.0f, 0.0f, 0.0f},
+            "ReactiveMaskInitializePass",
+            "ReactiveMaskInitializeRTV");
     }
 } // namespace
 
@@ -8187,6 +8349,7 @@ void SceneRenderer::BuildRenderGraph()
 
     // Store RenderGraph and ViewCache pointers in ViewData so passes can access resources
     m_viewData.velocityTarget = {};
+    m_viewData.reactiveMaskTarget = {};
     m_viewData.environmentSkyTexture = {};
     m_viewData.environmentIrradianceTexture = {};
     m_viewData.environmentPrefilteredTexture = {};
@@ -8530,10 +8693,14 @@ void SceneRenderer::BuildRenderGraph()
     // visual effect. The typed PostProcessPipeline feature owns the single
     // HDR-to-presentation graph boundary for every presentable recipe.
     PostProcessSettings effectivePostProcessSettings = m_postProcessSettings;
+    effectivePostProcessSettings.toneMappingOutputColorSpace =
+        ResolveToneMappingOutputColorSpace(backBufferFormat);
     if (deferredRecipeRequested)
     {
         effectivePostProcessSettings.enableToneMapping = true;
     }
+    m_postProcessSettings.toneMappingOutputColorSpace =
+        effectivePostProcessSettings.toneMappingOutputColorSpace;
     std::string deferredToneMappingPresentationDiagnostic;
     if (m_postProcessStack)
     {
@@ -8548,17 +8715,16 @@ void SceneRenderer::BuildRenderGraph()
             backBufferFormat,
             deferredToneMappingPresentationDiagnostic);
     const bool postProcessActive = m_postProcessStats.stackStats.enabledEffectCount > 0 &&
+                                   m_postProcessStats.stackStats.planValid &&
                                    m_postProcessStats.stackStats.toneMappingBoundaryValid &&
                                    deferredToneMappingPresentationReady;
     m_sceneColorFormatPolicy = ResolveSceneColorFormatPolicy(backBufferFormat, postProcessActive);
-    m_postProcessSettings.toneMappingOutputColorSpace = m_sceneColorFormatPolicy.toneMappingOutputColorSpace;
-    effectivePostProcessSettings.toneMappingOutputColorSpace =
-        m_sceneColorFormatPolicy.toneMappingOutputColorSpace;
-    if (m_postProcessStack)
+    if (m_sceneColorFormatPolicy.toneMappingOutputColorSpace !=
+        effectivePostProcessSettings.toneMappingOutputColorSpace)
     {
-        m_postProcessStack->ApplySettings(effectivePostProcessSettings);
-        m_postProcessStats.stackStats =
-            m_postProcessStack->EvaluateEffects(backBufferFormat);
+        m_featureCompositionFailureReason =
+            "post-process presentation color-space policy changed after preflight";
+        return;
     }
 
     m_postProcessStats.requestedSceneColorFormat = m_sceneColorFormatPolicy.requestedSceneColorFormat;
@@ -8586,6 +8752,31 @@ void SceneRenderer::BuildRenderGraph()
     m_postProcessStats.frameInputVelocityAvailable = m_viewData.velocityTarget.IsValid();
     m_postProcessStats.frameInputTemporalHistoryAvailable =
         !m_viewData.resetTemporalHistory && m_viewData.previousViewProjectionValid != 0;
+
+    if (effectivePostProcessSettings.antiAliasingMode ==
+            RenderAntiAliasingMode::TAA &&
+        m_viewData.viewportWidth > 0 && m_viewData.viewportHeight > 0)
+    {
+        RHITextureDesc reactiveMaskDesc = RHITextureDesc::RenderTarget(
+            m_viewData.viewportWidth,
+            m_viewData.viewportHeight,
+            SceneTextures::ReactiveMaskContract.format);
+        reactiveMaskDesc.sampleCount =
+            SceneTextures::ReactiveMaskContract.sampleCount;
+        reactiveMaskDesc.SetOptimizedClearColor(
+            RHIClearColor{0.0f, 0.0f, 0.0f, 0.0f});
+        reactiveMaskDesc.debugName = "SceneReactiveMask";
+        m_viewData.reactiveMaskTarget =
+            m_renderGraph->CreateTexture(reactiveMaskDesc);
+        if (!m_viewData.reactiveMaskTarget.IsValid())
+        {
+            m_featureCompositionFailureReason =
+                "TAA requires a graph-owned full-resolution reactive mask";
+            return;
+        }
+        AddReactiveMaskInitializationPass(
+            *m_renderGraph, m_viewData.reactiveMaskTarget);
+    }
 
     if (backBufferTarget.IsValid() && postProcessActive)
     {
@@ -8891,18 +9082,32 @@ void SceneRenderer::BuildRenderGraph()
             RHISampleCount::Count1};
     postProcessRecordContext.frameInputs.depth = m_viewData.depthTarget;
     postProcessRecordContext.frameInputs.velocity = m_viewData.velocityTarget;
+    postProcessRecordContext.frameInputs.reactiveMask =
+        m_viewData.reactiveMaskTarget;
     postProcessRecordContext.frameInputs.outputFormat =
         m_sceneColorFormatPolicy.toneMappingOutputFormat;
     postProcessRecordContext.frameInputs.frameIndex = m_viewData.frameNumber;
+    postProcessRecordContext.frameInputs.jitterOffset =
+        m_viewData.currentTemporalJitter.pixelOffset;
     postProcessRecordContext.frameInputs.currentViewProjection =
-        m_viewData.viewProjectionMatrix;
+        m_viewData.jitteredViewProjectionMatrix;
     postProcessRecordContext.frameInputs.previousViewProjection =
-        m_viewData.previousViewProjectionMatrix;
+        m_viewData.previousJitteredViewProjectionMatrix;
     postProcessRecordContext.frameInputs.currentViewProjectionValid = true;
     postProcessRecordContext.frameInputs.previousViewProjectionValid =
         m_viewData.previousViewProjectionValid != 0;
     postProcessRecordContext.frameInputs.resetTemporalHistory =
         m_viewData.resetTemporalHistory;
+    if (m_activeViewHistoryCandidate.has_value() &&
+        m_activeViewHistoryAvailability.has_value())
+    {
+        postProcessRecordContext.frameInputs.historyIdentity =
+            *m_activeViewHistoryCandidate;
+        postProcessRecordContext.frameInputs.historyResetReasons =
+            m_activeViewHistoryAvailability->resetReasons;
+        postProcessRecordContext.frameInputs.historyAvailable =
+            m_activeViewHistoryAvailability->available;
+    }
     postProcessRecordContext.frameInputs.sceneColorDomain =
         PostProcessColorDomain::SceneLinearHDR;
     postProcessRecordContext.frameInputs.outputColorDomain =
@@ -9343,6 +9548,7 @@ void SceneRenderer::SetupDefaultPostProcess()
     m_vignettePostProcess = m_postProcessStack->AddEffect<VignettePass>();
     m_filmGrainPostProcess = m_postProcessStack->AddEffect<FilmGrainPass>();
     m_fxaaPostProcess = m_postProcessStack->AddEffect<FXAAPass>();
+    m_taaPostProcess = m_postProcessStack->AddEffect<TAA>();
 
     if (m_bloomPostProcess)
     {
@@ -9392,6 +9598,11 @@ void SceneRenderer::SetupDefaultPostProcess()
     if (m_postProcessFeature != nullptr)
     {
         m_postProcessFeature->SetStack(m_postProcessStack.get());
+    }
+
+    if (m_taaPostProcess)
+    {
+        m_taaPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
     }
 }
 

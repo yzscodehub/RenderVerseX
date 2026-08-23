@@ -84,6 +84,7 @@ namespace
         EXPECT_FALSE(firstDecision.available);
         EXPECT_TRUE(HasRenderHistoryResetReason(
             firstDecision.resetReasons, RenderHistoryResetReason::FirstFrame));
+        EXPECT_TRUE(coordinator.CanCommitPresented(first->GetHistoryIdentity()));
         EXPECT_TRUE(coordinator.CommitPresented(first->GetHistoryIdentity()));
 
         FrameOptions cutOptions = MakeOptions(2);
@@ -95,6 +96,13 @@ namespace
             coordinator.Evaluate(*cutCandidate, true);
         EXPECT_TRUE(HasRenderHistoryResetReason(
             cutDecision.resetReasons, RenderHistoryResetReason::CameraCut));
+        RenderViewHistoryIdentity mismatched = cutCandidate->GetHistoryIdentity();
+        ++mismatched.temporalEpoch;
+        EXPECT_FALSE(coordinator.CanCommitPresented(mismatched));
+        // A failed preflight must leave the exact candidate untouched for the
+        // caller to abandon explicitly; it must not advance presentation.
+        EXPECT_TRUE(coordinator.CanCommitPresented(
+            cutCandidate->GetHistoryIdentity()));
         coordinator.Abandon(cutCandidate->GetHistoryIdentity());
 
         const auto compatible = MakeFrame(MakeOptions(3));
@@ -104,6 +112,8 @@ namespace
         EXPECT_TRUE(compatibleDecision.available);
         EXPECT_EQ(coordinator.GetLastPresentedIdentity()->previousFrame.frameSequence,
                   1U);
+        EXPECT_TRUE(
+            coordinator.CanCommitPresented(compatible->GetHistoryIdentity()));
         EXPECT_TRUE(
             coordinator.CommitPresented(compatible->GetHistoryIdentity()));
         EXPECT_EQ(coordinator.GetLastPresentedIdentity()->previousFrame.frameSequence,

@@ -33,11 +33,7 @@ RenderHistoryAvailability RenderViewHistoryCoordinator::Evaluate(
 bool RenderViewHistoryCoordinator::CommitPresented(
     const RenderViewHistoryIdentity& identity) noexcept
 {
-    if (!identity.IsValid() || !m_evaluatedIdentity.has_value() ||
-        *m_evaluatedIdentity != identity ||
-        (m_lastPresentedIdentity.has_value() &&
-         identity.previousFrame.frameSequence <=
-             m_lastPresentedIdentity->previousFrame.frameSequence))
+    if (!CanCommitPresented(identity))
     {
         return false;
     }
@@ -52,6 +48,16 @@ bool RenderViewHistoryCoordinator::CommitPresented(
         m_pendingResetReasons = RenderHistoryResetReason::None;
     }
     return true;
+}
+
+bool RenderViewHistoryCoordinator::CanCommitPresented(
+    const RenderViewHistoryIdentity& identity) const noexcept
+{
+    return identity.IsValid() && m_evaluatedIdentity.has_value() &&
+           *m_evaluatedIdentity == identity &&
+           (!m_lastPresentedIdentity.has_value() ||
+            identity.previousFrame.frameSequence >
+                m_lastPresentedIdentity->previousFrame.frameSequence);
 }
 
 void RenderViewHistoryCoordinator::Abandon(

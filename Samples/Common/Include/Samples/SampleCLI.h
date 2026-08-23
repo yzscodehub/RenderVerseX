@@ -16,6 +16,7 @@
 #include "Samples/SampleInfo.h"
 
 #include <array>
+#include <cmath>
 #include <filesystem>
 #include <iosfwd>
 #include <optional>
@@ -25,11 +26,13 @@
 namespace RVX
 {
     /** @brief Current JSON schema version written by sample report producers. */
-    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 22;
+    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 23;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION = 20;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_POST_PROCESS_EXECUTION_SCHEMA_VERSION = 21;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_TEMPORAL_AA_EXECUTION_SCHEMA_VERSION = 22;
     inline constexpr uint32 RVX_SAMPLE_REPORT_PRE_VISUAL_CONTRACT_SCHEMA_VERSION = 19;
     inline constexpr uint32 RVX_SAMPLE_REPORT_SCENARIO_SCHEMA_VERSION = 12;
     inline constexpr uint32 RVX_SAMPLE_REPORT_ECS_DIAGNOSTICS_SCHEMA_VERSION = 13;
@@ -332,6 +335,23 @@ namespace RVX
         uint32 colorGradingPassCount = 0;
         uint32 fxaaPassCount = 0;
         uint32 taaPassCount = 0;
+        RenderAntiAliasingMode antiAliasingMode =
+            RenderAntiAliasingMode::None;
+        bool taaRequested = false;
+        bool taaPipelineReady = false;
+        bool taaInputsReady = false;
+        bool taaExecuted = false;
+        bool historyAvailableBefore = false;
+        bool historySampled = false;
+        bool historyCandidateProduced = false;
+        bool historyCommitted = false;
+        bool historyAbandoned = false;
+        RenderHistoryResetReason historyResetReasons =
+            RenderHistoryResetReason::None;
+        Vec2 currentJitterPixels = Vec2(0.0f);
+        Vec2 previousJitterPixels = Vec2(0.0f);
+        uint32 taaResolveGraphPassCount = 0;
+        uint32 taaHistoryStoreGraphPassCount = 0;
         PostProcessColorDomain inputColorDomain =
             PostProcessColorDomain::Unknown;
         PostProcessColorDomain plannedOutputColorDomain =
@@ -347,8 +367,8 @@ namespace RVX
         bool fallbackUsed = false;
         std::string diagnostic;
 
-        /** @brief True only for the exact main view that reached presentation. */
-        [[nodiscard]] bool IsQualificationReady() const noexcept
+        /** @brief True only for a structurally valid, exactly presented main view. */
+        [[nodiscard]] bool HasQualifiedPresentation() const noexcept
         {
             const bool presentedMainView =
                 presentedFrameAligned && frameFeatureSequence != 0 &&
@@ -380,7 +400,7 @@ namespace RVX
                     PostProcessTransfer::SceneLinearToDisplayEncoded &&
                 !displayLinearOutputReady;
 
-            return available && executionReceiptSchemaVersion == 6 &&
+            return available && executionReceiptSchemaVersion == 7 &&
                    executionReceiptStructurallyValid &&
                    executionReceiptAvailable && executionReceiptGraphComposed &&
                    executionReceiptExecutionSucceeded &&
@@ -393,10 +413,47 @@ namespace RVX
                        postProcessFeatureGraphPassCount &&
                    postProcessReceiptStructurallyValid &&
                    planContentHash != 0 && toneMappingPassCount == 1 &&
-                   bloomPassCount == 1 && colorGradingPassCount == 1 &&
-                   fxaaPassCount == 1 && taaPassCount == 0 && hdrInputReady &&
+                   hdrInputReady &&
                    encodedOutputReady && !fallbackUsed &&
                    (srgbPresentationContract || unormPresentationContract);
+        }
+
+        /** @brief Exact GFX10 Bloom/ColorGrade/FXAA qualification contract. */
+        [[nodiscard]] bool IsQualificationReady() const noexcept
+        {
+            return HasQualifiedPresentation() &&
+                   antiAliasingMode == RenderAntiAliasingMode::FXAA &&
+                   bloomPassCount == 1 && colorGradingPassCount == 1 &&
+                   fxaaPassCount == 1 && taaPassCount == 0 && !taaRequested &&
+                   !taaPipelineReady && !taaInputsReady && !taaExecuted &&
+                   !historyAvailableBefore && !historySampled &&
+                   !historyCandidateProduced && !historyCommitted &&
+                   !historyAbandoned &&
+                   historyResetReasons == RenderHistoryResetReason::None &&
+                   currentJitterPixels == Vec2(0.0f) &&
+                   previousJitterPixels == Vec2(0.0f) &&
+                   taaResolveGraphPassCount == 0 &&
+                   taaHistoryStoreGraphPassCount == 0;
+        }
+
+        /** @brief Exact GFX11 temporal resolve and present-commit qualification. */
+        [[nodiscard]] bool IsTemporalAAQualificationReady() const noexcept
+        {
+            return HasQualifiedPresentation() &&
+                   antiAliasingMode == RenderAntiAliasingMode::TAA &&
+                   fxaaPassCount == 0 && taaPassCount == 1 && taaRequested &&
+                   taaPipelineReady && taaInputsReady && taaExecuted &&
+                   historyAvailableBefore && historySampled &&
+                   historyCandidateProduced && historyCommitted &&
+                   !historyAbandoned &&
+                   historyResetReasons == RenderHistoryResetReason::None &&
+                   std::isfinite(currentJitterPixels.x) &&
+                   std::isfinite(currentJitterPixels.y) &&
+                   std::isfinite(previousJitterPixels.x) &&
+                   std::isfinite(previousJitterPixels.y) &&
+                   currentJitterPixels != previousJitterPixels &&
+                   taaResolveGraphPassCount == 1 &&
+                   taaHistoryStoreGraphPassCount == 1;
         }
     };
 

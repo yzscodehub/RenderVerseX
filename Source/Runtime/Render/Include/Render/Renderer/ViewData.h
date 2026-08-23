@@ -11,6 +11,7 @@
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Renderer/ShadowConstants.h"
 #include "RenderContracts/RenderFrameTypes.h"
+#include "RenderContracts/TemporalJitter.h"
 
 #include <array>
 
@@ -39,17 +40,35 @@ namespace RVX
         /// View matrix (world to camera)
         Mat4 viewMatrix = Mat4Identity();
 
-        /// Projection matrix (camera to clip)
+        /// Canonical unjittered projection matrix (camera to clip).
         Mat4 projectionMatrix = Mat4Identity();
 
-        /// Combined view-projection matrix
+        /// Canonical unjittered view-projection matrix for culling and clusters.
         Mat4 viewProjectionMatrix = Mat4Identity();
 
-        /// Previous rendered frame view-projection matrix, used for temporal reprojection
+        /// Current raster projection after the deterministic temporal jitter.
+        Mat4 jitteredProjectionMatrix = Mat4Identity();
+
+        /// Current raster view-projection after the deterministic temporal jitter.
+        Mat4 jitteredViewProjectionMatrix = Mat4Identity();
+
+        /// Inverse current raster view-projection for screen-space reconstruction.
+        Mat4 inverseJitteredViewProjectionMatrix = Mat4Identity();
+
+        /// Previous presented unjittered view-projection for temporal reprojection.
         Mat4 previousViewProjectionMatrix = Mat4Identity();
+
+        /// Previous presented jittered view-projection for temporal reprojection.
+        Mat4 previousJitteredViewProjectionMatrix = Mat4Identity();
 
         /// Whether previousViewProjectionMatrix contains a valid rendered frame
         uint8 previousViewProjectionValid = 0;
+
+        /** @brief Current frame's deterministic sub-pixel jitter. */
+        RenderTemporalJitter currentTemporalJitter;
+
+        /** @brief Previous presented frame's deterministic sub-pixel jitter. */
+        RenderTemporalJitter previousTemporalJitter;
 
         /// Inverse view matrix
         Mat4 inverseViewMatrix = Mat4Identity();
@@ -164,6 +183,9 @@ namespace RVX
         /// Optional motion-vector target for temporal reprojection
         RGTextureHandle velocityTarget;
 
+        /// Full-resolution mask for rejecting unstable temporal history
+        RGTextureHandle reactiveMaskTarget;
+
         /// Source cubemap sampled by SkyboxPass when the frame selects a cubemap sky.
         RGTextureHandle environmentSkyTexture;
 
@@ -255,6 +277,20 @@ namespace RVX
             const Mat4& previousRenderedViewProjection,
             bool previousRenderedViewValid,
             bool resetHistory);
+
+        /**
+         * @brief Install the exact raster and prior-presented temporal state.
+         *
+         * Culling, clustering, and all canonical camera consumers continue to
+         * use `viewProjectionMatrix`.  Raster and temporal consumers must use
+         * the explicit jittered matrices instead, avoiding an implicit camera
+         * convention change.
+         */
+        void SetTemporalJitter(
+            const RenderTemporalJitter& currentJitter,
+            const RenderTemporalJitter& previousJitter,
+            const Mat4& previousPresentedJitteredViewProjection,
+            bool previousPresentedJitteredViewValid);
 
         /** @brief Skybox may contribute only for the explicit Skybox policy. */
         [[nodiscard]] bool AllowsSkybox() const noexcept

@@ -69,6 +69,27 @@ namespace RVX
             return m_lastExecutionReceipt;
         }
 
+        /**
+         * @brief Commit the TAA candidate only after the exact frame/view has
+         *        crossed a successful presentation boundary.
+         */
+        [[nodiscard]] bool CommitTemporalHistoryAfterPresent(
+            const RenderViewHistoryIdentity& identity) noexcept;
+
+        /**
+         * @brief Side-effect-free exact-candidate preflight for presentation.
+         *
+         * SceneRenderer uses this together with its view-history coordinator
+         * before advancing either temporal owner.
+         */
+        [[nodiscard]] bool CanCommitTemporalHistoryAfterPresent(
+            const RenderViewHistoryIdentity& identity) noexcept;
+
+        /** @brief Discard an unpresented TAA candidate without advancing history. */
+        void AbandonTemporalHistoryCandidate() noexcept;
+
+        [[nodiscard]] bool RequiresTemporalHistoryCommit() const noexcept;
+
     private:
         [[nodiscard]] bool HasMatchingRecordContext(
             const RenderFeatureContext& context) const noexcept;

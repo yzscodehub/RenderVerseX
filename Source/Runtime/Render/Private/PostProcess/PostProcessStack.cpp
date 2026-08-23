@@ -95,6 +95,43 @@ namespace
         MixTextureHandleFingerprint(hash, stats.frameInputs.depth);
         MixTextureHandleFingerprint(hash, stats.frameInputs.normal);
         MixTextureHandleFingerprint(hash, stats.frameInputs.velocity);
+        MixTextureHandleFingerprint(hash, stats.frameInputs.reactiveMask);
+        Diagnostics::MixContentHashValue(
+            hash, stats.frameInputs.historyAvailable ? 1u : 0u);
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(stats.frameInputs.historyResetReasons));
+        Diagnostics::MixContentHashValue(
+            hash, stats.frameInputs.historyIdentity.previousFrame.frameSequence);
+        Diagnostics::MixContentHashValue(
+            hash, stats.frameInputs.historyIdentity.previousFrame.sceneRevision);
+        Diagnostics::MixContentHashValue(
+            hash, stats.frameInputs.historyIdentity.previousFrame.surfaceGeneration);
+        Diagnostics::MixContentHashValue(
+            hash, stats.frameInputs.historyIdentity.previousFrame.configurationRevision);
+        Diagnostics::MixContentHashValue(
+            hash, stats.frameInputs.historyIdentity.familyId);
+        Diagnostics::MixContentHashValue(
+            hash, stats.frameInputs.historyIdentity.temporalEpoch);
+        Diagnostics::MixContentHashValue(
+            hash, stats.frameInputs.historyIdentity.worldRevision);
+        Diagnostics::MixContentHashValue(
+            hash, stats.frameInputs.historyIdentity.formatRevision);
+        Diagnostics::MixContentHashValue(
+            hash, stats.frameInputs.historyIdentity.cameraCutRevision);
+        Diagnostics::MixContentHashValue(
+            hash, stats.frameInputs.historyIdentity.surfaceGeneration);
+        Diagnostics::MixContentHashValue(
+            hash, stats.frameInputs.historyIdentity.view.sceneRuntimeId);
+        Diagnostics::MixContentHashValue(
+            hash, stats.frameInputs.historyIdentity.view.cameraEntityPacked);
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(stats.frameInputs.historyIdentity.view.subViewIndex));
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(stats.frameInputs.historyIdentity.view.role));
+        Diagnostics::MixContentHashValue(
+            hash, stats.frameInputs.historyIdentity.extent.width);
+        Diagnostics::MixContentHashValue(
+            hash, stats.frameInputs.historyIdentity.extent.height);
         Diagnostics::MixContentHashValue(hash, stats.effectPlans.size());
         for (const PostProcessEffectExecutionPlan& effect : stats.effectPlans)
         {
@@ -112,6 +149,7 @@ namespace
             Diagnostics::MixContentHashValue(hash, effect.requiresDepth ? 1u : 0u);
             Diagnostics::MixContentHashValue(hash, effect.requiresNormal ? 1u : 0u);
             Diagnostics::MixContentHashValue(hash, effect.requiresVelocity ? 1u : 0u);
+            Diagnostics::MixContentHashValue(hash, effect.requiresReactiveMask ? 1u : 0u);
             Diagnostics::MixContentHashValue(hash, effect.requiresHistory ? 1u : 0u);
             Diagnostics::MixContentHashValue(
                 hash, effect.frameInputsSatisfied ? 1u : 0u);
@@ -251,12 +289,45 @@ namespace
         {
             append("velocity");
         }
+        if (requirements.requiresReactiveMask && !inputs.reactiveMask.IsValid())
+        {
+            append("reactive mask");
+        }
         if (requirements.requiresHistory && !inputs.HasHistory())
         {
             append("temporal history");
         }
 
         return reason.empty() ? reason : "missing required frame input(s): " + reason;
+    }
+
+    std::string BuildRequestedEffectFailureReason(
+        const std::vector<PostProcessEffectExecutionPlan>& effectPlans)
+    {
+        for (const PostProcessEffectExecutionPlan& plan : effectPlans)
+        {
+            if (!plan.requested ||
+                (plan.supported && plan.enabled &&
+                 plan.frameInputsSatisfied))
+            {
+                continue;
+            }
+
+            const char* const canonicalName =
+                GetPostProcessPassCanonicalName(plan.passId);
+            const std::string effectName = !plan.effectName.empty()
+                ? plan.effectName
+                : (canonicalName != nullptr ? canonicalName : "<unnamed>");
+            const std::string detail = !plan.skippedReason.empty()
+                ? plan.skippedReason
+                : (!plan.pipelineReadinessReason.empty()
+                       ? plan.pipelineReadinessReason
+                       : "not enabled by the resolved post-process settings");
+            return "requested post-process pass '" + effectName +
+                   "' is unavailable: " + detail;
+        }
+
+        return "requested post-process pass is unsupported or missing required frame inputs";
     }
 
     void SetQualityPresetStats(PostProcessStackExecuteStats& stats, const PostProcessSettings& settings)
@@ -278,6 +349,7 @@ const char* GetPostProcessPassCanonicalName(PostProcessPassId id)
         case PostProcessPassId::Vignette: return "Vignette";
         case PostProcessPassId::FilmGrain: return "FilmGrain";
         case PostProcessPassId::FXAA: return "FXAA";
+        case PostProcessPassId::TemporalAntiAliasing: return "TemporalAntiAliasing";
         case PostProcessPassId::DepthOfField: return "DepthOfField";
         case PostProcessPassId::MotionBlur: return "MotionBlur";
         case PostProcessPassId::VolumetricLighting: return "VolumetricLighting";
@@ -312,7 +384,7 @@ void ApplyRenderVisualQualityPreset(PostProcessSettings& settings, RenderVisualQ
 
     settings.enableToneMapping = false;
     settings.enableBloom = false;
-    settings.enableFXAA = false;
+    settings.antiAliasingMode = RenderAntiAliasingMode::None;
     settings.enableColorGrading = false;
     settings.enableVignette = false;
     settings.enableChromaticAberration = false;
@@ -320,7 +392,6 @@ void ApplyRenderVisualQualityPreset(PostProcessSettings& settings, RenderVisualQ
     settings.enableSSAO = false;
     settings.enableSSR = false;
     settings.enableVelocityOutput = false;
-    settings.enableTAA = false;
     settings.enableDOF = false;
     settings.enableMotionBlur = false;
     settings.enableVolumetricLighting = false;
@@ -331,18 +402,18 @@ void ApplyRenderVisualQualityPreset(PostProcessSettings& settings, RenderVisualQ
             return;
         case RenderVisualQualityPreset::Low:
             settings.enableToneMapping = true;
-            settings.enableFXAA = true;
+            settings.antiAliasingMode = RenderAntiAliasingMode::FXAA;
             return;
         case RenderVisualQualityPreset::Medium:
             settings.enableToneMapping = true;
             settings.enableBloom = true;
-            settings.enableFXAA = true;
+            settings.antiAliasingMode = RenderAntiAliasingMode::FXAA;
             settings.enableColorGrading = true;
             return;
         case RenderVisualQualityPreset::High:
             settings.enableToneMapping = true;
             settings.enableBloom = true;
-            settings.enableFXAA = true;
+            settings.antiAliasingMode = RenderAntiAliasingMode::FXAA;
             settings.enableColorGrading = true;
             settings.enableVignette = true;
             settings.enableChromaticAberration = true;
@@ -350,14 +421,12 @@ void ApplyRenderVisualQualityPreset(PostProcessSettings& settings, RenderVisualQ
         case RenderVisualQualityPreset::Cinematic:
             settings.enableToneMapping = true;
             settings.enableBloom = true;
-            settings.enableFXAA = true;
+            settings.antiAliasingMode = RenderAntiAliasingMode::TAA;
+            settings.enableVelocityOutput = true;
             settings.enableColorGrading = true;
             settings.enableVignette = true;
             settings.enableChromaticAberration = true;
             settings.enableFilmGrain = true;
-            // The historical TAA object has no resolve implementation. It is
-            // deliberately not enabled by a quality preset before GFX11.
-            settings.enableTAA = false;
             // SSAO/GTAO, SSR, DOF, motion blur, and volumetrics each remain
             // explicitly opt-in and unavailable until their own verified
             // renderer features land. A quality preset must not request a
@@ -459,6 +528,7 @@ std::vector<IPostProcessPass*> PostProcessStack::GatherEnabledEffects(PostProces
         plan.requiresDepth = requirements.requiresDepth;
         plan.requiresNormal = requirements.requiresNormal;
         plan.requiresVelocity = requirements.requiresVelocity;
+        plan.requiresReactiveMask = requirements.requiresReactiveMask;
         plan.requiresHistory = requirements.requiresHistory;
         if (frameInputs)
         {
@@ -551,10 +621,16 @@ PostProcessStackExecuteStats PostProcessStack::EvaluateEffects(
     RHIFormat finalOutputFormat) const
 {
     PostProcessFrameInputs inputs;
+    inputs.sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
+    inputs.outputFormat = finalOutputFormat;
     (void)ResolveLegacyOutputColorDomain(finalOutputFormat, inputs.outputColorDomain);
 
     PostProcessStackExecuteStats stats;
-    (void)BuildPlan(inputs, finalOutputFormat, stats);
+    (void)BuildPlanImpl(inputs,
+                        finalOutputFormat,
+                        PostProcessPlanContract::Generic,
+                        FrameInputValidationMode::ConfigurationPreflight,
+                        stats);
     return stats;
 }
 
@@ -708,6 +784,20 @@ bool PostProcessStack::BuildPlan(const PostProcessFrameInputs& frameInputs,
                                  PostProcessPlanContract contract,
                                  PostProcessStackExecuteStats& outStats) const
 {
+    return BuildPlanImpl(frameInputs,
+                         finalOutputFormat,
+                         contract,
+                         FrameInputValidationMode::FrameReady,
+                         outStats);
+}
+
+bool PostProcessStack::BuildPlanImpl(
+    const PostProcessFrameInputs& frameInputs,
+    RHIFormat finalOutputFormat,
+    PostProcessPlanContract contract,
+    FrameInputValidationMode frameInputValidationMode,
+    PostProcessStackExecuteStats& outStats) const
+{
     outStats = {};
     SetQualityPresetStats(outStats, m_settings);
     outStats.frameInputs = frameInputs;
@@ -717,8 +807,21 @@ bool PostProcessStack::BuildPlan(const PostProcessFrameInputs& frameInputs,
     outStats.planContract = contract;
     outStats.planValid = false;
 
+    if (!IsValidRenderAntiAliasingMode(m_settings.antiAliasingMode))
+    {
+        outStats.planFailureReason =
+            "post-process plan has an unknown anti-aliasing mode";
+        outStats.toneMappingBoundaryValid = false;
+        outStats.toneMappingBoundaryWarning = outStats.planFailureReason;
+        return false;
+    }
+
+    const PostProcessFrameInputs* const readinessInputs =
+        frameInputValidationMode == FrameInputValidationMode::FrameReady
+            ? &frameInputs
+            : nullptr;
     const std::vector<IPostProcessPass*> enabledEffects =
-        GatherEnabledEffects(outStats, false, &frameInputs);
+        GatherEnabledEffects(outStats, false, readinessInputs);
 
     auto fail = [&outStats](const std::string& reason)
     {
@@ -781,7 +884,7 @@ bool PostProcessStack::BuildPlan(const PostProcessFrameInputs& frameInputs,
     if (outStats.requestedEffectCount != outStats.enabledEffectCount ||
         outStats.unsupportedSkippedCount != 0)
     {
-        return fail("requested post-process pass is unsupported or missing required frame inputs");
+        return fail(BuildRequestedEffectFailureReason(outStats.effectPlans));
     }
 
     if (contract == PostProcessPlanContract::Presentation &&

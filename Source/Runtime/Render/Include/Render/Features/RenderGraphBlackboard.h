@@ -83,6 +83,8 @@ namespace RVX
             RHIFormat::R32_UINT, RHISampleCount::Count1};
         inline static constexpr FormatContract VelocityContract{
             RHIFormat::RG16_FLOAT, RHISampleCount::Count1};
+        inline static constexpr FormatContract ReactiveMaskContract{
+            RHIFormat::R8_UNORM, RHISampleCount::Count1};
         inline static constexpr FormatContract DeviceDepthContract{
             RHIFormat::D32_FLOAT, RHISampleCount::Count1};
 
@@ -725,8 +727,7 @@ namespace RVX
                        SceneTextures::VelocityContract) &&
                    OptionalMetadataMatches(
                        outputs.reactiveMask, outputs.reactiveMaskMetadata,
-                       SceneTextures::FormatContract{
-                           RHIFormat::R8_UNORM, RHISampleCount::Count1}) &&
+                       SceneTextures::ReactiveMaskContract) &&
                    OptionalMetadataMatches(
                        outputs.distortionVectors,
                        outputs.distortionVectorsMetadata,

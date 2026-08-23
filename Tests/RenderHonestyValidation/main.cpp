@@ -3985,7 +3985,7 @@ TEST_F(RenderHonestyValidationFixture, ColorGradingRejectsHDRAndLUTRequests)
 TEST_F(RenderHonestyValidationFixture, FXAARequiresResourcesBeforeSupported)
 {
     RVX::PostProcessSettings settings;
-    settings.enableFXAA = true;
+    settings.antiAliasingMode = RVX::RenderAntiAliasingMode::FXAA;
 
     RVX::FXAAPass fxaa;
     fxaa.Configure(settings);

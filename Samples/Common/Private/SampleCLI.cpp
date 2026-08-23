@@ -68,6 +68,21 @@ namespace RVX
             return "invalid";
         }
 
+        const char* GetRenderAntiAliasingModeCanonicalName(
+            RenderAntiAliasingMode mode) noexcept
+        {
+            switch (mode)
+            {
+            case RenderAntiAliasingMode::None:
+                return "none";
+            case RenderAntiAliasingMode::FXAA:
+                return "fxaa";
+            case RenderAntiAliasingMode::TAA:
+                return "taa";
+            }
+            return "invalid";
+        }
+
         const char* GetRHIFormatCanonicalName(RHIFormat format) noexcept
         {
             switch (format)
@@ -476,7 +491,8 @@ namespace RVX
             stream << "      \"profileHash\": " << receipt.profileHash
                    << ",\n";
             if (receipt.schemaVersion == 2 || receipt.schemaVersion == 4 ||
-                receipt.schemaVersion == 5 || receipt.schemaVersion == 6)
+                receipt.schemaVersion == 5 || receipt.schemaVersion == 6 ||
+                receipt.schemaVersion == 7)
             {
                 stream << "      \"deferredOpaque\": {\"available\": "
                        << Diagnostics::JsonBool(receipt.deferredOpaque.available)
@@ -491,7 +507,7 @@ namespace RVX
                        << "},\n";
             }
             if (receipt.schemaVersion == 4 || receipt.schemaVersion == 5 ||
-                receipt.schemaVersion == 6)
+                receipt.schemaVersion == 6 || receipt.schemaVersion == 7)
             {
                 stream << "      \"lighting\": {\"lightingPlanIdentity\": "
                        << receipt.lighting.lightingPlanIdentity
@@ -533,7 +549,8 @@ namespace RVX
                               receipt.lighting.iblExecutionReady)
                        << "},\n";
             }
-            if (receipt.schemaVersion == 5 || receipt.schemaVersion == 6)
+            if (receipt.schemaVersion == 5 || receipt.schemaVersion == 6 ||
+                receipt.schemaVersion == 7)
             {
                 stream << "      \"deformation\": {\"deformationContentHash\": "
                        << receipt.deformation.deformationContentHash
@@ -559,7 +576,7 @@ namespace RVX
                        << receipt.deformation.velocityPreviousPaletteDrawCount
                        << "},\n";
             }
-            if (receipt.schemaVersion == 6)
+            if (receipt.schemaVersion == 6 || receipt.schemaVersion == 7)
             {
                 stream << "      \"postProcess\": {\"planContentHash\": "
                        << receipt.postProcess.postProcessContentHash
@@ -572,8 +589,55 @@ namespace RVX
                        << ", \"fxaaPassCount\": "
                        << receipt.postProcess.fxaaPassCount
                        << ", \"taaPassCount\": "
-                       << receipt.postProcess.taaPassCount
-                       << ", \"inputColorDomain\": "
+                       << receipt.postProcess.taaPassCount;
+                if (receipt.schemaVersion == 7)
+                {
+                    stream << ", \"antiAliasingMode\": "
+                           << Diagnostics::JsonString(
+                                  GetRenderAntiAliasingModeCanonicalName(
+                                      receipt.postProcess.antiAliasingMode))
+                           << ", \"taaRequested\": "
+                           << Diagnostics::JsonBool(
+                                  receipt.postProcess.taaRequested)
+                           << ", \"taaPipelineReady\": "
+                           << Diagnostics::JsonBool(
+                                  receipt.postProcess.taaPipelineReady)
+                           << ", \"taaInputsReady\": "
+                           << Diagnostics::JsonBool(
+                                  receipt.postProcess.taaInputsReady)
+                           << ", \"taaExecuted\": "
+                           << Diagnostics::JsonBool(
+                                  receipt.postProcess.taaExecuted)
+                           << ", \"historyAvailableBefore\": "
+                           << Diagnostics::JsonBool(
+                                  receipt.postProcess.historyAvailableBefore)
+                           << ", \"historySampled\": "
+                           << Diagnostics::JsonBool(
+                                  receipt.postProcess.historySampled)
+                           << ", \"historyCandidateProduced\": "
+                           << Diagnostics::JsonBool(
+                                  receipt.postProcess.historyCandidateProduced)
+                           << ", \"historyCommitted\": "
+                           << Diagnostics::JsonBool(
+                                  receipt.postProcess.historyCommitted)
+                           << ", \"historyAbandoned\": "
+                           << Diagnostics::JsonBool(
+                                  receipt.postProcess.historyAbandoned)
+                           << ", \"historyResetReasons\": "
+                           << static_cast<uint32>(
+                                  receipt.postProcess.historyResetReasons)
+                           << ", \"currentJitterPixels\": ["
+                           << receipt.postProcess.currentJitterPixels.x << ", "
+                           << receipt.postProcess.currentJitterPixels.y << "]"
+                           << ", \"previousJitterPixels\": ["
+                           << receipt.postProcess.previousJitterPixels.x << ", "
+                           << receipt.postProcess.previousJitterPixels.y << "]"
+                           << ", \"taaResolveGraphPassCount\": "
+                           << receipt.postProcess.taaResolveGraphPassCount
+                           << ", \"taaHistoryStoreGraphPassCount\": "
+                           << receipt.postProcess.taaHistoryStoreGraphPassCount;
+                }
+                stream << ", \"inputColorDomain\": "
                        << Diagnostics::JsonString(
                               GetPostProcessColorDomainCanonicalName(
                                   receipt.postProcess.inputColorDomain))
@@ -1940,6 +2004,58 @@ namespace RVX
                    << postProcess.fxaaPassCount << ",\n";
             stream << "      \"taaPassCount\": "
                    << postProcess.taaPassCount << ",\n";
+            if (report.schemaVersion >=
+                RVX_SAMPLE_REPORT_PRE_TEMPORAL_AA_EXECUTION_SCHEMA_VERSION + 1)
+            {
+                stream << "      \"antiAliasingMode\": "
+                       << Diagnostics::JsonString(
+                              GetRenderAntiAliasingModeCanonicalName(
+                                  postProcess.antiAliasingMode))
+                       << ",\n";
+                stream << "      \"taaRequested\": "
+                       << Diagnostics::JsonBool(postProcess.taaRequested)
+                       << ",\n";
+                stream << "      \"taaPipelineReady\": "
+                       << Diagnostics::JsonBool(postProcess.taaPipelineReady)
+                       << ",\n";
+                stream << "      \"taaInputsReady\": "
+                       << Diagnostics::JsonBool(postProcess.taaInputsReady)
+                       << ",\n";
+                stream << "      \"taaExecuted\": "
+                       << Diagnostics::JsonBool(postProcess.taaExecuted)
+                       << ",\n";
+                stream << "      \"historyAvailableBefore\": "
+                       << Diagnostics::JsonBool(
+                              postProcess.historyAvailableBefore)
+                       << ",\n";
+                stream << "      \"historySampled\": "
+                       << Diagnostics::JsonBool(postProcess.historySampled)
+                       << ",\n";
+                stream << "      \"historyCandidateProduced\": "
+                       << Diagnostics::JsonBool(
+                              postProcess.historyCandidateProduced)
+                       << ",\n";
+                stream << "      \"historyCommitted\": "
+                       << Diagnostics::JsonBool(postProcess.historyCommitted)
+                       << ",\n";
+                stream << "      \"historyAbandoned\": "
+                       << Diagnostics::JsonBool(postProcess.historyAbandoned)
+                       << ",\n";
+                stream << "      \"historyResetReasons\": "
+                       << static_cast<uint32>(
+                              postProcess.historyResetReasons)
+                       << ",\n";
+                stream << "      \"currentJitterPixels\": ["
+                       << postProcess.currentJitterPixels.x << ", "
+                       << postProcess.currentJitterPixels.y << "],\n";
+                stream << "      \"previousJitterPixels\": ["
+                       << postProcess.previousJitterPixels.x << ", "
+                       << postProcess.previousJitterPixels.y << "],\n";
+                stream << "      \"taaResolveGraphPassCount\": "
+                       << postProcess.taaResolveGraphPassCount << ",\n";
+                stream << "      \"taaHistoryStoreGraphPassCount\": "
+                       << postProcess.taaHistoryStoreGraphPassCount << ",\n";
+            }
             stream << "      \"inputColorDomain\": "
                    << Diagnostics::JsonString(
                           GetPostProcessColorDomainCanonicalName(
@@ -1986,6 +2102,14 @@ namespace RVX
             stream << "      \"qualified\": "
                    << Diagnostics::JsonBool(postProcess.IsQualificationReady())
                    << ",\n";
+            if (report.schemaVersion >=
+                RVX_SAMPLE_REPORT_PRE_TEMPORAL_AA_EXECUTION_SCHEMA_VERSION + 1)
+            {
+                stream << "      \"temporalAAQualified\": "
+                       << Diagnostics::JsonBool(
+                              postProcess.IsTemporalAAQualificationReady())
+                       << ",\n";
+            }
             stream << "      \"diagnostic\": "
                    << Diagnostics::JsonString(postProcess.diagnostic) << "\n";
             stream << "    },\n";

@@ -2661,6 +2661,25 @@ namespace
                 postProcess.colorGradingPassCount;
             result.fxaaPassCount = postProcess.fxaaPassCount;
             result.taaPassCount = postProcess.taaPassCount;
+            result.antiAliasingMode = postProcess.antiAliasingMode;
+            result.taaRequested = postProcess.taaRequested;
+            result.taaPipelineReady = postProcess.taaPipelineReady;
+            result.taaInputsReady = postProcess.taaInputsReady;
+            result.taaExecuted = postProcess.taaExecuted;
+            result.historyAvailableBefore =
+                postProcess.historyAvailableBefore;
+            result.historySampled = postProcess.historySampled;
+            result.historyCandidateProduced =
+                postProcess.historyCandidateProduced;
+            result.historyCommitted = postProcess.historyCommitted;
+            result.historyAbandoned = postProcess.historyAbandoned;
+            result.historyResetReasons = postProcess.historyResetReasons;
+            result.currentJitterPixels = postProcess.currentJitterPixels;
+            result.previousJitterPixels = postProcess.previousJitterPixels;
+            result.taaResolveGraphPassCount =
+                postProcess.taaResolveGraphPassCount;
+            result.taaHistoryStoreGraphPassCount =
+                postProcess.taaHistoryStoreGraphPassCount;
             result.inputColorDomain = postProcess.inputColorDomain;
             result.plannedOutputColorDomain =
                 postProcess.plannedOutputColorDomain;

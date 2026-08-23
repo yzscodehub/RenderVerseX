@@ -29,6 +29,7 @@
 #include "Common/RenderRuntimeTestHarness.h"
 #include "Render/Debug/DebugRenderer.h"
 #include "Render/Decal/DecalRenderer.h"
+#include "Features/PostProcessPipelineFeatureAdapter.h"
 #include "Render/GPUScene/GPUSceneSchema.h"
 #include "GPUScene/GPUSceneUploader.h"
 #include "Render/Graph/ResourceViewCache.h"
@@ -118,7 +119,10 @@ namespace RVX
             RenderSceneDatabase& sceneDatabase,
             uint64 frameSequence,
             RenderPipelineRecipe recipe =
-                RenderPipelineRecipe::ForwardStandard)
+                RenderPipelineRecipe::ForwardStandard,
+            RenderAntiAliasingMode antiAliasingMode =
+                RenderAntiAliasingMode::FXAA,
+            bool postProcessEnabled = true)
         {
             RenderSceneMutationAccumulator accumulator;
             accumulator.Begin(0, true);
@@ -161,6 +165,10 @@ namespace RVX
             extraction.complete = true;
             RenderFrameSettings settings;
             settings.pipelineRequest.recipe = recipe;
+            settings.postProcess.enabled = postProcessEnabled;
+            settings.postProcess.antiAliasingMode = antiAliasingMode;
+            settings.postProcess.enableVelocityOutput =
+                antiAliasingMode == RenderAntiAliasingMode::TAA;
             return RenderFramePacketV5::Create(
                 header,
                 view,
@@ -843,6 +851,20 @@ namespace RVX
                 renderer.m_environmentIBLRequested,
                 textureIBLEnabled,
                 std::move(fallbackReason));
+        }
+
+        static void SetPendingExecutionReceiptForTesting(
+            SceneRenderer& renderer,
+            RenderExecutionReceipt receipt)
+        {
+            renderer.m_pendingRenderExecutionReceipt = std::move(receipt);
+        }
+
+        static void SetPostProcessFeatureForTesting(
+            SceneRenderer& renderer,
+            PostProcessPipelineFeatureAdapter* feature) noexcept
+        {
+            renderer.m_postProcessFeature = feature;
         }
     };
 } // namespace RVX
@@ -3380,6 +3402,21 @@ namespace
         return true;
     }
 
+    bool AreMatricesNear(const Mat4& lhs,
+                         const Mat4& rhs,
+                         float epsilon = 0.0001f)
+    {
+        for (int column = 0; column < 4; ++column)
+        {
+            for (int row = 0; row < 4; ++row)
+            {
+                if (std::abs(lhs[column][row] - rhs[column][row]) > epsilon)
+                    return false;
+            }
+        }
+        return true;
+    }
+
     bool IsAlignedToTexel(float value, float texelSize, float epsilon = 0.0001f)
     {
         if (texelSize <= 0.0f)
@@ -4513,7 +4550,7 @@ TEST_F(RenderPassValidationFixture,
 
     RHITextureRef colorTarget = device.CreateTexture(
         RHITextureDesc::RenderTarget(
-            32u, 32u, RHIFormat::RGBA8_UNORM_SRGB));
+            32u, 32u, RHIFormat::BGRA8_UNORM_SRGB));
     ASSERT_TRUE(colorTarget);
     SceneRendererExternalTargetDesc externalTarget;
     externalTarget.colorTarget = colorTarget;
@@ -4529,12 +4566,13 @@ TEST_F(RenderPassValidationFixture,
         &opaquePass,
         std::move(opaqueOwner)));
 
-    // This is the state retained after the previous sRGB graph build: the
-    // tone-mapping shader writes display-linear values and the target applies
-    // the final hardware sRGB encode.
+    // Deliberately poison the retained setting with shader-side sRGB output.
+    // The BGRA sRGB target performs the final hardware encode, so frame policy
+    // preflight must resolve this to display-linear output before evaluating
+    // the stack rather than inheriting this stale value.
     PostProcessSettings settings = renderer.GetPostProcessSettings();
     settings.enableToneMapping = true;
-    settings.toneMappingOutputColorSpace = ToneMappingOutputColorSpace::Linear;
+    settings.toneMappingOutputColorSpace = ToneMappingOutputColorSpace::SRGB;
     renderer.ApplyPostProcessSettings(settings);
     ASSERT_TRUE(
         SceneRendererTestAccess::InstallMinimalPostProcessRuntimeForGraphBuild(
@@ -4542,19 +4580,23 @@ TEST_F(RenderPassValidationFixture,
 
     const PostProcessStack* const stack = renderer.GetPostProcessStack();
     ASSERT_NE(nullptr, stack);
-    const PostProcessStackExecuteStats srgbSurfaceStats =
-        stack->EvaluateEffects(RHIFormat::RGBA8_UNORM_SRGB);
-    EXPECT_TRUE(srgbSurfaceStats.toneMappingBoundaryValid);
-    EXPECT_EQ(PostProcessColorDomain::DisplayLinearLDR,
-              srgbSurfaceStats.outputColorDomain);
-    // The legacy format-less overload assumes an encoded UNORM output.  If
-    // GPU preflight used it here, it would select the sRGB backbuffer instead
-    // of the linear HDR scene target.
-    EXPECT_FALSE(stack->EvaluateEffects().toneMappingBoundaryValid);
+    EXPECT_FALSE(
+        stack->EvaluateEffects(RHIFormat::BGRA8_UNORM_SRGB).planValid);
 
     const size_t pipelineCountBefore =
         device.createdGraphicsPipelineDebugNames.size();
     renderer.CompileRenderFramePlanForTesting();
+
+    const PostProcessStackExecuteStats resolvedSurfaceStats =
+        stack->EvaluateEffects(RHIFormat::BGRA8_UNORM_SRGB);
+    EXPECT_TRUE(resolvedSurfaceStats.planValid)
+        << resolvedSurfaceStats.planFailureReason;
+    EXPECT_TRUE(resolvedSurfaceStats.toneMappingBoundaryValid)
+        << resolvedSurfaceStats.toneMappingBoundaryWarning;
+    EXPECT_EQ(PostProcessColorDomain::SceneLinearHDR,
+              resolvedSurfaceStats.inputColorDomain);
+    EXPECT_EQ(PostProcessColorDomain::DisplayLinearLDR,
+              resolvedSurfaceStats.outputColorDomain);
 
     const RenderPolicyDiagnostics& diagnostics =
         renderer.GetRenderPolicyDiagnostics();
@@ -5269,10 +5311,11 @@ TEST(RenderPassStatusValidation, RecordContextRejectsStaleMismatchedAndIncomplet
         4, 4, RHIFormat::RGBA8_UNORM);
     const RGTextureHandle currentTarget = graph.CreateTexture(targetDesc);
     const RGTextureHandle foreignTarget = otherGraph.CreateTexture(targetDesc);
-    const std::array<RGTextureHandle ViewData::*, 3> viewHandles = {
+    const std::array<RGTextureHandle ViewData::*, 4> viewHandles = {
         &ViewData::colorTarget,
         &ViewData::depthTarget,
-        &ViewData::velocityTarget};
+        &ViewData::velocityTarget,
+        &ViewData::reactiveMaskTarget};
     for (RGTextureHandle ViewData::* handle : viewHandles)
     {
         context.view.*handle = currentTarget;
@@ -10249,10 +10292,91 @@ TEST_F(RenderPassValidationFixture, ViewDataDefaultsKeepTemporalHistoryStable)
     ViewData defaultView;
     EXPECT_FALSE(defaultView.resetTemporalHistory);
     EXPECT_FALSE(defaultView.velocityTarget.IsValid());
+    EXPECT_FALSE(defaultView.reactiveMaskTarget.IsValid());
     EXPECT_EQ(defaultView.previousViewProjectionValid, 0);
 
     RenderObject defaultObject;
     EXPECT_EQ(defaultObject.previousWorldMatrixValid, 0);
+}
+
+TEST(RenderPassValidation,
+     ViewDataTemporalJitterKeepsCanonicalCullingAndProvidesRasterInverse)
+{
+    ViewData view;
+    view.viewMatrix = Mat4Identity();
+    view.projectionMatrix = Mat4Identity();
+    view.viewProjectionMatrix = Mat4Identity();
+    view.inverseViewMatrix = Mat4Identity();
+    view.inverseProjectionMatrix = Mat4Identity();
+    view.previousViewProjectionMatrix = Mat4Identity();
+    view.previousViewProjectionMatrix[3][0] = 0.25f;
+    view.previousViewProjectionValid = 1;
+
+    const RenderOutputExtent extent{64u, 32u};
+    const RenderTemporalJitter current =
+        MakeRenderTemporalJitterForPhase(0u, extent);
+    const RenderTemporalJitter previous =
+        MakeRenderTemporalJitterForPhase(1u, extent);
+    const Mat4 previousPresentedJittered =
+        ApplyRenderTemporalJitter(view.previousViewProjectionMatrix, previous);
+
+    view.SetTemporalJitter(
+        current, previous, previousPresentedJittered, true);
+
+    EXPECT_TRUE(IsIdentityMatrix(view.viewProjectionMatrix));
+    EXPECT_FLOAT_EQ(
+        current.ndcOffset.x, view.jitteredViewProjectionMatrix[2][0]);
+    EXPECT_FLOAT_EQ(
+        current.ndcOffset.y, view.jitteredViewProjectionMatrix[2][1]);
+    EXPECT_TRUE(AreMatricesNear(
+        view.inverseJitteredViewProjectionMatrix *
+            view.jitteredViewProjectionMatrix,
+        Mat4Identity()));
+    EXPECT_TRUE(AreMatricesNear(view.previousJitteredViewProjectionMatrix,
+                                previousPresentedJittered));
+}
+
+TEST(RenderPassValidation,
+     SceneRendererAppliesRasterJitterOnlyForEnabledTemporalAntiAliasing)
+{
+    struct AntiAliasingCase
+    {
+        RenderAntiAliasingMode mode = RenderAntiAliasingMode::None;
+        bool postProcessEnabled = true;
+        bool expectsTemporalJitter = false;
+    };
+    constexpr std::array<AntiAliasingCase, 4> cases{{
+        {RenderAntiAliasingMode::None, true, false},
+        {RenderAntiAliasingMode::FXAA, true, false},
+        {RenderAntiAliasingMode::TAA, false, false},
+        {RenderAntiAliasingMode::TAA, true, true},
+    }};
+
+    uint64 frameSequence = 101u;
+    for (const AntiAliasingCase& testCase : cases)
+    {
+        SceneRenderer renderer;
+        RenderSceneDatabase sceneDatabase;
+        const std::unique_ptr<const RenderFramePacketV5> frame =
+            SceneRendererTestAccess::MakeEmptyFrameForTesting(
+                sceneDatabase,
+                frameSequence++,
+                RenderPipelineRecipe::ForwardStandard,
+                testCase.mode,
+                testCase.postProcessEnabled);
+        ASSERT_NE(frame, nullptr);
+
+        RenderResourceRegistry registry;
+        ASSERT_TRUE(
+            renderer.ApplyFrameV5(*frame, sceneDatabase, registry).IsApplied());
+
+        const ViewData& view = renderer.GetViewData();
+        EXPECT_EQ(testCase.expectsTemporalJitter,
+                  view.currentTemporalJitter.IsValid());
+        EXPECT_EQ(testCase.expectsTemporalJitter,
+                  !AreMatricesNear(view.jitteredViewProjectionMatrix,
+                                   view.viewProjectionMatrix));
+    }
 }
 
 TEST(RenderPassValidation, ToneMappingPixelProbeDisabledRequestDoesNotArmReadback)
@@ -10964,6 +11088,47 @@ TEST(SceneRendererDiagnosticsValidation,
     EXPECT_TRUE(renderer.GetMeshPassPreparation().shadow.packets.empty());
     EXPECT_TRUE(renderer.GetMeshPassPreparation().transparent.packets.empty());
     EXPECT_FALSE(renderer.GetRenderPolicyDiagnostics().planAvailable);
+}
+
+TEST(SceneRendererTemporalHistoryValidation,
+     UnsubmittedFrameRefreshesPostProcessReceiptAfterAbandoningCandidate)
+{
+    // The post-process adapter owns its immutable lifecycle receipt. Arrange
+    // a stale renderer-side candidate and ensure an unsubmitted frame never
+    // reports that candidate as pending after the adapter's abandon hook.
+    PostProcessStack stack;
+    PostProcessPipelineFeatureAdapter postProcess(&stack);
+    SceneRenderer renderer;
+    SceneRendererTestAccess::SetPostProcessFeatureForTesting(
+        renderer, &postProcess);
+
+    RenderExecutionReceipt pending;
+    pending.schemaVersion = 7;
+    pending.postProcess.antiAliasingMode = RenderAntiAliasingMode::TAA;
+    pending.postProcess.taaRequested = true;
+    pending.postProcess.taaPipelineReady = true;
+    pending.postProcess.taaInputsReady = true;
+    pending.postProcess.taaExecuted = true;
+    pending.postProcess.historyCandidateProduced = true;
+    pending.postProcess.historyResetReasons =
+        RenderHistoryResetReason::FirstFrame;
+    pending.postProcess.taaPassCount = 1;
+    pending.postProcess.taaResolveGraphPassCount = 1;
+    pending.postProcess.taaHistoryStoreGraphPassCount = 1;
+    SceneRendererTestAccess::SetPendingExecutionReceiptForTesting(
+        renderer, std::move(pending));
+
+    renderer.ReleaseUnsubmittedFrame();
+
+    const RenderExecutionReceipt& rejected =
+        renderer.GetFrameDiagnostics().attemptedExecutionReceipt;
+    EXPECT_FALSE(rejected.executionSucceeded);
+    EXPECT_FALSE(rejected.presented);
+    EXPECT_FALSE(rejected.succeeded);
+    EXPECT_TRUE(rejected.postProcess.IsEmpty());
+    EXPECT_FALSE(rejected.postProcess.historyCandidateProduced);
+    EXPECT_FALSE(rejected.postProcess.historyCommitted);
+    EXPECT_FALSE(rejected.postProcess.historyAbandoned);
 }
 
 TEST_F(RenderPassValidationFixture, PostProcessSettingsDefaultRayTracedReflectionControlsAreExplicit)
@@ -11810,7 +11975,7 @@ TEST_F(RenderPassValidationFixture, FXAARequiresResourcesBeforeReportingSupporte
 {
     FXAAPass pass;
     PostProcessSettings settings;
-    settings.enableFXAA = true;
+    settings.antiAliasingMode = RenderAntiAliasingMode::FXAA;
     pass.Configure(settings);
 
     EXPECT_TRUE(pass.IsRequestedEnabled());
@@ -11825,7 +11990,7 @@ TEST_F(RenderPassValidationFixture, FXAAAddsLiveGraphPassAndDrawsFullscreenTrian
 
     FXAAPass pass;
     PostProcessSettings settings;
-    settings.enableFXAA = true;
+    settings.antiAliasingMode = RenderAntiAliasingMode::FXAA;
     settings.fxaaQuality = 0.85f;
     pass.Configure(settings);
     pass.SetResources(&pipelineCache, &viewCache);
@@ -11932,7 +12097,7 @@ TEST_F(RenderPassValidationFixture, FXAASkipsDrawWhenConstantsCannotMap)
 
     FXAAPass pass;
     PostProcessSettings settings;
-    settings.enableFXAA = true;
+    settings.antiAliasingMode = RenderAntiAliasingMode::FXAA;
     pass.Configure(settings);
     pass.SetResources(&pipelineCache, &viewCache);
 
@@ -12801,7 +12966,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGra
     settings.enableColorGrading = true;
     settings.enableChromaticAberration = true;
     settings.enableVignette = true;
-    settings.enableFXAA = true;
+    settings.antiAliasingMode = RenderAntiAliasingMode::FXAA;
 
     PostProcessStack stack;
     auto* bloom = stack.AddEffect<BloomPass>();
@@ -12892,7 +13057,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackKeepsZeroIntensityVignetteAs
     settings.enableToneMapping = true;
     settings.enableVignette = true;
     settings.vignetteIntensity = 0.0f;
-    settings.enableFXAA = true;
+    settings.antiAliasingMode = RenderAntiAliasingMode::FXAA;
 
     PostProcessStack stack;
     auto* toneMapping = stack.AddEffect<ToneMappingPass>();
@@ -13315,7 +13480,7 @@ TEST(RenderPostProcessStackValidation, SceneRendererWiresLDREffectsWithoutFlippi
 
     EXPECT_NE(source.find("settings.enableColorGrading = false;"), std::string::npos);
     EXPECT_NE(source.find("settings.enableChromaticAberration = false;"), std::string::npos);
-    EXPECT_NE(source.find("settings.enableFXAA = false;"), std::string::npos);
+    EXPECT_NE(source.find("settings.antiAliasingMode = RenderAntiAliasingMode::None;"), std::string::npos);
     EXPECT_NE(source.find("settings.enableVignette = false;"), std::string::npos);
     EXPECT_NE(source.find("m_colorGradingPostProcess = m_postProcessStack->AddEffect<ColorGradingPass>();"),
               std::string::npos);
@@ -24510,14 +24675,13 @@ TEST(RenderPostProcessStackValidation, RenderVisualQualityPresetAppliesExplicitE
     EXPECT_STREQ(GetRenderVisualQualityPresetName(settings.visualQualityPreset), "off");
     EXPECT_FALSE(settings.enableToneMapping);
     EXPECT_FALSE(settings.enableBloom);
-    EXPECT_FALSE(settings.enableFXAA);
+    EXPECT_EQ(settings.antiAliasingMode, RenderAntiAliasingMode::None);
     EXPECT_FALSE(settings.enableSSAO);
-    EXPECT_FALSE(settings.enableTAA);
 
     ApplyRenderVisualQualityPreset(settings, RenderVisualQualityPreset::Low);
     EXPECT_EQ(settings.visualQualityPreset, RenderVisualQualityPreset::Low);
     EXPECT_TRUE(settings.enableToneMapping);
-    EXPECT_TRUE(settings.enableFXAA);
+    EXPECT_EQ(settings.antiAliasingMode, RenderAntiAliasingMode::FXAA);
     EXPECT_FALSE(settings.enableBloom);
     EXPECT_FALSE(settings.enableSSAO);
 
@@ -24525,12 +24689,11 @@ TEST(RenderPostProcessStackValidation, RenderVisualQualityPresetAppliesExplicitE
     EXPECT_EQ(settings.visualQualityPreset, RenderVisualQualityPreset::Cinematic);
     EXPECT_TRUE(settings.enableToneMapping);
     EXPECT_TRUE(settings.enableBloom);
-    EXPECT_TRUE(settings.enableFXAA);
+    EXPECT_EQ(settings.antiAliasingMode, RenderAntiAliasingMode::TAA);
     EXPECT_TRUE(settings.enableFilmGrain);
     EXPECT_FALSE(settings.enableSSAO);
     EXPECT_FALSE(settings.enableSSR);
-    EXPECT_FALSE(settings.enableVelocityOutput);
-    EXPECT_FALSE(settings.enableTAA);
+    EXPECT_TRUE(settings.enableVelocityOutput);
     EXPECT_FALSE(settings.enableDOF);
     EXPECT_FALSE(settings.enableMotionBlur);
     EXPECT_FALSE(settings.enableVolumetricLighting);
@@ -24790,7 +24953,7 @@ TEST(RenderPostProcessStackValidation,
         settings.enableChromaticAberration = true;
         settings.enableVignette = true;
         settings.enableFilmGrain = true;
-        settings.enableFXAA = true;
+        settings.antiAliasingMode = RenderAntiAliasingMode::FXAA;
 
         ToneMappingPass toneMapping;
         ColorGradingPass colorGrading;
@@ -25133,7 +25296,7 @@ TEST(RenderPostProcessStackValidation,
     EXPECT_EQ(graphStats.totalPasses, 3u);
 }
 
-TEST_F(RenderPassValidationFixture, PostProcessFrameInputContractReportsMissingVelocityDepthAndHistory)
+TEST_F(RenderPassValidationFixture, PostProcessFrameInputContractReportsMissingVelocityDepthReactiveMaskAndHistory)
 {
     RenderGraph graph;
     RenderGraphValidationAccess::SetDevice(graph, &device);
@@ -25156,6 +25319,7 @@ TEST_F(RenderPassValidationFixture, PostProcessFrameInputContractReportsMissingV
     auto* motionBlur = stack.AddEffect<RecordingPostProcessPass>("MotionBlur", 100);
     motionBlur->requirements.requiresDepth = true;
     motionBlur->requirements.requiresVelocity = true;
+    motionBlur->requirements.requiresReactiveMask = true;
     motionBlur->requirements.requiresHistory = true;
 
     stack.Execute(graph, inputs, output);
@@ -25171,14 +25335,19 @@ TEST_F(RenderPassValidationFixture, PostProcessFrameInputContractReportsMissingV
     EXPECT_TRUE(plan.pipelineReady);
     EXPECT_TRUE(plan.requiresDepth);
     EXPECT_TRUE(plan.requiresVelocity);
+    EXPECT_TRUE(plan.requiresReactiveMask);
     EXPECT_TRUE(plan.requiresHistory);
     EXPECT_FALSE(plan.frameInputsSatisfied);
     EXPECT_NE(plan.missingFrameInputReason.find("depth"), std::string::npos);
     EXPECT_NE(plan.missingFrameInputReason.find("velocity"), std::string::npos);
+    EXPECT_NE(plan.missingFrameInputReason.find("reactive mask"), std::string::npos);
     EXPECT_NE(plan.missingFrameInputReason.find("temporal history"), std::string::npos);
     EXPECT_EQ(plan.skippedReason, plan.missingFrameInputReason);
     EXPECT_FALSE(plan.scheduled);
     EXPECT_EQ(plan.reason, plan.missingFrameInputReason);
+    EXPECT_EQ(
+        executeStats.planFailureReason,
+        "requested post-process pass 'MotionBlur' is unavailable: missing required frame input(s): depth, velocity, reactive mask, temporal history");
     EXPECT_FALSE(executeStats.fallbackCopyApplied);
 }
 
@@ -25195,6 +25364,24 @@ TEST(RenderPostProcessStackValidation, DOFAndMotionBlurDeclareFrameInputRequirem
     EXPECT_TRUE(motionRequirements.requiresDepth);
     EXPECT_TRUE(motionRequirements.requiresVelocity);
     EXPECT_TRUE(motionRequirements.requiresHistory);
+}
+
+TEST(RenderPostProcessStackValidation, UnknownAntiAliasingModeFailsClosedBeforePassSelection)
+{
+    PostProcessStack stack;
+    PostProcessSettings settings;
+    settings.antiAliasingMode =
+        static_cast<RenderAntiAliasingMode>(0xffu);
+    stack.ApplySettings(settings);
+
+    PostProcessFrameInputs inputs;
+    inputs.outputFormat = RHIFormat::RGBA8_UNORM;
+    PostProcessStackExecuteStats plan;
+    EXPECT_FALSE(stack.BuildPlan(inputs, RHIFormat::RGBA8_UNORM, plan));
+    EXPECT_FALSE(plan.planValid);
+    EXPECT_EQ(plan.effectPlans.size(), static_cast<size_t>(0));
+    EXPECT_NE(plan.planFailureReason.find("unknown anti-aliasing mode"),
+              std::string::npos);
 }
 
 TEST(RenderPostProcessStackValidation, MotionBlurReportsUnsupportedDiagnosticsWithoutScheduling)
@@ -25463,37 +25650,940 @@ TEST_F(RenderPassValidationFixture, SSRReportsUnsupportedDiagnosticsWithoutSched
     EXPECT_EQ(ssrSource.find("TODO"), std::string::npos);
 }
 
-TEST_F(RenderPassValidationFixture, TAAMinimalResolveCopiesCurrentFrameAndUpdatesHistory)
+TEST_F(RenderPassValidationFixture,
+       EvaluateEffectsKeepsSupportedTAAChainEnabledWithoutFrameHandles)
 {
-    FakeDevice localDevice;
-    RecordingCommandContext ctx;
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    PostProcessStack stack;
+    auto* taa = stack.AddEffect<TAA>();
+    auto* toneMapping = stack.AddEffect<ToneMappingPass>();
+
+    PostProcessSettings settings;
+    settings.antiAliasingMode = RenderAntiAliasingMode::TAA;
+    settings.enableToneMapping = true;
+    settings.toneMappingOutputColorSpace = ToneMappingOutputColorSpace::SRGB;
+    stack.ApplySettings(settings);
+    taa->SetResources(&pipelineCache, &viewCache);
+    toneMapping->SetResources(&pipelineCache, &viewCache);
+
+    ASSERT_TRUE(taa->IsSupported()) << taa->GetUnsupportedReason();
+    ASSERT_TRUE(toneMapping->IsSupported())
+        << toneMapping->GetUnsupportedReason();
+
+    const PostProcessStackExecuteStats stats =
+        stack.EvaluateEffects(RHIFormat::BGRA8_UNORM);
+
+    EXPECT_TRUE(stats.planValid) << stats.planFailureReason;
+    EXPECT_TRUE(stats.toneMappingBoundaryValid)
+        << stats.toneMappingBoundaryWarning;
+    EXPECT_EQ(stats.requestedEffectCount, 2u);
+    EXPECT_EQ(stats.enabledEffectCount, 2u);
+    EXPECT_EQ(stats.unsupportedSkippedCount, 0u);
+    EXPECT_EQ(stats.enabledToneMappingEffectCount, 1u);
+
+    const auto taaPlan = std::find_if(
+        stats.effectPlans.begin(), stats.effectPlans.end(),
+        [](const PostProcessEffectExecutionPlan& effectPlan)
+        {
+            return effectPlan.passId ==
+                PostProcessPassId::TemporalAntiAliasing;
+        });
+    ASSERT_NE(taaPlan, stats.effectPlans.end());
+    EXPECT_TRUE(taaPlan->requested);
+    EXPECT_TRUE(taaPlan->supported);
+    EXPECT_TRUE(taaPlan->enabled);
+    EXPECT_TRUE(taaPlan->frameInputsSatisfied);
+    EXPECT_TRUE(taaPlan->requiresDepth);
+    EXPECT_TRUE(taaPlan->requiresVelocity);
+    EXPECT_TRUE(taaPlan->requiresReactiveMask);
+    EXPECT_FALSE(taaPlan->requiresHistory);
+    EXPECT_TRUE(taaPlan->missingFrameInputReason.empty());
+
+    settings.toneMappingOutputColorSpace =
+        ToneMappingOutputColorSpace::Linear;
+    stack.ApplySettings(settings);
+    const PostProcessStackExecuteStats bgraSrgbStats =
+        stack.EvaluateEffects(RHIFormat::BGRA8_UNORM_SRGB);
+    EXPECT_TRUE(bgraSrgbStats.planValid) << bgraSrgbStats.planFailureReason;
+    EXPECT_TRUE(bgraSrgbStats.toneMappingBoundaryValid)
+        << bgraSrgbStats.toneMappingBoundaryWarning;
+    EXPECT_EQ(RHIFormat::BGRA8_UNORM_SRGB,
+              bgraSrgbStats.finalOutputFormat);
+    EXPECT_EQ(PostProcessColorDomain::SceneLinearHDR,
+              bgraSrgbStats.inputColorDomain);
+    EXPECT_EQ(PostProcessColorDomain::DisplayLinearLDR,
+              bgraSrgbStats.outputColorDomain);
+    EXPECT_EQ(bgraSrgbStats.requestedEffectCount, 2u);
+    EXPECT_EQ(bgraSrgbStats.enabledEffectCount, 2u);
+    EXPECT_EQ(bgraSrgbStats.unsupportedSkippedCount, 0u);
+}
+
+TEST_F(RenderPassValidationFixture,
+       TAAStrictBuildPlanRejectsOnlyMissingReactiveMask)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    PostProcessStack stack;
+    auto* taa = stack.AddEffect<TAA>();
+    auto* toneMapping = stack.AddEffect<ToneMappingPass>();
+
+    PostProcessSettings settings;
+    settings.antiAliasingMode = RenderAntiAliasingMode::TAA;
+    settings.enableToneMapping = true;
+    settings.toneMappingOutputColorSpace = ToneMappingOutputColorSpace::SRGB;
+    stack.ApplySettings(settings);
+    taa->SetResources(&pipelineCache, &viewCache);
+    toneMapping->SetResources(&pipelineCache, &viewCache);
+
+    ASSERT_TRUE(taa->IsSupported()) << taa->GetUnsupportedReason();
+    ASSERT_TRUE(toneMapping->IsSupported())
+        << toneMapping->GetUnsupportedReason();
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+
+    PostProcessFrameInputs inputs;
+    inputs.sceneColor = graph.CreateTexture(
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT));
+    inputs.depth = graph.CreateTexture(
+        RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
+    inputs.velocity = graph.CreateTexture(
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RG16_FLOAT));
+    inputs.reactiveMask = {};
+    inputs.outputFormat = RHIFormat::BGRA8_UNORM;
+    inputs.sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
+    inputs.outputColorDomain = PostProcessColorDomain::DisplayEncodedLDR;
+
+    ASSERT_TRUE(inputs.sceneColor.IsValid());
+    ASSERT_TRUE(inputs.depth.IsValid());
+    ASSERT_TRUE(inputs.velocity.IsValid());
+
+    PostProcessStackExecuteStats plan;
+    EXPECT_FALSE(stack.BuildPlan(
+        inputs,
+        RHIFormat::BGRA8_UNORM,
+        PostProcessPlanContract::Presentation,
+        plan));
+    EXPECT_FALSE(plan.planValid);
+
+    const auto taaPlan = std::find_if(
+        plan.effectPlans.begin(), plan.effectPlans.end(),
+        [](const PostProcessEffectExecutionPlan& effectPlan)
+        {
+            return effectPlan.passId ==
+                PostProcessPassId::TemporalAntiAliasing;
+        });
+    ASSERT_NE(taaPlan, plan.effectPlans.end());
+    EXPECT_TRUE(taaPlan->requested);
+    EXPECT_TRUE(taaPlan->supported);
+    EXPECT_TRUE(taaPlan->enabled);
+    EXPECT_FALSE(taaPlan->frameInputsSatisfied);
+    EXPECT_EQ(taaPlan->missingFrameInputReason,
+              "missing required frame input(s): reactive mask");
+    EXPECT_EQ(
+        plan.planFailureReason,
+        "requested post-process pass 'TemporalAntiAliasing' is unavailable: "
+        "missing required frame input(s): reactive mask");
+}
+
+TEST_F(RenderPassValidationFixture, TAADeclaresStrictGraphOnlyFrameInputContract)
+{
+    TAA taa;
+    PostProcessSettings settings;
+    settings.antiAliasingMode = RenderAntiAliasingMode::TAA;
+    taa.Configure(settings);
+
+    const PostProcessPassDescriptor descriptor = taa.Describe();
+    EXPECT_EQ(descriptor.id, PostProcessPassId::TemporalAntiAliasing);
+    EXPECT_EQ(descriptor.stage, PostProcessStage::Temporal);
+    EXPECT_EQ(descriptor.inputDomain, PostProcessColorDomain::SceneLinearHDR);
+    EXPECT_EQ(descriptor.outputDomain, PostProcessColorDomain::SceneLinearHDR);
+    EXPECT_TRUE(taa.IsRequestedEnabled());
+
+    const PostProcessFrameInputRequirements requirements =
+        taa.GetFrameInputRequirements();
+    EXPECT_TRUE(requirements.requiresDepth);
+    EXPECT_TRUE(requirements.requiresVelocity);
+    EXPECT_TRUE(requirements.requiresReactiveMask);
+    EXPECT_FALSE(requirements.requiresHistory);
+
+    const fs::path taaSourcePath =
+        FindShaderDirectory().parent_path() / "Private" / "PostProcess" / "TAA.cpp";
+    const std::string taaSource = ReadTextFile(taaSourcePath);
+    EXPECT_NE(taaSource.find("TAAResolve"), std::string::npos);
+    EXPECT_NE(taaSource.find("TAAHistoryStore"), std::string::npos);
+    EXPECT_NE(taaSource.find("CreateImmutablePassConstants"),
+              std::string::npos);
+    EXPECT_NE(taaSource.find("RetainSubmissionResource"),
+              std::string::npos);
+    EXPECT_EQ(taaSource.find("m_constantBuffer"), std::string::npos);
+    EXPECT_EQ(taaSource.find("CopyTexture"), std::string::npos);
+    EXPECT_EQ(taaSource.find("TAA::Resolve("), std::string::npos);
+}
+
+TEST_F(RenderPassValidationFixture,
+       TAAAddsResolveAndCandidateHistoryStoreWithoutCopyingOrPrematureCommit)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     TAA taa;
-    taa.Initialize(&localDevice, 32, 24);
-    ASSERT_TRUE(taa.IsInitialized());
-    EXPECT_TRUE(taa.IsSupported());
-    EXPECT_TRUE(taa.IsEnabled());
-    EXPECT_FALSE(taa.HasValidHistory());
+    PostProcessSettings settings;
+    settings.antiAliasingMode = RenderAntiAliasingMode::TAA;
+    taa.Configure(settings);
+    taa.SetResources(&pipelineCache, &viewCache);
 
-    RHITextureRef currentColor =
-        localDevice.CreateTexture(RHITextureDesc::RenderTarget(32, 24, RHIFormat::RGBA16_FLOAT));
-    ASSERT_TRUE(currentColor);
+    ASSERT_TRUE(taa.IsSupported()) << taa.GetUnsupportedReason();
+    ASSERT_TRUE(taa.IsEnabled());
 
-    taa.Resolve(ctx, currentColor.Get(), nullptr, nullptr, 17);
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+
+    RHITextureDesc colorDesc =
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT);
+    colorDesc.usage =
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+    RHITextureDesc depthDesc =
+        RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT);
+    depthDesc.usage = RHITextureUsage::DepthStencil |
+                      RHITextureUsage::ShaderResource;
+    RHITextureDesc velocityDesc =
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RG16_FLOAT);
+    velocityDesc.usage =
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+    RHITextureDesc reactiveMaskDesc =
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::R8_UNORM);
+    reactiveMaskDesc.usage =
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+
+    RHITextureRef sceneColorTexture = device.CreateTexture(colorDesc);
+    RHITextureRef depthTexture = device.CreateTexture(depthDesc);
+    RHITextureRef velocityTexture = device.CreateTexture(velocityDesc);
+    RHITextureRef reactiveMaskTexture = device.CreateTexture(reactiveMaskDesc);
+    RHITextureRef outputTexture = device.CreateTexture(colorDesc);
+    ASSERT_TRUE(sceneColorTexture);
+    ASSERT_TRUE(depthTexture);
+    ASSERT_TRUE(velocityTexture);
+    ASSERT_TRUE(reactiveMaskTexture);
+    ASSERT_TRUE(outputTexture);
+
+    RenderViewHistoryIdentity historyIdentity;
+    historyIdentity.previousFrame = {
+        .frameSequence = 1,
+        .sceneRevision = 1,
+        .surfaceGeneration = 1,
+        .configurationRevision = 1,
+    };
+    historyIdentity.view = {
+        .sceneRuntimeId = 1,
+        .cameraEntityPacked = 1,
+        .subViewIndex = 0,
+        .role = ViewRole::Main,
+    };
+    historyIdentity.extent = {.width = 64, .height = 64};
+    historyIdentity.familyId = 1;
+    historyIdentity.worldRevision = 1;
+    historyIdentity.temporalEpoch = 1;
+    historyIdentity.formatRevision = 1;
+    historyIdentity.surfaceGeneration = 1;
+    historyIdentity.cameraCutRevision = 1;
+    ASSERT_TRUE(historyIdentity.IsValid());
+
+    PostProcessFrameInputs inputs;
+    inputs.sceneColor = RenderGraphValidationAccess::ImportTexture(
+        graph, sceneColorTexture.Get(), RHIResourceState::ShaderResource);
+    inputs.depth = RenderGraphValidationAccess::ImportTexture(
+        graph, depthTexture.Get(), RHIResourceState::DepthRead);
+    inputs.velocity = RenderGraphValidationAccess::ImportTexture(
+        graph, velocityTexture.Get(), RHIResourceState::ShaderResource);
+    inputs.reactiveMask = RenderGraphValidationAccess::ImportTexture(
+        graph, reactiveMaskTexture.Get(), RHIResourceState::ShaderResource);
+    inputs.outputFormat = RHIFormat::RGBA16_FLOAT;
+    inputs.frameIndex = 1;
+    // The first frame may have no history and therefore does not sample it.
+    // Keeping this at zero lets the next sampled frame prove that an
+    // all-zero/identical pair is rejected rather than masquerading as TAA.
+    inputs.jitterOffset = Vec2(0.0f);
+    inputs.historyIdentity = historyIdentity;
+    inputs.historyResetReasons = RenderHistoryResetReason::FirstFrame;
+    inputs.historyAvailable = false;
+    const RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(
+        graph, outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    taa.AddToGraph(graph, inputs, output);
+    RenderGraphValidationAccess::Compile(graph);
+
+    const RenderGraph::CompileStats& graphStats = graph.GetCompileStats();
+    EXPECT_TRUE(graphStats.compileValid);
+    EXPECT_EQ(graphStats.totalPasses, 2u);
+    EXPECT_EQ(graphStats.culledPasses, 0u);
+
+    const RenderGraph::Diagnostics graphDiagnostics = graph.GetDiagnostics();
+    const auto findPass = [&graphDiagnostics](const char* name)
+        -> const RenderGraph::PassDiagnostic*
+    {
+        const auto it = std::find_if(
+            graphDiagnostics.passes.begin(),
+            graphDiagnostics.passes.end(),
+            [name](const RenderGraph::PassDiagnostic& pass)
+            {
+                return pass.name == name;
+            });
+        return it != graphDiagnostics.passes.end() ? &*it : nullptr;
+    };
+    const RenderGraph::PassDiagnostic* const resolvePass =
+        findPass("TAAResolve");
+    const RenderGraph::PassDiagnostic* const historyStorePass =
+        findPass("TAAHistoryStore");
+    ASSERT_NE(resolvePass, nullptr);
+    ASSERT_NE(historyStorePass, nullptr);
+
+    const auto isFrameTexture = [&](uint32 resourceIndex)
+    {
+        return resourceIndex == inputs.sceneColor.index ||
+               resourceIndex == inputs.depth.index ||
+               resourceIndex == inputs.velocity.index ||
+               resourceIndex == inputs.reactiveMask.index ||
+               resourceIndex == output.index;
+    };
+    const auto appendUnique = [](std::vector<uint32>& indices, uint32 index)
+    {
+        if (std::find(indices.begin(), indices.end(), index) == indices.end())
+        {
+            indices.push_back(index);
+        }
+    };
+    std::vector<uint32> historyReadIndices;
+    for (const RenderGraph::ResourceUsageDiagnostic& usage :
+         resolvePass->usages)
+    {
+        if (usage.type == RenderGraph::DiagnosticResourceType::Texture &&
+            usage.access == RenderGraph::DiagnosticAccessType::Read &&
+            !isFrameTexture(usage.resourceIndex))
+        {
+            appendUnique(historyReadIndices, usage.resourceIndex);
+        }
+    }
+    std::vector<uint32> historyWriteIndices;
+    for (const RenderGraph::ResourceUsageDiagnostic& usage :
+         historyStorePass->usages)
+    {
+        if (usage.type == RenderGraph::DiagnosticResourceType::Texture &&
+            usage.access == RenderGraph::DiagnosticAccessType::Write)
+        {
+            appendUnique(historyWriteIndices, usage.resourceIndex);
+        }
+    }
+    ASSERT_EQ(historyReadIndices.size(), static_cast<size_t>(2));
+    ASSERT_EQ(historyWriteIndices.size(), static_cast<size_t>(2));
+
+    std::vector<const RenderGraph::ResourceDiagnostic*> historyResources;
+    for (const uint32 resourceIndex : historyReadIndices)
+    {
+        const auto it = std::find_if(
+            graphDiagnostics.resources.begin(),
+            graphDiagnostics.resources.end(),
+            [resourceIndex](const RenderGraph::ResourceDiagnostic& resource)
+            {
+                return resource.type ==
+                           RenderGraph::DiagnosticResourceType::Texture &&
+                       resource.index == resourceIndex;
+            });
+        ASSERT_NE(it, graphDiagnostics.resources.end());
+        historyResources.push_back(&*it);
+    }
+    for (const uint32 resourceIndex : historyWriteIndices)
+    {
+        ASSERT_EQ(std::find(historyReadIndices.begin(),
+                            historyReadIndices.end(),
+                            resourceIndex),
+                  historyReadIndices.end());
+        const auto it = std::find_if(
+            graphDiagnostics.resources.begin(),
+            graphDiagnostics.resources.end(),
+            [resourceIndex](const RenderGraph::ResourceDiagnostic& resource)
+            {
+                return resource.type ==
+                           RenderGraph::DiagnosticResourceType::Texture &&
+                       resource.index == resourceIndex;
+            });
+        ASSERT_NE(it, graphDiagnostics.resources.end());
+        historyResources.push_back(&*it);
+    }
+    ASSERT_EQ(historyResources.size(), static_cast<size_t>(4));
+    uint32 historyColorCount = 0;
+    uint32 historyDepthCount = 0;
+    for (const RenderGraph::ResourceDiagnostic* const resource :
+         historyResources)
+    {
+        ASSERT_NE(resource, nullptr);
+        EXPECT_TRUE(resource->imported);
+        EXPECT_EQ(resource->initialState, RHIResourceState::Undefined);
+        EXPECT_EQ(resource->initialAccess.layout,
+                  RHIResourceLayout::Undefined);
+        EXPECT_EQ(resource->initialAccess.contentValidity,
+                  RHIContentValidity::Invalid);
+        historyColorCount +=
+            resource->format == RHIFormat::RGBA16_FLOAT ? 1u : 0u;
+        historyDepthCount +=
+            resource->format == RHIFormat::R32_FLOAT ? 1u : 0u;
+        const bool isHistoryWrite =
+            std::find(historyWriteIndices.begin(),
+                      historyWriteIndices.end(),
+                      resource->index) != historyWriteIndices.end();
+        if (isHistoryWrite)
+        {
+            EXPECT_TRUE(resource->hasExportState);
+            EXPECT_EQ(resource->currentState, RHIResourceState::RenderTarget);
+            EXPECT_EQ(resource->exportState,
+                      RHIResourceState::ShaderResource);
+        }
+        else
+        {
+            EXPECT_FALSE(resource->hasExportState);
+            EXPECT_EQ(resource->currentState,
+                      RHIResourceState::ShaderResource);
+        }
+    }
+    EXPECT_EQ(historyColorCount, 2u);
+    EXPECT_EQ(historyDepthCount, 2u);
+
+    RecordingCommandContext ctx;
+    RenderGraphValidationAccess::Execute(graph, ctx);
+
+    for (const RenderGraph::ResourceDiagnostic* const resource :
+         historyResources)
+    {
+        RGTextureHandle historyHandle;
+        historyHandle.index = resource->index;
+        historyHandle.graphIdentity = graph.GetGraphIdentity();
+        historyHandle.recordingGeneration = graph.GetRecordingGeneration();
+        const RHITextureAccessSnapshot realized =
+            graph.GetRealizedAccess(historyHandle);
+        EXPECT_EQ(ProjectRHIResourceState(realized.uniformAccess),
+                  RHIResourceState::ShaderResource);
+        EXPECT_EQ(realized.uniformAccess.layout,
+                  RHIResourceLayout::ShaderReadOnly);
+    }
+
+    EXPECT_EQ(ctx.copyTextureCount, 0u);
+    EXPECT_EQ(ctx.beginRenderPassCount, 2u);
+    EXPECT_EQ(ctx.endRenderPassCount, 2u);
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(2));
+    EXPECT_EQ(ctx.pipelineSequence[0],
+              pipelineCache.GetTAAResolvePipeline(RHIFormat::RGBA16_FLOAT));
+    EXPECT_EQ(ctx.pipelineSequence[1],
+              pipelineCache.GetTAAHistoryStorePipeline());
+    EXPECT_EQ(ctx.drawCount, 2u);
+    EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
+
+    const auto findDescriptor = [this](const char* debugName)
+        -> const RHIDescriptorSetDesc*
+    {
+        const auto it = std::find_if(
+            device.createdDescriptorSetDescs.begin(),
+            device.createdDescriptorSetDescs.end(),
+            [debugName](const RHIDescriptorSetDesc& desc)
+            {
+                return desc.debugName != nullptr &&
+                       std::string(desc.debugName) == debugName;
+            });
+        return it == device.createdDescriptorSetDescs.end() ? nullptr : &*it;
+    };
+
+    const RHIDescriptorSetDesc* const resolveDescriptor =
+        findDescriptor("TAAResolveDescriptorSet");
+    const RHIDescriptorSetDesc* const historyStoreDescriptor =
+        findDescriptor("TAAHistoryStoreDescriptorSet");
+    ASSERT_NE(resolveDescriptor, nullptr);
+    ASSERT_NE(historyStoreDescriptor, nullptr);
+    EXPECT_EQ(resolveDescriptor->layout, pipelineCache.GetTAASetLayout());
+    EXPECT_EQ(historyStoreDescriptor->layout, pipelineCache.GetTAASetLayout());
+    EXPECT_EQ(resolveDescriptor->bindings.size(), static_cast<size_t>(8));
+    EXPECT_EQ(historyStoreDescriptor->bindings.size(), static_cast<size_t>(8));
+    ASSERT_NE(resolveDescriptor->bindings[0].buffer, nullptr);
+    ASSERT_NE(historyStoreDescriptor->bindings[0].buffer, nullptr);
+    EXPECT_NE(resolveDescriptor->bindings[0].buffer,
+              historyStoreDescriptor->bindings[0].buffer);
 
     const TAAResolveStats& stats = taa.GetLastResolveStats();
     EXPECT_TRUE(stats.requested);
-    EXPECT_TRUE(stats.supported);
-    EXPECT_TRUE(stats.resolved);
-    EXPECT_TRUE(stats.copiedCurrentFrame);
-    EXPECT_FALSE(stats.historyValidBefore);
-    EXPECT_TRUE(stats.historyValidAfter);
-    EXPECT_FALSE(stats.depthAvailable);
-    EXPECT_FALSE(stats.motionVectorsAvailable);
-    EXPECT_TRUE(stats.motionVectorFallbackUsed);
-    EXPECT_EQ(stats.frameIndex, 17u);
-    EXPECT_EQ(ctx.copyTextureCount, 2u);
-    EXPECT_TRUE(taa.HasValidHistory());
+    EXPECT_TRUE(stats.pipelineReady);
+    EXPECT_TRUE(stats.inputsReady);
+    EXPECT_TRUE(stats.executed);
+    EXPECT_FALSE(stats.historyAvailableBefore);
+    EXPECT_FALSE(stats.historySampled);
+    EXPECT_FALSE(stats.historyConsumed);
+    EXPECT_TRUE(stats.historyCandidatePrepared);
+    EXPECT_FALSE(stats.historyCommitted);
+    EXPECT_EQ(stats.resolveGraphPassCount, 1u);
+    EXPECT_EQ(stats.historyStoreGraphPassCount, 1u);
+    EXPECT_EQ(stats.historyIdentity, historyIdentity);
+    EXPECT_FALSE(taa.HasValidHistory());
+
+    RenderViewHistoryIdentity mismatchedIdentity = historyIdentity;
+    ++mismatchedIdentity.temporalEpoch;
+    EXPECT_FALSE(taa.CanCommitHistoryAfterPresent(mismatchedIdentity));
+    EXPECT_FALSE(taa.CommitHistoryAfterPresent(mismatchedIdentity));
+    EXPECT_FALSE(taa.HasValidHistory());
+    EXPECT_TRUE(taa.CanCommitHistoryAfterPresent(historyIdentity));
+    taa.AbandonPendingHistory();
+    EXPECT_TRUE(taa.GetLastResolveStats().historyCandidatePrepared);
+    EXPECT_TRUE(taa.GetLastResolveStats().historyAbandoned);
+    EXPECT_FALSE(taa.GetLastResolveStats().historyCommitted);
+    EXPECT_FALSE(taa.CanCommitHistoryAfterPresent(historyIdentity));
+    EXPECT_FALSE(taa.CommitHistoryAfterPresent(historyIdentity));
+    EXPECT_FALSE(taa.HasValidHistory());
+}
+
+TEST_F(RenderPassValidationFixture,
+       TAARejectsSampledHistoryWithIdenticalAllZeroTemporalJitter)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    TAA taa;
+    PostProcessSettings settings;
+    settings.antiAliasingMode = RenderAntiAliasingMode::TAA;
+    taa.Configure(settings);
+    taa.SetResources(&pipelineCache, &viewCache);
+    ASSERT_TRUE(taa.IsSupported()) << taa.GetUnsupportedReason();
+
+    RHITextureDesc colorDesc =
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT);
+    colorDesc.usage =
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+    RHITextureDesc depthDesc =
+        RHITextureDesc::DepthStencil(32, 32, RHIFormat::D32_FLOAT);
+    depthDesc.usage = RHITextureUsage::DepthStencil |
+                      RHITextureUsage::ShaderResource;
+    RHITextureDesc velocityDesc =
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RG16_FLOAT);
+    velocityDesc.usage =
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+    RHITextureDesc reactiveMaskDesc =
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::R8_UNORM);
+    reactiveMaskDesc.usage =
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+
+    RHITextureRef sceneColorTexture = device.CreateTexture(colorDesc);
+    RHITextureRef depthTexture = device.CreateTexture(depthDesc);
+    RHITextureRef velocityTexture = device.CreateTexture(velocityDesc);
+    RHITextureRef reactiveMaskTexture = device.CreateTexture(reactiveMaskDesc);
+    RHITextureRef outputTexture = device.CreateTexture(colorDesc);
+    ASSERT_TRUE(sceneColorTexture);
+    ASSERT_TRUE(depthTexture);
+    ASSERT_TRUE(velocityTexture);
+    ASSERT_TRUE(reactiveMaskTexture);
+    ASSERT_TRUE(outputTexture);
+
+    const auto makeHistoryIdentity = [](uint64 sequence)
+    {
+        RenderViewHistoryIdentity identity;
+        identity.previousFrame = {
+            .frameSequence = sequence,
+            .sceneRevision = 1,
+            .surfaceGeneration = 1,
+            .configurationRevision = 1,
+        };
+        identity.view = {
+            .sceneRuntimeId = 1,
+            .cameraEntityPacked = 1,
+            .subViewIndex = 0,
+            .role = ViewRole::Main,
+        };
+        identity.extent = {.width = 32, .height = 32};
+        identity.familyId = 1;
+        identity.worldRevision = 1;
+        identity.temporalEpoch = 1;
+        identity.formatRevision = 1;
+        identity.surfaceGeneration = 1;
+        identity.cameraCutRevision = 1;
+        return identity;
+    };
+
+    const RenderViewHistoryIdentity firstIdentity = makeHistoryIdentity(1);
+    ASSERT_TRUE(firstIdentity.IsValid());
+    RenderGraph initialGraph;
+    RenderGraphValidationAccess::SetDevice(initialGraph, &device);
+    PostProcessFrameInputs initialInputs;
+    initialInputs.sceneColor = RenderGraphValidationAccess::ImportTexture(
+        initialGraph, sceneColorTexture.Get(), RHIResourceState::ShaderResource);
+    initialInputs.depth = RenderGraphValidationAccess::ImportTexture(
+        initialGraph, depthTexture.Get(), RHIResourceState::DepthRead);
+    initialInputs.velocity = RenderGraphValidationAccess::ImportTexture(
+        initialGraph, velocityTexture.Get(), RHIResourceState::ShaderResource);
+    initialInputs.reactiveMask = RenderGraphValidationAccess::ImportTexture(
+        initialGraph, reactiveMaskTexture.Get(), RHIResourceState::ShaderResource);
+    initialInputs.outputFormat = RHIFormat::RGBA16_FLOAT;
+    initialInputs.frameIndex = 1;
+    initialInputs.jitterOffset = Vec2(0.0f);
+    initialInputs.historyIdentity = firstIdentity;
+    initialInputs.historyResetReasons = RenderHistoryResetReason::FirstFrame;
+    initialInputs.historyAvailable = false;
+    const RGTextureHandle initialOutput =
+        RenderGraphValidationAccess::ImportTexture(
+            initialGraph, outputTexture.Get(), RHIResourceState::RenderTarget);
+    initialGraph.SetExportState(initialOutput, RHIResourceState::RenderTarget);
+    taa.AddToGraph(initialGraph, initialInputs, initialOutput);
+    RenderGraphValidationAccess::Compile(initialGraph);
+    ASSERT_TRUE(initialGraph.GetCompileStats().compileValid);
+    ASSERT_EQ(initialGraph.GetCompileStats().totalPasses, 2u);
+    RecordingCommandContext initialCommands;
+    RenderGraphValidationAccess::Execute(initialGraph, initialCommands);
+    ASSERT_TRUE(taa.GetLastResolveStats().historyCandidatePrepared);
+    ASSERT_TRUE(taa.CommitHistoryAfterPresent(firstIdentity));
+    ASSERT_TRUE(taa.HasValidHistory());
+
+    const RenderViewHistoryIdentity sampledIdentity = makeHistoryIdentity(2);
+    RenderGraph sampledGraph;
+    RenderGraphValidationAccess::SetDevice(sampledGraph, &device);
+    PostProcessFrameInputs sampledInputs;
+    sampledInputs.sceneColor = RenderGraphValidationAccess::ImportTexture(
+        sampledGraph, sceneColorTexture.Get(), RHIResourceState::ShaderResource);
+    sampledInputs.depth = RenderGraphValidationAccess::ImportTexture(
+        sampledGraph, depthTexture.Get(), RHIResourceState::DepthRead);
+    sampledInputs.velocity = RenderGraphValidationAccess::ImportTexture(
+        sampledGraph, velocityTexture.Get(), RHIResourceState::ShaderResource);
+    sampledInputs.reactiveMask = RenderGraphValidationAccess::ImportTexture(
+        sampledGraph, reactiveMaskTexture.Get(), RHIResourceState::ShaderResource);
+    sampledInputs.outputFormat = RHIFormat::RGBA16_FLOAT;
+    sampledInputs.frameIndex = 2;
+    sampledInputs.jitterOffset = Vec2(0.0f);
+    sampledInputs.historyIdentity = sampledIdentity;
+    sampledInputs.historyResetReasons = RenderHistoryResetReason::None;
+    sampledInputs.historyAvailable = true;
+    const RGTextureHandle sampledOutput =
+        RenderGraphValidationAccess::ImportTexture(
+            sampledGraph, outputTexture.Get(), RHIResourceState::RenderTarget);
+    sampledGraph.SetExportState(sampledOutput, RHIResourceState::RenderTarget);
+    taa.AddToGraph(sampledGraph, sampledInputs, sampledOutput);
+    RenderGraphValidationAccess::Compile(sampledGraph);
+
+    const TAAResolveStats& stats = taa.GetLastResolveStats();
+    EXPECT_TRUE(stats.requested);
+    EXPECT_TRUE(stats.pipelineReady);
+    EXPECT_FALSE(stats.inputsReady);
+    EXPECT_TRUE(stats.historyAvailableBefore);
+    EXPECT_FALSE(stats.historySampled);
+    EXPECT_FALSE(stats.historyConsumed);
+    EXPECT_FALSE(stats.executed);
+    EXPECT_NE(stats.fallbackReason.find("identical or invalid temporal jitter"),
+              std::string::npos);
+    EXPECT_EQ(sampledGraph.GetCompileStats().totalPasses, 0u);
+}
+
+TEST_F(RenderPassValidationFixture,
+       TAAUsesShaderResourceInitialStateAfterSuccessfulHistoryCommit)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    TAA taa;
+    PostProcessSettings settings;
+    settings.antiAliasingMode = RenderAntiAliasingMode::TAA;
+    taa.Configure(settings);
+    taa.SetResources(&pipelineCache, &viewCache);
+    ASSERT_TRUE(taa.IsSupported()) << taa.GetUnsupportedReason();
+
+    RHITextureDesc colorDesc =
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT);
+    colorDesc.usage =
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+    RHITextureDesc depthDesc =
+        RHITextureDesc::DepthStencil(32, 32, RHIFormat::D32_FLOAT);
+    depthDesc.usage =
+        RHITextureUsage::DepthStencil | RHITextureUsage::ShaderResource;
+    RHITextureDesc velocityDesc =
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RG16_FLOAT);
+    velocityDesc.usage =
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+    RHITextureDesc reactiveMaskDesc =
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::R8_UNORM);
+    reactiveMaskDesc.usage =
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+
+    RHITextureRef sceneColorTexture = device.CreateTexture(colorDesc);
+    RHITextureRef depthTexture = device.CreateTexture(depthDesc);
+    RHITextureRef velocityTexture = device.CreateTexture(velocityDesc);
+    RHITextureRef reactiveMaskTexture = device.CreateTexture(reactiveMaskDesc);
+    RHITextureRef outputTexture = device.CreateTexture(colorDesc);
+    ASSERT_TRUE(sceneColorTexture);
+    ASSERT_TRUE(depthTexture);
+    ASSERT_TRUE(velocityTexture);
+    ASSERT_TRUE(reactiveMaskTexture);
+    ASSERT_TRUE(outputTexture);
+
+    const auto makeIdentity = [](uint64 sequence)
+    {
+        RenderViewHistoryIdentity identity;
+        identity.previousFrame = {
+            .frameSequence = sequence,
+            .sceneRevision = 1,
+            .surfaceGeneration = 1,
+            .configurationRevision = 1,
+        };
+        identity.view = {
+            .sceneRuntimeId = 1,
+            .cameraEntityPacked = 1,
+            .subViewIndex = 0,
+            .role = ViewRole::Main,
+        };
+        identity.extent = {.width = 32, .height = 32};
+        identity.familyId = 1;
+        identity.worldRevision = 1;
+        identity.temporalEpoch = 1;
+        identity.formatRevision = 1;
+        identity.surfaceGeneration = 1;
+        identity.cameraCutRevision = 1;
+        return identity;
+    };
+    const auto addFrame = [&](RenderGraph& graph,
+                              const RenderViewHistoryIdentity& identity,
+                              uint64 frameIndex,
+                              const Vec2& jitter,
+                              bool historyAvailable)
+        -> std::array<uint32, 5>
+    {
+        RenderGraphValidationAccess::SetDevice(graph, &device);
+        PostProcessFrameInputs inputs;
+        inputs.sceneColor = RenderGraphValidationAccess::ImportTexture(
+            graph, sceneColorTexture.Get(), RHIResourceState::ShaderResource);
+        inputs.depth = RenderGraphValidationAccess::ImportTexture(
+            graph, depthTexture.Get(), RHIResourceState::DepthRead);
+        inputs.velocity = RenderGraphValidationAccess::ImportTexture(
+            graph, velocityTexture.Get(), RHIResourceState::ShaderResource);
+        inputs.reactiveMask = RenderGraphValidationAccess::ImportTexture(
+            graph, reactiveMaskTexture.Get(), RHIResourceState::ShaderResource);
+        inputs.outputFormat = RHIFormat::RGBA16_FLOAT;
+        inputs.frameIndex = frameIndex;
+        inputs.jitterOffset = jitter;
+        inputs.historyIdentity = identity;
+        inputs.historyResetReasons = historyAvailable
+            ? RenderHistoryResetReason::None
+            : RenderHistoryResetReason::FirstFrame;
+        inputs.historyAvailable = historyAvailable;
+        const RGTextureHandle output =
+            RenderGraphValidationAccess::ImportTexture(
+                graph, outputTexture.Get(), RHIResourceState::RenderTarget);
+        graph.SetExportState(output, RHIResourceState::RenderTarget);
+        taa.AddToGraph(graph, inputs, output);
+        return {
+            inputs.sceneColor.index,
+            inputs.depth.index,
+            inputs.velocity.index,
+            inputs.reactiveMask.index,
+            output.index,
+        };
+    };
+
+    const RenderViewHistoryIdentity firstIdentity = makeIdentity(1);
+    RenderGraph firstGraph;
+    addFrame(firstGraph, firstIdentity, 1, Vec2(0.0f, -0.166667f), false);
+    RenderGraphValidationAccess::Compile(firstGraph);
+    ASSERT_TRUE(firstGraph.GetCompileStats().compileValid);
+    RecordingCommandContext firstCommands;
+    RenderGraphValidationAccess::Execute(firstGraph, firstCommands);
+    ASSERT_TRUE(taa.CommitHistoryAfterPresent(firstIdentity));
+
+    const RenderViewHistoryIdentity secondIdentity = makeIdentity(2);
+    RenderGraph secondGraph;
+    const std::array<uint32, 5> secondFrameTextureIndices =
+        addFrame(secondGraph,
+                 secondIdentity,
+                 2,
+                 Vec2(-0.25f, 0.166667f),
+                 true);
+    RenderGraphValidationAccess::Compile(secondGraph);
+    ASSERT_TRUE(secondGraph.GetCompileStats().compileValid);
+    ASSERT_EQ(secondGraph.GetCompileStats().totalPasses, 2u);
+
+    const RenderGraph::Diagnostics diagnostics = secondGraph.GetDiagnostics();
+    const auto findPass = [&diagnostics](const char* name)
+        -> const RenderGraph::PassDiagnostic*
+    {
+        const auto it = std::find_if(
+            diagnostics.passes.begin(),
+            diagnostics.passes.end(),
+            [name](const RenderGraph::PassDiagnostic& pass)
+            {
+                return pass.name == name;
+            });
+        return it != diagnostics.passes.end() ? &*it : nullptr;
+    };
+    const RenderGraph::PassDiagnostic* const resolvePass =
+        findPass("TAAResolve");
+    const RenderGraph::PassDiagnostic* const historyStorePass =
+        findPass("TAAHistoryStore");
+    ASSERT_NE(resolvePass, nullptr);
+    ASSERT_NE(historyStorePass, nullptr);
+
+    const auto isFrameTexture = [&](uint32 resourceIndex)
+    {
+        return std::find(secondFrameTextureIndices.begin(),
+                         secondFrameTextureIndices.end(),
+                         resourceIndex) != secondFrameTextureIndices.end();
+    };
+    const auto appendUnique = [](std::vector<uint32>& indices, uint32 index)
+    {
+        if (std::find(indices.begin(), indices.end(), index) == indices.end())
+        {
+            indices.push_back(index);
+        }
+    };
+    std::vector<uint32> historyResourceIndices;
+    for (const RenderGraph::ResourceUsageDiagnostic& usage :
+         resolvePass->usages)
+    {
+        if (usage.type == RenderGraph::DiagnosticResourceType::Texture &&
+            usage.access == RenderGraph::DiagnosticAccessType::Read &&
+            !isFrameTexture(usage.resourceIndex))
+        {
+            appendUnique(historyResourceIndices, usage.resourceIndex);
+        }
+    }
+    ASSERT_EQ(historyResourceIndices.size(), static_cast<size_t>(2));
+    for (const RenderGraph::ResourceUsageDiagnostic& usage :
+         historyStorePass->usages)
+    {
+        if (usage.type == RenderGraph::DiagnosticResourceType::Texture &&
+            usage.access == RenderGraph::DiagnosticAccessType::Write)
+        {
+            appendUnique(historyResourceIndices, usage.resourceIndex);
+        }
+    }
+    ASSERT_EQ(historyResourceIndices.size(), static_cast<size_t>(4));
+
+    uint32 historyColorCount = 0;
+    uint32 historyDepthCount = 0;
+    for (const uint32 resourceIndex : historyResourceIndices)
+    {
+        const auto it = std::find_if(
+            diagnostics.resources.begin(),
+            diagnostics.resources.end(),
+            [resourceIndex](const RenderGraph::ResourceDiagnostic& resource)
+            {
+                return resource.type ==
+                           RenderGraph::DiagnosticResourceType::Texture &&
+                       resource.index == resourceIndex;
+            });
+        ASSERT_NE(it, diagnostics.resources.end());
+        EXPECT_TRUE(it->imported);
+        EXPECT_EQ(it->initialState, RHIResourceState::ShaderResource);
+        EXPECT_EQ(it->initialAccess.layout,
+                  RHIResourceLayout::ShaderReadOnly);
+        historyColorCount +=
+            it->format == RHIFormat::RGBA16_FLOAT ? 1u : 0u;
+        historyDepthCount +=
+            it->format == RHIFormat::R32_FLOAT ? 1u : 0u;
+    }
+    EXPECT_EQ(historyColorCount, 2u);
+    EXPECT_EQ(historyDepthCount, 2u);
+
+    RecordingCommandContext secondCommands;
+    RenderGraphValidationAccess::Execute(secondGraph, secondCommands);
+    const TAAResolveStats& stats = taa.GetLastResolveStats();
+    EXPECT_TRUE(stats.inputsReady);
+    EXPECT_TRUE(stats.executed);
+    EXPECT_TRUE(stats.historyAvailableBefore);
+    EXPECT_TRUE(stats.historySampled);
+    EXPECT_TRUE(stats.historyConsumed);
+}
+
+TEST_F(RenderPassValidationFixture,
+       TAARejectsRenderTargetOnlyCurrentColorWithoutAddingGraphPasses)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    TAA taa;
+    PostProcessSettings settings;
+    settings.antiAliasingMode = RenderAntiAliasingMode::TAA;
+    taa.Configure(settings);
+    taa.SetResources(&pipelineCache, &viewCache);
+    ASSERT_TRUE(taa.IsSupported()) << taa.GetUnsupportedReason();
+
+    RHITextureDesc currentColorDesc =
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT);
+    currentColorDesc.usage = RHITextureUsage::RenderTarget;
+    RHITextureDesc outputDesc = currentColorDesc;
+    outputDesc.usage =
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+    RHITextureDesc depthDesc =
+        RHITextureDesc::DepthStencil(32, 32, RHIFormat::D32_FLOAT);
+    depthDesc.usage =
+        RHITextureUsage::DepthStencil | RHITextureUsage::ShaderResource;
+    RHITextureDesc velocityDesc =
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RG16_FLOAT);
+    velocityDesc.usage = RHITextureUsage::ShaderResource;
+    RHITextureDesc reactiveMaskDesc =
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::R8_UNORM);
+    reactiveMaskDesc.usage = RHITextureUsage::ShaderResource;
+
+    RHITextureRef currentColor = device.CreateTexture(currentColorDesc);
+    RHITextureRef outputTexture = device.CreateTexture(outputDesc);
+    RHITextureRef depthTexture = device.CreateTexture(depthDesc);
+    RHITextureRef velocityTexture = device.CreateTexture(velocityDesc);
+    RHITextureRef reactiveMaskTexture = device.CreateTexture(reactiveMaskDesc);
+    ASSERT_TRUE(currentColor);
+    ASSERT_TRUE(outputTexture);
+    ASSERT_TRUE(depthTexture);
+    ASSERT_TRUE(velocityTexture);
+    ASSERT_TRUE(reactiveMaskTexture);
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    PostProcessFrameInputs inputs;
+    inputs.sceneColor = RenderGraphValidationAccess::ImportTexture(
+        graph, currentColor.Get(), RHIResourceState::RenderTarget);
+    inputs.depth = RenderGraphValidationAccess::ImportTexture(
+        graph, depthTexture.Get(), RHIResourceState::DepthRead);
+    inputs.velocity = RenderGraphValidationAccess::ImportTexture(
+        graph, velocityTexture.Get(), RHIResourceState::ShaderResource);
+    inputs.reactiveMask = RenderGraphValidationAccess::ImportTexture(
+        graph, reactiveMaskTexture.Get(), RHIResourceState::ShaderResource);
+    inputs.outputFormat = RHIFormat::RGBA16_FLOAT;
+    inputs.frameIndex = 1;
+    inputs.jitterOffset = Vec2(0.0f);
+    inputs.historyIdentity.previousFrame = {
+        .frameSequence = 1,
+        .sceneRevision = 1,
+        .surfaceGeneration = 1,
+        .configurationRevision = 1,
+    };
+    inputs.historyIdentity.view = {
+        .sceneRuntimeId = 1,
+        .cameraEntityPacked = 1,
+        .subViewIndex = 0,
+        .role = ViewRole::Main,
+    };
+    inputs.historyIdentity.extent = {.width = 32, .height = 32};
+    inputs.historyIdentity.familyId = 1;
+    inputs.historyIdentity.worldRevision = 1;
+    inputs.historyIdentity.temporalEpoch = 1;
+    inputs.historyIdentity.formatRevision = 1;
+    inputs.historyIdentity.surfaceGeneration = 1;
+    inputs.historyIdentity.cameraCutRevision = 1;
+    inputs.historyResetReasons = RenderHistoryResetReason::FirstFrame;
+    inputs.historyAvailable = false;
+    const RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(
+        graph, outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    const size_t textureCountBefore = device.createdTextureDescs.size();
+    taa.AddToGraph(graph, inputs, output);
+    EXPECT_EQ(graph.GetRecordedPassCount(), static_cast<size_t>(0));
+    EXPECT_EQ(device.createdTextureDescs.size(), textureCountBefore);
+
+    RenderGraphValidationAccess::Compile(graph);
+    EXPECT_TRUE(graph.GetCompileStats().compileValid);
+    EXPECT_EQ(graph.GetCompileStats().totalPasses, 0u);
+    const TAAResolveStats& stats = taa.GetLastResolveStats();
+    EXPECT_TRUE(stats.requested);
+    EXPECT_TRUE(stats.pipelineReady);
+    EXPECT_FALSE(stats.inputsReady);
+    EXPECT_FALSE(stats.executed);
+    EXPECT_EQ(
+        stats.fallbackReason,
+        "TAA requires shader-readable inputs and a shader-readable render-target output");
 }
 
 TEST_F(RenderPassValidationFixture, StandaloneSSAOAndSSRReportMissingFrameInputs)

@@ -766,7 +766,7 @@ namespace RVX
                                             m_device,
                                             state->execution.identity,
                                             state->config,
-                                            state->execution.view.viewProjectionMatrix,
+                                            state->execution.view.jitteredViewProjectionMatrix,
                                             rayDirection,
                                             state->execution.view.resetTemporalHistory,
                                             state->stats);
@@ -1569,9 +1569,10 @@ namespace RVX
         const bool useHistory = state.reservation->historyAvailable &&
             state.config.rayTracedTemporalAccumulation && stableHistoryLight;
         RayTracedShadowGPUConstants constants;
-        constants.inverseViewProjection = view.inverseViewMatrix * view.inverseProjectionMatrix;
+        constants.inverseViewProjection = view.inverseJitteredViewProjectionMatrix;
         constants.previousViewProjection = state.reservation->historyViewValid
-            ? state.reservation->previousViewProjection : view.viewProjectionMatrix;
+            ? state.reservation->previousViewProjection
+            : view.jitteredViewProjectionMatrix;
         constants.lightDirectionAndTMax = Vec4(state.reservation->currentRayDirection,
             std::max(1.0f, ClampFiniteNonNegative(view.farPlane, 1000.0f)));
         constants.viewportSizeAndInvSize = Vec4(width, height, 1.0f / width, 1.0f / height);

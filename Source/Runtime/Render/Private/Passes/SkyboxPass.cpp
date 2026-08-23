@@ -245,7 +245,7 @@ namespace
         constants.cameraPosition[1] = view.cameraPosition.y;
         constants.cameraPosition[2] = view.cameraPosition.z;
         constants.inverseViewProjection =
-            view.inverseViewMatrix * view.inverseProjectionMatrix;
+            view.inverseJitteredViewProjectionMatrix;
 
         void* mapped = data.constantBuffer->Map();
         if (mapped == nullptr)

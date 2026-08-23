@@ -171,7 +171,7 @@ namespace RVX
             const float outputHeight = static_cast<float>(std::max(1u, height));
             DeferredLightingGPUConstants constants;
             constants.inverseViewProjection =
-                view.inverseViewMatrix * view.inverseProjectionMatrix;
+                view.inverseJitteredViewProjectionMatrix;
             constants.outputSizeInvSize[0] = outputWidth;
             constants.outputSizeInvSize[1] = outputHeight;
             constants.outputSizeInvSize[2] = 1.0f / outputWidth;

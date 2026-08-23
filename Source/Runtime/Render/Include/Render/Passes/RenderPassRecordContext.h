@@ -355,6 +355,8 @@ namespace RVX
                HasCurrentGraphProvenance(view.depthTarget, identity) &&
                HasCurrentGraphProvenance(view.velocityTarget, identity) &&
                HasCurrentGraphProvenance(
+                   view.reactiveMaskTarget, identity) &&
+               HasCurrentGraphProvenance(
                    view.environmentSkyTexture, identity) &&
                HasCurrentGraphProvenance(
                    view.environmentIrradianceTexture, identity) &&

@@ -1516,6 +1516,69 @@
     {
       "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
+      "symbol": "m_taaHistoryStorePipeline",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_taaHistoryStorePixelShader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_taaPipelineLayout",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_taaResolvePipeline",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_taaResolvePixelShader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_taaSetLayout",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_taaVertexShader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
       "symbol": "m_toneMappingPipeline",
       "policy": "OwnerSnapshot",
       "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
@@ -1948,7 +2011,7 @@
     {
       "path": "Source/Runtime/Render/Include/Render/PostProcess/TAA.h",
       "owner": "TAA",
-      "symbol": "m_constantBuffer",
+      "symbol": "m_historyColor",
       "policy": "OwnerSnapshot",
       "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
       "normalRelease": "owner replacement retires after the captured snapshot completes",
@@ -1957,7 +2020,7 @@
     {
       "path": "Source/Runtime/Render/Include/Render/PostProcess/TAA.h",
       "owner": "TAA",
-      "symbol": "m_copyPipeline",
+      "symbol": "m_historyDepth",
       "policy": "OwnerSnapshot",
       "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
       "normalRelease": "owner replacement retires after the captured snapshot completes",
@@ -1966,34 +2029,7 @@
     {
       "path": "Source/Runtime/Render/Include/Render/PostProcess/TAA.h",
       "owner": "TAA",
-      "symbol": "m_history",
-      "policy": "OwnerSnapshot",
-      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
-      "normalRelease": "owner replacement retires after the captured snapshot completes",
-      "deviceLostRelease": "owner explicit device-lost teardown"
-    },
-    {
-      "path": "Source/Runtime/Render/Include/Render/PostProcess/TAA.h",
-      "owner": "TAA",
-      "symbol": "m_result",
-      "policy": "OwnerSnapshot",
-      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
-      "normalRelease": "owner replacement retires after the captured snapshot completes",
-      "deviceLostRelease": "owner explicit device-lost teardown"
-    },
-    {
-      "path": "Source/Runtime/Render/Include/Render/PostProcess/TAA.h",
-      "owner": "TAA",
-      "symbol": "m_sharpenPipeline",
-      "policy": "OwnerSnapshot",
-      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
-      "normalRelease": "owner replacement retires after the captured snapshot completes",
-      "deviceLostRelease": "owner explicit device-lost teardown"
-    },
-    {
-      "path": "Source/Runtime/Render/Include/Render/PostProcess/TAA.h",
-      "owner": "TAA",
-      "symbol": "m_taaPipeline",
+      "symbol": "m_sampler",
       "policy": "OwnerSnapshot",
       "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
       "normalRelease": "owner replacement retires after the captured snapshot completes",

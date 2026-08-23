@@ -98,6 +98,7 @@ namespace RVX
     class SkyboxPass;
     class ToneMappingPass;
     class TransparentPass;
+    class TAA;
     struct GPUCompletionToken;
 
     enum class SceneRenderCollectionPath : uint8
@@ -1779,6 +1780,20 @@ namespace RVX
         std::unique_ptr<RenderViewHistoryCoordinator> m_viewHistoryCoordinator;
         /** @brief Candidate evaluated after acceptance but not yet presented. */
         std::optional<RenderViewHistoryIdentity> m_activeViewHistoryCandidate;
+        /** Exact availability/reset decision for the active temporal candidate. */
+        std::optional<RenderHistoryAvailability> m_activeViewHistoryAvailability;
+        /** Raster jitter state that may become reusable only after Present. */
+        struct PendingTemporalPresentationState
+        {
+            RenderViewHistoryIdentity historyIdentity{};
+            RenderTemporalJitter jitter{};
+            Mat4 jitteredViewProjection = Mat4Identity();
+        };
+        std::optional<PendingTemporalPresentationState>
+            m_pendingTemporalPresentationState;
+        /** Last presentation-qualified raster temporal state. */
+        std::optional<PendingTemporalPresentationState>
+            m_presentedTemporalPresentationState;
         /** @brief One immutable feature snapshot shared by every view in the frame. */
         std::shared_ptr<const RenderFeatureSnapshot> m_featureSnapshot =
             std::make_shared<const RenderFeatureSnapshot>();
@@ -1905,6 +1920,7 @@ namespace RVX
         FilmGrainPass* m_filmGrainPostProcess = nullptr;
         SSAOPass* m_ssaoPostProcess = nullptr;
         FXAAPass* m_fxaaPostProcess = nullptr;
+        TAA* m_taaPostProcess = nullptr;
 
         // Depth buffer
         RHITextureRef m_depthTexture;

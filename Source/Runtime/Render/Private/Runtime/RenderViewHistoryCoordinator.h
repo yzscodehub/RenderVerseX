@@ -31,6 +31,16 @@ namespace RVX
         [[nodiscard]] bool CommitPresented(
             const RenderViewHistoryIdentity& identity) noexcept;
 
+        /**
+         * @brief Test whether CommitPresented can advance the exact candidate.
+         *
+         * This is intentionally non-mutating so SceneRenderer can preflight
+         * the coordinator and effect-owned temporal stores before either is
+         * advanced at the presentation boundary.
+         */
+        [[nodiscard]] bool CanCommitPresented(
+            const RenderViewHistoryIdentity& identity) const noexcept;
+
         /** @brief Abandon an exact evaluated identity without advancing history. */
         void Abandon(const RenderViewHistoryIdentity& identity) noexcept;
 

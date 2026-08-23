@@ -527,6 +527,32 @@ namespace RVX
         CameraEV100 = 1
     };
 
+    /**
+     * @brief The single anti-aliasing path selected for one rendered frame.
+     *
+     * A frame may not request both spatial and temporal anti-aliasing.  The
+     * renderer resolves this value into the corresponding post-process
+     * feature; temporal mode additionally requires a velocity input.
+     */
+    enum class RenderAntiAliasingMode : uint8
+    {
+        None = 0,
+        FXAA = 1,
+        TAA = 2,
+    };
+
+    [[nodiscard]] constexpr bool IsValidRenderAntiAliasingMode(
+        RenderAntiAliasingMode mode) noexcept
+    {
+        switch (mode)
+        {
+            case RenderAntiAliasingMode::None:
+            case RenderAntiAliasingMode::FXAA:
+            case RenderAntiAliasingMode::TAA: return true;
+            default: return false;
+        }
+    }
+
     struct RenderPostProcessSettings
     {
         bool enabled = true;
@@ -535,10 +561,10 @@ namespace RVX
          * temporal resolve is available.
          */
         bool enableVelocityOutput = false;
-        /** @brief Reserved for the real temporal resolve introduced in GFX11. */
-        bool enableTAA = false;
+        /** @brief The sole anti-aliasing method requested for this frame. */
+        RenderAntiAliasingMode antiAliasingMode =
+            RenderAntiAliasingMode::FXAA;
         bool enableBloom = true;
-        bool enableFXAA = true;
         bool enableColorGrading = true;
         /** @brief Reserved for the verified GTAO implementation in GFX13. */
         bool enableSSAO = false;

@@ -14,6 +14,7 @@
 #include "RHI/RHIDefinitions.h"
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <utility>
@@ -588,8 +589,38 @@ namespace RVX
         uint32 bloomPassCount = 0;
         uint32 colorGradingPassCount = 0;
         uint32 fxaaPassCount = 0;
-        /** Reserved for the real temporal resolve introduced by GFX11. */
+        /** One semantic temporal-AA effect, independent of physical graph nodes. */
         uint32 taaPassCount = 0;
+        /** The sole AA mode resolved from the frozen render-frame settings. */
+        RenderAntiAliasingMode antiAliasingMode =
+            RenderAntiAliasingMode::None;
+        /** TAA was selected by the canonical AA mode. */
+        bool taaRequested = false;
+        /** The cooked TAA resolve/store pipelines were ready. */
+        bool taaPipelineReady = false;
+        /** Required current-frame TAA inputs were valid. */
+        bool taaInputsReady = false;
+        /** Both physical TAA graph nodes executed successfully. */
+        bool taaExecuted = false;
+        /** Exact prior-presented temporal history was reusable before resolve. */
+        bool historyAvailableBefore = false;
+        /** The resolve sampled a compatible prior-presented history. */
+        bool historySampled = false;
+        /** This graph produced a candidate history resource for its exact view. */
+        bool historyCandidateProduced = false;
+        /** Candidate history committed only after a matching successful Present. */
+        bool historyCommitted = false;
+        /** Candidate history was discarded without changing committed history. */
+        bool historyAbandoned = false;
+        /** Exact reason that prior temporal history could not be sampled. */
+        RenderHistoryResetReason historyResetReasons =
+            RenderHistoryResetReason::None;
+        /** Current and previous jitter expressed in physical pixels. */
+        Vec2 currentJitterPixels = Vec2(0.0f);
+        Vec2 previousJitterPixels = Vec2(0.0f);
+        /** Physical graph evidence for the real resolve/store implementation. */
+        uint32 taaResolveGraphPassCount = 0;
+        uint32 taaHistoryStoreGraphPassCount = 0;
         /** Semantic domain consumed by the post-process presentation plan. */
         PostProcessColorDomain inputColorDomain =
             PostProcessColorDomain::Unknown;
@@ -615,6 +646,16 @@ namespace RVX
             return postProcessContentHash == 0 && toneMapPassCount == 0 &&
                    bloomPassCount == 0 && colorGradingPassCount == 0 &&
                    fxaaPassCount == 0 && taaPassCount == 0 &&
+                   antiAliasingMode == RenderAntiAliasingMode::None &&
+                   !taaRequested && !taaPipelineReady && !taaInputsReady &&
+                   !taaExecuted && !historyAvailableBefore && !historySampled &&
+                   !historyCandidateProduced && !historyCommitted &&
+                   !historyAbandoned &&
+                   historyResetReasons == RenderHistoryResetReason::None &&
+                   currentJitterPixels == Vec2(0.0f) &&
+                   previousJitterPixels == Vec2(0.0f) &&
+                   taaResolveGraphPassCount == 0 &&
+                   taaHistoryStoreGraphPassCount == 0 &&
                    inputColorDomain == PostProcessColorDomain::Unknown &&
                    plannedOutputColorDomain ==
                        PostProcessColorDomain::Unknown &&
@@ -629,13 +670,53 @@ namespace RVX
 
         [[nodiscard]] bool IsStructurallyValid() const noexcept
         {
+            const bool finiteTemporalJitter =
+                std::isfinite(currentJitterPixels.x) &&
+                std::isfinite(currentJitterPixels.y) &&
+                std::isfinite(previousJitterPixels.x) &&
+                std::isfinite(previousJitterPixels.y);
             if (postProcessContentHash == 0 || toneMapPassCount != 1 ||
-                taaPassCount != 0 || !hdrInputReady ||
+                !IsValidRenderAntiAliasingMode(antiAliasingMode) ||
+                !finiteTemporalJitter ||
+                !hdrInputReady ||
                 !encodedOutputReady || fallbackUsed ||
                 inputColorDomain != PostProcessColorDomain::SceneLinearHDR ||
                 storedOutputColorDomain !=
                     PostProcessColorDomain::DisplayEncodedLDR ||
                 finalOutputFormat == RHIFormat::Unknown)
+            {
+                return false;
+            }
+
+            const bool temporalMode =
+                antiAliasingMode == RenderAntiAliasingMode::TAA;
+            const bool spatialMode =
+                antiAliasingMode == RenderAntiAliasingMode::FXAA;
+            if (taaRequested != temporalMode ||
+                (spatialMode && fxaaPassCount != 1) ||
+                (!spatialMode && fxaaPassCount != 0) ||
+                (!temporalMode &&
+                 (taaPassCount != 0 || taaPipelineReady || taaInputsReady ||
+                  taaExecuted || historyAvailableBefore || historySampled ||
+                  historyCandidateProduced || historyCommitted ||
+                  historyAbandoned ||
+                  historyResetReasons != RenderHistoryResetReason::None ||
+                  currentJitterPixels != Vec2(0.0f) ||
+                  previousJitterPixels != Vec2(0.0f) ||
+                  taaResolveGraphPassCount != 0 ||
+                  taaHistoryStoreGraphPassCount != 0)) ||
+                (temporalMode &&
+                 (taaPassCount != 1 || !taaPipelineReady || !taaInputsReady ||
+                  !taaExecuted ||
+                  !historyCandidateProduced ||
+                  (historyAbandoned && historyCommitted) ||
+                  taaResolveGraphPassCount != 1 ||
+                  taaHistoryStoreGraphPassCount != 1 ||
+                  (historyAvailableBefore != historySampled) ||
+                  (historyAvailableBefore &&
+                   historyResetReasons != RenderHistoryResetReason::None) ||
+                  (!historyAvailableBefore &&
+                   historyResetReasons == RenderHistoryResetReason::None))))
             {
                 return false;
             }
@@ -669,7 +750,7 @@ namespace RVX
     /** @brief Candidate or presentation-qualified evidence for one frame/view. */
     struct RenderExecutionReceipt
     {
-        uint32 schemaVersion = 6;
+        uint32 schemaVersion = 7;
         bool available = false;
         bool graphComposed = false;
         bool executionSucceeded = false;
@@ -700,7 +781,7 @@ namespace RVX
         {
             if ((schemaVersion != 1 && schemaVersion != 2 &&
                  schemaVersion != 4 && schemaVersion != 5 &&
-                 schemaVersion != 6) ||
+                 schemaVersion != 6 && schemaVersion != 7) ||
                 !frameIdentity.IsValid() ||
                 !viewIdentity.IsValid() || backend == RHIBackendType::None ||
                 !IsDeclaredRenderPipelineRecipe(requestedRecipe) ||
@@ -742,7 +823,33 @@ namespace RVX
                  ((executionSucceeded || presented) &&
                   (!lighting.IsStructurallyValid() ||
                    !deformation.IsStructurallyValid())));
+            const bool postProcessCarriesTemporalEvidence =
+                postProcess.antiAliasingMode == RenderAntiAliasingMode::TAA ||
+                postProcess.taaPassCount != 0 || postProcess.taaRequested ||
+                postProcess.taaPipelineReady || postProcess.taaInputsReady ||
+                postProcess.taaExecuted ||
+                postProcess.historyAvailableBefore || postProcess.historySampled ||
+                postProcess.historyCandidateProduced ||
+                postProcess.historyCommitted || postProcess.historyAbandoned ||
+                postProcess.historyResetReasons !=
+                    RenderHistoryResetReason::None ||
+                postProcess.currentJitterPixels != Vec2(0.0f) ||
+                postProcess.previousJitterPixels != Vec2(0.0f) ||
+                postProcess.taaResolveGraphPassCount != 0 ||
+                postProcess.taaHistoryStoreGraphPassCount != 0;
             const bool schemaSixInvalid = schemaVersion == 6 &&
+                (!deferredOpaque.IsStructurallyValid() ||
+                (!lighting.IsEmpty() && !lighting.IsStructurallyValid()) ||
+                (!deformation.IsEmpty() &&
+                  !deformation.IsStructurallyValid()) ||
+                (!postProcess.IsEmpty() &&
+                  !postProcess.IsStructurallyValid()) ||
+                 postProcessCarriesTemporalEvidence ||
+                ((executionSucceeded || presented) &&
+                 (!lighting.IsStructurallyValid() ||
+                  !deformation.IsStructurallyValid() ||
+                   !postProcess.IsStructurallyValid())));
+            const bool schemaSevenInvalid = schemaVersion == 7 &&
                 (!deferredOpaque.IsStructurallyValid() ||
                  (!lighting.IsEmpty() && !lighting.IsStructurallyValid()) ||
                  (!deformation.IsEmpty() &&
@@ -752,9 +859,11 @@ namespace RVX
                  ((executionSucceeded || presented) &&
                   (!lighting.IsStructurallyValid() ||
                    !deformation.IsStructurallyValid() ||
-                   !postProcess.IsStructurallyValid())));
+                   !postProcess.IsStructurallyValid())) ||
+                 (presented && postProcess.taaRequested &&
+                  !postProcess.historyCommitted));
             if (schemaOneInvalid || schemaTwoInvalid || schemaFourInvalid ||
-                schemaFiveInvalid || schemaSixInvalid)
+                schemaFiveInvalid || schemaSixInvalid || schemaSevenInvalid)
             {
                 return false;
             }

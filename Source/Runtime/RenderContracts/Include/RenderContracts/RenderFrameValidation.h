@@ -217,6 +217,8 @@ namespace RVX
         const RenderFrameSettings& settings) noexcept
     {
         if (!IsValidRenderPipelineRequest(settings.pipelineRequest) ||
+            !IsValidRenderAntiAliasingMode(
+                settings.postProcess.antiAliasingMode) ||
             !std::isfinite(settings.renderScale) ||
             settings.renderScale <= 0.0f ||
             !std::isfinite(settings.postProcess.bloomThreshold) ||
@@ -237,6 +239,12 @@ namespace RVX
             !std::isfinite(settings.postProcess.gamma) ||
             settings.postProcess.gamma <= 0.0f ||
             !std::isfinite(settings.shadows.maxDistance))
+        {
+            return false;
+        }
+        if (settings.postProcess.antiAliasingMode ==
+                RenderAntiAliasingMode::TAA &&
+            !settings.postProcess.enableVelocityOutput)
         {
             return false;
         }

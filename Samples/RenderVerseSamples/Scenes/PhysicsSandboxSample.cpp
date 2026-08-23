@@ -353,7 +353,8 @@ namespace RVX
         context.renderSettings.shadows.atlasResolution = 1024u;
         context.renderSettings.shadows.cascadeCount = 2u;
         context.renderSettings.postProcess.enabled = true;
-        context.renderSettings.postProcess.enableTAA = false;
+        context.renderSettings.postProcess.antiAliasingMode =
+            RenderAntiAliasingMode::FXAA;
 
         if (!m_lastRuntime.available || !m_lastRuntime.initialized ||
             !m_lastRuntime.physicsInitialized ||

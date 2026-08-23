@@ -7,10 +7,12 @@
 #include "RenderContracts/RenderPipelineProfile.h"
 #include "RenderContracts/RenderSceneUpdate.h"
 #include "RenderContracts/ResourceUploadRequest.h"
+#include "RenderContracts/TemporalJitter.h"
 #include "ResourceUploadRequestInternal.h"
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -493,18 +495,31 @@ namespace
     }
 
     TEST(RenderContractsValidation,
-         PostProcessSettingsSeparateVelocityDemandAndValidateColorGrading)
+         PostProcessSettingsUseOneFailClosedAntiAliasingMode)
     {
         RenderFrameSettings settings;
         EXPECT_FALSE(settings.postProcess.enableVelocityOutput);
-        EXPECT_FALSE(settings.postProcess.enableTAA);
-        EXPECT_TRUE(settings.postProcess.enableFXAA);
+        EXPECT_EQ(settings.postProcess.antiAliasingMode,
+                  RenderAntiAliasingMode::FXAA);
         EXPECT_TRUE(settings.postProcess.enableColorGrading);
         EXPECT_FALSE(settings.postProcess.enableSSAO);
         EXPECT_FALSE(settings.postProcess.enableSSR);
         EXPECT_TRUE(IsValidRenderFrameSettings(settings));
 
         settings.postProcess.enableVelocityOutput = true;
+        EXPECT_TRUE(IsValidRenderFrameSettings(settings));
+
+        settings.postProcess.antiAliasingMode = RenderAntiAliasingMode::TAA;
+        EXPECT_TRUE(IsValidRenderFrameSettings(settings));
+
+        settings.postProcess.enableVelocityOutput = false;
+        EXPECT_FALSE(IsValidRenderFrameSettings(settings));
+        settings.postProcess.enableVelocityOutput = true;
+
+        settings.postProcess.antiAliasingMode =
+            static_cast<RenderAntiAliasingMode>(255U);
+        EXPECT_FALSE(IsValidRenderFrameSettings(settings));
+        settings.postProcess.antiAliasingMode = RenderAntiAliasingMode::None;
         EXPECT_TRUE(IsValidRenderFrameSettings(settings));
 
         settings.postProcess.colorGradingContrast = -0.1f;
@@ -531,6 +546,77 @@ namespace
         settings.postProcess.colorGradingSaturation = 1.0f;
 
         EXPECT_TRUE(IsValidRenderFrameSettings(settings));
+    }
+
+    TEST(RenderContractsValidation,
+         TemporalJitterUsesTheFixedEightPhaseHaltonSequenceInPixelSpace)
+    {
+        const RenderOutputExtent extent{.width = 320U, .height = 180U};
+        const std::array<Vec2, RVX_RENDER_TEMPORAL_JITTER_PHASE_COUNT>
+            expectedPixels = {
+                Vec2{0.0f, -1.0f / 6.0f},
+                Vec2{-0.25f, 1.0f / 6.0f},
+                Vec2{0.25f, -7.0f / 18.0f},
+                Vec2{-0.375f, -1.0f / 18.0f},
+                Vec2{0.125f, 5.0f / 18.0f},
+                Vec2{-0.125f, -5.0f / 18.0f},
+                Vec2{0.375f, 1.0f / 18.0f},
+                Vec2{-0.4375f, 7.0f / 18.0f},
+            };
+
+        for (uint32 phase = 0U;
+             phase < RVX_RENDER_TEMPORAL_JITTER_PHASE_COUNT;
+             ++phase)
+        {
+            const RenderTemporalJitter jitter =
+                MakeRenderTemporalJitterForPhase(phase, extent);
+            EXPECT_TRUE(IsValidRenderTemporalJitter(jitter));
+            EXPECT_EQ(jitter.phaseIndex, phase);
+            EXPECT_NEAR(jitter.pixelOffset.x, expectedPixels[phase].x, 1.0e-6f);
+            EXPECT_NEAR(jitter.pixelOffset.y, expectedPixels[phase].y, 1.0e-6f);
+            EXPECT_NEAR(jitter.ndcOffset.x,
+                        2.0f * expectedPixels[phase].x / 320.0f,
+                        1.0e-7f);
+            EXPECT_NEAR(jitter.ndcOffset.y,
+                        2.0f * expectedPixels[phase].y / 180.0f,
+                        1.0e-7f);
+            EXPECT_EQ(MakeRenderTemporalJitter(static_cast<uint64>(phase) + 1U,
+                                                extent),
+                      jitter);
+        }
+
+        EXPECT_EQ(MakeRenderTemporalJitter(9U, extent),
+                  MakeRenderTemporalJitter(1U, extent));
+        EXPECT_FALSE(IsValidRenderTemporalJitter({}));
+        EXPECT_FALSE(IsValidRenderTemporalJitter(
+            MakeRenderTemporalJitterForPhase(
+                RVX_RENDER_TEMPORAL_JITTER_PHASE_COUNT, extent)));
+        EXPECT_FALSE(IsValidRenderTemporalJitter(
+            MakeRenderTemporalJitter(1U, RenderOutputExtent{})));
+    }
+
+    TEST(RenderContractsValidation,
+         TemporalJitterDoesNotMutateTheCanonicalProjectionMatrix)
+    {
+        const RenderOutputExtent extent{.width = 640U, .height = 360U};
+        const RenderTemporalJitter jitter =
+            MakeRenderTemporalJitterForPhase(1U, extent);
+        Mat4 canonical = Mat4Identity();
+        canonical[0][0] = 2.0f;
+        canonical[1][1] = 3.0f;
+
+        const Mat4 jittered = ApplyRenderTemporalJitter(canonical, jitter);
+        EXPECT_EQ(canonical[2][0], 0.0f);
+        EXPECT_EQ(canonical[2][1], 0.0f);
+        EXPECT_FLOAT_EQ(jittered[2][0], jitter.ndcOffset.x);
+        EXPECT_FLOAT_EQ(jittered[2][1], jitter.ndcOffset.y);
+        EXPECT_EQ(jittered[0][0], canonical[0][0]);
+        EXPECT_EQ(jittered[1][1], canonical[1][1]);
+
+        RenderTemporalJitter malformed = jitter;
+        malformed.ndcOffset.x += 0.001f;
+        EXPECT_FALSE(IsValidRenderTemporalJitter(malformed));
+        EXPECT_EQ(ApplyRenderTemporalJitter(canonical, malformed), canonical);
     }
 
     TEST(RenderContractsValidation,

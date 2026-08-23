@@ -232,6 +232,9 @@ void LegacyForwardFeatureAdapter::AddPasses(
     outputs.velocity = m_recordContext.view.velocityTarget;
     outputs.velocityMetadata = MakeMetadata(
         m_preparedContext.outputExtent, SceneTextures::VelocityContract);
+    outputs.reactiveMask = m_recordContext.view.reactiveMaskTarget;
+    outputs.reactiveMaskMetadata = MakeMetadata(
+        m_preparedContext.outputExtent, SceneTextures::ReactiveMaskContract);
     outputs.colorDomain = PostProcessColorDomain::SceneLinearHDR;
     outputs.transfer = PostProcessTransfer::None;
     if (blackboard.Publish(BuiltinRenderFeatureIds::LegacyForwardMainChain,

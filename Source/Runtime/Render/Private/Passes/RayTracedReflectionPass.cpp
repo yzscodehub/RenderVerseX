@@ -1161,8 +1161,10 @@ namespace RVX
             ClampFiniteRange(m_config.historyVelocityRejectionScale, 8.0f, 0.0f, 64.0f);
 
         RayTracedReflectionGPUConstants constants;
-        constants.inverseViewProjection = view.inverseViewMatrix * view.inverseProjectionMatrix;
-        constants.previousViewProjection = m_historyViewValid ? m_lastHistoryViewProjection : view.viewProjectionMatrix;
+        constants.inverseViewProjection = view.inverseJitteredViewProjectionMatrix;
+        constants.previousViewProjection = m_historyViewValid
+            ? m_lastHistoryViewProjection
+            : view.jitteredViewProjectionMatrix;
         constants.cameraPositionAndTMax = Vec4(view.cameraPosition, maxTraceDistance);
         constants.outputSizeAndInvSize = Vec4(outputWidth, outputHeight, 1.0f / outputWidth, 1.0f / outputHeight);
         constants.sceneSizeAndInvSize = Vec4(sceneWidth, sceneHeight, 1.0f / sceneWidth, 1.0f / sceneHeight);
@@ -1185,7 +1187,7 @@ namespace RVX
         std::memcpy(mapped, &constants, sizeof(constants));
         if (!m_constantBuffer->CommitMappedWrite())
             return false;
-        m_pendingHistoryViewProjection = view.viewProjectionMatrix;
+        m_pendingHistoryViewProjection = view.jitteredViewProjectionMatrix;
         m_pendingHistoryViewValid = true;
         m_temporalAccumulatedThisFrame = useHistory;
         m_stats.constantsUploaded = true;

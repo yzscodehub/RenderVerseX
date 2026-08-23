@@ -352,8 +352,10 @@ namespace RVX
         const bool previousValid = view.previousViewProjectionValid != 0 && !view.resetTemporalHistory;
 
         CameraVelocityGPUConstants constants;
-        constants.inverseViewProjection = view.inverseViewMatrix * view.inverseProjectionMatrix;
-        constants.previousViewProjection = previousValid ? view.previousViewProjectionMatrix : view.viewProjectionMatrix;
+        constants.inverseViewProjection = view.inverseJitteredViewProjectionMatrix;
+        constants.previousViewProjection = previousValid
+            ? view.previousJitteredViewProjectionMatrix
+            : view.jitteredViewProjectionMatrix;
         constants.outputSizeAndInvSize = Vec4(outputWidth, outputHeight, 1.0f / outputWidth, 1.0f / outputHeight);
         constants.velocityParams = Vec4(previousValid ? 1.0f : 0.0f, 0.0f, 0.999999f, 0.0f);
 

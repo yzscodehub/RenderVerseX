@@ -1,88 +1,91 @@
 /**
  * @file TAA.h
- * @brief Temporal Anti-Aliasing
- * 
- * High-quality temporal anti-aliasing with motion vector support.
+ * @brief History-safe temporal anti-aliasing post-process pass.
  */
 
 #pragma once
 
 #include "Core/Types.h"
-#include "Core/MathTypes.h"
-#include "RHI/RHI.h"
-#include <memory>
+#include "Render/PostProcess/PostProcessStack.h"
+
 #include <string>
 
 namespace RVX
 {
     class IRHIDevice;
-    class RHICommandContext;
-    class RHITexture;
-
-    /**
-     * @brief TAA configuration
-     */
+    class PipelineCache;
+    class ResourceViewCache;
+    /** @brief Tunable, backend-neutral temporal resolve parameters. */
     struct TAAConfig
     {
-        float jitterScale = 1.0f;           ///< Jitter scale for sub-pixel sampling
-        int jitterPhase = 8;                 ///< Number of jitter samples in sequence
-        
-        float feedbackMin = 0.88f;          ///< Minimum history blend factor
-        float feedbackMax = 0.97f;          ///< Maximum history blend factor
-        
-        float motionScale = 1.0f;           ///< Motion vector scale
-        float velocityWeight = 1000.0f;     ///< Weight for velocity-based rejection
-        
-        bool useMotionVectors = true;       ///< Use motion vectors for reprojection
-        bool sharpen = true;                ///< Apply sharpening after TAA
-        float sharpness = 0.25f;            ///< Sharpening amount
-        
-        bool antiFlicker = true;            ///< Reduce flickering on thin features
-        bool clampHistory = true;           ///< Clamp history to neighborhood
+        float feedbackMin = 0.88f;
+        float feedbackMax = 0.97f;
+        float motionScale = 1.0f;
+        float velocityWeight = 1000.0f;
+        float depthRejectScale = 0.01f;
+        float reactiveMaskScale = 1.0f;
+        bool sharpen = true;
+        float sharpness = 0.25f;
     };
 
+    /** @brief Receipt for the last exact TAA candidate or presentation commit. */
     struct TAAResolveStats
     {
         bool requested = false;
-        bool supported = false;
-        bool resolved = false;
-        bool copiedCurrentFrame = false;
-        bool historyValidBefore = false;
-        bool historyValidAfter = false;
-        bool depthAvailable = false;
-        bool motionVectorsAvailable = false;
-        bool motionVectorFallbackUsed = false;
+        bool pipelineReady = false;
+        bool inputsReady = false;
+        bool executed = false;
+        bool historyAvailableBefore = false;
+        bool historySampled = false;
+        bool historyConsumed = false;
+        bool historyCandidatePrepared = false;
+        bool historyCommitted = false;
+        bool historyAbandoned = false;
         uint64 frameIndex = 0;
-        Vec2 jitterOffset = Vec2(0.0f);
+        Vec2 currentJitterPixels = Vec2(0.0f);
+        Vec2 previousJitterPixels = Vec2(0.0f);
+        uint32 resolveGraphPassCount = 0;
+        uint32 historyStoreGraphPassCount = 0;
+        RenderViewHistoryIdentity historyIdentity{};
+        RenderHistoryResetReason historyResetReasons =
+            RenderHistoryResetReason::HistoryUnavailable;
         std::string fallbackReason;
     };
 
     /**
-     * @brief Temporal Anti-Aliasing
-     * 
-     * Implements high-quality TAA with:
-     * - Sub-pixel jittering for temporal supersampling
-     * - Motion vector reprojection
-     * - Neighborhood clamping for ghosting reduction
-     * - Velocity weighting for disocclusion handling
-     * 
-     * Usage:
-     * 1. Apply jitter offset to projection matrix each frame
-     * 2. Render scene with motion vectors
-     * 3. Call Resolve() with current frame and motion vectors
+     * @brief HDR temporal resolve with explicit candidate-history presentation.
+     *
+     * Resolve and history store are separate graph passes. The class never
+     * promotes a written history target itself; composition must call
+     * CommitHistoryAfterPresent() for the matching successfully presented view.
      */
-    class TAA
+    class TAA final : public IPostProcessPass
     {
     public:
-        TAA() = default;
-        ~TAA();
+        TAA();
+        ~TAA() override;
 
-        // Non-copyable
         TAA(const TAA&) = delete;
         TAA& operator=(const TAA&) = delete;
 
         // =========================================================================
-        // Lifecycle
+        // IPostProcessPass
+        // =========================================================================
+
+        PostProcessPassDescriptor Describe() const override;
+        const char* GetName() const override { return "TemporalAntiAliasing"; }
+        int32 GetPriority() const override { return 0; }
+        void Configure(const PostProcessSettings& settings) override;
+        PostProcessFrameInputRequirements GetFrameInputRequirements() const override;
+        void AddToGraph(RenderGraph& graph,
+                        RGTextureHandle input,
+                        RGTextureHandle output) override;
+        void AddToGraph(RenderGraph& graph,
+                        const PostProcessFrameInputs& frameInputs,
+                        RGTextureHandle output) override;
+
+        // =========================================================================
+        // Resources and configuration
         // =========================================================================
 
         void Initialize(IRHIDevice* device, uint32 width, uint32 height);
@@ -90,111 +93,58 @@ namespace RVX
         void Resize(uint32 width, uint32 height);
         bool IsInitialized() const { return m_device != nullptr; }
 
-        // =========================================================================
-        // Configuration
-        // =========================================================================
-
+        void SetResources(PipelineCache* pipelineCache, ResourceViewCache* viewCache);
         const TAAConfig& GetConfig() const { return m_config; }
         void SetConfig(const TAAConfig& config);
 
-        void SetEnabled(bool enabled) { m_enabled = enabled; }
-        bool IsEnabled() const { return m_enabled && m_supported; }
         bool IsRequestedEnabled() const { return m_enabled; }
-        bool IsSupported() const { return m_supported; }
-        const std::string& GetUnsupportedReason() const { return m_unsupportedReason; }
         const TAAResolveStats& GetLastResolveStats() const { return m_lastResolveStats; }
         bool HasValidHistory() const { return m_historyValid; }
 
         // =========================================================================
-        // Jitter
+        // History lifecycle
         // =========================================================================
 
         /**
-         * @brief Get jitter offset for current frame
-         * @param frameIndex Current frame number
-         * @return Jitter offset in clip space (-1 to 1)
+         * @brief Returns whether the exact pending candidate may be promoted.
+         *
+         * This is intentionally side-effect-free so composition can establish
+         * the full dual-history commit precondition before mutating either
+         * history owner after a successful Present.
          */
-        Vec2 GetJitterOffset(uint64 frameIndex) const;
-
-        /**
-         * @brief Get jitter offset in pixels
-         * @param frameIndex Current frame number
-         * @return Jitter offset in pixels
-         */
-        Vec2 GetJitterOffsetPixels(uint64 frameIndex) const;
-
-        /**
-         * @brief Apply jitter to projection matrix
-         * @param projMatrix Original projection matrix
-         * @param frameIndex Current frame number
-         * @return Jittered projection matrix
-         */
-        Mat4 JitterProjectionMatrix(const Mat4& projMatrix, uint64 frameIndex) const;
-
-        // =========================================================================
-        // Rendering
-        // =========================================================================
-
-        /**
-         * @brief Resolve TAA for current frame
-         * @param ctx Command context
-         * @param currentColor Current frame color
-         * @param depthTexture Scene depth buffer
-         * @param motionVectors Motion vector buffer (optional)
-         * @param frameIndex Current frame number
-         */
-        void Resolve(RHICommandContext& ctx,
-                     RHITexture* currentColor,
-                     RHITexture* depthTexture,
-                     RHITexture* motionVectors,
-                     uint64 frameIndex);
-
-        /**
-         * @brief Get the TAA result texture
-         */
-        RHITexture* GetResult() const { return m_result.Get(); }
-
-        /**
-         * @brief Reset history (call after camera cut)
-         */
+        [[nodiscard]] bool CanCommitHistoryAfterPresent(
+            const RenderViewHistoryIdentity& identity) const noexcept;
+        [[nodiscard]] bool CommitHistoryAfterPresent(
+            const RenderViewHistoryIdentity& identity) noexcept;
+        void AbandonPendingHistory() noexcept;
         void ResetHistory();
 
     private:
-        void CreateResources(uint32 width, uint32 height);
-        void SwapHistory();
-
-        // Halton sequence for jitter
-        static float Halton(int index, int base);
-        static Vec2 HaltonSequence(int index);
+        bool EnsureRuntimeResources(uint32 width, uint32 height);
+        bool HasPipelineResources() const noexcept;
+        void ResetRuntimeResources();
+        void RecordUnsupported(const char* reason,
+                               const PostProcessFrameInputs* frameInputs = nullptr);
 
         IRHIDevice* m_device = nullptr;
-        TAAConfig m_config;
-        bool m_enabled = true;
-        bool m_supported = false;
-        std::string m_unsupportedReason = "TAA resolve, copy, and sharpening pipelines are not implemented";
-
+        PipelineCache* m_pipelineCache = nullptr;
+        ResourceViewCache* m_viewCache = nullptr;
+        TAAConfig m_config{};
         uint32 m_width = 0;
         uint32 m_height = 0;
 
-        // Double-buffered history
-        RHITextureRef m_history[2];
-        int m_currentHistory = 0;
-
-        // Output
-        RHITextureRef m_result;
-
-        // Pipelines
-        RHIPipelineRef m_taaPipeline;
-        RHIPipelineRef m_sharpenPipeline;
-        RHIPipelineRef m_copyPipeline;
-
-        // Constant buffer
-        RHIBufferRef m_constantBuffer;
-
-        // State
+        RHITextureRef m_historyColor[2];
+        RHITextureRef m_historyDepth[2];
+        uint32 m_committedHistoryIndex = 0;
+        uint32 m_pendingHistoryIndex = 0;
+        /** True after the graph has established SRV layouts for all four histories. */
+        bool m_historyResourceStatesInitialized = false;
         bool m_historyValid = false;
-        Mat4 m_prevViewProj;
-        TAAResolveStats m_lastResolveStats;
+        bool m_hasPendingHistory = false;
+        RenderViewHistoryIdentity m_pendingHistoryIdentity{};
+        Vec2 m_previousJitterPixels = Vec2(0.0f);
+        Vec2 m_pendingJitterPixels = Vec2(0.0f);
+        RHISamplerRef m_sampler;
+        TAAResolveStats m_lastResolveStats{};
     };
-
 } // namespace RVX

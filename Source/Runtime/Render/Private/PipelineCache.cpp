@@ -151,7 +151,7 @@ namespace
     // Set-1 now contains two structured skin palette bindings in addition to
     // the object constants and instance stream; old manifests cannot describe
     // this pipeline-layout ABI.
-    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 17;
+    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 18;
     constexpr uint32 RVX_PIPELINE_PURPOSE_DEFAULT = 0x50445354u; // PDST
     constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_DRIVEN_DEFAULT = 0x47444546u; // GDEF
     constexpr uint32 RVX_PIPELINE_PURPOSE_INSTANCED_MATERIAL = 0x494D4154u; // IMAT
@@ -264,6 +264,9 @@ namespace
         uint64 filmGrainPixelShaderHash = 0;
         uint64 fxaaVertexShaderHash = 0;
         uint64 fxaaPixelShaderHash = 0;
+        uint64 taaVertexShaderHash = 0;
+        uint64 taaResolvePixelShaderHash = 0;
+        uint64 taaHistoryStorePixelShaderHash = 0;
         uint64 vignetteVertexShaderHash = 0;
         uint64 vignettePixelShaderHash = 0;
         uint64 skyboxVertexShaderHash = 0;
@@ -286,6 +289,8 @@ namespace
         uint64 chromaticAberrationPipelineHash = 0;
         uint64 filmGrainPipelineHash = 0;
         uint64 fxaaPipelineHash = 0;
+        uint64 taaResolvePipelineHash = 0;
+        uint64 taaHistoryStorePipelineHash = 0;
         uint64 vignettePipelineHash = 0;
         uint64 uiPipelineHash = 0;
     };
@@ -464,7 +469,16 @@ namespace
                                               bool reverseZ)
     {
         ViewConstants constants{};
-        constants.viewProjection = ApplyBackendClipConvention(view.viewProjectionMatrix, backend);
+        // Raster/velocity shaders consume the current jittered transform.
+        // A non-temporal caller has no valid jitter contract, so it retains
+        // the canonical matrix rather than sampling ViewData's default value.
+        // Culling, clusters, and shadow matrices stay explicitly unjittered.
+        const Mat4& rasterViewProjection =
+            IsValidRenderTemporalJitter(view.currentTemporalJitter)
+                ? view.jitteredViewProjectionMatrix
+                : view.viewProjectionMatrix;
+        constants.viewProjection = ApplyBackendClipConvention(
+            rasterViewProjection, backend);
         constants.cameraPosition = view.cameraPosition;
         constants.time = view.time;
         constants.lightDirection = NormalizeOr(view.directionalLightDirection, Vec3(0.5f, -0.8f, 0.3f));
@@ -563,6 +577,9 @@ namespace
                key == "filmGrainPixelShaderHash" ||
                key == "fxaaVertexShaderHash" ||
                key == "fxaaPixelShaderHash" ||
+               key == "taaVertexShaderHash" ||
+               key == "taaResolvePixelShaderHash" ||
+               key == "taaHistoryStorePixelShaderHash" ||
                key == "vignetteVertexShaderHash" ||
                key == "vignettePixelShaderHash" ||
                key == "skyboxVertexShaderHash" ||
@@ -585,6 +602,8 @@ namespace
                key == "chromaticAberrationPipelineHash" ||
                key == "filmGrainPipelineHash" ||
                key == "fxaaPipelineHash" ||
+               key == "taaResolvePipelineHash" ||
+               key == "taaHistoryStorePipelineHash" ||
                key == "vignettePipelineHash" ||
                key == "uiPipelineHash";
     }
@@ -676,7 +695,7 @@ namespace
             fields.emplace(std::move(key), std::move(value));
         }
 
-        if (fields.size() != 42)
+        if (fields.size() != 47)
         {
             return false;
         }
@@ -699,6 +718,9 @@ namespace
             !ReadRequiredManifestUint64(fields, "filmGrainPixelShaderHash", manifest.filmGrainPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "fxaaVertexShaderHash", manifest.fxaaVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "fxaaPixelShaderHash", manifest.fxaaPixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "taaVertexShaderHash", manifest.taaVertexShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "taaResolvePixelShaderHash", manifest.taaResolvePixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "taaHistoryStorePixelShaderHash", manifest.taaHistoryStorePixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "vignetteVertexShaderHash", manifest.vignetteVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "vignettePixelShaderHash", manifest.vignettePixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "skyboxVertexShaderHash", manifest.skyboxVertexShaderHash) ||
@@ -721,6 +743,8 @@ namespace
             !ReadRequiredManifestUint64(fields, "chromaticAberrationPipelineHash", manifest.chromaticAberrationPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "filmGrainPipelineHash", manifest.filmGrainPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "fxaaPipelineHash", manifest.fxaaPipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "taaResolvePipelineHash", manifest.taaResolvePipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "taaHistoryStorePipelineHash", manifest.taaHistoryStorePipelineHash) ||
             !ReadRequiredManifestUint64(fields, "vignettePipelineHash", manifest.vignettePipelineHash) ||
             !ReadRequiredManifestUint64(fields, "uiPipelineHash", manifest.uiPipelineHash))
         {
@@ -766,6 +790,9 @@ namespace
             file << "filmGrainPixelShaderHash=" << manifest.filmGrainPixelShaderHash << '\n';
             file << "fxaaVertexShaderHash=" << manifest.fxaaVertexShaderHash << '\n';
             file << "fxaaPixelShaderHash=" << manifest.fxaaPixelShaderHash << '\n';
+            file << "taaVertexShaderHash=" << manifest.taaVertexShaderHash << '\n';
+            file << "taaResolvePixelShaderHash=" << manifest.taaResolvePixelShaderHash << '\n';
+            file << "taaHistoryStorePixelShaderHash=" << manifest.taaHistoryStorePixelShaderHash << '\n';
             file << "vignetteVertexShaderHash=" << manifest.vignetteVertexShaderHash << '\n';
             file << "vignettePixelShaderHash=" << manifest.vignettePixelShaderHash << '\n';
             file << "skyboxVertexShaderHash=" << manifest.skyboxVertexShaderHash << '\n';
@@ -788,6 +815,8 @@ namespace
             file << "chromaticAberrationPipelineHash=" << manifest.chromaticAberrationPipelineHash << '\n';
             file << "filmGrainPipelineHash=" << manifest.filmGrainPipelineHash << '\n';
             file << "fxaaPipelineHash=" << manifest.fxaaPipelineHash << '\n';
+            file << "taaResolvePipelineHash=" << manifest.taaResolvePipelineHash << '\n';
+            file << "taaHistoryStorePipelineHash=" << manifest.taaHistoryStorePipelineHash << '\n';
             file << "vignettePipelineHash=" << manifest.vignettePipelineHash << '\n';
             file << "uiPipelineHash=" << manifest.uiPipelineHash << '\n';
             if (!file)
@@ -862,6 +891,9 @@ namespace
                a.filmGrainPixelShaderHash == b.filmGrainPixelShaderHash &&
                a.fxaaVertexShaderHash == b.fxaaVertexShaderHash &&
                a.fxaaPixelShaderHash == b.fxaaPixelShaderHash &&
+               a.taaVertexShaderHash == b.taaVertexShaderHash &&
+               a.taaResolvePixelShaderHash == b.taaResolvePixelShaderHash &&
+               a.taaHistoryStorePixelShaderHash == b.taaHistoryStorePixelShaderHash &&
                a.vignetteVertexShaderHash == b.vignetteVertexShaderHash &&
                a.vignettePixelShaderHash == b.vignettePixelShaderHash &&
                a.skyboxVertexShaderHash == b.skyboxVertexShaderHash &&
@@ -884,6 +916,8 @@ namespace
                a.chromaticAberrationPipelineHash == b.chromaticAberrationPipelineHash &&
                a.filmGrainPipelineHash == b.filmGrainPipelineHash &&
                a.fxaaPipelineHash == b.fxaaPipelineHash &&
+               a.taaResolvePipelineHash == b.taaResolvePipelineHash &&
+               a.taaHistoryStorePipelineHash == b.taaHistoryStorePipelineHash &&
                a.vignettePipelineHash == b.vignettePipelineHash &&
                a.uiPipelineHash == b.uiPipelineHash;
     }
@@ -1101,6 +1135,15 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
         return false;
     }
 
+    if (!CreateTAAPipelineLayout())
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create TAA pipeline layout");
+        }
+        return false;
+    }
+
     if (!EnsureObjectSkinningPaletteFallbackBuffers())
     {
         SetLastError("Failed to create object skinning palette fallback buffers");
@@ -1174,6 +1217,8 @@ void PipelineCache::Shutdown()
     m_chromaticAberrationPipeline.Reset();
     m_filmGrainPipeline.Reset();
     m_fxaaPipeline.Reset();
+    m_taaResolvePipeline.Reset();
+    m_taaHistoryStorePipeline.Reset();
     m_vignettePipeline.Reset();
     m_uiPipeline.Reset();
     m_pipelineCache.clear();
@@ -1227,6 +1272,8 @@ void PipelineCache::Shutdown()
     m_lastEnvironmentIBLFrameBindingResult = {};
     m_postProcessPipelineLayout.Reset();
     m_postProcessSetLayout.Reset();
+    m_taaPipelineLayout.Reset();
+    m_taaSetLayout.Reset();
     m_uiPipelineLayout.Reset();
     m_uiTextureSetLayout.Reset();
     m_rayTracedReflectionDenoisePipelineLayout.Reset();
@@ -1286,6 +1333,9 @@ void PipelineCache::Shutdown()
     m_filmGrainPixelShader.Reset();
     m_fxaaVertexShader.Reset();
     m_fxaaPixelShader.Reset();
+    m_taaVertexShader.Reset();
+    m_taaResolvePixelShader.Reset();
+    m_taaHistoryStorePixelShader.Reset();
     m_vignetteVertexShader.Reset();
     m_vignettePixelShader.Reset();
     m_uiVertexShader.Reset();
@@ -1341,6 +1391,9 @@ void PipelineCache::Shutdown()
     m_filmGrainPsCompileResult.reset();
     m_fxaaVsCompileResult.reset();
     m_fxaaPsCompileResult.reset();
+    m_taaVsCompileResult.reset();
+    m_taaResolvePsCompileResult.reset();
+    m_taaHistoryStorePsCompileResult.reset();
     m_vignetteVsCompileResult.reset();
     m_vignettePsCompileResult.reset();
     m_uiVsCompileResult.reset();
@@ -1399,6 +1452,7 @@ bool PipelineCache::CompileShaders()
     std::string chromaticAberrationShaderPath = m_shaderDir + "/PostProcess/ChromaticAberration.hlsl";
     std::string filmGrainShaderPath = m_shaderDir + "/PostProcess/FilmGrain.hlsl";
     std::string fxaaShaderPath = m_shaderDir + "/PostProcess/FXAA.hlsl";
+    std::string taaShaderPath = m_shaderDir + "/PostProcess/TAA.hlsl";
     std::string vignetteShaderPath = m_shaderDir + "/PostProcess/Vignette.hlsl";
     std::string uiShaderPath = m_shaderDir + "/UI.hlsl";
     std::string skyboxShaderPath = m_shaderDir + "/Skybox.hlsl";
@@ -2366,6 +2420,76 @@ bool PipelineCache::CompileShaders()
     m_fxaaPixelShader = fxaaPsResult.shader;
     m_fxaaPsCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(fxaaPsResult.compileResult));
 
+    RenderShaderLoadDesc taaVsDesc = vsDesc;
+    taaVsDesc.path = taaShaderPath;
+    taaVsDesc.entryPoint = "VSMain";
+    taaVsDesc.stage = RHIShaderStage::Vertex;
+    taaVsDesc.defines.push_back(fullscreenUVYMappingDefine);
+    if (backend == RHIBackendType::DX11)
+    {
+        taaVsDesc.targetProfile = "vs_5_0";
+    }
+
+    auto taaVsResult = m_shaderProgramLoader->LoadFromFile(m_device, taaVsDesc);
+    if (!taaVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile TAA vertex shader: " +
+                     taaVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!taaVsResult.shader)
+    {
+        SetLastError("Failed to create TAA vertex shader");
+        return false;
+    }
+    m_taaVertexShader = taaVsResult.shader;
+    m_taaVsCompileResult =
+        std::make_unique<ShaderProgramMetadata>(std::move(taaVsResult.compileResult));
+
+    RenderShaderLoadDesc taaResolvePsDesc = taaVsDesc;
+    taaResolvePsDesc.entryPoint = "PSResolve";
+    taaResolvePsDesc.stage = RHIShaderStage::Pixel;
+    if (backend == RHIBackendType::DX11)
+    {
+        taaResolvePsDesc.targetProfile = "ps_5_0";
+    }
+
+    auto taaResolvePsResult = m_shaderProgramLoader->LoadFromFile(
+        m_device, taaResolvePsDesc);
+    if (!taaResolvePsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile TAA resolve pixel shader: " +
+                     taaResolvePsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!taaResolvePsResult.shader)
+    {
+        SetLastError("Failed to create TAA resolve pixel shader");
+        return false;
+    }
+    m_taaResolvePixelShader = taaResolvePsResult.shader;
+    m_taaResolvePsCompileResult = std::make_unique<ShaderProgramMetadata>(
+        std::move(taaResolvePsResult.compileResult));
+
+    RenderShaderLoadDesc taaHistoryStorePsDesc = taaResolvePsDesc;
+    taaHistoryStorePsDesc.entryPoint = "PSStore";
+    auto taaHistoryStorePsResult = m_shaderProgramLoader->LoadFromFile(
+        m_device, taaHistoryStorePsDesc);
+    if (!taaHistoryStorePsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile TAA history-store pixel shader: " +
+                     taaHistoryStorePsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!taaHistoryStorePsResult.shader)
+    {
+        SetLastError("Failed to create TAA history-store pixel shader");
+        return false;
+    }
+    m_taaHistoryStorePixelShader = taaHistoryStorePsResult.shader;
+    m_taaHistoryStorePsCompileResult = std::make_unique<ShaderProgramMetadata>(
+        std::move(taaHistoryStorePsResult.compileResult));
+
     RenderShaderLoadDesc vignetteVsDesc = vsDesc;
     vignetteVsDesc.path = vignetteShaderPath;
     vignetteVsDesc.entryPoint = "VSMain";
@@ -2894,6 +3018,40 @@ bool PipelineCache::CreatePostProcessPipelineLayout()
     return true;
 }
 
+bool PipelineCache::CreateTAAPipelineLayout()
+{
+    RHIDescriptorSetLayoutDesc setLayoutDesc;
+    setLayoutDesc.debugName = "TAASetLayout";
+    setLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(1, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(2, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(3, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(4, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(5, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(6, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(7, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+
+    m_taaSetLayout = m_device->CreateDescriptorSetLayout(setLayoutDesc);
+    if (!m_taaSetLayout)
+    {
+        SetLastError("Failed to create TAA descriptor set layout");
+        return false;
+    }
+
+    RHIPipelineLayoutDesc layoutDesc;
+    layoutDesc.debugName = "TAAPipelineLayout";
+    layoutDesc.setLayouts.push_back(m_taaSetLayout.Get());
+    m_taaPipelineLayout = m_device->CreatePipelineLayout(layoutDesc);
+    if (!m_taaPipelineLayout)
+    {
+        SetLastError("Failed to create TAA pipeline layout");
+        return false;
+    }
+
+    RVX_CORE_DEBUG("PipelineCache: Created TAA pipeline layout");
+    return true;
+}
+
 bool PipelineCache::CreateUIPipelineLayout()
 {
     RHIDescriptorSetLayoutDesc setLayoutDesc;
@@ -3321,6 +3479,10 @@ void PipelineCache::ProcessPipelineManifest()
     expected.filmGrainPixelShaderHash = ComputeShaderHash(m_filmGrainPsCompileResult.get());
     expected.fxaaVertexShaderHash = ComputeShaderHash(m_fxaaVsCompileResult.get());
     expected.fxaaPixelShaderHash = ComputeShaderHash(m_fxaaPsCompileResult.get());
+    expected.taaVertexShaderHash = ComputeShaderHash(m_taaVsCompileResult.get());
+    expected.taaResolvePixelShaderHash = ComputeShaderHash(m_taaResolvePsCompileResult.get());
+    expected.taaHistoryStorePixelShaderHash =
+        ComputeShaderHash(m_taaHistoryStorePsCompileResult.get());
     expected.vignetteVertexShaderHash = ComputeShaderHash(m_vignetteVsCompileResult.get());
     expected.vignettePixelShaderHash = ComputeShaderHash(m_vignettePsCompileResult.get());
     expected.skyboxVertexShaderHash = ComputeShaderHash(m_skyboxVsCompileResult.get());
@@ -3343,6 +3505,8 @@ void PipelineCache::ProcessPipelineManifest()
     expected.chromaticAberrationPipelineHash = m_stats.chromaticAberrationPipelineHash;
     expected.filmGrainPipelineHash = m_stats.filmGrainPipelineHash;
     expected.fxaaPipelineHash = m_stats.fxaaPipelineHash;
+    expected.taaResolvePipelineHash = m_stats.taaResolvePipelineHash;
+    expected.taaHistoryStorePipelineHash = m_stats.taaHistoryStorePipelineHash;
     expected.vignettePipelineHash = m_stats.vignettePipelineHash;
     expected.uiPipelineHash = m_stats.uiPipelineHash;
 
@@ -6265,6 +6429,22 @@ RHIPipeline* PipelineCache::GetFXAAPipeline(RHIFormat outputFormat)
     return GetOrCreateFXAAPipeline(outputFormat).Get();
 }
 
+RHIPipeline* PipelineCache::GetTAAResolvePipeline(RHIFormat outputFormat)
+{
+    const RHIFormat resolvedFormat =
+        outputFormat == RHIFormat::Unknown ? m_postProcessIntermediateFormat : outputFormat;
+    if (resolvedFormat == m_postProcessIntermediateFormat)
+    {
+        if (!m_taaResolvePipeline)
+        {
+            m_taaResolvePipeline = GetOrCreateTAAResolvePipeline(resolvedFormat);
+        }
+        return m_taaResolvePipeline.Get();
+    }
+
+    return GetOrCreateTAAResolvePipeline(resolvedFormat).Get();
+}
+
 RHIPipeline* PipelineCache::GetFilmGrainPipeline(RHIFormat outputFormat)
 {
     if (outputFormat == RHIFormat::Unknown)
@@ -7235,6 +7415,30 @@ bool PipelineCache::CreatePipeline()
         if (m_lastError.empty())
         {
             SetLastError("Failed to create masked depth-only pipeline");
+        }
+        return false;
+    }
+
+    // TAA needs two coupled pipelines, but it remains after the established
+    // default-pipeline sequence so existing backend diagnostics and failure
+    // injection ordinals stay stable.
+    m_taaResolvePipeline =
+        GetOrCreateTAAResolvePipeline(m_postProcessIntermediateFormat);
+    if (!m_taaResolvePipeline)
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create TAA resolve pipeline");
+        }
+        return false;
+    }
+
+    m_taaHistoryStorePipeline = GetOrCreateTAAHistoryStorePipeline();
+    if (!m_taaHistoryStorePipeline)
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create TAA history-store pipeline");
         }
         return false;
     }
@@ -8742,6 +8946,79 @@ RHIPipelineRef PipelineCache::GetOrCreateFXAAPipeline(RHIFormat outputFormat)
     return pipeline;
 }
 
+RHIPipelineRef PipelineCache::GetOrCreateTAAResolvePipeline(RHIFormat outputFormat)
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildTAAResolvePipelineDesc(outputFormat);
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
+        !pipelineDesc.pipelineLayout || pipelineDesc.numRenderTargets != 1 ||
+        pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create TAA resolve pipeline from incomplete state");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc, MaterialPipelineVariant::Transparent);
+    m_stats.taaResolvePipelineHash = stateHash;
+    m_stats.lastPipelineStateHash = stateHash;
+
+    const auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create TAA resolve pipeline");
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateTAAHistoryStorePipeline()
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildTAAHistoryStorePipelineDesc();
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
+        !pipelineDesc.pipelineLayout || pipelineDesc.numRenderTargets != 2 ||
+        pipelineDesc.renderTargetFormats[0] != RHIFormat::RGBA16_FLOAT ||
+        pipelineDesc.renderTargetFormats[1] != RHIFormat::R32_FLOAT)
+    {
+        SetLastError("Cannot create TAA history-store pipeline from incomplete state");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc, MaterialPipelineVariant::Transparent);
+    m_stats.taaHistoryStorePipelineHash = stateHash;
+    m_stats.lastPipelineStateHash = stateHash;
+
+    const auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create TAA history-store pipeline");
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
 RHIPipelineRef PipelineCache::GetOrCreateUIPipeline(RHIFormat outputFormat)
 {
     RHIGraphicsPipelineDesc pipelineDesc = BuildUIPipelineDesc(outputFormat);
@@ -9394,6 +9671,44 @@ RHIGraphicsPipelineDesc PipelineCache::BuildFXAAPipelineDesc(RHIFormat outputFor
     return pipelineDesc;
 }
 
+RHIGraphicsPipelineDesc PipelineCache::BuildTAAResolvePipelineDesc(
+    RHIFormat outputFormat) const
+{
+    RHIGraphicsPipelineDesc pipelineDesc;
+    pipelineDesc.vertexShader = m_taaVertexShader.Get();
+    pipelineDesc.pixelShader = m_taaResolvePixelShader.Get();
+    pipelineDesc.pipelineLayout = m_taaPipelineLayout.Get();
+    pipelineDesc.debugName = "TAAResolvePipeline";
+    pipelineDesc.rasterizerState = RHIRasterizerState::Default();
+    pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
+    pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
+    pipelineDesc.blendState = RHIBlendState::Default();
+    pipelineDesc.numRenderTargets = 1;
+    pipelineDesc.renderTargetFormats[0] = outputFormat;
+    pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
+    pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+    return pipelineDesc;
+}
+
+RHIGraphicsPipelineDesc PipelineCache::BuildTAAHistoryStorePipelineDesc() const
+{
+    RHIGraphicsPipelineDesc pipelineDesc;
+    pipelineDesc.vertexShader = m_taaVertexShader.Get();
+    pipelineDesc.pixelShader = m_taaHistoryStorePixelShader.Get();
+    pipelineDesc.pipelineLayout = m_taaPipelineLayout.Get();
+    pipelineDesc.debugName = "TAAHistoryStorePipeline";
+    pipelineDesc.rasterizerState = RHIRasterizerState::Default();
+    pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
+    pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
+    pipelineDesc.blendState = RHIBlendState::Default();
+    pipelineDesc.numRenderTargets = 2;
+    pipelineDesc.renderTargetFormats[0] = RHIFormat::RGBA16_FLOAT;
+    pipelineDesc.renderTargetFormats[1] = RHIFormat::R32_FLOAT;
+    pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
+    pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+    return pipelineDesc;
+}
+
 RHIGraphicsPipelineDesc PipelineCache::BuildVignettePipelineDesc(RHIFormat outputFormat) const
 {
     RHIGraphicsPipelineDesc pipelineDesc;
@@ -9599,6 +9914,12 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             return ComputeShaderHash(m_fxaaVsCompileResult.get());
         if (shader == m_fxaaPixelShader.Get())
             return ComputeShaderHash(m_fxaaPsCompileResult.get());
+        if (shader == m_taaVertexShader.Get())
+            return ComputeShaderHash(m_taaVsCompileResult.get());
+        if (shader == m_taaResolvePixelShader.Get())
+            return ComputeShaderHash(m_taaResolvePsCompileResult.get());
+        if (shader == m_taaHistoryStorePixelShader.Get())
+            return ComputeShaderHash(m_taaHistoryStorePsCompileResult.get());
         if (shader == m_vignetteVertexShader.Get())
             return ComputeShaderHash(m_vignetteVsCompileResult.get());
         if (shader == m_vignettePixelShader.Get())

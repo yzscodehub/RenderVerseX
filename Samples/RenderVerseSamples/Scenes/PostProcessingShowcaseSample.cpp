@@ -231,11 +231,10 @@ namespace RVX
         // owns all passes, input/output color domains, and execution receipts.
         auto& postProcess = context.renderSettings.postProcess;
         postProcess.enabled = true;
-        postProcess.enableTAA = false;
+        postProcess.antiAliasingMode = RenderAntiAliasingMode::FXAA;
         postProcess.enableVelocityOutput = false;
         postProcess.enableBloom = true;
         postProcess.enableColorGrading = true;
-        postProcess.enableFXAA = true;
         postProcess.enableSSAO = false;
         postProcess.enableSSR = false;
         postProcess.toneMappingOperator = RenderToneMappingOperator::ACES;

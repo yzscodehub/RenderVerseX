@@ -54,6 +54,15 @@ if(RVX_ENABLE_GFX10_POST_PROCESS_NATIVE)
 elseif(NOT WIN32)
     message(STATUS "GFX10 post-process qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
 endif()
+option(RVX_ENABLE_GFX11_TAA_NATIVE
+    "Register the fail-closed DX12/Vulkan GFX11 Forward+/Deferred temporal-AA gate" OFF)
+if(RVX_ENABLE_GFX11_TAA_NATIVE)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_GFX11_TAA_NATIVE requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "GFX11 temporal-AA qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
 option(RVX_ENABLE_PR_SMOKE
     "Register only the fixed primary-backend SceneLifecycle PR smoke" OFF)
 option(RVX_ENABLE_COMPATIBILITY_SMOKE
@@ -79,7 +88,8 @@ endif()
 
 if((RVX_ENABLE_P0_QUALIFICATION_MATRIX OR RVX_ENABLE_P1_QUALIFICATION_MATRIX
     OR RVX_ENABLE_GFX07_DEFERRED_NATIVE OR RVX_ENABLE_GFX08_LIGHTING_NATIVE
-    OR RVX_ENABLE_GFX09_ANIMATION_NATIVE OR RVX_ENABLE_GFX10_POST_PROCESS_NATIVE)
+    OR RVX_ENABLE_GFX09_ANIMATION_NATIVE OR RVX_ENABLE_GFX10_POST_PROCESS_NATIVE
+    OR RVX_ENABLE_GFX11_TAA_NATIVE)
    AND (NOT TARGET VisualGoldenValidation OR NOT TARGET ImageContentValidation OR NOT TARGET SampleReportContentValidation))
     message(FATAL_ERROR "Enabled qualification matrices require visual and SampleReport validators")
 endif()
@@ -638,6 +648,148 @@ function(rvx_add_renderverse_gfx10_post_process_native
         TAGS product.samples trait.visual trait.gpu trait.native
             backend.${BACKEND_NAME} suite.gfx10
         SUITE gfx10-postprocess
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+# GFX11 qualifies the real temporal resolve across both raster recipes. The
+# producer runs long enough to sample a compatible prior-presented history;
+# receipt validation rejects scheduling-only evidence and any FXAA fallback.
+function(rvx_add_renderverse_gfx11_taa_native
+         BACKEND_NAME BACKEND_LABEL PIPELINE_NAME PIPELINE_LABEL)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation)
+        message(FATAL_ERROR "GFX11 temporal-AA qualification requires RenderVerseSamples and report/image validators")
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}GFX11${PIPELINE_LABEL}TemporalAA")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(startup_report
+        "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(pipeline_receipt_args)
+    if(PIPELINE_NAME STREQUAL "deferred")
+        list(APPEND pipeline_receipt_args
+            --require-deferred-opaque-execution)
+    endif()
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}Capture
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample temporal-aa
+            --backend ${BACKEND_NAME}
+            --pipeline ${PIPELINE_NAME}
+            --render-path direct
+            --quality high
+            --smoke
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 2400
+            --view hero
+            --fixed-delta 0.0166666666666667
+            --capture-tick 120
+            --width 640
+            --height 360
+            --screenshot "${capture}"
+            --report "${report}"
+            --startup-report "${startup_report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS RenderVerseSamples ImageContentValidation SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.temporal
+            backend.${BACKEND_NAME} suite.gfx11
+        SUITE gfx11-taa
+        TIMEOUT 300
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.temporal
+            backend.${BACKEND_NAME} suite.gfx11
+        SUITE gfx11-taa
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ReceiptValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name temporal-aa
+            --category visual
+            --backend ${BACKEND_NAME}
+            --require-requested-backend ${BACKEND_NAME}
+            --require-actual-backend ${BACKEND_NAME}
+            --quality high
+            --min-frame-count 120
+            --min-visible-objects 1
+            --require-ready
+            --require-readiness-wait
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-direct-execution
+            --require-render-pipeline ${PIPELINE_NAME}
+            ${pipeline_receipt_args}
+            --require-post-process-execution
+            --require-exactly-one-tone-map
+            --require-temporal-aa-execution
+            --require-no-fxaa-execution
+            --require-temporal-history-sampled
+            --require-temporal-history-committed
+            --require-render-feature-executed 2
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-phase stable
+            --require-enabled-feature EnginePostProcessConfiguration
+            --require-enabled-feature TemporalAARequested
+            --require-enabled-feature VelocityOutputRequested
+            --require-enabled-feature DeterministicModelMotion
+            --require-enabled-feature FXAAExplicitlyDisabled
+            --require-enabled-feature TemporalAAActualExecutionQualified
+            --require-enabled-feature TemporalHistorySampled
+            --require-enabled-feature TemporalHistoryCommittedAfterPresent
+            --forbid-fallback-reasons
+            --forbid-render-feature-fallbacks
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.temporal
+            backend.${BACKEND_NAME} suite.gfx11
+        SUITE gfx11-taa
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         FIXTURES_REQUIRED "${test_prefix}FreshCapture"
@@ -2903,6 +3055,19 @@ if(RVX_ENABLE_GFX10_POST_PROCESS_NATIVE)
     rvx_add_renderverse_gfx10_post_process_native(
         vulkan Vulkan forward-plus ForwardPlus)
     rvx_add_renderverse_gfx10_post_process_native(
+        vulkan Vulkan deferred Deferred)
+endif()
+
+if(RVX_ENABLE_GFX11_TAA_NATIVE)
+    # The suite target is RVXValidationSuiteGfx11Taa and its exact CTest label
+    # is suite.gfx11-taa.
+    rvx_add_renderverse_gfx11_taa_native(
+        dx12 DX12 forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx11_taa_native(
+        dx12 DX12 deferred Deferred)
+    rvx_add_renderverse_gfx11_taa_native(
+        vulkan Vulkan forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx11_taa_native(
         vulkan Vulkan deferred Deferred)
 endif()
 

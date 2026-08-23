@@ -373,7 +373,7 @@ namespace RVX
                     object.worldMatrix,
                     object.normalMatrix,
                     object.previousWorldMatrix,
-                    data.execution.view.previousViewProjectionMatrix,
+                    data.execution.view.previousJitteredViewProjectionMatrix,
                     true,
                     object.receivesShadow,
                     skinningSlice))

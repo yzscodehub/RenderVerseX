@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -170,6 +171,10 @@ namespace
         bool requirePostProcessColorGradingExecution = false;
         bool requirePostProcessFXAAExecution = false;
         bool requireNoTemporalAAExecution = false;
+        bool requireTemporalAAExecution = false;
+        bool requireNoFXAAExecution = false;
+        bool requireTemporalHistorySampled = false;
+        bool requireTemporalHistoryCommitted = false;
         bool requireReadinessWait = false;
         bool requireGPUDrivenExecution = false;
         bool requireDirectExecution = false;
@@ -1028,6 +1033,22 @@ namespace
             else if (arg == "--require-no-temporal-aa-execution")
             {
                 options.requireNoTemporalAAExecution = true;
+            }
+            else if (arg == "--require-temporal-aa-execution")
+            {
+                options.requireTemporalAAExecution = true;
+            }
+            else if (arg == "--require-no-fxaa-execution")
+            {
+                options.requireNoFXAAExecution = true;
+            }
+            else if (arg == "--require-temporal-history-sampled")
+            {
+                options.requireTemporalHistorySampled = true;
+            }
+            else if (arg == "--require-temporal-history-committed")
+            {
+                options.requireTemporalHistoryCommitted = true;
             }
             else if (arg == "--require-phase")
             {
@@ -2558,19 +2579,20 @@ namespace
             "features",
         };
         if (schemaVersion == 2 || schemaVersion == 4 || schemaVersion == 5 ||
-            schemaVersion == 6)
+            schemaVersion == 6 || schemaVersion == 7)
         {
             expectedFields.insert("deferredOpaque");
         }
-        if (schemaVersion == 4 || schemaVersion == 5 || schemaVersion == 6)
+        if (schemaVersion == 4 || schemaVersion == 5 || schemaVersion == 6 ||
+            schemaVersion == 7)
         {
             expectedFields.insert("lighting");
         }
-        if (schemaVersion == 5 || schemaVersion == 6)
+        if (schemaVersion == 5 || schemaVersion == 6 || schemaVersion == 7)
         {
             expectedFields.insert("deformation");
         }
-        if (schemaVersion == 6)
+        if (schemaVersion == 6 || schemaVersion == 7)
         {
             expectedFields.insert("postProcess");
         }
@@ -2615,7 +2637,7 @@ namespace
                                   "Render execution receipt v21");
         if ((schemaVersion != 1 && schemaVersion != 2 &&
              schemaVersion != 4 && schemaVersion != 5 &&
-             schemaVersion != 6) || !available ||
+             schemaVersion != 6 && schemaVersion != 7) || !available ||
             !graphComposed ||
             !executionSucceeded || !presented || !succeeded)
         {
@@ -2623,7 +2645,7 @@ namespace
             passed = false;
         }
         if (schemaVersion == 2 || schemaVersion == 4 || schemaVersion == 5 ||
-            schemaVersion == 6)
+            schemaVersion == 6 || schemaVersion == 7)
         {
             const auto deferredOpaque = execution.find("deferredOpaque");
             if (deferredOpaque == execution.end() ||
@@ -2692,7 +2714,8 @@ namespace
                       << "DeferredOpaque evidence\n";
             passed = false;
         }
-        if (schemaVersion == 4 || schemaVersion == 5 || schemaVersion == 6)
+        if (schemaVersion == 4 || schemaVersion == 5 || schemaVersion == 6 ||
+            schemaVersion == 7)
         {
             const auto lighting = execution.find("lighting");
             if (lighting == execution.end() || !lighting->is_object())
@@ -2836,7 +2859,7 @@ namespace
              options->requireSkinnedOpaqueExecution ||
              options->requireSkinnedShadowExecution ||
              options->requireSkinnedVelocityExecution);
-        if (schemaVersion == 5 || schemaVersion == 6)
+        if (schemaVersion == 5 || schemaVersion == 6 || schemaVersion == 7)
         {
             const auto deformation = execution.find("deformation");
             if (deformation == execution.end() || !deformation->is_object())
@@ -2972,8 +2995,12 @@ namespace
              options->requirePostProcessBloomExecution ||
              options->requirePostProcessColorGradingExecution ||
              options->requirePostProcessFXAAExecution ||
-             options->requireNoTemporalAAExecution);
-        if (schemaVersion == 6)
+             options->requireNoTemporalAAExecution ||
+             options->requireTemporalAAExecution ||
+             options->requireNoFXAAExecution ||
+             options->requireTemporalHistorySampled ||
+             options->requireTemporalHistoryCommitted);
+        if (schemaVersion == 6 || schemaVersion == 7)
         {
             const auto postProcess = execution.find("postProcess");
             if (postProcess == execution.end() || !postProcess->is_object())
@@ -2984,17 +3011,29 @@ namespace
             else
             {
                 constexpr const char* context =
-                    "Render post-process execution receipt v6";
+                    "Render post-process execution receipt";
+                std::set<std::string> expectedPostProcessFields{
+                    "planContentHash", "toneMappingPassCount", "bloomPassCount",
+                    "colorGradingPassCount", "fxaaPassCount", "taaPassCount",
+                    "inputColorDomain", "plannedOutputColorDomain",
+                    "storedOutputColorDomain", "finalOutputFormat",
+                    "toneMappingTransfer", "presentationTransfer",
+                    "hdrInputReady", "displayLinearOutputReady",
+                    "encodedOutputReady", "fallbackUsed"};
+                if (schemaVersion == 7)
+                {
+                    expectedPostProcessFields.insert({
+                        "antiAliasingMode", "taaRequested", "taaPipelineReady",
+                        "taaInputsReady", "taaExecuted",
+                        "historyAvailableBefore", "historySampled",
+                        "historyCandidateProduced", "historyCommitted",
+                        "historyAbandoned", "historyResetReasons",
+                        "currentJitterPixels", "previousJitterPixels",
+                        "taaResolveGraphPassCount",
+                        "taaHistoryStoreGraphPassCount"});
+                }
                 passed &= ValidateExactObjectFields(
-                    *postProcess,
-                    {"planContentHash", "toneMappingPassCount", "bloomPassCount",
-                     "colorGradingPassCount", "fxaaPassCount", "taaPassCount",
-                     "inputColorDomain", "plannedOutputColorDomain",
-                     "storedOutputColorDomain", "finalOutputFormat",
-                     "toneMappingTransfer", "presentationTransfer",
-                     "hdrInputReady", "displayLinearOutputReady",
-                     "encodedOutputReady", "fallbackUsed"},
-                    context);
+                    *postProcess, expectedPostProcessFields, context);
 
                 uint64_t planContentHash = 0;
                 uint64_t toneMappingPassCount = 0;
@@ -3002,6 +3041,23 @@ namespace
                 uint64_t colorGradingPassCount = 0;
                 uint64_t fxaaPassCount = 0;
                 uint64_t taaPassCount = 0;
+                std::string antiAliasingMode;
+                bool taaRequested = false;
+                bool taaPipelineReady = false;
+                bool taaInputsReady = false;
+                bool taaExecuted = false;
+                bool historyAvailableBefore = false;
+                bool historySampled = false;
+                bool historyCandidateProduced = false;
+                bool historyCommitted = false;
+                bool historyAbandoned = false;
+                uint64_t historyResetReasons = 0;
+                double currentJitterX = 0.0;
+                double currentJitterY = 0.0;
+                double previousJitterX = 0.0;
+                double previousJitterY = 0.0;
+                uint64_t taaResolveGraphPassCount = 0;
+                uint64_t taaHistoryStoreGraphPassCount = 0;
                 std::string inputColorDomain;
                 std::string plannedOutputColorDomain;
                 std::string storedOutputColorDomain;
@@ -3024,6 +3080,71 @@ namespace
                                             fxaaPassCount, context);
                 passed &= ReadUnsignedField(*postProcess, "taaPassCount",
                                             taaPassCount, context);
+                if (schemaVersion == 7)
+                {
+                    passed &= ReadStringField(*postProcess, "antiAliasingMode",
+                                              antiAliasingMode, context, true);
+                    passed &= ReadBooleanField(*postProcess, "taaRequested",
+                                               taaRequested, context);
+                    passed &= ReadBooleanField(*postProcess, "taaPipelineReady",
+                                               taaPipelineReady, context);
+                    passed &= ReadBooleanField(*postProcess, "taaInputsReady",
+                                               taaInputsReady, context);
+                    passed &= ReadBooleanField(*postProcess, "taaExecuted",
+                                               taaExecuted, context);
+                    passed &= ReadBooleanField(*postProcess,
+                                               "historyAvailableBefore",
+                                               historyAvailableBefore, context);
+                    passed &= ReadBooleanField(*postProcess, "historySampled",
+                                               historySampled, context);
+                    passed &= ReadBooleanField(*postProcess,
+                                               "historyCandidateProduced",
+                                               historyCandidateProduced,
+                                               context);
+                    passed &= ReadBooleanField(*postProcess, "historyCommitted",
+                                               historyCommitted, context);
+                    passed &= ReadBooleanField(*postProcess, "historyAbandoned",
+                                               historyAbandoned, context);
+                    passed &= ReadUnsignedField(*postProcess,
+                                                "historyResetReasons",
+                                                historyResetReasons, context);
+                    passed &= ReadUnsignedField(*postProcess,
+                                                "taaResolveGraphPassCount",
+                                                taaResolveGraphPassCount,
+                                                context);
+                    passed &= ReadUnsignedField(*postProcess,
+                                                "taaHistoryStoreGraphPassCount",
+                                                taaHistoryStoreGraphPassCount,
+                                                context);
+
+                    const auto readJitter = [&](const char* field,
+                                                double& outX,
+                                                double& outY)
+                    {
+                        const auto value = postProcess->find(field);
+                        if (value == postProcess->end() || !value->is_array() ||
+                            value->size() != 2 || !(*value)[0].is_number() ||
+                            !(*value)[1].is_number())
+                        {
+                            std::cerr << context << " field " << field
+                                      << " must be a two-number array\n";
+                            return false;
+                        }
+                        outX = (*value)[0].get<double>();
+                        outY = (*value)[1].get<double>();
+                        if (!std::isfinite(outX) || !std::isfinite(outY))
+                        {
+                            std::cerr << context << " field " << field
+                                      << " must contain finite values\n";
+                            return false;
+                        }
+                        return true;
+                    };
+                    passed &= readJitter(
+                        "currentJitterPixels", currentJitterX, currentJitterY);
+                    passed &= readJitter(
+                        "previousJitterPixels", previousJitterX, previousJitterY);
+                }
                 passed &= ReadStringField(*postProcess, "inputColorDomain",
                                           inputColorDomain, context, true);
                 passed &= ReadStringField(*postProcess,
@@ -3076,19 +3197,56 @@ namespace
                     presentationTransfer ==
                         "scene-linear-to-display-encoded" &&
                     !displayLinearOutputReady;
-                const bool structurallyValid =
+                const bool commonStructurallyValid =
                     planContentHash != 0 && fitsUInt32(toneMappingPassCount) &&
                     fitsUInt32(bloomPassCount) &&
                     fitsUInt32(colorGradingPassCount) &&
                     fitsUInt32(fxaaPassCount) && fitsUInt32(taaPassCount) &&
-                    toneMappingPassCount == 1 && taaPassCount == 0 &&
+                    toneMappingPassCount == 1 &&
                     hdrInputReady && encodedOutputReady && !fallbackUsed &&
                     IsKnownRHIFormatCanonicalName(finalOutputFormat) &&
                     (isSRGBPresentationContract ||
                      isDirectEncodedPresentationContract);
+                bool aaStructurallyValid = taaPassCount == 0;
+                if (schemaVersion == 7)
+                {
+                    const bool temporalJitterProgressed =
+                        currentJitterX != previousJitterX ||
+                        currentJitterY != previousJitterY;
+                    const bool temporalStateEmpty =
+                        !taaRequested && !taaPipelineReady && !taaInputsReady &&
+                        !taaExecuted && !historyAvailableBefore &&
+                        !historySampled && !historyCandidateProduced &&
+                        !historyCommitted && !historyAbandoned &&
+                        historyResetReasons == 0 && currentJitterX == 0.0 &&
+                        currentJitterY == 0.0 && previousJitterX == 0.0 &&
+                        previousJitterY == 0.0 &&
+                        taaResolveGraphPassCount == 0 &&
+                        taaHistoryStoreGraphPassCount == 0;
+                    const bool noneMode = antiAliasingMode == "none" &&
+                        fxaaPassCount == 0 && taaPassCount == 0 &&
+                        temporalStateEmpty;
+                    const bool fxaaMode = antiAliasingMode == "fxaa" &&
+                        fxaaPassCount == 1 && taaPassCount == 0 &&
+                        temporalStateEmpty;
+                    const bool taaMode = antiAliasingMode == "taa" &&
+                        fxaaPassCount == 0 && taaPassCount == 1 &&
+                        taaRequested && taaPipelineReady && taaInputsReady &&
+                        taaExecuted && historyCandidateProduced &&
+                        historyCommitted && !historyAbandoned &&
+                        temporalJitterProgressed &&
+                        taaResolveGraphPassCount == 1 &&
+                        taaHistoryStoreGraphPassCount == 1 &&
+                        historyAvailableBefore == historySampled &&
+                        ((historyAvailableBefore && historyResetReasons == 0) ||
+                         (!historyAvailableBefore && historyResetReasons != 0));
+                    aaStructurallyValid = noneMode || fxaaMode || taaMode;
+                }
+                const bool structurallyValid =
+                    commonStructurallyValid && aaStructurallyValid;
                 if (!structurallyValid)
                 {
-                    std::cerr << "Render post-process execution receipt v6 is structurally invalid\n";
+                    std::cerr << "Render post-process execution receipt is structurally invalid\n";
                     passed = false;
                 }
 
@@ -3106,9 +3264,27 @@ namespace
                      (options->requirePostProcessFXAAExecution &&
                       fxaaPassCount == 0) ||
                      (options->requireNoTemporalAAExecution &&
-                      taaPassCount != 0)))
+                      taaPassCount != 0) ||
+                     (options->requireTemporalAAExecution &&
+                      (schemaVersion != 7 || antiAliasingMode != "taa" ||
+                       taaPassCount != 1 || !taaRequested ||
+                       !taaPipelineReady || !taaInputsReady ||
+                       !taaExecuted ||
+                       (currentJitterX == previousJitterX &&
+                        currentJitterY == previousJitterY) ||
+                       taaResolveGraphPassCount != 1 ||
+                       taaHistoryStoreGraphPassCount != 1)) ||
+                     (options->requireNoFXAAExecution && fxaaPassCount != 0) ||
+                     (options->requireTemporalHistorySampled &&
+                      (schemaVersion != 7 || !historyAvailableBefore ||
+                       !historySampled ||
+                       (currentJitterX == previousJitterX &&
+                        currentJitterY == previousJitterY))) ||
+                     (options->requireTemporalHistoryCommitted &&
+                      (schemaVersion != 7 || !historyCandidateProduced ||
+                       !historyCommitted || historyAbandoned))))
                 {
-                    std::cerr << "Render execution receipt v6 does not satisfy required post-process evidence\n";
+                    std::cerr << "Render execution receipt does not satisfy required post-process evidence\n";
                     passed = false;
                 }
             }
@@ -5168,6 +5344,122 @@ namespace
             return false;
         }
 
+        // Schema 23 carries execution-receipt v7 temporal-AA lifecycle facts.
+        // Spatial FXAA remains valid only with an otherwise empty temporal
+        // state, while a required TAA gate must prove history sampling and the
+        // exact post-Present candidate commit.
+        Json schema23SpatialReport = schema21Report;
+        schema23SpatialReport["schemaVersion"] = 23;
+        Json& schema23SpatialExecution =
+            schema23SpatialReport["visualContractReceipt"]
+                                 ["renderExecutionReceipt"];
+        schema23SpatialExecution["schemaVersion"] = 7;
+        Json& schema23SpatialPostProcess =
+            schema23SpatialExecution["postProcess"];
+        schema23SpatialPostProcess["antiAliasingMode"] = "fxaa";
+        schema23SpatialPostProcess["taaRequested"] = false;
+        schema23SpatialPostProcess["taaPipelineReady"] = false;
+        schema23SpatialPostProcess["taaInputsReady"] = false;
+        schema23SpatialPostProcess["taaExecuted"] = false;
+        schema23SpatialPostProcess["historyAvailableBefore"] = false;
+        schema23SpatialPostProcess["historySampled"] = false;
+        schema23SpatialPostProcess["historyCandidateProduced"] = false;
+        schema23SpatialPostProcess["historyCommitted"] = false;
+        schema23SpatialPostProcess["historyAbandoned"] = false;
+        schema23SpatialPostProcess["historyResetReasons"] = 0;
+        schema23SpatialPostProcess["currentJitterPixels"] =
+            Json::array({0.0, 0.0});
+        schema23SpatialPostProcess["previousJitterPixels"] =
+            Json::array({0.0, 0.0});
+        schema23SpatialPostProcess["taaResolveGraphPassCount"] = 0;
+        schema23SpatialPostProcess["taaHistoryStoreGraphPassCount"] = 0;
+        if (!ValidateSampleReportV12Root(
+                schema23SpatialReport, expectedBuildIdentity))
+        {
+            return false;
+        }
+
+        Json schema23TemporalReport = schema23SpatialReport;
+        Json& schema23TemporalPostProcess =
+            schema23TemporalReport["visualContractReceipt"]
+                                  ["renderExecutionReceipt"]
+                                  ["postProcess"];
+        schema23TemporalPostProcess["fxaaPassCount"] = 0;
+        schema23TemporalPostProcess["taaPassCount"] = 1;
+        schema23TemporalPostProcess["antiAliasingMode"] = "taa";
+        schema23TemporalPostProcess["taaRequested"] = true;
+        schema23TemporalPostProcess["taaPipelineReady"] = true;
+        schema23TemporalPostProcess["taaInputsReady"] = true;
+        schema23TemporalPostProcess["taaExecuted"] = true;
+        schema23TemporalPostProcess["historyAvailableBefore"] = true;
+        schema23TemporalPostProcess["historySampled"] = true;
+        schema23TemporalPostProcess["historyCandidateProduced"] = true;
+        schema23TemporalPostProcess["historyCommitted"] = true;
+        schema23TemporalPostProcess["historyAbandoned"] = false;
+        schema23TemporalPostProcess["historyResetReasons"] = 0;
+        schema23TemporalPostProcess["currentJitterPixels"] =
+            Json::array({0.25, -0.125});
+        schema23TemporalPostProcess["previousJitterPixels"] =
+            Json::array({-0.25, 0.125});
+        schema23TemporalPostProcess["taaResolveGraphPassCount"] = 1;
+        schema23TemporalPostProcess["taaHistoryStoreGraphPassCount"] = 1;
+
+        Options strictTemporalEvidence;
+        strictTemporalEvidence.requirePostProcessExecution = true;
+        strictTemporalEvidence.requireExactlyOneToneMap = true;
+        strictTemporalEvidence.requireTemporalAAExecution = true;
+        strictTemporalEvidence.requireNoFXAAExecution = true;
+        strictTemporalEvidence.requireTemporalHistorySampled = true;
+        strictTemporalEvidence.requireTemporalHistoryCommitted = true;
+        strictTemporalEvidence.requiredExecutedRenderFeatureIds = {2};
+        if (!ValidateSampleReportV12Root(
+                schema23TemporalReport,
+                expectedBuildIdentity,
+                &strictTemporalEvidence))
+        {
+            return false;
+        }
+
+        const auto temporalRequirementFails =
+            [&schema23TemporalReport,
+             &expectedBuildIdentity,
+             &strictTemporalEvidence](const char* field, const Json& value)
+        {
+            Json candidate = schema23TemporalReport;
+            candidate["visualContractReceipt"]
+                     ["renderExecutionReceipt"]
+                     ["postProcess"][field] = value;
+            return !ValidateSampleReportV12Root(
+                candidate, expectedBuildIdentity, &strictTemporalEvidence);
+        };
+        if (!temporalRequirementFails("taaExecuted", false) ||
+            !temporalRequirementFails("historySampled", false) ||
+            !temporalRequirementFails("historyCommitted", false) ||
+            !temporalRequirementFails("historyAbandoned", true) ||
+            !temporalRequirementFails("taaResolveGraphPassCount", 0) ||
+            !temporalRequirementFails("taaHistoryStoreGraphPassCount", 0) ||
+            !temporalRequirementFails("fxaaPassCount", 1))
+        {
+            return false;
+        }
+
+        Json equalJitterReport = schema23TemporalReport;
+        equalJitterReport["visualContractReceipt"]
+                         ["renderExecutionReceipt"]
+                         ["postProcess"]
+                         ["previousJitterPixels"] =
+            equalJitterReport["visualContractReceipt"]
+                             ["renderExecutionReceipt"]
+                             ["postProcess"]
+                             ["currentJitterPixels"];
+        if (ValidateSampleReportV12Root(
+                equalJitterReport,
+                expectedBuildIdentity,
+                &strictTemporalEvidence))
+        {
+            return false;
+        }
+
         // Execution receipt schema four remains deformation-free. Schemas one
         // and two are additionally lighting-free. The schema-v21 report
         // envelope accepts all published legacy shapes unless a gate requests
@@ -6086,6 +6378,10 @@ namespace
             << "  --require-post-process-color-grading-execution\n"
             << "  --require-post-process-fxaa-execution\n"
             << "  --require-no-temporal-aa-execution\n"
+            << "  --require-temporal-aa-execution\n"
+            << "  --require-no-fxaa-execution\n"
+            << "  --require-temporal-history-sampled\n"
+            << "  --require-temporal-history-committed\n"
             << "  --require-render-feature-executed <feature-id>\n"
             << "  --forbid-fallback-reasons\n"
             << "  --forbid-render-feature-fallbacks\n";

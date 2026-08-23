@@ -10,6 +10,7 @@
 #include "Render/Graph/RenderGraph.h"
 #include "Render/PostProcess/PostProcessTypes.h"
 #include "Render/PostProcess/ToneMappingTypes.h"
+#include "RenderContracts/RenderFrameTypes.h"
 #include <vector>
 #include <memory>
 #include <functional>
@@ -27,6 +28,7 @@ namespace RVX
         RGTextureHandle depth;
         RGTextureHandle normal;
         RGTextureHandle velocity;
+        RGTextureHandle reactiveMask;
         RHIFormat outputFormat = RHIFormat::Unknown;
         uint64 frameIndex = 0;
         Vec2 jitterOffset = Vec2(0.0f);
@@ -43,11 +45,23 @@ namespace RVX
         bool currentViewProjectionValid = false;
         bool previousViewProjectionValid = false;
         bool resetTemporalHistory = false;
+        /** Exact compatibility key for the candidate history output. */
+        RenderViewHistoryIdentity historyIdentity{};
+        /** Exact reason(s) a previous history resource cannot be sampled. */
+        RenderHistoryResetReason historyResetReasons =
+            RenderHistoryResetReason::HistoryUnavailable;
+        /** True only when the exact prior-presented history is reusable. */
+        bool historyAvailable = false;
 
         bool HasDepth() const { return depth.IsValid(); }
         bool HasNormal() const { return normal.IsValid(); }
         bool HasVelocity() const { return velocity.IsValid(); }
-        bool HasHistory() const { return !resetTemporalHistory; }
+        bool HasHistory() const
+        {
+            return historyAvailable && !resetTemporalHistory &&
+                   historyIdentity.IsValid() &&
+                   historyResetReasons == RenderHistoryResetReason::None;
+        }
     };
 
     struct PostProcessFrameInputRequirements
@@ -55,6 +69,7 @@ namespace RVX
         bool requiresDepth = false;
         bool requiresNormal = false;
         bool requiresVelocity = false;
+        bool requiresReactiveMask = false;
         bool requiresHistory = false;
 
         bool IsSatisfiedBy(const PostProcessFrameInputs& inputs) const
@@ -62,6 +77,7 @@ namespace RVX
             return (!requiresDepth || inputs.HasDepth()) &&
                    (!requiresNormal || inputs.HasNormal()) &&
                    (!requiresVelocity || inputs.HasVelocity()) &&
+                   (!requiresReactiveMask || inputs.reactiveMask.IsValid()) &&
                    (!requiresHistory || inputs.HasHistory());
         }
     };
@@ -107,10 +123,11 @@ namespace RVX
         // =========================================================================
         // Anti-aliasing
         // =========================================================================
-        // Motion-vector production is opt-in. Temporal resolve remains
-        // unsupported until GFX11, so enableTAA is deliberately false.
+        // One public enum selects the complete anti-aliasing path. A frame
+        // cannot request both FXAA and temporal AA.
         bool enableVelocityOutput = false;
-        bool enableFXAA = true;
+        RenderAntiAliasingMode antiAliasingMode =
+            RenderAntiAliasingMode::FXAA;
         float fxaaQuality = 0.75f;
 
         // =========================================================================
@@ -204,14 +221,6 @@ namespace RVX
         float rayTracedReflectionDenoiseCenterWeight = 1.0f;
         float rayTracedReflectionDenoiseLowConfidenceDepthScale = 4.0f;
 
-        // =========================================================================
-        // TAA
-        // =========================================================================
-        // GFX10 keeps temporal AA explicitly disabled: the historical TAA
-        // object has no real resolve implementation. GFX11 introduces the
-        // verified temporal-resolve feature and may enable it by default.
-        bool enableTAA = false;
-        float taaJitterScale = 1.0f;
     };
 
     void ApplyRenderVisualQualityPreset(PostProcessSettings& settings, RenderVisualQualityPreset preset);
@@ -356,6 +365,7 @@ namespace RVX
         bool requiresDepth = false;
         bool requiresNormal = false;
         bool requiresVelocity = false;
+        bool requiresReactiveMask = false;
         bool requiresHistory = false;
         bool frameInputsSatisfied = true;
         std::string pipelineReadinessReason;
@@ -535,7 +545,12 @@ namespace RVX
                          const PostProcessStackExecuteStats& plan);
 
         /**
-         * @brief Evaluate currently configured effects without adding graph passes
+         * @brief Evaluate configured effects without adding graph passes.
+         *
+         * This is a composition preflight: it validates stable descriptors,
+         * ordering, color domains, and pipeline support, but deliberately does
+         * not require per-frame depth, velocity, reactive-mask, or history
+         * handles. BuildPlan remains the strict frame-ready contract.
          */
         PostProcessStackExecuteStats EvaluateEffects() const;
 
@@ -560,9 +575,20 @@ namespace RVX
         const PostProcessStackExecuteStats& GetLastExecuteStats() const { return m_lastExecuteStats; }
 
     private:
+        enum class FrameInputValidationMode : uint8
+        {
+            ConfigurationPreflight = 0,
+            FrameReady,
+        };
+
         std::vector<IPostProcessPass*> GatherEnabledEffects(PostProcessStackExecuteStats& stats,
                                                             bool logUnsupported,
                                                             const PostProcessFrameInputs* frameInputs = nullptr) const;
+        bool BuildPlanImpl(const PostProcessFrameInputs& frameInputs,
+                           RHIFormat finalOutputFormat,
+                           PostProcessPlanContract contract,
+                           FrameInputValidationMode frameInputValidationMode,
+                           PostProcessStackExecuteStats& outStats) const;
         bool ValidateDescriptor(const PostProcessPassDescriptor& descriptor,
                                 std::string& outReason) const;
         bool ResolveLegacyOutputColorDomain(RHIFormat format,

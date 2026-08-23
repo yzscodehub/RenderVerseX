@@ -883,7 +883,25 @@ bool ShadowPass::BuildCascadeFrameBindings(
     for (const ShadowCascade& cascade : m_cascades)
     {
         ViewData shadowView = view;
+        // Cascaded shadow maps are light-space depth views. They must never
+        // inherit the main camera's temporal offset, otherwise the shadow map
+        // would shimmer independently from its canonical split/culling plan.
+        shadowView.viewMatrix = Mat4Identity();
+        shadowView.projectionMatrix = cascade.viewProjection;
         shadowView.viewProjectionMatrix = cascade.viewProjection;
+        shadowView.jitteredProjectionMatrix = cascade.viewProjection;
+        shadowView.jitteredViewProjectionMatrix = cascade.viewProjection;
+        shadowView.inverseViewMatrix = Mat4Identity();
+        shadowView.inverseProjectionMatrix = inverse(cascade.viewProjection);
+        shadowView.inverseJitteredViewProjectionMatrix =
+            shadowView.inverseProjectionMatrix;
+        shadowView.previousViewProjectionMatrix = cascade.viewProjection;
+        shadowView.previousJitteredViewProjectionMatrix =
+            cascade.viewProjection;
+        shadowView.previousViewProjectionValid = 0;
+        shadowView.currentTemporalJitter = {};
+        shadowView.previousTemporalJitter = {};
+        shadowView.resetTemporalHistory = true;
         shadowView.cameraForward = NormalizeOr(
             primaryLight.direction, Vec3(0.0f, -1.0f, 0.0f));
         cascadeViews.push_back(std::move(shadowView));
@@ -1181,7 +1199,7 @@ bool ShadowPass::BuildPlannedShadowDraws(RenderGraphBuilder& builder,
                 object->worldMatrix,
                 object->normalMatrix,
                 object->previousWorldMatrix,
-                view.previousViewProjectionMatrix,
+                view.previousJitteredViewProjectionMatrix,
                 object->previousWorldMatrixValid != 0 &&
                     view.previousViewProjectionValid != 0 &&
                     !view.resetTemporalHistory,
@@ -1427,7 +1445,7 @@ void ShadowPass::ApplyDirectInstancePlan(RenderGraphBuilder& builder,
                 Mat4Identity(),
                 Mat4Identity(),
                 Mat4Identity(),
-                view.previousViewProjectionMatrix,
+                view.previousJitteredViewProjectionMatrix,
                 false,
                 true,
                 {},

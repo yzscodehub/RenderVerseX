@@ -531,6 +531,8 @@ namespace RVX
         uint64 chromaticAberrationPipelineHash = 0;
         uint64 filmGrainPipelineHash = 0;
         uint64 fxaaPipelineHash = 0;
+        uint64 taaResolvePipelineHash = 0;
+        uint64 taaHistoryStorePipelineHash = 0;
         uint64 vignettePipelineHash = 0;
         uint64 uiPipelineHash = 0;
         uint32 pipelineCreateCount = 0;
@@ -864,6 +866,16 @@ namespace RVX
         RHIPipeline* GetFXAAPipeline() const { return m_fxaaPipeline.Get(); }
         RHIPipeline* GetFXAAPipeline(RHIFormat outputFormat);
 
+        /** @brief Get the HDR temporal resolve pipeline. */
+        RHIPipeline* GetTAAResolvePipeline() const { return m_taaResolvePipeline.Get(); }
+        RHIPipeline* GetTAAResolvePipeline(RHIFormat outputFormat);
+
+        /** @brief Get the dual-target temporal history-store pipeline. */
+        RHIPipeline* GetTAAHistoryStorePipeline() const
+        {
+            return m_taaHistoryStorePipeline.Get();
+        }
+
         /**
          * @brief Get the fullscreen FilmGrain LDR post-process pipeline
          */
@@ -923,6 +935,9 @@ namespace RVX
          */
         RHIPipelineLayout* GetPostProcessLayout() const { return m_postProcessPipelineLayout.Get(); }
 
+        /** @brief Layout for the temporal resolve and history-store fullscreen passes. */
+        RHIPipelineLayout* GetTAALayout() const { return m_taaPipelineLayout.Get(); }
+
         /**
          * @brief Get the runtime UI overlay pipeline layout
          */
@@ -956,6 +971,9 @@ namespace RVX
          * @brief Get the descriptor set layout used by fullscreen post-process passes
          */
         RHIDescriptorSetLayout* GetPostProcessSetLayout() const { return m_postProcessSetLayout.Get(); }
+
+        /** @brief Descriptor layout for current/history/depth/velocity/reactive TAA inputs. */
+        RHIDescriptorSetLayout* GetTAASetLayout() const { return m_taaSetLayout.Get(); }
 
         /**
          * @brief Get the descriptor set layout used by ray-traced reflection denoise pass
@@ -1375,6 +1393,7 @@ namespace RVX
         bool CreateGPUSceneRasterPipelineLayout();
         bool CreateDeferredLightingPipelineLayout();
         bool CreatePostProcessPipelineLayout();
+        bool CreateTAAPipelineLayout();
         bool CreateUIPipelineLayout();
         bool CreateRayTracedReflectionDenoisePipelineLayout();
         bool CreateSkyboxPipelineLayout();
@@ -1479,6 +1498,8 @@ namespace RVX
         RHIPipelineRef GetOrCreateChromaticAberrationPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateFilmGrainPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateFXAAPipeline(RHIFormat outputFormat);
+        RHIPipelineRef GetOrCreateTAAResolvePipeline(RHIFormat outputFormat);
+        RHIPipelineRef GetOrCreateTAAHistoryStorePipeline();
         RHIPipelineRef GetOrCreateVignettePipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateUIPipeline(RHIFormat outputFormat);
         bool CreateRayTracedShadowPipeline();
@@ -1562,6 +1583,8 @@ namespace RVX
         RHIGraphicsPipelineDesc BuildChromaticAberrationPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildFilmGrainPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildFXAAPipelineDesc(RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildTAAResolvePipelineDesc(RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildTAAHistoryStorePipelineDesc() const;
         RHIGraphicsPipelineDesc BuildVignettePipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildUIPipelineDesc(RHIFormat outputFormat) const;
         bool CreateViewConstantBuffer();
@@ -1677,6 +1700,9 @@ namespace RVX
         RHIShaderRef m_filmGrainPixelShader;
         RHIShaderRef m_fxaaVertexShader;
         RHIShaderRef m_fxaaPixelShader;
+        RHIShaderRef m_taaVertexShader;
+        RHIShaderRef m_taaResolvePixelShader;
+        RHIShaderRef m_taaHistoryStorePixelShader;
         RHIShaderRef m_vignetteVertexShader;
         RHIShaderRef m_vignettePixelShader;
         RHIShaderRef m_uiVertexShader;
@@ -1732,6 +1758,9 @@ namespace RVX
         std::unique_ptr<ShaderProgramMetadata> m_filmGrainPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_fxaaVsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_fxaaPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_taaVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_taaResolvePsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_taaHistoryStorePsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_vignetteVsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_vignettePsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_uiVsCompileResult;
@@ -1754,6 +1783,8 @@ namespace RVX
         RHIPipelineLayoutRef m_deferredLightingPipelineLayout;
         RHIDescriptorSetLayoutRef m_postProcessSetLayout;
         RHIPipelineLayoutRef m_postProcessPipelineLayout;
+        RHIDescriptorSetLayoutRef m_taaSetLayout;
+        RHIPipelineLayoutRef m_taaPipelineLayout;
         RHIDescriptorSetLayoutRef m_uiTextureSetLayout;
         RHIPipelineLayoutRef m_uiPipelineLayout;
         RHIDescriptorSetLayoutRef m_rayTracedReflectionDenoiseSetLayout;
@@ -1800,6 +1831,8 @@ namespace RVX
         RHIPipelineRef m_chromaticAberrationPipeline;
         RHIPipelineRef m_filmGrainPipeline;
         RHIPipelineRef m_fxaaPipeline;
+        RHIPipelineRef m_taaResolvePipeline;
+        RHIPipelineRef m_taaHistoryStorePipeline;
         RHIPipelineRef m_vignettePipeline;
         RHIPipelineRef m_uiPipeline;
         RHIPipelineRef m_rayTracedShadowPipeline;
