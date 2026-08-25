@@ -215,6 +215,7 @@ namespace RVX
                 deformationResources,
             const DirectionalShadowRecordOutput& directionalShadow,
             const RayTracedShadowRecordOutput& rayTracedShadow,
+            const AmbientOcclusionRecordInput& ambientOcclusion,
             std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache,
             DirectRasterReadbackQualification* directReadbackQualification,
             const RenderPassRecordIdentity& recordIdentity,
@@ -233,6 +234,8 @@ namespace RVX
         RGTextureHandle m_depthTargetHandle;
         RGTextureHandle m_directionalShadowReadHandle;
         RGTextureHandle m_rayTracedShadowMaskReadHandle;
+        /** Exact renderer-produced R8 visibility field for Forward opaque IBL. */
+        RGTextureHandle m_ambientOcclusionReadHandle;
         RGBufferHandle m_lightConstantsReadHandle;
         RGBufferHandle m_pointLightsReadHandle;
         RGBufferHandle m_spotLightsReadHandle;
@@ -247,6 +250,7 @@ namespace RVX
         RGTextureViewHandle m_depthTargetViewHandle;
         RGTextureViewHandle m_directionalShadowViewHandle;
         RGTextureViewHandle m_rayTracedShadowMaskViewHandle;
+        RGTextureViewHandle m_ambientOcclusionViewHandle;
         RGTextureViewHandle m_environmentIBLIrradianceViewHandle;
         RGTextureViewHandle m_environmentIBLPrefilteredViewHandle;
         RGTextureViewHandle m_environmentIBLBRDFLUTViewHandle;
@@ -290,6 +294,7 @@ namespace RVX
         std::shared_ptr<LightingBindingSnapshot> m_lightingBindingSnapshot;
         DirectionalShadowRecordOutput m_directionalShadowInputs;
         RayTracedShadowRecordOutput m_rayTracedShadowInputs;
+        AmbientOcclusionRecordInput m_ambientOcclusionInput{};
         std::shared_ptr<RenderPassRecordResults> m_publishedRecordResults;
         OpaqueRasterOutputFamily m_outputFamily =
             OpaqueRasterOutputFamily::ForwardSceneHDR;

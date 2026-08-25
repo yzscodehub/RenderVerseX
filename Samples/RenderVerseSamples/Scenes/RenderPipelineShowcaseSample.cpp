@@ -169,7 +169,6 @@ namespace RVX
         context.renderSettings.postProcess.antiAliasingMode =
             RenderAntiAliasingMode::FXAA;
         context.renderSettings.postProcess.enableBloom = true;
-        context.renderSettings.postProcess.enableSSAO = false;
         context.renderSettings.postProcess.enableSSR = false;
         context.renderSettings.postProcess.toneMappingOperator =
             RenderToneMappingOperator::ACES;

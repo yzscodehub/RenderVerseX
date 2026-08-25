@@ -41,7 +41,7 @@ namespace RVX
     {
         static constexpr RenderBlackboardResourceId ResourceId =
             RenderBlackboardResourceId::SceneTextures;
-        static constexpr uint32 SchemaVersion = 3;
+        static constexpr uint32 SchemaVersion = 4;
         static constexpr uint32 ExposureStateSchemaVersion = 1;
         static constexpr uint32 ExposureStateStride = 48;
 
@@ -128,8 +128,6 @@ namespace RVX
         // to satisfy temporal consumers that are not part of this recipe.
         RGTextureHandle velocity{};
         Metadata velocityMetadata{};
-        RGTextureHandle ambientOcclusion{};
-        Metadata ambientOcclusionMetadata{};
         RGTextureHandle reactiveMask{};
         Metadata reactiveMaskMetadata{};
         RGTextureHandle distortionVectors{};
@@ -253,6 +251,38 @@ namespace RVX
         }
         return DeferredSceneTexturesValidationCode::Success;
     }
+
+    /**
+     * @brief Canonical GTAO visibility field produced before opaque lighting.
+     *
+     * The field is intentionally independent from SceneTextures so a consumer
+     * must declare the AO dependency explicitly rather than silently treating
+     * it as a mutable scene-color side channel.
+     */
+    struct AmbientOcclusionOutputs
+    {
+        static constexpr RenderBlackboardResourceId ResourceId =
+            RenderBlackboardResourceId::AmbientOcclusionOutputs;
+        static constexpr uint32 SchemaVersion = 1;
+        inline static constexpr SceneTextures::FormatContract VisibilityContract{
+            RHIFormat::R8_UNORM, RHISampleCount::Count1};
+
+        RenderGraphBlackboardProvenance provenance{};
+        /** Exact frame/view and temporal key that generated this field. */
+        RenderFrameIdentity frameIdentity{};
+        RenderViewIdentity viewIdentity{};
+        RenderViewHistoryIdentity historyIdentity{};
+        RenderHistoryResetReason historyResetReasons =
+            RenderHistoryResetReason::HistoryUnavailable;
+        /** Hash of the immutable RenderAmbientOcclusionSettings value. */
+        uint64 settingsHash = 0;
+        /** Closed indirect-only lighting consumer contract. */
+        RenderAmbientOcclusionConsumerMask consumerMask = 0;
+        /** Immutable content identity of the published R8 visibility field. */
+        uint64 ambientOcclusionFieldHash = 0;
+        RGTextureHandle ambientOcclusion{};
+        SceneTextures::Metadata ambientOcclusionMetadata{};
+    };
 
     struct VisibilityOutputs
     {
@@ -573,7 +603,8 @@ namespace RVX
             std::optional<LightingOutputs>,
             std::optional<ReflectionOutputs>,
             std::optional<TranslucencyOutputs>,
-            std::optional<PostProcessOutputs>>;
+            std::optional<PostProcessOutputs>,
+            std::optional<AmbientOcclusionOutputs>>;
 
         template<typename Entry>
         [[nodiscard]] static consteval bool IsSupportedEntry()
@@ -584,7 +615,8 @@ namespace RVX
                    std::is_same_v<Entry, LightingOutputs> ||
                    std::is_same_v<Entry, ReflectionOutputs> ||
                    std::is_same_v<Entry, TranslucencyOutputs> ||
-                   std::is_same_v<Entry, PostProcessOutputs>;
+                   std::is_same_v<Entry, PostProcessOutputs> ||
+                   std::is_same_v<Entry, AmbientOcclusionOutputs>;
         }
 
         [[nodiscard]] static constexpr size_t ToIndex(
@@ -612,6 +644,8 @@ namespace RVX
                     return TranslucencyOutputs::SchemaVersion;
                 case RenderBlackboardResourceId::PostProcessOutputs:
                     return PostProcessOutputs::SchemaVersion;
+                case RenderBlackboardResourceId::AmbientOcclusionOutputs:
+                    return AmbientOcclusionOutputs::SchemaVersion;
                 default: return 0;
             }
         }
@@ -658,7 +692,6 @@ namespace RVX
                        HandleMatchesGraph(
                            entry.roughnessMetallic, provenance) &&
                        HandleMatchesGraph(entry.velocity, provenance) &&
-                       HandleMatchesGraph(entry.ambientOcclusion, provenance) &&
                        HandleMatchesGraph(entry.reactiveMask, provenance) &&
                        HandleMatchesGraph(entry.distortionVectors, provenance) &&
                        HandleMatchesGraph(entry.exposureState, provenance) &&
@@ -702,6 +735,10 @@ namespace RVX
                        HandleMatchesGraph(entry.reactiveMask, provenance) &&
                        HandleMatchesGraph(entry.distortionVectors, provenance) &&
                        HandleMatchesGraph(entry.exposureState, provenance);
+            }
+            else if constexpr (std::is_same_v<Entry, AmbientOcclusionOutputs>)
+            {
+                return HandleMatchesGraph(entry.ambientOcclusion, provenance);
             }
             else
             {
@@ -793,6 +830,28 @@ namespace RVX
                         PostProcessTransfer::SceneLinearToDisplayEncoded);
         }
 
+        [[nodiscard]] static bool HasValidAmbientOcclusionOutputs(
+            const AmbientOcclusionOutputs& outputs,
+            const RenderGraphBlackboardProvenance& provenance) noexcept
+        {
+            return HasMatchingFrameViewProvenance(
+                       outputs.frameIdentity, outputs.viewIdentity,
+                       provenance) &&
+                   outputs.historyIdentity.IsValid() &&
+                   outputs.historyIdentity.previousFrame ==
+                       outputs.frameIdentity &&
+                   outputs.historyIdentity.view == outputs.viewIdentity &&
+                   outputs.historyIdentity.extent ==
+                       outputs.ambientOcclusionMetadata.extent &&
+                   outputs.settingsHash != 0 &&
+                   IsValidRenderAmbientOcclusionConsumerMask(
+                       outputs.consumerMask) &&
+                   outputs.ambientOcclusionFieldHash != 0 &&
+                   outputs.ambientOcclusion.IsValid() &&
+                   MetadataMatches(outputs.ambientOcclusionMetadata,
+                                   AmbientOcclusionOutputs::VisibilityContract);
+        }
+
         template<typename Entry>
         [[nodiscard]] static bool EntryHasValidSemanticContract(
             const Entry& entry,
@@ -805,6 +864,10 @@ namespace RVX
             else if constexpr (std::is_same_v<Entry, PostProcessOutputs>)
             {
                 return HasValidPostProcessOutputs(entry, provenance);
+            }
+            else if constexpr (std::is_same_v<Entry, AmbientOcclusionOutputs>)
+            {
+                return HasValidAmbientOcclusionOutputs(entry, provenance);
             }
             else
             {

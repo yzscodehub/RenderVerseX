@@ -312,6 +312,8 @@ namespace RVX
                 context.RetainSubmissionResource(
                     Ref<RefCounted>(bindings.exposureStateBuffer.Get())) &&
                 context.RetainSubmissionResource(
+                    Ref<RefCounted>(bindings.ambientOcclusionView.Get())) &&
+                context.RetainSubmissionResource(
                     Ref<RefCounted>(bindings.frameSetLayout.Get())) &&
                 context.RetainSubmissionResource(
                     Ref<RefCounted>(bindings.frameDescriptorSet.Get()));

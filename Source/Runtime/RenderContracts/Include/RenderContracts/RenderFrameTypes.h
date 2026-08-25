@@ -9,6 +9,7 @@
 #include "Core/Diagnostics/SkinningPaletteHash.h"
 #include "Core/Types.h"
 #include "RenderContracts/FeatureRenderSnapshot.h"
+#include "RenderContracts/RenderAmbientOcclusion.h"
 #include "RenderContracts/RenderExposure.h"
 #include "RenderContracts/RenderIdentity.h"
 #include "RenderContracts/RenderMaterial.h"
@@ -561,8 +562,8 @@ namespace RVX
             RenderAntiAliasingMode::FXAA;
         bool enableBloom = true;
         bool enableColorGrading = true;
-        /** @brief Reserved for the verified GTAO implementation in GFX13. */
-        bool enableSSAO = false;
+        /** @brief Immutable GTAO policy; only indirect lighting may consume it. */
+        RenderAmbientOcclusionSettings ambientOcclusion{};
         /** @brief Reserved for the verified Hi-Z reflection path in GFX19. */
         bool enableSSR = false;
         bool enableRayTracedReflectionDenoise = true;

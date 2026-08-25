@@ -424,12 +424,14 @@
         "RENDER.CAPABILITY.POST_PROCESS_BLOOM",
         "RENDER.CAPABILITY.POST_PROCESS_TONE_MAPPING",
         "RENDER.CAPABILITY.POST_PROCESS_COLOR_GRADING",
-        "RENDER.CAPABILITY.POST_PROCESS_FXAA"
+        "RENDER.CAPABILITY.POST_PROCESS_FXAA",
+        "RENDER.CAPABILITY.GTAO"
       ],
       "optionalCapabilities": [],
       "allowedFallbacks": [],
       "cookedAssetIds": [
-        "pbr-material-grid"
+        "interior-rendering-p0a",
+        "pbr-reference-environment"
       ],
       "fixedTime": {
         "numerator": 1,
@@ -439,16 +441,16 @@
       "cameraBookmarks": [
         {
           "id": "hero",
-          "position": [0.0, 1.35, 4.0],
-          "target": [0.0, 0.35, 0.0],
-          "verticalFieldOfViewDegrees": 45.0,
+          "position": [0.0, 2.4, 6.0],
+          "target": [0.0, 2.3, -4.0],
+          "verticalFieldOfViewDegrees": 75.0,
           "nearPlane": 0.05,
           "farPlane": 100.0,
           "exposure": 1.0
         }
       ],
       "captureTicks": [120],
-      "visualContractVersion": 1,
+      "visualContractVersion": 4,
       "roiMetricPolicy": {
         "regionsOfInterest": [
           {

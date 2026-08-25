@@ -309,6 +309,13 @@ namespace
                    m_sceneRenderer->ArmExposureQualificationProbe();
         }
 
+        bool RequestAmbientOcclusionQualificationProbe() override
+        {
+            return m_sceneRenderer != nullptr &&
+                   m_sceneRenderer
+                       ->ArmAmbientOcclusionQualificationProbe();
+        }
+
         void PollCompletion() override
         {
             static_cast<void>(m_uploadProcessor.PollCompletion());
@@ -345,7 +352,10 @@ namespace
                         ->HasPendingDirectOpaqueRasterReadbackQualificationCompletion()) ||
                    (m_sceneRenderer != nullptr &&
                     m_sceneRenderer
-                        ->HasPendingExposureQualificationCompletion());
+                        ->HasPendingExposureQualificationCompletion()) ||
+                   (m_sceneRenderer != nullptr &&
+                    m_sceneRenderer
+                        ->HasPendingAmbientOcclusionQualificationCompletion());
         }
 
         void PopulateDiagnostics(
@@ -1963,6 +1973,12 @@ bool RenderSubsystem::RequestCompletionPump() noexcept
     {
         return m_runtime != nullptr &&
                m_runtime->RequestExposureQualificationProbe();
+    }
+
+    bool RenderSubsystem::RequestAmbientOcclusionQualificationProbe() noexcept
+    {
+        return m_runtime != nullptr &&
+               m_runtime->RequestAmbientOcclusionQualificationProbe();
     }
 
     void RenderSubsystem::Deinitialize()

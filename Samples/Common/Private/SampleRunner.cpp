@@ -2738,6 +2738,110 @@ namespace
             return result;
         }
 
+        [[nodiscard]] SampleAmbientOcclusionExecutionDiagnostics
+            MakeSampleAmbientOcclusionExecutionDiagnostics(
+                const RenderDiagnosticsSnapshot& renderDiagnostics)
+        {
+            SampleAmbientOcclusionExecutionDiagnostics result;
+            const RenderFrameFeatureDiagnostics& frameFeatures =
+                renderDiagnostics.frameFeatures;
+            const RenderExecutionReceipt& receipt =
+                frameFeatures.executionReceipt;
+
+            result.available = frameFeatures.available && receipt.available;
+            result.executionReceiptSchemaVersion = receipt.schemaVersion;
+            result.executionReceiptStructurallyValid =
+                receipt.IsStructurallyValid();
+            result.executionReceiptAvailable = receipt.available;
+            result.executionReceiptGraphComposed = receipt.graphComposed;
+            result.executionReceiptExecutionSucceeded =
+                receipt.executionSucceeded;
+            result.executionReceiptPresented = receipt.presented;
+            result.executionReceiptSucceeded = receipt.succeeded;
+            result.frameFeatureSequence = frameFeatures.frameSequence;
+            result.receiptFrameSequence = receipt.frameIdentity.frameSequence;
+            result.lastPresentedFrameSequence =
+                renderDiagnostics.lastPresentedFrameSequence;
+            result.presentedFrameAligned =
+                result.frameFeatureSequence != 0 &&
+                result.frameFeatureSequence == result.receiptFrameSequence &&
+                result.receiptFrameSequence ==
+                    result.lastPresentedFrameSequence;
+            result.mainView = receipt.viewIdentity.role == ViewRole::Main &&
+                receipt.viewIdentity.subViewIndex == 0;
+            result.sceneRuntimeId = receipt.viewIdentity.sceneRuntimeId;
+            result.cameraEntityPacked = receipt.viewIdentity.cameraEntityPacked;
+            result.subViewIndex = receipt.viewIdentity.subViewIndex;
+
+            // GFX13 integration point: every field is a direct immutable
+            // projection of the renderer-owned receipt. Samples never infer
+            // GTAO execution, consumers, or temporal commits from settings.
+            const RenderAmbientOcclusionExecutionReceipt& ambientOcclusion =
+                receipt.ambientOcclusion;
+            result.receiptStructurallyValid =
+                ambientOcclusion.IsStructurallyValid();
+            result.planContentHash = ambientOcclusion.planContentHash;
+            result.requested = ambientOcclusion.requested;
+            result.pipelineReady = ambientOcclusion.pipelineReady;
+            result.inputsReady = ambientOcclusion.inputsReady;
+            result.executed = ambientOcclusion.executed;
+            result.lightingConsumerExecuted =
+                ambientOcclusion.lightingConsumerExecuted;
+            result.linearDepthInputReady =
+                ambientOcclusion.linearDepthInputReady;
+            result.worldNormalInputReady =
+                ambientOcclusion.worldNormalInputReady;
+            result.velocityInputReady = ambientOcclusion.velocityInputReady;
+            result.velocityProducerExecuted =
+                ambientOcclusion.velocityProducerExecuted;
+            result.outputPublished = ambientOcclusion.outputPublished;
+            result.outputFormat = ambientOcclusion.outputFormat;
+            result.horizonSearchGraphPassCount =
+                ambientOcclusion.horizonSearchGraphPassCount;
+            result.bilateralDenoiseGraphPassCount =
+                ambientOcclusion.bilateralDenoiseGraphPassCount;
+            result.temporalResolveGraphPassCount =
+                ambientOcclusion.temporalResolveGraphPassCount;
+            result.historyAvailableBefore =
+                ambientOcclusion.historyAvailableBefore;
+            result.historySampled = ambientOcclusion.historySampled;
+            result.motionReprojectionUsed =
+                ambientOcclusion.motionReprojectionUsed;
+            result.viewProjectionMotionObserved =
+                ambientOcclusion.viewProjectionMotionObserved;
+            result.historyCandidateProduced =
+                ambientOcclusion.historyCandidateProduced;
+            result.historyCommitted = ambientOcclusion.historyCommitted;
+            result.historyAbandoned = ambientOcclusion.historyAbandoned;
+            result.historyResetReasons = ambientOcclusion.historyResetReasons;
+            result.aoFieldContentHash = ambientOcclusion.aoFieldContentHash;
+            result.lightingAOFieldContentHash =
+                ambientOcclusion.lightingAOFieldContentHash;
+            result.velocityFieldIdentity =
+                ambientOcclusion.velocityFieldIdentity;
+            result.consumerMask =
+                static_cast<uint32>(ambientOcclusion.consumerMask);
+            result.probeRequested = ambientOcclusion.probeRequested;
+            result.probeReady = ambientOcclusion.probeReady;
+            result.probeSampleCount = ambientOcclusion.probeSampleCount;
+            result.probeOccludedSampleCount =
+                ambientOcclusion.probeOccludedSampleCount;
+            if (result.probeReady)
+            {
+                result.probeMinVisibility = ambientOcclusion.probeMinVisibility;
+                result.probeMeanVisibility =
+                    ambientOcclusion.probeMeanVisibility;
+                result.probeMaxVisibility = ambientOcclusion.probeMaxVisibility;
+            }
+            result.fallbackUsed = ambientOcclusion.fallbackUsed;
+            result.diagnostic = ambientOcclusion.diagnostic;
+            if (result.diagnostic.empty())
+            {
+                result.diagnostic = receipt.diagnostic;
+            }
+            return result;
+        }
+
         SampleRenderDiagnostics MakeSampleRenderDiagnostics(
             const RenderDiagnosticsSnapshot& renderDiagnostics,
             const Engine& engine)
@@ -2953,6 +3057,8 @@ namespace
                 diagnostics.postProcessGraphPassCount;
             result.postProcessActualExecution =
                 MakeSamplePostProcessExecutionDiagnostics(renderDiagnostics);
+            result.ambientOcclusionActualExecution =
+                MakeSampleAmbientOcclusionExecutionDiagnostics(renderDiagnostics);
             result.clusteredLightingInitialized =
                 diagnostics.clusteredLightingInitialized;
             result.clusteredLightingActiveClusters =
@@ -4040,9 +4146,20 @@ namespace
                      "GPUScene and Direct Opaque readback qualifications are mutually exclusive");
             return false;
         }
+        if (options.common.exposureQualificationProbeEnabled &&
+            options.common.ambientOcclusionQualificationProbeEnabled)
+        {
+            // Each probe owns the capture frame's immutable execution
+            // receipt. Do not accept a configuration that would let one
+            // completion replace the other before both can be reported.
+            SetError(outError,
+                     "Exposure and ambient-occlusion qualification probes are mutually exclusive");
+            return false;
+        }
         if (options.common.gpuSceneCullingQualificationEnabled ||
             options.common.directOpaqueRasterReadbackQualificationEnabled ||
-            options.common.exposureQualificationProbeEnabled)
+            options.common.exposureQualificationProbeEnabled ||
+            options.common.ambientOcclusionQualificationProbeEnabled)
         {
             // One-shot readbacks are consumed by the target frame and observed
             // only after a later Render-owner completion poll. Reuse the
@@ -4924,7 +5041,7 @@ namespace
                     static_cast<float32>(options.common.width) /
                     static_cast<float32>(
                         std::max(options.common.height, 1u));
-                const Vec3 position(
+                Vec3 position(
                     selectedBookmark->position[0],
                     selectedBookmark->position[1],
                     selectedBookmark->position[2]);
@@ -4932,6 +5049,22 @@ namespace
                     selectedBookmark->target[0],
                     selectedBookmark->target[1],
                     selectedBookmark->target[2]);
+                if (deterministicEpochActive &&
+                    options.common
+                        .ambientOcclusionQualificationProbeEnabled)
+                {
+                    // GTAO qualification must exercise actual temporal
+                    // reprojection, not merely sample a static history with a
+                    // zero velocity field. Keep this path runner-owned so the
+                    // manifest bookmark remains the deterministic authority.
+                    const float64 seconds =
+                        static_cast<float64>(deterministicTick + 1u) *
+                        options.fixedDeltaSeconds;
+                    position.x += static_cast<float32>(
+                        std::sin(seconds * 2.0) * 0.35);
+                    position.y += static_cast<float32>(
+                        std::sin(seconds * 1.3) * 0.12);
+                }
                 if (!cameras->SetPerspective(
                         camera,
                         selectedBookmark->verticalFieldOfViewDegrees *
@@ -5023,6 +5156,8 @@ namespace
                 directRasterReadbackQualificationEnabled;
             const bool exposureQualificationProbeEnabled =
                 options.common.exposureQualificationProbeEnabled;
+            const bool ambientOcclusionQualificationProbeEnabled =
+                options.common.ambientOcclusionQualificationProbeEnabled;
             const auto hasQualificationComparison =
                 [directRasterReadbackQualificationEnabled](
                     const SampleRenderDiagnostics& value)
@@ -5068,15 +5203,68 @@ namespace
                        receipt.postProcess.exposureHistoryCommitted &&
                        !receipt.postProcess.exposureHistoryAbandoned;
             };
+            const auto hasAmbientOcclusionProbeForTarget =
+                [](const RenderDiagnosticsSnapshot& value, uint64 target)
+            {
+                const RenderExecutionReceipt& receipt =
+                    value.frameFeatures.executionReceipt;
+                const RenderAmbientOcclusionExecutionReceipt& ambientOcclusion =
+                    receipt.ambientOcclusion;
+                const bool nonNeutralProbe =
+                    ambientOcclusion.probeSampleCount != 0 &&
+                    ambientOcclusion.probeOccludedSampleCount != 0 &&
+                    ambientOcclusion.probeOccludedSampleCount <
+                        ambientOcclusion.probeSampleCount &&
+                    std::isfinite(ambientOcclusion.probeMinVisibility) &&
+                    std::isfinite(ambientOcclusion.probeMeanVisibility) &&
+                    std::isfinite(ambientOcclusion.probeMaxVisibility) &&
+                    ambientOcclusion.probeMinVisibility >= 0.0f &&
+                    ambientOcclusion.probeMinVisibility < 1.0f &&
+                    ambientOcclusion.probeMeanVisibility >=
+                        ambientOcclusion.probeMinVisibility &&
+                    ambientOcclusion.probeMeanVisibility < 1.0f &&
+                    ambientOcclusion.probeMaxVisibility >=
+                        ambientOcclusion.probeMeanVisibility &&
+                    ambientOcclusion.probeMaxVisibility <= 1.0f;
+                return receipt.IsStructurallyValid() && receipt.available &&
+                       receipt.presented && receipt.succeeded &&
+                       receipt.frameIdentity.frameSequence == target &&
+                       ambientOcclusion.IsStructurallyValid() &&
+                       ambientOcclusion.executed &&
+                       ambientOcclusion.outputFormat == RHIFormat::R8_UNORM &&
+                       ambientOcclusion.probeRequested &&
+                       ambientOcclusion.probeReady &&
+                       ambientOcclusion.historyAvailableBefore &&
+                       ambientOcclusion.historySampled &&
+                       ambientOcclusion.velocityInputReady &&
+                       ambientOcclusion.velocityProducerExecuted &&
+                       ambientOcclusion.velocityFieldIdentity != 0 &&
+                       ambientOcclusion.motionReprojectionUsed &&
+                       ambientOcclusion.viewProjectionMotionObserved &&
+                       ambientOcclusion.historyCandidateProduced &&
+                       ambientOcclusion.historyCommitted &&
+                       !ambientOcclusion.historyAbandoned &&
+                       ambientOcclusion.historyResetReasons ==
+                           RenderHistoryResetReason::None &&
+                       ambientOcclusion.lightingConsumerExecuted &&
+                       ambientOcclusion.aoFieldContentHash != 0 &&
+                       ambientOcclusion.aoFieldContentHash ==
+                           ambientOcclusion.lightingAOFieldContentHash &&
+                       ambientOcclusion.consumerMask == 0x7u &&
+                       !ambientOcclusion.fallbackUsed && nonNeutralProbe;
+            };
             bool gpuSceneCullingQualificationRequestAccepted =
                 !qualificationEnabled;
             bool exposureQualificationProbeRequestAccepted =
                 !exposureQualificationProbeEnabled;
+            bool ambientOcclusionQualificationProbeRequestAccepted =
+                !ambientOcclusionQualificationProbeEnabled;
             uint64 gpuSceneCullingQualificationTargetFrameSequence = 0;
             uint64 gpuSceneCullingQualificationTargetPublishedSequence = 0;
             uint64 gpuSceneCullingQualificationTargetSubmittedSequence = 0;
             uint64 gpuSceneCullingQualificationTargetPresentedSequence = 0;
             uint64 exposureQualificationProbeTargetFrameSequence = 0;
+            uint64 ambientOcclusionQualificationProbeTargetFrameSequence = 0;
 
             if (setupSucceeded)
             {
@@ -5131,6 +5319,38 @@ namespace
                         if (hasExposureProbeForTarget(
                                 diagnostics,
                                 exposureQualificationProbeTargetFrameSequence))
+                        {
+                            captureExecutionReceipt =
+                                diagnostics.frameFeatures.executionReceipt;
+                            engine.RequestShutdown();
+                        }
+                        continue;
+                    }
+
+                    if (ambientOcclusionQualificationProbeEnabled &&
+                        ambientOcclusionQualificationProbeTargetFrameSequence != 0 &&
+                        !finalRenderDrainRequested)
+                    {
+                        // GTAO uses the same target-frame discipline as the
+                        // exposure probe: after presentation, progress only
+                        // the Render owner until its immutable receipt is
+                        // supplemented by the explicit probe result.
+                        if (std::chrono::steady_clock::now() >= readinessDeadline)
+                        {
+                            readinessTimedOut = true;
+                            error =
+                                "Ambient-occlusion qualification probe did not complete for the final target frame";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        diagnostics = frameDriver.PumpRenderProgressOnce();
+                        const SampleRenderDiagnostics completionDiagnostics =
+                            MakeSampleRenderDiagnostics(diagnostics, engine);
+                        sample->ObserveDiagnostics(completionDiagnostics,
+                                                   context.assessment);
+                        if (hasAmbientOcclusionProbeForTarget(
+                                diagnostics,
+                                ambientOcclusionQualificationProbeTargetFrameSequence))
                         {
                             captureExecutionReceipt =
                                 diagnostics.frameFeatures.executionReceipt;
@@ -5571,6 +5791,10 @@ namespace
                         exposureQualificationProbeEnabled &&
                         exposureQualificationProbeTargetFrameSequence == 0 &&
                         (fixedCaptureFrame || readyCaptureFrame);
+                    const bool ambientOcclusionProbeTargetFrame =
+                        ambientOcclusionQualificationProbeEnabled &&
+                        ambientOcclusionQualificationProbeTargetFrameSequence == 0 &&
+                        (fixedCaptureFrame || readyCaptureFrame);
                     const bool captureFrame =
                         (!options.common.screenshotPath.empty() ||
                          options.common.pixelProbeEnabled) &&
@@ -5622,6 +5846,18 @@ namespace
                         {
                             error =
                                 "Render runtime rejected the explicit exposure qualification probe";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                    }
+                    if (ambientOcclusionProbeTargetFrame)
+                    {
+                        ambientOcclusionQualificationProbeRequestAccepted =
+                            render->RequestAmbientOcclusionQualificationProbe();
+                        if (!ambientOcclusionQualificationProbeRequestAccepted)
+                        {
+                            error =
+                                "Render runtime rejected the explicit ambient-occlusion qualification probe";
                             engine.RequestShutdown();
                             break;
                         }
@@ -5748,6 +5984,22 @@ namespace
                             {
                                 error =
                                     "Exposure qualification target did not retain exact presentation provenance";
+                                engine.RequestShutdown();
+                            }
+                        }
+                        if (ambientOcclusionProbeTargetFrame && waitResult.Reached())
+                        {
+                            ambientOcclusionQualificationProbeTargetFrameSequence =
+                                targetSequence;
+                            if (diagnostics.lastPublishedFrameSequence !=
+                                    targetSequence ||
+                                diagnostics.lastSubmittedFrameSequence !=
+                                    targetSequence ||
+                                diagnostics.lastPresentedFrameSequence !=
+                                    targetSequence)
+                            {
+                                error =
+                                    "Ambient-occlusion qualification target did not retain exact presentation provenance";
                                 engine.RequestShutdown();
                             }
                         }
@@ -6045,7 +6297,12 @@ namespace
                              (exposureQualificationProbeTargetFrameSequence != 0 &&
                               hasExposureProbeForTarget(
                                   diagnostics,
-                                  exposureQualificationProbeTargetFrameSequence)));
+                                  exposureQualificationProbeTargetFrameSequence))) &&
+                            (!ambientOcclusionQualificationProbeEnabled ||
+                             (ambientOcclusionQualificationProbeTargetFrameSequence != 0 &&
+                              hasAmbientOcclusionProbeForTarget(
+                                  diagnostics,
+                                  ambientOcclusionQualificationProbeTargetFrameSequence)));
                         const bool requestedRunComplete =
                             lifetimeQualification
                                 ? lifetimeQualification->IsComplete() &&
@@ -6251,6 +6508,32 @@ namespace
                 {
                     error =
                         "Exposure qualification probe did not complete for the capture frame";
+                }
+            }
+            if (ambientOcclusionQualificationProbeEnabled)
+            {
+                const bool ambientOcclusionProbeCompleted =
+                    ambientOcclusionQualificationProbeTargetFrameSequence != 0 &&
+                    hasAmbientOcclusionProbeForTarget(
+                        diagnostics,
+                        ambientOcclusionQualificationProbeTargetFrameSequence) &&
+                    captureExecutionReceipt.has_value() &&
+                    captureExecutionReceipt->frameIdentity.frameSequence ==
+                        ambientOcclusionQualificationProbeTargetFrameSequence &&
+                    captureExecutionReceipt->ambientOcclusion.probeRequested &&
+                    captureExecutionReceipt->ambientOcclusion.probeReady;
+                succeeded &= ambientOcclusionQualificationProbeRequestAccepted &&
+                             ambientOcclusionProbeCompleted;
+                if (!ambientOcclusionQualificationProbeRequestAccepted &&
+                    error.empty())
+                {
+                    error =
+                        "Render runtime rejected the explicit ambient-occlusion qualification probe";
+                }
+                else if (!ambientOcclusionProbeCompleted && error.empty())
+                {
+                    error =
+                        "Ambient-occlusion qualification probe did not complete for the capture frame";
                 }
             }
             if (!succeeded && error.empty())

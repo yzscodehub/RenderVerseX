@@ -8,6 +8,7 @@
  */
 
 #include "Include/BRDF.hlsli"
+#include "Include/AmbientOcclusion.hlsli"
 #include "Include/Exposure.hlsli"
 #include "Include/Lighting.hlsli"
 
@@ -71,6 +72,9 @@ Texture2D<float4> GBuffer1 : register(t2, space0);
 Texture2D<float4> GBuffer2 : register(t3, space0);
 Texture2D<uint> GBuffer3 : register(t4, space0);
 Texture2D<float> DeviceDepth : register(t5, space0);
+// Vulkan storage images require the SPIR-V image format to match the bound
+// RGBA16F scene-color view exactly. DXIL ignores this Vulkan-only annotation.
+[[vk::image_format("rgba16f")]]
 RWTexture2D<float4> HDRSceneColor : register(u6, space0);
 
 static const uint RVX_DEFERRED_MATERIAL_TABLE_SCHEMA_VERSION = 1u;
@@ -107,6 +111,8 @@ SamplerState IBLLinearClampSampler : register(s19, space0);
 // leaves GBuffer data in physical scene-linear units; only this HDR producer
 // applies the scale.
 StructuredBuffer<RVXExposureState> ExposureStateBuffer : register(t21, space0);
+// Exact R8 visibility field published by the AmbientOcclusion feature.
+Texture2D<float> AmbientOcclusionTexture : register(t22, space0);
 
 static const uint RVX_INVALID_CLUSTER_INDEX = 0xffffffffu;
 static const uint RVX_MAX_CLUSTERED_LIGHTS_PER_PIXEL = 100u;
@@ -246,7 +252,7 @@ float3 EvaluateClusteredLocalLights(
 
 float3 EvaluateEnvironmentIBL(
     float3 normal, float3 viewDir, float3 baseColor, float metallic,
-    float roughness, float ambientOcclusion)
+    float roughness, float materialOcclusion, float screenAmbientOcclusion)
 {
     const float3 f0 = ComputeF0(baseColor, metallic);
     const float nDotV = max(dot(normal, viewDir), 0.001);
@@ -267,19 +273,25 @@ float3 EvaluateEnvironmentIBL(
         const float2 brdf = BRDFLUTTexture.SampleLevel(
             IBLLinearClampSampler, float2(nDotV, roughness), 0.0).rg;
         diffuseAmbient = baseColor * (1.0 - fresnel) * (1.0 - metallic) *
-            irradiance * ambientOcclusion;
-        specularAmbient = prefiltered * (fresnel * brdf.x + brdf.y) * ambientOcclusion;
+            irradiance * materialOcclusion;
+        specularAmbient = prefiltered * (fresnel * brdf.x + brdf.y) *
+            materialOcclusion;
     }
     else
     {
         const float3 diffuse = IBLDiffuseAmbient.rgb * IBLDiffuseAmbient.a;
         const float3 specular = IBLSpecularAmbient.rgb * IBLSpecularAmbient.a;
         diffuseAmbient = baseColor * (1.0 - fresnel) * (1.0 - metallic) *
-            ambientOcclusion * diffuse;
-        specularAmbient = f0 * ambientOcclusion * (1.0 - roughness) * specular;
+            materialOcclusion * diffuse;
+        specularAmbient = f0 * materialOcclusion * (1.0 - roughness) * specular;
     }
-    return diffuseAmbient + specularAmbient +
-        baseColor * max(IBLTextureParams.w, 0.0);
+    diffuseAmbient = RVX_ApplyIndirectDiffuseAmbientOcclusion(
+        diffuseAmbient, screenAmbientOcclusion);
+    specularAmbient = RVX_ApplyIndirectSpecularAmbientOcclusion(
+        specularAmbient, screenAmbientOcclusion, roughness, nDotV);
+    const float3 ambientFloor = RVX_ApplyIndirectDiffuseAmbientOcclusion(
+        baseColor * max(IBLTextureParams.w, 0.0), screenAmbientOcclusion);
+    return diffuseAmbient + specularAmbient + ambientFloor;
 }
 
 [numthreads(8, 8, 1)]
@@ -342,8 +354,11 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         DirectionalLightColor * max(DirectionalLightIntensity, 0.0), shadow);
     const float3 local = EvaluateClusteredLocalLights(
         pixel, normal, viewDir, worldPos, albedoAO.rgb, metallic, roughness);
+    const float screenAmbientOcclusion = RVX_SaturateAmbientOcclusion(
+        AmbientOcclusionTexture.Load(int3(pixel, 0)));
     const float3 ambient = EvaluateEnvironmentIBL(
-        normal, viewDir, albedoAO.rgb, metallic, roughness, saturate(albedoAO.a));
+        normal, viewDir, albedoAO.rgb, metallic, roughness,
+        saturate(albedoAO.a), screenAmbientOcclusion);
     HDRSceneColor[pixel] = float4(
         (directional + local + ambient + emissive) * preExposure, 1.0);
 }

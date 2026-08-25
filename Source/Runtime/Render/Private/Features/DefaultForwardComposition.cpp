@@ -7,6 +7,7 @@
 
 #include "Context/RenderContextInternal.h"
 #include "Core/Log.h"
+#include "Features/AmbientOcclusionFeatureAdapter.h"
 #include "Features/DeferredRecipeFeatureAdapter.h"
 #include "Features/LegacyForwardFeatureAdapter.h"
 #include "Features/PostProcessPipelineFeatureAdapter.h"
@@ -160,6 +161,8 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
     const bool deferredDependenciesReady = m_opaquePass != nullptr &&
         m_pipelineCache != nullptr && m_deferredLightingPass != nullptr;
     const bool fullCompositionReady = m_legacyForwardFeature != nullptr &&
+        m_ambientOcclusionFeature != nullptr &&
+        m_forwardLightingFeature != nullptr &&
         m_postProcessFeature != nullptr &&
         m_deferredGeometryFeature != nullptr &&
         m_deferredLightingFeature != nullptr &&
@@ -175,6 +178,8 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
     const bool forwardOnlyCompositionReady =
         m_renderFeatureRegistry != nullptr &&
         m_legacyForwardFeature != nullptr &&
+        m_ambientOcclusionFeature != nullptr &&
+        m_forwardLightingFeature != nullptr &&
         m_postProcessFeature != nullptr &&
         m_deferredGeometryFeature == nullptr &&
         m_deferredLightingFeature == nullptr &&
@@ -187,10 +192,14 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
         }
         m_renderFeatureRegistry.reset();
         m_legacyForwardFeature = nullptr;
+        m_ambientOcclusionFeature = nullptr;
+        m_forwardLightingFeature = nullptr;
         m_postProcessFeature = nullptr;
     }
 
     if (m_renderFeatureRegistry != nullptr || m_legacyForwardFeature != nullptr ||
+        m_ambientOcclusionFeature != nullptr ||
+        m_forwardLightingFeature != nullptr ||
         m_postProcessFeature != nullptr ||
         m_deferredGeometryFeature != nullptr ||
         m_deferredLightingFeature != nullptr ||
@@ -208,6 +217,8 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
     }
 
     auto registry = std::make_unique<RenderFeatureRegistry>();
+    const VelocityPassBindings velocityPasses{
+        m_cameraVelocityPass, m_objectVelocityPass};
     std::vector<RenderPipelineRecipe> recipes = {
         RenderPipelineRecipe::ForwardStandard};
     if (deferredDependenciesReady)
@@ -229,7 +240,7 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
     }
 
     auto legacyForward = std::make_unique<LegacyForwardFeatureAdapter>(
-        m_passRegistry.get(), m_opaquePass);
+        m_passRegistry.get(), m_opaquePass, velocityPasses);
     LegacyForwardFeatureAdapter* const legacyForwardFeature =
         legacyForward.get();
     const auto registerFeature = [&registry](
@@ -253,6 +264,27 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
         return false;
     }
 
+    auto ambientOcclusion =
+        std::make_unique<AmbientOcclusionFeatureAdapter>(
+            m_pipelineCache.get());
+    AmbientOcclusionFeatureAdapter* const ambientOcclusionFeature =
+        ambientOcclusion.get();
+    if (!registerFeature(
+            std::move(ambientOcclusion), "AmbientOcclusion"))
+    {
+        return false;
+    }
+
+    auto forwardLighting =
+        std::make_unique<ForwardLightingFeatureAdapter>(
+            m_passRegistry.get(), m_opaquePass, velocityPasses);
+    ForwardLightingFeatureAdapter* const forwardLightingFeature =
+        forwardLighting.get();
+    if (!registerFeature(std::move(forwardLighting), "ForwardLighting"))
+    {
+        return false;
+    }
+
     auto postProcess = std::make_unique<PostProcessPipelineFeatureAdapter>(
         m_postProcessStack.get());
     PostProcessPipelineFeatureAdapter* const postProcessFeature =
@@ -269,7 +301,8 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
     {
         auto deferredGeometry =
             std::make_unique<DeferredGeometryFeatureAdapter>(
-                m_passRegistry.get(), m_opaquePass, m_pipelineCache.get());
+                m_passRegistry.get(), m_opaquePass, m_pipelineCache.get(),
+                velocityPasses);
         deferredGeometryFeature = deferredGeometry.get();
         auto deferredLighting =
             std::make_unique<DeferredLightingFeatureAdapter>(
@@ -277,7 +310,7 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
         deferredLightingFeature = deferredLighting.get();
         auto deferredForwardSpecial =
             std::make_unique<DeferredForwardSpecialFeatureAdapter>(
-                m_passRegistry.get(), m_opaquePass);
+                m_passRegistry.get(), m_opaquePass, velocityPasses);
         deferredForwardSpecialFeature = deferredForwardSpecial.get();
         if (!registerFeature(std::move(deferredGeometry), "DeferredGeometry") ||
             !registerFeature(std::move(deferredLighting), "DeferredLighting") ||
@@ -298,6 +331,8 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
     }
 
     m_legacyForwardFeature = legacyForwardFeature;
+    m_ambientOcclusionFeature = ambientOcclusionFeature;
+    m_forwardLightingFeature = forwardLightingFeature;
     m_postProcessFeature = postProcessFeature;
     m_deferredGeometryFeature = deferredGeometryFeature;
     m_deferredLightingFeature = deferredLightingFeature;

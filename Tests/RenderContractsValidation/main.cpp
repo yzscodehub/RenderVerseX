@@ -1,4 +1,5 @@
 #include "RenderContracts/FeatureRenderSnapshot.h"
+#include "RenderContracts/RenderAmbientOcclusion.h"
 #include "RenderContracts/RenderFramePacketV5.h"
 #include "RenderContracts/RenderFrameValidation.h"
 #include "RenderContracts/RenderExposure.h"
@@ -503,7 +504,9 @@ namespace
         EXPECT_EQ(settings.postProcess.antiAliasingMode,
                   RenderAntiAliasingMode::FXAA);
         EXPECT_TRUE(settings.postProcess.enableColorGrading);
-        EXPECT_FALSE(settings.postProcess.enableSSAO);
+        EXPECT_FALSE(settings.postProcess.ambientOcclusion.enabled);
+        EXPECT_TRUE(IsValidRenderAmbientOcclusionConsumerMask(
+            settings.postProcess.ambientOcclusion.consumerMask));
         EXPECT_FALSE(settings.postProcess.enableSSR);
         EXPECT_TRUE(IsValidRenderFrameSettings(settings));
 
@@ -547,6 +550,194 @@ namespace
         settings.postProcess.colorGradingSaturation = 1.0f;
 
         EXPECT_TRUE(IsValidRenderFrameSettings(settings));
+    }
+
+    TEST(RenderContractsValidation,
+         AmbientOcclusionSettingsAndReferenceMathFailClosed)
+    {
+        RenderAmbientOcclusionSettings settings;
+        EXPECT_TRUE(IsValidRenderAmbientOcclusionSettings(settings));
+        const uint64 settingsHash =
+            CalculateRenderAmbientOcclusionSettingsHash(settings);
+        EXPECT_NE(settingsHash, 0U);
+        EXPECT_EQ(settingsHash,
+                  CalculateRenderAmbientOcclusionSettingsHash(settings));
+
+        const auto expectDistinctValidHash =
+            [settingsHash](const RenderAmbientOcclusionSettings& changed)
+        {
+            ASSERT_TRUE(IsValidRenderAmbientOcclusionSettings(changed));
+            const uint64 changedHash =
+                CalculateRenderAmbientOcclusionSettingsHash(changed);
+            EXPECT_NE(changedHash, 0U);
+            EXPECT_NE(changedHash, settingsHash);
+        };
+        RenderAmbientOcclusionSettings changed = settings;
+        changed.enabled = !settings.enabled;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.radiusMeters = 2.0f;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.falloffStartMeters = 0.2f;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.falloffEndMeters = 4.0f;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.thicknessMeters = 0.25f;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.directionCount = 16;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.stepCount = 8;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.spatialRadius = 4;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.bilateralDepthSigma = 2.0f;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.bilateralNormalThreshold = 0.7f;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.temporalBlend = 0.8f;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.temporalDepthThresholdMeters = 0.1f;
+        expectDistinctValidHash(changed);
+        changed = settings;
+        changed.temporalNormalThreshold = 0.75f;
+        expectDistinctValidHash(changed);
+
+        RenderAmbientOcclusionSettings invalid = settings;
+        invalid.radiusMeters = 0.0f;
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid = settings;
+        invalid.falloffEndMeters = invalid.falloffStartMeters;
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid = settings;
+        invalid.thicknessMeters =
+            std::numeric_limits<float32>::quiet_NaN();
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid = settings;
+        invalid.directionCount = 0;
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid = settings;
+        invalid.stepCount = RVX_RENDER_AMBIENT_OCCLUSION_MAX_STEP_COUNT + 1;
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid.directionCount =
+            RVX_RENDER_AMBIENT_OCCLUSION_MAX_DIRECTION_COUNT;
+        invalid.stepCount = RVX_RENDER_AMBIENT_OCCLUSION_MAX_STEP_COUNT;
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid.directionCount = 32;
+        invalid.stepCount = 8;
+        EXPECT_TRUE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid = settings;
+        invalid.spatialRadius = 0;
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid = settings;
+        invalid.bilateralDepthSigma = 0.0f;
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid = settings;
+        invalid.bilateralNormalThreshold = 1.0f;
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid = settings;
+        invalid.temporalBlend = 1.0f;
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid = settings;
+        invalid.temporalDepthThresholdMeters =
+            std::numeric_limits<float32>::infinity();
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        invalid = settings;
+        invalid.consumerMask = ToMask(RenderAmbientOcclusionConsumer::IBL);
+        EXPECT_FALSE(IsValidRenderAmbientOcclusionSettings(invalid));
+        EXPECT_EQ(CalculateRenderAmbientOcclusionSettingsHash(invalid), 0U);
+
+        float32 linearDepth = 0.0f;
+        EXPECT_TRUE(TryLinearizeRenderAmbientOcclusionDepth(
+            0.0f, 0.1f, 100.0f, linearDepth));
+        EXPECT_NEAR(linearDepth, 0.1f, 1.0e-5f);
+        EXPECT_TRUE(TryLinearizeRenderAmbientOcclusionDepth(
+            1.0f, 0.1f, 100.0f, linearDepth));
+        EXPECT_NEAR(linearDepth, 100.0f, 1.0e-3f);
+        EXPECT_FALSE(TryLinearizeRenderAmbientOcclusionDepth(
+            -0.01f, 0.1f, 100.0f, linearDepth));
+        EXPECT_FALSE(TryLinearizeRenderAmbientOcclusionDepth(
+            0.5f, 1.0f, 1.0f, linearDepth));
+
+        float32 openVisibility = 0.0f;
+        float32 cornerVisibility = 0.0f;
+        ASSERT_TRUE(TryCalculateRenderAmbientOcclusionHorizonVisibility(
+            3.0f, 3.0f, 0.5f, settings, openVisibility));
+        ASSERT_TRUE(TryCalculateRenderAmbientOcclusionHorizonVisibility(
+            3.0f, 1.0f, 0.5f, settings, cornerVisibility));
+        EXPECT_FLOAT_EQ(openVisibility, 1.0f);
+        EXPECT_LT(cornerVisibility, openVisibility);
+
+        float32 continuousWeight = 0.0f;
+        float32 depthDiscontinuityWeight = 0.0f;
+        float32 normalDiscontinuityWeight = 0.0f;
+        ASSERT_TRUE(TryCalculateRenderAmbientOcclusionBilateralWeight(
+            3.0f, 3.0f, 1.0f, 1.0f, settings, continuousWeight));
+        ASSERT_TRUE(TryCalculateRenderAmbientOcclusionBilateralWeight(
+            3.0f, 12.0f, 1.0f, 1.0f, settings,
+            depthDiscontinuityWeight));
+        ASSERT_TRUE(TryCalculateRenderAmbientOcclusionBilateralWeight(
+            3.0f, 3.0f, 0.0f, 1.0f, settings,
+            normalDiscontinuityWeight));
+        EXPECT_GT(continuousWeight, depthDiscontinuityWeight);
+        EXPECT_FLOAT_EQ(normalDiscontinuityWeight, 0.0f);
+
+        EXPECT_TRUE(IsRenderAmbientOcclusionTemporalHistoryAccepted(
+            Vec3{0.0f, 0.0f, 3.0f}, Vec3{0.01f, 0.0f, 3.02f},
+            0.9f, settings));
+        EXPECT_FALSE(IsRenderAmbientOcclusionTemporalHistoryAccepted(
+            Vec3{0.0f, 0.0f, 3.0f}, Vec3{0.0f, 0.0f, 3.2f},
+            0.9f, settings));
+        EXPECT_FALSE(IsRenderAmbientOcclusionTemporalHistoryAccepted(
+            Vec3{0.0f, 0.0f, 3.0f}, Vec3{0.01f, 0.0f, 3.02f},
+            0.5f, settings));
+        EXPECT_FALSE(IsRenderAmbientOcclusionTemporalHistoryAccepted(
+            Vec3{0.0f, 0.0f, 3.0f}, Vec3{0.2f, 0.0f, 3.0f},
+            0.9f, settings));
+        EXPECT_FALSE(IsRenderAmbientOcclusionTemporalHistoryAccepted(
+            Vec3{0.0f, 0.0f, 3.0f}, Vec3{0.0f, 0.0f, 3.0f},
+            -0.9f, settings));
+        float32 clampedVisibility = 0.0f;
+        EXPECT_TRUE(TryClampRenderAmbientOcclusionTemporalHistory(
+            0.1f, 0.4f, 0.8f, clampedVisibility));
+        EXPECT_FLOAT_EQ(clampedVisibility, 0.4f);
+        EXPECT_FALSE(TryClampRenderAmbientOcclusionTemporalHistory(
+            0.1f, 0.8f, 0.4f, clampedVisibility));
+
+        const RenderAmbientOcclusionIndirectLighting input{
+            .directDiffuse = 3.0f,
+            .directSpecular = 5.0f,
+            .indirectDiffuse = 7.0f,
+            .indirectSpecular = 11.0f,
+            .iblDiffuse = 13.0f,
+            .iblSpecular = 17.0f,
+            .emissive = 19.0f,
+            .sky = 23.0f};
+        RenderAmbientOcclusionIndirectLighting composed;
+        ASSERT_TRUE(TryComposeRenderAmbientOcclusionIndirectLighting(
+            input, 0.5f,
+            RVX_RENDER_AMBIENT_OCCLUSION_INDIRECT_CONSUMER_MASK,
+            composed));
+        EXPECT_FLOAT_EQ(composed.directDiffuse, input.directDiffuse);
+        EXPECT_FLOAT_EQ(composed.directSpecular, input.directSpecular);
+        EXPECT_FLOAT_EQ(composed.indirectDiffuse, 3.5f);
+        EXPECT_FLOAT_EQ(composed.indirectSpecular, 5.5f);
+        EXPECT_FLOAT_EQ(composed.iblDiffuse, 6.5f);
+        EXPECT_FLOAT_EQ(composed.iblSpecular, 8.5f);
+        EXPECT_FLOAT_EQ(composed.emissive, input.emissive);
+        EXPECT_FLOAT_EQ(composed.sky, input.sky);
+        EXPECT_FALSE(TryComposeRenderAmbientOcclusionIndirectLighting(
+            input, 0.5f, ToMask(RenderAmbientOcclusionConsumer::IBL),
+            composed));
     }
 
     TEST(RenderContractsValidation,

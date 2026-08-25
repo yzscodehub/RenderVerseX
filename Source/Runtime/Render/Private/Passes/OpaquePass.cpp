@@ -178,6 +178,8 @@ namespace
             context.RetainSubmissionResource(
                 Ref<RefCounted>(bindings.environmentIBLSampler.Get())) &&
             context.RetainSubmissionResource(
+                Ref<RefCounted>(bindings.ambientOcclusionView.Get())) &&
+            context.RetainSubmissionResource(
                 Ref<RefCounted>(bindings.exposureStateBuffer.Get())) &&
             context.RetainSubmissionResource(
                 Ref<RefCounted>(bindings.frameSetLayout.Get())) &&
@@ -1235,6 +1237,7 @@ void OpaquePass::InitializeGraphRecorder(
     std::shared_ptr<const RenderDeformationFrameResources> deformationResources,
     const DirectionalShadowRecordOutput& directionalShadow,
     const RayTracedShadowRecordOutput& rayTracedShadow,
+    const AmbientOcclusionRecordInput& ambientOcclusion,
     std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache,
     DirectRasterReadbackQualification* directReadbackQualification,
     const RenderPassRecordIdentity& recordIdentity,
@@ -1265,6 +1268,7 @@ void OpaquePass::InitializeGraphRecorder(
     m_lightingBindingSnapshot.reset();
     m_directionalShadowInputs = directionalShadow;
     m_rayTracedShadowInputs = rayTracedShadow;
+    m_ambientOcclusionInput = ambientOcclusion;
     m_directInstanceStreamCache = std::move(directInstanceStreamCache);
     m_directReadbackQualification = directReadbackQualification;
     m_recordIdentity = recordIdentity;
@@ -1439,12 +1443,22 @@ void OpaquePass::AddToGraphInternal(
             execution.lightingResources->textureIBLEnabled &&
         execution.lightingPlan->GetCSMRequest().inputsReady ==
             execution.directionalShadow.enabled;
+    // The Forward opaque route is the only legacy raster consumer of the
+    // renderer-owned GTAO visibility field. Deferred GBuffer production must
+    // not borrow it (the subsequent compute-lighting feature owns that edge),
+    // and ForwardSpecial is deliberately composed after opaque lighting.
+    const bool requiresAmbientOcclusion =
+        outputFamily == OpaqueRasterOutputFamily::ForwardSceneHDR &&
+        surfaceRoute == OpaqueRasterSurfaceRoute::AllOpaque;
+    const bool ambientOcclusionInputsValid = !requiresAmbientOcclusion ||
+        execution.ambientOcclusion.IsCompatibleWith(execution.identity);
     const bool contextValid = sourceContextValid && hasPlan &&
         execution.MatchesTargetGraph(graph) &&
         execution.IsFrameIdentityValid() &&
         execution.frameSnapshot != nullptr && execution.results != nullptr &&
         executionAttachmentsValid &&
         lightingInputsValid &&
+        ambientOcclusionInputsValid &&
         execution.directionalShadow.IsCompatibleWith(
             execution.identity,
             execution.lightingPlan->GetIdentityHash()) &&
@@ -1557,6 +1571,7 @@ void OpaquePass::AddToGraphInternal(
                 data.gpuInputs, gpuPlanned, lightingPlan, lightingResources,
                 data.execution.deformationResources,
                 directionalShadow, rayTracedShadow,
+                data.execution.ambientOcclusion,
                 data.directInstanceStreamCache,
                 data.directReadbackQualification,
                 data.execution.identity,
@@ -1688,6 +1703,7 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 {
     m_directionalShadowReadHandle = {};
     m_rayTracedShadowMaskReadHandle = {};
+    m_ambientOcclusionReadHandle = {};
     m_lightConstantsReadHandle = {};
     m_pointLightsReadHandle = {};
     m_spotLightsReadHandle = {};
@@ -1701,6 +1717,7 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     m_depthTargetViewHandle = {};
     m_directionalShadowViewHandle = {};
     m_rayTracedShadowMaskViewHandle = {};
+    m_ambientOcclusionViewHandle = {};
     m_environmentIBLIrradianceViewHandle = {};
     m_environmentIBLPrefilteredViewHandle = {};
     m_environmentIBLBRDFLUTViewHandle = {};
@@ -1847,6 +1864,60 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
             !m_exposureStateReadHandle.IsValid())
         {
             return;
+        }
+
+        if (m_surfaceRoute == OpaqueRasterSurfaceRoute::AllOpaque)
+        {
+            const RHITextureDesc* const colorDesc =
+                builder.GetTextureDesc(view.colorTarget);
+            const RHITextureDesc* const ambientOcclusionDesc =
+                builder.GetTextureDesc(m_ambientOcclusionInput.filteredOcclusion);
+            const RenderOutputExtent expectedExtent{
+                colorDesc != nullptr ? colorDesc->width : 0,
+                colorDesc != nullptr ? colorDesc->height : 0};
+            if (!m_ambientOcclusionInput.IsCompatibleWith(m_recordIdentity) ||
+                colorDesc == nullptr || ambientOcclusionDesc == nullptr ||
+                !expectedExtent.IsValid() ||
+                m_ambientOcclusionInput.extent != expectedExtent ||
+                ambientOcclusionDesc->format != RHIFormat::R8_UNORM ||
+                ambientOcclusionDesc->sampleCount != RHISampleCount::Count1 ||
+                ambientOcclusionDesc->dimension != RHITextureDimension::Texture2D ||
+                ambientOcclusionDesc->depth != 1 ||
+                ambientOcclusionDesc->mipLevels != 1 ||
+                ambientOcclusionDesc->arraySize != 1 ||
+                ambientOcclusionDesc->width != expectedExtent.width ||
+                ambientOcclusionDesc->height != expectedExtent.height ||
+                !HasFlag(ambientOcclusionDesc->usage,
+                         RHITextureUsage::ShaderResource))
+            {
+                return;
+            }
+
+            m_ambientOcclusionReadHandle = builder.Read(
+                m_ambientOcclusionInput.filteredOcclusion,
+                MakeRGAccessDesc(
+                    RHIResourceState::ShaderResource,
+                    RHIShaderStage::Pixel));
+            RHITextureViewDesc ambientOcclusionViewDesc;
+            ambientOcclusionViewDesc.format = RHIFormat::R8_UNORM;
+            ambientOcclusionViewDesc.dimension =
+                RHITextureDimension::Texture2D;
+            ambientOcclusionViewDesc.subresourceRange =
+                RHISubresourceRange::All();
+            ambientOcclusionViewDesc.type = RHITextureViewType::ShaderResource;
+            ambientOcclusionViewDesc.debugName = "ForwardOpaqueAmbientOcclusionSRV";
+            m_ambientOcclusionViewHandle = builder.CreateTextureView(
+                m_ambientOcclusionReadHandle, ambientOcclusionViewDesc);
+            m_ambientOcclusionViewHandle = builder.Read(
+                m_ambientOcclusionViewHandle,
+                MakeRGAccessDesc(
+                    RHIResourceState::ShaderResource,
+                    RHIShaderStage::Pixel));
+            if (!m_ambientOcclusionReadHandle.IsValid() ||
+                !m_ambientOcclusionViewHandle.IsValid())
+            {
+                return;
+            }
         }
     }
 
@@ -4009,6 +4080,40 @@ void OpaquePass::Execute(
         }
     }
 
+    const bool consumesAmbientOcclusion = consumesSurfaceLighting &&
+        m_surfaceRoute == OpaqueRasterSurfaceRoute::AllOpaque;
+    RHITextureView* ambientOcclusionView = nullptr;
+    if (consumesAmbientOcclusion)
+    {
+        if (!m_ambientOcclusionInput.IsCompatibleWith(m_recordIdentity) ||
+            !m_ambientOcclusionReadHandle.IsValid() ||
+            !m_ambientOcclusionViewHandle.IsValid())
+        {
+            RVX_RENDER_WARN(
+                "OpaquePass: Forward opaque lighting requires an exact current GTAO visibility field");
+            reportPlannedFailure(routePlan.gpuPacketCount != 0);
+            return;
+        }
+
+        RHITexture* const ambientOcclusionTexture =
+            context.GetTexture(m_ambientOcclusionReadHandle);
+        ambientOcclusionView = context.GetTextureView(
+            m_ambientOcclusionViewHandle);
+        if (ambientOcclusionTexture == nullptr || ambientOcclusionView == nullptr ||
+            ambientOcclusionView->GetTexture() != ambientOcclusionTexture ||
+            ambientOcclusionView->GetFormat() != RHIFormat::R8_UNORM ||
+            ambientOcclusionTexture->GetWidth() !=
+                m_ambientOcclusionInput.extent.width ||
+            ambientOcclusionTexture->GetHeight() !=
+                m_ambientOcclusionInput.extent.height)
+        {
+            RVX_RENDER_WARN(
+                "OpaquePass: Forward opaque GTAO graph view does not match its exact R8 field contract");
+            reportPlannedFailure(routePlan.gpuPacketCount != 0);
+            return;
+        }
+    }
+
     EnvironmentIBLFrameResources environmentIBLResources;
     bool exactIBLViews = !consumesSurfaceLighting ||
         !m_lightingResources->textureIBLEnabled;
@@ -4042,6 +4147,13 @@ void OpaquePass::Execute(
     {
         lightingRequest.exposureStateBuffer = RHIBufferRef(
             context.GetBuffer(m_exposureStateReadHandle));
+    }
+    if (consumesAmbientOcclusion)
+    {
+        lightingRequest.ambientOcclusionView =
+            RHITextureViewRef(ambientOcclusionView);
+        lightingRequest.ambientOcclusionFieldHash =
+            m_ambientOcclusionInput.fieldContentHash;
     }
     m_lightingBindingSnapshot = std::make_shared<LightingBindingSnapshot>();
     if (!m_pipelineCache->CreateLightingBindingSnapshot(
@@ -4488,6 +4600,13 @@ void OpaquePass::Execute(
                 evidence.textureIBLBound =
                     m_lightingResources->textureIBLEnabled;
                 evidence.exactIBLViews = exactIBLViews;
+                // Only the initial Forward opaque route receives the exact
+                // GTAO field. ForwardSpecial and translucency use a neutral
+                // descriptor fallback and must never claim consumption.
+                evidence.ambientOcclusionFieldContentHash =
+                    consumesAmbientOcclusion
+                    ? m_ambientOcclusionInput.fieldContentHash
+                    : 0;
                 evidence.workCount = lightingWorkCount;
                 evidence.executed = true;
                 if (!results->RecordLightingSurfaceExecution(evidence))

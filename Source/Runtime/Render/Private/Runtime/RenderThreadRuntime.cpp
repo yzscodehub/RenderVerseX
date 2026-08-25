@@ -1102,6 +1102,43 @@ namespace
         return true;
     }
 
+    bool RenderThreadRuntime::RequestAmbientOcclusionQualificationProbe()
+        noexcept
+    {
+        {
+            std::lock_guard lock(m_publicationMutex);
+            if (m_publicationSealed.load(std::memory_order_acquire) ||
+                m_completionOnlyDrainActive.load(std::memory_order_acquire) ||
+                m_lifecycle.load(std::memory_order_acquire) !=
+                    RenderLifecycleState::Running)
+            {
+                return false;
+            }
+            const RenderRuntimeResult result = GetLastRuntimeResult();
+            if (result.lifecycle != RenderLifecycleState::Running ||
+                result.terminalCause != RenderTerminalCause::None ||
+                result.teardownMode != RenderTeardownMode::None)
+            {
+                return false;
+            }
+
+            bool expected = false;
+            if (!m_ambientOcclusionQualificationProbeRequestIssued
+                     .compare_exchange_strong(expected,
+                                              true,
+                                              std::memory_order_acq_rel,
+                                              std::memory_order_acquire))
+            {
+                return false;
+            }
+            m_ambientOcclusionQualificationProbeRequestPending.store(
+                true, std::memory_order_release);
+        }
+
+        Wake();
+        return true;
+    }
+
     RenderResourceReserveResult RenderThreadRuntime::ReserveResource(
         AssetId assetId,
         RenderResourceKind kind) noexcept
@@ -1296,6 +1333,13 @@ namespace
                     m_consumer->RequestExposureQualificationProbe());
                 progressed = true;
             }
+            if (m_ambientOcclusionQualificationProbeRequestPending.exchange(
+                    false, std::memory_order_acq_rel))
+            {
+                static_cast<void>(
+                    m_consumer->RequestAmbientOcclusionQualificationProbe());
+                progressed = true;
+            }
             uint64 resizeFrameSequenceCutoff = 0;
             BasicRenderControlBatch<HAL::NativeSurfaceDesc,
                                     HAL::NativeSurfaceDesc>
@@ -1436,6 +1480,19 @@ namespace
                     m_consumer->RequestExposureQualificationProbe());
                 progressed = true;
             }
+            bool ambientOcclusionProbeRequestBeforeFrameAcquire = false;
+            {
+                std::lock_guard lock(m_publicationMutex);
+                ambientOcclusionProbeRequestBeforeFrameAcquire =
+                    m_ambientOcclusionQualificationProbeRequestPending.exchange(
+                        false, std::memory_order_acq_rel);
+            }
+            if (ambientOcclusionProbeRequestBeforeFrameAcquire)
+            {
+                static_cast<void>(
+                    m_consumer->RequestAmbientOcclusionQualificationProbe());
+                progressed = true;
+            }
             if (acquiredFrameV5.packet != nullptr)
             {
                 m_frameReplacementCount.fetch_add(
@@ -1552,6 +1609,19 @@ namespace
                 {
                     static_cast<void>(
                         m_consumer->RequestExposureQualificationProbe());
+                    progressed = true;
+                }
+                bool ambientOcclusionProbeRequestBeforeFrameConsume = false;
+                {
+                    std::lock_guard lock(m_publicationMutex);
+                    ambientOcclusionProbeRequestBeforeFrameConsume =
+                        m_ambientOcclusionQualificationProbeRequestPending.exchange(
+                            false, std::memory_order_acq_rel);
+                }
+                if (ambientOcclusionProbeRequestBeforeFrameConsume)
+                {
+                    static_cast<void>(
+                        m_consumer->RequestAmbientOcclusionQualificationProbe());
                     progressed = true;
                 }
                 const uint64 requiredRevision =

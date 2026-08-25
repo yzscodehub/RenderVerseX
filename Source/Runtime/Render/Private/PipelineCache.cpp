@@ -153,7 +153,11 @@ namespace
     // this pipeline-layout ABI.
     // Exposure introduces a new cooked-program readiness requirement and
     // descriptor ABI for HDR producers; never reuse a manifest built before it.
-    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 19;
+    // GTAO extends both the raster frame set and deferred compute set, so its
+    // exact R8 visibility ABI must invalidate all previous manifests.
+    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 21;
+    constexpr uint64 RVX_NEUTRAL_AMBIENT_OCCLUSION_FIELD_HASH =
+        0x4E45555452414F31ull; // "NEUTRAO1"
     constexpr uint32 RVX_PIPELINE_PURPOSE_DEFAULT = 0x50445354u; // PDST
     constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_DRIVEN_DEFAULT = 0x47444546u; // GDEF
     constexpr uint32 RVX_PIPELINE_PURPOSE_INSTANCED_MATERIAL = 0x494D4154u; // IMAT
@@ -256,8 +260,11 @@ namespace
         uint64 toneMappingPixelShaderHash = 0;
         uint64 bloomVertexShaderHash = 0;
         uint64 bloomPixelShaderHash = 0;
-        uint64 ssaoVertexShaderHash = 0;
-        uint64 ssaoPixelShaderHash = 0;
+        uint64 gtaoSurfacePixelShaderHash = 0;
+        uint64 gtaoHorizonPixelShaderHash = 0;
+        uint64 gtaoBilateralHorizontalPixelShaderHash = 0;
+        uint64 gtaoBilateralVerticalPixelShaderHash = 0;
+        uint64 gtaoTemporalPixelShaderHash = 0;
         uint64 colorGradingVertexShaderHash = 0;
         uint64 colorGradingPixelShaderHash = 0;
         uint64 chromaticAberrationVertexShaderHash = 0;
@@ -286,7 +293,11 @@ namespace
         uint64 skyboxPipelineHash = 0;
         uint64 toneMappingPipelineHash = 0;
         uint64 bloomPipelineHash = 0;
-        uint64 ssaoPipelineHash = 0;
+        uint64 gtaoSurfacePipelineHash = 0;
+        uint64 gtaoHorizonPipelineHash = 0;
+        uint64 gtaoBilateralHorizontalPipelineHash = 0;
+        uint64 gtaoBilateralVerticalPipelineHash = 0;
+        uint64 gtaoTemporalPipelineHash = 0;
         uint64 colorGradingPipelineHash = 0;
         uint64 chromaticAberrationPipelineHash = 0;
         uint64 filmGrainPipelineHash = 0;
@@ -380,7 +391,7 @@ namespace
 
     bool IsRequiredDefaultLitBinding(uint32 set, uint32 binding)
     {
-        if (set == 0 && binding <= 14)
+        if (set == 0 && binding <= 15)
         {
             return true;
         }
@@ -427,6 +438,9 @@ namespace
         frameLayout.AddBinding(13, RHIBindingType::Sampler, RHIShaderStage::Pixel);
         frameLayout.AddBinding(PipelineCache::DefaultLitExposureStateBinding,
                                RHIBindingType::ShaderResourceBuffer,
+                               RHIShaderStage::Pixel);
+        frameLayout.AddBinding(PipelineCache::DefaultLitAmbientOcclusionBinding,
+                               RHIBindingType::SampledTexture,
                                RHIShaderStage::Pixel);
 
         auto& objectLayout = outLayouts[1];
@@ -572,8 +586,11 @@ namespace
                key == "toneMappingPixelShaderHash" ||
                key == "bloomVertexShaderHash" ||
                key == "bloomPixelShaderHash" ||
-               key == "ssaoVertexShaderHash" ||
-               key == "ssaoPixelShaderHash" ||
+               key == "gtaoSurfacePixelShaderHash" ||
+               key == "gtaoHorizonPixelShaderHash" ||
+               key == "gtaoBilateralHorizontalPixelShaderHash" ||
+               key == "gtaoBilateralVerticalPixelShaderHash" ||
+               key == "gtaoTemporalPixelShaderHash" ||
                key == "colorGradingVertexShaderHash" ||
                key == "colorGradingPixelShaderHash" ||
                key == "chromaticAberrationVertexShaderHash" ||
@@ -602,7 +619,11 @@ namespace
                key == "skyboxPipelineHash" ||
                key == "toneMappingPipelineHash" ||
                key == "bloomPipelineHash" ||
-               key == "ssaoPipelineHash" ||
+               key == "gtaoSurfacePipelineHash" ||
+               key == "gtaoHorizonPipelineHash" ||
+               key == "gtaoBilateralHorizontalPipelineHash" ||
+               key == "gtaoBilateralVerticalPipelineHash" ||
+               key == "gtaoTemporalPipelineHash" ||
                key == "colorGradingPipelineHash" ||
                key == "chromaticAberrationPipelineHash" ||
                key == "filmGrainPipelineHash" ||
@@ -700,7 +721,7 @@ namespace
             fields.emplace(std::move(key), std::move(value));
         }
 
-        if (fields.size() != 47)
+        if (fields.size() != 54)
         {
             return false;
         }
@@ -713,8 +734,11 @@ namespace
             !ReadRequiredManifestUint64(fields, "toneMappingPixelShaderHash", manifest.toneMappingPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "bloomVertexShaderHash", manifest.bloomVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "bloomPixelShaderHash", manifest.bloomPixelShaderHash) ||
-            !ReadRequiredManifestUint64(fields, "ssaoVertexShaderHash", manifest.ssaoVertexShaderHash) ||
-            !ReadRequiredManifestUint64(fields, "ssaoPixelShaderHash", manifest.ssaoPixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "gtaoSurfacePixelShaderHash", manifest.gtaoSurfacePixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "gtaoHorizonPixelShaderHash", manifest.gtaoHorizonPixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "gtaoBilateralHorizontalPixelShaderHash", manifest.gtaoBilateralHorizontalPixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "gtaoBilateralVerticalPixelShaderHash", manifest.gtaoBilateralVerticalPixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "gtaoTemporalPixelShaderHash", manifest.gtaoTemporalPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "colorGradingVertexShaderHash", manifest.colorGradingVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "colorGradingPixelShaderHash", manifest.colorGradingPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "chromaticAberrationVertexShaderHash", manifest.chromaticAberrationVertexShaderHash) ||
@@ -743,7 +767,11 @@ namespace
             !ReadRequiredManifestUint64(fields, "skyboxPipelineHash", manifest.skyboxPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "toneMappingPipelineHash", manifest.toneMappingPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "bloomPipelineHash", manifest.bloomPipelineHash) ||
-            !ReadRequiredManifestUint64(fields, "ssaoPipelineHash", manifest.ssaoPipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "gtaoSurfacePipelineHash", manifest.gtaoSurfacePipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "gtaoHorizonPipelineHash", manifest.gtaoHorizonPipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "gtaoBilateralHorizontalPipelineHash", manifest.gtaoBilateralHorizontalPipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "gtaoBilateralVerticalPipelineHash", manifest.gtaoBilateralVerticalPipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "gtaoTemporalPipelineHash", manifest.gtaoTemporalPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "colorGradingPipelineHash", manifest.colorGradingPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "chromaticAberrationPipelineHash", manifest.chromaticAberrationPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "filmGrainPipelineHash", manifest.filmGrainPipelineHash) ||
@@ -785,8 +813,11 @@ namespace
             file << "toneMappingPixelShaderHash=" << manifest.toneMappingPixelShaderHash << '\n';
             file << "bloomVertexShaderHash=" << manifest.bloomVertexShaderHash << '\n';
             file << "bloomPixelShaderHash=" << manifest.bloomPixelShaderHash << '\n';
-            file << "ssaoVertexShaderHash=" << manifest.ssaoVertexShaderHash << '\n';
-            file << "ssaoPixelShaderHash=" << manifest.ssaoPixelShaderHash << '\n';
+            file << "gtaoSurfacePixelShaderHash=" << manifest.gtaoSurfacePixelShaderHash << '\n';
+            file << "gtaoHorizonPixelShaderHash=" << manifest.gtaoHorizonPixelShaderHash << '\n';
+            file << "gtaoBilateralHorizontalPixelShaderHash=" << manifest.gtaoBilateralHorizontalPixelShaderHash << '\n';
+            file << "gtaoBilateralVerticalPixelShaderHash=" << manifest.gtaoBilateralVerticalPixelShaderHash << '\n';
+            file << "gtaoTemporalPixelShaderHash=" << manifest.gtaoTemporalPixelShaderHash << '\n';
             file << "colorGradingVertexShaderHash=" << manifest.colorGradingVertexShaderHash << '\n';
             file << "colorGradingPixelShaderHash=" << manifest.colorGradingPixelShaderHash << '\n';
             file << "chromaticAberrationVertexShaderHash=" << manifest.chromaticAberrationVertexShaderHash << '\n';
@@ -815,7 +846,11 @@ namespace
             file << "skyboxPipelineHash=" << manifest.skyboxPipelineHash << '\n';
             file << "toneMappingPipelineHash=" << manifest.toneMappingPipelineHash << '\n';
             file << "bloomPipelineHash=" << manifest.bloomPipelineHash << '\n';
-            file << "ssaoPipelineHash=" << manifest.ssaoPipelineHash << '\n';
+            file << "gtaoSurfacePipelineHash=" << manifest.gtaoSurfacePipelineHash << '\n';
+            file << "gtaoHorizonPipelineHash=" << manifest.gtaoHorizonPipelineHash << '\n';
+            file << "gtaoBilateralHorizontalPipelineHash=" << manifest.gtaoBilateralHorizontalPipelineHash << '\n';
+            file << "gtaoBilateralVerticalPipelineHash=" << manifest.gtaoBilateralVerticalPipelineHash << '\n';
+            file << "gtaoTemporalPipelineHash=" << manifest.gtaoTemporalPipelineHash << '\n';
             file << "colorGradingPipelineHash=" << manifest.colorGradingPipelineHash << '\n';
             file << "chromaticAberrationPipelineHash=" << manifest.chromaticAberrationPipelineHash << '\n';
             file << "filmGrainPipelineHash=" << manifest.filmGrainPipelineHash << '\n';
@@ -886,8 +921,11 @@ namespace
                a.toneMappingPixelShaderHash == b.toneMappingPixelShaderHash &&
                a.bloomVertexShaderHash == b.bloomVertexShaderHash &&
                a.bloomPixelShaderHash == b.bloomPixelShaderHash &&
-               a.ssaoVertexShaderHash == b.ssaoVertexShaderHash &&
-               a.ssaoPixelShaderHash == b.ssaoPixelShaderHash &&
+               a.gtaoSurfacePixelShaderHash == b.gtaoSurfacePixelShaderHash &&
+               a.gtaoHorizonPixelShaderHash == b.gtaoHorizonPixelShaderHash &&
+               a.gtaoBilateralHorizontalPixelShaderHash == b.gtaoBilateralHorizontalPixelShaderHash &&
+               a.gtaoBilateralVerticalPixelShaderHash == b.gtaoBilateralVerticalPixelShaderHash &&
+               a.gtaoTemporalPixelShaderHash == b.gtaoTemporalPixelShaderHash &&
                a.colorGradingVertexShaderHash == b.colorGradingVertexShaderHash &&
                a.colorGradingPixelShaderHash == b.colorGradingPixelShaderHash &&
                a.chromaticAberrationVertexShaderHash == b.chromaticAberrationVertexShaderHash &&
@@ -916,7 +954,11 @@ namespace
                a.skyboxPipelineHash == b.skyboxPipelineHash &&
                a.toneMappingPipelineHash == b.toneMappingPipelineHash &&
                a.bloomPipelineHash == b.bloomPipelineHash &&
-               a.ssaoPipelineHash == b.ssaoPipelineHash &&
+               a.gtaoSurfacePipelineHash == b.gtaoSurfacePipelineHash &&
+               a.gtaoHorizonPipelineHash == b.gtaoHorizonPipelineHash &&
+               a.gtaoBilateralHorizontalPipelineHash == b.gtaoBilateralHorizontalPipelineHash &&
+               a.gtaoBilateralVerticalPipelineHash == b.gtaoBilateralVerticalPipelineHash &&
+               a.gtaoTemporalPipelineHash == b.gtaoTemporalPipelineHash &&
                a.colorGradingPipelineHash == b.colorGradingPipelineHash &&
                a.chromaticAberrationPipelineHash == b.chromaticAberrationPipelineHash &&
                a.filmGrainPipelineHash == b.filmGrainPipelineHash &&
@@ -1158,6 +1200,15 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
         return false;
     }
 
+    if (!CreateGTAOPipelineLayout())
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create GTAO pipeline layout");
+        }
+        return false;
+    }
+
     if (!EnsureObjectSkinningPaletteFallbackBuffers())
     {
         SetLastError("Failed to create object skinning palette fallback buffers");
@@ -1229,7 +1280,11 @@ void PipelineCache::Shutdown()
     m_rigidObjectVelocityPipeline.Reset();
     m_maskedObjectVelocityPipeline.Reset();
     m_rigidMaskedObjectVelocityPipeline.Reset();
-    m_ssaoPipeline.Reset();
+    m_gtaoSurfacePipeline.Reset();
+    m_gtaoHorizonPipeline.Reset();
+    m_gtaoBilateralHorizontalPipeline.Reset();
+    m_gtaoBilateralVerticalPipeline.Reset();
+    m_gtaoTemporalPipeline.Reset();
     m_colorGradingPipeline.Reset();
     m_chromaticAberrationPipeline.Reset();
     m_filmGrainPipeline.Reset();
@@ -1272,6 +1327,8 @@ void PipelineCache::Shutdown()
     m_fallbackClusterBuffer.Reset();
     m_fallbackClusterLightIndexBuffer.Reset();
     m_fallbackExposureStateBuffer.Reset();
+    m_fallbackAmbientOcclusionView.Reset();
+    m_fallbackAmbientOcclusionTexture.Reset();
     m_currentDirectionalShadowView = nullptr;
     m_currentRayTracedShadowMaskView = nullptr;
     m_currentDirectionalShadowSampler = nullptr;
@@ -1297,6 +1354,8 @@ void PipelineCache::Shutdown()
     m_exposureComputeSetLayout.Reset();
     m_taaPipelineLayout.Reset();
     m_taaSetLayout.Reset();
+    m_gtaoPipelineLayout.Reset();
+    m_gtaoSetLayout.Reset();
     m_uiPipelineLayout.Reset();
     m_uiTextureSetLayout.Reset();
     m_rayTracedReflectionDenoisePipelineLayout.Reset();
@@ -1338,8 +1397,11 @@ void PipelineCache::Shutdown()
     m_toneMappingPixelShader.Reset();
     m_bloomVertexShader.Reset();
     m_bloomPixelShader.Reset();
-    m_ssaoVertexShader.Reset();
-    m_ssaoPixelShader.Reset();
+    m_gtaoSurfacePixelShader.Reset();
+    m_gtaoHorizonPixelShader.Reset();
+    m_gtaoBilateralHorizontalPixelShader.Reset();
+    m_gtaoBilateralVerticalPixelShader.Reset();
+    m_gtaoTemporalPixelShader.Reset();
     m_cameraVelocityPixelShader.Reset();
     m_objectVelocityVertexShader.Reset();
     m_rigidObjectVelocityVertexShader.Reset();
@@ -1399,8 +1461,11 @@ void PipelineCache::Shutdown()
     m_toneMappingPsCompileResult.reset();
     m_bloomVsCompileResult.reset();
     m_bloomPsCompileResult.reset();
-    m_ssaoVsCompileResult.reset();
-    m_ssaoPsCompileResult.reset();
+    m_gtaoSurfacePsCompileResult.reset();
+    m_gtaoHorizonPsCompileResult.reset();
+    m_gtaoBilateralHorizontalPsCompileResult.reset();
+    m_gtaoBilateralVerticalPsCompileResult.reset();
+    m_gtaoTemporalPsCompileResult.reset();
     m_cameraVelocityPsCompileResult.reset();
     m_objectVelocityVsCompileResult.reset();
     m_rigidObjectVelocityVsCompileResult.reset();
@@ -1470,7 +1535,7 @@ bool PipelineCache::CompileShaders()
         m_shaderDir + "/DeferredLighting.hlsl";
     std::string toneMappingShaderPath = m_shaderDir + "/PostProcess/ToneMapping.hlsl";
     std::string bloomShaderPath = m_shaderDir + "/PostProcess/Bloom.hlsl";
-    std::string ssaoShaderPath = m_shaderDir + "/PostProcess/SSAO.hlsl";
+    std::string gtaoShaderPath = m_shaderDir + "/Lighting/GTAO.hlsl";
     std::string cameraVelocityShaderPath = m_shaderDir + "/PostProcess/CameraVelocity.hlsl";
     std::string objectVelocityShaderPath = m_shaderDir + "/ObjectVelocity.hlsl";
     std::string rayTracedReflectionCompositeShaderPath =
@@ -2015,51 +2080,62 @@ bool PipelineCache::CompileShaders()
     m_bloomPixelShader = bloomPsResult.shader;
     m_bloomPsCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(bloomPsResult.compileResult));
 
-    RenderShaderLoadDesc ssaoVsDesc = vsDesc;
-    ssaoVsDesc.path = ssaoShaderPath;
-    ssaoVsDesc.entryPoint = "VSMain";
-    ssaoVsDesc.stage = RHIShaderStage::Vertex;
-    ssaoVsDesc.defines.push_back(fullscreenUVYMappingDefine);
-    if (backend == RHIBackendType::DX11)
-    {
-        ssaoVsDesc.targetProfile = "vs_5_0";
-    }
+    const auto loadGTAOPixelProgram =
+        [this, &vsDesc, &gtaoShaderPath, backend, &fullscreenUVYMappingDefine](
+            const char* entryPoint,
+            const char* displayName,
+            RHIShaderRef& outShader,
+            std::unique_ptr<ShaderProgramMetadata>& outMetadata) -> bool
+        {
+            RenderShaderLoadDesc desc = vsDesc;
+            desc.path = gtaoShaderPath;
+            desc.entryPoint = entryPoint;
+            desc.stage = RHIShaderStage::Pixel;
+            desc.defines.push_back(fullscreenUVYMappingDefine);
+            if (backend == RHIBackendType::DX11)
+            {
+                desc.targetProfile = "ps_5_0";
+            }
 
-    auto ssaoVsResult = m_shaderProgramLoader->LoadFromFile(m_device, ssaoVsDesc);
-    if (!ssaoVsResult.compileResult.success)
-    {
-        SetLastError("Failed to compile SSAO vertex shader: " + ssaoVsResult.compileResult.errorMessage);
-        return false;
-    }
-    if (!ssaoVsResult.shader)
-    {
-        SetLastError("Failed to create SSAO vertex shader");
-        return false;
-    }
-    m_ssaoVertexShader = ssaoVsResult.shader;
-    m_ssaoVsCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(ssaoVsResult.compileResult));
+            auto result = m_shaderProgramLoader->LoadFromFile(m_device, desc);
+            if (!result.compileResult.success)
+            {
+                SetLastError(std::string("Failed to compile GTAO ") +
+                             displayName + " pixel shader: " +
+                             result.compileResult.errorMessage);
+                return false;
+            }
+            if (!result.shader)
+            {
+                SetLastError(std::string("Failed to create GTAO ") +
+                             displayName + " pixel shader");
+                return false;
+            }
 
-    RenderShaderLoadDesc ssaoPsDesc = ssaoVsDesc;
-    ssaoPsDesc.entryPoint = "PSMain";
-    ssaoPsDesc.stage = RHIShaderStage::Pixel;
-    if (backend == RHIBackendType::DX11)
-    {
-        ssaoPsDesc.targetProfile = "ps_5_0";
-    }
+            outShader = result.shader;
+            outMetadata = std::make_unique<ShaderProgramMetadata>(
+                std::move(result.compileResult));
+            return true;
+        };
 
-    auto ssaoPsResult = m_shaderProgramLoader->LoadFromFile(m_device, ssaoPsDesc);
-    if (!ssaoPsResult.compileResult.success)
+    if (!loadGTAOPixelProgram("PSSurface", "surface reconstruction",
+                              m_gtaoSurfacePixelShader,
+                              m_gtaoSurfacePsCompileResult) ||
+        !loadGTAOPixelProgram("PSHorizon", "horizon integration",
+                              m_gtaoHorizonPixelShader,
+                              m_gtaoHorizonPsCompileResult) ||
+        !loadGTAOPixelProgram("PSBilateralHorizontal", "bilateral horizontal",
+                              m_gtaoBilateralHorizontalPixelShader,
+                              m_gtaoBilateralHorizontalPsCompileResult) ||
+        !loadGTAOPixelProgram("PSBilateralVertical", "bilateral vertical",
+                              m_gtaoBilateralVerticalPixelShader,
+                              m_gtaoBilateralVerticalPsCompileResult) ||
+        !loadGTAOPixelProgram("PSTemporal", "temporal resolve",
+                              m_gtaoTemporalPixelShader,
+                              m_gtaoTemporalPsCompileResult))
     {
-        SetLastError("Failed to compile SSAO pixel shader: " + ssaoPsResult.compileResult.errorMessage);
         return false;
     }
-    if (!ssaoPsResult.shader)
-    {
-        SetLastError("Failed to create SSAO pixel shader");
-        return false;
-    }
-    m_ssaoPixelShader = ssaoPsResult.shader;
-    m_ssaoPsCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(ssaoPsResult.compileResult));
 
     RenderShaderLoadDesc cameraVelocityPsDesc = vsDesc;
     cameraVelocityPsDesc.path = cameraVelocityShaderPath;
@@ -3052,6 +3128,9 @@ bool PipelineCache::CreateDeferredLightingPipelineLayout()
     setLayoutDesc.AddBinding(PipelineCache::DeferredLightingExposureStateBinding,
                              RHIBindingType::ShaderResourceBuffer,
                              RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(PipelineCache::DeferredLightingAmbientOcclusionBinding,
+                             RHIBindingType::SampledTexture,
+                             RHIShaderStage::Compute);
 
     RHIDescriptorSetLayoutRef setLayout =
         m_device->CreateDescriptorSetLayout(setLayoutDesc);
@@ -3174,6 +3253,41 @@ bool PipelineCache::CreateTAAPipelineLayout()
     }
 
     RVX_CORE_DEBUG("PipelineCache: Created TAA pipeline layout");
+    return true;
+}
+
+bool PipelineCache::CreateGTAOPipelineLayout()
+{
+    RHIDescriptorSetLayoutDesc setLayoutDesc;
+    setLayoutDesc.debugName = "GTAOSetLayout";
+    setLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::Pixel);
+    // depth, optional normal, intermediate AO, committed AO history,
+    // optional velocity, committed depth history, and the shared sampler.
+    for (uint32 binding = 1; binding <= 6; ++binding)
+    {
+        setLayoutDesc.AddBinding(binding, RHIBindingType::SampledTexture,
+                                 RHIShaderStage::Pixel);
+    }
+    setLayoutDesc.AddBinding(7, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+
+    m_gtaoSetLayout = m_device->CreateDescriptorSetLayout(setLayoutDesc);
+    if (!m_gtaoSetLayout)
+    {
+        SetLastError("Failed to create GTAO descriptor set layout");
+        return false;
+    }
+
+    RHIPipelineLayoutDesc layoutDesc;
+    layoutDesc.debugName = "GTAOPipelineLayout";
+    layoutDesc.setLayouts.push_back(m_gtaoSetLayout.Get());
+    m_gtaoPipelineLayout = m_device->CreatePipelineLayout(layoutDesc);
+    if (!m_gtaoPipelineLayout)
+    {
+        SetLastError("Failed to create GTAO pipeline layout");
+        return false;
+    }
+
+    RVX_CORE_DEBUG("PipelineCache: Created GTAO pipeline layout");
     return true;
 }
 
@@ -3452,6 +3566,8 @@ bool PipelineCache::BuildReflectedDefaultLitLayouts(std::vector<RHIDescriptorSet
     ensureBinding(outLayouts[0], 9, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
     ensureBinding(outLayouts[0], PipelineCache::DefaultLitExposureStateBinding,
                   RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
+    ensureBinding(outLayouts[0], PipelineCache::DefaultLitAmbientOcclusionBinding,
+                  RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
     ensureBinding(outLayouts[1], 1, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
     ensureBinding(outLayouts[1], 2, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
     ensureBinding(outLayouts[1], 3, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
@@ -3561,6 +3677,9 @@ bool PipelineCache::ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSet
     if (!requireBinding(0, PipelineCache::DefaultLitExposureStateBinding,
                         RHIBindingType::ShaderResourceBuffer))
         return false;
+    if (!requireBinding(0, PipelineCache::DefaultLitAmbientOcclusionBinding,
+                        RHIBindingType::SampledTexture))
+        return false;
     if (!requireBinding(1, 0, RHIBindingType::DynamicUniformBuffer))
         return false;
     if (!requireBinding(1, 1, RHIBindingType::ShaderResourceBuffer))
@@ -3603,8 +3722,16 @@ void PipelineCache::ProcessPipelineManifest()
     expected.toneMappingPixelShaderHash = ComputeShaderHash(m_toneMappingPsCompileResult.get());
     expected.bloomVertexShaderHash = ComputeShaderHash(m_bloomVsCompileResult.get());
     expected.bloomPixelShaderHash = ComputeShaderHash(m_bloomPsCompileResult.get());
-    expected.ssaoVertexShaderHash = ComputeShaderHash(m_ssaoVsCompileResult.get());
-    expected.ssaoPixelShaderHash = ComputeShaderHash(m_ssaoPsCompileResult.get());
+    expected.gtaoSurfacePixelShaderHash =
+        ComputeShaderHash(m_gtaoSurfacePsCompileResult.get());
+    expected.gtaoHorizonPixelShaderHash =
+        ComputeShaderHash(m_gtaoHorizonPsCompileResult.get());
+    expected.gtaoBilateralHorizontalPixelShaderHash =
+        ComputeShaderHash(m_gtaoBilateralHorizontalPsCompileResult.get());
+    expected.gtaoBilateralVerticalPixelShaderHash =
+        ComputeShaderHash(m_gtaoBilateralVerticalPsCompileResult.get());
+    expected.gtaoTemporalPixelShaderHash =
+        ComputeShaderHash(m_gtaoTemporalPsCompileResult.get());
     expected.colorGradingVertexShaderHash = ComputeShaderHash(m_colorGradingVsCompileResult.get());
     expected.colorGradingPixelShaderHash = ComputeShaderHash(m_colorGradingPsCompileResult.get());
     expected.chromaticAberrationVertexShaderHash = ComputeShaderHash(m_chromaticAberrationVsCompileResult.get());
@@ -3634,7 +3761,13 @@ void PipelineCache::ProcessPipelineManifest()
     expected.skyboxPipelineHash = m_stats.skyboxPipelineHash;
     expected.toneMappingPipelineHash = m_stats.toneMappingPipelineHash;
     expected.bloomPipelineHash = m_stats.bloomPipelineHash;
-    expected.ssaoPipelineHash = m_stats.ssaoPipelineHash;
+    expected.gtaoSurfacePipelineHash = m_stats.gtaoSurfacePipelineHash;
+    expected.gtaoHorizonPipelineHash = m_stats.gtaoHorizonPipelineHash;
+    expected.gtaoBilateralHorizontalPipelineHash =
+        m_stats.gtaoBilateralHorizontalPipelineHash;
+    expected.gtaoBilateralVerticalPipelineHash =
+        m_stats.gtaoBilateralVerticalPipelineHash;
+    expected.gtaoTemporalPipelineHash = m_stats.gtaoTemporalPipelineHash;
     expected.colorGradingPipelineHash = m_stats.colorGradingPipelineHash;
     expected.chromaticAberrationPipelineHash = m_stats.chromaticAberrationPipelineHash;
     expected.filmGrainPipelineHash = m_stats.filmGrainPipelineHash;
@@ -4190,7 +4323,8 @@ bool PipelineCache::CreateLightingBindingSnapshot(
     if (!EnsureFrameShadowFallbackResources() ||
         !EnsureFrameRayTracedShadowFallbackResources() ||
         !EnsureFrameEnvironmentIBLFallbackResources() ||
-        !EnsureFrameExposureFallbackBuffer())
+        !EnsureFrameExposureFallbackBuffer() ||
+        !EnsureFrameAmbientOcclusionFallbackResources())
     {
         SetLastError(
             "Lighting binding snapshot could not create stable fallback resources");
@@ -4199,7 +4333,8 @@ bool PipelineCache::CreateLightingBindingSnapshot(
     if (!m_directionalShadowSampler || !m_environmentIBLSampler ||
         !m_fallbackDirectionalShadowView || !m_fallbackRayTracedShadowMaskView ||
         !m_fallbackEnvironmentIBLCubemapView ||
-        !m_fallbackEnvironmentIBLBRDFLUTView)
+        !m_fallbackEnvironmentIBLBRDFLUTView ||
+        !m_fallbackAmbientOcclusionView)
     {
         SetLastError(
             "Lighting binding snapshot has incomplete fallback bindings");
@@ -4257,6 +4392,24 @@ bool PipelineCache::CreateLightingBindingSnapshot(
     snapshot.environmentIBLSampler = m_environmentIBLSampler;
     snapshot.exposureStateBuffer = request.exposureStateBuffer
         ? request.exposureStateBuffer : m_fallbackExposureStateBuffer;
+    if (request.ambientOcclusionView)
+    {
+        if (request.ambientOcclusionView->GetFormat() != RHIFormat::R8_UNORM ||
+            request.ambientOcclusionFieldHash == 0)
+        {
+            SetLastError(
+                "Lighting binding snapshot requires an exact R8 GTAO visibility view and non-zero field hash");
+            return false;
+        }
+        snapshot.ambientOcclusionView = request.ambientOcclusionView;
+        snapshot.ambientOcclusionFieldHash = request.ambientOcclusionFieldHash;
+    }
+    else
+    {
+        snapshot.ambientOcclusionView = m_fallbackAmbientOcclusionView;
+        snapshot.ambientOcclusionFieldHash =
+            RVX_NEUTRAL_AMBIENT_OCCLUSION_FIELD_HASH;
+    }
     snapshot.frameSetLayout = m_setLayouts[0];
 
     // The descriptor set is deliberately created only after every resource
@@ -4271,7 +4424,8 @@ bool PipelineCache::CreateLightingBindingSnapshot(
         !snapshot.environmentIBLIrradianceView ||
         !snapshot.environmentIBLPrefilteredView ||
         !snapshot.environmentIBLBRDFLUTView || !snapshot.environmentIBLSampler ||
-        !snapshot.exposureStateBuffer || !snapshot.frameSetLayout)
+        !snapshot.exposureStateBuffer || !snapshot.ambientOcclusionView ||
+        snapshot.ambientOcclusionFieldHash == 0 || !snapshot.frameSetLayout)
     {
         SetLastError("Lighting binding snapshot has incomplete record-owned resources");
         return false;
@@ -4302,6 +4456,8 @@ bool PipelineCache::CreateLightingBindingSnapshot(
     descriptorSetDesc.BindSampler(13, snapshot.environmentIBLSampler.Get());
     descriptorSetDesc.BindBuffer(DefaultLitExposureStateBinding,
                                  snapshot.exposureStateBuffer.Get());
+    descriptorSetDesc.BindTexture(DefaultLitAmbientOcclusionBinding,
+                                  snapshot.ambientOcclusionView.Get());
 
     snapshot.frameDescriptorSet = m_device->CreateDescriptorSet(descriptorSetDesc);
     if (!snapshot.frameDescriptorSet ||
@@ -5140,7 +5296,8 @@ bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
             !m_fallbackClusterConstantsBuffer || !m_fallbackClusterBuffer ||
             !m_fallbackClusterLightIndexBuffer ||
             !m_fallbackEnvironmentIBLCubemapView ||
-            !m_fallbackEnvironmentIBLBRDFLUTView || !m_environmentIBLSampler)
+            !m_fallbackEnvironmentIBLBRDFLUTView || !m_environmentIBLSampler ||
+            !m_fallbackExposureStateBuffer || !m_fallbackAmbientOcclusionView)
         {
             return false;
         }
@@ -5253,6 +5410,12 @@ bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
                 ? m_currentEnvironmentIBLBRDFLUTView.Get()
                 : m_fallbackEnvironmentIBLBRDFLUTView.Get());
         frameSetDesc.BindSampler(13, m_environmentIBLSampler.Get());
+        frameSetDesc.BindBuffer(
+            DefaultLitExposureStateBinding,
+            m_fallbackExposureStateBuffer.Get());
+        frameSetDesc.BindTexture(
+            DefaultLitAmbientOcclusionBinding,
+            m_fallbackAmbientOcclusionView.Get());
     }
     RHIDescriptorSetRef frameSet = m_device->CreateDescriptorSet(frameSetDesc);
     if (!frameSet || !frameSet->IsReadyForBinding(m_setLayouts[0].Get()))
@@ -6528,22 +6691,6 @@ RHIPipeline* PipelineCache::GetBloomAdditivePipeline(RHIFormat outputFormat)
     return GetOrCreateBloomAdditivePipeline(resolvedFormat).Get();
 }
 
-RHIPipeline* PipelineCache::GetSSAOPipeline(RHIFormat outputFormat)
-{
-    const RHIFormat resolvedFormat =
-        outputFormat == RHIFormat::Unknown ? m_postProcessIntermediateFormat : outputFormat;
-    if (resolvedFormat == m_postProcessIntermediateFormat)
-    {
-        if (!m_ssaoPipeline)
-        {
-            m_ssaoPipeline = GetOrCreateSSAOPipeline(resolvedFormat);
-        }
-        return m_ssaoPipeline.Get();
-    }
-
-    return GetOrCreateSSAOPipeline(resolvedFormat).Get();
-}
-
 RHIPipeline* PipelineCache::GetCameraVelocityPipeline(RHIFormat outputFormat)
 {
     const RHIFormat resolvedFormat = outputFormat == RHIFormat::Unknown ? RHIFormat::RG16_FLOAT : outputFormat;
@@ -6958,9 +7105,15 @@ bool PipelineCache::BuildObjectConstants(
         ? ApplyBackendClipConvention(previousViewProjectionMatrix, backend) *
               previousWorldMatrix
         : Mat4Identity();
+    // ObjectVelocity raster coordinates include the backend clip convention,
+    // while the engine velocity contract is always semantic NDC.  Vulkan's
+    // clip-Y inversion therefore needs to be undone exactly once in the
+    // velocity pixel shader before GTAO/TAA convert NDC to top-left UV space.
+    const float32 semanticNdcYScale =
+        backend == RHIBackendType::Vulkan ? -1.0f : 1.0f;
     outConstants.objectVelocityParams = Vec4(historyValid ? 1.0f : 0.0f,
                                               receivesShadow ? 1.0f : 0.0f,
-                                              0.0f,
+                                              semanticNdcYScale,
                                               0.0f);
     outConstants.skinningParams = Vec4(skinned ? 1.0f : 0.0f,
                                         static_cast<float>(skinningSlice.matrixCount),
@@ -7350,13 +7503,112 @@ bool PipelineCache::EnsureFrameExposureFallbackBuffer()
     return true;
 }
 
+bool PipelineCache::EnsureFrameAmbientOcclusionFallbackResources()
+{
+    if (m_fallbackAmbientOcclusionTexture && m_fallbackAmbientOcclusionView)
+    {
+        return true;
+    }
+    if (!m_device)
+    {
+        return false;
+    }
+
+    // All DefaultLit consumers require a sampled R8 visibility field, even
+    // when GTAO was not selected.  Use a real white texel rather than an
+    // uninitialized allocation so it is the identity for indirect AO.
+    RHITextureDesc textureDesc = RHITextureDesc::Texture2D(
+        1, 1, RHIFormat::R8_UNORM,
+        RHITextureUsage::ShaderResource | RHITextureUsage::RenderTarget |
+            RHITextureUsage::CopyDst);
+    textureDesc.SetOptimizedClearColor(RHIClearColor{1.0f, 1.0f, 1.0f, 1.0f});
+    textureDesc.debugName = "FallbackAmbientOcclusionVisibility";
+    RHITextureRef texture = m_device->CreateTexture(textureDesc);
+    if (!texture)
+    {
+        return false;
+    }
+
+    RHICommandContextRef uploadContext =
+        m_device->CreateCommandContext(RHICommandQueueType::Graphics);
+    if (uploadContext)
+    {
+        // D3D12 (and Metal) require texture-buffer rows to use a 256-byte
+        // pitch. Keep the portable RHI upload valid on every backend instead
+        // of relying on the one-byte logical extent being tightly packed.
+        constexpr uint32 NeutralVisibilityRowPitch = 256;
+        std::array<uint8, NeutralVisibilityRowPitch> neutralVisibility{};
+        neutralVisibility.front() = 255u;
+        RHIStagingBufferDesc stagingDesc;
+        stagingDesc.size = neutralVisibility.size();
+        stagingDesc.debugName = "FallbackAmbientOcclusionVisibilityUpload";
+        RHIStagingBufferRef staging = m_device->CreateStagingBuffer(stagingDesc);
+        if (!staging)
+        {
+            return false;
+        }
+        void* mapped = staging->Map(0, neutralVisibility.size());
+        if (!mapped)
+        {
+            return false;
+        }
+        std::memcpy(mapped, neutralVisibility.data(), neutralVisibility.size());
+        staging->Unmap();
+
+        uploadContext->Begin();
+        // A newly created texture has no preserved contents. Vulkan images
+        // begin in UNDEFINED, while DX12 projects Undefined to COMMON, so the
+        // discard transition is the portable contract for this first upload.
+        uploadContext->TextureBarrier(texture.Get(), RHIResourceState::Undefined,
+                                      RHIResourceState::CopyDest);
+        RHIBufferTextureCopyDesc copyDesc;
+        copyDesc.bufferRowPitch = NeutralVisibilityRowPitch;
+        copyDesc.bufferImageHeight = 1;
+        copyDesc.textureRegion = {0, 0, 1, 1};
+        uploadContext->CopyBufferToTexture(staging->GetBuffer(), texture.Get(),
+                                           copyDesc);
+        uploadContext->TextureBarrier(texture.Get(), RHIResourceState::CopyDest,
+                                      RHIResourceState::ShaderResource);
+        uploadContext->End();
+        m_device->SubmitCommandContext(uploadContext.Get());
+        m_device->WaitIdle();
+        if (m_device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            return false;
+        }
+    }
+    else if (m_device->GetCapabilities().supportsExplicitResourceBarriers)
+    {
+        // A rendering-capable explicit backend must be able to initialize the
+        // fallback; accepting an uninitialized texture would hide a real error.
+        return false;
+    }
+
+    RHITextureViewDesc viewDesc;
+    viewDesc.format = RHIFormat::R8_UNORM;
+    viewDesc.dimension = RHITextureDimension::Texture2D;
+    viewDesc.subresourceRange = RHISubresourceRange::All();
+    viewDesc.type = RHITextureViewType::ShaderResource;
+    viewDesc.debugName = "FallbackAmbientOcclusionVisibilitySRV";
+    RHITextureViewRef view = m_device->CreateTextureView(texture.Get(), viewDesc);
+    if (!view || view->GetFormat() != RHIFormat::R8_UNORM)
+    {
+        return false;
+    }
+
+    m_fallbackAmbientOcclusionTexture = std::move(texture);
+    m_fallbackAmbientOcclusionView = std::move(view);
+    return true;
+}
+
 bool PipelineCache::UpdateDefaultFrameDescriptorSet()
 {
     if (!m_viewConstantBuffer || m_setLayouts.empty() || !m_setLayouts[0] ||
         !EnsureFrameShadowFallbackResources() || !EnsureFrameRayTracedShadowFallbackResources() ||
         !EnsureFrameEnvironmentIBLFallbackResources() ||
         !EnsureFrameLightFallbackResources() || !EnsureFrameClusteredLightFallbackResources() ||
-        !EnsureFrameExposureFallbackBuffer())
+        !EnsureFrameExposureFallbackBuffer() ||
+        !EnsureFrameAmbientOcclusionFallbackResources())
     {
         return false;
     }
@@ -7421,6 +7673,9 @@ PipelineCache::CreateFrameDescriptorBindingOwners() const
     owners->environmentIBLSampler = m_environmentIBLSampler;
     owners->exposureStateBuffer = m_currentExposureStateBuffer
         ? m_currentExposureStateBuffer : m_fallbackExposureStateBuffer;
+    owners->ambientOcclusionView = m_fallbackAmbientOcclusionView;
+    owners->ambientOcclusionFieldHash =
+        RVX_NEUTRAL_AMBIENT_OCCLUSION_FIELD_HASH;
     return owners->IsComplete() ? owners : Ref<FrameDescriptorBindingOwners>{};
 }
 
@@ -7430,7 +7685,7 @@ std::vector<RHIDescriptorBinding> PipelineCache::BuildFrameDescriptorBindings(
     RVX_ASSERT(owners.IsComplete());
 
     std::vector<RHIDescriptorBinding> bindings;
-    bindings.reserve(15);
+    bindings.reserve(16);
     bindings.push_back({0, owners.viewConstantBuffer.Get(), 0,
                         AlignConstantBufferSize(sizeof(ViewConstants)), nullptr, nullptr});
     bindings.push_back({1, nullptr, 0, 0, owners.directionalShadowView.Get(), nullptr});
@@ -7450,6 +7705,8 @@ std::vector<RHIDescriptorBinding> PipelineCache::BuildFrameDescriptorBindings(
     bindings.push_back({13, nullptr, 0, 0, nullptr, owners.environmentIBLSampler.Get()});
     bindings.push_back({DefaultLitExposureStateBinding, owners.exposureStateBuffer.Get(),
                         0, RVX_WHOLE_SIZE, nullptr, nullptr});
+    bindings.push_back({DefaultLitAmbientOcclusionBinding, nullptr, 0, 0,
+                        owners.ambientOcclusionView.Get(), nullptr});
     return bindings;
 }
 
@@ -7459,7 +7716,8 @@ RHIDescriptorSetRef PipelineCache::CreateFrameDescriptorSet()
         !EnsureFrameShadowFallbackResources() || !EnsureFrameRayTracedShadowFallbackResources() ||
         !EnsureFrameEnvironmentIBLFallbackResources() ||
         !EnsureFrameLightFallbackResources() || !EnsureFrameClusteredLightFallbackResources() ||
-        !EnsureFrameExposureFallbackBuffer())
+        !EnsureFrameExposureFallbackBuffer() ||
+        !EnsureFrameAmbientOcclusionFallbackResources())
         return {};
 
     m_currentDirectionalShadowView = m_fallbackDirectionalShadowView;
@@ -7664,12 +7922,18 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
-    m_ssaoPipeline = GetOrCreateSSAOPipeline(m_postProcessIntermediateFormat);
-    if (!m_ssaoPipeline)
+    m_gtaoSurfacePipeline = GetOrCreateGTAOSurfacePipeline();
+    m_gtaoHorizonPipeline = GetOrCreateGTAOHorizonPipeline();
+    m_gtaoBilateralHorizontalPipeline = GetOrCreateGTAOBilateralHorizontalPipeline();
+    m_gtaoBilateralVerticalPipeline = GetOrCreateGTAOBilateralVerticalPipeline();
+    m_gtaoTemporalPipeline = GetOrCreateGTAOTemporalPipeline();
+    if (!m_gtaoSurfacePipeline || !m_gtaoHorizonPipeline ||
+        !m_gtaoBilateralHorizontalPipeline || !m_gtaoBilateralVerticalPipeline ||
+        !m_gtaoTemporalPipeline)
     {
         if (m_lastError.empty())
         {
-            SetLastError("Failed to create SSAO pipeline");
+            SetLastError("Failed to create GTAO pipeline family");
         }
         return false;
     }
@@ -7789,7 +8053,7 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
-    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants, depth-only pipeline, Skybox pipeline, ToneMapping pipeline, Bloom pipeline, SSAO pipeline, Vignette pipeline, FilmGrain pipeline, FXAA pipeline, ColorGrading pipeline, ChromaticAberration pipeline, UI pipeline, and optional ray tracing pipelines");
+    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants, depth-only pipeline, Skybox pipeline, ToneMapping pipeline, Bloom pipeline, GTAO pipeline family, Vignette pipeline, FilmGrain pipeline, FXAA pipeline, ColorGrading pipeline, ChromaticAberration pipeline, UI pipeline, and optional ray tracing pipelines");
     return true;
 }
 
@@ -8725,35 +8989,75 @@ RHIPipelineRef PipelineCache::GetOrCreateBloomAdditivePipeline(RHIFormat outputF
     return pipeline;
 }
 
-RHIPipelineRef PipelineCache::GetOrCreateSSAOPipeline(RHIFormat outputFormat)
+RHIPipelineRef PipelineCache::GetOrCreateGTAOSurfacePipeline()
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildSSAOPipelineDesc(outputFormat);
-    if (!pipelineDesc.vertexShader)
+    return GetOrCreateGTAOPipeline(m_gtaoSurfacePixelShader.Get(),
+                                   "GTAOSurfacePipeline",
+                                   "surface reconstruction",
+                                   RHIFormat::R32_FLOAT,
+                                   m_stats.gtaoSurfacePipelineHash);
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateGTAOHorizonPipeline()
+{
+    return GetOrCreateGTAOPipeline(m_gtaoHorizonPixelShader.Get(),
+                                   "GTAOHorizonPipeline",
+                                   "horizon integration",
+                                   RHIFormat::R8_UNORM,
+                                   m_stats.gtaoHorizonPipelineHash);
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateGTAOBilateralHorizontalPipeline()
+{
+    return GetOrCreateGTAOPipeline(m_gtaoBilateralHorizontalPixelShader.Get(),
+                                   "GTAOBilateralHorizontalPipeline",
+                                   "bilateral horizontal",
+                                   RHIFormat::R8_UNORM,
+                                   m_stats.gtaoBilateralHorizontalPipelineHash);
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateGTAOBilateralVerticalPipeline()
+{
+    return GetOrCreateGTAOPipeline(m_gtaoBilateralVerticalPixelShader.Get(),
+                                   "GTAOBilateralVerticalPipeline",
+                                   "bilateral vertical",
+                                   RHIFormat::R8_UNORM,
+                                   m_stats.gtaoBilateralVerticalPipelineHash);
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateGTAOTemporalPipeline()
+{
+    return GetOrCreateGTAOPipeline(m_gtaoTemporalPixelShader.Get(),
+                                   "GTAOTemporalPipeline",
+                                   "temporal resolve",
+                                   RHIFormat::R8_UNORM,
+                                   m_stats.gtaoTemporalPipelineHash);
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateGTAOPipeline(
+    RHIShader* pixelShader,
+    const char* debugName,
+    const char* stageName,
+    RHIFormat outputFormat,
+    uint64& outPipelineHash)
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildGTAOPipelineDesc(
+        pixelShader, debugName, outputFormat);
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
+        !pipelineDesc.pipelineLayout || pipelineDesc.numRenderTargets != 1 ||
+        pipelineDesc.renderTargetFormats[0] != outputFormat)
     {
-        SetLastError("Cannot create SSAO pipeline without vertex shader");
-        return {};
-    }
-    if (!pipelineDesc.pixelShader)
-    {
-        SetLastError("Cannot create SSAO pipeline without pixel shader");
-        return {};
-    }
-    if (!pipelineDesc.pipelineLayout)
-    {
-        SetLastError("Cannot create SSAO pipeline without pipeline layout");
-        return {};
-    }
-    if (pipelineDesc.numRenderTargets != 1 || pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown)
-    {
-        SetLastError("Cannot create SSAO pipeline with invalid render target format");
+        SetLastError(std::string("Cannot create GTAO ") + stageName +
+                     " pipeline from incomplete expected output-format state");
         return {};
     }
 
-    const uint64 stateHash = ComputePipelineStateHash(pipelineDesc, MaterialPipelineVariant::Transparent);
-    m_stats.ssaoPipelineHash = stateHash;
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc, MaterialPipelineVariant::Transparent);
+    outPipelineHash = stateHash;
     m_stats.lastPipelineStateHash = stateHash;
 
-    auto cached = m_pipelineCache.find(stateHash);
+    const auto cached = m_pipelineCache.find(stateHash);
     if (cached != m_pipelineCache.end())
     {
         ++m_stats.pipelineCacheHitCount;
@@ -8764,7 +9068,8 @@ RHIPipelineRef PipelineCache::GetOrCreateSSAOPipeline(RHIFormat outputFormat)
     RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
     if (!pipeline)
     {
-        SetLastError("Backend failed to create SSAO pipeline");
+        SetLastError(std::string("Backend failed to create GTAO ") +
+                     stageName + " pipeline");
         return {};
     }
 
@@ -9736,14 +10041,19 @@ RHIGraphicsPipelineDesc PipelineCache::BuildBloomAdditivePipelineDesc(RHIFormat 
     return pipelineDesc;
 }
 
-RHIGraphicsPipelineDesc PipelineCache::BuildSSAOPipelineDesc(RHIFormat outputFormat) const
+RHIGraphicsPipelineDesc PipelineCache::BuildGTAOPipelineDesc(
+    RHIShader* pixelShader,
+    const char* debugName,
+    RHIFormat outputFormat) const
 {
     RHIGraphicsPipelineDesc pipelineDesc;
 
-    pipelineDesc.vertexShader = m_ssaoVertexShader.Get();
-    pipelineDesc.pixelShader = m_ssaoPixelShader.Get();
-    pipelineDesc.pipelineLayout = m_postProcessPipelineLayout.Get();
-    pipelineDesc.debugName = "SSAOPipeline";
+    // GTAO shares the established fullscreen vertex program, while every
+    // pixel program has its own reflection-checked descriptor contract.
+    pipelineDesc.vertexShader = m_toneMappingVertexShader.Get();
+    pipelineDesc.pixelShader = pixelShader;
+    pipelineDesc.pipelineLayout = m_gtaoPipelineLayout.Get();
+    pipelineDesc.debugName = debugName;
 
     pipelineDesc.rasterizerState = RHIRasterizerState::Default();
     pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
@@ -10198,10 +10508,16 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             return ComputeShaderHash(m_bloomVsCompileResult.get());
         if (shader == m_bloomPixelShader.Get())
             return ComputeShaderHash(m_bloomPsCompileResult.get());
-        if (shader == m_ssaoVertexShader.Get())
-            return ComputeShaderHash(m_ssaoVsCompileResult.get());
-        if (shader == m_ssaoPixelShader.Get())
-            return ComputeShaderHash(m_ssaoPsCompileResult.get());
+        if (shader == m_gtaoSurfacePixelShader.Get())
+            return ComputeShaderHash(m_gtaoSurfacePsCompileResult.get());
+        if (shader == m_gtaoHorizonPixelShader.Get())
+            return ComputeShaderHash(m_gtaoHorizonPsCompileResult.get());
+        if (shader == m_gtaoBilateralHorizontalPixelShader.Get())
+            return ComputeShaderHash(m_gtaoBilateralHorizontalPsCompileResult.get());
+        if (shader == m_gtaoBilateralVerticalPixelShader.Get())
+            return ComputeShaderHash(m_gtaoBilateralVerticalPsCompileResult.get());
+        if (shader == m_gtaoTemporalPixelShader.Get())
+            return ComputeShaderHash(m_gtaoTemporalPsCompileResult.get());
         if (shader == m_cameraVelocityPixelShader.Get())
             return ComputeShaderHash(m_cameraVelocityPsCompileResult.get());
         if (shader == m_objectVelocityVertexShader.Get())

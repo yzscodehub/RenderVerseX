@@ -35,6 +35,7 @@ namespace RVX
     class GPUCullingRecordedState;
     class DirectRasterReadbackQualification;
     class RenderGraph;
+    struct RenderPassRecordIdentity;
 
     struct DepthPrepassDrawStats
     {
@@ -143,8 +144,18 @@ namespace RVX
         uint32 skinnedDrawCount = 0;
         uint32 currentPaletteBoundDrawCount = 0;
         uint32 previousPaletteBoundDrawCount = 0;
+        /** Exact RenderGraph texture slot written by this recording. */
+        uint32 velocityTargetResourceIndex = RVX_INVALID_INDEX;
+        /** Exact graph provenance paired with the written texture slot. */
+        uint64 velocityTargetGraphIdentity = 0;
+        uint64 velocityTargetRecordingGeneration = 0;
         RHIFormat outputFormat = RHIFormat::Unknown;
+
+        [[nodiscard]] bool MatchesVelocityTarget(
+            const RGTextureHandle& handle,
+            const RenderPassRecordIdentity& expected) const noexcept;
     };
+
 
     /** @brief Per-recording ray-traced-shadow diagnostics. */
     struct RayTracedShadowPassStats
@@ -342,9 +353,90 @@ namespace RVX
     {
         return !handle.IsValid() ||
                (handle.graphIdentity == identity.graphIdentity &&
-                handle.recordingGeneration ==
+                    handle.recordingGeneration ==
                     identity.graphRecordingGeneration);
     }
+
+    inline bool ObjectVelocityPassStats::MatchesVelocityTarget(
+        const RGTextureHandle& handle,
+        const RenderPassRecordIdentity& expected) const noexcept
+    {
+        return handle.IsValid() && expected.IsValid() &&
+            velocityTargetResourceIndex == handle.index &&
+            velocityTargetGraphIdentity == expected.graphIdentity &&
+            velocityTargetRecordingGeneration ==
+                expected.graphRecordingGeneration &&
+            handle.graphIdentity == expected.graphIdentity &&
+            handle.recordingGeneration ==
+                expected.graphRecordingGeneration;
+    }
+
+    /** @brief Per-recording fullscreen camera motion-vector diagnostics. */
+    struct CameraVelocityPassStats
+    {
+        bool requested = false;
+        bool supported = false;
+        bool depthAvailable = false;
+        bool previousViewProjectionAvailable = false;
+        /** Current and previous unjittered view projections differ. */
+        bool viewProjectionMotionObserved = false;
+        bool velocityTargetAvailable = false;
+        bool outputDeclared = false;
+        bool constantsUploaded = false;
+        bool velocityRecorded = false;
+        uint32 width = 0;
+        uint32 height = 0;
+        /** Exact RenderGraph texture slot written by this recording. */
+        uint32 velocityTargetResourceIndex = RVX_INVALID_INDEX;
+        /** Exact graph provenance paired with the written texture slot. */
+        uint64 velocityTargetGraphIdentity = 0;
+        uint64 velocityTargetRecordingGeneration = 0;
+        RHIFormat outputFormat = RHIFormat::Unknown;
+
+        [[nodiscard]] bool MatchesVelocityTarget(
+            const RGTextureHandle& handle,
+            const RenderPassRecordIdentity& expected) const noexcept
+        {
+            return handle.IsValid() && expected.IsValid() &&
+                velocityTargetResourceIndex == handle.index &&
+                velocityTargetGraphIdentity == expected.graphIdentity &&
+                velocityTargetRecordingGeneration ==
+                    expected.graphRecordingGeneration &&
+                handle.graphIdentity == expected.graphIdentity &&
+                handle.recordingGeneration ==
+                    expected.graphRecordingGeneration;
+        }
+    };
+
+    /**
+     * @brief Exact graph-owned ambient-occlusion field consumed by lighting.
+     *
+     * The field is injected only after the GTAO feature has published its
+     * typed blackboard output. It is deliberately separate from ViewData and
+     * the frozen scene snapshot: a later RenderGraph producer must not mutate
+     * an already-frozen frame merely to attach its lighting dependency.
+     */
+    struct AmbientOcclusionRecordInput
+    {
+        RenderPassRecordIdentity identity{};
+        RGTextureHandle filteredOcclusion{};
+        RenderOutputExtent extent{};
+        RHIFormat format = RHIFormat::Unknown;
+        RHISampleCount sampleCount = RHISampleCount::Count1;
+        uint64 settingsHash = 0;
+        uint64 fieldContentHash = 0;
+        bool requested = false;
+
+        [[nodiscard]] bool IsCompatibleWith(
+            const RenderPassRecordIdentity& expected) const noexcept
+        {
+            return identity == expected && filteredOcclusion.IsValid() &&
+                   HasCurrentGraphProvenance(filteredOcclusion, expected) &&
+                   extent.IsValid() && format == RHIFormat::R8_UNORM &&
+                   sampleCount == RHISampleCount::Count1 &&
+                   settingsHash != 0 && fieldContentHash != 0;
+        }
+    };
 
     /** @brief Validate every optional RenderGraph resource stored in ViewData. */
     [[nodiscard]] inline bool HasCurrentViewDataGraphResources(
@@ -899,15 +991,23 @@ namespace RVX
         bool directionalShadowBound = false;
         bool textureIBLBound = false;
         bool exactIBLViews = false;
+        /** Exact R8 visibility field consumed by opaque indirect lighting. */
+        uint64 ambientOcclusionFieldContentHash = 0;
         uint64 workCount = 0;
         bool executed = false;
 
         [[nodiscard]] bool IsValid() const noexcept
         {
+            const bool requiresAmbientOcclusion =
+                route == RenderLightingSurfaceRoute::ForwardOpaque ||
+                route == RenderLightingSurfaceRoute::DeferredOpaque;
             return lightingPlanIdentity != 0 &&
                 route < RenderLightingSurfaceRoute::Count &&
                 frozenBufferMask == 0x3fu && workCount != 0 && executed &&
-                (!textureIBLBound || exactIBLViews);
+                (!textureIBLBound || exactIBLViews) &&
+                (requiresAmbientOcclusion
+                     ? ambientOcclusionFieldContentHash != 0
+                     : ambientOcclusionFieldContentHash == 0);
         }
     };
 
@@ -927,6 +1027,7 @@ namespace RVX
         OpaqueSurfaceRouteExecutionEvidence forwardSpecialOpaqueRoute{};
         TransparentPassDrawStats transparentStats{};
         ObjectVelocityPassStats objectVelocityStats{};
+        CameraVelocityPassStats cameraVelocityStats{};
         std::array<RenderLightingSurfaceExecutionEvidence,
                    static_cast<size_t>(RenderLightingSurfaceRoute::Count)>
             lightingSurfaceEvidence{};
@@ -1099,6 +1200,8 @@ namespace RVX
             deformationResources;
         DirectionalShadowRecordOutput directionalShadow{};
         RayTracedShadowRecordOutput rayTracedShadow{};
+        /** Screen-space AO selected by the typed lighting dependency edge. */
+        AmbientOcclusionRecordInput ambientOcclusion{};
         std::shared_ptr<const RenderPassFrameSnapshot> frameSnapshot;
         std::shared_ptr<RenderPassRecordResults> results;
         /// True only for the legacy ViewData adapter.  Migrated scene passes
@@ -1195,6 +1298,7 @@ namespace RVX
             deformationResources;
         DirectionalShadowRecordOutput directionalShadow{};
         RayTracedShadowRecordOutput rayTracedShadow{};
+        AmbientOcclusionRecordInput ambientOcclusion{};
 
         [[nodiscard]] const RenderFrameExecutionPlan* GetExecutionPlan() const
         {
@@ -1392,6 +1496,7 @@ namespace RVX
         }
         result.directionalShadow = context.directionalShadow;
         result.rayTracedShadow = context.rayTracedShadow;
+        result.ambientOcclusion = context.ambientOcclusion;
         return result;
     }
 

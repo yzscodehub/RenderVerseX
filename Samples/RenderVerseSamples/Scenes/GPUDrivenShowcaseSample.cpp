@@ -157,7 +157,6 @@ namespace RVX
         context.renderSettings.postProcess.antiAliasingMode =
             RenderAntiAliasingMode::FXAA;
         context.renderSettings.postProcess.enableBloom = false;
-        context.renderSettings.postProcess.enableSSAO = false;
         context.renderSettings.postProcess.enableSSR = false;
 
         const float32 aspect =

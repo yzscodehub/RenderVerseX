@@ -187,17 +187,23 @@ namespace RVX
                 data.frameSnapshot->maskedDrawItems.size());
             stats.drawItemCount = stats.opaqueDrawItemCount + stats.maskedDrawItemCount;
             stats.drawItemsAvailable = stats.drawItemCount > 0;
-            if (data.identity.graph != nullptr && view.velocityTarget.IsValid())
+            if (data.identity.graph == nullptr ||
+                !view.velocityTarget.IsValid() ||
+                !HasCurrentGraphProvenance(view.velocityTarget, data.identity))
             {
-                if (const RHITextureDesc* desc = data.identity.graph->GetTextureDesc(
-                        view.velocityTarget))
-                {
-                    stats.outputFormat = desc->format;
-                    if (stats.width == 0)
-                        stats.width = desc->width;
-                    if (stats.height == 0)
-                        stats.height = desc->height;
-                }
+                return;
+            }
+
+            stats.velocityTargetResourceIndex = view.velocityTarget.index;
+            stats.velocityTargetGraphIdentity = data.identity.graphIdentity;
+            stats.velocityTargetRecordingGeneration =
+                data.identity.graphRecordingGeneration;
+            if (const RHITextureDesc* const desc =
+                    data.identity.graph->GetTextureDesc(view.velocityTarget))
+            {
+                stats.outputFormat = desc->format;
+                stats.width = desc->width;
+                stats.height = desc->height;
             }
         }
 
@@ -401,7 +407,10 @@ namespace RVX
             const ViewData& view = data.execution.view;
             ObjectVelocityPassStats& stats = data.results->objectVelocityStats;
             if (!view.velocityTarget.IsValid() ||
-                !view.depthTarget.IsValid() || !stats.previousViewProjectionAvailable ||
+                !view.depthTarget.IsValid() ||
+                !HasCurrentGraphProvenance(view.depthTarget, data.identity) ||
+                !stats.MatchesVelocityTarget(view.velocityTarget, data.identity) ||
+                !stats.previousViewProjectionAvailable ||
                 !stats.drawItemsAvailable || view.viewportWidth == 0 ||
                 view.viewportHeight == 0)
             {
@@ -579,6 +588,7 @@ namespace RVX
                 !data.velocityHandle.IsValid() || !data.depthHandle.IsValid() ||
                 !data.velocityViewHandle.IsValid() ||
                 !data.depthViewHandle.IsValid() ||
+                !stats.MatchesVelocityTarget(data.velocityHandle, data.identity) ||
                 data.velocityHandle.graphIdentity != data.identity.graphIdentity ||
                 data.velocityHandle.recordingGeneration != data.identity.graphRecordingGeneration ||
                 data.depthHandle.graphIdentity != data.identity.graphIdentity ||

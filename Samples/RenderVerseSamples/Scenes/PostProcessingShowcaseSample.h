@@ -3,6 +3,7 @@
 /** @file PostProcessingShowcaseSample.h @brief Typed post-processing demonstration scene. */
 
 #include "Samples/Sample.h"
+#include "Samples/SampleEnvironmentLoader.h"
 #include "Samples/SampleModelLoader.h"
 
 namespace RVX
@@ -34,6 +35,7 @@ namespace RVX
 
     private:
         LoadedSampleModel m_model;
+        LoadedSampleEnvironment m_environment;
         SampleRenderPath m_renderPath = SampleRenderPath::Auto;
         std::string m_modelFailure;
         bool m_skyboxCreated = false;
@@ -42,7 +44,12 @@ namespace RVX
         bool m_toneMappingCapabilityPublished = false;
         bool m_colorGradingCapabilityPublished = false;
         bool m_fxaaCapabilityPublished = false;
+        bool m_ambientOcclusionCapabilityPublished = false;
         /** Exact latest presented-frame post-process qualification result. */
         bool m_postProcessExecutionQualified = false;
+        /** Renderer execution is intentionally independent of the opt-in probe. */
+        bool m_ambientOcclusionExecutionReady = false;
+        /** True only after the explicit post-Present GTAO probe is complete. */
+        bool m_ambientOcclusionQualificationReady = false;
     };
 } // namespace RVX

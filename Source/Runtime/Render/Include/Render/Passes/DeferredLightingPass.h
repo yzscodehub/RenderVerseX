@@ -6,6 +6,7 @@
  */
 
 #include "Render/Features/RenderFeatureGraphBuilder.h"
+#include "Render/Passes/RenderPassRecordContext.h"
 #include "Render/PipelineCache.h"
 #include "RHI/RHI.h"
 
@@ -122,6 +123,8 @@ namespace RVX
         RGBufferHandle materialTable{};
         /** Same committed prior-presented state consumed by every HDR producer. */
         RGBufferHandle exposureState{};
+        /** Exact renderer-owned R8 GTAO visibility field for indirect lighting. */
+        AmbientOcclusionRecordInput ambientOcclusion{};
         // This is the immutable plan identity captured by the feature adapter
         // when it imports the graph resources below.  It must agree with the
         // identity carried by those resources; accepting either identity on
@@ -135,6 +138,8 @@ namespace RVX
                    gBuffer2.IsValid() && gBuffer3.IsValid() &&
                    deviceDepth.IsValid() && hdrSceneColor.IsValid() &&
                    materialTable.IsValid() && exposureState.IsValid() &&
+                   ambientOcclusion.IsCompatibleWith(
+                       ambientOcclusion.identity) &&
                    expectedLightingPlanIdentity != 0 &&
                    expectedLightingPlanIdentity == lighting.lightingPlanIdentity &&
                    lighting.IsComplete();

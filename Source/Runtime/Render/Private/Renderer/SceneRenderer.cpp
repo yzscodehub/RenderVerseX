@@ -8,6 +8,7 @@
 #include "Context/RenderContextInternal.h"
 #include "GPUScene/GPUSceneUpdate.h"
 #include "GPUScene/GPUSceneUploader.h"
+#include "Features/AmbientOcclusionFeatureAdapter.h"
 #include "Features/DeferredRecipeFeatureAdapter.h"
 #include "Features/LegacyForwardFeatureAdapter.h"
 #include "Features/PostProcessPipelineFeatureAdapter.h"
@@ -43,7 +44,6 @@
 #include "Render/PostProcess/ColorGrading.h"
 #include "Render/PostProcess/FilmGrain.h"
 #include "Render/PostProcess/FXAA.h"
-#include "Render/PostProcess/SSAO.h"
 #include "Render/PostProcess/TAA.h"
 #include "Render/PostProcess/ToneMapping.h"
 #include "Render/PostProcess/Vignette.h"
@@ -873,10 +873,20 @@ namespace
         settings.enableChromaticAberration = false;
         settings.enableFilmGrain = false;
         settings.enableVolumetricLighting = false;
-        settings.enableSSAO = false;
         settings.enableSSR = false;
         settings.enableRayTracedReflections = false;
         settings.enableRayTracedReflectionDenoise = true;
+        return settings;
+    }
+
+    [[nodiscard]] RenderAmbientOcclusionSettings
+    ResolveAmbientOcclusionSettings(
+        const RenderFrameSettings& frameSettings) noexcept
+    {
+        RenderAmbientOcclusionSettings settings =
+            frameSettings.postProcess.ambientOcclusion;
+        settings.enabled = frameSettings.postProcess.enabled &&
+            settings.enabled;
         return settings;
     }
 
@@ -1400,6 +1410,15 @@ void SceneRenderer::Shutdown()
     m_exposureProbeHistoryIdentity.reset();
     m_exposureProbeSourceExecutionReceipt.reset();
     m_exposureProbePresented = false;
+    if (m_ambientOcclusionFeature != nullptr)
+    {
+        m_ambientOcclusionFeature->AbandonQualificationProbe();
+    }
+    m_ambientOcclusionProbeHistoryIdentity.reset();
+    m_ambientOcclusionProbeSourceExecutionReceipt.reset();
+    m_ambientOcclusionProbeSubmissionAccepted = false;
+    m_ambientOcclusionProbePresented = false;
+    m_ambientOcclusionProbeAbandoned = false;
     if (m_viewHistoryCoordinator)
     {
         m_viewHistoryCoordinator->Clear();
@@ -1434,8 +1453,14 @@ void SceneRenderer::Shutdown()
     {
         m_postProcessFeature->SetStack(nullptr);
     }
+    if (m_ambientOcclusionFeature != nullptr)
+    {
+        m_ambientOcclusionFeature->Shutdown();
+    }
     m_renderFeatureRegistry.reset();
     m_legacyForwardFeature = nullptr;
+    m_ambientOcclusionFeature = nullptr;
+    m_forwardLightingFeature = nullptr;
     m_postProcessFeature = nullptr;
     m_deferredGeometryFeature = nullptr;
     m_deferredLightingFeature = nullptr;
@@ -1459,7 +1484,6 @@ void SceneRenderer::Shutdown()
     m_chromaticAberrationPostProcess = nullptr;
     m_vignettePostProcess = nullptr;
     m_filmGrainPostProcess = nullptr;
-    m_ssaoPostProcess = nullptr;
     m_fxaaPostProcess = nullptr;
     m_taaPostProcess = nullptr;
     m_pendingRenderExecutionReceipt.reset();
@@ -1550,6 +1574,10 @@ void SceneRenderer::RequestTemporalHistoryReset()
 {
     m_pendingTemporalHistoryReset = true;
     m_presentedTemporalPresentationState.reset();
+    if (m_ambientOcclusionFeature != nullptr)
+    {
+        m_ambientOcclusionFeature->ResetHistory();
+    }
     if (m_viewHistoryCoordinator)
     {
         m_viewHistoryCoordinator->RequestReset(
@@ -1607,6 +1635,16 @@ void SceneRenderer::EvaluateAcceptedFrameHistory(
 
 void SceneRenderer::AbandonAcceptedFrameHistory() noexcept
 {
+    if (m_ambientOcclusionFeature)
+    {
+        if (m_ambientOcclusionProbeSubmissionAccepted &&
+            !m_ambientOcclusionProbePresented)
+        {
+            m_ambientOcclusionFeature->AbandonQualificationProbe();
+            m_ambientOcclusionProbeAbandoned = true;
+        }
+        m_ambientOcclusionFeature->AbandonHistoryCandidate();
+    }
     if (m_postProcessFeature)
     {
         m_postProcessFeature->AbandonTemporalHistoryCandidate();
@@ -2671,12 +2709,18 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
 
     m_viewData.instancingMode = frameSettings.instancingMode;
     SetGPUDrivenCullingMode(frameSettings.gpuCulling.mode);
+    const RenderAmbientOcclusionSettings resolvedAmbientOcclusion =
+        ResolveAmbientOcclusionSettings(frameSettings);
     m_postProcessSettings.enableBloom =
         frameSettings.postProcess.enabled &&
         frameSettings.postProcess.enableBloom;
-    m_postProcessSettings.enableSSAO =
-        frameSettings.postProcess.enabled &&
-        frameSettings.postProcess.enableSSAO;
+    if (m_depthPrepass != nullptr)
+    {
+        m_depthPrepass->SetEnabled(
+            resolvedAmbientOcclusion.enabled &&
+            frameSettings.pipelineRequest.recipe ==
+                RenderPipelineRecipe::ForwardStandard);
+    }
     m_postProcessSettings.enableSSR =
         frameSettings.postProcess.enabled &&
         frameSettings.postProcess.enableSSR;
@@ -2687,7 +2731,8 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
     m_postProcessSettings.enableVelocityOutput =
         frameSettings.postProcess.enabled &&
         (frameSettings.postProcess.enableVelocityOutput ||
-         requestedAntiAliasingMode == RenderAntiAliasingMode::TAA);
+         requestedAntiAliasingMode == RenderAntiAliasingMode::TAA ||
+         resolvedAmbientOcclusion.enabled);
     m_postProcessSettings.enableColorGrading =
         frameSettings.postProcess.enabled &&
         frameSettings.postProcess.enableColorGrading;
@@ -2919,6 +2964,19 @@ RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()
                 m_renderPolicyDiagnostics.executionReport.status),
             GetGPUDrivenFrameFailureStageName(
                 m_gpuDrivenFrameFailureStage));
+        if (m_renderFeatureRegistry != nullptr &&
+            !m_pendingRenderExecutionReceipt.has_value())
+        {
+            const RenderExecutionReceipt& attempted =
+                m_lastAttemptedRenderExecutionReceipt;
+            RVX_RENDER_ERROR(
+                "SceneRenderer: execution receipt rejected (available={}, graphComposed={}, executionSucceeded={}, structurallyValid={}, diagnostic={})",
+                attempted.available,
+                attempted.graphComposed,
+                attempted.executionSucceeded,
+                attempted.IsStructurallyValid(),
+                attempted.diagnostic.empty() ? "none" : attempted.diagnostic);
+        }
         for (const RenderPassExecutionReport& pass :
              m_renderPolicyDiagnostics.executionReport.passes)
         {
@@ -3008,6 +3066,21 @@ bool SceneRenderer::ArmExposureQualificationProbe()
         return false;
     }
     m_exposureProbeSourceExecutionReceipt.reset();
+    return true;
+}
+
+bool SceneRenderer::ArmAmbientOcclusionQualificationProbe()
+{
+    if (m_ambientOcclusionFeature == nullptr ||
+        m_ambientOcclusionProbeSubmissionAccepted ||
+        m_ambientOcclusionProbeHistoryIdentity.has_value() ||
+        m_ambientOcclusionProbeSourceExecutionReceipt.has_value() ||
+        !m_ambientOcclusionFeature->RequestQualificationProbe())
+    {
+        return false;
+    }
+    m_ambientOcclusionProbePresented = false;
+    m_ambientOcclusionProbeAbandoned = false;
     return true;
 }
 
@@ -3103,6 +3176,52 @@ void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
         }
     }
 
+    if (m_ambientOcclusionProbeSubmissionAccepted &&
+        m_ambientOcclusionFeature != nullptr &&
+        (m_ambientOcclusionProbePresented ||
+         m_ambientOcclusionProbeAbandoned))
+    {
+        RenderExecutionReceipt qualified =
+            m_ambientOcclusionProbeSourceExecutionReceipt.has_value()
+                ? *m_ambientOcclusionProbeSourceExecutionReceipt
+                : RenderExecutionReceipt{};
+        const bool completed =
+            m_ambientOcclusionFeature->CompleteQualificationProbe(
+                tracker, qualified.ambientOcclusion);
+        if (completed && m_ambientOcclusionProbePresented &&
+            m_ambientOcclusionProbeHistoryIdentity.has_value() &&
+            qualified.presented &&
+            qualified.frameIdentity ==
+                m_ambientOcclusionProbeHistoryIdentity->previousFrame &&
+            qualified.viewIdentity ==
+                m_ambientOcclusionProbeHistoryIdentity->view &&
+            qualified.IsStructurallyValid())
+        {
+            m_completedRenderExecutionReceipt = qualified;
+            m_lastAttemptedRenderExecutionReceipt = std::move(qualified);
+            m_ambientOcclusionProbeSubmissionAccepted = false;
+            m_ambientOcclusionProbeHistoryIdentity.reset();
+            m_ambientOcclusionProbeSourceExecutionReceipt.reset();
+            m_ambientOcclusionProbePresented = false;
+            m_ambientOcclusionProbeAbandoned = false;
+        }
+        else if (!m_ambientOcclusionFeature->HasPendingQualificationProbe())
+        {
+            m_lastAttemptedRenderExecutionReceipt =
+                m_ambientOcclusionProbeSourceExecutionReceipt.has_value()
+                    ? *m_ambientOcclusionProbeSourceExecutionReceipt
+                    : m_completedRenderExecutionReceipt;
+            m_lastAttemptedRenderExecutionReceipt.succeeded = false;
+            m_lastAttemptedRenderExecutionReceipt.diagnostic =
+                "Ambient-occlusion qualification probe failed or lost its presented source";
+            m_ambientOcclusionProbeSubmissionAccepted = false;
+            m_ambientOcclusionProbeHistoryIdentity.reset();
+            m_ambientOcclusionProbeSourceExecutionReceipt.reset();
+            m_ambientOcclusionProbePresented = false;
+            m_ambientOcclusionProbeAbandoned = false;
+        }
+    }
+
     // Completion can arrive while the runtime is deliberately progressing no
     // replacement frame.  Project only the post-fence evidence into the
     // already-published source-frame diagnostics; rebuilding the complete
@@ -3162,6 +3281,12 @@ bool SceneRenderer::HasPendingDirectOpaqueRasterReadbackQualificationCompletion(
 bool SceneRenderer::HasPendingExposureQualificationCompletion() const noexcept
 {
     return m_exposureProbeCompletion != nullptr;
+}
+
+bool SceneRenderer::HasPendingAmbientOcclusionQualificationCompletion()
+    const noexcept
+{
+    return m_ambientOcclusionProbeSubmissionAccepted;
 }
 
 bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
@@ -3250,6 +3375,44 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
             }
         }
     }
+    if (m_ambientOcclusionFeature != nullptr &&
+        m_ambientOcclusionFeature->RequiresHistoryCommit())
+    {
+        const bool historySubmissionAccepted =
+            m_activeViewHistoryCandidate.has_value() &&
+            m_ambientOcclusionFeature->NotifyHistorySubmission(
+                *m_activeViewHistoryCandidate);
+        if (!historySubmissionAccepted)
+        {
+            RVX_RENDER_ERROR(
+                "SceneRenderer: ambient-occlusion history did not bind the exact submitted view");
+        }
+    }
+    if (m_ambientOcclusionFeature != nullptr &&
+        m_ambientOcclusionFeature->HasPendingQualificationProbe())
+    {
+        const bool exactIdentityAvailable =
+            m_activeViewHistoryCandidate.has_value();
+        const bool accepted = exactIdentityAvailable &&
+            !m_ambientOcclusionProbeSubmissionAccepted &&
+            m_ambientOcclusionFeature->NotifyQualificationProbeSubmission(
+                *m_activeViewHistoryCandidate, completion, *tracker);
+        if (!accepted)
+        {
+            m_ambientOcclusionFeature->AbandonQualificationProbe();
+            RVX_RENDER_WARN(
+                "SceneRenderer: ambient-occlusion qualification probe did not bind exact submission evidence");
+        }
+        else
+        {
+            m_ambientOcclusionProbeHistoryIdentity =
+                *m_activeViewHistoryCandidate;
+            m_ambientOcclusionProbeSourceExecutionReceipt.reset();
+            m_ambientOcclusionProbeSubmissionAccepted = true;
+            m_ambientOcclusionProbePresented = false;
+            m_ambientOcclusionProbeAbandoned = false;
+        }
+    }
     if (m_pipelineCache && !m_pipelineCache->NotifyObjectConstantSubmission(completion))
     {
         RVX_RENDER_ERROR("SceneRenderer: object constant pages rejected invalid completion evidence");
@@ -3298,6 +3461,18 @@ void SceneRenderer::ReleaseUnsubmittedFrame()
     // discarded before recording begins. None reached Present, so their
     // compatibility candidate must not advance committed temporal history.
     AbandonAcceptedFrameHistory();
+    if (m_ambientOcclusionFeature != nullptr &&
+        !m_ambientOcclusionProbeSubmissionAccepted)
+    {
+        // A one-shot request may be armed before frame consumption. Preserve
+        // it across ApplyFrameV5, but explicitly cancel it once that frame is
+        // known not to have reached a real submission boundary.
+        m_ambientOcclusionFeature->AbandonQualificationProbe();
+        m_ambientOcclusionProbeHistoryIdentity.reset();
+        m_ambientOcclusionProbeSourceExecutionReceipt.reset();
+        m_ambientOcclusionProbePresented = false;
+        m_ambientOcclusionProbeAbandoned = false;
+    }
     const bool preservePresentedExposureProbe =
         m_exposureProbeCompletion && m_exposureProbePresented &&
         m_exposureProbeSourceExecutionReceipt.has_value();
@@ -3323,6 +3498,19 @@ void SceneRenderer::ReleaseUnsubmittedFrame()
         {
             m_pendingRenderExecutionReceipt->postProcess =
                 m_postProcessFeature->GetLastExecutionReceipt();
+        }
+        if (m_ambientOcclusionFeature != nullptr)
+        {
+            RenderAmbientOcclusionExecutionReceipt ambientOcclusion =
+                m_ambientOcclusionFeature->GetLastExecutionReceipt();
+            ambientOcclusion.lightingConsumerExecuted =
+                m_pendingRenderExecutionReceipt->ambientOcclusion
+                    .lightingConsumerExecuted;
+            ambientOcclusion.lightingAOFieldContentHash =
+                m_pendingRenderExecutionReceipt->ambientOcclusion
+                    .lightingAOFieldContentHash;
+            m_pendingRenderExecutionReceipt->ambientOcclusion =
+                std::move(ambientOcclusion);
         }
         RenderExecutionReceipt rejected =
             *m_pendingRenderExecutionReceipt;
@@ -3620,10 +3808,14 @@ void SceneRenderer::MarkAcceptedFramePresented()
     const bool postProcessRequiresHistoryCommit =
         m_postProcessFeature != nullptr &&
         m_postProcessFeature->RequiresTemporalHistoryCommit();
+    const bool ambientOcclusionRequiresHistoryCommit =
+        m_ambientOcclusionFeature != nullptr &&
+        m_ambientOcclusionFeature->RequiresHistoryCommit();
     const bool coordinatorCanCommit =
         temporalPresentationStateMatches &&
         m_viewHistoryCoordinator && m_activeViewHistoryCandidate.has_value() &&
-        (!postProcessRequiresHistoryCommit || receiptMatches) &&
+        (!(postProcessRequiresHistoryCommit ||
+           ambientOcclusionRequiresHistoryCommit) || receiptMatches) &&
         m_viewHistoryCoordinator->CanCommitPresented(
             *m_activeViewHistoryCandidate);
     // A presentation is a dual temporal transaction when TAA produced a
@@ -3636,10 +3828,19 @@ void SceneRenderer::MarkAcceptedFramePresented()
          m_activeViewHistoryCandidate.has_value() &&
          m_postProcessFeature->CanCommitTemporalHistoryAfterPresent(
              *m_activeViewHistoryCandidate));
+    const bool ambientOcclusionCanCommit =
+        !ambientOcclusionRequiresHistoryCommit ||
+        (coordinatorCanCommit && m_ambientOcclusionFeature != nullptr &&
+         m_activeViewHistoryCandidate.has_value() &&
+         m_ambientOcclusionFeature->CanCommitHistoryAfterPresent(
+             *m_activeViewHistoryCandidate));
 
     bool historyCommitted = false;
     bool postProcessHistoryCommitted = !postProcessRequiresHistoryCommit;
-    if (coordinatorCanCommit && postProcessCanCommit)
+    bool ambientOcclusionHistoryCommitted =
+        !ambientOcclusionRequiresHistoryCommit;
+    if (coordinatorCanCommit && postProcessCanCommit &&
+        ambientOcclusionCanCommit)
     {
         // These commits cannot fail after their side-effect-free exact
         // candidate preflights while this renderer owns the frame lifecycle.
@@ -3649,6 +3850,13 @@ void SceneRenderer::MarkAcceptedFramePresented()
         {
             postProcessHistoryCommitted =
                 m_postProcessFeature->CommitTemporalHistoryAfterPresent(
+                    *m_activeViewHistoryCandidate);
+        }
+        if (historyCommitted && postProcessHistoryCommitted &&
+            ambientOcclusionRequiresHistoryCommit)
+        {
+            ambientOcclusionHistoryCommitted =
+                m_ambientOcclusionFeature->CommitHistoryAfterPresent(
                     *m_activeViewHistoryCandidate);
         }
     }
@@ -3662,7 +3870,13 @@ void SceneRenderer::MarkAcceptedFramePresented()
     {
         m_postProcessFeature->AbandonTemporalHistoryCandidate();
     }
-    if (!historyCommitted || !postProcessHistoryCommitted)
+    if (!ambientOcclusionHistoryCommitted &&
+        m_ambientOcclusionFeature != nullptr)
+    {
+        m_ambientOcclusionFeature->AbandonHistoryCandidate();
+    }
+    if (!historyCommitted || !postProcessHistoryCommitted ||
+        !ambientOcclusionHistoryCommitted)
     {
         // Preserve correctness if a lifecycle caller violates the accepted /
         // presented pairing or either exact-candidate preflight fails. The
@@ -3690,13 +3904,48 @@ void SceneRenderer::MarkAcceptedFramePresented()
         m_pendingRenderExecutionReceipt->postProcess =
             m_postProcessFeature->GetLastExecutionReceipt();
     }
+    if (m_pendingRenderExecutionReceipt.has_value() &&
+        m_ambientOcclusionFeature != nullptr)
+    {
+        RenderAmbientOcclusionExecutionReceipt ambientOcclusion =
+            m_ambientOcclusionFeature->GetLastExecutionReceipt();
+        ambientOcclusion.lightingConsumerExecuted =
+            m_pendingRenderExecutionReceipt->ambientOcclusion
+                .lightingConsumerExecuted;
+        ambientOcclusion.lightingAOFieldContentHash =
+            m_pendingRenderExecutionReceipt->ambientOcclusion
+                .lightingAOFieldContentHash;
+        m_pendingRenderExecutionReceipt->ambientOcclusion =
+            std::move(ambientOcclusion);
+    }
 
     m_activeViewHistoryCandidate.reset();
     m_activeViewHistoryAvailability.reset();
     m_pendingTemporalPresentationState.reset();
 
     const bool presentationQualified =
-        receiptMatches && historyCommitted && postProcessHistoryCommitted;
+        receiptMatches && historyCommitted && postProcessHistoryCommitted &&
+        ambientOcclusionHistoryCommitted;
+    if (m_ambientOcclusionProbeSubmissionAccepted &&
+        m_ambientOcclusionFeature != nullptr)
+    {
+        const bool probeMatchesPresentation =
+            presentationQualified && presentedTemporalCandidate.has_value() &&
+            m_ambientOcclusionProbeHistoryIdentity.has_value() &&
+            *m_ambientOcclusionProbeHistoryIdentity ==
+                presentedTemporalCandidate->historyIdentity;
+        if (probeMatchesPresentation)
+        {
+            m_ambientOcclusionProbePresented = true;
+            m_ambientOcclusionProbeAbandoned = false;
+        }
+        else
+        {
+            m_ambientOcclusionFeature->AbandonQualificationProbe();
+            m_ambientOcclusionProbePresented = false;
+            m_ambientOcclusionProbeAbandoned = true;
+        }
+    }
     if (m_exposureProbeCompletion &&
         !(m_exposureProbePresented &&
           m_exposureProbeSourceExecutionReceipt.has_value()))
@@ -3747,6 +3996,16 @@ void SceneRenderer::MarkAcceptedFramePresented()
                 m_exposureProbeSourceExecutionReceipt =
                     m_completedRenderExecutionReceipt;
             }
+            if (m_ambientOcclusionProbeSubmissionAccepted &&
+                m_ambientOcclusionProbePresented &&
+                m_ambientOcclusionProbeHistoryIdentity.has_value() &&
+                presentedTemporalCandidate.has_value() &&
+                *m_ambientOcclusionProbeHistoryIdentity ==
+                    presentedTemporalCandidate->historyIdentity)
+            {
+                m_ambientOcclusionProbeSourceExecutionReceipt =
+                    m_completedRenderExecutionReceipt;
+            }
             m_lastAttemptedRenderExecutionReceipt = std::move(presented);
         }
         else
@@ -3758,6 +4017,13 @@ void SceneRenderer::MarkAcceptedFramePresented()
             presented.succeeded = false;
             presented.diagnostic =
                 "Presented render execution receipt failed structural validation";
+            if (m_ambientOcclusionProbeSubmissionAccepted &&
+                m_ambientOcclusionFeature != nullptr)
+            {
+                m_ambientOcclusionFeature->AbandonQualificationProbe();
+                m_ambientOcclusionProbePresented = false;
+                m_ambientOcclusionProbeAbandoned = true;
+            }
             m_lastAttemptedRenderExecutionReceipt = std::move(presented);
         }
     }
@@ -5557,7 +5823,13 @@ const RayTracingSceneManagerStats& SceneRenderer::GetRayTracingSceneStats() cons
 const CameraVelocityPassStats& SceneRenderer::GetCameraVelocityStats() const
 {
     static const CameraVelocityPassStats emptyStats;
-    return m_cameraVelocityPass ? m_cameraVelocityPass->GetStats() : emptyStats;
+    if (m_activeRenderPassResults &&
+        m_activeRenderPassResults->identity == m_activeRenderPassIdentity)
+    {
+        return m_activeRenderPassResults->cameraVelocityStats;
+    }
+    return m_cameraVelocityPass ? m_cameraVelocityPass->GetStats()
+                                : emptyStats;
 }
 
 const ObjectVelocityPassStats& SceneRenderer::GetObjectVelocityStats() const
@@ -5893,6 +6165,18 @@ bool SceneRenderer::HasSubmissionFailure() const noexcept
         return true;
     }
 
+    // A compiled graph is not sufficient evidence for a required renderer
+    // feature. CollectExecutionReceipt() validates the exact graph recording,
+    // its semantic consumers, and every required feature receipt. If that
+    // validation rejected the current frame, do not submit or present it.
+    if (m_renderFeatureRegistry != nullptr &&
+        (!m_pendingRenderExecutionReceipt.has_value() ||
+         !m_pendingRenderExecutionReceipt->executionSucceeded ||
+         !m_pendingRenderExecutionReceipt->IsStructurallyValid()))
+    {
+        return true;
+    }
+
     // Passes may have recorded work before a later lane fails.  Submission is
     // atomic at the accepted-frame boundary: never present a partial hybrid
     // frame just because the graph itself compiled and executed.
@@ -5957,9 +6241,9 @@ void SceneRenderer::Render()
         rayTracedReflectionsRequested && m_postProcessSettings.enableRayTracedReflectionDenoise;
     const bool rayTracedShadowsRequested =
         m_rayTracedShadowPass && m_rayTracedShadowPass->IsRequestedEnabled();
-    // Motion vectors are an explicit renderer output. GFX10 does not route
-    // an unavailable TAA request through this path; GFX11 owns temporal
-    // resolve selection separately.
+    // Motion vectors are a resolved feature dependency. TAA and temporally
+    // filtered GTAO request the same canonical Camera + Object field even
+    // when a caller did not explicitly ask to expose velocity diagnostics.
     const bool cameraVelocityRequested =
         m_postProcessSettings.enableVelocityOutput;
     if (m_cameraVelocityPass)
@@ -6271,6 +6555,12 @@ void SceneRenderer::Render()
                         m_activeRenderPassResults,
                         m_activeRenderPassIdentity);
                 }
+                if (m_cameraVelocityPass)
+                {
+                    m_cameraVelocityPass->PublishRecordResults(
+                        m_activeRenderPassResults,
+                        m_activeRenderPassIdentity);
+                }
             }
             RHITextureAccessSnapshot realizedDepthAccess;
             const RHITextureAccessSnapshot* realizedDepthAccessPtr = nullptr;
@@ -6401,7 +6691,7 @@ void SceneRenderer::Render()
         RenderExecutionReceipt receipt =
             m_renderFeatureRegistry->CollectExecutionReceipt(
                 m_executionBuildIdentity);
-        receipt.schemaVersion = 8;
+        receipt.schemaVersion = 10;
         if (m_activeRenderPassResults != nullptr &&
             m_activeRenderPassResults->identity == m_activeRenderPassIdentity &&
             m_activeRenderPassIdentity.frameSequence ==
@@ -6602,6 +6892,46 @@ void SceneRenderer::Render()
                     lighting.lightingPlanIdentity, false, true);
             receipt.lighting = lighting;
         }
+        const bool ambientOcclusionFeatureExecuted = std::any_of(
+            receipt.features.begin(),
+            receipt.features.end(),
+            [](const RenderFeatureExecutionReceipt& feature)
+            {
+                return feature.featureId ==
+                           BuiltinRenderFeatureIds::AmbientOcclusion &&
+                       feature.readiness.executed &&
+                       feature.graphPassCount != 0 &&
+                       feature.executedGraphPassCount ==
+                           feature.graphPassCount;
+            });
+        if (m_ambientOcclusionFeature != nullptr)
+        {
+            receipt.ambientOcclusion =
+                m_ambientOcclusionFeature->GetLastExecutionReceipt();
+        }
+        if (receipt.ambientOcclusion.requested &&
+            activeRenderPassResultsMatchReceipt)
+        {
+            const RenderLightingSurfaceRoute route =
+                receipt.resolvedRecipe ==
+                        RenderPipelineRecipe::DeferredQuality
+                    ? RenderLightingSurfaceRoute::DeferredOpaque
+                    : RenderLightingSurfaceRoute::ForwardOpaque;
+            const RenderLightingSurfaceExecutionEvidence& evidence =
+                m_activeRenderPassResults->lightingSurfaceEvidence[
+                    static_cast<size_t>(route)];
+            if (evidence.IsValid() && evidence.route == route)
+            {
+                receipt.ambientOcclusion.lightingConsumerExecuted = true;
+                receipt.ambientOcclusion.lightingAOFieldContentHash =
+                    evidence.ambientOcclusionFieldContentHash;
+            }
+        }
+        const bool ambientOcclusionExecutionEvidenceValid =
+            receipt.ambientOcclusion.IsEmpty() ||
+            (exactGraphExecutionSucceeded &&
+             ambientOcclusionFeatureExecuted &&
+             receipt.ambientOcclusion.IsStructurallyValid());
         const bool postProcessFeatureExecuted = std::any_of(
             receipt.features.begin(),
             receipt.features.end(),
@@ -6625,6 +6955,7 @@ void SceneRenderer::Render()
         receipt.executionSucceeded = receipt.executionSucceeded &&
             graphExecuted && graphCompileValid &&
             deformationExecutionEvidenceValid &&
+            ambientOcclusionExecutionEvidenceValid &&
             postProcessExecutionEvidenceValid;
         receipt.presented = false;
         receipt.succeeded = false;
@@ -6632,6 +6963,8 @@ void SceneRenderer::Render()
         {
             receipt.diagnostic = !deformationExecutionEvidenceValid
                 ? "Render deformation execution evidence did not match the active graph recording"
+                : !ambientOcclusionExecutionEvidenceValid
+                    ? "Ambient-occlusion execution evidence did not match its opaque lighting consumer"
                 : !postProcessExecutionEvidenceValid
                     ? "Post-process execution evidence did not match the active graph recording"
                 : executionSkippedReason != nullptr
@@ -8859,11 +9192,9 @@ void SceneRenderer::BuildRenderGraph()
             RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource);
         velocityDesc.debugName = "SceneCameraVelocity";
         m_viewData.velocityTarget = m_renderGraph->CreateTexture(velocityDesc);
-        // Motion vectors are an explicitly requested frame product.  Until a
-        // typed temporal feature consumes SceneTextures in GFX11, keep the
-        // transient velocity chain live through the graph export contract;
-        // otherwise liveness pruning can correctly remove both producers and
-        // leave no execution evidence for skinned deformation.
+        // Keep the transient velocity chain live through graph export. Typed
+        // consumers also read this exact handle, while export preserves
+        // standalone velocity diagnostics and deformation evidence.
         GPUQueueDomain velocityDomain = GPUQueueDomain::Graphics;
         TryGetGPUQueueDomain(
             m_renderContext->GetDevice()->GetCapabilities().queueTopology,
@@ -9290,6 +9621,8 @@ void SceneRenderer::BuildRenderGraph()
     const bool selectedCompositionMissing =
         m_renderFeatureRegistry == nullptr ||
         m_legacyForwardFeature == nullptr ||
+        m_ambientOcclusionFeature == nullptr ||
+        m_forwardLightingFeature == nullptr ||
         m_postProcessFeature == nullptr ||
         (deferredRecipeRequested &&
          (m_deferredGeometryFeature == nullptr ||
@@ -9303,7 +9636,8 @@ void SceneRenderer::BuildRenderGraph()
         return;
     }
     if (!m_passRegistry || !m_renderFeatureRegistry ||
-        !m_legacyForwardFeature || !m_postProcessFeature ||
+        !m_legacyForwardFeature || !m_ambientOcclusionFeature ||
+        !m_forwardLightingFeature || !m_postProcessFeature ||
         (deferredRecipeRequested &&
          (!m_deferredGeometryFeature || !m_deferredLightingFeature ||
           !m_deferredForwardSpecialFeature)))
@@ -9314,6 +9648,23 @@ void SceneRenderer::BuildRenderGraph()
     }
 
     m_legacyForwardFeature->SetRecordContext(passRecordContext);
+    m_forwardLightingFeature->SetRecordContext(passRecordContext);
+    AmbientOcclusionFeatureRecordContext ambientOcclusionRecordContext;
+    ambientOcclusionRecordContext.passRecordContext = passRecordContext;
+    ambientOcclusionRecordContext.settings = ResolveAmbientOcclusionSettings(
+        m_renderScene.GetSettings());
+    if (m_activeViewHistoryCandidate.has_value() &&
+        m_activeViewHistoryAvailability.has_value())
+    {
+        ambientOcclusionRecordContext.historyIdentity =
+            *m_activeViewHistoryCandidate;
+        ambientOcclusionRecordContext.historyResetReasons =
+            effectiveTemporalHistory.resetReasons;
+        ambientOcclusionRecordContext.historyAvailable =
+            effectiveTemporalHistory.available;
+    }
+    m_ambientOcclusionFeature->SetRecordContext(
+        std::move(ambientOcclusionRecordContext));
     if (m_deferredGeometryFeature != nullptr)
     {
         m_deferredGeometryFeature->SetRecordContext(passRecordContext);
@@ -9487,7 +9838,35 @@ void SceneRenderer::BuildRenderGraph()
     }
     else
     {
-        passChain = m_legacyForwardFeature->GetPassChainStatsSnapshot();
+        const LegacyForwardFeaturePassChainStats surfaceChain =
+            m_legacyForwardFeature->GetPassChainStatsSnapshot();
+        const LegacyForwardFeaturePassChainStats lightingChain =
+            m_forwardLightingFeature->GetPassChainStatsSnapshot();
+        passChain.frameSequence = surfaceChain.frameSequence != 0
+            ? surfaceChain.frameSequence : lightingChain.frameSequence;
+        passChain.registeredPassCount = surfaceChain.registeredPassCount != 0
+            ? surfaceChain.registeredPassCount
+            : lightingChain.registeredPassCount;
+        passChain.graphPassCount = surfaceChain.graphPassCount +
+            lightingChain.graphPassCount;
+        passChain.skippedDisabledPassCount =
+            surfaceChain.skippedDisabledPassCount +
+            lightingChain.skippedDisabledPassCount;
+        passChain.skippedUnsupportedPassCount =
+            surfaceChain.skippedUnsupportedPassCount +
+            lightingChain.skippedUnsupportedPassCount;
+        passChain.passStatuses = surfaceChain.passStatuses.empty()
+            ? lightingChain.passStatuses : surfaceChain.passStatuses;
+        passChain.graphPassNames = surfaceChain.graphPassNames;
+        passChain.graphPassNames.insert(
+            passChain.graphPassNames.end(),
+            lightingChain.graphPassNames.begin(),
+            lightingChain.graphPassNames.end());
+        passChain.unsupportedPassNames = surfaceChain.unsupportedPassNames;
+        passChain.unsupportedPassNames.insert(
+            passChain.unsupportedPassNames.end(),
+            lightingChain.unsupportedPassNames.begin(),
+            lightingChain.unsupportedPassNames.end());
     }
     ++m_passChainStats.frameCount;
     m_passChainStats.passStatuses = passChain.passStatuses;
@@ -9537,6 +9916,7 @@ void SceneRenderer::BuildRenderGraph()
         {
             readinessCandidates = {
                 m_deferredGeometryFeature->ResolveReadiness(),
+                m_ambientOcclusionFeature->ResolveReadiness(),
                 m_deferredLightingFeature->ResolveReadiness(),
                 m_deferredForwardSpecialFeature->ResolveReadiness(),
                 m_postProcessFeature->ResolveReadiness()};
@@ -9545,6 +9925,10 @@ void SceneRenderer::BuildRenderGraph()
         {
             readinessCandidates.push_back(
                 m_legacyForwardFeature->ResolveReadiness());
+            readinessCandidates.push_back(
+                m_ambientOcclusionFeature->ResolveReadiness());
+            readinessCandidates.push_back(
+                m_forwardLightingFeature->ResolveReadiness());
             readinessCandidates.push_back(
                 m_postProcessFeature->ResolveReadiness());
         }
@@ -9671,6 +10055,10 @@ bool SceneRenderer::RemovePass(const char* name)
         {
             m_legacyForwardFeature->SetOpaquePass(nullptr);
         }
+        if (m_forwardLightingFeature)
+        {
+            m_forwardLightingFeature->SetOpaquePass(nullptr);
+        }
         if (m_deferredGeometryFeature)
         {
             m_deferredGeometryFeature->SetOpaquePass(nullptr);
@@ -9683,8 +10071,23 @@ bool SceneRenderer::RemovePass(const char* name)
     if (removed == m_depthPrepass) m_depthPrepass = nullptr;
     if (removed == m_shadowPass) m_shadowPass = nullptr;
     if (removed == m_rayTracedShadowPass) m_rayTracedShadowPass = nullptr;
+    const bool velocityPassRemoved =
+        removed == m_cameraVelocityPass || removed == m_objectVelocityPass;
     if (removed == m_cameraVelocityPass) m_cameraVelocityPass = nullptr;
     if (removed == m_objectVelocityPass) m_objectVelocityPass = nullptr;
+    if (velocityPassRemoved)
+    {
+        const VelocityPassBindings velocityPasses{
+            m_cameraVelocityPass, m_objectVelocityPass};
+        if (m_legacyForwardFeature)
+            m_legacyForwardFeature->SetVelocityPasses(velocityPasses);
+        if (m_forwardLightingFeature)
+            m_forwardLightingFeature->SetVelocityPasses(velocityPasses);
+        if (m_deferredGeometryFeature)
+            m_deferredGeometryFeature->SetVelocityPasses(velocityPasses);
+        if (m_deferredForwardSpecialFeature)
+            m_deferredForwardSpecialFeature->SetVelocityPasses(velocityPasses);
+    }
     if (removed == m_particleFeaturePass) m_particleFeaturePass = nullptr;
     if (removed == m_transparentPass) m_transparentPass = nullptr;
     if (removed == m_skyboxPass) m_skyboxPass = nullptr;
@@ -9699,6 +10102,10 @@ void SceneRenderer::ClearPasses()
     {
         m_legacyForwardFeature->SetOpaquePass(nullptr);
     }
+    if (m_forwardLightingFeature)
+    {
+        m_forwardLightingFeature->SetOpaquePass(nullptr);
+    }
     if (m_deferredGeometryFeature)
     {
         m_deferredGeometryFeature->SetOpaquePass(nullptr);
@@ -9707,6 +10114,14 @@ void SceneRenderer::ClearPasses()
     {
         m_deferredForwardSpecialFeature->SetOpaquePass(nullptr);
     }
+    if (m_legacyForwardFeature)
+        m_legacyForwardFeature->SetVelocityPasses({});
+    if (m_forwardLightingFeature)
+        m_forwardLightingFeature->SetVelocityPasses({});
+    if (m_deferredGeometryFeature)
+        m_deferredGeometryFeature->SetVelocityPasses({});
+    if (m_deferredForwardSpecialFeature)
+        m_deferredForwardSpecialFeature->SetVelocityPasses({});
     if (m_passRegistry)
         m_passRegistry->Clear();
 
@@ -9806,7 +10221,6 @@ void SceneRenderer::SetupDefaultPostProcess()
     m_postProcessStack->Initialize(m_renderContext->GetDevice());
     m_postProcessStack->SetExposureResources(m_pipelineCache.get());
     m_bloomPostProcess = m_postProcessStack->AddEffect<BloomPass>();
-    m_ssaoPostProcess = m_postProcessStack->AddEffect<SSAOPass>();
     m_toneMappingPostProcess = m_postProcessStack->AddEffect<ToneMappingPass>();
     m_colorGradingPostProcess = m_postProcessStack->AddEffect<ColorGradingPass>();
     m_chromaticAberrationPostProcess = m_postProcessStack->AddEffect<ChromaticAberrationPass>();
@@ -9818,11 +10232,6 @@ void SceneRenderer::SetupDefaultPostProcess()
     if (m_bloomPostProcess)
     {
         m_bloomPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
-    }
-
-    if (m_ssaoPostProcess)
-    {
-        m_ssaoPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
     }
 
     if (m_toneMappingPostProcess)

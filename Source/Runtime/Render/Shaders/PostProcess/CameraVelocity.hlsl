@@ -15,7 +15,7 @@ cbuffer CameraVelocityConstants : register(b0, space0)
     float4x4 InverseViewProjection;
     float4x4 PreviousViewProjection;
     float4 OutputSizeAndInvSize; // xy: size, zw: inv size
-    float4 VelocityParams;       // x: previous valid, y: unused, z: background depth threshold, w: unused
+    float4 VelocityParams;       // x: previous valid, y: unused, z: depth clear value, w: clear epsilon
 };
 
 Texture2D<float> DepthTexture : register(t1, space0);
@@ -39,7 +39,8 @@ float2 PSMain(VSOutput input) : SV_TARGET
 {
     const uint2 pixel = min(uint2(input.Position.xy), uint2(OutputSizeAndInvSize.xy) - 1u);
     const float depth = DepthTexture.Load(int3(pixel, 0)).r;
-    if (VelocityParams.x <= 0.5f || depth >= VelocityParams.z)
+    const float backgroundDelta = abs(depth - VelocityParams.z);
+    if (VelocityParams.x <= 0.5f || backgroundDelta <= VelocityParams.w)
     {
         return 0.0f;
     }

@@ -7,26 +7,13 @@
 
 #include "Render/Passes/IRenderPass.h"
 
+#include <memory>
+
 
 namespace RVX
 {
     class PipelineCache;
     class ResourceViewCache;
-
-    struct CameraVelocityPassStats
-    {
-        bool requested = false;
-        bool supported = false;
-        bool depthAvailable = false;
-        bool previousViewProjectionAvailable = false;
-        bool velocityTargetAvailable = false;
-        bool outputDeclared = false;
-        bool constantsUploaded = false;
-        bool velocityRecorded = false;
-        uint32 width = 0;
-        uint32 height = 0;
-        RHIFormat outputFormat = RHIFormat::Unknown;
-    };
 
     class CameraVelocityPass : public IRenderPass
     {
@@ -43,6 +30,9 @@ namespace RVX
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
         void Execute(RenderGraphPassContext& context,
                      const ViewData& view) override;
+        void AddToGraph(RenderGraph& graph, const ViewData& view) override;
+        void AddToGraph(RenderGraph& graph,
+                        const RenderPassRecordContext& context) override;
 
         void SetResources(PipelineCache* pipelineCache, ResourceViewCache* viewCache);
         void SetEnabled(bool enabled) { m_enabled = enabled; }
@@ -50,7 +40,14 @@ namespace RVX
         bool IsSupported() const override;
         const std::string& GetUnsupportedReason() const override { return m_unsupportedReason; }
         bool IsEnabled() const override { return IsRequestedEnabled() && IsSupported(); }
-        const CameraVelocityPassStats& GetStats() const { return m_stats; }
+        /** Compatibility diagnostic snapshot of the newest completed record. */
+        const CameraVelocityPassStats& GetStats() const
+        {
+            return m_lastPublishedStats;
+        }
+        void PublishRecordResults(
+            const std::shared_ptr<RenderPassRecordResults>& results,
+            const RenderPassRecordIdentity& expectedIdentity);
 
     private:
         IRHIDevice* m_device = nullptr;
@@ -59,16 +56,8 @@ namespace RVX
         bool m_enabled = false;
         mutable std::string m_unsupportedReason = "Camera velocity pass has not been requested";
 
-        RGTextureHandle m_depthReadHandle;
-        RGTextureHandle m_velocityWriteHandle;
-        RGTextureViewHandle m_depthViewHandle;
-        RGTextureViewHandle m_velocityViewHandle;
-        RHIBufferRef m_constantBuffer;
-        RHISamplerRef m_sampler;
-        CameraVelocityPassStats m_stats;
-
-        bool EnsureRuntimeResources();
-        bool UpdateConstants(const ViewData& view, uint32 width, uint32 height);
+        RenderPassRecordIdentity m_lastPublishedIdentity{};
+        CameraVelocityPassStats m_lastPublishedStats{};
     };
 
 } // namespace RVX

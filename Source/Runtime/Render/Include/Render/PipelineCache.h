@@ -275,6 +275,13 @@ namespace RVX
         EnvironmentIBLFrameResources environmentIBL{};
         /** Exact committed state used by deferred HDR lighting, set 0 / b21. */
         RHIBufferRef exposureStateBuffer;
+        /**
+         * Exact graph-owned GTAO visibility field used by this lighting record.
+         * When omitted, the cache binds its immutable neutral-white R8 fallback.
+         */
+        RHITextureViewRef ambientOcclusionView;
+        /** Content identity for ambientOcclusionView; required when a view is supplied. */
+        uint64 ambientOcclusionFieldHash = 0;
     };
 
     /**
@@ -304,6 +311,8 @@ namespace RVX
         RHITextureViewRef environmentIBLBRDFLUTView;
         RHISamplerRef environmentIBLSampler;
         RHIBufferRef exposureStateBuffer;
+        RHITextureViewRef ambientOcclusionView;
+        uint64 ambientOcclusionFieldHash = 0;
         RHIDescriptorSetLayoutRef frameSetLayout;
         RHIDescriptorSetRef frameDescriptorSet;
 
@@ -317,6 +326,7 @@ namespace RVX
                    clusterLightIndexBuffer && environmentIBLIrradianceView &&
                    environmentIBLPrefilteredView && environmentIBLBRDFLUTView &&
                    environmentIBLSampler && exposureStateBuffer &&
+                   ambientOcclusionView && ambientOcclusionFieldHash != 0 &&
                    frameSetLayout && frameDescriptorSet;
         }
 
@@ -530,7 +540,11 @@ namespace RVX
         uint64 skyboxPipelineHash = 0;
         uint64 toneMappingPipelineHash = 0;
         uint64 bloomPipelineHash = 0;
-        uint64 ssaoPipelineHash = 0;
+        uint64 gtaoSurfacePipelineHash = 0;
+        uint64 gtaoHorizonPipelineHash = 0;
+        uint64 gtaoBilateralHorizontalPipelineHash = 0;
+        uint64 gtaoBilateralVerticalPipelineHash = 0;
+        uint64 gtaoTemporalPipelineHash = 0;
         uint64 colorGradingPipelineHash = 0;
         uint64 chromaticAberrationPipelineHash = 0;
         uint64 filmGrainPipelineHash = 0;
@@ -729,9 +743,11 @@ namespace RVX
                    m_deferredLightingPipelineLayout;
         }
 
-        /** Fixed HDR producer binding ABI for pre-exposure state. */
+        /** Fixed HDR producer binding ABI for pre-exposure state and GTAO visibility. */
         static constexpr uint32 DefaultLitExposureStateBinding = 14u;
+        static constexpr uint32 DefaultLitAmbientOcclusionBinding = 15u;
         static constexpr uint32 DeferredLightingExposureStateBinding = 21u;
+        static constexpr uint32 DeferredLightingAmbientOcclusionBinding = 22u;
         static constexpr uint32 SkyboxExposureStateBinding = 3u;
 
         RHIPipeline* GetExposureHistogramClearPipeline();
@@ -826,10 +842,24 @@ namespace RVX
         RHIPipeline* GetBloomAdditivePipeline(RHIFormat outputFormat);
 
         /**
-         * @brief Get the fullscreen depth-only SSAO post-process pipeline
+         * @brief Get the fail-closed Ground Truth Ambient Occlusion pipeline family.
+         *
+         * Surface preparation preserves exact device depth in R32_FLOAT.
+         * Horizon, bilateral, and temporal visibility fields are
+         * contractually R8_UNORM; callers cannot select arbitrary output
+         * formats.
          */
-        RHIPipeline* GetSSAOPipeline() const { return m_ssaoPipeline.Get(); }
-        RHIPipeline* GetSSAOPipeline(RHIFormat outputFormat);
+        RHIPipeline* GetGTAOSurfacePipeline() const { return m_gtaoSurfacePipeline.Get(); }
+        RHIPipeline* GetGTAOHorizonPipeline() const { return m_gtaoHorizonPipeline.Get(); }
+        RHIPipeline* GetGTAOBilateralHorizontalPipeline() const
+        {
+            return m_gtaoBilateralHorizontalPipeline.Get();
+        }
+        RHIPipeline* GetGTAOBilateralVerticalPipeline() const
+        {
+            return m_gtaoBilateralVerticalPipeline.Get();
+        }
+        RHIPipeline* GetGTAOTemporalPipeline() const { return m_gtaoTemporalPipeline.Get(); }
 
         /**
          * @brief Get the camera/depth motion-vector pipeline
@@ -969,6 +999,9 @@ namespace RVX
         /** @brief Layout for the temporal resolve and history-store fullscreen passes. */
         RHIPipelineLayout* GetTAALayout() const { return m_taaPipelineLayout.Get(); }
 
+        /** @brief Layout for the five-pass GTAO reconstruction and filtering family. */
+        RHIPipelineLayout* GetGTAOLayout() const { return m_gtaoPipelineLayout.Get(); }
+
         /**
          * @brief Get the runtime UI overlay pipeline layout
          */
@@ -1010,6 +1043,9 @@ namespace RVX
 
         /** @brief Descriptor layout for current/history/depth/velocity/reactive TAA inputs. */
         RHIDescriptorSetLayout* GetTAASetLayout() const { return m_taaSetLayout.Get(); }
+
+        /** @brief Descriptor layout for current surface, AO filtering, and temporal inputs. */
+        RHIDescriptorSetLayout* GetGTAOSetLayout() const { return m_gtaoSetLayout.Get(); }
 
         /**
          * @brief Get the descriptor set layout used by ray-traced reflection denoise pass
@@ -1405,6 +1441,8 @@ namespace RVX
             RHITextureViewRef environmentIBLBRDFLUTView;
             RHISamplerRef environmentIBLSampler;
             RHIBufferRef exposureStateBuffer;
+            RHITextureViewRef ambientOcclusionView;
+            uint64 ambientOcclusionFieldHash = 0;
 
             [[nodiscard]] bool IsComplete() const noexcept
             {
@@ -1416,7 +1454,8 @@ namespace RVX
                        environmentIBLIrradianceView &&
                        environmentIBLPrefilteredView &&
                        environmentIBLBRDFLUTView && environmentIBLSampler &&
-                       exposureStateBuffer;
+                       exposureStateBuffer && ambientOcclusionView &&
+                       ambientOcclusionFieldHash != 0;
             }
         };
 
@@ -1439,6 +1478,7 @@ namespace RVX
         bool CreateDeferredLightingPipelineLayout();
         bool CreatePostProcessPipelineLayout();
         bool CreateTAAPipelineLayout();
+        bool CreateGTAOPipelineLayout();
         bool CreateUIPipelineLayout();
         bool CreateRayTracedReflectionDenoisePipelineLayout();
         bool CreateSkyboxPipelineLayout();
@@ -1523,7 +1563,17 @@ namespace RVX
         RHIPipelineRef GetOrCreateToneMappingPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateBloomPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateBloomAdditivePipeline(RHIFormat outputFormat);
-        RHIPipelineRef GetOrCreateSSAOPipeline(RHIFormat outputFormat);
+        RHIPipelineRef GetOrCreateGTAOSurfacePipeline();
+        RHIPipelineRef GetOrCreateGTAOHorizonPipeline();
+        RHIPipelineRef GetOrCreateGTAOBilateralHorizontalPipeline();
+        RHIPipelineRef GetOrCreateGTAOBilateralVerticalPipeline();
+        RHIPipelineRef GetOrCreateGTAOTemporalPipeline();
+        RHIPipelineRef GetOrCreateGTAOPipeline(
+            RHIShader* pixelShader,
+            const char* debugName,
+            const char* stageName,
+            RHIFormat outputFormat,
+            uint64& outPipelineHash);
         RHIPipelineRef GetOrCreateCameraVelocityPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateObjectVelocityPipeline(
             RHIFormat outputFormat,
@@ -1613,7 +1663,10 @@ namespace RVX
         RHIGraphicsPipelineDesc BuildToneMappingPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildBloomPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildBloomAdditivePipelineDesc(RHIFormat outputFormat) const;
-        RHIGraphicsPipelineDesc BuildSSAOPipelineDesc(RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildGTAOPipelineDesc(
+            RHIShader* pixelShader,
+            const char* debugName,
+            RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildCameraVelocityPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildObjectVelocityPipelineDesc(
             RHIFormat outputFormat,
@@ -1643,6 +1696,7 @@ namespace RVX
         bool EnsureFrameLightFallbackResources();
         bool EnsureFrameClusteredLightFallbackResources();
         bool EnsureFrameExposureFallbackBuffer();
+        bool EnsureFrameAmbientOcclusionFallbackResources();
         bool EnsureObjectInstanceFallbackBuffer();
         bool EnsureObjectSkinningPaletteFallbackBuffers();
         [[nodiscard]] bool ResolveSkinningPaletteBuffers(
@@ -1731,8 +1785,11 @@ namespace RVX
         RHIShaderRef m_toneMappingPixelShader;
         RHIShaderRef m_bloomVertexShader;
         RHIShaderRef m_bloomPixelShader;
-        RHIShaderRef m_ssaoVertexShader;
-        RHIShaderRef m_ssaoPixelShader;
+        RHIShaderRef m_gtaoSurfacePixelShader;
+        RHIShaderRef m_gtaoHorizonPixelShader;
+        RHIShaderRef m_gtaoBilateralHorizontalPixelShader;
+        RHIShaderRef m_gtaoBilateralVerticalPixelShader;
+        RHIShaderRef m_gtaoTemporalPixelShader;
         RHIShaderRef m_cameraVelocityPixelShader;
         RHIShaderRef m_objectVelocityVertexShader;
         RHIShaderRef m_rigidObjectVelocityVertexShader;
@@ -1792,8 +1849,11 @@ namespace RVX
         std::unique_ptr<ShaderProgramMetadata> m_toneMappingPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_bloomVsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_bloomPsCompileResult;
-        std::unique_ptr<ShaderProgramMetadata> m_ssaoVsCompileResult;
-        std::unique_ptr<ShaderProgramMetadata> m_ssaoPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_gtaoSurfacePsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_gtaoHorizonPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_gtaoBilateralHorizontalPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_gtaoBilateralVerticalPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_gtaoTemporalPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_cameraVelocityPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_objectVelocityVsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_rigidObjectVelocityVsCompileResult;
@@ -1844,6 +1904,8 @@ namespace RVX
         RHIPipelineLayoutRef m_exposurePostProcessPipelineLayout;
         RHIDescriptorSetLayoutRef m_taaSetLayout;
         RHIPipelineLayoutRef m_taaPipelineLayout;
+        RHIDescriptorSetLayoutRef m_gtaoSetLayout;
+        RHIPipelineLayoutRef m_gtaoPipelineLayout;
         RHIDescriptorSetLayoutRef m_uiTextureSetLayout;
         RHIPipelineLayoutRef m_uiPipelineLayout;
         RHIDescriptorSetLayoutRef m_rayTracedReflectionDenoiseSetLayout;
@@ -1881,7 +1943,11 @@ namespace RVX
         RHIPipelineRef m_toneMappingPipeline;
         RHIPipelineRef m_bloomPipeline;
         RHIPipelineRef m_bloomAdditivePipeline;
-        RHIPipelineRef m_ssaoPipeline;
+        RHIPipelineRef m_gtaoSurfacePipeline;
+        RHIPipelineRef m_gtaoHorizonPipeline;
+        RHIPipelineRef m_gtaoBilateralHorizontalPipeline;
+        RHIPipelineRef m_gtaoBilateralVerticalPipeline;
+        RHIPipelineRef m_gtaoTemporalPipeline;
         RHIPipelineRef m_cameraVelocityPipeline;
         RHIPipelineRef m_objectVelocityPipeline;
         RHIPipelineRef m_rigidObjectVelocityPipeline;
@@ -1959,6 +2025,8 @@ namespace RVX
         RHIBufferRef m_fallbackClusterBuffer;
         RHIBufferRef m_fallbackClusterLightIndexBuffer;
         RHIBufferRef m_fallbackExposureStateBuffer;
+        RHITextureRef m_fallbackAmbientOcclusionTexture;
+        RHITextureViewRef m_fallbackAmbientOcclusionView;
         RHITextureViewRef m_currentDirectionalShadowView;
         RHITextureViewRef m_currentRayTracedShadowMaskView;
         RHISamplerRef m_currentDirectionalShadowSampler;

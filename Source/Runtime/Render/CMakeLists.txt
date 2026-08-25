@@ -211,6 +211,7 @@ add_library(RVX_RenderLighting STATIC)
 target_sources(RVX_RenderLighting PRIVATE
     Private/Passes/ShadowPass.cpp
     Private/Passes/DeferredLightingPass.cpp
+    Private/Lighting/GroundTruthAmbientOcclusion.cpp
 )
 rvx_configure_render_component(RVX_RenderLighting)
 target_link_libraries(RVX_RenderLighting PUBLIC
@@ -238,7 +239,6 @@ target_sources(RVX_RenderPostProcess PRIVATE
     Private/PostProcess/ToneMapping.cpp
     Private/PostProcess/Bloom.cpp
     Private/PostProcess/FXAA.cpp
-    Private/PostProcess/SSAO.cpp
     Private/PostProcess/SSR.cpp
     Private/PostProcess/TAA.cpp
     Private/PostProcess/DOF.cpp
@@ -302,6 +302,7 @@ target_sources(RVX_RenderComposition PRIVATE
     Private/Renderer/RenderPassRegistry.cpp
     Private/Renderer/SceneRenderer.cpp
     Private/Features/DefaultForwardComposition.cpp
+    Private/Features/AmbientOcclusionFeatureAdapter.cpp
     Private/Features/DeferredRecipeFeatureAdapter.cpp
     Private/Features/LegacyForwardFeatureAdapter.cpp
     Private/Features/PostProcessPipelineFeatureAdapter.cpp

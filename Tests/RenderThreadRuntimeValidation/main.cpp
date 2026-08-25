@@ -1754,6 +1754,41 @@ namespace
     }
 
     TEST(RenderThreadRuntimeValidation,
+         AmbientOcclusionQualificationProbeRequestIsOneShotAndOwnerDelivered)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->ambientOcclusionQualificationProbeAccepted = true;
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe));
+
+        EXPECT_FALSE(runtime.RequestAmbientOcclusionQualificationProbe());
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::AmbientOcclusionQualificationProbe),
+                  0U);
+
+        EXPECT_TRUE(runtime.RequestAmbientOcclusionQualificationProbe());
+        EXPECT_FALSE(runtime.RequestAmbientOcclusionQualificationProbe());
+        EXPECT_TRUE(probe->WaitForEventCount(
+            RenderRuntimeTestEvent::AmbientOcclusionQualificationProbe,
+            1U,
+            RVX_TEST_TIMEOUT));
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::AmbientOcclusionQualificationProbe),
+                  1U);
+        EXPECT_EQ(probe->GetEventCount(RenderRuntimeTestEvent::Frame), 0U);
+
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+        EXPECT_FALSE(runtime.RequestAmbientOcclusionQualificationProbe());
+    }
+
+    TEST(RenderThreadRuntimeValidation,
          QualificationRequestArrivingBeforeFrameAcquireArmsThatExactFrame)
     {
         auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
@@ -1929,6 +1964,66 @@ namespace
             events.begin(),
             events.end(),
             RenderRuntimeTestEvent::ExposureQualificationProbe);
+        const auto frame = std::find(
+            events.begin(), events.end(), RenderRuntimeTestEvent::Frame);
+        ASSERT_NE(events.end(), qualification);
+        ASSERT_NE(events.end(), frame);
+        EXPECT_LT(std::distance(events.begin(), qualification),
+                  std::distance(events.begin(), frame));
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         AmbientOcclusionProbeRequestArrivingBeforeFrameAcquireArmsThatExactFrame)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->ambientOcclusionQualificationProbeAccepted = true;
+        auto acquireHook = std::make_shared<BlockingFrameAcquireHook>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe),
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            acquireHook);
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+
+        acquireHook->Arm();
+        runtime.Wake();
+        if (!acquireHook->WaitUntilEntered(RVX_TEST_TIMEOUT))
+        {
+            acquireHook->Release();
+            EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+            FAIL() << "Render owner did not reach the frame acquire seam";
+            return;
+        }
+
+        const bool requestAccepted =
+            runtime.RequestAmbientOcclusionQualificationProbe();
+        const RenderFramePublishResult publish =
+            PublishFrame(runtime, MakePacket(8134));
+        acquireHook->Release();
+
+        ASSERT_TRUE(requestAccepted);
+        ASSERT_EQ(publish.code, RenderFramePublishCode::Accepted);
+        ASSERT_TRUE(probe->WaitForEventCount(
+            RenderRuntimeTestEvent::Frame, 1U, RVX_TEST_TIMEOUT));
+        EXPECT_TRUE(WaitForPresentedFrame(runtime, 8134));
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::AmbientOcclusionQualificationProbe),
+                  1U);
+        const std::vector<RenderRuntimeTestEvent> events = probe->GetEvents();
+        const auto qualification = std::find(
+            events.begin(),
+            events.end(),
+            RenderRuntimeTestEvent::AmbientOcclusionQualificationProbe);
         const auto frame = std::find(
             events.begin(), events.end(), RenderRuntimeTestEvent::Frame);
         ASSERT_NE(events.end(), qualification);

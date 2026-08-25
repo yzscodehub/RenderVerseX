@@ -2,9 +2,10 @@
 
 /**
  * @file LegacyForwardFeatureAdapter.h
- * @brief Transitional feature wrapper for the established forward pass chain.
+ * @brief Recipe-specific halves of the established forward pass chain.
  */
 
+#include "Features/VelocityPassBindings.h"
 #include "Render/Features/IRenderFeature.h"
 #include "Render/Passes/RenderPassRecordContext.h"
 
@@ -31,17 +32,18 @@ namespace RVX
     };
 
     /**
-     * @brief Bridges the existing sorted forward-pass registry into GFX02 features.
+     * @brief Produces ForwardStandard depth/surface inputs before lighting.
      *
-     * This is intentionally a narrow compatibility adapter. It owns neither the
-     * pass registry nor the opaque pass, and it snapshots the full record context
-     * before graph composition so callbacks never consult SceneRenderer state.
+     * GFX13 keeps stable feature id 1 but narrows its responsibility to passes
+     * before Opaque.  It publishes SceneTextures so GTAO can be an ordinary
+     * typed dependency instead of a hidden callback in the legacy chain.
      */
     class LegacyForwardFeatureAdapter final : public IRenderFeature
     {
     public:
         LegacyForwardFeatureAdapter(RenderPassRegistry* passRegistry,
-                                    OpaquePass* opaquePass) noexcept;
+                                    OpaquePass* opaquePass,
+                                    VelocityPassBindings velocityPasses = {}) noexcept;
 
         /** @brief Replace the value-owned context used for the next graph build. */
         void SetRecordContext(RenderPassRecordContext context);
@@ -50,6 +52,11 @@ namespace RVX
         void SetOpaquePass(OpaquePass* opaquePass) noexcept
         {
             m_opaquePass = opaquePass;
+        }
+
+        void SetVelocityPasses(VelocityPassBindings velocityPasses) noexcept
+        {
+            m_velocityPasses = velocityPasses;
         }
 
         [[nodiscard]] RenderFeatureDescriptor Describe() const override;
@@ -92,6 +99,67 @@ namespace RVX
 
         RenderPassRegistry* m_passRegistry = nullptr;
         OpaquePass* m_opaquePass = nullptr;
+        VelocityPassBindings m_velocityPasses{};
+        RenderPassRecordContext m_recordContext{};
+        RenderFeatureContext m_preparedContext{};
+        LegacyForwardFeaturePassChainStats m_lastPassChainStats{};
+        mutable RenderFeatureExecutionReceipt m_lastReceipt{};
+        RenderFeatureReadiness m_readiness{};
+        bool m_hasRecordContext = false;
+    };
+
+    /**
+     * @brief Consumes the exact AO field, then records Forward opaque and later passes.
+     *
+     * This adapter is the sole ForwardStandard consumer of screen-space AO.
+     * Transparent, sky, particles, water, and other later passes receive no AO
+     * input even though they remain in the same compatibility pass registry.
+     */
+    class ForwardLightingFeatureAdapter final : public IRenderFeature
+    {
+    public:
+        ForwardLightingFeatureAdapter(RenderPassRegistry* passRegistry,
+                                      OpaquePass* opaquePass,
+                                      VelocityPassBindings velocityPasses = {}) noexcept;
+
+        void SetRecordContext(RenderPassRecordContext context);
+        void SetOpaquePass(OpaquePass* opaquePass) noexcept
+        {
+            m_opaquePass = opaquePass;
+        }
+        void SetVelocityPasses(VelocityPassBindings velocityPasses) noexcept
+        {
+            m_velocityPasses = velocityPasses;
+        }
+
+        [[nodiscard]] RenderFeatureDescriptor Describe() const override;
+        void Prepare(const RenderFeatureContext& context) override;
+        [[nodiscard]] RenderFeatureReadiness ResolveReadiness() const override;
+        void AddPasses(RenderFeatureGraphBuilder& builder,
+                       RenderGraphBlackboard& blackboard) override;
+        [[nodiscard]] RenderFeatureExecutionReceipt CollectReceipt()
+            const override;
+
+        [[nodiscard]] LegacyForwardFeaturePassChainStats
+        GetPassChainStatsSnapshot() const
+        {
+            return m_lastPassChainStats;
+        }
+
+        [[nodiscard]] const RenderFeatureReadiness& GetLastReadiness()
+            const noexcept
+        {
+            return m_readiness;
+        }
+
+    private:
+        [[nodiscard]] bool HasMatchingRecordContext(
+            const RenderFeatureContext& context) const noexcept;
+        void SetCompositionFailure(std::string diagnostic);
+
+        RenderPassRegistry* m_passRegistry = nullptr;
+        OpaquePass* m_opaquePass = nullptr;
+        VelocityPassBindings m_velocityPasses{};
         RenderPassRecordContext m_recordContext{};
         RenderFeatureContext m_preparedContext{};
         LegacyForwardFeaturePassChainStats m_lastPassChainStats{};

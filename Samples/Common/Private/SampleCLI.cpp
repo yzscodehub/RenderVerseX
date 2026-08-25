@@ -517,7 +517,8 @@ namespace RVX
                    << ",\n";
             if (receipt.schemaVersion == 2 || receipt.schemaVersion == 4 ||
                 receipt.schemaVersion == 5 || receipt.schemaVersion == 6 ||
-                receipt.schemaVersion == 7 || receipt.schemaVersion == 8)
+                receipt.schemaVersion == 7 || receipt.schemaVersion == 8 ||
+                receipt.schemaVersion == 10)
             {
                 stream << "      \"deferredOpaque\": {\"available\": "
                        << Diagnostics::JsonBool(receipt.deferredOpaque.available)
@@ -533,7 +534,7 @@ namespace RVX
             }
             if (receipt.schemaVersion == 4 || receipt.schemaVersion == 5 ||
                 receipt.schemaVersion == 6 || receipt.schemaVersion == 7 ||
-                receipt.schemaVersion == 8)
+                receipt.schemaVersion == 8 || receipt.schemaVersion == 10)
             {
                 stream << "      \"lighting\": {\"lightingPlanIdentity\": "
                        << receipt.lighting.lightingPlanIdentity
@@ -576,7 +577,8 @@ namespace RVX
                        << "},\n";
             }
             if (receipt.schemaVersion == 5 || receipt.schemaVersion == 6 ||
-                receipt.schemaVersion == 7 || receipt.schemaVersion == 8)
+                receipt.schemaVersion == 7 || receipt.schemaVersion == 8 ||
+                receipt.schemaVersion == 10)
             {
                 stream << "      \"deformation\": {\"deformationContentHash\": "
                        << receipt.deformation.deformationContentHash
@@ -603,7 +605,7 @@ namespace RVX
                        << "},\n";
             }
             if (receipt.schemaVersion == 6 || receipt.schemaVersion == 7 ||
-                receipt.schemaVersion == 8)
+                receipt.schemaVersion == 8 || receipt.schemaVersion == 10)
             {
                 stream << "      \"postProcess\": {\"planContentHash\": "
                        << receipt.postProcess.postProcessContentHash
@@ -617,7 +619,8 @@ namespace RVX
                        << receipt.postProcess.fxaaPassCount
                        << ", \"taaPassCount\": "
                        << receipt.postProcess.taaPassCount;
-                if (receipt.schemaVersion == 7 || receipt.schemaVersion == 8)
+                if (receipt.schemaVersion == 7 || receipt.schemaVersion == 8 ||
+                    receipt.schemaVersion == 10)
                 {
                     stream << ", \"antiAliasingMode\": "
                            << Diagnostics::JsonString(
@@ -664,7 +667,7 @@ namespace RVX
                            << ", \"taaHistoryStoreGraphPassCount\": "
                            << receipt.postProcess.taaHistoryStoreGraphPassCount;
                 }
-                if (receipt.schemaVersion == 8)
+                if (receipt.schemaVersion == 8 || receipt.schemaVersion == 10)
                 {
                     stream << ", \"exposureStateContentHash\": "
                            << receipt.postProcess.exposureStateContentHash
@@ -771,6 +774,117 @@ namespace RVX
                               receipt.postProcess.fallbackUsed)
                        << "},\n";
             }
+            if (receipt.schemaVersion == 10)
+            {
+                const RenderAmbientOcclusionExecutionReceipt& ambientOcclusion =
+                    receipt.ambientOcclusion;
+                stream << "      \"ambientOcclusion\": {\"planContentHash\": "
+                       << ambientOcclusion.planContentHash
+                       << ", \"requested\": "
+                       << Diagnostics::JsonBool(ambientOcclusion.requested)
+                       << ", \"pipelineReady\": "
+                       << Diagnostics::JsonBool(ambientOcclusion.pipelineReady)
+                       << ", \"inputsReady\": "
+                       << Diagnostics::JsonBool(ambientOcclusion.inputsReady)
+                       << ", \"executed\": "
+                       << Diagnostics::JsonBool(ambientOcclusion.executed)
+                       << ", \"lightingConsumerExecuted\": "
+                       << Diagnostics::JsonBool(
+                              ambientOcclusion.lightingConsumerExecuted)
+                       << ", \"linearDepthInputReady\": "
+                       << Diagnostics::JsonBool(
+                              ambientOcclusion.linearDepthInputReady)
+                       << ", \"worldNormalInputReady\": "
+                       << Diagnostics::JsonBool(
+                              ambientOcclusion.worldNormalInputReady)
+                       << ", \"velocityInputReady\": "
+                       << Diagnostics::JsonBool(
+                              ambientOcclusion.velocityInputReady)
+                       << ", \"velocityProducerExecuted\": "
+                       << Diagnostics::JsonBool(
+                              ambientOcclusion.velocityProducerExecuted)
+                       << ", \"outputPublished\": "
+                       << Diagnostics::JsonBool(ambientOcclusion.outputPublished)
+                       << ", \"outputFormat\": "
+                       << Diagnostics::JsonString(GetRHIFormatCanonicalName(
+                              ambientOcclusion.outputFormat))
+                       << ", \"horizonSearchGraphPassCount\": "
+                       << ambientOcclusion.horizonSearchGraphPassCount
+                       << ", \"bilateralDenoiseGraphPassCount\": "
+                       << ambientOcclusion.bilateralDenoiseGraphPassCount
+                       << ", \"temporalResolveGraphPassCount\": "
+                       << ambientOcclusion.temporalResolveGraphPassCount
+                       << ", \"historyAvailableBefore\": "
+                       << Diagnostics::JsonBool(
+                              ambientOcclusion.historyAvailableBefore)
+                       << ", \"historySampled\": "
+                       << Diagnostics::JsonBool(ambientOcclusion.historySampled)
+                       << ", \"motionReprojectionUsed\": "
+                       << Diagnostics::JsonBool(
+                              ambientOcclusion.motionReprojectionUsed)
+                       << ", \"viewProjectionMotionObserved\": "
+                       << Diagnostics::JsonBool(
+                              ambientOcclusion.viewProjectionMotionObserved)
+                       << ", \"historyCandidateProduced\": "
+                       << Diagnostics::JsonBool(
+                              ambientOcclusion.historyCandidateProduced)
+                       << ", \"historyCommitted\": "
+                       << Diagnostics::JsonBool(ambientOcclusion.historyCommitted)
+                       << ", \"historyAbandoned\": "
+                       << Diagnostics::JsonBool(ambientOcclusion.historyAbandoned)
+                       << ", \"historyResetReasons\": "
+                       << static_cast<uint32>(
+                              ambientOcclusion.historyResetReasons)
+                       << ", \"aoFieldContentHash\": "
+                       << ambientOcclusion.aoFieldContentHash
+                       << ", \"lightingAOFieldContentHash\": "
+                       << ambientOcclusion.lightingAOFieldContentHash
+                       << ", \"velocityFieldIdentity\": "
+                       << ambientOcclusion.velocityFieldIdentity
+                       << ", \"consumerMask\": "
+                       << static_cast<uint32>(ambientOcclusion.consumerMask)
+                       << ", \"probeRequested\": "
+                       << Diagnostics::JsonBool(ambientOcclusion.probeRequested)
+                       << ", \"probeReady\": "
+                       << Diagnostics::JsonBool(ambientOcclusion.probeReady)
+                       << ", \"probeSampleCount\": "
+                       << ambientOcclusion.probeSampleCount
+                       << ", \"probeOccludedSampleCount\": "
+                       << ambientOcclusion.probeOccludedSampleCount
+                       << ", \"probeMinVisibility\": ";
+                if (ambientOcclusion.probeReady)
+                {
+                    WriteOptionalFiniteNumber(
+                        stream, ambientOcclusion.probeMinVisibility);
+                }
+                else
+                {
+                    stream << "null";
+                }
+                stream << ", \"probeMeanVisibility\": ";
+                if (ambientOcclusion.probeReady)
+                {
+                    WriteOptionalFiniteNumber(
+                        stream, ambientOcclusion.probeMeanVisibility);
+                }
+                else
+                {
+                    stream << "null";
+                }
+                stream << ", \"probeMaxVisibility\": ";
+                if (ambientOcclusion.probeReady)
+                {
+                    WriteOptionalFiniteNumber(
+                        stream, ambientOcclusion.probeMaxVisibility);
+                }
+                else
+                {
+                    stream << "null";
+                }
+                stream << ", \"fallbackUsed\": "
+                       << Diagnostics::JsonBool(ambientOcclusion.fallbackUsed)
+                       << "},\n";
+            }
             stream << "      \"diagnostic\": "
                    << Diagnostics::JsonString(receipt.diagnostic) << ",\n";
             stream << "      \"features\": [\n";
@@ -823,6 +937,17 @@ namespace RVX
                        << feature.graphPassCount << ",\n";
                 stream << "          \"executedGraphPassCount\": "
                        << feature.executedGraphPassCount << ",\n";
+                // Schema 10 can explicitly describe a selected feature that
+                // completed its typed contract without registering GPU graph
+                // work.  Keep this out of older receipt schemas so their
+                // compatibility shape remains unchanged.
+                if (receipt.schemaVersion == 10)
+                {
+                    stream << "          \"contractCompletedWithoutGraphWork\": "
+                           << Diagnostics::JsonBool(
+                                  feature.contractCompletedWithoutGraphWork)
+                           << ",\n";
+                }
                 stream << "          \"graphPassNames\": [";
                 for (size_t passIndex = 0;
                      passIndex < feature.graphPassNames.size();
@@ -1177,6 +1302,10 @@ namespace RVX
             {
                 options.exposureQualificationProbeEnabled = true;
             }
+            else if (arg == "--ambient-occlusion-qualification-probe")
+            {
+                options.ambientOcclusionQualificationProbeEnabled = true;
+            }
             else if (arg == "--report")
             {
                 const char* value = requireValue("--report");
@@ -1260,6 +1389,7 @@ namespace RVX
             << "  --gpu-scene-culling-qualification\n"
             << "  --direct-opaque-raster-readback-qualification\n"
             << "  --exposure-qualification-probe\n"
+            << "  --ambient-occlusion-qualification-probe\n"
             << "  --report <path.json>\n"
             << "  --width <pixels>\n"
             << "  --height <pixels>\n"
@@ -1499,7 +1629,11 @@ namespace RVX
         stream << "{\n";
         stream << "  \"schemaId\": " << Diagnostics::JsonString(report.schemaId) << ",\n";
         stream << "  \"schemaVersion\": " << report.schemaVersion << ",\n";
-        if (report.schemaVersion >= RVX_SAMPLE_REPORT_SCHEMA_VERSION)
+        // Validation run identities were introduced by schema 24. Keep the
+        // boundary aligned with the reader so legacy schema-24 reports remain
+        // self-describing instead of producing a shape the validator rejects.
+        if (report.schemaVersion >=
+            RVX_SAMPLE_REPORT_PRE_AMBIENT_OCCLUSION_EXECUTION_SCHEMA_VERSION)
         {
             stream << "  \"validationRunId\": "
                    << Diagnostics::JsonString(report.validationRunId) << ",\n";
@@ -2314,6 +2448,193 @@ namespace RVX
             }
             stream << "      \"diagnostic\": "
                    << Diagnostics::JsonString(postProcess.diagnostic) << "\n";
+            stream << "    },\n";
+        }
+        if (report.schemaVersion >
+            RVX_SAMPLE_REPORT_PRE_AMBIENT_OCCLUSION_EXECUTION_SCHEMA_VERSION)
+        {
+            const SampleAmbientOcclusionExecutionDiagnostics& ambientOcclusion =
+                renderDiagnostics.ambientOcclusionActualExecution;
+            stream << "    \"ambientOcclusionActualExecution\": {\n";
+            stream << "      \"available\": "
+                   << Diagnostics::JsonBool(ambientOcclusion.available) << ",\n";
+            stream << "      \"executionReceiptSchemaVersion\": "
+                   << ambientOcclusion.executionReceiptSchemaVersion << ",\n";
+            stream << "      \"executionReceiptStructurallyValid\": "
+                   << Diagnostics::JsonBool(
+                          ambientOcclusion.executionReceiptStructurallyValid)
+                   << ",\n";
+            stream << "      \"executionReceiptAvailable\": "
+                   << Diagnostics::JsonBool(
+                          ambientOcclusion.executionReceiptAvailable)
+                   << ",\n";
+            stream << "      \"executionReceiptGraphComposed\": "
+                   << Diagnostics::JsonBool(
+                          ambientOcclusion.executionReceiptGraphComposed)
+                   << ",\n";
+            stream << "      \"executionReceiptExecutionSucceeded\": "
+                   << Diagnostics::JsonBool(
+                          ambientOcclusion.executionReceiptExecutionSucceeded)
+                   << ",\n";
+            stream << "      \"executionReceiptPresented\": "
+                   << Diagnostics::JsonBool(
+                          ambientOcclusion.executionReceiptPresented)
+                   << ",\n";
+            stream << "      \"executionReceiptSucceeded\": "
+                   << Diagnostics::JsonBool(
+                          ambientOcclusion.executionReceiptSucceeded)
+                   << ",\n";
+            stream << "      \"frameFeatureSequence\": "
+                   << ambientOcclusion.frameFeatureSequence << ",\n";
+            stream << "      \"receiptFrameSequence\": "
+                   << ambientOcclusion.receiptFrameSequence << ",\n";
+            stream << "      \"lastPresentedFrameSequence\": "
+                   << ambientOcclusion.lastPresentedFrameSequence << ",\n";
+            stream << "      \"presentedFrameAligned\": "
+                   << Diagnostics::JsonBool(
+                          ambientOcclusion.presentedFrameAligned)
+                   << ",\n";
+            stream << "      \"mainView\": "
+                   << Diagnostics::JsonBool(ambientOcclusion.mainView) << ",\n";
+            stream << "      \"sceneRuntimeId\": "
+                   << ambientOcclusion.sceneRuntimeId << ",\n";
+            stream << "      \"cameraEntityPacked\": "
+                   << ambientOcclusion.cameraEntityPacked << ",\n";
+            stream << "      \"subViewIndex\": "
+                   << ambientOcclusion.subViewIndex << ",\n";
+            stream << "      \"receiptStructurallyValid\": "
+                   << Diagnostics::JsonBool(
+                          ambientOcclusion.receiptStructurallyValid)
+                   << ",\n";
+            stream << "      \"planContentHash\": "
+                   << ambientOcclusion.planContentHash << ",\n";
+            stream << "      \"requested\": "
+                   << Diagnostics::JsonBool(ambientOcclusion.requested) << ",\n";
+            stream << "      \"pipelineReady\": "
+                   << Diagnostics::JsonBool(ambientOcclusion.pipelineReady)
+                   << ",\n";
+            stream << "      \"inputsReady\": "
+                   << Diagnostics::JsonBool(ambientOcclusion.inputsReady)
+                   << ",\n";
+            stream << "      \"executed\": "
+                   << Diagnostics::JsonBool(ambientOcclusion.executed) << ",\n";
+            stream << "      \"lightingConsumerExecuted\": "
+                   << Diagnostics::JsonBool(
+                          ambientOcclusion.lightingConsumerExecuted)
+                   << ",\n";
+            stream << "      \"linearDepthInputReady\": "
+                   << Diagnostics::JsonBool(
+                          ambientOcclusion.linearDepthInputReady)
+                   << ",\n";
+            stream << "      \"worldNormalInputReady\": "
+                   << Diagnostics::JsonBool(
+                          ambientOcclusion.worldNormalInputReady)
+                   << ",\n";
+            stream << "      \"velocityInputReady\": "
+                   << Diagnostics::JsonBool(
+                          ambientOcclusion.velocityInputReady)
+                   << ",\n";
+            stream << "      \"velocityProducerExecuted\": "
+                   << Diagnostics::JsonBool(
+                          ambientOcclusion.velocityProducerExecuted)
+                   << ",\n";
+            stream << "      \"outputPublished\": "
+                   << Diagnostics::JsonBool(ambientOcclusion.outputPublished)
+                   << ",\n";
+            stream << "      \"outputFormat\": "
+                   << Diagnostics::JsonString(GetRHIFormatCanonicalName(
+                          ambientOcclusion.outputFormat))
+                   << ",\n";
+            stream << "      \"horizonSearchGraphPassCount\": "
+                   << ambientOcclusion.horizonSearchGraphPassCount << ",\n";
+            stream << "      \"bilateralDenoiseGraphPassCount\": "
+                   << ambientOcclusion.bilateralDenoiseGraphPassCount << ",\n";
+            stream << "      \"temporalResolveGraphPassCount\": "
+                   << ambientOcclusion.temporalResolveGraphPassCount << ",\n";
+            stream << "      \"historyAvailableBefore\": "
+                   << Diagnostics::JsonBool(
+                          ambientOcclusion.historyAvailableBefore)
+                   << ",\n";
+            stream << "      \"historySampled\": "
+                   << Diagnostics::JsonBool(ambientOcclusion.historySampled)
+                   << ",\n";
+            stream << "      \"motionReprojectionUsed\": "
+                   << Diagnostics::JsonBool(
+                          ambientOcclusion.motionReprojectionUsed)
+                   << ",\n";
+            stream << "      \"viewProjectionMotionObserved\": "
+                   << Diagnostics::JsonBool(
+                          ambientOcclusion.viewProjectionMotionObserved)
+                   << ",\n";
+            stream << "      \"historyCandidateProduced\": "
+                   << Diagnostics::JsonBool(
+                          ambientOcclusion.historyCandidateProduced)
+                   << ",\n";
+            stream << "      \"historyCommitted\": "
+                   << Diagnostics::JsonBool(ambientOcclusion.historyCommitted)
+                   << ",\n";
+            stream << "      \"historyAbandoned\": "
+                   << Diagnostics::JsonBool(ambientOcclusion.historyAbandoned)
+                   << ",\n";
+            stream << "      \"historyResetReasons\": "
+                   << static_cast<uint32>(ambientOcclusion.historyResetReasons)
+                   << ",\n";
+            stream << "      \"aoFieldContentHash\": "
+                   << ambientOcclusion.aoFieldContentHash << ",\n";
+            stream << "      \"lightingAOFieldContentHash\": "
+                   << ambientOcclusion.lightingAOFieldContentHash << ",\n";
+            stream << "      \"velocityFieldIdentity\": "
+                   << ambientOcclusion.velocityFieldIdentity << ",\n";
+            stream << "      \"consumerMask\": "
+                   << ambientOcclusion.consumerMask << ",\n";
+            stream << "      \"probeRequested\": "
+                   << Diagnostics::JsonBool(ambientOcclusion.probeRequested)
+                   << ",\n";
+            stream << "      \"probeReady\": "
+                   << Diagnostics::JsonBool(ambientOcclusion.probeReady) << ",\n";
+            stream << "      \"probeSampleCount\": "
+                   << ambientOcclusion.probeSampleCount << ",\n";
+            stream << "      \"probeOccludedSampleCount\": "
+                   << ambientOcclusion.probeOccludedSampleCount << ",\n";
+            stream << "      \"probeMinVisibility\": ";
+            if (ambientOcclusion.probeReady)
+            {
+                WriteOptionalFiniteNumber(
+                    stream, ambientOcclusion.probeMinVisibility);
+            }
+            else
+            {
+                stream << "null";
+            }
+            stream << ",\n      \"probeMeanVisibility\": ";
+            if (ambientOcclusion.probeReady)
+            {
+                WriteOptionalFiniteNumber(
+                    stream, ambientOcclusion.probeMeanVisibility);
+            }
+            else
+            {
+                stream << "null";
+            }
+            stream << ",\n      \"probeMaxVisibility\": ";
+            if (ambientOcclusion.probeReady)
+            {
+                WriteOptionalFiniteNumber(
+                    stream, ambientOcclusion.probeMaxVisibility);
+            }
+            else
+            {
+                stream << "null";
+            }
+            stream << ",\n      \"fallbackUsed\": "
+                   << Diagnostics::JsonBool(ambientOcclusion.fallbackUsed)
+                   << ",\n";
+            stream << "      \"qualified\": "
+                   << Diagnostics::JsonBool(
+                          ambientOcclusion.IsQualificationReady())
+                   << ",\n";
+            stream << "      \"diagnostic\": "
+                   << Diagnostics::JsonString(ambientOcclusion.diagnostic) << "\n";
             stream << "    },\n";
         }
         stream << "    \"clusteredLightingInitialized\": "

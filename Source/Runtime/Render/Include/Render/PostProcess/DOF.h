@@ -118,7 +118,7 @@ namespace RVX
                     PostProcessTransfer::None};
         }
         const char* GetName() const override { return "DepthOfField"; }
-        int32 GetPriority() const override { return 200; }  // Early in pipeline (after SSAO)
+        int32 GetPriority() const override { return 200; }  // Early HDR post stage.
 
         void Configure(const PostProcessSettings& settings) override;
         PostProcessFrameInputRequirements GetFrameInputRequirements() const override

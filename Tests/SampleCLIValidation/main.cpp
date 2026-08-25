@@ -282,6 +282,7 @@ namespace
         feature.selected = true;
         feature.graphPassCount = 2;
         feature.executedGraphPassCount = 2;
+        feature.contractCompletedWithoutGraphWork = false;
         feature.graphPassNames = {"DepthPrepass", "OpaquePass"};
         receipt.features.push_back(std::move(feature));
         return receipt;
@@ -451,7 +452,17 @@ namespace
             MakeQualifiedPostProcessActualExecution();
         EXPECT_TRUE(diagnostics.IsQualificationReady());
 
+        // Schema ten extends the renderer receipt with GTAO velocity evidence
+        // while preserving
+        // the complete schema-eight post-process projection.
+        diagnostics.executionReceiptSchemaVersion = 10;
+        EXPECT_TRUE(diagnostics.IsQualificationReady());
+
+        diagnostics.executionReceiptSchemaVersion = 7;
+        EXPECT_FALSE(diagnostics.IsQualificationReady());
+
         // Graph registration alone is not execution evidence.
+        diagnostics = MakeQualifiedPostProcessActualExecution();
         diagnostics.postProcessFeatureExecuted = false;
         diagnostics.postProcessFeatureExecutedGraphPassCount = 0;
         EXPECT_FALSE(diagnostics.IsQualificationReady());
@@ -736,6 +747,69 @@ namespace
         EXPECT_FALSE(qualificationOptions.pixelProbeEnabled);
     }
 
+    TEST(SampleCLIValidation,
+         AmbientOcclusionQualificationProbeIsExplicitAndIndependentOfPixelProbe)
+    {
+        const char* qualificationArgv[] = {
+            "BasicRHI",
+            "--frames",
+            "1",
+            "--ambient-occlusion-qualification-probe",
+        };
+        RVX::SampleCLIOptions qualificationOptions;
+        std::string error;
+        ASSERT_TRUE(RVX::ParseSampleCLI(
+            static_cast<int>(std::size(qualificationArgv)),
+            qualificationArgv,
+            qualificationOptions,
+            &error))
+            << error;
+        EXPECT_TRUE(
+            qualificationOptions.ambientOcclusionQualificationProbeEnabled);
+        EXPECT_FALSE(qualificationOptions.pixelProbeEnabled);
+    }
+
+    TEST(SampleCLIValidation,
+         RunnerRejectsCombinedExposureAndAmbientOcclusionQualificationProbes)
+    {
+        const char* argv[] = {
+            "RenderVerseSamples",
+            "--exposure-qualification-probe",
+            "--ambient-occlusion-qualification-probe",
+        };
+
+        RVX::SampleRunnerCLIOptions options;
+        std::string error;
+        EXPECT_FALSE(RVX::ParseSampleRunnerCLI(
+            static_cast<int>(std::size(argv)), argv, options, &error));
+        EXPECT_NE(error.find("mutually exclusive"), std::string::npos);
+    }
+
+    TEST(SampleCLIValidation,
+         ValidationRunIdSerializesAtSchemaTwentyFourBoundary)
+    {
+        RVX::SampleReport schema24;
+        schema24.schemaVersion =
+            RVX::RVX_SAMPLE_REPORT_PRE_AMBIENT_OCCLUSION_EXECUTION_SCHEMA_VERSION;
+        schema24.validationRunId = std::string(32, 'a');
+        std::ostringstream schema24Stream;
+        RVX::WriteSampleReportJson(schema24Stream, schema24);
+        EXPECT_NE(schema24Stream.str().find(
+                      "\"validationRunId\": \"" +
+                      std::string(32, 'a') + "\""),
+                  std::string::npos);
+
+        RVX::SampleReport schema23;
+        schema23.schemaVersion =
+            RVX::RVX_SAMPLE_REPORT_PRE_AMBIENT_OCCLUSION_EXECUTION_SCHEMA_VERSION -
+            1u;
+        schema23.validationRunId = std::string(32, 'b');
+        std::ostringstream schema23Stream;
+        RVX::WriteSampleReportJson(schema23Stream, schema23);
+        EXPECT_EQ(schema23Stream.str().find("\"validationRunId\""),
+                  std::string::npos);
+    }
+
     TEST(SampleCLIValidation, PixelProbeRejectsMalformedCoordinates)
     {
         const char* argv[] = {"BasicRHI", "--pixel-probe", "x", "19"};
@@ -853,7 +927,7 @@ namespace
         std::ostringstream stream;
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
-        EXPECT_NE(json.find("\"schemaVersion\": 24"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 26"), std::string::npos);
         EXPECT_NE(json.find("\"validationRunId\": \"" +
                             std::string(32, '1') + "\""),
                   std::string::npos);
@@ -1024,6 +1098,12 @@ namespace
                   std::string::npos);
         EXPECT_NE(json.find("\"satisfied\": true"), std::string::npos);
 
+        // Schema eight deliberately predates the raw GTAO receipt. Keep this
+        // assertion explicit so future receipt additions cannot mutate its
+        // published compatibility shape.
+        EXPECT_EQ(json.find("\"ambientOcclusion\": {"),
+                  std::string::npos);
+
         RVX::RenderExecutionReceipt legacyV2Receipt =
             MakeSuccessfulRenderExecutionReceipt(91);
         legacyV2Receipt.schemaVersion = 2;
@@ -1080,6 +1160,83 @@ namespace
         EXPECT_EQ(legacyV1Stream.str().find("\"deferredOpaque\":"),
                   std::string::npos);
         EXPECT_EQ(legacyV1Stream.str().find("\"lighting\":"),
+                  std::string::npos);
+    }
+
+    TEST(SampleCLIValidation,
+         SchemaTenRenderReceiptSerializesAmbientOcclusionVelocityPayload)
+    {
+        RVX::SampleReport report;
+        report.schemaVersion = RVX::RVX_SAMPLE_REPORT_SCHEMA_VERSION;
+        report.visualContractReceipt.emplace();
+        report.visualContractReceipt->renderExecutionReceipt =
+            MakeSuccessfulRenderExecutionReceipt(91);
+        RVX::RenderExecutionReceipt& receipt =
+            *report.visualContractReceipt->renderExecutionReceipt;
+        receipt.schemaVersion = 10;
+        receipt.ambientOcclusion.planContentHash = 0xA013ULL;
+        receipt.ambientOcclusion.requested = true;
+        receipt.ambientOcclusion.pipelineReady = true;
+        receipt.ambientOcclusion.inputsReady = true;
+        receipt.ambientOcclusion.executed = true;
+        receipt.ambientOcclusion.linearDepthInputReady = true;
+        receipt.ambientOcclusion.worldNormalInputReady = true;
+        receipt.ambientOcclusion.velocityInputReady = true;
+        receipt.ambientOcclusion.velocityProducerExecuted = true;
+        receipt.ambientOcclusion.outputPublished = true;
+        receipt.ambientOcclusion.outputFormat = RVX::RHIFormat::R8_UNORM;
+        receipt.ambientOcclusion.horizonSearchGraphPassCount = 1;
+        receipt.ambientOcclusion.bilateralDenoiseGraphPassCount = 2;
+        receipt.ambientOcclusion.temporalResolveGraphPassCount = 1;
+        receipt.ambientOcclusion.historyAvailableBefore = true;
+        receipt.ambientOcclusion.historySampled = true;
+        receipt.ambientOcclusion.motionReprojectionUsed = true;
+        receipt.ambientOcclusion.viewProjectionMotionObserved = true;
+        receipt.ambientOcclusion.historyCandidateProduced = true;
+        receipt.ambientOcclusion.historyCommitted = true;
+        receipt.ambientOcclusion.historyResetReasons =
+            RVX::RenderHistoryResetReason::None;
+        receipt.ambientOcclusion.aoFieldContentHash = 0xA0FULL;
+        receipt.ambientOcclusion.lightingConsumerExecuted = true;
+        receipt.ambientOcclusion.lightingAOFieldContentHash = 0xA0FULL;
+        receipt.ambientOcclusion.velocityFieldIdentity = 0xF013ULL;
+        receipt.ambientOcclusion.consumerMask = 0x7u;
+        receipt.ambientOcclusion.probeRequested = true;
+        receipt.ambientOcclusion.probeReady = true;
+        receipt.ambientOcclusion.probeSampleCount = 16;
+        receipt.ambientOcclusion.probeOccludedSampleCount = 6;
+        receipt.ambientOcclusion.probeMinVisibility = 0.1f;
+        receipt.ambientOcclusion.probeMeanVisibility = 0.58f;
+        receipt.ambientOcclusion.probeMaxVisibility = 0.95f;
+
+        std::ostringstream stream;
+        RVX::WriteSampleReportJson(stream, report);
+        const std::string json = stream.str();
+        EXPECT_NE(json.find("\"schemaVersion\": 10"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"ambientOcclusion\": {\"planContentHash\": 40979"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"outputFormat\": \"r8-unorm\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"bilateralDenoiseGraphPassCount\": 2"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"lightingConsumerExecuted\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"velocityInputReady\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"velocityProducerExecuted\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"motionReprojectionUsed\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"viewProjectionMotionObserved\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"velocityFieldIdentity\": 61459"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"consumerMask\": 7"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"probeMeanVisibility\": 0.58"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"contractCompletedWithoutGraphWork\": false"),
                   std::string::npos);
     }
 
@@ -1217,6 +1374,26 @@ namespace
             static_cast<int>(std::size(argv)), argv, options, &error))
             << error;
         EXPECT_TRUE(options.common.exposureQualificationProbeEnabled);
+        EXPECT_TRUE(options.waitReady);
+        EXPECT_EQ(options.common.frames, 1u);
+        EXPECT_GE(options.readyMaxFrames, options.common.frames);
+    }
+
+    TEST(SampleCLIValidation,
+         RunnerAmbientOcclusionProbeUsesBoundedReadinessWait)
+    {
+        const char* argv[] = {
+            "RenderVerseSamples",
+            "--ambient-occlusion-qualification-probe",
+        };
+
+        RVX::SampleRunnerCLIOptions options;
+        std::string error;
+        ASSERT_TRUE(RVX::ParseSampleRunnerCLI(
+            static_cast<int>(std::size(argv)), argv, options, &error))
+            << error;
+        EXPECT_TRUE(
+            options.common.ambientOcclusionQualificationProbeEnabled);
         EXPECT_TRUE(options.waitReady);
         EXPECT_EQ(options.common.frames, 1u);
         EXPECT_GE(options.readyMaxFrames, options.common.frames);
@@ -1849,7 +2026,7 @@ namespace
         const std::string json = stream.str();
 
         EXPECT_NE(json.find("\"schemaId\": \"RVX.SampleReport\""), std::string::npos);
-        EXPECT_NE(json.find("\"schemaVersion\": 24"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 26"), std::string::npos);
         EXPECT_NE(json.find("\"sampleName\": \"BasicRHI\""), std::string::npos);
         EXPECT_NE(json.find("\"category\": \"sample\""), std::string::npos);
         EXPECT_NE(json.find("\"requestedBackend\": \"dx12\""), std::string::npos);
@@ -2124,7 +2301,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 24"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 26"), std::string::npos);
         EXPECT_NE(json.find("\"contractRevision\": 7"), std::string::npos);
         EXPECT_NE(json.find("\"phase\": \"complete\""),
                   std::string::npos);
@@ -2613,7 +2790,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 24"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 26"), std::string::npos);
         EXPECT_NE(json.find("\"packageContentId\""), std::string::npos);
         EXPECT_NE(json.find(asset.packageContentId.digest), std::string::npos);
         EXPECT_NE(json.find("\"cook\": {\"required\": true, \"accepted\": true, \"code\": \"accepted\""),

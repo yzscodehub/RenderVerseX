@@ -234,6 +234,8 @@ namespace RVX
             !std::isfinite(settings.postProcess.colorGradingBrightness) ||
             !IsValidRenderExposureSettings(
                 settings.postProcess.exposureSettings) ||
+            !IsValidRenderAmbientOcclusionSettings(
+                settings.postProcess.ambientOcclusion) ||
             !std::isfinite(settings.postProcess.gamma) ||
             settings.postProcess.gamma <= 0.0f ||
             !std::isfinite(settings.shadows.maxDistance))

@@ -71,6 +71,8 @@ namespace RVX
          * corresponding submission fence has completed.
          */
         [[nodiscard]] bool RequestExposureQualificationProbe() noexcept;
+        /** @brief Arm one physical GTAO visibility qualification probe. */
+        [[nodiscard]] bool RequestAmbientOcclusionQualificationProbe() noexcept;
 
         RenderResourceReserveResult ReserveResource(
             AssetId assetId,

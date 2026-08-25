@@ -330,7 +330,6 @@ namespace RVX
         context.renderSettings.postProcess.enabled = true;
         context.renderSettings.postProcess.antiAliasingMode =
             RenderAntiAliasingMode::FXAA;
-        context.renderSettings.postProcess.enableSSAO = false;
         context.renderSettings.postProcess.enableSSR = false;
         context.renderSettings.postProcess.enableBloom = false;
         context.renderSettings.postProcess.exposureSettings.mode =

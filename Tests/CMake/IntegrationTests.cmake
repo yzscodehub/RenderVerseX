@@ -262,6 +262,7 @@ rvx_add_gtest(
     LIBS
         RVX::Core
         RVX::Render
+        RVX::RenderGraph
         RVX::ResourceRuntime
         RVX::RHI
         RVX::RHI_BackendFactory

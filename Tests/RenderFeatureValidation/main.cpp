@@ -43,6 +43,9 @@ namespace
     constexpr RenderFeatureResourceContract PostProcessOutputsContract{
         RenderBlackboardResourceId::PostProcessOutputs,
         PostProcessOutputs::SchemaVersion};
+    constexpr RenderFeatureResourceContract AmbientOcclusionOutputsContract{
+        RenderBlackboardResourceId::AmbientOcclusionOutputs,
+        AmbientOcclusionOutputs::SchemaVersion};
 
     class ScopedTestLog final
     {
@@ -346,6 +349,27 @@ namespace
                        RenderGraphBlackboard& blackboard) override
         {
             ++m_addPassesCount;
+            if (m_addCulledPass)
+            {
+                struct CulledPassData
+                {
+                    RGTextureHandle output{};
+                };
+                const RGTextureHandle unusedOutput = builder.CreateTexture(
+                    RHITextureDesc::RenderTarget(
+                        4, 4, RHIFormat::RGBA8_UNORM));
+                static_cast<void>(builder.AddPass<CulledPassData>(
+                    "CulledDataOnlyCandidate",
+                    RenderGraphPassType::Graphics,
+                    [unusedOutput](
+                        RenderGraphBuilder& graphBuilder,
+                        CulledPassData& data)
+                    {
+                        data.output = graphBuilder.Write(
+                            unusedOutput, RHIResourceState::RenderTarget);
+                    },
+                    [](const CulledPassData&, RenderGraphPassContext&) {}));
+            }
             if (m_addSemanticPass)
             {
                 struct SemanticPassData
@@ -473,6 +497,11 @@ namespace
             m_failSemanticPass = failExecution;
         }
 
+        void SetCulledPass(bool enabled = true) noexcept
+        {
+            m_addCulledPass = enabled;
+        }
+
     private:
         RenderFeatureDescriptor m_descriptor{};
         RenderFeatureReadiness m_readiness{};
@@ -486,6 +515,7 @@ namespace
         bool m_consumeSceneTextures = false;
         bool m_replaceReadinessAfterAddPasses = false;
         bool m_claimExecutionInReceipt = false;
+        bool m_addCulledPass = false;
         bool m_addSemanticPass = false;
         bool m_failSemanticPass = false;
         RHIBufferRef m_semanticBuffer{new TestBuffer()};
@@ -601,6 +631,9 @@ namespace
         view.colorTarget.index = 1;
         view.colorTarget.graphIdentity = graph.GetGraphIdentity();
         view.colorTarget.recordingGeneration = graph.GetRecordingGeneration();
+        view.depthTarget.index = 4;
+        view.depthTarget.graphIdentity = graph.GetGraphIdentity();
+        view.depthTarget.recordingGeneration = graph.GetRecordingGeneration();
         view.reactiveMaskTarget.index = 2;
         view.reactiveMaskTarget.graphIdentity = graph.GetGraphIdentity();
         view.reactiveMaskTarget.recordingGeneration =
@@ -619,6 +652,17 @@ namespace
         context.featureViewIdentity =
             RenderViewIdentity{5, 6, 0, ViewRole::Main};
         return context;
+    }
+
+    [[nodiscard]] RGTextureHandle MakeVelocityTarget(
+        RenderGraph& graph,
+        RHIFormat format = SceneTextures::VelocityContract.format)
+    {
+        RHITextureDesc desc = RHITextureDesc::RenderTarget(
+            320, 180, format);
+        desc.sampleCount = SceneTextures::VelocityContract.sampleCount;
+        desc.debugName = "RenderFeatureValidationVelocity";
+        return graph.CreateTexture(desc);
     }
 
     [[nodiscard]] std::shared_ptr<const LightingFramePlan>
@@ -736,6 +780,36 @@ namespace
         outputs.lightingPlanIdentity = lightingPlanIdentity;
         outputs.hdrSceneColor = MakeTextureHandle(provenance, 1);
         outputs.clusteredLights = MakeBufferHandle(provenance, 2);
+        return outputs;
+    }
+
+    [[nodiscard]] AmbientOcclusionOutputs MakeAmbientOcclusionOutputs(
+        const RenderGraphBlackboardProvenance& provenance)
+    {
+        AmbientOcclusionOutputs outputs;
+        outputs.provenance = provenance;
+        outputs.frameIdentity = RenderFrameIdentity{
+            provenance.frameSequence, 2, 3, 4};
+        outputs.viewIdentity = RenderViewIdentity{
+            5, 6, provenance.viewOrdinal, ViewRole::Main};
+        outputs.historyIdentity.previousFrame = outputs.frameIdentity;
+        outputs.historyIdentity.view = outputs.viewIdentity;
+        outputs.historyIdentity.extent = RenderOutputExtent{320, 180};
+        outputs.historyIdentity.familyId = 7;
+        outputs.historyIdentity.worldRevision = 8;
+        outputs.historyIdentity.temporalEpoch = 9;
+        outputs.historyIdentity.formatRevision = 10;
+        outputs.historyIdentity.surfaceGeneration =
+            outputs.frameIdentity.surfaceGeneration;
+        outputs.historyIdentity.cameraCutRevision = 11;
+        outputs.historyResetReasons = RenderHistoryResetReason::FirstFrame;
+        outputs.settingsHash = CalculateRenderAmbientOcclusionSettingsHash({});
+        outputs.consumerMask =
+            RVX_RENDER_AMBIENT_OCCLUSION_INDIRECT_CONSUMER_MASK;
+        outputs.ambientOcclusionFieldHash = 0xA013ULL;
+        outputs.ambientOcclusion = MakeTextureHandle(provenance, 10);
+        outputs.ambientOcclusionMetadata = MakeSceneTextureMetadata(
+            AmbientOcclusionOutputs::VisibilityContract);
         return outputs;
     }
 
@@ -2070,6 +2144,141 @@ namespace
     }
 
     TEST(RenderFeatureValidation,
+         AmbientOcclusionBlackboardRequiresTheExactForwardAndDeferredChains)
+    {
+        EXPECT_EQ(BuiltinRenderFeatureIds::AmbientOcclusion.value, 7U);
+        EXPECT_EQ(BuiltinRenderFeatureIds::ForwardLighting.value, 8U);
+        EXPECT_EQ(AmbientOcclusionOutputs::VisibilityContract.format,
+                  RHIFormat::R8_UNORM);
+        EXPECT_EQ(AmbientOcclusionOutputs::VisibilityContract.sampleCount,
+                  RHISampleCount::Count1);
+
+        RenderFeatureRegistry forwardRegistry;
+        RenderFeatureDescriptor forwardGeometry = MakeDescriptor(
+            BuiltinRenderFeatureIds::LegacyForwardMainChain.value,
+            "forward-geometry", RenderFeaturePhase::Geometry);
+        forwardGeometry.producedResources.push_back(SceneTexturesContract);
+        RenderFeatureDescriptor ambientOcclusion = MakeDescriptor(
+            BuiltinRenderFeatureIds::AmbientOcclusion.value, "gtao",
+            RenderFeaturePhase::Lighting);
+        ambientOcclusion.consumedResources.push_back(SceneTexturesContract);
+        ambientOcclusion.producedResources.push_back(
+            AmbientOcclusionOutputsContract);
+        RenderFeatureDescriptor forwardLighting = MakeDescriptor(
+            BuiltinRenderFeatureIds::ForwardLighting.value, "forward-lighting",
+            RenderFeaturePhase::Lighting);
+        forwardLighting.consumedResources.push_back(
+            AmbientOcclusionOutputsContract);
+        forwardLighting.producedResources.push_back(TranslucencyOutputsContract);
+
+        ASSERT_EQ(forwardRegistry.Register(MakeFeature(std::move(forwardLighting))),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(forwardRegistry.Register(MakeFeature(std::move(ambientOcclusion))),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(forwardRegistry.Register(MakeFeature(std::move(forwardGeometry))),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(forwardRegistry.DeclareImplementedRecipe(
+                      RenderPipelineRecipe::ForwardStandard),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(forwardRegistry.Seal(), RenderFeatureRegistryCode::Success);
+        const std::vector<RenderFeatureId>& forwardOrder =
+            forwardRegistry.GetExecutionOrder();
+        ASSERT_EQ(forwardOrder.size(), 3U);
+        EXPECT_EQ(forwardOrder[0], BuiltinRenderFeatureIds::LegacyForwardMainChain);
+        EXPECT_EQ(forwardOrder[1], BuiltinRenderFeatureIds::AmbientOcclusion);
+        EXPECT_EQ(forwardOrder[2], BuiltinRenderFeatureIds::ForwardLighting);
+
+        RenderFeatureRegistry deferredRegistry;
+        RenderFeatureDescriptor deferredGeometry = MakeDescriptor(
+            BuiltinRenderFeatureIds::DeferredGeometry.value, "deferred-geometry",
+            RenderFeaturePhase::Geometry);
+        deferredGeometry.requiredRecipes = ToMask(RenderPipelineRecipe::DeferredQuality);
+        deferredGeometry.producedResources.push_back(SceneTexturesContract);
+        RenderFeatureDescriptor deferredAO = MakeDescriptor(
+            BuiltinRenderFeatureIds::AmbientOcclusion.value, "deferred-gtao",
+            RenderFeaturePhase::Lighting);
+        deferredAO.requiredRecipes = ToMask(RenderPipelineRecipe::DeferredQuality);
+        deferredAO.consumedResources.push_back(SceneTexturesContract);
+        deferredAO.producedResources.push_back(AmbientOcclusionOutputsContract);
+        RenderFeatureDescriptor deferredLighting = MakeDescriptor(
+            BuiltinRenderFeatureIds::DeferredLighting.value, "deferred-lighting",
+            RenderFeaturePhase::Lighting);
+        deferredLighting.requiredRecipes = ToMask(RenderPipelineRecipe::DeferredQuality);
+        deferredLighting.consumedResources = {
+            SceneTexturesContract, AmbientOcclusionOutputsContract};
+        deferredLighting.producedResources.push_back(LightingOutputsContract);
+        ASSERT_EQ(deferredRegistry.Register(MakeFeature(std::move(deferredLighting))),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(deferredRegistry.Register(MakeFeature(std::move(deferredAO))),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(deferredRegistry.Register(MakeFeature(std::move(deferredGeometry))),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(deferredRegistry.DeclareImplementedRecipe(
+                      RenderPipelineRecipe::DeferredQuality),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(deferredRegistry.Seal(), RenderFeatureRegistryCode::Success);
+        const std::vector<RenderFeatureId>& deferredOrder =
+            deferredRegistry.GetExecutionOrder();
+        ASSERT_EQ(deferredOrder.size(), 3U);
+        EXPECT_EQ(deferredOrder[0], BuiltinRenderFeatureIds::DeferredGeometry);
+        EXPECT_EQ(deferredOrder[1], BuiltinRenderFeatureIds::AmbientOcclusion);
+        EXPECT_EQ(deferredOrder[2], BuiltinRenderFeatureIds::DeferredLighting);
+
+        const RenderGraphBlackboardProvenance provenance = MakeProvenance();
+        RenderFeatureDescriptor producer = MakeDescriptor(
+            BuiltinRenderFeatureIds::AmbientOcclusion.value, "gtao-producer",
+            RenderFeaturePhase::Lighting);
+        producer.producedResources.push_back(AmbientOcclusionOutputsContract);
+        RenderFeatureDescriptor consumer = MakeDescriptor(
+            BuiltinRenderFeatureIds::ForwardLighting.value, "gtao-consumer",
+            RenderFeaturePhase::Lighting);
+        consumer.consumedResources.push_back(AmbientOcclusionOutputsContract);
+
+        RenderGraphBlackboard missing(provenance);
+        RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
+        EXPECT_EQ(missing.Require<AmbientOcclusionOutputs>(
+                      BuiltinRenderFeatureIds::ForwardLighting, consumer, &code),
+                  nullptr);
+        EXPECT_EQ(code, RenderGraphBlackboardCode::MissingResource);
+
+        RenderGraphBlackboard stale(provenance);
+        AmbientOcclusionOutputs staleOutputs = MakeAmbientOcclusionOutputs(provenance);
+        ++staleOutputs.ambientOcclusion.recordingGeneration;
+        EXPECT_EQ(stale.Publish(BuiltinRenderFeatureIds::AmbientOcclusion,
+                                producer, staleOutputs),
+                  RenderGraphBlackboardCode::StaleGraphResource);
+
+        RenderGraphBlackboard invalidSemantic(provenance);
+        AmbientOcclusionOutputs invalidOutputs = MakeAmbientOcclusionOutputs(provenance);
+        invalidOutputs.ambientOcclusionMetadata.format = RHIFormat::R16_FLOAT;
+        EXPECT_EQ(invalidSemantic.Publish(BuiltinRenderFeatureIds::AmbientOcclusion,
+                                          producer, invalidOutputs),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+
+        RenderGraphBlackboard published(provenance);
+        const AmbientOcclusionOutputs outputs = MakeAmbientOcclusionOutputs(provenance);
+        EXPECT_EQ(published.Publish(BuiltinRenderFeatureIds::AmbientOcclusion,
+                                    producer, outputs),
+                  RenderGraphBlackboardCode::Success);
+        EXPECT_EQ(published.Publish(BuiltinRenderFeatureIds::AmbientOcclusion,
+                                    producer, outputs),
+                  RenderGraphBlackboardCode::DuplicateProducer);
+        EXPECT_NE(published.Require<AmbientOcclusionOutputs>(
+                      BuiltinRenderFeatureIds::ForwardLighting, consumer, &code),
+                  nullptr);
+        EXPECT_EQ(code, RenderGraphBlackboardCode::Success);
+
+        RenderFeatureRegistry schemaRegistry;
+        RenderFeatureDescriptor invalidSchema = MakeDescriptor(77, "bad-gtao");
+        invalidSchema.producedResources.push_back(
+            RenderFeatureResourceContract{
+                RenderBlackboardResourceId::AmbientOcclusionOutputs,
+                AmbientOcclusionOutputs::SchemaVersion + 1});
+        EXPECT_EQ(schemaRegistry.Register(MakeFeature(std::move(invalidSchema))),
+                  RenderFeatureRegistryCode::InvalidResourceContract);
+    }
+
+    TEST(RenderFeatureValidation,
          BlackboardV2RejectsStaleAndWrongColorDomainPresentationContracts)
     {
         const RenderGraphBlackboardProvenance provenance = MakeProvenance();
@@ -2568,18 +2777,217 @@ namespace
         EXPECT_FALSE(receipt.features[0].readiness.executed);
         EXPECT_FALSE(receipt.executionSucceeded);
         EXPECT_EQ(receipt.diagnostic,
-                  "Render feature self-reported execution; graph evidence is "
-                  "registry-owned");
+                  "forged-execution: Render feature self-reported execution; "
+                  "graph evidence is registry-owned");
+    }
+
+    TEST(RenderFeatureValidation,
+         RegistryCompletesOptInTypedOutputWithoutGraphWork)
+    {
+        RenderFeatureDescriptor descriptor =
+            MakeDescriptor(1, "data-only-output");
+        descriptor.producedResources.push_back(SceneTexturesContract);
+        descriptor.allowsDataOnlyCompletion = true;
+        auto feature = MakeFeature(std::move(descriptor), MakeReadyReadiness());
+        FakeRenderFeature* const featureRaw = feature.get();
+        feature->SetPublishSceneTextures();
+
+        RenderFeatureRegistry registry;
+        ASSERT_EQ(registry.Register(std::move(feature)),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(registry.DeclareImplementedRecipe(
+                      RenderPipelineRecipe::ForwardStandard),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(registry.Seal(), RenderFeatureRegistryCode::Success);
+        ASSERT_TRUE(registry.PrepareFrame(MakeValidContext()).Succeeded());
+
+        RenderGraph graph;
+        const RenderGraphBlackboardProvenance provenance{
+            graph.GetGraphIdentity(), graph.GetRecordingGeneration(), 1, 0, 1};
+        RenderFeatureGraphBuilder builder(graph, provenance);
+        RenderGraphBlackboard blackboard(provenance);
+        ASSERT_EQ(registry.AddPasses(builder, blackboard),
+                  RenderFeatureRegistryCode::Success);
+        EXPECT_EQ(graph.GetRecordedPassCount(), 0U);
+        RenderGraphValidationAccess::Compile(graph);
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+        NoOpCommandContext commands;
+        RenderGraphValidationAccess::Execute(graph, commands);
+        ASSERT_EQ(registry.FinalizeGraphExecution(graph),
+                  RenderFeatureRegistryCode::Success);
+
+        ASSERT_EQ(featureRaw->GetExecutionEvidenceCount(), 1U);
+        const RenderFeatureGraphExecutionEvidence& evidence =
+            featureRaw->GetLastExecutionEvidence();
+        EXPECT_TRUE(evidence.contractCompletedWithoutGraphWork);
+        EXPECT_FALSE(evidence.semanticExecutionSucceeded);
+        EXPECT_FALSE(evidence.HasExactExecution());
+
+        const RenderExecutionReceipt receipt = registry.CollectExecutionReceipt();
+        ASSERT_EQ(receipt.features.size(), 1U);
+        EXPECT_EQ(receipt.features[0].graphPassCount, 0U);
+        EXPECT_EQ(receipt.features[0].executedGraphPassCount, 0U);
+        EXPECT_TRUE(
+            receipt.features[0].contractCompletedWithoutGraphWork);
+        EXPECT_TRUE(receipt.features[0].readiness.executed);
+        EXPECT_TRUE(receipt.executionSucceeded);
+        EXPECT_TRUE(receipt.IsStructurallyValid());
+    }
+
+    TEST(RenderFeatureValidation,
+         RegistryRejectsDataOnlyCompletionWithoutTypedOutput)
+    {
+        RenderFeatureDescriptor descriptor =
+            MakeDescriptor(1, "unbound-data-only-output");
+        descriptor.allowsDataOnlyCompletion = true;
+
+        RenderFeatureRegistry registry;
+        EXPECT_EQ(registry.Register(MakeFeature(std::move(descriptor))),
+                  RenderFeatureRegistryCode::InvalidResourceContract);
+    }
+
+    TEST(RenderFeatureValidation,
+         RegistryRejectsDefaultFeatureWithoutGraphWork)
+    {
+        RenderFeatureDescriptor descriptor =
+            MakeDescriptor(1, "default-no-graph-work");
+        descriptor.producedResources.push_back(SceneTexturesContract);
+        auto feature = MakeFeature(std::move(descriptor), MakeReadyReadiness());
+        FakeRenderFeature* const featureRaw = feature.get();
+        feature->SetPublishSceneTextures();
+
+        RenderFeatureRegistry registry;
+        ASSERT_EQ(registry.Register(std::move(feature)),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(registry.DeclareImplementedRecipe(
+                      RenderPipelineRecipe::ForwardStandard),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(registry.Seal(), RenderFeatureRegistryCode::Success);
+        ASSERT_TRUE(registry.PrepareFrame(MakeValidContext()).Succeeded());
+
+        RenderGraph graph;
+        const RenderGraphBlackboardProvenance provenance{
+            graph.GetGraphIdentity(), graph.GetRecordingGeneration(), 1, 0, 1};
+        RenderFeatureGraphBuilder builder(graph, provenance);
+        RenderGraphBlackboard blackboard(provenance);
+        ASSERT_EQ(registry.AddPasses(builder, blackboard),
+                  RenderFeatureRegistryCode::Success);
+        RenderGraphValidationAccess::Compile(graph);
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+        NoOpCommandContext commands;
+        RenderGraphValidationAccess::Execute(graph, commands);
+        ASSERT_EQ(registry.FinalizeGraphExecution(graph),
+                  RenderFeatureRegistryCode::Success);
+
+        ASSERT_EQ(featureRaw->GetExecutionEvidenceCount(), 1U);
+        EXPECT_FALSE(featureRaw->GetLastExecutionEvidence()
+                         .contractCompletedWithoutGraphWork);
+        const RenderExecutionReceipt receipt = registry.CollectExecutionReceipt();
+        ASSERT_EQ(receipt.features.size(), 1U);
+        EXPECT_FALSE(
+            receipt.features[0].contractCompletedWithoutGraphWork);
+        EXPECT_FALSE(receipt.features[0].readiness.executed);
+        EXPECT_FALSE(receipt.executionSucceeded);
+    }
+
+    TEST(RenderFeatureValidation,
+         RegistryRejectsCulledRegisteredPassForDataOnlyCompletion)
+    {
+        RenderFeatureDescriptor descriptor =
+            MakeDescriptor(1, "culled-data-only-work");
+        descriptor.producedResources.push_back(SceneTexturesContract);
+        descriptor.allowsDataOnlyCompletion = true;
+        auto feature = MakeFeature(std::move(descriptor), MakeReadyReadiness());
+        FakeRenderFeature* const featureRaw = feature.get();
+        feature->SetPublishSceneTextures();
+        feature->SetCulledPass();
+
+        RenderFeatureRegistry registry;
+        ASSERT_EQ(registry.Register(std::move(feature)),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(registry.DeclareImplementedRecipe(
+                      RenderPipelineRecipe::ForwardStandard),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(registry.Seal(), RenderFeatureRegistryCode::Success);
+        ASSERT_TRUE(registry.PrepareFrame(MakeValidContext()).Succeeded());
+
+        RenderGraph graph;
+        const RenderGraphBlackboardProvenance provenance{
+            graph.GetGraphIdentity(), graph.GetRecordingGeneration(), 1, 0, 1};
+        RenderFeatureGraphBuilder builder(graph, provenance);
+        RenderGraphBlackboard blackboard(provenance);
+        ASSERT_EQ(registry.AddPasses(builder, blackboard),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(graph.GetRecordedPassCount(), 1U);
+        RenderGraphValidationAccess::Compile(graph);
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+        ASSERT_EQ(graph.GetCompileStats().culledPasses, 1U);
+        ASSERT_EQ(registry.FinalizeGraphExecution(graph),
+                  RenderFeatureRegistryCode::Success);
+
+        ASSERT_EQ(featureRaw->GetExecutionEvidenceCount(), 1U);
+        EXPECT_FALSE(featureRaw->GetLastExecutionEvidence()
+                         .contractCompletedWithoutGraphWork);
+        const RenderExecutionReceipt receipt = registry.CollectExecutionReceipt();
+        ASSERT_EQ(receipt.features.size(), 1U);
+        EXPECT_EQ(receipt.features[0].graphPassCount, 0U);
+        EXPECT_EQ(receipt.features[0].executedGraphPassCount, 0U);
+        EXPECT_FALSE(
+            receipt.features[0].contractCompletedWithoutGraphWork);
+        EXPECT_FALSE(receipt.features[0].readiness.executed);
+        EXPECT_FALSE(receipt.executionSucceeded);
+        EXPECT_TRUE(receipt.IsStructurallyValid());
+    }
+
+    TEST(RenderFeatureValidation,
+         RegistryRequiresFinalizedEvidenceForDataOnlyCompletion)
+    {
+        RenderFeatureDescriptor descriptor =
+            MakeDescriptor(1, "unfinalized-data-only-output");
+        descriptor.producedResources.push_back(SceneTexturesContract);
+        descriptor.allowsDataOnlyCompletion = true;
+        auto feature = MakeFeature(std::move(descriptor), MakeReadyReadiness());
+        feature->SetPublishSceneTextures();
+
+        RenderFeatureRegistry registry;
+        ASSERT_EQ(registry.Register(std::move(feature)),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(registry.DeclareImplementedRecipe(
+                      RenderPipelineRecipe::ForwardStandard),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(registry.Seal(), RenderFeatureRegistryCode::Success);
+        ASSERT_TRUE(registry.PrepareFrame(MakeValidContext()).Succeeded());
+
+        RenderGraph graph;
+        const RenderGraphBlackboardProvenance provenance{
+            graph.GetGraphIdentity(), graph.GetRecordingGeneration(), 1, 0, 1};
+        RenderFeatureGraphBuilder builder(graph, provenance);
+        RenderGraphBlackboard blackboard(provenance);
+        ASSERT_EQ(registry.AddPasses(builder, blackboard),
+                  RenderFeatureRegistryCode::Success);
+        RenderGraphValidationAccess::Compile(graph);
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+        const RenderExecutionReceipt receipt = registry.CollectExecutionReceipt();
+        ASSERT_EQ(receipt.features.size(), 1U);
+        EXPECT_FALSE(
+            receipt.features[0].contractCompletedWithoutGraphWork);
+        EXPECT_FALSE(receipt.features[0].readiness.executed);
+        EXPECT_FALSE(receipt.executionSucceeded);
     }
 
     TEST(RenderFeatureValidation,
          RegistryRejectsExecutedCallbackThatReportsSemanticFailure)
     {
         RenderFeatureRegistry registry;
-        auto feature = MakeFeature(
-            MakeDescriptor(1, "semantic-evidence"), MakeReadyReadiness());
+        RenderFeatureDescriptor descriptor =
+            MakeDescriptor(1, "semantic-evidence");
+        descriptor.producedResources.push_back(SceneTexturesContract);
+        descriptor.allowsDataOnlyCompletion = true;
+        auto feature = MakeFeature(std::move(descriptor), MakeReadyReadiness());
         FakeRenderFeature* const featureRaw = feature.get();
         feature->SetSemanticPass(true);
+        feature->SetPublishSceneTextures();
         ASSERT_EQ(registry.Register(std::move(feature)),
                   RenderFeatureRegistryCode::Success);
         ASSERT_EQ(registry.DeclareImplementedRecipe(
@@ -2614,6 +3022,8 @@ namespace
         ASSERT_EQ(featureRaw->GetExecutionEvidenceCount(), 1U);
         EXPECT_FALSE(
             featureRaw->GetLastExecutionEvidence().semanticExecutionSucceeded);
+        EXPECT_FALSE(featureRaw->GetLastExecutionEvidence()
+                         .contractCompletedWithoutGraphWork);
         EXPECT_FALSE(featureRaw->GetLastExecutionEvidence().HasExactExecution());
         EXPECT_EQ(featureRaw->GetLastExecutionEvidence().diagnostic,
                   "required semantic workload was not recorded");
@@ -2624,11 +3034,13 @@ namespace
         EXPECT_EQ(receipt.features[0].graphPassCount, 1U);
         EXPECT_EQ(receipt.features[0].executedGraphPassCount, 0U);
         EXPECT_FALSE(receipt.features[0].readiness.executed);
+        EXPECT_FALSE(
+            receipt.features[0].contractCompletedWithoutGraphWork);
         EXPECT_EQ(receipt.features[0].diagnostic,
                   "required semantic workload was not recorded");
         EXPECT_FALSE(receipt.executionSucceeded);
         EXPECT_EQ(receipt.diagnostic,
-                  "required semantic workload was not recorded");
+                  "semantic-evidence: required semantic workload was not recorded");
     }
 
     TEST(RenderFeatureValidation,
@@ -2834,11 +3246,96 @@ namespace
         executedFeature.selected = true;
         executedFeature.readiness = MakeReadyReadiness();
         executedFeature.readiness.executed = true;
+        executedFeature.contractCompletedWithoutGraphWork = true;
         candidate.features.push_back(std::move(executedFeature));
 
         EXPECT_TRUE(candidate.IsStructurallyValid());
         EXPECT_FALSE(candidate.presented);
         EXPECT_FALSE(candidate.succeeded);
+
+        candidate.ambientOcclusion.requested = true;
+        candidate.ambientOcclusion.linearDepthInputReady = true;
+        candidate.ambientOcclusion.worldNormalInputReady = true;
+        candidate.ambientOcclusion.velocityInputReady = true;
+        candidate.ambientOcclusion.velocityProducerExecuted = true;
+        candidate.ambientOcclusion.pipelineReady = true;
+        candidate.ambientOcclusion.inputsReady = true;
+        candidate.ambientOcclusion.outputPublished = true;
+        candidate.ambientOcclusion.executed = true;
+        candidate.ambientOcclusion.historyCandidateProduced = true;
+        candidate.ambientOcclusion.historyResetReasons =
+            RenderHistoryResetReason::FirstFrame;
+        candidate.ambientOcclusion.consumerMask =
+            RVX_RENDER_AMBIENT_OCCLUSION_INDIRECT_CONSUMER_MASK;
+        candidate.ambientOcclusion.outputFormat = RHIFormat::R8_UNORM;
+        candidate.ambientOcclusion.horizonSearchGraphPassCount = 1;
+        candidate.ambientOcclusion.bilateralDenoiseGraphPassCount = 2;
+        candidate.ambientOcclusion.temporalResolveGraphPassCount = 1;
+        candidate.ambientOcclusion.planContentHash = 0xA013ULL;
+        candidate.ambientOcclusion.settingsHash = 0xA014ULL;
+        candidate.ambientOcclusion.aoFieldContentHash = 0xA015ULL;
+        candidate.ambientOcclusion.lightingConsumerExecuted = true;
+        candidate.ambientOcclusion.lightingAOFieldContentHash = 0xA015ULL;
+        candidate.ambientOcclusion.velocityFieldIdentity = 0xF013ULL;
+        EXPECT_TRUE(candidate.ambientOcclusion.IsStructurallyValid());
+        EXPECT_TRUE(candidate.IsStructurallyValid());
+
+        RenderAmbientOcclusionExecutionReceipt noLightingWork =
+            candidate.ambientOcclusion;
+        noLightingWork.lightingConsumerExecuted = false;
+        noLightingWork.lightingAOFieldContentHash = 0;
+        EXPECT_TRUE(noLightingWork.IsStructurallyValid());
+
+        RenderAmbientOcclusionExecutionReceipt mismatchedLightingField =
+            candidate.ambientOcclusion;
+        mismatchedLightingField.lightingAOFieldContentHash = 0xA016ULL;
+        EXPECT_FALSE(mismatchedLightingField.IsStructurallyValid());
+
+        RenderAmbientOcclusionExecutionReceipt unclaimedLightingField =
+            candidate.ambientOcclusion;
+        unclaimedLightingField.lightingConsumerExecuted = false;
+        EXPECT_FALSE(unclaimedLightingField.IsStructurallyValid());
+
+        RenderExecutionReceipt oldSchemaWithAO = candidate;
+        oldSchemaWithAO.schemaVersion = 8;
+        EXPECT_FALSE(oldSchemaWithAO.IsStructurallyValid());
+        RenderExecutionReceipt schemaNineWithAO = candidate;
+        schemaNineWithAO.schemaVersion = 9;
+        EXPECT_FALSE(schemaNineWithAO.IsStructurallyValid());
+        RenderExecutionReceipt invalidAOReceipt = candidate;
+        invalidAOReceipt.ambientOcclusion.consumerMask =
+            ToMask(RenderAmbientOcclusionConsumer::IBL);
+        EXPECT_FALSE(invalidAOReceipt.IsStructurallyValid());
+        invalidAOReceipt = candidate;
+        invalidAOReceipt.ambientOcclusion.outputFormat = RHIFormat::R16_FLOAT;
+        EXPECT_FALSE(invalidAOReceipt.IsStructurallyValid());
+        invalidAOReceipt = candidate;
+        invalidAOReceipt.ambientOcclusion.historySampled = true;
+        EXPECT_FALSE(invalidAOReceipt.IsStructurallyValid());
+        invalidAOReceipt = candidate;
+        invalidAOReceipt.ambientOcclusion.velocityInputReady = false;
+        EXPECT_FALSE(invalidAOReceipt.IsStructurallyValid());
+        invalidAOReceipt = candidate;
+        invalidAOReceipt.ambientOcclusion.velocityProducerExecuted = false;
+        EXPECT_FALSE(invalidAOReceipt.IsStructurallyValid());
+        invalidAOReceipt = candidate;
+        invalidAOReceipt.ambientOcclusion.velocityFieldIdentity = 0;
+        EXPECT_FALSE(invalidAOReceipt.IsStructurallyValid());
+        invalidAOReceipt = candidate;
+        invalidAOReceipt.ambientOcclusion.historyAvailableBefore = true;
+        invalidAOReceipt.ambientOcclusion.historySampled = true;
+        EXPECT_FALSE(invalidAOReceipt.IsStructurallyValid());
+        invalidAOReceipt = candidate;
+        invalidAOReceipt.ambientOcclusion.viewProjectionMotionObserved = true;
+        EXPECT_FALSE(invalidAOReceipt.IsStructurallyValid());
+        invalidAOReceipt = candidate;
+        invalidAOReceipt.ambientOcclusion.historyAvailableBefore = true;
+        invalidAOReceipt.ambientOcclusion.historySampled = true;
+        invalidAOReceipt.ambientOcclusion.motionReprojectionUsed = true;
+        invalidAOReceipt.ambientOcclusion.viewProjectionMotionObserved = true;
+        invalidAOReceipt.ambientOcclusion.historyResetReasons =
+            RenderHistoryResetReason::None;
+        EXPECT_TRUE(invalidAOReceipt.IsStructurallyValid());
 
         RenderExecutionReceipt temporalCandidate = candidate;
         temporalCandidate.postProcess.antiAliasingMode =
@@ -3021,6 +3518,8 @@ namespace
 
         RenderExecutionReceipt legacyV2 = candidate;
         legacyV2.schemaVersion = 2;
+        legacyV2.features[0].contractCompletedWithoutGraphWork = false;
+        legacyV2.ambientOcclusion = {};
         legacyV2.lighting = {};
         legacyV2.deformation = {};
         legacyV2.postProcess = {};
@@ -3034,6 +3533,8 @@ namespace
 
         RenderExecutionReceipt legacyV4 = candidate;
         legacyV4.schemaVersion = 4;
+        legacyV4.features[0].contractCompletedWithoutGraphWork = false;
+        legacyV4.ambientOcclusion = {};
         legacyV4.deformation = {};
         legacyV4.postProcess = {};
         EXPECT_TRUE(legacyV4.IsStructurallyValid());
@@ -3042,6 +3543,8 @@ namespace
 
         RenderExecutionReceipt legacyV1 = candidate;
         legacyV1.schemaVersion = 1;
+        legacyV1.features[0].contractCompletedWithoutGraphWork = false;
+        legacyV1.ambientOcclusion = {};
         legacyV1.deferredOpaque = {};
         legacyV1.lighting = {};
         legacyV1.deformation = {};
@@ -3063,6 +3566,7 @@ namespace
         first.lightingPlanIdentity = 7;
         first.route = RenderLightingSurfaceRoute::DeferredOpaque;
         first.frozenBufferMask = 0x3fu;
+        first.ambientOcclusionFieldContentHash = 19;
         first.workCount = 11;
         first.executed = true;
         ASSERT_TRUE(results.RecordLightingSurfaceExecution(first));
@@ -3077,6 +3581,7 @@ namespace
 
         RenderLightingSurfaceExecutionEvidence separateRoute = first;
         separateRoute.route = RenderLightingSurfaceRoute::Transparent;
+        separateRoute.ambientOcclusionFieldContentHash = 0;
         EXPECT_TRUE(results.RecordLightingSurfaceExecution(separateRoute));
     }
 
@@ -3131,36 +3636,28 @@ namespace
         ASSERT_EQ(registry.AddPasses(builder, blackboard),
                   RenderFeatureRegistryCode::Success);
 
-        RenderGraphBlackboardCode translucencyCode =
+        RenderGraphBlackboardCode sceneTexturesCode =
             RenderGraphBlackboardCode::Success;
-        const TranslucencyOutputs* const translucency =
-            blackboard.Require<TranslucencyOutputs>(
-                BuiltinRenderFeatureIds::PostProcessPipeline,
-                PostProcessPipelineFeatureAdapter(nullptr).Describe(),
-                &translucencyCode);
-        ASSERT_EQ(translucencyCode, RenderGraphBlackboardCode::Success);
-        ASSERT_NE(translucency, nullptr);
-        EXPECT_EQ(translucency->frameIdentity,
-                  MakeValidContext().frameIdentity);
-        EXPECT_EQ(translucency->viewIdentity,
-                  MakeValidContext().viewIdentity);
-        EXPECT_EQ(translucency->colorDomain,
-                  PostProcessColorDomain::SceneLinearHDR);
-        EXPECT_EQ(translucency->transfer, PostProcessTransfer::None);
-        EXPECT_TRUE(translucency->hdrSceneColor.IsValid());
-        EXPECT_EQ(translucency->hdrSceneColorMetadata,
+        RenderFeatureDescriptor sceneTexturesConsumer = MakeDescriptor(
+            99, "scene-textures-consumer", RenderFeaturePhase::Lighting);
+        sceneTexturesConsumer.consumedResources.push_back(
+            SceneTexturesContract);
+        const SceneTextures* const sceneTextures =
+            blackboard.Require<SceneTextures>(
+                sceneTexturesConsumer.featureId, sceneTexturesConsumer,
+                &sceneTexturesCode);
+        ASSERT_EQ(sceneTexturesCode, RenderGraphBlackboardCode::Success);
+        ASSERT_NE(sceneTextures, nullptr);
+        EXPECT_TRUE(sceneTextures->hdrSceneColor.IsValid());
+        EXPECT_EQ(sceneTextures->hdrSceneColorMetadata,
                   MakeSceneTextureMetadata(
                       SceneTextures::HDRSceneColorContract));
-        EXPECT_TRUE(translucency->reactiveMask.IsValid());
-        EXPECT_EQ(translucency->reactiveMask.index,
-                  recordContext.view.reactiveMaskTarget.index);
-        EXPECT_EQ(translucency->reactiveMask.graphIdentity,
-                  recordContext.view.reactiveMaskTarget.graphIdentity);
-        EXPECT_EQ(translucency->reactiveMask.recordingGeneration,
-                  recordContext.view.reactiveMaskTarget.recordingGeneration);
-        EXPECT_EQ(translucency->reactiveMaskMetadata,
+        EXPECT_TRUE(sceneTextures->deviceDepth.IsValid());
+        EXPECT_EQ(sceneTextures->deviceDepth.index,
+                  recordContext.view.depthTarget.index);
+        EXPECT_EQ(sceneTextures->deviceDepthMetadata,
                   MakeSceneTextureMetadata(
-                      SceneTextures::ReactiveMaskContract));
+                      SceneTextures::DeviceDepthContract));
 
         const LegacyForwardFeaturePassChainStats chain =
             legacyRaw->GetPassChainStatsSnapshot();
@@ -3211,6 +3708,182 @@ namespace
         EXPECT_FALSE(candidate.presented);
         EXPECT_FALSE(candidate.succeeded);
         EXPECT_TRUE(candidate.IsStructurallyValid());
+    }
+
+    TEST(RenderFeatureValidation,
+         LegacyAdapterRegistersCanonicalVelocityProducersBeforePublishingSceneTextures)
+    {
+        RenderGraph graph;
+        RenderPassRecordContext recordContext = MakeValidRecordContext(graph);
+        recordContext.view.velocityTarget = MakeVelocityTarget(graph);
+        ASSERT_TRUE(recordContext.view.velocityTarget.IsValid());
+
+        RenderPassRegistry passes;
+        auto camera = std::make_unique<TestLegacyPass>(
+            "CameraVelocityPass", PassPriority::PostProcess - 300,
+            true, true, true);
+        TestLegacyPass* const cameraRaw = camera.get();
+        passes.AddPass(std::move(camera), nullptr);
+        auto object = std::make_unique<TestLegacyPass>(
+            "ObjectVelocityPass", PassPriority::PostProcess - 250,
+            true, true, true);
+        TestLegacyPass* const objectRaw = object.get();
+        passes.AddPass(std::move(object), nullptr);
+
+        LegacyForwardFeatureAdapter adapter(
+            &passes, nullptr, VelocityPassBindings{cameraRaw, objectRaw});
+        adapter.SetRecordContext(recordContext);
+        adapter.Prepare(MakeValidContext());
+        ASSERT_TRUE(adapter.ResolveReadiness().IsReadyToExecute());
+
+        const RenderGraphBlackboardProvenance provenance{
+            recordContext.identity.graphIdentity,
+            recordContext.identity.graphRecordingGeneration,
+            recordContext.identity.frameSequence,
+            recordContext.identity.viewOrdinal,
+            recordContext.identity.recordEpoch};
+        RenderFeatureGraphBuilder builder(graph, provenance);
+        RenderGraphBlackboard blackboard(provenance);
+        adapter.AddPasses(builder, blackboard);
+
+        ASSERT_TRUE(adapter.ResolveReadiness().IsReadyToExecute());
+        const LegacyForwardFeaturePassChainStats chain =
+            adapter.GetPassChainStatsSnapshot();
+        EXPECT_EQ(chain.registeredPassCount, 2U);
+        EXPECT_EQ(chain.graphPassCount, 2U);
+        EXPECT_EQ(chain.graphPassNames,
+                  (std::vector<std::string>{"CameraVelocityPass",
+                                            "ObjectVelocityPass"}));
+        EXPECT_EQ(graph.GetRecordedPassCount(), 2U);
+        EXPECT_TRUE(cameraRaw->ReceivedMatchingContext());
+        EXPECT_TRUE(objectRaw->ReceivedMatchingContext());
+
+        RenderFeatureDescriptor consumer = MakeDescriptor(
+            98, "scene-textures-consumer", RenderFeaturePhase::Lighting);
+        consumer.consumedResources.push_back(SceneTexturesContract);
+        RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
+        const SceneTextures* const sceneTextures =
+            blackboard.Require<SceneTextures>(
+                consumer.featureId, consumer, &code);
+        ASSERT_EQ(code, RenderGraphBlackboardCode::Success);
+        ASSERT_NE(sceneTextures, nullptr);
+        EXPECT_EQ(sceneTextures->velocity.index,
+                  recordContext.view.velocityTarget.index);
+        EXPECT_EQ(sceneTextures->velocityMetadata,
+                  MakeSceneTextureMetadata(
+                      SceneTextures::VelocityContract));
+
+        // Concrete CameraVelocityPass/ObjectVelocityPass integration tests
+        // own GPU execution evidence.  This adapter-level test intentionally
+        // stops at composition because the transient target has no test RHI
+        // device; its contract is atomic ordered registration and publication.
+    }
+
+    TEST(RenderFeatureValidation,
+         LegacyAdapterRejectsNonCanonicalVelocityTargetBeforePublication)
+    {
+        RenderGraph graph;
+        RenderPassRecordContext recordContext = MakeValidRecordContext(graph);
+        recordContext.view.velocityTarget = MakeVelocityTarget(
+            graph, RHIFormat::RGBA16_FLOAT);
+        ASSERT_TRUE(recordContext.view.velocityTarget.IsValid());
+
+        RenderPassRegistry passes;
+        auto camera = std::make_unique<TestLegacyPass>(
+            "CameraVelocityPass", PassPriority::PostProcess - 300,
+            true, true, true);
+        TestLegacyPass* const cameraRaw = camera.get();
+        passes.AddPass(std::move(camera), nullptr);
+        auto object = std::make_unique<TestLegacyPass>(
+            "ObjectVelocityPass", PassPriority::PostProcess - 250,
+            true, true, true);
+        TestLegacyPass* const objectRaw = object.get();
+        passes.AddPass(std::move(object), nullptr);
+
+        LegacyForwardFeatureAdapter adapter(
+            &passes, nullptr, VelocityPassBindings{cameraRaw, objectRaw});
+        adapter.SetRecordContext(recordContext);
+        adapter.Prepare(MakeValidContext());
+        ASSERT_TRUE(adapter.ResolveReadiness().IsReadyToExecute());
+
+        const RenderGraphBlackboardProvenance provenance{
+            recordContext.identity.graphIdentity,
+            recordContext.identity.graphRecordingGeneration,
+            recordContext.identity.frameSequence,
+            recordContext.identity.viewOrdinal,
+            recordContext.identity.recordEpoch};
+        RenderFeatureGraphBuilder builder(graph, provenance);
+        RenderGraphBlackboard blackboard(provenance);
+        adapter.AddPasses(builder, blackboard);
+
+        EXPECT_FALSE(adapter.ResolveReadiness().inputsReady);
+        EXPECT_EQ(adapter.ResolveReadiness().diagnostic,
+                  "Requested velocity producers require a full-resolution "
+                  "RG16_FLOAT target");
+        EXPECT_EQ(adapter.GetPassChainStatsSnapshot().graphPassCount, 0U);
+        EXPECT_EQ(graph.GetRecordedPassCount(), 0U);
+
+        RenderFeatureDescriptor consumer = MakeDescriptor(
+            99, "scene-textures-consumer", RenderFeaturePhase::Lighting);
+        consumer.consumedResources.push_back(SceneTexturesContract);
+        RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
+        EXPECT_EQ(blackboard.Require<SceneTextures>(
+                      consumer.featureId, consumer, &code),
+                  nullptr);
+        EXPECT_EQ(code, RenderGraphBlackboardCode::MissingResource);
+    }
+
+    TEST(RenderFeatureValidation,
+         LegacyAdapterRejectsIncompleteVelocityPairWithoutPartialGraphMutation)
+    {
+        RenderGraph graph;
+        RenderPassRecordContext recordContext = MakeValidRecordContext(graph);
+        recordContext.view.velocityTarget = MakeVelocityTarget(graph);
+        ASSERT_TRUE(recordContext.view.velocityTarget.IsValid());
+
+        RenderPassRegistry passes;
+        auto camera = std::make_unique<TestLegacyPass>(
+            "CameraVelocityPass", PassPriority::PostProcess - 300,
+            true, true, true);
+        TestLegacyPass* const cameraRaw = camera.get();
+        passes.AddPass(std::move(camera), nullptr);
+        auto object = std::make_unique<TestLegacyPass>(
+            "ObjectVelocityPass", PassPriority::PostProcess - 250,
+            true, false, false);
+        TestLegacyPass* const objectRaw = object.get();
+        passes.AddPass(std::move(object), nullptr);
+
+        LegacyForwardFeatureAdapter adapter(
+            &passes, nullptr, VelocityPassBindings{cameraRaw, objectRaw});
+        adapter.SetRecordContext(recordContext);
+        adapter.Prepare(MakeValidContext());
+        ASSERT_TRUE(adapter.ResolveReadiness().IsReadyToExecute());
+
+        const RenderGraphBlackboardProvenance provenance{
+            recordContext.identity.graphIdentity,
+            recordContext.identity.graphRecordingGeneration,
+            recordContext.identity.frameSequence,
+            recordContext.identity.viewOrdinal,
+            recordContext.identity.recordEpoch};
+        RenderFeatureGraphBuilder builder(graph, provenance);
+        RenderGraphBlackboard blackboard(provenance);
+        adapter.AddPasses(builder, blackboard);
+
+        EXPECT_FALSE(adapter.ResolveReadiness().inputsReady);
+        EXPECT_NE(adapter.ResolveReadiness().diagnostic.find(
+                      "ObjectVelocityPass"),
+                  std::string::npos);
+        EXPECT_EQ(adapter.GetPassChainStatsSnapshot().graphPassCount, 0U);
+        EXPECT_EQ(graph.GetRecordedPassCount(), 0U);
+
+        RenderFeatureDescriptor consumer = MakeDescriptor(
+            100, "scene-textures-consumer", RenderFeaturePhase::Lighting);
+        consumer.consumedResources.push_back(SceneTexturesContract);
+        RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
+        EXPECT_EQ(blackboard.Require<SceneTextures>(
+                      consumer.featureId, consumer, &code),
+                  nullptr);
+        EXPECT_EQ(code, RenderGraphBlackboardCode::MissingResource);
     }
 
     TEST(RenderFeatureValidation,
@@ -3265,6 +3938,11 @@ namespace
         EXPECT_EQ(receipt.features[0].executedGraphPassCount, 0U);
         EXPECT_EQ(receipt.features[0].graphPassNames,
                   (std::vector<std::string>{"Working"}));
+        // The adapter explicitly allows data-only completion, but it did
+        // register an Empty graph node. A culled registration therefore must
+        // remain a fail-closed non-execution outcome.
+        EXPECT_FALSE(
+            receipt.features[0].contractCompletedWithoutGraphWork);
         EXPECT_FALSE(receipt.features[0].readiness.executed);
         EXPECT_FALSE(receipt.executionSucceeded);
         EXPECT_TRUE(receipt.IsStructurallyValid());
@@ -3358,9 +4036,11 @@ namespace
         ASSERT_EQ(receipt.features.size(), 1U);
         EXPECT_EQ(receipt.features[0].graphPassCount, 0U);
         EXPECT_EQ(receipt.features[0].executedGraphPassCount, 0U);
-        EXPECT_FALSE(receipt.features[0].readiness.executed);
+        EXPECT_TRUE(
+            receipt.features[0].contractCompletedWithoutGraphWork);
+        EXPECT_TRUE(receipt.features[0].readiness.executed);
         EXPECT_TRUE(receipt.graphComposed);
-        EXPECT_FALSE(receipt.executionSucceeded);
+        EXPECT_TRUE(receipt.executionSucceeded);
         EXPECT_FALSE(receipt.presented);
         EXPECT_FALSE(receipt.succeeded);
     }

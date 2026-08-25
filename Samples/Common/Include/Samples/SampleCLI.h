@@ -28,7 +28,7 @@
 namespace RVX
 {
     /** @brief Current JSON schema version written by sample report producers. */
-    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 24;
+    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 26;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION = 20;
     inline constexpr uint32
@@ -37,6 +37,11 @@ namespace RVX
         RVX_SAMPLE_REPORT_PRE_TEMPORAL_AA_EXECUTION_SCHEMA_VERSION = 22;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_EXPOSURE_EXECUTION_SCHEMA_VERSION = 23;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_AMBIENT_OCCLUSION_EXECUTION_SCHEMA_VERSION = 24;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_AMBIENT_OCCLUSION_MOTION_REPROJECTION_SCHEMA_VERSION =
+            25;
     inline constexpr uint32 RVX_SAMPLE_REPORT_PRE_VISUAL_CONTRACT_SCHEMA_VERSION = 19;
     inline constexpr uint32 RVX_SAMPLE_REPORT_SCENARIO_SCHEMA_VERSION = 12;
     inline constexpr uint32 RVX_SAMPLE_REPORT_ECS_DIAGNOSTICS_SCHEMA_VERSION = 13;
@@ -293,6 +298,8 @@ namespace RVX
         bool directOpaqueRasterReadbackQualificationEnabled = false;
         /** @brief Explicit one-shot post-Present exposure-state readback. */
         bool exposureQualificationProbeEnabled = false;
+        /** @brief Explicit one-shot post-Present GTAO readback. */
+        bool ambientOcclusionQualificationProbeEnabled = false;
         uint32 width = 1280;
         uint32 height = 720;
         std::string quality = "default";
@@ -433,7 +440,10 @@ namespace RVX
                     PostProcessTransfer::SceneLinearToDisplayEncoded &&
                 !displayLinearOutputReady;
 
-            return available && executionReceiptSchemaVersion == 8 &&
+            const bool supportedExecutionReceipt =
+                executionReceiptSchemaVersion == 8 ||
+                executionReceiptSchemaVersion == 10;
+            return available && supportedExecutionReceipt &&
                    executionReceiptStructurallyValid &&
                    executionReceiptAvailable && executionReceiptGraphComposed &&
                    executionReceiptExecutionSucceeded &&
@@ -568,6 +578,127 @@ namespace RVX
         }
     };
 
+    /**
+     * @brief Narrow, presentation-bound ambient-occlusion execution evidence.
+     *
+     * This remains a separate projection from post processing: GTAO produces a
+     * scene texture consumed by indirect lighting before HDR post processing.
+     * Sample scenarios only receive immutable receipt values, never graph
+     * handles, pass objects, or renderer-private history resources.
+     */
+    struct SampleAmbientOcclusionExecutionDiagnostics
+    {
+        bool available = false;
+        uint32 executionReceiptSchemaVersion = 0;
+        bool executionReceiptStructurallyValid = false;
+        bool executionReceiptAvailable = false;
+        bool executionReceiptGraphComposed = false;
+        bool executionReceiptExecutionSucceeded = false;
+        bool executionReceiptPresented = false;
+        bool executionReceiptSucceeded = false;
+        uint64 frameFeatureSequence = 0;
+        uint64 receiptFrameSequence = 0;
+        uint64 lastPresentedFrameSequence = 0;
+        bool presentedFrameAligned = false;
+        bool mainView = false;
+        uint64 sceneRuntimeId = 0;
+        uint64 cameraEntityPacked = 0;
+        uint32 subViewIndex = 0;
+
+        bool receiptStructurallyValid = false;
+        uint64 planContentHash = 0;
+        bool requested = false;
+        bool pipelineReady = false;
+        bool inputsReady = false;
+        bool executed = false;
+        bool lightingConsumerExecuted = false;
+        bool linearDepthInputReady = false;
+        bool worldNormalInputReady = false;
+        /** @brief The GTAO resolve consumed the view's motion-vector field. */
+        bool velocityInputReady = false;
+        /** @brief The source velocity pass executed for the presented view. */
+        bool velocityProducerExecuted = false;
+        bool outputPublished = false;
+        RHIFormat outputFormat = RHIFormat::Unknown;
+        uint32 horizonSearchGraphPassCount = 0;
+        uint32 bilateralDenoiseGraphPassCount = 0;
+        uint32 temporalResolveGraphPassCount = 0;
+        bool historyAvailableBefore = false;
+        bool historySampled = false;
+        /** @brief History sampling used motion-vector reprojection. */
+        bool motionReprojectionUsed = false;
+        /** @brief The qualified frame contains genuine unjittered camera motion. */
+        bool viewProjectionMotionObserved = false;
+        bool historyCandidateProduced = false;
+        bool historyCommitted = false;
+        bool historyAbandoned = false;
+        RenderHistoryResetReason historyResetReasons =
+            RenderHistoryResetReason::None;
+        uint64 aoFieldContentHash = 0;
+        uint64 lightingAOFieldContentHash = 0;
+        uint64 velocityFieldIdentity = 0;
+        uint32 consumerMask = 0;
+        bool probeRequested = false;
+        bool probeReady = false;
+        uint32 probeSampleCount = 0;
+        uint32 probeOccludedSampleCount = 0;
+        float32 probeMinVisibility = std::numeric_limits<float32>::quiet_NaN();
+        float32 probeMeanVisibility = std::numeric_limits<float32>::quiet_NaN();
+        float32 probeMaxVisibility = std::numeric_limits<float32>::quiet_NaN();
+        bool fallbackUsed = false;
+        std::string diagnostic;
+
+        /** @brief True once GTAO was genuinely executed for the presented view. */
+        [[nodiscard]] bool IsExecutionReady() const noexcept
+        {
+            const bool presentedMainView =
+                presentedFrameAligned && frameFeatureSequence != 0 &&
+                frameFeatureSequence == receiptFrameSequence &&
+                receiptFrameSequence == lastPresentedFrameSequence && mainView;
+            return available && executionReceiptSchemaVersion == 10 &&
+                   executionReceiptStructurallyValid &&
+                   executionReceiptAvailable && executionReceiptGraphComposed &&
+                   executionReceiptExecutionSucceeded &&
+                   executionReceiptPresented && executionReceiptSucceeded &&
+                   presentedMainView && receiptStructurallyValid &&
+                   planContentHash != 0 && requested && pipelineReady &&
+                   inputsReady && executed && linearDepthInputReady &&
+                   worldNormalInputReady && velocityInputReady &&
+                   velocityProducerExecuted && velocityFieldIdentity != 0 &&
+                   outputPublished &&
+                   outputFormat == RHIFormat::R8_UNORM &&
+                   horizonSearchGraphPassCount != 0 &&
+                   bilateralDenoiseGraphPassCount >= 2 &&
+                   temporalResolveGraphPassCount == 1 && !fallbackUsed;
+        }
+
+        /** @brief True only after a non-neutral probe and post-Present history commit. */
+        [[nodiscard]] bool IsQualificationReady() const noexcept
+        {
+            constexpr uint32 ExpectedIndirectOnlyConsumerMask = 0x7u;
+            return IsExecutionReady() && historyAvailableBefore &&
+                   historySampled && motionReprojectionUsed &&
+                   viewProjectionMotionObserved &&
+                   historyCandidateProduced &&
+                   historyCommitted && !historyAbandoned &&
+                   historyResetReasons == RenderHistoryResetReason::None &&
+                   lightingConsumerExecuted && aoFieldContentHash != 0 &&
+                   aoFieldContentHash == lightingAOFieldContentHash &&
+                   consumerMask == ExpectedIndirectOnlyConsumerMask &&
+                   probeRequested && probeReady && probeSampleCount != 0 &&
+                   probeOccludedSampleCount != 0 &&
+                   probeOccludedSampleCount < probeSampleCount &&
+                   std::isfinite(probeMinVisibility) &&
+                   std::isfinite(probeMeanVisibility) &&
+                   std::isfinite(probeMaxVisibility) &&
+                   probeMinVisibility >= 0.0f && probeMinVisibility < 1.0f &&
+                   probeMeanVisibility >= probeMinVisibility &&
+                   probeMeanVisibility < 1.0f &&
+                   probeMaxVisibility >= probeMeanVisibility &&
+                   probeMaxVisibility <= 1.0f;
+        }
+    };
+
     struct SampleRenderDiagnostics
     {
         bool available = false;
@@ -624,6 +755,9 @@ namespace RVX
         uint32 postProcessGraphPassCount = 0;
         /** @brief Exact, main-view execution projection for post-process only. */
         SamplePostProcessExecutionDiagnostics postProcessActualExecution{};
+        /** @brief Exact, main-view execution projection for GTAO only. */
+        SampleAmbientOcclusionExecutionDiagnostics
+            ambientOcclusionActualExecution{};
         bool clusteredLightingInitialized = false;
         uint32 clusteredLightingActiveClusters = 0;
         bool textureIBLEnabled = false;

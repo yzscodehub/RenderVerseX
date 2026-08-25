@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <string>
 #include <utility>
 
 namespace RVX
@@ -50,6 +51,8 @@ namespace
                 return TranslucencyOutputs::SchemaVersion;
             case RenderBlackboardResourceId::PostProcessOutputs:
                 return PostProcessOutputs::SchemaVersion;
+            case RenderBlackboardResourceId::AmbientOcclusionOutputs:
+                return AmbientOcclusionOutputs::SchemaVersion;
             default:
                 return 0U;
         }
@@ -378,6 +381,13 @@ RenderFeatureRegistryCode RenderFeatureRegistry::Register(
     if (!IsValidResourceList(descriptor.consumedResources) ||
         !IsValidResourceList(descriptor.producedResources))
     {
+        return RenderFeatureRegistryCode::InvalidResourceContract;
+    }
+    if (descriptor.allowsDataOnlyCompletion &&
+        descriptor.producedResources.empty())
+    {
+        // A data-only completion is meaningful only when the feature owns a
+        // declared typed output that the blackboard can prove was published.
         return RenderFeatureRegistryCode::InvalidResourceContract;
     }
     const bool hasSnapshotChannel =
@@ -962,6 +972,25 @@ RenderFeatureRegistryCode RenderFeatureRegistry::FinalizeGraphExecution(
             evidence.executedGraphPassCount == evidence.graphPassCount &&
             registration.semanticExecutionDiagnostic.empty();
         evidence.diagnostic = registration.semanticExecutionDiagnostic;
+        const auto activeIt = std::find_if(
+            m_activeFeatures.begin(), m_activeFeatures.end(),
+            [&registration](const ActiveFeature& active)
+            {
+                return active.featureId == registration.featureId &&
+                       active.addPasses;
+            });
+        evidence.contractCompletedWithoutGraphWork =
+            entry->descriptor.allowsDataOnlyCompletion &&
+            !entry->descriptor.producedResources.empty() &&
+            registration.passIndices.empty() &&
+            registration.observedGraphPassCount == 0 &&
+            registration.observedExecutedGraphPassCount == 0 &&
+            registration.executionEvidenceFinalized &&
+            registration.semanticExecutionDiagnostic.empty() &&
+            activeIt != m_activeFeatures.end() &&
+            !activeIt->fallbackUsed &&
+            activeIt->readiness.IsReadyToExecute() &&
+            activeIt->readiness.diagnostic.empty();
         entry->feature->OnGraphExecutionFinalized(evidence);
     }
 
@@ -1002,6 +1031,8 @@ RenderExecutionReceipt RenderFeatureRegistry::CollectExecutionReceipt(
             : RenderFeatureExecutionReceipt{};
         const bool featureClaimedExecution = active.addPasses &&
             featureReceipt.readiness.executed;
+        const bool featureClaimedDataOnlyCompletion = active.addPasses &&
+            featureReceipt.contractCompletedWithoutGraphWork;
         featureReceipt.featureId = active.featureId;
         featureReceipt.featureSchemaVersion = entry->descriptor.schemaVersion;
         featureReceipt.phase = entry->descriptor.phase;
@@ -1024,6 +1055,7 @@ RenderExecutionReceipt RenderFeatureRegistry::CollectExecutionReceipt(
             featureReceipt.graphPassCount = 0;
             featureReceipt.executedGraphPassCount = 0;
             featureReceipt.graphPassNames.clear();
+            featureReceipt.contractCompletedWithoutGraphWork = false;
 
             if (registration == nullptr)
             {
@@ -1041,11 +1073,23 @@ RenderExecutionReceipt RenderFeatureRegistry::CollectExecutionReceipt(
                     registration->observedExecutedGraphPassCount;
                 featureReceipt.graphPassNames =
                     registration->observedGraphPassNames;
+                featureReceipt.contractCompletedWithoutGraphWork =
+                    entry->descriptor.allowsDataOnlyCompletion &&
+                    !entry->descriptor.producedResources.empty() &&
+                    registration->passIndices.empty() &&
+                    registration->observedGraphPassCount == 0 &&
+                    registration->observedExecutedGraphPassCount == 0 &&
+                    registration->semanticExecutionDiagnostic.empty() &&
+                    !active.fallbackUsed &&
+                    active.readiness.IsReadyToExecute() &&
+                    active.readiness.diagnostic.empty() &&
+                    featureReceipt.diagnostic.empty();
                 featureReceipt.readiness.executed =
                     featureReceipt.readiness.IsReadyToExecute() &&
-                    featureReceipt.graphPassCount != 0 &&
-                    featureReceipt.executedGraphPassCount ==
-                        featureReceipt.graphPassCount;
+                    (featureReceipt.contractCompletedWithoutGraphWork ||
+                     (featureReceipt.graphPassCount != 0 &&
+                      featureReceipt.executedGraphPassCount ==
+                          featureReceipt.graphPassCount));
                 if (!featureReceipt.readiness.executed &&
                     !registration->semanticExecutionDiagnostic.empty())
                 {
@@ -1065,8 +1109,17 @@ RenderExecutionReceipt RenderFeatureRegistry::CollectExecutionReceipt(
             {
                 receipt.executionSucceeded = false;
                 featureReceipt.readiness.executed = false;
+                featureReceipt.contractCompletedWithoutGraphWork = false;
                 featureReceipt.diagnostic =
                     "Render feature self-reported execution; graph evidence is registry-owned";
+            }
+            else if (featureClaimedDataOnlyCompletion)
+            {
+                receipt.executionSucceeded = false;
+                featureReceipt.readiness.executed = false;
+                featureReceipt.contractCompletedWithoutGraphWork = false;
+                featureReceipt.diagnostic =
+                    "Render feature self-reported data-only completion; graph evidence is registry-owned";
             }
 
             if (!featureReceipt.readiness.IsReadyToExecute() ||
@@ -1076,8 +1129,16 @@ RenderExecutionReceipt RenderFeatureRegistry::CollectExecutionReceipt(
                 if (receipt.diagnostic.empty())
                 {
                     receipt.diagnostic = featureReceipt.diagnostic.empty()
-                        ? "Selected render feature did not execute"
-                        : featureReceipt.diagnostic;
+                        ? "Selected render feature '" +
+                              entry->descriptor.name +
+                              "' did not execute (observed " +
+                              std::to_string(
+                                  featureReceipt.executedGraphPassCount) +
+                              "/" +
+                              std::to_string(featureReceipt.graphPassCount) +
+                              " graph passes)"
+                        : entry->descriptor.name + ": " +
+                              featureReceipt.diagnostic;
                 }
             }
         }

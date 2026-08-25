@@ -51,6 +51,10 @@ namespace RVX
         inline constexpr RenderFeatureId DeferredLighting{5};
         /** Legacy special surfaces retained after deferred opaque lighting. */
         inline constexpr RenderFeatureId DeferredForwardSpecialChain{6};
+        /** GTAO publishes the canonical indirect-light visibility field. */
+        inline constexpr RenderFeatureId AmbientOcclusion{7};
+        /** Forward lighting/special-surface consumer after GTAO publication. */
+        inline constexpr RenderFeatureId ForwardLighting{8};
     } // namespace BuiltinRenderFeatureIds
 
     /** @brief Legal feature bands. Resource edges determine actual execution order. */
@@ -82,6 +86,7 @@ namespace RVX
         ReflectionOutputs,
         TranslucencyOutputs,
         PostProcessOutputs,
+        AmbientOcclusionOutputs,
         Count,
     };
 
@@ -178,6 +183,16 @@ namespace RVX
             RenderFeatureChannelId::Invalid;
         uint32 snapshotChannelSchemaVersion = 0;
         std::string shaderPipelineFamily{};
+        /**
+         * @brief Permits a ready feature with declared typed outputs to finish
+         *        its data contract without registering a RenderGraph pass.
+         *
+         * This is an explicit, narrow opt-in for producers whose current
+         * frame has no GPU work. It never represents GPU execution: a feature
+         * that registered any pass, including one later culled by the graph,
+         * must still provide exact execution evidence for that pass.
+         */
+        bool allowsDataOnlyCompletion = false;
     };
 
     /** @brief Distinct truth dimensions; support never implies execution. */
@@ -319,6 +334,11 @@ namespace RVX
         uint32 executedGraphPassCount = 0;
         std::vector<std::string> graphPassNames{};
         std::string diagnostic{};
+        /**
+         * @brief A finalized typed-output contract completed with no graph
+         *        pass registered; this is not GPU execution evidence.
+         */
+        bool contractCompletedWithoutGraphWork = false;
     };
 
     /**
@@ -340,6 +360,11 @@ namespace RVX
         uint32 executedGraphPassCount = 0;
         bool semanticExecutionSucceeded = false;
         std::string diagnostic{};
+        /**
+         * @brief A finalized typed-output contract completed with no graph
+         *        pass registered; this is not GPU execution evidence.
+         */
+        bool contractCompletedWithoutGraphWork = false;
 
         [[nodiscard]] bool HasExactExecution() const noexcept
         {
@@ -840,10 +865,168 @@ namespace RVX
         }
     };
 
+    /**
+     * @brief Exact GTAO execution and post-present qualification evidence.
+     *
+     * This receipt never describes an arbitrary scene-color darkening pass:
+     * its closed consumer mask proves that only indirect lighting consumed the
+     * generated R8 visibility field.
+     */
+    struct RenderAmbientOcclusionExecutionReceipt
+    {
+        bool requested = false;
+        bool linearDepthInputReady = false;
+        bool worldNormalInputReady = false;
+        /** True only when the current view's RG16 motion-vector field is usable. */
+        bool velocityInputReady = false;
+        /** True only when the velocity producer executed for this exact view. */
+        bool velocityProducerExecuted = false;
+        bool pipelineReady = false;
+        bool inputsReady = false;
+        bool outputPublished = false;
+        bool executed = false;
+        /** The selected opaque lighting route consumed this exact AO field. */
+        bool lightingConsumerExecuted = false;
+        bool historyAvailableBefore = false;
+        bool historySampled = false;
+        /** True only when history sampling was reprojected with motion vectors. */
+        bool motionReprojectionUsed = false;
+        /** Current and previous unjittered camera transforms genuinely differ. */
+        bool viewProjectionMotionObserved = false;
+        bool historyCandidateProduced = false;
+        bool historyCommitted = false;
+        bool historyAbandoned = false;
+        /** GTAO has no scene-color fallback; true is always a contract failure. */
+        bool fallbackUsed = false;
+        bool probeRequested = false;
+        bool probeReady = false;
+        RenderHistoryResetReason historyResetReasons =
+            RenderHistoryResetReason::None;
+        RenderAmbientOcclusionConsumerMask consumerMask = 0;
+        RHIFormat outputFormat = RHIFormat::Unknown;
+        uint32 horizonSearchGraphPassCount = 0;
+        uint32 bilateralDenoiseGraphPassCount = 0;
+        uint32 temporalResolveGraphPassCount = 0;
+        uint32 probeSampleCount = 0;
+        uint32 probeOccludedSampleCount = 0;
+        uint64 planContentHash = 0;
+        uint64 settingsHash = 0;
+        uint64 aoFieldContentHash = 0;
+        uint64 lightingAOFieldContentHash = 0;
+        /** Stable identity of the exact velocity field consumed by GTAO. */
+        uint64 velocityFieldIdentity = 0;
+        float32 probeMinVisibility = 0.0f;
+        float32 probeMeanVisibility = 0.0f;
+        float32 probeMaxVisibility = 0.0f;
+        std::string diagnostic{};
+
+        [[nodiscard]] bool IsEmpty() const noexcept
+        {
+            return !requested && !linearDepthInputReady &&
+                   !worldNormalInputReady && !velocityInputReady &&
+                   !velocityProducerExecuted &&
+                   !pipelineReady && !inputsReady &&
+                   !outputPublished && !executed &&
+                   !lightingConsumerExecuted && !historyAvailableBefore &&
+                   !historySampled && !motionReprojectionUsed &&
+                   !viewProjectionMotionObserved &&
+                   !historyCandidateProduced &&
+                   !historyCommitted && !historyAbandoned && !fallbackUsed &&
+                   !probeRequested &&
+                   !probeReady &&
+                   historyResetReasons == RenderHistoryResetReason::None &&
+                   consumerMask == 0 && outputFormat == RHIFormat::Unknown &&
+                   horizonSearchGraphPassCount == 0 &&
+                   bilateralDenoiseGraphPassCount == 0 &&
+                   temporalResolveGraphPassCount == 0 && probeSampleCount == 0 &&
+                   probeOccludedSampleCount == 0 &&
+                   planContentHash == 0 && settingsHash == 0 &&
+                   aoFieldContentHash == 0 && lightingAOFieldContentHash == 0 &&
+                   velocityFieldIdentity == 0 &&
+                   probeMinVisibility == 0.0f && probeMeanVisibility == 0.0f &&
+                   probeMaxVisibility == 0.0f && diagnostic.empty();
+        }
+
+        [[nodiscard]] bool IsStructurallyValid() const noexcept
+        {
+            if (!requested)
+                return IsEmpty();
+
+            const bool probeValuesEmpty = probeSampleCount == 0 &&
+                probeOccludedSampleCount == 0 &&
+                probeMinVisibility == 0.0f && probeMeanVisibility == 0.0f &&
+                probeMaxVisibility == 0.0f;
+            const bool probeValuesValid = probeSampleCount != 0 &&
+                probeOccludedSampleCount <= probeSampleCount &&
+                std::isfinite(probeMinVisibility) &&
+                std::isfinite(probeMeanVisibility) &&
+                std::isfinite(probeMaxVisibility) &&
+                probeMinVisibility >= 0.0f && probeMinVisibility <= 1.0f &&
+                probeMeanVisibility >= probeMinVisibility &&
+                probeMeanVisibility <= probeMaxVisibility &&
+                probeMaxVisibility <= 1.0f;
+            if (planContentHash == 0 || settingsHash == 0 ||
+                !IsValidRenderAmbientOcclusionConsumerMask(consumerMask) ||
+                (inputsReady !=
+                 (linearDepthInputReady && worldNormalInputReady &&
+                  velocityInputReady)) ||
+                (historySampled && !historyAvailableBefore) ||
+                (motionReprojectionUsed !=
+                 (historySampled && velocityInputReady &&
+                  velocityProducerExecuted)) ||
+                (viewProjectionMotionObserved && !motionReprojectionUsed) ||
+                (historyCommitted && !historyCandidateProduced) ||
+                (historyAbandoned && !historyCandidateProduced) ||
+                (historyCommitted && historyAbandoned) ||
+                fallbackUsed ||
+                (probeReady && (!probeRequested || !probeValuesValid)) ||
+                (!probeReady && !probeValuesEmpty))
+            {
+                return false;
+            }
+
+            if (!executed)
+            {
+                return !outputPublished && outputFormat == RHIFormat::Unknown &&
+                       horizonSearchGraphPassCount == 0 &&
+                       bilateralDenoiseGraphPassCount == 0 &&
+                       temporalResolveGraphPassCount == 0 &&
+                       aoFieldContentHash == 0 && lightingAOFieldContentHash == 0 &&
+                       velocityFieldIdentity == 0 &&
+                       !lightingConsumerExecuted &&
+                       !historyAvailableBefore && !historySampled &&
+                       !motionReprojectionUsed &&
+                       !viewProjectionMotionObserved &&
+                       !historyCandidateProduced && !historyCommitted &&
+                       !historyAbandoned &&
+                       !probeRequested && !probeReady &&
+                       historyResetReasons == RenderHistoryResetReason::None;
+            }
+
+            return linearDepthInputReady && worldNormalInputReady &&
+                   velocityInputReady &&
+                   velocityProducerExecuted && velocityFieldIdentity != 0 &&
+                   pipelineReady && inputsReady && outputPublished &&
+                   outputFormat == RHIFormat::R8_UNORM &&
+                   horizonSearchGraphPassCount == 1 &&
+                   bilateralDenoiseGraphPassCount == 2 &&
+                   temporalResolveGraphPassCount == 1 &&
+                   aoFieldContentHash != 0 &&
+                   ((!lightingConsumerExecuted &&
+                     lightingAOFieldContentHash == 0) ||
+                    (lightingConsumerExecuted &&
+                     lightingAOFieldContentHash == aoFieldContentHash)) &&
+                   historyCandidateProduced &&
+                   (!historyAvailableBefore || historySampled) &&
+                   (!historySampled ||
+                    historyResetReasons == RenderHistoryResetReason::None);
+        }
+    };
+
     /** @brief Candidate or presentation-qualified evidence for one frame/view. */
     struct RenderExecutionReceipt
     {
-        uint32 schemaVersion = 8;
+        uint32 schemaVersion = 10;
         bool available = false;
         bool graphComposed = false;
         bool executionSucceeded = false;
@@ -867,6 +1050,8 @@ namespace RVX
         RenderDeformationExecutionReceipt deformation{};
         /** Typed HDR-to-presentation plan and exact stage evidence. */
         RenderPostProcessExecutionReceipt postProcess{};
+        /** GTAO execution and indirect-light field provenance. */
+        RenderAmbientOcclusionExecutionReceipt ambientOcclusion{};
         std::vector<RenderFeatureExecutionReceipt> features{};
         std::string diagnostic{};
 
@@ -875,7 +1060,7 @@ namespace RVX
             if ((schemaVersion != 1 && schemaVersion != 2 &&
                  schemaVersion != 4 && schemaVersion != 5 &&
                  schemaVersion != 6 && schemaVersion != 7 &&
-                 schemaVersion != 8) ||
+                 schemaVersion != 8 && schemaVersion != 10) ||
                 !frameIdentity.IsValid() ||
                 !viewIdentity.IsValid() || backend == RHIBackendType::None ||
                 !IsDeclaredRenderPipelineRecipe(requestedRecipe) ||
@@ -887,6 +1072,10 @@ namespace RVX
                 return false;
             }
             if (!build.IsEmpty() && !build.IsStructurallyValid())
+            {
+                return false;
+            }
+            if (schemaVersion != 10 && !ambientOcclusion.IsEmpty())
             {
                 return false;
             }
@@ -974,9 +1163,30 @@ namespace RVX
                  (postProcess.exposureProbeReady &&
                   (!presented || !postProcess.exposureHistoryCommitted ||
                    postProcess.exposureHistoryAbandoned)));
+            const bool schemaTenInvalid = schemaVersion == 10 &&
+                (!deferredOpaque.IsStructurallyValid() ||
+                 (!lighting.IsEmpty() && !lighting.IsStructurallyValid()) ||
+                 (!deformation.IsEmpty() &&
+                  !deformation.IsStructurallyValid()) ||
+                 (!postProcess.IsEmpty() && !postProcess.IsStructurallyValid()) ||
+                 (!ambientOcclusion.IsEmpty() &&
+                  !ambientOcclusion.IsStructurallyValid()) ||
+                 ((executionSucceeded || presented) &&
+                  (!lighting.IsStructurallyValid() ||
+                   !deformation.IsStructurallyValid() ||
+                   !postProcess.IsStructurallyValid())) ||
+                 (presented && postProcess.taaRequested &&
+                  !postProcess.historyCommitted) ||
+                 (presented && !postProcess.exposureHistoryCommitted) ||
+                 (postProcess.exposureProbeReady &&
+                  (!presented || !postProcess.exposureHistoryCommitted ||
+                   postProcess.exposureHistoryAbandoned)) ||
+                 (ambientOcclusion.probeReady &&
+                  (!presented || !ambientOcclusion.historyCommitted ||
+                   ambientOcclusion.historyAbandoned)));
             if (schemaOneInvalid || schemaTwoInvalid || schemaFourInvalid ||
                 schemaFiveInvalid || schemaSixInvalid || schemaSevenInvalid ||
-                schemaEightInvalid)
+                schemaEightInvalid || schemaTenInvalid)
             {
                 return false;
             }
@@ -996,6 +1206,13 @@ namespace RVX
                     feature.featureSchemaVersion == 0 || !feature.selected ||
                     feature.executedGraphPassCount > feature.graphPassCount ||
                     feature.graphPassNames.size() != feature.graphPassCount ||
+                    (feature.contractCompletedWithoutGraphWork &&
+                     (!feature.readiness.executed ||
+                      feature.graphPassCount != 0 ||
+                      feature.executedGraphPassCount != 0 ||
+                      feature.fallbackUsed ||
+                      !feature.readiness.diagnostic.empty() ||
+                      !feature.diagnostic.empty())) ||
                     feature.selectedFallbackFeatureId == feature.featureId ||
                     feature.fallbackForFeatureId == feature.featureId ||
                     (!feature.fallbackUsed &&
@@ -1058,6 +1275,13 @@ namespace RVX
                 if (executionSucceeded && feature.readiness.executed &&
                     feature.graphPassCount != 0 &&
                     feature.executedGraphPassCount != feature.graphPassCount)
+                {
+                    return false;
+                }
+                if (schemaVersion == 10 && executionSucceeded &&
+                    feature.readiness.executed &&
+                    feature.graphPassCount == 0 &&
+                    !feature.contractCompletedWithoutGraphWork)
                 {
                     return false;
                 }

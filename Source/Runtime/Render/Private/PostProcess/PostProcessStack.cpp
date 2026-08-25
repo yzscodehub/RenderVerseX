@@ -373,7 +373,6 @@ const char* GetPostProcessPassCanonicalName(PostProcessPassId id)
     switch (id)
     {
         case PostProcessPassId::Bloom: return "Bloom";
-        case PostProcessPassId::SSAO: return "SSAO";
         case PostProcessPassId::ToneMapping: return "ToneMapping";
         case PostProcessPassId::ColorGrading: return "ColorGrading";
         case PostProcessPassId::ChromaticAberration: return "ChromaticAberration";
@@ -420,7 +419,6 @@ void ApplyRenderVisualQualityPreset(PostProcessSettings& settings, RenderVisualQ
     settings.enableVignette = false;
     settings.enableChromaticAberration = false;
     settings.enableFilmGrain = false;
-    settings.enableSSAO = false;
     settings.enableSSR = false;
     settings.enableVelocityOutput = false;
     settings.enableDOF = false;
@@ -458,7 +456,7 @@ void ApplyRenderVisualQualityPreset(PostProcessSettings& settings, RenderVisualQ
             settings.enableVignette = true;
             settings.enableChromaticAberration = true;
             settings.enableFilmGrain = true;
-            // SSAO/GTAO, SSR, DOF, motion blur, and volumetrics each remain
+            // GTAO, SSR, DOF, motion blur, and volumetrics each remain
             // explicitly opt-in and unavailable until their own verified
             // renderer features land. A quality preset must not request a
             // placeholder that strict planning would reject.

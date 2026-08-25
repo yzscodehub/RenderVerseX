@@ -330,6 +330,13 @@ namespace
             return m_probe->exposureQualificationProbeAccepted;
         }
 
+        bool RequestAmbientOcclusionQualificationProbe() override
+        {
+            m_probe->Record(
+                RenderRuntimeTestEvent::AmbientOcclusionQualificationProbe);
+            return m_probe->ambientOcclusionQualificationProbeAccepted;
+        }
+
         void PollCompletion() override
         {
             m_probe->Record(RenderRuntimeTestEvent::Poll);

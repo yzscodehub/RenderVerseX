@@ -233,7 +233,6 @@ namespace RVX
         postProcess.antiAliasingMode = RenderAntiAliasingMode::TAA;
         postProcess.enableBloom = true;
         postProcess.enableColorGrading = false;
-        postProcess.enableSSAO = false;
         postProcess.enableSSR = false;
         postProcess.toneMappingOperator = RenderToneMappingOperator::ACES;
         postProcess.gamma = 2.2f;

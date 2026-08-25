@@ -399,7 +399,6 @@ void ShadowPass::AddToGraph(
         std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache;
         std::unique_ptr<ShadowPass> recorder;
         bool contextValid = false;
-        bool noWork = false;
     };
 
     const bool sourcePlanValid = context.executionPlan != nullptr &&
@@ -471,6 +470,21 @@ void ShadowPass::AddToGraph(
     const std::shared_ptr<RenderPassRecordResults> results =
         resultOwnershipValid ? execution.results : nullptr;
 
+    if (results != nullptr && !primaryLight.IsShadowEligible())
+    {
+        // There is no shadow workload to schedule. Publish the current-frame
+        // disabled output directly instead of registering an empty graph node;
+        // a culled node must never be confused with a completed feature.
+        results->directionalShadowOutput = {};
+        results->directionalShadowOutput.identity = results->identity;
+        results->directionalShadowOutput.lightingPlanIdentity =
+            execution.lightingPlan != nullptr
+                ? execution.lightingPlan->GetIdentityHash()
+                : 0;
+        results->shadowStats = {};
+        return;
+    }
+
     graph.AddPass<GraphPassData>(
         GetName(),
         GetPassType(),
@@ -524,13 +538,6 @@ void ShadowPass::AddToGraph(
                     }
                 }
             }
-            if (!primaryLight.IsShadowEligible())
-            {
-                // No shadow-casting primary directional light is an explicit
-                // no-work outcome, not an execution failure.
-                data.noWork = true;
-                return;
-            }
             data.recorder->Setup(builder, data.execution.view, primaryLight);
 
             results->shadowStats = data.recorder->GetStats();
@@ -545,10 +552,6 @@ void ShadowPass::AddToGraph(
         [results, primaryLight](const GraphPassData& data,
                                 RenderGraphPassContext& context)
         {
-            if (data.noWork)
-            {
-                return;
-            }
             if (!data.contextValid || !data.recorder || !results)
             {
                 context.MarkExecutionFailed(

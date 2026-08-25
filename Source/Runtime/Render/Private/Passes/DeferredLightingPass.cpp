@@ -137,6 +137,7 @@ namespace RVX
             RGTextureHandle hdrSceneColor{};
             RGBufferHandle materialTable{};
             RGBufferHandle exposureState{};
+            AmbientOcclusionRecordInput ambientOcclusion{};
             DeferredLightingFrameResources lighting{};
             RGTextureViewHandle gBuffer0View{};
             RGTextureViewHandle gBuffer1View{};
@@ -144,6 +145,7 @@ namespace RVX
             RGTextureViewHandle gBuffer3View{};
             RGTextureViewHandle deviceDepthView{};
             RGTextureViewHandle hdrSceneColorView{};
+            RGTextureViewHandle ambientOcclusionView{};
             RGTextureViewHandle directionalShadowView{};
             RGTextureViewHandle irradianceView{};
             RGTextureViewHandle prefilteredEnvironmentView{};
@@ -415,6 +417,25 @@ namespace RVX
                 "Deferred lighting requires a valid graph and complete frame inputs";
             return false;
         }
+        const RenderGraphBlackboardProvenance& graphProvenance =
+            featureBuilder.GetProvenance();
+        if (!inputs.ambientOcclusion.IsCompatibleWith(
+                inputs.ambientOcclusion.identity) ||
+            inputs.ambientOcclusion.identity.graphIdentity !=
+                graphProvenance.graphIdentity ||
+            inputs.ambientOcclusion.identity.graphRecordingGeneration !=
+                graphProvenance.recordingGeneration ||
+            inputs.ambientOcclusion.identity.frameSequence !=
+                graphProvenance.frameSequence ||
+            inputs.ambientOcclusion.identity.viewOrdinal !=
+                graphProvenance.viewOrdinal ||
+            inputs.ambientOcclusion.identity.recordEpoch !=
+                graphProvenance.recordEpoch)
+        {
+            m_unsupportedReason =
+                "Deferred lighting requires the exact current R8 GTAO visibility field";
+            return false;
+        }
         if (!EnsurePipelineReady())
         {
             return false;
@@ -470,6 +491,7 @@ namespace RVX
                 data.hdrSceneColor = inputs.hdrSceneColor;
                 data.materialTable = inputs.materialTable;
                 data.exposureState = inputs.exposureState;
+                data.ambientOcclusion = inputs.ambientOcclusion;
                 data.lighting = inputs.lighting;
                 data.execution = execution;
 
@@ -489,9 +511,13 @@ namespace RVX
                     builder.GetBufferDesc(data.materialTable);
                 const RHIBufferDesc* exposureStateDesc =
                     builder.GetBufferDesc(data.exposureState);
+                const RHITextureDesc* ambientOcclusionDesc =
+                    builder.GetTextureDesc(
+                        data.ambientOcclusion.filteredOcclusion);
                 if (gBuffer0Desc == nullptr || gBuffer1Desc == nullptr ||
                     gBuffer2Desc == nullptr || gBuffer3Desc == nullptr ||
                     depthDesc == nullptr || hdrDesc == nullptr ||
+                    ambientOcclusionDesc == nullptr ||
                     exposureStateDesc == nullptr ||
                     gBuffer0Desc->format != RHIFormat::RGBA8_UNORM_SRGB ||
                     gBuffer1Desc->format != RHIFormat::RGBA8_UNORM ||
@@ -499,12 +525,24 @@ namespace RVX
                     gBuffer3Desc->format != RHIFormat::R32_UINT ||
                     depthDesc->format != RHIFormat::D32_FLOAT ||
                     hdrDesc->format != RHIFormat::RGBA16_FLOAT ||
+                    ambientOcclusionDesc->format != RHIFormat::R8_UNORM ||
                     !HasFlag(hdrDesc->usage, RHITextureUsage::UnorderedAccess) ||
+                    !HasFlag(ambientOcclusionDesc->usage,
+                             RHITextureUsage::ShaderResource) ||
                     !MatchesExtentAndSamples(*gBuffer1Desc, *gBuffer0Desc) ||
                     !MatchesExtentAndSamples(*gBuffer2Desc, *gBuffer0Desc) ||
                     !MatchesExtentAndSamples(*gBuffer3Desc, *gBuffer0Desc) ||
                     !MatchesExtentAndSamples(*depthDesc, *gBuffer0Desc) ||
                     !MatchesExtentAndSamples(*hdrDesc, *gBuffer0Desc) ||
+                    !MatchesExtentAndSamples(
+                        *ambientOcclusionDesc, *gBuffer0Desc) ||
+                    ambientOcclusionDesc->dimension !=
+                        RHITextureDimension::Texture2D ||
+                    ambientOcclusionDesc->depth != 1 ||
+                    ambientOcclusionDesc->mipLevels != 1 ||
+                    ambientOcclusionDesc->arraySize != 1 ||
+                    data.ambientOcclusion.extent != RenderOutputExtent{
+                        gBuffer0Desc->width, gBuffer0Desc->height} ||
                     gBuffer0Desc->sampleCount != RHISampleCount::Count1)
                 {
                     return;
@@ -528,6 +566,10 @@ namespace RVX
                 data.hdrSceneColorView = DeclareComputeUAV(
                     builder, data.hdrSceneColor,
                     "DeferredLightingHDRSceneColorUAV");
+                data.ambientOcclusionView = DeclareComputeSRV(
+                    builder, data.ambientOcclusion.filteredOcclusion,
+                    RHITextureAspect::Color,
+                    "DeferredLightingAmbientOcclusionSRV");
                 data.lighting.lightConstants = builder.Read(
                     data.lighting.lightConstants,
                     MakeRGAccessDesc(
@@ -598,6 +640,7 @@ namespace RVX
                     data.gBuffer1View.IsValid() && data.gBuffer2View.IsValid() &&
                     data.gBuffer3View.IsValid() && data.deviceDepthView.IsValid() &&
                     data.hdrSceneColorView.IsValid() &&
+                    data.ambientOcclusionView.IsValid() &&
                     data.materialTable.IsValid() &&
                     data.exposureState.IsValid() &&
                     data.lighting.lightConstants.IsValid() &&
@@ -627,6 +670,7 @@ namespace RVX
                     data.gBuffer1View.IsValid() && data.gBuffer2View.IsValid() &&
                     data.gBuffer3View.IsValid() && data.deviceDepthView.IsValid() &&
                     data.hdrSceneColorView.IsValid() &&
+                    data.ambientOcclusionView.IsValid() &&
                     data.materialTable.IsValid() &&
                     data.exposureState.IsValid() &&
                     data.lighting.lightConstants.IsValid() &&
@@ -655,6 +699,8 @@ namespace RVX
                 RHITexture* gBuffer3 = context.GetTexture(data.gBuffer3);
                 RHITexture* depth = context.GetTexture(data.deviceDepth);
                 RHITexture* hdrSceneColor = context.GetTexture(data.hdrSceneColor);
+                RHITexture* ambientOcclusion = context.GetTexture(
+                    data.ambientOcclusion.filteredOcclusion);
                 RHIBuffer* materialTable = context.GetBuffer(data.materialTable);
                 RHIBuffer* exposureState = context.GetBuffer(data.exposureState);
                 RHIBuffer* lightConstants =
@@ -669,6 +715,7 @@ namespace RVX
                 if (gBuffer0 == nullptr || gBuffer1 == nullptr ||
                     gBuffer2 == nullptr || gBuffer3 == nullptr ||
                     depth == nullptr || hdrSceneColor == nullptr ||
+                    ambientOcclusion == nullptr ||
                     exposureState == nullptr ||
                     lightConstants == nullptr || pointLights == nullptr ||
                     spotLights == nullptr || clusterConstants == nullptr ||
@@ -712,6 +759,8 @@ namespace RVX
                     context.GetTextureView(data.deviceDepthView);
                 RHITextureView* hdrSceneColorView =
                     context.GetTextureView(data.hdrSceneColorView);
+                RHITextureView* ambientOcclusionView =
+                    context.GetTextureView(data.ambientOcclusionView);
                 RHITextureView* directionalShadowView =
                     data.lighting.directionalShadowEnabled
                         ? context.GetTextureView(data.directionalShadowView)
@@ -730,7 +779,12 @@ namespace RVX
                         : nullptr;
                 if (gBuffer0View == nullptr || gBuffer1View == nullptr ||
                     gBuffer2View == nullptr || gBuffer3View == nullptr ||
-                    depthView == nullptr || hdrSceneColorView == nullptr)
+                    depthView == nullptr || hdrSceneColorView == nullptr ||
+                    ambientOcclusionView == nullptr ||
+                    ambientOcclusionView->GetTexture() != ambientOcclusion ||
+                    ambientOcclusionView->GetFormat() != RHIFormat::R8_UNORM ||
+                    ambientOcclusion->GetWidth() != hdrSceneColor->GetWidth() ||
+                    ambientOcclusion->GetHeight() != hdrSceneColor->GetHeight())
                 {
                     data.executionDiagnostic =
                         "Deferred lighting could not resolve graph-owned texture views";
@@ -805,6 +859,10 @@ namespace RVX
                     prefilteredEnvironmentView;
                 snapshotRequest.environmentIBL.brdfLUTView = brdfLUTView;
                 snapshotRequest.exposureStateBuffer = RHIBufferRef(exposureState);
+                snapshotRequest.ambientOcclusionView =
+                    RHITextureViewRef(ambientOcclusionView);
+                snapshotRequest.ambientOcclusionFieldHash =
+                    data.ambientOcclusion.fieldContentHash;
 
                 LightingBindingSnapshot lightingSnapshot;
                 if (data.execution.view.rayTracedShadowEnabled != 0 ||
@@ -884,6 +942,9 @@ namespace RVX
                 descriptorSetDesc.BindBuffer(
                     PipelineCache::DeferredLightingExposureStateBinding,
                     exposureState);
+                descriptorSetDesc.BindTexture(
+                    PipelineCache::DeferredLightingAmbientOcclusionBinding,
+                    ambientOcclusionView);
 
                 RHIDescriptorSetRef descriptorSet =
                     data.execution.device->CreateDescriptorSet(descriptorSetDesc);
@@ -933,6 +994,8 @@ namespace RVX
                     !context.RetainSubmissionResource(
                         Ref<RefCounted>(lightingSnapshot.environmentIBLSampler)) ||
                     !context.RetainSubmissionResource(
+                        Ref<RefCounted>(lightingSnapshot.ambientOcclusionView)) ||
+                    !context.RetainSubmissionResource(
                         Ref<RefCounted>(lightingSnapshot.exposureStateBuffer)) ||
                     !context.RetainSubmissionResource(
                         Ref<RefCounted>(exposureState)))
@@ -974,6 +1037,8 @@ namespace RVX
                     evidence.textureIBLBound =
                         data.lighting.textureIBLEnabled;
                     evidence.exactIBLViews = exactIBLViews;
+                    evidence.ambientOcclusionFieldContentHash =
+                        data.ambientOcclusion.fieldContentHash;
                     evidence.workCount = data.stats.dispatchPixelCount;
                     evidence.executed = true;
                     if (!data.lighting.recordResults

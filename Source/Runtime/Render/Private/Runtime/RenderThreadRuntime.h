@@ -89,6 +89,11 @@ namespace RenderRuntimeDetail
         {
             return false;
         }
+        /** @brief Arm one owner-side physical GTAO visibility probe. */
+        [[nodiscard]] virtual bool RequestAmbientOcclusionQualificationProbe()
+        {
+            return false;
+        }
         virtual void PollCompletion() = 0;
         virtual void RetireCompleted() = 0;
         /**
@@ -304,6 +309,8 @@ namespace RenderRuntimeDetail
             noexcept;
         /** @brief Publish one explicit physical-exposure qualification probe request. */
         [[nodiscard]] bool RequestExposureQualificationProbe() noexcept;
+        /** @brief Publish one explicit GTAO visibility probe request. */
+        [[nodiscard]] bool RequestAmbientOcclusionQualificationProbe() noexcept;
 
         RenderResourceReserveResult ReserveResource(
             AssetId assetId,
@@ -416,6 +423,10 @@ namespace RenderRuntimeDetail
             false;
         std::atomic<bool> m_exposureQualificationProbeRequestIssued = false;
         std::atomic<bool> m_exposureQualificationProbeRequestPending = false;
+        std::atomic<bool> m_ambientOcclusionQualificationProbeRequestIssued =
+            false;
+        std::atomic<bool> m_ambientOcclusionQualificationProbeRequestPending =
+            false;
 
         mutable std::mutex m_stateMutex;
         std::timed_mutex m_startupArbitrationMutex;

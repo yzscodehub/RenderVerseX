@@ -131,7 +131,8 @@ namespace RVX
         Shutdown = 7,
         GPUSceneCullingQualification = 8,
         DirectOpaqueRasterReadbackQualification = 9,
-        ExposureQualificationProbe = 10
+        ExposureQualificationProbe = 10,
+        AmbientOcclusionQualificationProbe = 11
     };
 
     /** @brief Shared observations for the real runtime conformance fixtures. */
@@ -180,10 +181,11 @@ namespace RVX
         bool gpuSceneCullingQualificationAccepted = false;
         bool directOpaqueRasterReadbackQualificationAccepted = false;
         bool exposureQualificationProbeAccepted = false;
+        bool ambientOcclusionQualificationProbeAccepted = false;
         bool throwOnFrame = false;
 
     private:
-        static constexpr size_t EVENT_COUNT = 11;
+        static constexpr size_t EVENT_COUNT = 12;
         mutable std::mutex m_mutex;
         mutable std::condition_variable m_cv;
         std::array<uint32, EVENT_COUNT> m_eventCounts{};

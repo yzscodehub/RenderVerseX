@@ -112,6 +112,21 @@ jobs:
           -ExpectedTestCount 24
           -BaseRef origin/master
           -SkipConfigure
+      - name: Run fail-closed GFX13 GTAO matrix
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset win_x64_qualification_debug
+          -BuildPreset win_x64_qualification_debug
+          -TestPreset win_x64_qualification_debug_gfx13_gtao
+          -BuildDir build/win_x64_qualification_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationSuiteGfx13Gtao
+          -RequiredLabel suite.gfx13-gtao
+          -ExpectedTestCount 12
+          -RequiredEvidence "Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX13ForwardPlusGTAO_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX13DeferredGTAO_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX13ForwardPlusGTAO_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX13DeferredGTAO_640x360.ppm;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX13ForwardPlusGTAO_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX13DeferredGTAO_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX13ForwardPlusGTAO_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX13DeferredGTAO_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX13ForwardPlusGTAO_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX13DeferredGTAO_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX13ForwardPlusGTAO_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX13DeferredGTAO_640x360.json"
+          -BaseRef origin/master
+          -SkipConfigure
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -122,6 +137,8 @@ jobs:
             build/win_x64_qualification_debug/BuildTruth
             build/win_x64_qualification_debug/Tests/VisualArtifacts
             build/win_x64_qualification_debug/Tests/SampleReports
+            build/win_x64_qualification_debug/Tests/StartupTimelines
+          if-no-files-found: error
 
   linux-full:
     name: Linux Full Validation

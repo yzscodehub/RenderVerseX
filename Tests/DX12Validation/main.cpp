@@ -1273,6 +1273,7 @@ namespace
                 float HistoryValid : TEXCOORD2;
                 float2 TexCoord : TEXCOORD3;
                 float2 TexCoord1 : TEXCOORD4;
+                nointerpolation float NdcYScale : TEXCOORD5;
             };
             PSInput VSMain(VSInput input)
             {
@@ -1283,6 +1284,7 @@ namespace
                 output.HistoryValid = 1.0;
                 output.TexCoord = input.TexCoord;
                 output.TexCoord1 = input.TexCoord1;
+                output.NdcYScale = 1.0;
                 return output;
             }
         )";
@@ -1339,6 +1341,10 @@ namespace
         frameLayoutDesc.AddBinding(PipelineCache::DefaultLitExposureStateBinding,
                                    RHIBindingType::ShaderResourceBuffer,
                                    RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(
+            PipelineCache::DefaultLitAmbientOcclusionBinding,
+            RHIBindingType::SampledTexture,
+            RHIShaderStage::Pixel);
         RHIDescriptorSetLayoutRef frameLayout = device->CreateDescriptorSetLayout(frameLayoutDesc);
         RHIDescriptorSetLayoutDesc emptyLayoutDesc;
         emptyLayoutDesc.debugName = "NativeSurfaceAlphaEmptySet";
@@ -1514,6 +1520,9 @@ namespace
         frameSetDesc.BindSampler(13, sampler.Get());
         frameSetDesc.BindBuffer(PipelineCache::DefaultLitExposureStateBinding,
                                 exposureStateBuffer.Get());
+        frameSetDesc.BindTexture(
+            PipelineCache::DefaultLitAmbientOcclusionBinding,
+            sourceTextureView.Get());
         RHIDescriptorSetRef frameSet = device->CreateDescriptorSet(frameSetDesc);
 
         RHIDescriptorSetDesc materialSetDesc;

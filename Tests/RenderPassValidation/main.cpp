@@ -1,5 +1,6 @@
 #include "Core/Log.h"
 #include "Core/MathTypes.h"
+#include "Render/Graph/RenderGraph.h"
 #include "Render/Material/MaterialClassification.h"
 #include "RHI/RHI.h"
 
@@ -28,6 +29,7 @@
 #include "Common/DeterministicShaderProgramProvider.h"
 #include "Common/RenderGraphValidationAccess.h"
 #include "Common/RenderRuntimeTestHarness.h"
+#include "Render/Features/RenderFeatureRegistry.h"
 #include "Render/Debug/DebugRenderer.h"
 #include "Render/Decal/DecalRenderer.h"
 #include "Features/PostProcessPipelineFeatureAdapter.h"
@@ -35,9 +37,11 @@
 #include "GPUScene/GPUSceneUploader.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Lighting/ClusteredLighting.h"
+#include "Render/Lighting/GroundTruthAmbientOcclusion.h"
 #include "Render/Lighting/LightingFramePlan.h"
 #include "Render/Lighting/LightManager.h"
 #include "Render/Material/MaterialSystem.h"
+#include "Render/Passes/CameraVelocityPass.h"
 #include "Render/Passes/DepthPrepass.h"
 #include "Render/Passes/IRenderPass.h"
 #include "Render/Passes/MeshPassProcessor.h"
@@ -60,7 +64,6 @@
 #include "Render/PostProcess/FXAA.h"
 #include "Render/PostProcess/MotionBlur.h"
 #include "Render/PostProcess/PostProcessStack.h"
-#include "Render/PostProcess/SSAO.h"
 #include "Render/PostProcess/SSR.h"
 #include "Render/PostProcess/TAA.h"
 #include "Render/PostProcess/ToneMapping.h"
@@ -93,6 +96,94 @@
 
 namespace RVX
 {
+    struct GroundTruthAmbientOcclusionTestAccess
+    {
+        static void PrimePendingHistory(
+            GroundTruthAmbientOcclusion& gtao,
+            const RenderViewHistoryIdentity& identity,
+            uint32 historyIndex,
+            uint64 settingsHash) noexcept
+        {
+            gtao.m_hasPendingHistory = true;
+            gtao.m_pendingHistoryIndex = historyIndex;
+            gtao.m_pendingHistoryIdentity = identity;
+            gtao.m_pendingHistorySettingsHash = settingsHash;
+            gtao.m_pendingHistorySubmissionAccepted = false;
+        }
+
+        static void SetCommittedHistory(
+            GroundTruthAmbientOcclusion& gtao,
+            uint32 historyIndex,
+            uint64 settingsHash) noexcept
+        {
+            gtao.m_historyValid = true;
+            gtao.m_committedHistoryIndex = historyIndex;
+            gtao.m_committedHistorySettingsHash = settingsHash;
+            gtao.m_historyResourceStatesInitialized = true;
+        }
+
+        [[nodiscard]] static bool HasPendingHistory(
+            const GroundTruthAmbientOcclusion& gtao) noexcept
+        {
+            return gtao.m_hasPendingHistory;
+        }
+
+        [[nodiscard]] static bool PendingSubmissionAccepted(
+            const GroundTruthAmbientOcclusion& gtao) noexcept
+        {
+            return gtao.m_pendingHistorySubmissionAccepted;
+        }
+
+        [[nodiscard]] static RenderViewHistoryIdentity PendingIdentity(
+            const GroundTruthAmbientOcclusion& gtao) noexcept
+        {
+            return gtao.m_pendingHistoryIdentity;
+        }
+
+        [[nodiscard]] static uint32 CommittedHistoryIndex(
+            const GroundTruthAmbientOcclusion& gtao) noexcept
+        {
+            return gtao.m_committedHistoryIndex;
+        }
+
+        [[nodiscard]] static uint64 CommittedSettingsHash(
+            const GroundTruthAmbientOcclusion& gtao) noexcept
+        {
+            return gtao.m_committedHistorySettingsHash;
+        }
+
+        [[nodiscard]] static bool HistoryResourceStatesInitialized(
+            const GroundTruthAmbientOcclusion& gtao) noexcept
+        {
+            return gtao.m_historyResourceStatesInitialized;
+        }
+
+        [[nodiscard]] static RenderHistoryResetReason ApplyViewTemporalReset(
+            const ViewData& view,
+            RenderHistoryResetReason resetReasons) noexcept
+        {
+            return GroundTruthAmbientOcclusion::ApplyViewTemporalReset(
+                view, resetReasons);
+        }
+
+        [[nodiscard]] static bool CanSampleHistory(
+            const GroundTruthAmbientOcclusionFrameInputs& inputs,
+            const ViewData& view,
+            bool historyValid,
+            uint64 committedHistorySettingsHash,
+            uint64 settingsHash,
+            RenderHistoryResetReason effectiveResetReasons) noexcept
+        {
+            return GroundTruthAmbientOcclusion::CanSampleHistory(
+                inputs,
+                view,
+                historyValid,
+                committedHistorySettingsHash,
+                settingsHash,
+                effectiveResetReasons);
+        }
+    };
+
     struct RenderGraphExecutionTestAccess
     {
         static bool MarkAdopted(RenderGraphExecution& execution)
@@ -280,6 +371,49 @@ namespace RVX
             SceneRenderer& renderer)
         {
             return renderer.m_pipelineCache.get();
+        }
+
+        static bool InstallMinimalForwardSurfaceRuntimeForGraphBuild(
+            SceneRenderer& renderer)
+        {
+            if (renderer.m_pipelineCache == nullptr ||
+                renderer.m_resourceViewCache == nullptr ||
+                renderer.m_opaquePass != nullptr ||
+                renderer.m_cameraVelocityPass != nullptr ||
+                renderer.m_objectVelocityPass != nullptr)
+            {
+                return false;
+            }
+
+            auto cameraVelocity = std::make_unique<CameraVelocityPass>();
+            cameraVelocity->SetResources(
+                renderer.m_pipelineCache.get(),
+                renderer.m_resourceViewCache.get());
+            cameraVelocity->SetEnabled(false);
+            renderer.m_cameraVelocityPass = cameraVelocity.get();
+            renderer.AddPass(std::move(cameraVelocity));
+
+            auto objectVelocity = std::make_unique<ObjectVelocityPass>();
+            objectVelocity->SetResources(
+                renderer.m_pipelineCache.get(),
+                renderer.m_resourceViewCache.get(),
+                renderer.m_materialSystem.get());
+            objectVelocity->SetResourceRegistry(
+                renderer.m_renderResourceRegistry);
+            objectVelocity->SetEnabled(false);
+            renderer.m_objectVelocityPass = objectVelocity.get();
+            renderer.AddPass(std::move(objectVelocity));
+
+            auto opaque = std::make_unique<OpaquePass>();
+            opaque->SetResources(
+                renderer.m_pipelineCache.get(),
+                renderer.m_materialSystem.get(),
+                renderer.m_lightManager.get(),
+                renderer.m_clusteredLighting.get());
+            opaque->SetResourceRegistry(renderer.m_renderResourceRegistry);
+            renderer.m_opaquePass = opaque.get();
+            renderer.AddPass(std::move(opaque));
+            return true;
         }
 
         /**
@@ -885,6 +1019,26 @@ namespace RVX
             RenderExecutionReceipt receipt)
         {
             renderer.m_pendingRenderExecutionReceipt = std::move(receipt);
+        }
+
+        static void ConfigureExecutionReceiptSubmissionGateForTesting(
+            SceneRenderer& renderer,
+            bool installFeatureRegistry)
+        {
+            renderer.m_frameDiagnostics.rendered = true;
+            renderer.m_frameDiagnostics.graphCompileValid = true;
+            renderer.m_renderPolicyDiagnostics.executionReport.status =
+                RenderExecutionStatus::Completed;
+            renderer.m_renderFeatureRegistry = installFeatureRegistry
+                ? std::make_unique<RenderFeatureRegistry>()
+                : nullptr;
+            renderer.m_pendingRenderExecutionReceipt.reset();
+        }
+
+        [[nodiscard]] static bool HasSubmissionFailureForTesting(
+            const SceneRenderer& renderer) noexcept
+        {
+            return renderer.HasSubmissionFailure();
         }
 
         static void SetPostProcessFeatureForTesting(
@@ -2441,6 +2595,7 @@ namespace
         uint64 recordedFrameSequence = 0;
     };
 
+
     PostProcessPassDescriptor MakeRecordingPostProcessDescriptor(const std::string& name,
                                                                   int32 order)
     {
@@ -2456,9 +2611,6 @@ namespace
 
         if (name == "Bloom")
             return make(PostProcessPassId::Bloom, "Bloom", PostProcessStage::HDRPost,
-                        PostProcessColorDomain::SceneLinearHDR, PostProcessColorDomain::SceneLinearHDR);
-        if (name == "SSAO")
-            return make(PostProcessPassId::SSAO, "SSAO", PostProcessStage::HDRPost,
                         PostProcessColorDomain::SceneLinearHDR, PostProcessColorDomain::SceneLinearHDR);
         if (name == "ToneMapping")
             return make(PostProcessPassId::ToneMapping, "ToneMapping", PostProcessStage::ToneMap,
@@ -3993,6 +4145,48 @@ namespace
         {
             ASSERT_TRUE(AttachTestLightingFixture(device, context, options));
 
+            // Focused Forward opaque tests do not compose the production GTAO
+            // feature. Supply an explicit graph-owned neutral R8 field instead
+            // of letting OpaquePass bypass its exact AO contract.
+            ASSERT_NE(context.identity.graph, nullptr);
+            const RHITextureDesc* const colorDesc =
+                context.identity.graph->GetTextureDesc(context.view.colorTarget);
+            const uint32 width = colorDesc != nullptr
+                ? colorDesc->width
+                : context.view.viewportWidth;
+            const uint32 height = colorDesc != nullptr
+                ? colorDesc->height
+                : context.view.viewportHeight;
+            if (context.view.colorTarget.IsValid() && width != 0 && height != 0)
+            {
+                RHITextureRef ambientOcclusionTexture = device.CreateTexture(
+                    RHITextureDesc::Texture2D(
+                        width,
+                        height,
+                        RHIFormat::R8_UNORM,
+                        RHITextureUsage::RenderTarget |
+                            RHITextureUsage::ShaderResource));
+                ASSERT_TRUE(ambientOcclusionTexture);
+                context.ambientOcclusion.identity = context.identity;
+                context.ambientOcclusion.filteredOcclusion =
+                    RenderGraphValidationAccess::ImportTexture(
+                        *context.identity.graph,
+                        ambientOcclusionTexture.Get(),
+                        RHIResourceState::ShaderResource);
+                context.ambientOcclusion.extent = {width, height};
+                context.ambientOcclusion.format = RHIFormat::R8_UNORM;
+                context.ambientOcclusion.sampleCount = RHISampleCount::Count1;
+                context.ambientOcclusion.settingsHash =
+                    0x4e45555452414c41ULL ^ context.identity.frameSequence;
+                context.ambientOcclusion.fieldContentHash =
+                    0x414f4649454c4431ULL ^ context.identity.recordEpoch;
+                context.ambientOcclusion.requested = false;
+                ASSERT_TRUE(context.ambientOcclusion.IsCompatibleWith(
+                    context.identity));
+                m_frameAmbientOcclusionTextures.push_back(
+                    std::move(ambientOcclusionTexture));
+            }
+
             // Forward/Deferred surface passes and Skybox now consume the exact
             // prior-presented exposure state.  The shared lighting fixture is
             // the single source of test frame bindings, so make the state a
@@ -4300,6 +4494,7 @@ namespace
         RHITextureRef colorTexture;
         RHITextureViewRef colorView;
         std::vector<RHIBufferRef> m_frameExposureBuffers;
+        std::vector<RHITextureRef> m_frameAmbientOcclusionTextures;
         ViewData view;
     };
 
@@ -6806,14 +7001,13 @@ TEST_F(RenderPassValidationFixture,
                 {
                     return diagnostic.name == "ShadowPass";
                 });
-            ASSERT_NE(diagnostics.passes.end(), shadowDiagnostic);
-            EXPECT_TRUE(shadowDiagnostic->usages.empty());
+            EXPECT_EQ(diagnostics.passes.end(), shadowDiagnostic);
 
             RecordingCommandContext commands;
             RenderGraphValidationAccess::Execute(graph, commands);
             // The only render pass belongs to the independently registered
-            // Opaque pass.  ShadowPass declared no resource usage above, so
-            // it has no render pass to execute for this record.
+            // Opaque pass. ShadowPass registered no graph node because the
+            // current frame has no shadow-eligible primary light.
             EXPECT_EQ(1u, commands.beginRenderPassCount);
             EXPECT_EQ(1u, commands.endRenderPassCount);
         }
@@ -11091,6 +11285,9 @@ TEST(SceneRendererPassRecordingValidation,
     ASSERT_TRUE(
         SceneRendererTestAccess::InstallMinimalPostProcessRuntimeForGraphBuild(
             renderer, device));
+    ASSERT_TRUE(
+        SceneRendererTestAccess::InstallMinimalForwardSurfaceRuntimeForGraphBuild(
+            renderer));
 
     RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(
         96, 64, RHIFormat::RGBA8_UNORM);
@@ -11170,8 +11367,9 @@ TEST(SceneRendererPassRecordingValidation,
     auto probe = std::make_unique<SceneRendererOverloadProbePass>();
     SceneRendererOverloadProbePass* const probePtr = probe.get();
     ASSERT_NE(nullptr, probePtr);
+    const size_t passCountBeforeProbe = renderer.GetPassCount();
     renderer.AddPass(std::move(probe));
-    EXPECT_EQ(1u, renderer.GetPassCount());
+    EXPECT_EQ(passCountBeforeProbe + 1u, renderer.GetPassCount());
 
     // AddPass invalidates the renderer's working plan, so establish the
     // frame identity and mutable caller values after registration.
@@ -11189,6 +11387,11 @@ TEST(SceneRendererPassRecordingValidation,
             renderer));
 
     renderer.BuildRenderGraphForTesting();
+
+    EXPECT_TRUE(
+        SceneRendererTestAccess::GetFeatureCompositionFailureReason(renderer)
+            .empty())
+        << SceneRendererTestAccess::GetFeatureCompositionFailureReason(renderer);
 
     EXPECT_EQ(0u, probePtr->viewDataOverloadCount);
     EXPECT_EQ(1u, probePtr->typedOverloadCount);
@@ -14728,6 +14931,246 @@ TEST(RenderPostProcessStackValidation, MultiPassChainUsesDistinctTransientInterm
     EXPECT_EQ(graphStats.totalPasses, 3u);
 }
 
+TEST_F(RenderPassValidationFixture,
+       CameraVelocityPassPublishesExactRecordOwnedFirstFrameEvidence)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RHITextureRef velocityTexture = device.CreateTexture(
+        RHITextureDesc::RenderTarget(96, 64, RHIFormat::RG16_FLOAT));
+    RHITextureRef depthTexture = device.CreateTexture(
+        RHITextureDesc::DepthStencil(
+            96, 64, PipelineCache::GetDefaultDepthStencilFormat()));
+    ASSERT_TRUE(velocityTexture);
+    ASSERT_TRUE(depthTexture);
+
+    RenderPassRecordContext context;
+    context.view = view;
+    context.view.viewportWidth = 96;
+    context.view.viewportHeight = 64;
+    context.view.velocityTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, velocityTexture.Get(), RHIResourceState::RenderTarget);
+    context.view.depthTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, depthTexture.Get(), RHIResourceState::DepthRead);
+    // A first-frame reset still has to write an explicit zero velocity target.
+    context.view.previousViewProjectionValid = 0;
+    context.view.resetTemporalHistory = true;
+    context.identity.graph = &graph;
+    context.identity.graphIdentity = graph.GetGraphIdentity();
+    context.identity.graphRecordingGeneration = graph.GetRecordingGeneration();
+    context.identity.frameSequence = 407;
+    context.identity.recordEpoch = 407;
+    context.results = std::make_shared<RenderPassRecordResults>();
+    context.frameSnapshot = MakeRenderPassFrameSnapshot(
+        context, *context.results);
+    const RGTextureHandle expectedVelocity = context.view.velocityTarget;
+    const RenderPassRecordIdentity expectedIdentity = context.identity;
+
+    CameraVelocityPass pass;
+    pass.SetResources(&pipelineCache, &viewCache);
+    pass.SetEnabled(true);
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    pass.AddToGraph(graph, context);
+
+    // The caller-owned context is no longer a recording mailbox.
+    context.view.velocityTarget = {};
+    context.view.depthTarget = {};
+    context.view.viewportWidth = 1;
+    context.view.viewportHeight = 1;
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    RecordingCommandContext commands;
+    RenderGraphValidationAccess::Execute(graph, commands);
+
+    ASSERT_EQ(1u, commands.beginRenderPassCount);
+    ASSERT_EQ(1u, commands.drawCount);
+    EXPECT_EQ(3u, commands.lastDrawVertexCount);
+    const CameraVelocityPassStats& recorded =
+        context.results->cameraVelocityStats;
+    EXPECT_TRUE(recorded.requested);
+    EXPECT_TRUE(recorded.supported);
+    EXPECT_TRUE(recorded.depthAvailable);
+    EXPECT_FALSE(recorded.previousViewProjectionAvailable);
+    EXPECT_FALSE(recorded.viewProjectionMotionObserved);
+    EXPECT_TRUE(recorded.velocityTargetAvailable);
+    EXPECT_TRUE(recorded.outputDeclared);
+    EXPECT_TRUE(recorded.constantsUploaded);
+    EXPECT_TRUE(recorded.velocityRecorded);
+    EXPECT_EQ(96u, recorded.width);
+    EXPECT_EQ(64u, recorded.height);
+    EXPECT_EQ(RHIFormat::RG16_FLOAT, recorded.outputFormat);
+    EXPECT_TRUE(recorded.MatchesVelocityTarget(
+        expectedVelocity, expectedIdentity));
+
+    pass.PublishRecordResults(context.results, expectedIdentity);
+    EXPECT_EQ(recorded.velocityTargetResourceIndex,
+              pass.GetStats().velocityTargetResourceIndex);
+    EXPECT_TRUE(pass.GetStats().velocityRecorded);
+}
+
+TEST_F(RenderPassValidationFixture,
+       CameraVelocityPassReportsGenuineUnjitteredViewMotion)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RHITextureRef velocityTexture = device.CreateTexture(
+        RHITextureDesc::RenderTarget(64, 48, RHIFormat::RG16_FLOAT));
+    RHITextureRef depthTexture = device.CreateTexture(
+        RHITextureDesc::DepthStencil(
+            64, 48, PipelineCache::GetDefaultDepthStencilFormat()));
+    ASSERT_TRUE(velocityTexture);
+    ASSERT_TRUE(depthTexture);
+
+    RenderPassRecordContext context;
+    context.view = view;
+    context.view.viewportWidth = 64;
+    context.view.viewportHeight = 48;
+    context.view.velocityTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, velocityTexture.Get(), RHIResourceState::RenderTarget);
+    context.view.depthTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, depthTexture.Get(), RHIResourceState::DepthRead);
+    context.view.previousViewProjectionMatrix = Mat4Identity();
+    context.view.previousJitteredViewProjectionMatrix = Mat4Identity();
+    context.view.previousViewProjectionValid = 1;
+    context.view.resetTemporalHistory = false;
+    context.view.viewProjectionMatrix = Mat4Identity();
+    context.view.viewProjectionMatrix[3][0] = 0.25f;
+    context.view.jitteredViewProjectionMatrix =
+        context.view.viewProjectionMatrix;
+    context.view.inverseJitteredViewProjectionMatrix =
+        inverse(context.view.jitteredViewProjectionMatrix);
+    context.identity.graph = &graph;
+    context.identity.graphIdentity = graph.GetGraphIdentity();
+    context.identity.graphRecordingGeneration = graph.GetRecordingGeneration();
+    context.identity.frameSequence = 408;
+    context.identity.recordEpoch = 408;
+    context.results = std::make_shared<RenderPassRecordResults>();
+    context.frameSnapshot = MakeRenderPassFrameSnapshot(
+        context, *context.results);
+
+    CameraVelocityPass pass;
+    pass.SetResources(&pipelineCache, &viewCache);
+    pass.SetEnabled(true);
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    pass.AddToGraph(graph, context);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    RecordingCommandContext commands;
+    RenderGraphValidationAccess::Execute(graph, commands);
+
+    const CameraVelocityPassStats& recorded =
+        context.results->cameraVelocityStats;
+    EXPECT_TRUE(recorded.previousViewProjectionAvailable);
+    EXPECT_TRUE(recorded.viewProjectionMotionObserved);
+    EXPECT_TRUE(recorded.velocityRecorded);
+}
+
+TEST_F(RenderPassValidationFixture,
+       CameraVelocityPassUploadsTheConfiguredReverseZClearConvention)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(true, false, true);
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RHITextureRef velocityTexture = device.CreateTexture(
+        RHITextureDesc::RenderTarget(64, 48, RHIFormat::RG16_FLOAT));
+    RHITextureRef depthTexture = device.CreateTexture(
+        RHITextureDesc::DepthStencil(
+            64, 48, PipelineCache::GetDefaultDepthStencilFormat()));
+    ASSERT_TRUE(velocityTexture);
+    ASSERT_TRUE(depthTexture);
+
+    RenderPassRecordContext context;
+    context.view = view;
+    context.view.viewportWidth = 64;
+    context.view.viewportHeight = 48;
+    context.view.velocityTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, velocityTexture.Get(), RHIResourceState::RenderTarget);
+    context.view.depthTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, depthTexture.Get(), RHIResourceState::DepthRead);
+    context.view.previousViewProjectionValid = 1;
+    context.view.resetTemporalHistory = false;
+    context.identity.graph = &graph;
+    context.identity.graphIdentity = graph.GetGraphIdentity();
+    context.identity.graphRecordingGeneration = graph.GetRecordingGeneration();
+    context.identity.frameSequence = 409;
+    context.identity.recordEpoch = 409;
+    context.results = std::make_shared<RenderPassRecordResults>();
+    context.frameSnapshot = MakeRenderPassFrameSnapshot(
+        context, *context.results);
+
+    CameraVelocityPass pass;
+    pass.SetResources(&pipelineCache, &viewCache);
+    pass.SetEnabled(true);
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    pass.AddToGraph(graph, context);
+
+    const FakeBuffer* const constants = FindCreatedBuffer(
+        device, "CameraVelocityRecordConstants");
+    ASSERT_NE(constants, nullptr);
+    constexpr size_t velocityParamsOffset = sizeof(Mat4) * 2 + sizeof(Vec4);
+    ASSERT_GE(constants->GetStorage().size(),
+              velocityParamsOffset + sizeof(Vec4));
+    Vec4 velocityParams{};
+    std::memcpy(
+        &velocityParams,
+        constants->GetStorage().data() + velocityParamsOffset,
+        sizeof(velocityParams));
+    EXPECT_FLOAT_EQ(velocityParams.x, 1.0f);
+    EXPECT_FLOAT_EQ(velocityParams.z, 0.0f);
+    EXPECT_FLOAT_EQ(velocityParams.w, 1.0e-6f);
+}
+
+TEST_F(RenderPassValidationFixture,
+       CameraVelocityPassRejectsForeignResultsWithoutMutatingTheirEvidence)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    CameraVelocityPass pass;
+    pass.SetResources(&pipelineCache, &viewCache);
+    pass.SetEnabled(true);
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    RenderGraph ownerGraph;
+    RenderGraph attackerGraph;
+    RenderGraphValidationAccess::SetDevice(ownerGraph, &device);
+    RenderGraphValidationAccess::SetDevice(attackerGraph, &device);
+    RenderPassRecordIdentity ownerIdentity;
+    ownerIdentity.graph = &ownerGraph;
+    ownerIdentity.graphIdentity = ownerGraph.GetGraphIdentity();
+    ownerIdentity.graphRecordingGeneration = ownerGraph.GetRecordingGeneration();
+    ownerIdentity.frameSequence = 408;
+    ownerIdentity.recordEpoch = 408;
+    auto foreignResults = std::make_shared<RenderPassRecordResults>();
+    foreignResults->identity = ownerIdentity;
+    foreignResults->cameraVelocityStats.velocityTargetResourceIndex = 77;
+    foreignResults->cameraVelocityStats.velocityRecorded = true;
+
+    RenderPassRecordContext attacker;
+    attacker.identity.graph = &attackerGraph;
+    attacker.identity.graphIdentity = attackerGraph.GetGraphIdentity();
+    attacker.identity.graphRecordingGeneration =
+        attackerGraph.GetRecordingGeneration();
+    attacker.identity.frameSequence = 409;
+    attacker.identity.recordEpoch = 409;
+    attacker.results = foreignResults;
+    pass.AddToGraph(attackerGraph, attacker);
+    RenderGraphValidationAccess::Compile(attackerGraph);
+    ASSERT_TRUE(attackerGraph.GetCompileStats().compileValid);
+    RecordingCommandContext commands;
+    RenderGraphValidationAccess::Execute(attackerGraph, commands);
+
+    EXPECT_EQ(ownerIdentity, foreignResults->identity);
+    EXPECT_EQ(77u,
+              foreignResults->cameraVelocityStats.velocityTargetResourceIndex);
+    EXPECT_TRUE(foreignResults->cameraVelocityStats.velocityRecorded);
+    EXPECT_EQ(0u, commands.beginRenderPassCount);
+}
+
 TEST_F(RenderPassValidationFixture, ObjectVelocityPassDrawsMaskedItemsWithMaterialSet)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
@@ -15485,6 +15928,8 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_TRUE(publishedB.velocityRecorded);
     EXPECT_EQ(96u, publishedB.width);
     EXPECT_EQ(1u, publishedB.maskedDrawCount);
+    EXPECT_TRUE(publishedB.MatchesVelocityTarget(
+        contextB.view.velocityTarget, contextB.identity));
 
     const uint32 retainedBeforeA = batchA.GetRetainedObjectCount();
     RecordingCommandContext commandsA;
@@ -15743,6 +16188,14 @@ TEST_F(RenderPassValidationFixture,
     RenderGraphValidationAccess::Execute(emptyGraph, emptyCommands);
     EXPECT_EQ(0u, emptyCommands.beginRenderPassCount);
     EXPECT_EQ(0u, emptyCommands.drawIndexedCount);
+    EXPECT_TRUE(empty.results->objectVelocityStats.requested);
+    EXPECT_TRUE(empty.results->objectVelocityStats.supported);
+    EXPECT_TRUE(empty.results->objectVelocityStats.velocityTargetAvailable);
+    EXPECT_TRUE(empty.results->objectVelocityStats.depthAvailable);
+    EXPECT_TRUE(empty.results->objectVelocityStats.previousViewProjectionAvailable);
+    EXPECT_FALSE(empty.results->objectVelocityStats.drawItemsAvailable);
+    EXPECT_TRUE(empty.results->objectVelocityStats.MatchesVelocityTarget(
+        empty.view.velocityTarget, empty.identity));
     EXPECT_FALSE(empty.results->objectVelocityStats.outputDeclared);
     EXPECT_FALSE(empty.results->objectVelocityStats.velocityRecorded);
 
@@ -15782,6 +16235,9 @@ TEST_F(RenderPassValidationFixture,
     auto foreignResults = std::make_shared<RenderPassRecordResults>();
     foreignResults->identity = foreignIdentity;
     foreignResults->objectVelocityStats.width = 777;
+    foreignResults->objectVelocityStats.velocityTargetResourceIndex = 778;
+    foreignResults->objectVelocityStats.velocityTargetGraphIdentity = 779;
+    foreignResults->objectVelocityStats.velocityTargetRecordingGeneration = 780;
     foreignResults->objectVelocityStats.velocityRecorded = true;
     RenderPassRecordContext attacker;
     attacker.identity.graph = &attackerGraph;
@@ -15797,6 +16253,12 @@ TEST_F(RenderPassValidationFixture,
     RenderGraphValidationAccess::Execute(attackerGraph, attackerCommands);
     EXPECT_EQ(foreignIdentity, foreignResults->identity);
     EXPECT_EQ(777u, foreignResults->objectVelocityStats.width);
+    EXPECT_EQ(778u,
+              foreignResults->objectVelocityStats.velocityTargetResourceIndex);
+    EXPECT_EQ(779u,
+              foreignResults->objectVelocityStats.velocityTargetGraphIdentity);
+    EXPECT_EQ(780u,
+              foreignResults->objectVelocityStats.velocityTargetRecordingGeneration);
     EXPECT_TRUE(foreignResults->objectVelocityStats.velocityRecorded);
     EXPECT_EQ(0u, attackerCommands.beginRenderPassCount);
 
@@ -15903,6 +16365,14 @@ TEST_F(RenderPassValidationFixture,
     RecordingCommandContext staleCommands;
     RenderGraphValidationAccess::Execute(staleTargetGraph, staleCommands);
     EXPECT_EQ(0u, staleCommands.beginRenderPassCount);
+    EXPECT_EQ(RVX_INVALID_INDEX,
+              stale.results->objectVelocityStats.velocityTargetResourceIndex);
+    EXPECT_EQ(0u,
+              stale.results->objectVelocityStats.velocityTargetGraphIdentity);
+    EXPECT_EQ(0u,
+              stale.results->objectVelocityStats.velocityTargetRecordingGeneration);
+    EXPECT_FALSE(stale.results->objectVelocityStats.MatchesVelocityTarget(
+        stale.view.velocityTarget, stale.identity));
     EXPECT_FALSE(stale.results->objectVelocityStats.outputDeclared);
     EXPECT_FALSE(stale.results->objectVelocityStats.velocityRecorded);
 
@@ -19593,6 +20063,28 @@ TEST(SceneRendererSubmissionValidation,
 }
 
 TEST(SceneRendererSubmissionValidation,
+     RequiredFeatureReceiptFailureBlocksSubmissionAfterGraphExecution)
+{
+    SceneRenderer renderer;
+    SceneRendererTestAccess::ConfigureExecutionReceiptSubmissionGateForTesting(
+        renderer, false);
+    EXPECT_FALSE(
+        SceneRendererTestAccess::HasSubmissionFailureForTesting(renderer));
+
+    SceneRendererTestAccess::ConfigureExecutionReceiptSubmissionGateForTesting(
+        renderer, true);
+    EXPECT_TRUE(
+        SceneRendererTestAccess::HasSubmissionFailureForTesting(renderer));
+
+    RenderExecutionReceipt invalidReceipt;
+    invalidReceipt.executionSucceeded = true;
+    SceneRendererTestAccess::SetPendingExecutionReceiptForTesting(
+        renderer, std::move(invalidReceipt));
+    EXPECT_TRUE(
+        SceneRendererTestAccess::HasSubmissionFailureForTesting(renderer));
+}
+
+TEST(SceneRendererSubmissionValidation,
      ZeroSubmissionRetractsDirectAndGPUSceneCompletedUploadTelemetry)
 {
     FakeDevice device;
@@ -21985,6 +22477,18 @@ TEST_F(RenderPassValidationFixture,
         EXPECT_TRUE(evidence.exactIBLViews);
         EXPECT_EQ(expectedWorkCount, evidence.workCount);
         EXPECT_TRUE(evidence.executed);
+        if (route == RenderLightingSurfaceRoute::ForwardOpaque)
+        {
+            EXPECT_EQ(context.ambientOcclusion.fieldContentHash,
+                      evidence.ambientOcclusionFieldContentHash);
+            EXPECT_NE(0u, evidence.ambientOcclusionFieldContentHash);
+        }
+        else
+        {
+            // Transparent work keeps its own material AO semantics and only
+            // receives a neutral descriptor fallback, never the graph field.
+            EXPECT_EQ(0u, evidence.ambientOcclusionFieldContentHash);
+        }
     };
 
     const auto makeOpaqueContext = [&](RenderGraph& graph,
@@ -25661,107 +26165,6 @@ TEST_F(RenderPassValidationFixture, FilmGrainSkipsDrawWhenConstantsCannotMap)
     EXPECT_EQ(ctx.beginRenderPassCount, 0u);
 }
 
-TEST_F(RenderPassValidationFixture, SSAOPassRequiresResourcesBeforeReportingSupported)
-{
-    SSAOPass pass;
-    PostProcessSettings settings;
-    settings.enableSSAO = true;
-    pass.Configure(settings);
-
-    EXPECT_TRUE(pass.IsRequestedEnabled());
-    EXPECT_FALSE(pass.IsSupported());
-    EXPECT_FALSE(pass.IsEnabled());
-    EXPECT_FALSE(pass.GetUnsupportedReason().empty());
-}
-
-TEST_F(RenderPassValidationFixture, SSAOPassAddsDepthOnlyGraphPassAndDrawsFullscreenTriangle)
-{
-    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
-
-    SSAOPass pass;
-    PostProcessSettings settings;
-    settings.enableSSAO = true;
-    settings.ssaoRadius = 0.75f;
-    settings.ssaoIntensity = 0.6f;
-    settings.visualQualityPreset = RenderVisualQualityPreset::High;
-    pass.Configure(settings);
-    pass.SetResources(&pipelineCache, &viewCache);
-
-    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
-    ASSERT_TRUE(pass.IsEnabled());
-
-    RenderGraph graph;
-    RenderGraphValidationAccess::SetDevice(graph, &device);
-
-    RHITextureDesc inputDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT);
-    inputDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
-    RHITextureDesc outputDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT);
-    outputDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
-    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT);
-    depthDesc.usage = RHITextureUsage::DepthStencil | RHITextureUsage::ShaderResource;
-
-    RHITextureRef inputTexture = device.CreateTexture(inputDesc);
-    RHITextureRef outputTexture = device.CreateTexture(outputDesc);
-    RHITextureRef depthTexture = device.CreateTexture(depthDesc);
-    ASSERT_TRUE(inputTexture);
-    ASSERT_TRUE(outputTexture);
-    ASSERT_TRUE(depthTexture);
-
-    PostProcessFrameInputs frameInputs;
-    frameInputs.sceneColor = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
-    frameInputs.depth = RenderGraphValidationAccess::ImportTexture(graph, depthTexture.Get(), RHIResourceState::DepthWrite);
-    frameInputs.outputFormat = RHIFormat::RGBA16_FLOAT;
-    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
-    graph.SetExportState(output, RHIResourceState::RenderTarget);
-
-    pass.AddToGraph(graph, frameInputs, output);
-    RenderGraphValidationAccess::Compile(graph);
-
-    const auto& graphStats = graph.GetCompileStats();
-    EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 1u);
-    EXPECT_EQ(graphStats.culledPasses, 0u);
-    EXPECT_EQ(graphStats.emptyPassUsageCount, 0u);
-
-    RecordingCommandContext ctx;
-    RenderGraphValidationAccess::Execute(graph, ctx);
-
-    EXPECT_EQ(ctx.beginRenderPassCount, 1u);
-    EXPECT_EQ(ctx.endRenderPassCount, 1u);
-    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
-    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetSSAOPipeline(RHIFormat::RGBA16_FLOAT));
-    ASSERT_EQ(ctx.descriptorSetSequence.size(), static_cast<size_t>(1));
-    EXPECT_EQ(ctx.descriptorSetSequence[0], 0u);
-    EXPECT_EQ(ctx.drawCount, 1u);
-    EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
-    EXPECT_EQ(ctx.drawIndexedCount, 0u);
-
-    auto descriptorIt = std::find_if(
-        device.createdDescriptorSetDescs.begin(),
-        device.createdDescriptorSetDescs.end(),
-        [](const RHIDescriptorSetDesc& desc)
-        {
-            return desc.debugName && std::string(desc.debugName) == "SSAODescriptorSet";
-        });
-    ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
-    EXPECT_EQ(descriptorIt->layout, pipelineCache.GetPostProcessSetLayout());
-    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(4));
-
-    const SSAOComputeStats& stats = pass.GetLastGraphStats();
-    EXPECT_TRUE(stats.requested);
-    EXPECT_TRUE(stats.supported);
-    EXPECT_TRUE(stats.executed);
-    EXPECT_TRUE(stats.depthAvailable);
-    EXPECT_FALSE(stats.normalAvailable);
-    EXPECT_TRUE(stats.normalFallbackUsed);
-    EXPECT_FALSE(stats.neutralOutputFallbackUsed);
-    EXPECT_EQ(stats.sampleCount, 12u);
-    EXPECT_EQ(stats.aoPassCount, 1u);
-    EXPECT_EQ(stats.blurPassCount, 0u);
-    EXPECT_EQ(stats.implementationTier, SSAOImplementationTier::DepthOnlyLowTier);
-    EXPECT_NE(stats.fallbackReason.find("depth-only low-tier fallback"), std::string::npos);
-}
-
 TEST(RenderPostProcessStackValidation, RenderVisualQualityPresetAppliesExplicitEffectPolicy)
 {
     PostProcessSettings settings;
@@ -25771,14 +26174,12 @@ TEST(RenderPostProcessStackValidation, RenderVisualQualityPresetAppliesExplicitE
     EXPECT_FALSE(settings.enableToneMapping);
     EXPECT_FALSE(settings.enableBloom);
     EXPECT_EQ(settings.antiAliasingMode, RenderAntiAliasingMode::None);
-    EXPECT_FALSE(settings.enableSSAO);
 
     ApplyRenderVisualQualityPreset(settings, RenderVisualQualityPreset::Low);
     EXPECT_EQ(settings.visualQualityPreset, RenderVisualQualityPreset::Low);
     EXPECT_TRUE(settings.enableToneMapping);
     EXPECT_EQ(settings.antiAliasingMode, RenderAntiAliasingMode::FXAA);
     EXPECT_FALSE(settings.enableBloom);
-    EXPECT_FALSE(settings.enableSSAO);
 
     ApplyRenderVisualQualityPreset(settings, RenderVisualQualityPreset::Cinematic);
     EXPECT_EQ(settings.visualQualityPreset, RenderVisualQualityPreset::Cinematic);
@@ -25786,7 +26187,6 @@ TEST(RenderPostProcessStackValidation, RenderVisualQualityPresetAppliesExplicitE
     EXPECT_TRUE(settings.enableBloom);
     EXPECT_EQ(settings.antiAliasingMode, RenderAntiAliasingMode::TAA);
     EXPECT_TRUE(settings.enableFilmGrain);
-    EXPECT_FALSE(settings.enableSSAO);
     EXPECT_FALSE(settings.enableSSR);
     EXPECT_TRUE(settings.enableVelocityOutput);
     EXPECT_FALSE(settings.enableDOF);
@@ -27776,19 +28176,9 @@ TEST_F(RenderPassValidationFixture,
         "TAA requires shader-readable inputs and a shader-readable render-target output");
 }
 
-TEST_F(RenderPassValidationFixture, StandaloneSSAOAndSSRReportMissingFrameInputs)
+TEST_F(RenderPassValidationFixture, StandaloneSSRReportsMissingFrameInputs)
 {
     RecordingCommandContext ctx;
-
-    SSAO ssao;
-    ssao.SetEnabled(true);
-    ssao.Compute(ctx, nullptr, nullptr, Mat4Identity(), Mat4Identity());
-    const SSAOComputeStats& ssaoStats = ssao.GetLastComputeStats();
-    EXPECT_TRUE(ssaoStats.requested);
-    EXPECT_FALSE(ssaoStats.supported);
-    EXPECT_FALSE(ssaoStats.executed);
-    EXPECT_FALSE(ssaoStats.depthAvailable);
-    EXPECT_NE(ssaoStats.fallbackReason.find("depth"), std::string::npos);
 
     SSR ssr;
     ssr.SetEnabled(true);
@@ -27806,61 +28196,6 @@ TEST_F(RenderPassValidationFixture, StandaloneSSAOAndSSRReportMissingFrameInputs
     EXPECT_NE(ssrStats.missingInputReason.find("color, depth, normal, or roughness"),
               std::string::npos);
     EXPECT_EQ(ssrStats.fallbackReason, ssrStats.missingInputReason);
-}
-
-TEST_F(RenderPassValidationFixture, StandaloneSSAOInitializesMinimalLowTierAndReportsFallbacks)
-{
-    RecordingCommandContext ctx;
-    FakeDevice localDevice;
-    localDevice.EnableBasicCapabilities();
-
-    SSAOConfig config;
-    config.quality = SSAOQuality::High;
-    config.temporalFilter = true;
-    config.blurPasses = 2;
-
-    SSAO ssao;
-    ssao.SetConfig(config);
-    ssao.SetEnabled(true);
-    ssao.Initialize(&localDevice, 64, 48);
-
-    EXPECT_TRUE(ssao.IsInitialized());
-    EXPECT_TRUE(ssao.IsSupported());
-    EXPECT_TRUE(ssao.IsEnabled());
-    EXPECT_TRUE(ssao.GetUnsupportedReason().empty());
-    ASSERT_NE(ssao.GetResult(), nullptr);
-    ASSERT_NE(ssao.GetBlurredResult(), nullptr);
-
-    RHITextureRef depthTexture =
-        localDevice.CreateTexture(RHITextureDesc::DepthStencil(64, 48, RHIFormat::D32_FLOAT));
-    ASSERT_TRUE(depthTexture);
-
-    ssao.Compute(ctx, depthTexture.Get(), nullptr, Mat4Identity(), Mat4Identity());
-
-    const SSAOComputeStats& stats = ssao.GetLastComputeStats();
-    EXPECT_TRUE(stats.requested);
-    EXPECT_TRUE(stats.supported);
-    EXPECT_TRUE(stats.executed);
-    EXPECT_TRUE(stats.depthAvailable);
-    EXPECT_FALSE(stats.normalAvailable);
-    EXPECT_TRUE(stats.normalFallbackUsed);
-    EXPECT_TRUE(stats.temporalFallbackUsed);
-    EXPECT_TRUE(stats.neutralOutputFallbackUsed);
-    EXPECT_EQ(stats.sampleCount, 16u);
-    EXPECT_EQ(stats.aoPassCount, 1u);
-    EXPECT_EQ(stats.blurPassCount, 1u);
-    EXPECT_EQ(stats.implementationTier, SSAOImplementationTier::MinimalNeutralOutput);
-    EXPECT_STREQ(GetSSAOImplementationTierName(stats.implementationTier), "MinimalNeutralOutput");
-    EXPECT_NE(stats.fallbackReason.find("normal"), std::string::npos);
-    EXPECT_NE(stats.fallbackReason.find("temporal"), std::string::npos);
-    EXPECT_NE(stats.fallbackReason.find("neutral AO"), std::string::npos);
-
-    EXPECT_EQ(ctx.beginRenderPassCount, 1u);
-    EXPECT_EQ(ctx.endRenderPassCount, 1u);
-    EXPECT_EQ(ctx.copyTextureCount, 1u);
-    ASSERT_EQ(ctx.renderPasses.size(), 1u);
-    EXPECT_EQ(ctx.renderPasses[0].colorAttachmentCount, 1u);
-    EXPECT_FLOAT_EQ(ctx.renderPasses[0].colorAttachments[0].clearColor.r, 1.0f);
 }
 
 TEST_F(RenderPassValidationFixture,
@@ -28465,6 +28800,184 @@ TEST_F(RenderPassValidationFixture,
     // view probe continues to own the source texture.
     EXPECT_EQ(1u + config.numCascades,
               shadowTextureProbe->GetRefCount());
+}
+
+namespace
+{
+    [[nodiscard]] RenderViewHistoryIdentity
+    MakeGTAOHistoryIdentity(uint64 sequence)
+    {
+        return {
+            .previousFrame = {
+                .frameSequence = sequence,
+                .sceneRevision = 7,
+                .surfaceGeneration = 3,
+                .configurationRevision = 11,
+            },
+            .view = {
+                .sceneRuntimeId = 17,
+                .cameraEntityPacked = 19,
+                .subViewIndex = 0,
+                .role = ViewRole::Main,
+            },
+            .extent = {.width = 64, .height = 64},
+            .familyId = 23,
+            .worldRevision = 29,
+            .temporalEpoch = 31,
+            .formatRevision = 37,
+            .surfaceGeneration = 3,
+            .cameraCutRevision = 41,
+        };
+    }
+
+    void PrepareGTAOHistoryCandidate(
+        GroundTruthAmbientOcclusion& gtao,
+        const RenderViewHistoryIdentity& identity,
+        uint32 historyIndex,
+        uint64 settingsHash)
+    {
+        GroundTruthAmbientOcclusionTestAccess::PrimePendingHistory(
+            gtao, identity, historyIndex, settingsHash);
+    }
+} // namespace
+
+TEST(GroundTruthAmbientOcclusionValidation,
+     PendingHistoryCannotCommitBeforeExactSubmission)
+{
+
+    GroundTruthAmbientOcclusion gtao;
+    const RenderViewHistoryIdentity identity = MakeGTAOHistoryIdentity(43);
+    ASSERT_TRUE(identity.IsValid());
+    PrepareGTAOHistoryCandidate(gtao, identity, 1, 0xA013ULL);
+
+    EXPECT_FALSE(gtao.CanCommitHistoryAfterPresent(identity));
+    EXPECT_FALSE(gtao.CommitHistoryAfterPresent(identity));
+    EXPECT_FALSE(gtao.HasValidHistory());
+    EXPECT_TRUE(GroundTruthAmbientOcclusionTestAccess::HasPendingHistory(gtao));
+    EXPECT_FALSE(
+        GroundTruthAmbientOcclusionTestAccess::PendingSubmissionAccepted(gtao));
+    EXPECT_EQ(GroundTruthAmbientOcclusionTestAccess::PendingIdentity(gtao),
+              identity);
+
+    gtao.AbandonPendingHistory();
+    EXPECT_FALSE(GroundTruthAmbientOcclusionTestAccess::HasPendingHistory(gtao));
+    EXPECT_FALSE(
+        GroundTruthAmbientOcclusionTestAccess::PendingSubmissionAccepted(gtao));
+    EXPECT_EQ(GroundTruthAmbientOcclusionTestAccess::PendingIdentity(gtao),
+              RenderViewHistoryIdentity{});
+}
+
+TEST(GroundTruthAmbientOcclusionValidation,
+     WrongSubmissionOrPresentIdentityDoesNotMutateReusableHistory)
+{
+    GroundTruthAmbientOcclusion gtao;
+    const RenderViewHistoryIdentity candidateIdentity = MakeGTAOHistoryIdentity(43);
+    RenderViewHistoryIdentity wrongIdentity = candidateIdentity;
+    ++wrongIdentity.temporalEpoch;
+    ASSERT_TRUE(candidateIdentity.IsValid());
+    ASSERT_TRUE(wrongIdentity.IsValid());
+
+    GroundTruthAmbientOcclusionTestAccess::SetCommittedHistory(
+        gtao, 0, 0xC011ULL);
+    PrepareGTAOHistoryCandidate(gtao, candidateIdentity, 1, 0xA013ULL);
+
+    EXPECT_FALSE(gtao.NotifyHistorySubmission(wrongIdentity));
+    EXPECT_FALSE(gtao.CanCommitHistoryAfterPresent(wrongIdentity));
+    EXPECT_FALSE(gtao.CommitHistoryAfterPresent(wrongIdentity));
+    EXPECT_FALSE(gtao.CanCommitHistoryAfterPresent(candidateIdentity));
+    EXPECT_FALSE(gtao.CommitHistoryAfterPresent(candidateIdentity));
+
+    EXPECT_TRUE(gtao.HasValidHistory());
+    EXPECT_EQ(
+        GroundTruthAmbientOcclusionTestAccess::CommittedHistoryIndex(gtao),
+        0u);
+    EXPECT_EQ(GroundTruthAmbientOcclusionTestAccess::CommittedSettingsHash(gtao),
+              0xC011ULL);
+    EXPECT_TRUE(GroundTruthAmbientOcclusionTestAccess::
+                    HistoryResourceStatesInitialized(gtao));
+    EXPECT_TRUE(GroundTruthAmbientOcclusionTestAccess::HasPendingHistory(gtao));
+    EXPECT_FALSE(
+        GroundTruthAmbientOcclusionTestAccess::PendingSubmissionAccepted(gtao));
+    EXPECT_EQ(GroundTruthAmbientOcclusionTestAccess::PendingIdentity(gtao),
+              candidateIdentity);
+
+    gtao.ResetHistory();
+    EXPECT_FALSE(gtao.HasValidHistory());
+    EXPECT_FALSE(GroundTruthAmbientOcclusionTestAccess::HasPendingHistory(gtao));
+    EXPECT_FALSE(
+        GroundTruthAmbientOcclusionTestAccess::PendingSubmissionAccepted(gtao));
+    EXPECT_EQ(GroundTruthAmbientOcclusionTestAccess::PendingIdentity(gtao),
+              RenderViewHistoryIdentity{});
+}
+
+TEST(GroundTruthAmbientOcclusionValidation,
+     ExactSubmissionThenPresentCommitsReusableHistoryAndShutdownClearsCandidate)
+{
+    GroundTruthAmbientOcclusion gtao;
+    const RenderViewHistoryIdentity firstIdentity = MakeGTAOHistoryIdentity(43);
+    ASSERT_TRUE(firstIdentity.IsValid());
+    PrepareGTAOHistoryCandidate(gtao, firstIdentity, 1, 0xA013ULL);
+
+    EXPECT_TRUE(gtao.NotifyHistorySubmission(firstIdentity));
+    EXPECT_TRUE(gtao.CanCommitHistoryAfterPresent(firstIdentity));
+    EXPECT_TRUE(gtao.CommitHistoryAfterPresent(firstIdentity));
+    EXPECT_TRUE(gtao.HasValidHistory());
+    EXPECT_EQ(
+        GroundTruthAmbientOcclusionTestAccess::CommittedHistoryIndex(gtao),
+        1u);
+    EXPECT_EQ(GroundTruthAmbientOcclusionTestAccess::CommittedSettingsHash(gtao),
+              0xA013ULL);
+    EXPECT_TRUE(GroundTruthAmbientOcclusionTestAccess::
+                    HistoryResourceStatesInitialized(gtao));
+    EXPECT_FALSE(GroundTruthAmbientOcclusionTestAccess::HasPendingHistory(gtao));
+    EXPECT_FALSE(
+        GroundTruthAmbientOcclusionTestAccess::PendingSubmissionAccepted(gtao));
+
+    const RenderViewHistoryIdentity secondIdentity = MakeGTAOHistoryIdentity(47);
+    PrepareGTAOHistoryCandidate(gtao, secondIdentity, 0, 0xB013ULL);
+    ASSERT_TRUE(gtao.NotifyHistorySubmission(secondIdentity));
+    gtao.Shutdown();
+    EXPECT_FALSE(gtao.HasValidHistory());
+    EXPECT_FALSE(GroundTruthAmbientOcclusionTestAccess::HasPendingHistory(gtao));
+    EXPECT_FALSE(
+        GroundTruthAmbientOcclusionTestAccess::PendingSubmissionAccepted(gtao));
+    EXPECT_EQ(GroundTruthAmbientOcclusionTestAccess::PendingIdentity(gtao),
+              RenderViewHistoryIdentity{});
+    EXPECT_FALSE(GroundTruthAmbientOcclusionTestAccess::
+                     HistoryResourceStatesInitialized(gtao));
+}
+
+TEST(GroundTruthAmbientOcclusionValidation,
+     ViewTemporalResetOverridesIncompleteReasonListAndPreventsHistorySampling)
+{
+    GroundTruthAmbientOcclusion gtao;
+    GroundTruthAmbientOcclusionFrameInputs inputs;
+    inputs.historyAvailable = true;
+    inputs.velocity.index = 7;
+
+    ViewData view;
+    view.previousViewProjectionValid = 1;
+    view.resetTemporalHistory = false;
+
+    constexpr uint64 settingsHash = 0x4754414FULL;
+    const RenderHistoryResetReason baselineReasons =
+        GroundTruthAmbientOcclusionTestAccess::ApplyViewTemporalReset(
+            view, RenderHistoryResetReason::None);
+    EXPECT_EQ(RenderHistoryResetReason::None, baselineReasons);
+    EXPECT_TRUE(GroundTruthAmbientOcclusionTestAccess::CanSampleHistory(
+        inputs, view, true, settingsHash, settingsHash, baselineReasons));
+
+    // This models a composition transition whose reason list is stale.  The
+    // authoritative view latch must still reject history, and AddToGraph()
+    // derives both its temporal blend and receipt fields from this decision.
+    view.resetTemporalHistory = true;
+    const RenderHistoryResetReason resetReasons =
+        GroundTruthAmbientOcclusionTestAccess::ApplyViewTemporalReset(
+            view, RenderHistoryResetReason::None);
+    EXPECT_TRUE(HasRenderHistoryResetReason(
+        resetReasons, RenderHistoryResetReason::ExplicitDiscontinuity));
+    EXPECT_FALSE(GroundTruthAmbientOcclusionTestAccess::CanSampleHistory(
+        inputs, view, true, settingsHash, settingsHash, resetReasons));
 }
 
 #undef RVX_REQUIRE_RENDER_RUNTIME_PIPELINE

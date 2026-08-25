@@ -66,7 +66,6 @@ namespace RVX
     class ColorGradingPass;
     class FXAAPass;
     class FilmGrainPass;
-    class SSAOPass;
     class LightManager;
     class VignettePass;
     class IRenderPass;
@@ -74,7 +73,9 @@ namespace RVX
     class DepthPrepass;
     class OpaquePass;
     class ParticleFeaturePass;
+    class AmbientOcclusionFeatureAdapter;
     class LegacyForwardFeatureAdapter;
+    class ForwardLightingFeatureAdapter;
     class PostProcessPipelineFeatureAdapter;
     class DeferredGeometryFeatureAdapter;
     class DeferredLightingFeatureAdapter;
@@ -1075,6 +1076,9 @@ namespace RVX
         /** @brief Arm one explicit post-fence physical-exposure state probe. */
         [[nodiscard]] bool ArmExposureQualificationProbe();
 
+        /** @brief Arm one exact-view physical GTAO visibility probe. */
+        [[nodiscard]] bool ArmAmbientOcclusionQualificationProbe();
+
         /** @brief Poll accepted qualification fences without requiring a new frame. */
         void PollGPUSceneCullingQualificationCompletion(
             const RenderSubmissionTracker& tracker);
@@ -1087,6 +1091,9 @@ namespace RVX
             const noexcept;
 
         [[nodiscard]] bool HasPendingExposureQualificationCompletion()
+            const noexcept;
+
+        [[nodiscard]] bool HasPendingAmbientOcclusionQualificationCompletion()
             const noexcept;
 
         /** @brief Release current recording ownership when no GPU work was submitted. */
@@ -1687,6 +1694,8 @@ namespace RVX
         std::unique_ptr<RenderPassRegistry> m_passRegistry;
         std::unique_ptr<RenderFeatureRegistry> m_renderFeatureRegistry;
         LegacyForwardFeatureAdapter* m_legacyForwardFeature = nullptr;
+        AmbientOcclusionFeatureAdapter* m_ambientOcclusionFeature = nullptr;
+        ForwardLightingFeatureAdapter* m_forwardLightingFeature = nullptr;
         PostProcessPipelineFeatureAdapter* m_postProcessFeature = nullptr;
         DeferredGeometryFeatureAdapter* m_deferredGeometryFeature = nullptr;
         DeferredLightingFeatureAdapter* m_deferredLightingFeature = nullptr;
@@ -1811,6 +1820,14 @@ namespace RVX
         std::optional<RenderExecutionReceipt>
             m_exposureProbeSourceExecutionReceipt;
         bool m_exposureProbePresented = false;
+        /** Exact submitted/presented source retained until the GTAO probe maps. */
+        std::optional<RenderViewHistoryIdentity>
+            m_ambientOcclusionProbeHistoryIdentity;
+        std::optional<RenderExecutionReceipt>
+            m_ambientOcclusionProbeSourceExecutionReceipt;
+        bool m_ambientOcclusionProbeSubmissionAccepted = false;
+        bool m_ambientOcclusionProbePresented = false;
+        bool m_ambientOcclusionProbeAbandoned = false;
         /** @brief One immutable feature snapshot shared by every view in the frame. */
         std::shared_ptr<const RenderFeatureSnapshot> m_featureSnapshot =
             std::make_shared<const RenderFeatureSnapshot>();
@@ -1935,7 +1952,6 @@ namespace RVX
         ChromaticAberrationPass* m_chromaticAberrationPostProcess = nullptr;
         VignettePass* m_vignettePostProcess = nullptr;
         FilmGrainPass* m_filmGrainPostProcess = nullptr;
-        SSAOPass* m_ssaoPostProcess = nullptr;
         FXAAPass* m_fxaaPostProcess = nullptr;
         TAA* m_taaPostProcess = nullptr;
 

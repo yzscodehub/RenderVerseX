@@ -22,6 +22,7 @@
 #define RVX_MAX_OBJECT_SKINNING_MATRICES 128
 
 #include "Include/BRDF.hlsli"
+#include "Include/AmbientOcclusion.hlsli"
 #include "Include/Exposure.hlsli"
 #include "Include/GPUInstanceData.hlsli"
 #include "Include/Lighting.hlsli"
@@ -142,6 +143,9 @@ SamplerState IBLLinearClampSampler : register(s13, space0);
 // entire frame. GBuffer export intentionally never reads this buffer; every
 // Forward HDR surface, including transparent and Unlit, does.
 StructuredBuffer<RVXExposureState> ExposureStateBuffer : register(t14, space0);
+// Renderer-owned R8 visibility field. Opaque receives the exact GTAO output;
+// later Forward surfaces receive PipelineCache's neutral white fallback.
+Texture2D<float> AmbientOcclusionTexture : register(t15, space0);
 #if !defined(RVX_GPU_SCENE_RASTER)
 StructuredBuffer<GPUInstanceData> GPUDrivenInstances : register(t1, space1);
 #endif
@@ -611,6 +615,24 @@ MaterialParameterData ResolveMaterialParameters(uint materialSlot)
     return material;
 }
 
+float SampleScreenSpaceAmbientOcclusion(float4 screenPosition)
+{
+    uint width = 0;
+    uint height = 0;
+    AmbientOcclusionTexture.GetDimensions(width, height);
+    if (width == 0 || height == 0)
+    {
+        // PipelineCache normally binds a 1.0 fallback for non-opaque
+        // surfaces. Keep the shader-side backstop identity-preserving.
+        return 1.0;
+    }
+
+    const int2 maximumPixel = int2((int)width - 1, (int)height - 1);
+    const int2 pixel = clamp(int2(screenPosition.xy), int2(0, 0), maximumPixel);
+    return RVX_SaturateAmbientOcclusion(
+        AmbientOcclusionTexture.Load(int3(pixel, 0)));
+}
+
 struct GBufferOutput
 {
     float4 baseColorAO : SV_Target0;
@@ -863,6 +885,8 @@ float4 PSMain(PSInput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
         clampedRoughness);
 
     float nDotV = max(dot(normal, viewDir), 0.001);
+    const float screenAmbientOcclusion =
+        SampleScreenSpaceAmbientOcclusion(input.Position);
     float3 fresnel = F_SchlickRoughness(nDotV, f0, clampedRoughness);
     float3 ambientDiffuse;
     float3 ambientSpecular;
@@ -880,17 +904,32 @@ float4 PSMain(PSInput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
             float2(nDotV, clampedRoughness)).rg;
 
         float3 diffuseEnergy = baseColor.rgb * (1.0 - fresnel) * (1.0 - metallic);
-        ambientDiffuse = diffuseEnergy * irradiance * occlusion;
-        ambientSpecular = prefilteredColor * (fresnel * brdf.x + brdf.y) * occlusion;
+        ambientDiffuse = RVX_ApplyIndirectDiffuseAmbientOcclusion(
+            diffuseEnergy * irradiance * occlusion,
+            screenAmbientOcclusion);
+        ambientSpecular = RVX_ApplyIndirectSpecularAmbientOcclusion(
+            prefilteredColor * (fresnel * brdf.x + brdf.y) * occlusion,
+            screenAmbientOcclusion,
+            clampedRoughness,
+            nDotV);
     }
     else
     {
         float3 iblDiffuse = IBLDiffuseAmbient.rgb * IBLDiffuseAmbient.a;
         float3 iblSpecular = IBLSpecularAmbient.rgb * IBLSpecularAmbient.a;
-        ambientDiffuse = baseColor.rgb * (1.0 - fresnel) * (1.0 - metallic) * occlusion * iblDiffuse;
-        ambientSpecular = f0 * occlusion * (1.0 - clampedRoughness) * iblSpecular;
+        ambientDiffuse = RVX_ApplyIndirectDiffuseAmbientOcclusion(
+            baseColor.rgb * (1.0 - fresnel) * (1.0 - metallic) *
+                occlusion * iblDiffuse,
+            screenAmbientOcclusion);
+        ambientSpecular = RVX_ApplyIndirectSpecularAmbientOcclusion(
+            f0 * occlusion * (1.0 - clampedRoughness) * iblSpecular,
+            screenAmbientOcclusion,
+            clampedRoughness,
+            nDotV);
     }
-    float3 ambientFloor = baseColor.rgb * max(IBLTextureParams.w, 0.0);
+    float3 ambientFloor = RVX_ApplyIndirectDiffuseAmbientOcclusion(
+        baseColor.rgb * max(IBLTextureParams.w, 0.0),
+        screenAmbientOcclusion);
     float3 finalColor = ambientDiffuse + ambientSpecular + directLight + emissive + ambientFloor;
 
     return float4(finalColor * preExposure, baseColor.a);

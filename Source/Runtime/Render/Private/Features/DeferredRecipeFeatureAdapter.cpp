@@ -192,15 +192,103 @@ namespace
         desc.debugName = name;
         return desc;
     }
+
+    [[nodiscard]] bool AddCanonicalVelocityPasses(
+        RenderFeatureGraphBuilder& builder,
+        const RenderPassRecordContext& context,
+        const VelocityPassBindings& bindings,
+        RenderOutputExtent extent,
+        DeferredRecipeFeaturePassChainStats& stats,
+        std::string& outFailure)
+    {
+        const bool targetAvailable = IsValidDeferredTexture(
+            builder.GetGraph(), context.view.velocityTarget, extent,
+            SceneTextures::VelocityContract,
+            RHITextureUsage::ShaderResource) &&
+            HasFlag(builder.GetGraph()
+                        .GetTextureDesc(context.view.velocityTarget)->usage,
+                    RHITextureUsage::RenderTarget);
+        if (!bindings.IsComplete())
+        {
+            if (context.view.velocityTarget.IsValid())
+            {
+                outFailure =
+                    "Canonical velocity target has no complete Camera/Object producer binding";
+                return false;
+            }
+            return true;
+        }
+
+        const std::array<IRenderPass*, 2> producers = {
+            bindings.camera, bindings.object};
+        const std::array<const char*, 2> expectedNames = {
+            "CameraVelocityPass", "ObjectVelocityPass"};
+        bool anyRequested = false;
+        for (size_t index = 0; index < producers.size(); ++index)
+        {
+            const RenderPassStatus status = producers[index]->GetStatus();
+            if (status.name != expectedNames[index])
+            {
+                outFailure =
+                    "Canonical velocity producer binding has an unexpected pass identity";
+                return false;
+            }
+            anyRequested = anyRequested || status.requestedEnabled;
+        }
+
+        if (!targetAvailable)
+        {
+            if (anyRequested || context.view.velocityTarget.IsValid())
+            {
+                outFailure =
+                    "Requested velocity producers require a full-resolution RG16_FLOAT target";
+                return false;
+            }
+            return true;
+        }
+
+        // Validate the whole pair before recording either producer so a
+        // failed Object pass cannot leave a partial velocity chain behind.
+        for (IRenderPass* const producer : producers)
+        {
+            const RenderPassStatus status = producer->GetStatus();
+            if (!status.requestedEnabled || !status.supported || !status.enabled)
+            {
+                outFailure = "Required velocity producer '" + status.name +
+                    "' is not executable";
+                if (!status.supported)
+                {
+                    stats.unsupportedPassNames.push_back(status.name);
+                }
+                return false;
+            }
+        }
+
+        for (IRenderPass* const producer : producers)
+        {
+            const RenderPassStatus status = producer->GetStatus();
+            if (!builder.AddLegacyPass(*producer, context))
+            {
+                outFailure = "Velocity producer registration failed for '" +
+                    status.name + "'";
+                return false;
+            }
+            ++stats.graphPassCount;
+            stats.graphPassNames.push_back(status.name);
+        }
+        return true;
+    }
 } // namespace
 
 DeferredGeometryFeatureAdapter::DeferredGeometryFeatureAdapter(
     RenderPassRegistry* passRegistry,
     OpaquePass* opaquePass,
-    PipelineCache* pipelineCache) noexcept
+    PipelineCache* pipelineCache,
+    VelocityPassBindings velocityPasses) noexcept
     : m_passRegistry(passRegistry)
     , m_opaquePass(opaquePass)
     , m_pipelineCache(pipelineCache)
+    , m_velocityPasses(velocityPasses)
 {
 }
 
@@ -361,13 +449,12 @@ void DeferredGeometryFeatureAdapter::AddPasses(
     textures.exposureState = m_recordContext.view.exposureState;
     textures.exposureStateMetadata = MakeExposureStateMetadata(
         m_recordContext.view);
-    // GFX07 does not publish velocity from allocation alone.  The existing
-    // camera/object velocity passes can still own an independently allocated
-    // view target, but SceneTextures.velocity remains absent until the typed
-    // velocity feature introduced by GFX10/GFX11 proves a producer and its
-    // semantic execution for this exact view.
-    textures.velocity = {};
-    textures.velocityMetadata = {};
+    if (m_recordContext.view.velocityTarget.IsValid())
+    {
+        textures.velocity = m_recordContext.view.velocityTarget;
+        textures.velocityMetadata = MakeMetadata(
+            extent, SceneTextures::VelocityContract);
+    }
     textures.gBuffer0 = builder.CreateTexture(MakeGBufferDesc(
         extent, SceneTextures::GBuffer0Contract, "DeferredGBuffer0"));
     textures.gBuffer0Metadata = MakeMetadata(extent, SceneTextures::GBuffer0Contract);
@@ -431,6 +518,14 @@ void DeferredGeometryFeatureAdapter::AddPasses(
     }
     ++m_lastPassChainStats.graphPassCount;
     m_lastPassChainStats.graphPassNames.push_back("DeferredGBuffer");
+
+    if (!AddCanonicalVelocityPasses(
+            builder, m_recordContext, m_velocityPasses, extent,
+            m_lastPassChainStats, failure))
+    {
+        SetCompositionFailure(std::move(failure));
+        return;
+    }
 
     if (blackboard.Publish(BuiltinRenderFeatureIds::DeferredGeometry,
                            Describe(), std::move(textures)) !=
@@ -531,7 +626,10 @@ RenderFeatureDescriptor DeferredLightingFeatureAdapter::Describe() const
     descriptor.name = "DeferredLighting";
     descriptor.phase = RenderFeaturePhase::Lighting;
     descriptor.consumedResources = {
-        {RenderBlackboardResourceId::SceneTextures, SceneTextures::SchemaVersion}};
+        {RenderBlackboardResourceId::SceneTextures,
+         SceneTextures::SchemaVersion},
+        {RenderBlackboardResourceId::AmbientOcclusionOutputs,
+         AmbientOcclusionOutputs::SchemaVersion}};
     descriptor.producedResources = {
         {RenderBlackboardResourceId::LightingOutputs,
          LightingOutputs::SchemaVersion}};
@@ -630,6 +728,29 @@ void DeferredLightingFeatureAdapter::AddPasses(
         SetCompositionFailure("Deferred lighting requires a valid SceneTextures v2 entry");
         return;
     }
+    const AmbientOcclusionOutputs* const ambientOcclusion =
+        blackboard.Require<AmbientOcclusionOutputs>(
+            BuiltinRenderFeatureIds::DeferredLighting, Describe(), &code);
+    if (ambientOcclusion == nullptr ||
+        code != RenderGraphBlackboardCode::Success ||
+        !ambientOcclusion->ambientOcclusion.IsValid() ||
+        ambientOcclusion->frameIdentity != m_preparedContext.frameIdentity ||
+        ambientOcclusion->viewIdentity != m_preparedContext.viewIdentity ||
+        ambientOcclusion->ambientOcclusionMetadata.extent !=
+            m_preparedContext.outputExtent ||
+        ambientOcclusion->ambientOcclusionMetadata.format !=
+            RHIFormat::R8_UNORM ||
+        ambientOcclusion->ambientOcclusionMetadata.sampleCount !=
+            RHISampleCount::Count1 ||
+        ambientOcclusion->settingsHash == 0 ||
+        ambientOcclusion->ambientOcclusionFieldHash == 0 ||
+        !IsValidRenderAmbientOcclusionConsumerMask(
+            ambientOcclusion->consumerMask))
+    {
+        SetCompositionFailure(
+            "Deferred lighting requires the exact typed ambient-occlusion output");
+        return;
+    }
     if (!builder.IsValid() || !m_recordContext.MatchesTargetGraph(builder.GetGraph()))
     {
         SetCompositionFailure(
@@ -724,6 +845,19 @@ void DeferredLightingFeatureAdapter::AddPasses(
     inputs.hdrSceneColor = sceneTextures->hdrSceneColor;
     inputs.materialTable = sceneTextures->materialTable;
     inputs.exposureState = sceneTextures->exposureState;
+    inputs.ambientOcclusion.identity = m_recordContext.identity;
+    inputs.ambientOcclusion.filteredOcclusion =
+        ambientOcclusion->ambientOcclusion;
+    inputs.ambientOcclusion.extent =
+        ambientOcclusion->ambientOcclusionMetadata.extent;
+    inputs.ambientOcclusion.format =
+        ambientOcclusion->ambientOcclusionMetadata.format;
+    inputs.ambientOcclusion.sampleCount =
+        ambientOcclusion->ambientOcclusionMetadata.sampleCount;
+    inputs.ambientOcclusion.settingsHash = ambientOcclusion->settingsHash;
+    inputs.ambientOcclusion.fieldContentHash =
+        ambientOcclusion->ambientOcclusionFieldHash;
+    inputs.ambientOcclusion.requested = true;
     inputs.expectedLightingPlanIdentity = lightingPlanIdentity;
     inputs.lighting.lightingPlanIdentity = lightingPlanIdentity;
     inputs.lighting.frozenLightResources =
@@ -837,9 +971,11 @@ void DeferredLightingFeatureAdapter::SetCompositionFailure(std::string diagnosti
 
 DeferredForwardSpecialFeatureAdapter::DeferredForwardSpecialFeatureAdapter(
     RenderPassRegistry* passRegistry,
-    OpaquePass* opaquePass) noexcept
+    OpaquePass* opaquePass,
+    VelocityPassBindings velocityPasses) noexcept
     : m_passRegistry(passRegistry)
     , m_opaquePass(opaquePass)
+    , m_velocityPasses(velocityPasses)
 {
 }
 
@@ -1013,9 +1149,10 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
             postLightingContext,
             *m_passRegistry,
             m_opaquePass,
-            [](const IRenderPass& pass)
+            [velocityPasses = m_velocityPasses](const IRenderPass& pass)
             {
-                return pass.GetPriority() > PassPriority::Opaque;
+                return pass.GetPriority() > PassPriority::Opaque &&
+                       !velocityPasses.Contains(&pass);
             },
             m_lastPassChainStats,
             failure))

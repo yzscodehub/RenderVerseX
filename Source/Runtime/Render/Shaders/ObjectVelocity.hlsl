@@ -29,7 +29,9 @@ cbuffer ObjectConstants : register(b0, space1)
     float4x4 World;
     float4x4 NormalMatrix;
     float4x4 PreviousWorldViewProjection;
-    float4 ObjectVelocityParams; // x: previous object+view history valid
+    // x: previous object+view history valid, y: receives shadow,
+    // z: backend-raster NDC Y to engine-semantic NDC Y scale.
+    float4 ObjectVelocityParams;
     float4 SkinningParams; // x: enabled, y: matrix count, z/w: current/previous offsets
 };
 
@@ -82,6 +84,7 @@ struct VSOutput
     float4 CurrentClip : TEXCOORD0;
     float4 PreviousClip : TEXCOORD1;
     float HistoryValid : TEXCOORD2;
+    nointerpolation float NdcYScale : TEXCOORD5;
 };
 
 struct VSMaskedOutput
@@ -92,6 +95,7 @@ struct VSMaskedOutput
     float HistoryValid : TEXCOORD2;
     float2 TexCoord : TEXCOORD3;
     float2 TexCoord1 : TEXCOORD4;
+    nointerpolation float NdcYScale : TEXCOORD5;
 };
 
 MaterialParameterData ResolveMaterialParameters()
@@ -131,10 +135,18 @@ VSOutput BuildVelocityOutput(
     output.PreviousClip = mul(PreviousWorldViewProjection, previousLocalPosition);
     output.Position = output.CurrentClip;
     output.HistoryValid = ObjectVelocityParams.x;
+    // Object constants are vertex-visible by contract. Carry the backend
+    // raster-to-semantic conversion as a flat interpolant so PSMain does not
+    // acquire an illegal object-set dependency.
+    output.NdcYScale = ObjectVelocityParams.z;
     return output;
 }
 
-float2 ResolveVelocity(float4 currentClip, float4 previousClip, float historyValid)
+float2 ResolveVelocity(
+    float4 currentClip,
+    float4 previousClip,
+    float historyValid,
+    float ndcYScale)
 {
     if (historyValid <= 0.5f || abs(currentClip.w) <= 1.0e-6f || abs(previousClip.w) <= 1.0e-6f)
     {
@@ -143,7 +155,9 @@ float2 ResolveVelocity(float4 currentClip, float4 previousClip, float historyVal
 
     const float2 currentNdc = currentClip.xy / currentClip.w;
     const float2 previousNdc = previousClip.xy / previousClip.w;
-    return currentNdc - previousNdc;
+    float2 velocity = currentNdc - previousNdc;
+    velocity.y *= ndcYScale;
+    return velocity;
 }
 
 VSOutput VSMain(VSInput input)
@@ -173,7 +187,10 @@ float2 PSMain(
         faceNormal,
         faceTangent);
     return ResolveVelocity(
-        input.CurrentClip, input.PreviousClip, input.HistoryValid);
+        input.CurrentClip,
+        input.PreviousClip,
+        input.HistoryValid,
+        input.NdcYScale);
 }
 
 VSMaskedOutput VSMainMasked(VSMaskedInput input)
@@ -191,6 +208,7 @@ VSMaskedOutput VSMainMasked(VSMaskedInput input)
     output.HistoryValid = velocity.HistoryValid;
     output.TexCoord = input.TexCoord;
     output.TexCoord1 = input.TexCoord1;
+    output.NdcYScale = velocity.NdcYScale;
     return output;
 }
 
@@ -206,6 +224,7 @@ VSMaskedOutput VSMainMaskedRigid(VSMaskedRigidInput input)
     output.HistoryValid = velocity.HistoryValid;
     output.TexCoord = input.TexCoord;
     output.TexCoord1 = input.TexCoord1;
+    output.NdcYScale = velocity.NdcYScale;
     return output;
 }
 
@@ -234,5 +253,9 @@ float2 PSMainMasked(
         material,
         RVXResolveBaseColorAlpha(material, sampledAlpha));
 
-    return ResolveVelocity(input.CurrentClip, input.PreviousClip, input.HistoryValid);
+    return ResolveVelocity(
+        input.CurrentClip,
+        input.PreviousClip,
+        input.HistoryValid,
+        input.NdcYScale);
 }

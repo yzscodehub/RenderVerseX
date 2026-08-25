@@ -14,7 +14,6 @@
 #include "Render/PostProcess/FXAA.h"
 #include "Render/PostProcess/FilmGrain.h"
 #include "Render/PostProcess/MotionBlur.h"
-#include "Render/PostProcess/SSAO.h"
 #include "Render/PostProcess/SSR.h"
 #include "Render/PostProcess/TAA.h"
 #include "Render/PostProcess/ToneMapping.h"
@@ -4041,16 +4040,11 @@ TEST_F(RenderHonestyValidationFixture, ToneMappingRequiresResourcesBeforeSupport
 TEST_F(RenderHonestyValidationFixture, StandalonePostProcessFeaturesExposeUnsupportedState)
 {
     RVX::TAA taa;
-    RVX::SSAO ssao;
     RVX::SSR ssr;
 
     EXPECT_FALSE(taa.IsSupported());
     EXPECT_FALSE(taa.IsEnabled());
     EXPECT_FALSE(taa.GetUnsupportedReason().empty());
-
-    EXPECT_FALSE(ssao.IsSupported());
-    EXPECT_FALSE(ssao.IsEnabled());
-    EXPECT_FALSE(ssao.GetUnsupportedReason().empty());
 
     EXPECT_FALSE(ssr.IsSupported());
     EXPECT_FALSE(ssr.IsEnabled());

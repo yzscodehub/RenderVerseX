@@ -221,6 +221,12 @@ namespace
         bool requireHistogramAutoExposure = false;
         bool requireExposureProbe = false;
         bool requireSharedExposureState = false;
+        bool requireAmbientOcclusionExecution = false;
+        bool requireAmbientOcclusionBilateralFiltering = false;
+        bool requireAmbientOcclusionTemporalSampled = false;
+        bool requireAmbientOcclusionHistoryCommittedAfterPresent = false;
+        bool requireAmbientOcclusionIndirectOnlyLighting = false;
+        bool requireAmbientOcclusionNonNeutralProbe = false;
         bool requireReadinessWait = false;
         bool requireGPUDrivenExecution = false;
         bool requireDirectExecution = false;
@@ -1111,6 +1117,32 @@ namespace
             else if (arg == "--require-shared-exposure-state")
             {
                 options.requireSharedExposureState = true;
+            }
+            else if (arg == "--require-ambient-occlusion-execution")
+            {
+                options.requireAmbientOcclusionExecution = true;
+            }
+            else if (arg == "--require-ambient-occlusion-bilateral-filtering")
+            {
+                options.requireAmbientOcclusionBilateralFiltering = true;
+            }
+            else if (arg == "--require-ambient-occlusion-temporal-sampled")
+            {
+                options.requireAmbientOcclusionTemporalSampled = true;
+            }
+            else if (arg ==
+                     "--require-ambient-occlusion-history-committed-after-present")
+            {
+                options.requireAmbientOcclusionHistoryCommittedAfterPresent =
+                    true;
+            }
+            else if (arg == "--require-ambient-occlusion-indirect-only-lighting")
+            {
+                options.requireAmbientOcclusionIndirectOnlyLighting = true;
+            }
+            else if (arg == "--require-ambient-occlusion-non-neutral-probe")
+            {
+                options.requireAmbientOcclusionNonNeutralProbe = true;
             }
             else if (arg == "--require-phase")
             {
@@ -2620,6 +2652,436 @@ namespace
         return passed;
     }
 
+    bool ValidateAmbientOcclusionExecutionProjectionSchemaV26(
+        const Json& ambientOcclusion,
+        const Options* options)
+    {
+        constexpr uint64_t ExpectedIndirectOnlyConsumerMask = 0x7u;
+        constexpr const char* Context =
+            "Ambient-occlusion execution projection v26";
+        if (!ambientOcclusion.is_object())
+        {
+            std::cerr << Context << " is not an object\n";
+            return false;
+        }
+
+        bool passed = ValidateExactObjectFields(
+            ambientOcclusion,
+            {"available",
+             "executionReceiptSchemaVersion",
+             "executionReceiptStructurallyValid",
+             "executionReceiptAvailable",
+             "executionReceiptGraphComposed",
+             "executionReceiptExecutionSucceeded",
+             "executionReceiptPresented",
+             "executionReceiptSucceeded",
+             "frameFeatureSequence",
+             "receiptFrameSequence",
+             "lastPresentedFrameSequence",
+             "presentedFrameAligned",
+             "mainView",
+             "sceneRuntimeId",
+             "cameraEntityPacked",
+             "subViewIndex",
+             "receiptStructurallyValid",
+             "planContentHash",
+             "requested",
+             "pipelineReady",
+             "inputsReady",
+             "executed",
+             "lightingConsumerExecuted",
+             "linearDepthInputReady",
+             "worldNormalInputReady",
+             "velocityInputReady",
+             "velocityProducerExecuted",
+             "outputPublished",
+             "outputFormat",
+             "horizonSearchGraphPassCount",
+             "bilateralDenoiseGraphPassCount",
+             "temporalResolveGraphPassCount",
+             "historyAvailableBefore",
+             "historySampled",
+             "motionReprojectionUsed",
+             "viewProjectionMotionObserved",
+             "historyCandidateProduced",
+             "historyCommitted",
+             "historyAbandoned",
+             "historyResetReasons",
+             "aoFieldContentHash",
+             "lightingAOFieldContentHash",
+             "velocityFieldIdentity",
+             "consumerMask",
+             "probeRequested",
+             "probeReady",
+             "probeSampleCount",
+             "probeOccludedSampleCount",
+             "probeMinVisibility",
+             "probeMeanVisibility",
+             "probeMaxVisibility",
+             "fallbackUsed",
+             "qualified",
+             "diagnostic"},
+            Context);
+
+        bool available = false;
+        uint64_t executionReceiptSchemaVersion = 0;
+        bool executionReceiptStructurallyValid = false;
+        bool executionReceiptAvailable = false;
+        bool executionReceiptGraphComposed = false;
+        bool executionReceiptExecutionSucceeded = false;
+        bool executionReceiptPresented = false;
+        bool executionReceiptSucceeded = false;
+        uint64_t frameFeatureSequence = 0;
+        uint64_t receiptFrameSequence = 0;
+        uint64_t lastPresentedFrameSequence = 0;
+        bool presentedFrameAligned = false;
+        bool mainView = false;
+        uint64_t sceneRuntimeId = 0;
+        uint64_t cameraEntityPacked = 0;
+        uint64_t subViewIndex = 0;
+        bool receiptStructurallyValid = false;
+        uint64_t planContentHash = 0;
+        bool requested = false;
+        bool pipelineReady = false;
+        bool inputsReady = false;
+        bool executed = false;
+        bool lightingConsumerExecuted = false;
+        bool linearDepthInputReady = false;
+        bool worldNormalInputReady = false;
+        bool velocityInputReady = false;
+        bool velocityProducerExecuted = false;
+        bool outputPublished = false;
+        std::string outputFormat;
+        uint64_t horizonSearchGraphPassCount = 0;
+        uint64_t bilateralDenoiseGraphPassCount = 0;
+        uint64_t temporalResolveGraphPassCount = 0;
+        bool historyAvailableBefore = false;
+        bool historySampled = false;
+        bool motionReprojectionUsed = false;
+        bool viewProjectionMotionObserved = false;
+        bool historyCandidateProduced = false;
+        bool historyCommitted = false;
+        bool historyAbandoned = false;
+        uint64_t historyResetReasons = 0;
+        uint64_t aoFieldContentHash = 0;
+        uint64_t lightingAOFieldContentHash = 0;
+        uint64_t velocityFieldIdentity = 0;
+        uint64_t consumerMask = 0;
+        bool probeRequested = false;
+        bool probeReady = false;
+        uint64_t probeSampleCount = 0;
+        uint64_t probeOccludedSampleCount = 0;
+        bool fallbackUsed = false;
+        bool qualified = false;
+        std::string diagnostic;
+
+        for (const auto& [field, value] : {
+                 std::pair{"available", &available},
+                 {"executionReceiptStructurallyValid",
+                  &executionReceiptStructurallyValid},
+                 {"executionReceiptAvailable", &executionReceiptAvailable},
+                 {"executionReceiptGraphComposed",
+                  &executionReceiptGraphComposed},
+                 {"executionReceiptExecutionSucceeded",
+                  &executionReceiptExecutionSucceeded},
+                 {"executionReceiptPresented", &executionReceiptPresented},
+                 {"executionReceiptSucceeded", &executionReceiptSucceeded},
+                 {"presentedFrameAligned", &presentedFrameAligned},
+                 {"mainView", &mainView},
+                 {"receiptStructurallyValid", &receiptStructurallyValid},
+                 {"requested", &requested},
+                 {"pipelineReady", &pipelineReady},
+                 {"inputsReady", &inputsReady},
+                 {"executed", &executed},
+                 {"lightingConsumerExecuted", &lightingConsumerExecuted},
+                 {"linearDepthInputReady", &linearDepthInputReady},
+                 {"worldNormalInputReady", &worldNormalInputReady},
+                 {"velocityInputReady", &velocityInputReady},
+                 {"velocityProducerExecuted", &velocityProducerExecuted},
+                 {"outputPublished", &outputPublished},
+                 {"historyAvailableBefore", &historyAvailableBefore},
+                 {"historySampled", &historySampled},
+                 {"motionReprojectionUsed", &motionReprojectionUsed},
+                 {"viewProjectionMotionObserved",
+                  &viewProjectionMotionObserved},
+                 {"historyCandidateProduced", &historyCandidateProduced},
+                 {"historyCommitted", &historyCommitted},
+                 {"historyAbandoned", &historyAbandoned},
+                 {"probeRequested", &probeRequested},
+                 {"probeReady", &probeReady},
+                 {"fallbackUsed", &fallbackUsed},
+                 {"qualified", &qualified}})
+        {
+            passed &= ReadBooleanField(ambientOcclusion, field, *value, Context);
+        }
+        for (const auto& [field, value] : {
+                 std::pair{"executionReceiptSchemaVersion",
+                           &executionReceiptSchemaVersion},
+                 {"frameFeatureSequence", &frameFeatureSequence},
+                 {"receiptFrameSequence", &receiptFrameSequence},
+                 {"lastPresentedFrameSequence", &lastPresentedFrameSequence},
+                 {"sceneRuntimeId", &sceneRuntimeId},
+                 {"cameraEntityPacked", &cameraEntityPacked},
+                 {"subViewIndex", &subViewIndex},
+                 {"planContentHash", &planContentHash},
+                 {"horizonSearchGraphPassCount",
+                  &horizonSearchGraphPassCount},
+                 {"bilateralDenoiseGraphPassCount",
+                  &bilateralDenoiseGraphPassCount},
+                 {"temporalResolveGraphPassCount",
+                  &temporalResolveGraphPassCount},
+                 {"historyResetReasons", &historyResetReasons},
+                 {"aoFieldContentHash", &aoFieldContentHash},
+                 {"lightingAOFieldContentHash", &lightingAOFieldContentHash},
+                 {"velocityFieldIdentity", &velocityFieldIdentity},
+                 {"consumerMask", &consumerMask},
+                 {"probeSampleCount", &probeSampleCount},
+                 {"probeOccludedSampleCount", &probeOccludedSampleCount}})
+        {
+            passed &= ReadUnsignedField(ambientOcclusion, field, *value, Context);
+        }
+        passed &= ReadStringField(ambientOcclusion, "outputFormat", outputFormat,
+                                  Context, true);
+        passed &= ReadStringField(ambientOcclusion, "diagnostic", diagnostic,
+                                  Context);
+
+        double probeMinVisibility = 0.0;
+        double probeMeanVisibility = 0.0;
+        double probeMaxVisibility = 0.0;
+        const auto readProbeNumber = [&](const char* field, double& value)
+        {
+            const auto iterator = ambientOcclusion.find(field);
+            if (probeReady)
+            {
+                return ReadFiniteNumberField(ambientOcclusion, field, value,
+                                             Context);
+            }
+            if (iterator == ambientOcclusion.end() || !iterator->is_null())
+            {
+                std::cerr << Context << " field " << field
+                          << " must be null when the probe is not ready\n";
+                return false;
+            }
+            return true;
+        };
+        passed &= readProbeNumber("probeMinVisibility", probeMinVisibility);
+        passed &= readProbeNumber("probeMeanVisibility", probeMeanVisibility);
+        passed &= readProbeNumber("probeMaxVisibility", probeMaxVisibility);
+        if (!passed)
+        {
+            return false;
+        }
+
+        const auto fitsUInt32 = [](uint64_t value)
+        {
+            return value <= std::numeric_limits<uint32_t>::max();
+        };
+        const bool presentationAligned = available &&
+            executionReceiptSchemaVersion == 10 &&
+            executionReceiptStructurallyValid && executionReceiptAvailable &&
+            executionReceiptGraphComposed &&
+            executionReceiptExecutionSucceeded && executionReceiptPresented &&
+            executionReceiptSucceeded && frameFeatureSequence != 0 &&
+            frameFeatureSequence == receiptFrameSequence &&
+            receiptFrameSequence == lastPresentedFrameSequence &&
+            presentedFrameAligned && mainView && sceneRuntimeId != 0 &&
+            cameraEntityPacked != 0 && subViewIndex == 0;
+        const bool historyValid = historyAvailableBefore == historySampled &&
+            motionReprojectionUsed ==
+                (historySampled && velocityInputReady &&
+                 velocityProducerExecuted) &&
+            historyCandidateProduced && historyCommitted && !historyAbandoned &&
+            ((historyAvailableBefore && historyResetReasons == 0) ||
+             (!historyAvailableBefore && historyResetReasons != 0));
+        const bool probeValid = !probeReady ||
+            (probeRequested && probeSampleCount != 0 &&
+             probeOccludedSampleCount < probeSampleCount &&
+             std::isfinite(probeMinVisibility) &&
+             std::isfinite(probeMeanVisibility) &&
+             std::isfinite(probeMaxVisibility) &&
+             probeMinVisibility >= 0.0 && probeMinVisibility < 1.0 &&
+             probeMeanVisibility >= probeMinVisibility &&
+             probeMeanVisibility < 1.0 &&
+             probeMaxVisibility >= probeMeanVisibility &&
+             probeMaxVisibility <= 1.0);
+        const bool emptyReceipt = !requested && !pipelineReady && !inputsReady &&
+            !executed && !linearDepthInputReady && !worldNormalInputReady &&
+            !velocityInputReady && !velocityProducerExecuted &&
+            !outputPublished && outputFormat == "unknown" &&
+            horizonSearchGraphPassCount == 0 &&
+            bilateralDenoiseGraphPassCount == 0 &&
+            temporalResolveGraphPassCount == 0 && !historyAvailableBefore &&
+            !historySampled && !motionReprojectionUsed &&
+            !viewProjectionMotionObserved &&
+            !historyCandidateProduced && !historyCommitted &&
+            !historyAbandoned && historyResetReasons == 0 &&
+            aoFieldContentHash == 0 && lightingAOFieldContentHash == 0 &&
+            velocityFieldIdentity == 0 &&
+            !lightingConsumerExecuted &&
+            consumerMask == 0 && !probeRequested && !probeReady &&
+            probeSampleCount == 0 && probeOccludedSampleCount == 0 &&
+            !fallbackUsed && !qualified;
+        const bool executedReceipt = presentationAligned &&
+            receiptStructurallyValid && planContentHash != 0 && requested &&
+            pipelineReady && inputsReady && executed && linearDepthInputReady &&
+            worldNormalInputReady && velocityInputReady &&
+            velocityProducerExecuted && velocityFieldIdentity != 0 &&
+            outputPublished &&
+            outputFormat == "r8-unorm" &&
+            fitsUInt32(horizonSearchGraphPassCount) &&
+            fitsUInt32(bilateralDenoiseGraphPassCount) &&
+            fitsUInt32(temporalResolveGraphPassCount) &&
+            horizonSearchGraphPassCount != 0 &&
+            bilateralDenoiseGraphPassCount >= 2 &&
+            temporalResolveGraphPassCount == 1 && historyValid &&
+            lightingConsumerExecuted && aoFieldContentHash != 0 &&
+            aoFieldContentHash == lightingAOFieldContentHash &&
+            consumerMask == ExpectedIndirectOnlyConsumerMask && probeValid &&
+            !fallbackUsed;
+        if ((!emptyReceipt && !executedReceipt) ||
+            (qualified && !executedReceipt) || diagnostic.size() > 4096)
+        {
+            std::cerr << Context << " is structurally invalid\n";
+            passed = false;
+        }
+
+        if (options != nullptr)
+        {
+            const bool requiresAmbientOcclusion =
+                options->requireAmbientOcclusionExecution ||
+                options->requireAmbientOcclusionBilateralFiltering ||
+                options->requireAmbientOcclusionTemporalSampled ||
+                options->requireAmbientOcclusionHistoryCommittedAfterPresent ||
+                options->requireAmbientOcclusionIndirectOnlyLighting ||
+                options->requireAmbientOcclusionNonNeutralProbe;
+            if (requiresAmbientOcclusion && !executedReceipt)
+            {
+                std::cerr << Context
+                          << " does not prove GTAO execution for the presented frame\n";
+                passed = false;
+            }
+            if (options->requireAmbientOcclusionBilateralFiltering &&
+                bilateralDenoiseGraphPassCount < 2)
+            {
+                std::cerr << Context << " lacks bilateral denoise passes\n";
+                passed = false;
+            }
+            if (options->requireAmbientOcclusionTemporalSampled &&
+                (!historyAvailableBefore || !historySampled ||
+                 !velocityInputReady || !velocityProducerExecuted ||
+                 velocityFieldIdentity == 0 || !motionReprojectionUsed ||
+                 !viewProjectionMotionObserved))
+            {
+                std::cerr << Context
+                          << " lacks motion-vector temporal reprojection\n";
+                passed = false;
+            }
+            if (options->requireAmbientOcclusionHistoryCommittedAfterPresent &&
+                (!historyCandidateProduced || !historyCommitted ||
+                 historyAbandoned || historyResetReasons != 0 ||
+                 !presentedFrameAligned))
+            {
+                std::cerr << Context
+                          << " lacks a post-Present temporal history commit\n";
+                passed = false;
+            }
+            if (options->requireAmbientOcclusionIndirectOnlyLighting &&
+                (!lightingConsumerExecuted ||
+                 consumerMask != ExpectedIndirectOnlyConsumerMask ||
+                 aoFieldContentHash == 0 ||
+                 aoFieldContentHash != lightingAOFieldContentHash))
+            {
+                std::cerr << Context
+                          << " does not prove indirect-only lighting consumers\n";
+                passed = false;
+            }
+            if (options->requireAmbientOcclusionNonNeutralProbe &&
+                (!probeReady || !probeRequested || probeSampleCount == 0 ||
+                 probeOccludedSampleCount == 0 ||
+                 !(probeMeanVisibility < 1.0)))
+            {
+                std::cerr << Context << " lacks a non-neutral GTAO probe\n";
+                passed = false;
+            }
+        }
+        return passed;
+    }
+
+    bool ValidateAmbientOcclusionRawReceiptSchemaV10(
+        const Json& rawAmbientOcclusion,
+        const Json& projectedAmbientOcclusion)
+    {
+        constexpr const char* Context =
+            "Ambient-occlusion raw receipt v10";
+        const std::set<std::string> expectedFields = {
+            "planContentHash",
+            "requested",
+            "pipelineReady",
+            "inputsReady",
+            "executed",
+            "lightingConsumerExecuted",
+            "linearDepthInputReady",
+            "worldNormalInputReady",
+            "velocityInputReady",
+            "velocityProducerExecuted",
+            "outputPublished",
+            "outputFormat",
+            "horizonSearchGraphPassCount",
+            "bilateralDenoiseGraphPassCount",
+            "temporalResolveGraphPassCount",
+            "historyAvailableBefore",
+            "historySampled",
+            "motionReprojectionUsed",
+            "viewProjectionMotionObserved",
+            "historyCandidateProduced",
+            "historyCommitted",
+            "historyAbandoned",
+            "historyResetReasons",
+            "aoFieldContentHash",
+            "lightingAOFieldContentHash",
+            "velocityFieldIdentity",
+            "consumerMask",
+            "probeRequested",
+            "probeReady",
+            "probeSampleCount",
+            "probeOccludedSampleCount",
+            "probeMinVisibility",
+            "probeMeanVisibility",
+            "probeMaxVisibility",
+            "fallbackUsed",
+        };
+        bool passed = ValidateExactObjectFields(rawAmbientOcclusion,
+                                                expectedFields, Context);
+        if (!rawAmbientOcclusion.is_object() ||
+            !projectedAmbientOcclusion.is_object())
+        {
+            std::cerr << Context
+                      << " cannot be compared with a non-object payload\n";
+            return false;
+        }
+
+        // The diagnostics entry is a projection of the immutable raw receipt,
+        // not a second source of truth. Compare both value and JSON type for
+        // every shared field: this makes an omitted, fabricated, or divergent
+        // raw schema-v10 payload fail before it can satisfy qualification.
+        for (const std::string& field : expectedFields)
+        {
+            const auto rawValue = rawAmbientOcclusion.find(field);
+            const auto projectedValue = projectedAmbientOcclusion.find(field);
+            if (rawValue == rawAmbientOcclusion.end() ||
+                projectedValue == projectedAmbientOcclusion.end() ||
+                rawValue->type() != projectedValue->type() ||
+                *rawValue != *projectedValue)
+            {
+                std::cerr << Context
+                          << " diverges from the execution projection: "
+                          << field << "\n";
+                passed = false;
+            }
+        }
+        return passed;
+    }
+
     bool ValidateRenderExecutionReceiptSchemaV21(
         const Json& execution,
         uint64_t captureCarryingFrameSequence,
@@ -2663,23 +3125,29 @@ namespace
             "features",
         };
         if (schemaVersion == 2 || schemaVersion == 4 || schemaVersion == 5 ||
-            schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8)
+            schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8 ||
+            schemaVersion == 10)
         {
             expectedFields.insert("deferredOpaque");
         }
         if (schemaVersion == 4 || schemaVersion == 5 || schemaVersion == 6 ||
-            schemaVersion == 7 || schemaVersion == 8)
+            schemaVersion == 7 || schemaVersion == 8 || schemaVersion == 10)
         {
             expectedFields.insert("lighting");
         }
         if (schemaVersion == 5 || schemaVersion == 6 || schemaVersion == 7 ||
-            schemaVersion == 8)
+            schemaVersion == 8 || schemaVersion == 10)
         {
             expectedFields.insert("deformation");
         }
-        if (schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8)
+        if (schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8 ||
+            schemaVersion == 10)
         {
             expectedFields.insert("postProcess");
+        }
+        if (schemaVersion == 10)
+        {
+            expectedFields.insert("ambientOcclusion");
         }
         passed &= ValidateExactObjectFields(
             execution, expectedFields, "Render execution receipt v21");
@@ -2722,8 +3190,8 @@ namespace
                                   "Render execution receipt v21");
         if ((schemaVersion != 1 && schemaVersion != 2 &&
              schemaVersion != 4 && schemaVersion != 5 &&
-             schemaVersion != 6 && schemaVersion != 7 &&
-             schemaVersion != 8) || !available ||
+                 schemaVersion != 6 && schemaVersion != 7 &&
+             schemaVersion != 8 && schemaVersion != 10) || !available ||
             !graphComposed ||
             !executionSucceeded || !presented || !succeeded)
         {
@@ -2731,7 +3199,8 @@ namespace
             passed = false;
         }
         if (schemaVersion == 2 || schemaVersion == 4 || schemaVersion == 5 ||
-            schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8)
+            schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8 ||
+            schemaVersion == 10)
         {
             const auto deferredOpaque = execution.find("deferredOpaque");
             if (deferredOpaque == execution.end() ||
@@ -2801,7 +3270,7 @@ namespace
             passed = false;
         }
         if (schemaVersion == 4 || schemaVersion == 5 || schemaVersion == 6 ||
-            schemaVersion == 7 || schemaVersion == 8)
+            schemaVersion == 7 || schemaVersion == 8 || schemaVersion == 10)
         {
             const auto lighting = execution.find("lighting");
             if (lighting == execution.end() || !lighting->is_object())
@@ -2946,7 +3415,7 @@ namespace
              options->requireSkinnedShadowExecution ||
              options->requireSkinnedVelocityExecution);
         if (schemaVersion == 5 || schemaVersion == 6 || schemaVersion == 7 ||
-            schemaVersion == 8)
+            schemaVersion == 8 || schemaVersion == 10)
         {
             const auto deformation = execution.find("deformation");
             if (deformation == execution.end() || !deformation->is_object())
@@ -3091,7 +3560,15 @@ namespace
              options->requireHistogramAutoExposure ||
              options->requireExposureProbe ||
              options->requireSharedExposureState);
-        if (schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8)
+        const bool requiresAmbientOcclusionEvidence = options != nullptr &&
+            (options->requireAmbientOcclusionExecution ||
+             options->requireAmbientOcclusionBilateralFiltering ||
+             options->requireAmbientOcclusionTemporalSampled ||
+             options->requireAmbientOcclusionHistoryCommittedAfterPresent ||
+             options->requireAmbientOcclusionIndirectOnlyLighting ||
+             options->requireAmbientOcclusionNonNeutralProbe);
+        if (schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8 ||
+            schemaVersion == 10)
         {
             const auto postProcess = execution.find("postProcess");
             if (postProcess == execution.end() || !postProcess->is_object())
@@ -3111,7 +3588,8 @@ namespace
                     "toneMappingTransfer", "presentationTransfer",
                     "hdrInputReady", "displayLinearOutputReady",
                     "encodedOutputReady", "fallbackUsed"};
-                if (schemaVersion == 7 || schemaVersion == 8)
+                if (schemaVersion == 7 || schemaVersion == 8 ||
+                    schemaVersion == 10)
                 {
                     expectedPostProcessFields.insert({
                         "antiAliasingMode", "taaRequested", "taaPipelineReady",
@@ -3123,7 +3601,7 @@ namespace
                         "taaResolveGraphPassCount",
                         "taaHistoryStoreGraphPassCount"});
                 }
-                if (schemaVersion == 8)
+                if (schemaVersion == 8 || schemaVersion == 10)
                 {
                     expectedPostProcessFields.insert({
                         "exposureStateContentHash",
@@ -3223,7 +3701,8 @@ namespace
                                             fxaaPassCount, context);
                 passed &= ReadUnsignedField(*postProcess, "taaPassCount",
                                             taaPassCount, context);
-                if (schemaVersion == 7 || schemaVersion == 8)
+                if (schemaVersion == 7 || schemaVersion == 8 ||
+                    schemaVersion == 10)
                 {
                     passed &= ReadStringField(*postProcess, "antiAliasingMode",
                                               antiAliasingMode, context, true);
@@ -3288,7 +3767,7 @@ namespace
                     passed &= readJitter(
                         "previousJitterPixels", previousJitterX, previousJitterY);
                 }
-                if (schemaVersion == 8)
+                if (schemaVersion == 8 || schemaVersion == 10)
                 {
                     passed &= ReadUnsignedField(*postProcess,
                                                 "exposureStateContentHash",
@@ -3444,7 +3923,8 @@ namespace
                     (isSRGBPresentationContract ||
                      isDirectEncodedPresentationContract);
                 bool aaStructurallyValid = taaPassCount == 0;
-                if (schemaVersion == 7 || schemaVersion == 8)
+                if (schemaVersion == 7 || schemaVersion == 8 ||
+                    schemaVersion == 10)
                 {
                     const bool temporalJitterProgressed =
                         currentJitterX != previousJitterX ||
@@ -3480,7 +3960,7 @@ namespace
                 }
                 bool exposureStructurallyValid = true;
                 bool sharedExposureState = false;
-                if (schemaVersion == 8)
+                if (schemaVersion == 8 || schemaVersion == 10)
                 {
                     sharedExposureState =
                         exposureStateContentHash != 0 &&
@@ -3552,7 +4032,8 @@ namespace
                      (options->requireNoTemporalAAExecution &&
                       taaPassCount != 0) ||
                      (options->requireTemporalAAExecution &&
-                      ((schemaVersion != 7 && schemaVersion != 8) ||
+                      ((schemaVersion != 7 && schemaVersion != 8 &&
+                        schemaVersion != 10) ||
                        antiAliasingMode != "taa" ||
                        taaPassCount != 1 || !taaRequested ||
                        !taaPipelineReady || !taaInputsReady ||
@@ -3563,17 +4044,19 @@ namespace
                        taaHistoryStoreGraphPassCount != 1)) ||
                      (options->requireNoFXAAExecution && fxaaPassCount != 0) ||
                      (options->requireTemporalHistorySampled &&
-                      ((schemaVersion != 7 && schemaVersion != 8) ||
+                      ((schemaVersion != 7 && schemaVersion != 8 &&
+                        schemaVersion != 10) ||
                        !historyAvailableBefore ||
                        !historySampled ||
                        (currentJitterX == previousJitterX &&
                         currentJitterY == previousJitterY))) ||
                      (options->requireTemporalHistoryCommitted &&
-                      ((schemaVersion != 7 && schemaVersion != 8) ||
+                      ((schemaVersion != 7 && schemaVersion != 8 &&
+                        schemaVersion != 10) ||
                        !historyCandidateProduced ||
                        !historyCommitted || historyAbandoned)) ||
                      (options->requireManualEV100Exposure &&
-                      (schemaVersion != 8 ||
+                      ((schemaVersion != 8 && schemaVersion != 10) ||
                        exposureMode != "manual-ev100" ||
                        exposureHistogramPassCount != 0 ||
                        exposureAdaptationPassCount != 1 ||
@@ -3589,7 +4072,7 @@ namespace
                        !IsNearlyEqualExposure(
                            previousPreExposure, exposureScale))) ||
                      (options->requireHistogramAutoExposure &&
-                      (schemaVersion != 8 ||
+                      ((schemaVersion != 8 && schemaVersion != 10) ||
                        exposureMode != "histogram-auto" ||
                        exposureHistogramPassCount != 2 ||
                        exposureAdaptationPassCount != 1 ||
@@ -3602,14 +4085,16 @@ namespace
                            adaptedEV100, exposureScale) ||
                        !(targetEV100 + 1.0e-4 < adaptedEV100))) ||
                      (options->requireExposureProbe &&
-                      (schemaVersion != 8 || !exposureProbeRequested ||
+                      ((schemaVersion != 8 && schemaVersion != 10) ||
+                       !exposureProbeRequested ||
                        !exposureProbeReady || !std::isfinite(targetEV100) ||
                        !std::isfinite(adaptedEV100) ||
                        !IsValidExposureScale(exposureScale) ||
                        !IsValidExposureScale(preExposure) ||
                        !IsValidExposureScale(previousPreExposure))) ||
                      (options->requireSharedExposureState &&
-                      (schemaVersion != 8 || !sharedExposureState))) )
+                      ((schemaVersion != 8 && schemaVersion != 10) ||
+                       !sharedExposureState))) )
                 {
                     std::cerr << "Render execution receipt does not satisfy required post-process evidence\n";
                     passed = false;
@@ -3619,6 +4104,21 @@ namespace
         else if (requiresPostProcessEvidence)
         {
             std::cerr << "Render execution receipt predates required post-process evidence\n";
+            passed = false;
+        }
+        if (schemaVersion == 10)
+        {
+            const auto ambientOcclusion = execution.find("ambientOcclusion");
+            if (ambientOcclusion == execution.end() ||
+                !ambientOcclusion->is_object())
+            {
+                std::cerr << "Render execution receipt v10 missing ambient-occlusion evidence\n";
+                passed = false;
+            }
+        }
+        else if (requiresAmbientOcclusionEvidence)
+        {
+            std::cerr << "Render execution receipt predates required ambient-occlusion evidence\n";
             passed = false;
         }
         if (!diagnostic.empty() || diagnostic.size() > 4096)
@@ -3793,7 +4293,7 @@ namespace
                 options->requiredExecutedRenderFeatureIds.end());
         }
         std::set<uint64_t> observedRequiredExecutedFeatureIds;
-        const std::set<std::string> expectedFeatureFields = {
+        std::set<std::string> expectedFeatureFields = {
             "featureId",
             "featureSchemaVersion",
             "phase",
@@ -3808,6 +4308,14 @@ namespace
             "graphPassNames",
             "diagnostic",
         };
+        // The explicit contract-only completion marker was added with the
+        // schema-10 receipt.  Older receipt versions retain their published
+        // feature shape and therefore must not accept or require this field.
+        if (schemaVersion == 10)
+        {
+            expectedFeatureFields.insert(
+                "contractCompletedWithoutGraphWork");
+        }
         const std::set<std::string> expectedReadinessFields = {
             "compiled",
             "hardwareSupported",
@@ -3836,6 +4344,7 @@ namespace
             uint64_t executedGraphPassCount = 0;
             bool selected = false;
             bool fallbackUsed = false;
+            bool contractCompletedWithoutGraphWork = false;
             std::string phase;
             std::string requirement;
             std::string featureDiagnostic;
@@ -3866,6 +4375,13 @@ namespace
             passed &= ReadUnsignedField(feature, "executedGraphPassCount",
                                         executedGraphPassCount,
                                         "Render feature execution receipt v21");
+            if (schemaVersion == 10)
+            {
+                passed &= ReadBooleanField(
+                    feature, "contractCompletedWithoutGraphWork",
+                    contractCompletedWithoutGraphWork,
+                    "Render feature execution receipt v21");
+            }
             passed &= ReadStringField(feature, "diagnostic", featureDiagnostic,
                                       "Render feature execution receipt v21");
             if (featureId == 0 ||
@@ -3959,13 +4475,20 @@ namespace
                                       "Render feature readiness v21");
             const bool ready = compiled && hardwareSupported &&
                 implementationSupported && pipelineReady && inputsReady;
-            const bool completeGraphExecution = graphPassCount == 0 ||
+            const bool contractOnlyExecution = schemaVersion == 10 &&
+                contractCompletedWithoutGraphWork && ready && executed &&
+                !fallbackUsed && graphPassCount == 0 &&
+                executedGraphPassCount == 0;
+            const bool completeGraphExecution = graphPassCount != 0 &&
                 executedGraphPassCount == graphPassCount;
             const bool allowedOptionalSkip = requirement == "optional" &&
                 fallbackUsed && !executed && graphPassCount == 0 &&
                 executedGraphPassCount == 0;
             if (readinessDiagnostic.size() > 4096 ||
-                (executed && (!ready || !completeGraphExecution)) ||
+                (contractCompletedWithoutGraphWork != contractOnlyExecution) ||
+                (executed && (!ready && !contractOnlyExecution)) ||
+                (executed && !completeGraphExecution &&
+                 !contractOnlyExecution) ||
                 (!executed && !allowedOptionalSkip))
             {
                 std::cerr << "Render feature readiness v21 is inconsistent with successful execution\n";
@@ -3980,10 +4503,19 @@ namespace
             }
             if (requiredExecutedFeatureIds.contains(featureId))
             {
-                observedRequiredExecutedFeatureIds.insert(featureId);
+                const bool physicalGraphExecution = executed && ready &&
+                    graphPassCount != 0 &&
+                    executedGraphPassCount == graphPassCount;
+                // Contract-only completion is deliberately not added to the
+                // physical evidence set.  A required GPU feature must prove
+                // at least one graph pass, even when its typed contract was
+                // published successfully.
+                if (physicalGraphExecution)
+                {
+                    observedRequiredExecutedFeatureIds.insert(featureId);
+                }
                 if (requirement != "required" || !selected || fallbackUsed ||
-                    !executed || !ready || graphPassCount == 0 ||
-                    executedGraphPassCount != graphPassCount)
+                    !physicalGraphExecution)
                 {
                     std::cerr << "Render execution receipt v21 did not fully execute "
                               << "required feature id " << featureId << "\n";
@@ -4234,9 +4766,83 @@ namespace
                         : (schemaVersion >= 16
                             ? ValidateGPUCullingQualificationSchemaV16(
                                   *renderDiagnostics)
-                            : ValidateGPUCullingQualificationSchemaV15(
+                        : ValidateGPUCullingQualificationSchemaV15(
                                   *renderDiagnostics))));
+                if (schemaVersion >= 26)
+                {
+                    const auto ambientOcclusion =
+                        renderDiagnostics->find("ambientOcclusionActualExecution");
+                    if (ambientOcclusion == renderDiagnostics->end())
+                    {
+                        std::cerr << "Schema-v26 report missing ambient-occlusion execution projection\n";
+                        passed = false;
+                    }
+                    else
+                    {
+                        passed &= ValidateAmbientOcclusionExecutionProjectionSchemaV26(
+                            *ambientOcclusion, options);
+
+                        const auto visualContract =
+                            report.find("visualContractReceipt");
+                        if (visualContract == report.end() ||
+                            !visualContract->is_object())
+                        {
+                            std::cerr << "Schema-v26 report missing visual contract for raw ambient-occlusion receipt\n";
+                            passed = false;
+                        }
+                        else
+                        {
+                            const auto rawExecution =
+                                visualContract->find("renderExecutionReceipt");
+                            if (rawExecution == visualContract->end() ||
+                                !rawExecution->is_object())
+                            {
+                                std::cerr << "Schema-v26 report missing raw render execution receipt\n";
+                                passed = false;
+                            }
+                            else
+                            {
+                                const auto rawAmbientOcclusion =
+                                    rawExecution->find("ambientOcclusion");
+                                if (rawAmbientOcclusion == rawExecution->end())
+                                {
+                                    std::cerr << "Schema-v26 report missing raw ambient-occlusion receipt\n";
+                                    passed = false;
+                                }
+                                else
+                                {
+                                    passed &=
+                                        ValidateAmbientOcclusionRawReceiptSchemaV10(
+                                            *rawAmbientOcclusion,
+                                            *ambientOcclusion);
+                                }
+                            }
+                        }
+                    }
+                }
+                else if (options != nullptr &&
+                         (options->requireAmbientOcclusionExecution ||
+                          options->requireAmbientOcclusionBilateralFiltering ||
+                          options->requireAmbientOcclusionTemporalSampled ||
+                          options->requireAmbientOcclusionHistoryCommittedAfterPresent ||
+                          options->requireAmbientOcclusionIndirectOnlyLighting ||
+                          options->requireAmbientOcclusionNonNeutralProbe))
+                {
+                    std::cerr << "Report predates required GTAO motion-reprojection evidence\n";
+                    passed = false;
+                }
             }
+        }
+        else if (options != nullptr &&
+                 (options->requireAmbientOcclusionExecution ||
+                  options->requireAmbientOcclusionBilateralFiltering ||
+                  options->requireAmbientOcclusionTemporalSampled ||
+                  options->requireAmbientOcclusionHistoryCommittedAfterPresent ||
+                  options->requireAmbientOcclusionIndirectOnlyLighting ||
+                  options->requireAmbientOcclusionNonNeutralProbe))
+        {
+            std::cerr << "Report predates required ambient-occlusion execution projection\n";
+            passed = false;
         }
 
         std::string requestedBackend;
@@ -5075,6 +5681,35 @@ namespace
             return false;
         }
 
+        char gtaoParserArg0[] = "SampleReportContentValidation";
+        char gtaoParserArg1[] = "--self-test";
+        char gtaoParserArg2[] = "--require-ambient-occlusion-execution";
+        char gtaoParserArg3[] =
+            "--require-ambient-occlusion-bilateral-filtering";
+        char gtaoParserArg4[] =
+            "--require-ambient-occlusion-temporal-sampled";
+        char gtaoParserArg5[] =
+            "--require-ambient-occlusion-history-committed-after-present";
+        char gtaoParserArg6[] =
+            "--require-ambient-occlusion-indirect-only-lighting";
+        char gtaoParserArg7[] =
+            "--require-ambient-occlusion-non-neutral-probe";
+        char* gtaoParserArguments[] = {
+            gtaoParserArg0, gtaoParserArg1, gtaoParserArg2, gtaoParserArg3,
+            gtaoParserArg4, gtaoParserArg5, gtaoParserArg6, gtaoParserArg7};
+        Options parsedGtaoOptions;
+        if (!ParseOptions(8, gtaoParserArguments, parsedGtaoOptions) ||
+            !parsedGtaoOptions.requireAmbientOcclusionExecution ||
+            !parsedGtaoOptions.requireAmbientOcclusionBilateralFiltering ||
+            !parsedGtaoOptions.requireAmbientOcclusionTemporalSampled ||
+            !parsedGtaoOptions
+                 .requireAmbientOcclusionHistoryCommittedAfterPresent ||
+            !parsedGtaoOptions.requireAmbientOcclusionIndirectOnlyLighting ||
+            !parsedGtaoOptions.requireAmbientOcclusionNonNeutralProbe)
+        {
+            return false;
+        }
+
         ScenarioMetricEqualityRequirement parsedRequirement;
         if (!ParseMetricEqualityRequirement("draw-count=4", parsedRequirement) ||
             parsedRequirement.name != "draw-count" ||
@@ -5868,8 +6503,14 @@ namespace
 
         Json mismatchedExposureRun = schema24ManualExposureReport;
         mismatchedExposureRun["validationRunId"] = std::string(32, '2');
+        Json missingExposureRun = schema24ManualExposureReport;
+        missingExposureRun.erase("validationRunId");
         if (ValidateSampleReportV12Root(
                 mismatchedExposureRun,
+                expectedBuildIdentity,
+                &strictManualExposureEvidence) ||
+            ValidateSampleReportV12Root(
+                missingExposureRun,
                 expectedBuildIdentity,
                 &strictManualExposureEvidence))
         {
@@ -6051,6 +6692,274 @@ namespace
                 invalidAutoExposureScale,
                 expectedBuildIdentity,
                 &strictAutoExposureEvidence))
+        {
+            return false;
+        }
+
+        // Schema 26 requires GTAO temporal history to be motion reprojected
+        // from an executed, identified velocity producer and keeps it distinct
+        // from the post-process
+        // policy. The qualifier requires its own presentation-bound
+        // projection, a real bilateral/temporal chain, indirect-only
+        // consumers, and a deliberately non-neutral probe.
+        Json schema25GTAOReport = schema24ManualExposureReport;
+        schema25GTAOReport["schemaVersion"] = 26;
+        Json& schema25GTAOExecution =
+            schema25GTAOReport["visualContractReceipt"]
+                            ["renderExecutionReceipt"];
+        schema25GTAOExecution["schemaVersion"] = 10;
+        for (Json& feature : schema25GTAOExecution["features"])
+        {
+            feature["contractCompletedWithoutGraphWork"] = false;
+        }
+        schema25GTAOExecution["ambientOcclusion"] = {
+            {"planContentHash", 0xA013ULL},
+            {"requested", true},
+            {"pipelineReady", true},
+            {"inputsReady", true},
+            {"executed", true},
+            {"lightingConsumerExecuted", true},
+            {"linearDepthInputReady", true},
+            {"worldNormalInputReady", true},
+            {"velocityInputReady", true},
+            {"velocityProducerExecuted", true},
+            {"outputPublished", true},
+            {"outputFormat", "r8-unorm"},
+            {"horizonSearchGraphPassCount", 1},
+            {"bilateralDenoiseGraphPassCount", 2},
+            {"temporalResolveGraphPassCount", 1},
+            {"historyAvailableBefore", true},
+            {"historySampled", true},
+            {"motionReprojectionUsed", true},
+            {"viewProjectionMotionObserved", true},
+            {"historyCandidateProduced", true},
+            {"historyCommitted", true},
+            {"historyAbandoned", false},
+            {"historyResetReasons", 0},
+            {"aoFieldContentHash", 0xA0F},
+            {"lightingAOFieldContentHash", 0xA0F},
+            {"velocityFieldIdentity", 0xF013ULL},
+            {"consumerMask", 0x7},
+            {"probeRequested", true},
+            {"probeReady", true},
+            {"probeSampleCount", 16},
+            {"probeOccludedSampleCount", 6},
+            {"probeMinVisibility", 0.1},
+            {"probeMeanVisibility", 0.58},
+            {"probeMaxVisibility", 0.95},
+            {"fallbackUsed", false}};
+        schema25GTAOReport["renderDiagnostics"]
+                          ["ambientOcclusionActualExecution"] = {
+            {"available", true},
+            {"executionReceiptSchemaVersion", 10},
+            {"executionReceiptStructurallyValid", true},
+            {"executionReceiptAvailable", true},
+            {"executionReceiptGraphComposed", true},
+            {"executionReceiptExecutionSucceeded", true},
+            {"executionReceiptPresented", true},
+            {"executionReceiptSucceeded", true},
+            {"frameFeatureSequence", 4},
+            {"receiptFrameSequence", 4},
+            {"lastPresentedFrameSequence", 4},
+            {"presentedFrameAligned", true},
+            {"mainView", true},
+            {"sceneRuntimeId", 11},
+            {"cameraEntityPacked", 13},
+            {"subViewIndex", 0},
+            {"receiptStructurallyValid", true},
+            {"planContentHash", 0xA013ULL},
+            {"requested", true},
+            {"pipelineReady", true},
+            {"inputsReady", true},
+            {"executed", true},
+            {"lightingConsumerExecuted", true},
+            {"linearDepthInputReady", true},
+            {"worldNormalInputReady", true},
+            {"velocityInputReady", true},
+            {"velocityProducerExecuted", true},
+            {"outputPublished", true},
+            {"outputFormat", "r8-unorm"},
+            {"horizonSearchGraphPassCount", 1},
+            {"bilateralDenoiseGraphPassCount", 2},
+            {"temporalResolveGraphPassCount", 1},
+            {"historyAvailableBefore", true},
+            {"historySampled", true},
+            {"motionReprojectionUsed", true},
+            {"viewProjectionMotionObserved", true},
+            {"historyCandidateProduced", true},
+            {"historyCommitted", true},
+            {"historyAbandoned", false},
+            {"historyResetReasons", 0},
+            {"aoFieldContentHash", 0xA0F},
+            {"lightingAOFieldContentHash", 0xA0F},
+            {"velocityFieldIdentity", 0xF013ULL},
+            {"consumerMask", 0x7},
+            {"probeRequested", true},
+            {"probeReady", true},
+            {"probeSampleCount", 16},
+            {"probeOccludedSampleCount", 6},
+            {"probeMinVisibility", 0.1},
+            {"probeMeanVisibility", 0.58},
+            {"probeMaxVisibility", 0.95},
+            {"fallbackUsed", false},
+            {"qualified", true},
+            {"diagnostic", ""}};
+        Options strictGTAOEvidence;
+        strictGTAOEvidence.requireAmbientOcclusionExecution = true;
+        strictGTAOEvidence.requireAmbientOcclusionBilateralFiltering = true;
+        strictGTAOEvidence.requireAmbientOcclusionTemporalSampled = true;
+        strictGTAOEvidence
+            .requireAmbientOcclusionHistoryCommittedAfterPresent = true;
+        strictGTAOEvidence.requireAmbientOcclusionIndirectOnlyLighting = true;
+        strictGTAOEvidence.requireAmbientOcclusionNonNeutralProbe = true;
+        if (!ValidateSampleReportV12Root(
+                schema25GTAOReport, expectedBuildIdentity,
+                &strictGTAOEvidence))
+        {
+            return false;
+        }
+
+        // A schema-10 feature may publish a typed contract without adding a
+        // GPU graph pass (for example, an empty scene can still publish its
+        // SceneTextures contract).  This is an explicit, non-physical
+        // completion state: it must never be inferred from 0/0 counts and it
+        // must not satisfy a required physical feature gate.
+        Json contractOnlyFeatureReport = schema25GTAOReport;
+        Json& contractOnlyFeature =
+            contractOnlyFeatureReport["visualContractReceipt"]
+                                    ["renderExecutionReceipt"]["features"][0];
+        contractOnlyFeature["graphPassCount"] = 0;
+        contractOnlyFeature["executedGraphPassCount"] = 0;
+        contractOnlyFeature["graphPassNames"] = Json::array();
+        contractOnlyFeature["contractCompletedWithoutGraphWork"] = true;
+        if (!ValidateSampleReportV12Root(
+                contractOnlyFeatureReport, expectedBuildIdentity,
+                &strictGTAOEvidence))
+        {
+            return false;
+        }
+
+        Json contractOnlyMissingMarker = contractOnlyFeatureReport;
+        contractOnlyMissingMarker["visualContractReceipt"]
+                                ["renderExecutionReceipt"]["features"][0]
+                                .erase("contractCompletedWithoutGraphWork");
+        Json contractOnlyWithoutMarker = contractOnlyFeatureReport;
+        contractOnlyWithoutMarker["visualContractReceipt"]
+                                 ["renderExecutionReceipt"]["features"][0]
+                                 ["contractCompletedWithoutGraphWork"] = false;
+        Json contractOnlyNotReady = contractOnlyFeatureReport;
+        contractOnlyNotReady["visualContractReceipt"]
+                           ["renderExecutionReceipt"]["features"][0]
+                           ["readiness"]["pipelineReady"] = false;
+        Json contractOnlyWithGraphWork = contractOnlyFeatureReport;
+        contractOnlyWithGraphWork["visualContractReceipt"]
+                                ["renderExecutionReceipt"]["features"][0]
+                                ["graphPassCount"] = 1;
+        contractOnlyWithGraphWork["visualContractReceipt"]
+                                ["renderExecutionReceipt"]["features"][0]
+                                ["executedGraphPassCount"] = 1;
+        contractOnlyWithGraphWork["visualContractReceipt"]
+                                ["renderExecutionReceipt"]["features"][0]
+                                ["graphPassNames"] = Json::array({"Opaque"});
+        Json contractOnlyWithFallback = contractOnlyFeatureReport;
+        contractOnlyWithFallback["visualContractReceipt"]
+                               ["renderExecutionReceipt"]["features"][0]
+                               ["fallbackUsed"] = true;
+        Options requiredPhysicalFeature = strictGTAOEvidence;
+        requiredPhysicalFeature.requiredExecutedRenderFeatureIds = {1};
+        if (ValidateSampleReportV12Root(
+                contractOnlyMissingMarker, expectedBuildIdentity,
+                &strictGTAOEvidence) ||
+            ValidateSampleReportV12Root(
+                contractOnlyWithoutMarker, expectedBuildIdentity,
+                &strictGTAOEvidence) ||
+            ValidateSampleReportV12Root(
+                contractOnlyNotReady, expectedBuildIdentity,
+                &strictGTAOEvidence) ||
+            ValidateSampleReportV12Root(
+                contractOnlyWithGraphWork, expectedBuildIdentity,
+                &strictGTAOEvidence) ||
+            ValidateSampleReportV12Root(
+                contractOnlyWithFallback, expectedBuildIdentity,
+                &strictGTAOEvidence) ||
+            ValidateSampleReportV12Root(
+                contractOnlyFeatureReport, expectedBuildIdentity,
+                &requiredPhysicalFeature))
+        {
+            return false;
+        }
+        const auto gtaoRequirementFails =
+            [&schema25GTAOReport, &expectedBuildIdentity,
+             &strictGTAOEvidence](const char* field, const Json& value)
+        {
+            Json candidate = schema25GTAOReport;
+            candidate["renderDiagnostics"]
+                     ["ambientOcclusionActualExecution"][field] = value;
+            return !ValidateSampleReportV12Root(
+                candidate, expectedBuildIdentity, &strictGTAOEvidence);
+        };
+        Json missingGTAORawReceipt = schema25GTAOReport;
+        missingGTAORawReceipt["visualContractReceipt"]
+                             ["renderExecutionReceipt"].erase(
+                                 "ambientOcclusion");
+        Json emptyGTAORawReceipt = schema25GTAOReport;
+        emptyGTAORawReceipt["visualContractReceipt"]
+                            ["renderExecutionReceipt"]
+                            ["ambientOcclusion"] = Json::object();
+        Json missingGTAORawField = schema25GTAOReport;
+        missingGTAORawField["visualContractReceipt"]
+                           ["renderExecutionReceipt"]
+                           ["ambientOcclusion"].erase("consumerMask");
+        Json unknownGTAORawField = schema25GTAOReport;
+        unknownGTAORawField["visualContractReceipt"]
+                           ["renderExecutionReceipt"]
+                           ["ambientOcclusion"]
+                           ["unexpected"] = true;
+        Json divergentGTAORawReceipt = schema25GTAOReport;
+        divergentGTAORawReceipt["visualContractReceipt"]
+                                ["renderExecutionReceipt"]
+                                ["ambientOcclusion"]
+                                ["consumerMask"] = 0x3;
+        Json missingGTAOProjectionField = schema25GTAOReport;
+        missingGTAOProjectionField["renderDiagnostics"]
+                                  ["ambientOcclusionActualExecution"].erase(
+                                      "consumerMask");
+        Json unknownGTAOProjectionField = schema25GTAOReport;
+        unknownGTAOProjectionField["renderDiagnostics"]
+                                  ["ambientOcclusionActualExecution"]
+                                  ["unexpected"] = true;
+        if (!gtaoRequirementFails("bilateralDenoiseGraphPassCount", 1) ||
+            !gtaoRequirementFails("historySampled", false) ||
+            !gtaoRequirementFails("velocityInputReady", false) ||
+            !gtaoRequirementFails("velocityProducerExecuted", false) ||
+            !gtaoRequirementFails("motionReprojectionUsed", false) ||
+            !gtaoRequirementFails("viewProjectionMotionObserved", false) ||
+            !gtaoRequirementFails("velocityFieldIdentity", 0) ||
+            !gtaoRequirementFails("historyCommitted", false) ||
+            !gtaoRequirementFails("lightingConsumerExecuted", false) ||
+            !gtaoRequirementFails("consumerMask", 0x3) ||
+            !gtaoRequirementFails("probeMeanVisibility", 1.0) ||
+            ValidateSampleReportV12Root(
+                missingGTAORawReceipt, expectedBuildIdentity,
+                &strictGTAOEvidence) ||
+            ValidateSampleReportV12Root(
+                emptyGTAORawReceipt, expectedBuildIdentity,
+                &strictGTAOEvidence) ||
+            ValidateSampleReportV12Root(
+                missingGTAORawField, expectedBuildIdentity,
+                &strictGTAOEvidence) ||
+            ValidateSampleReportV12Root(
+                unknownGTAORawField, expectedBuildIdentity,
+                &strictGTAOEvidence) ||
+            ValidateSampleReportV12Root(
+                divergentGTAORawReceipt, expectedBuildIdentity,
+                &strictGTAOEvidence) ||
+            ValidateSampleReportV12Root(
+                missingGTAOProjectionField, expectedBuildIdentity,
+                &strictGTAOEvidence) ||
+            ValidateSampleReportV12Root(
+                unknownGTAOProjectionField, expectedBuildIdentity,
+                &strictGTAOEvidence))
         {
             return false;
         }
@@ -6973,6 +7882,12 @@ namespace
             << "  --require-post-process-color-grading-execution\n"
             << "  --require-post-process-fxaa-execution\n"
             << "  --require-no-temporal-aa-execution\n"
+            << "  --require-ambient-occlusion-execution\n"
+            << "  --require-ambient-occlusion-bilateral-filtering\n"
+            << "  --require-ambient-occlusion-temporal-sampled\n"
+            << "  --require-ambient-occlusion-history-committed-after-present\n"
+            << "  --require-ambient-occlusion-indirect-only-lighting\n"
+            << "  --require-ambient-occlusion-non-neutral-probe\n"
             << "  --require-temporal-aa-execution\n"
             << "  --require-no-fxaa-execution\n"
             << "  --require-temporal-history-sampled\n"

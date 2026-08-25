@@ -17,6 +17,17 @@ if(EXISTS "${RVX_VISUAL_GOLDEN_REPORT_SELFTEST_IMAGE}")
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 endif()
+if(TARGET SampleReportContentValidation)
+    rvx_add_validation_test(
+        LANE unit
+        NAME SampleReportContentValidationSelfTest
+        COMMAND $<TARGET_FILE:SampleReportContentValidation> --self-test
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS subsystem.validation suite.sample-report
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+endif()
 rvx_add_gtest(
     NAME EcsEntityValidation
     LANE unit

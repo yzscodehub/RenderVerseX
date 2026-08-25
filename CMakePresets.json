@@ -140,6 +140,7 @@
         "RVX_ENABLE_GFX10_POST_PROCESS_NATIVE": "ON",
         "RVX_ENABLE_GFX11_TAA_NATIVE": "ON",
         "RVX_ENABLE_GFX12_EXPOSURE_NATIVE": "ON",
+        "RVX_ENABLE_GFX13_GTAO_NATIVE": "ON",
         "RVX_ENABLE_PR_SMOKE": "OFF"
       }
     },
@@ -792,6 +793,17 @@
       },
       "output": { "outputOnFailure": true },
       "filter": { "include": { "label": "^suite\\.gfx12-exposure$" } }
+    },
+    {
+      "name": "win_x64_qualification_debug_gfx13_gtao",
+      "inherits": "win_x64_qualification_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx13-gtao$" } }
     },
     {
       "name": "linux_x64_debug_lane_base",

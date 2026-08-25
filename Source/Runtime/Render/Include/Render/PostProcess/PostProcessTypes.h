@@ -14,7 +14,6 @@ namespace RVX
     {
         Invalid = 0,
         Bloom,
-        SSAO,
         ToneMapping,
         ColorGrading,
         ChromaticAberration,
