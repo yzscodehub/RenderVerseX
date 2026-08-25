@@ -28,6 +28,12 @@ namespace RVX
 
         void Resize(uint32 width, uint32 height) override;
         void Present() override;
+        [[nodiscard]] bool HasAcquiredPresentationImage() const noexcept override
+        {
+            return m_currentDrawable != nil;
+        }
+        bool RecordAbortPresentationImageRetirement(
+            RHICommandContext& context) noexcept override;
 
         // Get current drawable for command buffer presentation
         id<CAMetalDrawable> GetCurrentDrawable() const { return m_currentDrawable; }

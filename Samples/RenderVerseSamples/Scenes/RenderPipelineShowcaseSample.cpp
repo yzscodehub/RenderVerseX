@@ -173,7 +173,11 @@ namespace RVX
         context.renderSettings.postProcess.enableSSR = false;
         context.renderSettings.postProcess.toneMappingOperator =
             RenderToneMappingOperator::ACES;
-        context.renderSettings.postProcess.exposure = 1.0f;
+        context.renderSettings.postProcess.exposureSettings.mode =
+            RenderExposureMode::ManualEV100;
+        context.renderSettings.postProcess.exposureSettings.manualEV100 = 0.0f;
+        context.renderSettings.postProcess.exposureSettings.exposureCompensationEV =
+            0.0f;
         context.renderSettings.postProcess.gamma = 2.2f;
         context.renderSettings.postProcess.bloomThreshold = 0.65f;
         context.renderSettings.postProcess.bloomIntensity = 0.35f;

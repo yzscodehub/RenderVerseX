@@ -120,6 +120,8 @@ namespace RVX
         RGTextureHandle deviceDepth{};
         RGTextureHandle hdrSceneColor{};
         RGBufferHandle materialTable{};
+        /** Same committed prior-presented state consumed by every HDR producer. */
+        RGBufferHandle exposureState{};
         // This is the immutable plan identity captured by the feature adapter
         // when it imports the graph resources below.  It must agree with the
         // identity carried by those resources; accepting either identity on
@@ -132,7 +134,7 @@ namespace RVX
             return gBuffer0.IsValid() && gBuffer1.IsValid() &&
                    gBuffer2.IsValid() && gBuffer3.IsValid() &&
                    deviceDepth.IsValid() && hdrSceneColor.IsValid() &&
-                   materialTable.IsValid() &&
+                   materialTable.IsValid() && exposureState.IsValid() &&
                    expectedLightingPlanIdentity != 0 &&
                    expectedLightingPlanIdentity == lighting.lightingPlanIdentity &&
                    lighting.IsComplete();

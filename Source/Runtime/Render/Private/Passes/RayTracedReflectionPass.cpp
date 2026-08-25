@@ -180,6 +180,7 @@ namespace RVX
         m_sceneColorReadHandle = {};
         m_depthReadHandle = {};
         m_velocityReadHandle = {};
+        m_exposureStateReadHandle = {};
         m_historyReadHandle = {};
         m_historyDepthReadHandle = {};
         m_historyDepthWriteHandle = {};
@@ -363,6 +364,8 @@ namespace RVX
         m_stats.sceneColorAvailable = view.colorTarget.IsValid();
         m_stats.depthAvailable = view.depthTarget.IsValid();
         m_stats.velocityAvailable = view.velocityTarget.IsValid();
+        m_stats.exposureStateAvailable = view.exposureState.IsValid();
+        m_stats.exposureStateContentHash = view.exposureStateContentHash;
         m_stats.historyReset = view.resetTemporalHistory;
         if (view.resetTemporalHistory)
         {
@@ -440,6 +443,7 @@ namespace RVX
         m_sceneColorReadHandle = {};
         m_depthReadHandle = {};
         m_velocityReadHandle = {};
+        m_exposureStateReadHandle = {};
         m_historyReadHandle = {};
         m_historyDepthReadHandle = {};
         m_historyDepthWriteHandle = {};
@@ -460,6 +464,8 @@ namespace RVX
         if (!m_stats.supported ||
             !m_stats.sceneColorAvailable ||
             !m_stats.depthAvailable ||
+            !m_stats.exposureStateAvailable ||
+            m_stats.exposureStateContentHash == 0 ||
             view.viewportWidth == 0 ||
             view.viewportHeight == 0)
         {
@@ -543,6 +549,16 @@ namespace RVX
         m_velocityViewHandle = createReadView(
             m_velocityReadHandle, "RayTracedReflectionVelocitySRV");
 
+        m_exposureStateReadHandle = builder.Read(
+            view.exposureState,
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::AllRayTracing);
+        m_stats.exposureStateReadDeclared = m_exposureStateReadHandle.IsValid();
+        if (!m_stats.exposureStateReadDeclared)
+        {
+            return;
+        }
+
         m_historyReadHandle = builder.ImportTexture(
             m_historyTextures[m_currentHistoryReadIndex],
             m_historyTextureStates[m_currentHistoryReadIndex]);
@@ -588,6 +604,8 @@ namespace RVX
 
         m_stats.outputDeclared = m_sceneColorViewHandle.IsValid() &&
             m_depthViewHandle.IsValid() && m_velocityViewHandle.IsValid() &&
+            m_exposureStateReadHandle.IsValid() &&
+            m_stats.exposureStateContentHash != 0 &&
             m_historyViewHandle.IsValid() &&
             m_historyDepthReadViewHandle.IsValid() &&
             m_historyDepthWriteViewHandle.IsValid() &&
@@ -620,6 +638,7 @@ namespace RVX
             !m_sceneManager ||
             !m_sceneColorReadHandle.IsValid() ||
             !m_depthReadHandle.IsValid() ||
+            !m_exposureStateReadHandle.IsValid() ||
             !m_historyReadHandle.IsValid() ||
             !m_historyDepthReadHandle.IsValid() ||
             !m_historyDepthWriteHandle.IsValid() ||
@@ -651,6 +670,7 @@ namespace RVX
         RHITexture* sceneColor = context.GetTexture(m_sceneColorReadHandle);
         RHITexture* sceneDepth = context.GetTexture(m_depthReadHandle);
         RHITexture* sceneVelocity = context.GetTexture(m_velocityReadHandle);
+        RHIBuffer* exposureStateBuffer = context.GetBuffer(m_exposureStateReadHandle);
         RHITexture* previousReflection = context.GetTexture(m_historyReadHandle);
         RHITexture* previousDepthHistory =
             context.GetTexture(m_historyDepthReadHandle);
@@ -662,6 +682,8 @@ namespace RVX
             context.GetTexture(m_historyNormalWriteHandle);
         RHITexture* reflectionOutput = context.GetTexture(m_reflectionHandle);
         if (!tlas || !materialMetadataBuffer || !geometryMetadataBuffer || !sceneColor || !sceneDepth ||
+            !sceneVelocity ||
+            !exposureStateBuffer ||
             !previousReflection || !previousDepthHistory || !currentDepthHistory || !previousNormalHistory ||
             !currentNormalHistory || !reflectionOutput)
         {
@@ -824,6 +846,9 @@ namespace RVX
                 bufferIndex);
         }
         descriptorDesc.BindTexture(RTReflectionBindings::RVX_RT_REFLECTION_SCENE_VELOCITY_BINDING, sceneVelocitySRV);
+        descriptorDesc.BindBuffer(
+            RTReflectionBindings::RVX_RT_REFLECTION_EXPOSURE_STATE_BINDING,
+            exposureStateBuffer);
 
         RHIDescriptorSetRef descriptorSet = device->CreateDescriptorSet(descriptorDesc);
         if (!descriptorSet)
@@ -835,6 +860,7 @@ namespace RVX
         }
 
         m_stats.descriptorSetAvailable = true;
+        m_stats.exposureStateDescriptorBound = true;
 
         if (!context.RetainSubmissionResource(descriptorSet) ||
             !context.RetainSubmissionResource(

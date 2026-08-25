@@ -95,6 +95,7 @@ namespace RVX
                    common.pixelProbeEnabled ||
                    common.gpuSceneCullingQualificationEnabled ||
                    common.directOpaqueRasterReadbackQualificationEnabled ||
+                   common.exposureQualificationProbeEnabled ||
                    HasLifetimeQualification() || HasFrameworkAssessment();
         }
     };

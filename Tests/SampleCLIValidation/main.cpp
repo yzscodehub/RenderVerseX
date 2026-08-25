@@ -165,7 +165,7 @@ namespace
         RVX::uint64 frameSequence = 91)
     {
         RVX::RenderExecutionReceipt receipt;
-        receipt.schemaVersion = 7;
+        receipt.schemaVersion = 8;
         receipt.available = true;
         receipt.graphComposed = true;
         receipt.executionSucceeded = true;
@@ -220,6 +220,31 @@ namespace
         receipt.deformation.velocitySkinnedDrawCount = 1;
         receipt.deformation.velocityPreviousPaletteDrawCount = 1;
         receipt.postProcess.postProcessContentHash = 0x9ABCu;
+        receipt.postProcess.exposureStateContentHash = 0xE120u;
+        receipt.postProcess.toneMapExposureStateHash = 0xE120u;
+        receipt.postProcess.bloomExposureStateHash = 0xE120u;
+        receipt.postProcess.taaExposureStateHash = 0;
+        receipt.postProcess.exposureMode = RVX::RenderExposureMode::ManualEV100;
+        receipt.postProcess.exposureRequested = true;
+        receipt.postProcess.exposurePipelineReady = true;
+        receipt.postProcess.exposureInputsReady = true;
+        receipt.postProcess.exposureExecuted = true;
+        receipt.postProcess.exposureHistogramPassCount = 0;
+        receipt.postProcess.exposureAdaptationPassCount = 1;
+        receipt.postProcess.exposureHistoryAvailableBefore = true;
+        receipt.postProcess.exposureHistorySampled = true;
+        receipt.postProcess.exposureHistoryCandidateProduced = true;
+        receipt.postProcess.exposureHistoryCommitted = true;
+        receipt.postProcess.exposureHistoryAbandoned = false;
+        receipt.postProcess.exposureHistoryResetReasons =
+            RVX::RenderHistoryResetReason::None;
+        receipt.postProcess.exposureProbeRequested = true;
+        receipt.postProcess.exposureProbeReady = true;
+        receipt.postProcess.targetEV100 = 10.0f;
+        receipt.postProcess.adaptedEV100 = 10.0f;
+        receipt.postProcess.exposureScale = 0.0008138021f;
+        receipt.postProcess.preExposure = 0.0008138021f;
+        receipt.postProcess.previousPreExposure = 0.0008138021f;
         receipt.postProcess.toneMapPassCount = 1;
         receipt.postProcess.bloomPassCount = 1;
         receipt.postProcess.colorGradingPassCount = 1;
@@ -268,7 +293,7 @@ namespace
     {
         RVX::SamplePostProcessExecutionDiagnostics diagnostics;
         diagnostics.available = true;
-        diagnostics.executionReceiptSchemaVersion = 7;
+        diagnostics.executionReceiptSchemaVersion = 8;
         diagnostics.executionReceiptStructurallyValid = true;
         diagnostics.executionReceiptAvailable = true;
         diagnostics.executionReceiptGraphComposed = true;
@@ -291,6 +316,31 @@ namespace
         diagnostics.postProcessFeatureExecutedGraphPassCount = 4;
         diagnostics.postProcessReceiptStructurallyValid = true;
         diagnostics.planContentHash = 0x9ABCu;
+        diagnostics.exposureStateContentHash = 0xE120u;
+        diagnostics.toneMapExposureStateHash = 0xE120u;
+        diagnostics.bloomExposureStateHash = 0xE120u;
+        diagnostics.taaExposureStateHash = 0;
+        diagnostics.exposureMode = RVX::RenderExposureMode::ManualEV100;
+        diagnostics.exposureRequested = true;
+        diagnostics.exposurePipelineReady = true;
+        diagnostics.exposureInputsReady = true;
+        diagnostics.exposureExecuted = true;
+        diagnostics.exposureHistogramPassCount = 0;
+        diagnostics.exposureAdaptationPassCount = 1;
+        diagnostics.exposureHistoryAvailableBefore = true;
+        diagnostics.exposureHistorySampled = true;
+        diagnostics.exposureHistoryCandidateProduced = true;
+        diagnostics.exposureHistoryCommitted = true;
+        diagnostics.exposureHistoryAbandoned = false;
+        diagnostics.exposureHistoryResetReasons =
+            RVX::RenderHistoryResetReason::None;
+        diagnostics.exposureProbeRequested = true;
+        diagnostics.exposureProbeReady = true;
+        diagnostics.targetEV100 = 10.0f;
+        diagnostics.adaptedEV100 = 10.0f;
+        diagnostics.exposureScale = 0.0008138021f;
+        diagnostics.preExposure = 0.0008138021f;
+        diagnostics.previousPreExposure = 0.0008138021f;
         diagnostics.toneMappingPassCount = 1;
         diagnostics.bloomPassCount = 1;
         diagnostics.colorGradingPassCount = 1;
@@ -340,6 +390,7 @@ namespace
         diagnostics.previousJitterPixels = RVX::Vec2(-0.25f, 0.125f);
         diagnostics.taaResolveGraphPassCount = 1;
         diagnostics.taaHistoryStoreGraphPassCount = 1;
+        diagnostics.taaExposureStateHash = diagnostics.exposureStateContentHash;
         return diagnostics;
     }
 
@@ -478,6 +529,97 @@ namespace
         EXPECT_FALSE(diagnostics.IsTemporalAAQualificationReady());
     }
 
+    TEST(SampleCLIValidation,
+         ExposureQualificationRequiresRendererProjectedStateAndProbe)
+    {
+        RVX::SamplePostProcessExecutionDiagnostics diagnostics =
+            MakeQualifiedTemporalAAActualExecution();
+        diagnostics.bloomPassCount = 1;
+        diagnostics.bloomExposureStateHash = diagnostics.exposureStateContentHash;
+        diagnostics.taaExposureStateHash = diagnostics.exposureStateContentHash;
+
+        EXPECT_TRUE(diagnostics.IsManualEV100ExposureQualificationReady());
+        EXPECT_FALSE(diagnostics.IsHistogramAutoExposureQualificationReady());
+
+        const RVX::SamplePostProcessExecutionDiagnostics validManual =
+            diagnostics;
+        const auto rejectsOutOfRangeExposureScale =
+            [&validManual](
+                RVX::float32 RVX::SamplePostProcessExecutionDiagnostics::* field,
+                RVX::float32 value)
+        {
+            RVX::SamplePostProcessExecutionDiagnostics invalid = validManual;
+            invalid.*field = value;
+            return !invalid.IsManualEV100ExposureQualificationReady();
+        };
+        const RVX::float32 belowMinimumExposure = std::nextafter(
+            RVX::RVX_RENDER_EXPOSURE_MIN_SCALE, 0.0f);
+        const RVX::float32 aboveMaximumExposure = std::nextafter(
+            RVX::RVX_RENDER_EXPOSURE_MAX_SCALE,
+            std::numeric_limits<RVX::float32>::infinity());
+        EXPECT_TRUE(rejectsOutOfRangeExposureScale(
+            &RVX::SamplePostProcessExecutionDiagnostics::exposureScale,
+            belowMinimumExposure));
+        EXPECT_TRUE(rejectsOutOfRangeExposureScale(
+            &RVX::SamplePostProcessExecutionDiagnostics::preExposure,
+            belowMinimumExposure));
+        EXPECT_TRUE(rejectsOutOfRangeExposureScale(
+            &RVX::SamplePostProcessExecutionDiagnostics::previousPreExposure,
+            belowMinimumExposure));
+        EXPECT_TRUE(rejectsOutOfRangeExposureScale(
+            &RVX::SamplePostProcessExecutionDiagnostics::exposureScale,
+            aboveMaximumExposure));
+        EXPECT_TRUE(rejectsOutOfRangeExposureScale(
+            &RVX::SamplePostProcessExecutionDiagnostics::preExposure,
+            aboveMaximumExposure));
+        EXPECT_TRUE(rejectsOutOfRangeExposureScale(
+            &RVX::SamplePostProcessExecutionDiagnostics::previousPreExposure,
+            aboveMaximumExposure));
+
+        RVX::float32 lowPhysicalScale = 0.0f;
+        ASSERT_TRUE(RVX::TryCalculateRenderExposureScale(
+            RVX::RVX_RENDER_EXPOSURE_MAX_EV100,
+            0.0f,
+            lowPhysicalScale));
+        RVX::SamplePostProcessExecutionDiagnostics lowScaleManual = validManual;
+        lowScaleManual.targetEV100 = RVX::RVX_RENDER_EXPOSURE_MAX_EV100;
+        lowScaleManual.adaptedEV100 = RVX::RVX_RENDER_EXPOSURE_MAX_EV100;
+        lowScaleManual.exposureScale = lowPhysicalScale;
+        lowScaleManual.preExposure = lowPhysicalScale;
+        lowScaleManual.previousPreExposure = lowPhysicalScale;
+        EXPECT_TRUE(lowScaleManual.IsManualEV100ExposureQualificationReady());
+
+        RVX::SamplePostProcessExecutionDiagnostics wrongLowScaleManual =
+            lowScaleManual;
+        const RVX::float32 wrongLowPhysicalScale = lowPhysicalScale * 100.0f;
+        wrongLowScaleManual.exposureScale = wrongLowPhysicalScale;
+        wrongLowScaleManual.preExposure = wrongLowPhysicalScale;
+        wrongLowScaleManual.previousPreExposure = wrongLowPhysicalScale;
+        EXPECT_FALSE(
+            wrongLowScaleManual.IsManualEV100ExposureQualificationReady());
+
+        diagnostics.exposureProbeReady = false;
+        EXPECT_FALSE(diagnostics.IsManualEV100ExposureQualificationReady());
+
+        diagnostics = MakeQualifiedTemporalAAActualExecution();
+        diagnostics.bloomPassCount = 1;
+        diagnostics.bloomExposureStateHash = diagnostics.exposureStateContentHash;
+        diagnostics.taaExposureStateHash = diagnostics.exposureStateContentHash;
+        diagnostics.exposureMode = RVX::RenderExposureMode::HistogramAuto;
+        diagnostics.exposureHistogramPassCount = 2;
+        EXPECT_TRUE(diagnostics.IsHistogramAutoExposureQualificationReady());
+
+        diagnostics.toneMapExposureStateHash = 0;
+        EXPECT_FALSE(diagnostics.IsHistogramAutoExposureQualificationReady());
+
+        diagnostics = MakeQualifiedTemporalAAActualExecution();
+        diagnostics.bloomPassCount = 1;
+        diagnostics.bloomExposureStateHash = diagnostics.exposureStateContentHash;
+        diagnostics.taaExposureStateHash = diagnostics.exposureStateContentHash;
+        diagnostics.exposureHistoryCommitted = false;
+        EXPECT_FALSE(diagnostics.IsManualEV100ExposureQualificationReady());
+    }
+
     TEST(SampleCLIValidation, SmokeDefaultsToEightFrames)
     {
         const char* argv[] = {"BasicRHI", "--smoke"};
@@ -573,6 +715,27 @@ namespace
         EXPECT_FALSE(qualificationOptions.pixelProbeEnabled);
     }
 
+    TEST(SampleCLIValidation,
+         ExposureQualificationProbeIsExplicitAndIndependentOfPixelProbe)
+    {
+        const char* qualificationArgv[] = {
+            "BasicRHI",
+            "--frames",
+            "1",
+            "--exposure-qualification-probe",
+        };
+        RVX::SampleCLIOptions qualificationOptions;
+        std::string error;
+        ASSERT_TRUE(RVX::ParseSampleCLI(
+            static_cast<int>(std::size(qualificationArgv)),
+            qualificationArgv,
+            qualificationOptions,
+            &error))
+            << error;
+        EXPECT_TRUE(qualificationOptions.exposureQualificationProbeEnabled);
+        EXPECT_FALSE(qualificationOptions.pixelProbeEnabled);
+    }
+
     TEST(SampleCLIValidation, PixelProbeRejectsMalformedCoordinates)
     {
         const char* argv[] = {"BasicRHI", "--pixel-probe", "x", "19"};
@@ -652,6 +815,7 @@ namespace
     {
         RVX::SampleReport report;
         report.schemaVersion = RVX::RVX_SAMPLE_REPORT_SCHEMA_VERSION;
+        report.validationRunId = std::string(32, '1');
         report.submittedFrameSequence = 91;
         report.presentedFrameSequence = 91;
         report.pass = true;
@@ -689,7 +853,10 @@ namespace
         std::ostringstream stream;
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
-        EXPECT_NE(json.find("\"schemaVersion\": 23"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 24"), std::string::npos);
+        EXPECT_NE(json.find("\"validationRunId\": \"" +
+                            std::string(32, '1') + "\""),
+                  std::string::npos);
         EXPECT_NE(json.find("\"visualContractReceipt\": {"),
                   std::string::npos);
         EXPECT_NE(json.find("\"manifestSchema\": \"RVX.SampleManifest\""),
@@ -735,7 +902,7 @@ namespace
                   std::string::npos);
         EXPECT_NE(json.find("\"renderExecutionReceipt\": {"),
                   std::string::npos);
-        EXPECT_NE(json.find("\"schemaVersion\": 7"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 8"), std::string::npos);
         EXPECT_NE(json.find("\"sourceCommit\": \"" + std::string(40, 'a') +
                             "\""),
                   std::string::npos);
@@ -1031,6 +1198,25 @@ namespace
             static_cast<int>(std::size(argv)), argv, options, &error))
             << error;
         EXPECT_TRUE(options.common.gpuSceneCullingQualificationEnabled);
+        EXPECT_TRUE(options.waitReady);
+        EXPECT_EQ(options.common.frames, 1u);
+        EXPECT_GE(options.readyMaxFrames, options.common.frames);
+    }
+
+    TEST(SampleCLIValidation,
+         RunnerExposureProbeUsesBoundedReadinessWait)
+    {
+        const char* argv[] = {
+            "RenderVerseSamples",
+            "--exposure-qualification-probe",
+        };
+
+        RVX::SampleRunnerCLIOptions options;
+        std::string error;
+        ASSERT_TRUE(RVX::ParseSampleRunnerCLI(
+            static_cast<int>(std::size(argv)), argv, options, &error))
+            << error;
+        EXPECT_TRUE(options.common.exposureQualificationProbeEnabled);
         EXPECT_TRUE(options.waitReady);
         EXPECT_EQ(options.common.frames, 1u);
         EXPECT_GE(options.readyMaxFrames, options.common.frames);
@@ -1663,7 +1849,7 @@ namespace
         const std::string json = stream.str();
 
         EXPECT_NE(json.find("\"schemaId\": \"RVX.SampleReport\""), std::string::npos);
-        EXPECT_NE(json.find("\"schemaVersion\": 23"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 24"), std::string::npos);
         EXPECT_NE(json.find("\"sampleName\": \"BasicRHI\""), std::string::npos);
         EXPECT_NE(json.find("\"category\": \"sample\""), std::string::npos);
         EXPECT_NE(json.find("\"requestedBackend\": \"dx12\""), std::string::npos);
@@ -1772,7 +1958,7 @@ namespace
         EXPECT_NE(json.find("\"renderGraphTotalPasses\": 3"), std::string::npos);
         EXPECT_NE(json.find("\"postProcessActualExecution\": {"),
                   std::string::npos);
-        EXPECT_NE(json.find("\"executionReceiptSchemaVersion\": 7"),
+        EXPECT_NE(json.find("\"executionReceiptSchemaVersion\": 8"),
                   std::string::npos);
         EXPECT_NE(json.find("\"presentedFrameAligned\": true"),
                   std::string::npos);
@@ -1938,7 +2124,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 23"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 24"), std::string::npos);
         EXPECT_NE(json.find("\"contractRevision\": 7"), std::string::npos);
         EXPECT_NE(json.find("\"phase\": \"complete\""),
                   std::string::npos);
@@ -2427,7 +2613,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 23"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 24"), std::string::npos);
         EXPECT_NE(json.find("\"packageContentId\""), std::string::npos);
         EXPECT_NE(json.find(asset.packageContentId.digest), std::string::npos);
         EXPECT_NE(json.find("\"cook\": {\"required\": true, \"accepted\": true, \"code\": \"accepted\""),

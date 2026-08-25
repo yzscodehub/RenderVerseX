@@ -328,9 +328,11 @@ void TAA::AddToGraph(RenderGraph& graph,
 
     if (!frameInputs.sceneColor.IsValid() || !frameInputs.depth.IsValid() ||
         !frameInputs.velocity.IsValid() || !frameInputs.reactiveMask.IsValid() ||
-        !output.IsValid() || !frameInputs.historyIdentity.IsValid())
+        !frameInputs.exposureState.IsValid() ||
+        frameInputs.exposureStateContentHash == 0 || !output.IsValid() ||
+        !frameInputs.historyIdentity.IsValid())
     {
-        RecordUnsupported("TAA requires valid color, depth, velocity, reactive-mask, output, and history identity inputs",
+        RecordUnsupported("TAA requires valid color, depth, velocity, reactive-mask, candidate exposure, output, and history identity inputs",
                           &frameInputs);
         return;
     }
@@ -432,6 +434,7 @@ void TAA::AddToGraph(RenderGraph& graph,
     struct ResolveData
     {
         RGTextureHandle currentColor;
+        RGBufferHandle exposureState;
         RGTextureHandle historyColor;
         RGTextureHandle currentDepth;
         RGTextureHandle historyDepth;
@@ -449,6 +452,7 @@ void TAA::AddToGraph(RenderGraph& graph,
         bool useHistory = false;
         Vec2 currentJitterPixels = Vec2(0.0f);
         Vec2 previousJitterPixels = Vec2(0.0f);
+        uint64 exposureStateContentHash = 0;
         std::shared_ptr<TAAFrameRecordState> state;
     };
 
@@ -462,6 +466,10 @@ void TAA::AddToGraph(RenderGraph& graph,
         {
             data.currentColor = builder.Read(
                 frameInputs.sceneColor,
+                MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                                 RHIShaderStage::Pixel));
+            data.exposureState = builder.Read(
+                frameInputs.exposureState,
                 MakeRGAccessDesc(RHIResourceState::ShaderResource,
                                  RHIShaderStage::Pixel));
             data.historyColor = builder.Read(
@@ -497,6 +505,7 @@ void TAA::AddToGraph(RenderGraph& graph,
             data.useHistory = useHistory;
             data.currentJitterPixels = frameInputs.jitterOffset;
             data.previousJitterPixels = m_previousJitterPixels;
+            data.exposureStateContentHash = frameInputs.exposureStateContentHash;
             data.state = frameState;
         },
         [this](const ResolveData& data, RenderGraphPassContext& context)
@@ -515,6 +524,7 @@ void TAA::AddToGraph(RenderGraph& graph,
             }
 
             RHITexture* const currentColor = context.GetTexture(data.currentColor);
+            RHIBuffer* const exposureState = context.GetBuffer(data.exposureState);
             RHITexture* const output = context.GetTexture(data.output);
             RHITextureView* const currentColorView = context.GetTextureView(data.currentColorView);
             RHITextureView* const historyColorView = context.GetTextureView(data.historyColorView);
@@ -523,7 +533,8 @@ void TAA::AddToGraph(RenderGraph& graph,
             RHITextureView* const velocityView = context.GetTextureView(data.velocityView);
             RHITextureView* const reactiveMaskView = context.GetTextureView(data.reactiveMaskView);
             RHITextureView* const outputView = context.GetTextureView(data.outputView);
-            if (currentColor == nullptr || output == nullptr || currentColorView == nullptr ||
+            if (currentColor == nullptr || output == nullptr || exposureState == nullptr ||
+                data.exposureStateContentHash == 0 || currentColorView == nullptr ||
                 historyColorView == nullptr || currentDepthView == nullptr ||
                 historyDepthView == nullptr || velocityView == nullptr ||
                 reactiveMaskView == nullptr || outputView == nullptr)
@@ -573,6 +584,7 @@ void TAA::AddToGraph(RenderGraph& graph,
             descriptorDesc.BindTexture(5, velocityView);
             descriptorDesc.BindTexture(6, reactiveMaskView);
             descriptorDesc.BindSampler(7, m_sampler.Get());
+            descriptorDesc.BindBuffer(8, exposureState);
             RHIDescriptorSetRef descriptorSet = device->CreateDescriptorSet(descriptorDesc);
             if (!descriptorSet || !context.RetainSubmissionResource(Ref<RefCounted>(descriptorSet)))
             {
@@ -606,11 +618,14 @@ void TAA::AddToGraph(RenderGraph& graph,
             m_lastResolveStats.historySampled = data.useHistory;
             m_lastResolveStats.historyConsumed = data.useHistory;
             m_lastResolveStats.resolveGraphPassCount = 1;
+            m_lastResolveStats.exposureStateContentHash =
+                data.exposureStateContentHash;
         });
 
     struct HistoryStoreData
     {
         RGTextureHandle resolvedColor;
+        RGBufferHandle exposureState;
         RGTextureHandle historyColorRead;
         RGTextureHandle currentDepth;
         RGTextureHandle historyDepthRead;
@@ -628,6 +643,7 @@ void TAA::AddToGraph(RenderGraph& graph,
         RGTextureViewHandle historyDepthWriteView;
         RenderViewHistoryIdentity historyIdentity{};
         Vec2 currentJitterPixels = Vec2(0.0f);
+        uint64 exposureStateContentHash = 0;
         std::shared_ptr<TAAFrameRecordState> state;
     };
 
@@ -641,6 +657,10 @@ void TAA::AddToGraph(RenderGraph& graph,
         {
             data.resolvedColor = builder.Read(
                 output,
+                MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                                 RHIShaderStage::Pixel));
+            data.exposureState = builder.Read(
+                frameInputs.exposureState,
                 MakeRGAccessDesc(RHIResourceState::ShaderResource,
                                  RHIShaderStage::Pixel));
             data.historyColorRead = builder.Read(
@@ -677,6 +697,7 @@ void TAA::AddToGraph(RenderGraph& graph,
             builder.SetExportState(data.historyDepthWrite, RHIResourceState::ShaderResource);
             data.historyIdentity = frameInputs.historyIdentity;
             data.currentJitterPixels = frameInputs.jitterOffset;
+            data.exposureStateContentHash = frameInputs.exposureStateContentHash;
             data.state = frameState;
         },
         [this, writeHistoryIndex](const HistoryStoreData& data,
@@ -702,6 +723,7 @@ void TAA::AddToGraph(RenderGraph& graph,
             }
 
             RHITexture* const resolvedColor = context.GetTexture(data.resolvedColor);
+            RHIBuffer* const exposureState = context.GetBuffer(data.exposureState);
             RHITexture* const historyColor = context.GetTexture(data.historyColorWrite);
             RHITexture* const historyDepth = context.GetTexture(data.historyDepthWrite);
             RHITextureView* const resolvedColorView = context.GetTextureView(data.resolvedColorView);
@@ -713,6 +735,7 @@ void TAA::AddToGraph(RenderGraph& graph,
             RHITextureView* const historyColorWriteView = context.GetTextureView(data.historyColorWriteView);
             RHITextureView* const historyDepthWriteView = context.GetTextureView(data.historyDepthWriteView);
             if (resolvedColor == nullptr || historyColor == nullptr || historyDepth == nullptr ||
+                exposureState == nullptr || data.exposureStateContentHash == 0 ||
                 resolvedColorView == nullptr || historyColorReadView == nullptr ||
                 currentDepthView == nullptr || historyDepthReadView == nullptr ||
                 velocityView == nullptr || reactiveMaskView == nullptr ||
@@ -755,6 +778,7 @@ void TAA::AddToGraph(RenderGraph& graph,
             descriptorDesc.BindTexture(5, velocityView);
             descriptorDesc.BindTexture(6, reactiveMaskView);
             descriptorDesc.BindSampler(7, m_sampler.Get());
+            descriptorDesc.BindBuffer(8, exposureState);
             RHIDescriptorSetRef descriptorSet = device->CreateDescriptorSet(descriptorDesc);
             if (!descriptorSet || !context.RetainSubmissionResource(Ref<RefCounted>(descriptorSet)))
             {
@@ -793,6 +817,8 @@ void TAA::AddToGraph(RenderGraph& graph,
         });
 
     m_lastResolveStats.inputsReady = true;
+    m_lastResolveStats.exposureStateContentHash =
+        frameInputs.exposureStateContentHash;
 }
 
 bool TAA::CanCommitHistoryAfterPresent(

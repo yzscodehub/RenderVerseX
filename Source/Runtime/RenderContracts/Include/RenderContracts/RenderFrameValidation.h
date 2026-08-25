@@ -232,10 +232,8 @@ namespace RVX
             !std::isfinite(settings.postProcess.colorGradingSaturation) ||
             settings.postProcess.colorGradingSaturation < 0.0f ||
             !std::isfinite(settings.postProcess.colorGradingBrightness) ||
-            !std::isfinite(settings.postProcess.exposure) ||
-            settings.postProcess.exposure < 0.0f ||
-            !std::isfinite(settings.postProcess.cameraEV100) ||
-            !std::isfinite(settings.postProcess.exposureCompensationEV) ||
+            !IsValidRenderExposureSettings(
+                settings.postProcess.exposureSettings) ||
             !std::isfinite(settings.postProcess.gamma) ||
             settings.postProcess.gamma <= 0.0f ||
             !std::isfinite(settings.shadows.maxDistance))

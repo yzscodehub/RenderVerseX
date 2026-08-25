@@ -273,6 +273,8 @@ namespace RVX
         DirectionalShadowFrameResources directionalShadow{};
         RayTracedShadowFrameResources rayTracedShadow{};
         EnvironmentIBLFrameResources environmentIBL{};
+        /** Exact committed state used by deferred HDR lighting, set 0 / b21. */
+        RHIBufferRef exposureStateBuffer;
     };
 
     /**
@@ -301,6 +303,7 @@ namespace RVX
         RHITextureViewRef environmentIBLPrefilteredView;
         RHITextureViewRef environmentIBLBRDFLUTView;
         RHISamplerRef environmentIBLSampler;
+        RHIBufferRef exposureStateBuffer;
         RHIDescriptorSetLayoutRef frameSetLayout;
         RHIDescriptorSetRef frameDescriptorSet;
 
@@ -313,7 +316,8 @@ namespace RVX
                    clusterConstantsBuffer && clusterBuffer &&
                    clusterLightIndexBuffer && environmentIBLIrradianceView &&
                    environmentIBLPrefilteredView && environmentIBLBRDFLUTView &&
-                   environmentIBLSampler && frameSetLayout && frameDescriptorSet;
+                   environmentIBLSampler && exposureStateBuffer &&
+                   frameSetLayout && frameDescriptorSet;
         }
 
         [[nodiscard]] bool MatchesLightingPlan(uint64 expectedIdentity) const noexcept
@@ -725,6 +729,27 @@ namespace RVX
                    m_deferredLightingPipelineLayout;
         }
 
+        /** Fixed HDR producer binding ABI for pre-exposure state. */
+        static constexpr uint32 DefaultLitExposureStateBinding = 14u;
+        static constexpr uint32 DeferredLightingExposureStateBinding = 21u;
+        static constexpr uint32 SkyboxExposureStateBinding = 3u;
+
+        RHIPipeline* GetExposureHistogramClearPipeline();
+        RHIPipeline* GetExposureHistogramBuildPipeline();
+        RHIPipeline* GetExposureAdaptationPipeline();
+        RHIDescriptorSetLayout* GetExposureComputeSetLayout() const
+        {
+            return m_exposureComputeSetLayout.Get();
+        }
+        [[nodiscard]] bool IsExposureComputePipelineReady() const noexcept
+        {
+            return m_initialized && m_exposureComputeSetLayout &&
+                m_exposureComputePipelineLayout &&
+                m_exposureHistogramClearPipeline &&
+                m_exposureHistogramBuildPipeline &&
+                m_exposureAdaptationPipeline;
+        }
+
         /**
          * @brief Get the depth-only pipeline for depth prepass
          * @return Depth-only pipeline or nullptr if not available
@@ -935,6 +960,12 @@ namespace RVX
          */
         RHIPipelineLayout* GetPostProcessLayout() const { return m_postProcessPipelineLayout.Get(); }
 
+        /** Layout for fullscreen consumers that read the candidate exposure state. */
+        RHIPipelineLayout* GetExposurePostProcessLayout() const
+        {
+            return m_exposurePostProcessPipelineLayout.Get();
+        }
+
         /** @brief Layout for the temporal resolve and history-store fullscreen passes. */
         RHIPipelineLayout* GetTAALayout() const { return m_taaPipelineLayout.Get(); }
 
@@ -971,6 +1002,11 @@ namespace RVX
          * @brief Get the descriptor set layout used by fullscreen post-process passes
          */
         RHIDescriptorSetLayout* GetPostProcessSetLayout() const { return m_postProcessSetLayout.Get(); }
+
+        RHIDescriptorSetLayout* GetExposurePostProcessSetLayout() const
+        {
+            return m_exposurePostProcessSetLayout.Get();
+        }
 
         /** @brief Descriptor layout for current/history/depth/velocity/reactive TAA inputs. */
         RHIDescriptorSetLayout* GetTAASetLayout() const { return m_taaSetLayout.Get(); }
@@ -1050,6 +1086,13 @@ namespace RVX
          * @brief Update frame-scope local light buffer bindings.
          */
         FrameLightBindingResult UpdateFrameLightResources(const FrameLightResources& resources);
+
+        /** Publish the next record's committed structured exposure state. */
+        [[nodiscard]] bool UpdateFrameExposureStateBuffer(RHIBuffer* exposureStateBuffer);
+        [[nodiscard]] RHIBuffer* GetFrameExposureStateBuffer() const noexcept
+        {
+            return m_currentExposureStateBuffer.Get();
+        }
 
         /**
          * @brief Create a complete immutable set-0 snapshot for one lighting plan.
@@ -1361,6 +1404,7 @@ namespace RVX
             RHITextureViewRef environmentIBLPrefilteredView;
             RHITextureViewRef environmentIBLBRDFLUTView;
             RHISamplerRef environmentIBLSampler;
+            RHIBufferRef exposureStateBuffer;
 
             [[nodiscard]] bool IsComplete() const noexcept
             {
@@ -1371,7 +1415,8 @@ namespace RVX
                        clusterBuffer && clusterLightIndexBuffer &&
                        environmentIBLIrradianceView &&
                        environmentIBLPrefilteredView &&
-                       environmentIBLBRDFLUTView && environmentIBLSampler;
+                       environmentIBLBRDFLUTView && environmentIBLSampler &&
+                       exposureStateBuffer;
             }
         };
 
@@ -1502,6 +1547,9 @@ namespace RVX
         RHIPipelineRef GetOrCreateTAAHistoryStorePipeline();
         RHIPipelineRef GetOrCreateVignettePipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateUIPipeline(RHIFormat outputFormat);
+        bool EnsureExposureComputePipelines();
+        bool CreateExposureComputePipelineLayout();
+        bool CreateExposurePostProcessPipelineLayout();
         bool CreateRayTracedShadowPipeline();
         bool CreateRayTracedReflectionPipeline();
         RHIGraphicsPipelineDesc BuildDefaultLitPipelineDesc(const char* debugName,
@@ -1594,6 +1642,7 @@ namespace RVX
         bool EnsureFrameEnvironmentIBLFallbackResources();
         bool EnsureFrameLightFallbackResources();
         bool EnsureFrameClusteredLightFallbackResources();
+        bool EnsureFrameExposureFallbackBuffer();
         bool EnsureObjectInstanceFallbackBuffer();
         bool EnsureObjectSkinningPaletteFallbackBuffers();
         [[nodiscard]] bool ResolveSkinningPaletteBuffers(
@@ -1666,6 +1715,9 @@ namespace RVX
         RHIShaderRef m_pixelShader;
         RHIShaderRef m_gBufferPixelShader;
         RHIShaderRef m_deferredLightingComputeShader;
+        RHIShaderRef m_exposureHistogramClearComputeShader;
+        RHIShaderRef m_exposureHistogramBuildComputeShader;
+        RHIShaderRef m_exposureAdaptationComputeShader;
         RHIShaderRef m_depthOnlyVertexShader;
         RHIShaderRef m_rigidDepthOnlyVertexShader;
         RHIShaderRef m_maskedDepthOnlyVertexShader;
@@ -1724,6 +1776,9 @@ namespace RVX
         std::unique_ptr<ShaderProgramMetadata> m_psCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_gBufferPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_deferredLightingCsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_exposureHistogramClearCsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_exposureHistogramBuildCsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_exposureAdaptationCsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_depthOnlyVsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_rigidDepthOnlyVsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_maskedDepthOnlyVsCompileResult;
@@ -1781,8 +1836,12 @@ namespace RVX
         RHIPipelineLayoutRef m_gpuSceneRasterPipelineLayout;
         RHIDescriptorSetLayoutRef m_deferredLightingSetLayout;
         RHIPipelineLayoutRef m_deferredLightingPipelineLayout;
+        RHIDescriptorSetLayoutRef m_exposureComputeSetLayout;
+        RHIPipelineLayoutRef m_exposureComputePipelineLayout;
         RHIDescriptorSetLayoutRef m_postProcessSetLayout;
         RHIPipelineLayoutRef m_postProcessPipelineLayout;
+        RHIDescriptorSetLayoutRef m_exposurePostProcessSetLayout;
+        RHIPipelineLayoutRef m_exposurePostProcessPipelineLayout;
         RHIDescriptorSetLayoutRef m_taaSetLayout;
         RHIPipelineLayoutRef m_taaPipelineLayout;
         RHIDescriptorSetLayoutRef m_uiTextureSetLayout;
@@ -1810,6 +1869,9 @@ namespace RVX
         RHIPipelineRef m_gpuSceneMaskedPipeline;
         RHIPipelineRef m_gpuSceneDepthOnlyPipeline;
         RHIPipelineRef m_deferredLightingPipeline;
+        RHIPipelineRef m_exposureHistogramClearPipeline;
+        RHIPipelineRef m_exposureHistogramBuildPipeline;
+        RHIPipelineRef m_exposureAdaptationPipeline;
         // Every GPU-scene raster pipeline is tracked independently from the
         // Back-cull convenience members above.  Cull variants are created on
         // demand, so those members alone cannot describe the complete set
@@ -1896,6 +1958,7 @@ namespace RVX
         RHIBufferRef m_fallbackClusterConstantsBuffer;
         RHIBufferRef m_fallbackClusterBuffer;
         RHIBufferRef m_fallbackClusterLightIndexBuffer;
+        RHIBufferRef m_fallbackExposureStateBuffer;
         RHITextureViewRef m_currentDirectionalShadowView;
         RHITextureViewRef m_currentRayTracedShadowMaskView;
         RHISamplerRef m_currentDirectionalShadowSampler;
@@ -1908,6 +1971,7 @@ namespace RVX
         RHIBufferRef m_currentClusterConstantsBuffer;
         RHIBufferRef m_currentClusterBuffer;
         RHIBufferRef m_currentClusterLightIndexBuffer;
+        RHIBufferRef m_currentExposureStateBuffer;
         bool m_frameResourceBindingsDirty = false;
         DirectionalShadowFrameBindingResult m_lastDirectionalShadowFrameBindingResult;
         RayTracedShadowFrameBindingResult m_lastRayTracedShadowFrameBindingResult;

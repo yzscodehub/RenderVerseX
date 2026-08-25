@@ -238,7 +238,9 @@ namespace RVX
         postProcess.enableSSAO = false;
         postProcess.enableSSR = false;
         postProcess.toneMappingOperator = RenderToneMappingOperator::ACES;
-        postProcess.exposure = 1.0f;
+        postProcess.exposureSettings.mode = RenderExposureMode::ManualEV100;
+        postProcess.exposureSettings.manualEV100 = 0.0f;
+        postProcess.exposureSettings.exposureCompensationEV = 0.0f;
         postProcess.gamma = 2.2f;
         postProcess.bloomThreshold = 0.65f;
         postProcess.bloomIntensity = 0.35f;

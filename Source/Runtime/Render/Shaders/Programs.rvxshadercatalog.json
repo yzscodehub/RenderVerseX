@@ -50,6 +50,9 @@
     {"asset":"PostProcess/TAA.hlsl","stage":"Vertex","entry":"VSMain","backends":["DX11","DX12","Vulkan","Metal","OpenGL"],"defines":[{"name":"RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y","value":"$backend.clipY"}]},
     {"asset":"PostProcess/TAA.hlsl","stage":"Pixel","entry":"PSResolve","backends":["DX11","DX12","Vulkan","Metal","OpenGL"],"defines":[{"name":"RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y","value":"$backend.clipY"}]},
     {"asset":"PostProcess/TAA.hlsl","stage":"Pixel","entry":"PSStore","backends":["DX11","DX12","Vulkan","Metal","OpenGL"],"defines":[{"name":"RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y","value":"$backend.clipY"}]},
+    {"asset":"PostProcess/Exposure.hlsl","stage":"Compute","entry":"CSClearHistogram","backends":["DX11","DX12","Vulkan","Metal","OpenGL"]},
+    {"asset":"PostProcess/Exposure.hlsl","stage":"Compute","entry":"CSBuildHistogram","backends":["DX11","DX12","Vulkan","Metal","OpenGL"]},
+    {"asset":"PostProcess/Exposure.hlsl","stage":"Compute","entry":"CSAdaptExposure","backends":["DX11","DX12","Vulkan","Metal","OpenGL"]},
     {"asset":"PostProcess/Vignette.hlsl","stage":"Vertex","entry":"VSMain","backends":["DX11","DX12","Vulkan","Metal","OpenGL"],"defines":[{"name":"RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y","value":"$backend.clipY"}]},
     {"asset":"PostProcess/Vignette.hlsl","stage":"Pixel","entry":"PSMain","backends":["DX11","DX12","Vulkan","Metal","OpenGL"],"defines":[{"name":"RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y","value":"$backend.clipY"}]},
 

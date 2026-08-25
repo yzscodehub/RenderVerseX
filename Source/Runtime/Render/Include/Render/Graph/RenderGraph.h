@@ -13,6 +13,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 namespace RVX
 {
@@ -120,6 +121,22 @@ namespace RVX
         Graphics,
         Compute,
         RayTracing,
+        Copy,
+    };
+
+    /**
+     * @brief Optional physical submission-queue requirement for one pass.
+     *
+     * Pass type remains the command and shader-stage contract. Queue affinity
+     * only controls where that valid work is submitted when a graph elects to
+     * use multiple queues. Explicit non-default affinities are exact: a graph
+     * fails compilation rather than silently moving a pass to another queue.
+     */
+    enum class RenderGraphQueueAffinity : uint8
+    {
+        Default = 0,
+        Graphics,
+        Compute,
         Copy,
     };
 
@@ -354,6 +371,22 @@ namespace RVX
         void AddPass(
             const char* name,
             RenderGraphPassType type,
+            RenderGraphQueueAffinity queueAffinity,
+            std::function<void(RenderGraphBuilder&, Data&)> setup,
+            std::function<void(const Data&, RHICommandContext&)> execute);
+
+        template<typename Data>
+        void AddPass(
+            const char* name,
+            RenderGraphPassType type,
+            std::function<void(RenderGraphBuilder&, Data&)> setup,
+            std::function<void(const Data&, RenderGraphPassContext&)> execute);
+
+        template<typename Data>
+        void AddPass(
+            const char* name,
+            RenderGraphPassType type,
+            RenderGraphQueueAffinity queueAffinity,
             std::function<void(RenderGraphBuilder&, Data&)> setup,
             std::function<void(const Data&, RenderGraphPassContext&)> execute);
 
@@ -500,6 +533,8 @@ namespace RVX
             uint32 index = RVX_INVALID_INDEX;
             std::string name;
             RenderGraphPassType type = RenderGraphPassType::Graphics;
+            RenderGraphQueueAffinity queueAffinity =
+                RenderGraphQueueAffinity::Default;
             bool culled = false;
             DiagnosticExecutionQueue plannedExecutionQueue =
                 DiagnosticExecutionQueue::Graphics;
@@ -718,6 +753,7 @@ namespace RVX
         void AddPassInternal(
             const char* name,
             RenderGraphPassType type,
+            RenderGraphQueueAffinity queueAffinity,
             std::function<void(RenderGraphBuilder&)> setup,
             std::function<void(RenderGraphPassContext&)> execute);
         RHITextureView* ResolveTextureView(RGTextureViewHandle handle) const;
@@ -734,10 +770,27 @@ namespace RVX
         std::function<void(RenderGraphBuilder&, Data&)> setup,
         std::function<void(const Data&, RHICommandContext&)> execute)
     {
+        AddPass<Data>(
+            name,
+            type,
+            RenderGraphQueueAffinity::Default,
+            std::move(setup),
+            std::move(execute));
+    }
+
+    template<typename Data>
+    void RenderGraph::AddPass(
+        const char* name,
+        RenderGraphPassType type,
+        RenderGraphQueueAffinity queueAffinity,
+        std::function<void(RenderGraphBuilder&, Data&)> setup,
+        std::function<void(const Data&, RHICommandContext&)> execute)
+    {
         auto data = std::make_shared<Data>();
         AddPassInternal(
             name,
             type,
+            queueAffinity,
             [data, setup](RenderGraphBuilder& builder)
             {
                 setup(builder, *data);
@@ -755,10 +808,27 @@ namespace RVX
         std::function<void(RenderGraphBuilder&, Data&)> setup,
         std::function<void(const Data&, RenderGraphPassContext&)> execute)
     {
+        AddPass<Data>(
+            name,
+            type,
+            RenderGraphQueueAffinity::Default,
+            std::move(setup),
+            std::move(execute));
+    }
+
+    template<typename Data>
+    void RenderGraph::AddPass(
+        const char* name,
+        RenderGraphPassType type,
+        RenderGraphQueueAffinity queueAffinity,
+        std::function<void(RenderGraphBuilder&, Data&)> setup,
+        std::function<void(const Data&, RenderGraphPassContext&)> execute)
+    {
         auto data = std::make_shared<Data>();
         AddPassInternal(
             name,
             type,
+            queueAffinity,
             [data, setup](RenderGraphBuilder& builder)
             {
                 setup(builder, *data);

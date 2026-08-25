@@ -9,6 +9,7 @@
 // =============================================================================
 
 #include "../Include/FullscreenTriangle.hlsli"
+#include "../Include/Exposure.hlsli"
 
 cbuffer TAAConstants : register(b0, space0)
 {
@@ -24,6 +25,7 @@ Texture2D<float> HistoryDepth : register(t4, space0);
 Texture2D<float2> Velocity : register(t5, space0);
 Texture2D<float> ReactiveMask : register(t6, space0);
 SamplerState LinearClampSampler : register(s7, space0);
+StructuredBuffer<RVXExposureState> ExposureState : register(t8, space0);
 
 struct VSOutput
 {
@@ -138,9 +140,16 @@ float4 PSResolve(VSOutput input) : SV_TARGET0
 
         const float3 neighborhoodMin = SampleCurrentNeighborhoodMin(uv);
         const float3 neighborhoodMax = SampleCurrentNeighborhoodMax(uv);
-        float3 historyYCoCg = RGBToYCoCg(SanitizeColor(
+        const RVXExposureState exposureState = ExposureState[0];
+        const float historyRescale = RVXExposureStateIsValid(exposureState)
+            ? RVXExposurePreExposure(exposureState) /
+                RVXExposurePreviousPreExposure(exposureState)
+            : 1.0;
+        const float3 historyPreExposed = SanitizeColor(
             HistoryColor.SampleLevel(
-                LinearClampSampler, saturate(previousUV), 0.0).rgb));
+                LinearClampSampler, saturate(previousUV), 0.0).rgb) *
+            historyRescale;
+        float3 historyYCoCg = RGBToYCoCg(historyPreExposed);
         historyYCoCg = clamp(historyYCoCg, neighborhoodMin, neighborhoodMax);
         const float3 history = SanitizeColor(YCoCgToRGB(historyYCoCg));
 

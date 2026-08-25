@@ -333,9 +333,11 @@ namespace RVX
         context.renderSettings.postProcess.enableSSAO = false;
         context.renderSettings.postProcess.enableSSR = false;
         context.renderSettings.postProcess.enableBloom = false;
-        context.renderSettings.postProcess.exposureMode =
-            RenderExposureMode::ManualMultiplier;
-        context.renderSettings.postProcess.exposure = 1.0f;
+        context.renderSettings.postProcess.exposureSettings.mode =
+            RenderExposureMode::ManualEV100;
+        context.renderSettings.postProcess.exposureSettings.manualEV100 = 0.0f;
+        context.renderSettings.postProcess.exposureSettings.exposureCompensationEV =
+            0.0f;
         // HZB is intentionally outside the P0 interior contract. Complex
         // occlusion here is produced by Sponza geometry, depth testing, and
         // opaque/transparent ordering rather than an unavailable HZB path.

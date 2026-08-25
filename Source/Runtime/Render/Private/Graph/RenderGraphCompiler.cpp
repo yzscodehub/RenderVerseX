@@ -124,6 +124,7 @@ namespace RVX
             {
                 HashPlanString(hash, pass.name);
                 HashPlanValue(hash, pass.type);
+                HashPlanValue(hash, pass.queueAffinity);
                 HashPlanValue(hash, pass.plannedExecutionQueue);
                 HashPlanValue(hash, pass.culled);
                 HashPlanValue(hash, static_cast<uint64>(pass.usages.size()));
@@ -902,6 +903,74 @@ namespace RVX
             RVX_CORE_ERROR("{}", message);
         }
 
+        const char* GetQueueAffinityName(
+            RenderGraphQueueAffinity queueAffinity) noexcept
+        {
+            switch (queueAffinity)
+            {
+                case RenderGraphQueueAffinity::Default:
+                    return "Default";
+                case RenderGraphQueueAffinity::Graphics:
+                    return "Graphics";
+                case RenderGraphQueueAffinity::Compute:
+                    return "Compute";
+                case RenderGraphQueueAffinity::Copy:
+                    return "Copy";
+                default:
+                    return "Unknown";
+            }
+        }
+
+        bool IsQueueAffinityResolved(const Pass& pass) noexcept
+        {
+            switch (pass.queueAffinity)
+            {
+                case RenderGraphQueueAffinity::Default:
+                    return true;
+                case RenderGraphQueueAffinity::Graphics:
+                    return pass.plannedExecutionQueue ==
+                        RenderGraph::DiagnosticExecutionQueue::Graphics;
+                case RenderGraphQueueAffinity::Compute:
+                    return pass.plannedExecutionQueue ==
+                        RenderGraph::DiagnosticExecutionQueue::Compute;
+                case RenderGraphQueueAffinity::Copy:
+                    return pass.plannedExecutionQueue ==
+                        RenderGraph::DiagnosticExecutionQueue::Copy;
+                default:
+                    return false;
+            }
+        }
+
+        void ValidatePassQueueAffinities(RenderGraphImpl& graph)
+        {
+            for (const Pass& pass : graph.passes)
+            {
+                if (!IsRenderGraphQueueAffinityCompatible(
+                        pass.type, pass.queueAffinity))
+                {
+                    ++graph.stats.validationErrorCount;
+                    AddCompileError(
+                        graph,
+                        "RenderGraph pass '" + pass.name +
+                            "' has queue affinity " +
+                            GetQueueAffinityName(pass.queueAffinity) +
+                            " that is incompatible with its pass type");
+                    continue;
+                }
+
+                if (!IsQueueAffinityResolved(pass))
+                {
+                    ++graph.stats.validationErrorCount;
+                    AddCompileError(
+                        graph,
+                        "RenderGraph pass '" + pass.name +
+                            "' requires queue affinity " +
+                            GetQueueAffinityName(pass.queueAffinity) +
+                            " but the selected queue policy or RHI capabilities cannot provide it");
+                }
+            }
+        }
+
         void ValidatePassUsages(RenderGraphImpl& graph)
         {
             for (uint32 passIndex = 0; passIndex < graph.passes.size(); ++passIndex)
@@ -1645,6 +1714,7 @@ namespace RVX
             }
         }
 
+        ValidatePassQueueAffinities(graph);
         ValidatePassUsages(graph);
         if (!supportsBufferRangeBarriers)
         {

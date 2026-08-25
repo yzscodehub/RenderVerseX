@@ -89,6 +89,7 @@ bool RenderContext::Initialize(const RenderContextConfig& config,
     m_frameIndex = 0;
     m_frameNumber = 0;
     m_surface = {};
+    m_shutdownNativeValidation = {};
 
     RVX_CORE_INFO("RenderContext initialized successfully");
     return true;
@@ -142,6 +143,14 @@ void RenderContext::Shutdown(bool waitForIdle)
     // RenderContext already performed the normal wait above. Device-loss and
     // timeout teardown deliberately skip all completion waits.
     m_frameSynchronizer.Shutdown(false);
+    if (m_device)
+    {
+        // Capture after every owned RHI child has been destroyed so validation
+        // emitted by command-context, swap-chain, or synchronization teardown
+        // remains observable after the device object itself is gone.
+        m_shutdownNativeValidation =
+            m_device->GetNativeValidationDiagnostics();
+    }
     m_device.reset();
 
     m_initialized = false;
@@ -282,12 +291,19 @@ bool RenderContext::BeginFrame()
         return false;
     }
 
-    m_frameReadyToPresent = false;
     if (!m_initialized || !m_device)
     {
         RVX_CORE_WARN("RenderContext: BeginFrame called before initialization");
         return false;
     }
+    if (HasAcquiredPresentationImage())
+    {
+        RVX_CORE_ERROR(
+            "RenderContext: BeginFrame rejected while a presentation image remains acquired");
+        return false;
+    }
+
+    m_frameReadyToPresent = false;
 
     // Wait for this frame slot to be available
     if (!m_frameSynchronizer.WaitForFrame(m_frameIndex))
@@ -607,13 +623,30 @@ GPUCompletionPoint RenderContext::EndFrame()
     return submittedPoint;
 }
 
-void RenderContext::AbortFrame()
+bool RenderContext::AbortFrame()
 {
     if (!m_frameActive)
     {
-        return;
+        if (HasAcquiredPresentationImage())
+        {
+            RVX_CORE_ERROR(
+                "RenderContext: cannot abort an inactive frame that still owns a presentation image");
+            return false;
+        }
+        return true;
     }
-    if (RHICommandContext* context = GetGraphicsContext())
+
+    RHICommandContext* context = GetGraphicsContext();
+    const bool presentationImageAcquired =
+        m_swapChain && m_swapChain->HasAcquiredPresentationImage();
+    bool retirementRecorded = !presentationImageAcquired;
+    if (presentationImageAcquired && context && m_graphicsContextRecording)
+    {
+        retirementRecorded =
+            m_swapChain->RecordAbortPresentationImageRetirement(*context);
+    }
+
+    if (context)
     {
         if (m_graphicsContextRecording)
         {
@@ -625,21 +658,68 @@ void RenderContext::AbortFrame()
     {
         m_frameTiming->DiscardFrame(m_frameIndex, false);
     }
-    m_queueSubmissionPending = false;
-    m_pendingQueuePlan = {};
-    m_pendingQueueContexts.clear();
-    m_pendingGraphicsGateway.Reset();
+    const bool hadPendingQueueSubmission = m_queueSubmissionPending;
     if (m_pendingGraphExecution)
     {
         static_cast<void>(m_pendingGraphExecution->AbortUnsubmitted());
         m_pendingGraphExecution.reset();
     }
+
+    bool presentationImageRetired = !presentationImageAcquired;
+    if (presentationImageAcquired && retirementRecorded && m_device && context)
+    {
+        const GPUCompletionPoint retirementPoint =
+            m_frameSynchronizer.SubmitGraphics(context);
+        if (retirementPoint.domain == GPUQueueDomain::Graphics &&
+            retirementPoint.value != 0)
+        {
+            m_frameSynchronizer.SignalFrame(m_frameIndex, retirementPoint);
+            if (hadPendingQueueSubmission)
+            {
+                m_inFlightQueueContexts[m_frameIndex] =
+                    std::move(m_pendingQueueContexts);
+            }
+            m_swapChain->Present();
+            presentationImageRetired =
+                m_device->QueryRuntimeStatus() ==
+                RHIDeviceRuntimeStatus::Ready;
+            if (presentationImageRetired)
+            {
+                m_frameIndex =
+                    (m_frameIndex + 1) % m_frameSynchronizer.GetFrameCount();
+                ++m_frameNumber;
+            }
+        }
+    }
+
+    m_queueSubmissionPending = false;
+    m_pendingQueuePlan = {};
+    m_pendingQueueContexts.clear();
+    m_pendingGraphicsGateway.Reset();
+
     if (m_device)
     {
-        m_device->EndFrame();
+        // A failed acquired-image retirement leaves the reset native frame
+        // fence intentionally unsubmitted. The render runtime must terminate
+        // instead of reusing an unconsumed binary acquire semaphore.
+        if (presentationImageRetired)
+        {
+            m_device->EndFrame();
+        }
     }
     m_frameActive = false;
     m_frameReadyToPresent = false;
+    if (!presentationImageRetired)
+    {
+        RVX_CORE_ERROR(
+            "RenderContext: failed to retire the presentation image acquired by an abandoned frame");
+    }
+    return presentationImageRetired;
+}
+
+bool RenderContext::HasAcquiredPresentationImage() const noexcept
+{
+    return m_swapChain && m_swapChain->HasAcquiredPresentationImage();
 }
 
 void RenderContext::Present()

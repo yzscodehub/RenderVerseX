@@ -239,6 +239,8 @@ namespace RVX
         RGBufferHandle m_clusterConstantsReadHandle;
         RGBufferHandle m_clusterDataReadHandle;
         RGBufferHandle m_clusterLightIndicesReadHandle;
+        /** Exact committed prior-presented pre-exposure state for DefaultLit. */
+        RGBufferHandle m_exposureStateReadHandle;
         RGBufferHandle m_currentPaletteReadHandle;
         RGBufferHandle m_previousPaletteReadHandle;
         RGTextureViewHandle m_colorTargetViewHandle;

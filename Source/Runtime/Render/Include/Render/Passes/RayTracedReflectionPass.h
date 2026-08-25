@@ -32,6 +32,10 @@ namespace RVX
         bool sceneColorAvailable = false;
         bool depthAvailable = false;
         bool velocityAvailable = false;
+        bool exposureStateAvailable = false;
+        bool exposureStateReadDeclared = false;
+        bool exposureStateDescriptorBound = false;
+        uint64 exposureStateContentHash = 0;
         bool historyAvailable = false;
         bool depthHistoryAvailable = false;
         bool normalHistoryAvailable = false;
@@ -166,6 +170,7 @@ namespace RVX
         RGTextureHandle m_sceneColorReadHandle;
         RGTextureHandle m_depthReadHandle;
         RGTextureHandle m_velocityReadHandle;
+        RGBufferHandle m_exposureStateReadHandle;
         RGTextureHandle m_historyReadHandle;
         RGTextureHandle m_historyDepthReadHandle;
         RGTextureHandle m_historyDepthWriteHandle;

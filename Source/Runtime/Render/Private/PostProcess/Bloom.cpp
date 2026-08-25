@@ -79,8 +79,8 @@ void BloomPass::SetResources(PipelineCache* pipelineCache, ResourceViewCache* vi
 
     if (!m_pipelineCache->GetBloomPipeline() ||
         !m_pipelineCache->GetBloomAdditivePipeline(m_pipelineCache->GetPostProcessIntermediateFormat()) ||
-        !m_pipelineCache->GetPostProcessLayout() ||
-        !m_pipelineCache->GetPostProcessSetLayout())
+        !m_pipelineCache->GetExposurePostProcessLayout() ||
+        !m_pipelineCache->GetExposurePostProcessSetLayout())
     {
         MarkUnsupported("Bloom fullscreen pipeline resources are not available");
         return;
@@ -97,6 +97,37 @@ void BloomPass::SetResources(PipelineCache* pipelineCache, ResourceViewCache* vi
 
 void BloomPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output)
 {
+    static_cast<void>(graph);
+    static_cast<void>(input);
+    static_cast<void>(output);
+    m_lastExposureStateContentHash = 0;
+    MarkUnsupported("Bloom requires the candidate exposure-state graph input");
+}
+
+void BloomPass::AddToGraph(RenderGraph& graph,
+                           const PostProcessFrameInputs& frameInputs,
+                           RGTextureHandle output)
+{
+    if (!frameInputs.HasExposureState() ||
+        frameInputs.exposureStateContentHash == 0)
+    {
+        m_lastExposureStateContentHash = 0;
+        MarkUnsupported("Bloom requires a non-zero candidate exposure-state identity");
+        return;
+    }
+    AddToGraphWithExposure(graph,
+                           frameInputs.sceneColor,
+                           frameInputs.exposureState,
+                           frameInputs.exposureStateContentHash,
+                           output);
+}
+
+void BloomPass::AddToGraphWithExposure(RenderGraph& graph,
+                                       RGTextureHandle input,
+                                       RGBufferHandle exposureState,
+                                       uint64 exposureStateContentHash,
+                                       RGTextureHandle output)
+{
     if (!IsEnabled())
     {
         if (IsRequestedEnabled() && !IsSupported())
@@ -111,6 +142,8 @@ void BloomPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureH
         AddFullscreenPass(graph,
                           "BloomCopyScene",
                           input,
+                          exposureState,
+                          exposureStateContentHash,
                           output,
                           PassMode::CopyScene,
                           false,
@@ -145,6 +178,8 @@ void BloomPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureH
     AddFullscreenPass(graph,
                       "BloomExtract",
                       input,
+                      exposureState,
+                      exposureStateContentHash,
                       pyramid[0],
                       PassMode::Extract,
                       false,
@@ -155,6 +190,8 @@ void BloomPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureH
     AddFullscreenPass(graph,
                       "BloomDownsample1",
                       pyramid[0],
+                      exposureState,
+                      exposureStateContentHash,
                       pyramid[1],
                       PassMode::Downsample,
                       false,
@@ -165,6 +202,8 @@ void BloomPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureH
     AddFullscreenPass(graph,
                       "BloomDownsample2",
                       pyramid[1],
+                      exposureState,
+                      exposureStateContentHash,
                       pyramid[2],
                       PassMode::Downsample,
                       false,
@@ -175,6 +214,8 @@ void BloomPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureH
     AddFullscreenPass(graph,
                       "BloomCopyScene",
                       input,
+                      exposureState,
+                      exposureStateContentHash,
                       output,
                       PassMode::CopyScene,
                       false,
@@ -187,6 +228,8 @@ void BloomPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureH
     AddFullscreenPass(graph,
                       "BloomComposite2",
                       pyramid[2],
+                      exposureState,
+                      exposureStateContentHash,
                       output,
                       PassMode::CompositeAdditive,
                       true,
@@ -197,6 +240,8 @@ void BloomPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureH
     AddFullscreenPass(graph,
                       "BloomComposite1",
                       pyramid[1],
+                      exposureState,
+                      exposureStateContentHash,
                       output,
                       PassMode::CompositeAdditive,
                       true,
@@ -207,6 +252,8 @@ void BloomPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureH
     AddFullscreenPass(graph,
                       "BloomComposite0",
                       pyramid[0],
+                      exposureState,
+                      exposureStateContentHash,
                       output,
                       PassMode::CompositeAdditive,
                       true,
@@ -219,6 +266,8 @@ void BloomPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureH
 void BloomPass::AddFullscreenPass(RenderGraph& graph,
                                   const char* passName,
                                   RGTextureHandle input,
+                                  RGBufferHandle exposureState,
+                                  uint64 exposureStateContentHash,
                                   RGTextureHandle output,
                                   PassMode mode,
                                   bool additive,
@@ -230,6 +279,7 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
     struct BloomData
     {
         RGTextureHandle input;
+        RGBufferHandle exposureState;
         RGTextureHandle output;
         RGTextureViewHandle inputView;
         RGTextureViewHandle outputView;
@@ -241,16 +291,22 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
         PassMode mode;
         bool additive;
         RHILoadOp outputLoadOp;
+        uint64 exposureStateContentHash = 0;
     };
 
     graph.AddPass<BloomData>(
         passName,
         RenderGraphPassType::Graphics,
-        [input, output, mode, additive, outputLoadOp, threshold, intensity, radius, this](
+        [input, exposureState, exposureStateContentHash, output, mode, additive, outputLoadOp,
+         threshold, intensity, radius, this](
             RenderGraphBuilder& builder,
             BloomData& data)
         {
             data.input = input;
+            data.exposureState = builder.Read(
+                exposureState,
+                MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                                 RHIShaderStage::Pixel));
             data.output = output;
             const RHITextureDesc* inputDesc = builder.GetTextureDesc(input);
             const RHITextureDesc* outputDesc = builder.GetTextureDesc(output);
@@ -297,6 +353,7 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
             data.mode = mode;
             data.additive = additive;
             data.outputLoadOp = outputLoadOp;
+            data.exposureStateContentHash = exposureStateContentHash;
         },
         [this](const BloomData& data, RenderGraphPassContext& context)
         {
@@ -310,7 +367,8 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
             RHIPipeline* pipeline = data.additive ?
                 m_pipelineCache->GetBloomAdditivePipeline(data.outputFormat) :
                 m_pipelineCache->GetBloomPipeline(data.outputFormat);
-            RHIDescriptorSetLayout* setLayout = m_pipelineCache->GetPostProcessSetLayout();
+            RHIDescriptorSetLayout* setLayout =
+                m_pipelineCache->GetExposurePostProcessSetLayout();
             IRHIDevice* device = m_pipelineCache->GetDevice();
             if (!pipeline || !setLayout || !device)
             {
@@ -322,7 +380,9 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
 
             RHITexture* inputTexture = context.GetTexture(data.input);
             RHITexture* outputTexture = context.GetTexture(data.output);
-            if (!inputTexture || !outputTexture)
+            RHIBuffer* exposureState = context.GetBuffer(data.exposureState);
+            if (!inputTexture || !outputTexture || !exposureState ||
+                data.exposureStateContentHash == 0)
             {
                 RVX_CORE_WARN("Bloom: input or output texture is unavailable");
                 context.MarkExecutionFailed("Bloom input or output texture is unavailable");
@@ -378,6 +438,7 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
             descriptorDesc.BindTexture(1, inputView);
             descriptorDesc.BindSampler(2, m_sampler.Get());
             descriptorDesc.BindTexture(3, inputView);
+            descriptorDesc.BindBuffer(4, exposureState);
 
             RHIDescriptorSetRef descriptorSet = device->CreateDescriptorSet(descriptorDesc);
             if (!descriptorSet)
@@ -418,6 +479,7 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
 
             ctx.Draw(3, 1, 0, 0);
             ctx.EndRenderPass();
+            m_lastExposureStateContentHash = data.exposureStateContentHash;
         });
 }
 

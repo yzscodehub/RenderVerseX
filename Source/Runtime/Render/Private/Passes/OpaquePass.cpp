@@ -178,6 +178,8 @@ namespace
             context.RetainSubmissionResource(
                 Ref<RefCounted>(bindings.environmentIBLSampler.Get())) &&
             context.RetainSubmissionResource(
+                Ref<RefCounted>(bindings.exposureStateBuffer.Get())) &&
+            context.RetainSubmissionResource(
                 Ref<RefCounted>(bindings.frameSetLayout.Get())) &&
             context.RetainSubmissionResource(
                 Ref<RefCounted>(bindings.frameDescriptorSet.Get()));
@@ -1692,6 +1694,7 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     m_clusterConstantsReadHandle = {};
     m_clusterDataReadHandle = {};
     m_clusterLightIndicesReadHandle = {};
+    m_exposureStateReadHandle = {};
     m_currentPaletteReadHandle = {};
     m_previousPaletteReadHandle = {};
     m_colorTargetViewHandle = {};
@@ -1799,7 +1802,9 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
             builder.GetBufferDesc(m_lightingResources->clusterConstants) != nullptr &&
             builder.GetBufferDesc(m_lightingResources->clusterData) != nullptr &&
             builder.GetBufferDesc(
-                m_lightingResources->clusterLightIndices) != nullptr;
+                m_lightingResources->clusterLightIndices) != nullptr &&
+            view.exposureState.IsValid() &&
+            builder.GetBufferDesc(view.exposureState) != nullptr;
         if (!descriptionsReady)
         {
             return;
@@ -1829,12 +1834,17 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
             m_lightingResources->clusterLightIndices,
             RHIResourceState::ShaderResource,
             RHIShaderStage::Pixel);
+        m_exposureStateReadHandle = builder.Read(
+            view.exposureState,
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Pixel);
         if (!m_lightConstantsReadHandle.IsValid() ||
             !m_pointLightsReadHandle.IsValid() ||
             !m_spotLightsReadHandle.IsValid() ||
             !m_clusterConstantsReadHandle.IsValid() ||
             !m_clusterDataReadHandle.IsValid() ||
-            !m_clusterLightIndicesReadHandle.IsValid())
+            !m_clusterLightIndicesReadHandle.IsValid() ||
+            !m_exposureStateReadHandle.IsValid())
         {
             return;
         }
@@ -3989,6 +3999,14 @@ void OpaquePass::Execute(
             reportPlannedFailure(routePlan.gpuPacketCount != 0);
             return;
         }
+        if (!m_exposureStateReadHandle.IsValid() ||
+            context.GetBuffer(m_exposureStateReadHandle) == nullptr)
+        {
+            RVX_RENDER_WARN(
+                "OpaquePass: Forward HDR rendering requires an exact committed exposure-state graph read");
+            reportPlannedFailure(routePlan.gpuPacketCount != 0);
+            return;
+        }
     }
 
     EnvironmentIBLFrameResources environmentIBLResources;
@@ -4020,6 +4038,11 @@ void OpaquePass::Execute(
     lightingRequest.environmentIBL = consumesSurfaceLighting
         ? environmentIBLResources
         : EnvironmentIBLFrameResources{};
+    if (consumesSurfaceLighting)
+    {
+        lightingRequest.exposureStateBuffer = RHIBufferRef(
+            context.GetBuffer(m_exposureStateReadHandle));
+    }
     m_lightingBindingSnapshot = std::make_shared<LightingBindingSnapshot>();
     if (!m_pipelineCache->CreateLightingBindingSnapshot(
             drawView, lightingRequest, *m_lightingBindingSnapshot) ||

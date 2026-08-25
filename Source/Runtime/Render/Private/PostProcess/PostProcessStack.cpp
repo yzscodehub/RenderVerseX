@@ -8,6 +8,7 @@
 #include "Core/Log.h"
 #include "RHI/RHICommandContext.h"
 #include <algorithm>
+#include <cstring>
 #include <limits>
 #include <utility>
 
@@ -75,6 +76,24 @@ namespace
             hash, static_cast<uint64>(handle.subresourceRange.aspect));
     }
 
+    void MixBufferHandleFingerprint(uint64& hash, const RGBufferHandle& handle)
+    {
+        Diagnostics::MixContentHashValue(hash, handle.index);
+        Diagnostics::MixContentHashValue(hash, handle.graphIdentity);
+        Diagnostics::MixContentHashValue(hash, handle.recordingGeneration);
+    }
+
+    [[nodiscard]] bool IsSameBufferHandle(
+        const RGBufferHandle& lhs,
+        const RGBufferHandle& rhs) noexcept
+    {
+        return lhs.index == rhs.index && lhs.hasRange == rhs.hasRange &&
+               lhs.rangeOffset == rhs.rangeOffset &&
+               lhs.rangeSize == rhs.rangeSize &&
+               lhs.graphIdentity == rhs.graphIdentity &&
+               lhs.recordingGeneration == rhs.recordingGeneration;
+    }
+
     uint64 ComputePlanFingerprint(const PostProcessStackExecuteStats& stats)
     {
         uint64 hash = Diagnostics::RVX_DIAGNOSTICS_FNV1A64_OFFSET_BASIS;
@@ -96,6 +115,18 @@ namespace
         MixTextureHandleFingerprint(hash, stats.frameInputs.normal);
         MixTextureHandleFingerprint(hash, stats.frameInputs.velocity);
         MixTextureHandleFingerprint(hash, stats.frameInputs.reactiveMask);
+        MixBufferHandleFingerprint(hash, stats.frameInputs.exposureState);
+        Diagnostics::MixContentHashValue(
+            hash, stats.frameInputs.exposureStateContentHash);
+        uint32 fixedDeltaBits = 0;
+        static_assert(sizeof(fixedDeltaBits) ==
+                      sizeof(stats.frameInputs.fixedDeltaSeconds));
+        std::memcpy(&fixedDeltaBits,
+                    &stats.frameInputs.fixedDeltaSeconds,
+                    sizeof(fixedDeltaBits));
+        Diagnostics::MixContentHashValue(hash, fixedDeltaBits);
+        Diagnostics::MixContentHashValue(
+            hash, stats.exposureStats.configurationHash);
         Diagnostics::MixContentHashValue(
             hash, stats.frameInputs.historyAvailable ? 1u : 0u);
         Diagnostics::MixContentHashValue(
@@ -454,12 +485,18 @@ void PostProcessStack::Initialize(IRHIDevice* device)
     RVX_CORE_DEBUG("PostProcessStack: Initialized");
 }
 
+void PostProcessStack::SetExposureResources(PipelineCache* pipelineCache)
+{
+    m_exposureController.SetResources(pipelineCache);
+}
+
 void PostProcessStack::Shutdown()
 {
     if (!m_device)
         return;
 
     ClearEffects();
+    m_exposureController.Shutdown();
     m_device = nullptr;
 
     RVX_CORE_DEBUG("PostProcessStack: Shutdown");
@@ -799,13 +836,34 @@ bool PostProcessStack::BuildPlanImpl(
     PostProcessStackExecuteStats& outStats) const
 {
     outStats = {};
+    PostProcessFrameInputs effectiveFrameInputs = frameInputs;
+    const uint64 exposureConfigurationHash =
+        CalculateRenderExposureSettingsHash(m_settings.exposureSettings);
+    if (const ExposureFrameInput* const preparedExposure =
+            m_exposureController.FindPreparedFrameInput(
+                frameInputs.historyIdentity,
+                exposureConfigurationHash))
+    {
+        const ExposureTemporalHistoryDecision temporalDecision =
+            ResolveExposureTemporalHistory(
+                frameInputs.historyAvailable,
+                frameInputs.resetTemporalHistory,
+                frameInputs.historyResetReasons,
+                *preparedExposure);
+        effectiveFrameInputs.historyAvailable = temporalDecision.available;
+        effectiveFrameInputs.resetTemporalHistory = temporalDecision.reset;
+        effectiveFrameInputs.historyResetReasons =
+            temporalDecision.resetReasons;
+    }
     SetQualityPresetStats(outStats, m_settings);
-    outStats.frameInputs = frameInputs;
+    outStats.frameInputs = effectiveFrameInputs;
     outStats.finalOutputFormat = finalOutputFormat;
-    outStats.inputColorDomain = frameInputs.sceneColorDomain;
-    outStats.outputColorDomain = frameInputs.outputColorDomain;
+    outStats.inputColorDomain = effectiveFrameInputs.sceneColorDomain;
+    outStats.outputColorDomain = effectiveFrameInputs.outputColorDomain;
     outStats.planContract = contract;
     outStats.planValid = false;
+    outStats.exposureStats.requested = true;
+    outStats.exposureStats.configurationHash = exposureConfigurationHash;
 
     if (!IsValidRenderAntiAliasingMode(m_settings.antiAliasingMode))
     {
@@ -815,10 +873,32 @@ bool PostProcessStack::BuildPlanImpl(
         outStats.toneMappingBoundaryWarning = outStats.planFailureReason;
         return false;
     }
+    if (!IsValidRenderExposureSettings(m_settings.exposureSettings) ||
+        outStats.exposureStats.configurationHash == 0)
+    {
+        outStats.planFailureReason =
+            "post-process plan has invalid physical exposure settings";
+        outStats.toneMappingBoundaryValid = false;
+        outStats.toneMappingBoundaryWarning = outStats.planFailureReason;
+        return false;
+    }
+    if (frameInputValidationMode == FrameInputValidationMode::FrameReady &&
+        (!effectiveFrameInputs.HasExposureState() ||
+         effectiveFrameInputs.exposureStateContentHash == 0 ||
+         !IsValidRenderExposureDeltaSeconds(
+             effectiveFrameInputs.fixedDeltaSeconds) ||
+         !effectiveFrameInputs.historyIdentity.IsValid()))
+    {
+        outStats.planFailureReason =
+            "post-process plan requires an exact exposure state, fixed time, and history identity";
+        outStats.toneMappingBoundaryValid = false;
+        outStats.toneMappingBoundaryWarning = outStats.planFailureReason;
+        return false;
+    }
 
     const PostProcessFrameInputs* const readinessInputs =
         frameInputValidationMode == FrameInputValidationMode::FrameReady
-            ? &frameInputs
+            ? &effectiveFrameInputs
             : nullptr;
     const std::vector<IPostProcessPass*> enabledEffects =
         GatherEnabledEffects(outStats, false, readinessInputs);
@@ -840,8 +920,10 @@ bool PostProcessStack::BuildPlanImpl(
         return false;
     };
 
-    if (frameInputs.sceneColorDomain == PostProcessColorDomain::Unknown ||
-        frameInputs.outputColorDomain == PostProcessColorDomain::Unknown)
+    if (effectiveFrameInputs.sceneColorDomain ==
+            PostProcessColorDomain::Unknown ||
+        effectiveFrameInputs.outputColorDomain ==
+            PostProcessColorDomain::Unknown)
     {
         return fail("post-process plan requires explicit input and output color domains");
     }
@@ -896,7 +978,8 @@ bool PostProcessStack::BuildPlanImpl(
     if (enabledEffects.empty())
     {
         outStats.noEffectNoWork = true;
-        if (frameInputs.sceneColorDomain != frameInputs.outputColorDomain)
+        if (effectiveFrameInputs.sceneColorDomain !=
+            effectiveFrameInputs.outputColorDomain)
         {
             return fail("an empty post-process chain cannot change color domain");
         }
@@ -913,7 +996,8 @@ bool PostProcessStack::BuildPlanImpl(
         return fail("post-process plan requires exactly one enabled ToneMapping transform");
     }
 
-    PostProcessColorDomain currentDomain = frameInputs.sceneColorDomain;
+    PostProcessColorDomain currentDomain =
+        effectiveFrameInputs.sceneColorDomain;
     uint32 previousStage = 0;
     int32 previousOrder = 0;
     PostProcessPassId previousId = PostProcessPassId::Invalid;
@@ -947,7 +1031,7 @@ bool PostProcessStack::BuildPlanImpl(
         first = false;
     }
 
-    if (currentDomain != frameInputs.outputColorDomain)
+    if (currentDomain != effectiveFrameInputs.outputColorDomain)
     {
         return fail("post-process plan final color domain does not match the presentation contract");
     }
@@ -1017,10 +1101,14 @@ bool PostProcessStack::ExecutePlan(RenderGraph& graph,
             m_lastExecuteStats.planFailureReason;
         return false;
     }
+    const PostProcessFrameInputs& effectiveFrameInputs =
+        revalidatedPlan.frameInputs;
+    m_lastExecuteStats.frameInputs = effectiveFrameInputs;
 
     PostProcessStackExecuteStats currentSelection;
     const std::vector<IPostProcessPass*> enabledEffects =
-        GatherEnabledEffects(currentSelection, false, &frameInputs);
+        GatherEnabledEffects(
+            currentSelection, false, &effectiveFrameInputs);
     if (enabledEffects.size() != plan.enabledEffectCount)
     {
         m_lastExecuteStats.planValid = false;
@@ -1089,7 +1177,8 @@ bool PostProcessStack::ExecutePlan(RenderGraph& graph,
                 m_lastExecuteStats.planFailureReason;
             return false;
         }
-        if (frameInputs.sceneColorDomain != frameInputs.outputColorDomain)
+        if (effectiveFrameInputs.sceneColorDomain !=
+            effectiveFrameInputs.outputColorDomain)
         {
             m_lastExecuteStats.planValid = false;
             m_lastExecuteStats.planFailureReason = "identity post-process execution cannot change color domain";
@@ -1098,11 +1187,49 @@ bool PostProcessStack::ExecutePlan(RenderGraph& graph,
             return false;
         }
         return AddIdentityCopyPass(graph,
-                                   frameInputs.sceneColor,
+                                   effectiveFrameInputs.sceneColor,
                                    output,
                                    m_lastExecuteStats,
                                    "empty identity post-process plan copied scene color to output");
     }
+
+    const ExposureGraphOutputs exposureOutputs =
+        m_exposureController.AddToGraph(
+            graph,
+            effectiveFrameInputs.sceneColor,
+            effectiveFrameInputs.exposureState,
+            m_settings.exposureSettings,
+            effectiveFrameInputs.fixedDeltaSeconds,
+            effectiveFrameInputs.frameIndex,
+            effectiveFrameInputs.historyIdentity,
+            effectiveFrameInputs.historyAvailable,
+            effectiveFrameInputs.historyResetReasons);
+    const ExposureControllerStats& exposureStats =
+        m_exposureController.GetLastStats();
+    if (!exposureOutputs.IsValid() ||
+        !IsSameBufferHandle(
+            exposureOutputs.committedState,
+            effectiveFrameInputs.exposureState) ||
+        exposureOutputs.committedStateContentHash !=
+            effectiveFrameInputs.exposureStateContentHash ||
+        exposureOutputs.configurationHash !=
+            CalculateRenderExposureSettingsHash(m_settings.exposureSettings) ||
+        !exposureStats.pipelineReady || !exposureStats.inputsReady)
+    {
+        m_lastExecuteStats.planValid = false;
+        m_lastExecuteStats.planFailureReason =
+            exposureStats.fallbackReason.empty()
+                ? "physical exposure graph did not preserve its prepared frame contract"
+                : exposureStats.fallbackReason;
+        m_lastExecuteStats.toneMappingBoundaryValid = false;
+        m_lastExecuteStats.toneMappingBoundaryWarning =
+            m_lastExecuteStats.planFailureReason;
+        return false;
+    }
+    m_lastExecuteStats.exposureOutputs = exposureOutputs;
+    m_lastExecuteStats.exposureStats = exposureStats;
+    graph.SetExportState(
+        exposureOutputs.candidateState, RHIResourceState::ShaderResource);
 
     const RHITextureDesc sceneDesc = *sceneDescPtr;
     const RHITextureDesc finalDesc = *finalDescPtr;
@@ -1145,7 +1272,7 @@ bool PostProcessStack::ExecutePlan(RenderGraph& graph,
     }
     m_lastExecuteStats.transientIntermediateCount = static_cast<uint32>(intermediates.size());
 
-    RGTextureHandle currentInput = frameInputs.sceneColor;
+    RGTextureHandle currentInput = effectiveFrameInputs.sceneColor;
     plannedIndex = 0;
     for (size_t effectIndex = 0; effectIndex < enabledEffects.size(); ++effectIndex)
     {
@@ -1185,8 +1312,11 @@ bool PostProcessStack::ExecutePlan(RenderGraph& graph,
         effectPlan.outputIsTransientIntermediate = !isLast;
         effectPlan.outputIsFinalTarget = isLast;
 
-        PostProcessFrameInputs passInputs = frameInputs;
+        PostProcessFrameInputs passInputs = effectiveFrameInputs;
         passInputs.sceneColor = currentInput;
+        passInputs.exposureState = exposureOutputs.candidateState;
+        passInputs.exposureStateContentHash =
+            exposureOutputs.candidateStateContentHash;
         const size_t passCountBefore = graph.GetRecordedPassCount();
         enabledEffects[effectIndex]->AddToGraph(graph, passInputs, currentOutput);
         if (!AccumulateRecordedGraphPasses(

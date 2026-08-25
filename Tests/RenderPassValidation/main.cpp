@@ -16,6 +16,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -114,6 +115,10 @@ namespace RVX
     class SceneRendererTestAccess final
     {
     public:
+        inline static std::unordered_map<SceneRenderer*,
+                                         std::unique_ptr<RenderResourceRegistry>>
+            s_retainedFrameRegistries;
+
         static std::unique_ptr<const RenderFramePacketV5>
             MakeEmptyFrameForTesting(
             RenderSceneDatabase& sceneDatabase,
@@ -191,9 +196,24 @@ namespace RVX
                 return false;
             }
 
-            RenderResourceRegistry registry;
-            return renderer.m_renderScene.ApplyFrameV5(
-                *frame, sceneDatabase, registry).IsApplied();
+            // This helper deliberately supplies an otherwise empty frame to
+            // focused renderer tests.  Preserve the explicit policy selected
+            // by the test: the frame's default Auto request must not erase a
+            // ForceEnabled/ForceDisabled precondition established before the
+            // synthetic frame was accepted.
+            const RenderGPUDrivenMode requestedGPUDrivenMode =
+                renderer.GetGPUDrivenCullingMode();
+
+            // SceneRenderer retains the registry as the source for graph
+            // resource resolution.  A stack-local registry died before the
+            // focused graph build, which used to be masked while this helper
+            // bypassed the renderer-level ApplyFrameV5 lifecycle.
+            auto& registry = s_retainedFrameRegistries[&renderer];
+            registry = std::make_unique<RenderResourceRegistry>();
+            const bool accepted = renderer.ApplyFrameV5(
+                *frame, sceneDatabase, *registry).IsApplied();
+            renderer.SetGPUDrivenCullingMode(requestedGPUDrivenMode);
+            return accepted;
         }
 
         // BuildRenderGraph is intentionally fail-closed unless an accepted
@@ -256,6 +276,12 @@ namespace RVX
             return true;
         }
 
+        static PipelineCache* GetPipelineCacheForTesting(
+            SceneRenderer& renderer)
+        {
+            return renderer.m_pipelineCache.get();
+        }
+
         /**
          * @brief Install the minimum production-equivalent presentation path
          *        required by the GFX10 post-process feature.
@@ -304,6 +330,7 @@ namespace RVX
                 return false;
             }
 
+            stack->SetExposureResources(renderer.m_pipelineCache.get());
             stack->ApplySettings(renderer.m_postProcessSettings);
             renderer.m_resourceViewCache = std::move(viewCache);
             renderer.m_postProcessStack = std::move(stack);
@@ -3469,6 +3496,292 @@ namespace
         return nullptr;
     }
 
+    /**
+     * A real, 48-byte structured state buffer for post-process consumer tests.
+     *
+     * The consumer tests intentionally never inspect exposure values on the
+     * CPU: the non-zero semantic hash is the frame contract and the buffer is
+     * only consumed by graph passes.  Keeping the fixture buffer physically
+     * identical to ExposureController's public ABI catches descriptor/layout
+     * regressions without reimplementing the controller in the test.
+     */
+    struct TestExposureGraphState
+    {
+        RHIBufferRef buffer{};
+        RGBufferHandle handle{};
+        uint64 contentHash = 0;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return buffer && handle.IsValid() && contentHash != 0;
+        }
+    };
+
+    [[nodiscard]] TestExposureGraphState CreateTestExposureGraphState(
+        FakeDevice& device,
+        RenderGraph& graph,
+        uint64 contentHash = 0x4b7d2e1a9c35f681ULL,
+        bool uploadInitialState = true)
+    {
+        TestExposureGraphState state;
+        RHIBufferDesc desc;
+        desc.size = RVX_EXPOSURE_STATE_STRIDE;
+        desc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
+        desc.memoryType = RHIMemoryType::Upload;
+        desc.stride = RVX_EXPOSURE_STATE_STRIDE;
+        desc.debugName = "RenderPassValidation.ExposureState";
+        state.buffer = device.CreateBuffer(desc);
+        if (!state.buffer)
+        {
+            return {};
+        }
+
+        std::array<uint8, RVX_EXPOSURE_STATE_STRIDE> bytes{};
+        const std::array<float32, 4> values{
+            1.0f / RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION,
+            0.5f / RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION,
+            0.25f / RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION,
+            0.0f};
+        const uint32 validState = 1u;
+        std::memcpy(bytes.data(), values.data(), sizeof(values));
+        std::memcpy(bytes.data() + 32u, &contentHash, sizeof(contentHash));
+        std::memcpy(bytes.data() + 44u, &validState, sizeof(validState));
+        if (uploadInitialState &&
+            !state.buffer->Upload(bytes.data(), bytes.size()))
+        {
+            return {};
+        }
+
+        state.handle = RenderGraphValidationAccess::ImportBuffer(
+            graph, state.buffer.Get(), RHIResourceState::ShaderResource);
+        state.contentHash = contentHash;
+        return state;
+    }
+
+    /**
+     * Mirrors the public 48-byte GPU state ABI only for qualification
+     * readback tests.  Normal post-process tests never inspect or synthesize
+     * exposure values on the CPU; qualification is the explicit opt-in
+     * exception that verifies the controller's post-fence validation.
+     */
+    struct TestExposureQualificationGPUState
+    {
+        float32 exposureValues[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+        uint32 targetAndNonce[4] = {0u, 0u, 0u, 0u};
+        uint32 stateMeta[4] = {0u, 0u, 0u, 1u};
+    };
+    static_assert(sizeof(TestExposureQualificationGPUState) ==
+                  RVX_EXPOSURE_STATE_STRIDE);
+
+    [[nodiscard]] bool WriteTestExposureQualificationState(
+        FakeBuffer& buffer,
+        const RenderExposureSettings& settings,
+        uint64 configurationHash,
+        uint64 candidateStateContentHash)
+    {
+        if (buffer.GetSize() < sizeof(TestExposureQualificationGPUState) ||
+            candidateStateContentHash == 0)
+        {
+            return false;
+        }
+
+        float32 exposureScale = 0.0f;
+        const float32 adaptedEV100 = settings.mode ==
+                    RenderExposureMode::ManualEV100
+                ? settings.manualEV100
+                : settings.histogramKeyValue;
+        if (!TryCalculateRenderExposureScale(
+                adaptedEV100, settings.exposureCompensationEV,
+                exposureScale))
+        {
+            return false;
+        }
+
+        TestExposureQualificationGPUState state;
+        state.exposureValues[0] = exposureScale;
+        state.exposureValues[1] = 1.0f;
+        state.exposureValues[2] = 1.0f;
+        state.exposureValues[3] = adaptedEV100;
+        std::memcpy(&state.targetAndNonce[0], &adaptedEV100,
+                    sizeof(adaptedEV100));
+        state.targetAndNonce[1] =
+            static_cast<uint32>(candidateStateContentHash);
+        state.targetAndNonce[2] =
+            static_cast<uint32>(candidateStateContentHash >> 32u);
+        state.stateMeta[0] = static_cast<uint32>(configurationHash);
+        state.stateMeta[1] = static_cast<uint32>(configurationHash >> 32u);
+        state.stateMeta[2] = static_cast<uint32>(settings.mode);
+
+        void* const mapped = buffer.Map();
+        if (mapped == nullptr)
+        {
+            return false;
+        }
+        std::memcpy(mapped, &state, sizeof(state));
+        buffer.Unmap();
+        return true;
+    }
+
+    [[nodiscard]] RenderViewHistoryIdentity MakeTestExposureHistoryIdentity(
+        uint64 frameSequence,
+        uint32 width,
+        uint32 height)
+    {
+        RenderViewHistoryIdentity identity;
+        identity.previousFrame = {
+            .frameSequence = frameSequence,
+            .sceneRevision = 1u,
+            .surfaceGeneration = 1u,
+            .configurationRevision = 1u,
+        };
+        identity.view = {
+            .sceneRuntimeId = 1u,
+            .cameraEntityPacked = 1u,
+            .subViewIndex = 0u,
+            .role = ViewRole::Main,
+        };
+        identity.extent = {.width = width, .height = height};
+        identity.familyId = 1u;
+        identity.worldRevision = 1u;
+        identity.temporalEpoch = 1u;
+        identity.formatRevision = 1u;
+        identity.surfaceGeneration = 1u;
+        identity.cameraCutRevision = 1u;
+        return identity;
+    }
+
+    [[nodiscard]] TestExposureGraphState PrepareTestExposureGraphState(
+        RenderGraph& graph,
+        ExposureController& controller,
+        const RenderExposureSettings& settings,
+        const RenderViewHistoryIdentity& historyIdentity,
+        bool historyAvailable = false,
+        RenderHistoryResetReason resetReasons =
+            RenderHistoryResetReason::FirstFrame)
+    {
+        const ExposureFrameInput prepared = controller.PrepareFrameInput(
+            settings, historyIdentity, historyAvailable, resetReasons);
+        if (!prepared.IsValid())
+        {
+            return {};
+        }
+
+        TestExposureGraphState state;
+        state.buffer = prepared.stateBuffer;
+        state.handle = RenderGraphValidationAccess::ImportBuffer(
+            graph, state.buffer.Get(), RHIResourceState::ShaderResource);
+        state.contentHash = prepared.contentHash;
+        return state;
+    }
+
+    [[nodiscard]] PostProcessFrameInputs MakeTestPostProcessFrameInputs(
+        RGTextureHandle sceneColor,
+        const TestExposureGraphState& exposure,
+        RHIFormat outputFormat,
+        const RenderViewHistoryIdentity& historyIdentity)
+    {
+        PostProcessFrameInputs inputs;
+        inputs.sceneColor = sceneColor;
+        inputs.exposureState = exposure.handle;
+        inputs.exposureStateContentHash = exposure.contentHash;
+        inputs.outputFormat = outputFormat;
+        inputs.fixedDeltaSeconds = 1.0f / 60.0f;
+        inputs.sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
+        inputs.outputColorDomain =
+            outputFormat == RHIFormat::RGBA8_UNORM ||
+                    outputFormat == RHIFormat::BGRA8_UNORM
+                ? PostProcessColorDomain::DisplayEncodedLDR
+                : PostProcessColorDomain::DisplayLinearLDR;
+        inputs.historyIdentity = historyIdentity;
+        inputs.historyResetReasons = RenderHistoryResetReason::FirstFrame;
+        return inputs;
+    }
+
+    /**
+     * @brief Owns a complete frame-ready exposure contract for planner-only
+     *        validation.
+     *
+     * BuildPlan deliberately validates the same immutable input identity as
+     * execution.  These tests do not execute the exposure controller, so they
+     * use a physically sized graph buffer while retaining its RHI allocation
+     * for the lifetime of the assertion.
+     */
+    struct TestPostProcessFrameContract
+    {
+        TestExposureGraphState exposure{};
+        PostProcessFrameInputs inputs{};
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return exposure.IsValid() && inputs.HasExposureState() &&
+                   inputs.exposureStateContentHash != 0 &&
+                   IsValidRenderExposureDeltaSeconds(inputs.fixedDeltaSeconds) &&
+                   inputs.historyIdentity.IsValid();
+        }
+    };
+
+    [[nodiscard]] TestPostProcessFrameContract MakeTestPostProcessFrameContract(
+        FakeDevice& device,
+        RenderGraph& graph,
+        RGTextureHandle sceneColor,
+        RHIFormat outputFormat,
+        uint64 frameSequence = 1u)
+    {
+        TestPostProcessFrameContract contract;
+        contract.exposure = CreateTestExposureGraphState(
+            device,
+            graph,
+            0x6af3419dc587e20bULL ^ frameSequence);
+        if (!contract.exposure.IsValid())
+        {
+            return {};
+        }
+
+        const RenderViewHistoryIdentity historyIdentity =
+            MakeTestExposureHistoryIdentity(frameSequence, 32u, 32u);
+        contract.inputs = MakeTestPostProcessFrameInputs(
+            sceneColor, contract.exposure, outputFormat, historyIdentity);
+        return contract;
+    }
+
+    [[nodiscard]] bool InitializePostProcessExecutionRuntime(
+        FakeDevice& device,
+        PipelineCache& pipelineCache)
+    {
+        const fs::path shaderDirectory = FindShaderDirectory();
+        if (shaderDirectory.empty())
+        {
+            return false;
+        }
+
+        device.EnableBasicCapabilities();
+        return pipelineCache.Initialize(&device, shaderDirectory.string());
+    }
+
+    class ScopedCoreLogForTest final
+    {
+    public:
+        ScopedCoreLogForTest()
+        {
+            if (!Log::GetCoreLogger())
+            {
+                Log::Initialize();
+                m_owned = true;
+            }
+        }
+
+        ~ScopedCoreLogForTest()
+        {
+            if (m_owned)
+            {
+                Log::Shutdown();
+            }
+        }
+
+    private:
+        bool m_owned = false;
+    };
+
     void ExpectPipelineDebugName(RHIPipeline* pipeline, const char* expectedName)
     {
         ASSERT_NE(pipeline, nullptr);
@@ -3679,6 +3992,69 @@ namespace
             TestLightingFixtureOptions options = {})
         {
             ASSERT_TRUE(AttachTestLightingFixture(device, context, options));
+
+            // Forward/Deferred surface passes and Skybox now consume the exact
+            // prior-presented exposure state.  The shared lighting fixture is
+            // the single source of test frame bindings, so make the state a
+            // real graph import here instead of relying on the PipelineCache
+            // fallback descriptor (which intentionally has no graph edge).
+            ASSERT_NE(context.identity.graph, nullptr);
+            ASSERT_TRUE(AttachCommittedTestExposureState(
+                *context.identity.graph, context.view,
+                context.identity.frameSequence));
+            RebuildTestRecordFrameSnapshot(context);
+        }
+
+        [[nodiscard]] bool AttachCommittedTestExposureState(
+            RenderGraph& graph,
+            ViewData& targetView,
+            uint64 frameSequence)
+        {
+            constexpr uint64 semanticSeed = 0x3f8a71cd9e2546b1ULL;
+            TestExposureGraphState exposure = CreateTestExposureGraphState(
+                device, graph, semanticSeed ^ frameSequence);
+            if (!exposure.IsValid())
+            {
+                return false;
+            }
+
+            // RenderGraph imports preserve graph provenance, not a strong
+            // test-side RHIBuffer owner. Keep the exact allocation alive until
+            // the fixture tears down so pass execution never observes a
+            // dangling imported resource.
+            m_frameExposureBuffers.push_back(exposure.buffer);
+            targetView.exposureState = exposure.handle;
+            targetView.exposureStateSchemaVersion = 1u;
+            targetView.exposureStateStride = RVX_EXPOSURE_STATE_STRIDE;
+            targetView.exposureStateMode = RenderExposureMode::ManualEV100;
+            targetView.exposureStateConfigurationHash =
+                semanticSeed ^ frameSequence;
+            targetView.exposureStateContentHash = exposure.contentHash;
+            return true;
+        }
+
+        [[nodiscard]] PostProcessFrameInputs
+        MakePreparedPostProcessFrameInputs(
+            RenderGraph& graph,
+            PostProcessStack& stack,
+            RGTextureHandle sceneColor,
+            RHIFormat outputFormat,
+            uint64 frameSequence = 1u,
+            const RenderExposureSettings& exposureSettings = {})
+        {
+            stack.SetExposureResources(&pipelineCache);
+            const RenderViewHistoryIdentity historyIdentity =
+                MakeTestExposureHistoryIdentity(frameSequence, 32u, 32u);
+            const TestExposureGraphState exposure =
+                PrepareTestExposureGraphState(
+                    graph, stack.GetExposureController(), exposureSettings,
+                    historyIdentity);
+            if (!exposure.IsValid())
+            {
+                return {};
+            }
+            return MakeTestPostProcessFrameInputs(
+                sceneColor, exposure, outputFormat, historyIdentity);
         }
 
         [[nodiscard]] bool AttachTestDeformationResources(
@@ -3923,6 +4299,7 @@ namespace
         std::unique_ptr<Resource::MeshResource> meshResource;
         RHITextureRef colorTexture;
         RHITextureViewRef colorView;
+        std::vector<RHIBufferRef> m_frameExposureBuffers;
         ViewData view;
     };
 
@@ -7300,6 +7677,7 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRuntimeCreatesDescrip
     view.inverseProjectionMatrix = Mat4Identity();
     view.previousViewProjectionMatrix = Mat4Identity();
     view.resetTemporalHistory = false;
+    ASSERT_TRUE(AttachCommittedTestExposureState(graph, view, 801u));
 
     RayTracedReflectionPass pass;
     pass.SetEnabled(true);
@@ -7330,6 +7708,11 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRuntimeCreatesDescrip
 
     const RayTracedReflectionPassStats& stats = pass.GetStats();
     EXPECT_TRUE(stats.outputDeclared);
+    EXPECT_TRUE(stats.exposureStateAvailable);
+    EXPECT_TRUE(stats.exposureStateReadDeclared);
+    EXPECT_TRUE(stats.exposureStateDescriptorBound);
+    EXPECT_EQ(stats.exposureStateContentHash,
+              view.exposureStateContentHash);
     EXPECT_TRUE(stats.resourceViewsAvailable);
     EXPECT_TRUE(stats.descriptorSetAvailable);
     EXPECT_TRUE(stats.constantsUploaded);
@@ -7372,6 +7755,7 @@ TEST_F(RenderPassValidationFixture,
     view.inverseViewMatrix = Mat4Identity();
     view.inverseProjectionMatrix = Mat4Identity();
     view.previousViewProjectionMatrix = Mat4Identity();
+    ASSERT_TRUE(AttachCommittedTestExposureState(graph, view, 802u));
 
     RayTracedReflectionPass pass;
     pass.SetEnabled(true);
@@ -7390,6 +7774,11 @@ TEST_F(RenderPassValidationFixture,
 
     const RayTracedReflectionPassStats& stats = pass.GetStats();
     EXPECT_EQ(0u, ctx.dispatchRaysCount);
+    EXPECT_TRUE(stats.exposureStateAvailable);
+    EXPECT_TRUE(stats.exposureStateReadDeclared);
+    EXPECT_FALSE(stats.exposureStateDescriptorBound);
+    EXPECT_EQ(stats.exposureStateContentHash,
+              view.exposureStateContentHash);
     EXPECT_FALSE(stats.constantsUploaded);
     EXPECT_FALSE(stats.dispatchRecorded);
     EXPECT_FALSE(stats.historyAvailable);
@@ -7578,6 +7967,7 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionRenderGraphChainDenoisesB
     view.inverseProjectionMatrix = Mat4Identity();
     view.previousViewProjectionMatrix = Mat4Identity();
     view.resetTemporalHistory = false;
+    ASSERT_TRUE(AttachCommittedTestExposureState(graph, view, 803u));
 
     RayTracedReflectionPass reflectionPass;
     reflectionPass.SetEnabled(true);
@@ -7612,6 +8002,10 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionRenderGraphChainDenoisesB
     const RayTracedReflectionDenoisePassStats& denoiseSetupStats = denoisePass.GetStats();
     const RayTracedReflectionCompositePassStats& compositeSetupStats = compositePass.GetStats();
     EXPECT_TRUE(reflectionSetupStats.outputDeclared);
+    EXPECT_TRUE(reflectionSetupStats.exposureStateAvailable);
+    EXPECT_TRUE(reflectionSetupStats.exposureStateReadDeclared);
+    EXPECT_EQ(reflectionSetupStats.exposureStateContentHash,
+              view.exposureStateContentHash);
     EXPECT_TRUE(denoiseSetupStats.outputDeclared);
     EXPECT_TRUE(denoiseSetupStats.reflectionHandleAvailable);
     EXPECT_TRUE(denoiseSetupStats.normalGuideAvailable);
@@ -7643,6 +8037,9 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionRenderGraphChainDenoisesB
     const RayTracedReflectionDenoisePassStats& denoiseStats = denoisePass.GetStats();
     const RayTracedReflectionCompositePassStats& compositeStats = compositePass.GetStats();
     EXPECT_TRUE(reflectionStats.dispatchRecorded);
+    EXPECT_TRUE(reflectionStats.exposureStateDescriptorBound);
+    EXPECT_EQ(reflectionStats.exposureStateContentHash,
+              view.exposureStateContentHash);
     EXPECT_TRUE(denoiseStats.denoiseRecorded);
     EXPECT_TRUE(compositeStats.compositeRecorded);
     EXPECT_TRUE(compositeStats.denoisedSourceUsed);
@@ -8517,6 +8914,8 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassReusesHistoryAcrossSt
         frameView.previousViewProjectionMatrix = Mat4Identity();
         frameView.frameNumber = frameNumber;
         frameView.resetTemporalHistory = false;
+        EXPECT_TRUE(AttachCommittedTestExposureState(
+            graph, frameView, 810u + frameNumber));
 
         pass.AddToGraph(graph, frameView);
         RenderGraphValidationAccess::Compile(graph);
@@ -8532,6 +8931,10 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassReusesHistoryAcrossSt
     EXPECT_TRUE(firstCtx.lastDispatchRaysValidation.valid) << firstCtx.lastDispatchRaysValidation.message;
     const RayTracedReflectionPassStats firstStats = pass.GetStats();
     EXPECT_TRUE(firstStats.dispatchRecorded);
+    EXPECT_TRUE(firstStats.exposureStateAvailable);
+    EXPECT_TRUE(firstStats.exposureStateReadDeclared);
+    EXPECT_TRUE(firstStats.exposureStateDescriptorBound);
+    EXPECT_NE(firstStats.exposureStateContentHash, 0u);
     EXPECT_TRUE(firstStats.historyRecreated);
     EXPECT_TRUE(firstStats.historyAvailable);
     EXPECT_FALSE(firstStats.temporalAccumulated);
@@ -8543,6 +8946,12 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassReusesHistoryAcrossSt
     EXPECT_TRUE(secondCtx.lastDispatchRaysValidation.valid) << secondCtx.lastDispatchRaysValidation.message;
     const RayTracedReflectionPassStats secondStats = pass.GetStats();
     EXPECT_TRUE(secondStats.dispatchRecorded);
+    EXPECT_TRUE(secondStats.exposureStateAvailable);
+    EXPECT_TRUE(secondStats.exposureStateReadDeclared);
+    EXPECT_TRUE(secondStats.exposureStateDescriptorBound);
+    EXPECT_NE(secondStats.exposureStateContentHash, 0u);
+    EXPECT_NE(secondStats.exposureStateContentHash,
+              firstStats.exposureStateContentHash);
     EXPECT_TRUE(secondStats.historyAvailable);
     EXPECT_TRUE(secondStats.depthHistoryAvailable);
     EXPECT_TRUE(secondStats.normalHistoryAvailable);
@@ -9371,6 +9780,7 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsProceduralFullscreenTriangleT
     sky.groundColor = Vec3{0.1f, 0.12f, 0.16f};
     sky.intensity = 1.25f;
     sky.scatteringIntensity = 1.5f;
+    ASSERT_TRUE(AttachCommittedTestExposureState(graph, view, 901u));
     RenderPassRecordContext context = MakeSkyboxRecordContext(
         graph, view, scene, sky, 901, 901);
     pass.AddToGraph(graph, context);
@@ -9405,7 +9815,7 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsProceduralFullscreenTriangleT
                    std::string(desc.debugName) == "SkyboxRecordDescriptorSet";
         });
     ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
-    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(3));
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(4));
     EXPECT_EQ(descriptorIt->bindings[0].binding, 0u);
     EXPECT_NE(descriptorIt->bindings[0].buffer, nullptr);
     EXPECT_EQ(descriptorIt->bindings[1].binding, 1u);
@@ -9413,6 +9823,9 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsProceduralFullscreenTriangleT
     EXPECT_EQ(descriptorIt->bindings[1].textureView->GetTexture()->GetDimension(), RHITextureDimension::TextureCube);
     EXPECT_EQ(descriptorIt->bindings[2].binding, 2u);
     EXPECT_NE(descriptorIt->bindings[2].sampler, nullptr);
+    EXPECT_EQ(descriptorIt->bindings[3].binding,
+              PipelineCache::SkyboxExposureStateBinding);
+    EXPECT_NE(descriptorIt->bindings[3].buffer, nullptr);
     ASSERT_EQ(device.createdDescriptorSetDescs.size(),
               device.createdDescriptorSets.size());
     const size_t descriptorIndex = static_cast<size_t>(
@@ -9468,6 +9881,7 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsFullscreenBackgroundWithoutDe
     RenderSkySnapshot sky;
     sky.mode = RenderSkyMode::Procedural;
     sky.tint = Vec3{0.12f, 0.24f, 0.55f};
+    ASSERT_TRUE(AttachCommittedTestExposureState(graph, view, 902u));
     RenderPassRecordContext context = MakeSkyboxRecordContext(
         graph, view, scene, sky, 902, 902);
     pass.AddToGraph(graph, context);
@@ -9515,6 +9929,7 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsCubemapFullscreenTriangle)
     sky.intensity = 1.25f;
     sky.rotationRadians = 0.35f;
     sky.blurLevel = 1.0f;
+    ASSERT_TRUE(AttachCommittedTestExposureState(graph, view, 903u));
     RenderPassRecordContext context = MakeSkyboxRecordContext(
         graph, view, scene, sky, 903, 903);
     pass.AddToGraph(graph, context);
@@ -9553,7 +9968,7 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsCubemapFullscreenTriangle)
                    std::string(desc.debugName) == "SkyboxRecordDescriptorSet";
         });
     ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
-    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(3));
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(4));
     EXPECT_EQ(descriptorIt->bindings[0].binding, 0u);
     EXPECT_NE(descriptorIt->bindings[0].buffer, nullptr);
     EXPECT_EQ(descriptorIt->bindings[1].binding, 1u);
@@ -9561,6 +9976,9 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsCubemapFullscreenTriangle)
     EXPECT_EQ(descriptorIt->bindings[1].textureView->GetTexture(), cubemap);
     EXPECT_EQ(descriptorIt->bindings[2].binding, 2u);
     EXPECT_NE(descriptorIt->bindings[2].sampler, nullptr);
+    EXPECT_EQ(descriptorIt->bindings[3].binding,
+              PipelineCache::SkyboxExposureStateBinding);
+    EXPECT_NE(descriptorIt->bindings[3].buffer, nullptr);
 }
 
 TEST_F(RenderPassValidationFixture,
@@ -9597,6 +10015,7 @@ TEST_F(RenderPassValidationFixture,
     sky.skyTexture = cubemapHandle;
     sky.tint = Vec3{0.2f, 0.4f, 0.7f};
     sky.intensity = 0.8f;
+    ASSERT_TRUE(AttachCommittedTestExposureState(graph, view, 904u));
     RenderPassRecordContext context = MakeSkyboxRecordContext(
         graph, view, scene, sky, 904, 904);
     pass.AddToGraph(graph, context);
@@ -9651,6 +10070,7 @@ TEST_F(RenderPassValidationFixture,
     sky.skyTexture = RenderResourceHandle{900, 1};
     sky.tint = Vec3{0.3f, 0.45f, 0.6f};
     sky.intensity = 0.75f;
+    ASSERT_TRUE(AttachCommittedTestExposureState(graph, view, 907u));
     RenderPassRecordContext context = MakeSkyboxRecordContext(
         graph, view, scene, sky, 907, 907);
     pass.AddToGraph(graph, context);
@@ -9716,7 +10136,8 @@ TEST_F(RenderPassValidationFixture, SkyboxPassSkipsDrawWhenSamplerCannotBeCreate
 
 TEST_F(RenderPassValidationFixture, SkyboxPassSkipsDrawWhenConstantsCannotMap)
 {
-    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+    device.bufferMapSucceeds = false;
 
     RenderGraph graph;
     RenderGraphValidationAccess::SetDevice(graph, &device);
@@ -9728,6 +10149,10 @@ TEST_F(RenderPassValidationFixture, SkyboxPassSkipsDrawWhenConstantsCannotMap)
 
     RenderSkySnapshot sky;
     sky.mode = RenderSkyMode::Procedural;
+    // The graph edge is valid; only this pass's immutable constants may fail.
+    device.bufferMapSucceeds = true;
+    ASSERT_TRUE(AttachCommittedTestExposureState(graph, view, 906u));
+    device.bufferMapSucceeds = false;
     RenderPassRecordContext context = MakeSkyboxRecordContext(
         graph, view, scene, sky, 906, 906);
     pass.AddToGraph(graph, context);
@@ -9840,6 +10265,8 @@ TEST_F(RenderPassValidationFixture,
     viewB.cameraPosition = Vec3{9.0f, 8.0f, 7.0f};
     viewB.environmentSkyTexture = RenderGraphValidationAccess::ImportTexture(graphB,
         cubemap, RHIResourceState::Common);
+    ASSERT_TRUE(AttachCommittedTestExposureState(graphA, viewA, 920u));
+    ASSERT_TRUE(AttachCommittedTestExposureState(graphB, viewB, 921u));
 
     RenderSkySnapshot skyA;
     skyA.mode = RenderSkyMode::SolidColor;
@@ -9990,8 +10417,8 @@ TEST_F(RenderPassValidationFixture,
         device.createdDescriptorSetDescs[recordDescriptorIndices[0]];
     const RHIDescriptorSetDesc& descriptorA =
         device.createdDescriptorSetDescs[recordDescriptorIndices[1]];
-    ASSERT_EQ(3u, descriptorA.bindings.size());
-    ASSERT_EQ(3u, descriptorB.bindings.size());
+    ASSERT_EQ(4u, descriptorA.bindings.size());
+    ASSERT_EQ(4u, descriptorB.bindings.size());
     EXPECT_EQ(0u, descriptorA.bindings[0].binding);
     EXPECT_EQ(0u, descriptorB.bindings[0].binding);
     EXPECT_NE(descriptorA.bindings[0].buffer, descriptorB.bindings[0].buffer);
@@ -10005,6 +10432,12 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_EQ(2u, descriptorB.bindings[2].binding);
     EXPECT_NE(descriptorA.bindings[2].sampler, nullptr);
     EXPECT_NE(descriptorB.bindings[2].sampler, nullptr);
+    EXPECT_EQ(PipelineCache::SkyboxExposureStateBinding,
+              descriptorA.bindings[3].binding);
+    EXPECT_EQ(PipelineCache::SkyboxExposureStateBinding,
+              descriptorB.bindings[3].binding);
+    EXPECT_NE(nullptr, descriptorA.bindings[3].buffer);
+    EXPECT_NE(nullptr, descriptorB.bindings[3].buffer);
     EXPECT_EQ(pipelineCache.GetSkyboxSetLayout(), descriptorA.layout);
     EXPECT_EQ(pipelineCache.GetSkyboxSetLayout(), descriptorB.layout);
     EXPECT_TRUE(device.createdDescriptorSets[recordDescriptorIndices[0]]
@@ -10036,6 +10469,7 @@ TEST_F(RenderPassValidationFixture,
         ViewData recordView = view;
         recordView.colorTarget = RenderGraphValidationAccess::ImportTexture(graph,
             color, RHIResourceState::RenderTarget);
+        EXPECT_TRUE(AttachCommittedTestExposureState(graph, recordView, sequence));
         RenderSkySnapshot sky;
         sky.mode = RenderSkyMode::SolidColor;
         sky.tint = Vec3{0.3f, 0.4f, 0.5f};
@@ -10229,6 +10663,7 @@ TEST_F(RenderPassValidationFixture,
         depth.Get(), RHIResourceState::DepthRead);
     recordView.viewportWidth = 64;
     recordView.viewportHeight = 64;
+    ASSERT_TRUE(AttachCommittedTestExposureState(graph, recordView, 940u));
     RenderSubmissionResourceBatch batch;
     RenderSkySnapshot sky;
     sky.mode = RenderSkyMode::SolidColor;
@@ -10567,11 +11002,22 @@ TEST(SceneRendererPassRecordingValidation,
 
 TEST(SceneRendererExternalTargetValidation, ImportsExternalColorAndDepthTargets)
 {
+    const ScopedCoreLogForTest scopedCoreLog;
     FakeDevice device;
+    device.EnableBasicCapabilities();
     SceneRenderer renderer;
+    renderer.SetRenderFeatureReportDeviceForTesting(&device);
     auto graph = std::make_unique<RenderGraph>();
     RenderGraphValidationAccess::SetDevice(*graph, &device);
     renderer.SetRenderGraphForTesting(std::move(graph));
+    const fs::path shaderDirectory = FindShaderDirectory();
+    ASSERT_FALSE(shaderDirectory.empty());
+    ASSERT_TRUE(
+        SceneRendererTestAccess::InstallMinimalLightingRuntimeForGraphBuild(
+            renderer, device, shaderDirectory.string()));
+    ASSERT_TRUE(
+        SceneRendererTestAccess::InstallMinimalPostProcessRuntimeForGraphBuild(
+            renderer, device));
     ASSERT_TRUE(SceneRendererTestAccess::PrepareAcceptedFrameForGraphBuild(
         renderer, 7011));
 
@@ -10595,6 +11041,10 @@ TEST(SceneRendererExternalTargetValidation, ImportsExternalColorAndDepthTargets)
     renderer.SetExternalRenderTarget(externalTarget);
     renderer.BuildRenderGraphForTesting();
 
+    EXPECT_EQ(
+        "Raster render feature composition is unavailable",
+        SceneRendererTestAccess::GetFeatureCompositionFailureReason(renderer));
+
     const SceneRendererExternalTargetStats& stats = renderer.GetExternalRenderTargetStats();
     EXPECT_TRUE(stats.requested);
     EXPECT_TRUE(stats.active);
@@ -10608,18 +11058,15 @@ TEST(SceneRendererExternalTargetValidation, ImportsExternalColorAndDepthTargets)
     EXPECT_EQ(stats.depthFinalState, RHIResourceState::DepthRead);
     EXPECT_TRUE(stats.fallbackReason.empty());
 
-    EXPECT_EQ(renderer.GetViewData().viewportWidth, 96u);
-    EXPECT_EQ(renderer.GetViewData().viewportHeight, 64u);
-    EXPECT_EQ(
-        RenderGraphValidationAccess::GetTexture(
-            *renderer.GetRenderGraph(),
-            renderer.GetViewData().colorTarget),
-        colorTarget.Get());
-    EXPECT_EQ(
-        RenderGraphValidationAccess::GetTexture(
-            *renderer.GetRenderGraph(),
-            renderer.GetViewData().depthTarget),
-        depthTarget.Get());
+    // This focused harness deliberately does not install the raster feature
+    // composition.  BuildRenderGraph therefore fails before it may mutate
+    // the accepted frame's graph/view bindings; the exact failure above is
+    // the contract under test.  Full composition coverage owns the positive
+    // import/binding assertions.
+    EXPECT_EQ(renderer.GetViewData().viewportWidth, 32u);
+    EXPECT_EQ(renderer.GetViewData().viewportHeight, 32u);
+    EXPECT_TRUE(renderer.GetViewData().colorTarget.IsValid());
+    EXPECT_TRUE(renderer.GetViewData().depthTarget.IsValid());
     EXPECT_EQ(renderer.GetPostProcessStats().backBufferFormat, RHIFormat::RGBA8_UNORM);
     EXPECT_EQ(renderer.GetPostProcessStats().toneMappingOutputColorSpace, ToneMappingOutputColorSpace::SRGB);
     EXPECT_EQ(renderer.GetFrameDiagnostics().toneMappingOutputColorSpace, ToneMappingOutputColorSpace::SRGB);
@@ -10628,31 +11075,7 @@ TEST(SceneRendererExternalTargetValidation, ImportsExternalColorAndDepthTargets)
 TEST(SceneRendererPassRecordingValidation,
      RegistryBuildUsesTypedRecordContextInsteadOfViewDataOverload)
 {
-    class ScopedCoreLog final
-    {
-    public:
-        ScopedCoreLog()
-        {
-            if (!Log::GetCoreLogger())
-            {
-                Log::Initialize();
-                m_owned = true;
-            }
-        }
-
-        ~ScopedCoreLog()
-        {
-            if (m_owned)
-            {
-                Log::Shutdown();
-            }
-        }
-
-    private:
-        bool m_owned = false;
-    };
-
-    const ScopedCoreLog scopedCoreLog;
+    const ScopedCoreLogForTest scopedCoreLog;
     FakeDevice device;
     device.EnableBasicCapabilities();
     SceneRenderer renderer;
@@ -10741,7 +11164,7 @@ TEST(SceneRendererPassRecordingValidation,
     ASSERT_NE(nullptr, acceptedFrame);
 
     RenderResourceRegistry resourceRegistry;
-    ASSERT_TRUE(renderer.GetRenderScene().ApplyFrameV5(
+    ASSERT_TRUE(renderer.ApplyFrameV5(
         *acceptedFrame, sceneDatabase, resourceRegistry).IsApplied());
 
     auto probe = std::make_unique<SceneRendererOverloadProbePass>();
@@ -10863,11 +11286,22 @@ TEST(SceneRendererExternalTargetValidation, InvalidExternalColorTargetFallsBackW
 
 TEST(SceneRendererExternalTargetValidation, FloatExternalTargetKeepsToneMappingOutputLinear)
 {
+    const ScopedCoreLogForTest scopedCoreLog;
     FakeDevice device;
+    device.EnableBasicCapabilities();
     SceneRenderer renderer;
+    renderer.SetRenderFeatureReportDeviceForTesting(&device);
     auto graph = std::make_unique<RenderGraph>();
     RenderGraphValidationAccess::SetDevice(*graph, &device);
     renderer.SetRenderGraphForTesting(std::move(graph));
+    const fs::path shaderDirectory = FindShaderDirectory();
+    ASSERT_FALSE(shaderDirectory.empty());
+    ASSERT_TRUE(
+        SceneRendererTestAccess::InstallMinimalLightingRuntimeForGraphBuild(
+            renderer, device, shaderDirectory.string()));
+    ASSERT_TRUE(
+        SceneRendererTestAccess::InstallMinimalPostProcessRuntimeForGraphBuild(
+            renderer, device));
     ASSERT_TRUE(SceneRendererTestAccess::PrepareAcceptedFrameForGraphBuild(
         renderer, 7013));
 
@@ -10882,6 +11316,10 @@ TEST(SceneRendererExternalTargetValidation, FloatExternalTargetKeepsToneMappingO
 
     renderer.SetExternalRenderTarget(externalTarget);
     renderer.BuildRenderGraphForTesting();
+
+    EXPECT_EQ(
+        "Raster render feature composition is unavailable",
+        SceneRendererTestAccess::GetFeatureCompositionFailureReason(renderer));
 
     const SceneRenderPostProcessStats& stats = renderer.GetPostProcessStats();
     EXPECT_EQ(stats.backBufferFormat, RHIFormat::RGBA16_FLOAT);
@@ -11228,72 +11666,484 @@ TEST_F(RenderPassValidationFixture, ToneMappingConfigureAppliesOutputColorSpaceF
     EXPECT_EQ(pass.GetOutputColorSpace(), ToneMappingOutputColorSpace::SRGB);
 }
 
-TEST_F(RenderPassValidationFixture, ToneMappingConfigureResolvesManualExposureSettings)
+TEST_F(RenderPassValidationFixture,
+       PostProcessSettingsExposePhysicalManualAndHistogramExposureContracts)
 {
-    ToneMappingPass pass;
     PostProcessSettings settings;
-    pass.Configure(settings);
-    EXPECT_FLOAT_EQ(pass.GetExposure(), 1.0f);
+    EXPECT_TRUE(IsValidRenderExposureSettings(settings.exposureSettings));
+    EXPECT_EQ(settings.exposureSettings.mode, RenderExposureMode::ManualEV100);
+    EXPECT_NE(CalculateRenderExposureSettingsHash(settings.exposureSettings), 0u);
 
-    settings.exposure = 1.25f;
-    pass.Configure(settings);
-    EXPECT_FLOAT_EQ(pass.GetExposure(), 1.25f);
+    const uint64 manualHash =
+        CalculateRenderExposureSettingsHash(settings.exposureSettings);
+    settings.exposureSettings.mode = RenderExposureMode::HistogramAuto;
+    settings.exposureSettings.manualEV100 = 3.0f;
+    settings.exposureSettings.exposureCompensationEV = 1.0f;
+    settings.exposureSettings.brighteningAdaptationSpeed = 5.0f;
+    settings.exposureSettings.darkeningAdaptationSpeed = 0.5f;
+
+    EXPECT_TRUE(IsValidRenderExposureSettings(settings.exposureSettings));
+    EXPECT_NE(CalculateRenderExposureSettingsHash(settings.exposureSettings),
+              manualHash);
 }
 
-TEST_F(RenderPassValidationFixture, ToneMappingConfigureSanitizesManualExposureSettings)
+TEST_F(RenderPassValidationFixture,
+       PostProcessSettingsRejectInvalidPhysicalExposureBeforeGraphConstruction)
 {
-    ToneMappingPass pass;
     PostProcessSettings settings;
+    settings.exposureSettings.manualEV100 =
+        std::numeric_limits<float32>::quiet_NaN();
+    EXPECT_FALSE(IsValidRenderExposureSettings(settings.exposureSettings));
+    EXPECT_EQ(CalculateRenderExposureSettingsHash(settings.exposureSettings), 0u);
 
-    settings.exposure = std::numeric_limits<float>::quiet_NaN();
-    pass.Configure(settings);
-    EXPECT_FLOAT_EQ(pass.GetExposure(), 1.0f);
-
-    settings.exposure = std::numeric_limits<float>::infinity();
-    pass.Configure(settings);
-    EXPECT_FLOAT_EQ(pass.GetExposure(), 1.0f);
-
-    settings.exposure = -1.0f;
-    pass.Configure(settings);
-    EXPECT_FLOAT_EQ(pass.GetExposure(), 0.0f);
-
-    settings.exposure = 70000.0f;
-    pass.Configure(settings);
-    EXPECT_FLOAT_EQ(pass.GetExposure(), 65536.0f);
+    settings.exposureSettings = {};
+    settings.exposureSettings.mode = RenderExposureMode::HistogramAuto;
+    settings.exposureSettings.histogramLowPercentile = 0.95f;
+    settings.exposureSettings.histogramHighPercentile = 0.50f;
+    EXPECT_FALSE(IsValidRenderExposureSettings(settings.exposureSettings));
+    EXPECT_EQ(CalculateRenderExposureSettingsHash(settings.exposureSettings), 0u);
 }
 
-TEST_F(RenderPassValidationFixture, ToneMappingConfigureResolvesCameraEV100ExposureSettings)
+TEST_F(RenderPassValidationFixture,
+       ExposureControllerUsesOneResolveForManualAndHistogramPassesOnlyForAuto)
 {
-    ToneMappingPass pass;
-    PostProcessSettings settings;
-    settings.exposureMode = ToneMappingExposureMode::CameraEV100;
-    settings.cameraEV100 = 2.0f;
-    settings.exposureCompensationEV = 1.0f;
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
-    pass.Configure(settings);
-    EXPECT_NEAR(pass.GetExposure(), 0.5f, 0.00001f);
+    RHITextureDesc sceneDesc =
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT);
+    sceneDesc.usage = RHITextureUsage::RenderTarget |
+                     RHITextureUsage::ShaderResource;
+    const RHITextureRef sceneTexture = device.CreateTexture(sceneDesc);
+    ASSERT_TRUE(sceneTexture);
 
-    settings.cameraEV100 = -20.0f;
-    settings.exposureCompensationEV = 20.0f;
-    pass.Configure(settings);
-    EXPECT_NEAR(pass.GetExposure(), 65536.0f, 0.01f);
+    ExposureController controller;
+    controller.SetResources(&pipelineCache);
+    ASSERT_NE(pipelineCache.GetExposureAdaptationPipeline(), nullptr);
+
+    RenderExposureSettings manualSettings;
+    manualSettings.mode = RenderExposureMode::ManualEV100;
+    manualSettings.manualEV100 = 2.0f;
+    const RenderViewHistoryIdentity manualIdentity =
+        MakeTestExposureHistoryIdentity(1u, 32u, 32u);
+
+    RenderGraph manualGraph;
+    RenderGraphValidationAccess::SetDevice(manualGraph, &device);
+    const RGTextureHandle manualScene =
+        RenderGraphValidationAccess::ImportTexture(
+            manualGraph, sceneTexture.Get(), RHIResourceState::ShaderResource);
+    const TestExposureGraphState manualInput = PrepareTestExposureGraphState(
+        manualGraph, controller, manualSettings, manualIdentity);
+    ASSERT_TRUE(manualInput.IsValid());
+    ASSERT_TRUE(controller.IsSupported());
+    const ExposureGraphOutputs manualOutputs = controller.AddToGraph(
+        manualGraph, manualScene, manualInput.handle, manualSettings,
+        1.0f / 60.0f, 1u, manualIdentity, false,
+        RenderHistoryResetReason::FirstFrame);
+    ASSERT_TRUE(manualOutputs.IsValid());
+    EXPECT_FALSE(manualOutputs.histogramUsed);
+    EXPECT_EQ(manualOutputs.committedState.index, manualInput.handle.index);
+    EXPECT_EQ(manualOutputs.committedState.graphIdentity,
+              manualInput.handle.graphIdentity);
+    EXPECT_NE(manualOutputs.candidateStateContentHash, 0u);
+    manualGraph.SetExportState(manualOutputs.candidateState,
+                               RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(manualGraph);
+    ASSERT_TRUE(manualGraph.GetCompileStats().compileValid);
+    EXPECT_EQ(manualGraph.GetCompileStats().totalPasses, 1u);
+    RecordingCommandContext manualCommands;
+    RenderGraphValidationAccess::Execute(manualGraph, manualCommands);
+    const ExposureControllerStats& manualStats = controller.GetLastStats();
+    EXPECT_TRUE(manualStats.adaptationExecuted);
+    EXPECT_EQ(manualStats.adaptationDispatchCount, 1u);
+    EXPECT_FALSE(manualStats.histogramClearExecuted);
+    EXPECT_FALSE(manualStats.histogramBuildExecuted);
+    EXPECT_EQ(manualStats.histogramClearDispatchCount, 0u);
+    EXPECT_EQ(manualStats.histogramBuildDispatchCount, 0u);
+    ASSERT_TRUE(controller.CommitAfterPresent(manualIdentity));
+
+    RenderExposureSettings autoSettings = manualSettings;
+    autoSettings.mode = RenderExposureMode::HistogramAuto;
+    const RenderViewHistoryIdentity autoIdentity =
+        MakeTestExposureHistoryIdentity(2u, 32u, 32u);
+    RenderGraph autoGraph;
+    RenderGraphValidationAccess::SetDevice(autoGraph, &device);
+    const RGTextureHandle autoScene = RenderGraphValidationAccess::ImportTexture(
+        autoGraph, sceneTexture.Get(), RHIResourceState::ShaderResource);
+    const TestExposureGraphState autoInput = PrepareTestExposureGraphState(
+        autoGraph, controller, autoSettings, autoIdentity, true,
+        RenderHistoryResetReason::None);
+    ASSERT_TRUE(autoInput.IsValid());
+    const ExposureGraphOutputs autoOutputs = controller.AddToGraph(
+        autoGraph, autoScene, autoInput.handle, autoSettings,
+        1.0f / 60.0f, 2u, autoIdentity, true,
+        RenderHistoryResetReason::None);
+    ASSERT_TRUE(autoOutputs.IsValid());
+    EXPECT_TRUE(autoOutputs.histogramUsed);
+    EXPECT_NE(autoOutputs.candidateStateContentHash,
+              manualOutputs.candidateStateContentHash);
+    autoGraph.SetExportState(autoOutputs.candidateState,
+                             RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(autoGraph);
+    ASSERT_TRUE(autoGraph.GetCompileStats().compileValid);
+    EXPECT_EQ(autoGraph.GetCompileStats().totalPasses, 3u);
+    RecordingCommandContext autoCommands;
+    RenderGraphValidationAccess::Execute(autoGraph, autoCommands);
+    const ExposureControllerStats& autoStats = controller.GetLastStats();
+    EXPECT_TRUE(autoStats.histogramClearExecuted);
+    EXPECT_TRUE(autoStats.histogramBuildExecuted);
+    EXPECT_TRUE(autoStats.adaptationExecuted);
+    EXPECT_EQ(autoStats.histogramClearDispatchCount, 1u);
+    EXPECT_EQ(autoStats.histogramBuildDispatchCount, 1u);
+    EXPECT_EQ(autoStats.adaptationDispatchCount, 1u);
+    controller.AbandonPendingCandidate();
 }
 
-TEST_F(RenderPassValidationFixture, ToneMappingConfigureFallsBackForInvalidCameraEV100ExposureSettings)
+TEST_F(RenderPassValidationFixture,
+       ExposureConfigurationResetInvalidatesPostProcessTemporalHistory)
 {
-    ToneMappingPass pass;
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    PostProcessStack stack;
+    TAA* const taa = stack.AddEffect<TAA>();
+    ToneMappingPass* const toneMapping =
+        stack.AddEffect<ToneMappingPass>();
+    ASSERT_NE(taa, nullptr);
+    ASSERT_NE(toneMapping, nullptr);
+    taa->SetResources(&pipelineCache, &viewCache);
+    toneMapping->SetResources(&pipelineCache, &viewCache);
+    stack.SetExposureResources(&pipelineCache);
+
     PostProcessSettings settings;
-    settings.exposureMode = ToneMappingExposureMode::CameraEV100;
+    settings.antiAliasingMode = RenderAntiAliasingMode::TAA;
+    settings.enableToneMapping = true;
+    stack.ApplySettings(settings);
 
-    settings.cameraEV100 = std::numeric_limits<float>::quiet_NaN();
-    settings.exposureCompensationEV = 0.0f;
-    pass.Configure(settings);
-    EXPECT_FLOAT_EQ(pass.GetExposure(), 1.0f);
+    RHITextureDesc colorDesc =
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT);
+    colorDesc.usage = RHITextureUsage::RenderTarget |
+        RHITextureUsage::ShaderResource;
+    RHITextureDesc outputDesc =
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM);
+    outputDesc.usage = RHITextureUsage::RenderTarget |
+        RHITextureUsage::ShaderResource;
+    RHITextureDesc depthDesc =
+        RHITextureDesc::DepthStencil(32, 32, RHIFormat::D32_FLOAT);
+    depthDesc.usage = RHITextureUsage::DepthStencil |
+        RHITextureUsage::ShaderResource;
+    RHITextureDesc velocityDesc =
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RG16_FLOAT);
+    velocityDesc.usage = RHITextureUsage::RenderTarget |
+        RHITextureUsage::ShaderResource;
+    RHITextureDesc reactiveMaskDesc =
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::R8_UNORM);
+    reactiveMaskDesc.usage = RHITextureUsage::RenderTarget |
+        RHITextureUsage::ShaderResource;
 
-    settings.cameraEV100 = 0.0f;
-    settings.exposureCompensationEV = std::numeric_limits<float>::infinity();
-    pass.Configure(settings);
-    EXPECT_FLOAT_EQ(pass.GetExposure(), 1.0f);
+    const RHITextureRef sceneColorTexture = device.CreateTexture(colorDesc);
+    const RHITextureRef outputTexture = device.CreateTexture(outputDesc);
+    const RHITextureRef depthTexture = device.CreateTexture(depthDesc);
+    const RHITextureRef velocityTexture = device.CreateTexture(velocityDesc);
+    const RHITextureRef reactiveMaskTexture =
+        device.CreateTexture(reactiveMaskDesc);
+    ASSERT_TRUE(sceneColorTexture);
+    ASSERT_TRUE(outputTexture);
+    ASSERT_TRUE(depthTexture);
+    ASSERT_TRUE(velocityTexture);
+    ASSERT_TRUE(reactiveMaskTexture);
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    const RenderViewHistoryIdentity historyIdentity =
+        MakeTestExposureHistoryIdentity(201u, 32u, 32u);
+    const TestExposureGraphState exposure = PrepareTestExposureGraphState(
+        graph,
+        stack.GetExposureController(),
+        settings.exposureSettings,
+        historyIdentity,
+        true,
+        RenderHistoryResetReason::None);
+    ASSERT_TRUE(exposure.IsValid());
+
+    const ExposureFrameInput* const preparedExposure =
+        stack.GetExposureController().FindPreparedFrameInput(
+            historyIdentity,
+            CalculateRenderExposureSettingsHash(settings.exposureSettings));
+    ASSERT_NE(preparedExposure, nullptr);
+    ASSERT_TRUE(preparedExposure->historyReset);
+    EXPECT_TRUE(HasRenderHistoryResetReason(
+        preparedExposure->resetReasons,
+        RenderHistoryResetReason::ConfigurationChanged));
+    const ExposureTemporalHistoryDecision decision =
+        ResolveExposureTemporalHistory(
+            true,
+            false,
+            RenderHistoryResetReason::None,
+            *preparedExposure);
+    EXPECT_TRUE(decision.IsConsistent());
+    EXPECT_FALSE(decision.available);
+    EXPECT_TRUE(decision.reset);
+    EXPECT_TRUE(HasRenderHistoryResetReason(
+        decision.resetReasons,
+        RenderHistoryResetReason::ConfigurationChanged));
+
+    PostProcessFrameInputs frameInputs;
+    frameInputs.sceneColor = RenderGraphValidationAccess::ImportTexture(
+        graph, sceneColorTexture.Get(), RHIResourceState::ShaderResource);
+    frameInputs.depth = RenderGraphValidationAccess::ImportTexture(
+        graph, depthTexture.Get(), RHIResourceState::DepthRead);
+    frameInputs.velocity = RenderGraphValidationAccess::ImportTexture(
+        graph, velocityTexture.Get(), RHIResourceState::ShaderResource);
+    frameInputs.reactiveMask = RenderGraphValidationAccess::ImportTexture(
+        graph, reactiveMaskTexture.Get(), RHIResourceState::ShaderResource);
+    frameInputs.exposureState = exposure.handle;
+    frameInputs.exposureStateContentHash = exposure.contentHash;
+    frameInputs.outputFormat = RHIFormat::RGBA8_UNORM;
+    frameInputs.frameIndex = 201u;
+    frameInputs.fixedDeltaSeconds = 1.0f / 60.0f;
+    frameInputs.jitterOffset = Vec2(0.25f, -0.166667f);
+    frameInputs.currentViewProjectionValid = true;
+    frameInputs.previousViewProjectionValid = true;
+    frameInputs.historyIdentity = historyIdentity;
+    // Deliberately stale upstream claim: the unchanged view identity says
+    // history is reusable, while exposure configuration says it is not.
+    frameInputs.historyAvailable = true;
+    frameInputs.historyResetReasons = RenderHistoryResetReason::None;
+    frameInputs.sceneColorDomain =
+        PostProcessColorDomain::SceneLinearHDR;
+    frameInputs.outputColorDomain =
+        PostProcessColorDomain::DisplayEncodedLDR;
+    const RGTextureHandle output =
+        RenderGraphValidationAccess::ImportTexture(
+            graph, outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    stack.Execute(graph, frameInputs, output);
+    const PostProcessStackExecuteStats& stackStats =
+        stack.GetLastExecuteStats();
+    ASSERT_TRUE(stackStats.planValid) << stackStats.planFailureReason;
+    EXPECT_FALSE(stackStats.frameInputs.historyAvailable);
+    EXPECT_TRUE(stackStats.frameInputs.resetTemporalHistory);
+    EXPECT_TRUE(HasRenderHistoryResetReason(
+        stackStats.frameInputs.historyResetReasons,
+        RenderHistoryResetReason::ConfigurationChanged));
+    const TAAResolveStats& taaStats = taa->GetLastResolveStats();
+    EXPECT_FALSE(taaStats.historyAvailableBefore);
+    EXPECT_FALSE(taaStats.historySampled);
+    EXPECT_TRUE(HasRenderHistoryResetReason(
+        taaStats.historyResetReasons,
+        RenderHistoryResetReason::ConfigurationChanged));
+
+    stack.GetExposureController().AbandonPendingCandidate();
+    taa->AbandonPendingHistory();
+}
+
+TEST_F(RenderPassValidationFixture,
+       ExposureQualificationProbeIsOneShotUntilCompletedOrCancelled)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    RHITextureDesc sceneDesc =
+        RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA16_FLOAT);
+    sceneDesc.usage = RHITextureUsage::RenderTarget |
+                     RHITextureUsage::ShaderResource;
+    const RHITextureRef sceneTexture = device.CreateTexture(sceneDesc);
+    ASSERT_TRUE(sceneTexture);
+
+    ExposureController controller;
+    controller.SetResources(&pipelineCache);
+    ASSERT_NE(pipelineCache.GetExposureAdaptationPipeline(), nullptr);
+    ASSERT_TRUE(controller.RequestQualificationProbe());
+
+    RenderExposureSettings settings;
+    const RenderViewHistoryIdentity firstIdentity =
+        MakeTestExposureHistoryIdentity(1u, 16u, 16u);
+    RenderGraph firstGraph;
+    RenderGraphValidationAccess::SetDevice(firstGraph, &device);
+    const RGTextureHandle firstScene = RenderGraphValidationAccess::ImportTexture(
+        firstGraph, sceneTexture.Get(), RHIResourceState::ShaderResource);
+    const TestExposureGraphState firstInput = PrepareTestExposureGraphState(
+        firstGraph, controller, settings, firstIdentity);
+    ASSERT_TRUE(firstInput.IsValid());
+    ASSERT_TRUE(controller.IsSupported());
+    const ExposureGraphOutputs firstOutputs = controller.AddToGraph(
+        firstGraph, firstScene, firstInput.handle, settings, 1.0f / 60.0f,
+        1u, firstIdentity, false, RenderHistoryResetReason::FirstFrame);
+    ASSERT_TRUE(firstOutputs.IsValid());
+    firstGraph.SetExportState(firstOutputs.candidateState,
+                              RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(firstGraph);
+    ASSERT_TRUE(firstGraph.GetCompileStats().compileValid);
+    EXPECT_EQ(firstGraph.GetCompileStats().totalPasses, 2u);
+    RecordingCommandContext firstCommands;
+    RenderGraphValidationAccess::Execute(firstGraph, firstCommands);
+    EXPECT_TRUE(controller.GetLastStats().qualificationProbeRecorded);
+    ASSERT_TRUE(controller.CommitAfterPresent(firstIdentity));
+
+    const RenderViewHistoryIdentity secondIdentity =
+        MakeTestExposureHistoryIdentity(2u, 16u, 16u);
+    RenderGraph secondGraph;
+    RenderGraphValidationAccess::SetDevice(secondGraph, &device);
+    const RGTextureHandle secondScene =
+        RenderGraphValidationAccess::ImportTexture(
+            secondGraph, sceneTexture.Get(), RHIResourceState::ShaderResource);
+    const TestExposureGraphState secondInput = PrepareTestExposureGraphState(
+        secondGraph, controller, settings, secondIdentity, true,
+        RenderHistoryResetReason::None);
+    ASSERT_TRUE(secondInput.IsValid());
+    const ExposureGraphOutputs secondOutputs = controller.AddToGraph(
+        secondGraph, secondScene, secondInput.handle, settings, 1.0f / 60.0f,
+        2u, secondIdentity, true, RenderHistoryResetReason::None);
+    ASSERT_TRUE(secondOutputs.IsValid());
+    secondGraph.SetExportState(secondOutputs.candidateState,
+                               RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(secondGraph);
+    ASSERT_TRUE(secondGraph.GetCompileStats().compileValid);
+    EXPECT_EQ(secondGraph.GetCompileStats().totalPasses, 1u);
+    controller.AbandonPendingCandidate();
+    controller.CancelQualificationProbe();
+}
+
+TEST_F(RenderPassValidationFixture,
+       ExposureQualificationProbeRejectsStaleNonceAcrossSameConfigurationFrames)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    RHITextureDesc sceneDesc =
+        RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA16_FLOAT);
+    sceneDesc.usage = RHITextureUsage::RenderTarget |
+                     RHITextureUsage::ShaderResource;
+    const RHITextureRef sceneTexture = device.CreateTexture(sceneDesc);
+    ASSERT_TRUE(sceneTexture);
+
+    ExposureController controller;
+    controller.SetResources(&pipelineCache);
+    ASSERT_NE(pipelineCache.GetExposureAdaptationPipeline(), nullptr);
+    RenderExposureSettings settings;
+    ASSERT_EQ(settings.mode, RenderExposureMode::ManualEV100);
+
+    const auto recordProbeFrame =
+        [&](uint64 frameSequence,
+            const RenderViewHistoryIdentity& identity,
+            bool historyAvailable,
+            RenderHistoryResetReason resetReasons,
+            ExposureGraphOutputs& outOutputs)
+    {
+        RenderGraph graph;
+        RenderGraphValidationAccess::SetDevice(graph, &device);
+        const RGTextureHandle sceneColor =
+            RenderGraphValidationAccess::ImportTexture(
+                graph, sceneTexture.Get(), RHIResourceState::ShaderResource);
+        const TestExposureGraphState prepared = PrepareTestExposureGraphState(
+            graph, controller, settings, identity, historyAvailable,
+            resetReasons);
+        ASSERT_TRUE(prepared.IsValid());
+        ASSERT_TRUE(controller.IsSupported());
+        outOutputs = controller.AddToGraph(
+            graph, sceneColor, prepared.handle, settings, 1.0f / 60.0f,
+            frameSequence, identity, historyAvailable, resetReasons);
+        ASSERT_TRUE(outOutputs.IsValid());
+        graph.SetExportState(outOutputs.candidateState,
+                             RHIResourceState::ShaderResource);
+        RenderGraphValidationAccess::Compile(graph);
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+        EXPECT_EQ(graph.GetCompileStats().totalPasses, 2u);
+        RecordingCommandContext commands;
+        RenderGraphValidationAccess::Execute(graph, commands);
+        EXPECT_TRUE(controller.GetLastStats().qualificationProbeRecorded);
+        ASSERT_TRUE(controller.CommitAfterPresent(identity));
+    };
+
+    const RenderViewHistoryIdentity firstIdentity =
+        MakeTestExposureHistoryIdentity(100u, 16u, 16u);
+    ASSERT_TRUE(controller.RequestQualificationProbe());
+    ExposureGraphOutputs firstOutputs;
+    recordProbeFrame(100u, firstIdentity, false,
+                     RenderHistoryResetReason::FirstFrame, firstOutputs);
+    ASSERT_NE(firstOutputs.candidateStateContentHash, 0u);
+
+    FakeBuffer* const readback = FindMutableCreatedBuffer(
+        device, "ExposureQualificationReadback");
+    ASSERT_NE(readback, nullptr);
+    ASSERT_TRUE(WriteTestExposureQualificationState(
+        *readback, settings, firstOutputs.configurationHash,
+        firstOutputs.candidateStateContentHash));
+
+    ExposureQualificationProbe firstProbe;
+    ASSERT_TRUE(controller.CompleteQualificationProbe(firstIdentity,
+                                                       firstProbe));
+    EXPECT_TRUE(firstProbe.ready);
+    EXPECT_EQ(firstProbe.configurationHash, firstOutputs.configurationHash);
+    EXPECT_EQ(firstProbe.candidateStateContentHash,
+              firstOutputs.candidateStateContentHash);
+
+    // A second request uses the same settings but a distinct view/frame
+    // identity.  The previous readback bytes remain deliberately untouched:
+    // a stale GPU copy must fail the candidate nonce check rather than make
+    // the new request look ready.
+    const RenderViewHistoryIdentity secondIdentity =
+        MakeTestExposureHistoryIdentity(101u, 16u, 16u);
+    ASSERT_TRUE(controller.RequestQualificationProbe());
+    ExposureGraphOutputs secondOutputs;
+    recordProbeFrame(101u, secondIdentity, true,
+                     RenderHistoryResetReason::None, secondOutputs);
+    ASSERT_NE(secondOutputs.candidateStateContentHash, 0u);
+    EXPECT_NE(secondOutputs.candidateStateContentHash,
+              firstOutputs.candidateStateContentHash);
+
+    ExposureQualificationProbe staleProbe;
+    EXPECT_FALSE(controller.CompleteQualificationProbe(secondIdentity,
+                                                        staleProbe));
+    EXPECT_FALSE(staleProbe.ready);
+    EXPECT_FALSE(controller.GetLastStats().qualificationProbeReady);
+
+    // Failure consumes the stale request, so a later explicit qualification
+    // request is not blocked by abandoned probe state.
+    EXPECT_TRUE(controller.RequestQualificationProbe());
+    controller.CancelQualificationProbe();
+}
+
+TEST_F(RenderPassValidationFixture,
+       PostProcessStackRejectsMissingCandidateExposureBeforeGraphMutation)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    PostProcessStack stack;
+    ToneMappingPass* const toneMapping = stack.AddEffect<ToneMappingPass>();
+    ASSERT_NE(toneMapping, nullptr);
+    PostProcessSettings settings;
+    toneMapping->SetResources(&pipelineCache, &viewCache);
+    stack.SetExposureResources(&pipelineCache);
+    stack.ApplySettings(settings);
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    const RHITextureRef inputTexture = device.CreateTexture(
+        RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA16_FLOAT));
+    const RHITextureRef outputTexture = device.CreateTexture(
+        RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+    const RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(
+        graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    const RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(
+        graph, outputTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(output, RHIResourceState::RenderTarget);
+
+    PostProcessFrameInputs inputs;
+    inputs.sceneColor = input;
+    inputs.outputFormat = RHIFormat::RGBA8_UNORM;
+    inputs.fixedDeltaSeconds = 1.0f / 60.0f;
+    inputs.sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
+    inputs.outputColorDomain = PostProcessColorDomain::DisplayEncodedLDR;
+    inputs.historyIdentity = MakeTestExposureHistoryIdentity(1u, 16u, 16u);
+    inputs.historyResetReasons = RenderHistoryResetReason::FirstFrame;
+    stack.Execute(graph, inputs, output);
+
+    const PostProcessStackExecuteStats& stats = stack.GetLastExecuteStats();
+    EXPECT_FALSE(stats.planValid);
+    EXPECT_NE(stats.planFailureReason.find("exact exposure state"),
+              std::string::npos);
+    EXPECT_EQ(graph.GetRecordedPassCount(), static_cast<size_t>(0));
 }
 
 TEST_F(RenderPassValidationFixture, ToneMappingAddsLiveGraphPassAndDrawsFullscreenTriangle)
@@ -11303,7 +12153,6 @@ TEST_F(RenderPassValidationFixture, ToneMappingAddsLiveGraphPassAndDrawsFullscre
     ToneMappingPass pass;
     PostProcessSettings settings;
     settings.enableToneMapping = true;
-    settings.exposure = 1.25f;
     settings.gamma = 2.2f;
     settings.toneMappingOutputColorSpace = ToneMappingOutputColorSpace::Linear;
     pass.Configure(settings);
@@ -11326,7 +12175,14 @@ TEST_F(RenderPassValidationFixture, ToneMappingAddsLiveGraphPassAndDrawsFullscre
     RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
-    pass.AddToGraph(graph, input, output);
+    const TestExposureGraphState exposure = CreateTestExposureGraphState(
+        device, graph, 0x182df94a6017bc35ULL);
+    ASSERT_TRUE(exposure.IsValid());
+    PostProcessFrameInputs frameInputs;
+    frameInputs.sceneColor = input;
+    frameInputs.exposureState = exposure.handle;
+    frameInputs.exposureStateContentHash = exposure.contentHash;
+    pass.AddToGraph(graph, frameInputs, output);
     RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
@@ -11376,8 +12232,9 @@ TEST_F(RenderPassValidationFixture, ToneMappingAddsLiveGraphPassAndDrawsFullscre
             return desc.debugName && std::string(desc.debugName) == "ToneMappingDescriptorSet";
         });
     ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
-    EXPECT_EQ(descriptorIt->layout, pipelineCache.GetPostProcessSetLayout());
-    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(4));
+    EXPECT_EQ(descriptorIt->layout,
+              pipelineCache.GetExposurePostProcessSetLayout());
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(5));
 
     const auto hasBinding = [descriptorIt](uint32 binding,
                                            bool expectBuffer,
@@ -11402,9 +12259,11 @@ TEST_F(RenderPassValidationFixture, ToneMappingAddsLiveGraphPassAndDrawsFullscre
     EXPECT_TRUE(hasBinding(1, false, true, false));
     EXPECT_TRUE(hasBinding(2, false, false, true));
     EXPECT_TRUE(hasBinding(3, false, true, false));
+    EXPECT_TRUE(hasBinding(4, true, false, false));
     EXPECT_EQ(descriptorIt->bindings[3].textureView, descriptorIt->bindings[1].textureView);
+    EXPECT_EQ(descriptorIt->bindings[4].buffer, exposure.buffer.Get());
 
-    const FakeBuffer* constants = FindCreatedBuffer(device, "ToneMappingConstants");
+    const FakeBuffer* constants = FindCreatedBuffer(device, "ToneMappingPassConstants");
     ASSERT_NE(constants, nullptr);
     const std::vector<uint8>& storage = constants->GetStorage();
     ASSERT_GE(storage.size(), static_cast<size_t>(36));
@@ -11416,7 +12275,8 @@ TEST_F(RenderPassValidationFixture, ToneMappingAddsLiveGraphPassAndDrawsFullscre
         return value;
     };
 
-    EXPECT_EQ(readUInt(32), static_cast<uint32>(ToneMappingOutputColorSpace::Linear));
+    EXPECT_EQ(readUInt(12), static_cast<uint32>(ToneMappingOutputColorSpace::Linear));
+    EXPECT_EQ(pass.GetLastExposureStateContentHash(), exposure.contentHash);
 
     auto descriptorCall = std::find(ctx.callSequence.begin(), ctx.callSequence.end(), "SetDescriptorSet");
     auto drawCall = std::find(ctx.callSequence.begin(), ctx.callSequence.end(), "Draw");
@@ -11428,7 +12288,8 @@ TEST_F(RenderPassValidationFixture, ToneMappingAddsLiveGraphPassAndDrawsFullscre
 
 TEST_F(RenderPassValidationFixture, ToneMappingSkipsDrawWhenConstantsCannotMap)
 {
-    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+    device.bufferMapSucceeds = false;
 
     ToneMappingPass pass;
     PostProcessSettings settings;
@@ -11452,7 +12313,14 @@ TEST_F(RenderPassValidationFixture, ToneMappingSkipsDrawWhenConstantsCannotMap)
     RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
-    pass.AddToGraph(graph, input, output);
+    const TestExposureGraphState exposure = CreateTestExposureGraphState(
+        device, graph, 0x6a07c593d1be248fULL, false);
+    ASSERT_TRUE(exposure.IsValid());
+    PostProcessFrameInputs frameInputs;
+    frameInputs.sceneColor = input;
+    frameInputs.exposureState = exposure.handle;
+    frameInputs.exposureStateContentHash = exposure.contentHash;
+    pass.AddToGraph(graph, frameInputs, output);
     RenderGraphValidationAccess::Compile(graph);
 
     RecordingCommandContext ctx;
@@ -11478,8 +12346,9 @@ TEST_F(RenderPassValidationFixture,
     auto* toneMapping = stack.AddEffect<ToneMappingPass>();
     PostProcessSettings settings;
     settings.enableToneMapping = true;
-    toneMapping->Configure(settings);
     toneMapping->SetResources(&pipelineCache, &viewCache);
+    stack.SetExposureResources(&pipelineCache);
+    stack.ApplySettings(settings);
     ASSERT_TRUE(toneMapping->IsSupported()) << toneMapping->GetUnsupportedReason();
 
     RenderGraph graph;
@@ -11496,7 +12365,23 @@ TEST_F(RenderPassValidationFixture,
     const RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(
         graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
-    stack.Execute(graph, input, output);
+    const RenderViewHistoryIdentity historyIdentity =
+        MakeTestExposureHistoryIdentity(1u, 32u, 32u);
+    const TestExposureGraphState exposure = PrepareTestExposureGraphState(
+        graph, stack.GetExposureController(), settings.exposureSettings,
+        historyIdentity);
+    ASSERT_TRUE(exposure.IsValid());
+    PostProcessFrameInputs frameInputs;
+    frameInputs.sceneColor = input;
+    frameInputs.exposureState = exposure.handle;
+    frameInputs.exposureStateContentHash = exposure.contentHash;
+    frameInputs.outputFormat = RHIFormat::RGBA8_UNORM;
+    frameInputs.fixedDeltaSeconds = 1.0f / 60.0f;
+    frameInputs.sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
+    frameInputs.outputColorDomain = PostProcessColorDomain::DisplayEncodedLDR;
+    frameInputs.historyIdentity = historyIdentity;
+    frameInputs.historyResetReasons = RenderHistoryResetReason::FirstFrame;
+    stack.Execute(graph, frameInputs, output);
 
     const PostProcessStackExecuteStats& stats = stack.GetLastExecuteStats();
     EXPECT_EQ(stats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
@@ -11506,6 +12391,10 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_EQ(stats.supportedToneMappingEffectCount, 1u);
     EXPECT_EQ(stats.enabledToneMappingEffectCount, 1u);
     EXPECT_EQ(stats.scheduledToneMappingEffectCount, 1u);
+    EXPECT_TRUE(stats.exposureOutputs.IsValid());
+    EXPECT_EQ(stats.exposureOutputs.committedStateContentHash,
+              exposure.contentHash);
+    EXPECT_NE(stats.exposureOutputs.candidateStateContentHash, 0u);
 
     RenderGraphValidationAccess::Compile(graph);
     ASSERT_TRUE(graph.GetCompileStats().compileValid);
@@ -11521,14 +12410,15 @@ TEST_F(RenderPassValidationFixture,
 TEST_F(RenderPassValidationFixture,
        DeferredPresentationRejectsToneMappingWithoutFullscreenSemanticEvidence)
 {
-    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     PostProcessStack stack;
     auto* toneMapping = stack.AddEffect<ToneMappingPass>();
     PostProcessSettings settings;
     settings.enableToneMapping = true;
-    toneMapping->Configure(settings);
     toneMapping->SetResources(&pipelineCache, &viewCache);
+    stack.SetExposureResources(&pipelineCache);
+    stack.ApplySettings(settings);
     ASSERT_TRUE(toneMapping->IsSupported()) << toneMapping->GetUnsupportedReason();
 
     RenderGraph graph;
@@ -11545,7 +12435,24 @@ TEST_F(RenderPassValidationFixture,
     const RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(
         graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
-    stack.Execute(graph, input, output);
+    const RenderViewHistoryIdentity historyIdentity =
+        MakeTestExposureHistoryIdentity(1u, 32u, 32u);
+    const TestExposureGraphState exposure = PrepareTestExposureGraphState(
+        graph, stack.GetExposureController(), settings.exposureSettings,
+        historyIdentity);
+    ASSERT_TRUE(exposure.IsValid());
+    PostProcessFrameInputs frameInputs;
+    frameInputs.sceneColor = input;
+    frameInputs.exposureState = exposure.handle;
+    frameInputs.exposureStateContentHash = exposure.contentHash;
+    frameInputs.outputFormat = RHIFormat::RGBA8_UNORM;
+    frameInputs.fixedDeltaSeconds = 1.0f / 60.0f;
+    frameInputs.sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
+    frameInputs.outputColorDomain = PostProcessColorDomain::DisplayEncodedLDR;
+    frameInputs.historyIdentity = historyIdentity;
+    frameInputs.historyResetReasons = RenderHistoryResetReason::FirstFrame;
+    device.failMapBufferDebugName = "ToneMappingPassConstants";
+    stack.Execute(graph, frameInputs, output);
     const PostProcessStackExecuteStats& stats = stack.GetLastExecuteStats();
     ASSERT_EQ(stats.scheduledToneMappingEffectCount, 1u);
 
@@ -11589,9 +12496,19 @@ TEST_F(RenderPassValidationFixture,
     RenderGraphValidationAccess::SetDevice(*graph, &device);
     renderer.SetRenderGraphForTesting(std::move(graph));
 
+    const fs::path shaderDirectory = FindShaderDirectory();
+    ASSERT_FALSE(shaderDirectory.empty());
+    ASSERT_TRUE(
+        SceneRendererTestAccess::InstallMinimalLightingRuntimeForGraphBuild(
+            renderer, device, shaderDirectory.string()));
+    PipelineCache* const rendererPipelineCache =
+        SceneRendererTestAccess::GetPipelineCacheForTesting(renderer);
+    ASSERT_NE(rendererPipelineCache, nullptr);
+
     auto stack = std::make_unique<PostProcessStack>();
     auto* toneMapping = stack->AddEffect<ToneMappingPass>();
-    toneMapping->SetResources(&pipelineCache, &viewCache);
+    toneMapping->SetResources(rendererPipelineCache, &viewCache);
+    stack->SetExposureResources(rendererPipelineCache);
     SceneRendererTestAccess::InstallPostProcessStack(renderer, std::move(stack));
 
     PostProcessSettings userSettings;
@@ -11622,6 +12539,10 @@ TEST_F(RenderPassValidationFixture,
     externalTarget.depthFinalState = RHIResourceState::DepthRead;
     renderer.SetExternalRenderTarget(externalTarget);
     renderer.BuildRenderGraphForTesting();
+
+    EXPECT_EQ(
+        "Raster render feature composition is unavailable",
+        SceneRendererTestAccess::GetFeatureCompositionFailureReason(renderer));
 
     const SceneRenderPostProcessStats& stats = renderer.GetPostProcessStats();
     EXPECT_FALSE(renderer.GetPostProcessSettings().enableToneMapping);
@@ -11728,7 +12649,14 @@ TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTria
     RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
-    pass.AddToGraph(graph, input, output);
+    const TestExposureGraphState exposure = CreateTestExposureGraphState(
+        device, graph, 0x0248a37fd91ce650ULL);
+    ASSERT_TRUE(exposure.IsValid());
+    PostProcessFrameInputs frameInputs;
+    frameInputs.sceneColor = input;
+    frameInputs.exposureState = exposure.handle;
+    frameInputs.exposureStateContentHash = exposure.contentHash;
+    pass.AddToGraph(graph, frameInputs, output);
     RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
@@ -11851,8 +12779,9 @@ TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTria
             return desc.debugName && std::string(desc.debugName) == "BloomDescriptorSet";
         });
     ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
-    EXPECT_EQ(descriptorIt->layout, pipelineCache.GetPostProcessSetLayout());
-    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(4));
+    EXPECT_EQ(descriptorIt->layout,
+              pipelineCache.GetExposurePostProcessSetLayout());
+    ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(5));
 
     const auto hasBinding = [descriptorIt](uint32 binding,
                                            bool expectBuffer,
@@ -11877,7 +12806,10 @@ TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTria
     EXPECT_TRUE(hasBinding(1, false, true, false));
     EXPECT_TRUE(hasBinding(2, false, false, true));
     EXPECT_TRUE(hasBinding(3, false, true, false));
+    EXPECT_TRUE(hasBinding(4, true, false, false));
     EXPECT_EQ(descriptorIt->bindings[3].textureView, descriptorIt->bindings[1].textureView);
+    EXPECT_EQ(descriptorIt->bindings[4].buffer, exposure.buffer.Get());
+    EXPECT_EQ(pass.GetLastExposureStateContentHash(), exposure.contentHash);
 
     auto descriptorCall = std::find(ctx.callSequence.begin(), ctx.callSequence.end(), "SetDescriptorSet");
     auto drawCall = std::find(ctx.callSequence.begin(), ctx.callSequence.end(), "Draw");
@@ -11915,7 +12847,14 @@ TEST_F(RenderPassValidationFixture, BloomZeroIntensityCopiesSceneOnly)
     RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
-    pass.AddToGraph(graph, input, output);
+    const TestExposureGraphState exposure = CreateTestExposureGraphState(
+        device, graph, 0x571e6ac901d4bf83ULL);
+    ASSERT_TRUE(exposure.IsValid());
+    PostProcessFrameInputs frameInputs;
+    frameInputs.sceneColor = input;
+    frameInputs.exposureState = exposure.handle;
+    frameInputs.exposureStateContentHash = exposure.contentHash;
+    pass.AddToGraph(graph, frameInputs, output);
     RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
@@ -11937,7 +12876,8 @@ TEST_F(RenderPassValidationFixture, BloomZeroIntensityCopiesSceneOnly)
 
 TEST_F(RenderPassValidationFixture, BloomSkipsDrawWhenConstantsCannotMap)
 {
-    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+    device.bufferMapSucceeds = false;
 
     BloomPass pass;
     PostProcessSettings settings;
@@ -11961,7 +12901,14 @@ TEST_F(RenderPassValidationFixture, BloomSkipsDrawWhenConstantsCannotMap)
     RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
-    pass.AddToGraph(graph, input, output);
+    const TestExposureGraphState exposure = CreateTestExposureGraphState(
+        device, graph, 0xb1f0642de7398ca5ULL, false);
+    ASSERT_TRUE(exposure.IsValid());
+    PostProcessFrameInputs frameInputs;
+    frameInputs.sceneColor = input;
+    frameInputs.exposureState = exposure.handle;
+    frameInputs.exposureStateContentHash = exposure.contentHash;
+    pass.AddToGraph(graph, frameInputs, output);
     RenderGraphValidationAccess::Compile(graph);
 
     RecordingCommandContext ctx;
@@ -12093,7 +13040,8 @@ TEST_F(RenderPassValidationFixture, FXAAAddsLiveGraphPassAndDrawsFullscreenTrian
 
 TEST_F(RenderPassValidationFixture, FXAASkipsDrawWhenConstantsCannotMap)
 {
-    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+    device.bufferMapSucceeds = false;
 
     FXAAPass pass;
     PostProcessSettings settings;
@@ -12460,7 +13408,8 @@ TEST_F(RenderPassValidationFixture, ColorGradingUploadsConstantsWithHLSLPacking)
 
 TEST_F(RenderPassValidationFixture, ColorGradingSkipsDrawWhenConstantsCannotMap)
 {
-    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+    device.bufferMapSucceeds = false;
 
     ColorGradingPass pass;
     PostProcessSettings settings;
@@ -12696,7 +13645,8 @@ TEST_F(RenderPassValidationFixture, ChromaticAberrationUploadsConstantsWithHLSLP
 
 TEST_F(RenderPassValidationFixture, ChromaticAberrationSkipsDrawWhenConstantsCannotMap)
 {
-    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+    device.bufferMapSucceeds = false;
 
     ChromaticAberrationPass pass;
     PostProcessSettings settings;
@@ -12839,7 +13789,8 @@ TEST_F(RenderPassValidationFixture, VignetteAddsLiveGraphPassAndDrawsFullscreenT
 
 TEST_F(RenderPassValidationFixture, VignetteSkipsDrawWhenConstantsCannotMap)
 {
-    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+    device.bufferMapSucceeds = false;
 
     VignettePass pass;
     PostProcessSettings settings;
@@ -12902,8 +13853,19 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomBeforeToneMappingTh
     toneMapping->Configure(settings);
     bloom->SetResources(&pipelineCache, &viewCache);
     toneMapping->SetResources(&pipelineCache, &viewCache);
+    stack.SetExposureResources(&pipelineCache);
+    stack.ApplySettings(settings);
 
-    stack.Execute(graph, input, output);
+    const RenderViewHistoryIdentity historyIdentity =
+        MakeTestExposureHistoryIdentity(1u, 32u, 32u);
+    const TestExposureGraphState exposure = PrepareTestExposureGraphState(
+        graph, stack.GetExposureController(), settings.exposureSettings,
+        historyIdentity);
+    ASSERT_TRUE(exposure.IsValid());
+    const PostProcessFrameInputs frameInputs =
+        MakeTestPostProcessFrameInputs(
+            input, exposure, RHIFormat::RGBA8_UNORM, historyIdentity);
+    stack.Execute(graph, frameInputs, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_FALSE(executeStats.noEffectNoWork);
@@ -12911,31 +13873,42 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomBeforeToneMappingTh
     // Bloom expands to seven physical graph passes; the stack must report
     // graph work rather than only the two scheduled semantic effects.
     EXPECT_EQ(executeStats.graphPassCount, 8u);
-    EXPECT_EQ(executeStats.graphPassCount, graph.GetRecordedPassCount());
+    EXPECT_EQ(graph.GetRecordedPassCount(),
+              static_cast<size_t>(executeStats.graphPassCount) + 1u);
     EXPECT_EQ(executeStats.transientIntermediateCount, 1u);
     EXPECT_EQ(executeStats.transientIntermediateFormat, RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
     EXPECT_TRUE(executeStats.toneMappingBoundaryValid);
     EXPECT_TRUE(executeStats.toneMappingBoundaryWarning.empty());
+    EXPECT_TRUE(executeStats.exposureOutputs.IsValid());
+    EXPECT_FALSE(executeStats.exposureOutputs.histogramUsed);
+    EXPECT_EQ(executeStats.exposureOutputs.committedStateContentHash,
+              exposure.contentHash);
+    EXPECT_NE(executeStats.exposureOutputs.candidateStateContentHash, 0u);
 
     RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 8u);
+    EXPECT_EQ(graphStats.totalPasses, 9u);
 
     RecordingCommandContext ctx;
     RenderGraphValidationAccess::Execute(graph, ctx);
 
-    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(8));
-    for (size_t i = 0; i < 4; ++i)
+    EXPECT_EQ(bloom->GetLastExposureStateContentHash(),
+              executeStats.exposureOutputs.candidateStateContentHash);
+    EXPECT_EQ(toneMapping->GetLastExposureStateContentHash(),
+              executeStats.exposureOutputs.candidateStateContentHash);
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(9));
+    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetExposureAdaptationPipeline());
+    for (size_t i = 1; i < 5; ++i)
     {
         ExpectPipelineDebugName(ctx.pipelineSequence[i], "BloomPipeline");
     }
-    for (size_t i = 4; i < 7; ++i)
+    for (size_t i = 5; i < 8; ++i)
     {
         ExpectPipelineDebugName(ctx.pipelineSequence[i], "BloomAdditivePipeline");
     }
-    EXPECT_EQ(ctx.pipelineSequence[7], pipelineCache.GetToneMappingPipeline());
+    EXPECT_EQ(ctx.pipelineSequence[8], pipelineCache.GetToneMappingPipeline());
     EXPECT_EQ(ctx.drawCount, 8u);
     EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
     EXPECT_EQ(ctx.beginRenderPassCount, 8u);
@@ -12987,8 +13960,19 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGra
     chromaticAberration->SetResources(&pipelineCache, &viewCache);
     vignette->SetResources(&pipelineCache, &viewCache);
     fxaa->SetResources(&pipelineCache, &viewCache);
+    stack.SetExposureResources(&pipelineCache);
+    stack.ApplySettings(settings);
 
-    stack.Execute(graph, input, output);
+    const RenderViewHistoryIdentity historyIdentity =
+        MakeTestExposureHistoryIdentity(1u, 32u, 32u);
+    const TestExposureGraphState exposure = PrepareTestExposureGraphState(
+        graph, stack.GetExposureController(), settings.exposureSettings,
+        historyIdentity);
+    ASSERT_TRUE(exposure.IsValid());
+    const PostProcessFrameInputs frameInputs =
+        MakeTestPostProcessFrameInputs(
+            input, exposure, RHIFormat::RGBA8_UNORM, historyIdentity);
+    stack.Execute(graph, frameInputs, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_FALSE(executeStats.noEffectNoWork);
@@ -12996,7 +13980,8 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGra
     // The six semantic effects expand to Bloom's seven passes plus five
     // single-pass effects. Keep this bound to the RenderGraph record count.
     EXPECT_EQ(executeStats.graphPassCount, 12u);
-    EXPECT_EQ(executeStats.graphPassCount, graph.GetRecordedPassCount());
+    EXPECT_EQ(graph.GetRecordedPassCount(),
+              static_cast<size_t>(executeStats.graphPassCount) + 1u);
     EXPECT_EQ(executeStats.transientIntermediateCount, 5u);
     EXPECT_EQ(executeStats.hdrIntermediateCount, 1u);
     EXPECT_EQ(executeStats.hdrIntermediateFormat, RHIFormat::RGBA16_FLOAT);
@@ -13006,29 +13991,32 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGra
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
     EXPECT_TRUE(executeStats.toneMappingBoundaryValid);
     EXPECT_TRUE(executeStats.toneMappingBoundaryWarning.empty());
+    EXPECT_TRUE(executeStats.exposureOutputs.IsValid());
+    EXPECT_FALSE(executeStats.exposureOutputs.histogramUsed);
 
     RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 12u);
+    EXPECT_EQ(graphStats.totalPasses, 13u);
 
     RecordingCommandContext ctx;
     RenderGraphValidationAccess::Execute(graph, ctx);
 
-    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(12));
-    for (size_t i = 0; i < 4; ++i)
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(13));
+    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetExposureAdaptationPipeline());
+    for (size_t i = 1; i < 5; ++i)
     {
         ExpectPipelineDebugName(ctx.pipelineSequence[i], "BloomPipeline");
     }
-    for (size_t i = 4; i < 7; ++i)
+    for (size_t i = 5; i < 8; ++i)
     {
         ExpectPipelineDebugName(ctx.pipelineSequence[i], "BloomAdditivePipeline");
     }
-    EXPECT_EQ(ctx.pipelineSequence[7], pipelineCache.GetToneMappingPipeline());
-    EXPECT_EQ(ctx.pipelineSequence[8], pipelineCache.GetColorGradingPipeline(RHIFormat::RGBA8_UNORM));
-    EXPECT_EQ(ctx.pipelineSequence[9], pipelineCache.GetChromaticAberrationPipeline(RHIFormat::RGBA8_UNORM));
-    EXPECT_EQ(ctx.pipelineSequence[10], pipelineCache.GetVignettePipeline(RHIFormat::RGBA8_UNORM));
-    EXPECT_EQ(ctx.pipelineSequence[11], pipelineCache.GetFXAAPipeline(RHIFormat::RGBA8_UNORM));
+    EXPECT_EQ(ctx.pipelineSequence[8], pipelineCache.GetToneMappingPipeline());
+    EXPECT_EQ(ctx.pipelineSequence[9], pipelineCache.GetColorGradingPipeline(RHIFormat::RGBA8_UNORM));
+    EXPECT_EQ(ctx.pipelineSequence[10], pipelineCache.GetChromaticAberrationPipeline(RHIFormat::RGBA8_UNORM));
+    EXPECT_EQ(ctx.pipelineSequence[11], pipelineCache.GetVignettePipeline(RHIFormat::RGBA8_UNORM));
+    EXPECT_EQ(ctx.pipelineSequence[12], pipelineCache.GetFXAAPipeline(RHIFormat::RGBA8_UNORM));
     EXPECT_EQ(ctx.drawCount, 12u);
     EXPECT_EQ(ctx.lastDrawVertexCount, 3u);
     EXPECT_EQ(ctx.beginRenderPassCount, 12u);
@@ -13069,8 +14057,19 @@ TEST_F(RenderPassValidationFixture, PostProcessStackKeepsZeroIntensityVignetteAs
     toneMapping->SetResources(&pipelineCache, &viewCache);
     vignette->SetResources(&pipelineCache, &viewCache);
     fxaa->SetResources(&pipelineCache, &viewCache);
+    stack.SetExposureResources(&pipelineCache);
+    stack.ApplySettings(settings);
 
-    stack.Execute(graph, input, output);
+    const RenderViewHistoryIdentity historyIdentity =
+        MakeTestExposureHistoryIdentity(1u, 32u, 32u);
+    const TestExposureGraphState exposure = PrepareTestExposureGraphState(
+        graph, stack.GetExposureController(), settings.exposureSettings,
+        historyIdentity);
+    ASSERT_TRUE(exposure.IsValid());
+    const PostProcessFrameInputs frameInputs =
+        MakeTestPostProcessFrameInputs(
+            input, exposure, RHIFormat::RGBA8_UNORM, historyIdentity);
+    stack.Execute(graph, frameInputs, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_FALSE(executeStats.noEffectNoWork);
@@ -13083,15 +14082,16 @@ TEST_F(RenderPassValidationFixture, PostProcessStackKeepsZeroIntensityVignetteAs
     RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 3u);
+    EXPECT_EQ(graphStats.totalPasses, 4u);
 
     RecordingCommandContext ctx;
     RenderGraphValidationAccess::Execute(graph, ctx);
 
-    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(3));
-    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetToneMappingPipeline());
-    EXPECT_EQ(ctx.pipelineSequence[1], pipelineCache.GetVignettePipeline(RHIFormat::RGBA8_UNORM));
-    EXPECT_EQ(ctx.pipelineSequence[2], pipelineCache.GetFXAAPipeline(RHIFormat::RGBA8_UNORM));
+    ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(4));
+    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetExposureAdaptationPipeline());
+    EXPECT_EQ(ctx.pipelineSequence[1], pipelineCache.GetToneMappingPipeline());
+    EXPECT_EQ(ctx.pipelineSequence[2], pipelineCache.GetVignettePipeline(RHIFormat::RGBA8_UNORM));
+    EXPECT_EQ(ctx.pipelineSequence[3], pipelineCache.GetFXAAPipeline(RHIFormat::RGBA8_UNORM));
     EXPECT_EQ(ctx.drawCount, 3u);
     EXPECT_EQ(ctx.beginRenderPassCount, 3u);
     EXPECT_EQ(ctx.endRenderPassCount, 3u);
@@ -13118,7 +14118,11 @@ TEST_F(RenderPassValidationFixture, PostProcessStackSortsHDRPassBeforeToneMappin
     (void)stack.AddEffect<RecordingPostProcessPass>("ToneMapping", 100);
     (void)stack.AddEffect<RecordingPostProcessPass>("Bloom", 200);
 
-    stack.Execute(graph, input, output);
+    const PostProcessFrameInputs frameInputs =
+        MakePreparedPostProcessFrameInputs(
+            graph, stack, input, RHIFormat::RGBA8_UNORM);
+    ASSERT_TRUE(frameInputs.HasExposureState());
+    stack.Execute(graph, frameInputs, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_TRUE(executeStats.toneMappingBoundaryValid);
@@ -13133,7 +14137,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackSortsHDRPassBeforeToneMappin
     RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 2u);
+    EXPECT_EQ(graphStats.totalPasses, 3u);
 }
 
 TEST_F(RenderPassValidationFixture, PostProcessStackSortsHDRToneMapAndLDRStages)
@@ -13158,7 +14162,11 @@ TEST_F(RenderPassValidationFixture, PostProcessStackSortsHDRToneMapAndLDRStages)
     (void)stack.AddEffect<RecordingPostProcessPass>("Vignette", 200);
     (void)stack.AddEffect<RecordingPostProcessPass>("Bloom", 300);
 
-    stack.Execute(graph, input, output);
+    const PostProcessFrameInputs frameInputs =
+        MakePreparedPostProcessFrameInputs(
+            graph, stack, input, RHIFormat::RGBA8_UNORM);
+    ASSERT_TRUE(frameInputs.HasExposureState());
+    stack.Execute(graph, frameInputs, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_TRUE(executeStats.toneMappingBoundaryValid);
@@ -13170,7 +14178,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackSortsHDRToneMapAndLDRStages)
     RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 3u);
+    EXPECT_EQ(graphStats.totalPasses, 4u);
 }
 
 TEST_F(RenderPassValidationFixture, PostProcessStackSortsHDRToneMapAndColorGradeStages)
@@ -13195,7 +14203,11 @@ TEST_F(RenderPassValidationFixture, PostProcessStackSortsHDRToneMapAndColorGrade
     (void)stack.AddEffect<RecordingPostProcessPass>("ColorGrading", 200);
     (void)stack.AddEffect<RecordingPostProcessPass>("Bloom", 300);
 
-    stack.Execute(graph, input, output);
+    const PostProcessFrameInputs frameInputs =
+        MakePreparedPostProcessFrameInputs(
+            graph, stack, input, RHIFormat::RGBA8_UNORM);
+    ASSERT_TRUE(frameInputs.HasExposureState());
+    stack.Execute(graph, frameInputs, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_TRUE(executeStats.toneMappingBoundaryValid);
@@ -13207,7 +14219,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackSortsHDRToneMapAndColorGrade
     RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 3u);
+    EXPECT_EQ(graphStats.totalPasses, 4u);
 }
 
 TEST_F(RenderPassValidationFixture, PostProcessStackRejectsHDRChainWritingLDROutputWithoutToneMapping)
@@ -13231,7 +14243,11 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRejectsHDRChainWritingLDROut
     PostProcessStack stack;
     auto* bloom = stack.AddEffect<RecordingPostProcessPass>("Bloom", 100);
 
-    stack.Execute(graph, input, output);
+    const PostProcessFrameInputs frameInputs =
+        MakePreparedPostProcessFrameInputs(
+            graph, stack, input, RHIFormat::RGBA8_UNORM);
+    ASSERT_TRUE(frameInputs.HasExposureState());
+    stack.Execute(graph, frameInputs, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_FALSE(executeStats.toneMappingBoundaryValid);
@@ -13269,7 +14285,11 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRejectsHDRChainWritingHDROut
     PostProcessStack stack;
     auto* bloom = stack.AddEffect<RecordingPostProcessPass>("Bloom", 100);
 
-    stack.Execute(graph, input, output);
+    const PostProcessFrameInputs frameInputs =
+        MakePreparedPostProcessFrameInputs(
+            graph, stack, input, RHIFormat::RGBA16_FLOAT);
+    ASSERT_TRUE(frameInputs.HasExposureState());
+    stack.Execute(graph, frameInputs, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_FALSE(executeStats.toneMappingBoundaryValid);
@@ -13306,7 +14326,11 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidLDREffectBefor
     PostProcessStack stack;
     (void)stack.AddEffect<RecordingPostProcessPass>("FXAA", 100);
 
-    stack.Execute(graph, input, output);
+    const PostProcessFrameInputs frameInputs =
+        MakePreparedPostProcessFrameInputs(
+            graph, stack, input, RHIFormat::RGBA8_UNORM);
+    ASSERT_TRUE(frameInputs.HasExposureState());
+    stack.Execute(graph, frameInputs, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_FALSE(executeStats.toneMappingBoundaryValid);
@@ -13341,7 +14365,11 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidColorGradingBe
     PostProcessStack stack;
     (void)stack.AddEffect<RecordingPostProcessPass>("ColorGrading", 100);
 
-    stack.Execute(graph, input, output);
+    const PostProcessFrameInputs frameInputs =
+        MakePreparedPostProcessFrameInputs(
+            graph, stack, input, RHIFormat::RGBA8_UNORM);
+    ASSERT_TRUE(frameInputs.HasExposureState());
+    stack.Execute(graph, frameInputs, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_FALSE(executeStats.toneMappingBoundaryValid);
@@ -13376,7 +14404,11 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidChromaticAberr
     PostProcessStack stack;
     (void)stack.AddEffect<RecordingPostProcessPass>("ChromaticAberration", 100);
 
-    stack.Execute(graph, input, output);
+    const PostProcessFrameInputs frameInputs =
+        MakePreparedPostProcessFrameInputs(
+            graph, stack, input, RHIFormat::RGBA8_UNORM);
+    ASSERT_TRUE(frameInputs.HasExposureState());
+    stack.Execute(graph, frameInputs, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_FALSE(executeStats.toneMappingBoundaryValid);
@@ -13411,7 +14443,11 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidVignetteBefore
     PostProcessStack stack;
     (void)stack.AddEffect<RecordingPostProcessPass>("Vignette", 100);
 
-    stack.Execute(graph, input, output);
+    const PostProcessFrameInputs frameInputs =
+        MakePreparedPostProcessFrameInputs(
+            graph, stack, input, RHIFormat::RGBA8_UNORM);
+    ASSERT_TRUE(frameInputs.HasExposureState());
+    stack.Execute(graph, frameInputs, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_FALSE(executeStats.toneMappingBoundaryValid);
@@ -13522,11 +14558,28 @@ TEST(RenderPostProcessStackValidation, EvaluateEffectsReportsRequestedButUnsuppo
 
 TEST_F(RenderPassValidationFixture, NoSupportedEffectsReportsNoWork)
 {
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
     RenderGraph graph;
     RenderGraphValidationAccess::SetDevice(graph, &device);
 
+    const RHITextureRef inputTexture = device.CreateTexture(
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    const RHITextureRef outputTexture = device.CreateTexture(
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(inputTexture);
+    ASSERT_TRUE(outputTexture);
+    const RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(
+        graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    const RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(
+        graph, outputTexture.Get(), RHIResourceState::RenderTarget);
+
     PostProcessStack stack;
-    stack.Execute(graph, RGTextureHandle{}, RGTextureHandle{});
+    const PostProcessFrameInputs frameInputs =
+        MakePreparedPostProcessFrameInputs(
+            graph, stack, input, RHIFormat::RGBA8_UNORM);
+    ASSERT_TRUE(frameInputs.HasExposureState());
+    stack.Execute(graph, frameInputs, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_TRUE(executeStats.noEffectNoWork);
@@ -13541,6 +14594,8 @@ TEST_F(RenderPassValidationFixture, NoSupportedEffectsReportsNoWork)
 
 TEST_F(RenderPassValidationFixture, NoSupportedEffectsCannotSilentlyChangeColorDomain)
 {
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
     RenderGraph graph;
     RenderGraphValidationAccess::SetDevice(graph, &device);
 
@@ -13556,7 +14611,11 @@ TEST_F(RenderPassValidationFixture, NoSupportedEffectsCannotSilentlyChangeColorD
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     PostProcessStack stack;
-    stack.Execute(graph, input, output);
+    const PostProcessFrameInputs frameInputs =
+        MakePreparedPostProcessFrameInputs(
+            graph, stack, input, RHIFormat::RGBA8_UNORM);
+    ASSERT_TRUE(frameInputs.HasExposureState());
+    stack.Execute(graph, frameInputs, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_TRUE(executeStats.noEffectNoWork);
@@ -13572,6 +14631,8 @@ TEST_F(RenderPassValidationFixture, NoSupportedEffectsCannotSilentlyChangeColorD
 
 TEST_F(RenderPassValidationFixture, InvalidToneMappingBoundaryDoesNotInsertFallbackCopy)
 {
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
     RenderGraph graph;
     RenderGraphValidationAccess::SetDevice(graph, &device);
 
@@ -13588,7 +14649,11 @@ TEST_F(RenderPassValidationFixture, InvalidToneMappingBoundaryDoesNotInsertFallb
 
     PostProcessStack stack;
     (void)stack.AddEffect<RecordingPostProcessPass>("FXAA", 100);
-    stack.Execute(graph, input, output);
+    const PostProcessFrameInputs frameInputs =
+        MakePreparedPostProcessFrameInputs(
+            graph, stack, input, RHIFormat::RGBA8_UNORM);
+    ASSERT_TRUE(frameInputs.HasExposureState());
+    stack.Execute(graph, frameInputs, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_FALSE(executeStats.toneMappingBoundaryValid);
@@ -13603,7 +14668,10 @@ TEST_F(RenderPassValidationFixture, InvalidToneMappingBoundaryDoesNotInsertFallb
 
 TEST(RenderPostProcessStackValidation, MultiPassChainUsesDistinctTransientIntermediate)
 {
+    const ScopedCoreLogForTest scopedCoreLog;
     FakeDevice device;
+    PipelineCache pipelineCache{RVX::Tests::GetDeterministicShaderProgramProvider()};
+    ASSERT_TRUE(InitializePostProcessExecutionRuntime(device, pipelineCache));
     RenderGraph graph;
     RenderGraphValidationAccess::SetDevice(graph, &device);
 
@@ -13619,10 +14687,18 @@ TEST(RenderPostProcessStackValidation, MultiPassChainUsesDistinctTransientInterm
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     PostProcessStack stack;
+    stack.SetExposureResources(&pipelineCache);
     auto* first = stack.AddEffect<RecordingPostProcessPass>("Bloom", 100);
     auto* second = stack.AddEffect<RecordingPostProcessPass>("ToneMapping", 200);
 
-    stack.Execute(graph, input, output);
+    const RenderViewHistoryIdentity historyIdentity =
+        MakeTestExposureHistoryIdentity(3201u, 32u, 32u);
+    const TestExposureGraphState exposure = PrepareTestExposureGraphState(
+        graph, stack.GetExposureController(), {}, historyIdentity);
+    ASSERT_TRUE(exposure.IsValid());
+    const PostProcessFrameInputs frameInputs = MakeTestPostProcessFrameInputs(
+        input, exposure, RHIFormat::RGBA8_UNORM, historyIdentity);
+    stack.Execute(graph, frameInputs, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     EXPECT_FALSE(executeStats.noEffectNoWork);
@@ -13649,7 +14725,7 @@ TEST(RenderPostProcessStackValidation, MultiPassChainUsesDistinctTransientInterm
     RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 2u);
+    EXPECT_EQ(graphStats.totalPasses, 3u);
 }
 
 TEST_F(RenderPassValidationFixture, ObjectVelocityPassDrawsMaskedItemsWithMaterialSet)
@@ -14124,7 +15200,11 @@ TEST_F(RenderPassValidationFixture, ToneMappingPixelProbeAddsOnePreToneCopyPass)
         graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
-    pass.AddToGraph(graph, input, output);
+    const TestPostProcessFrameContract frameContract =
+        MakeTestPostProcessFrameContract(
+            device, graph, input, RHIFormat::RGBA8_UNORM, 19u);
+    ASSERT_TRUE(frameContract.IsValid());
+    pass.AddToGraph(graph, frameContract.inputs, output);
     RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
@@ -20399,6 +21479,16 @@ TEST_F(RenderPassValidationFixture,
         deferredContext.view.environmentPrefilteredTexture;
     transparentContext.view.environmentBRDFLUTTexture =
         deferredContext.view.environmentBRDFLUTTexture;
+    transparentContext.view.exposureState =
+        deferredContext.view.exposureState;
+    transparentContext.view.exposureStateSchemaVersion =
+        deferredContext.view.exposureStateSchemaVersion;
+    transparentContext.view.exposureStateStride =
+        deferredContext.view.exposureStateStride;
+    transparentContext.view.exposureStateMode =
+        deferredContext.view.exposureStateMode;
+    transparentContext.view.exposureStateConfigurationHash =
+        deferredContext.view.exposureStateConfigurationHash;
     RebuildTestRecordFrameSnapshot(transparentContext);
     ASSERT_TRUE(transparentContext.IsFrameIdentityValid());
     ASSERT_TRUE(transparentContext.directionalShadow.IsCompatibleWith(
@@ -22033,7 +23123,7 @@ TEST_F(RenderPassValidationFixture, TransparentPassBindsTransparentPipeline)
 TEST_F(RenderPassValidationFixture,
        TransparentPassTypedPathFailsClosedWhenRecordingBindingsCannotBeCreated)
 {
-    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     std::vector<RenderDrawItem> transparentItems = {MakeDrawItem(MaterialRenderMode::Transparent)};
 
@@ -22051,6 +23141,10 @@ TEST_F(RenderPassValidationFixture,
     RenderPassRecordContext context = MakeTransparentRecordContext(
         graph, graphView, scene, transparentItems, 1102, 1102);
     AttachDefaultTestLighting(context);
+    // Exposure is an exact imported graph input.  Create it while uploads are
+    // available, then fail the subsequent record-binding allocation under
+    // test rather than weakening the exposure contract.
+    device.bufferMapSucceeds = false;
     pass.AddToGraph(graph, context);
     RenderGraphValidationAccess::Compile(graph);
     ASSERT_TRUE(graph.GetCompileStats().compileValid);
@@ -24532,7 +25626,8 @@ TEST_F(RenderPassValidationFixture, FilmGrainUploadsConstantsWithHLSLPacking)
 
 TEST_F(RenderPassValidationFixture, FilmGrainSkipsDrawWhenConstantsCannotMap)
 {
-    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+    device.bufferMapSucceeds = false;
 
     FilmGrainPass pass;
     PostProcessSettings settings;
@@ -24867,9 +25962,14 @@ TEST(RenderPostProcessStackValidation, TypedPlannerOrdersByStageOrderAndStableId
     (void)stack.AddEffect<RecordingPostProcessPass>("ToneMapping", 1);
     (void)stack.AddEffect<RecordingPostProcessPass>("Bloom", 999);
 
-    PostProcessFrameInputs inputs;
-    inputs.sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
-    inputs.outputColorDomain = PostProcessColorDomain::DisplayEncodedLDR;
+    FakeDevice device;
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    const TestPostProcessFrameContract frameContract =
+        MakeTestPostProcessFrameContract(
+            device, graph, {}, RHIFormat::RGBA8_UNORM, 3001u);
+    ASSERT_TRUE(frameContract.IsValid());
+    PostProcessFrameInputs inputs = frameContract.inputs;
 
     PostProcessStackExecuteStats plan;
     ASSERT_TRUE(stack.BuildPlan(inputs, RHIFormat::RGBA8_UNORM, plan)) << plan.planFailureReason;
@@ -24887,9 +25987,14 @@ TEST(RenderPostProcessStackValidation, TypedPlannerOrdersByStageOrderAndStableId
 
 TEST(RenderPostProcessStackValidation, TypedPlannerRejectsZeroOrTwoToneMapsBeforeGraphMutation)
 {
-    PostProcessFrameInputs inputs;
-    inputs.sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
-    inputs.outputColorDomain = PostProcessColorDomain::DisplayEncodedLDR;
+    FakeDevice device;
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    const TestPostProcessFrameContract frameContract =
+        MakeTestPostProcessFrameContract(
+            device, graph, {}, RHIFormat::RGBA8_UNORM, 3002u);
+    ASSERT_TRUE(frameContract.IsValid());
+    PostProcessFrameInputs inputs = frameContract.inputs;
 
     PostProcessStack zeroToneMaps;
     (void)zeroToneMaps.AddEffect<RecordingPostProcessPass>("Bloom", 100);
@@ -24912,8 +26017,14 @@ TEST(RenderPostProcessStackValidation, TypedPlannerRejectsZeroOrTwoToneMapsBefor
 TEST(RenderPostProcessStackValidation,
      PresentationContractRejectsZeroToneMapsWithoutRemovingGenericNoOpPlans)
 {
-    PostProcessFrameInputs inputs;
-    inputs.sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
+    FakeDevice device;
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    const TestPostProcessFrameContract frameContract =
+        MakeTestPostProcessFrameContract(
+            device, graph, {}, RHIFormat::RGBA16_FLOAT, 3003u);
+    ASSERT_TRUE(frameContract.IsValid());
+    PostProcessFrameInputs inputs = frameContract.inputs;
     inputs.outputColorDomain = PostProcessColorDomain::SceneLinearHDR;
     inputs.outputFormat = RHIFormat::RGBA16_FLOAT;
 
@@ -25001,10 +26112,15 @@ TEST(RenderPostProcessStackValidation,
         plannedFilmGrain->SetDescriptorForTesting(filmGrain.Describe());
         plannedFXAA->SetDescriptorForTesting(fxaa.Describe());
 
-        PostProcessFrameInputs inputs;
-        inputs.sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
+        FakeDevice device;
+        RenderGraph graph;
+        RenderGraphValidationAccess::SetDevice(graph, &device);
+        const TestPostProcessFrameContract frameContract =
+            MakeTestPostProcessFrameContract(
+                device, graph, {}, outputFormat, 3004u);
+        ASSERT_TRUE(frameContract.IsValid());
+        PostProcessFrameInputs inputs = frameContract.inputs;
         inputs.outputColorDomain = expectedDomain;
-        inputs.outputFormat = outputFormat;
         PostProcessStackExecuteStats plan;
         EXPECT_TRUE(stack.BuildPlan(inputs,
                                     outputFormat,
@@ -25024,9 +26140,14 @@ TEST(RenderPostProcessStackValidation,
 
 TEST(RenderPostProcessStackValidation, TypedPlannerRejectsFakeDescriptorsAndIllegalColorTransitions)
 {
-    PostProcessFrameInputs inputs;
-    inputs.sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
-    inputs.outputColorDomain = PostProcessColorDomain::DisplayEncodedLDR;
+    FakeDevice device;
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    const TestPostProcessFrameContract frameContract =
+        MakeTestPostProcessFrameContract(
+            device, graph, {}, RHIFormat::RGBA8_UNORM, 3005u);
+    ASSERT_TRUE(frameContract.IsValid());
+    PostProcessFrameInputs inputs = frameContract.inputs;
 
     PostProcessStack fakeName;
     auto* fakeBloom = fakeName.AddEffect<RecordingPostProcessPass>("Bloom", 100);
@@ -25093,12 +26214,13 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    PostProcessFrameInputs inputs;
-    inputs.sceneColor = RenderGraphValidationAccess::ImportTexture(
+    const RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(
         graph, inputTexture.Get(), RHIResourceState::ShaderResource);
-    inputs.outputFormat = RHIFormat::RGBA8_UNORM;
-    inputs.sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
-    inputs.outputColorDomain = PostProcessColorDomain::DisplayEncodedLDR;
+    const TestPostProcessFrameContract frameContract =
+        MakeTestPostProcessFrameContract(
+            device, graph, input, RHIFormat::RGBA8_UNORM, 3101u);
+    ASSERT_TRUE(frameContract.IsValid());
+    PostProcessFrameInputs inputs = frameContract.inputs;
     const RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(
         graph, outputTexture.Get(), RHIResourceState::RenderTarget);
 
@@ -25134,12 +26256,13 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    PostProcessFrameInputs inputs;
-    inputs.sceneColor = RenderGraphValidationAccess::ImportTexture(
+    const RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(
         graph, inputTexture.Get(), RHIResourceState::ShaderResource);
-    inputs.outputFormat = RHIFormat::RGBA8_UNORM;
-    inputs.sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
-    inputs.outputColorDomain = PostProcessColorDomain::DisplayEncodedLDR;
+    const TestPostProcessFrameContract frameContract =
+        MakeTestPostProcessFrameContract(
+            device, graph, input, RHIFormat::RGBA8_UNORM, 3102u);
+    ASSERT_TRUE(frameContract.IsValid());
+    PostProcessFrameInputs inputs = frameContract.inputs;
     const RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(
         graph, outputTexture.Get(), RHIResourceState::RenderTarget);
 
@@ -25171,7 +26294,10 @@ TEST_F(RenderPassValidationFixture,
 
 TEST(RenderPostProcessStackValidation, PostProcessStackReportsEffectExecutionPlanDomainsAndTargets)
 {
+    const ScopedCoreLogForTest scopedCoreLog;
     FakeDevice device;
+    PipelineCache pipelineCache{RVX::Tests::GetDeterministicShaderProgramProvider()};
+    ASSERT_TRUE(InitializePostProcessExecutionRuntime(device, pipelineCache));
     RenderGraph graph;
     RenderGraphValidationAccess::SetDevice(graph, &device);
 
@@ -25187,11 +26313,19 @@ TEST(RenderPostProcessStackValidation, PostProcessStackReportsEffectExecutionPla
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     PostProcessStack stack;
+    stack.SetExposureResources(&pipelineCache);
     auto* bloom = stack.AddEffect<RecordingPostProcessPass>("Bloom", 100);
     auto* toneMapping = stack.AddEffect<RecordingPostProcessPass>("ToneMapping", 200);
     auto* fxaa = stack.AddEffect<RecordingPostProcessPass>("FXAA", 300);
 
-    stack.Execute(graph, input, output);
+    const RenderViewHistoryIdentity historyIdentity =
+        MakeTestExposureHistoryIdentity(3202u, 32u, 32u);
+    const TestExposureGraphState exposure = PrepareTestExposureGraphState(
+        graph, stack.GetExposureController(), {}, historyIdentity);
+    ASSERT_TRUE(exposure.IsValid());
+    const PostProcessFrameInputs frameInputs = MakeTestPostProcessFrameInputs(
+        input, exposure, RHIFormat::RGBA8_UNORM, historyIdentity);
+    stack.Execute(graph, frameInputs, output);
 
     const PostProcessStackExecuteStats& executeStats = stack.GetLastExecuteStats();
     ASSERT_EQ(executeStats.effectPlans.size(), static_cast<size_t>(3));
@@ -25250,13 +26384,16 @@ TEST(RenderPostProcessStackValidation, PostProcessStackReportsEffectExecutionPla
     RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 3u);
+    EXPECT_EQ(graphStats.totalPasses, 4u);
 }
 
 TEST(RenderPostProcessStackValidation,
      PostProcessStackCountsPhysicalGraphPassesRatherThanScheduledEffects)
 {
+    const ScopedCoreLogForTest scopedCoreLog;
     FakeDevice device;
+    PipelineCache pipelineCache{RVX::Tests::GetDeterministicShaderProgramProvider()};
+    ASSERT_TRUE(InitializePostProcessExecutionRuntime(device, pipelineCache));
     RenderGraph graph;
     RenderGraphValidationAccess::SetDevice(graph, &device);
 
@@ -25274,12 +26411,20 @@ TEST(RenderPostProcessStackValidation,
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     PostProcessStack stack;
+    stack.SetExposureResources(&pipelineCache);
     (void)stack.AddEffect<RecordingPostProcessPass>("Bloom", 100);
     (void)stack.AddEffect<TwoStageRecordingPostProcessPass>(
         "ToneMapping", 200);
 
     const size_t recordedPassesBefore = graph.GetRecordedPassCount();
-    stack.Execute(graph, input, output);
+    const RenderViewHistoryIdentity historyIdentity =
+        MakeTestExposureHistoryIdentity(3203u, 32u, 32u);
+    const TestExposureGraphState exposure = PrepareTestExposureGraphState(
+        graph, stack.GetExposureController(), {}, historyIdentity);
+    ASSERT_TRUE(exposure.IsValid());
+    const PostProcessFrameInputs frameInputs = MakeTestPostProcessFrameInputs(
+        input, exposure, RHIFormat::RGBA8_UNORM, historyIdentity);
+    stack.Execute(graph, frameInputs, output);
 
     const PostProcessStackExecuteStats& stats = stack.GetLastExecuteStats();
     EXPECT_TRUE(stats.planValid) << stats.planFailureReason;
@@ -25287,13 +26432,13 @@ TEST(RenderPostProcessStackValidation,
     EXPECT_EQ(stats.scheduledEffectCount, 2u);
     EXPECT_EQ(stats.scheduledToneMappingEffectCount, 1u);
     EXPECT_EQ(stats.graphPassCount, 3u);
-    EXPECT_EQ(graph.GetRecordedPassCount(), recordedPassesBefore + 3u);
+    EXPECT_EQ(graph.GetRecordedPassCount(), recordedPassesBefore + 4u);
     EXPECT_NE(stats.graphPassCount, stats.scheduledEffectCount);
 
     RenderGraphValidationAccess::Compile(graph);
     const RenderGraph::CompileStats& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
-    EXPECT_EQ(graphStats.totalPasses, 3u);
+    EXPECT_EQ(graphStats.totalPasses, 4u);
 }
 
 TEST_F(RenderPassValidationFixture, PostProcessFrameInputContractReportsMissingVelocityDepthReactiveMaskAndHistory)
@@ -25308,9 +26453,13 @@ TEST_F(RenderPassValidationFixture, PostProcessFrameInputContractReportsMissingV
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    PostProcessFrameInputs inputs;
-    inputs.sceneColor = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
-    inputs.outputFormat = RHIFormat::RGBA16_FLOAT;
+    const RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(
+        graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    const TestPostProcessFrameContract frameContract =
+        MakeTestPostProcessFrameContract(
+            device, graph, input, RHIFormat::RGBA16_FLOAT, 3103u);
+    ASSERT_TRUE(frameContract.IsValid());
+    PostProcessFrameInputs inputs = frameContract.inputs;
     inputs.resetTemporalHistory = true;
     RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
@@ -25751,9 +26900,17 @@ TEST_F(RenderPassValidationFixture,
     inputs.velocity = graph.CreateTexture(
         RHITextureDesc::RenderTarget(64, 64, RHIFormat::RG16_FLOAT));
     inputs.reactiveMask = {};
+    const TestExposureGraphState exposure = CreateTestExposureGraphState(
+        device, graph, 0x3dba76e514092fc8ULL);
+    ASSERT_TRUE(exposure.IsValid());
+    inputs.exposureState = exposure.handle;
+    inputs.exposureStateContentHash = exposure.contentHash;
     inputs.outputFormat = RHIFormat::BGRA8_UNORM;
+    inputs.fixedDeltaSeconds = 1.0f / 60.0f;
     inputs.sceneColorDomain = PostProcessColorDomain::SceneLinearHDR;
     inputs.outputColorDomain = PostProcessColorDomain::DisplayEncodedLDR;
+    inputs.historyIdentity = MakeTestExposureHistoryIdentity(1u, 64u, 64u);
+    inputs.historyResetReasons = RenderHistoryResetReason::FirstFrame;
 
     ASSERT_TRUE(inputs.sceneColor.IsValid());
     ASSERT_TRUE(inputs.depth.IsValid());
@@ -25898,6 +27055,11 @@ TEST_F(RenderPassValidationFixture,
         graph, velocityTexture.Get(), RHIResourceState::ShaderResource);
     inputs.reactiveMask = RenderGraphValidationAccess::ImportTexture(
         graph, reactiveMaskTexture.Get(), RHIResourceState::ShaderResource);
+    const TestExposureGraphState exposure = CreateTestExposureGraphState(
+        device, graph, 0x8d5720cb4e169af3ULL);
+    ASSERT_TRUE(exposure.IsValid());
+    inputs.exposureState = exposure.handle;
+    inputs.exposureStateContentHash = exposure.contentHash;
     inputs.outputFormat = RHIFormat::RGBA16_FLOAT;
     inputs.frameIndex = 1;
     // The first frame may have no history and therefore does not sample it.
@@ -26100,12 +27262,14 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_NE(historyStoreDescriptor, nullptr);
     EXPECT_EQ(resolveDescriptor->layout, pipelineCache.GetTAASetLayout());
     EXPECT_EQ(historyStoreDescriptor->layout, pipelineCache.GetTAASetLayout());
-    EXPECT_EQ(resolveDescriptor->bindings.size(), static_cast<size_t>(8));
-    EXPECT_EQ(historyStoreDescriptor->bindings.size(), static_cast<size_t>(8));
+    EXPECT_EQ(resolveDescriptor->bindings.size(), static_cast<size_t>(9));
+    EXPECT_EQ(historyStoreDescriptor->bindings.size(), static_cast<size_t>(9));
     ASSERT_NE(resolveDescriptor->bindings[0].buffer, nullptr);
     ASSERT_NE(historyStoreDescriptor->bindings[0].buffer, nullptr);
     EXPECT_NE(resolveDescriptor->bindings[0].buffer,
               historyStoreDescriptor->bindings[0].buffer);
+    EXPECT_EQ(resolveDescriptor->bindings[8].buffer, exposure.buffer.Get());
+    EXPECT_EQ(historyStoreDescriptor->bindings[8].buffer, exposure.buffer.Get());
 
     const TAAResolveStats& stats = taa.GetLastResolveStats();
     EXPECT_TRUE(stats.requested);
@@ -26119,6 +27283,7 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_FALSE(stats.historyCommitted);
     EXPECT_EQ(stats.resolveGraphPassCount, 1u);
     EXPECT_EQ(stats.historyStoreGraphPassCount, 1u);
+    EXPECT_EQ(stats.exposureStateContentHash, exposure.contentHash);
     EXPECT_EQ(stats.historyIdentity, historyIdentity);
     EXPECT_FALSE(taa.HasValidHistory());
 
@@ -26215,6 +27380,11 @@ TEST_F(RenderPassValidationFixture,
         initialGraph, velocityTexture.Get(), RHIResourceState::ShaderResource);
     initialInputs.reactiveMask = RenderGraphValidationAccess::ImportTexture(
         initialGraph, reactiveMaskTexture.Get(), RHIResourceState::ShaderResource);
+    const TestExposureGraphState initialExposure = CreateTestExposureGraphState(
+        device, initialGraph, 0x49a1c28e6fd5307bULL);
+    ASSERT_TRUE(initialExposure.IsValid());
+    initialInputs.exposureState = initialExposure.handle;
+    initialInputs.exposureStateContentHash = initialExposure.contentHash;
     initialInputs.outputFormat = RHIFormat::RGBA16_FLOAT;
     initialInputs.frameIndex = 1;
     initialInputs.jitterOffset = Vec2(0.0f);
@@ -26247,6 +27417,11 @@ TEST_F(RenderPassValidationFixture,
         sampledGraph, velocityTexture.Get(), RHIResourceState::ShaderResource);
     sampledInputs.reactiveMask = RenderGraphValidationAccess::ImportTexture(
         sampledGraph, reactiveMaskTexture.Get(), RHIResourceState::ShaderResource);
+    const TestExposureGraphState sampledExposure = CreateTestExposureGraphState(
+        device, sampledGraph, 0x2f176d9ab48053ceULL);
+    ASSERT_TRUE(sampledExposure.IsValid());
+    sampledInputs.exposureState = sampledExposure.handle;
+    sampledInputs.exposureStateContentHash = sampledExposure.contentHash;
     sampledInputs.outputFormat = RHIFormat::RGBA16_FLOAT;
     sampledInputs.frameIndex = 2;
     sampledInputs.jitterOffset = Vec2(0.0f);
@@ -26354,6 +27529,15 @@ TEST_F(RenderPassValidationFixture,
             graph, velocityTexture.Get(), RHIResourceState::ShaderResource);
         inputs.reactiveMask = RenderGraphValidationAccess::ImportTexture(
             graph, reactiveMaskTexture.Get(), RHIResourceState::ShaderResource);
+        const TestExposureGraphState exposure = CreateTestExposureGraphState(
+            device, graph, 0x9e74c125a60bd833ULL + frameIndex);
+        if (!exposure.IsValid())
+        {
+            ADD_FAILURE() << "failed to create TAA exposure-state graph input";
+            return {};
+        }
+        inputs.exposureState = exposure.handle;
+        inputs.exposureStateContentHash = exposure.contentHash;
         inputs.outputFormat = RHIFormat::RGBA16_FLOAT;
         inputs.frameIndex = frameIndex;
         inputs.jitterOffset = jitter;
@@ -26487,6 +27671,7 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_TRUE(stats.historyAvailableBefore);
     EXPECT_TRUE(stats.historySampled);
     EXPECT_TRUE(stats.historyConsumed);
+    EXPECT_NE(stats.exposureStateContentHash, 0u);
 }
 
 TEST_F(RenderPassValidationFixture,
@@ -26540,6 +27725,11 @@ TEST_F(RenderPassValidationFixture,
         graph, velocityTexture.Get(), RHIResourceState::ShaderResource);
     inputs.reactiveMask = RenderGraphValidationAccess::ImportTexture(
         graph, reactiveMaskTexture.Get(), RHIResourceState::ShaderResource);
+    const TestExposureGraphState exposure = CreateTestExposureGraphState(
+        device, graph, 0x7ca54d0be3f91862ULL);
+    ASSERT_TRUE(exposure.IsValid());
+    inputs.exposureState = exposure.handle;
+    inputs.exposureStateContentHash = exposure.contentHash;
     inputs.outputFormat = RHIFormat::RGBA16_FLOAT;
     inputs.frameIndex = 1;
     inputs.jitterOffset = Vec2(0.0f);

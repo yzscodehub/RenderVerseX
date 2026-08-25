@@ -180,21 +180,104 @@ namespace RVX
                     return;
                 for (const ResourceUsage& usage : pass.usages)
                 {
-                    if (!usage.hasPlannedBeforeAccess)
-                        continue;
-
                     RHIAccessSnapshot& realized = usage.type == ResourceType::Texture
                         ? textureAccesses[usage.index]
                         : bufferAccesses[usage.index];
-                    if (realized != usage.plannedBeforeAccess)
+                    if (usage.hasPlannedBeforeAccess &&
+                        realized != usage.plannedBeforeAccess)
                     {
                         ++graph.stats.accessSnapshotMismatchCount;
-                        RVX_CORE_ERROR(
-                            "RenderGraph scoped access mismatch before pass '{}': planned [{}], realized [{}]",
-                            pass.name,
-                            DescribeRHIAccessSnapshot(usage.plannedBeforeAccess),
-                            DescribeRHIAccessSnapshot(realized));
+                        if (usage.type == ResourceType::Texture &&
+                            usage.index < graph.textures.size())
+                        {
+                            const TextureResource& resource =
+                                graph.textures[usage.index];
+                            const char* const resourceName =
+                                resource.desc.debugName
+                                    ? resource.desc.debugName
+                                    : "<unnamed>";
+                            if (usage.hasSubresourceRange)
+                            {
+                                RVX_CORE_ERROR(
+                                    "RenderGraph scoped access mismatch before pass '{}' for texture[{}] '{}' "
+                                    "range [mip={}, count={}, layer={}, count={}, aspect={}]: planned [{}], realized [{}]",
+                                    pass.name,
+                                    usage.index,
+                                    resourceName,
+                                    usage.subresourceRange.baseMipLevel,
+                                    usage.subresourceRange.mipLevelCount,
+                                    usage.subresourceRange.baseArrayLayer,
+                                    usage.subresourceRange.arrayLayerCount,
+                                    static_cast<uint32>(usage.subresourceRange.aspect),
+                                    DescribeRHIAccessSnapshot(usage.plannedBeforeAccess),
+                                    DescribeRHIAccessSnapshot(realized));
+                            }
+                            else
+                            {
+                                RVX_CORE_ERROR(
+                                    "RenderGraph scoped access mismatch before pass '{}' for texture[{}] '{}' "
+                                    "whole-resource: planned [{}], realized [{}]",
+                                    pass.name,
+                                    usage.index,
+                                    resourceName,
+                                    DescribeRHIAccessSnapshot(usage.plannedBeforeAccess),
+                                    DescribeRHIAccessSnapshot(realized));
+                            }
+                        }
+                        else if (usage.type == ResourceType::Buffer &&
+                                 usage.index < graph.buffers.size())
+                        {
+                            const BufferResource& resource =
+                                graph.buffers[usage.index];
+                            const char* const resourceName =
+                                resource.desc.debugName
+                                    ? resource.desc.debugName
+                                    : "<unnamed>";
+                            if (usage.hasRange)
+                            {
+                                RVX_CORE_ERROR(
+                                    "RenderGraph scoped access mismatch before pass '{}' for buffer[{}] '{}' "
+                                    "range [offset={}, size={}]: planned [{}], realized [{}]",
+                                    pass.name,
+                                    usage.index,
+                                    resourceName,
+                                    usage.offset,
+                                    usage.size,
+                                    DescribeRHIAccessSnapshot(usage.plannedBeforeAccess),
+                                    DescribeRHIAccessSnapshot(realized));
+                            }
+                            else
+                            {
+                                RVX_CORE_ERROR(
+                                    "RenderGraph scoped access mismatch before pass '{}' for buffer[{}] '{}' "
+                                    "whole-resource: planned [{}], realized [{}]",
+                                    pass.name,
+                                    usage.index,
+                                    resourceName,
+                                    DescribeRHIAccessSnapshot(usage.plannedBeforeAccess),
+                                    DescribeRHIAccessSnapshot(realized));
+                            }
+                        }
+                        else
+                        {
+                            RVX_CORE_ERROR(
+                                "RenderGraph scoped access mismatch before pass '{}' for invalid resource {}[{}]: "
+                                "planned [{}], realized [{}]",
+                                pass.name,
+                                usage.type == ResourceType::Texture
+                                    ? "texture"
+                                    : "buffer",
+                                usage.index,
+                                DescribeRHIAccessSnapshot(usage.plannedBeforeAccess),
+                                DescribeRHIAccessSnapshot(realized));
+                        }
                     }
+                    // Scoped usages still contribute their desired uniform
+                    // access to the replay even when the compiler did not
+                    // retain a before-access assertion.  A subresource write
+                    // followed by a whole-resource use deliberately has no
+                    // uniform assertion on the first two uses, but the later
+                    // whole-resource assertion must see their resolved state.
                     realized = usage.desiredAccess;
                 }
             };
@@ -1040,7 +1123,6 @@ namespace RVX
             return false;
         }
 
-        ValidatePlannedAccessSources(graph);
         submission.plan.batches.reserve(planned.queueBatches.size());
         submission.ownedContexts.reserve(planned.queueBatches.size());
 
@@ -1123,6 +1205,11 @@ namespace RVX
             submission = {};
             return false;
         }
+
+        // Transient resource acquisition can replace the initial access
+        // snapshot captured at compile time.  Replay only after that physical
+        // state is known, while still before any pass callback records work.
+        ValidatePlannedAccessSources(graph);
 
         // All fallible plan construction and validation completes before any
         // pass callback records commands. A GraphicsOnly fallback can

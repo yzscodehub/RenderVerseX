@@ -5665,7 +5665,6 @@ TEST_F(GPUDrivenValidationFixture,
         root / "Source" / "Runtime" / "Render" / "Include" / "Render" / "RenderDiagnostics.h");
     const std::string subsystemSource = ReadTextFile(
         root / "Source" / "Runtime" / "Render" / "Private" / "RenderSubsystem.cpp");
-
     EXPECT_NE(rendererHeader.find("bool hzbRequested = false;"),
               std::string::npos);
     EXPECT_NE(rendererHeader.find("bool hzbSupported = false;"),
@@ -7957,11 +7956,15 @@ TEST_F(GPUDrivenValidationFixture,
         root / "Source" / "Runtime" / "Render" / "Private" / "GPUScene" / "GPUSceneUploader.h");
     const std::string subsystemSource = ReadTextFile(
         root / "Source" / "Runtime" / "Render" / "Private" / "RenderSubsystem.cpp");
+    const std::string renderContextSource = ReadTextFile(
+        root / "Source" / "Runtime" / "Render" / "Private" / "Context" /
+        "RenderContext.cpp");
     const std::string sampleRunnerSource = ReadTextFile(
         root / "Samples" / "Common" / "Private" / "SampleRunner.cpp");
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(uploaderHeader.empty());
     ASSERT_FALSE(subsystemSource.empty());
+    ASSERT_FALSE(renderContextSource.empty());
     ASSERT_FALSE(sampleRunnerSource.empty());
 
     size_t acquireCount = 0;
@@ -8106,15 +8109,42 @@ TEST_F(GPUDrivenValidationFixture,
     const size_t acceptedFrame = subsystemSource.find("m_sceneRenderer->RenderAcceptedFrame()");
     const size_t releaseUnsubmitted = subsystemSource.find(
         "m_sceneRenderer->ReleaseUnsubmittedFrame();", acceptedFrame);
-    const size_t abortFrame = subsystemSource.find("m_context->AbortFrame();", acceptedFrame);
+    const size_t abortFrame = subsystemSource.find("m_context->AbortFrame()", acceptedFrame);
     const size_t submitFrame = subsystemSource.find("m_context->EndFrame();", acceptedFrame);
+    const size_t acquiredImageCheck = subsystemSource.find(
+        "m_context->HasAcquiredPresentationImage();", submitFrame);
+    const size_t failClosedOwnership = subsystemSource.find(
+        "result.code = RenderRuntimeCode::OwnershipViolation;", acquiredImageCheck);
     ASSERT_NE(std::string::npos, acceptedFrame);
     ASSERT_NE(std::string::npos, releaseUnsubmitted);
     ASSERT_NE(std::string::npos, abortFrame);
     ASSERT_NE(std::string::npos, submitFrame);
+    ASSERT_NE(std::string::npos, acquiredImageCheck);
+    ASSERT_NE(std::string::npos, failClosedOwnership);
     EXPECT_LT(acceptedFrame, releaseUnsubmitted);
     EXPECT_LT(abortFrame, releaseUnsubmitted);
     EXPECT_LT(releaseUnsubmitted, submitFrame);
+    EXPECT_LT(submitFrame, acquiredImageCheck);
+    EXPECT_LT(acquiredImageCheck, failClosedOwnership);
+
+    const size_t abortImplementation = renderContextSource.find(
+        "bool RenderContext::AbortFrame()");
+    const size_t inactiveFrame = renderContextSource.find(
+        "if (!m_frameActive)", abortImplementation);
+    const size_t inactiveAcquiredImage = renderContextSource.find(
+        "if (HasAcquiredPresentationImage())", inactiveFrame);
+    const size_t inactiveAbortFailure = renderContextSource.find(
+        "return false;", inactiveAcquiredImage);
+    const size_t inactiveAbortSuccess = renderContextSource.find(
+        "return true;", inactiveAbortFailure);
+    ASSERT_NE(std::string::npos, abortImplementation);
+    ASSERT_NE(std::string::npos, inactiveFrame);
+    ASSERT_NE(std::string::npos, inactiveAcquiredImage);
+    ASSERT_NE(std::string::npos, inactiveAbortFailure);
+    ASSERT_NE(std::string::npos, inactiveAbortSuccess);
+    EXPECT_LT(inactiveFrame, inactiveAcquiredImage);
+    EXPECT_LT(inactiveAcquiredImage, inactiveAbortFailure);
+    EXPECT_LT(inactiveAbortFailure, inactiveAbortSuccess);
 }
 
 TEST_F(GPUDrivenValidationFixture,

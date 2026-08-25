@@ -98,6 +98,20 @@ jobs:
           -RequiredLabel lane.qualification
           -BaseRef origin/master
           -SkipConfigure
+      - name: Run fail-closed GFX12 physical exposure matrix
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset win_x64_qualification_debug
+          -BuildPreset win_x64_qualification_debug
+          -TestPreset win_x64_qualification_debug_gfx12_exposure
+          -BuildDir build/win_x64_qualification_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationSuiteGfx12Exposure
+          -RequiredLabel suite.gfx12-exposure
+          -ExpectedTestCount 24
+          -BaseRef origin/master
+          -SkipConfigure
       - if: always()
         uses: actions/upload-artifact@v4
         with:

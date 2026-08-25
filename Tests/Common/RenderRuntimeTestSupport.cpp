@@ -324,6 +324,12 @@ namespace
             return m_probe->directOpaqueRasterReadbackQualificationAccepted;
         }
 
+        bool RequestExposureQualificationProbe() override
+        {
+            m_probe->Record(RenderRuntimeTestEvent::ExposureQualificationProbe);
+            return m_probe->exposureQualificationProbeAccepted;
+        }
+
         void PollCompletion() override
         {
             m_probe->Record(RenderRuntimeTestEvent::Poll);

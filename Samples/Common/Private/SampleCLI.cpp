@@ -410,6 +410,17 @@ namespace RVX
             }
         }
 
+        const char* GetRenderExposureModeCanonicalName(
+            RenderExposureMode mode) noexcept
+        {
+            switch (mode)
+            {
+                case RenderExposureMode::ManualEV100: return "manual-ev100";
+                case RenderExposureMode::HistogramAuto: return "histogram-auto";
+                default: return "invalid";
+            }
+        }
+
         [[nodiscard]] const char* GetRenderFeatureRequirementName(
             RenderFeatureRequirement requirement) noexcept
         {
@@ -430,6 +441,20 @@ namespace RVX
                 case ViewRole::Reflection: return "reflection";
                 case ViewRole::Editor: return "editor";
                 default: return "invalid";
+            }
+        }
+
+        void WriteOptionalFiniteNumber(std::ostream& stream, float32 value)
+        {
+            if (std::isfinite(value))
+            {
+                stream << value;
+            }
+            else
+            {
+                // Qualification probes are optional for ordinary runtime
+                // reports. JSON null avoids writing a non-standard NaN token.
+                stream << "null";
             }
         }
 
@@ -492,7 +517,7 @@ namespace RVX
                    << ",\n";
             if (receipt.schemaVersion == 2 || receipt.schemaVersion == 4 ||
                 receipt.schemaVersion == 5 || receipt.schemaVersion == 6 ||
-                receipt.schemaVersion == 7)
+                receipt.schemaVersion == 7 || receipt.schemaVersion == 8)
             {
                 stream << "      \"deferredOpaque\": {\"available\": "
                        << Diagnostics::JsonBool(receipt.deferredOpaque.available)
@@ -507,7 +532,8 @@ namespace RVX
                        << "},\n";
             }
             if (receipt.schemaVersion == 4 || receipt.schemaVersion == 5 ||
-                receipt.schemaVersion == 6 || receipt.schemaVersion == 7)
+                receipt.schemaVersion == 6 || receipt.schemaVersion == 7 ||
+                receipt.schemaVersion == 8)
             {
                 stream << "      \"lighting\": {\"lightingPlanIdentity\": "
                        << receipt.lighting.lightingPlanIdentity
@@ -550,7 +576,7 @@ namespace RVX
                        << "},\n";
             }
             if (receipt.schemaVersion == 5 || receipt.schemaVersion == 6 ||
-                receipt.schemaVersion == 7)
+                receipt.schemaVersion == 7 || receipt.schemaVersion == 8)
             {
                 stream << "      \"deformation\": {\"deformationContentHash\": "
                        << receipt.deformation.deformationContentHash
@@ -576,7 +602,8 @@ namespace RVX
                        << receipt.deformation.velocityPreviousPaletteDrawCount
                        << "},\n";
             }
-            if (receipt.schemaVersion == 6 || receipt.schemaVersion == 7)
+            if (receipt.schemaVersion == 6 || receipt.schemaVersion == 7 ||
+                receipt.schemaVersion == 8)
             {
                 stream << "      \"postProcess\": {\"planContentHash\": "
                        << receipt.postProcess.postProcessContentHash
@@ -590,7 +617,7 @@ namespace RVX
                        << receipt.postProcess.fxaaPassCount
                        << ", \"taaPassCount\": "
                        << receipt.postProcess.taaPassCount;
-                if (receipt.schemaVersion == 7)
+                if (receipt.schemaVersion == 7 || receipt.schemaVersion == 8)
                 {
                     stream << ", \"antiAliasingMode\": "
                            << Diagnostics::JsonString(
@@ -636,6 +663,76 @@ namespace RVX
                            << receipt.postProcess.taaResolveGraphPassCount
                            << ", \"taaHistoryStoreGraphPassCount\": "
                            << receipt.postProcess.taaHistoryStoreGraphPassCount;
+                }
+                if (receipt.schemaVersion == 8)
+                {
+                    stream << ", \"exposureStateContentHash\": "
+                           << receipt.postProcess.exposureStateContentHash
+                           << ", \"toneMapExposureStateHash\": "
+                           << receipt.postProcess.toneMapExposureStateHash
+                           << ", \"bloomExposureStateHash\": "
+                           << receipt.postProcess.bloomExposureStateHash
+                           << ", \"taaExposureStateHash\": "
+                           << receipt.postProcess.taaExposureStateHash
+                           << ", \"exposureMode\": "
+                           << Diagnostics::JsonString(
+                                  GetRenderExposureModeCanonicalName(
+                                      receipt.postProcess.exposureMode))
+                           << ", \"exposureRequested\": "
+                           << Diagnostics::JsonBool(
+                                  receipt.postProcess.exposureRequested)
+                           << ", \"exposurePipelineReady\": "
+                           << Diagnostics::JsonBool(
+                                  receipt.postProcess.exposurePipelineReady)
+                           << ", \"exposureInputsReady\": "
+                           << Diagnostics::JsonBool(
+                                  receipt.postProcess.exposureInputsReady)
+                           << ", \"exposureExecuted\": "
+                           << Diagnostics::JsonBool(
+                                  receipt.postProcess.exposureExecuted)
+                           << ", \"exposureHistogramPassCount\": "
+                           << receipt.postProcess.exposureHistogramPassCount
+                           << ", \"exposureAdaptationPassCount\": "
+                           << receipt.postProcess.exposureAdaptationPassCount
+                           << ", \"exposureHistoryAvailableBefore\": "
+                           << Diagnostics::JsonBool(
+                                  receipt.postProcess.exposureHistoryAvailableBefore)
+                           << ", \"exposureHistorySampled\": "
+                           << Diagnostics::JsonBool(
+                                  receipt.postProcess.exposureHistorySampled)
+                           << ", \"exposureHistoryCandidateProduced\": "
+                           << Diagnostics::JsonBool(
+                                  receipt.postProcess.exposureHistoryCandidateProduced)
+                           << ", \"exposureHistoryCommitted\": "
+                           << Diagnostics::JsonBool(
+                                  receipt.postProcess.exposureHistoryCommitted)
+                           << ", \"exposureHistoryAbandoned\": "
+                           << Diagnostics::JsonBool(
+                                  receipt.postProcess.exposureHistoryAbandoned)
+                           << ", \"exposureHistoryResetReasons\": "
+                           << static_cast<uint32>(
+                                  receipt.postProcess.exposureHistoryResetReasons)
+                           << ", \"exposureProbeRequested\": "
+                           << Diagnostics::JsonBool(
+                                  receipt.postProcess.exposureProbeRequested)
+                           << ", \"exposureProbeReady\": "
+                           << Diagnostics::JsonBool(
+                                  receipt.postProcess.exposureProbeReady)
+                           << ", \"targetEV100\": ";
+                    WriteOptionalFiniteNumber(
+                        stream, receipt.postProcess.targetEV100);
+                    stream << ", \"adaptedEV100\": ";
+                    WriteOptionalFiniteNumber(
+                        stream, receipt.postProcess.adaptedEV100);
+                    stream << ", \"exposureScale\": ";
+                    WriteOptionalFiniteNumber(
+                        stream, receipt.postProcess.exposureScale);
+                    stream << ", \"preExposure\": ";
+                    WriteOptionalFiniteNumber(
+                        stream, receipt.postProcess.preExposure);
+                    stream << ", \"previousPreExposure\": ";
+                    WriteOptionalFiniteNumber(
+                        stream, receipt.postProcess.previousPreExposure);
                 }
                 stream << ", \"inputColorDomain\": "
                        << Diagnostics::JsonString(
@@ -1076,6 +1173,10 @@ namespace RVX
             {
                 options.directOpaqueRasterReadbackQualificationEnabled = true;
             }
+            else if (arg == "--exposure-qualification-probe")
+            {
+                options.exposureQualificationProbeEnabled = true;
+            }
             else if (arg == "--report")
             {
                 const char* value = requireValue("--report");
@@ -1158,6 +1259,7 @@ namespace RVX
             << "  --pixel-probe <x> <y>\n"
             << "  --gpu-scene-culling-qualification\n"
             << "  --direct-opaque-raster-readback-qualification\n"
+            << "  --exposure-qualification-probe\n"
             << "  --report <path.json>\n"
             << "  --width <pixels>\n"
             << "  --height <pixels>\n"
@@ -1397,6 +1499,11 @@ namespace RVX
         stream << "{\n";
         stream << "  \"schemaId\": " << Diagnostics::JsonString(report.schemaId) << ",\n";
         stream << "  \"schemaVersion\": " << report.schemaVersion << ",\n";
+        if (report.schemaVersion >= RVX_SAMPLE_REPORT_SCHEMA_VERSION)
+        {
+            stream << "  \"validationRunId\": "
+                   << Diagnostics::JsonString(report.validationRunId) << ",\n";
+        }
         stream << "  \"sampleName\": " << Diagnostics::JsonString(report.sampleName) << ",\n";
         stream << "  \"category\": " << Diagnostics::JsonString(report.category) << ",\n";
         stream << "  \"requestedBackend\": "
@@ -1994,6 +2101,87 @@ namespace RVX
                    << ",\n";
             stream << "      \"planContentHash\": "
                    << postProcess.planContentHash << ",\n";
+            if (report.schemaVersion >
+                RVX_SAMPLE_REPORT_PRE_EXPOSURE_EXECUTION_SCHEMA_VERSION)
+            {
+                stream << "      \"exposureStateContentHash\": "
+                       << postProcess.exposureStateContentHash << ",\n";
+                stream << "      \"toneMapExposureStateHash\": "
+                       << postProcess.toneMapExposureStateHash << ",\n";
+                stream << "      \"bloomExposureStateHash\": "
+                       << postProcess.bloomExposureStateHash << ",\n";
+                stream << "      \"taaExposureStateHash\": "
+                       << postProcess.taaExposureStateHash << ",\n";
+                stream << "      \"exposureMode\": "
+                       << Diagnostics::JsonString(
+                              GetRenderExposureModeCanonicalName(
+                                  postProcess.exposureMode))
+                       << ",\n";
+                stream << "      \"exposureRequested\": "
+                       << Diagnostics::JsonBool(postProcess.exposureRequested)
+                       << ",\n";
+                stream << "      \"exposurePipelineReady\": "
+                       << Diagnostics::JsonBool(
+                              postProcess.exposurePipelineReady)
+                       << ",\n";
+                stream << "      \"exposureInputsReady\": "
+                       << Diagnostics::JsonBool(postProcess.exposureInputsReady)
+                       << ",\n";
+                stream << "      \"exposureExecuted\": "
+                       << Diagnostics::JsonBool(postProcess.exposureExecuted)
+                       << ",\n";
+                stream << "      \"exposureHistogramPassCount\": "
+                       << postProcess.exposureHistogramPassCount << ",\n";
+                stream << "      \"exposureAdaptationPassCount\": "
+                       << postProcess.exposureAdaptationPassCount << ",\n";
+                stream << "      \"exposureHistoryAvailableBefore\": "
+                       << Diagnostics::JsonBool(
+                              postProcess.exposureHistoryAvailableBefore)
+                       << ",\n";
+                stream << "      \"exposureHistorySampled\": "
+                       << Diagnostics::JsonBool(
+                              postProcess.exposureHistorySampled)
+                       << ",\n";
+                stream << "      \"exposureHistoryCandidateProduced\": "
+                       << Diagnostics::JsonBool(
+                              postProcess.exposureHistoryCandidateProduced)
+                       << ",\n";
+                stream << "      \"exposureHistoryCommitted\": "
+                       << Diagnostics::JsonBool(
+                              postProcess.exposureHistoryCommitted)
+                       << ",\n";
+                stream << "      \"exposureHistoryAbandoned\": "
+                       << Diagnostics::JsonBool(
+                              postProcess.exposureHistoryAbandoned)
+                       << ",\n";
+                stream << "      \"exposureHistoryResetReasons\": "
+                       << static_cast<uint32>(
+                              postProcess.exposureHistoryResetReasons)
+                       << ",\n";
+                stream << "      \"exposureProbeRequested\": "
+                       << Diagnostics::JsonBool(
+                              postProcess.exposureProbeRequested)
+                       << ",\n";
+                stream << "      \"exposureProbeReady\": "
+                       << Diagnostics::JsonBool(postProcess.exposureProbeReady)
+                       << ",\n";
+                stream << "      \"targetEV100\": ";
+                WriteOptionalFiniteNumber(stream, postProcess.targetEV100);
+                stream << ",\n";
+                stream << "      \"adaptedEV100\": ";
+                WriteOptionalFiniteNumber(stream, postProcess.adaptedEV100);
+                stream << ",\n";
+                stream << "      \"exposureScale\": ";
+                WriteOptionalFiniteNumber(stream, postProcess.exposureScale);
+                stream << ",\n";
+                stream << "      \"preExposure\": ";
+                WriteOptionalFiniteNumber(stream, postProcess.preExposure);
+                stream << ",\n";
+                stream << "      \"previousPreExposure\": ";
+                WriteOptionalFiniteNumber(stream,
+                                          postProcess.previousPreExposure);
+                stream << ",\n";
+            }
             stream << "      \"toneMappingPassCount\": "
                    << postProcess.toneMappingPassCount << ",\n";
             stream << "      \"bloomPassCount\": "
@@ -2108,6 +2296,20 @@ namespace RVX
                 stream << "      \"temporalAAQualified\": "
                        << Diagnostics::JsonBool(
                               postProcess.IsTemporalAAQualificationReady())
+                       << ",\n";
+            }
+            if (report.schemaVersion >
+                RVX_SAMPLE_REPORT_PRE_EXPOSURE_EXECUTION_SCHEMA_VERSION)
+            {
+                stream << "      \"manualEV100ExposureQualified\": "
+                       << Diagnostics::JsonBool(
+                              postProcess
+                                  .IsManualEV100ExposureQualificationReady())
+                       << ",\n";
+                stream << "      \"histogramAutoExposureQualified\": "
+                       << Diagnostics::JsonBool(
+                              postProcess
+                                  .IsHistogramAutoExposureQualificationReady())
                        << ",\n";
             }
             stream << "      \"diagnostic\": "

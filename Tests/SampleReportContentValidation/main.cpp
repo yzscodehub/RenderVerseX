@@ -17,6 +17,46 @@
 
 namespace
 {
+    constexpr double RVX_EXPOSURE_MIN_EV100 = -12.0;
+    constexpr double RVX_EXPOSURE_MAX_EV100 = 24.0;
+    constexpr double RVX_EXPOSURE_PHYSICAL_CALIBRATION = 1.2;
+    constexpr double RVX_EXPOSURE_MIN_SCALE =
+        static_cast<double>(4.8506380e-11f);
+    constexpr double RVX_EXPOSURE_MAX_SCALE =
+        static_cast<double>(3495253.5f);
+
+    [[nodiscard]] bool IsValidExposureScale(double value) noexcept
+    {
+        return std::isfinite(value) &&
+               value >= RVX_EXPOSURE_MIN_SCALE &&
+               value <= RVX_EXPOSURE_MAX_SCALE;
+    }
+
+    [[nodiscard]] bool IsNearlyEqualExposure(double lhs, double rhs) noexcept
+    {
+        return std::isfinite(lhs) && std::isfinite(rhs) &&
+               std::abs(lhs - rhs) <=
+                   1.0e-5 * std::max(
+                       std::abs(rhs), RVX_EXPOSURE_MIN_SCALE);
+    }
+
+    [[nodiscard]] bool IsZeroCompensationExposureScale(
+        double adaptedEV100,
+        double exposureScale) noexcept
+    {
+        if (!std::isfinite(adaptedEV100) ||
+            adaptedEV100 < RVX_EXPOSURE_MIN_EV100 ||
+            adaptedEV100 > RVX_EXPOSURE_MAX_EV100)
+        {
+            return false;
+        }
+        const double expectedScale =
+            std::exp2(-adaptedEV100) /
+            RVX_EXPOSURE_PHYSICAL_CALIBRATION;
+        return IsValidExposureScale(exposureScale) &&
+               IsNearlyEqualExposure(exposureScale, expectedScale);
+    }
+
     struct ScenarioMetricEqualityRequirement
     {
         std::string name;
@@ -68,10 +108,11 @@ namespace
     {
         std::string sourceCommit;
         std::string preset;
+        std::string runId;
 
         [[nodiscard]] bool IsEmpty() const noexcept
         {
-            return sourceCommit.empty() && preset.empty();
+            return sourceCommit.empty() && preset.empty() && runId.empty();
         }
     };
 
@@ -97,7 +138,8 @@ namespace
     {
         return {
             ReadEnvironmentString("RVX_VALIDATION_SOURCE_COMMIT"),
-            ReadEnvironmentString("RVX_VALIDATION_PRESET")};
+            ReadEnvironmentString("RVX_VALIDATION_PRESET"),
+            ReadEnvironmentString("RVX_VALIDATION_RUN_ID")};
     }
 
     struct Options
@@ -175,6 +217,10 @@ namespace
         bool requireNoFXAAExecution = false;
         bool requireTemporalHistorySampled = false;
         bool requireTemporalHistoryCommitted = false;
+        bool requireManualEV100Exposure = false;
+        bool requireHistogramAutoExposure = false;
+        bool requireExposureProbe = false;
+        bool requireSharedExposureState = false;
         bool requireReadinessWait = false;
         bool requireGPUDrivenExecution = false;
         bool requireDirectExecution = false;
@@ -1049,6 +1095,22 @@ namespace
             else if (arg == "--require-temporal-history-committed")
             {
                 options.requireTemporalHistoryCommitted = true;
+            }
+            else if (arg == "--require-manual-ev100-exposure")
+            {
+                options.requireManualEV100Exposure = true;
+            }
+            else if (arg == "--require-histogram-auto-exposure")
+            {
+                options.requireHistogramAutoExposure = true;
+            }
+            else if (arg == "--require-exposure-probe")
+            {
+                options.requireExposureProbe = true;
+            }
+            else if (arg == "--require-shared-exposure-state")
+            {
+                options.requireSharedExposureState = true;
             }
             else if (arg == "--require-phase")
             {
@@ -2313,6 +2375,28 @@ namespace
         return true;
     }
 
+    bool ReadFiniteNumberField(const Json& object,
+                               const char* field,
+                               double& outValue,
+                               const char* scope)
+    {
+        const auto value = object.find(field);
+        if (value == object.end() || !value->is_number())
+        {
+            std::cerr << scope << " field " << field
+                      << " must be a number\n";
+            return false;
+        }
+        outValue = value->get<double>();
+        if (!std::isfinite(outValue))
+        {
+            std::cerr << scope << " field " << field
+                      << " must be finite\n";
+            return false;
+        }
+        return true;
+    }
+
     bool ParseRenderQualityIdentity(const std::string& value,
                                     uint64_t& outIdentity)
     {
@@ -2579,20 +2663,21 @@ namespace
             "features",
         };
         if (schemaVersion == 2 || schemaVersion == 4 || schemaVersion == 5 ||
-            schemaVersion == 6 || schemaVersion == 7)
+            schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8)
         {
             expectedFields.insert("deferredOpaque");
         }
         if (schemaVersion == 4 || schemaVersion == 5 || schemaVersion == 6 ||
-            schemaVersion == 7)
+            schemaVersion == 7 || schemaVersion == 8)
         {
             expectedFields.insert("lighting");
         }
-        if (schemaVersion == 5 || schemaVersion == 6 || schemaVersion == 7)
+        if (schemaVersion == 5 || schemaVersion == 6 || schemaVersion == 7 ||
+            schemaVersion == 8)
         {
             expectedFields.insert("deformation");
         }
-        if (schemaVersion == 6 || schemaVersion == 7)
+        if (schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8)
         {
             expectedFields.insert("postProcess");
         }
@@ -2637,7 +2722,8 @@ namespace
                                   "Render execution receipt v21");
         if ((schemaVersion != 1 && schemaVersion != 2 &&
              schemaVersion != 4 && schemaVersion != 5 &&
-             schemaVersion != 6 && schemaVersion != 7) || !available ||
+             schemaVersion != 6 && schemaVersion != 7 &&
+             schemaVersion != 8) || !available ||
             !graphComposed ||
             !executionSucceeded || !presented || !succeeded)
         {
@@ -2645,7 +2731,7 @@ namespace
             passed = false;
         }
         if (schemaVersion == 2 || schemaVersion == 4 || schemaVersion == 5 ||
-            schemaVersion == 6 || schemaVersion == 7)
+            schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8)
         {
             const auto deferredOpaque = execution.find("deferredOpaque");
             if (deferredOpaque == execution.end() ||
@@ -2715,7 +2801,7 @@ namespace
             passed = false;
         }
         if (schemaVersion == 4 || schemaVersion == 5 || schemaVersion == 6 ||
-            schemaVersion == 7)
+            schemaVersion == 7 || schemaVersion == 8)
         {
             const auto lighting = execution.find("lighting");
             if (lighting == execution.end() || !lighting->is_object())
@@ -2859,7 +2945,8 @@ namespace
              options->requireSkinnedOpaqueExecution ||
              options->requireSkinnedShadowExecution ||
              options->requireSkinnedVelocityExecution);
-        if (schemaVersion == 5 || schemaVersion == 6 || schemaVersion == 7)
+        if (schemaVersion == 5 || schemaVersion == 6 || schemaVersion == 7 ||
+            schemaVersion == 8)
         {
             const auto deformation = execution.find("deformation");
             if (deformation == execution.end() || !deformation->is_object())
@@ -2999,8 +3086,12 @@ namespace
              options->requireTemporalAAExecution ||
              options->requireNoFXAAExecution ||
              options->requireTemporalHistorySampled ||
-             options->requireTemporalHistoryCommitted);
-        if (schemaVersion == 6 || schemaVersion == 7)
+             options->requireTemporalHistoryCommitted ||
+             options->requireManualEV100Exposure ||
+             options->requireHistogramAutoExposure ||
+             options->requireExposureProbe ||
+             options->requireSharedExposureState);
+        if (schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8)
         {
             const auto postProcess = execution.find("postProcess");
             if (postProcess == execution.end() || !postProcess->is_object())
@@ -3020,7 +3111,7 @@ namespace
                     "toneMappingTransfer", "presentationTransfer",
                     "hdrInputReady", "displayLinearOutputReady",
                     "encodedOutputReady", "fallbackUsed"};
-                if (schemaVersion == 7)
+                if (schemaVersion == 7 || schemaVersion == 8)
                 {
                     expectedPostProcessFields.insert({
                         "antiAliasingMode", "taaRequested", "taaPipelineReady",
@@ -3031,6 +3122,34 @@ namespace
                         "currentJitterPixels", "previousJitterPixels",
                         "taaResolveGraphPassCount",
                         "taaHistoryStoreGraphPassCount"});
+                }
+                if (schemaVersion == 8)
+                {
+                    expectedPostProcessFields.insert({
+                        "exposureStateContentHash",
+                        "toneMapExposureStateHash",
+                        "bloomExposureStateHash",
+                        "taaExposureStateHash",
+                        "exposureMode",
+                        "exposureRequested",
+                        "exposurePipelineReady",
+                        "exposureInputsReady",
+                        "exposureExecuted",
+                        "exposureHistogramPassCount",
+                        "exposureAdaptationPassCount",
+                        "exposureHistoryAvailableBefore",
+                        "exposureHistorySampled",
+                        "exposureHistoryCandidateProduced",
+                        "exposureHistoryCommitted",
+                        "exposureHistoryAbandoned",
+                        "exposureHistoryResetReasons",
+                        "exposureProbeRequested",
+                        "exposureProbeReady",
+                        "targetEV100",
+                        "adaptedEV100",
+                        "exposureScale",
+                        "preExposure",
+                        "previousPreExposure"});
                 }
                 passed &= ValidateExactObjectFields(
                     *postProcess, expectedPostProcessFields, context);
@@ -3058,6 +3177,30 @@ namespace
                 double previousJitterY = 0.0;
                 uint64_t taaResolveGraphPassCount = 0;
                 uint64_t taaHistoryStoreGraphPassCount = 0;
+                uint64_t exposureStateContentHash = 0;
+                uint64_t toneMapExposureStateHash = 0;
+                uint64_t bloomExposureStateHash = 0;
+                uint64_t taaExposureStateHash = 0;
+                std::string exposureMode;
+                bool exposureRequested = false;
+                bool exposurePipelineReady = false;
+                bool exposureInputsReady = false;
+                bool exposureExecuted = false;
+                uint64_t exposureHistogramPassCount = 0;
+                uint64_t exposureAdaptationPassCount = 0;
+                bool exposureHistoryAvailableBefore = false;
+                bool exposureHistorySampled = false;
+                bool exposureHistoryCandidateProduced = false;
+                bool exposureHistoryCommitted = false;
+                bool exposureHistoryAbandoned = false;
+                uint64_t exposureHistoryResetReasons = 0;
+                bool exposureProbeRequested = false;
+                bool exposureProbeReady = false;
+                double targetEV100 = 0.0;
+                double adaptedEV100 = 0.0;
+                double exposureScale = 0.0;
+                double preExposure = 0.0;
+                double previousPreExposure = 0.0;
                 std::string inputColorDomain;
                 std::string plannedOutputColorDomain;
                 std::string storedOutputColorDomain;
@@ -3080,7 +3223,7 @@ namespace
                                             fxaaPassCount, context);
                 passed &= ReadUnsignedField(*postProcess, "taaPassCount",
                                             taaPassCount, context);
-                if (schemaVersion == 7)
+                if (schemaVersion == 7 || schemaVersion == 8)
                 {
                     passed &= ReadStringField(*postProcess, "antiAliasingMode",
                                               antiAliasingMode, context, true);
@@ -3145,6 +3288,99 @@ namespace
                     passed &= readJitter(
                         "previousJitterPixels", previousJitterX, previousJitterY);
                 }
+                if (schemaVersion == 8)
+                {
+                    passed &= ReadUnsignedField(*postProcess,
+                                                "exposureStateContentHash",
+                                                exposureStateContentHash,
+                                                context);
+                    passed &= ReadUnsignedField(*postProcess,
+                                                "toneMapExposureStateHash",
+                                                toneMapExposureStateHash,
+                                                context);
+                    passed &= ReadUnsignedField(*postProcess,
+                                                "bloomExposureStateHash",
+                                                bloomExposureStateHash,
+                                                context);
+                    passed &= ReadUnsignedField(*postProcess,
+                                                "taaExposureStateHash",
+                                                taaExposureStateHash,
+                                                context);
+                    passed &= ReadStringField(*postProcess, "exposureMode",
+                                              exposureMode, context, true);
+                    passed &= ReadBooleanField(*postProcess,
+                                               "exposureRequested",
+                                               exposureRequested, context);
+                    passed &= ReadBooleanField(*postProcess,
+                                               "exposurePipelineReady",
+                                               exposurePipelineReady, context);
+                    passed &= ReadBooleanField(*postProcess,
+                                               "exposureInputsReady",
+                                               exposureInputsReady, context);
+                    passed &= ReadBooleanField(*postProcess,
+                                               "exposureExecuted",
+                                               exposureExecuted, context);
+                    passed &= ReadUnsignedField(*postProcess,
+                                                "exposureHistogramPassCount",
+                                                exposureHistogramPassCount,
+                                                context);
+                    passed &= ReadUnsignedField(*postProcess,
+                                                "exposureAdaptationPassCount",
+                                                exposureAdaptationPassCount,
+                                                context);
+                    passed &= ReadBooleanField(*postProcess,
+                                               "exposureHistoryAvailableBefore",
+                                               exposureHistoryAvailableBefore,
+                                               context);
+                    passed &= ReadBooleanField(*postProcess,
+                                               "exposureHistorySampled",
+                                               exposureHistorySampled, context);
+                    passed &= ReadBooleanField(*postProcess,
+                                               "exposureHistoryCandidateProduced",
+                                               exposureHistoryCandidateProduced,
+                                               context);
+                    passed &= ReadBooleanField(*postProcess,
+                                               "exposureHistoryCommitted",
+                                               exposureHistoryCommitted,
+                                               context);
+                    passed &= ReadBooleanField(*postProcess,
+                                               "exposureHistoryAbandoned",
+                                               exposureHistoryAbandoned,
+                                               context);
+                    passed &= ReadUnsignedField(*postProcess,
+                                                "exposureHistoryResetReasons",
+                                                exposureHistoryResetReasons,
+                                                context);
+                    passed &= ReadBooleanField(*postProcess,
+                                               "exposureProbeRequested",
+                                               exposureProbeRequested, context);
+                    passed &= ReadBooleanField(*postProcess,
+                                               "exposureProbeReady",
+                                               exposureProbeReady, context);
+                    const auto readProbeNumber = [&](const char* field,
+                                                     double& outValue)
+                    {
+                        const auto value = postProcess->find(field);
+                        if (exposureProbeReady)
+                        {
+                            return ReadFiniteNumberField(
+                                *postProcess, field, outValue, context);
+                        }
+                        if (value == postProcess->end() || !value->is_null())
+                        {
+                            std::cerr << context << " field " << field
+                                      << " must be null when the exposure probe is not ready\n";
+                            return false;
+                        }
+                        return true;
+                    };
+                    passed &= readProbeNumber("targetEV100", targetEV100);
+                    passed &= readProbeNumber("adaptedEV100", adaptedEV100);
+                    passed &= readProbeNumber("exposureScale", exposureScale);
+                    passed &= readProbeNumber("preExposure", preExposure);
+                    passed &= readProbeNumber("previousPreExposure",
+                                              previousPreExposure);
+                }
                 passed &= ReadStringField(*postProcess, "inputColorDomain",
                                           inputColorDomain, context, true);
                 passed &= ReadStringField(*postProcess,
@@ -3208,7 +3444,7 @@ namespace
                     (isSRGBPresentationContract ||
                      isDirectEncodedPresentationContract);
                 bool aaStructurallyValid = taaPassCount == 0;
-                if (schemaVersion == 7)
+                if (schemaVersion == 7 || schemaVersion == 8)
                 {
                     const bool temporalJitterProgressed =
                         currentJitterX != previousJitterX ||
@@ -3242,8 +3478,58 @@ namespace
                          (!historyAvailableBefore && historyResetReasons != 0));
                     aaStructurallyValid = noneMode || fxaaMode || taaMode;
                 }
+                bool exposureStructurallyValid = true;
+                bool sharedExposureState = false;
+                if (schemaVersion == 8)
+                {
+                    sharedExposureState =
+                        exposureStateContentHash != 0 &&
+                        toneMapExposureStateHash == exposureStateContentHash &&
+                        ((bloomPassCount == 0 && bloomExposureStateHash == 0) ||
+                         (bloomPassCount != 0 &&
+                          bloomExposureStateHash == exposureStateContentHash)) &&
+                        ((antiAliasingMode != "taa" &&
+                          taaExposureStateHash == 0) ||
+                         (antiAliasingMode == "taa" &&
+                          taaExposureStateHash == exposureStateContentHash));
+                    const bool exposureHistoryValid =
+                        exposureHistoryAvailableBefore == exposureHistorySampled &&
+                        exposureHistoryCandidateProduced &&
+                        exposureHistoryCommitted && !exposureHistoryAbandoned &&
+                        ((exposureHistoryAvailableBefore &&
+                          exposureHistoryResetReasons == 0) ||
+                         (!exposureHistoryAvailableBefore &&
+                          exposureHistoryResetReasons != 0));
+                    const bool exposureModeValid =
+                        exposureMode == "manual-ev100" ||
+                        exposureMode == "histogram-auto";
+                    const bool histogramPassesValid =
+                        exposureMode == "manual-ev100"
+                            ? exposureHistogramPassCount == 0 &&
+                                  exposureAdaptationPassCount == 1
+                            : exposureHistogramPassCount == 2 &&
+                                  exposureAdaptationPassCount == 1;
+                    const bool exposureProbeValid = !exposureProbeReady ||
+                        (exposureProbeRequested &&
+                         std::isfinite(targetEV100) &&
+                         targetEV100 >= RVX_EXPOSURE_MIN_EV100 &&
+                         targetEV100 <= RVX_EXPOSURE_MAX_EV100 &&
+                         std::isfinite(adaptedEV100) &&
+                         adaptedEV100 >= RVX_EXPOSURE_MIN_EV100 &&
+                         adaptedEV100 <= RVX_EXPOSURE_MAX_EV100 &&
+                         IsValidExposureScale(exposureScale) &&
+                         IsValidExposureScale(preExposure) &&
+                         IsValidExposureScale(previousPreExposure));
+                    exposureStructurallyValid = exposureModeValid &&
+                        exposureRequested && exposurePipelineReady &&
+                        exposureInputsReady && exposureExecuted &&
+                        sharedExposureState && exposureHistoryValid &&
+                        histogramPassesValid && exposureProbeValid &&
+                        (!exposureProbeReady || exposureProbeRequested);
+                }
                 const bool structurallyValid =
-                    commonStructurallyValid && aaStructurallyValid;
+                    commonStructurallyValid && aaStructurallyValid &&
+                    exposureStructurallyValid;
                 if (!structurallyValid)
                 {
                     std::cerr << "Render post-process execution receipt is structurally invalid\n";
@@ -3266,7 +3552,8 @@ namespace
                      (options->requireNoTemporalAAExecution &&
                       taaPassCount != 0) ||
                      (options->requireTemporalAAExecution &&
-                      (schemaVersion != 7 || antiAliasingMode != "taa" ||
+                      ((schemaVersion != 7 && schemaVersion != 8) ||
+                       antiAliasingMode != "taa" ||
                        taaPassCount != 1 || !taaRequested ||
                        !taaPipelineReady || !taaInputsReady ||
                        !taaExecuted ||
@@ -3276,13 +3563,53 @@ namespace
                        taaHistoryStoreGraphPassCount != 1)) ||
                      (options->requireNoFXAAExecution && fxaaPassCount != 0) ||
                      (options->requireTemporalHistorySampled &&
-                      (schemaVersion != 7 || !historyAvailableBefore ||
+                      ((schemaVersion != 7 && schemaVersion != 8) ||
+                       !historyAvailableBefore ||
                        !historySampled ||
                        (currentJitterX == previousJitterX &&
                         currentJitterY == previousJitterY))) ||
                      (options->requireTemporalHistoryCommitted &&
-                      (schemaVersion != 7 || !historyCandidateProduced ||
-                       !historyCommitted || historyAbandoned))))
+                      ((schemaVersion != 7 && schemaVersion != 8) ||
+                       !historyCandidateProduced ||
+                       !historyCommitted || historyAbandoned)) ||
+                     (options->requireManualEV100Exposure &&
+                      (schemaVersion != 8 ||
+                       exposureMode != "manual-ev100" ||
+                       exposureHistogramPassCount != 0 ||
+                       exposureAdaptationPassCount != 1 ||
+                       !exposureHistoryCandidateProduced ||
+                       !exposureHistoryCommitted || exposureHistoryAbandoned ||
+                       !exposureProbeRequested || !exposureProbeReady ||
+                       !std::isfinite(targetEV100) ||
+                       !std::isfinite(adaptedEV100) ||
+                       std::abs(targetEV100 - adaptedEV100) > 1.0e-5 ||
+                       !IsZeroCompensationExposureScale(
+                           adaptedEV100, exposureScale) ||
+                       !IsNearlyEqualExposure(preExposure, exposureScale) ||
+                       !IsNearlyEqualExposure(
+                           previousPreExposure, exposureScale))) ||
+                     (options->requireHistogramAutoExposure &&
+                      (schemaVersion != 8 ||
+                       exposureMode != "histogram-auto" ||
+                       exposureHistogramPassCount != 2 ||
+                       exposureAdaptationPassCount != 1 ||
+                       !exposureHistoryAvailableBefore ||
+                       !exposureHistorySampled ||
+                       !exposureHistoryCandidateProduced ||
+                       !exposureHistoryCommitted || exposureHistoryAbandoned ||
+                       !exposureProbeRequested || !exposureProbeReady ||
+                       !IsZeroCompensationExposureScale(
+                           adaptedEV100, exposureScale) ||
+                       !(targetEV100 + 1.0e-4 < adaptedEV100))) ||
+                     (options->requireExposureProbe &&
+                      (schemaVersion != 8 || !exposureProbeRequested ||
+                       !exposureProbeReady || !std::isfinite(targetEV100) ||
+                       !std::isfinite(adaptedEV100) ||
+                       !IsValidExposureScale(exposureScale) ||
+                       !IsValidExposureScale(preExposure) ||
+                       !IsValidExposureScale(previousPreExposure))) ||
+                     (options->requireSharedExposureState &&
+                      (schemaVersion != 8 || !sharedExposureState))) )
                 {
                     std::cerr << "Render execution receipt does not satisfy required post-process evidence\n";
                     passed = false;
@@ -3860,6 +4187,28 @@ namespace
         {
             std::cerr << "Report schemaVersion must be at least 12\n";
             passed = false;
+        }
+
+        if (schemaVersion >= 24)
+        {
+            std::string validationRunId;
+            passed &= ReadStringField(report, "validationRunId",
+                                      validationRunId, "Report", true);
+            if (!expectedBuildIdentity.runId.empty())
+            {
+                const bool validRunId = validationRunId.size() == 32 &&
+                    std::all_of(validationRunId.begin(), validationRunId.end(),
+                        [](char value)
+                        {
+                            return (value >= '0' && value <= '9') ||
+                                   (value >= 'a' && value <= 'f');
+                        });
+                if (!validRunId || validationRunId != expectedBuildIdentity.runId)
+                {
+                    std::cerr << "Report validationRunId does not match the required suite run\n";
+                    passed = false;
+                }
+            }
         }
 
         if (schemaVersion >= 15)
@@ -5337,7 +5686,7 @@ namespace
                            {"diagnostic", ""}}})},
         };
         const ValidationBuildIdentity expectedBuildIdentity{
-            std::string(40, 'e'), "win_x64_pr_debug"};
+            std::string(40, 'e'), "win_x64_pr_debug", std::string(32, '1')};
         if (!ValidateSampleReportV12Root(
                 schema21Report, expectedBuildIdentity))
         {
@@ -5456,6 +5805,252 @@ namespace
                 equalJitterReport,
                 expectedBuildIdentity,
                 &strictTemporalEvidence))
+        {
+            return false;
+        }
+
+        // Schema 24 projects renderer-owned exposure evidence.  Qualification
+        // values are accepted only when the explicit GPU probe is ready; the
+        // sample never derives them from its scripted lighting sequence.
+        Json schema24ManualExposureReport = schema23TemporalReport;
+        schema24ManualExposureReport["schemaVersion"] = 24;
+        schema24ManualExposureReport["validationRunId"] =
+            expectedBuildIdentity.runId;
+        Json& schema24ManualExposureExecution =
+            schema24ManualExposureReport["visualContractReceipt"]
+                                        ["renderExecutionReceipt"];
+        schema24ManualExposureExecution["schemaVersion"] = 8;
+        Json& schema24ManualExposurePostProcess =
+            schema24ManualExposureExecution["postProcess"];
+        schema24ManualExposurePostProcess["exposureStateContentHash"] =
+            0xE120ULL;
+        schema24ManualExposurePostProcess["toneMapExposureStateHash"] =
+            0xE120ULL;
+        schema24ManualExposurePostProcess["bloomExposureStateHash"] =
+            0xE120ULL;
+        schema24ManualExposurePostProcess["taaExposureStateHash"] =
+            0xE120ULL;
+        schema24ManualExposurePostProcess["exposureMode"] = "manual-ev100";
+        schema24ManualExposurePostProcess["exposureRequested"] = true;
+        schema24ManualExposurePostProcess["exposurePipelineReady"] = true;
+        schema24ManualExposurePostProcess["exposureInputsReady"] = true;
+        schema24ManualExposurePostProcess["exposureExecuted"] = true;
+        schema24ManualExposurePostProcess["exposureHistogramPassCount"] = 0;
+        schema24ManualExposurePostProcess["exposureAdaptationPassCount"] = 1;
+        schema24ManualExposurePostProcess["exposureHistoryAvailableBefore"] =
+            true;
+        schema24ManualExposurePostProcess["exposureHistorySampled"] = true;
+        schema24ManualExposurePostProcess["exposureHistoryCandidateProduced"] =
+            true;
+        schema24ManualExposurePostProcess["exposureHistoryCommitted"] = true;
+        schema24ManualExposurePostProcess["exposureHistoryAbandoned"] = false;
+        schema24ManualExposurePostProcess["exposureHistoryResetReasons"] = 0;
+        schema24ManualExposurePostProcess["exposureProbeRequested"] = true;
+        schema24ManualExposurePostProcess["exposureProbeReady"] = true;
+        schema24ManualExposurePostProcess["targetEV100"] = 10.0;
+        schema24ManualExposurePostProcess["adaptedEV100"] = 10.0;
+        schema24ManualExposurePostProcess["exposureScale"] = 0.0008138021;
+        schema24ManualExposurePostProcess["preExposure"] = 0.0008138021;
+        schema24ManualExposurePostProcess["previousPreExposure"] =
+            0.0008138021;
+
+        Options strictManualExposureEvidence = strictTemporalEvidence;
+        strictManualExposureEvidence.requireManualEV100Exposure = true;
+        strictManualExposureEvidence.requireExposureProbe = true;
+        strictManualExposureEvidence.requireSharedExposureState = true;
+        if (!ValidateSampleReportV12Root(
+                schema24ManualExposureReport,
+                expectedBuildIdentity,
+                &strictManualExposureEvidence))
+        {
+            return false;
+        }
+
+        Json mismatchedExposureRun = schema24ManualExposureReport;
+        mismatchedExposureRun["validationRunId"] = std::string(32, '2');
+        if (ValidateSampleReportV12Root(
+                mismatchedExposureRun,
+                expectedBuildIdentity,
+                &strictManualExposureEvidence))
+        {
+            return false;
+        }
+
+        Json missingManualExposureProbe = schema24ManualExposureReport;
+        missingManualExposureProbe["visualContractReceipt"]
+                                  ["renderExecutionReceipt"]
+                                  ["postProcess"]["exposureProbeReady"] = false;
+        if (ValidateSampleReportV12Root(
+                missingManualExposureProbe,
+                expectedBuildIdentity,
+                &strictManualExposureEvidence))
+        {
+            return false;
+        }
+
+        Json reciprocalManualPreExposure = schema24ManualExposureReport;
+        reciprocalManualPreExposure["visualContractReceipt"]
+                                   ["renderExecutionReceipt"]
+                                   ["postProcess"]["preExposure"] = 1228.8;
+        if (ValidateSampleReportV12Root(
+                reciprocalManualPreExposure,
+                expectedBuildIdentity,
+                &strictManualExposureEvidence))
+        {
+            return false;
+        }
+
+        const double lowPhysicalScale =
+            std::exp2(-RVX_EXPOSURE_MAX_EV100) /
+            RVX_EXPOSURE_PHYSICAL_CALIBRATION;
+        Json lowScaleManualExposure = schema24ManualExposureReport;
+        Json& lowScaleManualPostProcess =
+            lowScaleManualExposure["visualContractReceipt"]
+                                  ["renderExecutionReceipt"]
+                                  ["postProcess"];
+        lowScaleManualPostProcess["targetEV100"] =
+            RVX_EXPOSURE_MAX_EV100;
+        lowScaleManualPostProcess["adaptedEV100"] =
+            RVX_EXPOSURE_MAX_EV100;
+        lowScaleManualPostProcess["exposureScale"] = lowPhysicalScale;
+        lowScaleManualPostProcess["preExposure"] = lowPhysicalScale;
+        lowScaleManualPostProcess["previousPreExposure"] = lowPhysicalScale;
+        if (!ValidateSampleReportV12Root(
+                lowScaleManualExposure,
+                expectedBuildIdentity,
+                &strictManualExposureEvidence))
+        {
+            return false;
+        }
+
+        Json wrongLowScaleManualExposure = lowScaleManualExposure;
+        Json& wrongLowScaleManualPostProcess =
+            wrongLowScaleManualExposure["visualContractReceipt"]
+                                       ["renderExecutionReceipt"]
+                                       ["postProcess"];
+        wrongLowScaleManualPostProcess["exposureScale"] =
+            lowPhysicalScale * 100.0;
+        wrongLowScaleManualPostProcess["preExposure"] =
+            lowPhysicalScale * 100.0;
+        wrongLowScaleManualPostProcess["previousPreExposure"] =
+            lowPhysicalScale * 100.0;
+        if (ValidateSampleReportV12Root(
+                wrongLowScaleManualExposure,
+                expectedBuildIdentity,
+                &strictManualExposureEvidence))
+        {
+            return false;
+        }
+
+        const auto exposureScaleRangeFails =
+            [&schema24ManualExposureReport,
+             &expectedBuildIdentity](const char* field, double value)
+        {
+            Json candidate = schema24ManualExposureReport;
+            candidate["visualContractReceipt"]
+                     ["renderExecutionReceipt"]
+                     ["postProcess"][field] = value;
+            return !ValidateSampleReportV12Root(
+                candidate, expectedBuildIdentity);
+        };
+        const auto exposureScaleRangeAccepts =
+            [&schema24ManualExposureReport,
+             &expectedBuildIdentity](const char* field, double value)
+        {
+            Json candidate = schema24ManualExposureReport;
+            candidate["visualContractReceipt"]
+                     ["renderExecutionReceipt"]
+                     ["postProcess"][field] = value;
+            return ValidateSampleReportV12Root(
+                candidate, expectedBuildIdentity);
+        };
+        const double belowMinimumExposure = std::nextafter(
+            RVX_EXPOSURE_MIN_SCALE, 0.0);
+        const double aboveMaximumExposure = std::nextafter(
+            RVX_EXPOSURE_MAX_SCALE,
+            std::numeric_limits<double>::infinity());
+        if (!exposureScaleRangeAccepts(
+                "exposureScale", RVX_EXPOSURE_MIN_SCALE) ||
+            !exposureScaleRangeAccepts(
+                "preExposure", RVX_EXPOSURE_MIN_SCALE) ||
+            !exposureScaleRangeAccepts(
+                "previousPreExposure", RVX_EXPOSURE_MIN_SCALE) ||
+            !exposureScaleRangeAccepts(
+                "exposureScale", RVX_EXPOSURE_MAX_SCALE) ||
+            !exposureScaleRangeAccepts(
+                "preExposure", RVX_EXPOSURE_MAX_SCALE) ||
+            !exposureScaleRangeAccepts(
+                "previousPreExposure", RVX_EXPOSURE_MAX_SCALE) ||
+            !exposureScaleRangeFails("exposureScale", belowMinimumExposure) ||
+            !exposureScaleRangeFails("preExposure", belowMinimumExposure) ||
+            !exposureScaleRangeFails(
+                "previousPreExposure", belowMinimumExposure) ||
+            !exposureScaleRangeFails("exposureScale", aboveMaximumExposure) ||
+            !exposureScaleRangeFails("preExposure", aboveMaximumExposure) ||
+            !exposureScaleRangeFails(
+                "previousPreExposure", aboveMaximumExposure))
+        {
+            return false;
+        }
+
+        Json schema24AutoExposureReport = schema24ManualExposureReport;
+        Json& schema24AutoExposurePostProcess =
+            schema24AutoExposureReport["visualContractReceipt"]
+                                     ["renderExecutionReceipt"]
+                                     ["postProcess"];
+        schema24AutoExposurePostProcess["exposureMode"] = "histogram-auto";
+        schema24AutoExposurePostProcess["exposureHistogramPassCount"] = 2;
+        schema24AutoExposurePostProcess["targetEV100"] = 6.0;
+        schema24AutoExposurePostProcess["adaptedEV100"] = 7.0;
+        schema24AutoExposurePostProcess["exposureScale"] =
+            0.006510416666666667;
+
+        Options strictAutoExposureEvidence = strictTemporalEvidence;
+        strictAutoExposureEvidence.requireHistogramAutoExposure = true;
+        strictAutoExposureEvidence.requireExposureProbe = true;
+        strictAutoExposureEvidence.requireSharedExposureState = true;
+        if (!ValidateSampleReportV12Root(
+                schema24AutoExposureReport,
+                expectedBuildIdentity,
+                &strictAutoExposureEvidence))
+        {
+            return false;
+        }
+
+        Json invalidSharedExposureState = schema24AutoExposureReport;
+        invalidSharedExposureState["visualContractReceipt"]
+                                  ["renderExecutionReceipt"]
+                                  ["postProcess"]
+                                  ["bloomExposureStateHash"] = 0;
+        if (ValidateSampleReportV12Root(
+                invalidSharedExposureState,
+                expectedBuildIdentity,
+                &strictAutoExposureEvidence))
+        {
+            return false;
+        }
+
+        Json invalidAutoExposurePasses = schema24AutoExposureReport;
+        invalidAutoExposurePasses["visualContractReceipt"]
+                                ["renderExecutionReceipt"]
+                                ["postProcess"]
+                                ["exposureHistogramPassCount"] = 1;
+        if (ValidateSampleReportV12Root(
+                invalidAutoExposurePasses,
+                expectedBuildIdentity,
+                &strictAutoExposureEvidence))
+        {
+            return false;
+        }
+
+        Json invalidAutoExposureScale = schema24AutoExposureReport;
+        invalidAutoExposureScale["visualContractReceipt"]
+                                ["renderExecutionReceipt"]
+                                ["postProcess"]["exposureScale"] = 1.0;
+        if (ValidateSampleReportV12Root(
+                invalidAutoExposureScale,
+                expectedBuildIdentity,
+                &strictAutoExposureEvidence))
         {
             return false;
         }

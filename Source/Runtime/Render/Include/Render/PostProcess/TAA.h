@@ -41,6 +41,7 @@ namespace RVX
         bool historyCandidatePrepared = false;
         bool historyCommitted = false;
         bool historyAbandoned = false;
+        uint64 exposureStateContentHash = 0;
         uint64 frameIndex = 0;
         Vec2 currentJitterPixels = Vec2(0.0f);
         Vec2 previousJitterPixels = Vec2(0.0f);

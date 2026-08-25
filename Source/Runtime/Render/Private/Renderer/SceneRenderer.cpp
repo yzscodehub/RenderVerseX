@@ -860,7 +860,7 @@ namespace
     {
         PostProcessSettings settings;
         settings.enableToneMapping = true;
-        settings.exposure = 1.0f;
+        settings.exposureSettings = {};
         settings.gamma = 2.2f;
         settings.toneMappingOperator = ToneMappingOperator::ACES;
         settings.enableBloom = true;
@@ -1391,6 +1391,15 @@ void SceneRenderer::Shutdown()
 {
     InvalidateRenderFramePlan();
     AbandonAcceptedFrameHistory();
+    if (m_postProcessStack)
+    {
+        m_postProcessStack->GetExposureController()
+            .CancelQualificationProbe();
+    }
+    m_exposureProbeCompletion.reset();
+    m_exposureProbeHistoryIdentity.reset();
+    m_exposureProbeSourceExecutionReceipt.reset();
+    m_exposureProbePresented = false;
     if (m_viewHistoryCoordinator)
     {
         m_viewHistoryCoordinator->Clear();
@@ -2687,14 +2696,8 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
     m_postProcessSettings.toneMappingOperator =
         static_cast<ToneMappingOperator>(
             frameSettings.postProcess.toneMappingOperator);
-    m_postProcessSettings.exposureMode =
-        static_cast<ToneMappingExposureMode>(
-            frameSettings.postProcess.exposureMode);
-    m_postProcessSettings.exposure = frameSettings.postProcess.exposure;
-    m_postProcessSettings.cameraEV100 =
-        frameSettings.postProcess.cameraEV100;
-    m_postProcessSettings.exposureCompensationEV =
-        frameSettings.postProcess.exposureCompensationEV;
+    m_postProcessSettings.exposureSettings =
+        frameSettings.postProcess.exposureSettings;
     m_postProcessSettings.gamma = frameSettings.postProcess.gamma;
     m_postProcessSettings.bloomThreshold =
         frameSettings.postProcess.bloomThreshold;
@@ -2708,7 +2711,6 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
         frameSettings.postProcess.colorGradingSaturation;
     m_postProcessSettings.brightness =
         frameSettings.postProcess.colorGradingBrightness;
-    m_postProcessSettings.exposure = m_renderScene.GetView().exposure;
     m_postProcessSettings.enableRayTracedReflections =
         frameSettings.rayTracing.enabled &&
         frameSettings.rayTracing.enableReflections;
@@ -2996,6 +2998,19 @@ bool SceneRenderer::ArmDirectOpaqueRasterReadbackQualificationCapture()
     return m_directOpaqueRasterReadbackQualification.Arm();
 }
 
+bool SceneRenderer::ArmExposureQualificationProbe()
+{
+    if (m_postProcessFeature == nullptr || m_exposureProbeCompletion ||
+        m_exposureProbeHistoryIdentity.has_value() ||
+        m_exposureProbeSourceExecutionReceipt.has_value() ||
+        !m_postProcessFeature->RequestExposureQualificationProbe())
+    {
+        return false;
+    }
+    m_exposureProbeSourceExecutionReceipt.reset();
+    return true;
+}
+
 void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
     const RenderSubmissionTracker& tracker)
 {
@@ -3011,6 +3026,82 @@ void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
     }
     static_cast<void>(
         m_directOpaqueRasterReadbackQualification.PollCompletion(tracker));
+
+    if (m_exposureProbeCompletion &&
+        m_exposureProbeHistoryIdentity.has_value())
+    {
+        const GPUCompletionStatus status =
+            tracker.Query(*m_exposureProbeCompletion);
+        if ((status == GPUCompletionStatus::Completed ||
+             status == GPUCompletionStatus::CompatibilityWaitIdle) &&
+            m_exposureProbePresented && m_postProcessFeature != nullptr)
+        {
+            const RenderViewHistoryIdentity identity =
+                *m_exposureProbeHistoryIdentity;
+            RenderPostProcessExecutionReceipt postProcess;
+            if (m_postProcessFeature->CompleteExposureQualificationProbe(
+                    identity, postProcess))
+            {
+                if (m_exposureProbeSourceExecutionReceipt.has_value() &&
+                    m_exposureProbeSourceExecutionReceipt->presented &&
+                    m_exposureProbeSourceExecutionReceipt->frameIdentity ==
+                        identity.previousFrame &&
+                    m_exposureProbeSourceExecutionReceipt->viewIdentity ==
+                        identity.view)
+                {
+                    RenderExecutionReceipt qualified =
+                        *m_exposureProbeSourceExecutionReceipt;
+                    qualified.postProcess = std::move(postProcess);
+                    if (qualified.IsStructurallyValid())
+                    {
+                        // Qualification completion is an explicit result for
+                        // its frozen source frame. Publish that source receipt
+                        // even when ordinary rendering advanced meanwhile.
+                        m_completedRenderExecutionReceipt = qualified;
+                        m_lastAttemptedRenderExecutionReceipt =
+                            std::move(qualified);
+                    }
+                    else
+                    {
+                        m_lastAttemptedRenderExecutionReceipt = qualified;
+                        m_lastAttemptedRenderExecutionReceipt.succeeded = false;
+                        m_lastAttemptedRenderExecutionReceipt.diagnostic =
+                            "Completed exposure probe invalidated its source receipt";
+                    }
+                }
+                else
+                {
+                    m_lastAttemptedRenderExecutionReceipt =
+                        m_completedRenderExecutionReceipt;
+                    m_lastAttemptedRenderExecutionReceipt.succeeded = false;
+                    m_lastAttemptedRenderExecutionReceipt.diagnostic =
+                        "Exposure qualification source receipt was lost or mismatched";
+                }
+            }
+            else
+            {
+                m_lastAttemptedRenderExecutionReceipt.succeeded = false;
+                m_lastAttemptedRenderExecutionReceipt.diagnostic =
+                    "Exposure qualification probe failed after GPU completion";
+            }
+            m_exposureProbeCompletion.reset();
+            m_exposureProbeHistoryIdentity.reset();
+            m_exposureProbeSourceExecutionReceipt.reset();
+            m_exposureProbePresented = false;
+        }
+        else if (status == GPUCompletionStatus::Lost)
+        {
+            if (m_postProcessStack)
+            {
+                m_postProcessStack->GetExposureController()
+                    .CancelQualificationProbe();
+            }
+            m_exposureProbeCompletion.reset();
+            m_exposureProbeHistoryIdentity.reset();
+            m_exposureProbeSourceExecutionReceipt.reset();
+            m_exposureProbePresented = false;
+        }
+    }
 
     // Completion can arrive while the runtime is deliberately progressing no
     // replacement frame.  Project only the post-fence evidence into the
@@ -3028,6 +3119,10 @@ void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
     m_frameDiagnostics.gpuDrivenCullingStats
         .directOpaqueRasterReadbackQualification =
         m_directOpaqueRasterReadbackQualification.GetDiagnostics();
+    m_frameDiagnostics.attemptedExecutionReceipt =
+        m_lastAttemptedRenderExecutionReceipt;
+    m_frameDiagnostics.presentedExecutionReceipt =
+        m_completedRenderExecutionReceipt;
     if (m_toolDiagnosticsSnapshot.frameDiagnosticsAvailable)
     {
         m_toolDiagnosticsSnapshot.frame.gpuDrivenCullingStats
@@ -3042,6 +3137,10 @@ void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
             .directOpaqueRasterReadbackQualification =
             m_frameDiagnostics.gpuDrivenCullingStats
                 .directOpaqueRasterReadbackQualification;
+        m_toolDiagnosticsSnapshot.frame.attemptedExecutionReceipt =
+            m_lastAttemptedRenderExecutionReceipt;
+        m_toolDiagnosticsSnapshot.frame.presentedExecutionReceipt =
+            m_completedRenderExecutionReceipt;
     }
 }
 
@@ -3058,6 +3157,11 @@ bool SceneRenderer::HasPendingDirectOpaqueRasterReadbackQualificationCompletion(
     const noexcept
 {
     return m_directOpaqueRasterReadbackQualification.HasPendingCompletion();
+}
+
+bool SceneRenderer::HasPendingExposureQualificationCompletion() const noexcept
+{
+    return m_exposureProbeCompletion != nullptr;
 }
 
 bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
@@ -3119,6 +3223,33 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
         RVX_RENDER_WARN(
             "SceneRenderer: Direct Opaque readback qualification completion evidence was rejected");
     }
+    if (m_postProcessStack != nullptr)
+    {
+        const ExposureControllerStats& exposureStats =
+            m_postProcessStack->GetExposureController().GetLastStats();
+        if (exposureStats.qualificationProbeRequested)
+        {
+            if (!exposureStats.qualificationProbeRecorded ||
+                !m_activeViewHistoryCandidate.has_value() ||
+                exposureStats.historyIdentity !=
+                    *m_activeViewHistoryCandidate ||
+                m_exposureProbeCompletion)
+            {
+                m_postProcessStack->GetExposureController()
+                    .CancelQualificationProbe();
+                RVX_RENDER_WARN(
+                    "SceneRenderer: exposure qualification probe did not bind exact submission evidence");
+            }
+            else
+            {
+                m_exposureProbeCompletion =
+                    std::make_shared<GPUCompletionToken>(completion);
+                m_exposureProbeHistoryIdentity =
+                    *m_activeViewHistoryCandidate;
+                m_exposureProbePresented = false;
+            }
+        }
+    }
     if (m_pipelineCache && !m_pipelineCache->NotifyObjectConstantSubmission(completion))
     {
         RVX_RENDER_ERROR("SceneRenderer: object constant pages rejected invalid completion evidence");
@@ -3167,6 +3298,21 @@ void SceneRenderer::ReleaseUnsubmittedFrame()
     // discarded before recording begins. None reached Present, so their
     // compatibility candidate must not advance committed temporal history.
     AbandonAcceptedFrameHistory();
+    const bool preservePresentedExposureProbe =
+        m_exposureProbeCompletion && m_exposureProbePresented &&
+        m_exposureProbeSourceExecutionReceipt.has_value();
+    if (!preservePresentedExposureProbe && m_postProcessStack)
+    {
+        m_postProcessStack->GetExposureController()
+            .CancelQualificationProbe();
+    }
+    if (!preservePresentedExposureProbe)
+    {
+        m_exposureProbeCompletion.reset();
+        m_exposureProbeHistoryIdentity.reset();
+        m_exposureProbeSourceExecutionReceipt.reset();
+        m_exposureProbePresented = false;
+    }
     if (m_pendingRenderExecutionReceipt.has_value())
     {
         // Abandoning a graph-backed TAA candidate changes its immutable
@@ -3551,6 +3697,32 @@ void SceneRenderer::MarkAcceptedFramePresented()
 
     const bool presentationQualified =
         receiptMatches && historyCommitted && postProcessHistoryCommitted;
+    if (m_exposureProbeCompletion &&
+        !(m_exposureProbePresented &&
+          m_exposureProbeSourceExecutionReceipt.has_value()))
+    {
+        const bool exposureProbeMatchesPresentation =
+            presentationQualified && presentedTemporalCandidate.has_value() &&
+            m_exposureProbeHistoryIdentity.has_value() &&
+            *m_exposureProbeHistoryIdentity ==
+                presentedTemporalCandidate->historyIdentity;
+        if (exposureProbeMatchesPresentation)
+        {
+            m_exposureProbePresented = true;
+        }
+        else
+        {
+            if (m_postProcessStack)
+            {
+                m_postProcessStack->GetExposureController()
+                    .CancelQualificationProbe();
+            }
+            m_exposureProbeCompletion.reset();
+            m_exposureProbeHistoryIdentity.reset();
+            m_exposureProbeSourceExecutionReceipt.reset();
+            m_exposureProbePresented = false;
+        }
+    }
     if (presentationQualified)
     {
         RenderExecutionReceipt presented =
@@ -3566,6 +3738,15 @@ void SceneRenderer::MarkAcceptedFramePresented()
                     *presentedTemporalCandidate;
             }
             m_completedRenderExecutionReceipt = presented;
+            if (m_exposureProbeCompletion && m_exposureProbePresented &&
+                m_exposureProbeHistoryIdentity.has_value() &&
+                presentedTemporalCandidate.has_value() &&
+                *m_exposureProbeHistoryIdentity ==
+                    presentedTemporalCandidate->historyIdentity)
+            {
+                m_exposureProbeSourceExecutionReceipt =
+                    m_completedRenderExecutionReceipt;
+            }
             m_lastAttemptedRenderExecutionReceipt = std::move(presented);
         }
         else
@@ -5463,6 +5644,14 @@ SceneRayTracingFrameStats SceneRenderer::GetRayTracingFrameStats() const
     stats.reflectionMaterialTextureTableAvailable = reflectionStats.materialTextureTableAvailable;
     stats.reflectionGeometryMetadataAvailable = reflectionStats.geometryMetadataAvailable;
     stats.reflectionGeometryTableAvailable = reflectionStats.geometryTableAvailable;
+    stats.reflectionExposureStateAvailable =
+        reflectionStats.exposureStateAvailable;
+    stats.reflectionExposureStateReadDeclared =
+        reflectionStats.exposureStateReadDeclared;
+    stats.reflectionExposureStateDescriptorBound =
+        reflectionStats.exposureStateDescriptorBound;
+    stats.reflectionExposureStateContentHash =
+        reflectionStats.exposureStateContentHash;
     stats.shadowMaterialTextureTableAvailable = shadowStats.materialTextureTableAvailable;
     stats.shadowAlphaMetadataAvailable = shadowStats.alphaMetadataAvailable;
     stats.shadowAlphaTextureTableAvailable = shadowStats.alphaTextureTableAvailable;
@@ -6212,7 +6401,7 @@ void SceneRenderer::Render()
         RenderExecutionReceipt receipt =
             m_renderFeatureRegistry->CollectExecutionReceipt(
                 m_executionBuildIdentity);
-        receipt.schemaVersion = 7;
+        receipt.schemaVersion = 8;
         if (m_activeRenderPassResults != nullptr &&
             m_activeRenderPassResults->identity == m_activeRenderPassIdentity &&
             m_activeRenderPassIdentity.frameSequence ==
@@ -8354,6 +8543,12 @@ void SceneRenderer::BuildRenderGraph()
     m_viewData.environmentIrradianceTexture = {};
     m_viewData.environmentPrefilteredTexture = {};
     m_viewData.environmentBRDFLUTTexture = {};
+    m_viewData.exposureState = {};
+    m_viewData.exposureStateSchemaVersion = 0;
+    m_viewData.exposureStateStride = 0;
+    m_viewData.exposureStateMode = RenderExposureMode::ManualEV100;
+    m_viewData.exposureStateConfigurationHash = 0;
+    m_viewData.exposureStateContentHash = 0;
     m_depthGraphHandle = {};
     m_backBufferGraphHandle = {};
     m_activeBackBufferIndex = RVX_INVALID_INDEX;
@@ -8727,6 +8922,69 @@ void SceneRenderer::BuildRenderGraph()
         return;
     }
 
+    // Select the exact prior-presented exposure state before any HDR producer
+    // records work. A configuration/history discontinuity deliberately picks
+    // the finite bootstrap buffer; it never mutates committed history until a
+    // matching candidate crosses Present later in this frame lifecycle.
+    ExposureFrameInput exposureFrameInput;
+    if (m_postProcessStack == nullptr || m_pipelineCache == nullptr ||
+        !m_activeViewHistoryCandidate.has_value() ||
+        !m_activeViewHistoryAvailability.has_value())
+    {
+        m_featureCompositionFailureReason =
+            "Physical exposure frame input is unavailable";
+        return;
+    }
+    exposureFrameInput =
+        m_postProcessStack->GetExposureController().PrepareFrameInput(
+            effectivePostProcessSettings.exposureSettings,
+            *m_activeViewHistoryCandidate,
+            m_activeViewHistoryAvailability->available,
+            m_activeViewHistoryAvailability->resetReasons);
+    if (!exposureFrameInput.IsValid() ||
+        !m_pipelineCache->UpdateFrameExposureStateBuffer(
+            exposureFrameInput.stateBuffer.Get()))
+    {
+        m_featureCompositionFailureReason =
+            "Physical exposure state could not be prepared for HDR producers";
+        return;
+    }
+    const ExposureTemporalHistoryDecision effectiveTemporalHistory =
+        ResolveExposureTemporalHistory(
+            m_activeViewHistoryAvailability->available,
+            m_viewData.resetTemporalHistory,
+            m_activeViewHistoryAvailability->resetReasons,
+            exposureFrameInput);
+    if (!effectiveTemporalHistory.IsConsistent())
+    {
+        m_featureCompositionFailureReason =
+            "Physical exposure produced an inconsistent temporal-history decision";
+        return;
+    }
+    // Exposure configuration is part of every HDR history's color-space
+    // identity. Propagate this one decision before reflection and post-process
+    // features record so no temporal consumer samples a stale exposure domain.
+    m_viewData.resetTemporalHistory = effectiveTemporalHistory.reset;
+    m_viewData.exposureState = m_renderGraph->ImportBuffer(
+        exposureFrameInput.stateBuffer,
+        RHIResourceState::ShaderResource);
+    if (!m_viewData.exposureState.IsValid())
+    {
+        m_featureCompositionFailureReason =
+            "Physical exposure state could not be imported into the render graph";
+        return;
+    }
+    m_renderGraph->SetExportState(
+        m_viewData.exposureState, RHIResourceState::ShaderResource);
+    m_viewData.exposureStateSchemaVersion =
+        SceneTextures::ExposureStateSchemaVersion;
+    m_viewData.exposureStateStride = SceneTextures::ExposureStateStride;
+    m_viewData.exposureStateMode =
+        effectivePostProcessSettings.exposureSettings.mode;
+    m_viewData.exposureStateConfigurationHash =
+        exposureFrameInput.configurationHash;
+    m_viewData.exposureStateContentHash = exposureFrameInput.contentHash;
+
     m_postProcessStats.requestedSceneColorFormat = m_sceneColorFormatPolicy.requestedSceneColorFormat;
     m_postProcessStats.actualSceneColorFormat = m_sceneColorFormatPolicy.actualSceneColorFormat;
     m_postProcessStats.backBufferFormat = m_sceneColorFormatPolicy.backBufferFormat;
@@ -9084,9 +9342,15 @@ void SceneRenderer::BuildRenderGraph()
     postProcessRecordContext.frameInputs.velocity = m_viewData.velocityTarget;
     postProcessRecordContext.frameInputs.reactiveMask =
         m_viewData.reactiveMaskTarget;
+    postProcessRecordContext.frameInputs.exposureState =
+        m_viewData.exposureState;
+    postProcessRecordContext.frameInputs.exposureStateContentHash =
+        exposureFrameInput.contentHash;
     postProcessRecordContext.frameInputs.outputFormat =
         m_sceneColorFormatPolicy.toneMappingOutputFormat;
     postProcessRecordContext.frameInputs.frameIndex = m_viewData.frameNumber;
+    postProcessRecordContext.frameInputs.fixedDeltaSeconds =
+        m_renderScene.GetViewFamily().effectTime.fixedDeltaSeconds;
     postProcessRecordContext.frameInputs.jitterOffset =
         m_viewData.currentTemporalJitter.pixelOffset;
     postProcessRecordContext.frameInputs.currentViewProjection =
@@ -9097,16 +9361,16 @@ void SceneRenderer::BuildRenderGraph()
     postProcessRecordContext.frameInputs.previousViewProjectionValid =
         m_viewData.previousViewProjectionValid != 0;
     postProcessRecordContext.frameInputs.resetTemporalHistory =
-        m_viewData.resetTemporalHistory;
+        effectiveTemporalHistory.reset;
     if (m_activeViewHistoryCandidate.has_value() &&
         m_activeViewHistoryAvailability.has_value())
     {
         postProcessRecordContext.frameInputs.historyIdentity =
             *m_activeViewHistoryCandidate;
         postProcessRecordContext.frameInputs.historyResetReasons =
-            m_activeViewHistoryAvailability->resetReasons;
+            effectiveTemporalHistory.resetReasons;
         postProcessRecordContext.frameInputs.historyAvailable =
-            m_activeViewHistoryAvailability->available;
+            effectiveTemporalHistory.available;
     }
     postProcessRecordContext.frameInputs.sceneColorDomain =
         PostProcessColorDomain::SceneLinearHDR;
@@ -9540,6 +9804,7 @@ void SceneRenderer::SetupDefaultPostProcess()
 
     m_postProcessStack = std::make_unique<PostProcessStack>();
     m_postProcessStack->Initialize(m_renderContext->GetDevice());
+    m_postProcessStack->SetExposureResources(m_pipelineCache.get());
     m_bloomPostProcess = m_postProcessStack->AddEffect<BloomPass>();
     m_ssaoPostProcess = m_postProcessStack->AddEffect<SSAOPass>();
     m_toneMappingPostProcess = m_postProcessStack->AddEffect<ToneMappingPass>();

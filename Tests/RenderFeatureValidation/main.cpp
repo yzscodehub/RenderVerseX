@@ -54,10 +54,10 @@ namespace
     class TestBuffer final : public RHIBuffer
     {
     public:
-        TestBuffer()
+        explicit TestBuffer(uint64 size = 256, uint32 stride = 16)
         {
-            m_desc.size = 256;
-            m_desc.stride = 16;
+            m_desc.size = size;
+            m_desc.stride = stride;
             m_desc.usage = RHIBufferUsage::ShaderResource |
                 RHIBufferUsage::UnorderedAccess;
         }
@@ -605,6 +605,14 @@ namespace
         view.reactiveMaskTarget.graphIdentity = graph.GetGraphIdentity();
         view.reactiveMaskTarget.recordingGeneration =
             graph.GetRecordingGeneration();
+        view.exposureState.index = 3;
+        view.exposureState.graphIdentity = graph.GetGraphIdentity();
+        view.exposureState.recordingGeneration = graph.GetRecordingGeneration();
+        view.exposureStateSchemaVersion =
+            SceneTextures::ExposureStateSchemaVersion;
+        view.exposureStateStride = SceneTextures::ExposureStateStride;
+        view.exposureStateMode = RenderExposureMode::ManualEV100;
+        view.exposureStateConfigurationHash = 0xE1205EULL;
         RenderPassRecordContext context =
             MakeRenderPassRecordContext(graph, view);
         context.featureFrameIdentity = RenderFrameIdentity{1, 2, 3, 4};
@@ -710,6 +718,12 @@ namespace
         textures.gBuffer3Metadata = MakeSceneTextureMetadata(
             SceneTextures::GBuffer3Contract);
         textures.materialTable = MakeBufferHandle(provenance, 8);
+        textures.exposureState = MakeBufferHandle(provenance, 9);
+        textures.exposureStateMetadata = {
+            SceneTextures::ExposureStateSchemaVersion,
+            SceneTextures::ExposureStateStride,
+            RenderExposureMode::ManualEV100,
+            0xE1205EULL};
         return textures;
     }
 
@@ -743,9 +757,34 @@ namespace
         outputs.velocity = MakeTextureHandle(provenance, 3);
         outputs.velocityMetadata = MakeSceneTextureMetadata(
             SceneTextures::VelocityContract);
+        outputs.exposureState = MakeBufferHandle(provenance, 4);
+        outputs.exposureStateMetadata = {
+            SceneTextures::ExposureStateSchemaVersion,
+            SceneTextures::ExposureStateStride,
+            RenderExposureMode::ManualEV100,
+            0xE1205EULL};
         outputs.colorDomain = PostProcessColorDomain::SceneLinearHDR;
         outputs.transfer = PostProcessTransfer::None;
         return outputs;
+    }
+
+    void PopulateValidManualExposureReceipt(
+        RenderPostProcessExecutionReceipt& receipt,
+        bool committed = false)
+    {
+        constexpr uint64 kExposureStateHash = 0xE1205EULL;
+        receipt.exposureStateContentHash = kExposureStateHash;
+        receipt.toneMapExposureStateHash = kExposureStateHash;
+        receipt.exposureMode = RenderExposureMode::ManualEV100;
+        receipt.exposureRequested = true;
+        receipt.exposurePipelineReady = true;
+        receipt.exposureInputsReady = true;
+        receipt.exposureExecuted = true;
+        receipt.exposureAdaptationPassCount = 1;
+        receipt.exposureHistoryCandidateProduced = true;
+        receipt.exposureHistoryCommitted = committed;
+        receipt.exposureHistoryResetReasons =
+            RenderHistoryResetReason::FirstFrame;
     }
 
     [[nodiscard]] PostProcessOutputs MakePostProcessOutputs(
@@ -797,6 +836,11 @@ namespace
                     presentableFormat);
             m_sceneColor = m_graph.CreateTexture(sceneColorDesc);
             m_presentableColor = m_graph.CreateTexture(presentableColorDesc);
+            m_exposureStateBuffer = RHIBufferRef(new TestBuffer(
+                SceneTextures::ExposureStateStride,
+                SceneTextures::ExposureStateStride));
+            m_exposureState = m_graph.ImportBuffer(
+                m_exposureStateBuffer, RHIResourceState::ShaderResource);
 
             m_provenance = {
                 m_graph.GetGraphIdentity(),
@@ -817,6 +861,25 @@ namespace
                 SceneTextures::FormatContract{
                     presentableFormat, RHISampleCount::Count1},
                 m_context.outputExtent);
+            recordContext.frameInputs.exposureState = m_exposureState;
+            recordContext.frameInputs.exposureStateContentHash = 0xE1205EULL;
+            recordContext.frameInputs.outputFormat = presentableFormat;
+            recordContext.frameInputs.frameIndex =
+                m_context.frameIdentity.frameSequence;
+            recordContext.frameInputs.fixedDeltaSeconds =
+                m_context.frameStamp.deltaTimeSeconds;
+            recordContext.frameInputs.historyIdentity = {
+                m_context.frameIdentity,
+                m_context.viewIdentity,
+                m_context.outputExtent,
+                m_context.viewFamilyId,
+                m_context.frameIdentity.sceneRevision,
+                1,
+                1,
+                m_context.frameIdentity.surfaceGeneration,
+                1};
+            recordContext.frameInputs.historyResetReasons =
+                RenderHistoryResetReason::FirstFrame;
             recordContext.passRecordContext = std::move(passContext);
             m_adapter.SetRecordContext(std::move(recordContext));
             m_adapter.Prepare(m_context);
@@ -840,6 +903,13 @@ namespace
             translucency.hdrSceneColorMetadata = MakeSceneTextureMetadata(
                 SceneTextures::HDRSceneColorContract,
                 m_context.outputExtent);
+            translucency.exposureState = m_exposureState;
+            translucency.exposureStateMetadata = {
+                SceneTextures::ExposureStateSchemaVersion,
+                SceneTextures::ExposureStateStride,
+                RenderExposureMode::ManualEV100,
+                CalculateRenderExposureSettingsHash(
+                    m_stack.GetSettings().exposureSettings)};
             translucency.colorDomain = PostProcessColorDomain::SceneLinearHDR;
             translucency.transfer = PostProcessTransfer::None;
             if (blackboard.Publish(RenderFeatureId{71},
@@ -896,6 +966,8 @@ namespace
         RenderGraphBlackboardProvenance m_provenance{};
         RGTextureHandle m_sceneColor{};
         RGTextureHandle m_presentableColor{};
+        RHIBufferRef m_exposureStateBuffer{};
+        RGBufferHandle m_exposureState{};
         PostProcessStack m_stack{};
         PostProcessPipelineFeatureAdapter m_adapter;
     };
@@ -927,13 +999,13 @@ namespace
     }
 
     TEST(RenderFeatureValidation,
-         LightingOutputsV2RejectsZeroAndValidatesDeferredPlanIdentity)
+         LightingOutputsV3RejectsZeroAndValidatesDeferredPlanIdentity)
     {
         const std::shared_ptr<const LightingFramePlan> plan =
             MakeValidLightingPlan();
         ASSERT_NE(nullptr, plan);
         ASSERT_NE(0U, plan->GetIdentityHash());
-        EXPECT_EQ(2U, LightingOutputs::SchemaVersion);
+        EXPECT_EQ(3U, LightingOutputs::SchemaVersion);
 
         DeferredLightingFeatureAdapter producer(nullptr, nullptr);
         DeferredForwardSpecialFeatureAdapter consumer(nullptr, nullptr);
@@ -2124,6 +2196,7 @@ namespace
             PostProcessTransfer::SceneLinearToDisplayEncoded;
         directEncoded.hdrInputReady = true;
         directEncoded.encodedOutputReady = true;
+        PopulateValidManualExposureReceipt(directEncoded);
         EXPECT_FALSE(directEncoded.displayLinearOutputReady);
         EXPECT_TRUE(directEncoded.IsStructurallyValid());
 
@@ -2144,6 +2217,7 @@ namespace
         temporal.taaPassCount = 1;
         temporal.taaResolveGraphPassCount = 1;
         temporal.taaHistoryStoreGraphPassCount = 1;
+        temporal.taaExposureStateHash = temporal.exposureStateContentHash;
         EXPECT_TRUE(temporal.IsStructurallyValid());
 
         temporal.historyCommitted = true;
@@ -2178,84 +2252,24 @@ namespace
     }
 
     TEST(RenderFeatureValidation,
-         PostProcessPipelineFinalizationBindsColorDomainsAndInvalidatesStaleEvidence)
+         PostProcessPipelineFailsClosedWithoutExposurePipelineResources)
     {
         ScopedTestLog log;
-        const auto verifyColorDomainReceipt = [](RHIFormat format,
-                                                  PostProcessColorDomain plannedDomain,
-                                                  PostProcessTransfer toneMappingTransfer,
-                                                  PostProcessTransfer presentationTransfer,
-                                                  bool displayLinearReady)
+        const auto verifyMissingExposureResources = [](RHIFormat format)
         {
             PostProcessAdapterTestFixture fixture(format);
-            ASSERT_TRUE(fixture.Compose());
-
-            // Composition plans work, but cannot declare execution before the
-            // registry has inspected the exact graph execution diagnostics.
+            EXPECT_FALSE(fixture.Compose());
+            EXPECT_FALSE(fixture.Adapter().ResolveReadiness().inputsReady);
             EXPECT_FALSE(fixture.Adapter().ResolveReadiness().executed);
             EXPECT_TRUE(fixture.Adapter().GetLastExecutionReceipt().IsEmpty());
-            EXPECT_FALSE(fixture.Adapter().CollectReceipt().readiness.executed);
-
-            fixture.Adapter().OnGraphExecutionFinalized(
-                fixture.MakeEvidence());
-            const RenderPostProcessExecutionReceipt& receipt =
-                fixture.Adapter().GetLastExecutionReceipt();
-            EXPECT_TRUE(receipt.IsStructurallyValid());
-            EXPECT_EQ(receipt.inputColorDomain,
-                      PostProcessColorDomain::SceneLinearHDR);
-            EXPECT_EQ(receipt.plannedOutputColorDomain, plannedDomain);
-            EXPECT_EQ(receipt.storedOutputColorDomain,
-                      PostProcessColorDomain::DisplayEncodedLDR);
-            EXPECT_EQ(receipt.finalOutputFormat, format);
-            EXPECT_EQ(receipt.toneMappingTransfer, toneMappingTransfer);
-            EXPECT_EQ(receipt.presentationTransfer, presentationTransfer);
-            EXPECT_EQ(receipt.displayLinearOutputReady, displayLinearReady);
-            EXPECT_TRUE(receipt.encodedOutputReady);
-            EXPECT_FALSE(receipt.fallbackUsed);
+            EXPECT_EQ(
+                fixture.Adapter().ResolveReadiness().diagnostic,
+                "Post-process typed plan could not be materialized");
             EXPECT_FALSE(fixture.Adapter().CollectReceipt().readiness.executed);
         };
 
-        verifyColorDomainReceipt(
-            RHIFormat::RGBA8_UNORM_SRGB,
-            PostProcessColorDomain::DisplayLinearLDR,
-            PostProcessTransfer::SceneLinearToDisplayLinear,
-            PostProcessTransfer::DisplayLinearToEncoded,
-            true);
-        verifyColorDomainReceipt(
-            RHIFormat::RGBA8_UNORM,
-            PostProcessColorDomain::DisplayEncodedLDR,
-            PostProcessTransfer::SceneLinearToDisplayEncoded,
-            PostProcessTransfer::SceneLinearToDisplayEncoded,
-            false);
-
-        PostProcessAdapterTestFixture lifecycle(
-            RHIFormat::RGBA8_UNORM_SRGB);
-        ASSERT_TRUE(lifecycle.Compose());
-        lifecycle.Adapter().OnGraphExecutionFinalized(lifecycle.MakeEvidence());
-        EXPECT_TRUE(
-            lifecycle.Adapter().GetLastExecutionReceipt().IsStructurallyValid());
-
-        RenderFeatureGraphExecutionEvidence staleEvidence =
-            lifecycle.MakeEvidence();
-        ++staleEvidence.graphIdentity;
-        lifecycle.Adapter().OnGraphExecutionFinalized(staleEvidence);
-        EXPECT_TRUE(lifecycle.Adapter().GetLastExecutionReceipt().IsEmpty());
-
-        lifecycle.Adapter().OnGraphExecutionFinalized(lifecycle.MakeEvidence());
-        EXPECT_TRUE(
-            lifecycle.Adapter().GetLastExecutionReceipt().IsStructurallyValid());
-        lifecycle.Adapter().OnGraphExecutionFinalized(
-            lifecycle.MakeEvidence(false));
-        EXPECT_TRUE(lifecycle.Adapter().GetLastExecutionReceipt().IsEmpty());
-
-        lifecycle.Adapter().OnGraphExecutionFinalized(lifecycle.MakeEvidence());
-        EXPECT_TRUE(
-            lifecycle.Adapter().GetLastExecutionReceipt().IsStructurallyValid());
-        PostProcessStack replacementStack;
-        lifecycle.Adapter().SetStack(&replacementStack);
-        EXPECT_TRUE(lifecycle.Adapter().GetLastExecutionReceipt().IsEmpty());
-        EXPECT_FALSE(lifecycle.Adapter().ResolveReadiness().executed);
-        lifecycle.Adapter().SetStack(nullptr);
+        verifyMissingExposureResources(RHIFormat::RGBA8_UNORM_SRGB);
+        verifyMissingExposureResources(RHIFormat::RGBA8_UNORM);
     }
 
     TEST(RenderFeatureValidation,
@@ -2813,6 +2827,7 @@ namespace
             PostProcessTransfer::SceneLinearToDisplayEncoded;
         candidate.postProcess.hdrInputReady = true;
         candidate.postProcess.encodedOutputReady = true;
+        PopulateValidManualExposureReceipt(candidate.postProcess);
         RenderFeatureExecutionReceipt executedFeature;
         executedFeature.featureId = RenderFeatureId{1};
         executedFeature.featureSchemaVersion = 1;
@@ -2838,6 +2853,8 @@ namespace
         temporalCandidate.postProcess.taaPassCount = 1;
         temporalCandidate.postProcess.taaResolveGraphPassCount = 1;
         temporalCandidate.postProcess.taaHistoryStoreGraphPassCount = 1;
+        temporalCandidate.postProcess.taaExposureStateHash =
+            temporalCandidate.postProcess.exposureStateContentHash;
         EXPECT_TRUE(temporalCandidate.IsStructurallyValid());
 
         RenderExecutionReceipt legacySchemaWithTemporal = temporalCandidate;
@@ -2848,13 +2865,82 @@ namespace
         temporalCandidate.succeeded = true;
         EXPECT_FALSE(temporalCandidate.IsStructurallyValid());
         temporalCandidate.postProcess.historyCommitted = true;
+        temporalCandidate.postProcess.exposureHistoryCommitted = true;
         EXPECT_TRUE(temporalCandidate.IsStructurallyValid());
 
         RenderExecutionReceipt presented = candidate;
         presented.presented = true;
         presented.succeeded = true;
+        presented.postProcess.exposureHistoryCommitted = true;
         EXPECT_TRUE(presented.IsStructurallyValid());
         EXPECT_TRUE(presented.succeeded);
+
+        const auto makeExposureProbeReady = [](RenderExecutionReceipt& receipt)
+        {
+            receipt.postProcess.exposureProbeRequested = true;
+            receipt.postProcess.exposureProbeReady = true;
+            receipt.postProcess.targetEV100 = 10.0f;
+            receipt.postProcess.adaptedEV100 = 10.0f;
+            receipt.postProcess.exposureScale = 0.0008138021f;
+            receipt.postProcess.preExposure = 0.0008138021f;
+            receipt.postProcess.previousPreExposure = 0.0008138021f;
+        };
+        RenderExecutionReceipt presentedWithExposureProbe = presented;
+        makeExposureProbeReady(presentedWithExposureProbe);
+        EXPECT_TRUE(presentedWithExposureProbe.IsStructurallyValid());
+
+        const auto rejectsOutOfRangeExposureScale =
+            [&presentedWithExposureProbe](
+                float32 RenderPostProcessExecutionReceipt::* field,
+                float32 value)
+        {
+            RenderExecutionReceipt invalid = presentedWithExposureProbe;
+            invalid.postProcess.*field = value;
+            return !invalid.IsStructurallyValid();
+        };
+        const float32 belowMinimumExposure = std::nextafter(
+            RVX_RENDER_EXPOSURE_MIN_SCALE, 0.0f);
+        const float32 aboveMaximumExposure = std::nextafter(
+            RVX_RENDER_EXPOSURE_MAX_SCALE,
+            std::numeric_limits<float32>::infinity());
+        EXPECT_TRUE(rejectsOutOfRangeExposureScale(
+            &RenderPostProcessExecutionReceipt::exposureScale,
+            belowMinimumExposure));
+        EXPECT_TRUE(rejectsOutOfRangeExposureScale(
+            &RenderPostProcessExecutionReceipt::preExposure,
+            belowMinimumExposure));
+        EXPECT_TRUE(rejectsOutOfRangeExposureScale(
+            &RenderPostProcessExecutionReceipt::previousPreExposure,
+            belowMinimumExposure));
+        EXPECT_TRUE(rejectsOutOfRangeExposureScale(
+            &RenderPostProcessExecutionReceipt::exposureScale,
+            aboveMaximumExposure));
+        EXPECT_TRUE(rejectsOutOfRangeExposureScale(
+            &RenderPostProcessExecutionReceipt::preExposure,
+            aboveMaximumExposure));
+        EXPECT_TRUE(rejectsOutOfRangeExposureScale(
+            &RenderPostProcessExecutionReceipt::previousPreExposure,
+            aboveMaximumExposure));
+
+        RenderExecutionReceipt forgedUnpresentedExposureProbe =
+            presentedWithExposureProbe;
+        forgedUnpresentedExposureProbe.presented = false;
+        forgedUnpresentedExposureProbe.succeeded = false;
+        EXPECT_FALSE(forgedUnpresentedExposureProbe.IsStructurallyValid());
+
+        RenderExecutionReceipt forgedUncommittedExposureProbe =
+            presentedWithExposureProbe;
+        forgedUncommittedExposureProbe.postProcess.exposureHistoryCommitted =
+            false;
+        EXPECT_FALSE(forgedUncommittedExposureProbe.IsStructurallyValid());
+
+        RenderExecutionReceipt forgedAbandonedExposureProbe =
+            presentedWithExposureProbe;
+        forgedAbandonedExposureProbe.postProcess.exposureHistoryCommitted =
+            false;
+        forgedAbandonedExposureProbe.postProcess.exposureHistoryAbandoned =
+            true;
+        EXPECT_FALSE(forgedAbandonedExposureProbe.IsStructurallyValid());
 
         RenderExecutionReceipt rejectedPresentation = presented;
         rejectedPresentation.presented = false;

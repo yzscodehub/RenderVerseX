@@ -38,6 +38,14 @@ namespace RVX
 
         void Configure(const PostProcessSettings& settings) override;
         void AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output) override;
+        void AddToGraph(RenderGraph& graph,
+                        const PostProcessFrameInputs& frameInputs,
+                        RGTextureHandle output) override;
+
+        [[nodiscard]] uint64 GetLastExposureStateContentHash() const noexcept
+        {
+            return m_lastExposureStateContentHash;
+        }
 
         /**
          * @brief Provide GPU resources required by the fullscreen Bloom path
@@ -72,6 +80,8 @@ namespace RVX
         void AddFullscreenPass(RenderGraph& graph,
                                const char* passName,
                                RGTextureHandle input,
+                               RGBufferHandle exposureState,
+                               uint64 exposureStateContentHash,
                                RGTextureHandle output,
                                PassMode mode,
                                bool additive,
@@ -79,6 +89,11 @@ namespace RVX
                                float threshold,
                                float intensity,
                                float radius);
+        void AddToGraphWithExposure(RenderGraph& graph,
+                                    RGTextureHandle input,
+                                    RGBufferHandle exposureState,
+                                    uint64 exposureStateContentHash,
+                                    RGTextureHandle output);
         bool EnsureRuntimeResources();
         RHIBufferRef CreatePassConstants(uint32 width,
                                          uint32 height,
@@ -96,6 +111,7 @@ namespace RVX
         ResourceViewCache* m_viewCache = nullptr;
         IRHIDevice* m_resourceDevice = nullptr;
         RHISamplerRef m_sampler;
+        uint64 m_lastExposureStateContentHash = 0;
     };
 
 } // namespace RVX

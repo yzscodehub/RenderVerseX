@@ -2,6 +2,7 @@
 // Draws a fullscreen triangle and lets read-only depth keep foreground geometry.
 
 #include "Include/FullscreenTriangle.hlsli"
+#include "Include/Exposure.hlsli"
 
 cbuffer SkyboxConstants : register(b0, space0)
 {
@@ -17,6 +18,7 @@ cbuffer SkyboxConstants : register(b0, space0)
 
 TextureCube SkyboxCubemap : register(t1, space0);
 SamplerState SkyboxSampler : register(s2, space0);
+StructuredBuffer<RVXExposureState> ExposureStateBuffer : register(t3, space0);
 
 struct VSOutput
 {
@@ -36,6 +38,15 @@ VSOutput VSMain(uint vertexId : SV_VertexID)
 
 float4 PSMain(VSOutput input) : SV_TARGET
 {
+    const RVXExposureState exposureState = ExposureStateBuffer[0];
+    if (!RVXExposureStateIsValid(exposureState))
+    {
+        // Never turn a malformed binding into implicit unit exposure.
+        clip(-1.0);
+        return float4(0.0, 0.0, 0.0, 0.0);
+    }
+    const float preExposure = RVXExposureProducerScale(exposureState);
+
     if (SkyboxTextureParams.x > 0.5)
     {
         float4 worldPos = mul(SkyboxInverseViewProjection, float4(input.ndc, 1.0, 1.0));
@@ -51,7 +62,7 @@ float4 PSMain(VSOutput input) : SV_TARGET
         const float mipLevel = max(0.0, SkyboxTextureParams.y);
         const float3 color = SkyboxCubemap.SampleLevel(SkyboxSampler, viewDir, mipLevel).rgb *
                              SkyboxZenithColor.a;
-        return float4(color, 1.0);
+        return float4(color * preExposure, 1.0);
     }
 
     const float height = saturate(input.ndc.y * 0.5 + 0.5);
@@ -67,5 +78,5 @@ float4 PSMain(VSOutput input) : SV_TARGET
     color += SkyboxSunColor.rgb * sunGlow * SkyboxHorizonColor.a;
 
     color *= SkyboxZenithColor.a;
-    return float4(color, 1.0);
+    return float4(color * preExposure, 1.0);
 }

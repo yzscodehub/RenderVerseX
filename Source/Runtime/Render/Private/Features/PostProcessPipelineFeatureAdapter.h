@@ -9,6 +9,7 @@
 #include "Render/Passes/RenderPassRecordContext.h"
 #include "Render/PostProcess/PostProcessStack.h"
 
+#include <optional>
 #include <string>
 
 namespace RVX
@@ -17,7 +18,7 @@ namespace RVX
      * @brief Value-owned presentation inputs frozen for one graph recording.
      *
      * Scene color is intentionally absent: the adapter obtains it only from
-     * TranslucencyOutputs v2 so no SceneRenderer-side post-process bypass can
+     * TranslucencyOutputs v3 so no SceneRenderer-side post-process bypass can
      * substitute a stale or untyped surface.
      */
     struct PostProcessPipelineRecordContext
@@ -70,8 +71,8 @@ namespace RVX
         }
 
         /**
-         * @brief Commit the TAA candidate only after the exact frame/view has
-         *        crossed a successful presentation boundary.
+         * @brief Commit all post-process temporal candidates only after the
+         *        exact frame/view crossed a successful presentation boundary.
          */
         [[nodiscard]] bool CommitTemporalHistoryAfterPresent(
             const RenderViewHistoryIdentity& identity) noexcept;
@@ -85,10 +86,18 @@ namespace RVX
         [[nodiscard]] bool CanCommitTemporalHistoryAfterPresent(
             const RenderViewHistoryIdentity& identity) noexcept;
 
-        /** @brief Discard an unpresented TAA candidate without advancing history. */
+        /** @brief Discard unpresented TAA/exposure candidates without advancing history. */
         void AbandonTemporalHistoryCandidate() noexcept;
 
         [[nodiscard]] bool RequiresTemporalHistoryCommit() const noexcept;
+
+        /** @brief Arm one explicit 48-byte post-fence exposure probe. */
+        [[nodiscard]] bool RequestExposureQualificationProbe() noexcept;
+
+        /** @brief Map the exact probe only after its presentation fence completed. */
+        [[nodiscard]] bool CompleteExposureQualificationProbe(
+            const RenderViewHistoryIdentity& identity,
+            RenderPostProcessExecutionReceipt& outReceipt) noexcept;
 
     private:
         [[nodiscard]] bool HasMatchingRecordContext(
@@ -99,6 +108,8 @@ namespace RVX
             const RenderFeatureGraphExecutionEvidence& evidence) const noexcept;
         void SetCompositionFailure(std::string diagnostic);
         void RefreshExecutionReceipt();
+        void SnapshotExposureProbeSourceReceipt() noexcept;
+        void ClearExposureProbeSourceReceipt() noexcept;
 
         PostProcessStack* m_stack = nullptr;
         PostProcessPipelineRecordContext m_recordContext{};
@@ -111,5 +122,10 @@ namespace RVX
         bool m_hasRecordContext = false;
         bool m_hasComposedPresentationPlan = false;
         bool m_hardwareSRGBEncodeBoundary = false;
+        ExposureQualificationProbe m_lastExposureProbe{};
+        std::optional<RenderViewHistoryIdentity>
+            m_exposureProbeSourceIdentity;
+        std::optional<RenderPostProcessExecutionReceipt>
+            m_exposureProbeSourceReceipt;
     };
 } // namespace RVX

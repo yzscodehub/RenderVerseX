@@ -41,7 +41,9 @@ namespace RVX
     {
         static constexpr RenderBlackboardResourceId ResourceId =
             RenderBlackboardResourceId::SceneTextures;
-        static constexpr uint32 SchemaVersion = 2;
+        static constexpr uint32 SchemaVersion = 3;
+        static constexpr uint32 ExposureStateSchemaVersion = 1;
+        static constexpr uint32 ExposureStateStride = 48;
 
         /**
          * @brief Graph-independent description for one scene texture.
@@ -67,6 +69,27 @@ namespace RVX
 
             friend constexpr bool operator==(const FormatContract&,
                                              const FormatContract&) = default;
+        };
+
+        /** Graph-independent ABI and configuration identity for exposure state. */
+        struct ExposureStateMetadata
+        {
+            uint32 schemaVersion = 0;
+            uint32 stride = 0;
+            RenderExposureMode mode = RenderExposureMode::ManualEV100;
+            uint64 configurationHash = 0;
+
+            [[nodiscard]] constexpr bool IsValid() const noexcept
+            {
+                return schemaVersion == ExposureStateSchemaVersion &&
+                       stride == ExposureStateStride &&
+                       IsValidRenderExposureMode(mode) &&
+                       configurationHash != 0;
+            }
+
+            friend constexpr bool operator==(
+                const ExposureStateMetadata&,
+                const ExposureStateMetadata&) = default;
         };
 
         // The renderer's fixed deferred layout. RHI names the requested
@@ -112,6 +135,7 @@ namespace RVX
         RGTextureHandle distortionVectors{};
         Metadata distortionVectorsMetadata{};
         RGBufferHandle exposureState{};
+        ExposureStateMetadata exposureStateMetadata{};
         RGTextureHandle opaqueSceneSnapshot{};
         Metadata opaqueSceneSnapshotMetadata{};
 
@@ -133,6 +157,7 @@ namespace RVX
         Success = 0,
         MissingRequiredHandle,
         MissingMaterialTable,
+        InvalidExposureState,
         InvalidExtent,
         FormatMismatch,
         ExtentMismatch,
@@ -152,6 +177,7 @@ namespace RVX
     {
         if (!textures.hdrSceneColor.IsValid() ||
             !textures.deviceDepth.IsValid() ||
+            !textures.exposureState.IsValid() ||
             !textures.gBuffer0.IsValid() || !textures.gBuffer1.IsValid() ||
             !textures.gBuffer2.IsValid() || !textures.gBuffer3.IsValid())
         {
@@ -160,6 +186,10 @@ namespace RVX
         if (!textures.materialTable.IsValid())
         {
             return DeferredSceneTexturesValidationCode::MissingMaterialTable;
+        }
+        if (!textures.exposureStateMetadata.IsValid())
+        {
+            return DeferredSceneTexturesValidationCode::InvalidExposureState;
         }
 
         const RenderOutputExtent extent = textures.hdrSceneColorMetadata.extent;
@@ -251,7 +281,7 @@ namespace RVX
     {
         static constexpr RenderBlackboardResourceId ResourceId =
             RenderBlackboardResourceId::LightingOutputs;
-        static constexpr uint32 SchemaVersion = 2;
+        static constexpr uint32 SchemaVersion = 3;
 
         RenderGraphBlackboardProvenance provenance{};
         /** Immutable LightingFramePlan identity shared by every lighting consumer. */
@@ -283,7 +313,7 @@ namespace RVX
     {
         static constexpr RenderBlackboardResourceId ResourceId =
             RenderBlackboardResourceId::TranslucencyOutputs;
-        static constexpr uint32 SchemaVersion = 2;
+        static constexpr uint32 SchemaVersion = 3;
 
         RenderGraphBlackboardProvenance provenance{};
         /** Exact frozen frame/view that produced these graph resources. */
@@ -303,6 +333,9 @@ namespace RVX
         SceneTextures::Metadata reactiveMaskMetadata{};
         RGTextureHandle distortionVectors{};
         SceneTextures::Metadata distortionVectorsMetadata{};
+        /** Committed prior-presented state used by all HDR producers. */
+        RGBufferHandle exposureState{};
+        SceneTextures::ExposureStateMetadata exposureStateMetadata{};
         PostProcessColorDomain colorDomain =
             PostProcessColorDomain::SceneLinearHDR;
         PostProcessTransfer transfer = PostProcessTransfer::None;
@@ -667,7 +700,8 @@ namespace RVX
                        HandleMatchesGraph(entry.worldNormal, provenance) &&
                        HandleMatchesGraph(entry.velocity, provenance) &&
                        HandleMatchesGraph(entry.reactiveMask, provenance) &&
-                       HandleMatchesGraph(entry.distortionVectors, provenance);
+                       HandleMatchesGraph(entry.distortionVectors, provenance) &&
+                       HandleMatchesGraph(entry.exposureState, provenance);
             }
             else
             {
@@ -714,6 +748,8 @@ namespace RVX
                    outputs.colorDomain ==
                        PostProcessColorDomain::SceneLinearHDR &&
                    outputs.transfer == PostProcessTransfer::None &&
+                   outputs.exposureState.IsValid() &&
+                   outputs.exposureStateMetadata.IsValid() &&
                    OptionalMetadataMatches(
                        outputs.deviceDepth, outputs.deviceDepthMetadata,
                        SceneTextures::DeviceDepthContract) &&

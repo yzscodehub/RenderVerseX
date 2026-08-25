@@ -149,6 +149,15 @@ namespace RVX
         AdvanceFrame();
     }
 
+    bool MetalSwapChain::RecordAbortPresentationImageRetirement(
+        RHICommandContext& context) noexcept
+    {
+        static_cast<void>(context);
+        // Releasing an acquired CAMetalDrawable is command-buffer/presentation
+        // ordered but needs no explicit image-layout transition.
+        return m_currentDrawable != nil;
+    }
+
     void MetalSwapChain::AdvanceFrame()
     {
         // Clear current drawable reference and advance to next frame

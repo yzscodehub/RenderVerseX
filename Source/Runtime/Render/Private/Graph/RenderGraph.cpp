@@ -96,10 +96,17 @@ namespace RVX
         GPUQueueDomain GetPhysicalDomain(
             const RHICapabilities* capabilities,
             RenderGraphPassType passType,
+            RenderGraphQueueAffinity queueAffinity,
             RenderGraph::QueueExecutionMode executionMode)
         {
             GPUQueueDomain domain = GPUQueueDomain::Graphics;
             if (executionMode == RenderGraph::QueueExecutionMode::GraphicsOnly)
+            {
+                return domain;
+            }
+
+            if (queueAffinity == RenderGraphQueueAffinity::Graphics ||
+                !IsRenderGraphQueueAffinityCompatible(passType, queueAffinity))
             {
                 return domain;
             }
@@ -110,7 +117,9 @@ namespace RVX
                 {
                     return GPUQueueDomain::Graphics;
                 }
-                if (passType == RenderGraphPassType::Compute &&
+                if ((queueAffinity == RenderGraphQueueAffinity::Compute ||
+                     (queueAffinity == RenderGraphQueueAffinity::Default &&
+                      passType == RenderGraphPassType::Compute)) &&
                     capabilities->supportsAsyncCompute)
                 {
                     TryGetGPUQueueDomain(
@@ -118,8 +127,9 @@ namespace RVX
                         RHICommandQueueType::Compute,
                         domain);
                 }
-                else if (passType == RenderGraphPassType::Copy &&
-                         capabilities->supportsQueueSubmissionPlan)
+                else if (queueAffinity == RenderGraphQueueAffinity::Copy ||
+                         (queueAffinity == RenderGraphQueueAffinity::Default &&
+                          passType == RenderGraphPassType::Copy))
                 {
                     TryGetGPUQueueDomain(
                         capabilities->queueTopology,
@@ -349,6 +359,7 @@ namespace RVX
                 passDiagnostic.index = passIndex;
                 passDiagnostic.name = pass.name;
                 passDiagnostic.type = pass.type;
+                passDiagnostic.queueAffinity = pass.queueAffinity;
                 passDiagnostic.culled = pass.culled;
                 passDiagnostic.plannedExecutionQueue = pass.plannedExecutionQueue;
                 passDiagnostic.executedLastRun = pass.executedLastRun;
@@ -1642,6 +1653,7 @@ namespace RVX
     void RenderGraph::AddPassInternal(
         const char* name,
         RenderGraphPassType type,
+        RenderGraphQueueAffinity queueAffinity,
         std::function<void(RenderGraphBuilder&)> setup,
         std::function<void(RenderGraphPassContext&)> execute)
     {
@@ -1651,12 +1663,14 @@ namespace RVX
         Pass pass;
         pass.name = name ? name : "RenderPass";
         pass.type = type;
+        pass.queueAffinity = queueAffinity;
         pass.plannedExecutionQueue = GetPlannedExecutionQueue(
             GetPhysicalDomain(
                 m_impl->hasCapabilitySnapshot
                     ? &m_impl->capabilitySnapshot
                     : nullptr,
                 type,
+                queueAffinity,
                 m_impl->queueExecutionMode));
         pass.execute = std::move(execute);
 
@@ -1686,6 +1700,7 @@ namespace RVX
                 ? &m_impl->capabilitySnapshot
                 : nullptr,
             type,
+            queueAffinity,
             m_impl->queueExecutionMode);
         for (ResourceUsage& usage : pass.usages)
         {
@@ -1853,6 +1868,7 @@ namespace RVX
             GetPhysicalDomain(
                 m_impl->capabilities,
                 m_impl->pass->type,
+                m_impl->pass->queueAffinity,
                 m_impl->queueExecutionMode));
         usage.logicalAccess = MakeRGAccessDesc(state, stages);
         usage.access = RGAccessType::Read;
@@ -1921,6 +1937,7 @@ namespace RVX
             GetPhysicalDomain(
                 m_impl->capabilities,
                 m_impl->pass->type,
+                m_impl->pass->queueAffinity,
                 m_impl->queueExecutionMode));
         usage.logicalAccess = MakeRGAccessDesc(state, stages);
         usage.access = RGAccessType::Read;
@@ -1992,6 +2009,7 @@ namespace RVX
             GetPhysicalDomain(
                 m_impl->capabilities,
                 m_impl->pass->type,
+                m_impl->pass->queueAffinity,
                 m_impl->queueExecutionMode));
         usage.logicalAccess = MakeRGAccessDesc(
             state, usage.stages, discardIntent);
@@ -2062,6 +2080,7 @@ namespace RVX
             GetPhysicalDomain(
                 m_impl->capabilities,
                 m_impl->pass->type,
+                m_impl->pass->queueAffinity,
                 m_impl->queueExecutionMode));
         usage.logicalAccess = MakeRGAccessDesc(
             state, usage.stages, discardIntent);
@@ -2124,6 +2143,7 @@ namespace RVX
             ? GetPhysicalDomain(
                 m_impl->capabilities,
                 m_impl->pass->type,
+                m_impl->pass->queueAffinity,
                 m_impl->queueExecutionMode)
             : GPUQueueDomain::Graphics;
         return ReadWrite(texture, MakeRHIAccessSnapshot(
@@ -2167,6 +2187,7 @@ namespace RVX
             ? GetPhysicalDomain(
                 m_impl->capabilities,
                 m_impl->pass->type,
+                m_impl->pass->queueAffinity,
                 m_impl->queueExecutionMode)
             : GPUQueueDomain::Graphics;
         return ReadWrite(buffer, MakeRHIAccessSnapshot(
@@ -2423,6 +2444,7 @@ namespace RVX
                     ? &m_impl->capabilitySnapshot
                     : nullptr,
                 pass.type,
+                pass.queueAffinity,
                 m_impl->queueExecutionMode);
             pass.plannedExecutionQueue =
                 GetPlannedExecutionQueue(physicalDomain);

@@ -22,6 +22,7 @@
 #define RVX_MAX_OBJECT_SKINNING_MATRICES 128
 
 #include "Include/BRDF.hlsli"
+#include "Include/Exposure.hlsli"
 #include "Include/GPUInstanceData.hlsli"
 #include "Include/Lighting.hlsli"
 #include "Include/SurfaceMaterial.hlsli"
@@ -137,6 +138,10 @@ TextureCube IrradianceTexture : register(t10, space0);
 TextureCube PrefilteredEnvironmentTexture : register(t11, space0);
 Texture2D BRDFLUTTexture : register(t12, space0);
 SamplerState IBLLinearClampSampler : register(s13, space0);
+// The graph imports exactly one committed prior-presented state for the
+// entire frame. GBuffer export intentionally never reads this buffer; every
+// Forward HDR surface, including transparent and Unlit, does.
+StructuredBuffer<RVXExposureState> ExposureStateBuffer : register(t14, space0);
 #if !defined(RVX_GPU_SCENE_RASTER)
 StructuredBuffer<GPUInstanceData> GPUDrivenInstances : register(t1, space1);
 #endif
@@ -776,9 +781,20 @@ float4 PSMain(PSInput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
                 input.TexCoord, input.TexCoord1)).rgb;
     }
 
+    const RVXExposureState exposureState = ExposureStateBuffer[0];
+    if (!RVXExposureStateIsValid(exposureState))
+    {
+        // A missing or malformed state must never silently become unit
+        // exposure. The graph-side contract rejects absent state; this is the
+        // shader-side fail-closed backstop for corrupt payloads.
+        clip(-1.0);
+        return float4(0.0, 0.0, 0.0, 0.0);
+    }
+    const float preExposure = RVXExposureProducerScale(exposureState);
+
     if (material.Workflow == MATERIAL_WORKFLOW_UNLIT)
     {
-        return float4(baseColor.rgb + emissive, baseColor.a);
+        return float4((baseColor.rgb + emissive) * preExposure, baseColor.a);
     }
 
     if (material.Workflow != MATERIAL_WORKFLOW_METALLIC_ROUGHNESS)
@@ -877,5 +893,5 @@ float4 PSMain(PSInput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     float3 ambientFloor = baseColor.rgb * max(IBLTextureParams.w, 0.0);
     float3 finalColor = ambientDiffuse + ambientSpecular + directLight + emissive + ambientFloor;
 
-    return float4(finalColor, baseColor.a);
+    return float4(finalColor * preExposure, baseColor.a);
 }

@@ -363,7 +363,8 @@ namespace RVX
                HasCurrentGraphProvenance(
                    view.environmentPrefilteredTexture, identity) &&
                HasCurrentGraphProvenance(
-                   view.environmentBRDFLUTTexture, identity);
+                   view.environmentBRDFLUTTexture, identity) &&
+               HasCurrentGraphProvenance(view.exposureState, identity);
     }
 
     /** @brief Typed GPU-culling inputs consumed by one graphics pass. */

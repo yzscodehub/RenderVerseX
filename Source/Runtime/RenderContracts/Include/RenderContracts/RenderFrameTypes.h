@@ -9,6 +9,7 @@
 #include "Core/Diagnostics/SkinningPaletteHash.h"
 #include "Core/Types.h"
 #include "RenderContracts/FeatureRenderSnapshot.h"
+#include "RenderContracts/RenderExposure.h"
 #include "RenderContracts/RenderIdentity.h"
 #include "RenderContracts/RenderMaterial.h"
 #include "RenderContracts/RenderPipelineProfile.h"
@@ -521,12 +522,6 @@ namespace RVX
         None = 5
     };
 
-    enum class RenderExposureMode : uint8
-    {
-        ManualMultiplier = 0,
-        CameraEV100 = 1
-    };
-
     /**
      * @brief The single anti-aliasing path selected for one rendered frame.
      *
@@ -573,10 +568,13 @@ namespace RVX
         bool enableRayTracedReflectionDenoise = true;
         RenderToneMappingOperator toneMappingOperator =
             RenderToneMappingOperator::ACES;
-        RenderExposureMode exposureMode = RenderExposureMode::ManualMultiplier;
-        float32 exposure = 1.0f;
-        float32 cameraEV100 = 0.0f;
-        float32 exposureCompensationEV = 0.0f;
+        /**
+         * @brief Sole authority for renderer exposure policy.
+         *
+         * RenderViewSnapshot::exposure remains a compatibility value owned by
+         * the scene/camera pipeline; it does not override this setting.
+         */
+        RenderExposureSettings exposureSettings{};
         float32 gamma = 2.2f;
         float32 bloomThreshold = 1.0f;
         float32 bloomIntensity = 1.0f;

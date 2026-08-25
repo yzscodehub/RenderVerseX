@@ -151,7 +151,9 @@ namespace
     // Set-1 now contains two structured skin palette bindings in addition to
     // the object constants and instance stream; old manifests cannot describe
     // this pipeline-layout ABI.
-    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 18;
+    // Exposure introduces a new cooked-program readiness requirement and
+    // descriptor ABI for HDR producers; never reuse a manifest built before it.
+    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 19;
     constexpr uint32 RVX_PIPELINE_PURPOSE_DEFAULT = 0x50445354u; // PDST
     constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_DRIVEN_DEFAULT = 0x47444546u; // GDEF
     constexpr uint32 RVX_PIPELINE_PURPOSE_INSTANCED_MATERIAL = 0x494D4154u; // IMAT
@@ -378,7 +380,7 @@ namespace
 
     bool IsRequiredDefaultLitBinding(uint32 set, uint32 binding)
     {
-        if (set == 0 && binding <= 13)
+        if (set == 0 && binding <= 14)
         {
             return true;
         }
@@ -423,6 +425,9 @@ namespace
         frameLayout.AddBinding(11, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
         frameLayout.AddBinding(12, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
         frameLayout.AddBinding(13, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        frameLayout.AddBinding(PipelineCache::DefaultLitExposureStateBinding,
+                               RHIBindingType::ShaderResourceBuffer,
+                               RHIShaderStage::Pixel);
 
         auto& objectLayout = outLayouts[1];
         objectLayout.debugName = "DefaultObjectSetLayout";
@@ -1135,6 +1140,15 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
         return false;
     }
 
+    if (!CreateExposurePostProcessPipelineLayout())
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create exposure post-process pipeline layout");
+        }
+        return false;
+    }
+
     if (!CreateTAAPipelineLayout())
     {
         if (m_lastError.empty())
@@ -1203,6 +1217,9 @@ void PipelineCache::Shutdown()
     m_gpuSceneMaskedPipeline.Reset();
     m_gpuSceneDepthOnlyPipeline.Reset();
     m_deferredLightingPipeline.Reset();
+    m_exposureHistogramClearPipeline.Reset();
+    m_exposureHistogramBuildPipeline.Reset();
+    m_exposureAdaptationPipeline.Reset();
     m_skyboxPipeline.Reset();
     m_toneMappingPipeline.Reset();
     m_bloomPipeline.Reset();
@@ -1254,6 +1271,7 @@ void PipelineCache::Shutdown()
     m_fallbackClusterConstantsBuffer.Reset();
     m_fallbackClusterBuffer.Reset();
     m_fallbackClusterLightIndexBuffer.Reset();
+    m_fallbackExposureStateBuffer.Reset();
     m_currentDirectionalShadowView = nullptr;
     m_currentRayTracedShadowMaskView = nullptr;
     m_currentDirectionalShadowSampler = nullptr;
@@ -1266,12 +1284,17 @@ void PipelineCache::Shutdown()
     m_currentClusterConstantsBuffer = nullptr;
     m_currentClusterBuffer = nullptr;
     m_currentClusterLightIndexBuffer = nullptr;
+    m_currentExposureStateBuffer = nullptr;
     m_frameResourceBindingsDirty = false;
     m_lastFrameLightBindingResult = {};
     m_lastRayTracedShadowFrameBindingResult = {};
     m_lastEnvironmentIBLFrameBindingResult = {};
     m_postProcessPipelineLayout.Reset();
     m_postProcessSetLayout.Reset();
+    m_exposurePostProcessPipelineLayout.Reset();
+    m_exposurePostProcessSetLayout.Reset();
+    m_exposureComputePipelineLayout.Reset();
+    m_exposureComputeSetLayout.Reset();
     m_taaPipelineLayout.Reset();
     m_taaSetLayout.Reset();
     m_uiPipelineLayout.Reset();
@@ -1299,6 +1322,9 @@ void PipelineCache::Shutdown()
     m_pixelShader.Reset();
     m_gBufferPixelShader.Reset();
     m_deferredLightingComputeShader.Reset();
+    m_exposureHistogramClearComputeShader.Reset();
+    m_exposureHistogramBuildComputeShader.Reset();
+    m_exposureAdaptationComputeShader.Reset();
     m_depthOnlyVertexShader.Reset();
     m_rigidDepthOnlyVertexShader.Reset();
     m_maskedDepthOnlyVertexShader.Reset();
@@ -1357,6 +1383,9 @@ void PipelineCache::Shutdown()
     m_psCompileResult.reset();
     m_gBufferPsCompileResult.reset();
     m_deferredLightingCsCompileResult.reset();
+    m_exposureHistogramClearCsCompileResult.reset();
+    m_exposureHistogramBuildCsCompileResult.reset();
+    m_exposureAdaptationCsCompileResult.reset();
     m_depthOnlyVsCompileResult.reset();
     m_rigidDepthOnlyVsCompileResult.reset();
     m_maskedDepthOnlyVsCompileResult.reset();
@@ -1453,6 +1482,7 @@ bool PipelineCache::CompileShaders()
     std::string filmGrainShaderPath = m_shaderDir + "/PostProcess/FilmGrain.hlsl";
     std::string fxaaShaderPath = m_shaderDir + "/PostProcess/FXAA.hlsl";
     std::string taaShaderPath = m_shaderDir + "/PostProcess/TAA.hlsl";
+    std::string exposureShaderPath = m_shaderDir + "/PostProcess/Exposure.hlsl";
     std::string vignetteShaderPath = m_shaderDir + "/PostProcess/Vignette.hlsl";
     std::string uiShaderPath = m_shaderDir + "/UI.hlsl";
     std::string skyboxShaderPath = m_shaderDir + "/Skybox.hlsl";
@@ -1624,6 +1654,63 @@ bool PipelineCache::CompileShaders()
         m_deferredLightingCsCompileResult =
             std::make_unique<ShaderProgramMetadata>(
                 std::move(deferredLightingCsResult.compileResult));
+    }
+
+    // Histogram metering is an optional compute feature. Its absence is never
+    // hidden: ExposureController refuses HistogramAuto when these cooked
+    // programs cannot be instantiated. ManualEV100 may still use the resolve
+    // program on every backend that exposes compute.
+    if (m_device->GetCapabilities().supportsComputePipeline)
+    {
+        RenderShaderLoadDesc exposureCsDesc;
+        exposureCsDesc.path = exposureShaderPath;
+        exposureCsDesc.stage = RHIShaderStage::Compute;
+        exposureCsDesc.backend = backend;
+        exposureCsDesc.enableDebugInfo = true;
+        if (backend == RHIBackendType::DX11)
+        {
+            exposureCsDesc.targetProfile = "cs_5_0";
+        }
+
+        const auto loadExposureShader = [this, &exposureCsDesc](
+            const char* entryPoint,
+            const char* diagnostic,
+            RHIShaderRef& outShader,
+            std::unique_ptr<ShaderProgramMetadata>& outMetadata) -> bool
+        {
+            RenderShaderLoadDesc request = exposureCsDesc;
+            request.entryPoint = entryPoint;
+            RenderShaderLoadResult result =
+                m_shaderProgramLoader->LoadFromFile(m_device, request);
+            if (!result.compileResult.success)
+            {
+                SetLastError(std::string("Failed to compile ") + diagnostic +
+                             ": " + result.compileResult.errorMessage);
+                return false;
+            }
+            if (!result.shader)
+            {
+                SetLastError(std::string("Failed to create ") + diagnostic);
+                return false;
+            }
+            outShader = result.shader;
+            outMetadata = std::make_unique<ShaderProgramMetadata>(
+                std::move(result.compileResult));
+            return true;
+        };
+
+        if (!loadExposureShader("CSClearHistogram", "exposure histogram-clear compute shader",
+                                m_exposureHistogramClearComputeShader,
+                                m_exposureHistogramClearCsCompileResult) ||
+            !loadExposureShader("CSBuildHistogram", "exposure histogram-build compute shader",
+                                m_exposureHistogramBuildComputeShader,
+                                m_exposureHistogramBuildCsCompileResult) ||
+            !loadExposureShader("CSAdaptExposure", "exposure adaptation compute shader",
+                                m_exposureAdaptationComputeShader,
+                                m_exposureAdaptationCsCompileResult))
+        {
+            return false;
+        }
     }
 
     RenderShaderLoadDesc depthVsDesc = vsDesc;
@@ -2962,6 +3049,9 @@ bool PipelineCache::CreateDeferredLightingPipelineLayout()
                              RHIShaderStage::Compute);
     setLayoutDesc.AddBinding(20, RHIBindingType::UniformBuffer,
                              RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(PipelineCache::DeferredLightingExposureStateBinding,
+                             RHIBindingType::ShaderResourceBuffer,
+                             RHIShaderStage::Compute);
 
     RHIDescriptorSetLayoutRef setLayout =
         m_device->CreateDescriptorSetLayout(setLayoutDesc);
@@ -3018,6 +3108,39 @@ bool PipelineCache::CreatePostProcessPipelineLayout()
     return true;
 }
 
+bool PipelineCache::CreateExposurePostProcessPipelineLayout()
+{
+    RHIDescriptorSetLayoutDesc setLayoutDesc;
+    setLayoutDesc.debugName = "ExposurePostProcessSetLayout";
+    setLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(1, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(2, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(3, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+    // Candidate state is produced by the same graph before ToneMapping/Bloom;
+    // keeping it in a narrow layout avoids forcing unrelated fullscreen passes
+    // to bind a resource they do not consume.
+    setLayoutDesc.AddBinding(4, RHIBindingType::ShaderResourceBuffer,
+                             RHIShaderStage::Pixel);
+
+    m_exposurePostProcessSetLayout = m_device->CreateDescriptorSetLayout(setLayoutDesc);
+    if (!m_exposurePostProcessSetLayout)
+    {
+        SetLastError("Failed to create exposure post-process descriptor set layout");
+        return false;
+    }
+
+    RHIPipelineLayoutDesc layoutDesc;
+    layoutDesc.debugName = "ExposurePostProcessPipelineLayout";
+    layoutDesc.setLayouts.push_back(m_exposurePostProcessSetLayout.Get());
+    m_exposurePostProcessPipelineLayout = m_device->CreatePipelineLayout(layoutDesc);
+    if (!m_exposurePostProcessPipelineLayout)
+    {
+        SetLastError("Failed to create exposure post-process pipeline layout");
+        return false;
+    }
+    return true;
+}
+
 bool PipelineCache::CreateTAAPipelineLayout()
 {
     RHIDescriptorSetLayoutDesc setLayoutDesc;
@@ -3030,6 +3153,8 @@ bool PipelineCache::CreateTAAPipelineLayout()
     setLayoutDesc.AddBinding(5, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
     setLayoutDesc.AddBinding(6, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
     setLayoutDesc.AddBinding(7, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(8, RHIBindingType::ShaderResourceBuffer,
+                             RHIShaderStage::Pixel);
 
     m_taaSetLayout = m_device->CreateDescriptorSetLayout(setLayoutDesc);
     if (!m_taaSetLayout)
@@ -3127,6 +3252,9 @@ bool PipelineCache::CreateSkyboxPipelineLayout()
     setLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::Vertex | RHIShaderStage::Pixel);
     setLayoutDesc.AddBinding(1, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
     setLayoutDesc.AddBinding(2, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(PipelineCache::SkyboxExposureStateBinding,
+                             RHIBindingType::ShaderResourceBuffer,
+                             RHIShaderStage::Pixel);
 
     m_skyboxSetLayout = m_device->CreateDescriptorSetLayout(setLayoutDesc);
     if (!m_skyboxSetLayout)
@@ -3225,6 +3353,7 @@ bool PipelineCache::CreateRayTracedReflectionPipelineLayout()
     setLayoutDesc.AddBinding(RTReflectionBindings::RVX_RT_REFLECTION_NORMAL_BUFFERS_BINDING, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::AllRayTracing, RTReflectionBindings::RVX_RT_REFLECTION_MAX_GEOMETRY_BUFFERS);
     setLayoutDesc.AddBinding(RTReflectionBindings::RVX_RT_REFLECTION_TANGENT_BUFFERS_BINDING, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::AllRayTracing, RTReflectionBindings::RVX_RT_REFLECTION_MAX_GEOMETRY_BUFFERS);
     setLayoutDesc.AddBinding(RTReflectionBindings::RVX_RT_REFLECTION_SCENE_VELOCITY_BINDING, RHIBindingType::SampledTexture, RHIShaderStage::AllRayTracing);
+    setLayoutDesc.AddBinding(RTReflectionBindings::RVX_RT_REFLECTION_EXPOSURE_STATE_BINDING, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::AllRayTracing);
 
     m_rayTracedReflectionSetLayout = m_device->CreateDescriptorSetLayout(setLayoutDesc);
     if (!m_rayTracedReflectionSetLayout)
@@ -3321,6 +3450,8 @@ bool PipelineCache::BuildReflectedDefaultLitLayouts(std::vector<RHIDescriptorSet
     ensureBinding(outLayouts[0], 7, RHIBindingType::UniformBuffer, RHIShaderStage::Pixel);
     ensureBinding(outLayouts[0], 8, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
     ensureBinding(outLayouts[0], 9, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
+    ensureBinding(outLayouts[0], PipelineCache::DefaultLitExposureStateBinding,
+                  RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
     ensureBinding(outLayouts[1], 1, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
     ensureBinding(outLayouts[1], 2, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
     ensureBinding(outLayouts[1], 3, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
@@ -3426,6 +3557,9 @@ bool PipelineCache::ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSet
             return false;
     }
     if (!requireBinding(0, 13, RHIBindingType::Sampler))
+        return false;
+    if (!requireBinding(0, PipelineCache::DefaultLitExposureStateBinding,
+                        RHIBindingType::ShaderResourceBuffer))
         return false;
     if (!requireBinding(1, 0, RHIBindingType::DynamicUniformBuffer))
         return false;
@@ -3577,6 +3711,7 @@ void PipelineCache::ResetFrameResourceBindings()
     m_currentClusterConstantsBuffer = m_fallbackClusterConstantsBuffer;
     m_currentClusterBuffer = m_fallbackClusterBuffer;
     m_currentClusterLightIndexBuffer = m_fallbackClusterLightIndexBuffer;
+    m_currentExposureStateBuffer = m_fallbackExposureStateBuffer;
     m_lastDirectionalShadowFrameBindingResult = {};
     m_lastRayTracedShadowFrameBindingResult = {};
     m_lastEnvironmentIBLFrameBindingResult = {};
@@ -3867,6 +4002,22 @@ FrameLightBindingResult PipelineCache::UpdateFrameLightResources(const FrameLigh
     return result;
 }
 
+bool PipelineCache::UpdateFrameExposureStateBuffer(RHIBuffer* exposureStateBuffer)
+{
+    if (!m_frameDescriptorSet || !m_viewConstantBuffer ||
+        !EnsureFrameExposureFallbackBuffer())
+    {
+        return false;
+    }
+
+    m_currentExposureStateBuffer.Reset(exposureStateBuffer);
+    if (!m_currentExposureStateBuffer)
+    {
+        m_currentExposureStateBuffer = m_fallbackExposureStateBuffer;
+    }
+    return UpdateDefaultFrameDescriptorSet();
+}
+
 bool PipelineCache::FreezeFrameLightResources(
     const FrameLightResources& source,
     FrozenFrameLightResources& outFrozenResources)
@@ -4038,7 +4189,8 @@ bool PipelineCache::CreateLightingBindingSnapshot(
 
     if (!EnsureFrameShadowFallbackResources() ||
         !EnsureFrameRayTracedShadowFallbackResources() ||
-        !EnsureFrameEnvironmentIBLFallbackResources())
+        !EnsureFrameEnvironmentIBLFallbackResources() ||
+        !EnsureFrameExposureFallbackBuffer())
     {
         SetLastError(
             "Lighting binding snapshot could not create stable fallback resources");
@@ -4103,6 +4255,8 @@ bool PipelineCache::CreateLightingBindingSnapshot(
         ? RHITextureViewRef(request.environmentIBL.brdfLUTView)
         : m_fallbackEnvironmentIBLBRDFLUTView;
     snapshot.environmentIBLSampler = m_environmentIBLSampler;
+    snapshot.exposureStateBuffer = request.exposureStateBuffer
+        ? request.exposureStateBuffer : m_fallbackExposureStateBuffer;
     snapshot.frameSetLayout = m_setLayouts[0];
 
     // The descriptor set is deliberately created only after every resource
@@ -4117,7 +4271,7 @@ bool PipelineCache::CreateLightingBindingSnapshot(
         !snapshot.environmentIBLIrradianceView ||
         !snapshot.environmentIBLPrefilteredView ||
         !snapshot.environmentIBLBRDFLUTView || !snapshot.environmentIBLSampler ||
-        !snapshot.frameSetLayout)
+        !snapshot.exposureStateBuffer || !snapshot.frameSetLayout)
     {
         SetLastError("Lighting binding snapshot has incomplete record-owned resources");
         return false;
@@ -4146,6 +4300,8 @@ bool PipelineCache::CreateLightingBindingSnapshot(
     descriptorSetDesc.BindTexture(11, snapshot.environmentIBLPrefilteredView.Get());
     descriptorSetDesc.BindTexture(12, snapshot.environmentIBLBRDFLUTView.Get());
     descriptorSetDesc.BindSampler(13, snapshot.environmentIBLSampler.Get());
+    descriptorSetDesc.BindBuffer(DefaultLitExposureStateBinding,
+                                 snapshot.exposureStateBuffer.Get());
 
     snapshot.frameDescriptorSet = m_device->CreateDescriptorSet(descriptorSetDesc);
     if (!snapshot.frameDescriptorSet ||
@@ -5920,6 +6076,118 @@ RHIPipeline* PipelineCache::GetDeferredLightingPipeline()
         : nullptr;
 }
 
+bool PipelineCache::CreateExposureComputePipelineLayout()
+{
+    if (!m_device || !m_device->GetCapabilities().supportsComputePipeline)
+    {
+        return false;
+    }
+    if (m_exposureComputeSetLayout && m_exposureComputePipelineLayout)
+    {
+        return true;
+    }
+
+    RHIDescriptorSetLayoutDesc setLayoutDesc;
+    setLayoutDesc.debugName = "ExposureComputeSetLayout";
+    setLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(1, RHIBindingType::SampledTexture, RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(2, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(3, RHIBindingType::StorageBuffer, RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(4, RHIBindingType::StorageBuffer, RHIShaderStage::Compute);
+    RHIDescriptorSetLayoutRef setLayout =
+        m_device->CreateDescriptorSetLayout(setLayoutDesc);
+    if (!setLayout)
+    {
+        SetLastError("Failed to create exposure compute descriptor set layout");
+        return false;
+    }
+
+    RHIPipelineLayoutDesc layoutDesc;
+    layoutDesc.debugName = "ExposureComputePipelineLayout";
+    layoutDesc.setLayouts.push_back(setLayout.Get());
+    RHIPipelineLayoutRef pipelineLayout = m_device->CreatePipelineLayout(layoutDesc);
+    if (!pipelineLayout)
+    {
+        SetLastError("Failed to create exposure compute pipeline layout");
+        return false;
+    }
+
+    m_exposureComputeSetLayout = std::move(setLayout);
+    m_exposureComputePipelineLayout = std::move(pipelineLayout);
+    return true;
+}
+
+bool PipelineCache::EnsureExposureComputePipelines()
+{
+    if (IsExposureComputePipelineReady())
+    {
+        return true;
+    }
+    if (!m_initialized || !m_device ||
+        !m_device->GetCapabilities().supportsComputePipeline ||
+        !m_exposureHistogramClearComputeShader ||
+        !m_exposureHistogramBuildComputeShader ||
+        !m_exposureAdaptationComputeShader ||
+        !CreateExposureComputePipelineLayout())
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Exposure compute programs or layout are unavailable");
+        }
+        return false;
+    }
+
+    const auto create = [this](RHIShader* shader, const char* debugName)
+        -> RHIPipelineRef
+    {
+        RHIComputePipelineDesc descriptor;
+        descriptor.computeShader = shader;
+        descriptor.pipelineLayout = m_exposureComputePipelineLayout.Get();
+        descriptor.debugName = debugName;
+        RHIPipelineRef pipeline = m_device->CreateComputePipeline(descriptor);
+        if (!pipeline)
+        {
+            SetLastError(std::string("Backend failed to create ") + debugName);
+        }
+        return pipeline;
+    };
+
+    m_exposureHistogramClearPipeline = create(
+        m_exposureHistogramClearComputeShader.Get(), "ExposureHistogramClearPipeline");
+    m_exposureHistogramBuildPipeline = create(
+        m_exposureHistogramBuildComputeShader.Get(), "ExposureHistogramBuildPipeline");
+    m_exposureAdaptationPipeline = create(
+        m_exposureAdaptationComputeShader.Get(), "ExposureAdaptationPipeline");
+    if (!m_exposureHistogramClearPipeline || !m_exposureHistogramBuildPipeline ||
+        !m_exposureAdaptationPipeline)
+    {
+        m_exposureHistogramClearPipeline.Reset();
+        m_exposureHistogramBuildPipeline.Reset();
+        m_exposureAdaptationPipeline.Reset();
+        return false;
+    }
+    m_stats.pipelineCreateCount += 3;
+    return true;
+}
+
+RHIPipeline* PipelineCache::GetExposureHistogramClearPipeline()
+{
+    return EnsureExposureComputePipelines()
+        ? m_exposureHistogramClearPipeline.Get() : nullptr;
+}
+
+RHIPipeline* PipelineCache::GetExposureHistogramBuildPipeline()
+{
+    return EnsureExposureComputePipelines()
+        ? m_exposureHistogramBuildPipeline.Get() : nullptr;
+}
+
+RHIPipeline* PipelineCache::GetExposureAdaptationPipeline()
+{
+    return EnsureExposureComputePipelines()
+        ? m_exposureAdaptationPipeline.Get() : nullptr;
+}
+
 RHIPipeline* PipelineCache::GetGPUDrivenGBufferPipelineForVariant(
     MaterialPipelineVariant variant,
     MaterialCullMode cullMode,
@@ -7029,12 +7297,66 @@ bool PipelineCache::EnsureFrameClusteredLightFallbackResources()
     return true;
 }
 
+bool PipelineCache::EnsureFrameExposureFallbackBuffer()
+{
+    if (m_fallbackExposureStateBuffer)
+    {
+        if (!m_currentExposureStateBuffer)
+        {
+            m_currentExposureStateBuffer = m_fallbackExposureStateBuffer;
+        }
+        return true;
+    }
+    if (!m_device)
+    {
+        return false;
+    }
+
+    // Matches Render/Shaders/Include/Exposure.hlsli. This state is only the
+    // safe binding used before ExposureController publishes its bootstrap;
+    // its valid bit still gives HDR producers a finite unit pre-exposure.
+    struct alignas(16) FallbackExposureState
+    {
+        float exposureValues[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+        uint32 targetAndNonce[4] = {0u, 0u, 0u, 0u};
+        uint32 stateMeta[4] = {0u, 0u, 0u, 1u};
+    };
+    static_assert(sizeof(FallbackExposureState) == 48u);
+
+    RHIBufferDesc desc;
+    desc.size = sizeof(FallbackExposureState);
+    desc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
+    desc.memoryType = RHIMemoryType::Upload;
+    desc.stride = sizeof(FallbackExposureState);
+    desc.debugName = "FallbackExposureStateBuffer";
+    RHIBufferRef buffer = m_device->CreateBuffer(desc);
+    if (!buffer)
+    {
+        return false;
+    }
+    void* mapped = buffer->Map();
+    if (!mapped)
+    {
+        return false;
+    }
+    const FallbackExposureState state{};
+    std::memcpy(mapped, &state, sizeof(state));
+    buffer->Unmap();
+    m_fallbackExposureStateBuffer = std::move(buffer);
+    if (!m_currentExposureStateBuffer)
+    {
+        m_currentExposureStateBuffer = m_fallbackExposureStateBuffer;
+    }
+    return true;
+}
+
 bool PipelineCache::UpdateDefaultFrameDescriptorSet()
 {
     if (!m_viewConstantBuffer || m_setLayouts.empty() || !m_setLayouts[0] ||
         !EnsureFrameShadowFallbackResources() || !EnsureFrameRayTracedShadowFallbackResources() ||
         !EnsureFrameEnvironmentIBLFallbackResources() ||
-        !EnsureFrameLightFallbackResources() || !EnsureFrameClusteredLightFallbackResources())
+        !EnsureFrameLightFallbackResources() || !EnsureFrameClusteredLightFallbackResources() ||
+        !EnsureFrameExposureFallbackBuffer())
     {
         return false;
     }
@@ -7097,6 +7419,8 @@ PipelineCache::CreateFrameDescriptorBindingOwners() const
     owners->environmentIBLBRDFLUTView = m_currentEnvironmentIBLBRDFLUTView
         ? m_currentEnvironmentIBLBRDFLUTView : m_fallbackEnvironmentIBLBRDFLUTView;
     owners->environmentIBLSampler = m_environmentIBLSampler;
+    owners->exposureStateBuffer = m_currentExposureStateBuffer
+        ? m_currentExposureStateBuffer : m_fallbackExposureStateBuffer;
     return owners->IsComplete() ? owners : Ref<FrameDescriptorBindingOwners>{};
 }
 
@@ -7106,7 +7430,7 @@ std::vector<RHIDescriptorBinding> PipelineCache::BuildFrameDescriptorBindings(
     RVX_ASSERT(owners.IsComplete());
 
     std::vector<RHIDescriptorBinding> bindings;
-    bindings.reserve(14);
+    bindings.reserve(15);
     bindings.push_back({0, owners.viewConstantBuffer.Get(), 0,
                         AlignConstantBufferSize(sizeof(ViewConstants)), nullptr, nullptr});
     bindings.push_back({1, nullptr, 0, 0, owners.directionalShadowView.Get(), nullptr});
@@ -7124,6 +7448,8 @@ std::vector<RHIDescriptorBinding> PipelineCache::BuildFrameDescriptorBindings(
     bindings.push_back({11, nullptr, 0, 0, owners.environmentIBLPrefilteredView.Get(), nullptr});
     bindings.push_back({12, nullptr, 0, 0, owners.environmentIBLBRDFLUTView.Get(), nullptr});
     bindings.push_back({13, nullptr, 0, 0, nullptr, owners.environmentIBLSampler.Get()});
+    bindings.push_back({DefaultLitExposureStateBinding, owners.exposureStateBuffer.Get(),
+                        0, RVX_WHOLE_SIZE, nullptr, nullptr});
     return bindings;
 }
 
@@ -7132,7 +7458,8 @@ RHIDescriptorSetRef PipelineCache::CreateFrameDescriptorSet()
     if (m_setLayouts.empty() || !m_setLayouts[0] || !m_viewConstantBuffer ||
         !EnsureFrameShadowFallbackResources() || !EnsureFrameRayTracedShadowFallbackResources() ||
         !EnsureFrameEnvironmentIBLFallbackResources() ||
-        !EnsureFrameLightFallbackResources() || !EnsureFrameClusteredLightFallbackResources())
+        !EnsureFrameLightFallbackResources() || !EnsureFrameClusteredLightFallbackResources() ||
+        !EnsureFrameExposureFallbackBuffer())
         return {};
 
     m_currentDirectionalShadowView = m_fallbackDirectionalShadowView;
@@ -7147,6 +7474,7 @@ RHIDescriptorSetRef PipelineCache::CreateFrameDescriptorSet()
     m_currentClusterConstantsBuffer = m_fallbackClusterConstantsBuffer;
     m_currentClusterBuffer = m_fallbackClusterBuffer;
     m_currentClusterLightIndexBuffer = m_fallbackClusterLightIndexBuffer;
+    m_currentExposureStateBuffer = m_fallbackExposureStateBuffer;
 
     Ref<FrameDescriptorBindingOwners> owners =
         CreateFrameDescriptorBindingOwners();
@@ -9357,7 +9685,7 @@ RHIGraphicsPipelineDesc PipelineCache::BuildToneMappingPipelineDesc(RHIFormat ou
 
     pipelineDesc.vertexShader = m_toneMappingVertexShader.Get();
     pipelineDesc.pixelShader = m_toneMappingPixelShader.Get();
-    pipelineDesc.pipelineLayout = m_postProcessPipelineLayout.Get();
+    pipelineDesc.pipelineLayout = m_exposurePostProcessPipelineLayout.Get();
     pipelineDesc.debugName = "ToneMappingPipeline";
 
     pipelineDesc.rasterizerState = RHIRasterizerState::Default();
@@ -9379,7 +9707,7 @@ RHIGraphicsPipelineDesc PipelineCache::BuildBloomPipelineDesc(RHIFormat outputFo
 
     pipelineDesc.vertexShader = m_bloomVertexShader.Get();
     pipelineDesc.pixelShader = m_bloomPixelShader.Get();
-    pipelineDesc.pipelineLayout = m_postProcessPipelineLayout.Get();
+    pipelineDesc.pipelineLayout = m_exposurePostProcessPipelineLayout.Get();
     pipelineDesc.debugName = "BloomPipeline";
 
     pipelineDesc.rasterizerState = RHIRasterizerState::Default();

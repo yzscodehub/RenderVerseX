@@ -1,6 +1,7 @@
 #include "VulkanSwapChain.h"
 #include "VulkanDevice.h"
 #include "VulkanResources.h"
+#include "RHI/RHICommandContext.h"
 
 #include <GLFW/glfw3.h>
 
@@ -230,6 +231,7 @@ namespace RVX
             m_swapchain = VK_NULL_HANDLE;
         }
         m_hasAcquiredImage = false;
+        m_abortAcquireRetirementPending = false;
 
         return canRecreate;
     }
@@ -402,6 +404,36 @@ namespace RVX
         }
 
         m_hasAcquiredImage = false;
+        m_abortAcquireRetirementPending = false;
+    }
+
+    bool VulkanSwapChain::RecordAbortPresentationImageRetirement(
+        RHICommandContext& context) noexcept
+    {
+        if (!m_hasAcquiredImage ||
+            context.GetQueueType() != RHICommandQueueType::Graphics ||
+            m_currentImageIndex >= m_backBuffers.size() ||
+            !m_backBuffers[m_currentImageIndex])
+        {
+            return false;
+        }
+
+        // An abandoned frame does not preserve presentation contents. Vulkan
+        // permits UNDEFINED as the old layout for that discard transition,
+        // including after an image has previously been presented. The submit
+        // still waits for image acquisition before executing this barrier.
+        try
+        {
+            context.TextureBarrier(m_backBuffers[m_currentImageIndex].Get(),
+                                   RHIResourceState::Undefined,
+                                   RHIResourceState::Present);
+        }
+        catch (...)
+        {
+            return false;
+        }
+        m_abortAcquireRetirementPending = true;
+        return true;
     }
 
     uint32 VulkanSwapChain::GetCurrentBackBufferIndex() const
@@ -446,6 +478,7 @@ namespace RVX
 
         RVX_RHI_INFO("Vulkan SwapChain resized: {}x{}", m_width, m_height);
         m_hasAcquiredImage = false;
+        m_abortAcquireRetirementPending = false;
     }
 
     RHITexture* VulkanSwapChain::GetCurrentBackBuffer()

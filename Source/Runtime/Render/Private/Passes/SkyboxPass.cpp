@@ -80,6 +80,7 @@ namespace
         RGTextureHandle skyTextureHandle{};
         RGTextureHandle colorHandle{};
         RGTextureHandle depthHandle{};
+        RGBufferHandle exposureStateReadHandle{};
         RGTextureViewHandle skyTextureViewHandle{};
         RGTextureViewHandle colorViewHandle{};
         RGTextureViewHandle depthViewHandle{};
@@ -280,6 +281,11 @@ namespace
         {
             return false;
         }
+        if (!view.exposureState.IsValid() ||
+            builder.GetBufferDesc(view.exposureState) == nullptr)
+        {
+            return false;
+        }
         const RHITextureDesc* colorDesc =
             builder.GetTextureDesc(view.colorTarget);
         if (colorDesc == nullptr)
@@ -330,6 +336,15 @@ namespace
         }
         if (!data.skyTextureViewHandle.IsValid())
             return false;
+
+        data.exposureStateReadHandle = builder.Read(
+            view.exposureState,
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Pixel);
+        if (!data.exposureStateReadHandle.IsValid())
+        {
+            return false;
+        }
 
         data.colorHandle = view.colorTarget;
         RHITextureViewDesc colorViewDesc;
@@ -399,7 +414,7 @@ namespace
             !data.colorHandle.IsValid() || !data.pipeline ||
             !data.pipelineLayout || !data.setLayout || !data.constantBuffer ||
             !data.cubemapTexture || !data.skyTextureViewHandle.IsValid() ||
-            !data.sampler ||
+            !data.sampler || !data.exposureStateReadHandle.IsValid() ||
             data.colorHandle.graphIdentity != data.identity.graphIdentity ||
             data.colorHandle.recordingGeneration !=
                 data.identity.graphRecordingGeneration ||
@@ -441,6 +456,14 @@ namespace
                 "SkyboxPass could not realize a required graph texture view");
             return;
         }
+        RHIBuffer* const exposureState = context.GetBuffer(
+            data.exposureStateReadHandle);
+        if (exposureState == nullptr)
+        {
+            context.MarkExecutionFailed(
+                "SkyboxPass requires an exact committed exposure-state graph read");
+            return;
+        }
 
         RHIDescriptorSetDesc descriptorDesc;
         descriptorDesc.layout = data.setLayout.Get();
@@ -452,12 +475,16 @@ namespace
                                       sizeof(SkyboxGPUConstants)));
         descriptorDesc.BindTexture(1, skyView);
         descriptorDesc.BindSampler(2, data.sampler.Get());
+        descriptorDesc.BindBuffer(
+            PipelineCache::SkyboxExposureStateBinding, exposureState);
         RHIDescriptorSetRef descriptorSet =
             data.device->CreateDescriptorSet(descriptorDesc);
         if (!descriptorSet ||
             !descriptorSet->IsReadyForBinding(data.setLayout.Get()) ||
             !context.RetainSubmissionResource(
-                Ref<RefCounted>(descriptorSet)))
+                Ref<RefCounted>(descriptorSet)) ||
+            !context.RetainSubmissionResource(
+                Ref<RefCounted>(exposureState)))
         {
             context.MarkExecutionFailed(
                 "SkyboxPass descriptor creation or submission ownership failed");

@@ -198,6 +198,23 @@ namespace RVX
         /// Split-sum BRDF integration lookup sampled by DefaultLit.
         RGTextureHandle environmentBRDFLUTTexture;
 
+        /**
+         * Immutable, prior-presented pre-exposure state imported once for this
+         * graph recording. Every HDR producer must declare an exact SRV read
+         * of this handle and bind the same allocation; it is never replaced
+         * with a CPU-readback approximation or an implicit unit-exposure
+         * fallback.
+         */
+        RGBufferHandle exposureState;
+
+        /** Graph-independent ABI identity paired with exposureState. */
+        uint32 exposureStateSchemaVersion = 0;
+        uint32 exposureStateStride = 0;
+        RenderExposureMode exposureStateMode = RenderExposureMode::ManualEV100;
+        uint64 exposureStateConfigurationHash = 0;
+        /** Exact prior-presented state identity, never derived from a GPU pointer. */
+        uint64 exposureStateContentHash = 0;
+
         // =====================================================================
         // Environment / IBL-Approximate Ambient
         // =====================================================================

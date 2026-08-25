@@ -24,6 +24,29 @@ namespace RVX
         ReadWrite,
     };
 
+    constexpr bool IsRenderGraphQueueAffinityCompatible(
+        RenderGraphPassType passType,
+        RenderGraphQueueAffinity queueAffinity) noexcept
+    {
+        switch (passType)
+        {
+            case RenderGraphPassType::Graphics:
+            case RenderGraphPassType::RayTracing:
+                return queueAffinity == RenderGraphQueueAffinity::Default ||
+                       queueAffinity == RenderGraphQueueAffinity::Graphics;
+            case RenderGraphPassType::Compute:
+                return queueAffinity == RenderGraphQueueAffinity::Default ||
+                       queueAffinity == RenderGraphQueueAffinity::Graphics ||
+                       queueAffinity == RenderGraphQueueAffinity::Compute;
+            case RenderGraphPassType::Copy:
+                return queueAffinity == RenderGraphQueueAffinity::Default ||
+                       queueAffinity == RenderGraphQueueAffinity::Graphics ||
+                       queueAffinity == RenderGraphQueueAffinity::Copy;
+            default:
+                return false;
+        }
+    }
+
     // =============================================================================
     // Resource Lifetime - for memory aliasing
     // =============================================================================
@@ -219,6 +242,8 @@ namespace RVX
     {
         std::string name;
         RenderGraphPassType type = RenderGraphPassType::Graphics;
+        RenderGraphQueueAffinity queueAffinity =
+            RenderGraphQueueAffinity::Default;
         RenderGraph::DiagnosticExecutionQueue plannedExecutionQueue =
             RenderGraph::DiagnosticExecutionQueue::Graphics;
         std::vector<ResourceUsage> usages;

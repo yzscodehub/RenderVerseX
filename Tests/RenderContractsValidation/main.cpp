@@ -1,6 +1,7 @@
 #include "RenderContracts/FeatureRenderSnapshot.h"
 #include "RenderContracts/RenderFramePacketV5.h"
 #include "RenderContracts/RenderFrameValidation.h"
+#include "RenderContracts/RenderExposure.h"
 #include "RenderContracts/RenderFeatureChannelRegistry.h"
 #include "RenderContracts/RenderIdentity.h"
 #include "RenderContracts/RenderMaterial.h"
@@ -2447,6 +2448,270 @@ namespace
         EXPECT_EQ(GetSurfacePathEligibilityName(
                       static_cast<SurfacePathEligibility>(255)),
                   "Unknown");
+    }
+
+    TEST(RenderContractsValidation,
+         ExposureSettingsRejectInvalidModesRangesAndFrozenDelta)
+    {
+        RenderExposureSettings settings;
+        EXPECT_TRUE(IsValidRenderExposureSettings(settings));
+        EXPECT_TRUE(IsValidRenderExposureDeltaSeconds(0.0f));
+        EXPECT_TRUE(IsValidRenderExposureDeltaSeconds(1.0f));
+        EXPECT_FALSE(IsValidRenderExposureDeltaSeconds(-0.001f));
+        EXPECT_FALSE(IsValidRenderExposureDeltaSeconds(
+            std::numeric_limits<float32>::infinity()));
+        EXPECT_FALSE(IsValidRenderExposureDeltaSeconds(1.001f));
+
+        const std::array<RenderExposureSettings, 10> invalidSettings = []
+        {
+            std::array<RenderExposureSettings, 10> values{};
+            values[0].mode = static_cast<RenderExposureMode>(255);
+            values[1].manualEV100 =
+                std::numeric_limits<float32>::quiet_NaN();
+            values[2].exposureCompensationEV = 10.01f;
+            values[3].histogramLowPercentile = -0.001f;
+            values[4].histogramHighPercentile = 0.50f;
+            values[4].histogramLowPercentile = 0.50f;
+            values[5].histogramKeyValue = 0.0f;
+            values[6].minEV100 = 4.0f;
+            values[6].maxEV100 = 4.0f;
+            values[7].maxEV100 = 24.01f;
+            values[8].brighteningAdaptationSpeed = -0.001f;
+            values[9].darkeningAdaptationSpeed =
+                std::numeric_limits<float32>::infinity();
+            return values;
+        }();
+
+        for (const RenderExposureSettings& invalid : invalidSettings)
+            EXPECT_FALSE(IsValidRenderExposureSettings(invalid));
+
+        RenderFrameSettings frameSettings;
+        frameSettings.postProcess.exposureSettings = invalidSettings[0];
+        EXPECT_FALSE(IsValidRenderFrameSettings(frameSettings));
+    }
+
+    TEST(RenderContractsValidation,
+         ExposurePhysicalScaleAndHistogramEVUseOneCalibration)
+    {
+        EXPECT_TRUE(IsValidRenderExposureScale(
+            RVX_RENDER_EXPOSURE_MIN_SCALE));
+        EXPECT_TRUE(IsValidRenderExposureScale(
+            RVX_RENDER_EXPOSURE_MAX_SCALE));
+        EXPECT_FALSE(IsValidRenderExposureScale(std::nextafter(
+            RVX_RENDER_EXPOSURE_MIN_SCALE, 0.0f)));
+        EXPECT_FALSE(IsValidRenderExposureScale(std::nextafter(
+            RVX_RENDER_EXPOSURE_MAX_SCALE,
+            std::numeric_limits<float32>::infinity())));
+        EXPECT_FALSE(IsValidRenderExposureScale(
+            std::numeric_limits<float32>::infinity()));
+        EXPECT_TRUE(AreRenderExposureScalesEquivalent(
+            RVX_RENDER_EXPOSURE_MIN_SCALE,
+            RVX_RENDER_EXPOSURE_MIN_SCALE));
+        EXPECT_TRUE(AreRenderExposureScalesEquivalent(
+            RVX_RENDER_EXPOSURE_MAX_SCALE,
+            RVX_RENDER_EXPOSURE_MAX_SCALE));
+        EXPECT_TRUE(AreRenderExposureScalesEquivalent(
+            std::nextafter(RVX_RENDER_EXPOSURE_MIN_SCALE,
+                           RVX_RENDER_EXPOSURE_MAX_SCALE),
+            RVX_RENDER_EXPOSURE_MIN_SCALE));
+        EXPECT_FALSE(AreRenderExposureScalesEquivalent(
+            RVX_RENDER_EXPOSURE_MIN_SCALE * 2.0f,
+            RVX_RENDER_EXPOSURE_MIN_SCALE));
+        EXPECT_FALSE(AreRenderExposureScalesEquivalent(
+            std::numeric_limits<float32>::infinity(),
+            RVX_RENDER_EXPOSURE_MIN_SCALE));
+
+        float32 exposureScale = 0.0f;
+        EXPECT_TRUE(TryCalculateRenderExposureScale(0.0f, 0.0f,
+                                                     exposureScale));
+        EXPECT_FLOAT_EQ(exposureScale,
+                        1.0f / RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION);
+
+        EXPECT_TRUE(TryCalculateRenderExposureScale(2.0f, 1.0f,
+                                                     exposureScale));
+        EXPECT_FLOAT_EQ(exposureScale,
+                        0.5f / RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION);
+        EXPECT_TRUE(TryCalculateRenderExposureScale(
+            RVX_RENDER_EXPOSURE_MAX_EV100,
+            RVX_RENDER_EXPOSURE_MIN_COMPENSATION_EV,
+            exposureScale));
+        EXPECT_FLOAT_EQ(
+            exposureScale,
+            std::exp2(RVX_RENDER_EXPOSURE_MIN_COMPENSATION_EV -
+                      RVX_RENDER_EXPOSURE_MAX_EV100) /
+                RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION);
+        EXPECT_GE(exposureScale, RVX_RENDER_EXPOSURE_MIN_SCALE);
+        EXPECT_LE(exposureScale, RVX_RENDER_EXPOSURE_MAX_SCALE);
+        EXPECT_TRUE(TryCalculateRenderExposureScale(
+            RVX_RENDER_EXPOSURE_MIN_EV100,
+            RVX_RENDER_EXPOSURE_MAX_COMPENSATION_EV,
+            exposureScale));
+        EXPECT_GE(exposureScale, RVX_RENDER_EXPOSURE_MIN_SCALE);
+        EXPECT_LE(exposureScale, RVX_RENDER_EXPOSURE_MAX_SCALE);
+        EXPECT_FALSE(TryCalculateRenderExposureScale(
+            std::numeric_limits<float32>::quiet_NaN(), 0.0f, exposureScale));
+
+        const uint64 validConfigurationHash =
+            CalculateRenderExposureSettingsHash(RenderExposureSettings{});
+        EXPECT_FALSE(MakeRenderExposureState(
+                         RenderExposureMode::ManualEV100,
+                         0.0f,
+                         0.0f,
+                         std::numeric_limits<float32>::infinity(),
+                         1.0f,
+                         validConfigurationHash)
+                         .IsValid());
+        EXPECT_FALSE(MakeRenderExposureState(
+                         RenderExposureMode::ManualEV100,
+                         0.0f,
+                         0.0f,
+                         std::nextafter(
+                             RVX_RENDER_EXPOSURE_MAX_SCALE,
+                             std::numeric_limits<float32>::infinity()),
+                         1.0f,
+                         validConfigurationHash)
+                         .IsValid());
+
+        RenderExposureSettings manualSettings;
+        manualSettings.mode = RenderExposureMode::ManualEV100;
+        manualSettings.manualEV100 = -5.0f;
+        manualSettings.minEV100 = 0.0f;
+        manualSettings.maxEV100 = 10.0f;
+        ASSERT_TRUE(IsValidRenderExposureSettings(manualSettings));
+        const RenderExposureResolveResult manual = ResolveRenderExposureState(
+            manualSettings, 0.0f, 1.0f / 60.0f);
+        ASSERT_TRUE(manual.Succeeded());
+        EXPECT_FLOAT_EQ(manual.state.GetTargetEV100(), -5.0f);
+        EXPECT_FLOAT_EQ(manual.state.GetAdaptedEV100(), -5.0f);
+
+        RenderExposureSettings settings;
+        settings.mode = RenderExposureMode::HistogramAuto;
+        float32 ev100 = 0.0f;
+        EXPECT_TRUE(TryCalculateHistogramEV100(
+            settings,
+            settings.histogramKeyValue *
+                RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION,
+            ev100));
+        EXPECT_FLOAT_EQ(ev100, 0.0f);
+
+        EXPECT_TRUE(TryCalculateHistogramEV100(
+            settings,
+            settings.histogramKeyValue *
+                RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION * 4.0f,
+            ev100));
+        EXPECT_FLOAT_EQ(ev100, 2.0f);
+
+        float32 blackEV100 = 0.0f;
+        float32 floorEV100 = 0.0f;
+        EXPECT_TRUE(TryCalculateHistogramEV100(settings, 0.0f,
+                                                blackEV100));
+        EXPECT_TRUE(TryCalculateHistogramEV100(
+            settings, RVX_RENDER_EXPOSURE_MIN_METERED_LUMINANCE,
+            floorEV100));
+        EXPECT_FLOAT_EQ(blackEV100, floorEV100);
+
+        float32 belowFloorEV100 = 0.0f;
+        EXPECT_TRUE(TryCalculateHistogramEV100(
+            settings, RVX_RENDER_EXPOSURE_MIN_METERED_LUMINANCE * 0.5f,
+            belowFloorEV100));
+        EXPECT_FLOAT_EQ(belowFloorEV100, floorEV100);
+
+        EXPECT_TRUE(TryCalculateHistogramEV100(
+            settings, RVX_RENDER_EXPOSURE_MAX_METERED_LUMINANCE, ev100));
+        EXPECT_FALSE(TryCalculateHistogramEV100(
+            settings,
+            std::nextafter(RVX_RENDER_EXPOSURE_MAX_METERED_LUMINANCE,
+                           std::numeric_limits<float32>::infinity()),
+            ev100));
+
+        EXPECT_FALSE(TryCalculateHistogramEV100(
+            settings, -0.001f, ev100));
+        EXPECT_FALSE(TryCalculateHistogramEV100(
+            settings, std::numeric_limits<float32>::infinity(), ev100));
+    }
+
+    TEST(RenderContractsValidation,
+         ExposureAdaptationUsesIndependentBrighteningAndDarkeningRates)
+    {
+        RenderExposureSettings settings;
+        settings.mode = RenderExposureMode::HistogramAuto;
+        settings.brighteningAdaptationSpeed = 4.0f;
+        settings.darkeningAdaptationSpeed = 0.0f;
+
+        float32 brightenedEV100 = 0.0f;
+        EXPECT_TRUE(TryAdaptRenderExposureEV100(settings, 4.0f, 2.0f, 0.25f,
+                                                 brightenedEV100));
+        EXPECT_LT(brightenedEV100, 4.0f);
+        EXPECT_GT(brightenedEV100, 2.0f);
+
+        float32 darkenedEV100 = 0.0f;
+        EXPECT_TRUE(TryAdaptRenderExposureEV100(settings, 4.0f, 6.0f, 0.25f,
+                                                 darkenedEV100));
+        EXPECT_FLOAT_EQ(darkenedEV100, 4.0f);
+
+        settings.darkeningAdaptationSpeed = 4.0f;
+        EXPECT_TRUE(TryAdaptRenderExposureEV100(settings, 4.0f, 6.0f, 0.25f,
+                                                 darkenedEV100));
+        EXPECT_GT(darkenedEV100, 4.0f);
+        EXPECT_LT(darkenedEV100, 6.0f);
+
+        float32 repeatedEV100 = 0.0f;
+        EXPECT_TRUE(TryAdaptRenderExposureEV100(settings, 4.0f, 6.0f, 0.25f,
+                                                 repeatedEV100));
+        EXPECT_FLOAT_EQ(darkenedEV100, repeatedEV100);
+        EXPECT_FALSE(TryAdaptRenderExposureEV100(
+            settings, 4.0f, 6.0f,
+            std::numeric_limits<float32>::quiet_NaN(), repeatedEV100));
+    }
+
+    TEST(RenderContractsValidation,
+         ExposureStateIsImmutableAndResetsIncompatibleHistory)
+    {
+        RenderExposureSettings settings;
+        settings.mode = RenderExposureMode::HistogramAuto;
+        settings.brighteningAdaptationSpeed = 0.0f;
+        settings.darkeningAdaptationSpeed = 0.0f;
+        const float32 neutralLuminance =
+            settings.histogramKeyValue *
+            RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION;
+
+        const RenderExposureResolveResult first = ResolveRenderExposureState(
+            settings, neutralLuminance, 1.0f / 60.0f);
+        ASSERT_TRUE(first.Succeeded());
+        EXPECT_FALSE(first.UsedHistory());
+        EXPECT_TRUE(first.state.IsValid());
+        EXPECT_EQ(first.state.GetMode(), RenderExposureMode::HistogramAuto);
+        EXPECT_FLOAT_EQ(first.state.GetTargetEV100(), 0.0f);
+        EXPECT_FLOAT_EQ(first.state.GetAdaptedEV100(), 0.0f);
+        EXPECT_FLOAT_EQ(first.state.GetExposureScale(),
+                        1.0f / RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION);
+        EXPECT_FLOAT_EQ(first.state.GetPreExposure(), 1.0f);
+        EXPECT_NE(first.state.GetConfigurationHash(), 0U);
+
+        const RenderExposureResolveResult second = ResolveRenderExposureState(
+            settings, neutralLuminance * 4.0f, 1.0f / 60.0f, &first.state);
+        ASSERT_TRUE(second.Succeeded());
+        EXPECT_TRUE(second.UsedHistory());
+        EXPECT_FLOAT_EQ(second.state.GetTargetEV100(), 2.0f);
+        EXPECT_FLOAT_EQ(second.state.GetAdaptedEV100(), 0.0f);
+        EXPECT_FLOAT_EQ(second.state.GetPreExposure(),
+                        first.state.GetExposureScale());
+
+        RenderExposureSettings changedSettings = settings;
+        changedSettings.exposureCompensationEV = 1.0f;
+        const RenderExposureResolveResult changed = ResolveRenderExposureState(
+            changedSettings, neutralLuminance, 1.0f / 60.0f, &first.state);
+        ASSERT_TRUE(changed.Succeeded());
+        EXPECT_FALSE(changed.UsedHistory());
+        EXPECT_FLOAT_EQ(changed.state.GetPreExposure(), 1.0f);
+        EXPECT_NE(changed.state.GetConfigurationHash(),
+                  first.state.GetConfigurationHash());
+
+        const RenderExposureState invalidPrevious;
+        const RenderExposureResolveResult invalid = ResolveRenderExposureState(
+            settings, neutralLuminance, 1.0f / 60.0f, &invalidPrevious);
+        EXPECT_EQ(invalid.code, RenderExposureResolveCode::InvalidPreviousState);
+        EXPECT_FALSE(invalid.Succeeded());
     }
 
 } // namespace

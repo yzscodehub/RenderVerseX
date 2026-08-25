@@ -145,6 +145,7 @@ namespace RVX
             RGBufferHandle clusterConstantsReadHandle{};
             RGBufferHandle clusterDataReadHandle{};
             RGBufferHandle clusterLightIndicesReadHandle{};
+            RGBufferHandle exposureStateReadHandle{};
             RGBufferHandle currentPaletteReadHandle{};
             RGBufferHandle previousPaletteReadHandle{};
             RGTextureViewHandle colorViewHandle{};
@@ -308,6 +309,8 @@ namespace RVX
                     Ref<RefCounted>(bindings.environmentIBLBRDFLUTView.Get())) &&
                 context.RetainSubmissionResource(
                     Ref<RefCounted>(bindings.environmentIBLSampler.Get())) &&
+                context.RetainSubmissionResource(
+                    Ref<RefCounted>(bindings.exposureStateBuffer.Get())) &&
                 context.RetainSubmissionResource(
                     Ref<RefCounted>(bindings.frameSetLayout.Get())) &&
                 context.RetainSubmissionResource(
@@ -563,7 +566,9 @@ namespace RVX
                 builder.GetBufferDesc(lightingResources.clusterConstants) != nullptr &&
                 builder.GetBufferDesc(lightingResources.clusterData) != nullptr &&
                 builder.GetBufferDesc(
-                    lightingResources.clusterLightIndices) != nullptr;
+                    lightingResources.clusterLightIndices) != nullptr &&
+                view.exposureState.IsValid() &&
+                builder.GetBufferDesc(view.exposureState) != nullptr;
             if (!lightingGraphInputsReady)
             {
                 MarkTransparentPreflightFailure(
@@ -594,12 +599,17 @@ namespace RVX
                 lightingResources.clusterLightIndices,
                 RHIResourceState::ShaderResource,
                 RHIShaderStage::Pixel);
+            data.exposureStateReadHandle = builder.Read(
+                view.exposureState,
+                RHIResourceState::ShaderResource,
+                RHIShaderStage::Pixel);
             if (!data.lightConstantsReadHandle.IsValid() ||
                 !data.pointLightsReadHandle.IsValid() ||
                 !data.spotLightsReadHandle.IsValid() ||
                 !data.clusterConstantsReadHandle.IsValid() ||
                 !data.clusterDataReadHandle.IsValid() ||
-                !data.clusterLightIndicesReadHandle.IsValid())
+                !data.clusterLightIndicesReadHandle.IsValid() ||
+                !data.exposureStateReadHandle.IsValid())
             {
                 MarkTransparentPreflightFailure(
                     data, RenderPolicyReason::ResourcesUnavailable);
@@ -1073,6 +1083,14 @@ namespace RVX
                     "TransparentPass: graph light reads do not match frozen descriptor allocations");
                 return false;
             }
+            RHIBuffer* const exposureState = context.GetBuffer(
+                data.exposureStateReadHandle);
+            if (exposureState == nullptr)
+            {
+                RVX_CORE_WARN(
+                    "TransparentPass: Forward HDR rendering requires an exact committed exposure-state graph read");
+                return false;
+            }
 
             LightingBindingSnapshotRequest lightingRequest;
             lightingRequest.lightingPlanIdentity = lightingPlanIdentity;
@@ -1103,6 +1121,7 @@ namespace RVX
                 return false;
             }
             lightingRequest.environmentIBL = environmentIBLResources;
+            lightingRequest.exposureStateBuffer = RHIBufferRef(exposureState);
             LightingBindingSnapshot lightingBindings;
             if (!data.pipelineCache->CreateLightingBindingSnapshot(
                     drawView, lightingRequest, lightingBindings) ||

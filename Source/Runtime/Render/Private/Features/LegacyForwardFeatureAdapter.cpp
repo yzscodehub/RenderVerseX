@@ -29,6 +29,16 @@ namespace
         return SceneTextures::Metadata{
             extent, contract.format, contract.sampleCount};
     }
+
+    [[nodiscard]] SceneTextures::ExposureStateMetadata
+    MakeExposureStateMetadata(const ViewData& view) noexcept
+    {
+        return SceneTextures::ExposureStateMetadata{
+            view.exposureStateSchemaVersion,
+            view.exposureStateStride,
+            view.exposureStateMode,
+            view.exposureStateConfigurationHash};
+    }
 } // namespace
 
 LegacyForwardFeatureAdapter::LegacyForwardFeatureAdapter(
@@ -127,6 +137,13 @@ void LegacyForwardFeatureAdapter::AddPasses(
     {
         SetCompositionFailure(
             "Legacy forward record context does not match the target graph");
+        return;
+    }
+    if (!m_recordContext.view.exposureState.IsValid() ||
+        !MakeExposureStateMetadata(m_recordContext.view).IsValid())
+    {
+        SetCompositionFailure(
+            "ForwardStandard requires a valid committed exposure-state contract");
         return;
     }
 
@@ -235,6 +252,9 @@ void LegacyForwardFeatureAdapter::AddPasses(
     outputs.reactiveMask = m_recordContext.view.reactiveMaskTarget;
     outputs.reactiveMaskMetadata = MakeMetadata(
         m_preparedContext.outputExtent, SceneTextures::ReactiveMaskContract);
+    outputs.exposureState = m_recordContext.view.exposureState;
+    outputs.exposureStateMetadata = MakeExposureStateMetadata(
+        m_recordContext.view);
     outputs.colorDomain = PostProcessColorDomain::SceneLinearHDR;
     outputs.transfer = PostProcessTransfer::None;
     if (blackboard.Publish(BuiltinRenderFeatureIds::LegacyForwardMainChain,

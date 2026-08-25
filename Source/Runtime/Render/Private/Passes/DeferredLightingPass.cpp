@@ -136,6 +136,7 @@ namespace RVX
             RGTextureHandle deviceDepth{};
             RGTextureHandle hdrSceneColor{};
             RGBufferHandle materialTable{};
+            RGBufferHandle exposureState{};
             DeferredLightingFrameResources lighting{};
             RGTextureViewHandle gBuffer0View{};
             RGTextureViewHandle gBuffer1View{};
@@ -420,10 +421,18 @@ namespace RVX
         }
         if ((view.directionalShadowEnabled != 0) !=
                 inputs.lighting.directionalShadowEnabled ||
-            (view.textureIBLEnabled != 0) != inputs.lighting.textureIBLEnabled)
+            (view.textureIBLEnabled != 0) != inputs.lighting.textureIBLEnabled ||
+            !view.exposureState.IsValid() ||
+            inputs.exposureState.index != view.exposureState.index ||
+            inputs.exposureState.hasRange != view.exposureState.hasRange ||
+            inputs.exposureState.rangeOffset != view.exposureState.rangeOffset ||
+            inputs.exposureState.rangeSize != view.exposureState.rangeSize ||
+            inputs.exposureState.graphIdentity != view.exposureState.graphIdentity ||
+            inputs.exposureState.recordingGeneration !=
+                view.exposureState.recordingGeneration)
         {
             m_unsupportedReason =
-                "Deferred lighting frame-resource readiness disagrees with ViewData";
+                "Deferred lighting frame-resource or exposure-state readiness disagrees with ViewData";
             return false;
         }
 
@@ -460,6 +469,7 @@ namespace RVX
                 data.deviceDepth = inputs.deviceDepth;
                 data.hdrSceneColor = inputs.hdrSceneColor;
                 data.materialTable = inputs.materialTable;
+                data.exposureState = inputs.exposureState;
                 data.lighting = inputs.lighting;
                 data.execution = execution;
 
@@ -477,9 +487,12 @@ namespace RVX
                     builder.GetTextureDesc(data.hdrSceneColor);
                 const RHIBufferDesc* materialTableDesc =
                     builder.GetBufferDesc(data.materialTable);
+                const RHIBufferDesc* exposureStateDesc =
+                    builder.GetBufferDesc(data.exposureState);
                 if (gBuffer0Desc == nullptr || gBuffer1Desc == nullptr ||
                     gBuffer2Desc == nullptr || gBuffer3Desc == nullptr ||
                     depthDesc == nullptr || hdrDesc == nullptr ||
+                    exposureStateDesc == nullptr ||
                     gBuffer0Desc->format != RHIFormat::RGBA8_UNORM_SRGB ||
                     gBuffer1Desc->format != RHIFormat::RGBA8_UNORM ||
                     gBuffer2Desc->format != RHIFormat::RGBA16_FLOAT ||
@@ -545,6 +558,11 @@ namespace RVX
                     MakeRGAccessDesc(
                         RHIResourceState::ShaderResource,
                         RHIShaderStage::Compute));
+                data.exposureState = builder.Read(
+                    data.exposureState,
+                    MakeRGAccessDesc(
+                        RHIResourceState::ShaderResource,
+                        RHIShaderStage::Compute));
                 if (data.lighting.directionalShadowEnabled)
                 {
                     data.directionalShadowView = DeclareComputeSRV(
@@ -581,6 +599,7 @@ namespace RVX
                     data.gBuffer3View.IsValid() && data.deviceDepthView.IsValid() &&
                     data.hdrSceneColorView.IsValid() &&
                     data.materialTable.IsValid() &&
+                    data.exposureState.IsValid() &&
                     data.lighting.lightConstants.IsValid() &&
                     data.lighting.pointLights.IsValid() &&
                     data.lighting.spotLights.IsValid() &&
@@ -609,6 +628,7 @@ namespace RVX
                     data.gBuffer3View.IsValid() && data.deviceDepthView.IsValid() &&
                     data.hdrSceneColorView.IsValid() &&
                     data.materialTable.IsValid() &&
+                    data.exposureState.IsValid() &&
                     data.lighting.lightConstants.IsValid() &&
                     data.lighting.pointLights.IsValid() &&
                     data.lighting.spotLights.IsValid() &&
@@ -636,6 +656,7 @@ namespace RVX
                 RHITexture* depth = context.GetTexture(data.deviceDepth);
                 RHITexture* hdrSceneColor = context.GetTexture(data.hdrSceneColor);
                 RHIBuffer* materialTable = context.GetBuffer(data.materialTable);
+                RHIBuffer* exposureState = context.GetBuffer(data.exposureState);
                 RHIBuffer* lightConstants =
                     context.GetBuffer(data.lighting.lightConstants);
                 RHIBuffer* pointLights = context.GetBuffer(data.lighting.pointLights);
@@ -648,6 +669,7 @@ namespace RVX
                 if (gBuffer0 == nullptr || gBuffer1 == nullptr ||
                     gBuffer2 == nullptr || gBuffer3 == nullptr ||
                     depth == nullptr || hdrSceneColor == nullptr ||
+                    exposureState == nullptr ||
                     lightConstants == nullptr || pointLights == nullptr ||
                     spotLights == nullptr || clusterConstants == nullptr ||
                     clusterData == nullptr || clusterLightIndices == nullptr)
@@ -782,6 +804,7 @@ namespace RVX
                 snapshotRequest.environmentIBL.prefilteredEnvironmentView =
                     prefilteredEnvironmentView;
                 snapshotRequest.environmentIBL.brdfLUTView = brdfLUTView;
+                snapshotRequest.exposureStateBuffer = RHIBufferRef(exposureState);
 
                 LightingBindingSnapshot lightingSnapshot;
                 if (data.execution.view.rayTracedShadowEnabled != 0 ||
@@ -858,6 +881,9 @@ namespace RVX
                 descriptorSetDesc.BindBuffer(
                     20, lightingSnapshot.viewConstantBuffer.Get(), 0,
                     lightingSnapshot.viewConstantBuffer->GetSize());
+                descriptorSetDesc.BindBuffer(
+                    PipelineCache::DeferredLightingExposureStateBinding,
+                    exposureState);
 
                 RHIDescriptorSetRef descriptorSet =
                     data.execution.device->CreateDescriptorSet(descriptorSetDesc);
@@ -905,7 +931,11 @@ namespace RVX
                     !context.RetainSubmissionResource(
                         Ref<RefCounted>(lightingSnapshot.environmentIBLBRDFLUTView)) ||
                     !context.RetainSubmissionResource(
-                        Ref<RefCounted>(lightingSnapshot.environmentIBLSampler)))
+                        Ref<RefCounted>(lightingSnapshot.environmentIBLSampler)) ||
+                    !context.RetainSubmissionResource(
+                        Ref<RefCounted>(lightingSnapshot.exposureStateBuffer)) ||
+                    !context.RetainSubmissionResource(
+                        Ref<RefCounted>(exposureState)))
                 {
                     data.executionDiagnostic =
                         "Deferred lighting submission ownership rejected record-local resources";

@@ -5,6 +5,7 @@
 
 #include "RayTracingResourceBindings.hlsli"
 #include "RayTracingSceneMetadata.hlsli"
+#include "../Include/Exposure.hlsli"
 
 RaytracingAccelerationStructure gScene : register(RVX_RT_REFLECTION_TLAS_REGISTER, space0);
 RWTexture2D<float4> gReflectionOutput : register(RVX_RT_REFLECTION_OUTPUT_REGISTER, space0);
@@ -27,6 +28,7 @@ ByteAddressBuffer gReflectionUVBuffers[RT_MAX_GEOMETRY_BUFFERS] : register(RVX_R
 ByteAddressBuffer gReflectionNormalBuffers[RT_MAX_GEOMETRY_BUFFERS] : register(RVX_RT_REFLECTION_NORMAL_BUFFERS_REGISTER, space0);
 ByteAddressBuffer gReflectionTangentBuffers[RT_MAX_GEOMETRY_BUFFERS] : register(RVX_RT_REFLECTION_TANGENT_BUFFERS_REGISTER, space0);
 Texture2D<float2> gSceneVelocity : register(RVX_RT_REFLECTION_SCENE_VELOCITY_REGISTER, space0);
+StructuredBuffer<RVXExposureState> gExposureState : register(RVX_RT_REFLECTION_EXPOSURE_STATE_REGISTER, space0);
 
 cbuffer RayTracedReflectionConstants : register(RVX_RT_REFLECTION_CONSTANTS_REGISTER, space0)
 {
@@ -142,6 +144,33 @@ bool TryReconstructWorldNormal(uint2 scenePixel, float3 centerWorld, out float3 
 float3 ResolveReflectionFallback(uint2 scenePixel)
 {
     return gSceneColor.Load(int3(scenePixel, 0)).rgb;
+}
+
+bool TryGetReflectionPreExposureScales(const RVXExposureState exposureState,
+                                       out float currentProducerPreExposure,
+                                       out float historyPreExposureRatio)
+{
+    currentProducerPreExposure = 0.0f;
+    historyPreExposureRatio = 0.0f;
+    if (!RVXExposureStateIsValid(exposureState))
+    {
+        return false;
+    }
+
+    const float previousProducerPreExposure =
+        RVXExposurePreExposure(exposureState);
+    currentProducerPreExposure = RVXExposureProducerScale(exposureState);
+    if (!isfinite(currentProducerPreExposure) ||
+        !isfinite(previousProducerPreExposure) ||
+        currentProducerPreExposure <= 0.0f ||
+        previousProducerPreExposure <= 0.0f)
+    {
+        return false;
+    }
+
+    historyPreExposureRatio =
+        currentProducerPreExposure / previousProducerPreExposure;
+    return isfinite(historyPreExposureRatio) && historyPreExposureRatio > 0.0f;
 }
 
 bool HasMaterialTexture(uint flags, uint textureFlag, uint textureTableIndex)
@@ -751,6 +780,7 @@ bool TryResolvePreviousReflectionHistoryPixel(float3 worldPosition,
 bool TryLoadReprojectedReflection(float3 worldPosition,
                                   float3 currentNormal,
                                   uint2 scenePixel,
+                                  float historyPreExposureRatio,
                                   out float4 previousReflection)
 {
     previousReflection = float4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -786,9 +816,10 @@ bool TryLoadReprojectedReflection(float3 worldPosition,
     }
 
     previousReflection = gPreviousReflectionHistory.Load(int3(previousPixel, 0));
-    previousReflection.rgb = max(previousReflection.rgb, 0.0f);
+    previousReflection.rgb = max(previousReflection.rgb, 0.0f) *
+        historyPreExposureRatio;
     previousReflection.a = saturate(previousReflection.a);
-    return true;
+    return all(isfinite(previousReflection.rgb));
 }
 
 [shader("raygeneration")]
@@ -796,6 +827,22 @@ void ReflectionRayGen()
 {
     const uint3 dispatchIndex = DispatchRaysIndex();
     const uint2 pixel = dispatchIndex.xy;
+    const RVXExposureState exposureState = gExposureState[0];
+    float currentProducerPreExposure;
+    float historyPreExposureRatio;
+    if (!TryGetReflectionPreExposureScales(
+            exposureState,
+            currentProducerPreExposure,
+            historyPreExposureRatio))
+    {
+        // A reflection in an unknown HDR domain cannot be composited safely.
+        // Do not leak stale history or a unit-exposure approximation.
+        gCurrentDepthHistory[pixel] = 1.0f;
+        gCurrentNormalHistory[pixel] = EncodeNormalHistory(0.0f, false);
+        gReflectionOutput[pixel] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        return;
+    }
+
     const uint2 scenePixel = MapOutputPixelToScenePixel(pixel);
     const float depth = gSceneDepth.Load(int3(scenePixel, 0)).r;
     gCurrentDepthHistory[pixel] = depth;
@@ -864,12 +911,17 @@ void ReflectionRayGen()
     const float intensity = saturate(gReflectionOptions.x);
     const float invSampleCount = rcp((float)sampleCount);
     float4 reflection = float4(
-        accumulatedColor * invSampleCount,
+        accumulatedColor * invSampleCount * currentProducerPreExposure,
         saturate(accumulatedConfidence * invSampleCount) * intensity);
     if (gHistoryParams.x > 0.5f)
     {
         float4 previousReflection;
-        if (TryLoadReprojectedReflection(worldPosition, worldNormal, scenePixel, previousReflection))
+        if (TryLoadReprojectedReflection(
+                worldPosition,
+                worldNormal,
+                scenePixel,
+                historyPreExposureRatio,
+                previousReflection))
         {
             const float velocityHistoryWeight = ComputeVelocityHistoryWeight(scenePixel);
             const float historyWeight =

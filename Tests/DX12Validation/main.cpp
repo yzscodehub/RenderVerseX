@@ -16,8 +16,10 @@
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Material/MaterialGPUData.h"
 #include "Render/PipelineCache.h"
+#include "Render/PostProcess/Exposure.h"
 #include "Render/RayTracing/RayTracingResourceBindings.h"
 #include "Render/Submission/RasterInstanceStream.h"
+#include "RenderContracts/RenderExposure.h"
 #include "Resources/RenderRetirementQueue.h"
 #include "Resources/RenderSubmissionResourceBatch.h"
 #include "Resources/RenderSubmissionTracker.h"
@@ -231,6 +233,20 @@ namespace
 
     static_assert(sizeof(RayTracingTestMaterialMetadata) == 208,
                   "RayTracingTestMaterialMetadata must match RayTracedShadow.hlsl material metadata layout");
+
+    struct alignas(16) NativeSurfaceExposureState
+    {
+        float32 exposureValues[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+        uint32 targetAndNonce[4] = {0u, 0u, 0u, 0u};
+        uint32 stateMeta[4] = {
+            0u,
+            0u,
+            static_cast<uint32>(RenderExposureMode::ManualEV100),
+            1u};
+    };
+
+    static_assert(sizeof(NativeSurfaceExposureState) == RVX_EXPOSURE_STATE_STRIDE,
+                  "Native exposure state must match Exposure.hlsli");
 
     RHIBufferRef CreateUploadBufferWithData(IRHIDevice& device,
                                             uint64 bufferSize,
@@ -1320,6 +1336,9 @@ namespace
         frameLayoutDesc.AddBinding(11, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
         frameLayoutDesc.AddBinding(12, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
         frameLayoutDesc.AddBinding(13, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(PipelineCache::DefaultLitExposureStateBinding,
+                                   RHIBindingType::ShaderResourceBuffer,
+                                   RHIShaderStage::Pixel);
         RHIDescriptorSetLayoutRef frameLayout = device->CreateDescriptorSetLayout(frameLayoutDesc);
         RHIDescriptorSetLayoutDesc emptyLayoutDesc;
         emptyLayoutDesc.debugName = "NativeSurfaceAlphaEmptySet";
@@ -1469,6 +1488,12 @@ namespace
             RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource,
             16u, zeroedStructuredElements.data(), zeroedStructuredElements.size(),
             "NativeSurfaceAlphaDummyStructuredBuffer");
+        const NativeSurfaceExposureState exposureState{};
+        RHIBufferRef exposureStateBuffer = CreateUploadBufferWithData(
+            *device, sizeof(exposureState),
+            RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource,
+            sizeof(exposureState), &exposureState, sizeof(exposureState),
+            "NativeSurfaceAlphaExposureState");
 
         RHIDescriptorSetDesc frameSetDesc;
         frameSetDesc.layout = frameLayout.Get();
@@ -1487,6 +1512,8 @@ namespace
         frameSetDesc.BindTexture(11, environmentCubeView.Get());
         frameSetDesc.BindTexture(12, sourceTextureView.Get());
         frameSetDesc.BindSampler(13, sampler.Get());
+        frameSetDesc.BindBuffer(PipelineCache::DefaultLitExposureStateBinding,
+                                exposureStateBuffer.Get());
         RHIDescriptorSetRef frameSet = device->CreateDescriptorSet(frameSetDesc);
 
         RHIDescriptorSetDesc materialSetDesc;
@@ -1544,7 +1571,8 @@ namespace
         if (!vertexBuffer || !materialBuffer || !textureUpload || !sourceTexture ||
             !sourceTextureView || !environmentCube || !environmentCubeView || !sampler ||
             !frameConstantsBuffer ||
-            !dummyStructuredBuffer || !frameSet || !materialSet || !readbackBuffer ||
+            !dummyStructuredBuffer || !exposureStateBuffer || !frameSet ||
+            !materialSet || !readbackBuffer ||
             (isDepthOnly && (!depthTarget || !depthTargetView)) ||
             (!isDepthOnly && (!renderTarget || !renderTargetView)))
         {
@@ -4426,7 +4454,7 @@ TEST(DX12Validation, RayTracedShadowPipelineCacheResources)
 
     const RHIDescriptorSetLayout* reflectionSetLayout = cache.GetRayTracedReflectionSetLayout();
     ASSERT_NE(reflectionSetLayout, nullptr);
-    ASSERT_EQ(reflectionSetLayout->GetEntries().size(), 18u);
+    ASSERT_EQ(reflectionSetLayout->GetEntries().size(), 19u);
     const RHIBindingLayoutEntry* reflectionTlasBinding = FindLayoutEntry(reflectionSetLayout, RTReflectionBindings::RVX_RT_REFLECTION_TLAS_BINDING);
     const RHIBindingLayoutEntry* reflectionOutputBinding = FindLayoutEntry(reflectionSetLayout, RTReflectionBindings::RVX_RT_REFLECTION_OUTPUT_BINDING);
     const RHIBindingLayoutEntry* reflectionSceneColorBinding = FindLayoutEntry(reflectionSetLayout, RTReflectionBindings::RVX_RT_REFLECTION_SCENE_COLOR_BINDING);
@@ -4445,6 +4473,7 @@ TEST(DX12Validation, RayTracedShadowPipelineCacheResources)
     const RHIBindingLayoutEntry* reflectionNormalBuffersBinding = FindLayoutEntry(reflectionSetLayout, RTReflectionBindings::RVX_RT_REFLECTION_NORMAL_BUFFERS_BINDING);
     const RHIBindingLayoutEntry* reflectionTangentBuffersBinding = FindLayoutEntry(reflectionSetLayout, RTReflectionBindings::RVX_RT_REFLECTION_TANGENT_BUFFERS_BINDING);
     const RHIBindingLayoutEntry* reflectionVelocityBinding = FindLayoutEntry(reflectionSetLayout, RTReflectionBindings::RVX_RT_REFLECTION_SCENE_VELOCITY_BINDING);
+    const RHIBindingLayoutEntry* reflectionExposureStateBinding = FindLayoutEntry(reflectionSetLayout, RTReflectionBindings::RVX_RT_REFLECTION_EXPOSURE_STATE_BINDING);
     ASSERT_NE(reflectionTlasBinding, nullptr);
     ASSERT_NE(reflectionOutputBinding, nullptr);
     ASSERT_NE(reflectionSceneColorBinding, nullptr);
@@ -4463,6 +4492,7 @@ TEST(DX12Validation, RayTracedShadowPipelineCacheResources)
     ASSERT_NE(reflectionNormalBuffersBinding, nullptr);
     ASSERT_NE(reflectionTangentBuffersBinding, nullptr);
     ASSERT_NE(reflectionVelocityBinding, nullptr);
+    ASSERT_NE(reflectionExposureStateBinding, nullptr);
     EXPECT_EQ(reflectionTlasBinding->type, RHIBindingType::AccelerationStructure);
     EXPECT_EQ(reflectionOutputBinding->type, RHIBindingType::StorageTexture);
     EXPECT_EQ(reflectionSceneColorBinding->type, RHIBindingType::SampledTexture);
@@ -4486,6 +4516,8 @@ TEST(DX12Validation, RayTracedShadowPipelineCacheResources)
     EXPECT_EQ(reflectionTangentBuffersBinding->type, RHIBindingType::ShaderResourceBuffer);
     EXPECT_EQ(reflectionTangentBuffersBinding->count, RTReflectionBindings::RVX_RT_REFLECTION_MAX_GEOMETRY_BUFFERS);
     EXPECT_EQ(reflectionVelocityBinding->type, RHIBindingType::SampledTexture);
+    EXPECT_EQ(reflectionExposureStateBinding->type, RHIBindingType::ShaderResourceBuffer);
+    EXPECT_EQ(reflectionExposureStateBinding->visibility, RHIShaderStage::AllRayTracing);
 
     const RHIDescriptorSetLayout* reflectionDenoiseSetLayout = cache.GetRayTracedReflectionDenoiseSetLayout();
     ASSERT_NE(reflectionDenoiseSetLayout, nullptr);
@@ -5803,6 +5835,12 @@ TEST(DX12Validation, RayTracedReflectionProductionShaderTracesTriangleAndWritesM
     constexpr float kExpectedR = kBaseColorR * 0.96f + kExpectedSpecular;
     constexpr float kExpectedG = kBaseColorG * 0.96f + kExpectedSpecular;
     constexpr float kExpectedB = kBaseColorB * 0.96f + kExpectedSpecular;
+    constexpr float kCurrentProducerPreExposure =
+        0.5f / RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION;
+    constexpr float kPreviousProducerPreExposure =
+        0.25f / RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION;
+    constexpr float kPreviousHistoryPreExposure =
+        0.125f / RVX_RENDER_EXPOSURE_PHYSICAL_CALIBRATION;
 
     struct RayTracedReflectionTestConstants
     {
@@ -5819,6 +5857,23 @@ TEST(DX12Validation, RayTracedReflectionProductionShaderTracesTriangleAndWritesM
     };
     static_assert(sizeof(RayTracedReflectionTestConstants) == 256,
                   "RayTracedReflectionTestConstants must match RayTracedReflection.hlsl cbuffer layout");
+
+    struct RayTracedReflectionExposureState
+    {
+        float32 exposureValues[4] = {
+            kCurrentProducerPreExposure,
+            kPreviousProducerPreExposure,
+            kPreviousHistoryPreExposure,
+            1.0f};
+        uint32 targetAndNonce[4] = {0u, 0u, 0u, 0u};
+        uint32 stateMeta[4] = {
+            0x6137a51fu,
+            0x9c4e28d3u,
+            static_cast<uint32>(RenderExposureMode::ManualEV100),
+            1u};
+    };
+    static_assert(sizeof(RayTracedReflectionExposureState) ==
+                  RVX_EXPOSURE_STATE_STRIDE);
 
     const std::filesystem::path shaderDir = FindRenderShaderDirectory();
     ASSERT_FALSE(shaderDir.empty()) << "Source/Runtime/Render/Shaders directory not found";
@@ -5846,6 +5901,17 @@ TEST(DX12Validation, RayTracedReflectionProductionShaderTracesTriangleAndWritesM
         sizeof(constants),
         "ProductionReflectionConstants");
     ASSERT_NE(constantBuffer.Get(), nullptr);
+
+    RayTracedReflectionExposureState exposureState;
+    RHIBufferRef exposureStateBuffer = CreateUploadBufferWithData(
+        *device,
+        sizeof(exposureState),
+        RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource,
+        sizeof(exposureState),
+        &exposureState,
+        sizeof(exposureState),
+        "ProductionReflectionExposureState");
+    ASSERT_NE(exposureStateBuffer.Get(), nullptr);
 
     RayTracingTestMaterialMetadata materialMetadata;
     materialMetadata.baseColorFactor = Vec4(kBaseColorR, kBaseColorG, kBaseColorB, 1.0f);
@@ -6278,7 +6344,11 @@ TEST(DX12Validation, RayTracedReflectionProductionShaderTracesTriangleAndWritesM
     }
 
     float velocity[kSceneWidth * kSceneHeight * 2u] = {};
-    const float previousReflection[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    const float previousReflection[4] = {
+        kExpectedR * kPreviousProducerPreExposure * 2.0f,
+        kExpectedG * kPreviousProducerPreExposure * 2.0f,
+        kExpectedB * kPreviousProducerPreExposure * 2.0f,
+        1.0f};
     const float previousDepth = 0.5f;
     const float previousNormal[4] = {0.5f, 0.5f, 1.0f, 1.0f};
     const float fallbackTexel[4] = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -6406,6 +6476,9 @@ TEST(DX12Validation, RayTracedReflectionProductionShaderTracesTriangleAndWritesM
     descriptorDesc.BindTexture(RTReflectionBindings::RVX_RT_REFLECTION_SCENE_DEPTH_BINDING, sceneDepthSRV.Get());
     descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_CONSTANTS_BINDING, constantBuffer.Get(), 0, sizeof(constants));
     descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_MATERIAL_METADATA_BINDING, materialMetadataBuffer.Get());
+    descriptorDesc.BindBuffer(
+        RTReflectionBindings::RVX_RT_REFLECTION_EXPOSURE_STATE_BINDING,
+        exposureStateBuffer.Get());
     auto resolveMaterialTextureView = [&](uint32 textureIndex) -> RHITextureView*
     {
         switch (textureIndex)
@@ -6666,9 +6739,15 @@ TEST(DX12Validation, RayTracedReflectionProductionShaderTracesTriangleAndWritesM
     float observedHit[4] = {};
     ASSERT_TRUE(writeMaterialMetadata(1.0f, false, "alpha-pass"));
     ASSERT_TRUE(dispatchAndReadReflection("alpha-pass", observedHit));
-    EXPECT_NEAR(observedHit[0], kExpectedR, 2.0e-3f);
-    EXPECT_NEAR(observedHit[1], kExpectedG, 2.0e-3f);
-    EXPECT_NEAR(observedHit[2], kExpectedB, 2.0e-3f);
+    EXPECT_NEAR(observedHit[0],
+                kExpectedR * kCurrentProducerPreExposure,
+                2.0e-3f);
+    EXPECT_NEAR(observedHit[1],
+                kExpectedG * kCurrentProducerPreExposure,
+                2.0e-3f);
+    EXPECT_NEAR(observedHit[2],
+                kExpectedB * kCurrentProducerPreExposure,
+                2.0e-3f);
     EXPECT_NEAR(observedHit[3], 1.0f, 1.0e-4f);
 
     float observedCutout[4] = {};
@@ -6705,9 +6784,15 @@ TEST(DX12Validation, RayTracedReflectionProductionShaderTracesTriangleAndWritesM
         Vec4(0.2f, 0.1f, 0.05f, 2.0f),
         "pbr-textures"));
     ASSERT_TRUE(dispatchAndReadReflection("pbr-textures", observedPBRTextures));
-    EXPECT_NEAR(observedPBRTextures[0], 0.4352f, 2.0e-3f);
-    EXPECT_NEAR(observedPBRTextures[1], 0.1217f, 2.0e-3f);
-    EXPECT_NEAR(observedPBRTextures[2], 0.112075f, 2.0e-3f);
+    EXPECT_NEAR(observedPBRTextures[0],
+                0.4352f * kCurrentProducerPreExposure,
+                2.0e-3f);
+    EXPECT_NEAR(observedPBRTextures[1],
+                0.1217f * kCurrentProducerPreExposure,
+                2.0e-3f);
+    EXPECT_NEAR(observedPBRTextures[2],
+                0.112075f * kCurrentProducerPreExposure,
+                2.0e-3f);
     EXPECT_NEAR(observedPBRTextures[3], 1.0f, 1.0e-4f);
 
     float observedNormalMap[4] = {};
@@ -6725,10 +6810,68 @@ TEST(DX12Validation, RayTracedReflectionProductionShaderTracesTriangleAndWritesM
         Vec4(0.0f, 0.0f, 0.0f, 1.0f),
         "normal-map"));
     ASSERT_TRUE(dispatchAndReadReflection("normal-map", observedNormalMap));
-    EXPECT_NEAR(observedNormalMap[0], 0.916235f, 3.0e-3f);
-    EXPECT_NEAR(observedNormalMap[1], 0.898399f, 3.0e-3f);
-    EXPECT_NEAR(observedNormalMap[2], 0.889481f, 3.0e-3f);
+    EXPECT_NEAR(observedNormalMap[0],
+                0.916235f * kCurrentProducerPreExposure,
+                3.0e-3f);
+    EXPECT_NEAR(observedNormalMap[1],
+                0.898399f * kCurrentProducerPreExposure,
+                3.0e-3f);
+    EXPECT_NEAR(observedNormalMap[2],
+                0.889481f * kCurrentProducerPreExposure,
+                3.0e-3f);
     EXPECT_NEAR(observedNormalMap[3], 1.0f, 1.0e-4f);
+
+    // Exercise the production shader's temporal exposure-domain conversion.
+    // The stored history is authored at y and contains twice the physical hit
+    // response.  Multiplying it by x/y therefore produces twice the current
+    // pre-exposed response, and a fixed 0.85 history weight yields 1.85x.
+    ASSERT_TRUE(writeGeometryMetadata(false, false, "pre-exposure-history"));
+    ASSERT_TRUE(writeMaterialMetadata(1.0f, false, "pre-exposure-history"));
+    constants.historyParams.x = 1.0f;
+    constants.historyClampParams.x = 0.0f;
+    void* mappedConstants = constantBuffer->Map();
+    ASSERT_NE(mappedConstants, nullptr);
+    std::memcpy(mappedConstants, &constants, sizeof(constants));
+    constantBuffer->Unmap();
+
+    float observedPreExposureHistory[4] = {};
+    ASSERT_TRUE(dispatchAndReadReflection(
+        "pre-exposure-history", observedPreExposureHistory));
+    constexpr float kHistoryBlendScale = 1.85f;
+    EXPECT_NEAR(observedPreExposureHistory[0],
+                kExpectedR * kCurrentProducerPreExposure *
+                    kHistoryBlendScale,
+                3.0e-3f);
+    EXPECT_NEAR(observedPreExposureHistory[1],
+                kExpectedG * kCurrentProducerPreExposure *
+                    kHistoryBlendScale,
+                3.0e-3f);
+    EXPECT_NEAR(observedPreExposureHistory[2],
+                kExpectedB * kCurrentProducerPreExposure *
+                    kHistoryBlendScale,
+                3.0e-3f);
+    EXPECT_NEAR(observedPreExposureHistory[3], 1.0f, 1.0e-4f);
+
+    // A finite but shader-ABI-out-of-range exposure must not silently fall
+    // back to unit exposure or reuse the valid history above.
+    RayTracedReflectionExposureState invalidExposureState = exposureState;
+    invalidExposureState.exposureValues[0] = std::nextafter(
+        RVX_RENDER_EXPOSURE_MAX_SCALE,
+        std::numeric_limits<float32>::infinity());
+    void* mappedExposureState = exposureStateBuffer->Map();
+    ASSERT_NE(mappedExposureState, nullptr);
+    std::memcpy(mappedExposureState,
+                &invalidExposureState,
+                sizeof(invalidExposureState));
+    exposureStateBuffer->Unmap();
+
+    float observedInvalidExposure[4] = {};
+    ASSERT_TRUE(dispatchAndReadReflection(
+        "invalid-pre-exposure", observedInvalidExposure));
+    EXPECT_NEAR(observedInvalidExposure[0], 0.0f, 1.0e-4f);
+    EXPECT_NEAR(observedInvalidExposure[1], 0.0f, 1.0e-4f);
+    EXPECT_NEAR(observedInvalidExposure[2], 0.0f, 1.0e-4f);
+    EXPECT_NEAR(observedInvalidExposure[3], 0.0f, 1.0e-4f);
 
     device->WaitIdle();
     cache.Shutdown();

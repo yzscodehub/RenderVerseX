@@ -844,6 +844,9 @@ namespace RVX
         bool reflectionMaterialTextureTableAvailable = false;
         bool reflectionGeometryMetadataAvailable = false;
         bool reflectionGeometryTableAvailable = false;
+        bool reflectionExposureStateAvailable = false;
+        bool reflectionExposureStateReadDeclared = false;
+        bool reflectionExposureStateDescriptorBound = false;
         bool shadowHistoryAvailable = false;
         bool shadowDepthHistoryAvailable = false;
         bool shadowNormalHistoryAvailable = false;
@@ -907,6 +910,7 @@ namespace RVX
         uint64 reflectionGpuTimingStartTimestamp = 0;
         uint64 reflectionGpuTimingEndTimestamp = 0;
         uint64 reflectionGpuTimingElapsedTicks = 0;
+        uint64 reflectionExposureStateContentHash = 0;
         float shadowGpuTimingElapsedMs = 0.0f;
         float reflectionGpuTimingElapsedMs = 0.0f;
         float totalMeasuredRayTracingGpuMs = 0.0f;
@@ -1068,6 +1072,9 @@ namespace RVX
         /** @brief Arm one post-fence Direct Opaque physical readback. */
         [[nodiscard]] bool ArmDirectOpaqueRasterReadbackQualificationCapture();
 
+        /** @brief Arm one explicit post-fence physical-exposure state probe. */
+        [[nodiscard]] bool ArmExposureQualificationProbe();
+
         /** @brief Poll accepted qualification fences without requiring a new frame. */
         void PollGPUSceneCullingQualificationCompletion(
             const RenderSubmissionTracker& tracker);
@@ -1077,6 +1084,9 @@ namespace RVX
             const noexcept;
 
         [[nodiscard]] bool HasPendingDirectOpaqueRasterReadbackQualificationCompletion()
+            const noexcept;
+
+        [[nodiscard]] bool HasPendingExposureQualificationCompletion()
             const noexcept;
 
         /** @brief Release current recording ownership when no GPU work was submitted. */
@@ -1794,6 +1804,13 @@ namespace RVX
         /** Last presentation-qualified raster temporal state. */
         std::optional<PendingTemporalPresentationState>
             m_presentedTemporalPresentationState;
+        /** Exact submitted/presented source retained until exposure probe completion. */
+        std::shared_ptr<GPUCompletionToken> m_exposureProbeCompletion;
+        std::optional<RenderViewHistoryIdentity> m_exposureProbeHistoryIdentity;
+        /** Immutable presented source receipt retained across later frames. */
+        std::optional<RenderExecutionReceipt>
+            m_exposureProbeSourceExecutionReceipt;
+        bool m_exposureProbePresented = false;
         /** @brief One immutable feature snapshot shared by every view in the frame. */
         std::shared_ptr<const RenderFeatureSnapshot> m_featureSnapshot =
             std::make_shared<const RenderFeatureSnapshot>();

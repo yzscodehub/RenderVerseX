@@ -62,6 +62,16 @@ namespace
                HasFlag(desc->usage, requiredUsage);
     }
 
+    [[nodiscard]] SceneTextures::ExposureStateMetadata
+    MakeExposureStateMetadata(const ViewData& view) noexcept
+    {
+        return SceneTextures::ExposureStateMetadata{
+            view.exposureStateSchemaVersion,
+            view.exposureStateStride,
+            view.exposureStateMode,
+            view.exposureStateConfigurationHash};
+    }
+
     [[nodiscard]] bool HasDeferredOpaqueRouteInputs(
         const std::vector<RenderDrawItem>* drawItems) noexcept
     {
@@ -348,6 +358,9 @@ void DeferredGeometryFeatureAdapter::AddPasses(
     textures.deviceDepth = m_recordContext.view.depthTarget;
     textures.deviceDepthMetadata = MakeMetadata(
         extent, SceneTextures::DeviceDepthContract);
+    textures.exposureState = m_recordContext.view.exposureState;
+    textures.exposureStateMetadata = MakeExposureStateMetadata(
+        m_recordContext.view);
     // GFX07 does not publish velocity from allocation alone.  The existing
     // camera/object velocity passes can still own an independently allocated
     // view target, but SceneTextures.velocity remains absent until the typed
@@ -710,6 +723,7 @@ void DeferredLightingFeatureAdapter::AddPasses(
     inputs.deviceDepth = sceneTextures->deviceDepth;
     inputs.hdrSceneColor = sceneTextures->hdrSceneColor;
     inputs.materialTable = sceneTextures->materialTable;
+    inputs.exposureState = sceneTextures->exposureState;
     inputs.expectedLightingPlanIdentity = lightingPlanIdentity;
     inputs.lighting.lightingPlanIdentity = lightingPlanIdentity;
     inputs.lighting.frozenLightResources =
@@ -1033,6 +1047,9 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
     outputs.reactiveMask = m_recordContext.view.reactiveMaskTarget;
     outputs.reactiveMaskMetadata = MakeMetadata(
         m_preparedContext.outputExtent, SceneTextures::ReactiveMaskContract);
+    outputs.exposureState = m_recordContext.view.exposureState;
+    outputs.exposureStateMetadata = MakeExposureStateMetadata(
+        m_recordContext.view);
     outputs.colorDomain = PostProcessColorDomain::SceneLinearHDR;
     outputs.transfer = PostProcessTransfer::None;
     if (blackboard.Publish(BuiltinRenderFeatureIds::DeferredForwardSpecialChain,

@@ -3,6 +3,7 @@
 // =============================================================================
 
 #include "../Include/FullscreenTriangle.hlsli"
+#include "../Include/Exposure.hlsli"
 
 // =============================================================================
 // Constant Buffer
@@ -10,19 +11,16 @@
 
 cbuffer ToneMappingConstants : register(b0, space0)
 {
-    float Exposure;
     float Gamma;
     float WhitePoint;
     uint OperatorType;  // 0=Reinhard, 1=ReinhardExt, 2=ACES, 3=Uncharted2, 4=Neutral, other=Pass-through
+    uint OutputColorSpace; // 0=Linear, 1=sRGB
     float2 TextureSize;
     float2 InvTextureSize;
-    uint OutputColorSpace; // 0=Linear, 1=sRGB
     // Keep padding as scalar members so the 48-byte HLSL cbuffer layout is
     // also representable by GLSL std140. A float3 here starts at byte 36 in
     // HLSL but requires 16-byte alignment in std140.
-    float ToneMappingPadding0;
-    float ToneMappingPadding1;
-    float ToneMappingPadding2;
+    float4 ToneMappingPadding;
 };
 
 #define TONE_MAPPING_OUTPUT_LINEAR 0
@@ -34,6 +32,7 @@ cbuffer ToneMappingConstants : register(b0, space0)
 
 Texture2D<float4> InputTexture : register(t1, space0);
 SamplerState LinearSampler : register(s2, space0);
+StructuredBuffer<RVXExposureState> ExposureState : register(t4, space0);
 
 // =============================================================================
 // Tone Mapping Operators
@@ -144,8 +143,14 @@ float4 PSMain(VSOutput input) : SV_TARGET
     // Sample HDR scene color
     float3 hdr = InputTexture.Sample(LinearSampler, input.TexCoord).rgb;
     
-    // Apply exposure
-    hdr *= Exposure;
+    // HDR was written with the prior producer scale. Convert it to the
+    // candidate's physical exposure using only E/P; CPU never reads the EV.
+    const RVXExposureState exposureState = ExposureState[0];
+    const float exposureRatio = RVXExposureStateIsValid(exposureState)
+        ? RVXExposureScale(exposureState) /
+            RVXExposurePreExposure(exposureState)
+        : 1.0;
+    hdr *= exposureRatio;
     
     // Apply tone mapping
     float3 ldr;

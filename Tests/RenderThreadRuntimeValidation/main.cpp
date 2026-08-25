@@ -765,6 +765,15 @@ namespace
             ++m_completionDiagnosticsCount;
         }
 
+        void PopulateTeardownDiagnostics(
+            RenderDiagnosticsSnapshot& diagnostics) const noexcept override
+        {
+            if (m_publishNativeOnlyAfterShutdown && m_shutdownComplete)
+            {
+                diagnostics.nativeValidation = m_shutdownNativeValidation;
+            }
+        }
+
         RenderShutdownResult Shutdown(RenderTeardownMode) noexcept override
         {
             m_shutdownComplete = true;
@@ -818,6 +827,19 @@ namespace
             m_publishGpuOnlyAfterShutdown = true;
         }
 
+        void SetNativeValidationOnShutdown(uint64 errorCount,
+                                           uint64 corruptionCount)
+        {
+            m_shutdownNativeValidation.available = true;
+            m_shutdownNativeValidation.enabled = true;
+            m_shutdownNativeValidation.readComplete = true;
+            m_shutdownNativeValidation.messageCount =
+                errorCount + corruptionCount;
+            m_shutdownNativeValidation.errorCount = errorCount;
+            m_shutdownNativeValidation.corruptionCount = corruptionCount;
+            m_publishNativeOnlyAfterShutdown = true;
+        }
+
         void SetFrameCode(RenderRuntimeCode code) noexcept
         {
             m_frameCode = code;
@@ -848,8 +870,10 @@ namespace
         RenderCpuFrameTimingDiagnostics m_cpuTiming{};
         RenderGpuFrameTimingDiagnostics m_gpuTiming{};
         RenderGpuFrameTimingDiagnostics m_shutdownGpuTiming{};
+        RenderNativeValidationDiagnostics m_shutdownNativeValidation{};
         RenderMutationEvidenceDiagnostics m_mutationEvidence{};
         bool m_publishGpuOnlyAfterShutdown = false;
+        bool m_publishNativeOnlyAfterShutdown = false;
         bool m_shutdownComplete = false;
         mutable uint32 m_completionDiagnosticsCount = 0;
         RHIBackendType m_backend = RHIBackendType::None;
@@ -1497,6 +1521,75 @@ namespace
     }
 
     TEST(RenderThreadRuntimeValidation,
+         NormalShutdownPublishesFinalNativeValidationCounters)
+    {
+        auto consumer = std::make_unique<TimingDiagnosticsFrameConsumer>();
+        TimingDiagnosticsFrameConsumer* consumerProbe = consumer.get();
+        consumerProbe->SetNativeValidationOnShutdown(2, 1);
+
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::Vulkan;
+        NativeSurfaceDesc surface = MakeSurface();
+        surface.backendWindow = 1;
+        RenderThreadRuntime runtime(
+            config,
+            surface,
+            RenderExecutorKind::InlineTest,
+            CreateInlineRenderExecutor(),
+            std::move(consumer));
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        EXPECT_FALSE(
+            runtime.GetDiagnosticsSnapshot().nativeValidation.available);
+
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+        const RenderNativeValidationDiagnostics& finalNative =
+            runtime.GetDiagnosticsSnapshot().nativeValidation;
+        EXPECT_TRUE(finalNative.available);
+        EXPECT_TRUE(finalNative.enabled);
+        EXPECT_TRUE(finalNative.readComplete);
+        EXPECT_EQ(finalNative.messageCount, 3U);
+        EXPECT_EQ(finalNative.errorCount, 2U);
+        EXPECT_EQ(finalNative.corruptionCount, 1U);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         FatalShutdownPublishesFinalNativeValidationCounters)
+    {
+        auto consumer = std::make_unique<TimingDiagnosticsFrameConsumer>();
+        TimingDiagnosticsFrameConsumer* consumerProbe = consumer.get();
+        consumerProbe->SetNativeValidationOnShutdown(4, 2);
+        consumerProbe->SetFrameCode(RenderRuntimeCode::OwnershipViolation);
+
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::Vulkan;
+        NativeSurfaceDesc surface = MakeSurface();
+        surface.backendWindow = 1;
+        RenderThreadRuntime runtime(
+            config,
+            surface,
+            RenderExecutorKind::InlineTest,
+            CreateInlineRenderExecutor(),
+            std::move(consumer));
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(8124)).code,
+                  RenderFramePublishCode::Accepted);
+        EXPECT_EQ(runtime.GetLastRuntimeResult().code,
+                  RenderRuntimeCode::OwnershipViolation);
+        EXPECT_EQ(runtime.GetLastRuntimeResult().lifecycle,
+                  RenderLifecycleState::Failed);
+
+        const RenderNativeValidationDiagnostics& finalNative =
+            runtime.GetDiagnosticsSnapshot().nativeValidation;
+        EXPECT_TRUE(finalNative.available);
+        EXPECT_TRUE(finalNative.enabled);
+        EXPECT_TRUE(finalNative.readComplete);
+        EXPECT_EQ(finalNative.messageCount, 6U);
+        EXPECT_EQ(finalNative.errorCount, 4U);
+        EXPECT_EQ(finalNative.corruptionCount, 2U);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
          CompletionOnlyWakeRetiresDelayedFenceWithoutConsumingAnotherFrame)
     {
         auto consumer = std::make_unique<DelayedRetirementFrameConsumer>();
@@ -1626,6 +1719,41 @@ namespace
     }
 
     TEST(RenderThreadRuntimeValidation,
+         ExposureQualificationProbeRequestIsOneShotAndOwnerDelivered)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->exposureQualificationProbeAccepted = true;
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe));
+
+        EXPECT_FALSE(runtime.RequestExposureQualificationProbe());
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::ExposureQualificationProbe),
+                  0U);
+
+        EXPECT_TRUE(runtime.RequestExposureQualificationProbe());
+        EXPECT_FALSE(runtime.RequestExposureQualificationProbe());
+        EXPECT_TRUE(probe->WaitForEventCount(
+            RenderRuntimeTestEvent::ExposureQualificationProbe,
+            1U,
+            RVX_TEST_TIMEOUT));
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::ExposureQualificationProbe),
+                  1U);
+        EXPECT_EQ(probe->GetEventCount(RenderRuntimeTestEvent::Frame), 0U);
+
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+        EXPECT_FALSE(runtime.RequestExposureQualificationProbe());
+    }
+
+    TEST(RenderThreadRuntimeValidation,
          QualificationRequestArrivingBeforeFrameAcquireArmsThatExactFrame)
     {
         auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
@@ -1742,6 +1870,65 @@ namespace
             events.begin(),
             events.end(),
             RenderRuntimeTestEvent::DirectOpaqueRasterReadbackQualification);
+        const auto frame = std::find(
+            events.begin(), events.end(), RenderRuntimeTestEvent::Frame);
+        ASSERT_NE(events.end(), qualification);
+        ASSERT_NE(events.end(), frame);
+        EXPECT_LT(std::distance(events.begin(), qualification),
+                  std::distance(events.begin(), frame));
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         ExposureProbeRequestArrivingBeforeFrameAcquireArmsThatExactFrame)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->exposureQualificationProbeAccepted = true;
+        auto acquireHook = std::make_shared<BlockingFrameAcquireHook>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe),
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            acquireHook);
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+
+        acquireHook->Arm();
+        runtime.Wake();
+        if (!acquireHook->WaitUntilEntered(RVX_TEST_TIMEOUT))
+        {
+            acquireHook->Release();
+            EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+            FAIL() << "Render owner did not reach the frame acquire seam";
+            return;
+        }
+
+        const bool requestAccepted = runtime.RequestExposureQualificationProbe();
+        const RenderFramePublishResult publish =
+            PublishFrame(runtime, MakePacket(8133));
+        acquireHook->Release();
+
+        ASSERT_TRUE(requestAccepted);
+        ASSERT_EQ(publish.code, RenderFramePublishCode::Accepted);
+        ASSERT_TRUE(probe->WaitForEventCount(
+            RenderRuntimeTestEvent::Frame, 1U, RVX_TEST_TIMEOUT));
+        EXPECT_TRUE(WaitForPresentedFrame(runtime, 8133));
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::ExposureQualificationProbe),
+                  1U);
+        const std::vector<RenderRuntimeTestEvent> events = probe->GetEvents();
+        const auto qualification = std::find(
+            events.begin(),
+            events.end(),
+            RenderRuntimeTestEvent::ExposureQualificationProbe);
         const auto frame = std::find(
             events.begin(), events.end(), RenderRuntimeTestEvent::Frame);
         ASSERT_NE(events.end(), qualification);
@@ -3776,6 +3963,71 @@ namespace
         EXPECT_LT(bind, capture);
         EXPECT_LT(capture, watermark);
         EXPECT_LT(watermark, firstPresent);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         CompletionOnlyDiagnosticsProjectOnlyTheMatchingPresentedReceipt)
+    {
+        const std::filesystem::path sourcePath{RVX_SOURCE_DIR};
+        const std::string source =
+            ReadSourceFile(sourcePath / "Source" / "Runtime" / "Render" /
+                           "Private" / "RenderSubsystem.cpp");
+        ASSERT_FALSE(source.empty());
+
+        const size_t completionBegin = source.find(
+            "void PopulateCompletionDiagnostics(");
+        const size_t completionEnd = source.find(
+            "RenderRuntimeResult QueryRuntimeStatus() const override",
+            completionBegin);
+        ASSERT_NE(completionBegin, std::string::npos);
+        ASSERT_NE(completionEnd, std::string::npos);
+        const std::string completion = source.substr(
+            completionBegin, completionEnd - completionBegin);
+
+        // Positive: a frozen, structurally valid receipt for the exact
+        // public frame/view is copied after its post-fence probe completes.
+        const size_t sourceReceipt = completion.find(
+            "const RenderExecutionReceipt& completedReceipt =");
+        const size_t publishedReceipt = completion.find(
+            "const RenderExecutionReceipt& publishedReceipt =");
+        const size_t validSource = completion.find(
+            "completedReceipt.IsStructurallyValid()");
+        const size_t sameFrame = completion.find(
+            "completedReceipt.frameIdentity ==\n"
+            "                        publishedReceipt.frameIdentity");
+        const size_t sameView = completion.find(
+            "completedReceipt.viewIdentity ==\n"
+            "                        publishedReceipt.viewIdentity");
+        const size_t samePublicSequence = completion.find(
+            "completedReceipt.frameIdentity.frameSequence ==\n"
+            "                        outDiagnostics.frameFeatures.frameSequence");
+        const size_t projection = completion.find(
+            "outDiagnostics.frameFeatures.executionReceipt =\n"
+            "                        completedReceipt;");
+        ASSERT_NE(sourceReceipt, std::string::npos);
+        ASSERT_NE(publishedReceipt, std::string::npos);
+        ASSERT_NE(validSource, std::string::npos);
+        ASSERT_NE(sameFrame, std::string::npos);
+        ASSERT_NE(sameView, std::string::npos);
+        ASSERT_NE(samePublicSequence, std::string::npos);
+        ASSERT_NE(projection, std::string::npos);
+        EXPECT_LT(sourceReceipt, validSource);
+        EXPECT_LT(publishedReceipt, validSource);
+        EXPECT_LT(validSource, projection);
+        EXPECT_LT(sameFrame, projection);
+        EXPECT_LT(sameView, projection);
+        EXPECT_LT(samePublicSequence, projection);
+
+        // Negative: a malformed source, a different frame, or a different
+        // view cannot overwrite a newer public receipt.  Completion polling
+        // must also remain narrow and never run PopulateDiagnostics().
+        EXPECT_NE(completion.find(
+                      "publishedReceipt.IsStructurallyValid()"),
+                  std::string::npos);
+        EXPECT_NE(completion.find("publishedReceipt.presented"),
+                  std::string::npos);
+        EXPECT_EQ(completion.find("PopulateDiagnostics(outDiagnostics)"),
+                  std::string::npos);
     }
 
     TEST(RenderThreadRuntimeValidation, PumpProcessesReleaseBeforeUpload)

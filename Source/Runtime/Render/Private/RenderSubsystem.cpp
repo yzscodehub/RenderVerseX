@@ -303,6 +303,12 @@ namespace
                        ->ArmDirectOpaqueRasterReadbackQualificationCapture();
         }
 
+        bool RequestExposureQualificationProbe() override
+        {
+            return m_sceneRenderer != nullptr &&
+                   m_sceneRenderer->ArmExposureQualificationProbe();
+        }
+
         void PollCompletion() override
         {
             static_cast<void>(m_uploadProcessor.PollCompletion());
@@ -336,7 +342,10 @@ namespace
                         ->HasPendingGPUSceneCullingQualificationCompletion()) ||
                    (m_sceneRenderer != nullptr &&
                     m_sceneRenderer
-                        ->HasPendingDirectOpaqueRasterReadbackQualificationCompletion());
+                        ->HasPendingDirectOpaqueRasterReadbackQualificationCompletion()) ||
+                   (m_sceneRenderer != nullptr &&
+                    m_sceneRenderer
+                        ->HasPendingExposureQualificationCompletion());
         }
 
         void PopulateDiagnostics(
@@ -786,6 +795,9 @@ namespace
             RVX_COPY_RAY_TRACING_FIELD(reflectionMaterialTextureTableAvailable);
             RVX_COPY_RAY_TRACING_FIELD(reflectionGeometryMetadataAvailable);
             RVX_COPY_RAY_TRACING_FIELD(reflectionGeometryTableAvailable);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionExposureStateAvailable);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionExposureStateReadDeclared);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionExposureStateDescriptorBound);
             RVX_COPY_RAY_TRACING_FIELD(shadowHistoryAvailable);
             RVX_COPY_RAY_TRACING_FIELD(shadowDepthHistoryAvailable);
             RVX_COPY_RAY_TRACING_FIELD(shadowNormalHistoryAvailable);
@@ -840,6 +852,7 @@ namespace
             RVX_COPY_RAY_TRACING_FIELD(estimatedReflectionDenoiseTapCount);
             RVX_COPY_RAY_TRACING_FIELD(shadowGpuTimestampFrequency);
             RVX_COPY_RAY_TRACING_FIELD(reflectionGpuTimestampFrequency);
+            RVX_COPY_RAY_TRACING_FIELD(reflectionExposureStateContentHash);
             RVX_COPY_RAY_TRACING_FIELD(shadowGpuTimingElapsedMs);
             RVX_COPY_RAY_TRACING_FIELD(reflectionGpuTimingElapsedMs);
             RVX_COPY_RAY_TRACING_FIELD(gpuTimeBudget);
@@ -969,6 +982,29 @@ namespace
             {
                 const SceneRendererFrameDiagnostics frame =
                     m_sceneRenderer->GetFrameDiagnostics();
+                const RenderExecutionReceipt& completedReceipt =
+                    frame.presentedExecutionReceipt;
+                const RenderExecutionReceipt& publishedReceipt =
+                    outDiagnostics.frameFeatures.executionReceipt;
+                // A completion-only pump may run after another frame has
+                // already updated the public value snapshot.  It may project
+                // a post-fence receipt only when both snapshots name the
+                // exact same presented source; otherwise retain the public
+                // frame rather than relabel delayed evidence.
+                if (completedReceipt.IsStructurallyValid() &&
+                    completedReceipt.presented &&
+                    publishedReceipt.IsStructurallyValid() &&
+                    publishedReceipt.presented &&
+                    completedReceipt.frameIdentity ==
+                        publishedReceipt.frameIdentity &&
+                    completedReceipt.viewIdentity ==
+                        publishedReceipt.viewIdentity &&
+                    completedReceipt.frameIdentity.frameSequence ==
+                        outDiagnostics.frameFeatures.frameSequence)
+                {
+                    outDiagnostics.frameFeatures.executionReceipt =
+                        completedReceipt;
+                }
                 outDiagnostics.frameFeatures.gpuDrivenCulling
                     .gpuSceneDepthQualification =
                     frame.gpuDrivenCullingStats.gpuSceneDepthQualification;
@@ -1062,6 +1098,22 @@ namespace
                     // The normal path already waited above; the failure path
                     // must never issue a device-wide wait.
                     m_context->Shutdown(false);
+                    const RHINativeValidationDiagnostics& finalNative =
+                        m_context->GetShutdownNativeValidationDiagnostics();
+                    m_shutdownNativeValidation.available =
+                        finalNative.available;
+                    m_shutdownNativeValidation.enabled =
+                        finalNative.enabled;
+                    m_shutdownNativeValidation.readComplete =
+                        finalNative.readComplete;
+                    m_shutdownNativeValidation.messageCount =
+                        finalNative.messageCount;
+                    m_shutdownNativeValidation.warningCount =
+                        finalNative.warningCount;
+                    m_shutdownNativeValidation.errorCount =
+                        finalNative.errorCount;
+                    m_shutdownNativeValidation.corruptionCount =
+                        finalNative.corruptionCount;
                     m_context.reset();
 
                     if (mode == RenderTeardownMode::DeviceLostTeardown)
@@ -1087,6 +1139,19 @@ namespace
                 result.message = "Render consumer cleanup threw";
             }
             return result;
+        }
+
+        void PopulateTeardownDiagnostics(
+            RenderDiagnosticsSnapshot& outDiagnostics) const noexcept override
+        {
+            if (m_shutdownNativeValidation.available)
+            {
+                // Native validation counters are a value snapshot captured
+                // after Render children are destroyed. They are safe to
+                // publish on every teardown path and never map GPU memory.
+                outDiagnostics.nativeValidation =
+                    m_shutdownNativeValidation;
+            }
         }
 
     private:
@@ -1189,7 +1254,14 @@ namespace
                 // other objects referenced by that command buffer. Releasing
                 // first invalidates Vulkan command-buffer state while AbortFrame
                 // is still required to finish the recording.
-                m_context->AbortFrame();
+                if (!m_context->AbortFrame())
+                {
+                    result.code = RenderRuntimeCode::OwnershipViolation;
+                    result.message =
+                        "Accepted frame failed to retire its acquired presentation image";
+                    m_sceneRenderer->ReleaseUnsubmittedFrame();
+                    return result;
+                }
                 m_sceneRenderer->ReleaseUnsubmittedFrame();
                 result.code = RenderRuntimeCode::RenderGraphValidationFailed;
                 result.message =
@@ -1210,6 +1282,8 @@ namespace
                 frameSequence);
             const auto frameEndSubmitStart = std::chrono::steady_clock::now();
             const GPUCompletionPoint submittedPoint = m_context->EndFrame();
+            const bool presentationImageStillAcquired =
+                m_context->HasAcquiredPresentationImage();
             phases.frameEndSubmit =
                 ElapsedNanoseconds(frameEndSubmitStart);
             if (submittedPoint.value == 0)
@@ -1221,6 +1295,13 @@ namespace
                 if (health.code != RenderRuntimeCode::Running)
                 {
                     return health;
+                }
+                if (presentationImageStillAcquired)
+                {
+                    result.code = RenderRuntimeCode::OwnershipViolation;
+                    result.message =
+                        "Graphics submission failed after acquiring a presentation image";
+                    return result;
                 }
                 result.code = RenderRuntimeCode::RenderGraphValidationFailed;
                 result.message =
@@ -1313,7 +1394,13 @@ namespace
             if (commandContext == nullptr || backBuffer == nullptr ||
                 backBufferView == nullptr)
             {
-                m_context->AbortFrame();
+                if (!m_context->AbortFrame())
+                {
+                    result.code = RenderRuntimeCode::OwnershipViolation;
+                    result.message =
+                        "Resize redraw failed to retire its acquired presentation image";
+                    return result;
+                }
                 result.code = RenderRuntimeCode::SurfaceCreationFailed;
                 result.message = "Resize redraw has no renderable back buffer";
                 return result;
@@ -1333,6 +1420,8 @@ namespace
                                            RHIResourceState::RenderTarget,
                                            RHIResourceState::Present);
             const GPUCompletionPoint submittedPoint = m_context->EndFrame();
+            const bool presentationImageStillAcquired =
+                m_context->HasAcquiredPresentationImage();
             if (submittedPoint.value == 0)
             {
                 RenderRuntimeResult health = MakeDeviceRuntimeResult();
@@ -1340,6 +1429,13 @@ namespace
                 if (health.code != RenderRuntimeCode::Running)
                 {
                     return health;
+                }
+                if (presentationImageStillAcquired)
+                {
+                    result.code = RenderRuntimeCode::OwnershipViolation;
+                    result.message =
+                        "Resize redraw submission failed after acquiring a presentation image";
+                    return result;
                 }
                 result.code = RenderRuntimeCode::RenderGraphValidationFailed;
                 result.message = "Resize redraw submission failed";
@@ -1693,6 +1789,7 @@ namespace
         RenderFrameCaptureResult m_lastCaptureResult{};
         RenderCpuFrameTimingDiagnostics m_lastCpuFrameTiming{};
         RenderGpuFrameTimingDiagnostics m_shutdownGpuFrameTiming{};
+        RenderNativeValidationDiagnostics m_shutdownNativeValidation{};
         Diagnostics::TraceContext m_startupTraceContext{};
         bool m_firstSubmittedTraceRecorded = false;
         bool m_firstPresentTraceRecorded = false;
@@ -1860,6 +1957,12 @@ bool RenderSubsystem::RequestCompletionPump() noexcept
         return m_runtime != nullptr &&
                m_runtime
                    ->RequestDirectOpaqueRasterReadbackQualificationCapture();
+    }
+
+    bool RenderSubsystem::RequestExposureQualificationProbe() noexcept
+    {
+        return m_runtime != nullptr &&
+               m_runtime->RequestExposureQualificationProbe();
     }
 
     void RenderSubsystem::Deinitialize()

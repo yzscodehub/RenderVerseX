@@ -8,6 +8,7 @@
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
 #include "Render/Graph/RenderGraph.h"
+#include "Render/PostProcess/Exposure.h"
 #include "Render/PostProcess/PostProcessTypes.h"
 #include "Render/PostProcess/ToneMappingTypes.h"
 #include "RenderContracts/RenderFrameTypes.h"
@@ -29,8 +30,13 @@ namespace RVX
         RGTextureHandle normal;
         RGTextureHandle velocity;
         RGTextureHandle reactiveMask;
+        /** Unique graph import of the prior-presented exposure state. */
+        RGBufferHandle exposureState;
+        /** Semantic identity of the state bound to this stage's consumers. */
+        uint64 exposureStateContentHash = 0;
         RHIFormat outputFormat = RHIFormat::Unknown;
         uint64 frameIndex = 0;
+        float32 fixedDeltaSeconds = 0.0f;
         Vec2 jitterOffset = Vec2(0.0f);
         Mat4 currentViewProjection = Mat4(1.0f);
         Mat4 previousViewProjection = Mat4(1.0f);
@@ -56,6 +62,7 @@ namespace RVX
         bool HasDepth() const { return depth.IsValid(); }
         bool HasNormal() const { return normal.IsValid(); }
         bool HasVelocity() const { return velocity.IsValid(); }
+        bool HasExposureState() const { return exposureState.IsValid(); }
         bool HasHistory() const
         {
             return historyAvailable && !resetTemporalHistory &&
@@ -104,10 +111,7 @@ namespace RVX
         // Tone mapping
         // =========================================================================
         bool enableToneMapping = true;
-        float exposure = 1.0f;
-        ToneMappingExposureMode exposureMode = ToneMappingExposureMode::ManualMultiplier;
-        float cameraEV100 = 0.0f;
-        float exposureCompensationEV = 0.0f;
+        RenderExposureSettings exposureSettings{};
         float gamma = 2.2f;
         ToneMappingOperator toneMappingOperator = ToneMappingOperator::ACES;
         ToneMappingOutputColorSpace toneMappingOutputColorSpace = ToneMappingOutputColorSpace::SRGB;
@@ -434,6 +438,8 @@ namespace RVX
         RenderVisualQualityPreset requestedQualityPreset = RenderVisualQualityPreset::Medium;
         RenderVisualQualityPreset appliedQualityPreset = RenderVisualQualityPreset::Medium;
         PostProcessFrameInputs frameInputs;
+        ExposureGraphOutputs exposureOutputs{};
+        ExposureControllerStats exposureStats{};
         std::vector<PostProcessEffectExecutionPlan> effectPlans;
     };
 
@@ -452,6 +458,7 @@ namespace RVX
         // =========================================================================
 
         void Initialize(IRHIDevice* device);
+        void SetExposureResources(PipelineCache* pipelineCache);
         void Shutdown();
         bool IsInitialized() const { return m_device != nullptr; }
 
@@ -573,6 +580,14 @@ namespace RVX
          * @brief Get statistics from the last Execute() call
          */
         const PostProcessStackExecuteStats& GetLastExecuteStats() const { return m_lastExecuteStats; }
+        ExposureController& GetExposureController() noexcept
+        {
+            return m_exposureController;
+        }
+        const ExposureController& GetExposureController() const noexcept
+        {
+            return m_exposureController;
+        }
 
     private:
         enum class FrameInputValidationMode : uint8
@@ -598,6 +613,7 @@ namespace RVX
         IRHIDevice* m_device = nullptr;
         PostProcessSettings m_settings;
         PostProcessStackExecuteStats m_lastExecuteStats;
+        ExposureController m_exposureController;
         std::vector<std::unique_ptr<IPostProcessPass>> m_effects;
     };
 

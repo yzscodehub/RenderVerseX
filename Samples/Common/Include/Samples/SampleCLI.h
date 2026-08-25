@@ -9,6 +9,7 @@
 #include "Core/Types.h"
 #include "Render/GPUScene/GPUSceneDiagnostics.h"
 #include "Render/RenderDiagnostics.h"
+#include "RenderContracts/RenderExposure.h"
 #include "RenderContracts/RenderIdentity.h"
 #include "RHI/RHIDefinitions.h"
 #include "Resource/ResourceContentIdentity.h"
@@ -19,6 +20,7 @@
 #include <cmath>
 #include <filesystem>
 #include <iosfwd>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -26,13 +28,15 @@
 namespace RVX
 {
     /** @brief Current JSON schema version written by sample report producers. */
-    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 23;
+    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 24;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION = 20;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_POST_PROCESS_EXECUTION_SCHEMA_VERSION = 21;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_TEMPORAL_AA_EXECUTION_SCHEMA_VERSION = 22;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_EXPOSURE_EXECUTION_SCHEMA_VERSION = 23;
     inline constexpr uint32 RVX_SAMPLE_REPORT_PRE_VISUAL_CONTRACT_SCHEMA_VERSION = 19;
     inline constexpr uint32 RVX_SAMPLE_REPORT_SCENARIO_SCHEMA_VERSION = 12;
     inline constexpr uint32 RVX_SAMPLE_REPORT_ECS_DIAGNOSTICS_SCHEMA_VERSION = 13;
@@ -287,6 +291,8 @@ namespace RVX
         bool gpuSceneCullingQualificationEnabled = false;
         /** @brief Explicit one-shot Direct Opaque physical readback. */
         bool directOpaqueRasterReadbackQualificationEnabled = false;
+        /** @brief Explicit one-shot post-Present exposure-state readback. */
+        bool exposureQualificationProbeEnabled = false;
         uint32 width = 1280;
         uint32 height = 720;
         std::string quality = "default";
@@ -330,6 +336,33 @@ namespace RVX
 
         bool postProcessReceiptStructurallyValid = false;
         uint64 planContentHash = 0;
+        /** Renderer-projected immutable exposure state; never scenario-authored. */
+        uint64 exposureStateContentHash = 0;
+        uint64 toneMapExposureStateHash = 0;
+        uint64 bloomExposureStateHash = 0;
+        uint64 taaExposureStateHash = 0;
+        RenderExposureMode exposureMode = RenderExposureMode::ManualEV100;
+        bool exposureRequested = false;
+        bool exposurePipelineReady = false;
+        bool exposureInputsReady = false;
+        bool exposureExecuted = false;
+        uint32 exposureHistogramPassCount = 0;
+        uint32 exposureAdaptationPassCount = 0;
+        bool exposureHistoryAvailableBefore = false;
+        bool exposureHistorySampled = false;
+        bool exposureHistoryCandidateProduced = false;
+        bool exposureHistoryCommitted = false;
+        bool exposureHistoryAbandoned = false;
+        RenderHistoryResetReason exposureHistoryResetReasons =
+            RenderHistoryResetReason::None;
+        bool exposureProbeRequested = false;
+        bool exposureProbeReady = false;
+        float32 targetEV100 = std::numeric_limits<float32>::quiet_NaN();
+        float32 adaptedEV100 = std::numeric_limits<float32>::quiet_NaN();
+        float32 exposureScale = std::numeric_limits<float32>::quiet_NaN();
+        float32 preExposure = std::numeric_limits<float32>::quiet_NaN();
+        float32 previousPreExposure =
+            std::numeric_limits<float32>::quiet_NaN();
         uint32 toneMappingPassCount = 0;
         uint32 bloomPassCount = 0;
         uint32 colorGradingPassCount = 0;
@@ -400,7 +433,7 @@ namespace RVX
                     PostProcessTransfer::SceneLinearToDisplayEncoded &&
                 !displayLinearOutputReady;
 
-            return available && executionReceiptSchemaVersion == 7 &&
+            return available && executionReceiptSchemaVersion == 8 &&
                    executionReceiptStructurallyValid &&
                    executionReceiptAvailable && executionReceiptGraphComposed &&
                    executionReceiptExecutionSucceeded &&
@@ -416,6 +449,84 @@ namespace RVX
                    hdrInputReady &&
                    encodedOutputReady && !fallbackUsed &&
                    (srgbPresentationContract || unormPresentationContract);
+        }
+
+        /** @brief Exact immutable exposure-state identity shared by HDR consumers. */
+        [[nodiscard]] bool HasSharedExposureState() const noexcept
+        {
+            const bool bloomMatches = bloomPassCount == 0
+                ? bloomExposureStateHash == 0
+                : bloomExposureStateHash == exposureStateContentHash;
+            const bool taaMatches = antiAliasingMode != RenderAntiAliasingMode::TAA
+                ? taaExposureStateHash == 0
+                : taaExposureStateHash == exposureStateContentHash;
+            return exposureStateContentHash != 0 &&
+                   toneMapExposureStateHash == exposureStateContentHash &&
+                   bloomMatches && taaMatches;
+        }
+
+        /** @brief Probe values obey the sole public EV100 calibration. */
+        [[nodiscard]] bool HasPhysicallyConsistentExposureProbe(
+            float32 exposureCompensationEV = 0.0f) const noexcept
+        {
+            if (!exposureProbeRequested || !exposureProbeReady ||
+                targetEV100 < RVX_RENDER_EXPOSURE_MIN_EV100 ||
+                targetEV100 > RVX_RENDER_EXPOSURE_MAX_EV100 ||
+                adaptedEV100 < RVX_RENDER_EXPOSURE_MIN_EV100 ||
+                adaptedEV100 > RVX_RENDER_EXPOSURE_MAX_EV100)
+            {
+                return false;
+            }
+            float32 expectedScale = 0.0f;
+            if (!TryCalculateRenderExposureScale(
+                    adaptedEV100, exposureCompensationEV, expectedScale))
+            {
+                return false;
+            }
+            return AreRenderExposureScalesEquivalent(
+                       exposureScale, expectedScale) &&
+                   IsValidRenderExposureScale(preExposure) &&
+                   IsValidRenderExposureScale(previousPreExposure);
+        }
+
+        /** @brief Exact GFX12 Manual EV100 receipt with qualification readback. */
+        [[nodiscard]] bool IsManualEV100ExposureQualificationReady() const noexcept
+        {
+            return HasQualifiedPresentation() && HasSharedExposureState() &&
+                   exposureMode == RenderExposureMode::ManualEV100 &&
+                   exposureRequested && exposurePipelineReady &&
+                   exposureInputsReady && exposureExecuted &&
+                   exposureHistogramPassCount == 0 &&
+                   exposureAdaptationPassCount == 1 &&
+                   exposureHistoryAvailableBefore && exposureHistorySampled &&
+                   exposureHistoryCandidateProduced &&
+                   exposureHistoryCommitted && !exposureHistoryAbandoned &&
+                   exposureHistoryResetReasons == RenderHistoryResetReason::None &&
+                   HasPhysicallyConsistentExposureProbe() &&
+                   AreRenderExposureScalesEquivalent(
+                       preExposure, exposureScale) &&
+                   AreRenderExposureScalesEquivalent(
+                       previousPreExposure, exposureScale) &&
+                   bloomPassCount == 1 &&
+                   IsTemporalAAQualificationReady();
+        }
+
+        /** @brief Exact GFX12 histogram-auto receipt with Present-safe history. */
+        [[nodiscard]] bool IsHistogramAutoExposureQualificationReady() const noexcept
+        {
+            return HasQualifiedPresentation() && HasSharedExposureState() &&
+                   exposureMode == RenderExposureMode::HistogramAuto &&
+                   exposureRequested && exposurePipelineReady &&
+                   exposureInputsReady && exposureExecuted &&
+                   exposureHistogramPassCount == 2 &&
+                   exposureAdaptationPassCount == 1 &&
+                   exposureHistoryAvailableBefore && exposureHistorySampled &&
+                   exposureHistoryCandidateProduced && exposureHistoryCommitted &&
+                   !exposureHistoryAbandoned &&
+                   exposureHistoryResetReasons == RenderHistoryResetReason::None &&
+                   HasPhysicallyConsistentExposureProbe() &&
+                   bloomPassCount == 1 &&
+                   IsTemporalAAQualificationReady();
         }
 
         /** @brief Exact GFX10 Bloom/ColorGrade/FXAA qualification contract. */
@@ -953,6 +1064,8 @@ namespace RVX
     {
         std::string schemaId = "RVX.SampleReport";
         uint32 schemaVersion = RVX_SAMPLE_REPORT_SCHEMA_VERSION;
+        /** Opaque required-suite identity; empty outside validation runners. */
+        std::string validationRunId;
         std::string sampleName;
         std::string category = "sample";
         RHIBackendType requestedBackend = RHIBackendType::Auto;

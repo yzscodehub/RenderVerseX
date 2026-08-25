@@ -8,12 +8,13 @@
 // - downsample a fixed transient bloom pyramid
 // - additively composite blurred levels back into HDR scene color
 //
-// The descriptor layout remains the shared fullscreen post-process layout:
-// b0 constants, t1 input texture, s2 sampler.
+// The narrow exposure-aware fullscreen layout additionally binds the candidate
+// state at t4, so thresholding uses the exact same E/P state as ToneMapping.
 //
 // =============================================================================
 
 #include "../Include/FullscreenTriangle.hlsli"
+#include "../Include/Exposure.hlsli"
 
 cbuffer BloomConstants : register(b0, space0)
 {
@@ -30,6 +31,7 @@ cbuffer BloomConstants : register(b0, space0)
 
 Texture2D<float4> InputTexture : register(t1, space0);
 SamplerState LinearSampler : register(s2, space0);
+StructuredBuffer<RVXExposureState> ExposureState : register(t4, space0);
 
 static const float BLOOM_MODE_COPY_SCENE = 0.0;
 static const float BLOOM_MODE_EXTRACT = 1.0;
@@ -43,7 +45,15 @@ float Luminance(float3 color)
 
 float3 ApplySoftThreshold(float3 color)
 {
-    float luma = Luminance(color);
+    const RVXExposureState exposureState = ExposureState[0];
+    const float exposureRatio = RVXExposureStateIsValid(exposureState)
+        ? RVXExposureScale(exposureState) /
+            RVXExposurePreExposure(exposureState)
+        : 1.0;
+    // Threshold is authored in physical scene exposure while HDR color is
+    // pre-exposed with the prior producer scale. Keep returned bloom in the
+    // original HDR domain so later composite remains energy-consistent.
+    const float luma = Luminance(color) * exposureRatio;
     float knee = max(Threshold * SoftKnee, 0.0001);
     float soft = luma - Threshold + knee;
     soft = clamp(soft, 0.0, 2.0 * knee);

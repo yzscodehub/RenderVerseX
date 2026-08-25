@@ -17,11 +17,23 @@ RenderHistoryAvailability RenderViewHistoryCoordinator::Evaluate(
         frame.GetHeader().explicitDiscontinuity,
         committedResourceAvailable);
 
-    if (previous != nullptr &&
-        incoming.previousFrame.frameSequence <=
-            previous->previousFrame.frameSequence)
+    if (previous != nullptr)
     {
-        result.resetReasons |= RenderHistoryResetReason::SceneDiscontinuity;
+        const uint64 incomingSequence =
+            incoming.previousFrame.frameSequence;
+        const uint64 previousSequence =
+            previous->previousFrame.frameSequence;
+        const bool isNextPresentedFrame =
+            incomingSequence > previousSequence &&
+            incomingSequence - previousSequence == 1U;
+        if (!isNextPresentedFrame)
+        {
+            // Temporal resources describe the immediately preceding presented
+            // frame. Mailbox replacement or an abandoned render can leave a
+            // forward sequence gap, which is no more reusable than rollback.
+            result.resetReasons |=
+                RenderHistoryResetReason::SceneDiscontinuity;
+        }
     }
     result.resetReasons |= m_pendingResetReasons;
     result.available = result.resetReasons == RenderHistoryResetReason::None;

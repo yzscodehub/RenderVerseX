@@ -5,13 +5,19 @@
 #include "Render/Graph/RenderGraph.h"
 #include "Render/GPUUploadService.h"
 #include "Render/Material/MaterialGPUData.h"
+#include "Render/PipelineCache.h"
+#include "Render/PostProcess/Exposure.h"
 #include "Render/Submission/RasterInstanceStream.h"
+#include "RenderContracts/RenderExposure.h"
 #include "RHI/RHI.h"
 #include "RHI_BackendFactory/RHIBackendFactory.h"
 #include "ShaderCompiler/ShaderCompiler.h"
 #include "VulkanCommon.h"
 #include "VulkanDevice.h"
 #include "VulkanResources.h"
+
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
 
 #include <gtest/gtest.h>
 
@@ -53,6 +59,80 @@ namespace
 
         return {};
     }
+
+    class HiddenVulkanPresentationWindow final
+    {
+    public:
+        HiddenVulkanPresentationWindow() = default;
+
+        ~HiddenVulkanPresentationWindow()
+        {
+            Shutdown();
+        }
+
+        HiddenVulkanPresentationWindow(const HiddenVulkanPresentationWindow&) = delete;
+        HiddenVulkanPresentationWindow& operator=(const HiddenVulkanPresentationWindow&) = delete;
+
+        [[nodiscard]] bool Initialize(uint32 width, uint32 height)
+        {
+            // The vcpkg Vulkan loader can be outside GLFW's default dynamic
+            // loader search path in CI, so register the linked loader before
+            // GLFW performs its first Vulkan query.
+            glfwInitVulkanLoader(vkGetInstanceProcAddr);
+            if (glfwInit() != GLFW_TRUE)
+            {
+                return false;
+            }
+            m_glfwInitialized = true;
+            glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+            glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+            glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+            m_window = glfwCreateWindow(static_cast<int>(width),
+                                        static_cast<int>(height),
+                                        "RenderVerseX Vulkan Abort Validation",
+                                        nullptr,
+                                        nullptr);
+            return m_window != nullptr;
+        }
+
+        [[nodiscard]] HAL::NativeSurfaceDesc Capture(uint64 generation) const
+        {
+            HAL::NativeSurfaceDesc surface;
+            if (m_window == nullptr)
+            {
+                return surface;
+            }
+
+            int width = 0;
+            int height = 0;
+            glfwGetFramebufferSize(m_window, &width, &height);
+            surface.platform = HAL::NativeSurfacePlatform::GLFW;
+            surface.backendWindow = reinterpret_cast<uintptr_t>(m_window);
+            surface.width = static_cast<uint32>(width);
+            surface.height = static_cast<uint32>(height);
+            surface.contentScale = 1.0f;
+            surface.generation = generation;
+            return surface;
+        }
+
+    private:
+        void Shutdown()
+        {
+            if (m_window != nullptr)
+            {
+                glfwDestroyWindow(m_window);
+                m_window = nullptr;
+            }
+            if (m_glfwInitialized)
+            {
+                glfwTerminate();
+                m_glfwInitialized = false;
+            }
+        }
+
+        GLFWwindow* m_window = nullptr;
+        bool m_glfwInitialized = false;
+    };
 
     class LegacyMappedBuffer : public RHIBuffer
     {
@@ -710,6 +790,9 @@ namespace
         frameLayoutDesc.AddBinding(11, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
         frameLayoutDesc.AddBinding(12, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
         frameLayoutDesc.AddBinding(13, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(PipelineCache::DefaultLitExposureStateBinding,
+                                   RHIBindingType::ShaderResourceBuffer,
+                                   RHIShaderStage::Pixel);
         RHIDescriptorSetLayoutRef frameLayout = device.CreateDescriptorSetLayout(frameLayoutDesc);
         RHIDescriptorSetLayoutDesc emptyLayoutDesc;
         emptyLayoutDesc.debugName = "VulkanNativeSurfaceAlphaEmptySet";
@@ -820,6 +903,23 @@ namespace
             device, RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource, 16u,
             zeroedStructuredElements.data(), zeroedStructuredElements.size(),
             "VulkanNativeSurfaceAlphaDummyStructuredBuffer");
+        struct alignas(16) NativeSurfaceExposureState
+        {
+            float32 exposureValues[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+            uint32 targetAndNonce[4] = {};
+            uint32 stateMeta[4] = {
+                1u,
+                0u,
+                static_cast<uint32>(RenderExposureMode::ManualEV100),
+                1u};
+        };
+        static_assert(sizeof(NativeSurfaceExposureState) ==
+                      RVX_EXPOSURE_STATE_STRIDE);
+        const NativeSurfaceExposureState exposureState{};
+        RHIBufferRef exposureStateBuffer = CreateVulkanUploadBuffer(
+            device, RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource,
+            sizeof(NativeSurfaceExposureState), &exposureState,
+            sizeof(exposureState), "VulkanNativeSurfaceAlphaExposureState");
 
         RHIDescriptorSetDesc frameSetDesc;
         frameSetDesc.layout = frameLayout.Get();
@@ -838,6 +938,8 @@ namespace
         frameSetDesc.BindTexture(11, environmentCubeView.Get());
         frameSetDesc.BindTexture(12, sourceTextureView.Get());
         frameSetDesc.BindSampler(13, sampler.Get());
+        frameSetDesc.BindBuffer(PipelineCache::DefaultLitExposureStateBinding,
+                                exposureStateBuffer.Get());
         RHIDescriptorSetRef frameSet = device.CreateDescriptorSet(frameSetDesc);
         RHIDescriptorSetDesc materialSetDesc;
         materialSetDesc.layout = materialLayout.Get();
@@ -883,7 +985,8 @@ namespace
         if (!vertexBuffer || !materialBuffer || !textureUpload || !sourceTexture ||
             !sourceTextureView || !directionalShadowArray || !directionalShadowArrayView ||
             !environmentCube || !environmentCubeView || !sampler ||
-            !frameConstantsBuffer || !dummyStructuredBuffer || !frameSet || !materialSet ||
+            !frameConstantsBuffer || !dummyStructuredBuffer ||
+            !exposureStateBuffer || !frameSet || !materialSet ||
             !renderTarget || !renderTargetView || !readbackBuffer ||
             (isDepthOnly && (!depthTarget || !depthTargetView || !depthTargetSRV)))
         {
@@ -1264,7 +1367,7 @@ TEST(VulkanValidation, RenderContextAbortFrameDoesNotStarveHeadlessFrameFence)
         vulkanDevice->GetValidationMessageCounts();
 
     ASSERT_TRUE(context.BeginFrame());
-    context.AbortFrame();
+    EXPECT_TRUE(context.AbortFrame());
 
     constexpr uint32 completedFrameCount = 4;
     for (uint32 frame = 0; frame < completedFrameCount; ++frame)
@@ -1276,6 +1379,59 @@ TEST(VulkanValidation, RenderContextAbortFrameDoesNotStarveHeadlessFrameFence)
     }
 
     context.WaitIdle();
+    const VulkanValidationMessageCounts messagesAfter =
+        vulkanDevice->GetValidationMessageCounts();
+    EXPECT_EQ(messagesAfter.errors, messagesBefore.errors);
+    EXPECT_EQ(messagesAfter.warnings, messagesBefore.warnings);
+    context.Shutdown();
+}
+
+TEST(VulkanValidation,
+     RenderContextAbortFrameRetiresAcquiredPresentationImageBeforeNextFrame)
+{
+    HiddenVulkanPresentationWindow window;
+    if (!window.Initialize(64u, 64u))
+    {
+        GTEST_SKIP() << "A hidden GLFW Vulkan presentation surface is unavailable";
+    }
+
+    const HAL::NativeSurfaceDesc surface = window.Capture(1u);
+    ASSERT_TRUE(IsNativeSurfaceValidFor(surface, RHIBackendType::Vulkan));
+
+    RenderContextConfig config;
+    config.backendType = RHIBackendType::Vulkan;
+    config.enableValidation = true;
+    config.allowSoftwareAdapter = RVX::Test::NativeAllowsSoftwareAdapter();
+    config.frameBuffering = 2;
+    config.appName = "VulkanRenderContextAcquireAbortValidation";
+
+    RenderContext context;
+    if (!context.Initialize(config, surface))
+    {
+        GTEST_SKIP() << "Vulkan RenderContext is not available for presentation";
+    }
+    ASSERT_TRUE(context.CreateSwapChain(surface));
+
+    auto* vulkanDevice = dynamic_cast<VulkanDevice*>(context.GetDevice());
+    ASSERT_NE(vulkanDevice, nullptr);
+    const VulkanValidationMessageCounts messagesBefore =
+        vulkanDevice->GetValidationMessageCounts();
+
+    ASSERT_TRUE(context.BeginFrame());
+    ASSERT_NE(context.GetCurrentBackBuffer(), nullptr);
+    ASSERT_TRUE(context.HasAcquiredPresentationImage());
+
+    // AbortFrame must submit the discard-to-present transition, present the
+    // acquired image, and consume the acquire semaphore before reusing the
+    // frame slot.
+    ASSERT_TRUE(context.AbortFrame());
+    EXPECT_FALSE(context.HasAcquiredPresentationImage());
+
+    ASSERT_TRUE(context.BeginFrame());
+    EXPECT_FALSE(context.HasAcquiredPresentationImage());
+    EXPECT_TRUE(context.AbortFrame());
+    context.WaitIdle();
+
     const VulkanValidationMessageCounts messagesAfter =
         vulkanDevice->GetValidationMessageCounts();
     EXPECT_EQ(messagesAfter.errors, messagesBefore.errors);

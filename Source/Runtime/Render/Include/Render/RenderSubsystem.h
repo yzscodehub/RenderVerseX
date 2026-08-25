@@ -62,6 +62,15 @@ namespace RVX
         /** @brief Arm one post-fence Direct Opaque raster-input readback. */
         [[nodiscard]] bool RequestDirectOpaqueRasterReadbackQualificationCapture()
             noexcept;
+        /**
+         * @brief Arm one post-fence physical-exposure qualification probe.
+         *
+         * The request is accepted at most once for this runtime instance and
+         * is consumed on the Render owner before its next frame is recorded.
+         * Completion remains asynchronous and is published only after the
+         * corresponding submission fence has completed.
+         */
+        [[nodiscard]] bool RequestExposureQualificationProbe() noexcept;
 
         RenderResourceReserveResult ReserveResource(
             AssetId assetId,

@@ -3,6 +3,7 @@
 #include "RegisterSamples.h"
 
 #include "Scenes/AnimationCharacterSample.h"
+#include "Scenes/AutoExposureSample.h"
 #include "Scenes/AssetStreamingSample.h"
 #include "Scenes/AssetGalleryShowcaseSample.h"
 #include "Scenes/GPUDrivenShowcaseSample.h"
@@ -12,6 +13,7 @@
 #include "Scenes/ModelViewerSample.h"
 #include "Scenes/PBRMaterialsSample.h"
 #include "Scenes/PhysicsSandboxSample.h"
+#include "Scenes/PhysicalExposureSample.h"
 #include "Scenes/PostProcessingShowcaseSample.h"
 #include "Scenes/RenderPipelineShowcaseSample.h"
 #include "Scenes/RenderingStressSample.h"
@@ -59,6 +61,10 @@ namespace RVX
                                     std::string* outError)
     {
         return RegisterBuiltInSample<ModelRenderingSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<PhysicalExposureSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<AutoExposureSample>(
                    manifest, registry, outError) &&
                RegisterBuiltInSample<ModelViewerSample>(
                    manifest, registry, outError) &&

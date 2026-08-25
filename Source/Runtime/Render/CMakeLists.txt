@@ -233,6 +233,7 @@ add_library(RVX::RenderAnimationDeform ALIAS RVX_RenderAnimationDeform)
 
 add_library(RVX_RenderPostProcess STATIC)
 target_sources(RVX_RenderPostProcess PRIVATE
+    Private/PostProcess/Exposure.cpp
     Private/PostProcess/PostProcessStack.cpp
     Private/PostProcess/ToneMapping.cpp
     Private/PostProcess/Bloom.cpp

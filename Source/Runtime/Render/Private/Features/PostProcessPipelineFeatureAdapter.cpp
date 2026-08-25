@@ -6,7 +6,9 @@
 #include "Features/PostProcessPipelineFeatureAdapter.h"
 
 #include "Core/Diagnostics/ContentHash.h"
+#include "Render/PostProcess/Bloom.h"
 #include "Render/PostProcess/TAA.h"
+#include "Render/PostProcess/ToneMapping.h"
 
 #include <algorithm>
 #include <bit>
@@ -38,6 +40,26 @@ namespace
                handle.recordingGeneration == builder.GetRecordingGeneration();
     }
 
+    [[nodiscard]] bool HandleMatchesBuilder(
+        RGBufferHandle handle,
+        const RenderFeatureGraphBuilder& builder) noexcept
+    {
+        return handle.IsValid() &&
+               handle.graphIdentity == builder.GetGraphIdentity() &&
+               handle.recordingGeneration == builder.GetRecordingGeneration();
+    }
+
+    [[nodiscard]] bool IsSameBufferHandle(
+        const RGBufferHandle& lhs,
+        const RGBufferHandle& rhs) noexcept
+    {
+        return lhs.index == rhs.index && lhs.hasRange == rhs.hasRange &&
+               lhs.rangeOffset == rhs.rangeOffset &&
+               lhs.rangeSize == rhs.rangeSize &&
+               lhs.graphIdentity == rhs.graphIdentity &&
+               lhs.recordingGeneration == rhs.recordingGeneration;
+    }
+
     [[nodiscard]] bool UsesHardwareSRGBEncode(RHIFormat format) noexcept
     {
         return IsSRGBFormat(format);
@@ -66,6 +88,28 @@ namespace
         Diagnostics::MixContentHashValue(
             hash,
             static_cast<uint64>(std::bit_cast<uint32>(canonicalValue)));
+    }
+
+    [[nodiscard]] uint64 ExtendExposureProbeContentHash(
+        uint64 sourceHash,
+        const ExposureQualificationProbe& probe) noexcept
+    {
+        uint64 hash = Diagnostics::RVX_DIAGNOSTICS_FNV1A64_OFFSET_BASIS;
+        Diagnostics::MixContentHashValue(hash, sourceHash);
+        // Domain-separate a post-fence qualification augmentation from the
+        // graph-finalized source receipt. The source hash already binds the
+        // exact graph, frame, view, plan, and pre-Present temporal state.
+        Diagnostics::MixContentHashValue(hash, 0x4558504F53555245ull);
+        Diagnostics::MixContentHashValue(hash, probe.frameIndex);
+        Diagnostics::MixContentHashValue(hash, probe.configurationHash);
+        Diagnostics::MixContentHashValue(
+            hash, probe.candidateStateContentHash);
+        MixFloat(hash, probe.targetEV100);
+        MixFloat(hash, probe.adaptedEV100);
+        MixFloat(hash, probe.exposureScale);
+        MixFloat(hash, probe.preExposure);
+        MixFloat(hash, probe.previousPreExposure);
+        return hash != 0 ? hash : 1u;
     }
 } // namespace
 
@@ -108,6 +152,8 @@ void PostProcessPipelineFeatureAdapter::SetStack(PostProcessStack* stack) noexce
     m_readiness = {};
     m_hasComposedPresentationPlan = false;
     m_hardwareSRGBEncodeBoundary = false;
+    m_lastExposureProbe = {};
+    ClearExposureProbeSourceReceipt();
 }
 
 RenderFeatureDescriptor PostProcessPipelineFeatureAdapter::Describe() const
@@ -202,14 +248,26 @@ void PostProcessPipelineFeatureAdapter::AddPasses(
             BuiltinRenderFeatureIds::PostProcessPipeline, Describe(), &code);
     if (translucency == nullptr || code != RenderGraphBlackboardCode::Success)
     {
-        SetCompositionFailure("Post-process requires TranslucencyOutputs v2");
+        SetCompositionFailure("Post-process requires TranslucencyOutputs v3");
         return;
     }
     if (translucency->frameIdentity != m_preparedContext.frameIdentity ||
         translucency->viewIdentity != m_preparedContext.viewIdentity ||
         translucency->colorDomain != PostProcessColorDomain::SceneLinearHDR ||
         translucency->transfer != PostProcessTransfer::None ||
-        !HandleMatchesBuilder(translucency->hdrSceneColor, builder))
+        !HandleMatchesBuilder(translucency->hdrSceneColor, builder) ||
+        !HandleMatchesBuilder(translucency->exposureState, builder) ||
+        !translucency->exposureStateMetadata.IsValid() ||
+        !IsSameBufferHandle(
+            translucency->exposureState,
+            m_recordContext.frameInputs.exposureState) ||
+        m_recordContext.frameInputs.exposureStateContentHash == 0 ||
+        m_stack == nullptr ||
+        translucency->exposureStateMetadata.mode !=
+            m_stack->GetSettings().exposureSettings.mode ||
+        translucency->exposureStateMetadata.configurationHash !=
+            CalculateRenderExposureSettingsHash(
+                m_stack->GetSettings().exposureSettings))
     {
         SetCompositionFailure(
             "Post-process received mismatched HDR scene-color provenance or domain");
@@ -222,6 +280,7 @@ void PostProcessPipelineFeatureAdapter::AddPasses(
     inputs.normal = translucency->worldNormal;
     inputs.velocity = translucency->velocity;
     inputs.reactiveMask = translucency->reactiveMask;
+    inputs.exposureState = translucency->exposureState;
     inputs.sceneColorDomain = translucency->colorDomain;
     const bool hardwareSRGBEncode = UsesHardwareSRGBEncode(
         m_recordContext.presentableColorMetadata.format);
@@ -336,6 +395,7 @@ void PostProcessPipelineFeatureAdapter::OnGraphExecutionFinalized(
     }
 
     RefreshExecutionReceipt();
+    SnapshotExposureProbeSourceReceipt();
 }
 
 bool PostProcessPipelineFeatureAdapter::CommitTemporalHistoryAfterPresent(
@@ -346,16 +406,34 @@ bool PostProcessPipelineFeatureAdapter::CommitTemporalHistoryAfterPresent(
         return false;
     }
 
-    if (!RequiresTemporalHistoryCommit())
-        return true;
+    const bool requiresTAA =
+        m_lastExecutionReceipt.taaRequested &&
+        m_lastExecutionReceipt.taaExecuted &&
+        m_lastExecutionReceipt.historyCandidateProduced &&
+        !m_lastExecutionReceipt.historyCommitted;
+    const bool requiresExposure =
+        m_lastExecutionReceipt.exposureRequested &&
+        m_lastExecutionReceipt.exposureExecuted &&
+        m_lastExecutionReceipt.exposureHistoryCandidateProduced &&
+        !m_lastExecutionReceipt.exposureHistoryCommitted;
 
-    TAA* const taa = m_stack->GetEffect<TAA>();
-    if (taa == nullptr || !taa->CommitHistoryAfterPresent(identity))
+    if (requiresTAA)
+    {
+        TAA* const taa = m_stack->GetEffect<TAA>();
+        if (taa == nullptr || !taa->CommitHistoryAfterPresent(identity))
+            return false;
+    }
+    if (requiresExposure &&
+        !m_stack->GetExposureController().CommitAfterPresent(identity))
+    {
         return false;
+    }
 
     RefreshExecutionReceipt();
-    return m_lastExecutionReceipt.taaRequested &&
-           m_lastExecutionReceipt.historyCommitted;
+    SnapshotExposureProbeSourceReceipt();
+    return (!requiresTAA || m_lastExecutionReceipt.historyCommitted) &&
+           (!requiresExposure ||
+            m_lastExecutionReceipt.exposureHistoryCommitted);
 }
 
 bool PostProcessPipelineFeatureAdapter::CanCommitTemporalHistoryAfterPresent(
@@ -367,8 +445,22 @@ bool PostProcessPipelineFeatureAdapter::CanCommitTemporalHistoryAfterPresent(
     if (m_stack == nullptr || !identity.IsValid())
         return false;
 
-    TAA* const taa = m_stack->GetEffect<TAA>();
-    return taa != nullptr && taa->CanCommitHistoryAfterPresent(identity);
+    const bool requiresTAA =
+        m_lastExecutionReceipt.taaRequested &&
+        m_lastExecutionReceipt.taaExecuted &&
+        m_lastExecutionReceipt.historyCandidateProduced &&
+        !m_lastExecutionReceipt.historyCommitted;
+    const bool requiresExposure =
+        m_lastExecutionReceipt.exposureRequested &&
+        m_lastExecutionReceipt.exposureExecuted &&
+        m_lastExecutionReceipt.exposureHistoryCandidateProduced &&
+        !m_lastExecutionReceipt.exposureHistoryCommitted;
+    const TAA* const taa = requiresTAA ? m_stack->GetEffect<TAA>() : nullptr;
+    return (!requiresTAA ||
+            (taa != nullptr &&
+             taa->CanCommitHistoryAfterPresent(identity))) &&
+           (!requiresExposure ||
+            m_stack->GetExposureController().CanCommitAfterPresent(identity));
 }
 
 void PostProcessPipelineFeatureAdapter::AbandonTemporalHistoryCandidate() noexcept
@@ -378,6 +470,8 @@ void PostProcessPipelineFeatureAdapter::AbandonTemporalHistoryCandidate() noexce
         return;
     }
 
+    const RenderViewHistoryIdentity abandonedIdentity =
+        m_lastPlanStats.frameInputs.historyIdentity;
     if (TAA* const taa = m_stack->GetEffect<TAA>(); taa != nullptr)
     {
         taa->AbandonPendingHistory();
@@ -386,14 +480,132 @@ void PostProcessPipelineFeatureAdapter::AbandonTemporalHistoryCandidate() noexce
             RefreshExecutionReceipt();
         }
     }
+    m_stack->GetExposureController().AbandonPendingCandidate();
+    if (m_lastExecutionReceipt.exposureRequested)
+    {
+        RefreshExecutionReceipt();
+    }
+    if (m_exposureProbeSourceIdentity.has_value() &&
+        *m_exposureProbeSourceIdentity == abandonedIdentity &&
+        (!m_exposureProbeSourceReceipt.has_value() ||
+         !m_exposureProbeSourceReceipt->exposureHistoryCommitted))
+    {
+        ClearExposureProbeSourceReceipt();
+    }
 }
 
 bool PostProcessPipelineFeatureAdapter::RequiresTemporalHistoryCommit() const noexcept
 {
-    return m_lastExecutionReceipt.taaRequested &&
-           m_lastExecutionReceipt.taaExecuted &&
-           m_lastExecutionReceipt.historyCandidateProduced &&
-           !m_lastExecutionReceipt.historyCommitted;
+    const bool taaRequiresCommit =
+        m_lastExecutionReceipt.taaRequested &&
+        m_lastExecutionReceipt.taaExecuted &&
+        m_lastExecutionReceipt.historyCandidateProduced &&
+        !m_lastExecutionReceipt.historyCommitted;
+    const bool exposureRequiresCommit =
+        m_lastExecutionReceipt.exposureRequested &&
+        m_lastExecutionReceipt.exposureExecuted &&
+        m_lastExecutionReceipt.exposureHistoryCandidateProduced &&
+        !m_lastExecutionReceipt.exposureHistoryCommitted;
+    return taaRequiresCommit || exposureRequiresCommit;
+}
+
+bool PostProcessPipelineFeatureAdapter::RequestExposureQualificationProbe()
+    noexcept
+{
+    if (m_stack == nullptr)
+    {
+        return false;
+    }
+    if (!m_stack->GetExposureController().RequestQualificationProbe())
+    {
+        return false;
+    }
+    m_lastExposureProbe = {};
+    ClearExposureProbeSourceReceipt();
+    return true;
+}
+
+bool PostProcessPipelineFeatureAdapter::CompleteExposureQualificationProbe(
+    const RenderViewHistoryIdentity& identity,
+    RenderPostProcessExecutionReceipt& outReceipt) noexcept
+{
+    outReceipt = {};
+    if (m_stack == nullptr || !identity.IsValid() ||
+        !m_exposureProbeSourceIdentity.has_value() ||
+        !m_exposureProbeSourceReceipt.has_value() ||
+        *m_exposureProbeSourceIdentity != identity)
+    {
+        return false;
+    }
+    ExposureQualificationProbe probe;
+    if (!m_stack->GetExposureController().CompleteQualificationProbe(
+            identity, probe))
+    {
+        return false;
+    }
+    m_lastExposureProbe = probe;
+    RenderPostProcessExecutionReceipt completed =
+        *m_exposureProbeSourceReceipt;
+    if (!completed.exposureProbeRequested ||
+        !completed.exposureHistoryCommitted ||
+        completed.exposureProbeReady || !m_lastExposureProbe.ready ||
+        m_lastExposureProbe.historyIdentity != identity ||
+        m_lastExposureProbe.configurationHash == 0 ||
+        m_lastExposureProbe.candidateStateContentHash == 0 ||
+        m_lastExposureProbe.candidateStateContentHash !=
+            completed.exposureStateContentHash)
+    {
+        ClearExposureProbeSourceReceipt();
+        return false;
+    }
+
+    completed.exposureProbeReady = true;
+    completed.targetEV100 = m_lastExposureProbe.targetEV100;
+    completed.adaptedEV100 = m_lastExposureProbe.adaptedEV100;
+    completed.exposureScale = m_lastExposureProbe.exposureScale;
+    completed.preExposure = m_lastExposureProbe.preExposure;
+    completed.previousPreExposure =
+        m_lastExposureProbe.previousPreExposure;
+    completed.postProcessContentHash = ExtendExposureProbeContentHash(
+        completed.postProcessContentHash, m_lastExposureProbe);
+    if (!completed.IsStructurallyValid())
+    {
+        ClearExposureProbeSourceReceipt();
+        return false;
+    }
+
+    outReceipt = std::move(completed);
+    ClearExposureProbeSourceReceipt();
+    return true;
+}
+
+void PostProcessPipelineFeatureAdapter::SnapshotExposureProbeSourceReceipt()
+    noexcept
+{
+    if (!m_lastExecutionReceipt.IsStructurallyValid() ||
+        !m_lastExecutionReceipt.exposureProbeRequested ||
+        m_lastExecutionReceipt.exposureProbeReady ||
+        !m_lastPlanStats.frameInputs.historyIdentity.IsValid())
+    {
+        return;
+    }
+
+    const RenderViewHistoryIdentity& identity =
+        m_lastPlanStats.frameInputs.historyIdentity;
+    if (m_exposureProbeSourceIdentity.has_value() &&
+        *m_exposureProbeSourceIdentity != identity)
+    {
+        return;
+    }
+    m_exposureProbeSourceIdentity = identity;
+    m_exposureProbeSourceReceipt = m_lastExecutionReceipt;
+}
+
+void PostProcessPipelineFeatureAdapter::ClearExposureProbeSourceReceipt()
+    noexcept
+{
+    m_exposureProbeSourceIdentity.reset();
+    m_exposureProbeSourceReceipt.reset();
 }
 
 RenderFeatureExecutionReceipt
@@ -486,6 +698,54 @@ void PostProcessPipelineFeatureAdapter::RefreshExecutionReceipt()
     receipt.antiAliasingMode = m_stack != nullptr
         ? m_stack->GetSettings().antiAliasingMode
         : RenderAntiAliasingMode::None;
+
+    if (m_stack == nullptr || !m_lastPlanStats.exposureOutputs.IsValid())
+    {
+        m_lastExecutionReceipt = {};
+        return;
+    }
+    const ExposureControllerStats& exposureStats =
+        m_stack->GetExposureController().GetLastStats();
+    receipt.exposureMode = m_stack->GetSettings().exposureSettings.mode;
+    receipt.exposureStateContentHash =
+        m_lastPlanStats.exposureOutputs.candidateStateContentHash;
+    receipt.exposureRequested = exposureStats.requested;
+    receipt.exposurePipelineReady = exposureStats.pipelineReady;
+    receipt.exposureInputsReady = exposureStats.inputsReady;
+    receipt.exposureExecuted = exposureStats.adaptationExecuted &&
+        (receipt.exposureMode == RenderExposureMode::ManualEV100 ||
+         (exposureStats.histogramClearExecuted &&
+          exposureStats.histogramBuildExecuted));
+    receipt.exposureHistogramPassCount =
+        exposureStats.histogramClearDispatchCount +
+        exposureStats.histogramBuildDispatchCount;
+    receipt.exposureAdaptationPassCount =
+        exposureStats.adaptationDispatchCount;
+    receipt.exposureHistoryAvailableBefore =
+        exposureStats.usedCommittedHistory;
+    receipt.exposureHistorySampled = exposureStats.usedCommittedHistory;
+    receipt.exposureHistoryCandidateProduced =
+        exposureStats.candidatePrepared || exposureStats.candidateAbandoned;
+    receipt.exposureHistoryCommitted = exposureStats.candidateCommitted;
+    receipt.exposureHistoryAbandoned = exposureStats.candidateAbandoned;
+    receipt.exposureHistoryResetReasons = exposureStats.historyResetReasons;
+    receipt.exposureProbeRequested =
+        exposureStats.qualificationProbeRequested;
+    const bool matchingExposureProbe = m_lastExposureProbe.ready &&
+        m_lastExposureProbe.historyIdentity ==
+            m_lastPlanStats.frameInputs.historyIdentity &&
+        m_lastExposureProbe.configurationHash ==
+            m_lastPlanStats.exposureOutputs.configurationHash;
+    receipt.exposureProbeReady = matchingExposureProbe;
+    if (matchingExposureProbe)
+    {
+        receipt.targetEV100 = m_lastExposureProbe.targetEV100;
+        receipt.adaptedEV100 = m_lastExposureProbe.adaptedEV100;
+        receipt.exposureScale = m_lastExposureProbe.exposureScale;
+        receipt.preExposure = m_lastExposureProbe.preExposure;
+        receipt.previousPreExposure =
+            m_lastExposureProbe.previousPreExposure;
+    }
 
     uint64 hash = Diagnostics::RVX_DIAGNOSTICS_FNV1A64_OFFSET_BASIS;
     Diagnostics::MixContentHashValue(hash, m_lastPlanStats.planFingerprint);
@@ -590,6 +850,23 @@ void PostProcessPipelineFeatureAdapter::RefreshExecutionReceipt()
         receipt.taaHistoryStoreGraphPassCount = taaStats.historyStoreGraphPassCount;
     }
 
+    const ToneMappingPass* const toneMapping =
+        m_stack->GetEffect<ToneMappingPass>();
+    receipt.toneMapExposureStateHash = toneMapping != nullptr
+        ? toneMapping->GetLastExposureStateContentHash()
+        : 0;
+    const BloomPass* const bloom = m_stack->GetEffect<BloomPass>();
+    receipt.bloomExposureStateHash = receipt.bloomPassCount != 0 && bloom != nullptr
+        ? bloom->GetLastExposureStateContentHash()
+        : 0;
+    const TAA* const exposureTAA =
+        receipt.antiAliasingMode == RenderAntiAliasingMode::TAA
+            ? m_stack->GetEffect<TAA>()
+            : nullptr;
+    receipt.taaExposureStateHash = exposureTAA != nullptr
+        ? exposureTAA->GetLastResolveStats().exposureStateContentHash
+        : 0;
+
     // Temporal state is filled from the actual graph-backed TAA execution,
     // rather than from settings.  Bind it into the receipt fingerprint only
     // after that evidence is available, including the post-Present state.
@@ -612,6 +889,41 @@ void PostProcessPipelineFeatureAdapter::RefreshExecutionReceipt()
     MixFloat(hash, receipt.previousJitterPixels.y);
     Diagnostics::MixContentHashValue(hash, receipt.taaResolveGraphPassCount);
     Diagnostics::MixContentHashValue(hash, receipt.taaHistoryStoreGraphPassCount);
+    Diagnostics::MixContentHashValue(hash, receipt.exposureStateContentHash);
+    Diagnostics::MixContentHashValue(hash, receipt.toneMapExposureStateHash);
+    Diagnostics::MixContentHashValue(hash, receipt.bloomExposureStateHash);
+    Diagnostics::MixContentHashValue(hash, receipt.taaExposureStateHash);
+    Diagnostics::MixContentHashValue(
+        hash, static_cast<uint64>(receipt.exposureMode));
+    Diagnostics::MixContentHashValue(hash, receipt.exposureRequested ? 1u : 0u);
+    Diagnostics::MixContentHashValue(hash, receipt.exposurePipelineReady ? 1u : 0u);
+    Diagnostics::MixContentHashValue(hash, receipt.exposureInputsReady ? 1u : 0u);
+    Diagnostics::MixContentHashValue(hash, receipt.exposureExecuted ? 1u : 0u);
+    Diagnostics::MixContentHashValue(hash, receipt.exposureHistogramPassCount);
+    Diagnostics::MixContentHashValue(hash, receipt.exposureAdaptationPassCount);
+    Diagnostics::MixContentHashValue(
+        hash, receipt.exposureHistoryAvailableBefore ? 1u : 0u);
+    Diagnostics::MixContentHashValue(
+        hash, receipt.exposureHistorySampled ? 1u : 0u);
+    Diagnostics::MixContentHashValue(
+        hash, receipt.exposureHistoryCandidateProduced ? 1u : 0u);
+    Diagnostics::MixContentHashValue(
+        hash, receipt.exposureHistoryCommitted ? 1u : 0u);
+    Diagnostics::MixContentHashValue(
+        hash, receipt.exposureHistoryAbandoned ? 1u : 0u);
+    Diagnostics::MixContentHashValue(
+        hash, static_cast<uint64>(receipt.exposureHistoryResetReasons));
+    Diagnostics::MixContentHashValue(
+        hash, receipt.exposureProbeRequested ? 1u : 0u);
+    Diagnostics::MixContentHashValue(hash, receipt.exposureProbeReady ? 1u : 0u);
+    if (receipt.exposureProbeReady)
+    {
+        MixFloat(hash, receipt.targetEV100);
+        MixFloat(hash, receipt.adaptedEV100);
+        MixFloat(hash, receipt.exposureScale);
+        MixFloat(hash, receipt.preExposure);
+        MixFloat(hash, receipt.previousPreExposure);
+    }
 
     receipt.postProcessContentHash = hash;
     receipt.hdrInputReady =

@@ -8,6 +8,7 @@
  */
 
 #include "Include/BRDF.hlsli"
+#include "Include/Exposure.hlsli"
 #include "Include/Lighting.hlsli"
 
 cbuffer DeferredLightingConstants : register(b0, space0)
@@ -102,6 +103,10 @@ TextureCube IrradianceTexture : register(t16, space0);
 TextureCube PrefilteredEnvironmentTexture : register(t17, space0);
 Texture2D BRDFLUTTexture : register(t18, space0);
 SamplerState IBLLinearClampSampler : register(s19, space0);
+// Canonical committed pre-exposure state. Deferred geometry deliberately
+// leaves GBuffer data in physical scene-linear units; only this HDR producer
+// applies the scale.
+StructuredBuffer<RVXExposureState> ExposureStateBuffer : register(t21, space0);
 
 static const uint RVX_INVALID_CLUSTER_INDEX = 0xffffffffu;
 static const uint RVX_MAX_CLUSTERED_LIGHTS_PER_PIXEL = 100u;
@@ -288,6 +293,17 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         return;
     }
 
+    const RVXExposureState exposureState = ExposureStateBuffer[0];
+    if (!RVXExposureStateIsValid(exposureState))
+    {
+        // Do not approximate corrupt state with a unit scale. The CPU graph
+        // contract makes the pass fail before execution for a missing handle;
+        // zero is the defensive shader-side failure result.
+        HDRSceneColor[pixel] = float4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+    const float preExposure = RVXExposureProducerScale(exposureState);
+
     const float deviceDepth = DeviceDepth.Load(int3(pixel, 0));
     if (IsBackgroundDepth(deviceDepth))
     {
@@ -328,5 +344,6 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         pixel, normal, viewDir, worldPos, albedoAO.rgb, metallic, roughness);
     const float3 ambient = EvaluateEnvironmentIBL(
         normal, viewDir, albedoAO.rgb, metallic, roughness, saturate(albedoAO.a));
-    HDRSceneColor[pixel] = float4(directional + local + ambient + emissive, 1.0);
+    HDRSceneColor[pixel] = float4(
+        (directional + local + ambient + emissive) * preExposure, 1.0);
 }

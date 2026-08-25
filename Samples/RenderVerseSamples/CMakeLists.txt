@@ -6,6 +6,7 @@ add_executable(RenderVerseSamples
     main.cpp
     RegisterSamples.cpp
     Scenes/AnimationCharacterSample.cpp
+    Scenes/AutoExposureSample.cpp
     Scenes/AssetGalleryShowcaseSample.cpp
     Scenes/AssetStreamingSample.cpp
     Scenes/GPUDrivenShowcaseSample.cpp
@@ -15,6 +16,7 @@ add_executable(RenderVerseSamples
     Scenes/ModelViewerSample.cpp
     Scenes/PBRMaterialsSample.cpp
     Scenes/PhysicsSandboxSample.cpp
+    Scenes/PhysicalExposureSample.cpp
     Scenes/PostProcessingShowcaseSample.cpp
     Scenes/RenderPipelineShowcaseSample.cpp
     Scenes/RenderingStressSample.cpp

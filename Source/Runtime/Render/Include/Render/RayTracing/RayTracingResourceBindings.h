@@ -55,6 +55,8 @@ namespace RVX
             constexpr uint32 RVX_RT_REFLECTION_NORMAL_BUFFERS_BINDING = 524;
             constexpr uint32 RVX_RT_REFLECTION_TANGENT_BUFFERS_BINDING = 652;
             constexpr uint32 RVX_RT_REFLECTION_SCENE_VELOCITY_BINDING = 780;
+            // Exact committed per-view pre-exposure state shared by HDR producers.
+            constexpr uint32 RVX_RT_REFLECTION_EXPOSURE_STATE_BINDING = 781;
 
             constexpr uint32 RVX_RT_REFLECTION_MAX_MATERIAL_TEXTURES = 256;
             constexpr uint32 RVX_RT_REFLECTION_MAX_GEOMETRY_BUFFERS = 128;

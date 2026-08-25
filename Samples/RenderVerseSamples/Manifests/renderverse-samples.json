@@ -484,6 +484,112 @@
       "deterministicQualification": true
     },
     {
+      "id": "physical-exposure",
+      "domain": "rendering",
+      "intent": "regression",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [
+        "RENDER.CAPABILITY.PHYSICAL_MANUAL_EXPOSURE"
+      ],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "pbr-material-grid"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1016
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 1.35, 4.0],
+          "target": [0.0, 0.35, 0.0],
+          "verticalFieldOfViewDegrees": 45.0,
+          "nearPlane": 0.05,
+          "farPlane": 100.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [120],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [
+          {
+            "id": "frame",
+            "x": 0.0,
+            "y": 0.0,
+            "width": 1.0,
+            "height": 1.0
+          }
+        ],
+        "metrics": [
+          {
+            "code": "VISUAL.METRIC.LUMA_RANGE",
+            "regionOfInterestId": "frame",
+            "minimum": 8.0,
+            "maximum": null
+          }
+        ]
+      },
+      "deterministicQualification": true
+    },
+    {
+      "id": "auto-exposure",
+      "domain": "rendering",
+      "intent": "regression",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [
+        "RENDER.CAPABILITY.HISTOGRAM_AUTO_EXPOSURE"
+      ],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "pbr-material-grid"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1017
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 1.35, 4.0],
+          "target": [0.0, 0.35, 0.0],
+          "verticalFieldOfViewDegrees": 45.0,
+          "nearPlane": 0.05,
+          "farPlane": 100.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [180],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [
+          {
+            "id": "frame",
+            "x": 0.0,
+            "y": 0.0,
+            "width": 1.0,
+            "height": 1.0
+          }
+        ],
+        "metrics": [
+          {
+            "code": "VISUAL.METRIC.LUMA_RANGE",
+            "regionOfInterestId": "frame",
+            "minimum": 8.0,
+            "maximum": null
+          }
+        ]
+      },
+      "deterministicQualification": true
+    },
+    {
       "id": "temporal-aa",
       "domain": "rendering",
       "intent": "regression",

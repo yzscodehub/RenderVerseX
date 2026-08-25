@@ -3300,6 +3300,203 @@ TEST(RenderGraphValidation, MultiQueueRecordsDistinctContextsForGraphicsComputeG
 }
 
 TEST(RenderGraphValidation,
+     MultiQueueKeepsPinnedComputeOnGraphicsAndSynchronizesAsyncCompute)
+{
+    FakeDevice device;
+    auto& capabilities = device.MutableCapabilities();
+    capabilities.supportsAsyncCompute = true;
+    capabilities.supportsDefaultQueueFenceSignal = true;
+    capabilities.supportsQueueSubmissionPlan = true;
+    capabilities.queueTopology.logicalQueueDomains = {
+        GPUQueueDomain::Graphics,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Copy};
+    capabilities.queueTopology.activeDomainCount = 3;
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    ASSERT_TRUE(RenderGraphValidationAccess::SetQueueExecutionMode(
+        graph, RenderGraph::QueueExecutionMode::MultiQueue));
+
+    RHIBufferDesc desc;
+    desc.size = 1024;
+    desc.usage = RHIBufferUsage::Structured |
+                 RHIBufferUsage::UnorderedAccess;
+    FakeBuffer pinnedBuffer(desc);
+    FakeBuffer asyncBuffer(desc);
+    const RGBufferHandle pinned = RenderGraphValidationAccess::ImportBuffer(
+        graph, &pinnedBuffer, RHIResourceState::Common);
+    const RGBufferHandle async = RenderGraphValidationAccess::ImportBuffer(
+        graph, &asyncBuffer, RHIResourceState::Common);
+
+    struct Data
+    {
+        RGBufferHandle first{};
+        RGBufferHandle second{};
+    };
+
+    graph.AddPass<Data>(
+        "PinnedComputeWritesPersistentState",
+        RenderGraphPassType::Compute,
+        RenderGraphQueueAffinity::Graphics,
+        [pinned](RenderGraphBuilder& builder, Data& data)
+        {
+            data.first = builder.Write(
+                pinned, RHIResourceState::UnorderedAccess);
+        },
+        [](const Data&, RHICommandContext&) {});
+    graph.AddPass<Data>(
+        "AsyncComputeWritesIndependentState",
+        RenderGraphPassType::Compute,
+        [async](RenderGraphBuilder& builder, Data& data)
+        {
+            data.first = builder.Write(
+                async, RHIResourceState::UnorderedAccess);
+        },
+        [](const Data&, RHICommandContext&) {});
+    graph.AddPass<Data>(
+        "GraphicsConsumesPinnedAndAsyncState",
+        RenderGraphPassType::Graphics,
+        [pinned, async](RenderGraphBuilder& builder, Data& data)
+        {
+            data.first = builder.ReadWrite(pinned);
+            data.second = builder.ReadWrite(async);
+        },
+        [](const Data&, RHICommandContext&) {});
+    graph.SetExportState(pinned, RHIResourceState::ShaderResource);
+    graph.SetExportState(async, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(diagnostics.passes.size(), 3u);
+    EXPECT_EQ(diagnostics.passes[0].type, RenderGraphPassType::Compute);
+    EXPECT_EQ(diagnostics.passes[0].queueAffinity,
+              RenderGraphQueueAffinity::Graphics);
+    EXPECT_EQ(diagnostics.passes[0].plannedExecutionQueue,
+              RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.passes[1].queueAffinity,
+              RenderGraphQueueAffinity::Default);
+    EXPECT_EQ(diagnostics.passes[1].plannedExecutionQueue,
+              RenderGraph::DiagnosticExecutionQueue::Compute);
+    EXPECT_TRUE(std::any_of(
+        diagnostics.plannedQueueSyncs.begin(),
+        diagnostics.plannedQueueSyncs.end(),
+        [](const RenderGraph::PlannedQueueSyncDiagnostic& sync)
+        {
+            return sync.sourceQueue ==
+                       RenderGraph::DiagnosticExecutionQueue::Compute &&
+                   sync.targetQueue ==
+                       RenderGraph::DiagnosticExecutionQueue::Graphics &&
+                   sync.reason ==
+                       RenderGraph::DiagnosticSyncReason::CrossQueueDependency;
+        }));
+
+    RenderGraph::RecordedQueueSubmission recorded;
+    ASSERT_TRUE(RenderGraphValidationAccess::RecordQueueSubmission(graph, recorded));
+    ASSERT_TRUE(ValidateRHIQueueSubmissionPlan(recorded.plan));
+    // The imported async buffer first needs an explicit Graphics release to
+    // the Compute queue, followed by the pinned Graphics, regular Compute,
+    // consuming Graphics, and terminal Graphics batches.
+    ASSERT_EQ(recorded.plan.batches.size(), 5u);
+    EXPECT_EQ(recorded.plan.batches[0].queueType,
+              RHICommandQueueType::Graphics);
+    EXPECT_EQ(recorded.plan.batches[1].queueType,
+              RHICommandQueueType::Graphics);
+    EXPECT_EQ(recorded.plan.batches[2].queueType,
+              RHICommandQueueType::Compute);
+    EXPECT_EQ(recorded.plan.batches[3].queueType,
+              RHICommandQueueType::Graphics);
+    EXPECT_EQ(recorded.plan.batches[4].queueType,
+              RHICommandQueueType::Graphics);
+}
+
+TEST(RenderGraphValidation, QueueAffinityIsPlanHashInputAndRejectsIllegalPairs)
+{
+    RHIBufferDesc desc;
+    desc.size = 1024;
+    desc.usage = RHIBufferUsage::Structured |
+                 RHIBufferUsage::UnorderedAccess;
+
+    FakeBuffer defaultBuffer(desc);
+    RenderGraph defaultGraph;
+    const RGBufferHandle defaultHandle =
+        RenderGraphValidationAccess::ImportBuffer(
+            defaultGraph, &defaultBuffer, RHIResourceState::Common);
+    struct Data
+    {
+        RGBufferHandle buffer{};
+    };
+    defaultGraph.AddPass<Data>(
+        "ComputeAffinityHashInput",
+        RenderGraphPassType::Compute,
+        [defaultHandle](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.Write(
+                defaultHandle, RHIResourceState::UnorderedAccess);
+        },
+        [](const Data&, RHICommandContext&) {});
+    defaultGraph.SetExportState(defaultHandle, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(defaultGraph);
+    ASSERT_TRUE(defaultGraph.GetCompileStats().compileValid);
+
+    FakeBuffer graphicsBuffer(desc);
+    RenderGraph graphicsGraph;
+    const RGBufferHandle graphicsHandle =
+        RenderGraphValidationAccess::ImportBuffer(
+            graphicsGraph, &graphicsBuffer, RHIResourceState::Common);
+    graphicsGraph.AddPass<Data>(
+        "ComputeAffinityHashInput",
+        RenderGraphPassType::Compute,
+        RenderGraphQueueAffinity::Graphics,
+        [graphicsHandle](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.Write(
+                graphicsHandle, RHIResourceState::UnorderedAccess);
+        },
+        [](const Data&, RHICommandContext&) {});
+    graphicsGraph.SetExportState(graphicsHandle, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(graphicsGraph);
+    ASSERT_TRUE(graphicsGraph.GetCompileStats().compileValid);
+
+    const RenderGraph::Diagnostics defaultDiagnostics = defaultGraph.GetDiagnostics();
+    const RenderGraph::Diagnostics graphicsDiagnostics = graphicsGraph.GetDiagnostics();
+    ASSERT_EQ(defaultDiagnostics.passes.size(), 1u);
+    ASSERT_EQ(graphicsDiagnostics.passes.size(), 1u);
+    EXPECT_EQ(defaultDiagnostics.passes[0].queueAffinity,
+              RenderGraphQueueAffinity::Default);
+    EXPECT_EQ(graphicsDiagnostics.passes[0].queueAffinity,
+              RenderGraphQueueAffinity::Graphics);
+    EXPECT_EQ(defaultDiagnostics.passes[0].plannedExecutionQueue,
+              graphicsDiagnostics.passes[0].plannedExecutionQueue);
+    EXPECT_NE(defaultGraph.GetCompileStats().planHash,
+              graphicsGraph.GetCompileStats().planHash);
+
+    FakeBuffer invalidBuffer(desc);
+    RenderGraph invalidGraph;
+    const RGBufferHandle invalidHandle =
+        RenderGraphValidationAccess::ImportBuffer(
+            invalidGraph, &invalidBuffer, RHIResourceState::Common);
+    invalidGraph.AddPass<Data>(
+        "InvalidComputeCopyAffinity",
+        RenderGraphPassType::Compute,
+        RenderGraphQueueAffinity::Copy,
+        [invalidHandle](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.Write(
+                invalidHandle, RHIResourceState::UnorderedAccess);
+        },
+        [](const Data&, RHICommandContext&) {});
+    invalidGraph.SetExportState(invalidHandle, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(invalidGraph);
+    EXPECT_FALSE(invalidGraph.GetCompileStats().compileValid);
+    EXPECT_EQ(invalidGraph.GetCompileStats().validationErrorCount, 1u);
+    ASSERT_EQ(invalidGraph.GetCompileDiagnostics().size(), 1u);
+    EXPECT_NE(invalidGraph.GetCompileDiagnostics()[0].find("incompatible"),
+              std::string::npos);
+}
+
+TEST(RenderGraphValidation,
      ParallelRecordingRunsIndependentDependencyLevelBatchesConcurrently)
 {
     ScopedJobSystem jobs(2);
@@ -5061,6 +5258,160 @@ TEST(RenderGraphValidation,
 
         RenderGraphExecution execution =
             RenderGraphValidationAccess::TakeExecution(graph, std::move(recorded));
+        ASSERT_TRUE(execution.AbortUnsubmitted());
+    }
+}
+
+TEST(RenderGraphValidation,
+     ScopedAccessReplayAdvancesAfterLayeredTextureWriteForMultiQueueAndGraphicsOnly)
+{
+    struct LayerWriteData
+    {
+        RGTextureHandle layer;
+    };
+    struct WholeReadData
+    {
+        RGTextureHandle texture;
+        RGBufferHandle completion;
+    };
+    struct FinalReadData
+    {
+        RGTextureHandle texture;
+        RGBufferHandle completion;
+        RGTextureHandle output;
+    };
+
+    const auto addLayeredReplayChain = [](RenderGraph& graph,
+                                          uint32& callbackCount)
+    {
+        RHITextureDesc layeredDesc = RHITextureDesc::RenderTarget(
+            64, 64, RHIFormat::RGBA8_UNORM);
+        layeredDesc.arraySize = 2;
+        layeredDesc.debugName = "ScopedAccessReplay.Layered";
+        const RGTextureHandle layered = graph.CreateTexture(layeredDesc);
+
+        RHITextureDesc outputDesc = RHITextureDesc::RenderTarget(
+            64, 64, RHIFormat::RGBA8_UNORM);
+        outputDesc.debugName = "ScopedAccessReplay.Output";
+        const RGTextureHandle output = graph.CreateTexture(outputDesc);
+
+        RHIBufferDesc completionDesc;
+        completionDesc.size = 64;
+        completionDesc.usage = RHIBufferUsage::Structured |
+            RHIBufferUsage::UnorderedAccess;
+        completionDesc.debugName = "ScopedAccessReplay.Completion";
+        const RGBufferHandle completion = graph.CreateBuffer(completionDesc);
+
+        RGTextureHandle layer = layered;
+        layer.hasSubresourceRange = true;
+        layer.subresourceRange = {
+            0, 1, 1, 1, RHITextureAspect::Color};
+
+        graph.AddPass<LayerWriteData>(
+            "ScopedAccessReplayLayeredWrite",
+            RenderGraphPassType::Graphics,
+            [layer](RenderGraphBuilder& builder, LayerWriteData& data)
+            {
+                data.layer = builder.Write(
+                    layer, RHIResourceState::RenderTarget);
+            },
+            [&callbackCount](const LayerWriteData&, RHICommandContext&)
+            {
+                ++callbackCount;
+            });
+        graph.AddPass<WholeReadData>(
+            "ScopedAccessReplayWholeComputeRead",
+            RenderGraphPassType::Compute,
+            [layered, completion](RenderGraphBuilder& builder,
+                                  WholeReadData& data)
+            {
+                data.texture = builder.Read(
+                    layered,
+                    RHIResourceState::ShaderResource,
+                    RHIShaderStage::Compute);
+                data.completion = builder.Write(
+                    completion, RHIResourceState::UnorderedAccess);
+            },
+            [&callbackCount](const WholeReadData&, RHICommandContext&)
+            {
+                ++callbackCount;
+            });
+        graph.AddPass<FinalReadData>(
+            "ScopedAccessReplayWholeGraphicsRead",
+            RenderGraphPassType::Graphics,
+            [layered, completion, output](RenderGraphBuilder& builder,
+                                          FinalReadData& data)
+            {
+                data.texture = builder.Read(
+                    layered,
+                    RHIResourceState::ShaderResource,
+                    RHIShaderStage::Pixel);
+                data.completion = builder.Read(
+                    completion,
+                    RHIResourceState::ShaderResource,
+                    RHIShaderStage::Pixel);
+                data.output = builder.Write(
+                    output, RHIResourceState::RenderTarget);
+            },
+            [&callbackCount](const FinalReadData&, RHICommandContext&)
+            {
+                ++callbackCount;
+            });
+        graph.SetExportState(output, RHIResourceState::ShaderResource);
+    };
+
+    {
+        FakeDevice device;
+        auto& capabilities = device.MutableCapabilities();
+        capabilities.supportsAsyncCompute = true;
+        capabilities.supportsDefaultQueueFenceSignal = true;
+        capabilities.supportsQueueSubmissionPlan = true;
+        capabilities.queueTopology.logicalQueueDomains = {
+            GPUQueueDomain::Graphics,
+            GPUQueueDomain::Compute,
+            GPUQueueDomain::Copy};
+        capabilities.queueTopology.activeDomainCount = 3;
+
+        RenderGraph graph;
+        RenderGraphValidationAccess::SetDevice(graph, &device);
+        ASSERT_TRUE(RenderGraphValidationAccess::SetQueueExecutionMode(
+            graph, RenderGraph::QueueExecutionMode::MultiQueue));
+        uint32 callbackCount = 0;
+        addLayeredReplayChain(graph, callbackCount);
+        RenderGraphValidationAccess::Compile(graph);
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+        EXPECT_EQ(RenderGraph::QueueExecutionMode::MultiQueue,
+                  graph.GetQueueExecutionMode());
+
+        RenderGraph::RecordedQueueSubmission recorded;
+        ASSERT_TRUE(RenderGraphValidationAccess::RecordQueueSubmission(
+            graph, recorded));
+        EXPECT_EQ(3u, callbackCount);
+        EXPECT_EQ(0u, graph.GetCompileStats().accessSnapshotMismatchCount);
+
+        RenderGraphExecution execution =
+            RenderGraphValidationAccess::TakeExecution(graph, std::move(recorded));
+        ASSERT_TRUE(execution.AbortUnsubmitted());
+    }
+
+    {
+        FakeDevice device;
+        RenderGraph graph;
+        RenderGraphValidationAccess::SetDevice(graph, &device);
+        EXPECT_EQ(RenderGraph::QueueExecutionMode::GraphicsOnly,
+                  graph.GetQueueExecutionMode());
+        uint32 callbackCount = 0;
+        addLayeredReplayChain(graph, callbackCount);
+        RenderGraphValidationAccess::Compile(graph);
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+        FakeCommandContext context;
+        RenderGraphValidationAccess::Execute(graph, context);
+        EXPECT_EQ(3u, callbackCount);
+        EXPECT_EQ(0u, graph.GetCompileStats().accessSnapshotMismatchCount);
+
+        RenderGraphExecution execution =
+            RenderGraphValidationAccess::TakeExecution(graph);
         ASSERT_TRUE(execution.AbortUnsubmitted());
     }
 }

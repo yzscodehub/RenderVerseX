@@ -2655,6 +2655,44 @@ namespace
             result.postProcessReceiptStructurallyValid =
                 postProcess.IsStructurallyValid();
             result.planContentHash = postProcess.postProcessContentHash;
+            // GFX12 integration point: this is a direct value projection of
+            // renderer-owned receipt fields. Samples never derive exposure
+            // execution from their requested lighting or post-process policy.
+            result.exposureStateContentHash =
+                postProcess.exposureStateContentHash;
+            result.toneMapExposureStateHash =
+                postProcess.toneMapExposureStateHash;
+            result.bloomExposureStateHash =
+                postProcess.bloomExposureStateHash;
+            result.taaExposureStateHash = postProcess.taaExposureStateHash;
+            result.exposureMode = postProcess.exposureMode;
+            result.exposureRequested = postProcess.exposureRequested;
+            result.exposurePipelineReady = postProcess.exposurePipelineReady;
+            result.exposureInputsReady = postProcess.exposureInputsReady;
+            result.exposureExecuted = postProcess.exposureExecuted;
+            result.exposureHistogramPassCount =
+                postProcess.exposureHistogramPassCount;
+            result.exposureAdaptationPassCount =
+                postProcess.exposureAdaptationPassCount;
+            result.exposureHistoryAvailableBefore =
+                postProcess.exposureHistoryAvailableBefore;
+            result.exposureHistorySampled =
+                postProcess.exposureHistorySampled;
+            result.exposureHistoryCandidateProduced =
+                postProcess.exposureHistoryCandidateProduced;
+            result.exposureHistoryCommitted =
+                postProcess.exposureHistoryCommitted;
+            result.exposureHistoryAbandoned =
+                postProcess.exposureHistoryAbandoned;
+            result.exposureHistoryResetReasons =
+                postProcess.exposureHistoryResetReasons;
+            result.exposureProbeRequested = postProcess.exposureProbeRequested;
+            result.exposureProbeReady = postProcess.exposureProbeReady;
+            result.targetEV100 = postProcess.targetEV100;
+            result.adaptedEV100 = postProcess.adaptedEV100;
+            result.exposureScale = postProcess.exposureScale;
+            result.preExposure = postProcess.preExposure;
+            result.previousPreExposure = postProcess.previousPreExposure;
             result.toneMappingPassCount = postProcess.toneMapPassCount;
             result.bloomPassCount = postProcess.bloomPassCount;
             result.colorGradingPassCount =
@@ -4003,11 +4041,12 @@ namespace
             return false;
         }
         if (options.common.gpuSceneCullingQualificationEnabled ||
-            options.common.directOpaqueRasterReadbackQualificationEnabled)
+            options.common.directOpaqueRasterReadbackQualificationEnabled ||
+            options.common.exposureQualificationProbeEnabled)
         {
-            // The one-shot capture is consumed by one frame and observed only
-            // after a later owner-side completion check. Reuse the bounded
-            // readiness wait instead of coupling it to pixel capture.
+            // One-shot readbacks are consumed by the target frame and observed
+            // only after a later Render-owner completion poll. Reuse the
+            // bounded readiness wait instead of coupling this to pixel capture.
             options.waitReady = true;
             if (options.common.frames == 0)
             {
@@ -4982,6 +5021,8 @@ namespace
             const bool qualificationEnabled =
                 options.common.gpuSceneCullingQualificationEnabled ||
                 directRasterReadbackQualificationEnabled;
+            const bool exposureQualificationProbeEnabled =
+                options.common.exposureQualificationProbeEnabled;
             const auto hasQualificationComparison =
                 [directRasterReadbackQualificationEnabled](
                     const SampleRenderDiagnostics& value)
@@ -5013,12 +5054,29 @@ namespace
                     ? render->RequestDirectOpaqueRasterReadbackQualificationCapture()
                     : render->RequestGPUSceneCullingQualificationCapture();
             };
+            const auto hasExposureProbeForTarget =
+                [](const RenderDiagnosticsSnapshot& value, uint64 target)
+            {
+                const RenderExecutionReceipt& receipt =
+                    value.frameFeatures.executionReceipt;
+                return receipt.IsStructurallyValid() && receipt.available &&
+                       receipt.presented && receipt.succeeded &&
+                       receipt.frameIdentity.frameSequence == target &&
+                       receipt.postProcess.exposureProbeRequested &&
+                       receipt.postProcess.exposureProbeReady &&
+                       receipt.postProcess.exposureHistoryCandidateProduced &&
+                       receipt.postProcess.exposureHistoryCommitted &&
+                       !receipt.postProcess.exposureHistoryAbandoned;
+            };
             bool gpuSceneCullingQualificationRequestAccepted =
                 !qualificationEnabled;
+            bool exposureQualificationProbeRequestAccepted =
+                !exposureQualificationProbeEnabled;
             uint64 gpuSceneCullingQualificationTargetFrameSequence = 0;
             uint64 gpuSceneCullingQualificationTargetPublishedSequence = 0;
             uint64 gpuSceneCullingQualificationTargetSubmittedSequence = 0;
             uint64 gpuSceneCullingQualificationTargetPresentedSequence = 0;
+            uint64 exposureQualificationProbeTargetFrameSequence = 0;
 
             if (setupSucceeded)
             {
@@ -5048,6 +5106,37 @@ namespace
                     {
                         engine.RequestShutdown();
                         break;
+                    }
+
+                    if (exposureQualificationProbeEnabled &&
+                        exposureQualificationProbeTargetFrameSequence != 0 &&
+                        !finalRenderDrainRequested)
+                    {
+                        // The target image already presented. Poll only the
+                        // Render owner until its explicit probe completion
+                        // supplements that exact frame's immutable receipt.
+                        if (std::chrono::steady_clock::now() >= readinessDeadline)
+                        {
+                            readinessTimedOut = true;
+                            error =
+                                "Exposure qualification probe did not complete for the final target frame";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        diagnostics = frameDriver.PumpRenderProgressOnce();
+                        const SampleRenderDiagnostics completionDiagnostics =
+                            MakeSampleRenderDiagnostics(diagnostics, engine);
+                        sample->ObserveDiagnostics(completionDiagnostics,
+                                                   context.assessment);
+                        if (hasExposureProbeForTarget(
+                                diagnostics,
+                                exposureQualificationProbeTargetFrameSequence))
+                        {
+                            captureExecutionReceipt =
+                                diagnostics.frameFeatures.executionReceipt;
+                            engine.RequestShutdown();
+                        }
+                        continue;
                     }
 
                     if (qualificationEnabled &&
@@ -5396,6 +5485,16 @@ namespace
                             engine.RequestShutdown();
                             break;
                         }
+                        if (!sample->BeginDeterministicEpoch(context, error))
+                        {
+                            if (error.empty())
+                            {
+                                error =
+                                    "Sample rejected the deterministic epoch reset";
+                            }
+                            engine.RequestShutdown();
+                            break;
+                        }
                         if (!applyContractCamera(true, error))
                         {
                             engine.RequestShutdown();
@@ -5468,6 +5567,10 @@ namespace
                           !resizePending &&
                           diagnostics.surfaceWidth == options.common.width &&
                           diagnostics.surfaceHeight == options.common.height));
+                    const bool exposureProbeTargetFrame =
+                        exposureQualificationProbeEnabled &&
+                        exposureQualificationProbeTargetFrameSequence == 0 &&
+                        (fixedCaptureFrame || readyCaptureFrame);
                     const bool captureFrame =
                         (!options.common.screenshotPath.empty() ||
                          options.common.pixelProbeEnabled) &&
@@ -5507,6 +5610,18 @@ namespace
                             error = directRasterReadbackQualificationEnabled
                                 ? "Render runtime rejected final Direct Opaque raster readback qualification capture"
                                 : "Render runtime rejected final GPUScene culling qualification capture";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                    }
+                    if (exposureProbeTargetFrame)
+                    {
+                        exposureQualificationProbeRequestAccepted =
+                            render->RequestExposureQualificationProbe();
+                        if (!exposureQualificationProbeRequestAccepted)
+                        {
+                            error =
+                                "Render runtime rejected the explicit exposure qualification probe";
                             engine.RequestShutdown();
                             break;
                         }
@@ -5617,6 +5732,22 @@ namespace
                             {
                                 error =
                                     "Qualification target did not retain exact presentation provenance";
+                                engine.RequestShutdown();
+                            }
+                        }
+                        if (exposureProbeTargetFrame && waitResult.Reached())
+                        {
+                            exposureQualificationProbeTargetFrameSequence =
+                                targetSequence;
+                            if (diagnostics.lastPublishedFrameSequence !=
+                                    targetSequence ||
+                                diagnostics.lastSubmittedFrameSequence !=
+                                    targetSequence ||
+                                diagnostics.lastPresentedFrameSequence !=
+                                    targetSequence)
+                            {
+                                error =
+                                    "Exposure qualification target did not retain exact presentation provenance";
                                 engine.RequestShutdown();
                             }
                         }
@@ -5909,7 +6040,12 @@ namespace
                                   frameReadinessDiagnostics) &&
                               qualificationMatchesTargetFrame(
                                   frameReadinessDiagnostics,
-                                  gpuSceneCullingQualificationTargetFrameSequence)));
+                                  gpuSceneCullingQualificationTargetFrameSequence))) &&
+                            (!exposureQualificationProbeEnabled ||
+                             (exposureQualificationProbeTargetFrameSequence != 0 &&
+                              hasExposureProbeForTarget(
+                                  diagnostics,
+                                  exposureQualificationProbeTargetFrameSequence)));
                         const bool requestedRunComplete =
                             lifetimeQualification
                                 ? lifetimeQualification->IsComplete() &&
@@ -6092,6 +6228,31 @@ namespace
                         : "GPUScene culling qualification reported a value mismatch";
                 }
             }
+            if (exposureQualificationProbeEnabled)
+            {
+                const bool exposureProbeCompleted =
+                    exposureQualificationProbeTargetFrameSequence != 0 &&
+                    hasExposureProbeForTarget(
+                        diagnostics,
+                        exposureQualificationProbeTargetFrameSequence) &&
+                    captureExecutionReceipt.has_value() &&
+                    captureExecutionReceipt->frameIdentity.frameSequence ==
+                        exposureQualificationProbeTargetFrameSequence &&
+                    captureExecutionReceipt->postProcess.exposureProbeRequested &&
+                    captureExecutionReceipt->postProcess.exposureProbeReady;
+                succeeded &= exposureQualificationProbeRequestAccepted &&
+                             exposureProbeCompleted;
+                if (!exposureQualificationProbeRequestAccepted && error.empty())
+                {
+                    error =
+                        "Render runtime rejected the explicit exposure qualification probe";
+                }
+                else if (!exposureProbeCompleted && error.empty())
+                {
+                    error =
+                        "Exposure qualification probe did not complete for the capture frame";
+                }
+            }
             if (!succeeded && error.empty())
             {
                 error = "Sample did not produce a presented, compiled render frame";
@@ -6195,6 +6356,8 @@ namespace
                                                        .directOpaqueRasterReadbackQualificationEnabled
                                               ? RVX_SAMPLE_REPORT_PIXEL_PROBE_SCHEMA_VERSION
                                               : RVX_SAMPLE_REPORT_PRE_VISUAL_CONTRACT_SCHEMA_VERSION);
+            report.validationRunId =
+                ReadEnvironmentString("RVX_VALIDATION_RUN_ID");
             report.scenario.contractRevision = 0;
             report.scenario.phase = "not-applicable";
             report.sampleName = registeredInfo->id;
@@ -6850,6 +7013,22 @@ namespace
                      std::chrono::steady_clock::now() < teardownDeadline);
             const EngineShutdownDiagnostics& shutdownDiagnostics =
                 engine.GetLastShutdownDiagnostics();
+            const RenderDiagnosticsSnapshot finalRenderDiagnostics =
+                render->GetDiagnosticsSnapshot();
+            const RenderNativeValidationDiagnostics& finalNativeValidation =
+                finalRenderDiagnostics.nativeValidation;
+            report.renderDiagnostics.nativeValidationAvailable =
+                finalNativeValidation.available;
+            report.renderDiagnostics.nativeValidationEnabled =
+                finalNativeValidation.enabled;
+            report.renderDiagnostics.nativeValidationReadComplete =
+                finalNativeValidation.readComplete;
+            report.renderDiagnostics.nativeValidationWarningCount =
+                finalNativeValidation.warningCount;
+            report.renderDiagnostics.nativeValidationErrorCount =
+                finalNativeValidation.errorCount;
+            report.renderDiagnostics.nativeValidationCorruptionCount =
+                finalNativeValidation.corruptionCount;
             static_cast<void>(assessmentSession.RecordCheckpoint(
                 AssessmentCheckpoints::EngineShutdownComplete));
             AssessmentSnapshot shutdownSnapshot;
@@ -6958,6 +7137,38 @@ namespace
                     {{AssessmentCode("ENGINE.TEARDOWN.CLEAN"),
                       "Scene, render, jobs, and worlds retire before shutdown ends."},
                      AssessmentCheckpoints::EngineShutdownComplete}));
+            }
+
+            if (finalNativeValidation.available &&
+                (finalNativeValidation.errorCount != 0 ||
+                 finalNativeValidation.corruptionCount != 0))
+            {
+                succeeded = false;
+                if (error.empty())
+                {
+                    error =
+                        "Native graphics validation reported an error during shutdown";
+                }
+                static_cast<void>(assessmentSession.RecordFinding(
+                    MakeHostFinding(
+                        "RHI.VALIDATION.SHUTDOWN_ERROR",
+                        "RHI",
+                        "ENGINE.TEARDOWN.CLEAN",
+                        AssessmentCheckpoints::EngineShutdownComplete,
+                        FindingClass::ContractViolation,
+                        finalNativeValidation.corruptionCount != 0
+                            ? FindingSeverity::Fatal
+                            : FindingSeverity::Error,
+                        FindingConfidence::Confirmed,
+                        "The final native validation snapshot reported errors after RHI child teardown.",
+                        "Final native validation error and corruption counts are zero.",
+                        "errors=" +
+                            std::to_string(finalNativeValidation.errorCount) +
+                            ", corruption=" +
+                            std::to_string(
+                                finalNativeValidation.corruptionCount),
+                        true,
+                        "Shutdown validation failures must fail the Sample process and report.")));
             }
 
             const SampleAssessmentReport assessmentReport =

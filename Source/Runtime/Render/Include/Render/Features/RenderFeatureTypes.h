@@ -8,6 +8,7 @@
 #include "Core/Types.h"
 #include "Render/PostProcess/PostProcessTypes.h"
 #include "RenderContracts/FeatureChannelContracts.h"
+#include "RenderContracts/RenderExposure.h"
 #include "RenderContracts/RenderFeatureChannelRegistry.h"
 #include "RenderContracts/RenderFrameTypes.h"
 #include "RenderContracts/RenderPipelineProfile.h"
@@ -15,6 +16,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -585,6 +587,36 @@ namespace RVX
     struct RenderPostProcessExecutionReceipt
     {
         uint64 postProcessContentHash = 0;
+        /** Immutable GPU exposure-state identity shared by every HDR consumer. */
+        uint64 exposureStateContentHash = 0;
+        uint64 toneMapExposureStateHash = 0;
+        uint64 bloomExposureStateHash = 0;
+        uint64 taaExposureStateHash = 0;
+        RenderExposureMode exposureMode = RenderExposureMode::ManualEV100;
+        bool exposureRequested = false;
+        bool exposurePipelineReady = false;
+        bool exposureInputsReady = false;
+        bool exposureExecuted = false;
+        /** Clear + build nodes for HistogramAuto; zero for ManualEV100. */
+        uint32 exposureHistogramPassCount = 0;
+        /** One GPU resolve/adaptation node for both exposure modes. */
+        uint32 exposureAdaptationPassCount = 0;
+        bool exposureHistoryAvailableBefore = false;
+        bool exposureHistorySampled = false;
+        bool exposureHistoryCandidateProduced = false;
+        bool exposureHistoryCommitted = false;
+        bool exposureHistoryAbandoned = false;
+        RenderHistoryResetReason exposureHistoryResetReasons =
+            RenderHistoryResetReason::None;
+        /** Optional qualification-only state readback; never required at runtime. */
+        bool exposureProbeRequested = false;
+        bool exposureProbeReady = false;
+        float32 targetEV100 = std::numeric_limits<float32>::quiet_NaN();
+        float32 adaptedEV100 = std::numeric_limits<float32>::quiet_NaN();
+        float32 exposureScale = std::numeric_limits<float32>::quiet_NaN();
+        float32 preExposure = std::numeric_limits<float32>::quiet_NaN();
+        float32 previousPreExposure =
+            std::numeric_limits<float32>::quiet_NaN();
         uint32 toneMapPassCount = 0;
         uint32 bloomPassCount = 0;
         uint32 colorGradingPassCount = 0;
@@ -644,6 +676,22 @@ namespace RVX
         [[nodiscard]] bool IsEmpty() const noexcept
         {
             return postProcessContentHash == 0 && toneMapPassCount == 0 &&
+                   exposureStateContentHash == 0 &&
+                   toneMapExposureStateHash == 0 &&
+                   bloomExposureStateHash == 0 &&
+                   taaExposureStateHash == 0 &&
+                   !exposureRequested && !exposurePipelineReady &&
+                   !exposureInputsReady && !exposureExecuted &&
+                   exposureHistogramPassCount == 0 &&
+                   exposureAdaptationPassCount == 0 &&
+                   !exposureHistoryAvailableBefore &&
+                   !exposureHistorySampled &&
+                   !exposureHistoryCandidateProduced &&
+                   !exposureHistoryCommitted &&
+                   !exposureHistoryAbandoned &&
+                   exposureHistoryResetReasons ==
+                       RenderHistoryResetReason::None &&
+                   !exposureProbeRequested && !exposureProbeReady &&
                    bloomPassCount == 0 && colorGradingPassCount == 0 &&
                    fxaaPassCount == 0 && taaPassCount == 0 &&
                    antiAliasingMode == RenderAntiAliasingMode::None &&
@@ -675,8 +723,35 @@ namespace RVX
                 std::isfinite(currentJitterPixels.y) &&
                 std::isfinite(previousJitterPixels.x) &&
                 std::isfinite(previousJitterPixels.y);
+            const bool exposureConsumersMatch =
+                exposureStateContentHash != 0 &&
+                toneMapExposureStateHash == exposureStateContentHash &&
+                ((bloomPassCount == 0 && bloomExposureStateHash == 0) ||
+                 (bloomPassCount != 0 &&
+                  bloomExposureStateHash == exposureStateContentHash)) &&
+                ((antiAliasingMode != RenderAntiAliasingMode::TAA &&
+                  taaExposureStateHash == 0) ||
+                 (antiAliasingMode == RenderAntiAliasingMode::TAA &&
+                  taaExposureStateHash == exposureStateContentHash));
+            const bool exposureProbeValid =
+                !exposureProbeReady ||
+                (exposureProbeRequested && exposureHistoryCommitted &&
+                 !exposureHistoryAbandoned && std::isfinite(targetEV100) &&
+                 targetEV100 >= RVX_RENDER_EXPOSURE_MIN_EV100 &&
+                 targetEV100 <= RVX_RENDER_EXPOSURE_MAX_EV100 &&
+                 std::isfinite(adaptedEV100) &&
+                 adaptedEV100 >= RVX_RENDER_EXPOSURE_MIN_EV100 &&
+                 adaptedEV100 <= RVX_RENDER_EXPOSURE_MAX_EV100 &&
+                 IsValidRenderExposureScale(exposureScale) &&
+                 IsValidRenderExposureScale(preExposure) &&
+                 IsValidRenderExposureScale(previousPreExposure));
             if (postProcessContentHash == 0 || toneMapPassCount != 1 ||
                 !IsValidRenderAntiAliasingMode(antiAliasingMode) ||
+                !IsValidRenderExposureMode(exposureMode) ||
+                !exposureRequested || !exposurePipelineReady ||
+                !exposureInputsReady || !exposureExecuted ||
+                !exposureConsumersMatch || !exposureProbeValid ||
+                (exposureProbeReady && !exposureProbeRequested) ||
                 !finiteTemporalJitter ||
                 !hdrInputReady ||
                 !encodedOutputReady || fallbackUsed ||
@@ -684,6 +759,24 @@ namespace RVX
                 storedOutputColorDomain !=
                     PostProcessColorDomain::DisplayEncodedLDR ||
                 finalOutputFormat == RHIFormat::Unknown)
+            {
+                return false;
+            }
+
+            const bool histogramMode =
+                exposureMode == RenderExposureMode::HistogramAuto;
+            const uint32 expectedHistogramPassCount = histogramMode ? 2u : 0u;
+            if (exposureHistogramPassCount != expectedHistogramPassCount ||
+                exposureAdaptationPassCount != 1 ||
+                !exposureHistoryCandidateProduced ||
+                (exposureHistoryCommitted && exposureHistoryAbandoned) ||
+                exposureHistoryAvailableBefore != exposureHistorySampled ||
+                (exposureHistoryAvailableBefore &&
+                 exposureHistoryResetReasons !=
+                     RenderHistoryResetReason::None) ||
+                (!exposureHistoryAvailableBefore &&
+                 exposureHistoryResetReasons ==
+                     RenderHistoryResetReason::None))
             {
                 return false;
             }
@@ -750,7 +843,7 @@ namespace RVX
     /** @brief Candidate or presentation-qualified evidence for one frame/view. */
     struct RenderExecutionReceipt
     {
-        uint32 schemaVersion = 7;
+        uint32 schemaVersion = 8;
         bool available = false;
         bool graphComposed = false;
         bool executionSucceeded = false;
@@ -781,7 +874,8 @@ namespace RVX
         {
             if ((schemaVersion != 1 && schemaVersion != 2 &&
                  schemaVersion != 4 && schemaVersion != 5 &&
-                 schemaVersion != 6 && schemaVersion != 7) ||
+                 schemaVersion != 6 && schemaVersion != 7 &&
+                 schemaVersion != 8) ||
                 !frameIdentity.IsValid() ||
                 !viewIdentity.IsValid() || backend == RHIBackendType::None ||
                 !IsDeclaredRenderPipelineRecipe(requestedRecipe) ||
@@ -862,8 +956,27 @@ namespace RVX
                    !postProcess.IsStructurallyValid())) ||
                  (presented && postProcess.taaRequested &&
                   !postProcess.historyCommitted));
+            const bool schemaEightInvalid = schemaVersion == 8 &&
+                (!deferredOpaque.IsStructurallyValid() ||
+                 (!lighting.IsEmpty() && !lighting.IsStructurallyValid()) ||
+                 (!deformation.IsEmpty() &&
+                  !deformation.IsStructurallyValid()) ||
+                 (!postProcess.IsEmpty() &&
+                  !postProcess.IsStructurallyValid()) ||
+                 ((executionSucceeded || presented) &&
+                  (!lighting.IsStructurallyValid() ||
+                   !deformation.IsStructurallyValid() ||
+                   !postProcess.IsStructurallyValid())) ||
+                 (presented && postProcess.taaRequested &&
+                  !postProcess.historyCommitted) ||
+                 (presented &&
+                  !postProcess.exposureHistoryCommitted) ||
+                 (postProcess.exposureProbeReady &&
+                  (!presented || !postProcess.exposureHistoryCommitted ||
+                   postProcess.exposureHistoryAbandoned)));
             if (schemaOneInvalid || schemaTwoInvalid || schemaFourInvalid ||
-                schemaFiveInvalid || schemaSixInvalid || schemaSevenInvalid)
+                schemaFiveInvalid || schemaSixInvalid || schemaSevenInvalid ||
+                schemaEightInvalid)
             {
                 return false;
             }

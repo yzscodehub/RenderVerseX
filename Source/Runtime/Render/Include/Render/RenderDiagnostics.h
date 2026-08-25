@@ -1096,6 +1096,9 @@ namespace RVX
         bool reflectionMaterialTextureTableAvailable = false;
         bool reflectionGeometryMetadataAvailable = false;
         bool reflectionGeometryTableAvailable = false;
+        bool reflectionExposureStateAvailable = false;
+        bool reflectionExposureStateReadDeclared = false;
+        bool reflectionExposureStateDescriptorBound = false;
         bool shadowHistoryAvailable = false;
         bool shadowDepthHistoryAvailable = false;
         bool shadowNormalHistoryAvailable = false;
@@ -1150,6 +1153,7 @@ namespace RVX
         uint64 estimatedReflectionDenoiseTapCount = 0;
         uint64 shadowGpuTimestampFrequency = 0;
         uint64 reflectionGpuTimestampFrequency = 0;
+        uint64 reflectionExposureStateContentHash = 0;
         float32 shadowGpuTimingElapsedMs = 0.0f;
         float32 reflectionGpuTimingElapsedMs = 0.0f;
         float32 gpuTimeBudget = 0.0f;

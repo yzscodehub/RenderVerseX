@@ -84,6 +84,11 @@ namespace RenderRuntimeDetail
         {
             return false;
         }
+        /** @brief Arm one owner-side physical-exposure qualification probe. */
+        [[nodiscard]] virtual bool RequestExposureQualificationProbe()
+        {
+            return false;
+        }
         virtual void PollCompletion() = 0;
         virtual void RetireCompleted() = 0;
         /**
@@ -111,6 +116,17 @@ namespace RenderRuntimeDetail
          */
         virtual void PopulateCompletionDiagnostics(
             RenderDiagnosticsSnapshot&) const
+        {
+        }
+        /**
+         * @brief Copy value-only diagnostics captured during consumer teardown.
+         *
+         * This hook must never map GPU completion data. It is invoked after
+         * Shutdown for normal, device-lost, timeout, and fatal teardown paths
+         * while the consumer still owns its value snapshot.
+         */
+        virtual void PopulateTeardownDiagnostics(
+            RenderDiagnosticsSnapshot&) const noexcept
         {
         }
         /** @brief Return the latest owned runtime-health snapshot. */
@@ -286,6 +302,8 @@ namespace RenderRuntimeDetail
         /** @brief Publish one explicit Direct Opaque readback qualification request. */
         [[nodiscard]] bool RequestDirectOpaqueRasterReadbackQualificationCapture()
             noexcept;
+        /** @brief Publish one explicit physical-exposure qualification probe request. */
+        [[nodiscard]] bool RequestExposureQualificationProbe() noexcept;
 
         RenderResourceReserveResult ReserveResource(
             AssetId assetId,
@@ -344,6 +362,7 @@ namespace RenderRuntimeDetail
             RenderShutdownResult result);
         void RecordFailure(const RenderRuntimeResult& result);
         void PublishDiagnostics();
+        void PopulateTeardownDiagnosticsOnRenderThread();
         [[noreturn]] void TerminateAfterFatalDiagnostics();
         RenderPumpDecision InitializeOnRenderThread();
         RenderPumpDecision FinishTimedOutStartupOnRenderThread();
@@ -395,6 +414,8 @@ namespace RenderRuntimeDetail
             false;
         std::atomic<bool> m_directOpaqueRasterReadbackQualificationRequestPending =
             false;
+        std::atomic<bool> m_exposureQualificationProbeRequestIssued = false;
+        std::atomic<bool> m_exposureQualificationProbeRequestPending = false;
 
         mutable std::mutex m_stateMutex;
         std::timed_mutex m_startupArbitrationMutex;

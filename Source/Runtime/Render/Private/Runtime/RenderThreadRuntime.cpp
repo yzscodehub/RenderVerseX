@@ -1064,6 +1064,44 @@ namespace
         return true;
     }
 
+    bool RenderThreadRuntime::RequestExposureQualificationProbe() noexcept
+    {
+        {
+            std::lock_guard lock(m_publicationMutex);
+            if (m_publicationSealed.load(std::memory_order_acquire) ||
+                m_completionOnlyDrainActive.load(std::memory_order_acquire) ||
+                m_lifecycle.load(std::memory_order_acquire) !=
+                    RenderLifecycleState::Running)
+            {
+                return false;
+            }
+            const RenderRuntimeResult result = GetLastRuntimeResult();
+            if (result.lifecycle != RenderLifecycleState::Running ||
+                result.terminalCause != RenderTerminalCause::None ||
+                result.teardownMode != RenderTeardownMode::None)
+            {
+                return false;
+            }
+
+            bool expected = false;
+            if (!m_exposureQualificationProbeRequestIssued
+                     .compare_exchange_strong(expected,
+                                              true,
+                                              std::memory_order_acq_rel,
+                                              std::memory_order_acquire))
+            {
+                return false;
+            }
+            m_exposureQualificationProbeRequestPending.store(
+                true, std::memory_order_release);
+        }
+
+        // This explicit request only publishes work for the Render owner. It
+        // never maps the exposure state or fabricates completion on Update.
+        Wake();
+        return true;
+    }
+
     RenderResourceReserveResult RenderThreadRuntime::ReserveResource(
         AssetId assetId,
         RenderResourceKind kind) noexcept
@@ -1249,6 +1287,15 @@ namespace
                     ->RequestDirectOpaqueRasterReadbackQualificationCapture());
                 progressed = true;
             }
+            if (m_exposureQualificationProbeRequestPending.exchange(
+                    false, std::memory_order_acq_rel))
+            {
+                // Exposure probes are armed only by the Render owner. The
+                // request never implies a readback or completed evidence.
+                static_cast<void>(
+                    m_consumer->RequestExposureQualificationProbe());
+                progressed = true;
+            }
             uint64 resizeFrameSequenceCutoff = 0;
             BasicRenderControlBatch<HAL::NativeSurfaceDesc,
                                     HAL::NativeSurfaceDesc>
@@ -1376,6 +1423,19 @@ namespace
                     ->RequestDirectOpaqueRasterReadbackQualificationCapture());
                 progressed = true;
             }
+            bool exposureProbeRequestBeforeFrameAcquire = false;
+            {
+                std::lock_guard lock(m_publicationMutex);
+                exposureProbeRequestBeforeFrameAcquire =
+                    m_exposureQualificationProbeRequestPending.exchange(
+                        false, std::memory_order_acq_rel);
+            }
+            if (exposureProbeRequestBeforeFrameAcquire)
+            {
+                static_cast<void>(
+                    m_consumer->RequestExposureQualificationProbe());
+                progressed = true;
+            }
             if (acquiredFrameV5.packet != nullptr)
             {
                 m_frameReplacementCount.fetch_add(
@@ -1479,6 +1539,19 @@ namespace
                 {
                     static_cast<void>(m_consumer
                         ->RequestDirectOpaqueRasterReadbackQualificationCapture());
+                    progressed = true;
+                }
+                bool exposureProbeRequestBeforeFrameConsume = false;
+                {
+                    std::lock_guard lock(m_publicationMutex);
+                    exposureProbeRequestBeforeFrameConsume =
+                        m_exposureQualificationProbeRequestPending.exchange(
+                            false, std::memory_order_acq_rel);
+                }
+                if (exposureProbeRequestBeforeFrameConsume)
+                {
+                    static_cast<void>(
+                        m_consumer->RequestExposureQualificationProbe());
                     progressed = true;
                 }
                 const uint64 requiredRevision =
@@ -1689,6 +1762,7 @@ namespace
                     m_lastSubmittedFrameSequence.load(
                         std::memory_order_acquire),
                     terminal.surfaceGeneration);
+                PopulateTeardownDiagnosticsOnRenderThread();
                 StoreShutdownResultAndRecordFailure(std::move(shutdown));
                 m_consumer.reset();
             }
@@ -2108,6 +2182,16 @@ namespace
         m_diagnosticsPublisher.Publish(std::move(snapshot));
     }
 
+    void RenderThreadRuntime::PopulateTeardownDiagnosticsOnRenderThread()
+    {
+        if (m_consumer == nullptr)
+        {
+            return;
+        }
+        std::lock_guard lock(m_stateMutex);
+        m_consumer->PopulateTeardownDiagnostics(m_diagnosticsState);
+    }
+
     [[noreturn]] void RenderThreadRuntime::TerminateAfterFatalDiagnostics()
     {
         m_fatalPolicy->Terminate(GetDiagnosticsSnapshot());
@@ -2218,6 +2302,7 @@ namespace
                 m_lastSubmittedFrameSequence.load(
                     std::memory_order_acquire),
                 result.surfaceGeneration);
+            PopulateTeardownDiagnosticsOnRenderThread();
             StoreShutdownResultAndRecordFailure(std::move(shutdown));
             m_consumer.reset();
             TransitionTo(RenderLifecycleState::Failed, "startup failed");
@@ -2251,20 +2336,24 @@ namespace
         RenderThreadRuntime::FinishTimedOutStartupOnRenderThread()
     {
         const RenderRuntimeResult runtime = GetLastRuntimeResult();
-        RenderShutdownResult shutdown =
-            m_consumer != nullptr
-                ? NormalizeShutdownResult(
-                      m_consumer->Shutdown(RenderTeardownMode::FatalTimeout),
-                      runtime.backend,
-                      m_lastSubmittedFrameSequence.load(
-                          std::memory_order_acquire),
-                      runtime.surfaceGeneration)
-                : MakeShutdownResult(
-                      RenderShutdownCode::Completed,
-                      runtime.backend,
-                      m_lastSubmittedFrameSequence.load(
-                          std::memory_order_acquire),
-                      runtime.surfaceGeneration);
+        RenderShutdownResult shutdown;
+        if (m_consumer != nullptr)
+        {
+            shutdown = NormalizeShutdownResult(
+                m_consumer->Shutdown(RenderTeardownMode::FatalTimeout),
+                runtime.backend,
+                m_lastSubmittedFrameSequence.load(std::memory_order_acquire),
+                runtime.surfaceGeneration);
+            PopulateTeardownDiagnosticsOnRenderThread();
+        }
+        else
+        {
+            shutdown = MakeShutdownResult(
+                RenderShutdownCode::Completed,
+                runtime.backend,
+                m_lastSubmittedFrameSequence.load(std::memory_order_acquire),
+                runtime.surfaceGeneration);
+        }
         m_consumer.reset();
         StoreShutdownResultAndRecordFailure(std::move(shutdown));
         TransitionTo(RenderLifecycleState::Failed,
@@ -2306,6 +2395,7 @@ namespace
                 std::lock_guard lock(m_stateMutex);
                 m_consumer->PopulateCompletionDiagnostics(m_diagnosticsState);
             }
+            PopulateTeardownDiagnosticsOnRenderThread();
         }
         else
         {
@@ -2375,6 +2465,7 @@ namespace
                 result.backend,
                 m_lastSubmittedFrameSequence.load(std::memory_order_acquire),
                 currentSurface.generation);
+            PopulateTeardownDiagnosticsOnRenderThread();
             StoreShutdownResultAndRecordFailure(std::move(shutdown));
             m_consumer.reset();
         }

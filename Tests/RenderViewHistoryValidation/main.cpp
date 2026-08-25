@@ -1,4 +1,5 @@
 #include "Runtime/RenderViewHistoryCoordinator.h"
+#include "RenderContracts/TemporalJitter.h"
 
 #include <gtest/gtest.h>
 
@@ -109,7 +110,10 @@ namespace
         ASSERT_NE(compatible, nullptr);
         const RenderHistoryAvailability compatibleDecision =
             coordinator.Evaluate(*compatible, true);
-        EXPECT_TRUE(compatibleDecision.available);
+        EXPECT_FALSE(compatibleDecision.available);
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            compatibleDecision.resetReasons,
+            RenderHistoryResetReason::SceneDiscontinuity));
         EXPECT_EQ(coordinator.GetLastPresentedIdentity()->previousFrame.frameSequence,
                   1U);
         EXPECT_TRUE(
@@ -216,9 +220,46 @@ TEST(RenderViewHistoryValidation,
 
         const auto successor = MakeFrame(MakeOptions(4));
         ASSERT_NE(successor, nullptr);
-        EXPECT_TRUE(coordinator.Evaluate(*successor, true).available);
+        const RenderHistoryAvailability successorDecision =
+            coordinator.Evaluate(*successor, true);
+        EXPECT_FALSE(successorDecision.available);
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            successorDecision.resetReasons,
+            RenderHistoryResetReason::SceneDiscontinuity));
         EXPECT_TRUE(
             coordinator.CommitPresented(successor->GetHistoryIdentity()));
+    }
+
+    TEST(RenderViewHistoryValidation,
+         ForwardSequenceGapResetsHistoryOnlyAtGapBoundary)
+    {
+        RenderViewHistoryCoordinator coordinator;
+        const auto first = MakeFrame(MakeOptions(1));
+        ASSERT_NE(first, nullptr);
+        ASSERT_TRUE(coordinator.CommitPresented(
+            coordinator.Evaluate(*first, true).identity));
+
+        const RenderOutputExtent extent{320, 180};
+        EXPECT_EQ(MakeRenderTemporalJitter(1, extent),
+                  MakeRenderTemporalJitter(9, extent));
+
+        const auto skipped = MakeFrame(MakeOptions(9));
+        ASSERT_NE(skipped, nullptr);
+        const RenderHistoryAvailability skippedDecision =
+            coordinator.Evaluate(*skipped, true);
+        EXPECT_FALSE(skippedDecision.available);
+        EXPECT_TRUE(HasRenderHistoryResetReason(
+            skippedDecision.resetReasons,
+            RenderHistoryResetReason::SceneDiscontinuity));
+        ASSERT_TRUE(coordinator.CommitPresented(skippedDecision.identity));
+
+        const auto contiguous = MakeFrame(MakeOptions(10));
+        ASSERT_NE(contiguous, nullptr);
+        const RenderHistoryAvailability contiguousDecision =
+            coordinator.Evaluate(*contiguous, true);
+        EXPECT_TRUE(contiguousDecision.available);
+        EXPECT_EQ(contiguousDecision.resetReasons,
+                  RenderHistoryResetReason::None);
     }
 
     TEST(RenderViewHistoryValidation,

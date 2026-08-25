@@ -41,6 +41,14 @@ namespace RVX
 
         void Configure(const PostProcessSettings& settings) override;
         void AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output) override;
+        void AddToGraph(RenderGraph& graph,
+                        const PostProcessFrameInputs& frameInputs,
+                        RGTextureHandle output) override;
+
+        [[nodiscard]] uint64 GetLastExposureStateContentHash() const noexcept
+        {
+            return m_lastExposureStateContentHash;
+        }
 
         /** @brief Arm an optional, one-frame raw input probe before graph build. */
         void SetPixelProbeRequest(const RenderFrameCaptureRequest& request,
@@ -68,9 +76,6 @@ namespace RVX
         void SetOperator(ToneMappingOperator op) { m_operator = op; }
         ToneMappingOperator GetOperator() const { return m_operator; }
 
-        void SetExposure(float exposure) { m_exposure = exposure; }
-        float GetExposure() const { return m_exposure; }
-
         void SetGamma(float gamma) { m_gamma = gamma; }
         float GetGamma() const { return m_gamma; }
 
@@ -91,24 +96,21 @@ namespace RVX
         };
 
         bool EnsureRuntimeResources();
-        bool UpdateConstants(uint32 width,
-                             uint32 height,
-                             ToneMappingOperator op,
-                             ToneMappingOutputColorSpace outputColorSpace,
-                             float exposure,
-                             float gamma,
-                             float whitePoint);
+        void AddToGraphWithExposure(RenderGraph& graph,
+                                    RGTextureHandle input,
+                                    RGBufferHandle exposureState,
+                                    uint64 exposureStateContentHash,
+                                    RGTextureHandle output);
 
         ToneMappingOperator m_operator = ToneMappingOperator::ACES;
         ToneMappingOutputColorSpace m_outputColorSpace = ToneMappingOutputColorSpace::SRGB;
-        float m_exposure = 1.0f;
         float m_gamma = 2.2f;
         float m_whitePoint = 11.2f;
         PipelineCache* m_pipelineCache = nullptr;
         ResourceViewCache* m_viewCache = nullptr;
         IRHIDevice* m_resourceDevice = nullptr;
-        RHIBufferRef m_constantBuffer;
         RHISamplerRef m_sampler;
+        uint64 m_lastExposureStateContentHash = 0;
         PixelProbeReadback m_pixelProbe{};
     };
 

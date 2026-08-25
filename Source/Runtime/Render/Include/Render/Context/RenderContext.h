@@ -160,7 +160,17 @@ namespace RVX
         bool AdoptRenderGraphExecution(RenderGraphExecution&& execution);
 
         /** @brief End recording without submitting or enabling presentation. */
-        void AbortFrame();
+        [[nodiscard]] bool AbortFrame();
+
+        /**
+         * @brief Return whether the swap chain still owns an acquired image.
+         *
+         * A caller must either present or explicitly retire that image before
+         * beginning another frame. This lets the runtime distinguish a
+         * recoverable offscreen submission failure from a presentation
+         * ownership violation that requires fail-closed teardown.
+         */
+        [[nodiscard]] bool HasAcquiredPresentationImage() const noexcept;
 
         /**
          * @brief Present the frame to the screen
@@ -231,6 +241,16 @@ namespace RVX
         /** @brief Latest completion-owned Graphics whole-frame timing snapshot. */
         const RenderGpuFrameTimingDiagnostics& GetGpuFrameTimingDiagnostics() const noexcept;
 
+        /**
+         * @brief Native validation counters captured after RHI child teardown
+         * and immediately before the device object is released.
+         */
+        const RHINativeValidationDiagnostics&
+            GetShutdownNativeValidationDiagnostics() const noexcept
+        {
+            return m_shutdownNativeValidation;
+        }
+
     private:
         friend struct RenderContextInternalAccess;
 
@@ -267,6 +287,7 @@ namespace RVX
         uint64_t m_frameNumber = 0;
         bool m_supportsAsyncCompute = false;
         HAL::NativeSurfaceDesc m_surface;
+        RHINativeValidationDiagnostics m_shutdownNativeValidation{};
     };
 
 } // namespace RVX

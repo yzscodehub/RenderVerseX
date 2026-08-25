@@ -21,6 +21,12 @@ namespace RVX
         ~VulkanSwapChain() override;
 
         void Present() override;
+        [[nodiscard]] bool HasAcquiredPresentationImage() const noexcept override
+        {
+            return m_hasAcquiredImage;
+        }
+        bool RecordAbortPresentationImageRetirement(
+            RHICommandContext& context) noexcept override;
         void Resize(uint32 width, uint32 height) override;
 
         uint32 GetWidth() const override { return m_width; }
@@ -41,6 +47,10 @@ namespace RVX
         }
         bool AcquireNextImage();
         bool HasAcquiredImage() const { return m_hasAcquiredImage; }
+        bool IsAbortAcquireRetirementPending() const
+        {
+            return m_abortAcquireRetirementPending;
+        }
         VkSemaphore GetCurrentRenderFinishedSemaphore() const;
 
     private:
@@ -69,6 +79,7 @@ namespace RVX
         uint32 m_currentImageIndex = 0;
 
         bool m_hasAcquiredImage = false;
+        bool m_abortAcquireRetirementPending = false;
 
         GLFWwindow* m_backendWindow = nullptr;
     };

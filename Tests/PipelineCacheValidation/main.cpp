@@ -3,10 +3,11 @@
 #include "Core/Log.h"
 #include "Render/Features/RenderFeatureGraphBuilder.h"
 #include "Render/GPUDriven/GPUCulling.h"
-#include "Render/Passes/DeferredLightingPass.h"
-#include "Render/PipelineCache.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
+#include "Render/Passes/DeferredLightingPass.h"
+#include "Render/PipelineCache.h"
+#include "Render/PostProcess/Exposure.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
 #include "Resources/RenderRetirementQueue.h"
@@ -848,6 +849,54 @@ namespace
                 desc.debugName = debugName;
                 return device.CreateBuffer(desc);
             };
+
+            // Deferred HDR lighting consumes the same prior-presented state as
+            // every other HDR producer. Keep this fixture at the public ABI,
+            // rather than relying on PipelineCache's bootstrap fallback.
+            RVX::RenderExposureSettings exposureSettings{};
+            const RVX::uint64 exposureConfigurationHash =
+                RVX::CalculateRenderExposureSettingsHash(exposureSettings);
+            RVX::RHIBufferDesc exposureStateDesc;
+            exposureStateDesc.size = RVX::RVX_EXPOSURE_STATE_STRIDE;
+            exposureStateDesc.stride = RVX::RVX_EXPOSURE_STATE_STRIDE;
+            exposureStateDesc.usage = RVX::RHIBufferUsage::Structured |
+                RVX::RHIBufferUsage::ShaderResource;
+            exposureStateDesc.memoryType = RVX::RHIMemoryType::Upload;
+            exposureStateDesc.debugName =
+                "DeferredLightingValidationExposureState";
+            exposureState = device.CreateBuffer(exposureStateDesc);
+            if (exposureState)
+            {
+                struct alignas(16) ExposureStateFixture
+                {
+                    float exposureValues[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+                    RVX::uint32 targetAndNonce[4] = {};
+                    RVX::uint32 stateMeta[4] = {0u, 0u, 0u, 1u};
+                };
+                static_assert(sizeof(ExposureStateFixture) ==
+                    RVX::RVX_EXPOSURE_STATE_STRIDE);
+
+                ExposureStateFixture state;
+                state.stateMeta[0] = static_cast<RVX::uint32>(
+                    exposureConfigurationHash & 0xffffffffULL);
+                state.stateMeta[1] = static_cast<RVX::uint32>(
+                    exposureConfigurationHash >> 32U);
+                state.stateMeta[2] = static_cast<RVX::uint32>(
+                    exposureSettings.mode);
+                if (void* const mapped = exposureState->Map())
+                {
+                    std::memcpy(mapped, &state, sizeof(state));
+                    exposureState->Unmap();
+                }
+                inputs.exposureState = graph.ImportBuffer(
+                    exposureState, RVX::RHIResourceState::ShaderResource);
+                view.exposureState = inputs.exposureState;
+                view.exposureStateSchemaVersion = 1u;
+                view.exposureStateStride = RVX::RVX_EXPOSURE_STATE_STRIDE;
+                view.exposureStateMode = exposureSettings.mode;
+                view.exposureStateConfigurationHash =
+                    exposureConfigurationHash;
+            }
             lightConstants = createBuffer(
                 256, RVX::RHIBufferUsage::Constant,
                 "DeferredLightingValidationLightConstants");
@@ -908,7 +957,9 @@ namespace
 
         RVX::RenderGraph graph;
         RVX::DeferredLightingInputs inputs{};
+        RVX::ViewData view{};
         RVX::RHIBufferRef materialTable;
+        RVX::RHIBufferRef exposureState;
         RVX::RHIBufferRef lightConstants;
         RVX::RHIBufferRef pointLights;
         RVX::RHIBufferRef spotLights;
@@ -1830,6 +1881,30 @@ TEST_F(PipelineCacheValidationFixture, MissingFXAAShaderFailsWithVisibleError)
     EXPECT_NE(cache.GetLastError().find("not found"), std::string::npos);
 }
 
+TEST_F(PipelineCacheValidationFixture,
+       MissingExposureComputeShaderFailsClosedWithVisibleError)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    TempDirectory temp("rvx_pipeline_missing_exposure_compute_shader");
+    const fs::path shaderDir = CopyShaderDirectoryToTemp(temp.Path());
+    fs::remove(shaderDir / "PostProcess" / "Exposure.hlsl");
+
+    FakeDevice device;
+    // Exposure programs are an optional compute family; enable the capability
+    // so this test reaches the missing-file contract instead of correctly
+    // omitting that family on a compatibility fake.
+    device.EnableNativeTimelineCompletion();
+    RVX::Tests::DeterministicShaderProgramProvider provider(shaderDir);
+    PipelineCacheForValidation cache(provider);
+
+    EXPECT_FALSE(cache.Initialize(&device, shaderDir.string()));
+    EXPECT_NE(cache.GetLastError().find("exposure"), std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture, MissingTAAShaderFailsClosedWithVisibleError)
 {
     if (!HasShaderFixtures())
@@ -2316,6 +2391,70 @@ TEST_F(PipelineCacheValidationFixture, FXAAShaderUsesPostProcessDescriptorLayout
     EXPECT_NE(shaderSource.find("SamplerState LinearSampler : register(s2, space0)"), std::string::npos);
 }
 
+TEST_F(PipelineCacheValidationFixture,
+       ExposureShaderPreservesThePublicPhysicalScaleRange)
+{
+    const fs::path shaderDirectory = FindShaderDirectory();
+    ASSERT_FALSE(shaderDirectory.empty());
+    const std::string exposure = ReadTextFile(
+        shaderDirectory / "PostProcess" / "Exposure.hlsl");
+    const std::string exposureABI = ReadTextFile(
+        shaderDirectory / "Include" / "Exposure.hlsli");
+
+    EXPECT_NE(exposure.find("float targetEV100 = ManualEV100;"),
+              std::string::npos);
+    EXPECT_NE(exposure.find("candidate.ExposureValues = float4(\n        exposureScale,"),
+              std::string::npos);
+    EXPECT_EQ(exposure.find("max(exposureScale, 1.0e-6)"),
+              std::string::npos);
+    EXPECT_NE(exposureABI.find("return state.ExposureValues.x;"),
+              std::string::npos);
+    EXPECT_NE(exposureABI.find(
+                  "state.ExposureValues.x >= RVX_EXPOSURE_MIN_SCALE"),
+              std::string::npos);
+    EXPECT_NE(exposureABI.find(
+                  "state.ExposureValues.x <= RVX_EXPOSURE_MAX_SCALE"),
+              std::string::npos);
+    EXPECT_NE(exposureABI.find(
+                  "state.ExposureValues.w >= RVX_EXPOSURE_MIN_EV100"),
+              std::string::npos);
+    EXPECT_NE(exposureABI.find(
+                  "state.ExposureValues.w <= RVX_EXPOSURE_MAX_EV100"),
+              std::string::npos);
+    EXPECT_NE(exposureABI.find(
+                  "state.StateMeta.z <= "
+                  "RVX_EXPOSURE_STATE_MODE_HISTOGRAM_AUTO"),
+              std::string::npos);
+    EXPECT_NE(exposureABI.find(
+                  "asfloat(state.TargetAndNonce.x) <= "
+                  "RVX_EXPOSURE_MAX_EV100"),
+              std::string::npos);
+    EXPECT_EQ(exposureABI.find("isfinite("), std::string::npos);
+    EXPECT_EQ(exposureABI.find("max(state.ExposureValues.x, 1.0e-6)"),
+              std::string::npos);
+    EXPECT_NE(exposure.find(
+                  "RVX_EXPOSURE_MIN_METERED_LUMINANCE = 1.0e-4"),
+              std::string::npos);
+    EXPECT_NE(exposure.find(
+                  "RVX_EXPOSURE_MAX_METERED_LUMINANCE = 65504.0"),
+              std::string::npos);
+    EXPECT_NE(exposure.find(
+                  "(float)(RVX_EXPOSURE_HISTOGRAM_BIN_COUNT - 1u)"),
+              std::string::npos);
+    EXPECT_NE(exposure.find(
+                  "luminance,\n        RVX_EXPOSURE_MIN_METERED_LUMINANCE,\n"
+                  "        RVX_EXPOSURE_MAX_METERED_LUMINANCE"),
+              std::string::npos);
+    EXPECT_NE(exposure.find("uint CandidateStateContentHashLo;"),
+              std::string::npos);
+    EXPECT_NE(exposure.find("uint CandidateStateContentHashHi;"),
+              std::string::npos);
+    EXPECT_NE(exposure.find("CandidateStateContentHashLo,"),
+              std::string::npos);
+    EXPECT_NE(exposure.find("CandidateStateContentHashHi,"),
+              std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture, TAAShaderUsesCookedResolveAndHistoryStoreContract)
 {
     if (!HasShaderFixtures())
@@ -2490,6 +2629,8 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     const auto objectLayoutIt = findSetLayout("DefaultObjectSetLayout");
     const auto materialLayoutIt = findSetLayout("DefaultMaterialSetLayout");
     const auto postProcessLayoutIt = findSetLayout("PostProcessSetLayout");
+    const auto exposurePostProcessLayoutIt =
+        findSetLayout("ExposurePostProcessSetLayout");
     const auto taaLayoutIt = findSetLayout("TAASetLayout");
     const auto uiLayoutIt = findSetLayout("UITextureSetLayout");
     const auto skyboxLayoutIt = findSetLayout("SkyboxSetLayout");
@@ -2497,6 +2638,7 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     ASSERT_NE(objectLayoutIt, device.capturedSetLayouts.end());
     ASSERT_NE(materialLayoutIt, device.capturedSetLayouts.end());
     ASSERT_NE(postProcessLayoutIt, device.capturedSetLayouts.end());
+    ASSERT_NE(exposurePostProcessLayoutIt, device.capturedSetLayouts.end());
     ASSERT_NE(taaLayoutIt, device.capturedSetLayouts.end());
     ASSERT_NE(uiLayoutIt, device.capturedSetLayouts.end());
     ASSERT_NE(skyboxLayoutIt, device.capturedSetLayouts.end());
@@ -2505,6 +2647,7 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     const auto& objectLayout = *objectLayoutIt;
     const auto& materialLayout = *materialLayoutIt;
     const auto& postProcessLayout = *postProcessLayoutIt;
+    const auto& exposurePostProcessLayout = *exposurePostProcessLayoutIt;
     const auto& taaLayout = *taaLayoutIt;
     const auto& uiLayout = *uiLayoutIt;
     const auto& skyboxLayout = *skyboxLayoutIt;
@@ -2563,6 +2706,12 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     EXPECT_EQ(iblSampler->type, RVX::RHIBindingType::Sampler);
     EXPECT_TRUE(RVX::HasFlag(
         iblSampler->visibility, RVX::RHIShaderStage::Pixel));
+    const auto* frameExposureState = FindBinding(
+        frameLayout, RVX::PipelineCache::DefaultLitExposureStateBinding);
+    ASSERT_NE(frameExposureState, nullptr);
+    EXPECT_EQ(frameExposureState->type, RVX::RHIBindingType::ShaderResourceBuffer);
+    EXPECT_TRUE(RVX::HasFlag(
+        frameExposureState->visibility, RVX::RHIShaderStage::Pixel));
 
     ASSERT_FALSE(device.capturedDescriptorSetDescs.empty());
     const RVX::RHIDescriptorSetDesc& frameSetDesc = device.capturedDescriptorSetDescs.front();
@@ -2637,6 +2786,12 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     EXPECT_EQ(
         fallbackBRDFLUT->textureView->GetTexture()->GetDimension(),
         RVX::RHITextureDimension::Texture2D);
+    const auto* fallbackExposureState = FindDescriptorBinding(
+        frameSetDesc, RVX::PipelineCache::DefaultLitExposureStateBinding);
+    ASSERT_NE(fallbackExposureState, nullptr);
+    ASSERT_NE(fallbackExposureState->buffer, nullptr);
+    EXPECT_EQ(fallbackExposureState->buffer->GetSize(),
+              RVX::RVX_EXPOSURE_STATE_STRIDE);
 
     const auto* object = FindBinding(objectLayout, 0);
     ASSERT_NE(object, nullptr);
@@ -2689,7 +2844,15 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     EXPECT_NE(cache.GetPostProcessSetLayout(), nullptr);
     EXPECT_NE(cache.GetPostProcessLayout(), nullptr);
 
-    ASSERT_EQ(taaLayout.entries.size(), static_cast<size_t>(8));
+    ASSERT_EQ(exposurePostProcessLayout.entries.size(), static_cast<size_t>(5));
+    const auto* exposureState = FindBinding(exposurePostProcessLayout, 4);
+    ASSERT_NE(exposureState, nullptr);
+    EXPECT_EQ(exposureState->type, RVX::RHIBindingType::ShaderResourceBuffer);
+    EXPECT_TRUE(RVX::HasFlag(exposureState->visibility, RVX::RHIShaderStage::Pixel));
+    EXPECT_NE(cache.GetExposurePostProcessSetLayout(), nullptr);
+    EXPECT_NE(cache.GetExposurePostProcessLayout(), nullptr);
+
+    ASSERT_EQ(taaLayout.entries.size(), static_cast<size_t>(9));
     const auto* taaConstants = FindBinding(taaLayout, 0);
     ASSERT_NE(taaConstants, nullptr);
     EXPECT_EQ(taaConstants->type, RVX::RHIBindingType::UniformBuffer);
@@ -2705,6 +2868,10 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     ASSERT_NE(taaSampler, nullptr);
     EXPECT_EQ(taaSampler->type, RVX::RHIBindingType::Sampler);
     EXPECT_TRUE(RVX::HasFlag(taaSampler->visibility, RVX::RHIShaderStage::Pixel));
+    const auto* taaExposureState = FindBinding(taaLayout, 8);
+    ASSERT_NE(taaExposureState, nullptr);
+    EXPECT_EQ(taaExposureState->type, RVX::RHIBindingType::ShaderResourceBuffer);
+    EXPECT_TRUE(RVX::HasFlag(taaExposureState->visibility, RVX::RHIShaderStage::Pixel));
     EXPECT_NE(cache.GetTAASetLayout(), nullptr);
     EXPECT_NE(cache.GetTAALayout(), nullptr);
     EXPECT_NE(cache.GetTAAResolvePipeline(), nullptr);
@@ -2724,7 +2891,7 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     EXPECT_NE(cache.GetUITextureSetLayout(), nullptr);
     EXPECT_NE(cache.GetUILayout(), nullptr);
 
-    ASSERT_EQ(skyboxLayout.entries.size(), static_cast<size_t>(3));
+    ASSERT_EQ(skyboxLayout.entries.size(), static_cast<size_t>(4));
     const auto* skyboxConstants = FindBinding(skyboxLayout, 0);
     ASSERT_NE(skyboxConstants, nullptr);
     EXPECT_EQ(skyboxConstants->type, RVX::RHIBindingType::UniformBuffer);
@@ -2738,6 +2905,12 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     ASSERT_NE(skyboxSampler, nullptr);
     EXPECT_EQ(skyboxSampler->type, RVX::RHIBindingType::Sampler);
     EXPECT_TRUE(RVX::HasFlag(skyboxSampler->visibility, RVX::RHIShaderStage::Pixel));
+    const auto* skyboxExposureState = FindBinding(
+        skyboxLayout, RVX::PipelineCache::SkyboxExposureStateBinding);
+    ASSERT_NE(skyboxExposureState, nullptr);
+    EXPECT_EQ(skyboxExposureState->type, RVX::RHIBindingType::ShaderResourceBuffer);
+    EXPECT_TRUE(RVX::HasFlag(
+        skyboxExposureState->visibility, RVX::RHIShaderStage::Pixel));
     EXPECT_NE(cache.GetSkyboxSetLayout(), nullptr);
     EXPECT_NE(cache.GetSkyboxLayout(), nullptr);
 }
@@ -5023,7 +5196,8 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitConsumesMaterialWorkflowAndDoub
     EXPECT_NE(surface.find("#define MATERIAL_WORKFLOW_SPECULAR_GLOSSINESS 1"), std::string::npos);
     EXPECT_NE(surface.find("#define MATERIAL_WORKFLOW_UNLIT 2"), std::string::npos);
     EXPECT_NE(shader.find("if (material.Workflow == MATERIAL_WORKFLOW_UNLIT)"), std::string::npos);
-    EXPECT_NE(shader.find("return float4(baseColor.rgb + emissive, baseColor.a);"), std::string::npos);
+    EXPECT_NE(shader.find("return float4((baseColor.rgb + emissive) * preExposure, baseColor.a);"),
+              std::string::npos);
     EXPECT_NE(shader.find("if (material.Workflow != MATERIAL_WORKFLOW_METALLIC_ROUGHNESS)"), std::string::npos);
     EXPECT_NE(shader.find("clip(-1.0f);"), std::string::npos);
     EXPECT_EQ(shader.find("Compatibility fallback"), std::string::npos);
@@ -6499,6 +6673,37 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracedShadowPassAfte
     EXPECT_LT(enableReflectionComposite, buildGraph);
 }
 
+TEST_F(PipelineCacheValidationFixture, RenderDiagnosticsProjectsReflectionExposureStateFacts)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    const fs::path renderRoot = FindShaderDirectory().parent_path();
+    const std::string diagnosticsHeader =
+        ReadTextFile(renderRoot / "Include" / "Render" / "RenderDiagnostics.h");
+    const std::string subsystemSource =
+        ReadTextFile(renderRoot / "Private" / "RenderSubsystem.cpp");
+
+    EXPECT_NE(diagnosticsHeader.find("bool reflectionExposureStateAvailable = false;"),
+              std::string::npos);
+    EXPECT_NE(diagnosticsHeader.find("bool reflectionExposureStateReadDeclared = false;"),
+              std::string::npos);
+    EXPECT_NE(diagnosticsHeader.find("bool reflectionExposureStateDescriptorBound = false;"),
+              std::string::npos);
+    EXPECT_NE(diagnosticsHeader.find("uint64 reflectionExposureStateContentHash = 0;"),
+              std::string::npos);
+    EXPECT_NE(subsystemSource.find("RVX_COPY_RAY_TRACING_FIELD(reflectionExposureStateAvailable);"),
+              std::string::npos);
+    EXPECT_NE(subsystemSource.find("RVX_COPY_RAY_TRACING_FIELD(reflectionExposureStateReadDeclared);"),
+              std::string::npos);
+    EXPECT_NE(subsystemSource.find("RVX_COPY_RAY_TRACING_FIELD(reflectionExposureStateDescriptorBound);"),
+              std::string::npos);
+    EXPECT_NE(subsystemSource.find("RVX_COPY_RAY_TRACING_FIELD(reflectionExposureStateContentHash);"),
+              std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture, RayTracingResourceBindingsMatchBetweenCppAndHlsl)
 {
     const fs::path shaderDir = FindShaderDirectory();
@@ -6552,6 +6757,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracingResourceBindingsMatchBetweenCpp
         {"RVX_RT_REFLECTION_NORMAL_BUFFERS_BINDING", "RVX_RT_REFLECTION_NORMAL_BUFFERS_REGISTER"},
         {"RVX_RT_REFLECTION_TANGENT_BUFFERS_BINDING", "RVX_RT_REFLECTION_TANGENT_BUFFERS_REGISTER"},
         {"RVX_RT_REFLECTION_SCENE_VELOCITY_BINDING", "RVX_RT_REFLECTION_SCENE_VELOCITY_REGISTER"},
+        {"RVX_RT_REFLECTION_EXPOSURE_STATE_BINDING", "RVX_RT_REFLECTION_EXPOSURE_STATE_REGISTER"},
     };
 
     for (const BindingExpectation& expectation : bindingExpectations)
@@ -7248,6 +7454,8 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionPipelineCacheResources
               std::string::npos);
     EXPECT_NE(pipelineSource.find("setLayoutDesc.AddBinding(RTReflectionBindings::RVX_RT_REFLECTION_SCENE_VELOCITY_BINDING, RHIBindingType::SampledTexture"),
               std::string::npos);
+    EXPECT_NE(pipelineSource.find("setLayoutDesc.AddBinding(RTReflectionBindings::RVX_RT_REFLECTION_EXPOSURE_STATE_BINDING, RHIBindingType::ShaderResourceBuffer"),
+              std::string::npos);
     EXPECT_NE(pipelineSource.find("pipelineDesc.debugName = \"RayTracedReflectionPipeline\""),
               std::string::npos);
     EXPECT_NE(pipelineSource.find("pipelineDesc.maxPayloadSize = sizeof(Vec4) + sizeof(float);"),
@@ -7321,6 +7529,14 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionPipelineCacheResources
     EXPECT_NE(passHeader.find("bool materialMetadataAvailable = false;"), std::string::npos);
     EXPECT_NE(passHeader.find("bool materialTextureTableAvailable = false;"), std::string::npos);
     EXPECT_NE(passHeader.find("bool velocityAvailable = false;"), std::string::npos);
+    EXPECT_NE(passHeader.find("bool exposureStateAvailable = false;"),
+              std::string::npos);
+    EXPECT_NE(passHeader.find("bool exposureStateReadDeclared = false;"),
+              std::string::npos);
+    EXPECT_NE(passHeader.find("bool exposureStateDescriptorBound = false;"),
+              std::string::npos);
+    EXPECT_NE(passHeader.find("uint64 exposureStateContentHash = 0;"),
+              std::string::npos);
     EXPECT_NE(passHeader.find("bool geometryMetadataAvailable = false;"), std::string::npos);
     EXPECT_NE(passHeader.find("bool geometryTableAvailable = false;"), std::string::npos);
     EXPECT_NE(passHeader.find("uint32 geometryIndexBufferCount = 0;"), std::string::npos);
@@ -7344,6 +7560,8 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionPipelineCacheResources
     EXPECT_NE(passHeader.find("RayTracedReflectionPassConfig m_lastHistoryConfig;"), std::string::npos);
     EXPECT_NE(passHeader.find("bool m_lastHistoryConfigValid = false;"), std::string::npos);
     EXPECT_NE(passHeader.find("RGTextureHandle m_velocityReadHandle;"), std::string::npos);
+    EXPECT_NE(passHeader.find("RGBufferHandle m_exposureStateReadHandle;"),
+              std::string::npos);
     EXPECT_NE(passHeader.find("RHITextureRef m_fallbackVelocityTexture;"), std::string::npos);
     EXPECT_NE(passHeader.find("bool EnsureFallbackVelocityTexture();"), std::string::npos);
     EXPECT_NE(passHeader.find("bool ResolveMaterialTextureViews(std::vector<RHITextureView*>& outViews) const;"),
@@ -7365,6 +7583,16 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionPipelineCacheResources
     EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTReflectionBindings::RVX_RT_REFLECTION_OUTPUT_DEPTH_BINDING, currentDepthHistoryUAV);"), std::string::npos);
     EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTReflectionBindings::RVX_RT_REFLECTION_OUTPUT_NORMAL_BINDING, currentNormalHistoryUAV);"), std::string::npos);
     EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTReflectionBindings::RVX_RT_REFLECTION_SCENE_VELOCITY_BINDING, sceneVelocitySRV);"), std::string::npos);
+    EXPECT_NE(passSource.find("m_exposureStateReadHandle = builder.Read("),
+              std::string::npos);
+    EXPECT_NE(passSource.find("RHIShaderStage::AllRayTracing"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("context.GetBuffer(m_exposureStateReadHandle)"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(\n            RTReflectionBindings::RVX_RT_REFLECTION_EXPOSURE_STATE_BINDING,\n            exposureStateBuffer);"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("m_stats.exposureStateDescriptorBound = true;"),
+              std::string::npos);
     EXPECT_NE(passSource.find("m_stats.descriptorSetAvailable = true;"), std::string::npos);
     const auto reflectionResourceViewsReady = passSource.find("m_stats.resourceViewsAvailable = true;");
     const auto reflectionCreateDescriptorSet = passSource.find("device->CreateDescriptorSet(descriptorDesc);");
@@ -7619,6 +7847,32 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionPipelineCacheResources
               std::string::npos);
     EXPECT_NE(shaderSource.find("Texture2D<float2> gSceneVelocity : register(RVX_RT_REFLECTION_SCENE_VELOCITY_REGISTER, space0);"),
               std::string::npos);
+    EXPECT_NE(shaderSource.find(
+                  "StructuredBuffer<RVXExposureState> gExposureState : "
+                  "register(RVX_RT_REFLECTION_EXPOSURE_STATE_REGISTER, space0);"),
+              std::string::npos);
+    EXPECT_NE(shaderSource.find(
+                  "RVXExposureProducerScale(exposureState)"),
+              std::string::npos);
+    EXPECT_NE(shaderSource.find(
+                  "historyPreExposureRatio =\n        "
+                  "currentProducerPreExposure / previousProducerPreExposure;"),
+              std::string::npos);
+    EXPECT_NE(shaderSource.find(
+                  "previousReflection.rgb = max(previousReflection.rgb, 0.0f) *\n"
+                  "        historyPreExposureRatio;"),
+              std::string::npos);
+    EXPECT_NE(shaderSource.find(
+                  "accumulatedColor * invSampleCount * "
+                  "currentProducerPreExposure"),
+              std::string::npos);
+    EXPECT_NE(shaderSource.find(
+                  "A reflection in an unknown HDR domain cannot be composited safely"),
+              std::string::npos);
+    EXPECT_NE(shaderSource.find(
+                  "gReflectionOutput[pixel] = "
+                  "float4(0.0f, 0.0f, 0.0f, 0.0f);"),
+              std::string::npos);
     EXPECT_NE(shaderSource.find("cbuffer RayTracedReflectionConstants : register(RVX_RT_REFLECTION_CONSTANTS_REGISTER, space0)"),
               std::string::npos);
     EXPECT_NE(shaderSource.find("float4x4 gPreviousViewProjection;"), std::string::npos);
@@ -7691,8 +7945,8 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionPipelineCacheResources
               std::string::npos);
     EXPECT_NE(shaderSource.find("previousUv = currentUv - velocityUv;"), std::string::npos);
     EXPECT_NE(shaderSource.find("TryLoadReprojectedReflection"), std::string::npos);
-    EXPECT_NE(shaderSource.find("TryLoadReprojectedReflection(worldPosition, worldNormal, scenePixel, previousReflection)"),
-              std::string::npos);
+    EXPECT_NE(shaderSource.find("TryLoadReprojectedReflection("), std::string::npos);
+    EXPECT_NE(shaderSource.find("historyPreExposureRatio,"), std::string::npos);
     EXPECT_NE(shaderSource.find("const float velocityHistoryWeight = ComputeVelocityHistoryWeight(scenePixel);"),
               std::string::npos);
     EXPECT_NE(shaderSource.find("ComputeReflectionHistoryWeight(reflection, previousReflection, velocityHistoryWeight)"),
@@ -8428,20 +8682,24 @@ TEST_F(PipelineCacheValidationFixture, ToneMappingOperatorUsesSharedRuntimeSetti
         ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
 
     EXPECT_NE(toneMappingTypesHeader.find("enum class ToneMappingOperator : uint8"), std::string::npos);
-    EXPECT_NE(toneMappingTypesHeader.find("enum class ToneMappingExposureMode : uint8"), std::string::npos);
     EXPECT_NE(toneMappingTypesHeader.find("enum class ToneMappingOutputColorSpace : uint8"), std::string::npos);
-    EXPECT_NE(toneMappingTypesHeader.find("ManualMultiplier"), std::string::npos);
-    EXPECT_NE(toneMappingTypesHeader.find("CameraEV100"), std::string::npos);
+    EXPECT_EQ(toneMappingTypesHeader.find("ToneMappingExposureMode"),
+              std::string::npos);
+    EXPECT_EQ(toneMappingTypesHeader.find("ManualMultiplier"),
+              std::string::npos);
+    EXPECT_EQ(toneMappingTypesHeader.find("CameraEV100"),
+              std::string::npos);
     EXPECT_NE(toneMappingTypesHeader.find("Linear"), std::string::npos);
     EXPECT_NE(toneMappingTypesHeader.find("SRGB"), std::string::npos);
     EXPECT_EQ(toneMappingHeader.find("enum class ToneMappingOperator"), std::string::npos);
     EXPECT_NE(settingsHeader.find("#include \"Render/PostProcess/ToneMappingTypes.h\""), std::string::npos);
     EXPECT_NE(toneMappingHeader.find("#include \"Render/PostProcess/ToneMappingTypes.h\""), std::string::npos);
     EXPECT_EQ(settingsHeader.find("#include \"Render/PostProcess/ToneMapping.h\""), std::string::npos);
-    EXPECT_NE(settingsHeader.find("ToneMappingExposureMode exposureMode = ToneMappingExposureMode::ManualMultiplier;"),
+    EXPECT_NE(settingsHeader.find("RenderExposureSettings exposureSettings{};"),
               std::string::npos);
-    EXPECT_NE(settingsHeader.find("float cameraEV100 = 0.0f;"), std::string::npos);
-    EXPECT_NE(settingsHeader.find("float exposureCompensationEV = 0.0f;"), std::string::npos);
+    EXPECT_EQ(settingsHeader.find("ToneMappingExposureMode exposureMode"),
+              std::string::npos);
+    EXPECT_EQ(settingsHeader.find("float cameraEV100"), std::string::npos);
     EXPECT_NE(settingsHeader.find("ToneMappingOperator toneMappingOperator = ToneMappingOperator::ACES;"),
               std::string::npos);
     EXPECT_NE(settingsHeader.find("ToneMappingOutputColorSpace toneMappingOutputColorSpace = ToneMappingOutputColorSpace::SRGB;"),
@@ -8468,22 +8726,23 @@ TEST_F(PipelineCacheValidationFixture, ToneMappingOperatorUsesSharedRuntimeSetti
               std::string::npos);
     EXPECT_NE(settingsHeader.find("float rayTracedReflectionDenoiseCenterWeight = 1.0f;"), std::string::npos);
     EXPECT_NE(settingsHeader.find("float rayTracedReflectionDenoiseLowConfidenceDepthScale = 4.0f;"), std::string::npos);
-    EXPECT_NE(toneMappingSource.find("float ResolveToneMappingExposure(const PostProcessSettings& settings)"),
+    EXPECT_NE(toneMappingSource.find("AddToGraphWithExposure"), std::string::npos);
+    EXPECT_NE(toneMappingSource.find("GetExposurePostProcessSetLayout"),
               std::string::npos);
-    EXPECT_NE(toneMappingSource.find("settings.exposureMode == ToneMappingExposureMode::CameraEV100"),
+    EXPECT_NE(toneMappingSource.find("descriptorDesc.BindBuffer(4, exposureState);"),
               std::string::npos);
-    EXPECT_NE(toneMappingSource.find("settings.exposureCompensationEV - settings.cameraEV100"),
+    EXPECT_EQ(toneMappingSource.find("ResolveToneMappingExposure"),
               std::string::npos);
-    EXPECT_NE(toneMappingSource.find("std::clamp(settings.exposureCompensationEV - settings.cameraEV100"),
+    EXPECT_EQ(toneMappingSource.find("settings.exposureMode"),
               std::string::npos);
-    EXPECT_NE(toneMappingSource.find("std::pow(2.0f, evDelta)"), std::string::npos);
-    EXPECT_NE(toneMappingSource.find("RVX_TONE_MAPPING_FALLBACK_EXPOSURE"), std::string::npos);
-    EXPECT_NE(toneMappingSource.find("return SanitizeManualExposure(settings.exposure);"), std::string::npos);
-    EXPECT_NE(toneMappingSource.find("m_exposure = ResolveToneMappingExposure(settings);"), std::string::npos);
+    EXPECT_EQ(toneMappingHeader.find("SetExposure("), std::string::npos);
+    EXPECT_EQ(toneMappingHeader.find("GetExposure("), std::string::npos);
+    EXPECT_EQ(toneMappingHeader.find("m_exposure"), std::string::npos);
+    EXPECT_EQ(toneMappingSource.find("m_exposure"), std::string::npos);
     EXPECT_NE(toneMappingSource.find("m_operator = settings.toneMappingOperator;"), std::string::npos);
     EXPECT_NE(toneMappingSource.find("m_outputColorSpace = settings.toneMappingOutputColorSpace;"),
               std::string::npos);
-    EXPECT_NE(toneMappingSource.find("constants.outputColorSpace = static_cast<uint32>(outputColorSpace);"),
+    EXPECT_NE(toneMappingSource.find("constants.outputColorSpace = static_cast<uint32>(data.outputColorSpace);"),
               std::string::npos);
     EXPECT_NE(sceneRendererSource.find("ToneMappingOutputColorSpace SceneRenderer::ResolveToneMappingOutputColorSpace"),
               std::string::npos);
@@ -8586,7 +8845,16 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesTonemapOperatorSelectio
         EXPECT_NE(currentSource.find("RenderToneMappingOperator::ACES"),
                   std::string::npos);
         EXPECT_NE(currentSource.find(
-                      "context.renderSettings.postProcess.exposure = 1.0f;"),
+                      "context.renderSettings.postProcess.exposureSettings.mode ="),
+                  std::string::npos);
+        EXPECT_NE(currentSource.find(
+                      "RenderExposureMode::ManualEV100"),
+                  std::string::npos);
+        EXPECT_NE(currentSource.find(
+                      "context.renderSettings.postProcess.exposureSettings.manualEV100 ="),
+                  std::string::npos);
+        EXPECT_NE(currentSource.find(
+                      "context.renderSettings.postProcess.exposureSettings.exposureCompensationEV ="),
                   std::string::npos);
         EXPECT_NE(currentSource.find(
                       "context.renderSettings.postProcess.gamma = 2.2f;"),
@@ -8599,6 +8867,8 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesTonemapOperatorSelectio
                   std::string::npos);
         EXPECT_EQ(currentSource.find("GetPostProcessSettings("), std::string::npos);
         EXPECT_EQ(currentSource.find("ApplyPostProcessSettings("), std::string::npos);
+        EXPECT_EQ(currentSource.find("postProcess.exposure ="),
+                  std::string::npos);
         return;
     }
     ASSERT_FALSE(modelViewerPath.empty());
@@ -8696,15 +8966,24 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesTonemapOperatorSelectio
     EXPECT_NE(source.find("RenderFrameSettings frameSettings = engine.GetRenderFrameSettings();"),
               std::string::npos);
     EXPECT_NE(source.find("frameSettings.postProcess.toneMappingOperator = toneMapping;"), std::string::npos);
-    EXPECT_NE(source.find("frameSettings.postProcess.exposureMode = RenderExposureMode::CameraEV100;"),
+    EXPECT_NE(source.find("frameSettings.postProcess.exposureSettings.mode"),
               std::string::npos);
-    EXPECT_NE(source.find("frameSettings.postProcess.cameraEV100 = options.cameraEV100;"), std::string::npos);
-    EXPECT_NE(source.find("frameSettings.postProcess.exposureCompensationEV ="), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.postProcess.exposureSettings.manualEV100"),
+              std::string::npos);
+    EXPECT_NE(source.find("frameSettings.postProcess.exposureSettings.exposureCompensationEV ="),
+              std::string::npos);
     EXPECT_NE(source.find("options.exposureCompensationSet ? options.exposureCompensationEV"),
               std::string::npos);
-    EXPECT_NE(source.find("RenderExposureMode::ManualMultiplier;"),
+    EXPECT_EQ(source.find("frameSettings.postProcess.exposureMode"),
               std::string::npos);
-    EXPECT_NE(source.find("frameSettings.postProcess.exposure = options.postExposure;"), std::string::npos);
+    EXPECT_EQ(source.find("frameSettings.postProcess.cameraEV100"),
+              std::string::npos);
+    EXPECT_EQ(source.find("frameSettings.postProcess.exposureCompensationEV"),
+              std::string::npos);
+    EXPECT_EQ(source.find("RenderExposureMode::ManualMultiplier"),
+              std::string::npos);
+    EXPECT_EQ(source.find("frameSettings.postProcess.exposure ="),
+              std::string::npos);
     EXPECT_NE(source.find("frameSettings.postProcess.gamma = options.displayGamma;"), std::string::npos);
     EXPECT_NE(source.find("frameSettings.postProcess.bloomIntensity = options.bloomIntensity;"), std::string::npos);
     EXPECT_NE(source.find("frameSettings.postProcess.bloomThreshold = options.bloomThreshold;"), std::string::npos);
@@ -10036,7 +10315,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestMissingIsColdInitAndSavesMetadata
     EXPECT_TRUE(fs::exists(temp.Path() / RVX::PipelineCache::GetManifestFileName()));
 
     const std::string manifest = ReadTextFile(temp.Path() / RVX::PipelineCache::GetManifestFileName());
-    EXPECT_NE(manifest.find("version=18"), std::string::npos);
+    EXPECT_NE(manifest.find("version=19"), std::string::npos);
     EXPECT_NE(manifest.find("skyboxVertexShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("skyboxPixelShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("skyboxPipelineHash="), std::string::npos);
@@ -12059,8 +12338,8 @@ TEST_F(PipelineCacheValidationFixture,
         const RVX::RHIDescriptorSetLayoutDesc& setLayout =
             device.capturedSetLayouts.back();
         ASSERT_STREQ("DeferredLightingSetLayout", setLayout.debugName);
-        ASSERT_EQ(21u, setLayout.entries.size());
-        for (RVX::uint32 binding = 0; binding < 21; ++binding)
+        ASSERT_EQ(22u, setLayout.entries.size());
+        for (RVX::uint32 binding = 0; binding < 22; ++binding)
         {
             const RVX::RHIBindingLayoutEntry* entry =
                 FindBinding(setLayout, binding);
@@ -12074,7 +12353,7 @@ TEST_F(PipelineCacheValidationFixture,
                     : (binding == 6 ? RVX::RHIBindingType::StorageTexture
                                     : ((binding == 7 || binding == 11 ||
                                         binding == 12 || binding == 14 ||
-                                        binding == 15)
+                                        binding == 15 || binding == 21)
                                            ? RVX::RHIBindingType::ShaderResourceBuffer
                                            : ((binding == 9 || binding == 19)
                                                   ? RVX::RHIBindingType::Sampler
@@ -12179,11 +12458,38 @@ TEST_F(PipelineCacheValidationFixture,
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
         << cache.GetLastError();
 
-    RVX::ViewData view;
     constexpr RVX::uint32 width = 17;
     constexpr RVX::uint32 height = 9;
     {
         DeferredLightingGraphInputs graphInputs(device, cache, width, height);
+        const RVX::ViewData& view = graphInputs.view;
+        ASSERT_TRUE(static_cast<bool>(graphInputs.exposureState));
+        EXPECT_EQ(RVX::RVX_EXPOSURE_STATE_STRIDE,
+                  graphInputs.exposureState->GetSize());
+        EXPECT_EQ(RVX::RVX_EXPOSURE_STATE_STRIDE,
+                  graphInputs.exposureState->GetStride());
+        EXPECT_TRUE(HasFlag(graphInputs.exposureState->GetUsage(),
+                            RVX::RHIBufferUsage::Structured));
+        EXPECT_TRUE(HasFlag(graphInputs.exposureState->GetUsage(),
+                            RVX::RHIBufferUsage::ShaderResource));
+        EXPECT_EQ(graphInputs.inputs.exposureState.index,
+                  view.exposureState.index);
+        EXPECT_EQ(graphInputs.inputs.exposureState.hasRange,
+                  view.exposureState.hasRange);
+        EXPECT_EQ(graphInputs.inputs.exposureState.rangeOffset,
+                  view.exposureState.rangeOffset);
+        EXPECT_EQ(graphInputs.inputs.exposureState.rangeSize,
+                  view.exposureState.rangeSize);
+        EXPECT_EQ(graphInputs.inputs.exposureState.graphIdentity,
+                  view.exposureState.graphIdentity);
+        EXPECT_EQ(graphInputs.inputs.exposureState.recordingGeneration,
+                  view.exposureState.recordingGeneration);
+        EXPECT_EQ(1u, view.exposureStateSchemaVersion);
+        EXPECT_EQ(RVX::RVX_EXPOSURE_STATE_STRIDE,
+                  view.exposureStateStride);
+        EXPECT_EQ(RVX::RenderExposureMode::ManualEV100,
+                  view.exposureStateMode);
+        EXPECT_NE(0u, view.exposureStateConfigurationHash);
         RVX::RenderFeatureGraphBuilder featureBuilder(graphInputs.graph);
         RVX::DeferredLightingPass deferredLighting;
         deferredLighting.SetPipelineCache(&cache);
@@ -12217,7 +12523,7 @@ TEST_F(PipelineCacheValidationFixture,
             });
         ASSERT_NE(device.capturedDescriptorSetDescs.end(), descriptor);
         ASSERT_EQ(cache.GetDeferredLightingSetLayout(), descriptor->layout);
-        ASSERT_EQ(21u, descriptor->bindings.size());
+        ASSERT_EQ(22u, descriptor->bindings.size());
         const RVX::RHIDescriptorBinding* constants =
             FindDescriptorBinding(*descriptor, 0);
         ASSERT_NE(nullptr, constants);
@@ -12258,6 +12564,15 @@ TEST_F(PipelineCacheValidationFixture,
                   FindDescriptorBinding(*descriptor, 14)->buffer);
         EXPECT_EQ(graphInputs.inputs.lighting.frozenLightResources.clusterLightIndexBuffer.Get(),
                   FindDescriptorBinding(*descriptor, 15)->buffer);
+        const RVX::RHIDescriptorBinding* const exposureState =
+            FindDescriptorBinding(
+                *descriptor,
+                RVX::PipelineCache::DeferredLightingExposureStateBinding);
+        ASSERT_NE(nullptr, exposureState);
+        EXPECT_EQ(graphInputs.exposureState.Get(), exposureState->buffer);
+        EXPECT_EQ(0u, exposureState->offset);
+        EXPECT_EQ(RVX::RVX_WHOLE_SIZE, exposureState->range);
+        EXPECT_EQ(nullptr, exposureState->textureView);
 
         EXPECT_EQ(0, device.deferredLightingConstantDestructionCount)
             << "The graph must own the frame constants until this execution ends";
@@ -12286,7 +12601,7 @@ TEST_F(PipelineCacheValidationFixture,
         RVX::DeferredLightingPass deferredLighting;
         deferredLighting.SetPipelineCache(&cache);
         EXPECT_FALSE(deferredLighting.AddToGraph(
-            featureBuilder, RVX::ViewData{}, graphInputs.inputs));
+            featureBuilder, graphInputs.view, graphInputs.inputs));
         EXPECT_TRUE(graphInputs.graph.GetDiagnostics().passes.empty());
         EXPECT_EQ(1u, device.capturedComputePipelines.size());
     }
@@ -12305,7 +12620,7 @@ TEST_F(PipelineCacheValidationFixture,
             RVX::DeferredLightingPass deferredLighting;
             deferredLighting.SetPipelineCache(&cache);
             EXPECT_TRUE(deferredLighting.AddToGraph(
-                featureBuilder, RVX::ViewData{}, graphInputs.inputs))
+                featureBuilder, graphInputs.view, graphInputs.inputs))
                 << deferredLighting.GetUnsupportedReason();
             RVX::RenderGraphValidationAccess::Compile(graphInputs.graph);
             EXPECT_TRUE(graphInputs.graph.GetCompileStats().compileValid);
@@ -12354,7 +12669,7 @@ TEST_F(PipelineCacheValidationFixture,
     ASSERT_TRUE(graphInputs.materialTableCreated) << graphInputs.materialTableError;
     ASSERT_TRUE(graphInputs.EnableCSMAndTextureIBL(device));
 
-    RVX::ViewData view;
+    RVX::ViewData view = graphInputs.view;
     view.directionalShadowEnabled = 1;
     view.directionalShadowCascadeCount = 1;
     view.textureIBLEnabled = 1;
@@ -12429,7 +12744,7 @@ TEST_F(PipelineCacheValidationFixture,
     ASSERT_TRUE(graphInputs.EnableCSMAndTextureIBL(
         device, true));
 
-    RVX::ViewData view;
+    RVX::ViewData view = graphInputs.view;
     view.directionalShadowEnabled = 1;
     view.directionalShadowCascadeCount = 1;
     view.textureIBLEnabled = 1;
@@ -12510,7 +12825,7 @@ TEST_F(PipelineCacheValidationFixture,
         RVX::DeferredLightingPass deferredLighting;
         deferredLighting.SetPipelineCache(&cache);
         EXPECT_FALSE(deferredLighting.AddToGraph(
-            featureBuilder, RVX::ViewData{}, graphInputs.inputs));
+            featureBuilder, graphInputs.view, graphInputs.inputs));
         EXPECT_TRUE(graphInputs.graph.GetDiagnostics().passes.empty());
     }
 
@@ -12534,7 +12849,7 @@ TEST_F(PipelineCacheValidationFixture,
         RVX::DeferredLightingPass deferredLighting;
         deferredLighting.SetPipelineCache(&cache);
         ASSERT_TRUE(deferredLighting.AddToGraph(
-            featureBuilder, RVX::ViewData{}, graphInputs.inputs))
+            featureBuilder, graphInputs.view, graphInputs.inputs))
             << deferredLighting.GetUnsupportedReason();
         RVX::RenderGraphValidationAccess::Compile(graphInputs.graph);
         ASSERT_TRUE(graphInputs.graph.GetCompileStats().compileValid);
@@ -12575,14 +12890,14 @@ TEST_F(PipelineCacheValidationFixture,
     graphInputs.inputs.expectedLightingPlanIdentity =
         graphInputs.inputs.lighting.lightingPlanIdentity + 1u;
     EXPECT_FALSE(deferredLighting.AddToGraph(
-        featureBuilder, RVX::ViewData{}, graphInputs.inputs));
+        featureBuilder, graphInputs.view, graphInputs.inputs));
     EXPECT_TRUE(graphInputs.graph.GetDiagnostics().passes.empty());
 
     graphInputs.inputs.expectedLightingPlanIdentity =
         graphInputs.inputs.lighting.lightingPlanIdentity;
     graphInputs.inputs.lighting.clusterLightIndices = {};
     EXPECT_FALSE(deferredLighting.AddToGraph(
-        featureBuilder, RVX::ViewData{}, graphInputs.inputs));
+        featureBuilder, graphInputs.view, graphInputs.inputs));
     EXPECT_TRUE(graphInputs.graph.GetDiagnostics().passes.empty());
 }
 
@@ -12621,6 +12936,14 @@ TEST_F(PipelineCacheValidationFixture,
     EXPECT_NE(std::string::npos,
               source.find("materialTableIndex != 0u"));
     EXPECT_NE(std::string::npos,
+              source.find("StructuredBuffer<RVXExposureState> ExposureStateBuffer"));
+    EXPECT_NE(std::string::npos,
+              source.find(": register(t21, space0)"));
+    EXPECT_NE(std::string::npos,
+              source.find("RVXExposureProducerScale(exposureState)"));
+    EXPECT_NE(std::string::npos,
+              source.find("(directional + local + ambient + emissive) * preExposure"));
+    EXPECT_NE(std::string::npos,
               shadowHeader.find("RVX_DIRECTIONAL_SHADOW_POISSON_TAP_COUNT = 16"));
     EXPECT_NE(std::string::npos,
               shadowHeader.find("float SampleDirectionalShadowPCF("));
@@ -12635,6 +12958,12 @@ TEST_F(PipelineCacheValidationFixture,
 
     EXPECT_NE(std::string::npos,
               defaultLit.find("output.materialTableIndex = 0u;"));
+    EXPECT_NE(std::string::npos,
+              defaultLit.find("RVXExposureProducerScale(exposureState)"));
+    EXPECT_NE(std::string::npos,
+              defaultLit.find("(baseColor.rgb + emissive) * preExposure"));
+    EXPECT_NE(std::string::npos,
+              defaultLit.find("finalColor * preExposure"));
     EXPECT_EQ(std::string::npos,
               defaultLit.find("? 0u\n        : input.MaterialParameterSlot"));
 }

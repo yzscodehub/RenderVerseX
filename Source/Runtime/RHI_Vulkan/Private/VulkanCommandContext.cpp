@@ -1146,7 +1146,13 @@ namespace RVX
             if (swapChain && swapChain->HasAcquiredImage())
             {
                 waitSemaphores.push_back(device->GetImageAvailableSemaphore());
-                waitStages.push_back(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+                // Normal rendering first consumes the image as a color target.
+                // Abort retirement may contain only an image-layout discard,
+                // so its acquire wait must cover that all-command transition.
+                waitStages.push_back(
+                    swapChain->IsAbortAcquireRetirementPending()
+                        ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT
+                        : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
                 waitValues.push_back(0);  // Binary semaphore
 
                 signalSemaphores.push_back(device->GetRenderFinishedSemaphore());
