@@ -1038,9 +1038,18 @@ namespace RVX
         bool enabled = false;
         bool graphPassScheduled = false;
         bool drawSubmitted = false;
+        bool uploadPublished = false;
         uint32 itemCount = 0;
-        uint32 renderPayloadReadyItemCount = 0;
+        uint32 cpuPacketReadyItemCount = 0;
         uint32 totalAliveParticles = 0;
+        uint32 drawCallCount = 0;
+        uint32 instanceCount = 0;
+        uint32 fallbackCount = 0;
+        uint32 waitIdleCallCount = 0;
+        uint32 frameSlot = RVX_INVALID_INDEX;
+        uint64 uploadBytes = 0;
+        uint64 resourceCreationCount = 0;
+        uint64 pipelineCreationCount = 0;
         std::string reason{};
     };
 

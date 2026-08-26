@@ -137,7 +137,7 @@ namespace RVX
         size_t skippedProviderCount = 0;
         size_t particleItemCount = 0;
         size_t particleMetadataOnlyCount = 0;
-        size_t particleRenderPayloadReadyCount = 0;
+        size_t particleCpuPacketReadyCount = 0;
         size_t particleSortingSupportedCount = 0;
         size_t waterItemCount = 0;
         size_t terrainItemCount = 0;

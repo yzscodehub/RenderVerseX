@@ -4100,6 +4100,9 @@ TEST_F(RenderHonestyValidationFixture, ParticleRenderingAndSimulationExposeDisco
     instance.Play();
     instance.Simulate(0.016f);
 
+    // GFX16 connects its CPU billboard path through the runtime/ECS
+    // composition.  A directly constructed instance has no simulator and
+    // must remain fail-closed instead of advancing a fictitious simulation.
     EXPECT_FALSE(instance.IsSimulationSupported());
     EXPECT_FALSE(instance.GetSimulationUnsupportedReason().empty());
     EXPECT_EQ(instance.GetSimulationTime(), 0.0f);
@@ -4110,12 +4113,23 @@ TEST_F(RenderHonestyValidationFixture, ParticleRenderingAndSimulationExposeDisco
     item.instanceId = 1;
     item.systemId = 1;
     item.systemName = "honesty-particles";
+    item.header = {
+        .channelId = RVX::RenderFeatureChannelId::Particle,
+        .schemaVersion = RVX::ParticleRenderFeatureChannelDescriptor::SchemaVersion,
+        .captureSequence = 1u,
+        .configurationRevision = 1u,
+        .source = {
+            .sceneRuntimeId = 0x484F4E45535459ull,
+            .entitySlot = 1u,
+            .entityGeneration = 1u,
+        },
+    };
     item.payloadStatus = RVX::ParticleRenderSnapshotPayloadStatus::MetadataOnly;
     item.aliveParticleCount = 4;
-    item.renderPayloadAvailable = false;
+    item.maxParticleCount = 4;
     snapshot.items.push_back(item);
-    snapshot.metadata.totalAliveParticles = item.aliveParticleCount;
     snapshot.MarkComplete();
+    ASSERT_TRUE(snapshot.metadata.complete);
 
     RVX::ParticleFeaturePass pass;
     pass.SetSnapshot(&snapshot);

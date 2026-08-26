@@ -22,7 +22,7 @@ namespace
             if (!IsAlive(handle)) return false;
             const Entry& entry = m_entries[handle.GetIndex()];
             out.item.instanceId = handle.GetPackedValue(); out.item.systemId = entry.systemId;
-            out.item.visible = true; out.item.simulationSupported = true; out.item.renderPayloadAvailable = true;
+            out.item.visible = true; out.item.simulationSupported = true;
             out.item.maxParticleCount = entry.maxParticleCount; out.payloadRevision = 7; return true;
         }
         RVX::Particle::ParticleEcsReleaseResult Release(RVX::Particle::ParticleEcsRuntimeHandle handle) override

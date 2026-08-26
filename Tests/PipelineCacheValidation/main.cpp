@@ -3558,6 +3558,14 @@ TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCove
     EXPECT_EQ(openGLUpload.find("m_wrapperBuffer = m_device->CreateBuffer(desc);"), std::string::npos);
     EXPECT_EQ(particleCMake.find("Private/Rendering/ParticleRenderer.cpp"), std::string::npos);
     EXPECT_EQ(particleCMake.find("RVX_ShaderCompiler"), std::string::npos);
+    EXPECT_EQ(particleCMake.find("add_custom_command(TARGET ${MODULE_NAME} POST_BUILD"),
+              std::string::npos);
+    EXPECT_EQ(particleCMake.find("SHADER_OUTPUT_DIR"), std::string::npos);
+    EXPECT_EQ(particleCMake.find("copy_if_different"), std::string::npos);
+    EXPECT_EQ(particleCMake.find("ParticleEmit.hlsl"), std::string::npos);
+    EXPECT_EQ(particleCMake.find("ParticleSimulate.hlsl"), std::string::npos);
+    EXPECT_EQ(particleCMake.find("ParticleBitonicSort.hlsl"), std::string::npos);
+    EXPECT_EQ(particleCMake.find("ParticleStretchedBillboard.hlsl"), std::string::npos);
     EXPECT_NE(renderCMake.find("Private/Passes/ParticleFeaturePass.cpp"), std::string::npos);
     EXPECT_NE(particleFeaturePass.find("ParticleRenderSnapshotPayloadStatus::MetadataOnly"), std::string::npos);
 }

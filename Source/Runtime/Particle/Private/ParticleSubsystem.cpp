@@ -61,6 +61,20 @@ namespace
 
         return RVX::ParticleRenderSnapshotSimulationBackend::External;
     }
+
+    bool IsGfx16CpuBillboardPolicy(
+        RVX::ParticleRenderSnapshotMode renderMode,
+        RVX::ParticleRenderSnapshotBlendMode blendMode,
+        RVX::ParticleRenderSnapshotSimulationBackend simulationBackend,
+        bool softParticlesEnabled) noexcept
+    {
+        return renderMode == RVX::ParticleRenderSnapshotMode::Billboard &&
+               simulationBackend == RVX::ParticleRenderSnapshotSimulationBackend::CPU &&
+               !softParticlesEnabled &&
+               (blendMode == RVX::ParticleRenderSnapshotBlendMode::AlphaBlend ||
+                blendMode == RVX::ParticleRenderSnapshotBlendMode::Premultiplied ||
+                blendMode == RVX::ParticleRenderSnapshotBlendMode::Additive);
+    }
 } // namespace
 
 ParticleSubsystem* ParticleSubsystem::s_activeSubsystem = nullptr;
@@ -85,6 +99,7 @@ std::vector<SubsystemDependency> ParticleSubsystem::GetTypedDependencies() const
 void ParticleSubsystem::Initialize()
 {
     s_activeSubsystem = this;
+    m_nextDeterministicInstanceKey = 1;
     m_renderIntegrationReady = false;
     m_renderIntegrationUnsupportedReason = "Particle render integration is not initialized";
 
@@ -151,6 +166,7 @@ void ParticleSubsystem::Deinitialize()
     m_stats.totalParticles = 0;
     m_stats.gpuSimulatedParticles = 0;
     m_stats.cpuSimulatedParticles = 0;
+    m_nextDeterministicInstanceKey = 1;
 
     RVX_CORE_INFO("ParticleSubsystem: Deinitialized");
 }
@@ -168,10 +184,16 @@ ParticleSystemInstance* ParticleSubsystem::CreateInstance(ParticleSystem::Ptr sy
     auto instance = std::make_unique<ParticleSystemInstance>(system);
     auto simulator = std::make_unique<CPUParticleSimulator>();
     simulator->Initialize(system->maxParticles);
-    if (m_config.deterministicCpuSimulation)
+    const uint32 deterministicSeed = m_config.useConfiguredCpuSimulationSeed
+                                         ? m_config.cpuSimulationSeed
+                                         : 0u;
+    const uint64 deterministicInstanceKey = m_nextDeterministicInstanceKey++;
+    if (m_nextDeterministicInstanceKey == 0)
     {
-        simulator->SetRandomSeed(m_config.cpuSimulationSeed + static_cast<uint32>(m_instances.size()));
+        m_nextDeterministicInstanceKey = 1;
     }
+    instance->SetDeterministicSimulationIdentity(
+        deterministicSeed, deterministicInstanceKey);
     instance->SetSimulator(std::move(simulator), "CPU");
 
     ParticleSystemInstance* ptr = instance.get();
@@ -271,11 +293,6 @@ bool ParticleSubsystem::BuildRenderSnapshot(RVX::ParticleRenderSnapshot& outSnap
         }
 
         const uint32 aliveCount = instance->GetAliveCount();
-        if (aliveCount == 0)
-        {
-            outSnapshot.skippedReasons.push_back("Particle instance has no alive particles");
-            continue;
-        }
 
         const auto system = instance->GetSystem();
         if (!system)
@@ -300,28 +317,48 @@ bool ParticleSubsystem::BuildRenderSnapshot(RVX::ParticleRenderSnapshot& outSnap
         item.normalizedTime = instance->GetNormalizedTime();
         item.visible = instance->IsVisible();
         item.simulationSupported = instance->IsSimulationSupported();
-        item.renderPayloadAvailable = false;
         item.sortingSupported = false;
         item.softParticlesEnabled = system->softParticleConfig.enabled;
         item.softParticleFadeDistance = system->softParticleConfig.fadeDistance;
 
-        if (const IParticleSimulator* simulator = instance->GetSimulator())
+        if (!IsGfx16CpuBillboardPolicy(item.renderMode,
+                                       item.blendMode,
+                                       item.simulationBackend,
+                                       item.softParticlesEnabled))
         {
-            item.renderPayloadAvailable = simulator->BuildRenderParticlePayload(item.particles);
+            item.renderPayloadReason =
+                "GFX16 accepts only non-soft CPU Billboard particles using AlphaBlend, Premultiplied, or Additive blending.";
+        }
+        else if (const IParticleSimulator* simulator = instance->GetSimulator())
+        {
+            RVX::ParticleCpuPacket packet;
+            packet.simulationTick = instance->GetSimulationTick();
+            packet.deterministicSeed = instance->GetDeterministicSimulationSeed();
+            packet.deterministicInstanceKey =
+                instance->GetDeterministicInstanceKey();
+            packet.effectiveSimulationSeed = instance->GetEffectiveSimulationSeed();
+            if (simulator->BuildRenderParticlePayload(packet.particles))
+            {
+                packet.contentHash = packet.ComputeContentHash();
+                if (packet.IsStructurallyValid(item.maxParticleCount) &&
+                    packet.particles.size() == item.aliveParticleCount)
+                {
+                    item.cpuPacket = std::move(packet);
+                    item.payloadStatus =
+                        RVX::ParticleRenderSnapshotPayloadStatus::CpuPacketReady;
+                    item.renderPayloadReason =
+                        "Immutable CPU particle packet is ready for Render-owned billboard upload.";
+                }
+                else
+                {
+                    item.renderPayloadReason =
+                        "CPU particle packet failed count, content-hash, or structural validation.";
+                }
+            }
         }
 
-        if (item.renderPayloadAvailable)
-        {
-            item.payloadStatus = RVX::ParticleRenderSnapshotPayloadStatus::RenderOwnedPayloadReady;
-            item.renderPayloadReason =
-                "CPU particle payload exported; Render-owned particle upload/draw implementation is not connected";
-        }
-        else
-        {
-            item.payloadStatus = RVX::ParticleRenderSnapshotPayloadStatus::MetadataOnly;
-            item.renderPayloadReason =
-                "Particle snapshot contains metadata only; Render-owned particle draw data extraction is not connected";
-        }
+        if (!item.IsCpuPacketReady() && item.renderPayloadReason.empty())
+            item.renderPayloadReason = "Particle snapshot contains no immutable CPU render packet.";
 
         item.sortingReason =
             "Particle sorting is deferred to Render-owned feature passes";
@@ -330,7 +367,6 @@ bool ParticleSubsystem::BuildRenderSnapshot(RVX::ParticleRenderSnapshot& outSnap
             item.unsupportedReason = instance->GetSimulationUnsupportedReason();
         }
 
-        outSnapshot.metadata.totalAliveParticles += aliveCount;
         outSnapshot.items.push_back(std::move(item));
     }
 

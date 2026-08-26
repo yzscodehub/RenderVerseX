@@ -44,6 +44,8 @@ namespace RVX::Particle
     {
         AssetId systemAssetId{};
         uint64 configurationRevision = 1;
+        /** @brief Explicit CPU simulation seed; zero is a valid deterministic seed. */
+        uint32 deterministicSeed = 0;
         float emissionRateScale = 1.0f;
         float simulationSpeed = 1.0f;
         uint32 maxParticleCount = 1;
@@ -84,6 +86,10 @@ namespace RVX::Particle
         Mat4 worldTransform{1.0f};
         ParticleEcsCommand command = ParticleEcsCommand::None;
         float64 deltaSeconds = 0.0;
+        /** @brief Caller-owned variable-step sequence captured with this update. */
+        uint64 simulationTick = 0;
+        /** @brief Generation-qualified owner key; never a process-global instance ID. */
+        uint64 deterministicInstanceKey = 0;
     };
 
     /** @brief Complete value result captured from a gateway-owned particle runtime instance. */

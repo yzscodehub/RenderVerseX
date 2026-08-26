@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <memory>
 #include <utility>
 
 namespace
@@ -59,7 +60,7 @@ using namespace RVX::SceneECS;
     return snapshot;
 }
 
-[[nodiscard]] ParticleRenderSnapshotItem MakeParticle()
+[[nodiscard]] ParticleRenderSnapshotItem MakeParticle(float positionX = 1.0f)
 {
     ParticleRenderSnapshotItem item;
     item.instanceId = 17;
@@ -67,16 +68,23 @@ using namespace RVX::SceneECS;
     item.systemAssetId = {.value = 101};
     item.systemName = "Transient legacy identity must not escape";
     item.simulationBackend = ParticleRenderSnapshotSimulationBackend::CPU;
-    item.payloadStatus = ParticleRenderSnapshotPayloadStatus::RenderOwnedPayloadReady;
+    item.payloadStatus = ParticleRenderSnapshotPayloadStatus::CpuPacketReady;
     item.aliveParticleCount = 1;
     item.maxParticleCount = 64;
-    item.renderPayloadAvailable = true;
-    item.particles.push_back({
-        .position = {1.0f, 2.0f, 3.0f},
+    ParticleCpuPacket packet;
+    packet.simulationTick = 7;
+    packet.deterministicSeed = 11;
+    packet.deterministicInstanceKey = 13;
+    packet.effectiveSimulationSeed = 17;
+    packet.particles.push_back({
+        .stableParticleId = 3,
+        .position = {positionX, 2.0f, 3.0f},
         .lifetime = 5.0f,
         .velocity = {4.0f, 5.0f, 6.0f},
         .age = 0.5f,
     });
+    packet.contentHash = packet.ComputeContentHash();
+    item.cpuPacket = std::move(packet);
     return item;
 }
 
@@ -266,7 +274,7 @@ TEST(EcsFeatureSnapshotValidation,
 }
 
 TEST(EcsFeatureSnapshotValidation,
-     DeepCopiesDynamicParticlePayloadAndExtractsFeatureFullIncrementalAndResetDeltas)
+     SharesImmutableParticlePacketAndExtractsFeatureFullIncrementalAndResetDeltas)
 {
     ECS::Registry registry;
     SceneFeatureSnapshotStore store(registry.GetSceneRuntimeId());
@@ -283,13 +291,16 @@ TEST(EcsFeatureSnapshotValidation,
     ASSERT_TRUE(store.PublishWater(waterSource, MakeWater(), 12));
     ASSERT_TRUE(store.PublishTerrain(terrainSource, MakeTerrain(), 13));
 
-    particle.particles[0].position.x = 999.0f;
     FrozenSceneSnapshot firstSnapshot = MakeSnapshot(registry.GetSceneRuntimeId(), 1);
     ASSERT_TRUE(store.FreezeInto(firstSnapshot));
     ASSERT_EQ(firstSnapshot.particles.size(), 1U);
     ASSERT_EQ(firstSnapshot.water.size(), 1U);
     ASSERT_EQ(firstSnapshot.terrain.size(), 1U);
-    EXPECT_FLOAT_EQ(firstSnapshot.particles[0].state.particles[0].position.x, 1.0f);
+    EXPECT_TRUE(firstSnapshot.particles[0].state.HasValidCpuPacket());
+    EXPECT_NE(&firstSnapshot.particles[0].state.cpuPacket, &particle.cpuPacket);
+    EXPECT_EQ(firstSnapshot.particles[0].state.cpuPacket.contentHash,
+              particle.cpuPacket.contentHash);
+    EXPECT_FLOAT_EQ(firstSnapshot.particles[0].state.GetParticles()[0].position.x, 1.0f);
     EXPECT_EQ(firstSnapshot.particles[0].payloadRevision, 11U);
     EXPECT_EQ(firstSnapshot.particles[0].state.header.channelId,
               RenderFeatureChannelId::Particle);
@@ -332,10 +343,11 @@ TEST(EcsFeatureSnapshotValidation,
     EXPECT_EQ(firstBridge.terrain[0].state.materialAssetId, (AssetId{302}));
 
     // Re-publishing cannot mutate an already frozen snapshot.
-    ParticleRenderSnapshotItem replacementParticle = MakeParticle();
-    replacementParticle.particles[0].position.x = 42.0f;
+    ParticleRenderSnapshotItem replacementParticle = MakeParticle(42.0f);
     ASSERT_TRUE(store.PublishParticle(particleSource, replacementParticle, 14));
-    EXPECT_FLOAT_EQ(firstSnapshot.particles[0].state.particles[0].position.x, 1.0f);
+    EXPECT_NE(firstSnapshot.particles[0].state.cpuPacket.contentHash,
+              replacementParticle.cpuPacket.contentHash);
+    EXPECT_FLOAT_EQ(firstSnapshot.particles[0].state.GetParticles()[0].position.x, 1.0f);
 
     EcsFrameExtractor extractor;
     EcsFrameExtractionResult first = extractor.Extract(MakeInput(1), firstBridge);

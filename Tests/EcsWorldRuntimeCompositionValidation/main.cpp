@@ -353,7 +353,6 @@ namespace
             outSnapshot.item.systemAssetId = AssetId{17};
             outSnapshot.item.maxParticleCount = m_maxParticleCount;
             outSnapshot.item.simulationSupported = true;
-            outSnapshot.item.renderPayloadAvailable = true;
             outSnapshot.payloadRevision = 1;
             return true;
         }

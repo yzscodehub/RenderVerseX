@@ -848,6 +848,80 @@ namespace
     }
 
     TEST(RenderContractsValidation,
+         CpuParticlePacketIsValueOwnedHashQualifiedAndSnapshotCountsAreFailClosed)
+    {
+        ParticleCpuPacket packet;
+        packet.simulationTick = 41;
+        packet.deterministicSeed = 0x51A7u;
+        packet.deterministicInstanceKey = 0xC0FFEEu;
+        packet.effectiveSimulationSeed = 0xA11CEu;
+        packet.particles.push_back({
+            .stableParticleId = 2,
+            .position = {1.0f, 2.0f, 3.0f},
+            .lifetime = 4.0f,
+            .velocity = {0.0f, 1.0f, 0.0f},
+            .age = 0.5f,
+            .color = {1.0f, 0.5f, 0.25f, 1.0f},
+            .size = {2.0f, 3.0f},
+        });
+        packet.contentHash = packet.ComputeContentHash();
+        ASSERT_TRUE(packet.IsStructurallyValid(8));
+
+        ParticleCpuPacket missingKey = packet;
+        missingKey.deterministicInstanceKey = 0;
+        missingKey.contentHash = missingKey.ComputeContentHash();
+        EXPECT_FALSE(missingKey.IsStructurallyValid(8));
+
+        ParticleRenderSnapshotItem item;
+        item.simulationBackend = ParticleRenderSnapshotSimulationBackend::CPU;
+        item.payloadStatus = ParticleRenderSnapshotPayloadStatus::CpuPacketReady;
+        item.aliveParticleCount = 1;
+        item.maxParticleCount = 8;
+        item.cpuPacket = packet;
+        EXPECT_TRUE(item.IsCpuPacketReady());
+        EXPECT_TRUE(item.HasValidCpuPacket());
+        EXPECT_EQ(item.GetParticleCount(), 1U);
+
+        ParticleRenderSnapshot snapshot;
+        snapshot.BeginBuild(7);
+        snapshot.items.push_back(item);
+        snapshot.MarkComplete();
+        EXPECT_TRUE(snapshot.metadata.complete);
+        EXPECT_EQ(snapshot.GetMetadata().totalAliveParticles, 1U);
+
+        ParticleCpuPacket malformed = packet;
+        ++malformed.contentHash;
+        item.cpuPacket = std::move(malformed);
+        EXPECT_TRUE(item.IsCpuPacketReady());
+        EXPECT_FALSE(item.HasValidCpuPacket());
+
+        snapshot.BeginBuild(8);
+        snapshot.items.push_back(std::move(item));
+        snapshot.MarkComplete();
+        EXPECT_TRUE(snapshot.metadata.complete);
+
+        // Packet contents are validated exactly once at publication/final
+        // consumption. Intermediate snapshot completion only verifies the
+        // sealed value/status/count shape and must not rehash all particles.
+        snapshot.items.front().payloadStatus =
+            ParticleRenderSnapshotPayloadStatus::MetadataOnly;
+        snapshot.MarkComplete();
+        EXPECT_FALSE(snapshot.metadata.complete);
+        EXPECT_TRUE(snapshot.items.empty());
+
+        ParticleRenderSnapshot overflow;
+        overflow.BeginBuild(9);
+        ParticleRenderSnapshotItem overflowItem;
+        overflowItem.aliveParticleCount = std::numeric_limits<uint32>::max();
+        overflowItem.maxParticleCount = std::numeric_limits<uint32>::max();
+        overflow.items.push_back(overflowItem);
+        overflow.items.push_back(overflowItem);
+        overflow.MarkComplete();
+        EXPECT_FALSE(overflow.metadata.complete);
+        EXPECT_TRUE(overflow.items.empty());
+    }
+
+    TEST(RenderContractsValidation,
          FeatureChannelRegistryRequiresCompleteUniqueRoutesBeforeSeal)
     {
         const auto registrationFor = [](RenderFeatureChannelId channelId)
@@ -996,6 +1070,11 @@ namespace
             invalid.header.captureSequence = 0;
             EXPECT_EQ(invalid.ValidateChannel(source),
                       RenderFeatureChannelValidationCode::ZeroCaptureSequence);
+
+            invalid = item;
+            invalid.header.configurationRevision = 0;
+            EXPECT_EQ(invalid.ValidateChannel(source),
+                      RenderFeatureChannelValidationCode::ZeroConfigurationRevision);
 
             invalid = item;
             EXPECT_EQ(invalid.ValidateChannel(source, 9),

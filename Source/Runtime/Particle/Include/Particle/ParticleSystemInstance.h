@@ -114,6 +114,51 @@ namespace RVX::Particle
         /// Update the simulation
         void Simulate(float deltaTime);
 
+        /**
+         * @brief Supplies the explicit simulation tick consumed by the next
+         * simulation step.
+         *
+         * ECS callers set this from their frozen owner-thread frame sequence.
+         * This is intentionally not a claim that EngineFramePipeline fixed
+         * time is implemented; it only makes this CPU instance reproducible
+         * for an explicit caller-owned tick.
+         */
+        void SetSimulationTick(uint64 simulationTick) noexcept;
+
+        /** @brief Last explicit or locally advanced simulation tick. */
+        [[nodiscard]] uint64 GetSimulationTick() const noexcept
+        {
+            return m_simulationTick;
+        }
+
+        /** @brief Configured seed used to derive deterministic emission and CPU RNG seeds. */
+        [[nodiscard]] uint32 GetDeterministicSimulationSeed() const noexcept
+        {
+            return m_deterministicSeed;
+        }
+
+        /** @brief Stable owner key paired with GetDeterministicSimulationSeed(). */
+        [[nodiscard]] uint64 GetDeterministicInstanceKey() const noexcept
+        {
+            return m_deterministicInstanceKey;
+        }
+
+        /** @brief Actual CPU RNG seed paired with the configured source identity. */
+        [[nodiscard]] uint32 GetEffectiveSimulationSeed() const noexcept
+        {
+            return m_effectiveSimulationSeed;
+        }
+
+        /**
+         * @brief Sets the deterministic identity used for emission seeds.
+         *
+         * `instanceKey` must be generation-qualified and supplied by the
+         * owner.  It deliberately replaces process-global instance IDs in
+         * random-seed derivation.
+         */
+        void SetDeterministicSimulationIdentity(uint32 seed,
+                                                uint64 instanceKey) noexcept;
+
         /// Prewarm the system (simulate ahead)
         void Prewarm(float duration);
 
@@ -250,6 +295,7 @@ namespace RVX::Particle
 
     private:
         void Initialize();
+        void ResetDeterministicSimulator();
         void UpdateEmission(float deltaTime);
         void ApplyOverrides();
 
@@ -266,6 +312,11 @@ namespace RVX::Particle
         float m_simulationTime = 0.0f;
         float m_emissionAccumulator = 0.0f;
         uint32 m_aliveCount = 0;
+        uint64 m_simulationTick = 0;
+        uint32 m_deterministicSeed = 0;
+        uint64 m_deterministicInstanceKey = 1;
+        uint32 m_effectiveSimulationSeed = 0;
+        bool m_hasExplicitSimulationTick = false;
 
         // Transform
         Mat4 m_worldTransform = Mat4Identity();

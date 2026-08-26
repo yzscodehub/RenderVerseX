@@ -784,11 +784,22 @@ namespace
             features.particles.graphPassScheduled =
                 particles.graphPassScheduled;
             features.particles.drawSubmitted = particles.drawSubmitted;
+            features.particles.uploadPublished = particles.uploadPublished;
             features.particles.itemCount = particles.itemCount;
-            features.particles.renderPayloadReadyItemCount =
-                particles.renderPayloadReadyItemCount;
+            features.particles.cpuPacketReadyItemCount =
+                particles.cpuPacketReadyItemCount;
             features.particles.totalAliveParticles =
                 particles.totalAliveParticles;
+            features.particles.drawCallCount = particles.drawCallCount;
+            features.particles.instanceCount = particles.instanceCount;
+            features.particles.fallbackCount = particles.fallbackCount;
+            features.particles.waitIdleCallCount = particles.waitIdleCallCount;
+            features.particles.frameSlot = particles.frameSlot;
+            features.particles.uploadBytes = particles.uploadBytes;
+            features.particles.resourceCreationCount =
+                particles.resourceCreationCount;
+            features.particles.pipelineCreationCount =
+                particles.pipelineCreationCount;
             features.particles.reason = particles.unsupportedReason;
 
             if (MaterialSystem* materials =

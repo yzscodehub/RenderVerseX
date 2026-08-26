@@ -15,6 +15,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace
@@ -227,6 +228,65 @@ TEST(ShaderProgramCatalogValidation,
         EXPECT_TRUE(cookedPrograms.contains(
             RVX::BuildShaderArtifactRelativePath(request).generic_string()))
             << entryPoint;
+    }
+}
+
+TEST(ShaderProgramCatalogValidation,
+     ParticleBillboardProgramsAreCookedForEveryRasterBackend)
+{
+    std::vector<RVX::Tools::ShaderProgramCatalogEntry> entries;
+    std::string error;
+    ASSERT_TRUE(RVX::Tools::LoadShaderProgramCatalog(
+        RepositoryCatalogPath(), entries, error)) << error;
+
+    const fs::path sourcePath =
+        RepositoryShaderRoot() / "Particle" / "ParticleBillboard.hlsl";
+    ASSERT_TRUE(fs::is_regular_file(sourcePath)) << sourcePath;
+
+    const std::array expectedBackends = {
+        RVX::RHIBackendType::DX11,
+        RVX::RHIBackendType::DX12,
+        RVX::RHIBackendType::Vulkan,
+        RVX::RHIBackendType::Metal,
+        RVX::RHIBackendType::OpenGL,
+    };
+
+    const auto findProgram = [&entries](RVX::RHIShaderStage stage,
+                                        std::string_view entryPoint)
+        -> const RVX::Tools::ShaderProgramCatalogEntry*
+    {
+        const auto it = std::find_if(
+            entries.begin(), entries.end(),
+            [stage, entryPoint](const RVX::Tools::ShaderProgramCatalogEntry& entry)
+            {
+                return entry.logicalAssetId == "Particle/ParticleBillboard.hlsl" &&
+                       entry.stage == stage && entry.entryPoint == entryPoint;
+            });
+        return it == entries.end() ? nullptr : &*it;
+    };
+
+    for (const auto [stage, entryPoint] : {
+             std::pair{RVX::RHIShaderStage::Vertex, std::string_view{"VSMain"}},
+             std::pair{RVX::RHIShaderStage::Pixel, std::string_view{"PSMain"}}})
+    {
+        const RVX::Tools::ShaderProgramCatalogEntry* program =
+            findProgram(stage, entryPoint);
+        ASSERT_NE(program, nullptr) << entryPoint;
+
+        for (const RVX::RHIBackendType backend : expectedBackends)
+        {
+            EXPECT_NE(std::find(program->backends.begin(), program->backends.end(), backend),
+                      program->backends.end())
+                << entryPoint;
+
+            RVX::ShaderProgramRequest request;
+            ASSERT_TRUE(RVX::Tools::ResolveShaderProgramCatalogEntry(
+                *program, backend, request, error)) << error;
+            EXPECT_EQ(request.logicalAssetId, "Particle/ParticleBillboard.hlsl");
+            EXPECT_EQ(request.stage, stage);
+            EXPECT_EQ(request.entryPoint, entryPoint);
+            EXPECT_EQ(request.backend, backend);
+        }
     }
 }
 

@@ -28,8 +28,14 @@ namespace RVX::Particle
         bool enableSorting = true;              ///< Enable transparency sorting
         bool enableSoftParticles = true;        ///< Enable soft particle depth fade
         float globalSimulationSpeed = 1.0f;     ///< Global simulation speed multiplier
-        bool deterministicCpuSimulation = false; ///< Use a fixed CPU simulator seed for reproducible captures
-        uint32 cpuSimulationSeed = 0;            ///< Seed used when deterministicCpuSimulation is enabled
+        /**
+         * @brief Uses cpuSimulationSeed instead of the canonical explicit seed zero.
+         *
+         * CPU simulation always receives an explicit seed and instance key; this
+         * switch does not enable entropy or make a packet non-deterministic.
+         */
+        bool useConfiguredCpuSimulationSeed = false;
+        uint32 cpuSimulationSeed = 0; ///< Explicit source seed when the configured-seed policy is enabled.
     };
 
     /**
@@ -176,6 +182,7 @@ namespace RVX::Particle
         // Statistics
         Statistics m_stats;
         mutable uint64 m_nextRenderSnapshotSequence = 0;
+        uint64 m_nextDeterministicInstanceKey = 1;
 
         static ParticleSubsystem* s_activeSubsystem;
     };

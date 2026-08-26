@@ -2,12 +2,46 @@
 #include "Particle/Emitters/IEmitter.h"
 #include "Particle/Events/ParticleEventHandler.h"
 #include "Particle/GPU/IParticleSimulator.h"
+#include "Particle/Modules/CollisionModule.h"
 #include "Core/Log.h"
 #include <algorithm>
 #include <cmath>
 
 namespace RVX::Particle
 {
+namespace
+{
+    [[nodiscard]] uint32 DeriveEmissionSeed(uint32 seed,
+                                             uint64 instanceKey,
+                                             uint64 simulationTick,
+                                             uint32 emitterIndex) noexcept
+    {
+        // Explicit scalar mixing prevents process-global instance construction
+        // order from affecting captured simulation output.
+        uint64 value = (static_cast<uint64>(seed) << 32u) ^ instanceKey;
+        value ^= simulationTick + 0x9e3779b97f4a7c15ull + (value << 6u) +
+                 (value >> 2u);
+        value ^= static_cast<uint64>(emitterIndex) * 0xbf58476d1ce4e5b9ull;
+        value ^= value >> 30u;
+        value *= 0xbf58476d1ce4e5b9ull;
+        value ^= value >> 27u;
+        value *= 0x94d049bb133111ebull;
+        value ^= value >> 31u;
+        return static_cast<uint32>(value ^ (value >> 32u));
+    }
+
+    [[nodiscard]] uint32 DeriveEffectiveSimulationSeed(uint32 seed,
+                                                        uint64 instanceKey) noexcept
+    {
+        uint64 value = (static_cast<uint64>(seed) << 32u) ^ instanceKey;
+        value ^= value >> 30u;
+        value *= 0xbf58476d1ce4e5b9ull;
+        value ^= value >> 27u;
+        value *= 0x94d049bb133111ebull;
+        value ^= value >> 31u;
+        return static_cast<uint32>(value ^ (value >> 32u));
+    }
+} // namespace
 
 uint64 ParticleSystemInstance::s_nextInstanceId = 1;
 
@@ -48,6 +82,10 @@ void ParticleSystemInstance::Initialize()
     m_aliveCount = 0;
     m_simulationTime = 0.0f;
     m_emissionAccumulator = 0.0f;
+    m_simulationTick = 0;
+    m_effectiveSimulationSeed = DeriveEffectiveSimulationSeed(
+        m_deterministicSeed, m_deterministicInstanceKey);
+    m_hasExplicitSimulationTick = false;
     m_boundsDirty = true;
 }
 
@@ -70,6 +108,7 @@ void ParticleSystemInstance::SetSimulator(std::unique_ptr<IParticleSimulator> si
     {
         m_simulationBackendName = backendName && backendName[0] ? backendName : "ParticleSimulator";
         m_simulationUnsupportedReason.clear();
+        ResetDeterministicSimulator();
     }
     else
     {
@@ -89,6 +128,9 @@ void ParticleSystemInstance::Play()
     {
         m_simulationTime = 0.0f;
         m_emissionAccumulator = 0.0f;
+        m_simulationTick = 0;
+        m_hasExplicitSimulationTick = false;
+        ResetDeterministicSimulator();
         
         // Handle prewarm
         if (m_system->prewarm)
@@ -105,6 +147,8 @@ void ParticleSystemInstance::Stop()
     m_playbackState = PlaybackState::Stopped;
     Clear();
     m_simulationTime = 0.0f;
+    m_simulationTick = 0;
+    m_hasExplicitSimulationTick = false;
 }
 
 void ParticleSystemInstance::Pause()
@@ -172,6 +216,12 @@ void ParticleSystemInstance::Simulate(float deltaTime)
         }
         return;
     }
+
+    if (!m_hasExplicitSimulationTick)
+    {
+        ++m_simulationTick;
+    }
+    m_hasExplicitSimulationTick = false;
     
     // Update simulation time
     m_simulationTime += effectiveDeltaTime;
@@ -200,11 +250,58 @@ void ParticleSystemInstance::Simulate(float deltaTime)
         params.simulationData.maxParticles = m_simulator->GetMaxParticles();
         params.simulationData.gravity = Vec4(0.0f, -9.81f, 0.0f, 0.0f);
 
+        // The CPU simulator supports the authored plane subset of the
+        // collision module.  Keep the module's data in the runtime snapshot
+        // rather than exposing simulator-private state to callers.
+        if (const CollisionModule* collision = m_system->GetModule<CollisionModule>();
+            collision != nullptr && collision->enabled &&
+            collision->type == CollisionType::Planes)
+        {
+            const uint32 planeCount = static_cast<uint32>(std::min(
+                collision->planes.size(),
+                static_cast<size_t>(RVX_MAX_COLLISION_PLANES)));
+            params.simulationData.collisionPlaneCount = planeCount;
+            params.simulationData.collisionBounce = collision->bounce;
+            params.simulationData.collisionLifetimeLoss = collision->lifetimeLoss;
+            params.simulationData.collisionRadiusScale = collision->radiusScale;
+            params.simulationData.collisionEnabled = planeCount > 0 ? 1u : 0u;
+            for (uint32 index = 0; index < planeCount; ++index)
+            {
+                params.simulationData.collisionPlanes[index] = collision->planes[index];
+            }
+        }
+
         m_simulator->Simulate(effectiveDeltaTime, params);
         m_aliveCount = m_simulator->GetAliveCount();
     }
     
     m_boundsDirty = true;
+}
+
+void ParticleSystemInstance::SetSimulationTick(uint64 simulationTick) noexcept
+{
+    m_simulationTick = simulationTick;
+    m_hasExplicitSimulationTick = true;
+}
+
+void ParticleSystemInstance::SetDeterministicSimulationIdentity(
+    uint32 seed,
+    uint64 instanceKey) noexcept
+{
+    m_deterministicSeed = seed;
+    m_deterministicInstanceKey = instanceKey != 0 ? instanceKey : 1;
+    m_effectiveSimulationSeed = DeriveEffectiveSimulationSeed(
+        m_deterministicSeed, m_deterministicInstanceKey);
+}
+
+void ParticleSystemInstance::ResetDeterministicSimulator()
+{
+    if (m_simulator != nullptr &&
+        !m_simulator->ResetDeterministicSeed(m_effectiveSimulationSeed))
+    {
+        SetSimulationUnsupported(
+            "Particle simulator cannot reset deterministic state for restart.");
+    }
 }
 
 void ParticleSystemInstance::Prewarm(float duration)
@@ -342,8 +439,11 @@ void ParticleSystemInstance::UpdateEmission(float deltaTime)
     }
     
     // Calculate particles to emit this frame
-    for (const auto& emitter : m_system->emitters)
+    for (uint32 emitterIndex = 0;
+         emitterIndex < m_system->emitters.size();
+         ++emitterIndex)
     {
+        const auto& emitter = m_system->emitters[emitterIndex];
         if (!emitter->enabled)
             continue;
         
@@ -363,7 +463,11 @@ void ParticleSystemInstance::UpdateEmission(float deltaTime)
         emitter->GetEmitParams(params.emitterData);
         params.emitterData.transform = m_worldTransform * params.emitterData.transform;
         params.emitterData.emitCount = toEmit;
-        params.emitterData.randomSeed = static_cast<uint32>(m_instanceId + m_simulationTime * 1000.0f);
+        params.emitterData.randomSeed = DeriveEmissionSeed(
+            m_deterministicSeed,
+            m_deterministicInstanceKey,
+            m_simulationTick,
+            emitterIndex);
         params.emitCount = toEmit;
         params.randomSeed = params.emitterData.randomSeed;
 

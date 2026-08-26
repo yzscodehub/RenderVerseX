@@ -300,24 +300,32 @@ namespace
         Diagnostics::MixContentHashValue(
             hash, state.simulationSupported ? 1U : 0U);
         Diagnostics::MixContentHashValue(
-            hash, state.renderPayloadAvailable ? 1U : 0U);
-        Diagnostics::MixContentHashValue(
             hash, state.sortingSupported ? 1U : 0U);
         Diagnostics::MixContentHashValue(
             hash, state.softParticlesEnabled ? 1U : 0U);
         MixFloat(hash, state.softParticleFadeDistance);
-        Diagnostics::MixContentHashValue(
-            hash, static_cast<uint64>(state.particles.size()));
-        for (const ParticleRenderParticleData& particle : state.particles)
+        const bool hasCpuPacket = state.payloadStatus ==
+            ParticleRenderSnapshotPayloadStatus::CpuPacketReady;
+        Diagnostics::MixContentHashValue(hash, hasCpuPacket ? 1U : 0U);
+        if (hasCpuPacket)
         {
-            MixVec3(hash, particle.position);
-            MixFloat(hash, particle.lifetime);
-            MixVec3(hash, particle.velocity);
-            MixFloat(hash, particle.age);
-            MixVec4(hash, particle.color);
-            MixVec2(hash, particle.size);
-            MixFloat(hash, particle.rotation);
-            Diagnostics::MixContentHashValue(hash, particle.flags);
+            // The immutable packet's producer-sealed content hash is the
+            // transfer identity. Rehashing every particle here would turn
+            // each Scene boundary into another O(N) validation pass.
+            Diagnostics::MixContentHashValue(hash,
+                                             state.cpuPacket.schemaVersion);
+            Diagnostics::MixContentHashValue(hash,
+                                             state.cpuPacket.simulationTick);
+            Diagnostics::MixContentHashValue(hash,
+                                             state.cpuPacket.deterministicSeed);
+            Diagnostics::MixContentHashValue(
+                hash, state.cpuPacket.deterministicInstanceKey);
+            Diagnostics::MixContentHashValue(
+                hash, state.cpuPacket.effectiveSimulationSeed);
+            Diagnostics::MixContentHashValue(
+                hash, static_cast<uint64>(state.cpuPacket.particles.size()));
+            Diagnostics::MixContentHashValue(hash,
+                                             state.cpuPacket.contentHash);
         }
         MixString(hash, state.unsupportedReason);
         MixString(hash, state.renderPayloadReason);

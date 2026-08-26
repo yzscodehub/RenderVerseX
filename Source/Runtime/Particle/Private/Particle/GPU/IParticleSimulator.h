@@ -67,11 +67,25 @@ namespace RVX::Particle
         /// Clear all particles
         virtual void Clear() = 0;
 
+        /**
+         * @brief Re-seed deterministic simulation state without creating
+         * Render resources.
+         *
+         * Called by a ParticleSystemInstance whenever a stopped system starts
+         * again, so restart and stop/play reproduce a fresh CPU simulation.
+         */
+        virtual bool ResetDeterministicSeed(uint32 effectiveSeed) = 0;
+
         // =====================================================================
         // Render Payload
         // =====================================================================
 
-        /// Export alive particle data for Render-owned upload/draw preparation.
+        /**
+         * @brief Export alive data for Render-owned upload/draw preparation.
+         *
+         * A successful empty vector represents a supported no-op and must not
+         * be conflated with a failed export.
+         */
         virtual bool BuildRenderParticlePayload(std::vector<RVX::ParticleRenderParticleData>& outParticles) const = 0;
 
         /// Get number of alive particles

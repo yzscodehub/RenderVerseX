@@ -1334,6 +1334,22 @@ namespace
             std::move(mismatchedSchemaContext),
             "Render feature snapshot channel schema mismatches its descriptor");
 
+        RenderFeatureSnapshot duplicateSource = MakeCompleteFeatureSnapshot();
+        ParticleRenderSnapshotItem firstProducer;
+        firstProducer.header.captureSequence = 7;
+        firstProducer.header.configurationRevision = 8;
+        firstProducer.header.source = RenderFeatureSourceIdentity{5, 0, 1};
+        ParticleRenderSnapshotItem secondProducer = firstProducer;
+        secondProducer.header.captureSequence = 9;
+        duplicateSource.particles.items.push_back(std::move(firstProducer));
+        duplicateSource.particles.items.push_back(std::move(secondProducer));
+        RenderFeatureContext duplicateSourceContext = MakeValidContext();
+        duplicateSourceContext.snapshotInputs = MakeSnapshotInputs(
+            std::move(duplicateSource));
+        expectRequiredFailure(
+            std::move(duplicateSourceContext),
+            "Render feature snapshot channel contains duplicate producer source");
+
         RenderFeatureContext staleGenerationContext = MakeValidContext();
         staleGenerationContext.snapshotInputs =
             MakeSnapshotInputs(MakeCompleteFeatureSnapshot(2));
@@ -1352,8 +1368,21 @@ namespace
 
         auto [validRegistry, validRawFeature] = makeRegistry();
         RenderFeatureContext validContext = MakeValidContext();
-        validContext.snapshotInputs =
-            MakeSnapshotInputs(MakeCompleteFeatureSnapshot());
+        RenderFeatureSnapshot producerClockSnapshot =
+            MakeCompleteFeatureSnapshot();
+        ParticleRenderSnapshotItem producerClockItem;
+        producerClockItem.header.channelId = RenderFeatureChannelId::Particle;
+        producerClockItem.header.schemaVersion =
+            RVX_PARTICLE_RENDER_SNAPSHOT_SCHEMA_VERSION;
+        // These are deliberately producer clocks, not the Render frame
+        // identity (frame sequence 1/configuration revision 4).
+        producerClockItem.header.captureSequence = 97;
+        producerClockItem.header.configurationRevision = 311;
+        producerClockItem.header.source = RenderFeatureSourceIdentity{5, 0, 1};
+        producerClockSnapshot.particles.items.push_back(
+            std::move(producerClockItem));
+        validContext.snapshotInputs = MakeSnapshotInputs(
+            std::move(producerClockSnapshot));
         EXPECT_TRUE(validRegistry.PrepareFrame(validContext).Succeeded());
         EXPECT_EQ(validRawFeature->GetPrepareCount(), 1U);
         EXPECT_NE(validRawFeature->GetLastContext().snapshotInputs.GetSnapshot(),

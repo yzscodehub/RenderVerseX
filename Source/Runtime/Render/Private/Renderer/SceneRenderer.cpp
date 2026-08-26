@@ -2903,11 +2903,9 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
         {
             ++m_featureExtractionStats.particleMetadataOnlyCount;
         }
-        if (item.renderPayloadAvailable ||
-            item.payloadStatus ==
-                ParticleRenderSnapshotPayloadStatus::RenderOwnedPayloadReady)
+        if (item.IsCpuPacketReady())
         {
-            ++m_featureExtractionStats.particleRenderPayloadReadyCount;
+            ++m_featureExtractionStats.particleCpuPacketReadyCount;
         }
         if (item.sortingSupported)
         {

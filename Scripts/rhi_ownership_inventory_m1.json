@@ -6687,6 +6687,114 @@
       "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
       "normalRelease": "submission batch transfer to retirement after token completion",
       "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
+      "owner": "Submission",
+      "symbol": "constantsBuffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "submission batch transfer to retirement after token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
+      "owner": "Submission",
+      "symbol": "instanceBuffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "submission batch transfer to retirement after token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
+      "owner": "Submission",
+      "symbol": "descriptorSet",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "submission batch transfer to retirement after token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
+      "owner": "Submission",
+      "symbol": "pipelines",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "submission batch transfer to retirement after token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
+      "owner": "FrameSlot",
+      "symbol": "constantsBuffer",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
+      "owner": "FrameSlot",
+      "symbol": "instanceBuffer",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
+      "owner": "FrameSlot",
+      "symbol": "descriptorSet",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
+      "owner": "ParticleBillboardRenderer",
+      "symbol": "m_descriptorSetLayout",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
+      "owner": "ParticleBillboardRenderer",
+      "symbol": "m_pipelineLayout",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
+      "owner": "ParticleBillboardRenderer",
+      "symbol": "m_vertexShader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
+      "owner": "ParticleBillboardRenderer",
+      "symbol": "m_pixelShader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
+      "owner": "ParticleBillboardRenderer",
+      "symbol": "m_pipelines",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
     }
   ]
 }

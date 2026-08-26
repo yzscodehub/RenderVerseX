@@ -25059,10 +25059,20 @@ TEST(RenderPassStatusValidation, ParticleFeaturePassReportsMetadataOnlySnapshots
     item.instanceId = 42;
     item.systemId = 11;
     item.systemName = "CPU metadata-only particles";
+    item.header = {
+        .channelId = RenderFeatureChannelId::Particle,
+        .schemaVersion = ParticleRenderFeatureChannelDescriptor::SchemaVersion,
+        .captureSequence = 7u,
+        .configurationRevision = 1u,
+        .source = {
+            .sceneRuntimeId = 0x5041525449434C45ull,
+            .entitySlot = 42u,
+            .entityGeneration = 1u,
+        },
+    };
     item.aliveParticleCount = 12;
     item.maxParticleCount = 64;
     item.payloadStatus = ParticleRenderSnapshotPayloadStatus::MetadataOnly;
-    item.renderPayloadAvailable = false;
     item.sortingSupported = false;
     snapshot.items.push_back(item);
     snapshot.metadata.totalAliveParticles = 12;
@@ -25077,7 +25087,7 @@ TEST(RenderPassStatusValidation, ParticleFeaturePassReportsMetadataOnlySnapshots
     EXPECT_FALSE(stats.enabled);
     EXPECT_EQ(stats.itemCount, 1u);
     EXPECT_EQ(stats.metadataOnlyItemCount, 1u);
-    EXPECT_EQ(stats.renderPayloadReadyItemCount, 0u);
+    EXPECT_EQ(stats.cpuPacketReadyItemCount, 0u);
     EXPECT_EQ(stats.sortingSupportedItemCount, 0u);
     EXPECT_EQ(stats.totalAliveParticles, 12u);
     EXPECT_NE(stats.unsupportedReason.find("metadata-only"), std::string::npos);
@@ -26816,7 +26826,7 @@ TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeFeatur
 
     EXPECT_NE(sceneRendererHeader.find("struct SceneFeatureExtractionStats"), std::string::npos);
     EXPECT_NE(sceneRendererHeader.find("size_t particleMetadataOnlyCount = 0;"), std::string::npos);
-    EXPECT_NE(sceneRendererHeader.find("size_t particleRenderPayloadReadyCount = 0;"), std::string::npos);
+    EXPECT_NE(sceneRendererHeader.find("size_t particleCpuPacketReadyCount = 0;"), std::string::npos);
     EXPECT_NE(sceneRendererHeader.find("size_t particleSortingSupportedCount = 0;"), std::string::npos);
     EXPECT_NE(sceneRendererHeader.find(
                   "std::shared_ptr<const RenderFeatureSnapshot> m_featureSnapshot"),
@@ -26853,7 +26863,7 @@ TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeFeatur
                   "m_featureSnapshot,\n        GetBuiltinRenderFeatureChannelRegistry()"),
               std::string::npos);
     EXPECT_NE(sceneRendererSource.find("ParticleRenderSnapshotPayloadStatus::MetadataOnly"), std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("ParticleRenderSnapshotPayloadStatus::RenderOwnedPayloadReady"),
+    EXPECT_NE(sceneRendererSource.find("if (item.IsCpuPacketReady())"),
               std::string::npos);
     EXPECT_NE(sceneRendererSource.find("diagnostics.featureExtractionStats = m_featureExtractionStats;"),
               std::string::npos);
@@ -26865,7 +26875,7 @@ TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeFeatur
     EXPECT_NE(artifactSource.find("\\\"featureExtraction\\\": {"), std::string::npos);
     EXPECT_NE(artifactSource.find("\\\"particleItemCount\\\": "), std::string::npos);
     EXPECT_NE(artifactSource.find("\\\"particleMetadataOnlyCount\\\": "), std::string::npos);
-    EXPECT_NE(artifactSource.find("\\\"particleRenderPayloadReadyCount\\\": "), std::string::npos);
+    EXPECT_NE(artifactSource.find("\\\"particleCpuPacketReadyCount\\\": "), std::string::npos);
     EXPECT_NE(artifactSource.find("\\\"particleSortingSupportedCount\\\": "), std::string::npos);
     EXPECT_NE(artifactSource.find("\\\"waterItemCount\\\": "), std::string::npos);
     EXPECT_NE(artifactSource.find("\\\"terrainItemCount\\\": "), std::string::npos);

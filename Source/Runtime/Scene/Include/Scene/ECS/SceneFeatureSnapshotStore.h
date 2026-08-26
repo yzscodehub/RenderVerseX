@@ -51,7 +51,9 @@ namespace RVX::SceneECS
      * Feature processors validate a live EntityRef only while publishing, then
      * this store retains only value data and a generation-qualified source. At
      * the presentation boundary FreezeInto copies those values into a
-     * FrozenSceneSnapshot; neither the store nor the frozen values retain a
+     * FrozenSceneSnapshot. A sealed ParticleCpuPacket remains an owned value
+     * of the snapshot payload, preserving the store's value-snapshot contract.
+     * Neither the store nor the frozen values retain a
      * live ECS::Registry, Fragment, Actor, Component, Resource, or RHI reference.
      *
      * GFX01 deliberately keeps fixed Particle/Water/Terrain storage. The
@@ -116,11 +118,12 @@ namespace RVX::SceneECS
         void Clear();
 
         /**
-         * @brief Deep-copy cached feature values into one immutable scene snapshot.
+         * @brief Copy cached feature envelopes into one immutable scene snapshot.
          *
          * The destination must belong to this exact Scene runtime. On failure
          * it remains unchanged, so callers can fail closed rather than publish
-         * a partial feature set.
+         * a partial feature set. Sealed particle packets remain owned values,
+         * so each frozen snapshot is independent of later source mutation.
          */
         [[nodiscard]] bool FreezeInto(FrozenSceneSnapshot& destination) const;
 

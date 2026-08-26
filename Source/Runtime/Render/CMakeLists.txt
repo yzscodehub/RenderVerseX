@@ -259,6 +259,7 @@ add_library(RVX::RenderPostProcess ALIAS RVX_RenderPostProcess)
 
 add_library(RVX_RenderParticles STATIC)
 target_sources(RVX_RenderParticles PRIVATE
+    Private/Particles/ParticleBillboardDrawPlan.cpp
     Private/Passes/ParticleFeaturePass.cpp
 )
 rvx_configure_render_component(RVX_RenderParticles)

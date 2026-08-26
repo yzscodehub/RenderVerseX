@@ -50,6 +50,7 @@ namespace RVX
         ChannelMismatch,
         SchemaMismatch,
         ZeroCaptureSequence,
+        ZeroConfigurationRevision,
         StaleCaptureSequence,
         InvalidSource,
         SourceMismatch,
@@ -110,6 +111,8 @@ namespace RVX
                 return RenderFeatureChannelValidationCode::SchemaMismatch;
             if (captureSequence == 0)
                 return RenderFeatureChannelValidationCode::ZeroCaptureSequence;
+            if (configurationRevision == 0)
+                return RenderFeatureChannelValidationCode::ZeroConfigurationRevision;
             if (captureSequence <= lastAcceptedCaptureSequence)
                 return RenderFeatureChannelValidationCode::StaleCaptureSequence;
             if (!source.IsValid())

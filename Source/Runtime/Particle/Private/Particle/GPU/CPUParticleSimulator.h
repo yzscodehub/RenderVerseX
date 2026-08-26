@@ -69,9 +69,7 @@ namespace RVX::Particle
         void Emit(const EmitParams& params) override;
         void Simulate(float deltaTime, const SimulateParams& params) override;
         void Clear() override;
-
-        /// Set a deterministic random seed for validation and reproducible captures.
-        void SetRandomSeed(uint32 seed) { m_rng.seed(seed); }
+        bool ResetDeterministicSeed(uint32 effectiveSeed) override;
 
         bool BuildRenderParticlePayload(std::vector<RVX::ParticleRenderParticleData>& outParticles) const override;
         uint32 GetAliveCount() const override { return static_cast<uint32>(m_aliveIndices.size()); }

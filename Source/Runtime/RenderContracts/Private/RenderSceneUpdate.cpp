@@ -59,16 +59,6 @@ namespace
                left.GetMax() == right.GetMax();
     }
 
-    bool EqualParticleData(const ParticleRenderParticleData& left,
-                           const ParticleRenderParticleData& right) noexcept
-    {
-        return left.position == right.position &&
-               left.lifetime == right.lifetime &&
-               left.velocity == right.velocity && left.age == right.age &&
-               left.color == right.color && left.size == right.size &&
-               left.rotation == right.rotation && left.flags == right.flags;
-    }
-
     template<typename Mutation, typename IdAccessor>
     bool ValidateMutations(const std::vector<Mutation>& mutations,
                            IdAccessor idAccessor)
@@ -382,25 +372,32 @@ bool AreParticleRenderSnapshotItemsEqual(
         left.normalizedTime != right.normalizedTime ||
         left.visible != right.visible ||
         left.simulationSupported != right.simulationSupported ||
-        left.renderPayloadAvailable != right.renderPayloadAvailable ||
         left.sortingSupported != right.sortingSupported ||
         left.softParticlesEnabled != right.softParticlesEnabled ||
         left.softParticleFadeDistance != right.softParticleFadeDistance ||
         left.unsupportedReason != right.unsupportedReason ||
         left.renderPayloadReason != right.renderPayloadReason ||
         left.sortingReason != right.sortingReason ||
-        left.particles.size() != right.particles.size())
+        left.GetParticleCount() != right.GetParticleCount())
     {
         return false;
     }
-    for (size_t index = 0; index < left.particles.size(); ++index)
+    if (left.cpuPacket.schemaVersion != right.cpuPacket.schemaVersion ||
+        left.cpuPacket.simulationTick != right.cpuPacket.simulationTick ||
+        left.cpuPacket.deterministicSeed != right.cpuPacket.deterministicSeed ||
+        left.cpuPacket.deterministicInstanceKey !=
+            right.cpuPacket.deterministicInstanceKey ||
+        left.cpuPacket.effectiveSimulationSeed !=
+            right.cpuPacket.effectiveSimulationSeed ||
+        left.cpuPacket.particles.size() != right.cpuPacket.particles.size() ||
+        left.cpuPacket.contentHash != right.cpuPacket.contentHash)
     {
-        if (!EqualParticleData(left.particles[index],
-                               right.particles[index]))
-        {
-            return false;
-        }
+        return false;
     }
+    // The producer seals an immutable packet hash once. Scene/update
+    // boundaries compare that identity rather than scanning the particle
+    // vector again; full field/hash validation belongs to publication and the
+    // final Render draw-plan consumer.
     return true;
 }
 

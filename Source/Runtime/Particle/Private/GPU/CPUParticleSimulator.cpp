@@ -2,6 +2,7 @@
 #include "Particle/Events/ParticleEventHandler.h"
 #include "Core/Log.h"
 #include "Core/Job/JobSystem.h"
+#include <algorithm>
 #include <cmath>
 #include <glm/glm.hpp>
 #include <mutex>
@@ -33,8 +34,10 @@ void CPUParticleSimulator::Initialize(uint32 maxParticles)
         m_particles[i].flags = 0;
     }
 
-    // Initialize RNG
-    m_rng.seed(std::random_device{}());
+    // The runtime gateway supplies an explicit deterministic seed before the
+    // first simulation step.  A fixed default keeps direct CPU users
+    // reproducible too; entropy must never leak into a captured packet.
+    m_rng.seed(0u);
 
     m_initialized = true;
     RVX_CORE_INFO("CPUParticleSimulator: Initialized with {} max particles", maxParticles);
@@ -454,9 +457,19 @@ void CPUParticleSimulator::SimulateParticle(uint32 index, float deltaTime, const
                 
                 // Lifetime loss
                 p.lifetime -= p.lifetime * data.collisionLifetimeLoss;
-                
+
                 // Set collision flag
                 p.flags |= PARTICLE_FLAG_COLLISION;
+
+                // A collision may consume the remaining lifetime.  Retire the
+                // particle in this simulation step rather than allowing an
+                // age/lifetime-invalid particle to escape into a sealed CPU
+                // packet.
+                if (p.age >= p.lifetime)
+                {
+                    p.flags &= ~PARTICLE_FLAG_ALIVE;
+                    return;
+                }
             }
         }
     }
@@ -627,6 +640,16 @@ void CPUParticleSimulator::SimulateParticleWithModules(uint32 index, float delta
                     p.position, p.velocity, normal, p.color,
                     p.age, p.lifetime, index, p.emitterIndex, params.instanceId
                 ));
+
+                // Do not continue a particle whose collision lifetime loss
+                // has already expired it.  The removal pass will emit the
+                // matching death event and keep render payload validation
+                // from seeing age greater than lifetime.
+                if (p.age >= p.lifetime)
+                {
+                    p.flags &= ~PARTICLE_FLAG_ALIVE;
+                    return;
+                }
             }
         }
     }
@@ -715,6 +738,12 @@ void CPUParticleSimulator::SimulateParallelWithModules(float deltaTime, const CP
                         p.position += normal * (radius - dist);
                         p.lifetime -= p.lifetime * data.collisionLifetimeLoss;
                         p.flags |= PARTICLE_FLAG_COLLISION;
+
+                        if (p.age >= p.lifetime)
+                        {
+                            p.flags &= ~PARTICLE_FLAG_ALIVE;
+                            return;
+                        }
                     }
                 }
             }
@@ -834,8 +863,14 @@ void CPUParticleSimulator::SimulateParallel(float deltaTime, const SimulateParam
 bool CPUParticleSimulator::BuildRenderParticlePayload(std::vector<RVX::ParticleRenderParticleData>& outParticles) const
 {
     outParticles.clear();
-    if (m_aliveIndices.empty())
+    if (!m_initialized)
         return false;
+
+    // An initialized CPU simulator with no live particles still has a valid
+    // render payload: producers seal it as an immutable empty packet so the
+    // Render feature can execute a supported no-op rather than a fallback.
+    if (m_aliveIndices.empty())
+        return true;
 
     outParticles.reserve(m_aliveIndices.size());
 
@@ -844,6 +879,7 @@ bool CPUParticleSimulator::BuildRenderParticlePayload(std::vector<RVX::ParticleR
         const CPUParticle& cpu = m_particles[aliveIndex];
         RVX::ParticleRenderParticleData particle;
 
+        particle.stableParticleId = aliveIndex;
         particle.position = cpu.position;
         particle.lifetime = cpu.lifetime;
         particle.velocity = cpu.velocity;
@@ -854,6 +890,17 @@ bool CPUParticleSimulator::BuildRenderParticlePayload(std::vector<RVX::ParticleR
         particle.flags = cpu.flags;
         outParticles.push_back(particle);
     }
+
+    // CPU alive storage is a free-list order, not a stable presentation
+    // order. Seal packets in ascending slot order so the value-owned packet
+    // has deterministic field order and validation can reject duplicates
+    // without an allocation.
+    std::sort(outParticles.begin(), outParticles.end(),
+              [](const RVX::ParticleRenderParticleData& left,
+                 const RVX::ParticleRenderParticleData& right)
+              {
+                  return left.stableParticleId < right.stableParticleId;
+              });
 
     return true;
 }
@@ -867,6 +914,32 @@ void CPUParticleSimulator::Clear()
         m_deadIndices.push_back(index);
     }
     m_aliveIndices.clear();
+}
+
+bool CPUParticleSimulator::ResetDeterministicSeed(uint32 effectiveSeed)
+{
+    if (!m_initialized)
+    {
+        return false;
+    }
+
+    // Clear() retains free-list order for its ordinary in-place use.  A
+    // deterministic restart instead needs the exact fresh-simulator state:
+    // reset both particle storage and the free list before resetting the RNG.
+    // Otherwise an identical random sequence could be assigned different
+    // stable particle slots after Stop()/Play().
+    std::fill(m_particles.begin(), m_particles.end(), CPUParticle{});
+    m_aliveIndices.clear();
+    m_deadIndices.clear();
+    m_deadIndices.reserve(m_maxParticles);
+    for (uint32 index = 0; index < m_maxParticles; ++index)
+    {
+        m_deadIndices.push_back(index);
+    }
+    m_queuedEvents.clear();
+    m_rng.seed(effectiveSeed);
+    m_dist.reset();
+    return true;
 }
 
 } // namespace RVX::Particle

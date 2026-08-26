@@ -139,6 +139,9 @@ bool SceneRenderer::SetupDefaultRenderFeatures()
 
     auto particleFeaturePass = std::make_unique<ParticleFeaturePass>();
     particleFeaturePass->SetSnapshot(&m_featureSnapshot->particles);
+    particleFeaturePass->SetShaderProgramProvider(m_shaderProgramProvider.get());
+    particleFeaturePass->SetReverseZ(
+        m_pipelineCache != nullptr && m_pipelineCache->GetConfig().reverseZ);
     m_particleFeaturePass = particleFeaturePass.get();
     AddPass(std::move(particleFeaturePass));
 

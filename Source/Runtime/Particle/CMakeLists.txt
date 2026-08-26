@@ -1,5 +1,6 @@
 # Particle Module CMakeLists.txt
-# GPU-driven particle system with CPU fallback
+# CPU particle runtime contracts. Renderer shader programs are owned and cooked
+# by the Render module; this module must not stage raw shader source.
 
 cmake_minimum_required(VERSION 3.21)
 
@@ -103,18 +104,6 @@ set(PARTICLE_SOURCES
     Private/Rendering/TrailRenderer.cpp
 )
 
-set(PARTICLE_SHADERS
-    Shaders/Include/ParticleCommon.hlsli
-    Shaders/Include/SoftParticle.hlsli
-    Shaders/Include/TextureSheet.hlsli
-    Shaders/Include/NoiseUtils.hlsli
-    Shaders/ParticleEmit.hlsl
-    Shaders/ParticleSimulate.hlsl
-    Shaders/ParticleBillboard.hlsl
-    Shaders/ParticleStretchedBillboard.hlsl
-    Shaders/ParticleBitonicSort.hlsl
-)
-
 # ==============================================================================
 # Library Definition
 # ==============================================================================
@@ -156,32 +145,6 @@ target_link_libraries(${MODULE_NAME}
 target_compile_definitions(${MODULE_NAME}
     PRIVATE
         RVX_PARTICLE_EXPORTS
-)
-
-# ==============================================================================
-# Shader Installation
-# ==============================================================================
-
-# Copy shaders to output directory
-set(SHADER_OUTPUT_DIR ${CMAKE_BINARY_DIR}/Shaders/Particle)
-
-add_custom_command(TARGET ${MODULE_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_OUTPUT_DIR}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_OUTPUT_DIR}/Include
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Include/ParticleCommon.hlsli
-        ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Include/SoftParticle.hlsli
-        ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Include/TextureSheet.hlsli
-        ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Include/NoiseUtils.hlsli
-        ${SHADER_OUTPUT_DIR}/Include/
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/ParticleEmit.hlsl
-        ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/ParticleSimulate.hlsl
-        ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/ParticleBillboard.hlsl
-        ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/ParticleStretchedBillboard.hlsl
-        ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/ParticleBitonicSort.hlsl
-        ${SHADER_OUTPUT_DIR}/
-    COMMENT "Copying Particle shaders to output directory"
 )
 
 # ==============================================================================
@@ -257,8 +220,6 @@ source_group("Private\\Rendering" FILES
     Private/Particle/Rendering/TrailRenderer.h
     Private/Rendering/TrailRenderer.cpp
 )
-
-source_group("Shaders" FILES ${PARTICLE_SHADERS})
 
 # ==============================================================================
 # Precompiled Headers (optional)

@@ -8,6 +8,14 @@ namespace RVX::SceneECS
 {
 namespace
 {
+    [[nodiscard]] bool HasValidParticlePacketShape(
+        const ParticleRenderSnapshotItem& state) noexcept
+    {
+        const bool ready = state.payloadStatus ==
+            ParticleRenderSnapshotPayloadStatus::CpuPacketReady;
+        return ready ? state.IsCpuPacketReady() : state.HasNoCpuPacket();
+    }
+
     template<typename State, typename Entries>
     [[nodiscard]] bool PublishTypedEntry(
         const RenderFeatureChannelRegistry& channelRegistry,
@@ -174,7 +182,7 @@ bool SceneFeatureSnapshotStore::PublishParticle(const ECS::EntityRef& source,
 {
     const std::optional<SceneFeatureSnapshotSource> identity =
         MakeSourceIdentity(source);
-    if (!identity.has_value())
+    if (!identity.has_value() || !HasValidParticlePacketShape(state))
     {
         return false;
     }
@@ -228,7 +236,7 @@ bool SceneFeatureSnapshotStore::PublishParticleChannel(
 {
     const std::optional<SceneFeatureSnapshotSource> identity =
         MakeSourceIdentity(source);
-    return identity.has_value() &&
+    return identity.has_value() && HasValidParticlePacketShape(state) &&
            PublishTypedEntry(m_channelRegistry,
                              m_particles,
                              identity->entity,

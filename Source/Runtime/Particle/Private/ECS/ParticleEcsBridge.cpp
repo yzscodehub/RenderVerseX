@@ -41,6 +41,33 @@ namespace
                command <= ParticleEcsCommand::Clear;
     }
 
+    [[nodiscard]] uint64 MakeDeterministicInstanceKey(
+        const ParticleEcsConfig& config,
+        ECS::EntityHandle entity) noexcept
+    {
+        // Explicitly encode the generation-qualified ECS owner.  This key is
+        // stable across identical worlds and does not depend on process-wide
+        // ParticleSystemInstance allocation order.
+        uint64 value = 14695981039346656037ull;
+        const auto mix = [&value](uint64 source)
+        {
+            for (uint32 byte = 0; byte < sizeof(source); ++byte)
+            {
+                value ^= static_cast<uint8>(source & 0xffu);
+                value *= 1099511628211ull;
+                source >>= 8u;
+            }
+        };
+        // SceneRuntimeId is deliberately excluded: it is a process-local
+        // allocation identity, so including it would make two fresh but
+        // content-identical Worlds produce different packets.
+        mix(config.systemAssetId.value);
+        mix(config.configurationRevision);
+        mix(entity.GetIndex());
+        mix(entity.GetGeneration());
+        return value == 0 ? 1 : value;
+    }
+
     [[nodiscard]] bool IsValidConfig(const ParticleEcsConfig& config)
     {
         return config.systemAssetId.IsValid() && config.configurationRevision != 0 &&
@@ -254,7 +281,6 @@ struct ParticleEcsBridge::State
         snapshot.position = ExtractTranslation(snapshot.worldMatrix);
         snapshot.visible = false;
         snapshot.simulationSupported = false;
-        snapshot.renderPayloadAvailable = false;
         snapshot.unsupportedReason = std::move(reason);
         if (!runtime->PublishParticleFeatureSnapshot(
                 entity, std::move(snapshot), config != nullptr ? config->configurationRevision : 0))
@@ -347,6 +373,9 @@ struct ParticleEcsBridge::State
                 .worldTransform = transform.matrix,
                 .command = command,
                 .deltaSeconds = context.deltaSeconds,
+                .simulationTick = context.frameSequence,
+                .deterministicInstanceKey = MakeDeterministicInstanceKey(
+                    config, entity),
             });
             binding.autoPlayConsumed = config.autoPlay;
             if (!binding.runtime.IsValid() || !gateway->IsAlive(binding.runtime))
@@ -399,6 +428,9 @@ struct ParticleEcsBridge::State
                 .worldTransform = transform.matrix,
                 .command = command,
                 .deltaSeconds = context.deltaSeconds,
+                .simulationTick = context.frameSequence,
+                .deterministicInstanceKey = MakeDeterministicInstanceKey(
+                    config, entity),
             }))
         {
             ++synchronizationFailureCount;

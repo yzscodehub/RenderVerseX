@@ -94,6 +94,133 @@ if(RVX_ENABLE_VULKAN)
     )
 endif()
 
+# GFX16 is a narrow native proof of the renderer-owned CPU billboard path.
+# It owns its own executable so `suite.gfx16-particles` cannot accidentally
+# select the full, unrelated DX12/Vulkan native inventories.
+if(RVX_ENABLE_DX12 OR RVX_ENABLE_VULKAN)
+    if(NOT TARGET RVXCook)
+        message(FATAL_ERROR
+            "GFX16 particle native validation requires RVXCook to stage cooked shader artifacts")
+    endif()
+
+    # GTest metadata is materialized through one configuration-independent
+    # file(GENERATE) include.  Keep fixture paths configuration-independent as
+    # the existing native-test registration model requires; DX12 and Vulkan
+    # remain isolated below their own roots.
+    set(RVX_PARTICLE_NATIVE_SHADER_ROOT_BASE
+        "${CMAKE_CURRENT_BINARY_DIR}/ParticleNativeShaders")
+    set(RVX_PARTICLE_NATIVE_FIXTURES "")
+    set(RVX_PARTICLE_NATIVE_DEFINES "")
+    set(RVX_PARTICLE_NATIVE_ENVIRONMENT "")
+    set(RVX_PARTICLE_NATIVE_TAGS
+        subsystem.render
+        subsystem.particle
+        trait.gpu
+        trait.native
+        suite.gfx16-particles)
+
+    if(RVX_ENABLE_DX12)
+        set(RVX_PARTICLE_NATIVE_SHADER_ROOT_DX12
+            "${RVX_PARTICLE_NATIVE_SHADER_ROOT_BASE}/DX12")
+        rvx_add_validation_test(
+            LANE native
+            NAME ParticleNativeCookedShadersDX12
+            COMMAND $<TARGET_FILE:RVXCook>
+                --source "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders"
+                --output "${RVX_PARTICLE_NATIVE_SHADER_ROOT_DX12}"
+                --shader-catalog "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                --shader-backend DX12
+                --fail-on-errors
+            BUILD_TARGETS RVXCook
+            REQUIRED_FILES
+                "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Particle/ParticleBillboard.hlsl"
+            TAGS subsystem.render subsystem.particle trait.gpu trait.native
+                backend.dx12 suite.gfx16-particles
+            SUITE gfx16-particles
+            TIMEOUT 300
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            FIXTURES_SETUP ParticleNativeCookedShadersDX12
+        )
+        list(APPEND RVX_PARTICLE_NATIVE_FIXTURES ParticleNativeCookedShadersDX12)
+        list(APPEND RVX_PARTICLE_NATIVE_DEFINES RVX_GFX16_PARTICLE_DX12_ENABLED=1)
+        list(APPEND RVX_PARTICLE_NATIVE_ENVIRONMENT
+            "RVX_PARTICLE_NATIVE_SHADER_ROOT_DX12=${RVX_PARTICLE_NATIVE_SHADER_ROOT_DX12}")
+        list(APPEND RVX_PARTICLE_NATIVE_TAGS backend.dx12)
+    endif()
+
+    if(RVX_ENABLE_VULKAN)
+        set(RVX_PARTICLE_NATIVE_SHADER_ROOT_VULKAN
+            "${RVX_PARTICLE_NATIVE_SHADER_ROOT_BASE}/Vulkan")
+        rvx_add_validation_test(
+            LANE native
+            NAME ParticleNativeCookedShadersVulkan
+            COMMAND $<TARGET_FILE:RVXCook>
+                --source "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders"
+                --output "${RVX_PARTICLE_NATIVE_SHADER_ROOT_VULKAN}"
+                --shader-catalog "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                --shader-backend Vulkan
+                --fail-on-errors
+            BUILD_TARGETS RVXCook
+            REQUIRED_FILES
+                "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Particle/ParticleBillboard.hlsl"
+            TAGS subsystem.render subsystem.particle trait.gpu trait.native
+                backend.vulkan suite.gfx16-particles
+            SUITE gfx16-particles
+            TIMEOUT 300
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            FIXTURES_SETUP ParticleNativeCookedShadersVulkan
+        )
+        list(APPEND RVX_PARTICLE_NATIVE_FIXTURES ParticleNativeCookedShadersVulkan)
+        list(APPEND RVX_PARTICLE_NATIVE_DEFINES RVX_GFX16_PARTICLE_VULKAN_ENABLED=1)
+        list(APPEND RVX_PARTICLE_NATIVE_ENVIRONMENT
+            "RVX_PARTICLE_NATIVE_SHADER_ROOT_VULKAN=${RVX_PARTICLE_NATIVE_SHADER_ROOT_VULKAN}")
+        list(APPEND RVX_PARTICLE_NATIVE_TAGS backend.vulkan)
+    endif()
+
+    rvx_add_gtest(
+        NAME ParticleNativeValidation
+        LANE native
+        SOURCES ParticleNativeValidation/main.cpp
+        LIBS
+            RVX::Core
+            RVX::Render
+            RVX::RenderGraph
+            RVX::RHI
+            RVX::RHI_BackendFactory
+            RVX::ShaderRuntime
+            ${RVX_ALL_BACKENDS}
+        INCLUDES
+            ${CMAKE_CURRENT_SOURCE_DIR}
+        DEFINES ${RVX_PARTICLE_NATIVE_DEFINES}
+        TAGS ${RVX_PARTICLE_NATIVE_TAGS}
+        SUITE gfx16-particles
+        TIMEOUT 180
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_REQUIRED "${RVX_PARTICLE_NATIVE_FIXTURES}"
+    )
+
+    # `rvx_add_gtest()` serializes generic metadata list values for CMake
+    # includes. That escaping is correct for fixture lists, but CTest's
+    # ENVIRONMENT property needs one real semicolon-separated list of
+    # assignments. Attach this small, configuration-independent include after
+    # the generic metadata so each assignment remains an independent variable.
+    string(CONCAT RVX_PARTICLE_NATIVE_ENVIRONMENT_METADATA_CONTENT
+        "if(DEFINED ParticleNativeValidation_TESTS)\n"
+        "    set_tests_properties(\${ParticleNativeValidation_TESTS} PROPERTIES\n"
+        "        ENVIRONMENT \"${RVX_PARTICLE_NATIVE_ENVIRONMENT}\"\n"
+        "    )\n"
+        "endif()\n")
+    set(RVX_PARTICLE_NATIVE_ENVIRONMENT_METADATA_FILE
+        "${CMAKE_CURRENT_BINARY_DIR}/ParticleNativeValidation_gfx16_environment.cmake")
+    file(GENERATE
+        OUTPUT "${RVX_PARTICLE_NATIVE_ENVIRONMENT_METADATA_FILE}"
+        CONTENT "${RVX_PARTICLE_NATIVE_ENVIRONMENT_METADATA_CONTENT}")
+    set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES
+        "${RVX_PARTICLE_NATIVE_ENVIRONMENT_METADATA_FILE}")
+endif()
+
 if(RVX_ENABLE_DX11)
     rvx_add_gtest(
         NAME DX11Validation

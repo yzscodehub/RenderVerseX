@@ -50,7 +50,25 @@ namespace
                config.maxParticleCount != 0 && IsFinite(config.emissionRateScale) &&
                config.emissionRateScale >= 0.0f && IsFinite(config.simulationSpeed) &&
                config.simulationSpeed >= 0.0f && IsFinite(request.worldTransform) &&
-               std::isfinite(request.deltaSeconds) && request.deltaSeconds >= 0.0;
+               std::isfinite(request.deltaSeconds) && request.deltaSeconds >= 0.0 &&
+               request.deterministicInstanceKey != 0;
+    }
+
+    [[nodiscard]] bool IsGfx16CpuBillboardPolicy(
+        ParticleRenderSnapshotMode renderMode,
+        ParticleRenderSnapshotBlendMode blendMode,
+        ParticleRenderSnapshotSimulationBackend simulationBackend,
+        bool softParticlesEnabled) noexcept
+    {
+        if (renderMode != ParticleRenderSnapshotMode::Billboard ||
+            simulationBackend != ParticleRenderSnapshotSimulationBackend::CPU ||
+            softParticlesEnabled)
+        {
+            return false;
+        }
+        return blendMode == ParticleRenderSnapshotBlendMode::AlphaBlend ||
+               blendMode == ParticleRenderSnapshotBlendMode::Premultiplied ||
+               blendMode == ParticleRenderSnapshotBlendMode::Additive;
     }
 
     [[nodiscard]] ParticleRenderSnapshotMode ToSnapshotRenderMode(ParticleRenderMode mode)
@@ -121,6 +139,8 @@ struct ParticleEcsRuntimeGateway::State
         std::unique_ptr<ParticleSystemInstance> instance;
         ParticleEcsConfig config;
         uint64 payloadRevision = 0;
+        uint64 lastSimulationTick = 0;
+        uint64 deterministicInstanceKey = 0;
         uint32 generation = 1;
         bool allocated = false;
     };
@@ -199,16 +219,17 @@ struct ParticleEcsRuntimeGateway::State
         }
 
         auto instance = std::make_unique<ParticleSystemInstance>(std::move(system));
+        ApplyConfiguration(*instance, request);
         auto simulator = std::make_unique<CPUParticleSimulator>();
         simulator->Initialize(request.config.maxParticleCount);
         instance->SetSimulator(std::move(simulator), "CPU");
-        ApplyConfiguration(*instance, request);
 
         outEntry.resource = std::move(resource);
         outEntry.residencyLease = std::move(residencyLease);
         outEntry.instance = std::move(instance);
         outEntry.config = request.config;
         outEntry.payloadRevision = request.config.configurationRevision;
+        outEntry.deterministicInstanceKey = request.deterministicInstanceKey;
         lastFailureReason.clear();
         return true;
     }
@@ -221,6 +242,9 @@ struct ParticleEcsRuntimeGateway::State
         instance.SetSimulationSpeedMultiplier(request.config.simulationSpeed);
         instance.SetVisible(request.config.visible);
         instance.SetSimulateWhenHidden(request.config.simulateWhenHidden);
+        instance.SetDeterministicSimulationIdentity(
+            request.config.deterministicSeed,
+            request.deterministicInstanceKey);
     }
 
     [[nodiscard]] static bool ApplyCommand(ParticleSystemInstance& instance,
@@ -286,6 +310,8 @@ struct ParticleEcsRuntimeGateway::State
         entry.resource = nullptr;
         entry.config = {};
         entry.payloadRevision = 0;
+        entry.lastSimulationTick = 0;
+        entry.deterministicInstanceKey = 0;
         entry.allocated = false;
         ++entry.generation;
         if (entry.generation == 0)
@@ -370,9 +396,28 @@ bool ParticleEcsRuntimeGateway::Update(ParticleEcsRuntimeHandle handle,
         return false;
     }
 
+    // A positive variable-step delta must carry a strictly advancing caller
+    // tick.  Replaying a tick would re-emit from the same deterministic seed,
+    // producing a plausible but incorrect packet.
+    const bool replacingSystem =
+        entry->config.systemAssetId != request.config.systemAssetId;
+    const bool replacingDeterministicIdentity =
+        entry->config.deterministicSeed != request.config.deterministicSeed ||
+        entry->deterministicInstanceKey != request.deterministicInstanceKey;
+    const bool rebuildingRuntime = replacingSystem || replacingDeterministicIdentity;
+    if (!rebuildingRuntime && request.deltaSeconds > 0.0 &&
+        (request.simulationTick == 0 ||
+         (entry->lastSimulationTick != 0 &&
+          request.simulationTick <= entry->lastSimulationTick)))
+    {
+        m_state->lastFailureReason =
+            "Particle ECS gateway rejected a non-monotonic simulation tick.";
+        return false;
+    }
+
     try
     {
-        if (entry->config.systemAssetId != request.config.systemAssetId)
+        if (rebuildingRuntime)
         {
             const PlaybackState playbackState = entry->instance->GetPlaybackState();
             State::Entry replacement;
@@ -397,9 +442,14 @@ bool ParticleEcsRuntimeGateway::Update(ParticleEcsRuntimeHandle handle,
             return false;
         }
 
+        entry->instance->SetSimulationTick(request.simulationTick);
         entry->instance->Simulate(static_cast<float>(request.deltaSeconds));
         entry->config = request.config;
         entry->payloadRevision = request.config.configurationRevision;
+        if (request.deltaSeconds > 0.0)
+        {
+            entry->lastSimulationTick = request.simulationTick;
+        }
         return true;
     }
     catch (...)
@@ -452,16 +502,48 @@ bool ParticleEcsRuntimeGateway::CaptureSnapshot(
     item.sortingSupported = false;
     item.sortingReason = "Particle sorting is deferred to Render-owned feature passes";
 
-    if (const IParticleSimulator* simulator = instance.GetSimulator())
+    const bool supportedPolicy = IsGfx16CpuBillboardPolicy(
+        item.renderMode, item.blendMode, item.simulationBackend,
+        item.softParticlesEnabled);
+    if (!supportedPolicy)
     {
-        item.renderPayloadAvailable = simulator->BuildRenderParticlePayload(item.particles);
+        item.renderPayloadReason =
+            "GFX16 accepts only non-soft CPU Billboard particles using AlphaBlend, Premultiplied, or Additive blending.";
     }
-    item.payloadStatus = item.renderPayloadAvailable
-                             ? ParticleRenderSnapshotPayloadStatus::RenderOwnedPayloadReady
-                             : ParticleRenderSnapshotPayloadStatus::MetadataOnly;
-    item.renderPayloadReason = item.renderPayloadAvailable
-                                   ? "CPU particle payload exported; Render-owned particle upload/draw implementation is not connected"
-                                   : "Particle snapshot contains metadata only; Render-owned particle draw data extraction is not connected";
+    else if (const IParticleSimulator* simulator = instance.GetSimulator())
+    {
+        ParticleCpuPacket packet;
+        packet.simulationTick = entry->lastSimulationTick;
+        packet.deterministicSeed = entry->config.deterministicSeed;
+        packet.deterministicInstanceKey = entry->deterministicInstanceKey;
+        packet.effectiveSimulationSeed = instance.GetEffectiveSimulationSeed();
+        if (simulator->BuildRenderParticlePayload(packet.particles))
+        {
+            packet.contentHash = packet.ComputeContentHash();
+            if (packet.IsStructurallyValid(item.maxParticleCount) &&
+                packet.particles.size() == item.aliveParticleCount)
+            {
+                item.cpuPacket = std::move(packet);
+                item.payloadStatus =
+                    ParticleRenderSnapshotPayloadStatus::CpuPacketReady;
+            }
+            else
+            {
+                item.renderPayloadReason =
+                    "CPU particle packet failed count, content-hash, or structural validation.";
+            }
+        }
+    }
+    if (item.IsCpuPacketReady())
+    {
+        item.renderPayloadReason =
+            "Immutable CPU particle packet is ready for Render-owned billboard upload.";
+    }
+    else if (item.renderPayloadReason.empty())
+    {
+        item.renderPayloadReason =
+            "Particle snapshot contains no immutable CPU render packet.";
+    }
     if (!item.simulationSupported)
     {
         item.unsupportedReason = instance.GetSimulationUnsupportedReason();

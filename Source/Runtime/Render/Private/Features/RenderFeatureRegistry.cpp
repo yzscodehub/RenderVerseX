@@ -210,8 +210,9 @@ namespace
             return {false, "Render feature snapshot channel generation is stale"};
         }
 
-        for (const auto& item : snapshot.items)
+        for (size_t itemIndex = 0; itemIndex < snapshot.items.size(); ++itemIndex)
         {
+            const auto& item = snapshot.items[itemIndex];
             const RenderFeatureChannelValidationCode headerCode =
                 item.header.Validate(descriptor.snapshotChannel,
                                      descriptor.snapshotChannelSchemaVersion);
@@ -223,12 +224,21 @@ namespace
             {
                 return {false, "Render feature snapshot item channel identity is invalid"};
             }
-            if (item.header.captureSequence != metadata.sequence ||
-                item.header.configurationRevision !=
-                    frameIdentity.configurationRevision)
+            for (size_t previousIndex = 0; previousIndex < itemIndex;
+                 ++previousIndex)
             {
-                return {false, "Render feature snapshot item generation is stale"};
+                if (snapshot.items[previousIndex].header.source ==
+                    item.header.source)
+                {
+                    return {false,
+                            "Render feature snapshot channel contains duplicate producer source"};
+                }
             }
+            // The aggregate snapshot sequence is the Render-frame generation.
+            // Individual item headers deliberately retain their producer-owned
+            // capture/configuration revisions.  Equating those independent
+            // clocks incorrectly rejects a stable source published into a
+            // newer Render frame.
         }
         return {true, {}};
     }

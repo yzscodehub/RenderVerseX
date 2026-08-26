@@ -662,6 +662,15 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME ParticleRenderValidation
+    LANE unit
+    SOURCES ParticleRenderValidation/main.cpp
+    LIBS RVX::RenderParticles
+    TAGS subsystem.render subsystem.particle
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
     NAME RenderResourceRuntimeValidation
     LANE unit
     SOURCES RenderResourceRuntimeValidation/main.cpp
