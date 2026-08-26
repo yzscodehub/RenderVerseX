@@ -1345,6 +1345,10 @@ namespace
             PipelineCache::DefaultLitAmbientOcclusionBinding,
             RHIBindingType::SampledTexture,
             RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(
+            PipelineCache::DefaultLitOpaqueSceneSnapshotBinding,
+            RHIBindingType::SampledTexture,
+            RHIShaderStage::Pixel);
         RHIDescriptorSetLayoutRef frameLayout = device->CreateDescriptorSetLayout(frameLayoutDesc);
         RHIDescriptorSetLayoutDesc emptyLayoutDesc;
         emptyLayoutDesc.debugName = "NativeSurfaceAlphaEmptySet";
@@ -1416,6 +1420,15 @@ namespace
         material.workflow = static_cast<uint32>(normalMapProbe
             ? MaterialGPUWorkflow::MetallicRoughness
             : MaterialGPUWorkflow::Unlit);
+        // DefaultLit rejects a workflow/shading-model disagreement before
+        // producing color. The alpha-silhouette fixture deliberately uses the
+        // Unlit branch, while the normal-map probe exercises StandardLit.
+        material.shadingModel = static_cast<uint32>(normalMapProbe
+            ? MaterialGPUShadingModel::StandardLit
+            : MaterialGPUShadingModel::Unlit);
+        material.blendMode = static_cast<uint32>(normalMapProbe
+            ? MaterialGPUBlendMode::Opaque
+            : MaterialGPUBlendMode::Masked);
         material.metallicFactor = 0.0f;
         material.roughnessFactor = 1.0f;
         material.normalScale = 1.0f;
@@ -1527,7 +1540,9 @@ namespace
         frameSetDesc.BindTexture(
             PipelineCache::DefaultLitAmbientOcclusionBinding,
             sourceTextureView.Get());
-        frameSetDesc.BindTexture(16, sourceTextureView.Get());
+        frameSetDesc.BindTexture(
+            PipelineCache::DefaultLitOpaqueSceneSnapshotBinding,
+            sourceTextureView.Get());
         RHIDescriptorSetRef frameSet = device->CreateDescriptorSet(frameSetDesc);
 
         RHIDescriptorSetDesc materialSetDesc;

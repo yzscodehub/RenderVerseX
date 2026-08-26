@@ -3,7 +3,7 @@
 /**
  * @file MaterialGPUData.h
  * @brief GPU-side material constant structures
- * 
+ *
  * Defines the GPU constant buffer layout for PBR materials,
  * matching the HLSL cbuffer in DefaultLit.hlsl.
  */
@@ -33,7 +33,7 @@ namespace RVX
 
     /**
      * @brief Texture flags for material shader
-     * 
+     *
      * Bitmask indicating which textures are bound for the material.
      * Must match the defines in DefaultLit.hlsl.
      */
@@ -104,10 +104,10 @@ namespace RVX
 
     /**
      * @brief GPU constant buffer layout for PBR materials
-     * 
+     *
      * This structure is uploaded to the GPU and must match
      * the MaterialConstants cbuffer in DefaultLit.hlsl exactly.
-     * 
+     *
      * Note: Padding is added to maintain 16-byte alignment
      * required by constant buffers.
      */
@@ -115,17 +115,17 @@ namespace RVX
     {
         // Base color (RGBA)
         Vec4 baseColorFactor = {1.0f, 1.0f, 1.0f, 1.0f};
-        
+
         // PBR factors
         float metallicFactor = 0.0f;
         float roughnessFactor = 1.0f;
         float normalScale = 1.0f;
         float occlusionStrength = 1.0f;
-        
+
         // Emissive
         Vec3 emissiveColor = {0.0f, 0.0f, 0.0f};
         float emissiveStrength = 1.0f;
-        
+
         // Material state
         uint32 textureFlags = 0;
         uint32 alphaMode = static_cast<uint32>(MaterialGPUAlphaMode::Opaque);
