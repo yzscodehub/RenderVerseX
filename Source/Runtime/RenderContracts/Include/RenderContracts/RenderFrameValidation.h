@@ -232,6 +232,13 @@ namespace RVX
             !std::isfinite(settings.postProcess.colorGradingSaturation) ||
             settings.postProcess.colorGradingSaturation < 0.0f ||
             !std::isfinite(settings.postProcess.colorGradingBrightness) ||
+            !std::isfinite(
+                settings.postProcess.toonOutlineDepthThreshold) ||
+            settings.postProcess.toonOutlineDepthThreshold <= 0.0f ||
+            !std::isfinite(
+                settings.postProcess.toonOutlineNormalThreshold) ||
+            settings.postProcess.toonOutlineNormalThreshold <= 0.0f ||
+            settings.postProcess.toonOutlineNormalThreshold > 2.0f ||
             !IsValidRenderExposureSettings(
                 settings.postProcess.exposureSettings) ||
             !IsValidRenderAmbientOcclusionSettings(

@@ -18,7 +18,7 @@ namespace RVX
      * @brief Value-owned presentation inputs frozen for one graph recording.
      *
      * Scene color is intentionally absent: the adapter obtains it only from
-     * TranslucencyOutputs v3 so no SceneRenderer-side post-process bypass can
+     * TranslucencyOutputs v4 so no SceneRenderer-side post-process bypass can
      * substitute a stale or untyped surface.
      */
     struct PostProcessPipelineRecordContext
@@ -70,6 +70,12 @@ namespace RVX
             return m_lastExecutionReceipt;
         }
 
+        [[nodiscard]] const RenderToonOutlineExecutionReceipt&
+        GetLastToonOutlineExecutionReceipt() const noexcept
+        {
+            return m_lastToonOutlineExecutionReceipt;
+        }
+
         /**
          * @brief Commit all post-process temporal candidates only after the
          *        exact frame/view crossed a successful presentation boundary.
@@ -108,6 +114,7 @@ namespace RVX
             const RenderFeatureGraphExecutionEvidence& evidence) const noexcept;
         void SetCompositionFailure(std::string diagnostic);
         void RefreshExecutionReceipt();
+        void RefreshToonOutlineExecutionReceipt();
         void SnapshotExposureProbeSourceReceipt() noexcept;
         void ClearExposureProbeSourceReceipt() noexcept;
 
@@ -118,6 +125,8 @@ namespace RVX
         RenderGraphBlackboardProvenance m_composedProvenance{};
         mutable RenderFeatureExecutionReceipt m_lastReceipt{};
         RenderPostProcessExecutionReceipt m_lastExecutionReceipt{};
+        RenderToonOutlineExecutionReceipt
+            m_lastToonOutlineExecutionReceipt{};
         RenderFeatureReadiness m_readiness{};
         bool m_hasRecordContext = false;
         bool m_hasComposedPresentationPlan = false;

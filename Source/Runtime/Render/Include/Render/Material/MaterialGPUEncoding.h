@@ -23,4 +23,16 @@ namespace RVX
         const MaterialSourceData& sourceData,
         std::span<const MaterialUploadTextureBinding> textureBindings = {}) noexcept;
 
+    /**
+     * @brief Encode a renderer-selected material program and stable table slot.
+     *
+     * The immutable descriptor is intentionally separate from legacy source
+     * workflow data so ToonLit cannot be approximated as StandardLit.
+     */
+    [[nodiscard]] MaterialGPUConstants EncodeMaterialGPUConstants(
+        const MaterialStaticDescriptor& staticDescriptor,
+        const MaterialSourceData& sourceData,
+        std::span<const MaterialUploadTextureBinding> textureBindings,
+        uint32 materialTableIndex) noexcept;
+
 } // namespace RVX

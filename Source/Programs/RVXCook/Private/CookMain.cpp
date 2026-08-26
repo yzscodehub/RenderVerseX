@@ -51,6 +51,9 @@ namespace
         std::vector<TextureCompressionRule> textureCompressionRules;
         bool hasMeshOptions = false;
         RVX::Tools::MeshImportOptions meshOptions;
+        bool hasModelOptions = false;
+        bool hasToonMaterialParameters = false;
+        RVX::Tools::ModelImportOptions modelOptions;
     };
 
     std::string ToLower(std::string value)
@@ -413,6 +416,85 @@ namespace
                 continue;
             }
 
+            if (keyLower == "model.material.shadingmodel")
+            {
+                const std::string shadingModel = ToLower(value);
+                if (shadingModel == "source")
+                {
+                    profile.modelOptions.overrideAllMaterialsToToonLit = false;
+                }
+                else if (shadingModel == "toon-lit" || shadingModel == "toonlit")
+                {
+                    profile.modelOptions.overrideAllMaterialsToToonLit = true;
+                }
+                else
+                {
+                    outError = "Cook profile line " + std::to_string(lineNumber) +
+                               " has unsupported model.material.shadingModel value: " + value;
+                    return false;
+                }
+                profile.hasModelOptions = true;
+                continue;
+            }
+
+            const auto parseToonFloat = [&](float& destination,
+                                            const char* settingName) -> bool
+            {
+                float parsed = 0.0f;
+                if (!ParseFloatValue(value, parsed) || !std::isfinite(parsed))
+                {
+                    outError = "Cook profile line " + std::to_string(lineNumber) +
+                               " has unsupported " + settingName + " value: " + value;
+                    return false;
+                }
+                destination = parsed;
+                profile.hasModelOptions = true;
+                profile.hasToonMaterialParameters = true;
+                return true;
+            };
+            if (keyLower == "model.material.toonbands")
+            {
+                if (!parseToonFloat(profile.modelOptions.toonBands,
+                                    "model.material.toonBands")) return false;
+                continue;
+            }
+            if (keyLower == "model.material.toonspecularthreshold")
+            {
+                if (!parseToonFloat(profile.modelOptions.toonSpecularThreshold,
+                                    "model.material.toonSpecularThreshold")) return false;
+                continue;
+            }
+            if (keyLower == "model.material.toonrimstrength")
+            {
+                if (!parseToonFloat(profile.modelOptions.toonRimStrength,
+                                    "model.material.toonRimStrength")) return false;
+                continue;
+            }
+            if (keyLower == "model.material.toonoutlinewidth")
+            {
+                if (!parseToonFloat(profile.modelOptions.toonOutlineWidth,
+                                    "model.material.toonOutlineWidth")) return false;
+                continue;
+            }
+            if (keyLower == "model.material.toonshadowtint.red")
+            {
+                if (!parseToonFloat(profile.modelOptions.toonShadowTintRed,
+                                    "model.material.toonShadowTint.red")) return false;
+                continue;
+            }
+            if (keyLower == "model.material.toonshadowtint.green")
+            {
+                if (!parseToonFloat(profile.modelOptions.toonShadowTintGreen,
+                                    "model.material.toonShadowTint.green")) return false;
+                continue;
+            }
+            if (keyLower == "model.material.toonshadowtint.blue")
+            {
+                if (!parseToonFloat(profile.modelOptions.toonShadowTintBlue,
+                                    "model.material.toonShadowTint.blue")) return false;
+                continue;
+            }
+
             outError = "Cook profile line " + std::to_string(lineNumber) +
                        " has unsupported key: " + key;
             return false;
@@ -421,6 +503,12 @@ namespace
         if (!sawHeader)
         {
             outError = "Cook profile is empty or missing RVX_COOK_PROFILE_V1: " + profilePath.string();
+            return false;
+        }
+        if (profile.hasToonMaterialParameters &&
+            !profile.modelOptions.overrideAllMaterialsToToonLit)
+        {
+            outError = "Cook profile ToonLit parameters require model.material.shadingModel=toon-lit";
             return false;
         }
 
@@ -1130,7 +1218,7 @@ namespace
             << "                        Texture compression profile, defaults to auto\n"
             << "                        Profiles also support mesh.generateTangents,\n"
             << "                        mesh.optimizeMesh, mesh.generateLODs, mesh.lodCount,\n"
-            << "                        and mesh.lodReductionFactor\n"
+            << "                        mesh.lodReductionFactor, and model.material.* ToonLit overrides\n"
             << "  --rewrite-gltf-texture-uris\n"
             << "                        Emit runtime .gltf copies with external image URIs redirected to cooked .rva textures\n"
             << "  --model-only          Cook complete glTF model products and their owned dependencies only\n"
@@ -1371,7 +1459,7 @@ int main(int argc, char** argv)
         RVX::Tools::ModelImportOptions resolvedModelOptions;
         if (options.hasTextureOptions ||
             !cookProfile.textureCompressionRules.empty() ||
-            cookProfile.hasMeshOptions)
+            cookProfile.hasMeshOptions || cookProfile.hasModelOptions)
         {
             optionsProvider = [&options,
                                &cookProfile,
@@ -1393,9 +1481,13 @@ int main(int argc, char** argv)
 
                 if (assetType == RVX::Tools::AssetType::Model)
                 {
-                    if (!cookProfile.hasMeshOptions)
+                    if (!cookProfile.hasMeshOptions && !cookProfile.hasModelOptions)
                         return nullptr;
-                    resolvedModelOptions.mesh = cookProfile.meshOptions;
+                    resolvedModelOptions = cookProfile.modelOptions;
+                    if (cookProfile.hasMeshOptions)
+                    {
+                        resolvedModelOptions.mesh = cookProfile.meshOptions;
+                    }
                     return &resolvedModelOptions;
                 }
 

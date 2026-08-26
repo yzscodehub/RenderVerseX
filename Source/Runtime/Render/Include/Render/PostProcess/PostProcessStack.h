@@ -26,10 +26,21 @@ namespace RVX
     struct PostProcessFrameInputs
     {
         RGTextureHandle sceneColor;
+        PostProcessTextureMetadata sceneColorMetadata{};
         RGTextureHandle depth;
+        PostProcessTextureMetadata depthMetadata{};
         RGTextureHandle normal;
+        PostProcessTextureMetadata normalMetadata{};
+        /** Full-resolution R32_UINT index into materialParameterTable. */
+        RGTextureHandle materialIdentity;
+        PostProcessTextureMetadata materialIdentityMetadata{};
+        /** Structured MaterialGPUConstants rows addressed by materialIdentity. */
+        RGBufferHandle materialParameterTable;
+        PostProcessMaterialTableMetadata materialParameterTableMetadata{};
         RGTextureHandle velocity;
+        PostProcessTextureMetadata velocityMetadata{};
         RGTextureHandle reactiveMask;
+        PostProcessTextureMetadata reactiveMaskMetadata{};
         /** Unique graph import of the prior-presented exposure state. */
         RGBufferHandle exposureState;
         /** Semantic identity of the state bound to this stage's consumers. */
@@ -61,6 +72,11 @@ namespace RVX
 
         bool HasDepth() const { return depth.IsValid(); }
         bool HasNormal() const { return normal.IsValid(); }
+        bool HasMaterialIdentity() const { return materialIdentity.IsValid(); }
+        bool HasMaterialParameterTable() const
+        {
+            return materialParameterTable.IsValid();
+        }
         bool HasVelocity() const { return velocity.IsValid(); }
         bool HasExposureState() const { return exposureState.IsValid(); }
         bool HasHistory() const
@@ -75,6 +91,8 @@ namespace RVX
     {
         bool requiresDepth = false;
         bool requiresNormal = false;
+        bool requiresMaterialIdentity = false;
+        bool requiresMaterialParameterTable = false;
         bool requiresVelocity = false;
         bool requiresReactiveMask = false;
         bool requiresHistory = false;
@@ -83,6 +101,10 @@ namespace RVX
         {
             return (!requiresDepth || inputs.HasDepth()) &&
                    (!requiresNormal || inputs.HasNormal()) &&
+                   (!requiresMaterialIdentity ||
+                    inputs.HasMaterialIdentity()) &&
+                   (!requiresMaterialParameterTable ||
+                    inputs.HasMaterialParameterTable()) &&
                    (!requiresVelocity || inputs.HasVelocity()) &&
                    (!requiresReactiveMask || inputs.reactiveMask.IsValid()) &&
                    (!requiresHistory || inputs.HasHistory());
@@ -133,6 +155,16 @@ namespace RVX
         RenderAntiAliasingMode antiAliasingMode =
             RenderAntiAliasingMode::FXAA;
         float fxaaQuality = 0.75f;
+
+        // =========================================================================
+        // Stylized outlines
+        // =========================================================================
+        /** Requires typed full-resolution depth, oct-normal, and material rows. */
+        bool enableToonOutline = false;
+        /** Relative linear/device depth discontinuity threshold. */
+        float toonOutlineDepthThreshold = 0.015f;
+        /** 1-dot(n0,n1) discontinuity threshold for normal creases. */
+        float toonOutlineNormalThreshold = 0.20f;
 
         // =========================================================================
         // Depth of Field
@@ -294,6 +326,21 @@ namespace RVX
         }
 
         /**
+         * @brief Validate pass-specific typed inputs before the stack mutates
+         *        the RenderGraph.
+         *
+         * Requirements only describe handle presence. Effects with ABI,
+         * format, extent, or immutable-content constraints override this to
+         * fail closed during plan construction.
+         */
+        virtual bool ValidateFrameInputs(const PostProcessFrameInputs&,
+                                         std::string& outReason) const
+        {
+            outReason.clear();
+            return true;
+        }
+
+        /**
          * @brief Add the pass to the render graph
          * @param graph The render graph
          * @param input Input texture handle
@@ -361,6 +408,8 @@ namespace RVX
         bool pipelineReady = false;
         bool requiresDepth = false;
         bool requiresNormal = false;
+        bool requiresMaterialIdentity = false;
+        bool requiresMaterialParameterTable = false;
         bool requiresVelocity = false;
         bool requiresReactiveMask = false;
         bool requiresHistory = false;

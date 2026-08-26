@@ -1,8 +1,10 @@
 #include "Features/LegacyForwardFeatureAdapter.h"
 
+#include "Render/Material/MaterialSystem.h"
 #include "Render/Passes/OpaquePass.h"
 #include "Renderer/RenderPassRegistry.h"
 
+#include <algorithm>
 #include <array>
 #include <utility>
 
@@ -10,6 +12,20 @@ namespace RVX
 {
 namespace
 {
+    [[nodiscard]] uint32 CountEligibleToonOutlineMaterials(
+        const MaterialParameterTableSnapshot& table) noexcept
+    {
+        return static_cast<uint32>(std::count_if(
+            table.valueOnlyRowEvidence.begin(),
+            table.valueOnlyRowEvidence.end(),
+            [](const MaterialParameterTableRowEvidence& row)
+            {
+                return row.isAsset &&
+                       row.shadingModel == MaterialShadingModel::ToonLit &&
+                       row.toonParametersValid && row.toonOutlineWidth > 0.0f;
+            }));
+    }
+
     [[nodiscard]] bool HasGraphicsCapability(
         RenderFeatureCapabilityMask capabilities) noexcept
     {
@@ -440,8 +456,20 @@ void ForwardLightingFeatureAdapter::Prepare(
     m_readiness.hardwareSupported = HasGraphicsCapability(
         context.hardwareCapabilities);
     m_readiness.implementationSupported = IsForwardStandard(context);
+    OpaqueRasterPipelinePreflightResult opaquePipelinePreflight;
+    if (m_readiness.hardwareSupported &&
+        m_readiness.implementationSupported && m_opaquePass != nullptr)
+    {
+        const OpaqueRasterOutputFamily outputFamily =
+            m_recordContext.view.toonOutlineRequested != 0
+                ? OpaqueRasterOutputFamily::ForwardSceneHDRWithSurfaceData
+                : OpaqueRasterOutputFamily::ForwardSceneHDR;
+        opaquePipelinePreflight = m_opaquePass->PreflightRasterPipelines(
+            m_recordContext, outputFamily,
+            OpaqueRasterSurfaceRoute::AllOpaque);
+    }
     m_readiness.pipelineReady = m_opaquePass != nullptr &&
-        m_opaquePass->IsSupported();
+        m_opaquePass->IsSupported() && opaquePipelinePreflight.Succeeded();
     m_readiness.inputsReady = HasMatchingRecordContext(context) &&
         m_passRegistry != nullptr && m_opaquePass != nullptr;
 
@@ -456,9 +484,19 @@ void ForwardLightingFeatureAdapter::Prepare(
     }
     else if (!m_readiness.pipelineReady)
     {
-        m_readiness.diagnostic = m_opaquePass == nullptr
-            ? "Forward opaque pass is unavailable"
-            : m_opaquePass->GetUnsupportedReason();
+        if (m_opaquePass == nullptr)
+        {
+            m_readiness.diagnostic = "Forward opaque pass is unavailable";
+        }
+        else if (!opaquePipelinePreflight.diagnostic.empty())
+        {
+            m_readiness.diagnostic =
+                std::move(opaquePipelinePreflight.diagnostic);
+        }
+        else
+        {
+            m_readiness.diagnostic = m_opaquePass->GetUnsupportedReason();
+        }
     }
     else if (!m_readiness.inputsReady)
     {
@@ -555,13 +593,102 @@ void ForwardLightingFeatureAdapter::AddPasses(
     m_lastPassChainStats.passStatuses = m_passRegistry->GetPassStatuses();
     m_lastPassChainStats.registeredPassCount =
         m_lastPassChainStats.passStatuses.size();
-    if (!builder.AddLegacyPass(*m_opaquePass, opaqueContext))
+
+    RGTextureHandle outlineNormal{};
+    RGTextureHandle outlineMaterialIdentity{};
+    RGBufferHandle outlineMaterialTable{};
+    PostProcessMaterialTableMetadata outlineMaterialTableMetadata{};
+    const bool toonOutlineRequested =
+        opaqueContext.view.toonOutlineRequested != 0;
+    bool opaqueRegistered = false;
+    if (toonOutlineRequested)
+    {
+        const RenderOutputExtent extent = m_preparedContext.outputExtent;
+        RHITextureDesc normalDesc = RHITextureDesc::RenderTarget(
+            extent.width, extent.height,
+            SceneTextures::GBuffer1Contract.format);
+        normalDesc.sampleCount = SceneTextures::GBuffer1Contract.sampleCount;
+        normalDesc.SetOptimizedClearColor(
+            RHIClearColor{0.5f, 0.5f, 1.0f, 0.0f});
+        normalDesc.debugName = "ForwardWorldNormal";
+        outlineNormal = builder.CreateTexture(normalDesc);
+
+        RHITextureDesc materialIdentityDesc = RHITextureDesc::RenderTarget(
+            extent.width, extent.height,
+            SceneTextures::GBuffer3Contract.format);
+        materialIdentityDesc.sampleCount =
+            SceneTextures::GBuffer3Contract.sampleCount;
+        materialIdentityDesc.SetOptimizedClearColor(
+            RHIClearColor{0.0f, 0.0f, 0.0f, 0.0f});
+        materialIdentityDesc.debugName = "ForwardMaterialIdentity";
+        outlineMaterialIdentity = builder.CreateTexture(materialIdentityDesc);
+
+        MaterialParameterTableSnapshot materialTable;
+        std::string materialTableError;
+        if (!outlineNormal.IsValid() || !outlineMaterialIdentity.IsValid() ||
+            !m_opaquePass->CreateMaterialClassificationTableSnapshot(
+                opaqueContext, OpaqueRasterSurfaceRoute::AllOpaque,
+                materialTable, materialTableError))
+        {
+            SetCompositionFailure(materialTableError.empty()
+                ? "Forward Toon outline could not create its typed surface inputs"
+                : std::move(materialTableError));
+            return;
+        }
+
+        outlineMaterialTableMetadata = PostProcessMaterialTableMetadata{
+            PostProcessMaterialTableMetadata::SchemaVersion,
+            materialTable.stride,
+            materialTable.slotCount,
+            CountEligibleToonOutlineMaterials(materialTable),
+            materialTable.contentHash,
+            extent,
+            SceneTextures::GBuffer3Contract.sampleCount};
+        opaqueContext.opaqueMaterialTable =
+            OpaqueMaterialTableExecutionIdentity{
+                1,
+                materialTable.schemaVersion,
+                materialTable.stride,
+                materialTable.slotCount,
+                materialTable.contentHash};
+        outlineMaterialTable = builder.ImportBuffer(
+            std::move(materialTable.buffer),
+            RHIResourceState::ShaderResource);
+        if (!outlineMaterialTable.IsValid() ||
+            !outlineMaterialTableMetadata.IsValid())
+        {
+            SetCompositionFailure(
+                "Forward Toon outline could not import its immutable material table");
+            return;
+        }
+
+        const OpaqueForwardSurfaceTargets targets{
+            opaqueContext.view.colorTarget,
+            outlineNormal,
+            outlineMaterialIdentity,
+            opaqueContext.view.depthTarget};
+        opaqueRegistered = builder.AddGraphCallback(
+            "ForwardSurfaceData",
+            opaqueContext,
+            [opaque = m_opaquePass,
+             context = opaqueContext,
+             targets](RenderGraph& graph)
+            {
+                opaque->AddForwardSurfaceToGraph(graph, context, targets);
+            });
+    }
+    else
+    {
+        opaqueRegistered = builder.AddLegacyPass(*m_opaquePass, opaqueContext);
+    }
+    if (!opaqueRegistered)
     {
         SetCompositionFailure("Forward opaque pass registration failed");
         return;
     }
     ++m_lastPassChainStats.graphPassCount;
-    m_lastPassChainStats.graphPassNames.push_back(m_opaquePass->GetName());
+    m_lastPassChainStats.graphPassNames.push_back(
+        toonOutlineRequested ? "ForwardSurfaceData" : m_opaquePass->GetName());
 
     const int32 firstLightingConsumerPriority = m_opaquePass->GetPriority();
     for (const std::unique_ptr<IRenderPass>& pass : m_passRegistry->GetPasses())
@@ -615,6 +742,20 @@ void ForwardLightingFeatureAdapter::AddPasses(
     outputs.deviceDepth = m_recordContext.view.depthTarget;
     outputs.deviceDepthMetadata = MakeMetadata(
         m_preparedContext.outputExtent, SceneTextures::DeviceDepthContract);
+    if (toonOutlineRequested)
+    {
+        outputs.worldNormal = outlineNormal;
+        outputs.worldNormalMetadata = MakeMetadata(
+            m_preparedContext.outputExtent,
+            SceneTextures::GBuffer1Contract);
+        outputs.materialIdentity = outlineMaterialIdentity;
+        outputs.materialIdentityMetadata = MakeMetadata(
+            m_preparedContext.outputExtent,
+            SceneTextures::GBuffer3Contract);
+        outputs.materialParameterTable = outlineMaterialTable;
+        outputs.materialParameterTableMetadata =
+            outlineMaterialTableMetadata;
+    }
     outputs.velocity = m_recordContext.view.velocityTarget;
     outputs.velocityMetadata = MakeMetadata(
         m_preparedContext.outputExtent, SceneTextures::VelocityContract);

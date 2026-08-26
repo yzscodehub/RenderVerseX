@@ -6,6 +6,7 @@
  */
 
 #include "Render/RenderDiagnostics.h"
+#include "Render/RenderRuntimeTypes.h"
 #include "Render/Renderer/RenderSceneDatabase.h"
 #include "Render/Runtime/RenderSceneUpdateQueue.h"
 #include "RenderContracts/IRenderResourceGateway.h"
@@ -91,6 +92,11 @@ namespace RenderRuntimeDetail
         }
         /** @brief Arm one owner-side physical GTAO visibility probe. */
         [[nodiscard]] virtual bool RequestAmbientOcclusionQualificationProbe()
+        {
+            return false;
+        }
+        /** @brief Arm one owner-side Toon lighting/outline qualification probe. */
+        [[nodiscard]] virtual bool RequestToonOutlineQualificationProbe()
         {
             return false;
         }
@@ -311,6 +317,11 @@ namespace RenderRuntimeDetail
         [[nodiscard]] bool RequestExposureQualificationProbe() noexcept;
         /** @brief Publish one explicit GTAO visibility probe request. */
         [[nodiscard]] bool RequestAmbientOcclusionQualificationProbe() noexcept;
+        /** @brief Publish one explicit Toon lighting/outline probe request. */
+        [[nodiscard]] bool RequestToonOutlineQualificationProbe() noexcept;
+        /** @brief Read the immutable one-shot Render-owner admission result. */
+        [[nodiscard]] RenderToonOutlineQualificationRequestResult
+        GetToonOutlineQualificationProbeRequestResult() const noexcept;
 
         RenderResourceReserveResult ReserveResource(
             AssetId assetId,
@@ -379,6 +390,8 @@ namespace RenderRuntimeDetail
             QueryConsumerRuntimeStatusOnRenderThread() const;
         void DiscardPendingWorkOnRenderThread(
             RenderTeardownMode mode) noexcept;
+        void ResolveToonOutlineQualificationProbeRequestOnRenderThread();
+        void RejectPendingToonOutlineQualificationProbeForShutdown() noexcept;
 
         RenderRuntimeConfig m_config;
         HAL::NativeSurfaceDesc m_initialSurface;
@@ -427,6 +440,11 @@ namespace RenderRuntimeDetail
             false;
         std::atomic<bool> m_ambientOcclusionQualificationProbeRequestPending =
             false;
+        std::atomic<bool> m_toonOutlineQualificationProbeRequestIssued = false;
+        std::atomic<bool> m_toonOutlineQualificationProbeRequestPending = false;
+        std::atomic<RenderToonOutlineQualificationRequestState>
+            m_toonOutlineQualificationProbeRequestState =
+                RenderToonOutlineQualificationRequestState::NotRequested;
 
         mutable std::mutex m_stateMutex;
         std::timed_mutex m_startupArbitrationMutex;
@@ -450,6 +468,10 @@ namespace RenderRuntimeDetail
         uint64 m_pendingResizeFrameSequenceCutoff = 0;
         // Render-thread-only compatibility barrier for the active surface.
         uint64 m_surfaceFrameSequenceCutoff = 0;
+        // Protected by m_publicationMutex. The one-shot Toon request belongs
+        // to the first frame published strictly after this linearization
+        // point; an older published or carried packet must not consume it.
+        uint64 m_toonOutlineQualificationProbePublishedBaseline = 0;
 
         std::mutex m_waitMutex;
         std::condition_variable m_waitCv;

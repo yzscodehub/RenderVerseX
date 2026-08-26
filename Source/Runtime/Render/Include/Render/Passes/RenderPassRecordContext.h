@@ -256,6 +256,18 @@ namespace RVX
         uint32 materialFallbackBindingCount = 0;
         uint32 materialTextureFlags = 0;
         uint32 materialFallbackTextureFlags = 0;
+        /** Completed Toon bindings, never requested-material counts. */
+        uint32 toonMaterialCount = 0;
+        /** Exact successfully recorded Toon draw submissions when observable. */
+        uint32 toonDrawCount = 0;
+        /** Successful Toon draws whose material binding used a fallback resource. */
+        uint32 toonFallbackDrawCount = 0;
+        /** Stable value identity of the actually bound Toon program family. */
+        uint64 toonProgramFamilyHash = 0;
+        /** Exact committed material table transcript used by successful Toon work. */
+        uint64 materialTableContentHash = 0;
+        /** ABI schema paired with materialTableContentHash. */
+        uint32 materialTableSchemaVersion = 0;
         uint64 deformationContentHash = 0;
         uint32 skinnedDrawCount = 0;
         uint32 currentPaletteBoundDrawCount = 0;
@@ -1160,9 +1172,38 @@ namespace RVX
     };
 
     /**
+     * @brief Exact immutable material-table identity routed into one opaque pass.
+     *
+     * This is a value contract so pass execution never reaches back into a
+     * mutable adapter/snapshot. It is empty for routes without a classification
+     * table and becomes observable in draw statistics only after a successful
+     * material binding and draw submission.
+     */
+    struct OpaqueMaterialTableExecutionIdentity
+    {
+        uint32 schemaVersion = 0;
+        uint32 materialTableSchemaVersion = 0;
+        uint32 stride = 0;
+        uint32 slotCount = 0;
+        uint64 contentHash = 0;
+
+        [[nodiscard]] bool IsEmpty() const noexcept
+        {
+            return schemaVersion == 0 && materialTableSchemaVersion == 0 &&
+                   stride == 0 && slotCount == 0 && contentHash == 0;
+        }
+
+        [[nodiscard]] bool IsStructurallyValid() const noexcept
+        {
+            return schemaVersion == 1 && materialTableSchemaVersion != 0 &&
+                   stride != 0 && slotCount != 0 && contentHash != 0;
+        }
+    };
+
+    /**
      * @brief Immutable source context used to create graph-owned pass data.
      *
-     * The ViewData snapshot is intentionally value-owned.  Scene references are
+     * The ViewData snapshot is intentionally value-owned. Scene references are
      * frame-retained by the renderer and are copied into typed pass data before
      * callbacks are registered.
      */
@@ -1202,6 +1243,8 @@ namespace RVX
         RayTracedShadowRecordOutput rayTracedShadow{};
         /** Screen-space AO selected by the typed lighting dependency edge. */
         AmbientOcclusionRecordInput ambientOcclusion{};
+        /** Explicit value identity for the route's immutable material table. */
+        OpaqueMaterialTableExecutionIdentity opaqueMaterialTable{};
         std::shared_ptr<const RenderPassFrameSnapshot> frameSnapshot;
         std::shared_ptr<RenderPassRecordResults> results;
         /// True only for the legacy ViewData adapter.  Migrated scene passes
@@ -1280,6 +1323,11 @@ namespace RVX
             {
                 return false;
             }
+            if (!opaqueMaterialTable.IsEmpty() &&
+                !opaqueMaterialTable.IsStructurallyValid())
+            {
+                return false;
+            }
             return true;
         }
     };
@@ -1299,6 +1347,7 @@ namespace RVX
         DirectionalShadowRecordOutput directionalShadow{};
         RayTracedShadowRecordOutput rayTracedShadow{};
         AmbientOcclusionRecordInput ambientOcclusion{};
+        OpaqueMaterialTableExecutionIdentity opaqueMaterialTable{};
 
         [[nodiscard]] const RenderFrameExecutionPlan* GetExecutionPlan() const
         {
@@ -1497,6 +1546,7 @@ namespace RVX
         result.directionalShadow = context.directionalShadow;
         result.rayTracedShadow = context.rayTracedShadow;
         result.ambientOcclusion = context.ambientOcclusion;
+        result.opaqueMaterialTable = context.opaqueMaterialTable;
         return result;
     }
 

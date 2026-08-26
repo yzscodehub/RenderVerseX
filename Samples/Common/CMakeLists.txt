@@ -59,6 +59,19 @@ add_executable(RVXSampleInteriorFixtureWriter
 )
 target_compile_features(RVXSampleInteriorFixtureWriter PRIVATE cxx_std_20)
 
+# Build-time publisher for the GFX14 cooked-only Sample asset.  It links only
+# Runtime resource contracts and verifies RVXCook output before emitting the
+# staged catalog declaration; it is not part of the Sample runtime closure.
+add_executable(RVXSampleCookedCatalogWriter
+    Tools/SampleCookedCatalogWriter.cpp
+)
+target_compile_features(RVXSampleCookedCatalogWriter PRIVATE cxx_std_20)
+target_link_libraries(RVXSampleCookedCatalogWriter PRIVATE
+    RVX::Core
+    RVX::ResourceRuntime
+    nlohmann_json::nlohmann_json
+)
+
 rvx_register_module_target(
     TARGET RVX_SampleCommon
     MODULE Samples
@@ -70,5 +83,9 @@ rvx_register_module_target(
 )
 rvx_register_module_target(
     TARGET RVXSampleInteriorFixtureWriter
+    MODULE Samples
+)
+rvx_register_module_target(
+    TARGET RVXSampleCookedCatalogWriter
     MODULE Samples
 )

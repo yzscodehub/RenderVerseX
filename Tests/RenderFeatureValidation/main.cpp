@@ -4,6 +4,7 @@
 #include "Render/Features/RenderGraphBlackboard.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Lighting/LightingFramePlan.h"
+#include "Render/Material/MaterialGPUData.h"
 #include "Render/Passes/OpaquePass.h"
 #include "RHI/RHICommandContext.h"
 
@@ -762,6 +763,14 @@ namespace
         textures.gBuffer3Metadata = MakeSceneTextureMetadata(
             SceneTextures::GBuffer3Contract);
         textures.materialTable = MakeBufferHandle(provenance, 8);
+        textures.materialTableMetadata = {
+            PostProcessMaterialTableMetadata::SchemaVersion,
+            static_cast<uint32>(sizeof(MaterialGPUConstants)),
+            1,
+            0,
+            0x4D41545441424C45ull,
+            textures.gBuffer3Metadata.extent,
+            textures.gBuffer3Metadata.sampleCount};
         textures.exposureState = MakeBufferHandle(provenance, 9);
         textures.exposureStateMetadata = {
             SceneTextures::ExposureStateSchemaVersion,
@@ -2549,6 +2558,11 @@ namespace
         EXPECT_EQ(ValidateDeferredSceneTextures(missingMaterialTable),
                   DeferredSceneTexturesValidationCode::MissingMaterialTable);
 
+        SceneTextures invalidMaterialMetadata = textures;
+        invalidMaterialMetadata.materialTableMetadata.contentHash = 0;
+        EXPECT_EQ(ValidateDeferredSceneTextures(invalidMaterialMetadata),
+                  DeferredSceneTexturesValidationCode::InvalidMaterialTable);
+
         SceneTextures invalidExtent = textures;
         invalidExtent.gBuffer0Metadata.extent = {};
         EXPECT_EQ(ValidateDeferredSceneTextures(invalidExtent),
@@ -2565,7 +2579,7 @@ namespace
                   DeferredSceneTexturesValidationCode::ExtentMismatch);
 
         SceneTextures multisampled = textures;
-        multisampled.gBuffer3Metadata.sampleCount = RHISampleCount::Count4;
+        multisampled.gBuffer2Metadata.sampleCount = RHISampleCount::Count4;
         EXPECT_EQ(ValidateDeferredSceneTextures(multisampled),
                   DeferredSceneTexturesValidationCode::SampleCountMismatch);
     }
@@ -4173,6 +4187,100 @@ namespace
         adapter.AddPasses(builder, blackboard);
         EXPECT_TRUE(adapter.ResolveReadiness().IsReadyToExecute());
         EXPECT_EQ(adapter.CollectReceipt().graphPassCount, 0U);
+    }
+
+    TEST(RenderFeatureValidation,
+         ToonLightingReceiptRequiresExecutedNonFallbackMaterialEvidence)
+    {
+        RenderToonLightingExecutionReceipt empty;
+        EXPECT_TRUE(empty.IsEmpty());
+        EXPECT_TRUE(empty.IsStructurallyValid());
+
+        RenderToonLightingExecutionReceipt receipt;
+        receipt.requested = true;
+        receipt.pipelineReady = true;
+        receipt.inputsReady = true;
+        receipt.executed = true;
+        receipt.programFamilyHash = 0x544F4F4E4C495431ull;
+        receipt.materialCount = 1;
+        receipt.drawCount = 2;
+        receipt.deferredShadedDrawCount = 2;
+        receipt.bandsApplied = true;
+        receipt.specularThresholdApplied = true;
+        receipt.rimApplied = true;
+        receipt.shadowTintApplied = true;
+        receipt.materialTableSchemaVersion = 2;
+        receipt.materialTableContentHash = 0x4D41545441424C45ull;
+        EXPECT_TRUE(receipt.IsStructurallyValid());
+
+        RenderToonLightingExecutionReceipt fallback = receipt;
+        fallback.standardLitFallbackCount = 1;
+        EXPECT_FALSE(fallback.IsStructurallyValid());
+        fallback = receipt;
+        fallback.materialFallbackCount = 1;
+        EXPECT_FALSE(fallback.IsStructurallyValid());
+        fallback = receipt;
+        fallback.forwardShadedDrawCount = 1;
+        EXPECT_FALSE(fallback.IsStructurallyValid());
+        fallback = receipt;
+        fallback.materialTableContentHash = 0;
+        EXPECT_FALSE(fallback.IsStructurallyValid());
+
+        OpaqueMaterialTableExecutionIdentity tableIdentity{
+            1, 2, sizeof(MaterialGPUConstants), 1, receipt.materialTableContentHash};
+        EXPECT_TRUE(tableIdentity.IsStructurallyValid());
+        tableIdentity.contentHash = 0;
+        EXPECT_FALSE(tableIdentity.IsStructurallyValid());
+
+        PostProcessMaterialTableMetadata outlineMetadata{
+            PostProcessMaterialTableMetadata::SchemaVersion,
+            static_cast<uint32>(sizeof(MaterialGPUConstants)),
+            2,
+            1,
+            receipt.materialTableContentHash,
+            {1280, 720},
+            RHISampleCount::Count1};
+        EXPECT_TRUE(outlineMetadata.IsValid());
+        outlineMetadata.eligibleToonMaterialCount = 3;
+        EXPECT_FALSE(outlineMetadata.IsValid());
+    }
+
+    TEST(RenderFeatureValidation,
+         ToonOutlineReceiptRejectsPlannedButUnrecordedExecutionEvidence)
+    {
+        RenderToonOutlineExecutionReceipt receipt;
+        receipt.requested = true;
+        receipt.pipelineReady = true;
+        receipt.inputsReady = true;
+        receipt.depthInputReady = true;
+        receipt.worldNormalInputReady = true;
+        receipt.materialIdentityInputReady = true;
+        receipt.materialTableInputReady = true;
+        receipt.settingsHash = 0x544F4F4E4F5554ull;
+        receipt.fallbackUsed = true;
+        receipt.diagnostic =
+            "ScreenSpaceOutline was scheduled but its exact visible draw was not recorded";
+        EXPECT_TRUE(receipt.IsStructurallyValid());
+        EXPECT_FALSE(receipt.IsExecutionReady());
+
+        RenderToonOutlineExecutionReceipt plannedOnly = receipt;
+        plannedOnly.outlineSequenceIndex = 2u;
+        plannedOnly.toneMapSequenceIndex = 3u;
+        plannedOnly.temporalOrderingValidated = true;
+        EXPECT_FALSE(plannedOnly.IsStructurallyValid());
+
+        RenderToonOutlineExecutionReceipt executed = receipt;
+        executed.executed = true;
+        executed.fallbackUsed = false;
+        executed.diagnostic.clear();
+        executed.taaSequenceIndex = 1u;
+        executed.outlineSequenceIndex = 2u;
+        executed.toneMapSequenceIndex = 3u;
+        executed.temporalOrderingValidated = true;
+        executed.eligibleToonMaterialCount = 1u;
+        executed.materialTableContentHash = 0x4D41545441424C45ull;
+        EXPECT_TRUE(executed.IsStructurallyValid());
+        EXPECT_TRUE(executed.IsExecutionReady());
     }
 } // namespace
 } // namespace RVX

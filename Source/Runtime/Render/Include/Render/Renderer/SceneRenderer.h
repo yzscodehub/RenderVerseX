@@ -95,6 +95,7 @@ namespace RVX
     class RayTracedReflectionDenoisePass;
     class RayTracedReflectionPass;
     class RayTracedShadowPass;
+    class ScreenSpaceOutlinePass;
     class ShadowPass;
     class SkyboxPass;
     class ToneMappingPass;
@@ -1079,6 +1080,9 @@ namespace RVX
         /** @brief Arm one exact-view physical GTAO visibility probe. */
         [[nodiscard]] bool ArmAmbientOcclusionQualificationProbe();
 
+        /** @brief Arm one exact-view Toon lighting/outline qualification probe. */
+        [[nodiscard]] bool ArmToonOutlineQualificationProbe();
+
         /** @brief Poll accepted qualification fences without requiring a new frame. */
         void PollGPUSceneCullingQualificationCompletion(
             const RenderSubmissionTracker& tracker);
@@ -1094,6 +1098,9 @@ namespace RVX
             const noexcept;
 
         [[nodiscard]] bool HasPendingAmbientOcclusionQualificationCompletion()
+            const noexcept;
+
+        [[nodiscard]] bool HasPendingToonOutlineQualificationCompletion()
             const noexcept;
 
         /** @brief Release current recording ownership when no GPU work was submitted. */
@@ -1828,6 +1835,12 @@ namespace RVX
         bool m_ambientOcclusionProbeSubmissionAccepted = false;
         bool m_ambientOcclusionProbePresented = false;
         bool m_ambientOcclusionProbeAbandoned = false;
+        /** Exact submitted/presented source retained until the outline probe maps. */
+        std::optional<RenderExecutionReceipt>
+            m_toonOutlineProbeSourceExecutionReceipt;
+        bool m_toonOutlineProbeSubmissionAccepted = false;
+        bool m_toonOutlineProbePresented = false;
+        bool m_toonOutlineProbeAbandoned = false;
         /** @brief One immutable feature snapshot shared by every view in the frame. */
         std::shared_ptr<const RenderFeatureSnapshot> m_featureSnapshot =
             std::make_shared<const RenderFeatureSnapshot>();
@@ -1954,6 +1967,7 @@ namespace RVX
         FilmGrainPass* m_filmGrainPostProcess = nullptr;
         FXAAPass* m_fxaaPostProcess = nullptr;
         TAA* m_taaPostProcess = nullptr;
+        ScreenSpaceOutlinePass* m_screenSpaceOutlinePostProcess = nullptr;
 
         // Depth buffer
         RHITextureRef m_depthTexture;

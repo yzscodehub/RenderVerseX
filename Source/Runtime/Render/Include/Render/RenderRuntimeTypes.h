@@ -35,6 +35,50 @@ namespace RVX
         Failed = 5
     };
 
+    /**
+     * @brief Immutable state of the one-shot Toon-outline qualification admission.
+     *
+     * RequestToonOutlineQualificationProbe() only reports whether the update
+     * owner successfully handed the request to the runtime. The Render owner
+     * resolves this value later, before recording the target frame, so callers
+     * can fail immediately when that owner rejects the probe instead of
+     * treating rejection as a GPU-completion timeout.
+     */
+    enum class RenderToonOutlineQualificationRequestState : uint8
+    {
+        NotRequested = 0,
+        PendingRenderOwnerAdmission = 1,
+        Accepted = 2,
+        RejectedByRenderOwner = 3,
+        RejectedByRuntimeShutdown = 4
+    };
+
+    /** @brief Value-only terminal admission result for the Toon qualification probe. */
+    struct RenderToonOutlineQualificationRequestResult
+    {
+        RenderToonOutlineQualificationRequestState state =
+            RenderToonOutlineQualificationRequestState::NotRequested;
+        const char* diagnostic = "toon outline qualification probe was not requested";
+
+        [[nodiscard]] constexpr bool IsTerminal() const noexcept
+        {
+            return state == RenderToonOutlineQualificationRequestState::Accepted ||
+                   state == RenderToonOutlineQualificationRequestState::RejectedByRenderOwner ||
+                   state == RenderToonOutlineQualificationRequestState::RejectedByRuntimeShutdown;
+        }
+
+        [[nodiscard]] constexpr bool IsAccepted() const noexcept
+        {
+            return state == RenderToonOutlineQualificationRequestState::Accepted;
+        }
+
+        [[nodiscard]] constexpr bool IsRejected() const noexcept
+        {
+            return state == RenderToonOutlineQualificationRequestState::RejectedByRenderOwner ||
+                   state == RenderToonOutlineQualificationRequestState::RejectedByRuntimeShutdown;
+        }
+    };
+
     enum class RenderResultClass : uint8
     {
         Success = 0,

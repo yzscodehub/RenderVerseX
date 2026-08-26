@@ -155,7 +155,7 @@ namespace
     // descriptor ABI for HDR producers; never reuse a manifest built before it.
     // GTAO extends both the raster frame set and deferred compute set, so its
     // exact R8 visibility ABI must invalidate all previous manifests.
-    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 21;
+    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 25;
     constexpr uint64 RVX_NEUTRAL_AMBIENT_OCCLUSION_FIELD_HASH =
         0x4E45555452414F31ull; // "NEUTRAO1"
     constexpr uint32 RVX_PIPELINE_PURPOSE_DEFAULT = 0x50445354u; // PDST
@@ -163,6 +163,13 @@ namespace
     constexpr uint32 RVX_PIPELINE_PURPOSE_INSTANCED_MATERIAL = 0x494D4154u; // IMAT
     constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_SCENE_DEFAULT = 0x47534446u; // GSDF
     constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_SCENE_INSTANCED_MATERIAL = 0x4753494Du; // GSIM
+    constexpr uint32 RVX_PIPELINE_PURPOSE_FORWARD_SURFACE_DIRECT = 0x46534452u; // FSDR
+    constexpr uint32 RVX_PIPELINE_PURPOSE_FORWARD_SURFACE_GPU_DRIVEN = 0x46534744u; // FSGD
+    constexpr uint32 RVX_PIPELINE_PURPOSE_FORWARD_SURFACE_INSTANCED = 0x4653494Du; // FSIM
+    constexpr uint32 RVX_PIPELINE_PURPOSE_FORWARD_SURFACE_GPU_SCENE = 0x46534753u; // FSGS
+    constexpr uint32 RVX_PIPELINE_PURPOSE_FORWARD_SURFACE_GPU_SCENE_INSTANCED = 0x46535349u; // FSSI
+    constexpr uint32 RVX_PIPELINE_PURPOSE_SCREEN_SPACE_OUTLINE = 0x4F55544Cu; // OUTL
+    constexpr uint32 RVX_PIPELINE_PURPOSE_SCREEN_SPACE_OUTLINE_VERIFIER = 0x4F565246u; // OVRF
     constexpr uint32 RVX_PIPELINE_PURPOSE_SHADOW_DEPTH = 0x53484457u; // SHDW
     constexpr uint32 RVX_PIPELINE_PURPOSE_RIGID_SHADOW_DEPTH = 0x52534844u; // RSHD
     constexpr uint32 RVX_PIPELINE_PURPOSE_MASKED_SHADOW_DEPTH = 0x4D534844u; // MSHD
@@ -258,6 +265,8 @@ namespace
         uint64 pixelShaderHash = 0;
         uint64 toneMappingVertexShaderHash = 0;
         uint64 toneMappingPixelShaderHash = 0;
+        uint64 screenSpaceOutlinePixelShaderHash = 0;
+        uint64 screenSpaceOutlineVerifierPixelShaderHash = 0;
         uint64 bloomVertexShaderHash = 0;
         uint64 bloomPixelShaderHash = 0;
         uint64 gtaoSurfacePixelShaderHash = 0;
@@ -292,6 +301,8 @@ namespace
         uint64 transparentPipelineHash = 0;
         uint64 skyboxPipelineHash = 0;
         uint64 toneMappingPipelineHash = 0;
+        uint64 screenSpaceOutlinePipelineHash = 0;
+        uint64 screenSpaceOutlineVerifierPipelineHash = 0;
         uint64 bloomPipelineHash = 0;
         uint64 gtaoSurfacePipelineHash = 0;
         uint64 gtaoHorizonPipelineHash = 0;
@@ -584,6 +595,8 @@ namespace
                key == "pixelShaderHash" ||
                key == "toneMappingVertexShaderHash" ||
                key == "toneMappingPixelShaderHash" ||
+               key == "screenSpaceOutlinePixelShaderHash" ||
+               key == "screenSpaceOutlineVerifierPixelShaderHash" ||
                key == "bloomVertexShaderHash" ||
                key == "bloomPixelShaderHash" ||
                key == "gtaoSurfacePixelShaderHash" ||
@@ -618,6 +631,8 @@ namespace
                key == "transparentPipelineHash" ||
                key == "skyboxPipelineHash" ||
                key == "toneMappingPipelineHash" ||
+               key == "screenSpaceOutlinePipelineHash" ||
+               key == "screenSpaceOutlineVerifierPipelineHash" ||
                key == "bloomPipelineHash" ||
                key == "gtaoSurfacePipelineHash" ||
                key == "gtaoHorizonPipelineHash" ||
@@ -721,7 +736,7 @@ namespace
             fields.emplace(std::move(key), std::move(value));
         }
 
-        if (fields.size() != 54)
+        if (fields.size() != 58)
         {
             return false;
         }
@@ -732,6 +747,8 @@ namespace
             !ReadRequiredManifestUint64(fields, "pixelShaderHash", manifest.pixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "toneMappingVertexShaderHash", manifest.toneMappingVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "toneMappingPixelShaderHash", manifest.toneMappingPixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "screenSpaceOutlinePixelShaderHash", manifest.screenSpaceOutlinePixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "screenSpaceOutlineVerifierPixelShaderHash", manifest.screenSpaceOutlineVerifierPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "bloomVertexShaderHash", manifest.bloomVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "bloomPixelShaderHash", manifest.bloomPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "gtaoSurfacePixelShaderHash", manifest.gtaoSurfacePixelShaderHash) ||
@@ -766,6 +783,8 @@ namespace
             !ReadRequiredManifestUint64(fields, "transparentPipelineHash", manifest.transparentPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "skyboxPipelineHash", manifest.skyboxPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "toneMappingPipelineHash", manifest.toneMappingPipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "screenSpaceOutlinePipelineHash", manifest.screenSpaceOutlinePipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "screenSpaceOutlineVerifierPipelineHash", manifest.screenSpaceOutlineVerifierPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "bloomPipelineHash", manifest.bloomPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "gtaoSurfacePipelineHash", manifest.gtaoSurfacePipelineHash) ||
             !ReadRequiredManifestUint64(fields, "gtaoHorizonPipelineHash", manifest.gtaoHorizonPipelineHash) ||
@@ -811,6 +830,8 @@ namespace
             file << "pixelShaderHash=" << manifest.pixelShaderHash << '\n';
             file << "toneMappingVertexShaderHash=" << manifest.toneMappingVertexShaderHash << '\n';
             file << "toneMappingPixelShaderHash=" << manifest.toneMappingPixelShaderHash << '\n';
+            file << "screenSpaceOutlinePixelShaderHash=" << manifest.screenSpaceOutlinePixelShaderHash << '\n';
+            file << "screenSpaceOutlineVerifierPixelShaderHash=" << manifest.screenSpaceOutlineVerifierPixelShaderHash << '\n';
             file << "bloomVertexShaderHash=" << manifest.bloomVertexShaderHash << '\n';
             file << "bloomPixelShaderHash=" << manifest.bloomPixelShaderHash << '\n';
             file << "gtaoSurfacePixelShaderHash=" << manifest.gtaoSurfacePixelShaderHash << '\n';
@@ -845,6 +866,8 @@ namespace
             file << "transparentPipelineHash=" << manifest.transparentPipelineHash << '\n';
             file << "skyboxPipelineHash=" << manifest.skyboxPipelineHash << '\n';
             file << "toneMappingPipelineHash=" << manifest.toneMappingPipelineHash << '\n';
+            file << "screenSpaceOutlinePipelineHash=" << manifest.screenSpaceOutlinePipelineHash << '\n';
+            file << "screenSpaceOutlineVerifierPipelineHash=" << manifest.screenSpaceOutlineVerifierPipelineHash << '\n';
             file << "bloomPipelineHash=" << manifest.bloomPipelineHash << '\n';
             file << "gtaoSurfacePipelineHash=" << manifest.gtaoSurfacePipelineHash << '\n';
             file << "gtaoHorizonPipelineHash=" << manifest.gtaoHorizonPipelineHash << '\n';
@@ -919,6 +942,8 @@ namespace
                a.pixelShaderHash == b.pixelShaderHash &&
                a.toneMappingVertexShaderHash == b.toneMappingVertexShaderHash &&
                a.toneMappingPixelShaderHash == b.toneMappingPixelShaderHash &&
+               a.screenSpaceOutlinePixelShaderHash == b.screenSpaceOutlinePixelShaderHash &&
+               a.screenSpaceOutlineVerifierPixelShaderHash == b.screenSpaceOutlineVerifierPixelShaderHash &&
                a.bloomVertexShaderHash == b.bloomVertexShaderHash &&
                a.bloomPixelShaderHash == b.bloomPixelShaderHash &&
                a.gtaoSurfacePixelShaderHash == b.gtaoSurfacePixelShaderHash &&
@@ -953,6 +978,8 @@ namespace
                a.transparentPipelineHash == b.transparentPipelineHash &&
                a.skyboxPipelineHash == b.skyboxPipelineHash &&
                a.toneMappingPipelineHash == b.toneMappingPipelineHash &&
+               a.screenSpaceOutlinePipelineHash == b.screenSpaceOutlinePipelineHash &&
+               a.screenSpaceOutlineVerifierPipelineHash == b.screenSpaceOutlineVerifierPipelineHash &&
                a.bloomPipelineHash == b.bloomPipelineHash &&
                a.gtaoSurfacePipelineHash == b.gtaoSurfacePipelineHash &&
                a.gtaoHorizonPipelineHash == b.gtaoHorizonPipelineHash &&
@@ -1209,6 +1236,24 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
         return false;
     }
 
+    if (!CreateScreenSpaceOutlinePipelineLayout())
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create screen-space outline pipeline layout");
+        }
+        return false;
+    }
+
+    if (!CreateScreenSpaceOutlineVerifierPipelineLayout())
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create screen-space outline verifier pipeline layout");
+        }
+        return false;
+    }
+
     if (!EnsureObjectSkinningPaletteFallbackBuffers())
     {
         SetLastError("Failed to create object skinning palette fallback buffers");
@@ -1285,6 +1330,8 @@ void PipelineCache::Shutdown()
     m_gtaoBilateralHorizontalPipeline.Reset();
     m_gtaoBilateralVerticalPipeline.Reset();
     m_gtaoTemporalPipeline.Reset();
+    m_screenSpaceOutlinePipeline.Reset();
+    m_screenSpaceOutlineVerifierPipeline.Reset();
     m_colorGradingPipeline.Reset();
     m_chromaticAberrationPipeline.Reset();
     m_filmGrainPipeline.Reset();
@@ -1356,6 +1403,10 @@ void PipelineCache::Shutdown()
     m_taaSetLayout.Reset();
     m_gtaoPipelineLayout.Reset();
     m_gtaoSetLayout.Reset();
+    m_screenSpaceOutlinePipelineLayout.Reset();
+    m_screenSpaceOutlineSetLayout.Reset();
+    m_screenSpaceOutlineVerifierPipelineLayout.Reset();
+    m_screenSpaceOutlineVerifierSetLayout.Reset();
     m_uiPipelineLayout.Reset();
     m_uiTextureSetLayout.Reset();
     m_rayTracedReflectionDenoisePipelineLayout.Reset();
@@ -1379,6 +1430,7 @@ void PipelineCache::Shutdown()
     m_gpuSceneVertexShader.Reset();
     m_gpuSceneInstancedMaterialVertexShader.Reset();
     m_pixelShader.Reset();
+    m_forwardSurfaceDataPixelShader.Reset();
     m_gBufferPixelShader.Reset();
     m_deferredLightingComputeShader.Reset();
     m_exposureHistogramClearComputeShader.Reset();
@@ -1395,6 +1447,8 @@ void PipelineCache::Shutdown()
     m_skyboxPixelShader.Reset();
     m_toneMappingVertexShader.Reset();
     m_toneMappingPixelShader.Reset();
+    m_screenSpaceOutlinePixelShader.Reset();
+    m_screenSpaceOutlineVerifierPixelShader.Reset();
     m_bloomVertexShader.Reset();
     m_bloomPixelShader.Reset();
     m_gtaoSurfacePixelShader.Reset();
@@ -1443,6 +1497,7 @@ void PipelineCache::Shutdown()
     m_gpuSceneVsCompileResult.reset();
     m_gpuSceneInstancedMaterialVsCompileResult.reset();
     m_psCompileResult.reset();
+    m_forwardSurfaceDataPsCompileResult.reset();
     m_gBufferPsCompileResult.reset();
     m_deferredLightingCsCompileResult.reset();
     m_exposureHistogramClearCsCompileResult.reset();
@@ -1459,6 +1514,8 @@ void PipelineCache::Shutdown()
     m_skyboxPsCompileResult.reset();
     m_toneMappingVsCompileResult.reset();
     m_toneMappingPsCompileResult.reset();
+    m_screenSpaceOutlinePsCompileResult.reset();
+    m_screenSpaceOutlineVerifierPsCompileResult.reset();
     m_bloomVsCompileResult.reset();
     m_bloomPsCompileResult.reset();
     m_gtaoSurfacePsCompileResult.reset();
@@ -1534,6 +1591,10 @@ bool PipelineCache::CompileShaders()
     std::string deferredLightingShaderPath =
         m_shaderDir + "/DeferredLighting.hlsl";
     std::string toneMappingShaderPath = m_shaderDir + "/PostProcess/ToneMapping.hlsl";
+    std::string screenSpaceOutlineShaderPath =
+        m_shaderDir + "/PostProcess/ScreenSpaceOutline.hlsl";
+    std::string screenSpaceOutlineVerifierShaderPath =
+        m_shaderDir + "/PostProcess/ScreenSpaceOutlineVerifier.hlsl";
     std::string bloomShaderPath = m_shaderDir + "/PostProcess/Bloom.hlsl";
     std::string gtaoShaderPath = m_shaderDir + "/Lighting/GTAO.hlsl";
     std::string cameraVelocityShaderPath = m_shaderDir + "/PostProcess/CameraVelocity.hlsl";
@@ -1671,6 +1732,26 @@ bool PipelineCache::CompileShaders()
     }
     m_pixelShader = psResult.shader;
     m_psCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(psResult.compileResult));
+
+    RenderShaderLoadDesc forwardSurfacePsDesc = psDesc;
+    forwardSurfacePsDesc.entryPoint = "PSForwardSurfaceData";
+    auto forwardSurfacePsResult = m_shaderProgramLoader->LoadFromFile(
+        m_device, forwardSurfacePsDesc);
+    if (!forwardSurfacePsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile forward surface-data pixel shader: " +
+                     forwardSurfacePsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!forwardSurfacePsResult.shader)
+    {
+        SetLastError("Failed to create forward surface-data pixel shader");
+        return false;
+    }
+    m_forwardSurfaceDataPixelShader = forwardSurfacePsResult.shader;
+    m_forwardSurfaceDataPsCompileResult =
+        std::make_unique<ShaderProgramMetadata>(
+            std::move(forwardSurfacePsResult.compileResult));
 
     // Deferred is an explicit production capability of DX12, Vulkan and
     // Metal. Compatibility backends do not compile or advertise this family.
@@ -2010,6 +2091,60 @@ bool PipelineCache::CompileShaders()
     m_toneMappingVertexShader = toneMappingVsResult.shader;
     m_toneMappingVsCompileResult =
         std::make_unique<ShaderProgramMetadata>(std::move(toneMappingVsResult.compileResult));
+
+    // ScreenSpaceOutline deliberately reuses the ToneMapping fullscreen
+    // vertex program, but owns its pixel shader and descriptor ABI. Keep the
+    // fullscreen clip-Y define on the pixel request as well so every cooked
+    // program key is unambiguous across backends.
+    RenderShaderLoadDesc screenSpaceOutlinePsDesc = toneMappingVsDesc;
+    screenSpaceOutlinePsDesc.path = screenSpaceOutlineShaderPath;
+    screenSpaceOutlinePsDesc.entryPoint = "PSMain";
+    screenSpaceOutlinePsDesc.stage = RHIShaderStage::Pixel;
+    if (backend == RHIBackendType::DX11)
+    {
+        screenSpaceOutlinePsDesc.targetProfile = "ps_5_0";
+    }
+
+    auto screenSpaceOutlinePsResult = m_shaderProgramLoader->LoadFromFile(
+        m_device, screenSpaceOutlinePsDesc);
+    if (!screenSpaceOutlinePsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile ScreenSpaceOutline pixel shader: " +
+                     screenSpaceOutlinePsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!screenSpaceOutlinePsResult.shader)
+    {
+        SetLastError("Failed to create ScreenSpaceOutline pixel shader");
+        return false;
+    }
+    m_screenSpaceOutlinePixelShader = screenSpaceOutlinePsResult.shader;
+    m_screenSpaceOutlinePsCompileResult =
+        std::make_unique<ShaderProgramMetadata>(
+            std::move(screenSpaceOutlinePsResult.compileResult));
+
+    RenderShaderLoadDesc screenSpaceOutlineVerifierPsDesc =
+        screenSpaceOutlinePsDesc;
+    screenSpaceOutlineVerifierPsDesc.path = screenSpaceOutlineVerifierShaderPath;
+    auto screenSpaceOutlineVerifierPsResult =
+        m_shaderProgramLoader->LoadFromFile(
+            m_device, screenSpaceOutlineVerifierPsDesc);
+    if (!screenSpaceOutlineVerifierPsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile ScreenSpaceOutline verifier pixel shader: " +
+                     screenSpaceOutlineVerifierPsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!screenSpaceOutlineVerifierPsResult.shader)
+    {
+        SetLastError("Failed to create ScreenSpaceOutline verifier pixel shader");
+        return false;
+    }
+    m_screenSpaceOutlineVerifierPixelShader =
+        screenSpaceOutlineVerifierPsResult.shader;
+    m_screenSpaceOutlineVerifierPsCompileResult =
+        std::make_unique<ShaderProgramMetadata>(
+            std::move(screenSpaceOutlineVerifierPsResult.compileResult));
 
     RenderShaderLoadDesc toneMappingPsDesc = toneMappingVsDesc;
     toneMappingPsDesc.entryPoint = "PSMain";
@@ -3291,6 +3426,92 @@ bool PipelineCache::CreateGTAOPipelineLayout()
     return true;
 }
 
+bool PipelineCache::CreateScreenSpaceOutlinePipelineLayout()
+{
+    RHIDescriptorSetLayoutDesc setLayoutDesc;
+    setLayoutDesc.debugName = "ScreenSpaceOutlineSetLayout";
+    // b0 constants; t1 HDR scene color; t2 depth; t3 oct-normal; t4 exact
+    // R32_UINT material identity; t5 MaterialGPUConstants table; s6 point
+    // sampler. All are consumed solely by the fullscreen pixel program.
+    setLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer,
+                             RHIShaderStage::Pixel);
+    for (uint32 binding = 1; binding <= 4; ++binding)
+    {
+        setLayoutDesc.AddBinding(binding, RHIBindingType::SampledTexture,
+                                 RHIShaderStage::Pixel);
+    }
+    setLayoutDesc.AddBinding(5, RHIBindingType::ShaderResourceBuffer,
+                             RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(6, RHIBindingType::Sampler,
+                             RHIShaderStage::Pixel);
+
+    m_screenSpaceOutlineSetLayout =
+        m_device->CreateDescriptorSetLayout(setLayoutDesc);
+    if (!m_screenSpaceOutlineSetLayout)
+    {
+        SetLastError("Failed to create screen-space outline descriptor set layout");
+        return false;
+    }
+
+    RHIPipelineLayoutDesc layoutDesc;
+    layoutDesc.debugName = "ScreenSpaceOutlinePipelineLayout";
+    layoutDesc.setLayouts.push_back(m_screenSpaceOutlineSetLayout.Get());
+    m_screenSpaceOutlinePipelineLayout =
+        m_device->CreatePipelineLayout(layoutDesc);
+    if (!m_screenSpaceOutlinePipelineLayout)
+    {
+        SetLastError("Failed to create screen-space outline pipeline layout");
+        return false;
+    }
+
+    RVX_CORE_DEBUG("PipelineCache: Created screen-space outline pipeline layout");
+    return true;
+}
+
+bool PipelineCache::CreateScreenSpaceOutlineVerifierPipelineLayout()
+{
+    RHIDescriptorSetLayoutDesc setLayoutDesc;
+    setLayoutDesc.debugName = "ScreenSpaceOutlineVerifierSetLayout";
+    // b0 constants; t1 pre-outline HDR; t2 post-outline HDR; t3 R32_UINT
+    // material identity; t4 MaterialGPUConstants table; s5 point sampler.
+    // The verifier is a qualification-only fullscreen pixel program.
+    setLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer,
+                             RHIShaderStage::Pixel);
+    for (uint32 binding = 1; binding <= 3; ++binding)
+    {
+        setLayoutDesc.AddBinding(binding, RHIBindingType::SampledTexture,
+                                 RHIShaderStage::Pixel);
+    }
+    setLayoutDesc.AddBinding(4, RHIBindingType::ShaderResourceBuffer,
+                             RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(5, RHIBindingType::Sampler,
+                             RHIShaderStage::Pixel);
+
+    m_screenSpaceOutlineVerifierSetLayout =
+        m_device->CreateDescriptorSetLayout(setLayoutDesc);
+    if (!m_screenSpaceOutlineVerifierSetLayout)
+    {
+        SetLastError(
+            "Failed to create screen-space outline verifier descriptor set layout");
+        return false;
+    }
+
+    RHIPipelineLayoutDesc layoutDesc;
+    layoutDesc.debugName = "ScreenSpaceOutlineVerifierPipelineLayout";
+    layoutDesc.setLayouts.push_back(m_screenSpaceOutlineVerifierSetLayout.Get());
+    m_screenSpaceOutlineVerifierPipelineLayout =
+        m_device->CreatePipelineLayout(layoutDesc);
+    if (!m_screenSpaceOutlineVerifierPipelineLayout)
+    {
+        SetLastError("Failed to create screen-space outline verifier pipeline layout");
+        return false;
+    }
+
+    RVX_CORE_DEBUG(
+        "PipelineCache: Created screen-space outline verifier pipeline layout");
+    return true;
+}
+
 bool PipelineCache::CreateUIPipelineLayout()
 {
     RHIDescriptorSetLayoutDesc setLayoutDesc;
@@ -3720,6 +3941,10 @@ void PipelineCache::ProcessPipelineManifest()
     expected.pixelShaderHash = ComputeShaderHash(m_psCompileResult.get());
     expected.toneMappingVertexShaderHash = ComputeShaderHash(m_toneMappingVsCompileResult.get());
     expected.toneMappingPixelShaderHash = ComputeShaderHash(m_toneMappingPsCompileResult.get());
+    expected.screenSpaceOutlinePixelShaderHash =
+        ComputeShaderHash(m_screenSpaceOutlinePsCompileResult.get());
+    expected.screenSpaceOutlineVerifierPixelShaderHash =
+        ComputeShaderHash(m_screenSpaceOutlineVerifierPsCompileResult.get());
     expected.bloomVertexShaderHash = ComputeShaderHash(m_bloomVsCompileResult.get());
     expected.bloomPixelShaderHash = ComputeShaderHash(m_bloomPsCompileResult.get());
     expected.gtaoSurfacePixelShaderHash =
@@ -3760,6 +3985,10 @@ void PipelineCache::ProcessPipelineManifest()
     expected.transparentPipelineHash = m_stats.transparentPipelineHash;
     expected.skyboxPipelineHash = m_stats.skyboxPipelineHash;
     expected.toneMappingPipelineHash = m_stats.toneMappingPipelineHash;
+    expected.screenSpaceOutlinePipelineHash =
+        m_stats.screenSpaceOutlinePipelineHash;
+    expected.screenSpaceOutlineVerifierPipelineHash =
+        m_stats.screenSpaceOutlineVerifierPipelineHash;
     expected.bloomPipelineHash = m_stats.bloomPipelineHash;
     expected.gtaoSurfacePipelineHash = m_stats.gtaoSurfacePipelineHash;
     expected.gtaoHorizonPipelineHash = m_stats.gtaoHorizonPipelineHash;
@@ -6088,6 +6317,212 @@ RHIPipeline* PipelineCache::GetGPUSceneInstancedMaterialPipelineForVariant(
     return pipeline.Get();
 }
 
+RHIGraphicsPipelineDesc PipelineCache::MakeForwardSurfaceDataPipelineDesc(
+    RHIGraphicsPipelineDesc pipelineDesc,
+    const char* debugName) const
+{
+    const RHIFormat sceneFormat = pipelineDesc.numRenderTargets != 0
+        ? pipelineDesc.renderTargetFormats[0]
+        : m_renderTargetFormat;
+    pipelineDesc.pixelShader = m_forwardSurfaceDataPixelShader.Get();
+    pipelineDesc.debugName = debugName;
+    pipelineDesc.blendState = RHIBlendState::Default();
+    pipelineDesc.numRenderTargets = 3;
+    for (RHIFormat& format : pipelineDesc.renderTargetFormats)
+    {
+        format = RHIFormat::Unknown;
+    }
+    pipelineDesc.renderTargetFormats[0] = sceneFormat != RHIFormat::Unknown
+        ? sceneFormat : m_renderTargetFormat;
+    pipelineDesc.renderTargetFormats[1] = RHIFormat::RGBA8_UNORM;
+    pipelineDesc.renderTargetFormats[2] = RHIFormat::R32_UINT;
+    return pipelineDesc;
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateForwardSurfaceDataPipeline(
+    RHIGraphicsPipelineDesc pipelineDesc,
+    MaterialPipelineVariant variant,
+    uint32 purposeSalt,
+    const char* debugName)
+{
+    if (!m_forwardSurfaceDataPixelShader ||
+        (variant != MaterialPipelineVariant::Opaque &&
+         variant != MaterialPipelineVariant::Masked))
+    {
+        SetLastError(
+            "Forward surface-data is unavailable for this material variant");
+        return {};
+    }
+
+    pipelineDesc = MakeForwardSurfaceDataPipelineDesc(
+        std::move(pipelineDesc), debugName);
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
+        !pipelineDesc.pipelineLayout || pipelineDesc.numRenderTargets != 3 ||
+        pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown ||
+        pipelineDesc.renderTargetFormats[1] != RHIFormat::RGBA8_UNORM ||
+        pipelineDesc.renderTargetFormats[2] != RHIFormat::R32_UINT ||
+        pipelineDesc.depthStencilFormat != RHIFormat::D32_FLOAT)
+    {
+        SetLastError(
+            "Cannot create an incomplete forward surface-data pipeline");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc, variant, purposeSalt);
+    m_stats.lastPipelineStateHash = stateHash;
+    const auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError(
+            "Backend failed to create forward surface-data pipeline '" +
+            std::string(debugName ? debugName : "") + "'");
+        return {};
+    }
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIPipeline* PipelineCache::GetForwardSurfaceDataPipelineForVariant(
+    MaterialPipelineVariant variant,
+    RHIFormat renderTargetFormat,
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
+{
+    if ((inputMode != DefaultLitDirectVertexInputMode::Rigid &&
+         inputMode != DefaultLitDirectVertexInputMode::Skinned) ||
+        !IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError("Invalid direct forward surface-data pipeline request");
+        return nullptr;
+    }
+    const char* debugName = inputMode == DefaultLitDirectVertexInputMode::Rigid
+        ? (variant == MaterialPipelineVariant::Masked
+               ? "ForwardSurfaceMaskedRigidPipeline"
+               : "ForwardSurfaceOpaqueRigidPipeline")
+        : (variant == MaterialPipelineVariant::Masked
+               ? "ForwardSurfaceMaskedPipeline"
+               : "ForwardSurfaceOpaquePipeline");
+    RHIGraphicsPipelineDesc desc = BuildDefaultLitPipelineDesc(
+        debugName,
+        BuildDepthStencilState(m_config.reverseZ, true),
+        RHIBlendState::Default(), renderTargetFormat, inputMode, cullMode,
+        reverseWinding);
+    return GetOrCreateForwardSurfaceDataPipeline(
+        std::move(desc), variant,
+        RVX_PIPELINE_PURPOSE_FORWARD_SURFACE_DIRECT, debugName).Get();
+}
+
+RHIPipeline* PipelineCache::GetGPUDrivenForwardSurfaceDataPipelineForVariant(
+    MaterialPipelineVariant variant,
+    RHIFormat renderTargetFormat,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
+{
+    if (!IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError(
+            "Invalid GPU-driven forward surface-data pipeline request");
+        return nullptr;
+    }
+    const char* debugName = variant == MaterialPipelineVariant::Masked
+        ? "GPUDrivenForwardSurfaceMaskedPipeline"
+        : "GPUDrivenForwardSurfaceOpaquePipeline";
+    RHIGraphicsPipelineDesc desc = BuildGPUDrivenDefaultLitPipelineDesc(
+        debugName,
+        BuildDepthStencilState(m_config.reverseZ, true),
+        RHIBlendState::Default(), renderTargetFormat, cullMode,
+        reverseWinding);
+    return GetOrCreateForwardSurfaceDataPipeline(
+        std::move(desc), variant,
+        RVX_PIPELINE_PURPOSE_FORWARD_SURFACE_GPU_DRIVEN, debugName).Get();
+}
+
+RHIPipeline*
+PipelineCache::GetInstancedMaterialForwardSurfaceDataPipelineForVariant(
+    MaterialPipelineVariant variant,
+    RHIFormat renderTargetFormat,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
+{
+    if (!IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError(
+            "Invalid instanced forward surface-data pipeline request");
+        return nullptr;
+    }
+    const char* debugName = variant == MaterialPipelineVariant::Masked
+        ? "InstancedForwardSurfaceMaskedPipeline"
+        : "InstancedForwardSurfaceOpaquePipeline";
+    RHIGraphicsPipelineDesc desc =
+        BuildInstancedMaterialDefaultLitPipelineDesc(
+            debugName,
+            BuildDepthStencilState(m_config.reverseZ, true),
+            RHIBlendState::Default(), renderTargetFormat, cullMode,
+            reverseWinding);
+    return GetOrCreateForwardSurfaceDataPipeline(
+        std::move(desc), variant,
+        RVX_PIPELINE_PURPOSE_FORWARD_SURFACE_INSTANCED, debugName).Get();
+}
+
+RHIPipeline* PipelineCache::GetGPUSceneForwardSurfaceDataPipelineForVariant(
+    MaterialPipelineVariant variant,
+    RHIFormat renderTargetFormat,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
+{
+    if (!IsGPUSceneRasterReady() || !IsValidSurfaceCullMode(cullMode))
+    {
+        return nullptr;
+    }
+    const char* debugName = variant == MaterialPipelineVariant::Masked
+        ? "GPUSceneForwardSurfaceMaskedPipeline"
+        : "GPUSceneForwardSurfaceOpaquePipeline";
+    RHIGraphicsPipelineDesc desc = BuildGPUSceneDefaultLitPipelineDesc(
+        debugName,
+        BuildDepthStencilState(m_config.reverseZ, true),
+        RHIBlendState::Default(), renderTargetFormat, false, cullMode,
+        reverseWinding);
+    return GetOrCreateForwardSurfaceDataPipeline(
+        std::move(desc), variant,
+        RVX_PIPELINE_PURPOSE_FORWARD_SURFACE_GPU_SCENE, debugName).Get();
+}
+
+RHIPipeline* PipelineCache::
+GetGPUSceneInstancedMaterialForwardSurfaceDataPipelineForVariant(
+    MaterialPipelineVariant variant,
+    RHIFormat renderTargetFormat,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
+{
+    if (!IsGPUSceneRasterReady() || !IsValidSurfaceCullMode(cullMode))
+    {
+        return nullptr;
+    }
+    const char* debugName = variant == MaterialPipelineVariant::Masked
+        ? "GPUSceneInstancedForwardSurfaceMaskedPipeline"
+        : "GPUSceneInstancedForwardSurfaceOpaquePipeline";
+    RHIGraphicsPipelineDesc desc = BuildGPUSceneDefaultLitPipelineDesc(
+        debugName,
+        BuildDepthStencilState(m_config.reverseZ, true),
+        RHIBlendState::Default(), renderTargetFormat, true, cullMode,
+        reverseWinding);
+    return GetOrCreateForwardSurfaceDataPipeline(
+        std::move(desc), variant,
+        RVX_PIPELINE_PURPOSE_FORWARD_SURFACE_GPU_SCENE_INSTANCED,
+        debugName).Get();
+}
+
 RHIGraphicsPipelineDesc PipelineCache::MakeGBufferPipelineDesc(
     RHIGraphicsPipelineDesc pipelineDesc,
     const char* debugName) const
@@ -6663,6 +7098,46 @@ RHIPipeline* PipelineCache::GetToneMappingPipeline(RHIFormat outputFormat)
     }
 
     return GetOrCreateToneMappingPipeline(outputFormat).Get();
+}
+
+RHIPipeline* PipelineCache::GetScreenSpaceOutlinePipeline(
+    RHIFormat outputFormat)
+{
+    // The typed outline contract is scene-linear HDR. Do not accept an
+    // arbitrary format merely because it happens to be render-target capable:
+    // that would move the pass into a different color domain without changing
+    // its declared inputs or ordering.
+    if (outputFormat != RHIFormat::RGBA16_FLOAT)
+    {
+        SetLastError(
+            "ScreenSpaceOutline requires an RGBA16_FLOAT scene-linear HDR output");
+        return nullptr;
+    }
+
+    if (!m_screenSpaceOutlinePipeline)
+    {
+        m_screenSpaceOutlinePipeline =
+            GetOrCreateScreenSpaceOutlinePipeline(outputFormat);
+    }
+    return m_screenSpaceOutlinePipeline.Get();
+}
+
+RHIPipeline* PipelineCache::GetScreenSpaceOutlineVerifierPipeline(
+    RHIFormat outputFormat)
+{
+    if (outputFormat != RHIFormat::R8_UNORM)
+    {
+        SetLastError(
+            "ScreenSpaceOutline verifier requires an R8_UNORM qualification mask output");
+        return nullptr;
+    }
+
+    if (!m_screenSpaceOutlineVerifierPipeline)
+    {
+        m_screenSpaceOutlineVerifierPipeline =
+            GetOrCreateScreenSpaceOutlineVerifierPipeline(outputFormat);
+    }
+    return m_screenSpaceOutlineVerifierPipeline.Get();
 }
 
 RHIPipeline* PipelineCache::GetBloomPipeline(RHIFormat outputFormat)
@@ -7938,6 +8413,31 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
+    // The outline pass is a pre-tone-map HDR feature. Build its only legal
+    // RGBA16_FLOAT variant eagerly so feature readiness reflects a real
+    // cooked pipeline rather than a later first-use side effect.
+    m_screenSpaceOutlinePipeline =
+        GetOrCreateScreenSpaceOutlinePipeline(RHIFormat::RGBA16_FLOAT);
+    if (!m_screenSpaceOutlinePipeline)
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create ScreenSpaceOutline pipeline");
+        }
+        return false;
+    }
+
+    m_screenSpaceOutlineVerifierPipeline =
+        GetOrCreateScreenSpaceOutlineVerifierPipeline(RHIFormat::R8_UNORM);
+    if (!m_screenSpaceOutlineVerifierPipeline)
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create ScreenSpaceOutline verifier pipeline");
+        }
+        return false;
+    }
+
     m_vignettePipeline = GetOrCreateVignettePipeline(m_toneMappingOutputFormat);
     if (!m_vignettePipeline)
     {
@@ -8053,7 +8553,7 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
-    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants, depth-only pipeline, Skybox pipeline, ToneMapping pipeline, Bloom pipeline, GTAO pipeline family, Vignette pipeline, FilmGrain pipeline, FXAA pipeline, ColorGrading pipeline, ChromaticAberration pipeline, UI pipeline, and optional ray tracing pipelines");
+    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants, depth-only pipeline, Skybox pipeline, ToneMapping pipeline, Bloom pipeline, GTAO pipeline family, ScreenSpaceOutline pipeline, Vignette pipeline, FilmGrain pipeline, FXAA pipeline, ColorGrading pipeline, ChromaticAberration pipeline, UI pipeline, and optional ray tracing pipelines");
     return true;
 }
 
@@ -8886,6 +9386,86 @@ RHIPipelineRef PipelineCache::GetOrCreateToneMappingPipeline(RHIFormat outputFor
     if (!pipeline)
     {
         SetLastError("Backend failed to create ToneMapping pipeline");
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateScreenSpaceOutlinePipeline(
+    RHIFormat outputFormat)
+{
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildScreenSpaceOutlinePipelineDesc(outputFormat);
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
+        !pipelineDesc.pipelineLayout || pipelineDesc.numRenderTargets != 1 ||
+        pipelineDesc.renderTargetFormats[0] != RHIFormat::RGBA16_FLOAT)
+    {
+        SetLastError(
+            "Cannot create ScreenSpaceOutline pipeline from incomplete HDR state");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc, MaterialPipelineVariant::Transparent,
+        RVX_PIPELINE_PURPOSE_SCREEN_SPACE_OUTLINE);
+    m_stats.screenSpaceOutlinePipelineHash = stateHash;
+    m_stats.lastPipelineStateHash = stateHash;
+
+    const auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create ScreenSpaceOutline pipeline");
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateScreenSpaceOutlineVerifierPipeline(
+    RHIFormat outputFormat)
+{
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildScreenSpaceOutlineVerifierPipelineDesc(outputFormat);
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
+        !pipelineDesc.pipelineLayout || pipelineDesc.numRenderTargets != 1 ||
+        pipelineDesc.renderTargetFormats[0] != RHIFormat::R8_UNORM)
+    {
+        SetLastError(
+            "Cannot create ScreenSpaceOutline verifier pipeline from incomplete mask state");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc, MaterialPipelineVariant::Transparent,
+        RVX_PIPELINE_PURPOSE_SCREEN_SPACE_OUTLINE_VERIFIER);
+    m_stats.screenSpaceOutlineVerifierPipelineHash = stateHash;
+    m_stats.lastPipelineStateHash = stateHash;
+
+    const auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create ScreenSpaceOutline verifier pipeline");
         return {};
     }
 
@@ -10003,6 +10583,47 @@ RHIGraphicsPipelineDesc PipelineCache::BuildToneMappingPipelineDesc(RHIFormat ou
     pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
     pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
 
+    return pipelineDesc;
+}
+
+RHIGraphicsPipelineDesc PipelineCache::BuildScreenSpaceOutlinePipelineDesc(
+    RHIFormat outputFormat) const
+{
+    RHIGraphicsPipelineDesc pipelineDesc;
+    pipelineDesc.vertexShader = m_toneMappingVertexShader.Get();
+    pipelineDesc.pixelShader = m_screenSpaceOutlinePixelShader.Get();
+    pipelineDesc.pipelineLayout = m_screenSpaceOutlinePipelineLayout.Get();
+    pipelineDesc.debugName = "ScreenSpaceOutlinePipeline";
+
+    pipelineDesc.rasterizerState = RHIRasterizerState::Default();
+    pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
+    pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
+    pipelineDesc.blendState = RHIBlendState::Default();
+    pipelineDesc.numRenderTargets = 1;
+    pipelineDesc.renderTargetFormats[0] = outputFormat;
+    pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
+    pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+    return pipelineDesc;
+}
+
+RHIGraphicsPipelineDesc PipelineCache::BuildScreenSpaceOutlineVerifierPipelineDesc(
+    RHIFormat outputFormat) const
+{
+    RHIGraphicsPipelineDesc pipelineDesc;
+    pipelineDesc.vertexShader = m_toneMappingVertexShader.Get();
+    pipelineDesc.pixelShader = m_screenSpaceOutlineVerifierPixelShader.Get();
+    pipelineDesc.pipelineLayout =
+        m_screenSpaceOutlineVerifierPipelineLayout.Get();
+    pipelineDesc.debugName = "ScreenSpaceOutlineVerifierPipeline";
+
+    pipelineDesc.rasterizerState = RHIRasterizerState::Default();
+    pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
+    pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
+    pipelineDesc.blendState = RHIBlendState::Default();
+    pipelineDesc.numRenderTargets = 1;
+    pipelineDesc.renderTargetFormats[0] = outputFormat;
+    pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
+    pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
     return pipelineDesc;
 }
 

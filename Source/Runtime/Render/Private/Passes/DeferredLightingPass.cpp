@@ -4,6 +4,7 @@
 
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
+#include "Render/Material/MaterialSystem.h"
 #include "Render/PipelineCache.h"
 #include "Render/Renderer/ViewData.h"
 
@@ -18,20 +19,29 @@ namespace RVX
         constexpr uint32 RVX_DEFERRED_LIGHTING_THREAD_GROUP_SIZE = 8;
 
         [[nodiscard]] bool IsCanonicalDeferredMaterialTableDesc(
-            const RHIBufferDesc& desc) noexcept
+            const RHIBufferDesc& desc,
+            const PostProcessMaterialTableMetadata& metadata) noexcept
         {
-            return desc.size == sizeof(DeferredMaterialClassification) &&
-                   desc.stride == sizeof(DeferredMaterialClassification) &&
+            return metadata.IsValid() &&
+                   metadata.stride == sizeof(MaterialGPUConstants) &&
+                   desc.size == static_cast<uint64>(metadata.slotCount) *
+                       metadata.stride &&
+                   desc.stride == metadata.stride &&
                    desc.memoryType == RHIMemoryType::Upload &&
                    HasFlag(desc.usage, RHIBufferUsage::Structured) &&
                    HasFlag(desc.usage, RHIBufferUsage::ShaderResource);
         }
 
         [[nodiscard]] bool IsCanonicalDeferredMaterialTable(
-            const RHIBuffer& buffer) noexcept
+            const RHIBuffer& buffer,
+            const PostProcessMaterialTableMetadata& metadata) noexcept
         {
-            return buffer.GetSize() == sizeof(DeferredMaterialClassification) &&
-                   buffer.GetStride() == sizeof(DeferredMaterialClassification) &&
+            return metadata.IsValid() &&
+                   metadata.stride == sizeof(MaterialGPUConstants) &&
+                   buffer.GetSize() ==
+                       static_cast<uint64>(metadata.slotCount) *
+                           metadata.stride &&
+                   buffer.GetStride() == metadata.stride &&
                    buffer.GetMemoryType() == RHIMemoryType::Upload &&
                    HasFlag(buffer.GetUsage(), RHIBufferUsage::Structured) &&
                    HasFlag(buffer.GetUsage(), RHIBufferUsage::ShaderResource);
@@ -136,6 +146,7 @@ namespace RVX
             RGTextureHandle deviceDepth{};
             RGTextureHandle hdrSceneColor{};
             RGBufferHandle materialTable{};
+            PostProcessMaterialTableMetadata materialTableMetadata{};
             RGBufferHandle exposureState{};
             AmbientOcclusionRecordInput ambientOcclusion{};
             DeferredLightingFrameResources lighting{};
@@ -296,52 +307,6 @@ namespace RVX
         }
     } // namespace
 
-    bool CreateDeferredStandardLitMaterialTable(
-        IRHIDevice& device,
-        RHIBufferRef& outTable,
-        std::string& outError)
-    {
-        outTable.Reset();
-        outError.clear();
-
-        RHIBufferDesc desc;
-        desc.size = sizeof(DeferredMaterialClassification);
-        desc.stride = sizeof(DeferredMaterialClassification);
-        desc.usage = RHIBufferUsage::Structured |
-            RHIBufferUsage::ShaderResource;
-        desc.memoryType = RHIMemoryType::Upload;
-        desc.debugName = "DeferredStandardLitMaterialTable";
-
-        RHIBufferRef table = device.CreateBuffer(desc);
-        if (!table || !IsCanonicalDeferredMaterialTable(*table))
-        {
-            outError =
-                "Deferred lighting could not allocate its canonical StandardLit material table";
-            return false;
-        }
-
-        RHIMappedWriteAccess access = table->MapWriteRange(
-            0, sizeof(DeferredMaterialClassification));
-        if (!access.IsValid())
-        {
-            outError =
-                "Deferred lighting could not map its canonical StandardLit material table";
-            return false;
-        }
-
-        const DeferredMaterialClassification standardLit{};
-        std::memcpy(access.GetData(), &standardLit, sizeof(standardLit));
-        if (!table->CommitMappedWriteRange(std::move(access)).IsPublished())
-        {
-            outError =
-                "Deferred lighting could not publish its canonical StandardLit material table";
-            return false;
-        }
-
-        outTable = std::move(table);
-        return true;
-    }
-
     void DeferredLightingPass::SetPipelineCache(PipelineCache* pipelineCache)
     {
         IRHIDevice* device = pipelineCache ? pipelineCache->GetDevice() : nullptr;
@@ -490,6 +455,7 @@ namespace RVX
                 data.deviceDepth = inputs.deviceDepth;
                 data.hdrSceneColor = inputs.hdrSceneColor;
                 data.materialTable = inputs.materialTable;
+                data.materialTableMetadata = inputs.materialTableMetadata;
                 data.exposureState = inputs.exposureState;
                 data.ambientOcclusion = inputs.ambientOcclusion;
                 data.lighting = inputs.lighting;
@@ -628,7 +594,8 @@ namespace RVX
                         "DeferredLightingBRDFLUTSRV");
                 }
                 if (materialTableDesc != nullptr &&
-                    IsCanonicalDeferredMaterialTableDesc(*materialTableDesc))
+                    IsCanonicalDeferredMaterialTableDesc(
+                        *materialTableDesc, data.materialTableMetadata))
                 {
                     data.materialTable = builder.Read(
                         data.materialTable,
@@ -656,7 +623,8 @@ namespace RVX
                       data.prefilteredEnvironmentView.IsValid() &&
                       data.brdfLUTView.IsValid())) &&
                     materialTableDesc != nullptr &&
-                    IsCanonicalDeferredMaterialTableDesc(*materialTableDesc);
+                    IsCanonicalDeferredMaterialTableDesc(
+                        *materialTableDesc, data.materialTableMetadata);
             },
             [](const DeferredLightingGraphPassData& data,
                RenderGraphPassContext& context)
@@ -740,10 +708,11 @@ namespace RVX
                     return;
                 }
                 if (materialTable == nullptr ||
-                    !IsCanonicalDeferredMaterialTable(*materialTable))
+                    !IsCanonicalDeferredMaterialTable(
+                        *materialTable, data.materialTableMetadata))
                 {
                     data.executionDiagnostic =
-                        "Deferred lighting received an invalid StandardLit material table";
+                        "Deferred lighting received an invalid material parameter table";
                     return;
                 }
 
@@ -909,7 +878,7 @@ namespace RVX
                 descriptorSetDesc.BindTexture(5, depthView);
                 descriptorSetDesc.BindTexture(6, hdrSceneColorView);
                 descriptorSetDesc.BindBuffer(
-                    7, materialTable, 0, sizeof(DeferredMaterialClassification));
+                    7, materialTable, 0, materialTable->GetSize());
                 descriptorSetDesc.BindTexture(
                     8, lightingSnapshot.directionalShadowView.Get());
                 descriptorSetDesc.BindSampler(

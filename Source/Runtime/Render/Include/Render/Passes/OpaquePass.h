@@ -37,6 +37,7 @@ namespace RVX
     class ShadowPass;
     class DirectRasterReadbackQualification;
     struct MaterialBindingResult;
+    struct MaterialParameterTableSnapshot;
     struct ObjectConstantBinding;
     struct GPUCullingDrawGroup;
     struct GPUSceneRasterBindingSnapshot;
@@ -104,6 +105,22 @@ namespace RVX
         }
     };
 
+    /** @brief Optional Forward attachments required by stylized outlines. */
+    struct OpaqueForwardSurfaceTargets
+    {
+        RGTextureHandle hdrSceneColor{};
+        RGTextureHandle normalRoughnessMetallic{};
+        RGTextureHandle materialIdentity{};
+        RGTextureHandle depth{};
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return hdrSceneColor.IsValid() &&
+                   normalRoughnessMetallic.IsValid() &&
+                   materialIdentity.IsValid() && depth.IsValid();
+        }
+    };
+
     /**
      * @brief Opaque geometry render pass
      * 
@@ -136,6 +153,12 @@ namespace RVX
             const RenderPassRecordContext& context,
             const OpaqueDeferredGBufferTargets& targets);
 
+        /** Register Forward HDR together with typed normal/material-id MRTs. */
+        void AddForwardSurfaceToGraph(
+            RenderGraph& graph,
+            const RenderPassRecordContext& context,
+            const OpaqueForwardSurfaceTargets& targets);
+
         /**
          * @brief Record only ForwardSpecialOpaque packets into an existing HDR
          * scene color after deferred lighting.
@@ -158,6 +181,16 @@ namespace RVX
             const RenderPassRecordContext& context,
             OpaqueRasterOutputFamily outputFamily,
             OpaqueRasterSurfaceRoute surfaceRoute) const;
+
+        /**
+         * Build the frame-local, stable-slot material table shared by GBuffer
+         * classification and the screen-space outline consumer.
+         */
+        [[nodiscard]] bool CreateMaterialClassificationTableSnapshot(
+            const RenderPassRecordContext& context,
+            OpaqueRasterSurfaceRoute surfaceRoute,
+            MaterialParameterTableSnapshot& outSnapshot,
+            std::string& outError) const;
 
         // =====================================================================
         // Resource Dependencies
@@ -222,13 +255,15 @@ namespace RVX
             uint32 sourceFrameSlot,
             OpaqueRasterOutputFamily outputFamily,
             OpaqueRasterSurfaceRoute surfaceRoute,
-            OpaqueDeferredGBufferTargets deferredTargets);
+            OpaqueDeferredGBufferTargets deferredTargets,
+            OpaqueForwardSurfaceTargets forwardSurfaceTargets);
         void AddToGraphInternal(
             RenderGraph& graph,
             const RenderPassRecordContext& context,
             OpaqueRasterOutputFamily outputFamily,
             OpaqueRasterSurfaceRoute surfaceRoute,
-            const OpaqueDeferredGBufferTargets& deferredTargets);
+            const OpaqueDeferredGBufferTargets& deferredTargets,
+            const OpaqueForwardSurfaceTargets& forwardSurfaceTargets);
 
         RGTextureHandle m_colorTargetHandle;
         RGTextureHandle m_depthTargetHandle;
@@ -256,6 +291,9 @@ namespace RVX
         RGTextureViewHandle m_environmentIBLBRDFLUTViewHandle;
         std::array<RGTextureHandle, 4> m_gBufferTargetHandles{};
         std::array<RGTextureViewHandle, 4> m_gBufferTargetViewHandles{};
+        std::array<RGTextureHandle, 3> m_forwardSurfaceTargetHandles{};
+        std::array<RGTextureViewHandle, 3>
+            m_forwardSurfaceTargetViewHandles{};
         RHIFormat m_colorTargetFormat = RHIFormat::Unknown;
         RGBufferHandle m_gpuDrivenInstanceHandle;
         RGBufferHandle m_gpuSceneCandidateHandle;
@@ -301,6 +339,7 @@ namespace RVX
         OpaqueRasterSurfaceRoute m_surfaceRoute =
             OpaqueRasterSurfaceRoute::AllOpaque;
         OpaqueDeferredGBufferTargets m_deferredTargets{};
+        OpaqueForwardSurfaceTargets m_forwardSurfaceTargets{};
 
         // Resource dependencies
         const RenderResourceRegistry* m_resourceRegistry = nullptr;

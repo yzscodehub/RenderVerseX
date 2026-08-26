@@ -18,6 +18,7 @@
 #include "Scenes/RenderPipelineShowcaseSample.h"
 #include "Scenes/RenderingStressSample.h"
 #include "Scenes/SceneLifecycleSample.h"
+#include "Scenes/StylizedMaterialsSample.h"
 #include "Scenes/TemporalAASample.h"
 #include "Samples/SampleRegistry.h"
 
@@ -91,6 +92,8 @@ namespace RVX
                RegisterBuiltInSample<AnimationCharacterSample>(
                    manifest, registry, outError) &&
                RegisterBuiltInSample<TemporalAASample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<StylizedMaterialsSample>(
                    manifest, registry, outError) &&
                RegisterBuiltInSample<RenderingStressSample>(
                    manifest, registry, outError) &&

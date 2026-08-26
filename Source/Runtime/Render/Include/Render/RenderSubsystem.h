@@ -73,6 +73,16 @@ namespace RVX
         [[nodiscard]] bool RequestExposureQualificationProbe() noexcept;
         /** @brief Arm one physical GTAO visibility qualification probe. */
         [[nodiscard]] bool RequestAmbientOcclusionQualificationProbe() noexcept;
+        /** @brief Arm one Toon lighting and screen-space outline qualification probe. */
+        [[nodiscard]] bool RequestToonOutlineQualificationProbe() noexcept;
+        /**
+         * @brief Read the one-shot Render-owner admission result for the Toon probe.
+         *
+         * A pending result has not yet reached the Render owner.  Accepted and
+         * rejected are terminal for this runtime instance.
+         */
+        [[nodiscard]] RenderToonOutlineQualificationRequestResult
+        GetToonOutlineQualificationProbeRequestResult() const noexcept;
 
         RenderResourceReserveResult ReserveResource(
             AssetId assetId,

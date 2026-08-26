@@ -321,8 +321,8 @@ namespace
                     drawData.material.resourceGeneration = batch.material.generation;
                     drawData.material.materialId =
                         PackGPUSceneUint64(GetStableHash(packet.materialKey));
-                    drawData.material.shadingModel =
-                        static_cast<uint32>(sourceData.workflow);
+                    drawData.material.shadingModel = static_cast<uint32>(
+                        material->staticDescriptor.shadingModel);
                     drawData.material.baseColor = {
                         sourceData.baseColorFactor.x,
                         sourceData.baseColorFactor.y,

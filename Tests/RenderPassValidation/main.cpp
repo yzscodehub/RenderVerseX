@@ -64,6 +64,7 @@
 #include "Render/PostProcess/FXAA.h"
 #include "Render/PostProcess/MotionBlur.h"
 #include "Render/PostProcess/PostProcessStack.h"
+#include "Render/PostProcess/ScreenSpaceOutline.h"
 #include "Render/PostProcess/SSR.h"
 #include "Render/PostProcess/TAA.h"
 #include "Render/PostProcess/ToneMapping.h"
@@ -305,6 +306,13 @@ namespace RVX
                 *frame, sceneDatabase, *registry).IsApplied();
             renderer.SetGPUDrivenCullingMode(requestedGPUDrivenMode);
             return accepted;
+        }
+
+        static void BindScreenSpaceOutlineForTesting(
+            SceneRenderer& renderer,
+            ScreenSpaceOutlinePass* pass) noexcept
+        {
+            renderer.m_screenSpaceOutlinePostProcess = pass;
         }
 
         // BuildRenderGraph is intentionally fail-closed unless an accepted
@@ -14830,6 +14838,184 @@ TEST_F(RenderPassValidationFixture, NoSupportedEffectsCannotSilentlyChangeColorD
 
     RenderGraphValidationAccess::Compile(graph);
     EXPECT_EQ(graph.GetCompileStats().totalPasses, 0u);
+}
+
+TEST(RenderPassValidation,
+     SceneRendererPreservesUnboundToonOutlineProbeUntilFrameDisposition)
+{
+    ScreenSpaceOutlinePass outline;
+    SceneRenderer renderer;
+    SceneRendererTestAccess::BindScreenSpaceOutlineForTesting(
+        renderer, &outline);
+
+    ASSERT_TRUE(renderer.ArmToonOutlineQualificationProbe());
+    ASSERT_TRUE(outline.HasPendingQualificationProbe());
+
+    // Accepting the frame establishes its history candidate.  It must not
+    // discard the Render-owner request that is waiting to bind while this
+    // exact frame records the outline graph.
+    ASSERT_TRUE(SceneRendererTestAccess::AcceptEmptyFrameForTesting(
+        renderer, 4113u));
+    EXPECT_TRUE(outline.HasPendingQualificationProbe());
+
+    // Once this accepted frame is known not to have reached submission, the
+    // one-shot request must be cancelled rather than leaking to another frame.
+    renderer.ReleaseUnsubmittedFrame();
+    EXPECT_FALSE(outline.HasPendingQualificationProbe());
+
+    SceneRendererTestAccess::BindScreenSpaceOutlineForTesting(
+        renderer, nullptr);
+}
+
+TEST_F(RenderPassValidationFixture,
+       ScreenSpaceOutlinePublishesExactIdentityOnlyAfterVisibleDrawRecording)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+    device.SetFenceAutoComplete(false);
+
+    constexpr uint32 Width = 32u;
+    constexpr uint32 Height = 32u;
+    constexpr uint64 FrameSequence = 4114u;
+    const RenderOutputExtent extent{Width, Height};
+
+    ScreenSpaceOutlinePass pass;
+    PostProcessSettings settings;
+    settings.enableToonOutline = true;
+    pass.Configure(settings);
+    pass.SetResources(&pipelineCache, &viewCache);
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    ASSERT_TRUE(pass.ArmQualificationProbe());
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    const auto makeTexture = [this](RHIFormat format,
+                                    RHITextureUsage usage,
+                                    const char* name)
+    {
+        RHITextureDesc desc = RHITextureDesc::Texture2D(
+            Width, Height, format, usage);
+        desc.debugName = name;
+        return device.CreateTexture(desc);
+    };
+
+    const RHITextureRef sceneColor = makeTexture(
+        RHIFormat::RGBA16_FLOAT,
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource,
+        "OutlineExecutionSceneColor");
+    const RHITextureRef depth = makeTexture(
+        RHIFormat::D32_FLOAT,
+        RHITextureUsage::DepthStencil | RHITextureUsage::ShaderResource,
+        "OutlineExecutionDepth");
+    const RHITextureRef normal = makeTexture(
+        RHIFormat::RGBA8_UNORM,
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource,
+        "OutlineExecutionNormal");
+    const RHITextureRef materialIdentity = makeTexture(
+        RHIFormat::R32_UINT,
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource,
+        "OutlineExecutionMaterialIdentity");
+    const RHITextureRef output = makeTexture(
+        RHIFormat::RGBA16_FLOAT,
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource,
+        "OutlineExecutionOutput");
+    ASSERT_TRUE(sceneColor);
+    ASSERT_TRUE(depth);
+    ASSERT_TRUE(normal);
+    ASSERT_TRUE(materialIdentity);
+    ASSERT_TRUE(output);
+
+    RHIBufferDesc materialTableDesc;
+    materialTableDesc.size = sizeof(MaterialGPUConstants);
+    materialTableDesc.stride = sizeof(MaterialGPUConstants);
+    materialTableDesc.usage =
+        RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
+    materialTableDesc.debugName = "OutlineExecutionMaterialTable";
+    const RHIBufferRef materialTable = device.CreateBuffer(materialTableDesc);
+    ASSERT_TRUE(materialTable);
+
+    PostProcessFrameInputs inputs;
+    inputs.sceneColor = RenderGraphValidationAccess::ImportTexture(
+        graph, sceneColor.Get(), RHIResourceState::ShaderResource);
+    inputs.depth = RenderGraphValidationAccess::ImportTexture(
+        graph, depth.Get(), RHIResourceState::ShaderResource);
+    inputs.normal = RenderGraphValidationAccess::ImportTexture(
+        graph, normal.Get(), RHIResourceState::ShaderResource);
+    inputs.materialIdentity = RenderGraphValidationAccess::ImportTexture(
+        graph, materialIdentity.Get(), RHIResourceState::ShaderResource);
+    inputs.materialParameterTable = RenderGraphValidationAccess::ImportBuffer(
+        graph, materialTable.Get(), RHIResourceState::ShaderResource);
+    const RGTextureHandle outputHandle =
+        RenderGraphValidationAccess::ImportTexture(
+            graph, output.Get(), RHIResourceState::RenderTarget);
+    inputs.sceneColorMetadata = {
+        extent, RHIFormat::RGBA16_FLOAT, RHISampleCount::Count1};
+    inputs.depthMetadata = {
+        extent, RHIFormat::D32_FLOAT, RHISampleCount::Count1};
+    inputs.normalMetadata = {
+        extent, RHIFormat::RGBA8_UNORM, RHISampleCount::Count1};
+    inputs.materialIdentityMetadata = {
+        extent, RHIFormat::R32_UINT, RHISampleCount::Count1};
+    inputs.materialParameterTableMetadata = {
+        PostProcessMaterialTableMetadata::SchemaVersion,
+        static_cast<uint32>(sizeof(MaterialGPUConstants)),
+        1u,
+        1u,
+        0x4D41545441424C45ull,
+        extent,
+        RHISampleCount::Count1};
+    inputs.frameIndex = FrameSequence;
+    inputs.historyIdentity =
+        MakeTestExposureHistoryIdentity(FrameSequence, Width, Height);
+
+    pass.AddToGraph(graph, inputs, outputHandle);
+    EXPECT_FALSE(pass.GetLastExecutionIdentity().has_value());
+
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    RecordingCommandContext commands;
+    RenderGraphValidationAccess::Execute(graph, commands);
+
+    const auto executedIdentity = pass.GetLastExecutionIdentity();
+    ASSERT_TRUE(executedIdentity.has_value());
+    EXPECT_EQ(executedIdentity->frameIndex, FrameSequence);
+    EXPECT_EQ(executedIdentity->historyIdentity, inputs.historyIdentity);
+    EXPECT_EQ(executedIdentity->extent, extent);
+    EXPECT_EQ(executedIdentity->settingsHash, pass.GetSettingsHash());
+    EXPECT_EQ(executedIdentity->materialTableContentHash,
+              inputs.materialParameterTableMetadata.contentHash);
+
+    const auto probeIdentity = pass.GetPendingQualificationProbeIdentity();
+    ASSERT_TRUE(probeIdentity.has_value());
+    EXPECT_EQ(*probeIdentity, *executedIdentity);
+
+    RenderSubmissionTracker tracker;
+    ASSERT_TRUE(tracker.Initialize(&device));
+    GPUCompletionToken completionToken;
+    const GPUCompletionPoint completion = tracker.Submit(&commands);
+    ASSERT_TRUE(InsertGPUCompletionPoint(completionToken, completion));
+    ASSERT_TRUE(pass.NotifyQualificationProbeSubmission(
+        *probeIdentity, completionToken, tracker));
+
+    pass.AbandonQualificationProbe();
+    ScreenSpaceOutlineQualificationProbeStats probeStats;
+    EXPECT_FALSE(pass.PollQualificationProbe(tracker, probeStats));
+    EXPECT_TRUE(pass.HasPendingQualificationProbe());
+
+    FakeFence* const graphicsFence =
+        device.FindFenceWithSignal(completion.value);
+    ASSERT_NE(graphicsFence, nullptr);
+    graphicsFence->Complete(completion.value);
+    EXPECT_FALSE(pass.PollQualificationProbe(tracker, probeStats));
+    EXPECT_NE(probeStats.failure.find("abandoned after submission"),
+              std::string::npos);
+    EXPECT_FALSE(pass.HasPendingQualificationProbe());
+    tracker.Shutdown();
+
+    RenderGraph rejectedGraph;
+    pass.AddToGraph(
+        rejectedGraph, PostProcessFrameInputs{}, RGTextureHandle{});
+    EXPECT_EQ(rejectedGraph.GetRecordedPassCount(), 0u);
+    EXPECT_FALSE(pass.GetLastExecutionIdentity().has_value());
 }
 
 TEST_F(RenderPassValidationFixture, InvalidToneMappingBoundaryDoesNotInsertFallbackCopy)

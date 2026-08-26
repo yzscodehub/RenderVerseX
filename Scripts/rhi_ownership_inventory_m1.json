@@ -6543,6 +6543,114 @@
       "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
       "normalRelease": "submission batch transfer to retirement after token completion",
       "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_forwardSurfaceDataPixelShader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_screenSpaceOutlinePixelShader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_screenSpaceOutlineVerifierPixelShader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_screenSpaceOutlineSetLayout",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_screenSpaceOutlinePipelineLayout",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_screenSpaceOutlineVerifierSetLayout",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_screenSpaceOutlineVerifierPipelineLayout",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_screenSpaceOutlinePipeline",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_screenSpaceOutlineVerifierPipeline",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/ScreenSpaceOutline.h",
+      "owner": "ScreenSpaceOutlinePass",
+      "symbol": "m_pointClampSampler",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/ScreenSpaceOutline.h",
+      "owner": "ScreenSpaceOutlinePass",
+      "symbol": "m_probeReadback",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/PostProcess/ScreenSpaceOutline.cpp",
+      "owner": "ScreenSpaceOutlineQualificationCopyData",
+      "symbol": "readbackOwner",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "submission batch transfer to retirement after token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
     }
   ]
 }

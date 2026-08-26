@@ -246,6 +246,22 @@ struct ModelImportOptions
      * importer clients may leave this empty to preserve the sourcePath value.
      */
     std::string artifactSourcePath;
+
+    /**
+     * @brief Replace every source material with one canonical ToonLit material.
+     *
+     * This is a cook-time authoring policy, not a runtime override.  It is
+     * intentionally limited to the fixed ToonLit contract so the cooker never
+     * serializes arbitrary RHI state or Sample-owned shader parameters.
+     */
+    bool overrideAllMaterialsToToonLit = false;
+    float toonBands = 4.0f;
+    float toonSpecularThreshold = 0.5f;
+    float toonRimStrength = 0.25f;
+    float toonOutlineWidth = 1.0f;
+    float toonShadowTintRed = 0.42f;
+    float toonShadowTintGreen = 0.48f;
+    float toonShadowTintBlue = 0.62f;
 };
 
 /** @brief Deterministic HDR/EXR environment cook settings. */

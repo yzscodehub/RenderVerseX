@@ -43,6 +43,8 @@ namespace
         0x4D4953534D41544Cull; // "MISSMATL"
     constexpr uint64 RASTER_DEFAULT_SAMPLER_TOKEN =
         0x44454653414D504Cull; // "DEFSAMPL"
+    constexpr uint64 RASTER_CLASSIFICATION_SENTINEL_TOKEN =
+        0x434C415353534E54ull; // "CLAS SNT"
 
     void HashBindingByte(uint64& hash, uint8 value) noexcept
     {
@@ -134,6 +136,18 @@ namespace
         HashBindingFloat(hash, constants.alphaCutoff);
         HashBindingValue(hash, constants.workflow);
         HashBindingValue(hash, constants.doubleSided);
+        HashBindingValue(hash, constants.shadingModel);
+        // A stable table slot is an addressing detail, not draw semantics.
+        // Classification-table content hashes still bind this field byte for
+        // byte; descriptor semantic keys must remain stable if identical
+        // assets are allocated at different slots.
+        HashBindingFloat(hash, constants.toonBands);
+        HashBindingFloat(hash, constants.toonSpecularThreshold);
+        HashBindingFloat(hash, constants.toonRimStrength);
+        HashBindingFloat(hash, constants.toonOutlineWidth);
+        HashBindingFloat(hash, constants.toonShadowTint.x);
+        HashBindingFloat(hash, constants.toonShadowTint.y);
+        HashBindingFloat(hash, constants.toonShadowTint.z);
         const MaterialGPUUVTransform identityTransform{};
         for (uint32 slot = 0;
              slot < static_cast<uint32>(constants.uvTransforms.size());
@@ -156,6 +170,96 @@ namespace
         }
     }
 
+    void HashMaterialTableRowEvidence(
+        uint64& hash,
+        const MaterialParameterTableRowEvidence& evidence) noexcept
+    {
+        HashBindingValue(hash, evidence.stableSlot);
+        HashBindingValue(hash, static_cast<uint8>(evidence.isAsset ? 1u : 0u));
+        HashBindingValue(hash, evidence.shadingModel);
+        HashBindingValue(hash, evidence.programFamilyHash);
+        HashBindingValue(hash, evidence.parameterLayoutHash);
+        HashBindingFloat(hash, evidence.toonBands);
+        HashBindingFloat(hash, evidence.toonSpecularThreshold);
+        HashBindingFloat(hash, evidence.toonRimStrength);
+        HashBindingFloat(hash, evidence.toonOutlineWidth);
+        HashBindingFloat(hash, evidence.toonShadowTint.x);
+        HashBindingFloat(hash, evidence.toonShadowTint.y);
+        HashBindingFloat(hash, evidence.toonShadowTint.z);
+        HashBindingValue(
+            hash,
+            static_cast<uint8>(evidence.toonParametersValid ? 1u : 0u));
+    }
+
+    [[nodiscard]] MaterialParameterTableRowEvidence
+    MakeDefaultMaterialTableRowEvidence(uint32 stableSlot) noexcept
+    {
+        MaterialParameterTableRowEvidence evidence;
+        evidence.stableSlot = stableSlot;
+        evidence.isAsset = false;
+        evidence.shadingModel = MaterialShadingModel::StandardLit;
+        evidence.programFamilyHash = GetMaterialProgramFamilyValueIdentity(
+            GetMaterialProgramFamily(MaterialShadingModel::StandardLit));
+        evidence.parameterLayoutHash = GetMaterialParameterLayoutHashV1();
+        return evidence;
+    }
+
+    [[nodiscard]] MaterialParameterTableRowEvidence
+    MakeMaterialTableRowEvidence(uint32 stableSlot,
+                                 const MaterialStaticDescriptor& descriptor,
+                                 const MaterialSourceData& source) noexcept
+    {
+        MaterialParameterTableRowEvidence evidence;
+        evidence.stableSlot = stableSlot;
+        evidence.isAsset = true;
+        evidence.shadingModel = descriptor.shadingModel;
+        evidence.programFamilyHash = GetMaterialProgramFamilyValueIdentity(
+            descriptor.programFamily);
+        evidence.parameterLayoutHash = descriptor.parameterLayoutHash;
+        if (descriptor.shadingModel == MaterialShadingModel::ToonLit)
+        {
+            evidence.toonBands = source.toonBands;
+            evidence.toonSpecularThreshold = source.toonSpecularThreshold;
+            evidence.toonRimStrength = source.toonRimStrength;
+            evidence.toonOutlineWidth = source.toonOutlineWidth;
+            evidence.toonShadowTint = source.toonShadowTint;
+            std::string validationError;
+            evidence.toonParametersValid =
+                ValidateMaterialSourceData(source, validationError);
+        }
+        return evidence;
+    }
+
+    uint64 CalculateMaterialTableContentHash(
+        const std::vector<MaterialGPUConstants>& table,
+        const std::vector<uint64>& semanticKeys,
+        const std::vector<MaterialParameterTableRowEvidence>& rowEvidence) noexcept
+    {
+        if (table.empty() || table.size() != semanticKeys.size() ||
+            table.size() != rowEvidence.size())
+        {
+            return 0;
+        }
+
+        uint64 hash = FNV_OFFSET;
+        HashBindingValue(hash, RVX_MATERIAL_PARAMETER_TABLE_SCHEMA_VERSION);
+        HashBindingValue(hash, static_cast<uint64>(sizeof(MaterialGPUConstants)));
+        HashBindingValue(hash, static_cast<uint64>(table.size()));
+        for (size_t index = 0; index < table.size(); ++index)
+        {
+            const auto* bytes = reinterpret_cast<const uint8*>(&table[index]);
+            for (size_t byteIndex = 0; byteIndex < sizeof(MaterialGPUConstants);
+                 ++byteIndex)
+            {
+                HashBindingByte(hash, bytes[byteIndex]);
+            }
+            HashBindingValue(hash, static_cast<uint64>(index));
+            HashBindingValue(hash, semanticKeys[index]);
+            HashMaterialTableRowEvidence(hash, rowEvidence[index]);
+        }
+        return hash == 0 ? 1 : hash;
+    }
+
     void SetSuccessfulMaterialBindingIdentity(
         MaterialBindingResult& result,
         RenderResourceHandle material,
@@ -168,6 +272,22 @@ namespace
         }
     }
 } // namespace
+
+uint64 GetMaterialProgramFamilyValueIdentity(
+    std::string_view programFamily) noexcept
+{
+    if (programFamily.empty())
+    {
+        return 0;
+    }
+
+    uint64 hash = FNV_OFFSET;
+    for (const char character : programFamily)
+    {
+        HashBindingByte(hash, static_cast<uint8>(character));
+    }
+    return hash == 0 ? 1 : hash;
+}
 
 MaterialSystem::MaterialSystem() = default;
 
@@ -469,6 +589,7 @@ bool MaterialSystem::ResolveSurfacePipelinePolicy(
     }
     const bool implementedShadingModel =
         descriptor.shadingModel == MaterialShadingModel::StandardLit ||
+        descriptor.shadingModel == MaterialShadingModel::ToonLit ||
         descriptor.shadingModel == MaterialShadingModel::Unlit;
     const bool implementedBlendMode =
         descriptor.blendMode == MaterialBlendMode::Opaque ||
@@ -480,7 +601,8 @@ bool MaterialSystem::ResolveSurfacePipelinePolicy(
     if (descriptor.domain != MaterialDomain::Surface ||
         !implementedShadingModel || !implementedBlendMode ||
         !implementedPhase ||
-        (descriptor.shadingModel == MaterialShadingModel::StandardLit &&
+        ((descriptor.shadingModel == MaterialShadingModel::StandardLit ||
+          descriptor.shadingModel == MaterialShadingModel::ToonLit) &&
          materialData->sourceData.workflow !=
              MaterialSourceWorkflow::MetallicRoughness) ||
         (descriptor.blendMode == MaterialBlendMode::AlphaBlend &&
@@ -489,12 +611,11 @@ bool MaterialSystem::ResolveSurfacePipelinePolicy(
             GetMaterialProgramFamily(descriptor.shadingModel) ||
         descriptor.parameterLayoutHash != GetMaterialParameterLayoutHashV1())
     {
-        // StandardLit currently implements only Metallic-Roughness. Toon,
-        // thin transmission, premultiplied/additive blending and after-tone-
-        // map surfaces are transport contracts only until their dedicated
-        // renderer features are implemented. Transparent casters also have no
-        // supported shadow path yet. Never shade any of these as an
-        // approximate StandardLit material.
+        // StandardLit and ToonLit implement only Metallic-Roughness source
+        // compatibility. Thin transmission, premultiplied/additive blending,
+        // after-tone-map surfaces and Toon translucency remain transport
+        // contracts until their dedicated renderer features exist. Transparent
+        // casters also have no supported shadow path yet.
         return false;
     }
 
@@ -583,11 +704,20 @@ bool MaterialSystem::CreateMaterialParameterTableSnapshot(
         maxSlot = std::max(maxSlot, request.material.slot);
     }
 
-    const MaterialGPUConstants defaultConstants =
-        MaterialBinder::ConvertToGPU(MaterialSourceData{});
     std::vector<MaterialGPUConstants> table(
-        static_cast<size_t>(maxSlot) + 1U, defaultConstants);
+        static_cast<size_t>(maxSlot) + 1U);
+    for (uint32 slot = 0; slot <= maxSlot; ++slot)
+    {
+        table[slot] = MaterialBinder::ConvertToGPU(
+            MaterialStaticDescriptor{}, MaterialSourceData{}, {}, slot);
+    }
     std::vector<uint64> rasterMaterialSemanticKeysBySlot(table.size(), 0);
+    std::vector<MaterialParameterTableRowEvidence> rowEvidence;
+    rowEvidence.reserve(table.size());
+    for (uint32 slot = 0; slot < table.size(); ++slot)
+    {
+        rowEvidence.emplace_back(MakeDefaultMaterialTableRowEvidence(slot));
+    }
     for (const auto& [slot, request] : unique)
     {
         const RenderMaterialResourceData* materialData =
@@ -608,11 +738,16 @@ bool MaterialSystem::CreateMaterialParameterTableSnapshot(
         MaterialSourceData source = materialData->sourceData;
         source.textureFlags = textures.textureFlags;
         const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(
-            source, textures.textureBindings);
+            materialData->staticDescriptor,
+            source,
+            textures.textureBindings,
+            request.material.slot);
         const uint64 semanticKey = BuildSemanticDescriptorContentKey(
             request.material, constants, textures.textureEntries);
         table[slot] = constants;
         rasterMaterialSemanticKeysBySlot[slot] = semanticKey;
+        rowEvidence[slot] = MakeMaterialTableRowEvidence(
+            slot, materialData->staticDescriptor, materialData->sourceData);
     }
 
     RHIBufferDesc desc;
@@ -635,10 +770,132 @@ bool MaterialSystem::CreateMaterialParameterTableSnapshot(
     }
 
     outSnapshot.buffer = std::move(buffer);
+    outSnapshot.schemaVersion = RVX_MATERIAL_PARAMETER_TABLE_SCHEMA_VERSION;
+    outSnapshot.stride = sizeof(MaterialGPUConstants);
     outSnapshot.slotCount = static_cast<uint32>(table.size());
     outSnapshot.materialCount = static_cast<uint32>(unique.size());
     outSnapshot.rasterMaterialSemanticKeysBySlot =
         std::move(rasterMaterialSemanticKeysBySlot);
+    outSnapshot.valueOnlyRowEvidence = std::move(rowEvidence);
+    outSnapshot.contentHash = CalculateMaterialTableContentHash(
+        table,
+        outSnapshot.rasterMaterialSemanticKeysBySlot,
+        outSnapshot.valueOnlyRowEvidence);
+    return outSnapshot.IsValid();
+}
+
+bool MaterialSystem::CreateMaterialClassificationTableSnapshot(
+    std::span<const RenderResourceHandle> materials,
+    MaterialParameterTableSnapshot& outSnapshot) const
+{
+    outSnapshot = {};
+    if (!m_initialized || !m_device || !m_resourceRegistry)
+    {
+        return false;
+    }
+
+    std::unordered_map<uint32, RenderResourceHandle> unique;
+    uint32 maxSlot = 0;
+    for (const RenderResourceHandle material : materials)
+    {
+        if (!material.IsValid() ||
+            material.slot >= RVX_MAX_MATERIAL_CONSTANTS_PER_FRAME)
+        {
+            return false;
+        }
+        const auto [it, inserted] = unique.emplace(material.slot, material);
+        if (!inserted && it->second.generation != material.generation)
+        {
+            return false;
+        }
+        maxSlot = std::max(maxSlot, material.slot);
+    }
+
+    const bool usesDefaultClassificationSentinel = materials.empty();
+    std::vector<MaterialGPUConstants> table(
+        usesDefaultClassificationSentinel ? 1U
+                                          : static_cast<size_t>(maxSlot) + 1U);
+    std::vector<uint64> semanticKeys(table.size(), 0);
+    std::vector<MaterialParameterTableRowEvidence> rowEvidence;
+    rowEvidence.reserve(table.size());
+    for (uint32 slot = 0; slot < table.size(); ++slot)
+    {
+        table[slot] = MaterialBinder::ConvertToGPU(
+            MaterialStaticDescriptor{}, MaterialSourceData{}, {}, slot);
+        rowEvidence.emplace_back(MakeDefaultMaterialTableRowEvidence(slot));
+    }
+
+    if (usesDefaultClassificationSentinel)
+    {
+        // Empty Deferred scenes still bind t7. Publish an explicit default
+        // StandardLit row rather than pretending a registered material exists.
+        semanticKeys[0] = RASTER_CLASSIFICATION_SENTINEL_TOKEN;
+    }
+
+    for (const auto& [slot, material] : unique)
+    {
+        const RenderMaterialResourceData* materialData =
+            m_resourceRegistry->ResolveMaterial(material);
+        if (materialData == nullptr || !materialData->metadataValid)
+        {
+            return false;
+        }
+
+        const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(
+            materialData->staticDescriptor,
+            materialData->sourceData,
+            {},
+            slot);
+        const uint64 semanticKey = BuildMaterialClassificationSemanticKey(
+            material, constants);
+        if (semanticKey == 0)
+        {
+            return false;
+        }
+        table[slot] = constants;
+        semanticKeys[slot] = semanticKey;
+        rowEvidence[slot] = MakeMaterialTableRowEvidence(
+            slot, materialData->staticDescriptor, materialData->sourceData);
+    }
+
+    const uint64 contentHash = CalculateMaterialTableContentHash(
+        table, semanticKeys, rowEvidence);
+    if (contentHash == 0)
+    {
+        return false;
+    }
+
+    RHIBufferDesc desc;
+    desc.size = static_cast<uint64>(table.size()) *
+                sizeof(MaterialGPUConstants);
+    desc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
+    desc.memoryType = RHIMemoryType::Upload;
+    desc.stride = sizeof(MaterialGPUConstants);
+    desc.debugName = "MaterialClassificationTable";
+    RHIBufferRef buffer = m_device->CreateBuffer(desc);
+    void* mapped = buffer ? buffer->Map() : nullptr;
+    if (mapped == nullptr)
+    {
+        return false;
+    }
+    std::memcpy(mapped, table.data(), static_cast<size_t>(desc.size));
+    if (!buffer->CommitMappedWrite())
+    {
+        return false;
+    }
+
+    outSnapshot.buffer = std::move(buffer);
+    outSnapshot.schemaVersion = RVX_MATERIAL_PARAMETER_TABLE_SCHEMA_VERSION;
+    outSnapshot.stride = sizeof(MaterialGPUConstants);
+    outSnapshot.slotCount = static_cast<uint32>(table.size());
+    outSnapshot.materialCount = usesDefaultClassificationSentinel
+        ? 1U
+        : static_cast<uint32>(unique.size());
+    outSnapshot.usesDefaultClassificationSentinel =
+        usesDefaultClassificationSentinel;
+    outSnapshot.contentHash = contentHash;
+    outSnapshot.valueOnlyRowEvidence = std::move(rowEvidence);
+    outSnapshot.rasterMaterialSemanticKeysBySlot = std::move(semanticKeys);
     return outSnapshot.IsValid();
 }
 
@@ -670,9 +927,11 @@ MaterialBindingResult MaterialSystem::PrepareMaterialBinding(
             m_resourceRegistry != nullptr
         ? m_resourceRegistry->GetContentRevision(material)
         : 0;
+    MaterialStaticDescriptor staticDescriptor;
     MaterialSourceData source;
     if (materialData && materialData->metadataValid)
     {
+        staticDescriptor = materialData->staticDescriptor;
         source = materialData->sourceData;
     }
     ResourceViewCache* const resolvedViewCache = viewCache
@@ -685,6 +944,7 @@ MaterialBindingResult MaterialSystem::PrepareMaterialBinding(
         : std::string();
     return PrepareResolvedMaterialBinding(material,
                                           contentRevision,
+                                          staticDescriptor,
                                           std::move(source),
                                           textures,
                                           materialName);
@@ -704,9 +964,11 @@ bool MaterialSystem::CreateMaterialBindingSnapshot(
 
     const RenderMaterialResourceData* materialData =
         m_resourceRegistry ? m_resourceRegistry->ResolveMaterial(material) : nullptr;
+    MaterialStaticDescriptor staticDescriptor;
     MaterialSourceData source;
     if (materialData && materialData->metadataValid)
     {
+        staticDescriptor = materialData->staticDescriptor;
         source = materialData->sourceData;
     }
     ResourceViewCache* const resolvedViewCache = viewCache
@@ -724,7 +986,7 @@ bool MaterialSystem::CreateMaterialBindingSnapshot(
 
     source.textureFlags = textures.textureFlags;
     const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(
-        source, textures.textureBindings);
+        staticDescriptor, source, textures.textureBindings, material.slot);
     const uint64 stride = m_materialConstantStride != 0
         ? m_materialConstantStride : AlignConstantBufferSize(sizeof(MaterialGPUConstants));
     RHIBufferDesc bufferDesc;
@@ -828,13 +1090,14 @@ bool MaterialSystem::CreateMaterialBindingSnapshot(
 MaterialBindingResult MaterialSystem::PrepareResolvedMaterialBinding(
     RenderResourceHandle material,
     uint64 contentRevision,
+    MaterialStaticDescriptor staticDescriptor,
     MaterialSourceData source,
     const ResolvedMaterialTextures& textures,
     std::string materialName)
 {
     source.textureFlags = textures.textureFlags;
     const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(
-        source, textures.textureBindings);
+        staticDescriptor, source, textures.textureBindings, material.slot);
 
     FrameConstantUploadAllocation allocation;
     if (!m_materialConstantUploadArena ||
@@ -1009,6 +1272,32 @@ uint64 MaterialSystem::BuildSemanticDescriptorContentKey(
         HashBindingValue(hash, selected->sampler.magFilter);
     }
     // Zero denotes unavailable evidence at the public boundary.
+    return hash == 0 ? 1 : hash;
+}
+
+uint64 MaterialSystem::BuildMaterialClassificationSemanticKey(
+    RenderResourceHandle material,
+    const MaterialGPUConstants& constants) const noexcept
+{
+    if (!material.IsValid() || m_resourceRegistry == nullptr)
+    {
+        return 0;
+    }
+    const AssetId materialAsset = m_resourceRegistry->GetExactAssetId(material);
+    const uint64 contentRevision =
+        m_resourceRegistry->GetContentRevision(material);
+    if (!materialAsset.IsValid() || contentRevision == 0)
+    {
+        return 0;
+    }
+
+    uint64 hash = FNV_OFFSET;
+    HashBindingValue(hash, RASTER_MATERIAL_SEMANTIC_DOMAIN);
+    HashBindingValue(hash, materialAsset.value);
+    HashBindingValue(hash, material.slot);
+    HashBindingValue(hash, material.generation);
+    HashBindingValue(hash, contentRevision);
+    HashRasterMaterialConstants(hash, constants);
     return hash == 0 ? 1 : hash;
 }
 

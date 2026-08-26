@@ -5,6 +5,7 @@
 #include "Render/GPUDriven/GPUCulling.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
+#include "Render/Material/MaterialGPUData.h"
 #include "Render/Passes/DeferredLightingPass.h"
 #include "Render/PipelineCache.h"
 #include "Render/PostProcess/Exposure.h"
@@ -834,6 +835,58 @@ namespace
         return !shaderDir.empty();
     }
 
+    bool CreateStandardLitMaterialTableFixture(
+        FakeDevice& device,
+        RVX::RHIBufferRef& outBuffer,
+        std::string& outError)
+    {
+        outBuffer = {};
+        outError.clear();
+
+        RVX::RHIBufferDesc desc;
+        desc.size = sizeof(RVX::MaterialGPUConstants);
+        desc.stride = sizeof(RVX::MaterialGPUConstants);
+        desc.usage = RVX::RHIBufferUsage::Structured |
+            RVX::RHIBufferUsage::ShaderResource;
+        desc.memoryType = RVX::RHIMemoryType::Upload;
+        desc.debugName = "DeferredLightingValidationMaterialTable";
+        outBuffer = device.CreateBuffer(desc);
+        if (!outBuffer)
+        {
+            outError = "Could not create the material-table fixture buffer";
+            return false;
+        }
+
+        RVX::MaterialGPUConstants constants{};
+        constants.shadingModel = static_cast<RVX::uint32>(
+            RVX::MaterialGPUShadingModel::StandardLit);
+        constants.materialTableIndex = 0u;
+        void* const mapped = outBuffer->Map();
+        if (mapped == nullptr)
+        {
+            outBuffer = {};
+            outError = "Could not map the material-table fixture buffer";
+            return false;
+        }
+        std::memcpy(mapped, &constants, sizeof(constants));
+        outBuffer->Unmap();
+        return true;
+    }
+
+    RVX::PostProcessMaterialTableMetadata MakeMaterialTableMetadata(
+        RVX::uint32 width,
+        RVX::uint32 height)
+    {
+        return {
+            RVX::PostProcessMaterialTableMetadata::SchemaVersion,
+            static_cast<RVX::uint32>(sizeof(RVX::MaterialGPUConstants)),
+            1u,
+            0u,
+            0x5354414E44415244ULL,
+            {width, height},
+            RVX::RHISampleCount::Count1};
+    }
+
     class DeferredLightingGraphInputs final
     {
     public:
@@ -914,12 +967,14 @@ namespace
             inputs.ambientOcclusion.settingsHash = 0x4754414F53455431ULL;
             inputs.ambientOcclusion.fieldContentHash = 0x4754414F4649454CULL;
             inputs.ambientOcclusion.requested = true;
-            materialTableCreated = RVX::CreateDeferredStandardLitMaterialTable(
+            materialTableCreated = CreateStandardLitMaterialTableFixture(
                 device, materialTable, materialTableError);
             if (materialTableCreated)
             {
                 inputs.materialTable = graph.ImportBuffer(
                     materialTable, RVX::RHIResourceState::ShaderResource);
+                inputs.materialTableMetadata =
+                    MakeMaterialTableMetadata(width, height);
             }
 
             const auto createBuffer = [&device](RVX::uint64 size,
@@ -5622,10 +5677,23 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitConsumesMaterialWorkflowAndDoub
     EXPECT_NE(surface.find("#define MATERIAL_WORKFLOW_METALLIC_ROUGHNESS 0"), std::string::npos);
     EXPECT_NE(surface.find("#define MATERIAL_WORKFLOW_SPECULAR_GLOSSINESS 1"), std::string::npos);
     EXPECT_NE(surface.find("#define MATERIAL_WORKFLOW_UNLIT 2"), std::string::npos);
-    EXPECT_NE(shader.find("if (material.Workflow == MATERIAL_WORKFLOW_UNLIT)"), std::string::npos);
+    EXPECT_NE(shader.find(
+                  "if (material.ShadingModel == MATERIAL_SHADING_MODEL_UNLIT)"),
+              std::string::npos);
+    EXPECT_NE(shader.find(
+                  "material.Workflow != MATERIAL_WORKFLOW_UNLIT"),
+              std::string::npos);
     EXPECT_NE(shader.find("return float4((baseColor.rgb + emissive) * preExposure, baseColor.a);"),
               std::string::npos);
-    EXPECT_NE(shader.find("if (material.Workflow != MATERIAL_WORKFLOW_METALLIC_ROUGHNESS)"), std::string::npos);
+    EXPECT_NE(shader.find(
+                  "material.ShadingModel != MATERIAL_SHADING_MODEL_STANDARD_LIT"),
+              std::string::npos);
+    EXPECT_NE(shader.find(
+                  "material.ShadingModel != MATERIAL_SHADING_MODEL_TOON_LIT"),
+              std::string::npos);
+    EXPECT_NE(shader.find(
+                  "material.Workflow != MATERIAL_WORKFLOW_METALLIC_ROUGHNESS"),
+              std::string::npos);
     EXPECT_NE(shader.find("clip(-1.0f);"), std::string::npos);
     EXPECT_EQ(shader.find("Compatibility fallback"), std::string::npos);
     EXPECT_NE(shader.find("float4 doubleSidedTangent = input.WorldTangent;"), std::string::npos);
@@ -9755,6 +9823,8 @@ TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAwa
     EXPECT_NE(firstCache.GetStats().gtaoBilateralHorizontalPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().gtaoBilateralVerticalPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().gtaoTemporalPipelineHash, 0u);
+    EXPECT_NE(firstCache.GetStats().screenSpaceOutlinePipelineHash, 0u);
+    EXPECT_NE(firstCache.GetStats().screenSpaceOutlineVerifierPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().colorGradingPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().chromaticAberrationPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().vignettePipelineHash, 0u);
@@ -9767,6 +9837,10 @@ TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAwa
     EXPECT_NE(firstCache.GetStats().toneMappingPipelineHash, firstCache.GetStats().bloomPipelineHash);
     EXPECT_NE(firstCache.GetStats().gtaoSurfacePipelineHash, firstCache.GetStats().bloomPipelineHash);
     EXPECT_NE(firstCache.GetStats().gtaoSurfacePipelineHash, firstCache.GetStats().gtaoHorizonPipelineHash);
+    EXPECT_NE(firstCache.GetStats().screenSpaceOutlinePipelineHash,
+              firstCache.GetStats().bloomPipelineHash);
+    EXPECT_NE(firstCache.GetStats().screenSpaceOutlineVerifierPipelineHash,
+              firstCache.GetStats().screenSpaceOutlinePipelineHash);
     EXPECT_NE(firstCache.GetStats().colorGradingPipelineHash, firstCache.GetStats().bloomPipelineHash);
     EXPECT_NE(firstCache.GetStats().chromaticAberrationPipelineHash, firstCache.GetStats().bloomPipelineHash);
     EXPECT_NE(firstCache.GetStats().vignettePipelineHash, firstCache.GetStats().bloomPipelineHash);
@@ -9775,9 +9849,10 @@ TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAwa
     EXPECT_NE(firstCache.GetStats().skyboxPipelineHash, firstCache.GetStats().toneMappingPipelineHash);
     EXPECT_NE(firstCache.GetStats().uiPipelineHash, firstCache.GetStats().bloomPipelineHash);
     // GTAO is a five-stage family (surface, horizon, two bilateral passes,
-    // temporal resolve), replacing the former scene-color occlusion placeholder.
-    EXPECT_EQ(firstCache.GetStats().pipelineCreateCount, 23u);
-    EXPECT_EQ(firstCache.GetStats().pipelineCacheMissCount, 23u);
+    // temporal resolve), and GFX14 adds visible and qualification outline
+    // pipelines with distinct HDR/R8 contracts.
+    EXPECT_EQ(firstCache.GetStats().pipelineCreateCount, 25u);
+    EXPECT_EQ(firstCache.GetStats().pipelineCacheMissCount, 25u);
 }
 
 TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
@@ -10262,7 +10337,7 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_EQ(RVX::PipelineCache::GetDefaultDepthStencilFormat(), RVX::RHIFormat::D32_FLOAT);
     EXPECT_EQ(cache.GetDepthClearValue(), 1.0f);
 
-    ASSERT_GE(device.capturedGraphicsPipelines.size(), 21u);
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), 23u);
     const auto& opaqueDesc = device.capturedGraphicsPipelines[0];
     const auto& transparentDesc = device.capturedGraphicsPipelines[2];
     const auto& depthOnlyDesc = device.capturedGraphicsPipelines[3];
@@ -10276,13 +10351,16 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     const auto& gtaoBilateralHorizontalDesc = device.capturedGraphicsPipelines[11];
     const auto& gtaoBilateralVerticalDesc = device.capturedGraphicsPipelines[12];
     const auto& gtaoTemporalDesc = device.capturedGraphicsPipelines[13];
-    const auto& vignetteDesc = device.capturedGraphicsPipelines[14];
-    const auto& filmGrainDesc = device.capturedGraphicsPipelines[15];
-    const auto& fxaaDesc = device.capturedGraphicsPipelines[16];
-    const auto& colorGradingDesc = device.capturedGraphicsPipelines[17];
-    const auto& chromaticAberrationDesc = device.capturedGraphicsPipelines[18];
-    const auto& uiDesc = device.capturedGraphicsPipelines[19];
-    const auto& maskedDepthOnlyDesc = device.capturedGraphicsPipelines[20];
+    const auto& screenSpaceOutlineDesc = device.capturedGraphicsPipelines[14];
+    const auto& screenSpaceOutlineVerifierDesc =
+        device.capturedGraphicsPipelines[15];
+    const auto& vignetteDesc = device.capturedGraphicsPipelines[16];
+    const auto& filmGrainDesc = device.capturedGraphicsPipelines[17];
+    const auto& fxaaDesc = device.capturedGraphicsPipelines[18];
+    const auto& colorGradingDesc = device.capturedGraphicsPipelines[19];
+    const auto& chromaticAberrationDesc = device.capturedGraphicsPipelines[20];
+    const auto& uiDesc = device.capturedGraphicsPipelines[21];
+    const auto& maskedDepthOnlyDesc = device.capturedGraphicsPipelines[22];
 
     EXPECT_EQ(opaqueDesc.depthStencilFormat, RVX::RHIFormat::D32_FLOAT);
     EXPECT_EQ(opaqueDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::Less);
@@ -10482,6 +10560,73 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_NE(chromaticAberrationDesc.vertexShader, nullptr);
     EXPECT_NE(chromaticAberrationDesc.pixelShader, nullptr);
     EXPECT_TRUE(chromaticAberrationDesc.inputLayout.elements.empty());
+
+    ASSERT_NE(cache.GetScreenSpaceOutlinePipeline(
+                  RVX::RHIFormat::RGBA16_FLOAT),
+              nullptr);
+    ASSERT_NE(cache.GetScreenSpaceOutlineLayout(), nullptr);
+    ASSERT_NE(cache.GetScreenSpaceOutlineSetLayout(), nullptr);
+    EXPECT_STREQ(screenSpaceOutlineDesc.debugName,
+                 "ScreenSpaceOutlinePipeline");
+    EXPECT_EQ(screenSpaceOutlineDesc.numRenderTargets, 1u);
+    EXPECT_EQ(screenSpaceOutlineDesc.renderTargetFormats[0],
+              RVX::RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(screenSpaceOutlineDesc.depthStencilFormat,
+              RVX::RHIFormat::Unknown);
+    EXPECT_FALSE(screenSpaceOutlineDesc.depthStencilState.depthTestEnable);
+    EXPECT_FALSE(screenSpaceOutlineDesc.depthStencilState.depthWriteEnable);
+    EXPECT_NE(screenSpaceOutlineDesc.vertexShader, nullptr);
+    EXPECT_NE(screenSpaceOutlineDesc.pixelShader, nullptr);
+    EXPECT_TRUE(screenSpaceOutlineDesc.inputLayout.elements.empty());
+
+    ASSERT_NE(cache.GetScreenSpaceOutlineVerifierPipeline(
+                  RVX::RHIFormat::R8_UNORM),
+              nullptr);
+    EXPECT_EQ(cache.GetScreenSpaceOutlineVerifierPipeline(
+                  RVX::RHIFormat::RGBA16_FLOAT),
+              nullptr);
+    ASSERT_NE(cache.GetScreenSpaceOutlineVerifierLayout(), nullptr);
+    ASSERT_NE(cache.GetScreenSpaceOutlineVerifierSetLayout(), nullptr);
+    EXPECT_STREQ(screenSpaceOutlineVerifierDesc.debugName,
+                 "ScreenSpaceOutlineVerifierPipeline");
+    EXPECT_EQ(screenSpaceOutlineVerifierDesc.numRenderTargets, 1u);
+    EXPECT_EQ(screenSpaceOutlineVerifierDesc.renderTargetFormats[0],
+              RVX::RHIFormat::R8_UNORM);
+    EXPECT_EQ(screenSpaceOutlineVerifierDesc.depthStencilFormat,
+              RVX::RHIFormat::Unknown);
+    EXPECT_FALSE(screenSpaceOutlineVerifierDesc.depthStencilState.depthTestEnable);
+    EXPECT_FALSE(screenSpaceOutlineVerifierDesc.depthStencilState.depthWriteEnable);
+    EXPECT_NE(screenSpaceOutlineVerifierDesc.vertexShader, nullptr);
+    EXPECT_NE(screenSpaceOutlineVerifierDesc.pixelShader, nullptr);
+    EXPECT_TRUE(screenSpaceOutlineVerifierDesc.inputLayout.elements.empty());
+
+    const auto outlineVerifierSetLayoutIt = std::find_if(
+        device.capturedSetLayouts.begin(), device.capturedSetLayouts.end(),
+        [](const RVX::RHIDescriptorSetLayoutDesc& desc)
+        {
+            return desc.debugName && std::string(desc.debugName) ==
+                "ScreenSpaceOutlineVerifierSetLayout";
+        });
+    ASSERT_NE(outlineVerifierSetLayoutIt, device.capturedSetLayouts.end());
+    ASSERT_EQ(outlineVerifierSetLayoutIt->entries.size(), 6u);
+    const std::array<RVX::RHIBindingType, 6> outlineVerifierBindingTypes = {{
+        RVX::RHIBindingType::UniformBuffer,
+        RVX::RHIBindingType::SampledTexture,
+        RVX::RHIBindingType::SampledTexture,
+        RVX::RHIBindingType::SampledTexture,
+        RVX::RHIBindingType::ShaderResourceBuffer,
+        RVX::RHIBindingType::Sampler,
+    }};
+    for (size_t binding = 0; binding < outlineVerifierBindingTypes.size(); ++binding)
+    {
+        EXPECT_EQ(outlineVerifierSetLayoutIt->entries[binding].binding,
+                  static_cast<uint32_t>(binding));
+        EXPECT_EQ(outlineVerifierSetLayoutIt->entries[binding].type,
+                  outlineVerifierBindingTypes[binding]);
+        EXPECT_TRUE(RVX::HasFlag(
+            outlineVerifierSetLayoutIt->entries[binding].visibility,
+            RVX::RHIShaderStage::Pixel));
+    }
 
     ASSERT_NE(cache.GetUIPipeline(), nullptr);
     ASSERT_NE(cache.GetUILayout(), nullptr);
@@ -10846,7 +10991,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestMissingIsColdInitAndSavesMetadata
     EXPECT_TRUE(fs::exists(temp.Path() / RVX::PipelineCache::GetManifestFileName()));
 
     const std::string manifest = ReadTextFile(temp.Path() / RVX::PipelineCache::GetManifestFileName());
-    EXPECT_NE(manifest.find("version=21"), std::string::npos);
+    EXPECT_NE(manifest.find("version=25"), std::string::npos);
     EXPECT_NE(manifest.find("skyboxVertexShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("skyboxPixelShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("skyboxPipelineHash="), std::string::npos);
@@ -10863,11 +11008,19 @@ TEST_F(PipelineCacheValidationFixture, ManifestMissingIsColdInitAndSavesMetadata
     EXPECT_NE(manifest.find("gtaoBilateralHorizontalPixelShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("gtaoBilateralVerticalPixelShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("gtaoTemporalPixelShaderHash="), std::string::npos);
+    EXPECT_NE(manifest.find("screenSpaceOutlinePixelShaderHash="),
+              std::string::npos);
+    EXPECT_NE(manifest.find("screenSpaceOutlineVerifierPixelShaderHash="),
+              std::string::npos);
     EXPECT_NE(manifest.find("gtaoSurfacePipelineHash="), std::string::npos);
     EXPECT_NE(manifest.find("gtaoHorizonPipelineHash="), std::string::npos);
     EXPECT_NE(manifest.find("gtaoBilateralHorizontalPipelineHash="), std::string::npos);
     EXPECT_NE(manifest.find("gtaoBilateralVerticalPipelineHash="), std::string::npos);
     EXPECT_NE(manifest.find("gtaoTemporalPipelineHash="), std::string::npos);
+    EXPECT_NE(manifest.find("screenSpaceOutlinePipelineHash="),
+              std::string::npos);
+    EXPECT_NE(manifest.find("screenSpaceOutlineVerifierPipelineHash="),
+              std::string::npos);
     EXPECT_NE(manifest.find("colorGradingVertexShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("colorGradingPixelShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("colorGradingPipelineHash="), std::string::npos);
@@ -12263,7 +12416,7 @@ TEST_F(PipelineCacheValidationFixture,
             << shaderName;
     }
     const std::string defaultLit = ReadTextFile(shaderDir / "DefaultLit.hlsl");
-    EXPECT_NE(defaultLit.find("normalUV = RVXResolveMaterialUV"),
+    EXPECT_NE(defaultLit.find("surface.normal = RVXSampleNormalMap("),
               std::string::npos);
     EXPECT_NE(defaultLit.find("RVXSampleNormalMap("), std::string::npos);
     EXPECT_NE(defaultLit.find(
@@ -12949,17 +13102,17 @@ TEST_F(PipelineCacheValidationFixture,
 }
 
 TEST_F(PipelineCacheValidationFixture,
-       DeferredStandardLitMaterialTableIsPublishedAsOneCanonicalStructuredSrv)
+       DeferredMaterialParameterTableUsesTheCanonicalStructuredSrvAbi)
 {
     FakeDevice device(RVX::RHIBackendType::DX12);
     RVX::RHIBufferRef materialTable;
     std::string error;
-    ASSERT_TRUE(RVX::CreateDeferredStandardLitMaterialTable(
+    ASSERT_TRUE(CreateStandardLitMaterialTableFixture(
         device, materialTable, error)) << error;
     ASSERT_TRUE(static_cast<bool>(materialTable));
 
-    EXPECT_EQ(sizeof(RVX::DeferredMaterialClassification), materialTable->GetSize());
-    EXPECT_EQ(sizeof(RVX::DeferredMaterialClassification), materialTable->GetStride());
+    EXPECT_EQ(sizeof(RVX::MaterialGPUConstants), materialTable->GetSize());
+    EXPECT_EQ(sizeof(RVX::MaterialGPUConstants), materialTable->GetStride());
     EXPECT_EQ(RVX::RHIMemoryType::Upload, materialTable->GetMemoryType());
     EXPECT_TRUE(HasFlag(materialTable->GetUsage(),
                         RVX::RHIBufferUsage::Structured));
@@ -12967,17 +13120,16 @@ TEST_F(PipelineCacheValidationFixture,
                         RVX::RHIBufferUsage::ShaderResource));
 
     const auto* const fakeTable = static_cast<const FakeBuffer*>(materialTable.Get());
-    ASSERT_EQ(sizeof(RVX::DeferredMaterialClassification),
+    ASSERT_EQ(sizeof(RVX::MaterialGPUConstants),
               fakeTable->GetStorage().size());
-    RVX::DeferredMaterialClassification row{};
+    RVX::MaterialGPUConstants row{};
     std::memcpy(&row, fakeTable->GetStorage().data(), sizeof(row));
     EXPECT_EQ(static_cast<RVX::uint32>(
-                  RVX::DeferredMaterialShadingModel::StandardLit),
+                  RVX::MaterialGPUShadingModel::StandardLit),
               row.shadingModel);
-    EXPECT_EQ(RVX::DeferredMaterialClassification::SchemaVersion,
-              row.schemaVersion);
-    EXPECT_EQ(0u, row.reserved0);
-    EXPECT_EQ(0u, row.reserved1);
+    EXPECT_EQ(0u, row.materialTableIndex);
+    EXPECT_FLOAT_EQ(4.0f, row.toonBands);
+    EXPECT_FLOAT_EQ(0.0f, row.toonOutlineWidth);
 }
 
 TEST_F(PipelineCacheValidationFixture,
@@ -13080,7 +13232,7 @@ TEST_F(PipelineCacheValidationFixture,
         ASSERT_NE(nullptr, materialTable);
         EXPECT_EQ(graphInputs.materialTable.Get(), materialTable->buffer);
         EXPECT_EQ(0u, materialTable->offset);
-        EXPECT_EQ(sizeof(RVX::DeferredMaterialClassification),
+        EXPECT_EQ(sizeof(RVX::MaterialGPUConstants),
                   materialTable->range);
         EXPECT_EQ(nullptr, materialTable->textureView);
         for (RVX::uint32 binding = 8; binding <= 20; ++binding)
@@ -13382,8 +13534,8 @@ TEST_F(PipelineCacheValidationFixture,
         ASSERT_TRUE(graphInputs.materialTableCreated)
             << graphInputs.materialTableError;
         RVX::RHIBufferDesc invalidDesc;
-        invalidDesc.size = sizeof(RVX::DeferredMaterialClassification) - 4u;
-        invalidDesc.stride = sizeof(RVX::DeferredMaterialClassification) - 4u;
+        invalidDesc.size = sizeof(RVX::MaterialGPUConstants) - 4u;
+        invalidDesc.stride = sizeof(RVX::MaterialGPUConstants) - 4u;
         invalidDesc.usage = RVX::RHIBufferUsage::Structured |
             RVX::RHIBufferUsage::ShaderResource;
         invalidDesc.memoryType = RVX::RHIMemoryType::Upload;
@@ -13463,6 +13615,11 @@ TEST_F(PipelineCacheValidationFixture,
         FindShaderDirectory() / "DefaultLit.hlsl");
     const std::string shadowHeader = ReadTextFile(
         FindShaderDirectory() / "Include" / "DirectionalShadow.hlsli");
+    const std::string outline = ReadTextFile(
+        FindShaderDirectory() / "PostProcess" / "ScreenSpaceOutline.hlsl");
+    const std::string outlineVerifier = ReadTextFile(
+        FindShaderDirectory() / "PostProcess" /
+        "ScreenSpaceOutlineVerifier.hlsl");
     EXPECT_NE(source.find("#include \"Include/DirectionalShadow.hlsli\""),
               std::string::npos);
     EXPECT_NE(defaultLit.find("#include \"Include/DirectionalShadow.hlsli\""),
@@ -13480,13 +13637,18 @@ TEST_F(PipelineCacheValidationFixture,
     EXPECT_NE(std::string::npos,
               source.find("HDRSceneColor[pixel] = float4(0.0, 0.0, 0.0, 1.0)"));
     EXPECT_NE(std::string::npos,
-              source.find("StructuredBuffer<DeferredMaterialClassification> MaterialClassificationTable"));
+              source.find("StructuredBuffer<MaterialParameterData> MaterialClassificationTable"));
     EXPECT_NE(std::string::npos,
               source.find(": register(t7, space0)"));
     EXPECT_NE(std::string::npos,
               source.find("MaterialClassificationTable[materialTableIndex]"));
     EXPECT_NE(std::string::npos,
-              source.find("materialTableIndex != 0u"));
+              source.find("material.MaterialTableIndex != materialTableIndex"));
+    EXPECT_NE(std::string::npos,
+              outline.find("material.MaterialTableIndex == materialId"));
+    EXPECT_NE(std::string::npos,
+              outlineVerifier.find(
+                  "material.MaterialTableIndex == materialId"));
     EXPECT_NE(std::string::npos,
               source.find("StructuredBuffer<RVXExposureState> ExposureStateBuffer"));
     EXPECT_NE(std::string::npos,
@@ -13495,6 +13657,15 @@ TEST_F(PipelineCacheValidationFixture,
               source.find("RVXExposureProducerScale(exposureState)"));
     EXPECT_NE(std::string::npos,
               source.find("(directional + local + ambient + emissive) * preExposure"));
+    EXPECT_NE(std::string::npos,
+              defaultLit.find(
+                  "input.ReceivesShadowValue > 0.5f ? 1.0f : 0.0f"));
+    EXPECT_NE(std::string::npos,
+              source.find("const bool receivesShadow = emissiveReceiver.a > 0.5f"));
+    EXPECT_NE(std::string::npos,
+              source.find("const float shadow = receivesShadow"));
+    EXPECT_NE(std::string::npos,
+              source.find("? SampleDirectionalShadow(worldPos, normal)"));
     EXPECT_NE(std::string::npos,
               shadowHeader.find("RVX_DIRECTIONAL_SHADOW_POISSON_TAP_COUNT = 16"));
     EXPECT_NE(std::string::npos,
@@ -13509,7 +13680,8 @@ TEST_F(PipelineCacheValidationFixture,
               shadowHeader.find("float SampleDirectionalShadowCascade("));
 
     EXPECT_NE(std::string::npos,
-              defaultLit.find("output.materialTableIndex = 0u;"));
+              defaultLit.find(
+                  "output.materialTableIndex = surface.material.MaterialTableIndex;"));
     EXPECT_NE(std::string::npos,
               defaultLit.find("RVXExposureProducerScale(exposureState)"));
     EXPECT_NE(std::string::npos,

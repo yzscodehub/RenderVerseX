@@ -186,6 +186,13 @@ namespace RVX
         /// Full-resolution mask for rejecting unstable temporal history
         RGTextureHandle reactiveMaskTarget;
 
+        /**
+         * Request full-resolution normal/material identity outputs for the
+         * typed Toon outline post-process. Forward+ uses this to select its
+         * on-demand MRT family; DeferredQuality reuses the canonical GBuffer.
+         */
+        uint8 toonOutlineRequested = 0;
+
         /// Source cubemap sampled by SkyboxPass when the frame selects a cubemap sky.
         RGTextureHandle environmentSkyTexture;
 

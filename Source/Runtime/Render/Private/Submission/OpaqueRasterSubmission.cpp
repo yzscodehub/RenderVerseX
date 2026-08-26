@@ -20,6 +20,7 @@ namespace RVX
         switch (outputFamily)
         {
             case OpaqueRasterOutputFamily::ForwardSceneHDR:
+            case OpaqueRasterOutputFamily::ForwardSceneHDRWithSurfaceData:
                 return surfaceRoute == OpaqueRasterSurfaceRoute::AllOpaque ||
                     surfaceRoute ==
                         OpaqueRasterSurfaceRoute::ForwardSpecialOpaque;
@@ -84,6 +85,59 @@ namespace RVX
                               request.reverseWinding);
                     break;
 
+                default:
+                    break;
+            }
+            return prepared;
+        }
+
+        if (request.outputFamily ==
+            OpaqueRasterOutputFamily::ForwardSceneHDRWithSurfaceData)
+        {
+            switch (request.route)
+            {
+                case OpaqueRasterSubmissionRoute::Direct:
+                    prepared.m_pipeline =
+                        m_pipelineCache.GetForwardSurfaceDataPipelineForVariant(
+                            request.materialVariant,
+                            request.colorTargetFormat,
+                            request.skinned
+                                ? DefaultLitDirectVertexInputMode::Skinned
+                                : DefaultLitDirectVertexInputMode::Rigid,
+                            request.cullMode,
+                            request.reverseWinding);
+                    break;
+                case OpaqueRasterSubmissionRoute::Instanced:
+                case OpaqueRasterSubmissionRoute::GPUDriven:
+                    prepared.m_pipeline = request.usesMaterialParameterTable
+                        ? m_pipelineCache
+                              .GetInstancedMaterialForwardSurfaceDataPipelineForVariant(
+                                  request.materialVariant,
+                                  request.colorTargetFormat,
+                                  request.cullMode,
+                                  request.reverseWinding)
+                        : m_pipelineCache
+                              .GetGPUDrivenForwardSurfaceDataPipelineForVariant(
+                                  request.materialVariant,
+                                  request.colorTargetFormat,
+                                  request.cullMode,
+                                  request.reverseWinding);
+                    break;
+                case OpaqueRasterSubmissionRoute::GPUScene:
+                    prepared.m_pipeline = request.usesMaterialParameterTable
+                        ? m_pipelineCache
+                              .GetGPUSceneInstancedMaterialForwardSurfaceDataPipelineForVariant(
+                                  request.materialVariant,
+                                  request.colorTargetFormat,
+                                  request.cullMode,
+                                  request.reverseWinding)
+                        : m_pipelineCache
+                              .GetGPUSceneForwardSurfaceDataPipelineForVariant(
+                                  request.materialVariant,
+                                  request.colorTargetFormat,
+                                  request.cullMode,
+                                  request.reverseWinding);
+                    break;
                 default:
                     break;
             }

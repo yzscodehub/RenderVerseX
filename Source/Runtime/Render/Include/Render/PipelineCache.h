@@ -539,6 +539,8 @@ namespace RVX
         uint64 transparentPipelineHash = 0;
         uint64 skyboxPipelineHash = 0;
         uint64 toneMappingPipelineHash = 0;
+        uint64 screenSpaceOutlinePipelineHash = 0;
+        uint64 screenSpaceOutlineVerifierPipelineHash = 0;
         uint64 bloomPipelineHash = 0;
         uint64 gtaoSurfacePipelineHash = 0;
         uint64 gtaoHorizonPipelineHash = 0;
@@ -687,6 +689,48 @@ namespace RVX
             bool reverseWinding = false);
 
         /**
+         * @brief Forward HDR pipelines that also export canonical surface data.
+         *
+         * The attachment ABI is scene HDR, RGBA8 oct-normal/roughness/metallic,
+         * and R32_UINT material-table identity. These variants are selected
+         * only when a typed outline consumer is requested for the view.
+         */
+        RHIPipeline* GetForwardSurfaceDataPipelineForVariant(
+            MaterialPipelineVariant variant,
+            RHIFormat renderTargetFormat,
+            DefaultLitDirectVertexInputMode inputMode,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
+        RHIPipeline* GetGPUDrivenForwardSurfaceDataPipelineForVariant(
+            MaterialPipelineVariant variant,
+            RHIFormat renderTargetFormat,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
+        RHIPipeline* GetInstancedMaterialForwardSurfaceDataPipelineForVariant(
+            MaterialPipelineVariant variant,
+            RHIFormat renderTargetFormat,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
+        RHIPipeline* GetGPUSceneForwardSurfaceDataPipelineForVariant(
+            MaterialPipelineVariant variant,
+            RHIFormat renderTargetFormat,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
+        RHIPipeline*
+        GetGPUSceneInstancedMaterialForwardSurfaceDataPipelineForVariant(
+            MaterialPipelineVariant variant,
+            RHIFormat renderTargetFormat,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
+
+        [[nodiscard]] bool IsForwardSurfaceDataPipelineFamilyReady()
+            const noexcept
+        {
+            return m_initialized && m_forwardSurfaceDataPixelShader &&
+                   m_pipelineLayout;
+        }
+
+        /**
          * @brief Deferred GBuffer pipelines using the canonical four-target ABI.
          *
          * The formats are fixed by the renderer contract: RGBA8_UNORM_SRGB,
@@ -833,6 +877,24 @@ namespace RVX
          */
         RHIPipeline* GetToneMappingPipeline() const { return m_toneMappingPipeline.Get(); }
         RHIPipeline* GetToneMappingPipeline(RHIFormat outputFormat);
+
+        /**
+         * @brief Get the typed HDR ToonLit screen-space outline pipeline.
+         *
+         * Screen-space outlines are defined only for the scene-linear
+         * RGBA16_FLOAT surface consumed before ToneMapping. Other output
+         * formats are rejected rather than silently changing color domains.
+         */
+        RHIPipeline* GetScreenSpaceOutlinePipeline(RHIFormat outputFormat);
+
+        /**
+         * @brief Get the qualification-only R8 mask verifier for screen-space outlines.
+         *
+         * This pipeline is intentionally separate from the visible outline
+         * pass. It writes 0 for unchanged pixels, 1 for changed ToonLit pixels,
+         * and 2 for changed non-Toon pixels.
+         */
+        RHIPipeline* GetScreenSpaceOutlineVerifierPipeline(RHIFormat outputFormat);
 
         /**
          * @brief Get the fullscreen Bloom post-process pipeline
@@ -1002,6 +1064,18 @@ namespace RVX
         /** @brief Layout for the five-pass GTAO reconstruction and filtering family. */
         RHIPipelineLayout* GetGTAOLayout() const { return m_gtaoPipelineLayout.Get(); }
 
+        /** @brief Layout for the typed screen-space outline HDR pass. */
+        RHIPipelineLayout* GetScreenSpaceOutlineLayout() const
+        {
+            return m_screenSpaceOutlinePipelineLayout.Get();
+        }
+
+        /** @brief Layout for the qualification-only outline verifier. */
+        RHIPipelineLayout* GetScreenSpaceOutlineVerifierLayout() const
+        {
+            return m_screenSpaceOutlineVerifierPipelineLayout.Get();
+        }
+
         /**
          * @brief Get the runtime UI overlay pipeline layout
          */
@@ -1046,6 +1120,18 @@ namespace RVX
 
         /** @brief Descriptor layout for current surface, AO filtering, and temporal inputs. */
         RHIDescriptorSetLayout* GetGTAOSetLayout() const { return m_gtaoSetLayout.Get(); }
+
+        /** @brief Descriptor layout for screen HDR/depth/normal/material outline inputs. */
+        RHIDescriptorSetLayout* GetScreenSpaceOutlineSetLayout() const
+        {
+            return m_screenSpaceOutlineSetLayout.Get();
+        }
+
+        /** @brief Descriptor ABI for the qualification-only outline verifier. */
+        RHIDescriptorSetLayout* GetScreenSpaceOutlineVerifierSetLayout() const
+        {
+            return m_screenSpaceOutlineVerifierSetLayout.Get();
+        }
 
         /**
          * @brief Get the descriptor set layout used by ray-traced reflection denoise pass
@@ -1479,6 +1565,8 @@ namespace RVX
         bool CreatePostProcessPipelineLayout();
         bool CreateTAAPipelineLayout();
         bool CreateGTAOPipelineLayout();
+        bool CreateScreenSpaceOutlinePipelineLayout();
+        bool CreateScreenSpaceOutlineVerifierPipelineLayout();
         bool CreateUIPipelineLayout();
         bool CreateRayTracedReflectionDenoisePipelineLayout();
         bool CreateSkyboxPipelineLayout();
@@ -1522,8 +1610,17 @@ namespace RVX
             MaterialPipelineVariant variant,
             uint32 purposeSalt,
             const char* debugName);
+        RHIPipelineRef GetOrCreateForwardSurfaceDataPipeline(
+            RHIGraphicsPipelineDesc pipelineDesc,
+            MaterialPipelineVariant variant,
+            uint32 purposeSalt,
+            const char* debugName);
         bool EnsureDeferredLightingPipeline();
         [[nodiscard]] RHIGraphicsPipelineDesc MakeGBufferPipelineDesc(
+            RHIGraphicsPipelineDesc pipelineDesc,
+            const char* debugName) const;
+        [[nodiscard]] RHIGraphicsPipelineDesc
+        MakeForwardSurfaceDataPipelineDesc(
             RHIGraphicsPipelineDesc pipelineDesc,
             const char* debugName) const;
         RHIPipelineRef GetOrCreateDepthOnlyPipeline(
@@ -1561,6 +1658,9 @@ namespace RVX
                                                  bool depthTest = true,
                                                  bool updatePrimaryStats = true);
         RHIPipelineRef GetOrCreateToneMappingPipeline(RHIFormat outputFormat);
+        RHIPipelineRef GetOrCreateScreenSpaceOutlinePipeline(RHIFormat outputFormat);
+        RHIPipelineRef GetOrCreateScreenSpaceOutlineVerifierPipeline(
+            RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateBloomPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateBloomAdditivePipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateGTAOSurfacePipeline();
@@ -1661,6 +1761,10 @@ namespace RVX
             bool reverseWinding) const;
         RHIGraphicsPipelineDesc BuildSkyboxPipelineDesc(RHIFormat outputFormat, bool depthTest = true) const;
         RHIGraphicsPipelineDesc BuildToneMappingPipelineDesc(RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildScreenSpaceOutlinePipelineDesc(
+            RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildScreenSpaceOutlineVerifierPipelineDesc(
+            RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildBloomPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildBloomAdditivePipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildGTAOPipelineDesc(
@@ -1767,6 +1871,7 @@ namespace RVX
         RHIShaderRef m_gpuSceneVertexShader;
         RHIShaderRef m_gpuSceneInstancedMaterialVertexShader;
         RHIShaderRef m_pixelShader;
+        RHIShaderRef m_forwardSurfaceDataPixelShader;
         RHIShaderRef m_gBufferPixelShader;
         RHIShaderRef m_deferredLightingComputeShader;
         RHIShaderRef m_exposureHistogramClearComputeShader;
@@ -1783,6 +1888,8 @@ namespace RVX
         RHIShaderRef m_skyboxPixelShader;
         RHIShaderRef m_toneMappingVertexShader;
         RHIShaderRef m_toneMappingPixelShader;
+        RHIShaderRef m_screenSpaceOutlinePixelShader;
+        RHIShaderRef m_screenSpaceOutlineVerifierPixelShader;
         RHIShaderRef m_bloomVertexShader;
         RHIShaderRef m_bloomPixelShader;
         RHIShaderRef m_gtaoSurfacePixelShader;
@@ -1831,6 +1938,8 @@ namespace RVX
         std::unique_ptr<ShaderProgramMetadata> m_gpuSceneVsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_gpuSceneInstancedMaterialVsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_psCompileResult;
+        std::unique_ptr<ShaderProgramMetadata>
+            m_forwardSurfaceDataPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_gBufferPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_deferredLightingCsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_exposureHistogramClearCsCompileResult;
@@ -1847,6 +1956,9 @@ namespace RVX
         std::unique_ptr<ShaderProgramMetadata> m_skyboxPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_toneMappingVsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_toneMappingPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_screenSpaceOutlinePsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata>
+            m_screenSpaceOutlineVerifierPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_bloomVsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_bloomPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_gtaoSurfacePsCompileResult;
@@ -1906,6 +2018,10 @@ namespace RVX
         RHIPipelineLayoutRef m_taaPipelineLayout;
         RHIDescriptorSetLayoutRef m_gtaoSetLayout;
         RHIPipelineLayoutRef m_gtaoPipelineLayout;
+        RHIDescriptorSetLayoutRef m_screenSpaceOutlineSetLayout;
+        RHIPipelineLayoutRef m_screenSpaceOutlinePipelineLayout;
+        RHIDescriptorSetLayoutRef m_screenSpaceOutlineVerifierSetLayout;
+        RHIPipelineLayoutRef m_screenSpaceOutlineVerifierPipelineLayout;
         RHIDescriptorSetLayoutRef m_uiTextureSetLayout;
         RHIPipelineLayoutRef m_uiPipelineLayout;
         RHIDescriptorSetLayoutRef m_rayTracedReflectionDenoiseSetLayout;
@@ -1948,6 +2064,8 @@ namespace RVX
         RHIPipelineRef m_gtaoBilateralHorizontalPipeline;
         RHIPipelineRef m_gtaoBilateralVerticalPipeline;
         RHIPipelineRef m_gtaoTemporalPipeline;
+        RHIPipelineRef m_screenSpaceOutlinePipeline;
+        RHIPipelineRef m_screenSpaceOutlineVerifierPipeline;
         RHIPipelineRef m_cameraVelocityPipeline;
         RHIPipelineRef m_objectVelocityPipeline;
         RHIPipelineRef m_rigidObjectVelocityPipeline;

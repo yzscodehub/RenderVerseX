@@ -92,6 +92,41 @@ TEST(CookedMaterialArtifactValidation, RoundTripIsDeterministicAndCanonical)
               RVX::GetMaterialParameterLayoutHashV1());
 }
 
+TEST(CookedMaterialArtifactValidation,
+     ToonParametersRoundTripWithoutStandardLitFallback)
+{
+    auto artifact = MakeArtifact();
+    artifact.logicalMaterialId = "Materials/ToonRoundTrip";
+    artifact.material.descriptor.shadingModel = RVX::MaterialShadingModel::ToonLit;
+    artifact.material.descriptor.programFamily = std::string(
+        RVX::GetMaterialProgramFamily(RVX::MaterialShadingModel::ToonLit));
+    artifact.material.parameters.toonBands = 7.0f;
+    artifact.material.parameters.toonSpecularThreshold = 0.58f;
+    artifact.material.parameters.toonRimStrength = 1.75f;
+    artifact.material.parameters.toonOutlineWidth = 2.25f;
+    artifact.material.parameters.toonShadowTint = {0.1f, 0.3f, 0.9f};
+
+    std::string error;
+    ASSERT_TRUE(RVX::Resource::FinalizeCookedMaterialArtifact(artifact, error))
+        << error;
+    std::vector<RVX::uint8> bytes;
+    ASSERT_TRUE(RVX::Resource::SerializeCookedMaterialArtifact(
+        artifact, bytes, error)) << error;
+
+    RVX::Resource::CookedMaterialArtifact decoded;
+    ASSERT_TRUE(RVX::Resource::DeserializeCookedMaterialArtifact(
+        bytes, decoded, error)) << error;
+    EXPECT_EQ(decoded.material.descriptor.shadingModel,
+              RVX::MaterialShadingModel::ToonLit);
+    EXPECT_EQ(decoded.material.descriptor.programFamily, "toon-lit-v1");
+    EXPECT_FLOAT_EQ(decoded.material.parameters.toonBands, 7.0f);
+    EXPECT_FLOAT_EQ(decoded.material.parameters.toonSpecularThreshold, 0.58f);
+    EXPECT_FLOAT_EQ(decoded.material.parameters.toonRimStrength, 1.75f);
+    EXPECT_FLOAT_EQ(decoded.material.parameters.toonOutlineWidth, 2.25f);
+    EXPECT_EQ(decoded.material.parameters.toonShadowTint,
+              (RVX::Vec3{0.1f, 0.3f, 0.9f}));
+}
+
 TEST(CookedMaterialArtifactValidation, InvalidContractFailsClosed)
 {
     std::string error;

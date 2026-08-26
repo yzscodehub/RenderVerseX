@@ -285,6 +285,102 @@ TEST(CookedMaterialLoaderValidation, PreparesStandaloneMaterialAndStableDependen
 }
 
 TEST(CookedMaterialLoaderValidation,
+     PreparesOpaqueToonMaterialWithAllAuthoredParameters)
+{
+    TemporaryDirectory temporary;
+    const fs::path materialPath = temporary.Get() / "Toon.rvmat";
+    const fs::path texturePath = temporary.Get() / "textures" / "albedo.rva";
+    ASSERT_TRUE(WriteTexture(texturePath, RVX::Resource::TextureUsage::Color, true));
+
+    auto artifact = MakeArtifact("textures/albedo.rva", HashFile(texturePath));
+    artifact.logicalMaterialId = "Materials/ToonLoaderValidation";
+    artifact.material.descriptor.shadingModel = RVX::MaterialShadingModel::ToonLit;
+    artifact.material.descriptor.programFamily = std::string(
+        RVX::GetMaterialProgramFamily(RVX::MaterialShadingModel::ToonLit));
+    artifact.material.parameters.toonBands = 5.0f;
+    artifact.material.parameters.toonSpecularThreshold = 0.45f;
+    artifact.material.parameters.toonRimStrength = 2.0f;
+    artifact.material.parameters.toonOutlineWidth = 1.5f;
+    artifact.material.parameters.toonShadowTint = {0.2f, 0.6f, 0.9f};
+    ASSERT_TRUE(WriteMaterial(materialPath, std::move(artifact)));
+
+    RVX::Resource::CookedMaterialLoader loader;
+    RVX::Resource::PreparedResourceBundle bundle;
+    RVX::Resource::ResourceLoadError error;
+    ASSERT_TRUE(loader.Prepare(MakeContext(materialPath), bundle, error))
+        << error.message;
+    const auto* material = dynamic_cast<RVX::Resource::MaterialResource*>(
+        bundle.GetRoot().Get());
+    ASSERT_NE(material, nullptr);
+    const RVX::MaterialDefinition& definition =
+        material->GetMaterialDefinition();
+    EXPECT_EQ(definition.descriptor.shadingModel,
+              RVX::MaterialShadingModel::ToonLit);
+    EXPECT_FLOAT_EQ(definition.parameters.toonBands, 5.0f);
+    EXPECT_FLOAT_EQ(definition.parameters.toonSpecularThreshold, 0.45f);
+    EXPECT_FLOAT_EQ(definition.parameters.toonRimStrength, 2.0f);
+    EXPECT_FLOAT_EQ(definition.parameters.toonOutlineWidth, 1.5f);
+    EXPECT_EQ(definition.parameters.toonShadowTint,
+              (RVX::Vec3{0.2f, 0.6f, 0.9f}));
+}
+
+TEST(CookedMaterialLoaderValidation, RejectsToonTranslucencyUntilGFX15)
+{
+    TemporaryDirectory temporary;
+    const fs::path materialPath = temporary.Get() / "ToonTranslucent.rvmat";
+    const fs::path texturePath = temporary.Get() / "textures" / "albedo.rva";
+    ASSERT_TRUE(WriteTexture(texturePath, RVX::Resource::TextureUsage::Color, true));
+
+    auto artifact = MakeArtifact("textures/albedo.rva", HashFile(texturePath));
+    artifact.material.descriptor.shadingModel = RVX::MaterialShadingModel::ToonLit;
+    artifact.material.descriptor.programFamily = std::string(
+        RVX::GetMaterialProgramFamily(RVX::MaterialShadingModel::ToonLit));
+    artifact.material.descriptor.blendMode = RVX::MaterialBlendMode::AlphaBlend;
+    artifact.material.descriptor.translucencyPhase =
+        RVX::MaterialTranslucencyPhase::Standard;
+    artifact.material.descriptor.shadowPolicy = RVX::MaterialShadowPolicy::Receive;
+    artifact.material.parameters.alphaMode = RVX::MaterialSourceAlphaMode::Blend;
+    ASSERT_TRUE(WriteMaterial(materialPath, std::move(artifact)));
+
+    RVX::Resource::CookedMaterialLoader loader;
+    RVX::Resource::PreparedResourceBundle bundle;
+    RVX::Resource::ResourceLoadError error;
+    EXPECT_FALSE(loader.Prepare(MakeContext(materialPath), bundle, error));
+    EXPECT_NE(error.message.find("GFX15"), std::string::npos);
+}
+
+TEST(CookedMaterialLoaderValidation,
+     RejectsActiveToonRampUntilTheRuntimeDescriptorLayoutSupportsIt)
+{
+    TemporaryDirectory temporary;
+    const fs::path materialPath = temporary.Get() / "ToonRamp.rvmat";
+    const fs::path texturePath = temporary.Get() / "textures" / "ramp.rva";
+    ASSERT_TRUE(WriteTexture(texturePath, RVX::Resource::TextureUsage::Color, true));
+
+    auto artifact = MakeArtifact("textures/ramp.rva", HashFile(texturePath));
+    artifact.material.descriptor.shadingModel = RVX::MaterialShadingModel::ToonLit;
+    artifact.material.descriptor.programFamily = std::string(
+        RVX::GetMaterialProgramFamily(RVX::MaterialShadingModel::ToonLit));
+    artifact.material.descriptor.featureMask |=
+        1ull << static_cast<RVX::uint8>(RVX::MaterialTextureSlot::ToonRamp);
+    RVX::Resource::CookedMaterialTextureBinding ramp;
+    ramp.definition.slot = RVX::MaterialTextureSlot::ToonRamp;
+    ramp.artifactPath = "textures/ramp.rva";
+    ramp.expectedContentHash = HashFile(texturePath);
+    ramp.usage = RVX::Resource::TextureUsage::Color;
+    ramp.isSRGB = true;
+    ramp.fallbackSemantic = RVX::Resource::TextureFallbackSemantic::White;
+    artifact.textureBindings.push_back(std::move(ramp));
+    ASSERT_TRUE(WriteMaterial(materialPath, std::move(artifact)));
+
+    RVX::Resource::CookedMaterialLoader loader;
+    RVX::Resource::PreparedResourceBundle bundle;
+    RVX::Resource::ResourceLoadError error;
+    EXPECT_FALSE(loader.Prepare(MakeContext(materialPath), bundle, error));
+    EXPECT_NE(error.message.find("texture slot"), std::string::npos);
+}
+
+TEST(CookedMaterialLoaderValidation,
      SynchronizesCompatibilityMaterialSlotMasks)
 {
     auto source = std::make_shared<RVX::Material>("slot-mask-source");

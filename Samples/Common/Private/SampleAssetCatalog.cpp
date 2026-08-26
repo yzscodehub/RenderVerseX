@@ -453,6 +453,17 @@ namespace RVX
                 return false;
             }
 
+            const auto packageOnly = cook->find("packageOnly");
+            if (packageOnly != cook->end())
+            {
+                if (!packageOnly->is_boolean())
+                {
+                    outError = "Sample asset cook packageOnly must be a boolean";
+                    return false;
+                }
+                output.packageOnly = packageOnly->get<bool>();
+            }
+
             output.cookSettingsHash = std::move(cookSettingsHash);
             output.recipeHash = std::move(recipeHash);
             output.declared = true;
@@ -1448,6 +1459,7 @@ namespace RVX
             entry->cook.manifestContentIdentity;
         expectation.expectedCookSettingsHash = entry->cook.cookSettingsHash;
         expectation.expectedRecipeHash = entry->cook.recipeHash;
+        expectation.verifyMountedSource = !entry->cook.packageOnly;
         result.resourceReceipt = Resource::VerifyCookedAssetAdmission(
             manifest,
             m_assetRoot,

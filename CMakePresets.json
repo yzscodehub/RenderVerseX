@@ -141,6 +141,7 @@
         "RVX_ENABLE_GFX11_TAA_NATIVE": "ON",
         "RVX_ENABLE_GFX12_EXPOSURE_NATIVE": "ON",
         "RVX_ENABLE_GFX13_GTAO_NATIVE": "ON",
+        "RVX_ENABLE_GFX14_TOON_NATIVE": "ON",
         "RVX_ENABLE_PR_SMOKE": "OFF"
       }
     },
@@ -804,6 +805,17 @@
       },
       "output": { "outputOnFailure": true },
       "filter": { "include": { "label": "^suite\\.gfx13-gtao$" } }
+    },
+    {
+      "name": "win_x64_qualification_debug_gfx14_toon",
+      "inherits": "win_x64_qualification_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx14-toon$" } }
     },
     {
       "name": "linux_x64_debug_lane_base",

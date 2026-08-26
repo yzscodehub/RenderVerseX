@@ -199,7 +199,15 @@ MaterialParameterData ResolveMaterialParameters()
     material.AlphaMode = AlphaMode;
     material.AlphaCutoff = AlphaCutoff;
     material.Workflow = Workflow;
-    material.DoubleSided_MaterialPaddingBits = DoubleSided_MaterialPaddingBits;
+    material.DoubleSided = DoubleSided;
+    material.ShadingModel = ShadingModel;
+    material.MaterialTableIndex = MaterialTableIndex;
+    material.ToonBands = ToonBands;
+    material.ToonSpecularThreshold = ToonSpecularThreshold;
+    material.ToonRimStrength = ToonRimStrength;
+    material.ToonOutlineWidth = ToonOutlineWidth;
+    material.ToonPadding = ToonPadding;
+    material.ToonShadowTint = ToonShadowTint;
     material.BaseColorUVScaleOffset = BaseColorUVScaleOffset;
     material.BaseColorUVRotationSet = BaseColorUVRotationSet;
     material.NormalUVScaleOffset = NormalUVScaleOffset;
@@ -234,7 +242,7 @@ void PSMainMasked(
     float4 faceTangent = float4(1.0f, 0.0f, 0.0f, 1.0f);
     RVXResolveFrontFaceBasis(
         isFrontFace,
-        material.DoubleSided_MaterialPaddingBits.x,
+        material.DoubleSided,
         faceNormal,
         faceTangent);
     RVXApplyAlphaMask(

@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -34,6 +35,23 @@ using namespace RVX;
 
 namespace
 {
+    float EvaluateToonDiffuseQuantizationReference(
+        float nDotL,
+        float authoredBandCount)
+    {
+        const float bandCount = std::clamp(
+            std::round(authoredBandCount), 1.0f, 64.0f);
+        const float lit = std::clamp(nDotL, 0.0f, 1.0f);
+        if (bandCount <= 1.0f)
+        {
+            return lit;
+        }
+
+        const float bandIndex = std::min(
+            std::floor(lit * bandCount), bandCount - 1.0f);
+        return bandIndex / (bandCount - 1.0f);
+    }
+
     Resource::TextureHandle PrepareCookedTexture(
         const std::filesystem::path& path,
         std::string& outError)
@@ -1224,7 +1242,8 @@ namespace
         ASSERT_TRUE(toonHandle.IsValid());
         MaterialShadowPolicy shadow =
             MaterialShadowPolicy::CastAndReceive;
-        EXPECT_FALSE(resolvePolicy(toonHandle, shadow));
+        EXPECT_TRUE(resolvePolicy(toonHandle, shadow));
+        EXPECT_EQ(MaterialShadowPolicy::CastAndReceive, shadow);
 
         MaterialDefinition thin;
         thin.descriptor.shadingModel =
@@ -1360,9 +1379,9 @@ namespace
         const RenderResourceHandle toonHandle = uploadDefinition(
             9165, "DeferredToonMaterial", toon);
         ASSERT_TRUE(toonHandle.IsValid());
-        path = SurfacePathEligibility::DeferredOpaque;
-        EXPECT_FALSE(resolvePath(toonHandle, path));
-        EXPECT_EQ(SurfacePathEligibility::Unsupported, path);
+        path = SurfacePathEligibility::Unsupported;
+        EXPECT_TRUE(resolvePath(toonHandle, path));
+        EXPECT_EQ(SurfacePathEligibility::DeferredOpaque, path);
 
         materialSystem.Shutdown();
         gpuResources.Shutdown();
@@ -1494,6 +1513,73 @@ namespace
     }
 
     TEST(MaterialSystemValidation,
+         MaterialBinderEncodesDescriptorOwnedToonAndStableTableSlot)
+    {
+        MaterialStaticDescriptor descriptor;
+        descriptor.shadingModel = MaterialShadingModel::ToonLit;
+        descriptor.programFamily = std::string(
+            GetMaterialProgramFamily(MaterialShadingModel::ToonLit));
+
+        MaterialSourceData source;
+        source.toonBands = 7.0f;
+        source.toonSpecularThreshold = 0.61f;
+        source.toonRimStrength = 1.25f;
+        source.toonOutlineWidth = 2.5f;
+        source.toonShadowTint = {0.2f, 0.4f, 0.8f};
+
+        const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(
+            descriptor, source, {}, 37u);
+        EXPECT_EQ(constants.shadingModel, static_cast<uint32>(
+            MaterialGPUShadingModel::ToonLit));
+        EXPECT_EQ(constants.materialTableIndex, 37u);
+        EXPECT_FLOAT_EQ(constants.toonBands, source.toonBands);
+        EXPECT_FLOAT_EQ(constants.toonSpecularThreshold,
+                        source.toonSpecularThreshold);
+        EXPECT_FLOAT_EQ(constants.toonRimStrength, source.toonRimStrength);
+        EXPECT_FLOAT_EQ(constants.toonOutlineWidth, source.toonOutlineWidth);
+        EXPECT_EQ(constants.toonShadowTint,
+                  (Vec4{0.2f, 0.4f, 0.8f, 0.0f}));
+
+        const MaterialGPUConstants legacy =
+            MaterialBinder::ConvertToGPU(source);
+        EXPECT_EQ(legacy.shadingModel, static_cast<uint32>(
+            MaterialGPUShadingModel::StandardLit));
+        EXPECT_EQ(legacy.materialTableIndex, 0u);
+    }
+
+    TEST(MaterialSystemValidation, ToonDiffuseQuantizationBoundaryReferenceMatchesContract)
+    {
+        EXPECT_FLOAT_EQ(
+            0.0f, EvaluateToonDiffuseQuantizationReference(0.0f, 4.0f));
+        EXPECT_FLOAT_EQ(
+            0.0f, EvaluateToonDiffuseQuantizationReference(0.249f, 4.0f));
+        EXPECT_FLOAT_EQ(
+            1.0f / 3.0f,
+            EvaluateToonDiffuseQuantizationReference(0.25f, 4.0f));
+        EXPECT_FLOAT_EQ(
+            2.0f / 3.0f,
+            EvaluateToonDiffuseQuantizationReference(0.50f, 4.0f));
+        EXPECT_FLOAT_EQ(
+            1.0f, EvaluateToonDiffuseQuantizationReference(0.75f, 4.0f));
+        EXPECT_FLOAT_EQ(
+            1.0f, EvaluateToonDiffuseQuantizationReference(1.0f, 4.0f));
+
+        EXPECT_FLOAT_EQ(
+            0.0f, EvaluateToonDiffuseQuantizationReference(0.0f, 1.0f));
+        EXPECT_FLOAT_EQ(
+            0.73f, EvaluateToonDiffuseQuantizationReference(0.73f, 1.0f));
+
+        EXPECT_FLOAT_EQ(
+            0.5f, EvaluateToonDiffuseQuantizationReference(0.60f, 3.49f));
+        EXPECT_FLOAT_EQ(
+            2.0f / 3.0f,
+            EvaluateToonDiffuseQuantizationReference(0.60f, 3.5f));
+
+        EXPECT_FLOAT_EQ(
+            1.0f, EvaluateToonDiffuseQuantizationReference(1.0f, 65.0f));
+    }
+
+    TEST(MaterialSystemValidation,
          MaterialBinderPacksPerSlotUVTransformsIntoTheSharedGPUABI)
     {
         MaterialSourceData source;
@@ -1511,7 +1597,7 @@ namespace
 
         const MaterialGPUConstants constants =
             MaterialBinder::ConvertToGPU(source, bindings);
-        static_assert(sizeof(MaterialGPUConstants) == 240);
+        static_assert(sizeof(MaterialGPUConstants) == 272);
         ASSERT_EQ(RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT,
                   constants.uvTransforms.size());
         EXPECT_FLOAT_EQ(2.0f, constants.uvTransforms[0].scaleOffset.x);
@@ -2979,6 +3065,172 @@ namespace
         gpuResources.Shutdown();
     }
 
+
+    TEST(MaterialSystemValidation,
+         MaterialClassificationTableUsesStableSlotsWithoutTextureResolution)
+    {
+        FakeDevice device;
+        RenderRuntimeTestHarness gpuResources;
+        ASSERT_TRUE(gpuResources.Initialize(&device));
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(
+            &device, &materialLayout, &gpuResources.GetRegistry()));
+
+        MaterialDefinition toon;
+        toon.descriptor.shadingModel = MaterialShadingModel::ToonLit;
+        toon.descriptor.programFamily = std::string(
+            GetMaterialProgramFamily(MaterialShadingModel::ToonLit));
+        toon.parameters.toonBands = 6.0f;
+        toon.parameters.toonSpecularThreshold = 0.55f;
+        toon.parameters.toonRimStrength = 1.5f;
+        toon.parameters.toonOutlineWidth = 3.0f;
+        toon.parameters.toonShadowTint = {0.25f, 0.5f, 0.75f};
+        Resource::MaterialResource resource;
+        resource.SetId(9901u);
+        resource.SetName("ToonClassificationMaterial");
+        ASSERT_TRUE(resource.SetMaterialDefinition(toon));
+        const RenderResourceHandle material =
+            gpuResources.ResolveOrUpload(&resource);
+        ASSERT_TRUE(material.IsValid());
+
+        const std::array handles = {material};
+        MaterialParameterTableSnapshot first;
+        ASSERT_TRUE(materialSystem.CreateMaterialClassificationTableSnapshot(
+            handles, first));
+        ASSERT_TRUE(first.IsValid());
+        EXPECT_EQ(first.schemaVersion,
+                  RVX_MATERIAL_PARAMETER_TABLE_SCHEMA_VERSION);
+        EXPECT_EQ(first.stride, sizeof(MaterialGPUConstants));
+        EXPECT_NE(first.contentHash, 0u);
+        ASSERT_LT(material.slot, first.slotCount);
+        ASSERT_LT(material.slot, first.rasterMaterialSemanticKeysBySlot.size());
+        EXPECT_NE(first.rasterMaterialSemanticKeysBySlot[material.slot], 0u);
+        ASSERT_EQ(first.valueOnlyRowEvidence.size(), first.slotCount);
+        const MaterialParameterTableRowEvidence& toonEvidence =
+            first.valueOnlyRowEvidence[material.slot];
+        EXPECT_EQ(toonEvidence.stableSlot, material.slot);
+        EXPECT_TRUE(toonEvidence.isAsset);
+        EXPECT_EQ(toonEvidence.shadingModel, MaterialShadingModel::ToonLit);
+        EXPECT_EQ(toonEvidence.programFamilyHash,
+                  GetMaterialProgramFamilyValueIdentity("toon-lit-v1"));
+        EXPECT_EQ(toonEvidence.parameterLayoutHash,
+                  GetMaterialParameterLayoutHashV1());
+        EXPECT_FLOAT_EQ(toonEvidence.toonBands, 6.0f);
+        EXPECT_FLOAT_EQ(toonEvidence.toonSpecularThreshold, 0.55f);
+        EXPECT_FLOAT_EQ(toonEvidence.toonRimStrength, 1.5f);
+        EXPECT_FLOAT_EQ(toonEvidence.toonOutlineWidth, 3.0f);
+        EXPECT_EQ(toonEvidence.toonShadowTint,
+                  (Vec3{0.25f, 0.5f, 0.75f}));
+        EXPECT_TRUE(toonEvidence.toonParametersValid);
+        EXPECT_TRUE(toonEvidence.IsStructurallyValid());
+
+        const auto* firstBuffer = static_cast<const FakeBuffer*>(first.buffer.Get());
+        const std::vector<uint8>& bytes = firstBuffer->GetStorage();
+        ASSERT_GE(bytes.size(),
+                  (static_cast<size_t>(material.slot) + 1U) *
+                      sizeof(MaterialGPUConstants));
+        MaterialGPUConstants constants{};
+        std::memcpy(&constants,
+                    bytes.data() +
+                        static_cast<size_t>(material.slot) *
+                            sizeof(MaterialGPUConstants),
+                    sizeof(constants));
+        EXPECT_EQ(constants.shadingModel, static_cast<uint32>(
+            MaterialGPUShadingModel::ToonLit));
+        EXPECT_EQ(constants.materialTableIndex, material.slot);
+        EXPECT_FLOAT_EQ(constants.toonBands, 6.0f);
+        EXPECT_FLOAT_EQ(constants.toonSpecularThreshold, 0.55f);
+        EXPECT_FLOAT_EQ(constants.toonRimStrength, 1.5f);
+        EXPECT_FLOAT_EQ(constants.toonOutlineWidth, 3.0f);
+        EXPECT_EQ(constants.toonShadowTint,
+                  (Vec4{0.25f, 0.5f, 0.75f, 0.0f}));
+
+        MaterialParameterTableSnapshot second;
+        ASSERT_TRUE(materialSystem.CreateMaterialClassificationTableSnapshot(
+            handles, second));
+        EXPECT_EQ(first.contentHash, second.contentHash);
+        EXPECT_EQ(first.rasterMaterialSemanticKeysBySlot,
+                  second.rasterMaterialSemanticKeysBySlot);
+        EXPECT_EQ(first.valueOnlyRowEvidence.size(),
+                  second.valueOnlyRowEvidence.size());
+        EXPECT_EQ(first.valueOnlyRowEvidence[material.slot].programFamilyHash,
+                  second.valueOnlyRowEvidence[material.slot].programFamilyHash);
+
+        const std::array conflicting = {
+            material,
+            RenderResourceHandle{material.slot, material.generation + 1u}};
+        MaterialParameterTableSnapshot rejected;
+        EXPECT_FALSE(materialSystem.CreateMaterialClassificationTableSnapshot(
+            conflicting, rejected));
+        EXPECT_FALSE(rejected.IsValid());
+
+        materialSystem.Shutdown();
+        gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation,
+         EmptyMaterialClassificationTablePublishesDefaultSentinel)
+    {
+        FakeDevice device;
+        RenderRuntimeTestHarness gpuResources;
+        ASSERT_TRUE(gpuResources.Initialize(&device));
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(
+            &device, &materialLayout, &gpuResources.GetRegistry()));
+
+        MaterialParameterTableSnapshot first;
+        ASSERT_TRUE(materialSystem.CreateMaterialClassificationTableSnapshot(
+            {}, first));
+        ASSERT_TRUE(first.IsValid());
+        EXPECT_TRUE(first.usesDefaultClassificationSentinel);
+        EXPECT_EQ(first.slotCount, 1u);
+        EXPECT_EQ(first.materialCount, 1u);
+        EXPECT_EQ(first.schemaVersion,
+                  RVX_MATERIAL_PARAMETER_TABLE_SCHEMA_VERSION);
+        EXPECT_EQ(first.stride, sizeof(MaterialGPUConstants));
+        EXPECT_NE(first.contentHash, 0u);
+        ASSERT_EQ(first.rasterMaterialSemanticKeysBySlot.size(), 1u);
+        EXPECT_NE(first.rasterMaterialSemanticKeysBySlot[0], 0u);
+        ASSERT_EQ(first.valueOnlyRowEvidence.size(), 1u);
+        const MaterialParameterTableRowEvidence& sentinelEvidence =
+            first.valueOnlyRowEvidence.front();
+        EXPECT_EQ(sentinelEvidence.stableSlot, 0u);
+        EXPECT_FALSE(sentinelEvidence.isAsset);
+        EXPECT_EQ(sentinelEvidence.shadingModel,
+                  MaterialShadingModel::StandardLit);
+        EXPECT_EQ(sentinelEvidence.programFamilyHash,
+                  GetMaterialProgramFamilyValueIdentity("standard-lit-v1"));
+        EXPECT_EQ(sentinelEvidence.parameterLayoutHash,
+                  GetMaterialParameterLayoutHashV1());
+        EXPECT_FALSE(sentinelEvidence.toonParametersValid);
+        EXPECT_TRUE(sentinelEvidence.IsStructurallyValid());
+
+        const auto* firstBuffer =
+            static_cast<const FakeBuffer*>(first.buffer.Get());
+        ASSERT_NE(firstBuffer, nullptr);
+        ASSERT_EQ(firstBuffer->GetStorage().size(),
+                  sizeof(MaterialGPUConstants));
+        MaterialGPUConstants constants{};
+        std::memcpy(&constants,
+                    firstBuffer->GetStorage().data(),
+                    sizeof(constants));
+        EXPECT_EQ(constants.shadingModel,
+                  static_cast<uint32>(MaterialGPUShadingModel::StandardLit));
+        EXPECT_EQ(constants.materialTableIndex, 0u);
+
+        MaterialParameterTableSnapshot second;
+        ASSERT_TRUE(materialSystem.CreateMaterialClassificationTableSnapshot(
+            {}, second));
+        EXPECT_TRUE(second.usesDefaultClassificationSentinel);
+        EXPECT_EQ(first.contentHash, second.contentHash);
+        EXPECT_EQ(first.rasterMaterialSemanticKeysBySlot,
+                  second.rasterMaterialSemanticKeysBySlot);
+
+        materialSystem.Shutdown();
+        gpuResources.Shutdown();
+    }
 
     TEST(MaterialSystemValidation, MaterialSetFallsBackWhenTextureIsNotGPUReady)
     {

@@ -99,11 +99,11 @@ SurfacePathEligibility ClassifySurfacePathEligibility(
         case MaterialShadingModel::ThinTransmission:
             return SurfacePathEligibility::ForwardTranslucency;
 
-        // Toon lighting and its outline inputs are added in GFX14. Until that
-        // contract is present, preserving the descriptor as unsupported is
-        // safer than silently routing it through StandardLit.
         case MaterialShadingModel::ToonLit:
-            return SurfacePathEligibility::Unsupported;
+            return descriptor.blendMode == MaterialBlendMode::Opaque ||
+                           descriptor.blendMode == MaterialBlendMode::Masked
+                       ? SurfacePathEligibility::DeferredOpaque
+                       : SurfacePathEligibility::Unsupported;
     }
     return SurfacePathEligibility::Unsupported;
 }

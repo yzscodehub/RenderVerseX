@@ -6,6 +6,8 @@
 #include "Samples/SampleCLI.h"
 
 #include "Core/Diagnostics/JsonWriter.h"
+#include "Render/Material/MaterialSystem.h"
+#include "RenderContracts/RenderMaterial.h"
 #include "RHI/RHI.h"
 
 #include <algorithm>
@@ -15,6 +17,7 @@
 #include <iostream>
 #include <ostream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 
@@ -518,7 +521,7 @@ namespace RVX
             if (receipt.schemaVersion == 2 || receipt.schemaVersion == 4 ||
                 receipt.schemaVersion == 5 || receipt.schemaVersion == 6 ||
                 receipt.schemaVersion == 7 || receipt.schemaVersion == 8 ||
-                receipt.schemaVersion == 10)
+                receipt.schemaVersion == 10 || receipt.schemaVersion == 11)
             {
                 stream << "      \"deferredOpaque\": {\"available\": "
                        << Diagnostics::JsonBool(receipt.deferredOpaque.available)
@@ -534,7 +537,8 @@ namespace RVX
             }
             if (receipt.schemaVersion == 4 || receipt.schemaVersion == 5 ||
                 receipt.schemaVersion == 6 || receipt.schemaVersion == 7 ||
-                receipt.schemaVersion == 8 || receipt.schemaVersion == 10)
+                receipt.schemaVersion == 8 || receipt.schemaVersion == 10 ||
+                receipt.schemaVersion == 11)
             {
                 stream << "      \"lighting\": {\"lightingPlanIdentity\": "
                        << receipt.lighting.lightingPlanIdentity
@@ -578,7 +582,7 @@ namespace RVX
             }
             if (receipt.schemaVersion == 5 || receipt.schemaVersion == 6 ||
                 receipt.schemaVersion == 7 || receipt.schemaVersion == 8 ||
-                receipt.schemaVersion == 10)
+                receipt.schemaVersion == 10 || receipt.schemaVersion == 11)
             {
                 stream << "      \"deformation\": {\"deformationContentHash\": "
                        << receipt.deformation.deformationContentHash
@@ -605,7 +609,8 @@ namespace RVX
                        << "},\n";
             }
             if (receipt.schemaVersion == 6 || receipt.schemaVersion == 7 ||
-                receipt.schemaVersion == 8 || receipt.schemaVersion == 10)
+                receipt.schemaVersion == 8 || receipt.schemaVersion == 10 ||
+                receipt.schemaVersion == 11)
             {
                 stream << "      \"postProcess\": {\"planContentHash\": "
                        << receipt.postProcess.postProcessContentHash
@@ -620,7 +625,7 @@ namespace RVX
                        << ", \"taaPassCount\": "
                        << receipt.postProcess.taaPassCount;
                 if (receipt.schemaVersion == 7 || receipt.schemaVersion == 8 ||
-                    receipt.schemaVersion == 10)
+                    receipt.schemaVersion == 10 || receipt.schemaVersion == 11)
                 {
                     stream << ", \"antiAliasingMode\": "
                            << Diagnostics::JsonString(
@@ -667,7 +672,8 @@ namespace RVX
                            << ", \"taaHistoryStoreGraphPassCount\": "
                            << receipt.postProcess.taaHistoryStoreGraphPassCount;
                 }
-                if (receipt.schemaVersion == 8 || receipt.schemaVersion == 10)
+                if (receipt.schemaVersion == 8 || receipt.schemaVersion == 10 ||
+                    receipt.schemaVersion == 11)
                 {
                     stream << ", \"exposureStateContentHash\": "
                            << receipt.postProcess.exposureStateContentHash
@@ -774,7 +780,7 @@ namespace RVX
                               receipt.postProcess.fallbackUsed)
                        << "},\n";
             }
-            if (receipt.schemaVersion == 10)
+            if (receipt.schemaVersion == 10 || receipt.schemaVersion == 11)
             {
                 const RenderAmbientOcclusionExecutionReceipt& ambientOcclusion =
                     receipt.ambientOcclusion;
@@ -885,6 +891,99 @@ namespace RVX
                        << Diagnostics::JsonBool(ambientOcclusion.fallbackUsed)
                        << "},\n";
             }
+            if (receipt.schemaVersion == 11)
+            {
+                const RenderToonLightingExecutionReceipt& toonLighting =
+                    receipt.toonLighting;
+                stream << "      \"toonLighting\": {\"requested\": "
+                       << Diagnostics::JsonBool(toonLighting.requested)
+                       << ", \"pipelineReady\": "
+                       << Diagnostics::JsonBool(toonLighting.pipelineReady)
+                       << ", \"inputsReady\": "
+                       << Diagnostics::JsonBool(toonLighting.inputsReady)
+                       << ", \"executed\": "
+                       << Diagnostics::JsonBool(toonLighting.executed)
+                       << ", \"programFamilyHash\": "
+                       << toonLighting.programFamilyHash
+                       << ", \"materialCount\": "
+                       << toonLighting.materialCount << ", \"drawCount\": "
+                       << toonLighting.drawCount
+                       << ", \"forwardShadedDrawCount\": "
+                       << toonLighting.forwardShadedDrawCount
+                       << ", \"deferredShadedDrawCount\": "
+                       << toonLighting.deferredShadedDrawCount
+                       << ", \"standardLitFallbackCount\": "
+                       << toonLighting.standardLitFallbackCount
+                       << ", \"materialFallbackCount\": "
+                       << toonLighting.materialFallbackCount
+                       << ", \"bandsApplied\": "
+                       << Diagnostics::JsonBool(toonLighting.bandsApplied)
+                       << ", \"specularThresholdApplied\": "
+                       << Diagnostics::JsonBool(
+                              toonLighting.specularThresholdApplied)
+                       << ", \"rimApplied\": "
+                       << Diagnostics::JsonBool(toonLighting.rimApplied)
+                       << ", \"shadowTintApplied\": "
+                       << Diagnostics::JsonBool(toonLighting.shadowTintApplied)
+                       << ", \"materialTableSchemaVersion\": "
+                       << toonLighting.materialTableSchemaVersion
+                       << ", \"materialTableContentHash\": "
+                       << toonLighting.materialTableContentHash << "},\n";
+
+                const RenderToonOutlineExecutionReceipt& toonOutline =
+                    receipt.toonOutline;
+                stream << "      \"toonOutline\": {\"requested\": "
+                       << Diagnostics::JsonBool(toonOutline.requested)
+                       << ", \"pipelineReady\": "
+                       << Diagnostics::JsonBool(toonOutline.pipelineReady)
+                       << ", \"inputsReady\": "
+                       << Diagnostics::JsonBool(toonOutline.inputsReady)
+                       << ", \"executed\": "
+                       << Diagnostics::JsonBool(toonOutline.executed)
+                       << ", \"depthInputReady\": "
+                       << Diagnostics::JsonBool(toonOutline.depthInputReady)
+                       << ", \"worldNormalInputReady\": "
+                       << Diagnostics::JsonBool(
+                              toonOutline.worldNormalInputReady)
+                       << ", \"materialIdentityInputReady\": "
+                       << Diagnostics::JsonBool(
+                              toonOutline.materialIdentityInputReady)
+                       << ", \"materialTableInputReady\": "
+                       << Diagnostics::JsonBool(
+                              toonOutline.materialTableInputReady)
+                       << ", \"temporalOrderingValidated\": "
+                       << Diagnostics::JsonBool(
+                              toonOutline.temporalOrderingValidated)
+                       << ", \"taaSequenceIndex\": "
+                       << toonOutline.taaSequenceIndex
+                       << ", \"outlineSequenceIndex\": "
+                       << toonOutline.outlineSequenceIndex
+                       << ", \"toneMapSequenceIndex\": "
+                       << toonOutline.toneMapSequenceIndex
+                       << ", \"eligibleToonMaterialCount\": "
+                       << toonOutline.eligibleToonMaterialCount
+                       << ", \"qualificationRequested\": "
+                       << Diagnostics::JsonBool(
+                              toonOutline.qualificationRequested)
+                       << ", \"qualificationReady\": "
+                       << Diagnostics::JsonBool(toonOutline.qualificationReady)
+                       << ", \"outlinedPixelCount\": "
+                       << toonOutline.outlinedPixelCount
+                       << ", \"nonToonAffectedPixelCount\": "
+                       << toonOutline.nonToonAffectedPixelCount
+                       << ", \"resolutionAware\": "
+                       << Diagnostics::JsonBool(toonOutline.resolutionAware)
+                       << ", \"renderWidth\": " << toonOutline.renderWidth
+                       << ", \"renderHeight\": " << toonOutline.renderHeight
+                       << ", \"settingsHash\": " << toonOutline.settingsHash
+                       << ", \"materialTableContentHash\": "
+                       << toonOutline.materialTableContentHash
+                       << ", \"fallbackUsed\": "
+                       << Diagnostics::JsonBool(toonOutline.fallbackUsed)
+                       << ", \"diagnostic\": "
+                       << Diagnostics::JsonString(toonOutline.diagnostic)
+                       << "},\n";
+            }
             stream << "      \"diagnostic\": "
                    << Diagnostics::JsonString(receipt.diagnostic) << ",\n";
             stream << "      \"features\": [\n";
@@ -937,11 +1036,11 @@ namespace RVX
                        << feature.graphPassCount << ",\n";
                 stream << "          \"executedGraphPassCount\": "
                        << feature.executedGraphPassCount << ",\n";
-                // Schema 10 can explicitly describe a selected feature that
+                // Schema 10+ can explicitly describe a selected feature that
                 // completed its typed contract without registering GPU graph
                 // work.  Keep this out of older receipt schemas so their
                 // compatibility shape remains unchanged.
-                if (receipt.schemaVersion == 10)
+                if (receipt.schemaVersion == 10 || receipt.schemaVersion == 11)
                 {
                     stream << "          \"contractCompletedWithoutGraphWork\": "
                            << Diagnostics::JsonBool(
@@ -974,6 +1073,230 @@ namespace RVX
             stream << "    }";
         }
     } // namespace
+
+    SampleToonLightingExecutionDiagnostics
+        ProjectSampleToonLightingExecutionDiagnostics(
+            const RenderDiagnosticsSnapshot& renderDiagnostics)
+    {
+        SampleToonLightingExecutionDiagnostics result;
+        const RenderFrameFeatureDiagnostics& frameFeatures =
+            renderDiagnostics.frameFeatures;
+        const RenderExecutionReceipt& receipt = frameFeatures.executionReceipt;
+
+        // GFX14 only exposes a value projection after the exact main-view
+        // schema-v11 receipt was structurally accepted and presented.  This
+        // prevents sample policy, a pending graph, or a stale candidate frame
+        // from being mistaken for executed Toon shading.
+        if (!frameFeatures.available || receipt.schemaVersion != 11 ||
+            !receipt.IsStructurallyValid() || !receipt.presented)
+        {
+            return result;
+        }
+
+        result.available = receipt.available;
+        result.executionReceiptSchemaVersion = receipt.schemaVersion;
+        result.executionReceiptStructurallyValid = true;
+        result.executionReceiptAvailable = receipt.available;
+        result.executionReceiptGraphComposed = receipt.graphComposed;
+        result.executionReceiptExecutionSucceeded = receipt.executionSucceeded;
+        result.executionReceiptPresented = receipt.presented;
+        result.executionReceiptSucceeded = receipt.succeeded;
+        result.frameFeatureSequence = frameFeatures.frameSequence;
+        result.receiptFrameSequence = receipt.frameIdentity.frameSequence;
+        result.lastPresentedFrameSequence =
+            renderDiagnostics.lastPresentedFrameSequence;
+        result.presentedFrameAligned = result.frameFeatureSequence != 0 &&
+            result.frameFeatureSequence == result.receiptFrameSequence &&
+            result.receiptFrameSequence == result.lastPresentedFrameSequence;
+        result.mainView = receipt.viewIdentity.role == ViewRole::Main &&
+            receipt.viewIdentity.subViewIndex == 0;
+
+        const RenderToonLightingExecutionReceipt& toon = receipt.toonLighting;
+        result.requested = toon.requested;
+        result.pipelineReady = toon.pipelineReady;
+        result.inputsReady = toon.inputsReady;
+        result.executed = toon.executed;
+        const std::string_view expectedProgramFamily =
+            GetMaterialProgramFamily(MaterialShadingModel::ToonLit);
+        if (toon.programFamilyHash ==
+            GetMaterialProgramFamilyValueIdentity(expectedProgramFamily))
+        {
+            result.programFamily = std::string(expectedProgramFamily);
+        }
+        result.materialCount = toon.materialCount;
+        result.drawCount = toon.drawCount;
+        result.forwardShadedDrawCount = toon.forwardShadedDrawCount;
+        result.deferredShadedDrawCount = toon.deferredShadedDrawCount;
+        result.standardLitFallbackCount = toon.standardLitFallbackCount;
+        result.materialFallbackCount = toon.materialFallbackCount;
+        result.bandsApplied = toon.bandsApplied;
+        result.specularThresholdApplied = toon.specularThresholdApplied;
+        result.rimApplied = toon.rimApplied;
+        result.shadowTintApplied = toon.shadowTintApplied;
+        result.materialTableSchemaVersion = toon.materialTableSchemaVersion;
+        result.materialTableContentHash = toon.materialTableContentHash;
+        return result;
+    }
+
+    SampleToonOutlineExecutionDiagnostics
+        ProjectSampleToonOutlineExecutionDiagnostics(
+            const RenderDiagnosticsSnapshot& renderDiagnostics)
+    {
+        SampleToonOutlineExecutionDiagnostics result;
+        const RenderFrameFeatureDiagnostics& frameFeatures =
+            renderDiagnostics.frameFeatures;
+        const RenderExecutionReceipt& receipt = frameFeatures.executionReceipt;
+
+        // See the paired ToonLit projection above.  Qualification metadata is
+        // copied only from the presented renderer receipt, never inferred from
+        // pixels observed by the sample host or from its public settings.
+        if (!frameFeatures.available || receipt.schemaVersion != 11 ||
+            !receipt.IsStructurallyValid() || !receipt.presented)
+        {
+            return result;
+        }
+
+        result.available = receipt.available;
+        result.executionReceiptSchemaVersion = receipt.schemaVersion;
+        result.executionReceiptStructurallyValid = true;
+        result.executionReceiptAvailable = receipt.available;
+        result.executionReceiptGraphComposed = receipt.graphComposed;
+        result.executionReceiptExecutionSucceeded = receipt.executionSucceeded;
+        result.executionReceiptPresented = receipt.presented;
+        result.executionReceiptSucceeded = receipt.succeeded;
+        result.frameFeatureSequence = frameFeatures.frameSequence;
+        result.receiptFrameSequence = receipt.frameIdentity.frameSequence;
+        result.lastPresentedFrameSequence =
+            renderDiagnostics.lastPresentedFrameSequence;
+        result.presentedFrameAligned = result.frameFeatureSequence != 0 &&
+            result.frameFeatureSequence == result.receiptFrameSequence &&
+            result.receiptFrameSequence == result.lastPresentedFrameSequence;
+        result.mainView = receipt.viewIdentity.role == ViewRole::Main &&
+            receipt.viewIdentity.subViewIndex == 0;
+
+        const RenderToonOutlineExecutionReceipt& toon = receipt.toonOutline;
+        result.requested = toon.requested;
+        result.pipelineReady = toon.pipelineReady;
+        result.inputsReady = toon.inputsReady;
+        result.executed = toon.executed;
+        result.depthInputReady = toon.depthInputReady;
+        result.worldNormalInputReady = toon.worldNormalInputReady;
+        result.materialIdentityInputReady = toon.materialIdentityInputReady;
+        result.materialTableInputReady = toon.materialTableInputReady;
+        result.temporalOrderingValidated = toon.temporalOrderingValidated;
+        result.taaSequenceIndex = toon.taaSequenceIndex;
+        result.outlineSequenceIndex = toon.outlineSequenceIndex;
+        result.toneMapSequenceIndex = toon.toneMapSequenceIndex;
+        result.eligibleToonMaterialCount = toon.eligibleToonMaterialCount;
+        result.outlinedPixelCount = toon.outlinedPixelCount;
+        result.nonToonAffectedPixelCount = toon.nonToonAffectedPixelCount;
+        result.resolutionAware = toon.resolutionAware;
+        result.settingsHash = toon.settingsHash;
+        result.fallbackUsed = toon.fallbackUsed;
+        result.qualificationRequested = toon.qualificationRequested;
+        result.qualificationReady = toon.qualificationReady;
+        result.renderWidth = toon.renderWidth;
+        result.renderHeight = toon.renderHeight;
+        result.materialTableContentHash = toon.materialTableContentHash;
+        result.diagnostic = toon.diagnostic;
+        return result;
+    }
+
+    SampleToonOutlineQualificationTargetEvaluation
+        EvaluateSampleToonOutlineQualificationTarget(
+            const RenderDiagnosticsSnapshot& renderDiagnostics,
+            uint64 targetFrameSequence)
+    {
+        SampleToonOutlineQualificationTargetEvaluation result;
+        if (targetFrameSequence == 0)
+        {
+            return result;
+        }
+
+        const RenderFrameFeatureDiagnostics& frameFeatures =
+            renderDiagnostics.frameFeatures;
+        const RenderExecutionReceipt& receipt =
+            frameFeatures.executionReceipt;
+        const bool exactPresentedTarget = frameFeatures.available &&
+            frameFeatures.frameSequence == targetFrameSequence &&
+            receipt.frameIdentity.frameSequence == targetFrameSequence &&
+            renderDiagnostics.lastPresentedFrameSequence ==
+                targetFrameSequence;
+        if (!exactPresentedTarget)
+        {
+            return result;
+        }
+
+        const auto fail = [&result](std::string diagnostic)
+        {
+            result.state =
+                SampleToonOutlineQualificationTargetState::Failed;
+            result.diagnostic = std::move(diagnostic);
+        };
+        if (receipt.schemaVersion != 11 ||
+            !receipt.IsStructurallyValid())
+        {
+            fail("Toon-outline target produced an invalid schema-v11 execution receipt");
+            return result;
+        }
+        if (!receipt.available || !receipt.graphComposed ||
+            !receipt.executionSucceeded || !receipt.presented ||
+            !receipt.succeeded || receipt.viewIdentity.role != ViewRole::Main ||
+            receipt.viewIdentity.subViewIndex != 0)
+        {
+            fail(receipt.diagnostic.empty()
+                     ? "Toon-outline target did not preserve a successful main-view presentation"
+                     : receipt.diagnostic);
+            return result;
+        }
+
+        const RenderToonOutlineExecutionReceipt& outline =
+            receipt.toonOutline;
+        if (!outline.qualificationRequested)
+        {
+            fail("Toon-outline target frame did not record the requested qualification probe");
+            return result;
+        }
+        if (!receipt.toonLighting.IsExecutionReady() ||
+            !outline.IsExecutionReady())
+        {
+            fail(outline.diagnostic.empty()
+                     ? "Toon-outline target lacked exact Toon lighting or visible outline execution"
+                     : outline.diagnostic);
+            return result;
+        }
+        if (outline.IsQualificationReady())
+        {
+            result.state =
+                SampleToonOutlineQualificationTargetState::Ready;
+            return result;
+        }
+        if (!outline.diagnostic.empty())
+        {
+            fail(outline.diagnostic);
+            return result;
+        }
+        if (outline.qualificationReady)
+        {
+            if (outline.outlinedPixelCount == 0)
+            {
+                fail("Toon-outline qualification observed zero outlined Toon pixels");
+            }
+            else if (outline.nonToonAffectedPixelCount != 0)
+            {
+                fail("Toon-outline qualification changed non-Toon pixels");
+            }
+            else
+            {
+                fail("Toon-outline qualification completed with invalid resolution-aware evidence");
+            }
+            return result;
+        }
+
+        result.state =
+            SampleToonOutlineQualificationTargetState::Pending;
+        return result;
+    }
 
     SampleFeatureReporter::SampleFeatureReporter(SampleReport& report)
         : m_report(&report)
@@ -1306,6 +1629,10 @@ namespace RVX
             {
                 options.ambientOcclusionQualificationProbeEnabled = true;
             }
+            else if (arg == "--toon-outline-qualification-probe")
+            {
+                options.toonOutlineQualificationProbeEnabled = true;
+            }
             else if (arg == "--report")
             {
                 const char* value = requireValue("--report");
@@ -1390,6 +1717,7 @@ namespace RVX
             << "  --direct-opaque-raster-readback-qualification\n"
             << "  --exposure-qualification-probe\n"
             << "  --ambient-occlusion-qualification-probe\n"
+            << "  --toon-outline-qualification-probe\n"
             << "  --report <path.json>\n"
             << "  --width <pixels>\n"
             << "  --height <pixels>\n"
@@ -2635,6 +2963,104 @@ namespace RVX
                    << ",\n";
             stream << "      \"diagnostic\": "
                    << Diagnostics::JsonString(ambientOcclusion.diagnostic) << "\n";
+            stream << "    },\n";
+        }
+        if (report.schemaVersion >
+            RVX_SAMPLE_REPORT_PRE_TOON_EXECUTION_SCHEMA_VERSION)
+        {
+            const SampleToonLightingExecutionDiagnostics& toonLighting =
+                renderDiagnostics.toonLightingActualExecution;
+            stream << "    \"toonLightingActualExecution\": {\n";
+            stream << "      \"requested\": "
+                   << Diagnostics::JsonBool(toonLighting.requested) << ",\n";
+            stream << "      \"pipelineReady\": "
+                   << Diagnostics::JsonBool(toonLighting.pipelineReady)
+                   << ",\n";
+            stream << "      \"inputsReady\": "
+                   << Diagnostics::JsonBool(toonLighting.inputsReady) << ",\n";
+            stream << "      \"executed\": "
+                   << Diagnostics::JsonBool(toonLighting.executed) << ",\n";
+            stream << "      \"programFamily\": "
+                   << Diagnostics::JsonString(toonLighting.programFamily)
+                   << ",\n";
+            stream << "      \"materialCount\": "
+                   << toonLighting.materialCount << ",\n";
+            stream << "      \"drawCount\": " << toonLighting.drawCount
+                   << ",\n";
+            stream << "      \"forwardShadedDrawCount\": "
+                   << toonLighting.forwardShadedDrawCount << ",\n";
+            stream << "      \"deferredShadedDrawCount\": "
+                   << toonLighting.deferredShadedDrawCount << ",\n";
+            stream << "      \"standardLitFallbackCount\": "
+                   << toonLighting.standardLitFallbackCount << ",\n";
+            stream << "      \"materialFallbackCount\": "
+                   << toonLighting.materialFallbackCount << ",\n";
+            stream << "      \"bandsApplied\": "
+                   << Diagnostics::JsonBool(toonLighting.bandsApplied)
+                   << ",\n";
+            stream << "      \"specularThresholdApplied\": "
+                   << Diagnostics::JsonBool(
+                          toonLighting.specularThresholdApplied)
+                   << ",\n";
+            stream << "      \"rimApplied\": "
+                   << Diagnostics::JsonBool(toonLighting.rimApplied) << ",\n";
+            stream << "      \"shadowTintApplied\": "
+                   << Diagnostics::JsonBool(toonLighting.shadowTintApplied)
+                   << ",\n";
+            stream << "      \"materialTableSchemaVersion\": "
+                   << toonLighting.materialTableSchemaVersion << ",\n";
+            stream << "      \"materialTableContentHash\": "
+                   << toonLighting.materialTableContentHash << "\n";
+            stream << "    },\n";
+
+            const SampleToonOutlineExecutionDiagnostics& toonOutline =
+                renderDiagnostics.toonOutlineActualExecution;
+            stream << "    \"toonOutlineActualExecution\": {\n";
+            stream << "      \"requested\": "
+                   << Diagnostics::JsonBool(toonOutline.requested) << ",\n";
+            stream << "      \"pipelineReady\": "
+                   << Diagnostics::JsonBool(toonOutline.pipelineReady)
+                   << ",\n";
+            stream << "      \"inputsReady\": "
+                   << Diagnostics::JsonBool(toonOutline.inputsReady) << ",\n";
+            stream << "      \"executed\": "
+                   << Diagnostics::JsonBool(toonOutline.executed) << ",\n";
+            stream << "      \"depthInputReady\": "
+                   << Diagnostics::JsonBool(toonOutline.depthInputReady)
+                   << ",\n";
+            stream << "      \"worldNormalInputReady\": "
+                   << Diagnostics::JsonBool(toonOutline.worldNormalInputReady)
+                   << ",\n";
+            stream << "      \"materialIdentityInputReady\": "
+                   << Diagnostics::JsonBool(
+                          toonOutline.materialIdentityInputReady)
+                   << ",\n";
+            stream << "      \"materialTableInputReady\": "
+                   << Diagnostics::JsonBool(toonOutline.materialTableInputReady)
+                   << ",\n";
+            stream << "      \"temporalOrderingValidated\": "
+                   << Diagnostics::JsonBool(
+                          toonOutline.temporalOrderingValidated)
+                   << ",\n";
+            stream << "      \"taaSequenceIndex\": "
+                   << toonOutline.taaSequenceIndex << ",\n";
+            stream << "      \"outlineSequenceIndex\": "
+                   << toonOutline.outlineSequenceIndex << ",\n";
+            stream << "      \"toneMapSequenceIndex\": "
+                   << toonOutline.toneMapSequenceIndex << ",\n";
+            stream << "      \"eligibleToonMaterialCount\": "
+                   << toonOutline.eligibleToonMaterialCount << ",\n";
+            stream << "      \"outlinedPixelCount\": "
+                   << toonOutline.outlinedPixelCount << ",\n";
+            stream << "      \"nonToonAffectedPixelCount\": "
+                   << toonOutline.nonToonAffectedPixelCount << ",\n";
+            stream << "      \"resolutionAware\": "
+                   << Diagnostics::JsonBool(toonOutline.resolutionAware)
+                   << ",\n";
+            stream << "      \"settingsHash\": " << toonOutline.settingsHash
+                   << ",\n";
+            stream << "      \"fallbackUsed\": "
+                   << Diagnostics::JsonBool(toonOutline.fallbackUsed) << "\n";
             stream << "    },\n";
         }
         stream << "    \"clusteredLightingInitialized\": "

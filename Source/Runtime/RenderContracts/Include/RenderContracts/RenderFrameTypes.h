@@ -562,6 +562,12 @@ namespace RVX
             RenderAntiAliasingMode::FXAA;
         bool enableBloom = true;
         bool enableColorGrading = true;
+        /** @brief Material-aware Toon silhouette/crease pass in HDR. */
+        bool enableToonOutline = false;
+        /** @brief Relative device-depth discontinuity threshold. */
+        float32 toonOutlineDepthThreshold = 0.015f;
+        /** @brief Oct-normal discontinuity threshold in [0, 2]. */
+        float32 toonOutlineNormalThreshold = 0.20f;
         /** @brief Immutable GTAO policy; only indirect lighting may consume it. */
         RenderAmbientOcclusionSettings ambientOcclusion{};
         /** @brief Reserved for the verified Hi-Z reflection path in GFX19. */

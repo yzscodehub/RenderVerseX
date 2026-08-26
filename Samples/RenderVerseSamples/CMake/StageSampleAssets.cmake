@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.25)
 
 foreach(_rvx_required SOURCE_ROOT BUILD_ROOT DESTINATION_ROOT STAMP_PATH
-                      HDR_FIXTURE_WRITER INTERIOR_FIXTURE_WRITER)
+                      HDR_FIXTURE_WRITER INTERIOR_FIXTURE_WRITER
+                      COOK_EXECUTABLE COOKED_CATALOG_WRITER TOON_COOK_PROFILE)
     if(NOT DEFINED ${_rvx_required} OR "${${_rvx_required}}" STREQUAL "")
         message(FATAL_ERROR "StageSampleAssets requires ${_rvx_required}")
     endif()
@@ -68,6 +69,48 @@ endif()
 
 file(COPY_FILE "${SOURCE_ROOT}/Assets/catalog.json"
      "${_rvx_staging}/catalog.json" ONLY_IF_DIFFERENT)
+
+# GFX14 uses one real, hermetic cook.  The source copy lives only in the
+# transaction staging directory while RVXCook and the catalog writer verify
+# its source identity; it is removed before the package is published so Sample
+# runtime admission cannot reach a development importer/source fallback.
+set(_rvx_toon_source_root "${_rvx_staging}/cook-inputs/stylized-materials-toon")
+set(_rvx_toon_cooked_root "${_rvx_staging}/cooked/stylized-materials-toon")
+set(_rvx_toon_manifest "${_rvx_toon_cooked_root}/CookManifest.rvxmanifest")
+file(MAKE_DIRECTORY "${_rvx_toon_source_root}")
+file(COPY_FILE
+    "${SOURCE_ROOT}/Assets/models/pbr-material-grid/scene.gltf"
+    "${_rvx_toon_source_root}/scene.gltf"
+    ONLY_IF_DIFFERENT)
+execute_process(
+    COMMAND "${COOK_EXECUTABLE}"
+        --source "${_rvx_toon_source_root}"
+        --output "${_rvx_toon_cooked_root}"
+        --manifest "${_rvx_toon_manifest}"
+        --profile "${TOON_COOK_PROFILE}"
+        --model-only
+        --fail-on-errors
+    RESULT_VARIABLE _rvx_toon_cook_result)
+if(NOT _rvx_toon_cook_result EQUAL 0)
+    message(FATAL_ERROR "Stylized Toon fixture cook failed")
+endif()
+execute_process(
+    COMMAND "${COOKED_CATALOG_WRITER}"
+        --input-catalog "${_rvx_staging}/catalog.json"
+        --output-catalog "${_rvx_staging}/catalog.json"
+        --asset-root "${_rvx_staging}"
+        --source-root "${_rvx_toon_source_root}"
+        --manifest "${_rvx_toon_manifest}"
+        --cooked-root "${_rvx_toon_cooked_root}"
+        --cooked-root-relative "cooked/stylized-materials-toon"
+        --asset-id "stylized-materials-toon"
+        --asset-path-relative "cooked/stylized-materials-toon/scene.rva"
+        --source-path "scene.gltf"
+    RESULT_VARIABLE _rvx_toon_catalog_result)
+if(NOT _rvx_toon_catalog_result EQUAL 0)
+    message(FATAL_ERROR "Stylized Toon cooked catalog publication failed")
+endif()
+file(REMOVE_RECURSE "${_rvx_toon_source_root}")
 file(COPY_FILE "${SOURCE_ROOT}/Manifests/renderverse-samples.json"
      "${_rvx_staging}/renderverse-samples.json" ONLY_IF_DIFFERENT)
 foreach(_rvx_license

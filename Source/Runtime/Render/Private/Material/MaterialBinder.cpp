@@ -157,6 +157,8 @@ void MaterialBinder::Bind(RHICommandContext& ctx,
                           RenderResourceHandle material,
                           uint32 setIndex)
 {
+    (void)ctx;
+    (void)setIndex;
     const RenderMaterialResourceData* materialData =
         m_resourceRegistry ? m_resourceRegistry->ResolveMaterial(material)
                            : nullptr;
@@ -165,7 +167,26 @@ void MaterialBinder::Bind(RHICommandContext& ctx,
         BindDefault(ctx, setIndex);
         return;
     }
-    Bind(ctx, materialData->sourceData, setIndex);
+    if (!m_device || !m_constantBuffer)
+    {
+        SetBindResult(
+            MaterialBindStatus::Error,
+            "Cannot bind material before successful initialization");
+        return;
+    }
+
+    const MaterialGPUConstants constants = ConvertToGPU(
+        materialData->staticDescriptor,
+        materialData->sourceData,
+        materialData->textureBindings,
+        material.slot);
+    if (!UpdateConstantBuffer(constants))
+    {
+        return;
+    }
+    SetBindResult(
+        MaterialBindStatus::Unsupported,
+        "Material constants were updated, but descriptor/pipeline binding is not wired until R5b");
 }
 
 void MaterialBinder::BindDefault(RHICommandContext& ctx, uint32 setIndex)
@@ -201,6 +222,16 @@ MaterialGPUConstants MaterialBinder::ConvertToGPU(
     return EncodeMaterialGPUConstants(material, textureBindings);
 }
 
+MaterialGPUConstants MaterialBinder::ConvertToGPU(
+    const MaterialStaticDescriptor& staticDescriptor,
+    const MaterialSourceData& material,
+    std::span<const MaterialUploadTextureBinding> textureBindings,
+    uint32 materialTableIndex)
+{
+    return EncodeMaterialGPUConstants(
+        staticDescriptor, material, textureBindings, materialTableIndex);
+}
+
 MaterialGPUConstants MaterialBinder::GetDefaultConstants()
 {
     MaterialGPUConstants constants;
@@ -212,6 +243,9 @@ MaterialGPUConstants MaterialBinder::GetDefaultConstants()
     constants.emissiveColor = {0.0f, 0.0f, 0.0f};
     constants.emissiveStrength = 0.0f;
     constants.textureFlags = 0;
+    constants.shadingModel = static_cast<uint32>(
+        MaterialGPUShadingModel::StandardLit);
+    constants.materialTableIndex = 0;
 
     return constants;
 }

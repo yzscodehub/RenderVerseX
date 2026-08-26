@@ -129,6 +129,18 @@ namespace RVX::Resource
         ResourceContentIdentity expectedManifestContentIdentity;
         std::string expectedCookSettingsHash;
         std::string expectedRecipeHash;
+
+        /**
+         * @brief Require every recorded source input to remain mounted and hashable.
+         *
+         * The default retains development-package admission.  A staged Sample
+         * package may explicitly opt into cooked-only admission after its
+         * catalog has independently bound the manifest's source identity.  In
+         * that mode all manifest, settings, recipe, and cooked closure checks
+         * remain mandatory; only physical access to the authoring source is
+         * intentionally absent.
+         */
+        bool verifyMountedSource = true;
     };
 
     enum class CookManifestAdmissionCode : uint8

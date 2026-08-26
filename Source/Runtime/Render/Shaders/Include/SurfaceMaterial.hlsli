@@ -15,6 +15,11 @@
 #define MATERIAL_WORKFLOW_SPECULAR_GLOSSINESS 1
 #define MATERIAL_WORKFLOW_UNLIT 2
 
+#define MATERIAL_SHADING_MODEL_STANDARD_LIT 0u
+#define MATERIAL_SHADING_MODEL_TOON_LIT 1u
+#define MATERIAL_SHADING_MODEL_UNLIT 2u
+#define MATERIAL_SHADING_MODEL_THIN_TRANSMISSION 3u
+
 #define MATERIAL_TEXTURE_SLOT_BASE_COLOR 0u
 #define MATERIAL_TEXTURE_SLOT_NORMAL 1u
 #define MATERIAL_TEXTURE_SLOT_METALLIC_ROUGHNESS 2u
@@ -33,7 +38,15 @@
     uint AlphaMode; \
     float AlphaCutoff; \
     uint Workflow; \
-    uint4 DoubleSided_MaterialPaddingBits; \
+    uint DoubleSided; \
+    uint ShadingModel; \
+    uint MaterialTableIndex; \
+    float ToonBands; \
+    float ToonSpecularThreshold; \
+    float ToonRimStrength; \
+    float ToonOutlineWidth; \
+    float ToonPadding; \
+    float4 ToonShadowTint; \
     float4 BaseColorUVScaleOffset; \
     float4 BaseColorUVRotationSet; \
     float4 NormalUVScaleOffset; \

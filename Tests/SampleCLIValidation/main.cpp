@@ -1,4 +1,5 @@
 #include "Render/GPUScene/GPUSceneDiagnostics.h"
+#include "Render/Material/MaterialSystem.h"
 #include "Engine/RenderRuntimeDiagnostics.h"
 #include "Samples/FrameworkAssessment.h"
 #include "Samples/RuntimeFrameDriver.h"
@@ -288,6 +289,69 @@ namespace
         return receipt;
     }
 
+    RVX::RenderExecutionReceipt MakeSuccessfulToonRenderExecutionReceipt(
+        RVX::uint64 frameSequence = 91)
+    {
+        RVX::RenderExecutionReceipt receipt =
+            MakeSuccessfulRenderExecutionReceipt(frameSequence);
+        receipt.schemaVersion = 11;
+        receipt.toonLighting.requested = true;
+        receipt.toonLighting.pipelineReady = true;
+        receipt.toonLighting.inputsReady = true;
+        receipt.toonLighting.executed = true;
+        receipt.toonLighting.programFamilyHash =
+            RVX::GetMaterialProgramFamilyValueIdentity("toon-lit-v1");
+        receipt.toonLighting.materialCount = 1;
+        receipt.toonLighting.drawCount = 2;
+        receipt.toonLighting.forwardShadedDrawCount = 2;
+        receipt.toonLighting.deferredShadedDrawCount = 0;
+        receipt.toonLighting.standardLitFallbackCount = 0;
+        receipt.toonLighting.materialFallbackCount = 0;
+        receipt.toonLighting.bandsApplied = true;
+        receipt.toonLighting.specularThresholdApplied = true;
+        receipt.toonLighting.rimApplied = true;
+        receipt.toonLighting.shadowTintApplied = true;
+        receipt.toonLighting.materialTableSchemaVersion = 1;
+        receipt.toonLighting.materialTableContentHash = 0x7001ULL;
+
+        receipt.toonOutline.requested = true;
+        receipt.toonOutline.pipelineReady = true;
+        receipt.toonOutline.inputsReady = true;
+        receipt.toonOutline.executed = true;
+        receipt.toonOutline.depthInputReady = true;
+        receipt.toonOutline.worldNormalInputReady = true;
+        receipt.toonOutline.materialIdentityInputReady = true;
+        receipt.toonOutline.materialTableInputReady = true;
+        receipt.toonOutline.temporalOrderingValidated = true;
+        receipt.toonOutline.taaSequenceIndex = 3;
+        receipt.toonOutline.outlineSequenceIndex = 4;
+        receipt.toonOutline.toneMapSequenceIndex = 5;
+        receipt.toonOutline.eligibleToonMaterialCount = 1;
+        receipt.toonOutline.qualificationRequested = true;
+        receipt.toonOutline.qualificationReady = true;
+        receipt.toonOutline.outlinedPixelCount = 128;
+        receipt.toonOutline.nonToonAffectedPixelCount = 0;
+        receipt.toonOutline.resolutionAware = true;
+        receipt.toonOutline.renderWidth = 640;
+        receipt.toonOutline.renderHeight = 360;
+        receipt.toonOutline.settingsHash = 0x7002ULL;
+        receipt.toonOutline.materialTableContentHash = 0x7001ULL;
+        receipt.toonOutline.fallbackUsed = false;
+        return receipt;
+    }
+
+    RVX::RenderDiagnosticsSnapshot MakeSuccessfulToonDiagnosticsSnapshot(
+        RVX::uint64 frameSequence = 91)
+    {
+        RVX::RenderDiagnosticsSnapshot snapshot;
+        snapshot.frameFeatures.available = true;
+        snapshot.frameFeatures.frameSequence = frameSequence;
+        snapshot.frameFeatures.executionReceipt =
+            MakeSuccessfulToonRenderExecutionReceipt(frameSequence);
+        snapshot.lastPresentedFrameSequence = frameSequence;
+        return snapshot;
+    }
+
     RVX::SamplePostProcessExecutionDiagnostics
         MakeQualifiedPostProcessActualExecution(
             RVX::uint64 frameSequence = 91)
@@ -417,6 +481,7 @@ namespace
             "180",
             "--quality",
             "low",
+            "--toon-outline-qualification-probe",
             "--diagnostics",
             "--no-validation",
         };
@@ -441,6 +506,7 @@ namespace
         EXPECT_EQ(options.width, 320u);
         EXPECT_EQ(options.height, 180u);
         EXPECT_EQ(options.quality, "low");
+        EXPECT_TRUE(options.toonOutlineQualificationProbeEnabled);
         EXPECT_TRUE(options.diagnostics);
         EXPECT_FALSE(options.enableValidation);
     }
@@ -496,6 +562,105 @@ namespace
             RVX::PostProcessTransfer::DisplayLinearToEncoded;
         diagnostics.displayLinearOutputReady = true;
         EXPECT_TRUE(diagnostics.IsQualificationReady());
+    }
+
+    TEST(SampleCLIValidation,
+         ToonExecutionProjectionRequiresPresentedSchemaElevenEvidence)
+    {
+        RVX::RenderDiagnosticsSnapshot snapshot =
+            MakeSuccessfulToonDiagnosticsSnapshot(113);
+        ASSERT_TRUE(snapshot.frameFeatures.executionReceipt.IsStructurallyValid());
+
+        const RVX::SampleToonLightingExecutionDiagnostics lighting =
+            RVX::ProjectSampleToonLightingExecutionDiagnostics(snapshot);
+        const RVX::SampleToonOutlineExecutionDiagnostics outline =
+            RVX::ProjectSampleToonOutlineExecutionDiagnostics(snapshot);
+        EXPECT_TRUE(lighting.IsExecutionReady());
+        EXPECT_EQ(lighting.programFamily, "toon-lit-v1");
+        EXPECT_TRUE(outline.IsExecutionReady());
+        EXPECT_TRUE(outline.IsQualificationReady());
+        EXPECT_EQ(outline.outlinedPixelCount, 128u);
+        EXPECT_EQ(outline.nonToonAffectedPixelCount, 0u);
+
+        snapshot.frameFeatures.executionReceipt.presented = false;
+        EXPECT_FALSE(
+            RVX::ProjectSampleToonLightingExecutionDiagnostics(snapshot)
+                .IsExecutionReady());
+        EXPECT_FALSE(
+            RVX::ProjectSampleToonOutlineExecutionDiagnostics(snapshot)
+                .IsQualificationReady());
+
+        snapshot = MakeSuccessfulToonDiagnosticsSnapshot(113);
+        snapshot.frameFeatures.executionReceipt.schemaVersion = 10;
+        EXPECT_FALSE(
+            RVX::ProjectSampleToonLightingExecutionDiagnostics(snapshot)
+                .IsExecutionReady());
+        EXPECT_FALSE(
+            RVX::ProjectSampleToonOutlineExecutionDiagnostics(snapshot)
+                .IsExecutionReady());
+    }
+
+    TEST(SampleCLIValidation,
+         ToonOutlineQualificationTargetEvaluationFailsTerminalEvidenceWithoutTimeout)
+    {
+        constexpr RVX::uint64 TargetFrame = 114u;
+        RVX::RenderDiagnosticsSnapshot snapshot =
+            MakeSuccessfulToonDiagnosticsSnapshot(TargetFrame);
+
+        auto evaluation =
+            RVX::EvaluateSampleToonOutlineQualificationTarget(
+                snapshot, TargetFrame);
+        EXPECT_TRUE(evaluation.IsReady());
+        EXPECT_TRUE(evaluation.diagnostic.empty());
+
+        RVX::RenderToonOutlineExecutionReceipt& outline =
+            snapshot.frameFeatures.executionReceipt.toonOutline;
+        outline.qualificationReady = false;
+        outline.outlinedPixelCount = 0;
+        outline.nonToonAffectedPixelCount = 0;
+        outline.resolutionAware = false;
+        outline.renderWidth = 0;
+        outline.renderHeight = 0;
+        ASSERT_TRUE(
+            snapshot.frameFeatures.executionReceipt.IsStructurallyValid());
+        evaluation = RVX::EvaluateSampleToonOutlineQualificationTarget(
+            snapshot, TargetFrame);
+        EXPECT_EQ(evaluation.state,
+                  RVX::SampleToonOutlineQualificationTargetState::Pending);
+
+        outline.diagnostic =
+            "ScreenSpaceOutline qualification probe was abandoned after submission";
+        ASSERT_TRUE(
+            snapshot.frameFeatures.executionReceipt.IsStructurallyValid());
+        evaluation = RVX::EvaluateSampleToonOutlineQualificationTarget(
+            snapshot, TargetFrame);
+        EXPECT_TRUE(evaluation.IsFailed());
+        EXPECT_EQ(evaluation.diagnostic, outline.diagnostic);
+
+        snapshot = MakeSuccessfulToonDiagnosticsSnapshot(TargetFrame);
+        snapshot.frameFeatures.executionReceipt.toonOutline.outlinedPixelCount =
+            0;
+        ASSERT_TRUE(
+            snapshot.frameFeatures.executionReceipt.IsStructurallyValid());
+        evaluation = RVX::EvaluateSampleToonOutlineQualificationTarget(
+            snapshot, TargetFrame);
+        EXPECT_TRUE(evaluation.IsFailed());
+        EXPECT_NE(evaluation.diagnostic.find("zero outlined"),
+                  std::string::npos);
+
+        snapshot = MakeSuccessfulToonDiagnosticsSnapshot(TargetFrame);
+        snapshot.frameFeatures.executionReceipt.toonLighting = {};
+        EXPECT_FALSE(
+            snapshot.frameFeatures.executionReceipt.IsStructurallyValid());
+        evaluation = RVX::EvaluateSampleToonOutlineQualificationTarget(
+            snapshot, TargetFrame);
+        EXPECT_TRUE(evaluation.IsFailed());
+
+        evaluation = RVX::EvaluateSampleToonOutlineQualificationTarget(
+            MakeSuccessfulToonDiagnosticsSnapshot(TargetFrame + 1u),
+            TargetFrame);
+        EXPECT_EQ(evaluation.state,
+                  RVX::SampleToonOutlineQualificationTargetState::Unrelated);
     }
 
     TEST(SampleCLIValidation,
@@ -927,7 +1092,7 @@ namespace
         std::ostringstream stream;
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
-        EXPECT_NE(json.find("\"schemaVersion\": 26"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 27"), std::string::npos);
         EXPECT_NE(json.find("\"validationRunId\": \"" +
                             std::string(32, '1') + "\""),
                   std::string::npos);
@@ -1238,6 +1403,30 @@ namespace
                   std::string::npos);
         EXPECT_NE(json.find("\"contractCompletedWithoutGraphWork\": false"),
                   std::string::npos);
+    }
+
+    TEST(SampleCLIValidation,
+         SchemaElevenRenderReceiptSerializesToonExecutionPayloads)
+    {
+        RVX::SampleReport report;
+        report.schemaVersion = RVX::RVX_SAMPLE_REPORT_SCHEMA_VERSION;
+        report.visualContractReceipt.emplace();
+        report.visualContractReceipt->renderExecutionReceipt =
+            MakeSuccessfulToonRenderExecutionReceipt(91);
+
+        std::ostringstream stream;
+        RVX::WriteSampleReportJson(stream, report);
+        const std::string json = stream.str();
+        EXPECT_NE(json.find("\"schemaVersion\": 11"), std::string::npos);
+        EXPECT_NE(json.find("\"toonLighting\": {"), std::string::npos);
+        EXPECT_NE(json.find("\"programFamilyHash\": "), std::string::npos);
+        EXPECT_NE(json.find("\"toonOutline\": {"), std::string::npos);
+        EXPECT_NE(json.find("\"qualificationRequested\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"qualificationReady\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"renderWidth\": 640"), std::string::npos);
+        EXPECT_NE(json.find("\"renderHeight\": 360"), std::string::npos);
     }
 
     TEST(SampleCLIValidation,
@@ -1916,6 +2105,12 @@ namespace
         report.renderDiagnostics.renderGraphTotalPasses = 3;
         report.renderDiagnostics.postProcessActualExecution =
             MakeQualifiedPostProcessActualExecution(67);
+        const RVX::RenderDiagnosticsSnapshot toonSnapshot =
+            MakeSuccessfulToonDiagnosticsSnapshot(67);
+        report.renderDiagnostics.toonLightingActualExecution =
+            RVX::ProjectSampleToonLightingExecutionDiagnostics(toonSnapshot);
+        report.renderDiagnostics.toonOutlineActualExecution =
+            RVX::ProjectSampleToonOutlineExecutionDiagnostics(toonSnapshot);
         report.renderDiagnostics.nativeValidationAvailable = true;
         report.renderDiagnostics.nativeValidationEnabled = true;
         report.renderDiagnostics.nativeValidationReadComplete = true;
@@ -2026,7 +2221,7 @@ namespace
         const std::string json = stream.str();
 
         EXPECT_NE(json.find("\"schemaId\": \"RVX.SampleReport\""), std::string::npos);
-        EXPECT_NE(json.find("\"schemaVersion\": 26"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 27"), std::string::npos);
         EXPECT_NE(json.find("\"sampleName\": \"BasicRHI\""), std::string::npos);
         EXPECT_NE(json.find("\"category\": \"sample\""), std::string::npos);
         EXPECT_NE(json.find("\"requestedBackend\": \"dx12\""), std::string::npos);
@@ -2159,6 +2354,15 @@ namespace
                       "\"presentationTransfer\": \"scene-linear-to-display-encoded\""),
                   std::string::npos);
         EXPECT_NE(json.find("\"qualified\": true"), std::string::npos);
+        EXPECT_NE(json.find("\"toonLightingActualExecution\": {"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"programFamily\": \"toon-lit-v1\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"toonOutlineActualExecution\": {"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"outlinedPixelCount\": 128"),
+                  std::string::npos);
+        EXPECT_EQ(json.find("\"renderWidth\""), std::string::npos);
         EXPECT_NE(json.find("\"temporalAAQualified\": false"),
                   std::string::npos);
         EXPECT_NE(json.find("\"nativeValidationAvailable\": true"),
@@ -2301,7 +2505,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 26"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 27"), std::string::npos);
         EXPECT_NE(json.find("\"contractRevision\": 7"), std::string::npos);
         EXPECT_NE(json.find("\"phase\": \"complete\""),
                   std::string::npos);
@@ -2790,7 +2994,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 26"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 27"), std::string::npos);
         EXPECT_NE(json.find("\"packageContentId\""), std::string::npos);
         EXPECT_NE(json.find(asset.packageContentId.digest), std::string::npos);
         EXPECT_NE(json.find("\"cook\": {\"required\": true, \"accepted\": true, \"code\": \"accepted\""),

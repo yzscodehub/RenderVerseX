@@ -128,22 +128,30 @@ namespace
     {
         const MaterialStaticDescriptor& descriptor = artifact.material.descriptor;
         if (descriptor.shadingModel != MaterialShadingModel::StandardLit &&
+            descriptor.shadingModel != MaterialShadingModel::ToonLit &&
             descriptor.shadingModel != MaterialShadingModel::Unlit)
         {
-            outError = "Cooked material shading model is not implemented by the v1 runtime";
+            outError = "Cooked material shading model is not implemented by the runtime";
+            return false;
+        }
+        if (descriptor.shadingModel == MaterialShadingModel::ToonLit &&
+            (descriptor.blendMode != MaterialBlendMode::Opaque &&
+             descriptor.blendMode != MaterialBlendMode::Masked))
+        {
+            outError = "Cooked ToonLit translucency is not implemented until GFX15";
             return false;
         }
         if (descriptor.blendMode == MaterialBlendMode::Premultiplied ||
             descriptor.blendMode == MaterialBlendMode::Additive)
         {
-            outError = "Cooked material blend mode is not implemented by the v1 runtime";
+            outError = "Cooked material blend mode is not implemented by the runtime";
             return false;
         }
         for (const CookedMaterialTextureBinding& binding : artifact.textureBindings)
         {
             if (GetLegacyTextureSlotName(binding.definition.slot) == nullptr)
             {
-                outError = "Cooked material texture slot is not implemented by the v1 runtime";
+                outError = "Cooked material texture slot is not implemented by the runtime";
                 return false;
             }
         }

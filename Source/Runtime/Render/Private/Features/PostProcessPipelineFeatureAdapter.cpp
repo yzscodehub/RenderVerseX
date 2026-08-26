@@ -7,6 +7,7 @@
 
 #include "Core/Diagnostics/ContentHash.h"
 #include "Render/PostProcess/Bloom.h"
+#include "Render/PostProcess/ScreenSpaceOutline.h"
 #include "Render/PostProcess/TAA.h"
 #include "Render/PostProcess/ToneMapping.h"
 
@@ -58,6 +59,93 @@ namespace
                lhs.rangeSize == rhs.rangeSize &&
                lhs.graphIdentity == rhs.graphIdentity &&
                lhs.recordingGeneration == rhs.recordingGeneration;
+    }
+
+    [[nodiscard]] PostProcessTextureMetadata MakePostProcessMetadata(
+        const SceneTextures::Metadata& metadata) noexcept
+    {
+        return {metadata.extent, metadata.format, metadata.sampleCount};
+    }
+
+    [[nodiscard]] bool MatchesTextureMetadata(
+        const RHITextureDesc& desc,
+        const PostProcessTextureMetadata& metadata) noexcept
+    {
+        return metadata.IsValid() &&
+               desc.width == metadata.extent.width &&
+               desc.height == metadata.extent.height &&
+               desc.format == metadata.format &&
+               desc.sampleCount == metadata.sampleCount;
+    }
+
+    [[nodiscard]] bool HasOutlineGraphInputs(
+        const RenderFeatureGraphBuilder& builder,
+        const PostProcessFrameInputs& inputs) noexcept
+    {
+        if (!inputs.HasDepth() || !inputs.HasNormal() ||
+            !inputs.HasMaterialIdentity() ||
+            !inputs.HasMaterialParameterTable() ||
+            !inputs.sceneColorMetadata.IsValid() ||
+            !inputs.depthMetadata.IsValid() ||
+            !inputs.normalMetadata.IsValid() ||
+            !inputs.materialIdentityMetadata.IsValid() ||
+            !inputs.materialParameterTableMetadata.IsValid() ||
+            !HandleMatchesBuilder(inputs.sceneColor, builder) ||
+            !HandleMatchesBuilder(inputs.depth, builder) ||
+            !HandleMatchesBuilder(inputs.normal, builder) ||
+            !HandleMatchesBuilder(inputs.materialIdentity, builder) ||
+            !HandleMatchesBuilder(inputs.materialParameterTable, builder))
+        {
+            return false;
+        }
+
+        const RenderGraph& graph = builder.GetGraph();
+        const RHITextureDesc* const sceneDesc =
+            graph.GetTextureDesc(inputs.sceneColor);
+        const RHITextureDesc* const depthDesc =
+            graph.GetTextureDesc(inputs.depth);
+        const RHITextureDesc* const normalDesc =
+            graph.GetTextureDesc(inputs.normal);
+        const RHITextureDesc* const materialIdentityDesc =
+            graph.GetTextureDesc(inputs.materialIdentity);
+        const RHIBufferDesc* const materialTableDesc =
+            graph.GetBufferDesc(inputs.materialParameterTable);
+        if (sceneDesc == nullptr || depthDesc == nullptr ||
+            normalDesc == nullptr || materialIdentityDesc == nullptr ||
+            materialTableDesc == nullptr ||
+            !MatchesTextureMetadata(*sceneDesc, inputs.sceneColorMetadata) ||
+            !MatchesTextureMetadata(*depthDesc, inputs.depthMetadata) ||
+            !MatchesTextureMetadata(*normalDesc, inputs.normalMetadata) ||
+            !MatchesTextureMetadata(*materialIdentityDesc,
+                                    inputs.materialIdentityMetadata) ||
+            sceneDesc->format != RHIFormat::RGBA16_FLOAT ||
+            depthDesc->format != RHIFormat::D32_FLOAT ||
+            normalDesc->format != RHIFormat::RGBA8_UNORM ||
+            materialIdentityDesc->format != RHIFormat::R32_UINT ||
+            sceneDesc->sampleCount != RHISampleCount::Count1 ||
+            depthDesc->sampleCount != RHISampleCount::Count1 ||
+            normalDesc->sampleCount != RHISampleCount::Count1 ||
+            materialIdentityDesc->sampleCount != RHISampleCount::Count1 ||
+            inputs.sceneColorMetadata.extent != inputs.depthMetadata.extent ||
+            inputs.sceneColorMetadata.extent != inputs.normalMetadata.extent ||
+            inputs.sceneColorMetadata.extent !=
+                inputs.materialIdentityMetadata.extent ||
+            inputs.materialParameterTableMetadata.sourceExtent !=
+                inputs.sceneColorMetadata.extent ||
+            inputs.materialParameterTableMetadata.sourceSampleCount !=
+                RHISampleCount::Count1 ||
+            materialTableDesc->stride !=
+                inputs.materialParameterTableMetadata.stride ||
+            materialTableDesc->stride == 0 ||
+            materialTableDesc->size /
+                    static_cast<uint64>(materialTableDesc->stride) <
+                inputs.materialParameterTableMetadata.slotCount ||
+            !HasFlag(materialTableDesc->usage, RHIBufferUsage::Structured) ||
+            !HasFlag(materialTableDesc->usage, RHIBufferUsage::ShaderResource))
+        {
+            return false;
+        }
+        return true;
     }
 
     [[nodiscard]] bool UsesHardwareSRGBEncode(RHIFormat format) noexcept
@@ -129,6 +217,7 @@ void PostProcessPipelineFeatureAdapter::SetRecordContext(
     m_composedProvenance = {};
     m_lastReceipt = {};
     m_lastExecutionReceipt = {};
+    m_lastToonOutlineExecutionReceipt = {};
     m_readiness = {};
     m_hasComposedPresentationPlan = false;
     m_hardwareSRGBEncodeBoundary = false;
@@ -149,6 +238,7 @@ void PostProcessPipelineFeatureAdapter::SetStack(PostProcessStack* stack) noexce
     m_composedProvenance = {};
     m_lastReceipt = {};
     m_lastExecutionReceipt = {};
+    m_lastToonOutlineExecutionReceipt = {};
     m_readiness = {};
     m_hasComposedPresentationPlan = false;
     m_hardwareSRGBEncodeBoundary = false;
@@ -228,6 +318,7 @@ void PostProcessPipelineFeatureAdapter::AddPasses(
     m_composedProvenance = {};
     m_lastReceipt = {};
     m_lastExecutionReceipt = {};
+    m_lastToonOutlineExecutionReceipt = {};
     m_readiness.executed = false;
     m_hasComposedPresentationPlan = false;
     m_hardwareSRGBEncodeBoundary = false;
@@ -248,7 +339,7 @@ void PostProcessPipelineFeatureAdapter::AddPasses(
             BuiltinRenderFeatureIds::PostProcessPipeline, Describe(), &code);
     if (translucency == nullptr || code != RenderGraphBlackboardCode::Success)
     {
-        SetCompositionFailure("Post-process requires TranslucencyOutputs v3");
+        SetCompositionFailure("Post-process requires TranslucencyOutputs v4");
         return;
     }
     if (translucency->frameIdentity != m_preparedContext.frameIdentity ||
@@ -276,10 +367,26 @@ void PostProcessPipelineFeatureAdapter::AddPasses(
 
     PostProcessFrameInputs inputs = m_recordContext.frameInputs;
     inputs.sceneColor = translucency->hdrSceneColor;
+    inputs.sceneColorMetadata = MakePostProcessMetadata(
+        translucency->hdrSceneColorMetadata);
     inputs.depth = translucency->deviceDepth;
+    inputs.depthMetadata = MakePostProcessMetadata(
+        translucency->deviceDepthMetadata);
     inputs.normal = translucency->worldNormal;
+    inputs.normalMetadata = MakePostProcessMetadata(
+        translucency->worldNormalMetadata);
+    inputs.materialIdentity = translucency->materialIdentity;
+    inputs.materialIdentityMetadata = MakePostProcessMetadata(
+        translucency->materialIdentityMetadata);
+    inputs.materialParameterTable = translucency->materialParameterTable;
+    inputs.materialParameterTableMetadata =
+        translucency->materialParameterTableMetadata;
     inputs.velocity = translucency->velocity;
+    inputs.velocityMetadata = MakePostProcessMetadata(
+        translucency->velocityMetadata);
     inputs.reactiveMask = translucency->reactiveMask;
+    inputs.reactiveMaskMetadata = MakePostProcessMetadata(
+        translucency->reactiveMaskMetadata);
     inputs.exposureState = translucency->exposureState;
     inputs.sceneColorDomain = translucency->colorDomain;
     const bool hardwareSRGBEncode = UsesHardwareSRGBEncode(
@@ -288,6 +395,16 @@ void PostProcessPipelineFeatureAdapter::AddPasses(
         ? PostProcessColorDomain::DisplayLinearLDR
         : PostProcessColorDomain::DisplayEncodedLDR;
     inputs.outputFormat = m_recordContext.presentableColorMetadata.format;
+
+    const bool hasMaterialOutlineInputs =
+        inputs.materialIdentity.IsValid() ||
+        inputs.materialParameterTable.IsValid();
+    if (hasMaterialOutlineInputs && !HasOutlineGraphInputs(builder, inputs))
+    {
+        SetCompositionFailure(
+            "Post-process received invalid typed toon-outline inputs");
+        return;
+    }
 
     if (!m_stack->BuildPlan(
             inputs,
@@ -388,6 +505,7 @@ void PostProcessPipelineFeatureAdapter::OnGraphExecutionFinalized(
     const RenderFeatureGraphExecutionEvidence& evidence)
 {
     m_lastExecutionReceipt = {};
+    m_lastToonOutlineExecutionReceipt = {};
     if (!HasMatchingFinalizedEvidence(evidence) ||
         !evidence.HasExactExecution())
     {
@@ -395,6 +513,7 @@ void PostProcessPipelineFeatureAdapter::OnGraphExecutionFinalized(
     }
 
     RefreshExecutionReceipt();
+    RefreshToonOutlineExecutionReceipt();
     SnapshotExposureProbeSourceReceipt();
 }
 
@@ -947,5 +1066,128 @@ void PostProcessPipelineFeatureAdapter::RefreshExecutionReceipt()
     m_lastExecutionReceipt = receipt.IsStructurallyValid()
         ? std::move(receipt)
         : RenderPostProcessExecutionReceipt{};
+}
+
+void PostProcessPipelineFeatureAdapter::RefreshToonOutlineExecutionReceipt()
+{
+    m_lastToonOutlineExecutionReceipt = {};
+    if (m_stack == nullptr || !m_hasComposedPresentationPlan ||
+        !m_lastPlanStats.planValid)
+    {
+        return;
+    }
+
+    const ScreenSpaceOutlinePass* const outline =
+        m_stack->GetEffect<ScreenSpaceOutlinePass>();
+    const PostProcessEffectExecutionPlan* outlinePlan = nullptr;
+    const PostProcessEffectExecutionPlan* taaPlan = nullptr;
+    const PostProcessEffectExecutionPlan* toneMapPlan = nullptr;
+    for (const PostProcessEffectExecutionPlan& effect :
+         m_lastPlanStats.effectPlans)
+    {
+        switch (effect.passId)
+        {
+            case PostProcessPassId::ScreenSpaceOutline:
+                outlinePlan = &effect;
+                break;
+            case PostProcessPassId::TemporalAntiAliasing:
+                taaPlan = &effect;
+                break;
+            case PostProcessPassId::ToneMapping:
+                toneMapPlan = &effect;
+                break;
+            default: break;
+        }
+    }
+    if (outline == nullptr || outlinePlan == nullptr ||
+        !outlinePlan->requested)
+    {
+        return;
+    }
+
+    const PostProcessFrameInputs& inputs = m_lastPlanStats.frameInputs;
+    RenderToonOutlineExecutionReceipt receipt;
+    receipt.requested = true;
+    receipt.pipelineReady =
+        outlinePlan->supported && outlinePlan->pipelineReady &&
+        outline->IsSupported();
+    receipt.depthInputReady =
+        inputs.HasDepth() && inputs.depthMetadata.IsValid();
+    receipt.worldNormalInputReady =
+        inputs.HasNormal() && inputs.normalMetadata.IsValid();
+    receipt.materialIdentityInputReady =
+        inputs.HasMaterialIdentity() &&
+        inputs.materialIdentityMetadata.IsValid();
+    receipt.materialTableInputReady =
+        inputs.HasMaterialParameterTable() &&
+        inputs.materialParameterTableMetadata.IsValid();
+    receipt.inputsReady =
+        receipt.depthInputReady && receipt.worldNormalInputReady &&
+        receipt.materialIdentityInputReady &&
+        receipt.materialTableInputReady;
+    receipt.settingsHash = outline->GetSettingsHash();
+    const ScreenSpaceOutlineExecutionIdentity expectedExecutionIdentity{
+        inputs.frameIndex,
+        inputs.historyIdentity,
+        inputs.sceneColorMetadata.extent,
+        receipt.settingsHash,
+        inputs.materialParameterTableMetadata.contentHash};
+    const auto actualExecutionIdentity =
+        outline->GetLastExecutionIdentity();
+    receipt.executed = outlinePlan->scheduled &&
+        expectedExecutionIdentity.IsValid() &&
+        actualExecutionIdentity.has_value() &&
+        *actualExecutionIdentity == expectedExecutionIdentity;
+    receipt.fallbackUsed = !receipt.executed;
+    if (receipt.executed)
+    {
+        receipt.outlineSequenceIndex = outlinePlan->sequenceIndex + 1u;
+        if (taaPlan != nullptr && taaPlan->scheduled)
+        {
+            receipt.taaSequenceIndex = taaPlan->sequenceIndex + 1u;
+        }
+        if (toneMapPlan != nullptr && toneMapPlan->scheduled)
+        {
+            receipt.toneMapSequenceIndex =
+                toneMapPlan->sequenceIndex + 1u;
+        }
+        receipt.temporalOrderingValidated =
+            receipt.outlineSequenceIndex != 0 &&
+            receipt.toneMapSequenceIndex != 0 &&
+            receipt.outlineSequenceIndex < receipt.toneMapSequenceIndex &&
+            (receipt.taaSequenceIndex == 0 ||
+             receipt.taaSequenceIndex < receipt.outlineSequenceIndex);
+        receipt.eligibleToonMaterialCount =
+            inputs.materialParameterTableMetadata
+                .eligibleToonMaterialCount;
+        receipt.materialTableContentHash =
+            inputs.materialParameterTableMetadata.contentHash;
+
+        const auto pendingIdentity =
+            outline->GetPendingQualificationProbeIdentity();
+        receipt.qualificationRequested =
+            pendingIdentity.has_value() &&
+            pendingIdentity->historyIdentity ==
+                inputs.historyIdentity &&
+            pendingIdentity->extent ==
+                inputs.sceneColorMetadata.extent &&
+            pendingIdentity->settingsHash == receipt.settingsHash &&
+            pendingIdentity->materialTableContentHash ==
+                receipt.materialTableContentHash;
+    }
+    if (!outlinePlan->reason.empty())
+    {
+        receipt.diagnostic = outlinePlan->reason;
+    }
+    else if (!outlinePlan->skippedReason.empty())
+    {
+        receipt.diagnostic = outlinePlan->skippedReason;
+    }
+    else if (outlinePlan->scheduled && !receipt.executed)
+    {
+        receipt.diagnostic =
+            "ScreenSpaceOutline was scheduled but its exact visible draw was not recorded";
+    }
+    m_lastToonOutlineExecutionReceipt = std::move(receipt);
 }
 } // namespace RVX

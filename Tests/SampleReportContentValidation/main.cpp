@@ -183,6 +183,7 @@ namespace
         std::vector<std::string> requiredMetrics;
         std::vector<ScenarioMetricEqualityRequirement> requiredMetricEquals;
         std::vector<std::string> requiredAssetContentIds;
+        std::vector<std::string> requiredAcceptedCookAdmissionAssetIds;
         std::vector<CookAdmissionRequirement> requiredCookAdmissions;
         std::vector<AssetReceiptRequirement> requiredAssetReceipts;
         std::string requiredPhase;
@@ -227,6 +228,8 @@ namespace
         bool requireAmbientOcclusionHistoryCommittedAfterPresent = false;
         bool requireAmbientOcclusionIndirectOnlyLighting = false;
         bool requireAmbientOcclusionNonNeutralProbe = false;
+        bool requireToonLightingExecution = false;
+        bool requireToonOutlineExecution = false;
         bool requireReadinessWait = false;
         bool requireGPUDrivenExecution = false;
         bool requireDirectExecution = false;
@@ -1144,6 +1147,14 @@ namespace
             {
                 options.requireAmbientOcclusionNonNeutralProbe = true;
             }
+            else if (arg == "--require-toon-lighting-execution")
+            {
+                options.requireToonLightingExecution = true;
+            }
+            else if (arg == "--require-toon-outline-execution")
+            {
+                options.requireToonOutlineExecution = true;
+            }
             else if (arg == "--require-phase")
             {
                 const char* value = requireValue("--require-phase");
@@ -1197,6 +1208,17 @@ namespace
                     return false;
                 }
                 options.requiredCookAdmissions.push_back(std::move(requirement));
+            }
+            else if (arg == "--require-cook-admission-accepted")
+            {
+                const char* value = requireValue(
+                    "--require-cook-admission-accepted");
+                if (!value || value[0] == '\0')
+                {
+                    return false;
+                }
+                options.requiredAcceptedCookAdmissionAssetIds.emplace_back(
+                    value);
             }
             else if (arg == "--require-asset-receipt")
             {
@@ -2652,6 +2674,269 @@ namespace
         return passed;
     }
 
+    bool ValidateToonLightingExecutionProjection(
+        const Json& toonLighting,
+        const Options* options)
+    {
+        constexpr const char* Context = "Toon-lighting execution projection";
+        if (!toonLighting.is_object())
+        {
+            std::cerr << Context << " is not an object\n";
+            return false;
+        }
+
+        bool passed = ValidateExactObjectFields(
+            toonLighting,
+            {"requested",
+             "pipelineReady",
+             "inputsReady",
+             "executed",
+             "programFamily",
+             "materialCount",
+             "drawCount",
+             "forwardShadedDrawCount",
+             "deferredShadedDrawCount",
+             "standardLitFallbackCount",
+             "materialFallbackCount",
+             "bandsApplied",
+             "specularThresholdApplied",
+             "rimApplied",
+             "shadowTintApplied",
+             "materialTableSchemaVersion",
+             "materialTableContentHash"},
+            Context);
+
+        bool requested = false;
+        bool pipelineReady = false;
+        bool inputsReady = false;
+        bool executed = false;
+        bool bandsApplied = false;
+        bool specularThresholdApplied = false;
+        bool rimApplied = false;
+        bool shadowTintApplied = false;
+        std::string programFamily;
+        uint64_t materialCount = 0;
+        uint64_t drawCount = 0;
+        uint64_t forwardShadedDrawCount = 0;
+        uint64_t deferredShadedDrawCount = 0;
+        uint64_t standardLitFallbackCount = 0;
+        uint64_t materialFallbackCount = 0;
+        uint64_t materialTableSchemaVersion = 0;
+        uint64_t materialTableContentHash = 0;
+
+        for (const auto& [field, value] : {
+                 std::pair{"requested", &requested},
+                 {"pipelineReady", &pipelineReady},
+                 {"inputsReady", &inputsReady},
+                 {"executed", &executed},
+                 {"bandsApplied", &bandsApplied},
+                 {"specularThresholdApplied", &specularThresholdApplied},
+                 {"rimApplied", &rimApplied},
+                 {"shadowTintApplied", &shadowTintApplied}})
+        {
+            passed &= ReadBooleanField(toonLighting, field, *value, Context);
+        }
+        for (const auto& [field, value] : {
+                 std::pair{"materialCount", &materialCount},
+                 {"drawCount", &drawCount},
+                 {"forwardShadedDrawCount", &forwardShadedDrawCount},
+                 {"deferredShadedDrawCount", &deferredShadedDrawCount},
+                 {"standardLitFallbackCount", &standardLitFallbackCount},
+                 {"materialFallbackCount", &materialFallbackCount},
+                 {"materialTableSchemaVersion", &materialTableSchemaVersion},
+                 {"materialTableContentHash", &materialTableContentHash}})
+        {
+            passed &= ReadUnsignedField(toonLighting, field, *value, Context);
+        }
+        passed &= ReadStringField(toonLighting, "programFamily", programFamily,
+                                  Context, true);
+        if (!passed)
+        {
+            return false;
+        }
+
+        const bool oneRasterPathExecuted =
+            (forwardShadedDrawCount != 0) !=
+            (deferredShadedDrawCount != 0);
+        const bool baseContract = requested && pipelineReady && inputsReady &&
+            executed && materialCount != 0 && drawCount != 0 &&
+            forwardShadedDrawCount + deferredShadedDrawCount == drawCount &&
+            oneRasterPathExecuted && standardLitFallbackCount == 0 &&
+            materialFallbackCount == 0 && bandsApplied &&
+            specularThresholdApplied && rimApplied && shadowTintApplied &&
+            materialTableSchemaVersion != 0 && materialTableContentHash != 0;
+        if (!baseContract)
+        {
+            std::cerr << Context << " does not prove a fully executed ToonLit draw\n";
+            return false;
+        }
+
+        if (options != nullptr && !options->requiredRenderPipeline.empty())
+        {
+            if (options->requiredRenderPipeline == "forward-plus" &&
+                forwardShadedDrawCount == 0)
+            {
+                std::cerr << Context << " lacks Forward+ ToonLit execution\n";
+                return false;
+            }
+            if (options->requiredRenderPipeline == "deferred" &&
+                deferredShadedDrawCount == 0)
+            {
+                std::cerr << Context << " lacks Deferred ToonLit execution\n";
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool ValidateToonOutlineExecutionProjection(
+        const Json& toonOutline)
+    {
+        constexpr const char* Context = "Toon-outline execution projection";
+        if (!toonOutline.is_object())
+        {
+            std::cerr << Context << " is not an object\n";
+            return false;
+        }
+
+        bool passed = ValidateExactObjectFields(
+            toonOutline,
+            {"requested",
+             "pipelineReady",
+             "inputsReady",
+             "executed",
+             "depthInputReady",
+             "worldNormalInputReady",
+             "materialIdentityInputReady",
+             "materialTableInputReady",
+             "temporalOrderingValidated",
+             "taaSequenceIndex",
+             "outlineSequenceIndex",
+             "toneMapSequenceIndex",
+             "eligibleToonMaterialCount",
+             "outlinedPixelCount",
+             "nonToonAffectedPixelCount",
+             "resolutionAware",
+             "settingsHash",
+             "fallbackUsed"},
+            Context);
+
+        bool requested = false;
+        bool pipelineReady = false;
+        bool inputsReady = false;
+        bool executed = false;
+        bool depthInputReady = false;
+        bool worldNormalInputReady = false;
+        bool materialIdentityInputReady = false;
+        bool materialTableInputReady = false;
+        bool temporalOrderingValidated = false;
+        bool resolutionAware = false;
+        bool fallbackUsed = false;
+        uint64_t taaSequenceIndex = 0;
+        uint64_t outlineSequenceIndex = 0;
+        uint64_t toneMapSequenceIndex = 0;
+        uint64_t eligibleToonMaterialCount = 0;
+        uint64_t outlinedPixelCount = 0;
+        uint64_t nonToonAffectedPixelCount = 0;
+        uint64_t settingsHash = 0;
+
+        for (const auto& [field, value] : {
+                 std::pair{"requested", &requested},
+                 {"pipelineReady", &pipelineReady},
+                 {"inputsReady", &inputsReady},
+                 {"executed", &executed},
+                 {"depthInputReady", &depthInputReady},
+                 {"worldNormalInputReady", &worldNormalInputReady},
+                 {"materialIdentityInputReady", &materialIdentityInputReady},
+                 {"materialTableInputReady", &materialTableInputReady},
+                 {"temporalOrderingValidated", &temporalOrderingValidated},
+                 {"resolutionAware", &resolutionAware},
+                 {"fallbackUsed", &fallbackUsed}})
+        {
+            passed &= ReadBooleanField(toonOutline, field, *value, Context);
+        }
+        for (const auto& [field, value] : {
+                 std::pair{"taaSequenceIndex", &taaSequenceIndex},
+                 {"outlineSequenceIndex", &outlineSequenceIndex},
+                 {"toneMapSequenceIndex", &toneMapSequenceIndex},
+                 {"eligibleToonMaterialCount", &eligibleToonMaterialCount},
+                 {"outlinedPixelCount", &outlinedPixelCount},
+                 {"nonToonAffectedPixelCount", &nonToonAffectedPixelCount},
+                 {"settingsHash", &settingsHash}})
+        {
+            passed &= ReadUnsignedField(toonOutline, field, *value, Context);
+        }
+        if (!passed)
+        {
+            return false;
+        }
+
+        const bool qualified = requested && pipelineReady && inputsReady &&
+            executed && depthInputReady && worldNormalInputReady &&
+            materialIdentityInputReady && materialTableInputReady &&
+            temporalOrderingValidated && taaSequenceIndex != 0 &&
+            taaSequenceIndex < outlineSequenceIndex &&
+            outlineSequenceIndex < toneMapSequenceIndex &&
+            eligibleToonMaterialCount != 0 && outlinedPixelCount != 0 &&
+            nonToonAffectedPixelCount == 0 && resolutionAware &&
+            settingsHash != 0 && !fallbackUsed;
+        if (!qualified)
+        {
+            std::cerr << Context << " does not prove the HDR temporal outline contract\n";
+        }
+        return qualified;
+    }
+
+    bool ValidateToonExecutionProjections(const Json& report,
+                                          const Options* options)
+    {
+        if (options == nullptr ||
+            (!options->requireToonLightingExecution &&
+             !options->requireToonOutlineExecution))
+        {
+            return true;
+        }
+
+        const auto diagnostics = report.find("renderDiagnostics");
+        if (diagnostics == report.end() || !diagnostics->is_object())
+        {
+            std::cerr << "Toon qualification requires report renderDiagnostics\n";
+            return false;
+        }
+
+        bool passed = true;
+        if (options->requireToonLightingExecution)
+        {
+            const auto lighting =
+                diagnostics->find("toonLightingActualExecution");
+            if (lighting == diagnostics->end())
+            {
+                std::cerr << "Toon qualification missing toonLightingActualExecution\n";
+                passed = false;
+            }
+            else
+            {
+                passed &= ValidateToonLightingExecutionProjection(
+                    *lighting, options);
+            }
+        }
+        if (options->requireToonOutlineExecution)
+        {
+            const auto outline =
+                diagnostics->find("toonOutlineActualExecution");
+            if (outline == diagnostics->end())
+            {
+                std::cerr << "Toon qualification missing toonOutlineActualExecution\n";
+                passed = false;
+            }
+            else
+            {
+                passed &= ValidateToonOutlineExecutionProjection(*outline);
+            }
+        }
+        return passed;
+    }
+
     bool ValidateAmbientOcclusionExecutionProjectionSchemaV26(
         const Json& ambientOcclusion,
         const Options* options)
@@ -3082,6 +3367,221 @@ namespace
         return passed;
     }
 
+    bool ValidateToonLightingRawReceiptSchemaV11(const Json& toonLighting)
+    {
+        constexpr const char* Context = "Toon-lighting raw receipt v11";
+        bool passed = ValidateExactObjectFields(
+            toonLighting,
+            {"requested", "pipelineReady", "inputsReady", "executed",
+             "programFamilyHash", "materialCount", "drawCount",
+             "forwardShadedDrawCount", "deferredShadedDrawCount",
+             "standardLitFallbackCount", "materialFallbackCount",
+             "bandsApplied", "specularThresholdApplied", "rimApplied",
+             "shadowTintApplied", "materialTableSchemaVersion",
+             "materialTableContentHash"},
+            Context);
+        bool requested = false;
+        bool pipelineReady = false;
+        bool inputsReady = false;
+        bool executed = false;
+        bool bandsApplied = false;
+        bool specularThresholdApplied = false;
+        bool rimApplied = false;
+        bool shadowTintApplied = false;
+        uint64_t programFamilyHash = 0;
+        uint64_t materialCount = 0;
+        uint64_t drawCount = 0;
+        uint64_t forwardDrawCount = 0;
+        uint64_t deferredDrawCount = 0;
+        uint64_t standardFallbackCount = 0;
+        uint64_t materialFallbackCount = 0;
+        uint64_t materialTableSchemaVersion = 0;
+        uint64_t materialTableContentHash = 0;
+        for (const auto& [field, value] : {
+                 std::pair{"requested", &requested},
+                 {"pipelineReady", &pipelineReady},
+                 {"inputsReady", &inputsReady}, {"executed", &executed},
+                 {"bandsApplied", &bandsApplied},
+                 {"specularThresholdApplied", &specularThresholdApplied},
+                 {"rimApplied", &rimApplied},
+                 {"shadowTintApplied", &shadowTintApplied}})
+        {
+            passed &= ReadBooleanField(toonLighting, field, *value, Context);
+        }
+        for (const auto& [field, value] : {
+                 std::pair{"programFamilyHash", &programFamilyHash},
+                 {"materialCount", &materialCount}, {"drawCount", &drawCount},
+                 {"forwardShadedDrawCount", &forwardDrawCount},
+                 {"deferredShadedDrawCount", &deferredDrawCount},
+                 {"standardLitFallbackCount", &standardFallbackCount},
+                 {"materialFallbackCount", &materialFallbackCount},
+                 {"materialTableSchemaVersion", &materialTableSchemaVersion},
+                 {"materialTableContentHash", &materialTableContentHash}})
+        {
+            passed &= ReadUnsignedField(toonLighting, field, *value, Context);
+        }
+        if (!passed)
+        {
+            return false;
+        }
+        if (!requested)
+        {
+            return !pipelineReady && !inputsReady && !executed &&
+                   programFamilyHash == 0 && materialCount == 0 &&
+                   drawCount == 0 && forwardDrawCount == 0 &&
+                   deferredDrawCount == 0 && standardFallbackCount == 0 &&
+                   materialFallbackCount == 0 && !bandsApplied &&
+                   !specularThresholdApplied && !rimApplied &&
+                   !shadowTintApplied && materialTableSchemaVersion == 0 &&
+                   materialTableContentHash == 0;
+        }
+        const bool hasInputs = materialCount != 0 ||
+            materialTableSchemaVersion != 0 || materialTableContentHash != 0;
+        if (inputsReady != hasInputs || standardFallbackCount != 0 ||
+            materialFallbackCount != 0 ||
+            forwardDrawCount + deferredDrawCount != drawCount ||
+            (inputsReady &&
+             (programFamilyHash == 0 || materialCount == 0 ||
+              materialTableSchemaVersion == 0 || materialTableContentHash == 0)))
+        {
+            return false;
+        }
+        if (!executed)
+        {
+            return drawCount == 0 && !bandsApplied &&
+                   !specularThresholdApplied && !rimApplied &&
+                   !shadowTintApplied;
+        }
+        const bool oneRasterPathExecuted =
+            (forwardDrawCount != 0) != (deferredDrawCount != 0);
+        return pipelineReady && inputsReady && drawCount != 0 &&
+               oneRasterPathExecuted && bandsApplied &&
+               specularThresholdApplied && rimApplied && shadowTintApplied;
+    }
+
+    bool ValidateToonOutlineRawReceiptSchemaV11(const Json& toonOutline)
+    {
+        constexpr const char* Context = "Toon-outline raw receipt v11";
+        bool passed = ValidateExactObjectFields(
+            toonOutline,
+            {"requested", "pipelineReady", "inputsReady", "executed",
+             "depthInputReady", "worldNormalInputReady",
+             "materialIdentityInputReady", "materialTableInputReady",
+             "temporalOrderingValidated", "taaSequenceIndex",
+             "outlineSequenceIndex", "toneMapSequenceIndex",
+             "eligibleToonMaterialCount", "qualificationRequested",
+             "qualificationReady", "outlinedPixelCount",
+             "nonToonAffectedPixelCount", "resolutionAware", "renderWidth",
+             "renderHeight", "settingsHash", "materialTableContentHash",
+             "fallbackUsed", "diagnostic"},
+            Context);
+        bool requested = false;
+        bool pipelineReady = false;
+        bool inputsReady = false;
+        bool executed = false;
+        bool depthReady = false;
+        bool normalReady = false;
+        bool identityReady = false;
+        bool tableReady = false;
+        bool orderingValidated = false;
+        bool qualificationRequested = false;
+        bool qualificationReady = false;
+        bool resolutionAware = false;
+        bool fallbackUsed = false;
+        std::string diagnostic;
+        uint64_t taaIndex = 0;
+        uint64_t outlineIndex = 0;
+        uint64_t toneMapIndex = 0;
+        uint64_t eligibleToonMaterialCount = 0;
+        uint64_t outlinedPixelCount = 0;
+        uint64_t nonToonAffectedPixelCount = 0;
+        uint64_t renderWidth = 0;
+        uint64_t renderHeight = 0;
+        uint64_t settingsHash = 0;
+        uint64_t materialTableContentHash = 0;
+        for (const auto& [field, value] : {
+                 std::pair{"requested", &requested},
+                 {"pipelineReady", &pipelineReady},
+                 {"inputsReady", &inputsReady}, {"executed", &executed},
+                 {"depthInputReady", &depthReady},
+                 {"worldNormalInputReady", &normalReady},
+                 {"materialIdentityInputReady", &identityReady},
+                 {"materialTableInputReady", &tableReady},
+                 {"temporalOrderingValidated", &orderingValidated},
+                 {"qualificationRequested", &qualificationRequested},
+                 {"qualificationReady", &qualificationReady},
+                 {"resolutionAware", &resolutionAware},
+                 {"fallbackUsed", &fallbackUsed}})
+        {
+            passed &= ReadBooleanField(toonOutline, field, *value, Context);
+        }
+        for (const auto& [field, value] : {
+                 std::pair{"taaSequenceIndex", &taaIndex},
+                 {"outlineSequenceIndex", &outlineIndex},
+                 {"toneMapSequenceIndex", &toneMapIndex},
+                 {"eligibleToonMaterialCount", &eligibleToonMaterialCount},
+                 {"outlinedPixelCount", &outlinedPixelCount},
+                 {"nonToonAffectedPixelCount", &nonToonAffectedPixelCount},
+                 {"renderWidth", &renderWidth}, {"renderHeight", &renderHeight},
+                 {"settingsHash", &settingsHash},
+                 {"materialTableContentHash", &materialTableContentHash}})
+        {
+            passed &= ReadUnsignedField(toonOutline, field, *value, Context);
+        }
+        passed &= ReadStringField(toonOutline, "diagnostic", diagnostic, Context);
+        if (!passed)
+        {
+            return false;
+        }
+        if (!requested)
+        {
+            return !pipelineReady && !inputsReady && !executed && !depthReady &&
+                   !normalReady && !identityReady && !tableReady &&
+                   !orderingValidated && taaIndex == 0 && outlineIndex == 0 &&
+                   toneMapIndex == 0 && eligibleToonMaterialCount == 0 &&
+                   !qualificationRequested && !qualificationReady &&
+                   outlinedPixelCount == 0 && nonToonAffectedPixelCount == 0 &&
+                   !resolutionAware && renderWidth == 0 && renderHeight == 0 &&
+                   settingsHash == 0 && materialTableContentHash == 0 &&
+                   !fallbackUsed && diagnostic.empty();
+        }
+        const bool exactInputs = depthReady && normalReady && identityReady &&
+            tableReady;
+        if (inputsReady != exactInputs || settingsHash == 0 ||
+            (qualificationRequested && !executed) ||
+            (qualificationReady && !qualificationRequested))
+        {
+            return false;
+        }
+        if (!executed)
+        {
+            return outlineIndex == 0 && toneMapIndex == 0 &&
+                   eligibleToonMaterialCount == 0 &&
+                   !qualificationRequested && !qualificationReady &&
+                   outlinedPixelCount == 0 && nonToonAffectedPixelCount == 0 &&
+                   !resolutionAware && renderWidth == 0 && renderHeight == 0 &&
+                   materialTableContentHash == 0;
+        }
+        const bool orderingValid = outlineIndex != 0 && toneMapIndex != 0 &&
+            outlineIndex < toneMapIndex &&
+            (taaIndex == 0 || taaIndex < outlineIndex);
+        if (!pipelineReady || !inputsReady || !orderingValidated ||
+            !orderingValid || materialTableContentHash == 0 || fallbackUsed ||
+            eligibleToonMaterialCount == 0)
+        {
+            return false;
+        }
+        if (!qualificationReady)
+        {
+            return outlinedPixelCount == 0 &&
+                   nonToonAffectedPixelCount == 0 && !resolutionAware &&
+                   renderWidth == 0 && renderHeight == 0;
+        }
+        return qualificationRequested && outlinedPixelCount != 0 &&
+               nonToonAffectedPixelCount == 0 && resolutionAware &&
+               renderWidth != 0 && renderHeight != 0 && diagnostic.empty();
+    }
+
     bool ValidateRenderExecutionReceiptSchemaV21(
         const Json& execution,
         uint64_t captureCarryingFrameSequence,
@@ -3126,28 +3626,34 @@ namespace
         };
         if (schemaVersion == 2 || schemaVersion == 4 || schemaVersion == 5 ||
             schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8 ||
-            schemaVersion == 10)
+            schemaVersion == 10 || schemaVersion == 11)
         {
             expectedFields.insert("deferredOpaque");
         }
         if (schemaVersion == 4 || schemaVersion == 5 || schemaVersion == 6 ||
-            schemaVersion == 7 || schemaVersion == 8 || schemaVersion == 10)
+            schemaVersion == 7 || schemaVersion == 8 || schemaVersion == 10 ||
+            schemaVersion == 11)
         {
             expectedFields.insert("lighting");
         }
         if (schemaVersion == 5 || schemaVersion == 6 || schemaVersion == 7 ||
-            schemaVersion == 8 || schemaVersion == 10)
+            schemaVersion == 8 || schemaVersion == 10 || schemaVersion == 11)
         {
             expectedFields.insert("deformation");
         }
         if (schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8 ||
-            schemaVersion == 10)
+            schemaVersion == 10 || schemaVersion == 11)
         {
             expectedFields.insert("postProcess");
         }
-        if (schemaVersion == 10)
+        if (schemaVersion == 10 || schemaVersion == 11)
         {
             expectedFields.insert("ambientOcclusion");
+        }
+        if (schemaVersion == 11)
+        {
+            expectedFields.insert("toonLighting");
+            expectedFields.insert("toonOutline");
         }
         passed &= ValidateExactObjectFields(
             execution, expectedFields, "Render execution receipt v21");
@@ -3191,7 +3697,8 @@ namespace
         if ((schemaVersion != 1 && schemaVersion != 2 &&
              schemaVersion != 4 && schemaVersion != 5 &&
                  schemaVersion != 6 && schemaVersion != 7 &&
-             schemaVersion != 8 && schemaVersion != 10) || !available ||
+                 schemaVersion != 8 && schemaVersion != 10 &&
+                 schemaVersion != 11) || !available ||
             !graphComposed ||
             !executionSucceeded || !presented || !succeeded)
         {
@@ -3200,7 +3707,7 @@ namespace
         }
         if (schemaVersion == 2 || schemaVersion == 4 || schemaVersion == 5 ||
             schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8 ||
-            schemaVersion == 10)
+            schemaVersion == 10 || schemaVersion == 11)
         {
             const auto deferredOpaque = execution.find("deferredOpaque");
             if (deferredOpaque == execution.end() ||
@@ -3270,7 +3777,8 @@ namespace
             passed = false;
         }
         if (schemaVersion == 4 || schemaVersion == 5 || schemaVersion == 6 ||
-            schemaVersion == 7 || schemaVersion == 8 || schemaVersion == 10)
+            schemaVersion == 7 || schemaVersion == 8 || schemaVersion == 10 ||
+            schemaVersion == 11)
         {
             const auto lighting = execution.find("lighting");
             if (lighting == execution.end() || !lighting->is_object())
@@ -3415,7 +3923,7 @@ namespace
              options->requireSkinnedShadowExecution ||
              options->requireSkinnedVelocityExecution);
         if (schemaVersion == 5 || schemaVersion == 6 || schemaVersion == 7 ||
-            schemaVersion == 8 || schemaVersion == 10)
+            schemaVersion == 8 || schemaVersion == 10 || schemaVersion == 11)
         {
             const auto deformation = execution.find("deformation");
             if (deformation == execution.end() || !deformation->is_object())
@@ -3568,7 +4076,7 @@ namespace
              options->requireAmbientOcclusionIndirectOnlyLighting ||
              options->requireAmbientOcclusionNonNeutralProbe);
         if (schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8 ||
-            schemaVersion == 10)
+            schemaVersion == 10 || schemaVersion == 11)
         {
             const auto postProcess = execution.find("postProcess");
             if (postProcess == execution.end() || !postProcess->is_object())
@@ -3589,7 +4097,7 @@ namespace
                     "hdrInputReady", "displayLinearOutputReady",
                     "encodedOutputReady", "fallbackUsed"};
                 if (schemaVersion == 7 || schemaVersion == 8 ||
-                    schemaVersion == 10)
+                    schemaVersion == 10 || schemaVersion == 11)
                 {
                     expectedPostProcessFields.insert({
                         "antiAliasingMode", "taaRequested", "taaPipelineReady",
@@ -3601,7 +4109,8 @@ namespace
                         "taaResolveGraphPassCount",
                         "taaHistoryStoreGraphPassCount"});
                 }
-                if (schemaVersion == 8 || schemaVersion == 10)
+                if (schemaVersion == 8 || schemaVersion == 10 ||
+                    schemaVersion == 11)
                 {
                     expectedPostProcessFields.insert({
                         "exposureStateContentHash",
@@ -3702,7 +4211,7 @@ namespace
                 passed &= ReadUnsignedField(*postProcess, "taaPassCount",
                                             taaPassCount, context);
                 if (schemaVersion == 7 || schemaVersion == 8 ||
-                    schemaVersion == 10)
+                    schemaVersion == 10 || schemaVersion == 11)
                 {
                     passed &= ReadStringField(*postProcess, "antiAliasingMode",
                                               antiAliasingMode, context, true);
@@ -3767,7 +4276,8 @@ namespace
                     passed &= readJitter(
                         "previousJitterPixels", previousJitterX, previousJitterY);
                 }
-                if (schemaVersion == 8 || schemaVersion == 10)
+                if (schemaVersion == 8 || schemaVersion == 10 ||
+                    schemaVersion == 11)
                 {
                     passed &= ReadUnsignedField(*postProcess,
                                                 "exposureStateContentHash",
@@ -3924,7 +4434,7 @@ namespace
                      isDirectEncodedPresentationContract);
                 bool aaStructurallyValid = taaPassCount == 0;
                 if (schemaVersion == 7 || schemaVersion == 8 ||
-                    schemaVersion == 10)
+                    schemaVersion == 10 || schemaVersion == 11)
                 {
                     const bool temporalJitterProgressed =
                         currentJitterX != previousJitterX ||
@@ -3960,7 +4470,8 @@ namespace
                 }
                 bool exposureStructurallyValid = true;
                 bool sharedExposureState = false;
-                if (schemaVersion == 8 || schemaVersion == 10)
+                if (schemaVersion == 8 || schemaVersion == 10 ||
+                    schemaVersion == 11)
                 {
                     sharedExposureState =
                         exposureStateContentHash != 0 &&
@@ -4032,8 +4543,8 @@ namespace
                      (options->requireNoTemporalAAExecution &&
                       taaPassCount != 0) ||
                      (options->requireTemporalAAExecution &&
-                      ((schemaVersion != 7 && schemaVersion != 8 &&
-                        schemaVersion != 10) ||
+                    ((schemaVersion != 7 && schemaVersion != 8 &&
+                        schemaVersion != 10 && schemaVersion != 11) ||
                        antiAliasingMode != "taa" ||
                        taaPassCount != 1 || !taaRequested ||
                        !taaPipelineReady || !taaInputsReady ||
@@ -4044,19 +4555,20 @@ namespace
                        taaHistoryStoreGraphPassCount != 1)) ||
                      (options->requireNoFXAAExecution && fxaaPassCount != 0) ||
                      (options->requireTemporalHistorySampled &&
-                      ((schemaVersion != 7 && schemaVersion != 8 &&
-                        schemaVersion != 10) ||
+                    ((schemaVersion != 7 && schemaVersion != 8 &&
+                        schemaVersion != 10 && schemaVersion != 11) ||
                        !historyAvailableBefore ||
                        !historySampled ||
                        (currentJitterX == previousJitterX &&
                         currentJitterY == previousJitterY))) ||
                      (options->requireTemporalHistoryCommitted &&
-                      ((schemaVersion != 7 && schemaVersion != 8 &&
-                        schemaVersion != 10) ||
+                    ((schemaVersion != 7 && schemaVersion != 8 &&
+                        schemaVersion != 10 && schemaVersion != 11) ||
                        !historyCandidateProduced ||
                        !historyCommitted || historyAbandoned)) ||
                      (options->requireManualEV100Exposure &&
-                      ((schemaVersion != 8 && schemaVersion != 10) ||
+                    ((schemaVersion != 8 && schemaVersion != 10 &&
+                        schemaVersion != 11) ||
                        exposureMode != "manual-ev100" ||
                        exposureHistogramPassCount != 0 ||
                        exposureAdaptationPassCount != 1 ||
@@ -4072,7 +4584,8 @@ namespace
                        !IsNearlyEqualExposure(
                            previousPreExposure, exposureScale))) ||
                      (options->requireHistogramAutoExposure &&
-                      ((schemaVersion != 8 && schemaVersion != 10) ||
+                    ((schemaVersion != 8 && schemaVersion != 10 &&
+                        schemaVersion != 11) ||
                        exposureMode != "histogram-auto" ||
                        exposureHistogramPassCount != 2 ||
                        exposureAdaptationPassCount != 1 ||
@@ -4085,7 +4598,8 @@ namespace
                            adaptedEV100, exposureScale) ||
                        !(targetEV100 + 1.0e-4 < adaptedEV100))) ||
                      (options->requireExposureProbe &&
-                      ((schemaVersion != 8 && schemaVersion != 10) ||
+                    ((schemaVersion != 8 && schemaVersion != 10 &&
+                        schemaVersion != 11) ||
                        !exposureProbeRequested ||
                        !exposureProbeReady || !std::isfinite(targetEV100) ||
                        !std::isfinite(adaptedEV100) ||
@@ -4093,7 +4607,8 @@ namespace
                        !IsValidExposureScale(preExposure) ||
                        !IsValidExposureScale(previousPreExposure))) ||
                      (options->requireSharedExposureState &&
-                      ((schemaVersion != 8 && schemaVersion != 10) ||
+                    ((schemaVersion != 8 && schemaVersion != 10 &&
+                        schemaVersion != 11) ||
                        !sharedExposureState))) )
                 {
                     std::cerr << "Render execution receipt does not satisfy required post-process evidence\n";
@@ -4106,7 +4621,7 @@ namespace
             std::cerr << "Render execution receipt predates required post-process evidence\n";
             passed = false;
         }
-        if (schemaVersion == 10)
+        if (schemaVersion == 10 || schemaVersion == 11)
         {
             const auto ambientOcclusion = execution.find("ambientOcclusion");
             if (ambientOcclusion == execution.end() ||
@@ -4119,6 +4634,29 @@ namespace
         else if (requiresAmbientOcclusionEvidence)
         {
             std::cerr << "Render execution receipt predates required ambient-occlusion evidence\n";
+            passed = false;
+        }
+        if (schemaVersion == 11)
+        {
+            const auto toonLighting = execution.find("toonLighting");
+            const auto toonOutline = execution.find("toonOutline");
+            if (toonLighting == execution.end() || toonOutline == execution.end())
+            {
+                std::cerr << "Render execution receipt v11 missing Toon evidence\n";
+                passed = false;
+            }
+            else
+            {
+                passed &= ValidateToonLightingRawReceiptSchemaV11(
+                    *toonLighting);
+                passed &= ValidateToonOutlineRawReceiptSchemaV11(*toonOutline);
+            }
+        }
+        else if (options != nullptr &&
+                 (options->requireToonLightingExecution ||
+                  options->requireToonOutlineExecution))
+        {
+            std::cerr << "Render execution receipt predates required Toon evidence\n";
             passed = false;
         }
         if (!diagnostic.empty() || diagnostic.size() > 4096)
@@ -4311,7 +4849,7 @@ namespace
         // The explicit contract-only completion marker was added with the
         // schema-10 receipt.  Older receipt versions retain their published
         // feature shape and therefore must not accept or require this field.
-        if (schemaVersion == 10)
+        if (schemaVersion == 10 || schemaVersion == 11)
         {
             expectedFeatureFields.insert(
                 "contractCompletedWithoutGraphWork");
@@ -4375,7 +4913,7 @@ namespace
             passed &= ReadUnsignedField(feature, "executedGraphPassCount",
                                         executedGraphPassCount,
                                         "Render feature execution receipt v21");
-            if (schemaVersion == 10)
+            if (schemaVersion == 10 || schemaVersion == 11)
             {
                 passed &= ReadBooleanField(
                     feature, "contractCompletedWithoutGraphWork",
@@ -4475,7 +5013,8 @@ namespace
                                       "Render feature readiness v21");
             const bool ready = compiled && hardwareSupported &&
                 implementationSupported && pipelineReady && inputsReady;
-            const bool contractOnlyExecution = schemaVersion == 10 &&
+            const bool contractOnlyExecution =
+                (schemaVersion == 10 || schemaVersion == 11) &&
                 contractCompletedWithoutGraphWork && ready && executed &&
                 !fallbackUsed && graphPassCount == 0 &&
                 executedGraphPassCount == 0;
@@ -4844,6 +5383,8 @@ namespace
             std::cerr << "Report predates required ambient-occlusion execution projection\n";
             passed = false;
         }
+
+        passed &= ValidateToonExecutionProjections(report, options);
 
         std::string requestedBackend;
         std::string backend;
@@ -5329,6 +5870,91 @@ namespace
         return passed;
     }
 
+    bool HasAcceptedCookAdmission(const Json& asset,
+                                  const std::string& assetId)
+    {
+        if (!asset.is_object() ||
+            !HasValue(asset, "id", Json::value_t::string) ||
+            asset["id"] != assetId)
+        {
+            return false;
+        }
+
+        const auto packageContentId = asset.find("packageContentId");
+        const auto cook = asset.find("cook");
+        if (packageContentId == asset.end() ||
+            !IsValidAssetContentIdentity(*packageContentId) ||
+            cook == asset.end() || !cook->is_object())
+        {
+            return false;
+        }
+
+        const auto hasBoolean = [&cook](const char* field, bool expected)
+        {
+            const auto value = cook->find(field);
+            return value != cook->end() && value->is_boolean() &&
+                   value->get<bool>() == expected;
+        };
+        const auto hasNonEmptyString = [&cook](const char* field)
+        {
+            const auto value = cook->find(field);
+            return value != cook->end() && value->is_string() &&
+                   !value->get_ref<const std::string&>().empty();
+        };
+        const auto hasSha256 = [&cook](const char* field)
+        {
+            const auto value = cook->find(field);
+            return value != cook->end() && value->is_string() &&
+                   IsSha256DigestText(value->get_ref<const std::string&>());
+        };
+        const auto hasExactIdentityPair = [&cook](const char* declaredField,
+                                                   const char* observedField)
+        {
+            const auto declared = cook->find(declaredField);
+            const auto observed = cook->find(observedField);
+            return declared != cook->end() && observed != cook->end() &&
+                   IsValidResourceContentIdentity(*declared) &&
+                   IsValidResourceContentIdentity(*observed) &&
+                   *declared == *observed;
+        };
+
+        const auto code = cook->find("code");
+        return hasBoolean("required", true) &&
+               hasBoolean("accepted", true) &&
+               code != cook->end() && code->is_string() &&
+               *code == "accepted" &&
+               hasNonEmptyString("manifestPath") &&
+               hasNonEmptyString("cookedRoot") &&
+               hasExactIdentityPair("declaredSourceContentIdentity",
+                                    "observedSourceContentIdentity") &&
+               hasExactIdentityPair("declaredCookedContentIdentity",
+                                    "observedCookedContentIdentity") &&
+               hasExactIdentityPair("declaredManifestContentIdentity",
+                                    "observedManifestContentIdentity") &&
+               hasSha256("cookSettingsHash") && hasSha256("recipeHash") &&
+               hasNonEmptyString("toolName") &&
+               hasNonEmptyString("toolVersion");
+    }
+
+    bool ValidateAcceptedCookAdmissionRequirements(const Json& report,
+                                                   const Options& options)
+    {
+        bool passed = true;
+        for (const std::string& assetId :
+             options.requiredAcceptedCookAdmissionAssetIds)
+        {
+            const Json* asset = FindUniqueAssetById(report, assetId);
+            if (asset == nullptr || !HasAcceptedCookAdmission(*asset, assetId))
+            {
+                std::cerr << "Report asset does not prove accepted cook "
+                             "admission with exact observed identities: "
+                          << assetId << "\n";
+                passed = false;
+            }
+        }
+        return passed;
+    }
+
     bool ContainsAssetId(const Json& report, const std::string& id)
     {
         return std::any_of(report["assets"].begin(), report["assets"].end(),
@@ -5710,6 +6336,126 @@ namespace
             return false;
         }
 
+        char toonParserArg0[] = "SampleReportContentValidation";
+        char toonParserArg1[] = "--self-test";
+        char toonParserArg2[] = "--require-toon-lighting-execution";
+        char toonParserArg3[] = "--require-toon-outline-execution";
+        char* toonParserArguments[] = {
+            toonParserArg0, toonParserArg1, toonParserArg2, toonParserArg3};
+        Options parsedToonOptions;
+        if (!ParseOptions(4, toonParserArguments, parsedToonOptions) ||
+            !parsedToonOptions.requireToonLightingExecution ||
+            !parsedToonOptions.requireToonOutlineExecution)
+        {
+            return false;
+        }
+
+        Json qualifiedToonLighting = {
+            {"requested", true},
+            {"pipelineReady", true},
+            {"inputsReady", true},
+            {"executed", true},
+            {"programFamily", "toon-lit"},
+            {"materialCount", 1},
+            {"drawCount", 2},
+            {"forwardShadedDrawCount", 2},
+            {"deferredShadedDrawCount", 0},
+            {"standardLitFallbackCount", 0},
+            {"materialFallbackCount", 0},
+            {"bandsApplied", true},
+            {"specularThresholdApplied", true},
+            {"rimApplied", true},
+            {"shadowTintApplied", true},
+            {"materialTableSchemaVersion", 1},
+            {"materialTableContentHash", 1},
+        };
+        if (!ValidateToonLightingExecutionProjection(
+                qualifiedToonLighting, &parsedToonOptions))
+        {
+            return false;
+        }
+        Json missingToonLightingField = qualifiedToonLighting;
+        missingToonLightingField.erase("materialTableContentHash");
+        if (ValidateToonLightingExecutionProjection(
+                missingToonLightingField, &parsedToonOptions))
+        {
+            return false;
+        }
+        Json zeroToonLightingHash = qualifiedToonLighting;
+        zeroToonLightingHash["materialTableContentHash"] = 0;
+        if (ValidateToonLightingExecutionProjection(
+                zeroToonLightingHash, &parsedToonOptions))
+        {
+            return false;
+        }
+
+        Json qualifiedRawToonLighting = qualifiedToonLighting;
+        qualifiedRawToonLighting.erase("programFamily");
+        qualifiedRawToonLighting["programFamilyHash"] = 1;
+        if (!ValidateToonLightingRawReceiptSchemaV11(qualifiedRawToonLighting))
+        {
+            return false;
+        }
+        qualifiedRawToonLighting["programFamilyHash"] = 0;
+        if (ValidateToonLightingRawReceiptSchemaV11(qualifiedRawToonLighting))
+        {
+            return false;
+        }
+
+        Json qualifiedToonOutline = {
+            {"requested", true},
+            {"pipelineReady", true},
+            {"inputsReady", true},
+            {"executed", true},
+            {"depthInputReady", true},
+            {"worldNormalInputReady", true},
+            {"materialIdentityInputReady", true},
+            {"materialTableInputReady", true},
+            {"temporalOrderingValidated", true},
+            {"taaSequenceIndex", 4},
+            {"outlineSequenceIndex", 5},
+            {"toneMapSequenceIndex", 6},
+            {"eligibleToonMaterialCount", 1},
+            {"outlinedPixelCount", 128},
+            {"nonToonAffectedPixelCount", 0},
+            {"resolutionAware", true},
+            {"settingsHash", 1},
+            {"fallbackUsed", false},
+        };
+        if (!ValidateToonOutlineExecutionProjection(qualifiedToonOutline))
+        {
+            return false;
+        }
+        Json unexpectedToonOutlineField = qualifiedToonOutline;
+        unexpectedToonOutlineField["unexpected"] = true;
+        if (ValidateToonOutlineExecutionProjection(unexpectedToonOutlineField))
+        {
+            return false;
+        }
+        Json zeroToonOutlinePixels = qualifiedToonOutline;
+        zeroToonOutlinePixels["outlinedPixelCount"] = 0;
+        if (ValidateToonOutlineExecutionProjection(zeroToonOutlinePixels))
+        {
+            return false;
+        }
+
+        Json qualifiedRawToonOutline = qualifiedToonOutline;
+        qualifiedRawToonOutline["qualificationRequested"] = true;
+        qualifiedRawToonOutline["qualificationReady"] = true;
+        qualifiedRawToonOutline["renderWidth"] = 640;
+        qualifiedRawToonOutline["renderHeight"] = 360;
+        qualifiedRawToonOutline["materialTableContentHash"] = 1;
+        qualifiedRawToonOutline["diagnostic"] = "";
+        if (!ValidateToonOutlineRawReceiptSchemaV11(qualifiedRawToonOutline))
+        {
+            return false;
+        }
+        qualifiedRawToonOutline["renderWidth"] = 0;
+        if (ValidateToonOutlineRawReceiptSchemaV11(qualifiedRawToonOutline))
+        {
+            return false;
+        }
+
         ScenarioMetricEqualityRequirement parsedRequirement;
         if (!ParseMetricEqualityRequirement("draw-count=4", parsedRequirement) ||
             parsedRequirement.name != "draw-count" ||
@@ -5939,6 +6685,7 @@ namespace
             return false;
         }
         positive.requiredCookAdmissions = {cookRequirement};
+        positive.requiredAcceptedCookAdmissionAssetIds = {"self-test-model"};
         positive.requiredAssetReceipts = {assetReceiptRequirement};
         positive.requiredSupportedFeatures = {"RenderGraph"};
         positive.requestedBackend = "dx12";
@@ -7717,6 +8464,12 @@ namespace
                                                   positive) &&
                !ValidateCookAdmissionRequirements(reportWithRejectedCookAdmission,
                                                   positive) &&
+               !ValidateAcceptedCookAdmissionRequirements(
+                   reportWithOtherAssetCookDecoy, positive) &&
+               !ValidateAcceptedCookAdmissionRequirements(
+                   reportWithNestedCookDecoy, positive) &&
+               !ValidateAcceptedCookAdmissionRequirements(
+                   reportWithRejectedCookAdmission, positive) &&
                !ValidateAssetReceiptRequirements(reportWithWrongReceiptRole,
                                                  positive) &&
                !ValidateAssetReceiptRequirements(reportWithWrongReceiptKind,
@@ -7837,6 +8590,7 @@ namespace
             << "       SampleReportContentValidation --self-test\n\n"
             << "Cook admission gates are repeatable and bind every value to one "
                "unique top-level assets[] entry by assetId:\n"
+            << "  --require-cook-admission-accepted <asset-id>\n"
             << "  --require-cook-admission \"assetId=<id>;"
                "packageContentId=<sha256>/<bytes>/<files>;required=true;"
                "accepted=true;manifestPath=<path>;cookedRoot=<path>;"
@@ -7888,6 +8642,8 @@ namespace
             << "  --require-ambient-occlusion-history-committed-after-present\n"
             << "  --require-ambient-occlusion-indirect-only-lighting\n"
             << "  --require-ambient-occlusion-non-neutral-probe\n"
+            << "  --require-toon-lighting-execution\n"
+            << "  --require-toon-outline-execution\n"
             << "  --require-temporal-aa-execution\n"
             << "  --require-no-fxaa-execution\n"
             << "  --require-temporal-history-sampled\n"
@@ -7951,6 +8707,7 @@ int main(int argc, char* argv[])
         passed &= ValidateExecutionRequirements(report, options);
         passed &= ValidateContentReceiptSurface(report);
         passed &= ValidateFeatureRequirements(report, options);
+        passed &= ValidateAcceptedCookAdmissionRequirements(report, options);
         passed &= ValidateCookAdmissionRequirements(report, options);
         passed &= ValidateAssetReceiptRequirements(report, options);
     }

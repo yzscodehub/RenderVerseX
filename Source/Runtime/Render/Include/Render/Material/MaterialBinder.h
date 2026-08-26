@@ -103,6 +103,11 @@ namespace RVX
         static MaterialGPUConstants ConvertToGPU(
             const MaterialSourceData& material,
             std::span<const MaterialUploadTextureBinding> textureBindings);
+        static MaterialGPUConstants ConvertToGPU(
+            const MaterialStaticDescriptor& staticDescriptor,
+            const MaterialSourceData& material,
+            std::span<const MaterialUploadTextureBinding> textureBindings,
+            uint32 materialTableIndex = 0);
 
         // =========================================================================
         // Default Material

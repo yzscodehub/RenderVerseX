@@ -61,6 +61,21 @@ namespace RVX
         Unlit = 2,
     };
 
+    /**
+     * @brief Immutable shading-model selector consumed by every raster path.
+     *
+     * This mirrors MaterialShadingModel rather than the legacy source
+     * workflow.  The workflow only describes source parameter compatibility;
+     * it must never select a renderer program family.
+     */
+    enum class MaterialGPUShadingModel : uint32
+    {
+        StandardLit = 0,
+        ToonLit = 1,
+        Unlit = 2,
+        ThinTransmission = 3,
+    };
+
     inline constexpr uint32 RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT = 5;
 
     /** @brief Packed affine UV transform for one fixed material texture slot. */
@@ -105,13 +120,24 @@ namespace RVX
         uint32 workflow = static_cast<uint32>(MaterialGPUWorkflow::MetallicRoughness);
 
         uint32 doubleSided = 0;
-        Vec3 padding = {0.0f, 0.0f, 0.0f};
+        uint32 shadingModel =
+            static_cast<uint32>(MaterialGPUShadingModel::StandardLit);
+        /** Stable RenderResourceHandle::slot used by table consumers. */
+        uint32 materialTableIndex = 0;
+        float toonBands = 4.0f;
+        float toonSpecularThreshold = 0.5f;
+
+        float toonRimStrength = 0.0f;
+        float toonOutlineWidth = 0.0f;
+        float toonPadding = 0.0f;
+        /** xyz = shadow tint; w is reserved and must remain zero. */
+        Vec4 toonShadowTint = {0.5f, 0.5f, 0.5f, 0.0f};
 
         std::array<MaterialGPUUVTransform,
                    RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT> uvTransforms{};
     };
 
-    static_assert(sizeof(MaterialGPUConstants) == 240,
+    static_assert(sizeof(MaterialGPUConstants) == 272,
                   "MaterialGPUConstants must match the HLSL cbuffer layout");
     static_assert(offsetof(MaterialGPUConstants, baseColorFactor) == 0);
     static_assert(offsetof(MaterialGPUConstants, metallicFactor) == 16);
@@ -125,8 +151,15 @@ namespace RVX
     static_assert(offsetof(MaterialGPUConstants, alphaCutoff) == 56);
     static_assert(offsetof(MaterialGPUConstants, workflow) == 60);
     static_assert(offsetof(MaterialGPUConstants, doubleSided) == 64);
-    static_assert(offsetof(MaterialGPUConstants, padding) == 68);
-    static_assert(offsetof(MaterialGPUConstants, uvTransforms) == 80);
+    static_assert(offsetof(MaterialGPUConstants, shadingModel) == 68);
+    static_assert(offsetof(MaterialGPUConstants, materialTableIndex) == 72);
+    static_assert(offsetof(MaterialGPUConstants, toonBands) == 76);
+    static_assert(offsetof(MaterialGPUConstants, toonSpecularThreshold) == 80);
+    static_assert(offsetof(MaterialGPUConstants, toonRimStrength) == 84);
+    static_assert(offsetof(MaterialGPUConstants, toonOutlineWidth) == 88);
+    static_assert(offsetof(MaterialGPUConstants, toonPadding) == 92);
+    static_assert(offsetof(MaterialGPUConstants, toonShadowTint) == 96);
+    static_assert(offsetof(MaterialGPUConstants, uvTransforms) == 112);
     static_assert(
         offsetof(MaterialGPUConstants, uvTransforms) +
             sizeof(MaterialGPUUVTransform) *

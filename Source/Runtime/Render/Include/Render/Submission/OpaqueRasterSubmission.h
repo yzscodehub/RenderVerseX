@@ -22,6 +22,8 @@ namespace RVX
     enum class OpaqueRasterOutputFamily : uint8
     {
         ForwardSceneHDR = 0,
+        /** Forward HDR plus full-resolution normal/material-id MRTs. */
+        ForwardSceneHDRWithSurfaceData,
         DeferredGBuffer,
     };
 

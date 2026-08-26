@@ -27,6 +27,7 @@
 #include "Include/GPUInstanceData.hlsli"
 #include "Include/Lighting.hlsli"
 #include "Include/SurfaceMaterial.hlsli"
+#include "Include/ToonLighting.hlsli"
 #include "GPUDriven/GPUSceneRaster.hlsli"
 
 // =============================================================================
@@ -101,8 +102,6 @@ cbuffer MaterialConstants : register(b0, space2)
 #define DirectionalLightColorPadding DirectionalLightColor_Padding.w
 #define EmissiveColor EmissiveColor_Strength.xyz
 #define EmissiveStrength EmissiveColor_Strength.w
-#define DoubleSided DoubleSided_MaterialPaddingBits.x
-#define MaterialPadding asfloat(DoubleSided_MaterialPaddingBits.yzw)
 
 DirectionalLight ResolveMainLight()
 {
@@ -525,6 +524,134 @@ float3 EvaluateClusteredLocalLights(
     return localLight;
 }
 
+float3 EvaluateToonPointLight(
+    PointLight light,
+    float3 normal,
+    float3 viewDir,
+    float3 worldPos,
+    float3 baseColor,
+    MaterialParameterData material)
+{
+    const float3 lightVector = light.position - worldPos;
+    const float distanceToLight = length(lightVector);
+    if (distanceToLight > light.range || distanceToLight <= 0.0f ||
+        light.range <= 1.0e-4f)
+    {
+        return float3(0.0f, 0.0f, 0.0f);
+    }
+    return RVX_EvaluateToonDirectLight(
+        normal,
+        viewDir,
+        lightVector / distanceToLight,
+        baseColor,
+        light.color * light.intensity * AttenuatePoint(distanceToLight, light.range),
+        1.0f,
+        material.ToonBands,
+        material.ToonSpecularThreshold,
+        material.ToonRimStrength,
+        material.ToonShadowTint.xyz);
+}
+
+float3 EvaluateToonSpotLight(
+    SpotLight light,
+    float3 normal,
+    float3 viewDir,
+    float3 worldPos,
+    float3 baseColor,
+    MaterialParameterData material)
+{
+    const float3 lightVector = light.position - worldPos;
+    const float distanceToLight = length(lightVector);
+    if (distanceToLight > light.range || distanceToLight <= 0.0f ||
+        light.range <= 1.0e-4f)
+    {
+        return float3(0.0f, 0.0f, 0.0f);
+    }
+    const float3 lightDirection = lightVector / distanceToLight;
+    const float cone = AttenuateSpot(
+        -lightDirection,
+        normalize(light.direction),
+        light.innerConeAngle,
+        light.outerConeAngle);
+    if (cone <= 0.0f)
+    {
+        return float3(0.0f, 0.0f, 0.0f);
+    }
+    return RVX_EvaluateToonDirectLight(
+        normal,
+        viewDir,
+        lightDirection,
+        baseColor,
+        light.color * light.intensity *
+            AttenuatePoint(distanceToLight, light.range) * cone,
+        1.0f,
+        material.ToonBands,
+        material.ToonSpecularThreshold,
+        material.ToonRimStrength,
+        material.ToonShadowTint.xyz);
+}
+
+float3 EvaluateToonLinearLocalLights(
+    float3 normal,
+    float3 viewDir,
+    float3 worldPos,
+    float3 baseColor,
+    MaterialParameterData material)
+{
+    float3 localLight = float3(0.0f, 0.0f, 0.0f);
+    [loop]
+    for (uint index = 0; index < min(NumPointLights, 256u); ++index)
+    {
+        localLight += EvaluateToonPointLight(
+            PointLights[index], normal, viewDir, worldPos, baseColor, material);
+    }
+    [loop]
+    for (uint index = 0; index < min(NumSpotLights, 128u); ++index)
+    {
+        localLight += EvaluateToonSpotLight(
+            SpotLights[index], normal, viewDir, worldPos, baseColor, material);
+    }
+    return localLight;
+}
+
+float3 EvaluateToonClusteredLocalLights(
+    float4 svPosition,
+    float3 normal,
+    float3 viewDir,
+    float3 worldPos,
+    float3 baseColor,
+    MaterialParameterData material)
+{
+    const uint clusterIndex = ResolveClusterIndex(svPosition, worldPos);
+    if (clusterIndex == RVX_INVALID_CLUSTER_INDEX)
+    {
+        return EvaluateToonLinearLocalLights(
+            normal, viewDir, worldPos, baseColor, material);
+    }
+
+    const GPUCluster cluster = ClusterData[clusterIndex];
+    const uint lightCount = min(cluster.count, RVX_MAX_CLUSTERED_LIGHTS_PER_PIXEL);
+    float3 localLight = float3(0.0f, 0.0f, 0.0f);
+    [loop]
+    for (uint index = 0; index < lightCount; ++index)
+    {
+        const uint packedIndex = ClusterLightIndices[cluster.offset + index];
+        const uint lightIndex = packedIndex & 0xffffu;
+        const uint lightType = (packedIndex >> 16u) & 0xffffu;
+        if (lightType == 0u && lightIndex < NumPointLights)
+        {
+            localLight += EvaluateToonPointLight(
+                PointLights[lightIndex], normal, viewDir, worldPos, baseColor, material);
+        }
+        else if (lightType == 1u && lightIndex < NumSpotLights)
+        {
+            localLight += EvaluateToonSpotLight(
+                SpotLights[lightIndex], normal, viewDir, worldPos, baseColor, material);
+        }
+    }
+    return localLight;
+}
+
 float SampleRayTracedShadowMask(float4 screenPosition)
 {
     if (RayTracedShadowParams.x <= 0.5)
@@ -598,8 +725,15 @@ MaterialParameterData ResolveMaterialParameters(uint materialSlot)
     material.AlphaMode = AlphaMode;
     material.AlphaCutoff = AlphaCutoff;
     material.Workflow = Workflow;
-    material.DoubleSided_MaterialPaddingBits =
-        DoubleSided_MaterialPaddingBits;
+    material.DoubleSided = DoubleSided;
+    material.ShadingModel = ShadingModel;
+    material.MaterialTableIndex = MaterialTableIndex;
+    material.ToonBands = ToonBands;
+    material.ToonSpecularThreshold = ToonSpecularThreshold;
+    material.ToonRimStrength = ToonRimStrength;
+    material.ToonOutlineWidth = ToonOutlineWidth;
+    material.ToonPadding = ToonPadding;
+    material.ToonShadowTint = ToonShadowTint;
     material.BaseColorUVScaleOffset = BaseColorUVScaleOffset;
     material.BaseColorUVRotationSet = BaseColorUVRotationSet;
     material.NormalUVScaleOffset = NormalUVScaleOffset;
@@ -654,154 +788,154 @@ float2 EncodeGBufferOctNormal(float3 normal)
     return encoded * 0.5f + 0.5f;
 }
 
-/**
- * Canonical deferred surface export. It deliberately uses the same typed UV,
- * alpha-mask, front-face and normal-map helpers as PSMain. CPU routing permits
- * only StandardLit opaque/masked packets to reach this entry point; the
- * workflow guard is the shader-side fail-closed backstop.
- */
-GBufferOutput PSGBuffer(PSInput input, bool isFrontFace : SV_IsFrontFace)
+// Texture/material evaluation is deliberately shared by every opaque export
+// path. This keeps Forward+ surface-data, Deferred GBuffer and ordinary
+// Forward HDR shading on the same UV, alpha, normal-map and double-sided ABI.
+struct ResolvedForwardSurfaceData
 {
-    const MaterialParameterData material = ResolveMaterialParameters(
-        input.MaterialParameterSlot);
+    MaterialParameterData material;
+    float4 baseColor;
+    float metallic;
+    float roughness;
+    float occlusion;
+    float3 emissive;
+    float3 normal;
+};
+
+ResolvedForwardSurfaceData ResolveForwardSurfaceData(
+    PSInput input,
+    bool isFrontFace)
+{
+    ResolvedForwardSurfaceData surface;
+    surface.material = ResolveMaterialParameters(input.MaterialParameterSlot);
     const float2 baseColorUV = RVXResolveMaterialUV(
-        material, MATERIAL_TEXTURE_SLOT_BASE_COLOR,
-        input.TexCoord, input.TexCoord1);
-    float4 baseColor = material.BaseColorFactor;
-    if ((material.TextureFlags & MATERIAL_TEXTURE_BASE_COLOR) != 0)
+        surface.material,
+        MATERIAL_TEXTURE_SLOT_BASE_COLOR,
+        input.TexCoord,
+        input.TexCoord1);
+    surface.baseColor = surface.material.BaseColorFactor;
+    if ((surface.material.TextureFlags & MATERIAL_TEXTURE_BASE_COLOR) != 0)
     {
-        baseColor *= BaseColorTexture.Sample(BaseColorSampler, baseColorUV);
+        surface.baseColor *= BaseColorTexture.Sample(BaseColorSampler, baseColorUV);
     }
-    RVXApplyAlphaMask(material, baseColor.a);
+    RVXApplyAlphaMask(surface.material, surface.baseColor.a);
 
-    if (material.Workflow != MATERIAL_WORKFLOW_METALLIC_ROUGHNESS)
-    {
-        clip(-1.0f);
-    }
-
-    float metallic = material.MetallicFactor;
-    float roughness = material.RoughnessFactor;
-    if ((material.TextureFlags & MATERIAL_TEXTURE_METALLIC_ROUGHNESS) != 0)
+    surface.metallic = surface.material.MetallicFactor;
+    surface.roughness = surface.material.RoughnessFactor;
+    if ((surface.material.TextureFlags & MATERIAL_TEXTURE_METALLIC_ROUGHNESS) != 0)
     {
         const float2 uv = RVXResolveMaterialUV(
-            material, MATERIAL_TEXTURE_SLOT_METALLIC_ROUGHNESS,
-            input.TexCoord, input.TexCoord1);
-        const float4 mr = MetallicRoughnessTexture.Sample(
+            surface.material,
+            MATERIAL_TEXTURE_SLOT_METALLIC_ROUGHNESS,
+            input.TexCoord,
+            input.TexCoord1);
+        const float4 metallicRoughness = MetallicRoughnessTexture.Sample(
             MetallicRoughnessSampler, uv);
-        roughness *= mr.g;
-        metallic *= mr.b;
+        surface.roughness *= metallicRoughness.g;
+        surface.metallic *= metallicRoughness.b;
     }
 
-    float occlusion = 1.0f;
-    if ((material.TextureFlags & MATERIAL_TEXTURE_OCCLUSION) != 0)
+    surface.occlusion = 1.0f;
+    if ((surface.material.TextureFlags & MATERIAL_TEXTURE_OCCLUSION) != 0)
     {
-        occlusion = lerp(
+        surface.occlusion = lerp(
             1.0f,
             OcclusionTexture.Sample(
                 OcclusionSampler,
                 RVXResolveMaterialUV(
-                    material, MATERIAL_TEXTURE_SLOT_OCCLUSION,
-                    input.TexCoord, input.TexCoord1)).r,
-            material.OcclusionStrength);
+                    surface.material,
+                    MATERIAL_TEXTURE_SLOT_OCCLUSION,
+                    input.TexCoord,
+                    input.TexCoord1)).r,
+            surface.material.OcclusionStrength);
     }
 
-    float3 emissive = material.EmissiveColor_Strength.xyz *
-                      material.EmissiveColor_Strength.w;
-    if ((material.TextureFlags & MATERIAL_TEXTURE_EMISSIVE) != 0)
+    surface.emissive = surface.material.EmissiveColor_Strength.xyz *
+                        surface.material.EmissiveColor_Strength.w;
+    if ((surface.material.TextureFlags & MATERIAL_TEXTURE_EMISSIVE) != 0)
     {
-        emissive *= EmissiveTexture.Sample(
+        surface.emissive *= EmissiveTexture.Sample(
             EmissiveSampler,
             RVXResolveMaterialUV(
-                material, MATERIAL_TEXTURE_SLOT_EMISSIVE,
-                input.TexCoord, input.TexCoord1)).rgb;
+                surface.material,
+                MATERIAL_TEXTURE_SLOT_EMISSIVE,
+                input.TexCoord,
+                input.TexCoord1)).rgb;
     }
 
-    float3 normal = SafeNormalize(
+    surface.normal = SafeNormalize(
         input.WorldNormal, float3(0.0f, 0.0f, 1.0f));
     float4 doubleSidedTangent = input.WorldTangent;
     RVXResolveFrontFaceBasis(
         isFrontFace,
-        material.DoubleSided_MaterialPaddingBits.x,
-        normal,
+        surface.material.DoubleSided,
+        surface.normal,
         doubleSidedTangent);
-    if ((material.TextureFlags & MATERIAL_TEXTURE_NORMAL) != 0)
+    if ((surface.material.TextureFlags & MATERIAL_TEXTURE_NORMAL) != 0)
     {
-        normal = RVXSampleNormalMap(
+        surface.normal = RVXSampleNormalMap(
             NormalTexture,
             NormalSampler,
             RVXResolveMaterialUV(
-                material, MATERIAL_TEXTURE_SLOT_NORMAL,
-                input.TexCoord, input.TexCoord1),
+                surface.material,
+                MATERIAL_TEXTURE_SLOT_NORMAL,
+                input.TexCoord,
+                input.TexCoord1),
             input.WorldPos,
-            normal,
+            surface.normal,
             doubleSidedTangent,
-            material.NormalScale);
+            surface.material.NormalScale);
+    }
+    return surface;
+}
+
+/**
+ * Canonical deferred surface export. It deliberately uses the same typed UV,
+ * alpha-mask, front-face and normal-map helpers as PSMain. CPU routing permits
+ * StandardLit and ToonLit opaque/masked packets only. The shading-model and
+ * legacy workflow checks remain shader-side fail-closed backstops.
+ */
+GBufferOutput PSGBuffer(PSInput input, bool isFrontFace : SV_IsFrontFace)
+{
+    const ResolvedForwardSurfaceData surface = ResolveForwardSurfaceData(
+        input, isFrontFace);
+    if (surface.material.Workflow != MATERIAL_WORKFLOW_METALLIC_ROUGHNESS ||
+        (surface.material.ShadingModel != MATERIAL_SHADING_MODEL_STANDARD_LIT &&
+         surface.material.ShadingModel != MATERIAL_SHADING_MODEL_TOON_LIT))
+    {
+        clip(-1.0f);
     }
 
     GBufferOutput output;
-    output.baseColorAO = float4(baseColor.rgb, saturate(occlusion));
+    output.baseColorAO = float4(surface.baseColor.rgb, saturate(surface.occlusion));
     output.normalRoughnessMetallic = float4(
         EncodeGBufferOctNormal(SafeNormalize(
-            normal, float3(0.0f, 0.0f, 1.0f))),
-        clamp(roughness, 0.04f, 1.0f),
-        saturate(metallic));
-    output.emissiveReserved = float4(emissive, 0.0f);
-    // GFX07 has one renderer-owned StandardLit classification row.  Runtime
-    // material parameter slots are intentionally not a deferred table ABI;
-    // carrying one through here would make the compute pass read arbitrary
-    // rows from the fixed one-row classification table.
-    output.materialTableIndex = 0u;
+            surface.normal, float3(0.0f, 0.0f, 1.0f))),
+        clamp(surface.roughness, 0.04f, 1.0f),
+        saturate(surface.metallic));
+    // GBuffer2.w is the reserved per-surface flag lane. Preserve the frozen
+    // object-level shadow receiver policy so Deferred and Forward+ consume
+    // the same semantic input without changing the stable material identity.
+    output.emissiveReserved = float4(
+        surface.emissive,
+        input.ReceivesShadowValue > 0.5f ? 1.0f : 0.0f);
+    // MaterialSystem publishes descriptor-only rows by stable handle slot.
+    // Preserve that slot exactly so Deferred and screen-space consumers cannot
+    // infer a shading model from legacy workflow parameters.
+    output.materialTableIndex = surface.material.MaterialTableIndex;
     return output;
 }
 
-float4 PSMain(PSInput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
+float4 ShadeForwardSurface(
+    PSInput input,
+    ResolvedForwardSurfaceData surface)
 {
-    const MaterialParameterData material = ResolveMaterialParameters(
-        input.MaterialParameterSlot);
-    const float2 baseColorUV = RVXResolveMaterialUV(
-        material, MATERIAL_TEXTURE_SLOT_BASE_COLOR,
-        input.TexCoord, input.TexCoord1);
-    float4 baseColor = material.BaseColorFactor;
-    if ((material.TextureFlags & MATERIAL_TEXTURE_BASE_COLOR) != 0)
-    {
-        baseColor *= BaseColorTexture.Sample(BaseColorSampler, baseColorUV);
-    }
-    RVXApplyAlphaMask(material, baseColor.a);
-
-    float metallic = material.MetallicFactor;
-    float roughness = material.RoughnessFactor;
-    if ((material.TextureFlags & MATERIAL_TEXTURE_METALLIC_ROUGHNESS) != 0)
-    {
-        const float2 uv = RVXResolveMaterialUV(
-            material, MATERIAL_TEXTURE_SLOT_METALLIC_ROUGHNESS,
-            input.TexCoord, input.TexCoord1);
-        float4 mr = MetallicRoughnessTexture.Sample(MetallicRoughnessSampler, uv);
-        roughness *= mr.g;
-        metallic *= mr.b;
-    }
-
-    float occlusion = 1.0;
-    if ((material.TextureFlags & MATERIAL_TEXTURE_OCCLUSION) != 0)
-    {
-        occlusion = lerp(1.0,
-                         OcclusionTexture.Sample(
-                             OcclusionSampler,
-                             RVXResolveMaterialUV(
-                                 material, MATERIAL_TEXTURE_SLOT_OCCLUSION,
-                                 input.TexCoord, input.TexCoord1)).r,
-                         material.OcclusionStrength);
-    }
-
-    float3 emissive = material.EmissiveColor_Strength.xyz *
-                      material.EmissiveColor_Strength.w;
-    if ((material.TextureFlags & MATERIAL_TEXTURE_EMISSIVE) != 0)
-    {
-        emissive *= EmissiveTexture.Sample(
-            EmissiveSampler,
-            RVXResolveMaterialUV(
-                material, MATERIAL_TEXTURE_SLOT_EMISSIVE,
-                input.TexCoord, input.TexCoord1)).rgb;
-    }
+    const MaterialParameterData material = surface.material;
+    const float4 baseColor = surface.baseColor;
+    const float metallic = surface.metallic;
+    const float roughness = surface.roughness;
+    const float occlusion = surface.occlusion;
+    const float3 emissive = surface.emissive;
 
     const RVXExposureState exposureState = ExposureStateBuffer[0];
     if (!RVXExposureStateIsValid(exposureState))
@@ -814,12 +948,19 @@ float4 PSMain(PSInput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     }
     const float preExposure = RVXExposureProducerScale(exposureState);
 
-    if (material.Workflow == MATERIAL_WORKFLOW_UNLIT)
+    if (material.ShadingModel == MATERIAL_SHADING_MODEL_UNLIT)
     {
+        if (material.Workflow != MATERIAL_WORKFLOW_UNLIT)
+        {
+            clip(-1.0f);
+            return float4(0.0f, 0.0f, 0.0f, 0.0f);
+        }
         return float4((baseColor.rgb + emissive) * preExposure, baseColor.a);
     }
 
-    if (material.Workflow != MATERIAL_WORKFLOW_METALLIC_ROUGHNESS)
+    if ((material.ShadingModel != MATERIAL_SHADING_MODEL_STANDARD_LIT &&
+         material.ShadingModel != MATERIAL_SHADING_MODEL_TOON_LIT) ||
+        material.Workflow != MATERIAL_WORKFLOW_METALLIC_ROUGHNESS)
     {
         // Unsupported workflows must never be approximated as StandardLit.
         // The CPU policy rejects these before recording; clip is a defensive
@@ -828,32 +969,9 @@ float4 PSMain(PSInput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
     }
 
-    float3 viewDir = SafeNormalize(CameraPosition - input.WorldPos, float3(0.0, 0.0, 1.0));
-    float3 normal = SafeNormalize(input.WorldNormal, float3(0.0, 0.0, 1.0));
-    float4 doubleSidedTangent = input.WorldTangent;
-    RVXResolveFrontFaceBasis(
-        isFrontFace,
-        material.DoubleSided_MaterialPaddingBits.x,
-        normal,
-        doubleSidedTangent);
-
-    if ((material.TextureFlags & MATERIAL_TEXTURE_NORMAL) != 0)
-    {
-        const float2 normalUV = RVXResolveMaterialUV(
-            material,
-            MATERIAL_TEXTURE_SLOT_NORMAL,
-            input.TexCoord,
-            input.TexCoord1);
-        normal = RVXSampleNormalMap(
-            NormalTexture,
-            NormalSampler,
-            normalUV,
-            input.WorldPos,
-            normal,
-            doubleSidedTangent,
-            material.NormalScale);
-    }
-
+    const float3 viewDir = SafeNormalize(
+        CameraPosition - input.WorldPos, float3(0.0, 0.0, 1.0));
+    const float3 normal = surface.normal;
     float3 toLight = SafeNormalize(-LightDirection, float3(0.0, 1.0, 0.0));
     float clampedRoughness = clamp(roughness, 0.04, 1.0);
     float3 f0 = ComputeF0(baseColor.rgb, metallic);
@@ -865,24 +983,48 @@ float4 PSMain(PSInput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
         receivesShadow ? SampleRayTracedShadowMask(input.Position) : 1.0;
     const float shadowVisibility =
         ComposeDirectionalShadowVisibility(rasterShadowVisibility, rayTracedShadowVisibility);
-    float3 directLight = EvaluatePBR(
-        normal,
-        viewDir,
-        toLight,
-        baseColor.rgb,
-        metallic,
-        clampedRoughness,
-        DirectionalLightColor * DirectionalLightIntensity,
-        shadowVisibility);
-
-    directLight += EvaluateClusteredLocalLights(
-        input.Position,
-        normal,
-        viewDir,
-        input.WorldPos,
-        baseColor.rgb,
-        metallic,
-        clampedRoughness);
+    float3 directLight;
+    if (material.ShadingModel == MATERIAL_SHADING_MODEL_TOON_LIT)
+    {
+        directLight = RVX_EvaluateToonDirectLight(
+            normal,
+            viewDir,
+            toLight,
+            baseColor.rgb,
+            DirectionalLightColor * DirectionalLightIntensity,
+            shadowVisibility,
+            material.ToonBands,
+            material.ToonSpecularThreshold,
+            material.ToonRimStrength,
+            material.ToonShadowTint.xyz);
+        directLight += EvaluateToonClusteredLocalLights(
+            input.Position,
+            normal,
+            viewDir,
+            input.WorldPos,
+            baseColor.rgb,
+            material);
+    }
+    else
+    {
+        directLight = EvaluatePBR(
+            normal,
+            viewDir,
+            toLight,
+            baseColor.rgb,
+            metallic,
+            clampedRoughness,
+            DirectionalLightColor * DirectionalLightIntensity,
+            shadowVisibility);
+        directLight += EvaluateClusteredLocalLights(
+            input.Position,
+            normal,
+            viewDir,
+            input.WorldPos,
+            baseColor.rgb,
+            metallic,
+            clampedRoughness);
+    }
 
     float nDotV = max(dot(normal, viewDir), 0.001);
     const float screenAmbientOcclusion =
@@ -933,4 +1075,40 @@ float4 PSMain(PSInput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     float3 finalColor = ambientDiffuse + ambientSpecular + directLight + emissive + ambientFloor;
 
     return float4(finalColor * preExposure, baseColor.a);
+}
+
+float4 PSMain(PSInput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
+{
+    return ShadeForwardSurface(
+        input, ResolveForwardSurfaceData(input, isFrontFace));
+}
+
+/**
+ * Forward+ opaque/masked export for the screen-space outline consumer. The
+ * HDR result comes from the exact same PBR/Toon function as PSMain, while the
+ * remaining attachments publish the canonical normal and stable material
+ * table identity without changing the material's raster route.
+ */
+struct ForwardSurfaceDataOutput
+{
+    float4 hdrSceneColor : SV_Target0;
+    float4 normalRoughnessMetallic : SV_Target1;
+    uint materialTableIndex : SV_Target2;
+};
+
+ForwardSurfaceDataOutput PSForwardSurfaceData(
+    PSInput input,
+    bool isFrontFace : SV_IsFrontFace)
+{
+    const ResolvedForwardSurfaceData surface = ResolveForwardSurfaceData(
+        input, isFrontFace);
+    ForwardSurfaceDataOutput output;
+    output.hdrSceneColor = ShadeForwardSurface(input, surface);
+    output.normalRoughnessMetallic = float4(
+        EncodeGBufferOctNormal(SafeNormalize(
+            surface.normal, float3(0.0f, 0.0f, 1.0f))),
+        clamp(surface.roughness, 0.04f, 1.0f),
+        saturate(surface.metallic));
+    output.materialTableIndex = surface.material.MaterialTableIndex;
+    return output;
 }

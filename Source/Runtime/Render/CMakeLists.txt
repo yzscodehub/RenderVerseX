@@ -236,6 +236,7 @@ add_library(RVX_RenderPostProcess STATIC)
 target_sources(RVX_RenderPostProcess PRIVATE
     Private/PostProcess/Exposure.cpp
     Private/PostProcess/PostProcessStack.cpp
+    Private/PostProcess/ScreenSpaceOutline.cpp
     Private/PostProcess/ToneMapping.cpp
     Private/PostProcess/Bloom.cpp
     Private/PostProcess/FXAA.cpp

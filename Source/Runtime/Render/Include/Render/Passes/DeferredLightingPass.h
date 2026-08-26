@@ -19,46 +19,6 @@ namespace RVX
     struct RenderPassRecordResults;
     struct ViewData;
 
-    /** @brief Canonical GFX07 deferred material-table shading model values. */
-    enum class DeferredMaterialShadingModel : uint32
-    {
-        Invalid = 0,
-        StandardLit = 1,
-    };
-
-    /**
-     * @brief One shader-visible material classification row.
-     *
-     * GFX07 deliberately has one canonical StandardLit row.  The table ABI is
-     * independent from material parameter slots: GBuffer3 always addresses this
-     * row until a later renderer feature supplies a real multi-material table.
-     */
-    struct DeferredMaterialClassification
-    {
-        static constexpr uint32 SchemaVersion = 1;
-
-        uint32 shadingModel = static_cast<uint32>(
-            DeferredMaterialShadingModel::StandardLit);
-        uint32 schemaVersion = SchemaVersion;
-        uint32 reserved0 = 0;
-        uint32 reserved1 = 0;
-    };
-
-    static_assert(sizeof(DeferredMaterialClassification) == 16);
-
-    /**
-     * @brief Create and publish the only material-classification table GFX07 accepts.
-     *
-     * The result is a one-row Upload structured SRV.  Callers import this exact
-     * buffer into the frame graph and pass the resulting handle through
-     * DeferredLightingInputs::materialTable.  The lighting pass validates the
-     * fixed one-row buffer ABI before it records a dispatch.
-     */
-    [[nodiscard]] bool CreateDeferredStandardLitMaterialTable(
-        IRHIDevice& device,
-        RHIBufferRef& outTable,
-        std::string& outError);
-
     /**
      * @brief Exact graph-owned lighting inputs for one deferred compute dispatch.
      *
@@ -121,6 +81,7 @@ namespace RVX
         RGTextureHandle deviceDepth{};
         RGTextureHandle hdrSceneColor{};
         RGBufferHandle materialTable{};
+        PostProcessMaterialTableMetadata materialTableMetadata{};
         /** Same committed prior-presented state consumed by every HDR producer. */
         RGBufferHandle exposureState{};
         /** Exact renderer-owned R8 GTAO visibility field for indirect lighting. */
@@ -137,7 +98,9 @@ namespace RVX
             return gBuffer0.IsValid() && gBuffer1.IsValid() &&
                    gBuffer2.IsValid() && gBuffer3.IsValid() &&
                    deviceDepth.IsValid() && hdrSceneColor.IsValid() &&
-                   materialTable.IsValid() && exposureState.IsValid() &&
+                   materialTable.IsValid() &&
+                   materialTableMetadata.IsValid() &&
+                   exposureState.IsValid() &&
                    ambientOcclusion.IsCompatibleWith(
                        ambientOcclusion.identity) &&
                    expectedLightingPlanIdentity != 0 &&

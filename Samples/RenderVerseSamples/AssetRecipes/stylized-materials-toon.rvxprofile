@@ -1,0 +1,12 @@
+RVX_COOK_PROFILE_V1
+# GFX14 qualification asset: all authored PBR materials are converted by the
+# cooker into the one fixed ToonLit contract.  These values are part of the
+# canonical settings and recipe hash; runtime code has no override path.
+model.material.shadingModel=toon-lit
+model.material.toonBands=4
+model.material.toonSpecularThreshold=0.55
+model.material.toonRimStrength=0.35
+model.material.toonOutlineWidth=1.25
+model.material.toonShadowTint.red=0.34
+model.material.toonShadowTint.green=0.41
+model.material.toonShadowTint.blue=0.58

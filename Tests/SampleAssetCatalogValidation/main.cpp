@@ -348,11 +348,13 @@ namespace
 
         std::string MakeCookDeclaration(const std::string& manifestPathText =
                                             "cooked/CookManifest.rvxmanifest",
-                                        const std::string& cookedRootText = "cooked") const
+                                        const std::string& cookedRootText = "cooked",
+                                        const bool packageOnly = false) const
         {
             return "\"cook\":{"
                    "\"manifestPath\":\"" + manifestPathText + "\","
                    "\"cookedRoot\":\"" + cookedRootText + "\","
+                   "\"packageOnly\":" + (packageOnly ? "true," : "false,") +
                    "\"selector\":{"
                    "\"sourcePath\":\"models/model.gltf\","
                    "\"outputPath\":\"models/model.rva\","
@@ -950,6 +952,32 @@ namespace
                   RVX::SampleCookedAssetAdmissionCode::ResourceAdmissionFailed);
         EXPECT_EQ(receipt.resourceReceipt.code,
                   RVX::Resource::CookManifestAdmissionCode::MountedContentMismatch);
+    }
+
+    TEST(SampleAssetCatalogValidation,
+         QualificationCookAdmissionAllowsExplicitPackageOnlyCatalogAfterSourceRemoval)
+    {
+        CookAdmissionFixture fixture;
+        fixture.WriteCatalog(fixture.MakeCookDeclaration(
+            "cooked/CookManifest.rvxmanifest", "cooked", true));
+
+        RVX::SampleAssetCatalog catalog;
+        std::string error;
+        ASSERT_TRUE(catalog.Load(fixture.catalog.CatalogPath(),
+                                 fixture.catalog.Root(),
+                                 &error))
+            << error;
+        const RVX::SampleAssetEntry* entry = catalog.Find("model");
+        ASSERT_NE(entry, nullptr);
+        EXPECT_TRUE(entry->cook.packageOnly);
+
+        std::error_code removeError;
+        std::filesystem::remove(fixture.catalog.Root() / "models/model.gltf",
+                                removeError);
+        ASSERT_FALSE(removeError) << removeError.message();
+        const RVX::SampleCookedAssetAdmissionReceipt receipt =
+            catalog.RequireCookedAdmission("model");
+        EXPECT_TRUE(receipt.IsAccepted()) << receipt.detail;
     }
 
 #if defined(RVX_SOURCE_DIR)

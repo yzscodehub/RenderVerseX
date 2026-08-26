@@ -3059,6 +3059,12 @@ namespace
                 MakeSamplePostProcessExecutionDiagnostics(renderDiagnostics);
             result.ambientOcclusionActualExecution =
                 MakeSampleAmbientOcclusionExecutionDiagnostics(renderDiagnostics);
+            result.toonLightingActualExecution =
+                ProjectSampleToonLightingExecutionDiagnostics(
+                    renderDiagnostics);
+            result.toonOutlineActualExecution =
+                ProjectSampleToonOutlineExecutionDiagnostics(
+                    renderDiagnostics);
             result.clusteredLightingInitialized =
                 diagnostics.clusteredLightingInitialized;
             result.clusteredLightingActiveClusters =
@@ -4146,20 +4152,24 @@ namespace
                      "GPUScene and Direct Opaque readback qualifications are mutually exclusive");
             return false;
         }
-        if (options.common.exposureQualificationProbeEnabled &&
-            options.common.ambientOcclusionQualificationProbeEnabled)
+        const uint32 executionReceiptProbeCount =
+            (options.common.exposureQualificationProbeEnabled ? 1u : 0u) +
+            (options.common.ambientOcclusionQualificationProbeEnabled ? 1u : 0u) +
+            (options.common.toonOutlineQualificationProbeEnabled ? 1u : 0u);
+        if (executionReceiptProbeCount > 1u)
         {
             // Each probe owns the capture frame's immutable execution
             // receipt. Do not accept a configuration that would let one
             // completion replace the other before both can be reported.
             SetError(outError,
-                     "Exposure and ambient-occlusion qualification probes are mutually exclusive");
+                     "Exposure, ambient-occlusion, and Toon-outline qualification probes are mutually exclusive");
             return false;
         }
         if (options.common.gpuSceneCullingQualificationEnabled ||
             options.common.directOpaqueRasterReadbackQualificationEnabled ||
             options.common.exposureQualificationProbeEnabled ||
-            options.common.ambientOcclusionQualificationProbeEnabled)
+            options.common.ambientOcclusionQualificationProbeEnabled ||
+            options.common.toonOutlineQualificationProbeEnabled)
         {
             // One-shot readbacks are consumed by the target frame and observed
             // only after a later Render-owner completion poll. Reuse the
@@ -5158,6 +5168,8 @@ namespace
                 options.common.exposureQualificationProbeEnabled;
             const bool ambientOcclusionQualificationProbeEnabled =
                 options.common.ambientOcclusionQualificationProbeEnabled;
+            const bool toonOutlineQualificationProbeEnabled =
+                options.common.toonOutlineQualificationProbeEnabled;
             const auto hasQualificationComparison =
                 [directRasterReadbackQualificationEnabled](
                     const SampleRenderDiagnostics& value)
@@ -5253,18 +5265,28 @@ namespace
                        ambientOcclusion.consumerMask == 0x7u &&
                        !ambientOcclusion.fallbackUsed && nonNeutralProbe;
             };
+            const auto hasToonOutlineProbeForTarget =
+                [](const RenderDiagnosticsSnapshot& value, uint64 target)
+            {
+                return EvaluateSampleToonOutlineQualificationTarget(
+                           value, target)
+                    .IsReady();
+            };
             bool gpuSceneCullingQualificationRequestAccepted =
                 !qualificationEnabled;
             bool exposureQualificationProbeRequestAccepted =
                 !exposureQualificationProbeEnabled;
             bool ambientOcclusionQualificationProbeRequestAccepted =
                 !ambientOcclusionQualificationProbeEnabled;
+            bool toonOutlineQualificationProbeRequestAccepted =
+                !toonOutlineQualificationProbeEnabled;
             uint64 gpuSceneCullingQualificationTargetFrameSequence = 0;
             uint64 gpuSceneCullingQualificationTargetPublishedSequence = 0;
             uint64 gpuSceneCullingQualificationTargetSubmittedSequence = 0;
             uint64 gpuSceneCullingQualificationTargetPresentedSequence = 0;
             uint64 exposureQualificationProbeTargetFrameSequence = 0;
             uint64 ambientOcclusionQualificationProbeTargetFrameSequence = 0;
+            uint64 toonOutlineQualificationProbeTargetFrameSequence = 0;
 
             if (setupSucceeded)
             {
@@ -5294,6 +5316,25 @@ namespace
                     {
                         engine.RequestShutdown();
                         break;
+                    }
+
+                    if (toonOutlineQualificationProbeEnabled &&
+                        toonOutlineQualificationProbeRequestAccepted)
+                    {
+                        const RenderToonOutlineQualificationRequestResult
+                            admission = render
+                                ->GetToonOutlineQualificationProbeRequestResult();
+                        if (admission.IsRejected())
+                        {
+                            toonOutlineQualificationProbeRequestAccepted =
+                                false;
+                            error = admission.diagnostic != nullptr &&
+                                    admission.diagnostic[0] != '\0'
+                                ? admission.diagnostic
+                                : "Render owner rejected the Toon-outline qualification probe";
+                            engine.RequestShutdown();
+                            break;
+                        }
                     }
 
                     if (exposureQualificationProbeEnabled &&
@@ -5355,6 +5396,47 @@ namespace
                             captureExecutionReceipt =
                                 diagnostics.frameFeatures.executionReceipt;
                             engine.RequestShutdown();
+                        }
+                        continue;
+                    }
+
+                    if (toonOutlineQualificationProbeEnabled &&
+                        toonOutlineQualificationProbeTargetFrameSequence != 0 &&
+                        !finalRenderDrainRequested)
+                    {
+                        // The verifier belongs to the already-presented target
+                        // frame. Progress only the Render owner so a replacement
+                        // frame cannot steal its immutable receipt identity.
+                        if (std::chrono::steady_clock::now() >= readinessDeadline)
+                        {
+                            readinessTimedOut = true;
+                            error =
+                                "Toon-outline qualification probe did not complete for the final target frame";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        diagnostics = frameDriver.PumpRenderProgressOnce();
+                        const SampleRenderDiagnostics completionDiagnostics =
+                            MakeSampleRenderDiagnostics(diagnostics, engine);
+                        sample->ObserveDiagnostics(completionDiagnostics,
+                                                   context.assessment);
+                        const auto targetEvaluation =
+                            EvaluateSampleToonOutlineQualificationTarget(
+                                diagnostics,
+                                toonOutlineQualificationProbeTargetFrameSequence);
+                        if (targetEvaluation.IsReady())
+                        {
+                            captureExecutionReceipt =
+                                diagnostics.frameFeatures.executionReceipt;
+                            engine.RequestShutdown();
+                        }
+                        else if (targetEvaluation.IsFailed())
+                        {
+                            error = targetEvaluation.diagnostic.empty()
+                                ? "Toon-outline qualification failed for the final target frame"
+                                : targetEvaluation.diagnostic;
+                            engine.RequestShutdown();
+                            break;
                         }
                         continue;
                     }
@@ -5795,6 +5877,10 @@ namespace
                         ambientOcclusionQualificationProbeEnabled &&
                         ambientOcclusionQualificationProbeTargetFrameSequence == 0 &&
                         (fixedCaptureFrame || readyCaptureFrame);
+                    const bool toonOutlineProbeTargetFrame =
+                        toonOutlineQualificationProbeEnabled &&
+                        toonOutlineQualificationProbeTargetFrameSequence == 0 &&
+                        (fixedCaptureFrame || readyCaptureFrame);
                     const bool captureFrame =
                         (!options.common.screenshotPath.empty() ||
                          options.common.pixelProbeEnabled) &&
@@ -5858,6 +5944,18 @@ namespace
                         {
                             error =
                                 "Render runtime rejected the explicit ambient-occlusion qualification probe";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                    }
+                    if (toonOutlineProbeTargetFrame)
+                    {
+                        toonOutlineQualificationProbeRequestAccepted =
+                            render->RequestToonOutlineQualificationProbe();
+                        if (!toonOutlineQualificationProbeRequestAccepted)
+                        {
+                            error =
+                                "Render runtime rejected the explicit Toon-outline qualification probe";
                             engine.RequestShutdown();
                             break;
                         }
@@ -6000,6 +6098,22 @@ namespace
                             {
                                 error =
                                     "Ambient-occlusion qualification target did not retain exact presentation provenance";
+                                engine.RequestShutdown();
+                            }
+                        }
+                        if (toonOutlineProbeTargetFrame && waitResult.Reached())
+                        {
+                            toonOutlineQualificationProbeTargetFrameSequence =
+                                targetSequence;
+                            if (diagnostics.lastPublishedFrameSequence !=
+                                    targetSequence ||
+                                diagnostics.lastSubmittedFrameSequence !=
+                                    targetSequence ||
+                                diagnostics.lastPresentedFrameSequence !=
+                                    targetSequence)
+                            {
+                                error =
+                                    "Toon-outline qualification target did not retain exact presentation provenance";
                                 engine.RequestShutdown();
                             }
                         }
@@ -6302,7 +6416,12 @@ namespace
                              (ambientOcclusionQualificationProbeTargetFrameSequence != 0 &&
                               hasAmbientOcclusionProbeForTarget(
                                   diagnostics,
-                                  ambientOcclusionQualificationProbeTargetFrameSequence)));
+                                  ambientOcclusionQualificationProbeTargetFrameSequence))) &&
+                            (!toonOutlineQualificationProbeEnabled ||
+                             (toonOutlineQualificationProbeTargetFrameSequence != 0 &&
+                              hasToonOutlineProbeForTarget(
+                                  diagnostics,
+                                  toonOutlineQualificationProbeTargetFrameSequence)));
                         const bool requestedRunComplete =
                             lifetimeQualification
                                 ? lifetimeQualification->IsComplete() &&
@@ -6534,6 +6653,32 @@ namespace
                 {
                     error =
                         "Ambient-occlusion qualification probe did not complete for the capture frame";
+                }
+            }
+            if (toonOutlineQualificationProbeEnabled)
+            {
+                const bool toonOutlineProbeCompleted =
+                    toonOutlineQualificationProbeTargetFrameSequence != 0 &&
+                    hasToonOutlineProbeForTarget(
+                        diagnostics,
+                        toonOutlineQualificationProbeTargetFrameSequence) &&
+                    captureExecutionReceipt.has_value() &&
+                    captureExecutionReceipt->frameIdentity.frameSequence ==
+                        toonOutlineQualificationProbeTargetFrameSequence &&
+                    captureExecutionReceipt->toonLighting.IsExecutionReady() &&
+                    captureExecutionReceipt->toonOutline.IsQualificationReady();
+                succeeded &= toonOutlineQualificationProbeRequestAccepted &&
+                             toonOutlineProbeCompleted;
+                if (!toonOutlineQualificationProbeRequestAccepted &&
+                    error.empty())
+                {
+                    error =
+                        "Render runtime rejected the explicit Toon-outline qualification probe";
+                }
+                else if (!toonOutlineProbeCompleted && error.empty())
+                {
+                    error =
+                        "Toon-outline qualification probe did not complete for the capture frame";
                 }
             }
             if (!succeeded && error.empty())

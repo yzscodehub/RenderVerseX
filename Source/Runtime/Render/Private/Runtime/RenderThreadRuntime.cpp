@@ -41,6 +41,25 @@ namespace
         return false;
     }
 
+    [[nodiscard]] const char* GetToonOutlineQualificationRequestDiagnostic(
+        RenderToonOutlineQualificationRequestState state) noexcept
+    {
+        switch (state)
+        {
+            case RenderToonOutlineQualificationRequestState::NotRequested:
+                return "toon outline qualification probe was not requested";
+            case RenderToonOutlineQualificationRequestState::PendingRenderOwnerAdmission:
+                return "toon outline qualification probe is awaiting render-owner admission";
+            case RenderToonOutlineQualificationRequestState::Accepted:
+                return "toon outline qualification probe was accepted by the render owner";
+            case RenderToonOutlineQualificationRequestState::RejectedByRenderOwner:
+                return "toon outline qualification probe was rejected by the render owner";
+            case RenderToonOutlineQualificationRequestState::RejectedByRuntimeShutdown:
+                return "toon outline qualification probe was rejected because the render runtime sealed before admission";
+        }
+        return "toon outline qualification probe has an invalid admission state";
+    }
+
     class TerminatingRenderFatalPolicy final : public IRenderFatalPolicy
     {
     public:
@@ -1139,6 +1158,60 @@ namespace
         return true;
     }
 
+    bool RenderThreadRuntime::RequestToonOutlineQualificationProbe() noexcept
+    {
+        {
+            std::lock_guard lock(m_publicationMutex);
+            if (m_publicationSealed.load(std::memory_order_acquire) ||
+                m_completionOnlyDrainActive.load(std::memory_order_acquire) ||
+                m_lifecycle.load(std::memory_order_acquire) !=
+                    RenderLifecycleState::Running)
+            {
+                return false;
+            }
+            const RenderRuntimeResult result = GetLastRuntimeResult();
+            if (result.lifecycle != RenderLifecycleState::Running ||
+                result.terminalCause != RenderTerminalCause::None ||
+                result.teardownMode != RenderTeardownMode::None)
+            {
+                return false;
+            }
+
+            bool expected = false;
+            if (!m_toonOutlineQualificationProbeRequestIssued
+                     .compare_exchange_strong(expected,
+                                              true,
+                                              std::memory_order_acq_rel,
+                                              std::memory_order_acquire))
+            {
+                return false;
+            }
+            m_toonOutlineQualificationProbePublishedBaseline =
+                m_lastPublishedFrameSequence.load(std::memory_order_acquire);
+            m_toonOutlineQualificationProbeRequestPending.store(
+                true, std::memory_order_release);
+            m_toonOutlineQualificationProbeRequestState.store(
+                RenderToonOutlineQualificationRequestState::PendingRenderOwnerAdmission,
+                std::memory_order_release);
+        }
+
+        Wake();
+        return true;
+    }
+
+    RenderToonOutlineQualificationRequestResult
+    RenderThreadRuntime::GetToonOutlineQualificationProbeRequestResult() const
+        noexcept
+    {
+        const RenderToonOutlineQualificationRequestState state =
+            m_toonOutlineQualificationProbeRequestState.load(
+                std::memory_order_acquire);
+        return {
+            .state = state,
+            .diagnostic = GetToonOutlineQualificationRequestDiagnostic(state)
+        };
+    }
+
     RenderResourceReserveResult RenderThreadRuntime::ReserveResource(
         AssetId assetId,
         RenderResourceKind kind) noexcept
@@ -1631,6 +1704,25 @@ namespace
                 {
                     const uint64 sequence =
                         m_pendingFrameV5->GetHeader().sequence;
+                    bool toonOutlineProbeRequestForFrame = false;
+                    {
+                        std::lock_guard lock(m_publicationMutex);
+                        if (sequence >
+                                m_toonOutlineQualificationProbePublishedBaseline &&
+                            m_toonOutlineQualificationProbeRequestPending.load(
+                                std::memory_order_acquire))
+                        {
+                            toonOutlineProbeRequestForFrame =
+                                m_toonOutlineQualificationProbeRequestPending
+                                    .exchange(false,
+                                              std::memory_order_acq_rel);
+                        }
+                    }
+                    if (toonOutlineProbeRequestForFrame)
+                    {
+                        ResolveToonOutlineQualificationProbeRequestOnRenderThread();
+                        progressed = true;
+                    }
                     const auto consumeStart = std::chrono::steady_clock::now();
                     RenderRuntimeResult frameResult =
                         m_consumer->ConsumeFrameV5(
@@ -2057,10 +2149,52 @@ namespace
     void RenderThreadRuntime::SealPublicationLocked() noexcept
     {
         m_publicationSealed.store(true, std::memory_order_release);
+        RejectPendingToonOutlineQualificationProbeForShutdown();
         if (m_resourceGateway != nullptr)
         {
             m_resourceGateway->BeginShutdown();
         }
+    }
+
+    void RenderThreadRuntime::ResolveToonOutlineQualificationProbeRequestOnRenderThread()
+    {
+        // Serialize Render-owner admission with publication sealing.  Without
+        // this lock, shutdown could publish a terminal rejection after the
+        // pending flag was consumed but before the consumer callback, allowing
+        // an owner-side probe to be armed after the runtime had sealed.
+        std::lock_guard lock(m_publicationMutex);
+        if (m_publicationSealed.load(std::memory_order_acquire))
+        {
+            RejectPendingToonOutlineQualificationProbeForShutdown();
+            return;
+        }
+        const bool accepted = m_consumer != nullptr &&
+                              m_consumer->RequestToonOutlineQualificationProbe();
+        RenderToonOutlineQualificationRequestState expected =
+            RenderToonOutlineQualificationRequestState::PendingRenderOwnerAdmission;
+        const RenderToonOutlineQualificationRequestState resolved =
+            accepted ? RenderToonOutlineQualificationRequestState::Accepted
+                     : RenderToonOutlineQualificationRequestState::RejectedByRenderOwner;
+        static_cast<void>(m_toonOutlineQualificationProbeRequestState
+                              .compare_exchange_strong(expected,
+                                                       resolved,
+                                                       std::memory_order_acq_rel,
+                                                       std::memory_order_acquire));
+    }
+
+    void RenderThreadRuntime::RejectPendingToonOutlineQualificationProbeForShutdown()
+        noexcept
+    {
+        m_toonOutlineQualificationProbeRequestPending.store(
+            false, std::memory_order_release);
+        RenderToonOutlineQualificationRequestState expected =
+            RenderToonOutlineQualificationRequestState::PendingRenderOwnerAdmission;
+        static_cast<void>(m_toonOutlineQualificationProbeRequestState
+                              .compare_exchange_strong(
+                                  expected,
+                                  RenderToonOutlineQualificationRequestState::RejectedByRuntimeShutdown,
+                                  std::memory_order_acq_rel,
+                                  std::memory_order_acquire));
     }
 
     void RenderThreadRuntime::StoreRuntimeResult(RenderRuntimeResult result)

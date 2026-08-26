@@ -28,7 +28,7 @@
 namespace RVX
 {
     /** @brief Current JSON schema version written by sample report producers. */
-    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 26;
+    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 27;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION = 20;
     inline constexpr uint32
@@ -42,6 +42,8 @@ namespace RVX
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_AMBIENT_OCCLUSION_MOTION_REPROJECTION_SCHEMA_VERSION =
             25;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_TOON_EXECUTION_SCHEMA_VERSION = 26;
     inline constexpr uint32 RVX_SAMPLE_REPORT_PRE_VISUAL_CONTRACT_SCHEMA_VERSION = 19;
     inline constexpr uint32 RVX_SAMPLE_REPORT_SCENARIO_SCHEMA_VERSION = 12;
     inline constexpr uint32 RVX_SAMPLE_REPORT_ECS_DIAGNOSTICS_SCHEMA_VERSION = 13;
@@ -300,6 +302,14 @@ namespace RVX
         bool exposureQualificationProbeEnabled = false;
         /** @brief Explicit one-shot post-Present GTAO readback. */
         bool ambientOcclusionQualificationProbeEnabled = false;
+        /**
+         * @brief Explicit one-shot Toon/outline presentation probe.
+         *
+         * The runner accepts this intent now, but it must remain fail-closed
+         * until the Render facade publishes the matching immutable receipt and
+         * implements RequestToonOutlineQualificationProbe().
+         */
+        bool toonOutlineQualificationProbeEnabled = false;
         uint32 width = 1280;
         uint32 height = 720;
         std::string quality = "default";
@@ -699,6 +709,157 @@ namespace RVX
         }
     };
 
+    /**
+     * @brief Presentation-bound value projection of ToonLit raster evidence.
+     *
+     * The host constructs this only from an immutable schema-v11 renderer
+     * receipt.  The public report intentionally contains only stable material
+     * execution facts; it never derives a result from requested sample policy.
+     */
+    struct SampleToonLightingExecutionDiagnostics
+    {
+        bool available = false;
+        uint32 executionReceiptSchemaVersion = 0;
+        bool executionReceiptStructurallyValid = false;
+        bool executionReceiptAvailable = false;
+        bool executionReceiptGraphComposed = false;
+        bool executionReceiptExecutionSucceeded = false;
+        bool executionReceiptPresented = false;
+        bool executionReceiptSucceeded = false;
+        uint64 frameFeatureSequence = 0;
+        uint64 receiptFrameSequence = 0;
+        uint64 lastPresentedFrameSequence = 0;
+        bool presentedFrameAligned = false;
+        bool mainView = false;
+
+        bool requested = false;
+        bool pipelineReady = false;
+        bool inputsReady = false;
+        bool executed = false;
+        /** Canonical program family resolved from the renderer value identity. */
+        std::string programFamily;
+        uint32 materialCount = 0;
+        uint32 drawCount = 0;
+        uint32 forwardShadedDrawCount = 0;
+        uint32 deferredShadedDrawCount = 0;
+        uint32 standardLitFallbackCount = 0;
+        uint32 materialFallbackCount = 0;
+        bool bandsApplied = false;
+        bool specularThresholdApplied = false;
+        bool rimApplied = false;
+        bool shadowTintApplied = false;
+        uint32 materialTableSchemaVersion = 0;
+        uint64 materialTableContentHash = 0;
+
+        [[nodiscard]] bool IsExecutionReady() const noexcept
+        {
+            const bool presentedMainView =
+                presentedFrameAligned && frameFeatureSequence != 0 &&
+                frameFeatureSequence == receiptFrameSequence &&
+                receiptFrameSequence == lastPresentedFrameSequence && mainView;
+            const bool oneRasterPathExecuted =
+                (forwardShadedDrawCount != 0) !=
+                (deferredShadedDrawCount != 0);
+            return available && executionReceiptSchemaVersion == 11 &&
+                   executionReceiptStructurallyValid &&
+                   executionReceiptAvailable && executionReceiptGraphComposed &&
+                   executionReceiptExecutionSucceeded &&
+                   executionReceiptPresented && executionReceiptSucceeded &&
+                   presentedMainView && requested && pipelineReady && inputsReady &&
+                   executed && !programFamily.empty() && materialCount != 0 &&
+                   drawCount != 0 &&
+                   forwardShadedDrawCount + deferredShadedDrawCount == drawCount &&
+                   oneRasterPathExecuted && standardLitFallbackCount == 0 &&
+                   materialFallbackCount == 0 && bandsApplied &&
+                   specularThresholdApplied && rimApplied && shadowTintApplied &&
+                   materialTableSchemaVersion != 0 &&
+                   materialTableContentHash != 0;
+        }
+    };
+
+    /**
+     * @brief Presentation-bound value projection of the HDR Toon outline.
+     *
+     * Qualification-only verifier metadata remains in-process so the public
+     * JSON shape stays limited to its documented, capability-facing facts.
+     */
+    struct SampleToonOutlineExecutionDiagnostics
+    {
+        bool available = false;
+        uint32 executionReceiptSchemaVersion = 0;
+        bool executionReceiptStructurallyValid = false;
+        bool executionReceiptAvailable = false;
+        bool executionReceiptGraphComposed = false;
+        bool executionReceiptExecutionSucceeded = false;
+        bool executionReceiptPresented = false;
+        bool executionReceiptSucceeded = false;
+        uint64 frameFeatureSequence = 0;
+        uint64 receiptFrameSequence = 0;
+        uint64 lastPresentedFrameSequence = 0;
+        bool presentedFrameAligned = false;
+        bool mainView = false;
+
+        bool requested = false;
+        bool pipelineReady = false;
+        bool inputsReady = false;
+        bool executed = false;
+        bool depthInputReady = false;
+        bool worldNormalInputReady = false;
+        bool materialIdentityInputReady = false;
+        bool materialTableInputReady = false;
+        bool temporalOrderingValidated = false;
+        uint32 taaSequenceIndex = 0;
+        uint32 outlineSequenceIndex = 0;
+        uint32 toneMapSequenceIndex = 0;
+        uint32 eligibleToonMaterialCount = 0;
+        uint64 outlinedPixelCount = 0;
+        uint64 nonToonAffectedPixelCount = 0;
+        bool resolutionAware = false;
+        uint64 settingsHash = 0;
+        bool fallbackUsed = false;
+
+        /** Internal-only exact verifier state, copied from the renderer. */
+        bool qualificationRequested = false;
+        bool qualificationReady = false;
+        uint32 renderWidth = 0;
+        uint32 renderHeight = 0;
+        uint64 materialTableContentHash = 0;
+        std::string diagnostic;
+
+        [[nodiscard]] bool IsExecutionReady() const noexcept
+        {
+            const bool presentedMainView =
+                presentedFrameAligned && frameFeatureSequence != 0 &&
+                frameFeatureSequence == receiptFrameSequence &&
+                receiptFrameSequence == lastPresentedFrameSequence && mainView;
+            return available && executionReceiptSchemaVersion == 11 &&
+                   executionReceiptStructurallyValid &&
+                   executionReceiptAvailable && executionReceiptGraphComposed &&
+                   executionReceiptExecutionSucceeded &&
+                   executionReceiptPresented && executionReceiptSucceeded &&
+                   presentedMainView && requested && pipelineReady && inputsReady &&
+                   executed && depthInputReady && worldNormalInputReady &&
+                   materialIdentityInputReady && materialTableInputReady &&
+                   temporalOrderingValidated && eligibleToonMaterialCount != 0 &&
+                   outlineSequenceIndex != 0 && toneMapSequenceIndex != 0 &&
+                   outlineSequenceIndex < toneMapSequenceIndex &&
+                   (taaSequenceIndex == 0 || taaSequenceIndex < outlineSequenceIndex) &&
+                   settingsHash != 0 && materialTableContentHash != 0 &&
+                   !fallbackUsed;
+        }
+
+        [[nodiscard]] bool IsQualificationReady() const noexcept
+        {
+            return IsExecutionReady() && qualificationRequested &&
+                   qualificationReady && taaSequenceIndex != 0 &&
+                   taaSequenceIndex < outlineSequenceIndex &&
+                   outlineSequenceIndex < toneMapSequenceIndex &&
+                   outlinedPixelCount != 0 && nonToonAffectedPixelCount == 0 &&
+                   resolutionAware && renderWidth != 0 && renderHeight != 0 &&
+                   diagnostic.empty();
+        }
+    };
+
     struct SampleRenderDiagnostics
     {
         bool available = false;
@@ -758,6 +919,10 @@ namespace RVX
         /** @brief Exact, main-view execution projection for GTAO only. */
         SampleAmbientOcclusionExecutionDiagnostics
             ambientOcclusionActualExecution{};
+        /** Exact, main-view execution projection for ToonLit raster work. */
+        SampleToonLightingExecutionDiagnostics toonLightingActualExecution{};
+        /** Exact, main-view execution projection for HDR Toon outlines. */
+        SampleToonOutlineExecutionDiagnostics toonOutlineActualExecution{};
         bool clusteredLightingInitialized = false;
         uint32 clusteredLightingActiveClusters = 0;
         bool textureIBLEnabled = false;
@@ -1310,6 +1475,62 @@ namespace RVX
     /** @brief Required GPU culling lanes must all match both evidence layers. */
     [[nodiscard]] bool HasRequiredGPUCullingQualificationMatch(
         const SampleRenderDiagnostics& diagnostics) noexcept;
+
+    /**
+     * @brief Project renderer-owned GFX14 evidence into the public Sample ABI.
+     *
+     * These functions fail closed for a non-presented or non-schema-v11
+     * receipt.  Sample scenarios must not manufacture the corresponding
+     * values from settings, assets, or image output.
+     */
+    [[nodiscard]] SampleToonLightingExecutionDiagnostics
+        ProjectSampleToonLightingExecutionDiagnostics(
+            const RenderDiagnosticsSnapshot& renderDiagnostics);
+    [[nodiscard]] SampleToonOutlineExecutionDiagnostics
+        ProjectSampleToonOutlineExecutionDiagnostics(
+            const RenderDiagnosticsSnapshot& renderDiagnostics);
+
+    /** Terminal state of the exact presented Toon-outline qualification target. */
+    enum class SampleToonOutlineQualificationTargetState : uint8
+    {
+        Unrelated = 0,
+        Pending,
+        Ready,
+        Failed,
+    };
+
+    /** Fail-closed target evaluation used by the host completion-only pump. */
+    struct SampleToonOutlineQualificationTargetEvaluation
+    {
+        SampleToonOutlineQualificationTargetState state =
+            SampleToonOutlineQualificationTargetState::Unrelated;
+        std::string diagnostic;
+
+        [[nodiscard]] bool IsReady() const noexcept
+        {
+            return state ==
+                SampleToonOutlineQualificationTargetState::Ready;
+        }
+
+        [[nodiscard]] bool IsFailed() const noexcept
+        {
+            return state ==
+                SampleToonOutlineQualificationTargetState::Failed;
+        }
+    };
+
+    /**
+     * @brief Evaluate only the exact frame/view receipt selected for capture.
+     *
+     * A matching receipt with a terminal renderer diagnostic, completed but
+     * semantically invalid pixel evidence, or a missing requested probe is a
+     * failure.  Only an exact matching receipt without terminal evidence may
+     * remain pending.
+     */
+    [[nodiscard]] SampleToonOutlineQualificationTargetEvaluation
+        EvaluateSampleToonOutlineQualificationTarget(
+            const RenderDiagnosticsSnapshot& renderDiagnostics,
+            uint64 targetFrameSequence);
 
     SampleReport BuildSampleReport(const SampleAppDesc& desc, const SampleRunContext& context);
     int RunReportOnlySample(int argc, char* argv[], const SampleAppDesc& desc);

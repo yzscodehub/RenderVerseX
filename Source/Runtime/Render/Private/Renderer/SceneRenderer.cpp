@@ -44,6 +44,7 @@
 #include "Render/PostProcess/ColorGrading.h"
 #include "Render/PostProcess/FilmGrain.h"
 #include "Render/PostProcess/FXAA.h"
+#include "Render/PostProcess/ScreenSpaceOutline.h"
 #include "Render/PostProcess/TAA.h"
 #include "Render/PostProcess/ToneMapping.h"
 #include "Render/PostProcess/Vignette.h"
@@ -1419,6 +1420,14 @@ void SceneRenderer::Shutdown()
     m_ambientOcclusionProbeSubmissionAccepted = false;
     m_ambientOcclusionProbePresented = false;
     m_ambientOcclusionProbeAbandoned = false;
+    if (m_screenSpaceOutlinePostProcess != nullptr)
+    {
+        m_screenSpaceOutlinePostProcess->AbandonQualificationProbe();
+    }
+    m_toonOutlineProbeSourceExecutionReceipt.reset();
+    m_toonOutlineProbeSubmissionAccepted = false;
+    m_toonOutlineProbePresented = false;
+    m_toonOutlineProbeAbandoned = false;
     if (m_viewHistoryCoordinator)
     {
         m_viewHistoryCoordinator->Clear();
@@ -1486,6 +1495,7 @@ void SceneRenderer::Shutdown()
     m_filmGrainPostProcess = nullptr;
     m_fxaaPostProcess = nullptr;
     m_taaPostProcess = nullptr;
+    m_screenSpaceOutlinePostProcess = nullptr;
     m_pendingRenderExecutionReceipt.reset();
     m_lastAttemptedRenderExecutionReceipt = {};
     m_completedRenderExecutionReceipt = {};
@@ -1644,6 +1654,15 @@ void SceneRenderer::AbandonAcceptedFrameHistory() noexcept
             m_ambientOcclusionProbeAbandoned = true;
         }
         m_ambientOcclusionFeature->AbandonHistoryCandidate();
+    }
+    if (m_screenSpaceOutlinePostProcess != nullptr)
+    {
+        if (m_toonOutlineProbeSubmissionAccepted &&
+            !m_toonOutlineProbePresented)
+        {
+            m_screenSpaceOutlinePostProcess->AbandonQualificationProbe();
+            m_toonOutlineProbeAbandoned = true;
+        }
     }
     if (m_postProcessFeature)
     {
@@ -2665,6 +2684,11 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
                                  previousViewProjection,
                                  previousViewValid,
                                  result.temporalHistoryReset);
+    // Keep shader-facing frame constants and post-process qualification
+    // identities bound to the accepted packet, not to a process-local render
+    // loop counter.  This is also the exact sequence carried by the temporal
+    // history candidate used at submission and Present.
+    m_viewData.frameNumber = m_renderScene.GetAcceptedHeader().sequence;
 
     const RenderFrameSettings& frameSettings = m_renderScene.GetSettings();
     const RenderAntiAliasingMode requestedAntiAliasingMode =
@@ -2736,6 +2760,13 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
     m_postProcessSettings.enableColorGrading =
         frameSettings.postProcess.enabled &&
         frameSettings.postProcess.enableColorGrading;
+    m_postProcessSettings.enableToonOutline =
+        frameSettings.postProcess.enabled &&
+        frameSettings.postProcess.enableToonOutline;
+    m_postProcessSettings.toonOutlineDepthThreshold =
+        frameSettings.postProcess.toonOutlineDepthThreshold;
+    m_postProcessSettings.toonOutlineNormalThreshold =
+        frameSettings.postProcess.toonOutlineNormalThreshold;
     m_postProcessSettings.enableRayTracedReflectionDenoise =
         frameSettings.postProcess.enableRayTracedReflectionDenoise;
     m_postProcessSettings.toneMappingOperator =
@@ -3084,6 +3115,21 @@ bool SceneRenderer::ArmAmbientOcclusionQualificationProbe()
     return true;
 }
 
+bool SceneRenderer::ArmToonOutlineQualificationProbe()
+{
+    if (m_screenSpaceOutlinePostProcess == nullptr ||
+        m_toonOutlineProbeSubmissionAccepted ||
+        m_toonOutlineProbeSourceExecutionReceipt.has_value() ||
+        m_screenSpaceOutlinePostProcess->HasPendingQualificationProbe() ||
+        !m_screenSpaceOutlinePostProcess->ArmQualificationProbe())
+    {
+        return false;
+    }
+    m_toonOutlineProbePresented = false;
+    m_toonOutlineProbeAbandoned = false;
+    return true;
+}
+
 void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
     const RenderSubmissionTracker& tracker)
 {
@@ -3222,6 +3268,98 @@ void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
         }
     }
 
+    if (m_toonOutlineProbeSubmissionAccepted &&
+        m_screenSpaceOutlinePostProcess != nullptr &&
+        (m_toonOutlineProbePresented || m_toonOutlineProbeAbandoned))
+    {
+        ScreenSpaceOutlineQualificationProbeStats probeStats;
+        const bool completed =
+            m_screenSpaceOutlinePostProcess->PollQualificationProbe(
+                tracker, probeStats);
+        RenderExecutionReceipt qualified =
+            m_toonOutlineProbeSourceExecutionReceipt.has_value()
+                ? *m_toonOutlineProbeSourceExecutionReceipt
+                : RenderExecutionReceipt{};
+        const bool sourceMatches =
+            completed && probeStats.IsValid() &&
+            m_toonOutlineProbePresented &&
+            m_toonOutlineProbeSourceExecutionReceipt.has_value() &&
+            qualified.presented &&
+            qualified.frameIdentity ==
+                probeStats.identity.historyIdentity.previousFrame &&
+            qualified.viewIdentity ==
+                probeStats.identity.historyIdentity.view &&
+            qualified.toonLighting.IsExecutionReady() &&
+            qualified.toonOutline.IsExecutionReady() &&
+            qualified.toonOutline.qualificationRequested &&
+            !qualified.toonOutline.qualificationReady &&
+            qualified.toonOutline.settingsHash ==
+                probeStats.identity.settingsHash &&
+            qualified.toonOutline.materialTableContentHash ==
+                probeStats.identity.materialTableContentHash &&
+            qualified.toonLighting.materialTableContentHash ==
+                probeStats.identity.materialTableContentHash;
+        if (sourceMatches)
+        {
+            qualified.toonOutline.qualificationReady = true;
+            qualified.toonOutline.outlinedPixelCount =
+                probeStats.outlinedPixelCount;
+            qualified.toonOutline.nonToonAffectedPixelCount =
+                probeStats.nonToonAffectedPixelCount;
+            qualified.toonOutline.resolutionAware =
+                probeStats.resolutionAware;
+            qualified.toonOutline.renderWidth =
+                probeStats.identity.extent.width;
+            qualified.toonOutline.renderHeight =
+                probeStats.identity.extent.height;
+            qualified.toonOutline.diagnostic.clear();
+            if (qualified.IsStructurallyValid())
+            {
+                // A completed physical observation remains valid evidence even
+                // when it exposes zero Toon coverage or non-Toon damage.  The
+                // Sample qualification contract evaluates those semantic
+                // counts without falsifying successful render/present state.
+                m_completedRenderExecutionReceipt = qualified;
+                m_lastAttemptedRenderExecutionReceipt =
+                    std::move(qualified);
+            }
+            else
+            {
+                const std::string failure =
+                    "Completed Toon-outline probe invalidated its source receipt";
+                m_lastAttemptedRenderExecutionReceipt =
+                    m_toonOutlineProbeSourceExecutionReceipt.has_value()
+                        ? *m_toonOutlineProbeSourceExecutionReceipt
+                        : m_completedRenderExecutionReceipt;
+                m_lastAttemptedRenderExecutionReceipt.toonOutline.diagnostic =
+                    failure;
+                m_lastAttemptedRenderExecutionReceipt.diagnostic = failure;
+            }
+            m_toonOutlineProbeSubmissionAccepted = false;
+            m_toonOutlineProbeSourceExecutionReceipt.reset();
+            m_toonOutlineProbePresented = false;
+            m_toonOutlineProbeAbandoned = false;
+        }
+        else if (!m_screenSpaceOutlinePostProcess
+                      ->HasPendingQualificationProbe())
+        {
+            const std::string failure = probeStats.failure.empty()
+                ? "Toon-outline qualification probe failed or lost its presented source"
+                : probeStats.failure;
+            m_lastAttemptedRenderExecutionReceipt =
+                m_toonOutlineProbeSourceExecutionReceipt.has_value()
+                    ? *m_toonOutlineProbeSourceExecutionReceipt
+                    : m_completedRenderExecutionReceipt;
+            m_lastAttemptedRenderExecutionReceipt.toonOutline.diagnostic =
+                failure;
+            m_lastAttemptedRenderExecutionReceipt.diagnostic = failure;
+            m_toonOutlineProbeSubmissionAccepted = false;
+            m_toonOutlineProbeSourceExecutionReceipt.reset();
+            m_toonOutlineProbePresented = false;
+            m_toonOutlineProbeAbandoned = false;
+        }
+    }
+
     // Completion can arrive while the runtime is deliberately progressing no
     // replacement frame.  Project only the post-fence evidence into the
     // already-published source-frame diagnostics; rebuilding the complete
@@ -3287,6 +3425,12 @@ bool SceneRenderer::HasPendingAmbientOcclusionQualificationCompletion()
     const noexcept
 {
     return m_ambientOcclusionProbeSubmissionAccepted;
+}
+
+bool SceneRenderer::HasPendingToonOutlineQualificationCompletion()
+    const noexcept
+{
+    return m_toonOutlineProbeSubmissionAccepted;
 }
 
 bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
@@ -3413,6 +3557,40 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
             m_ambientOcclusionProbeAbandoned = false;
         }
     }
+    if (m_screenSpaceOutlinePostProcess != nullptr &&
+        m_screenSpaceOutlinePostProcess->HasPendingQualificationProbe())
+    {
+        const auto pendingIdentity =
+            m_screenSpaceOutlinePostProcess
+                ->GetPendingQualificationProbeIdentity();
+        const bool exactIdentityAvailable =
+            pendingIdentity.has_value() &&
+            m_activeViewHistoryCandidate.has_value() &&
+            pendingIdentity->historyIdentity ==
+                *m_activeViewHistoryCandidate &&
+            pendingIdentity->frameIndex == m_viewData.frameNumber;
+        const bool accepted = exactIdentityAvailable &&
+            !m_toonOutlineProbeSubmissionAccepted &&
+            m_screenSpaceOutlinePostProcess
+                ->NotifyQualificationProbeSubmission(
+                    *pendingIdentity, completion, *tracker);
+        if (!accepted)
+        {
+            m_screenSpaceOutlinePostProcess->AbandonQualificationProbe();
+            m_toonOutlineProbeSubmissionAccepted = false;
+            m_toonOutlineProbePresented = false;
+            m_toonOutlineProbeAbandoned = true;
+            RVX_RENDER_WARN(
+                "SceneRenderer: Toon-outline qualification probe did not bind exact submission evidence");
+        }
+        else
+        {
+            m_toonOutlineProbeSourceExecutionReceipt.reset();
+            m_toonOutlineProbeSubmissionAccepted = true;
+            m_toonOutlineProbePresented = false;
+            m_toonOutlineProbeAbandoned = false;
+        }
+    }
     if (m_pipelineCache && !m_pipelineCache->NotifyObjectConstantSubmission(completion))
     {
         RVX_RENDER_ERROR("SceneRenderer: object constant pages rejected invalid completion evidence");
@@ -3472,6 +3650,20 @@ void SceneRenderer::ReleaseUnsubmittedFrame()
         m_ambientOcclusionProbeSourceExecutionReceipt.reset();
         m_ambientOcclusionProbePresented = false;
         m_ambientOcclusionProbeAbandoned = false;
+    }
+    if (m_screenSpaceOutlinePostProcess != nullptr &&
+        !m_toonOutlineProbeSubmissionAccepted &&
+        m_screenSpaceOutlinePostProcess->HasPendingQualificationProbe())
+    {
+        // Match the AO lifecycle above: accepting a frame must preserve a
+        // Render-owner-armed request until that frame can record it.  Once
+        // the frame is known not to have reached submission, however, the
+        // one-shot request must fail closed instead of leaking to a later
+        // frame.
+        m_screenSpaceOutlinePostProcess->AbandonQualificationProbe();
+        m_toonOutlineProbeSourceExecutionReceipt.reset();
+        m_toonOutlineProbePresented = false;
+        m_toonOutlineProbeAbandoned = false;
     }
     const bool preservePresentedExposureProbe =
         m_exposureProbeCompletion && m_exposureProbePresented &&
@@ -3972,6 +4164,33 @@ void SceneRenderer::MarkAcceptedFramePresented()
             m_exposureProbePresented = false;
         }
     }
+    if (m_toonOutlineProbeSubmissionAccepted &&
+        m_screenSpaceOutlinePostProcess != nullptr)
+    {
+        const auto pendingIdentity =
+            m_screenSpaceOutlinePostProcess
+                ->GetPendingQualificationProbeIdentity();
+        const bool probeMatchesPresentation =
+            presentationQualified &&
+            presentedTemporalCandidate.has_value() &&
+            pendingIdentity.has_value() &&
+            pendingIdentity->historyIdentity ==
+                presentedTemporalCandidate->historyIdentity &&
+            pendingIdentity->frameIndex == presentedFrameSequence;
+        if (probeMatchesPresentation &&
+            m_screenSpaceOutlinePostProcess
+                ->MarkQualificationProbePresented(*pendingIdentity))
+        {
+            m_toonOutlineProbePresented = true;
+            m_toonOutlineProbeAbandoned = false;
+        }
+        else
+        {
+            m_screenSpaceOutlinePostProcess->AbandonQualificationProbe();
+            m_toonOutlineProbePresented = false;
+            m_toonOutlineProbeAbandoned = true;
+        }
+    }
     if (presentationQualified)
     {
         RenderExecutionReceipt presented =
@@ -4006,6 +4225,31 @@ void SceneRenderer::MarkAcceptedFramePresented()
                 m_ambientOcclusionProbeSourceExecutionReceipt =
                     m_completedRenderExecutionReceipt;
             }
+            if (m_toonOutlineProbeSubmissionAccepted &&
+                m_toonOutlineProbePresented &&
+                m_screenSpaceOutlinePostProcess != nullptr)
+            {
+                const auto pendingIdentity =
+                    m_screenSpaceOutlinePostProcess
+                        ->GetPendingQualificationProbeIdentity();
+                if (pendingIdentity.has_value() &&
+                    presentedTemporalCandidate.has_value() &&
+                    pendingIdentity->historyIdentity ==
+                        presentedTemporalCandidate->historyIdentity &&
+                    m_completedRenderExecutionReceipt.toonOutline
+                        .qualificationRequested)
+                {
+                    m_toonOutlineProbeSourceExecutionReceipt =
+                        m_completedRenderExecutionReceipt;
+                }
+                else
+                {
+                    m_screenSpaceOutlinePostProcess
+                        ->AbandonQualificationProbe();
+                    m_toonOutlineProbePresented = false;
+                    m_toonOutlineProbeAbandoned = true;
+                }
+            }
             m_lastAttemptedRenderExecutionReceipt = std::move(presented);
         }
         else
@@ -4023,6 +4267,14 @@ void SceneRenderer::MarkAcceptedFramePresented()
                 m_ambientOcclusionFeature->AbandonQualificationProbe();
                 m_ambientOcclusionProbePresented = false;
                 m_ambientOcclusionProbeAbandoned = true;
+            }
+            if (m_toonOutlineProbeSubmissionAccepted &&
+                m_screenSpaceOutlinePostProcess != nullptr)
+            {
+                m_screenSpaceOutlinePostProcess
+                    ->AbandonQualificationProbe();
+                m_toonOutlineProbePresented = false;
+                m_toonOutlineProbeAbandoned = true;
             }
             m_lastAttemptedRenderExecutionReceipt = std::move(presented);
         }
@@ -6691,7 +6943,7 @@ void SceneRenderer::Render()
         RenderExecutionReceipt receipt =
             m_renderFeatureRegistry->CollectExecutionReceipt(
                 m_executionBuildIdentity);
-        receipt.schemaVersion = 10;
+        receipt.schemaVersion = 11;
         if (m_activeRenderPassResults != nullptr &&
             m_activeRenderPassResults->identity == m_activeRenderPassIdentity &&
             m_activeRenderPassIdentity.frameSequence ==
@@ -6722,6 +6974,60 @@ void SceneRenderer::Render()
             m_activeRenderPassResults->identity == m_activeRenderPassIdentity &&
             m_activeRenderPassIdentity.frameSequence ==
                 receipt.frameIdentity.frameSequence;
+        if (activeRenderPassResultsMatchReceipt)
+        {
+            const OpaquePassDrawStats& toonStats =
+                receipt.resolvedRecipe ==
+                        RenderPipelineRecipe::DeferredQuality
+                    ? m_activeRenderPassResults->deferredOpaqueRoute.drawStats
+                    : m_activeRenderPassResults->opaqueStats;
+            const bool observedToonWork =
+                toonStats.toonMaterialCount != 0 ||
+                toonStats.toonDrawCount != 0 ||
+                toonStats.toonFallbackDrawCount != 0;
+            if (observedToonWork)
+            {
+                RenderToonLightingExecutionReceipt toon;
+                toon.requested = true;
+                toon.pipelineReady =
+                    toonStats.planValidated &&
+                    toonStats.toonProgramFamilyHash != 0;
+                toon.inputsReady =
+                    toonStats.toonMaterialCount != 0 &&
+                    toonStats.materialTableSchemaVersion != 0 &&
+                    toonStats.materialTableContentHash != 0;
+                toon.executed =
+                    exactGraphExecutionSucceeded &&
+                    toonStats.toonDrawCount != 0;
+                toon.programFamilyHash = toonStats.toonProgramFamilyHash;
+                toon.materialCount = toonStats.toonMaterialCount;
+                toon.drawCount = toonStats.toonDrawCount;
+                toon.forwardShadedDrawCount =
+                    receipt.resolvedRecipe ==
+                            RenderPipelineRecipe::ForwardStandard
+                        ? toonStats.toonDrawCount
+                        : 0;
+                toon.deferredShadedDrawCount =
+                    receipt.resolvedRecipe ==
+                            RenderPipelineRecipe::DeferredQuality
+                        ? toonStats.toonDrawCount
+                        : 0;
+                // The shared Toon program has no StandardLit compatibility
+                // branch. A resource fallback remains explicit and invalid.
+                toon.standardLitFallbackCount = 0;
+                toon.materialFallbackCount =
+                    toonStats.toonFallbackDrawCount;
+                toon.bandsApplied = toon.executed;
+                toon.specularThresholdApplied = toon.executed;
+                toon.rimApplied = toon.executed;
+                toon.shadowTintApplied = toon.executed;
+                toon.materialTableSchemaVersion =
+                    toonStats.materialTableSchemaVersion;
+                toon.materialTableContentHash =
+                    toonStats.materialTableContentHash;
+                receipt.toonLighting = std::move(toon);
+            }
+        }
         const RenderDeformationFrameIdentity activeDeformationIdentity =
             MakeRenderDeformationFrameIdentity(m_activeRenderPassIdentity);
         const bool deformationResourcesMatchReceipt =
@@ -6948,15 +7254,32 @@ void SceneRenderer::Render()
         {
             receipt.postProcess =
                 m_postProcessFeature->GetLastExecutionReceipt();
+            receipt.toonOutline =
+                m_postProcessFeature
+                    ->GetLastToonOutlineExecutionReceipt();
         }
         const bool postProcessExecutionEvidenceValid =
             exactGraphExecutionSucceeded && postProcessFeatureExecuted &&
             receipt.postProcess.IsStructurallyValid();
+        const bool toonLightingExecutionEvidenceValid =
+            receipt.toonLighting.IsEmpty() ||
+            (exactGraphExecutionSucceeded &&
+             receipt.toonLighting.IsStructurallyValid());
+        const bool toonOutlineExecutionEvidenceValid =
+            receipt.toonOutline.IsEmpty() ||
+            (exactGraphExecutionSucceeded && postProcessFeatureExecuted &&
+             receipt.toonOutline.IsStructurallyValid() &&
+             (!receipt.toonOutline.IsExecutionReady() ||
+              (receipt.toonLighting.IsExecutionReady() &&
+               receipt.toonOutline.materialTableContentHash ==
+                   receipt.toonLighting.materialTableContentHash)));
         receipt.executionSucceeded = receipt.executionSucceeded &&
             graphExecuted && graphCompileValid &&
             deformationExecutionEvidenceValid &&
             ambientOcclusionExecutionEvidenceValid &&
-            postProcessExecutionEvidenceValid;
+            postProcessExecutionEvidenceValid &&
+            toonLightingExecutionEvidenceValid &&
+            toonOutlineExecutionEvidenceValid;
         receipt.presented = false;
         receipt.succeeded = false;
         if (!receipt.executionSucceeded && receipt.diagnostic.empty())
@@ -6967,6 +7290,10 @@ void SceneRenderer::Render()
                     ? "Ambient-occlusion execution evidence did not match its opaque lighting consumer"
                 : !postProcessExecutionEvidenceValid
                     ? "Post-process execution evidence did not match the active graph recording"
+                : !toonLightingExecutionEvidenceValid
+                    ? "Toon lighting execution evidence did not match the active opaque recording"
+                : !toonOutlineExecutionEvidenceValid
+                    ? "Toon outline execution evidence did not match its material table or post-process recording"
                 : executionSkippedReason != nullptr
                     ? executionSkippedReason
                     : "Render feature execution did not complete";
@@ -9225,6 +9552,8 @@ void SceneRenderer::BuildRenderGraph()
     {
         effectivePostProcessSettings.enableToneMapping = true;
     }
+    m_viewData.toonOutlineRequested =
+        effectivePostProcessSettings.enableToonOutline ? 1 : 0;
     m_postProcessSettings.toneMappingOutputColorSpace =
         effectivePostProcessSettings.toneMappingOutputColorSpace;
     std::string deferredToneMappingPresentationDiagnostic;
@@ -9951,7 +10280,7 @@ void SceneRenderer::BuildRenderGraph()
 
     // The PostProcessPipeline feature is the sole owner of the typed HDR to
     // presentation boundary. SceneRenderer deliberately has no direct stack
-    // execution bypass: the feature consumes TranslucencyOutputs v2 and
+    // execution bypass: the feature consumes TranslucencyOutputs v4 and
     // publishes PostProcessOutputs v2 inside the same graph composition.
     m_postProcessStats.stackStats = m_postProcessFeature->GetLastPlanStats();
 }
@@ -10228,6 +10557,8 @@ void SceneRenderer::SetupDefaultPostProcess()
     m_filmGrainPostProcess = m_postProcessStack->AddEffect<FilmGrainPass>();
     m_fxaaPostProcess = m_postProcessStack->AddEffect<FXAAPass>();
     m_taaPostProcess = m_postProcessStack->AddEffect<TAA>();
+    m_screenSpaceOutlinePostProcess =
+        m_postProcessStack->AddEffect<ScreenSpaceOutlinePass>();
 
     if (m_bloomPostProcess)
     {
@@ -10262,6 +10593,12 @@ void SceneRenderer::SetupDefaultPostProcess()
     if (m_fxaaPostProcess)
     {
         m_fxaaPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
+    }
+
+    if (m_screenSpaceOutlinePostProcess)
+    {
+        m_screenSpaceOutlinePostProcess->SetResources(
+            m_pipelineCache.get(), m_resourceViewCache.get());
     }
 
     ApplyPostProcessSettings(MakeDefaultRuntimePostProcessSettings());

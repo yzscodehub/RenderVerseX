@@ -140,6 +140,28 @@ namespace
     static_assert(static_cast<uint8>(RenderShutdownCode::TimedOut) == 4);
     static_assert(static_cast<uint8>(RenderShutdownCode::ExecutorJoinFailed) == 5);
 
+    static_assert(
+        std::is_same_v<std::underlying_type_t<RenderToonOutlineQualificationRequestState>,
+                       uint8>);
+    static_assert(
+        static_cast<uint8>(
+            RenderToonOutlineQualificationRequestState::NotRequested) == 0);
+    static_assert(
+        static_cast<uint8>(
+            RenderToonOutlineQualificationRequestState::PendingRenderOwnerAdmission) ==
+        1);
+    static_assert(
+        static_cast<uint8>(
+            RenderToonOutlineQualificationRequestState::Accepted) == 2);
+    static_assert(
+        static_cast<uint8>(
+            RenderToonOutlineQualificationRequestState::RejectedByRenderOwner) ==
+        3);
+    static_assert(
+        static_cast<uint8>(
+            RenderToonOutlineQualificationRequestState::RejectedByRuntimeShutdown) ==
+        4);
+
     constexpr auto RVX_TEST_TIMEOUT = 2s;
 
     class BlockingRuntimeBootstrapHook final
@@ -571,6 +593,23 @@ namespace
         while (std::chrono::steady_clock::now() < deadline)
         {
             if (runtime.GetLastRuntimeResult().lifecycle == lifecycle)
+            {
+                return true;
+            }
+            std::this_thread::sleep_for(1ms);
+        }
+        return false;
+    }
+
+    bool WaitForToonOutlineQualificationRequestTerminal(
+        const RenderThreadRuntime& runtime)
+    {
+        const auto deadline =
+            std::chrono::steady_clock::now() + RVX_TEST_TIMEOUT;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            if (runtime.GetToonOutlineQualificationProbeRequestResult()
+                    .IsTerminal())
             {
                 return true;
             }
@@ -1786,6 +1825,252 @@ namespace
 
         EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
         EXPECT_FALSE(runtime.RequestAmbientOcclusionQualificationProbe());
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         ToonOutlineQualificationProbeRequestIsOneShotAndOwnerDelivered)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->toonOutlineQualificationProbeAccepted = true;
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe));
+
+        EXPECT_FALSE(runtime.RequestToonOutlineQualificationProbe());
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        EXPECT_EQ(runtime.GetToonOutlineQualificationProbeRequestResult().state,
+                  RenderToonOutlineQualificationRequestState::NotRequested);
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::ToonOutlineQualificationProbe),
+                  0U);
+
+        EXPECT_TRUE(runtime.RequestToonOutlineQualificationProbe());
+        EXPECT_FALSE(runtime.RequestToonOutlineQualificationProbe());
+        const uint64 pumpIterationsAfterRequest =
+            runtime.GetDiagnosticsSnapshot().pumpIterationCount;
+        runtime.Wake();
+        ASSERT_TRUE(WaitForPumpIterationCount(
+            runtime, pumpIterationsAfterRequest + 1U));
+        EXPECT_EQ(runtime.GetToonOutlineQualificationProbeRequestResult().state,
+                  RenderToonOutlineQualificationRequestState::
+                      PendingRenderOwnerAdmission);
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::ToonOutlineQualificationProbe),
+                  0U);
+        EXPECT_EQ(probe->GetEventCount(RenderRuntimeTestEvent::Frame), 0U);
+
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(8135)).code,
+                  RenderFramePublishCode::Accepted);
+        EXPECT_TRUE(probe->WaitForEventCount(
+            RenderRuntimeTestEvent::ToonOutlineQualificationProbe,
+            1U,
+            RVX_TEST_TIMEOUT));
+        EXPECT_TRUE(probe->WaitForEventCount(
+            RenderRuntimeTestEvent::Frame, 1U, RVX_TEST_TIMEOUT));
+        EXPECT_TRUE(WaitForPresentedFrame(runtime, 8135));
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::ToonOutlineQualificationProbe),
+                  1U);
+        EXPECT_EQ(probe->GetEventCount(RenderRuntimeTestEvent::Frame), 1U);
+        const std::vector<RenderRuntimeTestEvent> events = probe->GetEvents();
+        const auto qualification = std::find(
+            events.begin(),
+            events.end(),
+            RenderRuntimeTestEvent::ToonOutlineQualificationProbe);
+        const auto frame = std::find(
+            events.begin(), events.end(), RenderRuntimeTestEvent::Frame);
+        ASSERT_NE(events.end(), qualification);
+        ASSERT_NE(events.end(), frame);
+        EXPECT_LT(std::distance(events.begin(), qualification),
+                  std::distance(events.begin(), frame));
+        const RenderToonOutlineQualificationRequestResult result =
+            runtime.GetToonOutlineQualificationProbeRequestResult();
+        EXPECT_TRUE(result.IsTerminal());
+        EXPECT_TRUE(result.IsAccepted());
+        EXPECT_FALSE(result.IsRejected());
+        EXPECT_EQ(result.state,
+                  RenderToonOutlineQualificationRequestState::Accepted);
+        EXPECT_STREQ(result.diagnostic,
+                     "toon outline qualification probe was accepted by the render owner");
+
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+        EXPECT_FALSE(runtime.RequestToonOutlineQualificationProbe());
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         ToonOutlineQualificationProbeConsumerRejectionIsTerminalAndDiagnostic)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe));
+
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        ASSERT_TRUE(runtime.RequestToonOutlineQualificationProbe());
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(8136)).code,
+                  RenderFramePublishCode::Accepted);
+        ASSERT_TRUE(probe->WaitForEventCount(
+            RenderRuntimeTestEvent::ToonOutlineQualificationProbe,
+            1U,
+            RVX_TEST_TIMEOUT));
+        ASSERT_TRUE(WaitForToonOutlineQualificationRequestTerminal(runtime));
+        EXPECT_TRUE(probe->WaitForEventCount(
+            RenderRuntimeTestEvent::Frame, 1U, RVX_TEST_TIMEOUT));
+        EXPECT_TRUE(WaitForPresentedFrame(runtime, 8136));
+
+        const RenderToonOutlineQualificationRequestResult result =
+            runtime.GetToonOutlineQualificationProbeRequestResult();
+        EXPECT_TRUE(result.IsTerminal());
+        EXPECT_FALSE(result.IsAccepted());
+        EXPECT_TRUE(result.IsRejected());
+        EXPECT_EQ(result.state,
+                  RenderToonOutlineQualificationRequestState::RejectedByRenderOwner);
+        EXPECT_STREQ(result.diagnostic,
+                     "toon outline qualification probe was rejected by the render owner");
+        EXPECT_FALSE(runtime.RequestToonOutlineQualificationProbe());
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::ToonOutlineQualificationProbe),
+                  1U);
+
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         ToonOutlineQualificationProbeSkipsAlreadyPublishedFrameAndBindsNextFrame)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->toonOutlineQualificationProbeAccepted = true;
+        auto acquireHook = std::make_shared<BlockingFrameAcquireHook>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe),
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            acquireHook);
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+
+        acquireHook->Arm();
+        runtime.Wake();
+        const bool ownerReachedAcquire = acquireHook->WaitUntilEntered(
+            RVX_TEST_TIMEOUT);
+        if (!ownerReachedAcquire)
+        {
+            acquireHook->Release();
+            EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+            FAIL() << "Render owner did not reach the frame acquire seam";
+            return;
+        }
+
+        const RenderFramePublishResult oldFrame =
+            PublishFrame(runtime, MakePacket(8137));
+        const bool requestAccepted =
+            runtime.RequestToonOutlineQualificationProbe();
+        acquireHook->Release();
+
+        ASSERT_EQ(oldFrame.code, RenderFramePublishCode::Accepted);
+        ASSERT_TRUE(requestAccepted);
+        ASSERT_TRUE(probe->WaitForEventCount(
+            RenderRuntimeTestEvent::Frame, 1U, RVX_TEST_TIMEOUT));
+        ASSERT_TRUE(WaitForPresentedFrame(runtime, 8137));
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::ToonOutlineQualificationProbe),
+                  0U);
+        EXPECT_EQ(runtime.GetToonOutlineQualificationProbeRequestResult().state,
+                  RenderToonOutlineQualificationRequestState::
+                      PendingRenderOwnerAdmission);
+
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(8138)).code,
+                  RenderFramePublishCode::Accepted);
+        ASSERT_TRUE(probe->WaitForEventCount(
+            RenderRuntimeTestEvent::ToonOutlineQualificationProbe,
+            1U,
+            RVX_TEST_TIMEOUT));
+        ASSERT_TRUE(probe->WaitForEventCount(
+            RenderRuntimeTestEvent::Frame, 2U, RVX_TEST_TIMEOUT));
+        ASSERT_TRUE(WaitForPresentedFrame(runtime, 8138));
+
+        const std::vector<RenderRuntimeTestEvent> events = probe->GetEvents();
+        const auto firstFrame = std::find(
+            events.begin(), events.end(), RenderRuntimeTestEvent::Frame);
+        ASSERT_NE(events.end(), firstFrame);
+        const auto qualification = std::find(
+            std::next(firstFrame),
+            events.end(),
+            RenderRuntimeTestEvent::ToonOutlineQualificationProbe);
+        ASSERT_NE(events.end(), qualification);
+        const auto secondFrame = std::find(
+            std::next(qualification),
+            events.end(),
+            RenderRuntimeTestEvent::Frame);
+        ASSERT_NE(events.end(), secondFrame);
+
+        const RenderToonOutlineQualificationRequestResult result =
+            runtime.GetToonOutlineQualificationProbeRequestResult();
+        EXPECT_TRUE(result.IsAccepted());
+        EXPECT_EQ(result.state,
+                  RenderToonOutlineQualificationRequestState::Accepted);
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         PendingToonOutlineQualificationProbeIsRejectedByShutdownWithoutOwnerCallback)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->toonOutlineQualificationProbeAccepted = true;
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe));
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+
+        const uint64 pumpIterationsBeforeRequest =
+            runtime.GetDiagnosticsSnapshot().pumpIterationCount;
+        ASSERT_TRUE(runtime.RequestToonOutlineQualificationProbe());
+        ASSERT_TRUE(WaitForPumpIterationCount(
+            runtime, pumpIterationsBeforeRequest + 1U));
+        EXPECT_EQ(runtime.GetToonOutlineQualificationProbeRequestResult().state,
+                  RenderToonOutlineQualificationRequestState::
+                      PendingRenderOwnerAdmission);
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::ToonOutlineQualificationProbe),
+                  0U);
+
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+        const RenderToonOutlineQualificationRequestResult result =
+            runtime.GetToonOutlineQualificationProbeRequestResult();
+        EXPECT_TRUE(result.IsTerminal());
+        EXPECT_TRUE(result.IsRejected());
+        EXPECT_EQ(result.state,
+                  RenderToonOutlineQualificationRequestState::
+                      RejectedByRuntimeShutdown);
+        EXPECT_STREQ(
+            result.diagnostic,
+            "toon outline qualification probe was rejected because the render runtime sealed before admission");
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::ToonOutlineQualificationProbe),
+                  0U);
     }
 
     TEST(RenderThreadRuntimeValidation,

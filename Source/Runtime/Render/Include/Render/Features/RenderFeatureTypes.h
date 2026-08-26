@@ -472,6 +472,214 @@ namespace RVX
     };
 
     /**
+     * @brief Execution-only evidence for the shared Forward/Deferred Toon path.
+     *
+     * This is populated by the renderer composition only after exact opaque
+     * execution. It therefore cannot be accidentally populated from a
+     * requested material or profile:
+     * non-zero counts represent completed binding/draw work only. The program
+     * family is a stable value identity, not a process-local string address.
+     */
+    struct RenderToonLightingExecutionReceipt
+    {
+        bool requested = false;
+        bool pipelineReady = false;
+        bool inputsReady = false;
+        bool executed = false;
+        uint64 programFamilyHash = 0;
+        uint32 materialCount = 0;
+        uint32 drawCount = 0;
+        uint32 forwardShadedDrawCount = 0;
+        uint32 deferredShadedDrawCount = 0;
+        uint32 standardLitFallbackCount = 0;
+        uint32 materialFallbackCount = 0;
+        bool bandsApplied = false;
+        bool specularThresholdApplied = false;
+        bool rimApplied = false;
+        bool shadowTintApplied = false;
+        uint32 materialTableSchemaVersion = 0;
+        uint64 materialTableContentHash = 0;
+
+        [[nodiscard]] bool IsEmpty() const noexcept
+        {
+            return !requested && !pipelineReady && !inputsReady && !executed &&
+                   programFamilyHash == 0 && materialCount == 0 &&
+                   drawCount == 0 && forwardShadedDrawCount == 0 &&
+                   deferredShadedDrawCount == 0 &&
+                   standardLitFallbackCount == 0 && materialFallbackCount == 0 &&
+                   !bandsApplied && !specularThresholdApplied && !rimApplied &&
+                   !shadowTintApplied && materialTableSchemaVersion == 0 &&
+                   materialTableContentHash == 0;
+        }
+
+        [[nodiscard]] bool IsStructurallyValid() const noexcept
+        {
+            if (!requested)
+            {
+                return IsEmpty();
+            }
+            // A Toon path never degrades to StandardLit. Fallback evidence
+            // instead makes the receipt unusable for qualification.
+            if (standardLitFallbackCount != 0 || materialFallbackCount != 0 ||
+                forwardShadedDrawCount + deferredShadedDrawCount != drawCount)
+            {
+                return false;
+            }
+            const bool hasInputs = materialCount != 0 ||
+                materialTableSchemaVersion != 0 || materialTableContentHash != 0;
+            if (inputsReady != hasInputs ||
+                (inputsReady &&
+                 (programFamilyHash == 0 || materialCount == 0 ||
+                  materialTableSchemaVersion == 0 ||
+                  materialTableContentHash == 0)))
+            {
+                return false;
+            }
+            if (!executed)
+            {
+                return drawCount == 0 && !bandsApplied &&
+                       !specularThresholdApplied && !rimApplied &&
+                       !shadowTintApplied;
+            }
+            return pipelineReady && inputsReady && drawCount != 0 &&
+                   (forwardShadedDrawCount == 0) !=
+                       (deferredShadedDrawCount == 0) &&
+                   bandsApplied && specularThresholdApplied && rimApplied &&
+                   shadowTintApplied;
+        }
+
+        [[nodiscard]] bool IsExecutionReady() const noexcept
+        {
+            return IsStructurallyValid() && requested && pipelineReady &&
+                   inputsReady && executed && materialCount != 0 &&
+                   drawCount != 0 && standardLitFallbackCount == 0 &&
+                   materialFallbackCount == 0;
+        }
+    };
+
+    /**
+     * @brief Presentation-bound evidence for the material-aware HDR outline.
+     *
+     * Graph execution and the optional qualification readback are distinct.
+     * Ordinary frames can prove a real outline draw without mapping pixels;
+     * qualification additionally requires the exact presented frame's
+     * verifier classification to complete after its submission fence.
+     */
+    struct RenderToonOutlineExecutionReceipt
+    {
+        bool requested = false;
+        bool pipelineReady = false;
+        bool inputsReady = false;
+        bool executed = false;
+        bool depthInputReady = false;
+        bool worldNormalInputReady = false;
+        bool materialIdentityInputReady = false;
+        bool materialTableInputReady = false;
+        bool temporalOrderingValidated = false;
+        /** One-based public order; zero means that effect was not scheduled. */
+        uint32 taaSequenceIndex = 0;
+        uint32 outlineSequenceIndex = 0;
+        uint32 toneMapSequenceIndex = 0;
+        uint32 eligibleToonMaterialCount = 0;
+        bool qualificationRequested = false;
+        bool qualificationReady = false;
+        uint64 outlinedPixelCount = 0;
+        uint64 nonToonAffectedPixelCount = 0;
+        bool resolutionAware = false;
+        uint32 renderWidth = 0;
+        uint32 renderHeight = 0;
+        uint64 settingsHash = 0;
+        uint64 materialTableContentHash = 0;
+        bool fallbackUsed = false;
+        std::string diagnostic{};
+
+        [[nodiscard]] bool IsEmpty() const noexcept
+        {
+            return !requested && !pipelineReady && !inputsReady && !executed &&
+                   !depthInputReady && !worldNormalInputReady &&
+                   !materialIdentityInputReady && !materialTableInputReady &&
+                   !temporalOrderingValidated && taaSequenceIndex == 0 &&
+                   outlineSequenceIndex == 0 && toneMapSequenceIndex == 0 &&
+                   eligibleToonMaterialCount == 0 &&
+                   !qualificationRequested && !qualificationReady &&
+                   outlinedPixelCount == 0 && nonToonAffectedPixelCount == 0 &&
+                   !resolutionAware && renderWidth == 0 && renderHeight == 0 &&
+                   settingsHash == 0 && materialTableContentHash == 0 &&
+                   !fallbackUsed && diagnostic.empty();
+        }
+
+        [[nodiscard]] bool IsStructurallyValid() const noexcept
+        {
+            if (!requested)
+            {
+                return IsEmpty();
+            }
+            const bool exactInputs = depthInputReady &&
+                worldNormalInputReady && materialIdentityInputReady &&
+                materialTableInputReady;
+            if (inputsReady != exactInputs || settingsHash == 0 ||
+                (qualificationRequested && !executed) ||
+                (qualificationReady && !qualificationRequested))
+            {
+                return false;
+            }
+            if (!executed)
+            {
+                return outlineSequenceIndex == 0 &&
+                       toneMapSequenceIndex == 0 &&
+                       eligibleToonMaterialCount == 0 &&
+                       !qualificationRequested && !qualificationReady &&
+                       outlinedPixelCount == 0 &&
+                       nonToonAffectedPixelCount == 0 &&
+                       !resolutionAware && renderWidth == 0 &&
+                       renderHeight == 0 &&
+                       materialTableContentHash == 0;
+            }
+            const bool orderingValid =
+                outlineSequenceIndex != 0 && toneMapSequenceIndex != 0 &&
+                outlineSequenceIndex < toneMapSequenceIndex &&
+                (taaSequenceIndex == 0 ||
+                 taaSequenceIndex < outlineSequenceIndex);
+            if (!pipelineReady || !inputsReady ||
+                temporalOrderingValidated != orderingValid ||
+                !temporalOrderingValidated ||
+                materialTableContentHash == 0 || fallbackUsed)
+            {
+                return false;
+            }
+            if (!qualificationReady)
+            {
+                return outlinedPixelCount == 0 &&
+                       nonToonAffectedPixelCount == 0 &&
+                       !resolutionAware && renderWidth == 0 &&
+                       renderHeight == 0;
+            }
+            return renderWidth != 0 && renderHeight != 0 &&
+                   resolutionAware && diagnostic.empty();
+        }
+
+        [[nodiscard]] bool IsExecutionReady() const noexcept
+        {
+            return IsStructurallyValid() && requested && pipelineReady &&
+                   inputsReady && executed &&
+                   eligibleToonMaterialCount != 0 &&
+                   outlineSequenceIndex != 0 &&
+                   toneMapSequenceIndex != 0 && !fallbackUsed;
+        }
+
+        [[nodiscard]] bool IsQualificationReady() const noexcept
+        {
+            return IsExecutionReady() && qualificationRequested &&
+                   qualificationReady && taaSequenceIndex != 0 &&
+                   taaSequenceIndex < outlineSequenceIndex &&
+                   outlineSequenceIndex < toneMapSequenceIndex &&
+                   outlinedPixelCount != 0 &&
+                   nonToonAffectedPixelCount == 0 && resolutionAware &&
+                   renderWidth != 0 && renderHeight != 0;
+        }
+    };
+
+    /**
      * @brief Presentation-bound lighting-plan evidence for one frame/view.
      *
      * The immutable LightingFramePlan is the single source of truth for light
@@ -1026,7 +1234,7 @@ namespace RVX
     /** @brief Candidate or presentation-qualified evidence for one frame/view. */
     struct RenderExecutionReceipt
     {
-        uint32 schemaVersion = 10;
+        uint32 schemaVersion = 11;
         bool available = false;
         bool graphComposed = false;
         bool executionSucceeded = false;
@@ -1052,6 +1260,10 @@ namespace RVX
         RenderPostProcessExecutionReceipt postProcess{};
         /** GTAO execution and indirect-light field provenance. */
         RenderAmbientOcclusionExecutionReceipt ambientOcclusion{};
+        /** Exact shared Forward+/Deferred Toon material execution. */
+        RenderToonLightingExecutionReceipt toonLighting{};
+        /** Exact HDR outline execution and optional presented-frame readback. */
+        RenderToonOutlineExecutionReceipt toonOutline{};
         std::vector<RenderFeatureExecutionReceipt> features{};
         std::string diagnostic{};
 
@@ -1060,7 +1272,8 @@ namespace RVX
             if ((schemaVersion != 1 && schemaVersion != 2 &&
                  schemaVersion != 4 && schemaVersion != 5 &&
                  schemaVersion != 6 && schemaVersion != 7 &&
-                 schemaVersion != 8 && schemaVersion != 10) ||
+                 schemaVersion != 8 && schemaVersion != 10 &&
+                 schemaVersion != 11) ||
                 !frameIdentity.IsValid() ||
                 !viewIdentity.IsValid() || backend == RHIBackendType::None ||
                 !IsDeclaredRenderPipelineRecipe(requestedRecipe) ||
@@ -1075,7 +1288,13 @@ namespace RVX
             {
                 return false;
             }
-            if (schemaVersion != 10 && !ambientOcclusion.IsEmpty())
+            if (schemaVersion != 10 && schemaVersion != 11 &&
+                !ambientOcclusion.IsEmpty())
+            {
+                return false;
+            }
+            if (schemaVersion != 11 &&
+                (!toonLighting.IsEmpty() || !toonOutline.IsEmpty()))
             {
                 return false;
             }
@@ -1184,9 +1403,42 @@ namespace RVX
                  (ambientOcclusion.probeReady &&
                   (!presented || !ambientOcclusion.historyCommitted ||
                    ambientOcclusion.historyAbandoned)));
+            const bool schemaElevenInvalid = schemaVersion == 11 &&
+                (!deferredOpaque.IsStructurallyValid() ||
+                 (!lighting.IsEmpty() && !lighting.IsStructurallyValid()) ||
+                 (!deformation.IsEmpty() &&
+                  !deformation.IsStructurallyValid()) ||
+                 (!postProcess.IsEmpty() &&
+                  !postProcess.IsStructurallyValid()) ||
+                 (!ambientOcclusion.IsEmpty() &&
+                  !ambientOcclusion.IsStructurallyValid()) ||
+                 (!toonLighting.IsEmpty() &&
+                  !toonLighting.IsStructurallyValid()) ||
+                 (!toonOutline.IsEmpty() &&
+                  !toonOutline.IsStructurallyValid()) ||
+                 ((executionSucceeded || presented) &&
+                  (!lighting.IsStructurallyValid() ||
+                   !deformation.IsStructurallyValid() ||
+                   !postProcess.IsStructurallyValid())) ||
+                 (presented && postProcess.taaRequested &&
+                  !postProcess.historyCommitted) ||
+                 (presented && !postProcess.exposureHistoryCommitted) ||
+                 (postProcess.exposureProbeReady &&
+                  (!presented || !postProcess.exposureHistoryCommitted ||
+                   postProcess.exposureHistoryAbandoned)) ||
+                 (ambientOcclusion.probeReady &&
+                  (!presented || !ambientOcclusion.historyCommitted ||
+                   ambientOcclusion.historyAbandoned)) ||
+                 (toonOutline.qualificationReady && !presented) ||
+                 (toonOutline.qualificationRequested &&
+                  !toonLighting.IsExecutionReady()) ||
+                 (toonOutline.executed && toonLighting.executed &&
+                  toonOutline.materialTableContentHash !=
+                      toonLighting.materialTableContentHash));
             if (schemaOneInvalid || schemaTwoInvalid || schemaFourInvalid ||
                 schemaFiveInvalid || schemaSixInvalid || schemaSevenInvalid ||
-                schemaEightInvalid || schemaTenInvalid)
+                schemaEightInvalid || schemaTenInvalid ||
+                schemaElevenInvalid)
             {
                 return false;
             }

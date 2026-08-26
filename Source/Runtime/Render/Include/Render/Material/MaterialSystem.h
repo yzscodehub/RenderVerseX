@@ -13,16 +13,21 @@
 #include "RenderContracts/ResourceUploadRequest.h"
 #include "RHI/RHI.h"
 
+#include <algorithm>
 #include <array>
 #include <limits>
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 namespace RVX
 {
+    /** ABI revision of MaterialGPUConstants-backed structured material tables. */
+    inline constexpr uint32 RVX_MATERIAL_PARAMETER_TABLE_SCHEMA_VERSION = 2;
+
     class RenderRetirementQueue;
     class FrameConstantUploadArena;
     class RenderResourceRegistry;
@@ -127,12 +132,75 @@ namespace RVX
         bool allowNormalMap = true;
     };
 
+    /**
+     * @brief CPU-only, value-only proof for one stable shader table slot.
+     *
+     * Texture descriptors and mesh-dependent fallback decisions are
+     * intentionally excluded. This lets Deferred/outline consumers prove the
+     * exact shading-model contract without conflating it with raster binding
+     * compatibility. A non-asset row is an explicit zero-fill/default row;
+     * the sole empty-scene sentinel is additionally marked on the snapshot.
+     */
+    struct MaterialParameterTableRowEvidence
+    {
+        uint32 stableSlot = 0;
+        bool isAsset = false;
+        MaterialShadingModel shadingModel =
+            MaterialShadingModel::StandardLit;
+        uint64 programFamilyHash = 0;
+        uint64 parameterLayoutHash = 0;
+        float32 toonBands = 0.0f;
+        float32 toonSpecularThreshold = 0.0f;
+        float32 toonRimStrength = 0.0f;
+        float32 toonOutlineWidth = 0.0f;
+        Vec3 toonShadowTint{0.0f, 0.0f, 0.0f};
+        bool toonParametersValid = false;
+
+        [[nodiscard]] bool IsStructurallyValid() const noexcept
+        {
+            if (programFamilyHash == 0 || parameterLayoutHash == 0)
+            {
+                return false;
+            }
+            if (!isAsset)
+            {
+                return shadingModel == MaterialShadingModel::StandardLit &&
+                       !toonParametersValid;
+            }
+            return shadingModel != MaterialShadingModel::ToonLit
+                ? !toonParametersValid
+                : toonParametersValid;
+        }
+    };
+
+    /**
+     * @brief Stable, process-independent value identity for a program family.
+     *
+     * The caller must still validate the public family string through the
+     * material contract. This identity is evidence, never a substitute for
+     * the typed MaterialShadingModel.
+     */
+    [[nodiscard]] uint64 GetMaterialProgramFamilyValueIdentity(
+        std::string_view programFamily) noexcept;
+
     /** @brief Recording-owned stable-slot GPU material parameter table. */
     struct MaterialParameterTableSnapshot
     {
         RHIBufferRef buffer;
+        uint32 schemaVersion = 0;
+        uint32 stride = 0;
         uint32 slotCount = 0;
         uint32 materialCount = 0;
+        /**
+         * True only when a classification snapshot represents an empty
+         * Deferred draw set with its required StandardLit sentinel at slot 0.
+         * The sentinel is a GPU safety row, never a registered asset.
+         */
+        bool usesDefaultClassificationSentinel = false;
+        /** Deterministic FNV-1a transcript of table bytes and slot identities. */
+        uint64 contentHash = 0;
+        /** Value-only evidence indexed by stable shader material slot. */
+        std::vector<MaterialParameterTableRowEvidence> valueOnlyRowEvidence;
         /**
          * CPU-only resolved material evidence, indexed by the exact stable
          * shader material slot. Published only after the table write commits.
@@ -141,7 +209,37 @@ namespace RVX
 
         [[nodiscard]] bool IsValid() const noexcept
         {
-            return buffer && slotCount != 0 && materialCount != 0;
+            if (!buffer ||
+                schemaVersion != RVX_MATERIAL_PARAMETER_TABLE_SCHEMA_VERSION ||
+                stride != sizeof(MaterialGPUConstants) || slotCount == 0 ||
+                materialCount == 0 || contentHash == 0 ||
+                valueOnlyRowEvidence.size() != slotCount ||
+                rasterMaterialSemanticKeysBySlot.size() != slotCount)
+            {
+                return false;
+            }
+            if (!std::all_of(valueOnlyRowEvidence.begin(),
+                             valueOnlyRowEvidence.end(),
+                             [](const MaterialParameterTableRowEvidence& row)
+                             {
+                                 return row.IsStructurallyValid();
+                             }))
+            {
+                return false;
+            }
+            const uint32 assetRowCount = static_cast<uint32>(std::count_if(
+                valueOnlyRowEvidence.begin(),
+                valueOnlyRowEvidence.end(),
+                [](const MaterialParameterTableRowEvidence& row)
+                {
+                    return row.isAsset;
+                }));
+            if (usesDefaultClassificationSentinel)
+            {
+                return slotCount == 1 && materialCount == 1 &&
+                       !valueOnlyRowEvidence.front().isAsset;
+            }
+            return assetRowCount == materialCount;
         }
     };
 
@@ -267,6 +365,21 @@ namespace RVX
             ResourceViewCache* viewCache,
             MaterialParameterTableSnapshot& outSnapshot) const;
 
+        /**
+         * @brief Materialize descriptor-only constants at stable handle slots.
+         *
+         * This deliberately does not resolve textures, samplers, mesh tangent
+         * requirements, or descriptor fallbacks. Deferred lighting and
+         * screen-space classification consume this table as an immutable
+         * shading-model contract, while raster draws continue to use
+         * CreateMaterialParameterTableSnapshot for texture bindings. An empty
+         * draw set yields one explicit StandardLit sentinel row at slot zero,
+         * so a Deferred pass never binds an invalid structured buffer.
+         */
+        [[nodiscard]] bool CreateMaterialClassificationTableSnapshot(
+            std::span<const RenderResourceHandle> materials,
+            MaterialParameterTableSnapshot& outSnapshot) const;
+
     private:
         void QueueMaterialDescriptorCacheRetirement();
         static uint64 AlignConstantBufferSize(uint64 size);
@@ -374,6 +487,7 @@ namespace RVX
         MaterialBindingResult PrepareResolvedMaterialBinding(
             RenderResourceHandle material,
             uint64 contentRevision,
+            MaterialStaticDescriptor staticDescriptor,
             MaterialSourceData source,
             const ResolvedMaterialTextures& textures,
             std::string materialName);
@@ -386,6 +500,9 @@ namespace RVX
             RenderResourceHandle requestedMaterial,
             const MaterialGPUConstants& constants,
             const std::vector<MaterialBindingTextureEntry>& textureEntries) const noexcept;
+        [[nodiscard]] uint64 BuildMaterialClassificationSemanticKey(
+            RenderResourceHandle material,
+            const MaterialGPUConstants& constants) const noexcept;
         MaterialSetResolveResult GetOrCreateMaterialSetForResolved(
             const ResolvedMaterialTextures& textures,
             const RHIBufferRef& constantBuffer);

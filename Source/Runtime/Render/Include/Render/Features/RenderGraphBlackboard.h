@@ -41,7 +41,7 @@ namespace RVX
     {
         static constexpr RenderBlackboardResourceId ResourceId =
             RenderBlackboardResourceId::SceneTextures;
-        static constexpr uint32 SchemaVersion = 4;
+        static constexpr uint32 SchemaVersion = 5;
         static constexpr uint32 ExposureStateSchemaVersion = 1;
         static constexpr uint32 ExposureStateStride = 48;
 
@@ -148,6 +148,7 @@ namespace RVX
         RGTextureHandle gBuffer3{};
         Metadata gBuffer3Metadata{};
         RGBufferHandle materialTable{};
+        PostProcessMaterialTableMetadata materialTableMetadata{};
     };
 
     enum class DeferredSceneTexturesValidationCode : uint8
@@ -155,6 +156,7 @@ namespace RVX
         Success = 0,
         MissingRequiredHandle,
         MissingMaterialTable,
+        InvalidMaterialTable,
         InvalidExposureState,
         InvalidExtent,
         FormatMismatch,
@@ -184,6 +186,14 @@ namespace RVX
         if (!textures.materialTable.IsValid())
         {
             return DeferredSceneTexturesValidationCode::MissingMaterialTable;
+        }
+        if (!textures.materialTableMetadata.IsValid() ||
+            textures.materialTableMetadata.sourceExtent !=
+                textures.gBuffer3Metadata.extent ||
+            textures.materialTableMetadata.sourceSampleCount !=
+                textures.gBuffer3Metadata.sampleCount)
+        {
+            return DeferredSceneTexturesValidationCode::InvalidMaterialTable;
         }
         if (!textures.exposureStateMetadata.IsValid())
         {
@@ -343,7 +353,7 @@ namespace RVX
     {
         static constexpr RenderBlackboardResourceId ResourceId =
             RenderBlackboardResourceId::TranslucencyOutputs;
-        static constexpr uint32 SchemaVersion = 3;
+        static constexpr uint32 SchemaVersion = 4;
 
         RenderGraphBlackboardProvenance provenance{};
         /** Exact frozen frame/view that produced these graph resources. */
@@ -357,6 +367,21 @@ namespace RVX
         SceneTextures::Metadata deviceDepthMetadata{};
         RGTextureHandle worldNormal{};
         SceneTextures::Metadata worldNormalMetadata{};
+        /**
+         * Full-resolution R32_UINT parameter-table slot identity.  It and
+         * worldNormal are intentionally retained after translucency so HDR
+         * stylized post passes can select material semantics without guessing
+         * them from scene color.
+         */
+        RGTextureHandle materialIdentity{};
+        SceneTextures::Metadata materialIdentityMetadata{};
+        /**
+         * Exact structured MaterialGPUConstants table addressed by
+         * materialIdentity.  The metadata binds its ABI and immutable content
+         * identity to this frame/view scene surface.
+         */
+        RGBufferHandle materialParameterTable{};
+        PostProcessMaterialTableMetadata materialParameterTableMetadata{};
         RGTextureHandle velocity{};
         SceneTextures::Metadata velocityMetadata{};
         RGTextureHandle reactiveMask{};
@@ -731,6 +756,9 @@ namespace RVX
                 return HandleMatchesGraph(entry.hdrSceneColor, provenance) &&
                        HandleMatchesGraph(entry.deviceDepth, provenance) &&
                        HandleMatchesGraph(entry.worldNormal, provenance) &&
+                       HandleMatchesGraph(entry.materialIdentity, provenance) &&
+                       HandleMatchesGraph(
+                           entry.materialParameterTable, provenance) &&
                        HandleMatchesGraph(entry.velocity, provenance) &&
                        HandleMatchesGraph(entry.reactiveMask, provenance) &&
                        HandleMatchesGraph(entry.distortionVectors, provenance) &&
@@ -795,6 +823,7 @@ namespace RVX
                        SceneTextures::FormatContract{
                            RHIFormat::RGBA8_UNORM,
                            RHISampleCount::Count1}) &&
+                   HasValidTranslucencyOutlineInputs(outputs) &&
                    OptionalMetadataMatches(
                        outputs.velocity, outputs.velocityMetadata,
                        SceneTextures::VelocityContract) &&
@@ -807,6 +836,47 @@ namespace RVX
                        SceneTextures::FormatContract{
                            RHIFormat::RG16_FLOAT,
                            RHISampleCount::Count1});
+        }
+
+        [[nodiscard]] static bool HasValidTranslucencyOutlineInputs(
+            const TranslucencyOutputs& outputs) noexcept
+        {
+            const bool hasMaterialIdentity =
+                outputs.materialIdentity.IsValid();
+            const bool hasMaterialTable =
+                outputs.materialParameterTable.IsValid();
+            if (!hasMaterialIdentity && !hasMaterialTable)
+            {
+                // Pre-existing consumers can publish a normal guide without
+                // opting into a material-identity surface. Once either half
+                // of the outline pair is present, the full typed contract is
+                // mandatory.
+                return !outputs.materialIdentityMetadata.extent.IsValid() &&
+                       !outputs.materialParameterTableMetadata.IsValid();
+            }
+
+            if (!outputs.worldNormal.IsValid() || !hasMaterialIdentity ||
+                !hasMaterialTable ||
+                !outputs.materialParameterTableMetadata.IsValid())
+            {
+                return false;
+            }
+
+            const RenderOutputExtent hdrExtent =
+                outputs.hdrSceneColorMetadata.extent;
+            return MetadataMatches(
+                       outputs.worldNormalMetadata,
+                       SceneTextures::FormatContract{
+                           RHIFormat::RGBA8_UNORM,
+                           RHISampleCount::Count1}) &&
+                   MetadataMatches(outputs.materialIdentityMetadata,
+                                   SceneTextures::GBuffer3Contract) &&
+                   outputs.worldNormalMetadata.extent == hdrExtent &&
+                   outputs.materialIdentityMetadata.extent == hdrExtent &&
+                   outputs.materialParameterTableMetadata.sourceExtent ==
+                       hdrExtent &&
+                   outputs.materialParameterTableMetadata.sourceSampleCount ==
+                       RHISampleCount::Count1;
         }
 
         [[nodiscard]] static bool HasValidPostProcessOutputs(

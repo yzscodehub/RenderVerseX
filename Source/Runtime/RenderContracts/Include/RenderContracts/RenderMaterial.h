@@ -148,10 +148,11 @@ namespace RVX
     /**
      * @brief Classify one immutable material descriptor into exactly one path.
      *
-     * StandardLit opaque and masked surfaces are deferred eligible. Unlit
-     * opaque and masked surfaces retain the forward-special path. All supported
-     * translucent descriptors use the forward translucency path. Toon is kept
-     * unsupported until its GFX14 renderer contract exists.
+     * StandardLit and ToonLit opaque/masked surfaces are deferred eligible.
+     * Unlit opaque and masked surfaces retain the forward-special path. All
+     * supported translucent descriptors use the forward translucency path.
+     * Toon translucency remains unsupported until the dedicated GFX15
+     * translucency contract exists.
      */
     [[nodiscard]] SurfacePathEligibility ClassifySurfacePathEligibility(
         const MaterialStaticDescriptor& descriptor);

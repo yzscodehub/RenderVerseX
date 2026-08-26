@@ -1027,6 +1027,93 @@ TEST_F(SkeletalAssetPipelineValidation,
 }
 
 TEST_F(SkeletalAssetPipelineValidation,
+       ModelV3ToonOverrideProducesOnlyCanonicalCookedMaterialParameters)
+{
+    ScopedGLB fixture("toon_material_override", FixtureFault::None);
+    TemporaryDirectory temporary("toon_material_override");
+    const fs::path sourceRoot = temporary.Path() / "Source";
+    const fs::path outputRoot = temporary.Path() / "Cooked";
+    const fs::path sourcePath = sourceRoot / "Models" / "Character.glb";
+    fs::create_directories(sourcePath.parent_path());
+    fs::copy_file(fixture.Path(), sourcePath);
+
+    RVX::Tools::ModelImportOptions options;
+    options.overrideAllMaterialsToToonLit = true;
+    options.toonBands = 5.0f;
+    options.toonSpecularThreshold = 0.6f;
+    options.toonRimStrength = 0.3f;
+    options.toonOutlineWidth = 1.5f;
+    options.toonShadowTintRed = 0.2f;
+    options.toonShadowTintGreen = 0.3f;
+    options.toonShadowTintBlue = 0.45f;
+
+    RVX::Tools::AssetPipeline pipeline;
+    pipeline.RegisterImporter(std::make_unique<RVX::Tools::ModelImporter>());
+    const RVX::Tools::CookManifest manifest = pipeline.CookDirectory(
+        sourceRoot,
+        outputRoot,
+        true,
+        outputRoot / "CookManifest.rvxmanifest",
+        nullptr,
+        [&options](const fs::path&, RVX::Tools::AssetType type) -> const void*
+        {
+            return type == RVX::Tools::AssetType::Model ? &options : nullptr;
+        });
+    ASSERT_TRUE(manifest.manifestWritten) << manifest.manifestError;
+    ASSERT_EQ(manifest.entries.size(), 1u);
+    const RVX::Tools::CookManifestEntry& entry = manifest.entries.front();
+    ASSERT_TRUE(entry.success) << entry.error;
+    EXPECT_NE(entry.canonicalCookSettings.find("model.material.overrideAllToonLit=1"),
+              std::string::npos);
+    EXPECT_NE(entry.canonicalCookSettings.find("model.material.toonBands=5"),
+              std::string::npos);
+
+    const fs::path materialPath =
+        outputRoot / "Models" / "Character.rvdeps" / "material_0.rvmat";
+    const std::vector<RVX::uint8> materialBytes = ReadBytes(materialPath);
+    RVX::Resource::CookedMaterialArtifact material;
+    std::string error;
+    ASSERT_TRUE(RVX::Resource::DeserializeCookedMaterialArtifact(
+        materialBytes, material, error)) << error;
+    EXPECT_EQ(material.material.descriptor.shadingModel,
+              RVX::MaterialShadingModel::ToonLit);
+    EXPECT_EQ(material.material.descriptor.programFamily, "toon-lit-v1");
+    EXPECT_FLOAT_EQ(material.material.parameters.toonBands, options.toonBands);
+    EXPECT_FLOAT_EQ(material.material.parameters.toonSpecularThreshold,
+                    options.toonSpecularThreshold);
+    EXPECT_FLOAT_EQ(material.material.parameters.toonRimStrength,
+                    options.toonRimStrength);
+    EXPECT_FLOAT_EQ(material.material.parameters.toonOutlineWidth,
+                    options.toonOutlineWidth);
+    EXPECT_FLOAT_EQ(material.material.parameters.toonShadowTint.x,
+                    options.toonShadowTintRed);
+    EXPECT_FLOAT_EQ(material.material.parameters.toonShadowTint.y,
+                    options.toonShadowTintGreen);
+    EXPECT_FLOAT_EQ(material.material.parameters.toonShadowTint.z,
+                    options.toonShadowTintBlue);
+
+    const fs::path secondOutputRoot = temporary.Path() / "CookedSecond";
+    RVX::Tools::AssetPipeline secondPipeline;
+    secondPipeline.RegisterImporter(std::make_unique<RVX::Tools::ModelImporter>());
+    const RVX::Tools::CookManifest second = secondPipeline.CookDirectory(
+        sourceRoot,
+        secondOutputRoot,
+        true,
+        secondOutputRoot / "CookManifest.rvxmanifest",
+        nullptr,
+        [&options](const fs::path&, RVX::Tools::AssetType type) -> const void*
+        {
+            return type == RVX::Tools::AssetType::Model ? &options : nullptr;
+        });
+    ASSERT_TRUE(second.manifestWritten) << second.manifestError;
+    EXPECT_EQ(ReadBytes(secondOutputRoot / "Models" / "Character.rva"),
+              ReadBytes(outputRoot / "Models" / "Character.rva"));
+    EXPECT_EQ(ReadBytes(secondOutputRoot / "Models" / "Character.rvdeps" /
+                        "material_0.rvmat"),
+              materialBytes);
+}
+
+TEST_F(SkeletalAssetPipelineValidation,
        SkeletalCookProductsAreRootIndependentAndDoNotEmbedTemporaryPaths)
 {
     ScopedGLB fixture("root_independent", FixtureFault::None);

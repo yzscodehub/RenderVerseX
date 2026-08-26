@@ -21,6 +21,7 @@ add_executable(RenderVerseSamples
     Scenes/RenderPipelineShowcaseSample.cpp
     Scenes/RenderingStressSample.cpp
     Scenes/SceneLifecycleSample.cpp
+    Scenes/StylizedMaterialsSample.cpp
     Scenes/TemporalAASample.cpp
 )
 target_include_directories(RenderVerseSamples PRIVATE
@@ -84,6 +85,7 @@ list(APPEND RVX_SAMPLE_ASSET_INPUTS
     "${CMAKE_CURRENT_SOURCE_DIR}/Assets/LICENSE.khronos-sample-assets-cc0.txt"
     "${CMAKE_CURRENT_SOURCE_DIR}/Assets/LICENSE.crytek-sponza-cc-by-3.0.txt"
     "${CMAKE_CURRENT_SOURCE_DIR}/Assets/LICENSE.polyhaven-cc0.txt"
+    "${CMAKE_CURRENT_SOURCE_DIR}/AssetRecipes/stylized-materials-toon.rvxprofile"
     "${CMAKE_CURRENT_SOURCE_DIR}/CMake/StageSampleAssets.cmake"
 )
 
@@ -101,11 +103,16 @@ add_custom_command(
         "-DSTAMP_PATH=${RVX_SAMPLE_ASSET_RECEIPT}"
         "-DHDR_FIXTURE_WRITER=$<TARGET_FILE:RVXSampleHDRFixtureWriter>"
         "-DINTERIOR_FIXTURE_WRITER=$<TARGET_FILE:RVXSampleInteriorFixtureWriter>"
+        "-DCOOK_EXECUTABLE=$<TARGET_FILE:RVXCook>"
+        "-DCOOKED_CATALOG_WRITER=$<TARGET_FILE:RVXSampleCookedCatalogWriter>"
+        "-DTOON_COOK_PROFILE=${CMAKE_CURRENT_SOURCE_DIR}/AssetRecipes/stylized-materials-toon.rvxprofile"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/CMake/StageSampleAssets.cmake"
     DEPENDS
         ${RVX_SAMPLE_ASSET_INPUTS}
         RVXSampleHDRFixtureWriter
         RVXSampleInteriorFixtureWriter
+        RVXCook
+        RVXSampleCookedCatalogWriter
     COMMENT "Staging a clean, dependency-tracked RenderVerseSamples asset tree"
     VERBATIM
 )

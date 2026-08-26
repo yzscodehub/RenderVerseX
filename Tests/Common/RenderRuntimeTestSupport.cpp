@@ -337,6 +337,13 @@ namespace
             return m_probe->ambientOcclusionQualificationProbeAccepted;
         }
 
+        bool RequestToonOutlineQualificationProbe() override
+        {
+            m_probe->Record(
+                RenderRuntimeTestEvent::ToonOutlineQualificationProbe);
+            return m_probe->toonOutlineQualificationProbeAccepted;
+        }
+
         void PollCompletion() override
         {
             m_probe->Record(RenderRuntimeTestEvent::Poll);

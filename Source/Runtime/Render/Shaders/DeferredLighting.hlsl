@@ -11,6 +11,8 @@
 #include "Include/AmbientOcclusion.hlsli"
 #include "Include/Exposure.hlsli"
 #include "Include/Lighting.hlsli"
+#include "Include/SurfaceMaterial.hlsli"
+#include "Include/ToonLighting.hlsli"
 
 cbuffer DeferredLightingConstants : register(b0, space0)
 {
@@ -77,17 +79,6 @@ Texture2D<float> DeviceDepth : register(t5, space0);
 [[vk::image_format("rgba16f")]]
 RWTexture2D<float4> HDRSceneColor : register(u6, space0);
 
-static const uint RVX_DEFERRED_MATERIAL_TABLE_SCHEMA_VERSION = 1u;
-static const uint RVX_DEFERRED_MATERIAL_SHADING_MODEL_STANDARD_LIT = 1u;
-
-struct DeferredMaterialClassification
-{
-    uint shadingModel;
-    uint schemaVersion;
-    uint reserved0;
-    uint reserved1;
-};
-
 struct GPUCluster
 {
     uint offset;
@@ -96,7 +87,10 @@ struct GPUCluster
     uint spotCount;
 };
 
-StructuredBuffer<DeferredMaterialClassification> MaterialClassificationTable : register(t7, space0);
+// MaterialSystem owns this descriptor-only snapshot. Each row is indexed by
+// the stable RenderResourceHandle::slot written by PSGBuffer, and verifies its
+// own table index before any lighting is evaluated.
+StructuredBuffer<MaterialParameterData> MaterialClassificationTable : register(t7, space0);
 Texture2DArray<float> DirectionalShadowMapTexture : register(t8, space0);
 SamplerState DirectionalShadowSampler : register(s9, space0);
 StructuredBuffer<PointLight> PointLights : register(t11, space0);
@@ -250,6 +244,134 @@ float3 EvaluateClusteredLocalLights(
     return result;
 }
 
+float3 EvaluateToonPointLight(
+    PointLight light,
+    float3 normal,
+    float3 viewDir,
+    float3 worldPos,
+    float3 baseColor,
+    MaterialParameterData material)
+{
+    const float3 lightVector = light.position - worldPos;
+    const float distanceToLight = length(lightVector);
+    if (distanceToLight > light.range || distanceToLight <= 0.0f ||
+        light.range <= 1.0e-4f)
+    {
+        return float3(0.0f, 0.0f, 0.0f);
+    }
+    return RVX_EvaluateToonDirectLight(
+        normal,
+        viewDir,
+        lightVector / distanceToLight,
+        baseColor,
+        light.color * light.intensity * AttenuatePoint(distanceToLight, light.range),
+        1.0f,
+        material.ToonBands,
+        material.ToonSpecularThreshold,
+        material.ToonRimStrength,
+        material.ToonShadowTint.xyz);
+}
+
+float3 EvaluateToonSpotLight(
+    SpotLight light,
+    float3 normal,
+    float3 viewDir,
+    float3 worldPos,
+    float3 baseColor,
+    MaterialParameterData material)
+{
+    const float3 lightVector = light.position - worldPos;
+    const float distanceToLight = length(lightVector);
+    if (distanceToLight > light.range || distanceToLight <= 0.0f ||
+        light.range <= 1.0e-4f)
+    {
+        return float3(0.0f, 0.0f, 0.0f);
+    }
+    const float3 lightDirection = lightVector / distanceToLight;
+    const float cone = AttenuateSpot(
+        -lightDirection,
+        normalize(light.direction),
+        light.innerConeAngle,
+        light.outerConeAngle);
+    if (cone <= 0.0f)
+    {
+        return float3(0.0f, 0.0f, 0.0f);
+    }
+    return RVX_EvaluateToonDirectLight(
+        normal,
+        viewDir,
+        lightDirection,
+        baseColor,
+        light.color * light.intensity *
+            AttenuatePoint(distanceToLight, light.range) * cone,
+        1.0f,
+        material.ToonBands,
+        material.ToonSpecularThreshold,
+        material.ToonRimStrength,
+        material.ToonShadowTint.xyz);
+}
+
+float3 EvaluateToonLinearLocalLights(
+    float3 normal,
+    float3 viewDir,
+    float3 worldPos,
+    float3 baseColor,
+    MaterialParameterData material)
+{
+    float3 result = 0.0f;
+    [loop]
+    for (uint index = 0; index < min(NumPointLights, 256u); ++index)
+    {
+        result += EvaluateToonPointLight(
+            PointLights[index], normal, viewDir, worldPos, baseColor, material);
+    }
+    [loop]
+    for (uint index = 0; index < min(NumSpotLights, 128u); ++index)
+    {
+        result += EvaluateToonSpotLight(
+            SpotLights[index], normal, viewDir, worldPos, baseColor, material);
+    }
+    return result;
+}
+
+float3 EvaluateToonClusteredLocalLights(
+    uint2 pixel,
+    float3 normal,
+    float3 viewDir,
+    float3 worldPos,
+    float3 baseColor,
+    MaterialParameterData material)
+{
+    const uint clusterIndex = ResolveClusterIndex(pixel, worldPos);
+    if (clusterIndex == RVX_INVALID_CLUSTER_INDEX)
+    {
+        return EvaluateToonLinearLocalLights(
+            normal, viewDir, worldPos, baseColor, material);
+    }
+
+    const GPUCluster cluster = ClusterData[clusterIndex];
+    const uint lightCount = min(cluster.count, RVX_MAX_CLUSTERED_LIGHTS_PER_PIXEL);
+    float3 result = 0.0f;
+    [loop]
+    for (uint index = 0; index < lightCount; ++index)
+    {
+        const uint packedIndex = ClusterLightIndices[cluster.offset + index];
+        const uint lightIndex = packedIndex & 0xffffu;
+        const uint lightType = (packedIndex >> 16u) & 0xffffu;
+        if (lightType == 0u && lightIndex < NumPointLights)
+        {
+            result += EvaluateToonPointLight(
+                PointLights[lightIndex], normal, viewDir, worldPos, baseColor, material);
+        }
+        else if (lightType == 1u && lightIndex < NumSpotLights)
+        {
+            result += EvaluateToonSpotLight(
+                SpotLights[lightIndex], normal, viewDir, worldPos, baseColor, material);
+        }
+    }
+    return result;
+}
+
 float3 EvaluateEnvironmentIBL(
     float3 normal, float3 viewDir, float3 baseColor, float metallic,
     float roughness, float materialOcclusion, float screenAmbientOcclusion)
@@ -324,16 +446,21 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     }
 
     const uint materialTableIndex = GBuffer3.Load(int3(pixel, 0));
-    if (materialTableIndex != 0u)
+    uint materialTableCount = 0u;
+    uint materialTableStride = 0u;
+    MaterialClassificationTable.GetDimensions(
+        materialTableCount, materialTableStride);
+    if (materialTableIndex >= materialTableCount)
     {
         HDRSceneColor[pixel] = float4(0.0, 0.0, 0.0, 1.0);
         return;
     }
-    const DeferredMaterialClassification classification =
+    const MaterialParameterData material =
         MaterialClassificationTable[materialTableIndex];
-    if (classification.shadingModel != RVX_DEFERRED_MATERIAL_SHADING_MODEL_STANDARD_LIT ||
-        classification.schemaVersion != RVX_DEFERRED_MATERIAL_TABLE_SCHEMA_VERSION ||
-        classification.reserved0 != 0u || classification.reserved1 != 0u)
+    if (material.MaterialTableIndex != materialTableIndex ||
+        (material.ShadingModel != MATERIAL_SHADING_MODEL_STANDARD_LIT &&
+         material.ShadingModel != MATERIAL_SHADING_MODEL_TOON_LIT) ||
+        material.Workflow != MATERIAL_WORKFLOW_METALLIC_ROUGHNESS)
     {
         HDRSceneColor[pixel] = float4(0.0, 0.0, 0.0, 1.0);
         return;
@@ -341,19 +468,44 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     const float4 albedoAO = GBuffer0.Load(int3(pixel, 0));
     const float4 normalRoughnessMetallic = GBuffer1.Load(int3(pixel, 0));
-    const float3 emissive = max(GBuffer2.Load(int3(pixel, 0)).rgb, 0.0);
+    const float4 emissiveReceiver = GBuffer2.Load(int3(pixel, 0));
+    const float3 emissive = max(emissiveReceiver.rgb, 0.0);
+    const bool receivesShadow = emissiveReceiver.a > 0.5f;
     const float3 normal = DecodeOctahedralNormal(normalRoughnessMetallic.xy);
     const float roughness = clamp(normalRoughnessMetallic.z, 0.04, 1.0);
     const float metallic = saturate(normalRoughnessMetallic.w);
     const float3 worldPos = ReconstructWorldPosition(pixel, deviceDepth);
     const float3 viewDir = SafeNormalize(CameraPosition - worldPos, float3(0.0, 0.0, 1.0));
-    const float shadow = SampleDirectionalShadow(worldPos, normal);
-    const float3 directional = EvaluatePBR(
-        normal, viewDir, SafeNormalize(-LightDirection, float3(0.0, 1.0, 0.0)),
-        albedoAO.rgb, metallic, roughness,
-        DirectionalLightColor * max(DirectionalLightIntensity, 0.0), shadow);
-    const float3 local = EvaluateClusteredLocalLights(
-        pixel, normal, viewDir, worldPos, albedoAO.rgb, metallic, roughness);
+    const float shadow = receivesShadow
+        ? SampleDirectionalShadow(worldPos, normal)
+        : 1.0f;
+    float3 directional;
+    float3 local;
+    if (material.ShadingModel == MATERIAL_SHADING_MODEL_TOON_LIT)
+    {
+        directional = RVX_EvaluateToonDirectLight(
+            normal,
+            viewDir,
+            SafeNormalize(-LightDirection, float3(0.0, 1.0, 0.0)),
+            albedoAO.rgb,
+            DirectionalLightColor * max(DirectionalLightIntensity, 0.0),
+            shadow,
+            material.ToonBands,
+            material.ToonSpecularThreshold,
+            material.ToonRimStrength,
+            material.ToonShadowTint.xyz);
+        local = EvaluateToonClusteredLocalLights(
+            pixel, normal, viewDir, worldPos, albedoAO.rgb, material);
+    }
+    else
+    {
+        directional = EvaluatePBR(
+            normal, viewDir, SafeNormalize(-LightDirection, float3(0.0, 1.0, 0.0)),
+            albedoAO.rgb, metallic, roughness,
+            DirectionalLightColor * max(DirectionalLightIntensity, 0.0), shadow);
+        local = EvaluateClusteredLocalLights(
+            pixel, normal, viewDir, worldPos, albedoAO.rgb, metallic, roughness);
+    }
     const float screenAmbientOcclusion = RVX_SaturateAmbientOcclusion(
         AmbientOcclusionTexture.Load(int3(pixel, 0)));
     const float3 ambient = EvaluateEnvironmentIBL(

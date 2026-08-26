@@ -1220,6 +1220,14 @@ CookManifestAdmissionReceipt VerifyCookedAssetAdmission(const CookManifest& mani
         receipt.detail = "Selected source does not satisfy the expected content identity";
         return receipt;
     }
+    if (!expectation.verifyMountedSource &&
+        expectation.expectedSourceContentIdentity.IsEmpty())
+    {
+        receipt.code = CookManifestAdmissionCode::SourceIdentityMismatch;
+        receipt.detail =
+            "Cooked-only admission requires a catalog-bound source content identity";
+        return receipt;
+    }
     if (!expectation.expectedCookSettingsHash.empty() &&
         selected.cookSettingsHash != expectation.expectedCookSettingsHash)
     {
@@ -1249,9 +1257,11 @@ CookManifestAdmissionReceipt VerifyCookedAssetAdmission(const CookManifest& mani
         return receipt;
     }
 
-    fs::path sourceRoot;
     fs::path cookedRoot;
-    if (!ResolveRoot(mountedSourceRoot, sourceRoot, error) || !ResolveRoot(mountedCookedRoot, cookedRoot, error))
+    fs::path sourceRoot;
+    if (!ResolveRoot(mountedCookedRoot, cookedRoot, error) ||
+        (expectation.verifyMountedSource &&
+         !ResolveRoot(mountedSourceRoot, sourceRoot, error)))
     {
         receipt.code = CookManifestAdmissionCode::MountedContentMismatch;
         receipt.detail = std::move(error);
@@ -1260,19 +1270,22 @@ CookManifestAdmissionReceipt VerifyCookedAssetAdmission(const CookManifest& mani
     for (const CookManifestEntry& entry : manifest.entries)
     {
         CookFileIdentity actual;
-        if (!CaptureMountedIdentity(sourceRoot, entry.sourceContent, actual, error))
+        if (expectation.verifyMountedSource)
         {
-            receipt.code = CookManifestAdmissionCode::MountedContentMismatch;
-            receipt.detail = std::move(error);
-            return receipt;
-        }
-        for (const CookFileIdentity& dependency : entry.sourceDependencies)
-        {
-            if (!CaptureMountedIdentity(sourceRoot, dependency, actual, error))
+            if (!CaptureMountedIdentity(sourceRoot, entry.sourceContent, actual, error))
             {
                 receipt.code = CookManifestAdmissionCode::MountedContentMismatch;
                 receipt.detail = std::move(error);
                 return receipt;
+            }
+            for (const CookFileIdentity& dependency : entry.sourceDependencies)
+            {
+                if (!CaptureMountedIdentity(sourceRoot, dependency, actual, error))
+                {
+                    receipt.code = CookManifestAdmissionCode::MountedContentMismatch;
+                    receipt.detail = std::move(error);
+                    return receipt;
+                }
             }
         }
         for (const CookFileIdentity& dependency : entry.dependencies)

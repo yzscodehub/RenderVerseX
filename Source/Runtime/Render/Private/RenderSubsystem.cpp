@@ -316,6 +316,12 @@ namespace
                        ->ArmAmbientOcclusionQualificationProbe();
         }
 
+        bool RequestToonOutlineQualificationProbe() override
+        {
+            return m_sceneRenderer != nullptr &&
+                   m_sceneRenderer->ArmToonOutlineQualificationProbe();
+        }
+
         void PollCompletion() override
         {
             static_cast<void>(m_uploadProcessor.PollCompletion());
@@ -355,7 +361,10 @@ namespace
                         ->HasPendingExposureQualificationCompletion()) ||
                    (m_sceneRenderer != nullptr &&
                     m_sceneRenderer
-                        ->HasPendingAmbientOcclusionQualificationCompletion());
+                        ->HasPendingAmbientOcclusionQualificationCompletion()) ||
+                   (m_sceneRenderer != nullptr &&
+                    m_sceneRenderer
+                        ->HasPendingToonOutlineQualificationCompletion());
         }
 
         void PopulateDiagnostics(
@@ -1979,6 +1988,26 @@ bool RenderSubsystem::RequestCompletionPump() noexcept
     {
         return m_runtime != nullptr &&
                m_runtime->RequestAmbientOcclusionQualificationProbe();
+    }
+
+    bool RenderSubsystem::RequestToonOutlineQualificationProbe() noexcept
+    {
+        return m_runtime != nullptr &&
+               m_runtime->RequestToonOutlineQualificationProbe();
+    }
+
+    RenderToonOutlineQualificationRequestResult
+    RenderSubsystem::GetToonOutlineQualificationProbeRequestResult() const noexcept
+    {
+        if (m_runtime != nullptr)
+        {
+            return m_runtime->GetToonOutlineQualificationProbeRequestResult();
+        }
+
+        return {
+            .state = RenderToonOutlineQualificationRequestState::RejectedByRuntimeShutdown,
+            .diagnostic = "render runtime is not initialized"
+        };
     }
 
     void RenderSubsystem::Deinitialize()

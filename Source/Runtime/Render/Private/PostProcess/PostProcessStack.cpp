@@ -83,6 +83,34 @@ namespace
         Diagnostics::MixContentHashValue(hash, handle.recordingGeneration);
     }
 
+    void MixTextureMetadataFingerprint(
+        uint64& hash,
+        const PostProcessTextureMetadata& metadata)
+    {
+        Diagnostics::MixContentHashValue(hash, metadata.extent.width);
+        Diagnostics::MixContentHashValue(hash, metadata.extent.height);
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(metadata.format));
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(metadata.sampleCount));
+    }
+
+    void MixMaterialTableMetadataFingerprint(
+        uint64& hash,
+        const PostProcessMaterialTableMetadata& metadata)
+    {
+        Diagnostics::MixContentHashValue(hash, metadata.schemaVersion);
+        Diagnostics::MixContentHashValue(hash, metadata.stride);
+        Diagnostics::MixContentHashValue(hash, metadata.slotCount);
+        Diagnostics::MixContentHashValue(
+            hash, metadata.eligibleToonMaterialCount);
+        Diagnostics::MixContentHashValue(hash, metadata.contentHash);
+        Diagnostics::MixContentHashValue(hash, metadata.sourceExtent.width);
+        Diagnostics::MixContentHashValue(hash, metadata.sourceExtent.height);
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(metadata.sourceSampleCount));
+    }
+
     [[nodiscard]] bool IsSameBufferHandle(
         const RGBufferHandle& lhs,
         const RGBufferHandle& rhs) noexcept
@@ -111,10 +139,24 @@ namespace
         Diagnostics::MixContentHashValue(
             hash, stats.frameInputs.resetTemporalHistory ? 1u : 0u);
         MixTextureHandleFingerprint(hash, stats.frameInputs.sceneColor);
+        MixTextureMetadataFingerprint(
+            hash, stats.frameInputs.sceneColorMetadata);
         MixTextureHandleFingerprint(hash, stats.frameInputs.depth);
+        MixTextureMetadataFingerprint(hash, stats.frameInputs.depthMetadata);
         MixTextureHandleFingerprint(hash, stats.frameInputs.normal);
+        MixTextureMetadataFingerprint(hash, stats.frameInputs.normalMetadata);
+        MixTextureHandleFingerprint(hash, stats.frameInputs.materialIdentity);
+        MixTextureMetadataFingerprint(
+            hash, stats.frameInputs.materialIdentityMetadata);
+        MixBufferHandleFingerprint(
+            hash, stats.frameInputs.materialParameterTable);
+        MixMaterialTableMetadataFingerprint(
+            hash, stats.frameInputs.materialParameterTableMetadata);
         MixTextureHandleFingerprint(hash, stats.frameInputs.velocity);
+        MixTextureMetadataFingerprint(hash, stats.frameInputs.velocityMetadata);
         MixTextureHandleFingerprint(hash, stats.frameInputs.reactiveMask);
+        MixTextureMetadataFingerprint(
+            hash, stats.frameInputs.reactiveMaskMetadata);
         MixBufferHandleFingerprint(hash, stats.frameInputs.exposureState);
         Diagnostics::MixContentHashValue(
             hash, stats.frameInputs.exposureStateContentHash);
@@ -179,6 +221,10 @@ namespace
             Diagnostics::MixContentHashValue(hash, effect.enabled ? 1u : 0u);
             Diagnostics::MixContentHashValue(hash, effect.requiresDepth ? 1u : 0u);
             Diagnostics::MixContentHashValue(hash, effect.requiresNormal ? 1u : 0u);
+            Diagnostics::MixContentHashValue(
+                hash, effect.requiresMaterialIdentity ? 1u : 0u);
+            Diagnostics::MixContentHashValue(
+                hash, effect.requiresMaterialParameterTable ? 1u : 0u);
             Diagnostics::MixContentHashValue(hash, effect.requiresVelocity ? 1u : 0u);
             Diagnostics::MixContentHashValue(hash, effect.requiresReactiveMask ? 1u : 0u);
             Diagnostics::MixContentHashValue(hash, effect.requiresHistory ? 1u : 0u);
@@ -316,6 +362,16 @@ namespace
         {
             append("normal");
         }
+        if (requirements.requiresMaterialIdentity &&
+            !inputs.HasMaterialIdentity())
+        {
+            append("material identity");
+        }
+        if (requirements.requiresMaterialParameterTable &&
+            !inputs.HasMaterialParameterTable())
+        {
+            append("material parameter table");
+        }
         if (requirements.requiresVelocity && !inputs.HasVelocity())
         {
             append("velocity");
@@ -383,6 +439,7 @@ const char* GetPostProcessPassCanonicalName(PostProcessPassId id)
         case PostProcessPassId::DepthOfField: return "DepthOfField";
         case PostProcessPassId::MotionBlur: return "MotionBlur";
         case PostProcessPassId::VolumetricLighting: return "VolumetricLighting";
+        case PostProcessPassId::ScreenSpaceOutline: return "ScreenSpaceOutline";
         case PostProcessPassId::Invalid:
         default:
             return nullptr;
@@ -424,6 +481,7 @@ void ApplyRenderVisualQualityPreset(PostProcessSettings& settings, RenderVisualQ
     settings.enableDOF = false;
     settings.enableMotionBlur = false;
     settings.enableVolumetricLighting = false;
+    settings.enableToonOutline = false;
 
     switch (preset)
     {
@@ -562,6 +620,9 @@ std::vector<IPostProcessPass*> PostProcessStack::GatherEnabledEffects(PostProces
                                            : effect->GetUnsupportedReason();
         plan.requiresDepth = requirements.requiresDepth;
         plan.requiresNormal = requirements.requiresNormal;
+        plan.requiresMaterialIdentity = requirements.requiresMaterialIdentity;
+        plan.requiresMaterialParameterTable =
+            requirements.requiresMaterialParameterTable;
         plan.requiresVelocity = requirements.requiresVelocity;
         plan.requiresReactiveMask = requirements.requiresReactiveMask;
         plan.requiresHistory = requirements.requiresHistory;
@@ -569,6 +630,19 @@ std::vector<IPostProcessPass*> PostProcessStack::GatherEnabledEffects(PostProces
         {
             plan.frameInputsSatisfied = requirements.IsSatisfiedBy(*frameInputs);
             plan.missingFrameInputReason = BuildMissingFrameInputReason(requirements, *frameInputs);
+            if (plan.frameInputsSatisfied)
+            {
+                std::string validationReason;
+                if (!effect->ValidateFrameInputs(*frameInputs,
+                                                 validationReason))
+                {
+                    plan.frameInputsSatisfied = false;
+                    plan.missingFrameInputReason =
+                        validationReason.empty()
+                            ? "post-process pass rejected typed frame inputs"
+                            : std::move(validationReason);
+                }
+            }
         }
 
         if (effect->IsRequestedEnabled())

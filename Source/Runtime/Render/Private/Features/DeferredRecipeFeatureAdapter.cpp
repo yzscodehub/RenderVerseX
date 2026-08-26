@@ -5,11 +5,13 @@
 
 #include "Features/DeferredRecipeFeatureAdapter.h"
 
+#include "Render/Material/MaterialSystem.h"
 #include "Render/Passes/DeferredLightingPass.h"
 #include "Render/Passes/OpaquePass.h"
 #include "Render/PipelineCache.h"
 #include "Renderer/RenderPassRegistry.h"
 
+#include <algorithm>
 #include <array>
 #include <utility>
 
@@ -17,6 +19,20 @@ namespace RVX
 {
 namespace
 {
+    [[nodiscard]] uint32 CountEligibleToonOutlineMaterials(
+        const MaterialParameterTableSnapshot& table) noexcept
+    {
+        return static_cast<uint32>(std::count_if(
+            table.valueOnlyRowEvidence.begin(),
+            table.valueOnlyRowEvidence.end(),
+            [](const MaterialParameterTableRowEvidence& row)
+            {
+                return row.isAsset &&
+                       row.shadingModel == MaterialShadingModel::ToonLit &&
+                       row.toonParametersValid && row.toonOutlineWidth > 0.0f;
+            }));
+    }
+
     [[nodiscard]] bool HasGraphicsCapability(
         RenderFeatureCapabilityMask capabilities) noexcept
     {
@@ -468,25 +484,33 @@ void DeferredGeometryFeatureAdapter::AddPasses(
         extent, SceneTextures::GBuffer3Contract, "DeferredGBuffer3"));
     textures.gBuffer3Metadata = MakeMetadata(extent, SceneTextures::GBuffer3Contract);
 
-    // GFX07 intentionally supports one canonical StandardLit classification
-    // row.  It must be initialized before graph import: a graph-created
-    // default-memory placeholder would make GBuffer3 index undefined data.
-    RHIBufferRef materialTable;
+    // GFX14 publishes the exact stable-slot material ABI consumed by both
+    // deferred lighting and the screen-space Toon outline. It is initialized
+    // before graph import so GBuffer3 can never address undefined rows.
+    MaterialParameterTableSnapshot materialTable;
     std::string materialTableError;
-    IRHIDevice* const device = m_pipelineCache != nullptr
-        ? m_pipelineCache->GetDevice()
-        : nullptr;
-    if (device == nullptr ||
-        !CreateDeferredStandardLitMaterialTable(
-            *device, materialTable, materialTableError))
+    if (m_opaquePass == nullptr ||
+        !m_opaquePass->CreateMaterialClassificationTableSnapshot(
+            m_recordContext,
+            OpaqueRasterSurfaceRoute::DeferredOpaque,
+            materialTable,
+            materialTableError))
     {
         SetCompositionFailure(materialTableError.empty()
-            ? "Deferred geometry could not create the canonical StandardLit material table"
+            ? "Deferred geometry could not create its immutable material table"
             : std::move(materialTableError));
         return;
     }
+    textures.materialTableMetadata = PostProcessMaterialTableMetadata{
+        PostProcessMaterialTableMetadata::SchemaVersion,
+        materialTable.stride,
+        materialTable.slotCount,
+        CountEligibleToonOutlineMaterials(materialTable),
+        materialTable.contentHash,
+        extent,
+        SceneTextures::GBuffer3Contract.sampleCount};
     textures.materialTable = builder.ImportBuffer(
-        std::move(materialTable), RHIResourceState::ShaderResource);
+        std::move(materialTable.buffer), RHIResourceState::ShaderResource);
 
     if (ValidateDeferredSceneTextures(textures) !=
         DeferredSceneTexturesValidationCode::Success)
@@ -496,8 +520,14 @@ void DeferredGeometryFeatureAdapter::AddPasses(
     }
 
     bool opaqueContextValid = false;
-    const RenderPassRecordContext opaqueContext = MakeOpaqueRecordContext(
+    RenderPassRecordContext opaqueContext = MakeOpaqueRecordContext(
         m_recordContext, opaqueContextValid);
+    opaqueContext.opaqueMaterialTable = OpaqueMaterialTableExecutionIdentity{
+        1,
+        materialTable.schemaVersion,
+        materialTable.stride,
+        materialTable.slotCount,
+        materialTable.contentHash};
     if (!opaqueContextValid ||
         !builder.AddGraphCallback(
             "DeferredGBuffer",
@@ -725,7 +755,7 @@ void DeferredLightingFeatureAdapter::AddPasses(
         ValidateDeferredSceneTextures(*sceneTextures) !=
             DeferredSceneTexturesValidationCode::Success)
     {
-        SetCompositionFailure("Deferred lighting requires a valid SceneTextures v2 entry");
+        SetCompositionFailure("Deferred lighting requires a valid SceneTextures v5 entry");
         return;
     }
     const AmbientOcclusionOutputs* const ambientOcclusion =
@@ -844,6 +874,7 @@ void DeferredLightingFeatureAdapter::AddPasses(
     inputs.deviceDepth = sceneTextures->deviceDepth;
     inputs.hdrSceneColor = sceneTextures->hdrSceneColor;
     inputs.materialTable = sceneTextures->materialTable;
+    inputs.materialTableMetadata = sceneTextures->materialTableMetadata;
     inputs.exposureState = sceneTextures->exposureState;
     inputs.ambientOcclusion.identity = m_recordContext.identity;
     inputs.ambientOcclusion.filteredOcclusion =
@@ -1004,6 +1035,8 @@ RenderFeatureDescriptor DeferredForwardSpecialFeatureAdapter::Describe() const
     descriptor.name = "DeferredForwardSpecialChain";
     descriptor.phase = RenderFeaturePhase::Sky;
     descriptor.consumedResources = {
+        {RenderBlackboardResourceId::SceneTextures,
+         SceneTextures::SchemaVersion},
         {RenderBlackboardResourceId::LightingOutputs,
          LightingOutputs::SchemaVersion}};
     descriptor.producedResources = {
@@ -1110,6 +1143,20 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
         SetCompositionFailure("Deferred lighting output is unavailable");
         return;
     }
+    code = RenderGraphBlackboardCode::Success;
+    const SceneTextures* const sceneTextures =
+        blackboard.Require<SceneTextures>(
+            BuiltinRenderFeatureIds::DeferredForwardSpecialChain,
+            Describe(), &code);
+    if (sceneTextures == nullptr ||
+        code != RenderGraphBlackboardCode::Success ||
+        ValidateDeferredSceneTextures(*sceneTextures) !=
+            DeferredSceneTexturesValidationCode::Success)
+    {
+        SetCompositionFailure(
+            "Deferred forward-special chain requires the exact typed GBuffer surface outputs");
+        return;
+    }
     if (!lighting->IsCompatibleWithLightingPlan(
             m_recordContext.lightingPlan->GetIdentityHash()))
     {
@@ -1178,6 +1225,13 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
     outputs.deviceDepth = m_recordContext.view.depthTarget;
     outputs.deviceDepthMetadata = MakeMetadata(
         m_preparedContext.outputExtent, SceneTextures::DeviceDepthContract);
+    outputs.worldNormal = sceneTextures->gBuffer1;
+    outputs.worldNormalMetadata = sceneTextures->gBuffer1Metadata;
+    outputs.materialIdentity = sceneTextures->gBuffer3;
+    outputs.materialIdentityMetadata = sceneTextures->gBuffer3Metadata;
+    outputs.materialParameterTable = sceneTextures->materialTable;
+    outputs.materialParameterTableMetadata =
+        sceneTextures->materialTableMetadata;
     outputs.velocity = m_recordContext.view.velocityTarget;
     outputs.velocityMetadata = MakeMetadata(
         m_preparedContext.outputExtent, SceneTextures::VelocityContract);
@@ -1195,7 +1249,7 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
         RenderGraphBlackboardCode::Success)
     {
         SetCompositionFailure(
-            "DeferredQuality could not publish TranslucencyOutputs v2");
+            "DeferredQuality could not publish TranslucencyOutputs v4");
     }
 }
 

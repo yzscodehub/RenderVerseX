@@ -94,6 +94,14 @@ namespace RVX
     struct SampleAssetCook
     {
         bool declared = false;
+        /**
+         * @brief Admit a staged package without mounting its authoring source.
+         *
+         * This must be explicitly declared by a schema-v3 catalog entry.  The
+         * catalog still binds the source identity recorded by RVXCook, while
+         * Resource verifies the complete cooked closure below @ref cookedRoot.
+         */
+        bool packageOnly = false;
         std::filesystem::path manifestPath;
         std::filesystem::path cookedRoot;
         Resource::CookAssetSelector selector;

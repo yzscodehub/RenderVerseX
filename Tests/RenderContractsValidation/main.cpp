@@ -504,6 +504,11 @@ namespace
         EXPECT_EQ(settings.postProcess.antiAliasingMode,
                   RenderAntiAliasingMode::FXAA);
         EXPECT_TRUE(settings.postProcess.enableColorGrading);
+        EXPECT_FALSE(settings.postProcess.enableToonOutline);
+        EXPECT_FLOAT_EQ(settings.postProcess.toonOutlineDepthThreshold,
+                        0.015f);
+        EXPECT_FLOAT_EQ(settings.postProcess.toonOutlineNormalThreshold,
+                        0.20f);
         EXPECT_FALSE(settings.postProcess.ambientOcclusion.enabled);
         EXPECT_TRUE(IsValidRenderAmbientOcclusionConsumerMask(
             settings.postProcess.ambientOcclusion.consumerMask));
@@ -548,6 +553,14 @@ namespace
             std::numeric_limits<float32>::quiet_NaN();
         EXPECT_FALSE(IsValidRenderFrameSettings(settings));
         settings.postProcess.colorGradingSaturation = 1.0f;
+
+        settings.postProcess.toonOutlineDepthThreshold = 0.0f;
+        EXPECT_FALSE(IsValidRenderFrameSettings(settings));
+        settings.postProcess.toonOutlineDepthThreshold = 0.015f;
+
+        settings.postProcess.toonOutlineNormalThreshold = 2.01f;
+        EXPECT_FALSE(IsValidRenderFrameSettings(settings));
+        settings.postProcess.toonOutlineNormalThreshold = 0.20f;
 
         EXPECT_TRUE(IsValidRenderFrameSettings(settings));
     }
@@ -2546,7 +2559,7 @@ namespace
     }
 
     TEST(RenderContractsValidation,
-         SurfacePathEligibilityKeepsToonUnsupportedUntilItsFeatureExists)
+         SurfacePathEligibilityRoutesOpaqueToonAndRejectsToonTranslucency)
     {
         for (const auto [blendMode, translucencyPhase] :
              {std::pair{MaterialBlendMode::Opaque,
@@ -2567,8 +2580,12 @@ namespace
             std::string error;
             EXPECT_TRUE(ValidateMaterialStaticDescriptor(descriptor, error))
                 << error;
-            EXPECT_EQ(ClassifySurfacePathEligibility(descriptor),
-                      SurfacePathEligibility::Unsupported);
+            const SurfacePathEligibility expected =
+                blendMode == MaterialBlendMode::Opaque ||
+                        blendMode == MaterialBlendMode::Masked
+                    ? SurfacePathEligibility::DeferredOpaque
+                    : SurfacePathEligibility::Unsupported;
+            EXPECT_EQ(ClassifySurfacePathEligibility(descriptor), expected);
         }
     }
 

@@ -2320,6 +2320,30 @@ namespace
                     ? *static_cast<const ModelImportOptions*>(options)
                     : ModelImportOptions{};
                 AppendCanonicalMeshSettings(settings, "model.mesh.", resolved.mesh);
+                AppendCanonicalBool(settings,
+                                    "model.material.overrideAllToonLit",
+                                    resolved.overrideAllMaterialsToToonLit);
+                AppendCanonicalFloat(settings,
+                                     "model.material.toonBands",
+                                     resolved.toonBands);
+                AppendCanonicalFloat(settings,
+                                     "model.material.toonSpecularThreshold",
+                                     resolved.toonSpecularThreshold);
+                AppendCanonicalFloat(settings,
+                                     "model.material.toonRimStrength",
+                                     resolved.toonRimStrength);
+                AppendCanonicalFloat(settings,
+                                     "model.material.toonOutlineWidth",
+                                     resolved.toonOutlineWidth);
+                AppendCanonicalFloat(settings,
+                                     "model.material.toonShadowTint.red",
+                                     resolved.toonShadowTintRed);
+                AppendCanonicalFloat(settings,
+                                     "model.material.toonShadowTint.green",
+                                     resolved.toonShadowTintGreen);
+                AppendCanonicalFloat(settings,
+                                     "model.material.toonShadowTint.blue",
+                                     resolved.toonShadowTintBlue);
                 break;
             }
             case AssetType::Shader:
@@ -4210,6 +4234,7 @@ namespace
         const Material& source,
         const fs::path& artifactSourcePath,
         size_t materialIndex,
+        const ModelImportOptions& importOptions,
         const std::vector<Resource::TextureReference>& cookedTextures,
         const std::vector<Hash::SHA256Digest>& cookedTextureContentHashes,
         Resource::CookedMaterialArtifact& outArtifact,
@@ -4219,10 +4244,18 @@ namespace
         outArtifact.logicalMaterialId = artifactSourcePath.generic_string() +
             "#material_" + std::to_string(materialIndex);
         MaterialDefinition& material = outArtifact.material;
-        material.descriptor.shadingModel =
-            source.GetWorkflow() == MaterialWorkflow::Unlit
-                ? MaterialShadingModel::Unlit
-                : MaterialShadingModel::StandardLit;
+        if (importOptions.overrideAllMaterialsToToonLit &&
+            source.GetAlphaMode() == Material::AlphaMode::Blend)
+        {
+            outError =
+                "Cooked ToonLit material override does not support alpha-blend source materials.";
+            return false;
+        }
+        material.descriptor.shadingModel = importOptions.overrideAllMaterialsToToonLit
+            ? MaterialShadingModel::ToonLit
+            : (source.GetWorkflow() == MaterialWorkflow::Unlit
+                   ? MaterialShadingModel::Unlit
+                   : MaterialShadingModel::StandardLit);
         material.descriptor.programFamily = std::string(
             GetMaterialProgramFamily(material.descriptor.shadingModel));
         switch (source.GetAlphaMode())
@@ -4262,6 +4295,18 @@ namespace
         parameters.alphaCutoff = source.GetAlphaCutoff();
         parameters.workflow = ToMaterialSourceWorkflow(source.GetWorkflow());
         parameters.doubleSided = source.IsDoubleSided();
+        if (importOptions.overrideAllMaterialsToToonLit)
+        {
+            parameters.toonBands = importOptions.toonBands;
+            parameters.toonSpecularThreshold = importOptions.toonSpecularThreshold;
+            parameters.toonRimStrength = importOptions.toonRimStrength;
+            parameters.toonOutlineWidth = importOptions.toonOutlineWidth;
+            parameters.toonShadowTint = {
+                importOptions.toonShadowTintRed,
+                importOptions.toonShadowTintGreen,
+                importOptions.toonShadowTintBlue,
+            };
+        }
 
         if (!AddCookedMaterialTextureBinding(
                 source.GetBaseColorTexture(), MaterialTextureSlot::BaseColor,
@@ -4305,6 +4350,26 @@ ImportResult ModelImporter::Import(const fs::path& sourcePath,
     const ModelImportOptions importOptions = options
         ? *static_cast<const ModelImportOptions*>(options)
         : ModelImportOptions{};
+    if (importOptions.overrideAllMaterialsToToonLit &&
+        (!std::isfinite(importOptions.toonBands) ||
+         importOptions.toonBands < 1.0f || importOptions.toonBands > 64.0f ||
+         !std::isfinite(importOptions.toonSpecularThreshold) ||
+         importOptions.toonSpecularThreshold < 0.0f ||
+         importOptions.toonSpecularThreshold > 1.0f ||
+         !std::isfinite(importOptions.toonRimStrength) ||
+         importOptions.toonRimStrength < 0.0f || importOptions.toonRimStrength > 64.0f ||
+         !std::isfinite(importOptions.toonOutlineWidth) ||
+         importOptions.toonOutlineWidth < 0.0f || importOptions.toonOutlineWidth > 64.0f ||
+         !std::isfinite(importOptions.toonShadowTintRed) ||
+         !std::isfinite(importOptions.toonShadowTintGreen) ||
+         !std::isfinite(importOptions.toonShadowTintBlue) ||
+         importOptions.toonShadowTintRed < 0.0f || importOptions.toonShadowTintRed > 1.0f ||
+         importOptions.toonShadowTintGreen < 0.0f || importOptions.toonShadowTintGreen > 1.0f ||
+         importOptions.toonShadowTintBlue < 0.0f || importOptions.toonShadowTintBlue > 1.0f))
+    {
+        result.error = "Model ToonLit override contains an invalid fixed material parameter.";
+        return result;
+    }
     fs::path artifactSourcePath = sourcePath;
     if (!importOptions.artifactSourcePath.empty())
     {
@@ -4637,6 +4702,7 @@ ImportResult ModelImporter::Import(const fs::path& sourcePath,
                 *sourceMaterial,
                 artifactSourcePath,
                 index,
+                importOptions,
                 cookedTextureReferences,
                 cookedTextureContentHashes,
                 materialArtifact,

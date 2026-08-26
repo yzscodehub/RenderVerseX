@@ -9,9 +9,39 @@
 
 namespace RVX
 {
+    namespace
+    {
+        MaterialGPUShadingModel ToGPUShadingModel(
+            MaterialShadingModel shadingModel) noexcept
+        {
+            switch (shadingModel)
+            {
+                case MaterialShadingModel::ToonLit:
+                    return MaterialGPUShadingModel::ToonLit;
+                case MaterialShadingModel::Unlit:
+                    return MaterialGPUShadingModel::Unlit;
+                case MaterialShadingModel::ThinTransmission:
+                    return MaterialGPUShadingModel::ThinTransmission;
+                case MaterialShadingModel::StandardLit:
+                default:
+                    return MaterialGPUShadingModel::StandardLit;
+            }
+        }
+    } // namespace
+
     MaterialGPUConstants EncodeMaterialGPUConstants(
         const MaterialSourceData& sourceData,
         std::span<const MaterialUploadTextureBinding> textureBindings) noexcept
+    {
+        return EncodeMaterialGPUConstants(
+            MaterialStaticDescriptor{}, sourceData, textureBindings, 0);
+    }
+
+    MaterialGPUConstants EncodeMaterialGPUConstants(
+        const MaterialStaticDescriptor& staticDescriptor,
+        const MaterialSourceData& sourceData,
+        std::span<const MaterialUploadTextureBinding> textureBindings,
+        uint32 materialTableIndex) noexcept
     {
         MaterialGPUConstants constants;
         constants.baseColorFactor = sourceData.baseColorFactor;
@@ -24,6 +54,18 @@ namespace RVX
         constants.textureFlags = sourceData.textureFlags;
         constants.alphaCutoff = sourceData.alphaCutoff;
         constants.doubleSided = sourceData.doubleSided ? 1U : 0U;
+        constants.shadingModel = static_cast<uint32>(
+            ToGPUShadingModel(staticDescriptor.shadingModel));
+        constants.materialTableIndex = materialTableIndex;
+        constants.toonBands = sourceData.toonBands;
+        constants.toonSpecularThreshold = sourceData.toonSpecularThreshold;
+        constants.toonRimStrength = sourceData.toonRimStrength;
+        constants.toonOutlineWidth = sourceData.toonOutlineWidth;
+        constants.toonShadowTint = {
+            sourceData.toonShadowTint.x,
+            sourceData.toonShadowTint.y,
+            sourceData.toonShadowTint.z,
+            0.0f};
 
         switch (sourceData.alphaMode)
         {
