@@ -2268,6 +2268,64 @@ namespace
         settings += '\n';
     }
 
+    template <typename Enum>
+    void AppendCanonicalOptionalEnum(std::string& settings,
+                                     const std::string& key,
+                                     const std::optional<Enum>& value)
+    {
+        AppendCanonicalBool(settings, (key + ".set").c_str(), value.has_value());
+        if (value.has_value())
+            AppendCanonicalInteger(settings, key.c_str(), static_cast<uint64>(*value));
+    }
+
+    void AppendCanonicalOptionalFloat(std::string& settings,
+                                      const std::string& key,
+                                      const std::optional<float>& value)
+    {
+        AppendCanonicalBool(settings, (key + ".set").c_str(), value.has_value());
+        if (value.has_value())
+            AppendCanonicalFloat(settings, key.c_str(), *value);
+    }
+
+    void AppendCanonicalMaterialCookOverrides(
+        std::string& settings,
+        std::vector<MaterialCookOverride> overrides)
+    {
+        std::sort(overrides.begin(), overrides.end(),
+                  [](const MaterialCookOverride& left,
+                     const MaterialCookOverride& right)
+                  {
+                      return left.materialName < right.materialName;
+                  });
+        AppendCanonicalInteger(settings,
+                               "model.material.override.count",
+                               static_cast<uint64>(overrides.size()));
+        for (size_t index = 0; index < overrides.size(); ++index)
+        {
+            const MaterialCookOverride& override = overrides[index];
+            const std::string prefix =
+                "model.material.override[" + std::to_string(index) + "].";
+            AppendCanonicalInteger(settings,
+                                   (prefix + "nameLength").c_str(),
+                                   static_cast<uint64>(override.materialName.size()));
+            settings += prefix + "name=" + override.materialName + '\n';
+            AppendCanonicalOptionalEnum(settings, prefix + "shadingModel", override.shadingModel);
+            AppendCanonicalOptionalEnum(settings, prefix + "blendMode", override.blendMode);
+            AppendCanonicalOptionalEnum(settings, prefix + "translucencyPhase", override.translucencyPhase);
+            AppendCanonicalOptionalEnum(settings, prefix + "cullMode", override.cullMode);
+            AppendCanonicalOptionalEnum(settings, prefix + "shadowPolicy", override.shadowPolicy);
+            AppendCanonicalOptionalEnum(settings, prefix + "sortPriority", override.sortPriority);
+            AppendCanonicalOptionalFloat(settings, prefix + "transmission", override.transmission);
+            AppendCanonicalOptionalFloat(settings, prefix + "indexOfRefraction", override.indexOfRefraction);
+            AppendCanonicalOptionalFloat(settings, prefix + "thickness", override.thickness);
+            AppendCanonicalOptionalFloat(settings, prefix + "attenuationColor.red", override.attenuationColorRed);
+            AppendCanonicalOptionalFloat(settings, prefix + "attenuationColor.green", override.attenuationColorGreen);
+            AppendCanonicalOptionalFloat(settings, prefix + "attenuationColor.blue", override.attenuationColorBlue);
+            AppendCanonicalOptionalFloat(settings, prefix + "attenuationDistance", override.attenuationDistance);
+            AppendCanonicalOptionalFloat(settings, prefix + "emissiveStrength", override.emissiveStrength);
+        }
+    }
+
     void AppendCanonicalMeshSettings(std::string& settings,
                                      const std::string& prefix,
                                      const MeshImportOptions& options)
@@ -2344,6 +2402,8 @@ namespace
                 AppendCanonicalFloat(settings,
                                      "model.material.toonShadowTint.blue",
                                      resolved.toonShadowTintBlue);
+                AppendCanonicalMaterialCookOverrides(settings,
+                                                     resolved.materialOverrides);
                 break;
             }
             case AssetType::Shader:
@@ -4230,11 +4290,205 @@ namespace
         return true;
     }
 
+    bool IsValidMaterialCookOverride(
+        const MaterialCookOverride& override,
+        std::string& outError)
+    {
+        if (override.materialName.empty() ||
+            override.materialName.find_first_of("\r\n") != std::string::npos ||
+            override.materialName.find('\0') != std::string::npos)
+        {
+            outError = "Material cook override has an empty or invalid exact material name";
+            return false;
+        }
+
+        const auto validFiniteRange = [](const std::optional<float>& value,
+                                         float minimum,
+                                         float maximum)
+        {
+            return !value.has_value() ||
+                   (std::isfinite(*value) && *value >= minimum && *value <= maximum);
+        };
+        if (!validFiniteRange(override.transmission, 0.0f, 1.0f) ||
+            !validFiniteRange(override.indexOfRefraction, 1.0f, 3.0f) ||
+            !validFiniteRange(override.thickness, 0.0f, 100000.0f) ||
+            !validFiniteRange(override.attenuationColorRed, 0.0f, 1.0f) ||
+            !validFiniteRange(override.attenuationColorGreen, 0.0f, 1.0f) ||
+            !validFiniteRange(override.attenuationColorBlue, 0.0f, 1.0f) ||
+            !validFiniteRange(override.attenuationDistance, 0.0f, 1000000.0f) ||
+            !validFiniteRange(override.emissiveStrength, 0.0f, 65504.0f))
+        {
+            outError = "Material cook override contains an out-of-range parameter";
+            return false;
+        }
+
+        if ((override.shadingModel.has_value() &&
+             static_cast<uint32>(*override.shadingModel) >
+                 static_cast<uint32>(MaterialShadingModel::ThinTransmission)) ||
+            (override.blendMode.has_value() &&
+             static_cast<uint32>(*override.blendMode) >
+                 static_cast<uint32>(MaterialBlendMode::Additive)) ||
+            (override.translucencyPhase.has_value() &&
+             static_cast<uint32>(*override.translucencyPhase) >
+                 static_cast<uint32>(MaterialTranslucencyPhase::AfterToneMap)) ||
+            (override.cullMode.has_value() &&
+             static_cast<uint32>(*override.cullMode) >
+                 static_cast<uint32>(MaterialCullMode::NoCull)) ||
+            (override.shadowPolicy.has_value() &&
+             static_cast<uint32>(*override.shadowPolicy) >
+                 static_cast<uint32>(MaterialShadowPolicy::CastAndReceive)))
+        {
+            outError = "Material cook override contains an unknown static enum";
+            return false;
+        }
+
+        outError.clear();
+        return true;
+    }
+
+    bool ValidateMaterialCookOverrides(
+        const std::vector<MaterialCookOverride>& overrides,
+        std::string& outError)
+    {
+        std::unordered_set<std::string> names;
+        for (const MaterialCookOverride& override : overrides)
+        {
+            if (!IsValidMaterialCookOverride(override, outError))
+                return false;
+            if (!names.insert(override.materialName).second)
+            {
+                outError = "Cook profile declares a duplicate exact material override: " +
+                    override.materialName;
+                return false;
+            }
+        }
+        outError.clear();
+        return true;
+    }
+
+    bool ResolveMaterialCookOverrides(
+        const std::vector<Material::Ptr>& sourceMaterials,
+        const std::vector<MaterialCookOverride>& overrides,
+        std::vector<const MaterialCookOverride*>& outOverrides,
+        std::string& outError)
+    {
+        outOverrides.assign(sourceMaterials.size(), nullptr);
+        if (overrides.empty())
+        {
+            outError.clear();
+            return true;
+        }
+
+        std::unordered_map<std::string, size_t> sourceNameCounts;
+        sourceNameCounts.reserve(sourceMaterials.size());
+        for (const Material::Ptr& material : sourceMaterials)
+        {
+            if (!material)
+            {
+                outError = "Model import produced a null material";
+                return false;
+            }
+            ++sourceNameCounts[material->GetName()];
+        }
+
+        for (const MaterialCookOverride& override : overrides)
+        {
+            const auto count = sourceNameCounts.find(override.materialName);
+            if (count == sourceNameCounts.end())
+            {
+                outError = "Cook profile references an unknown exact material name: " +
+                    override.materialName;
+                return false;
+            }
+            if (count->second != 1u)
+            {
+                outError = "Cook profile exact material name is ambiguous in the source model: " +
+                    override.materialName;
+                return false;
+            }
+
+            for (size_t index = 0; index < sourceMaterials.size(); ++index)
+            {
+                if (sourceMaterials[index]->GetName() == override.materialName)
+                {
+                    outOverrides[index] = &override;
+                    break;
+                }
+            }
+        }
+
+        outError.clear();
+        return true;
+    }
+
+    void ApplyMaterialCookOverride(const MaterialCookOverride& override,
+                                   MaterialDefinition& material)
+    {
+        MaterialStaticDescriptor& descriptor = material.descriptor;
+        MaterialSourceData& parameters = material.parameters;
+        if (override.shadingModel.has_value())
+        {
+            descriptor.shadingModel = *override.shadingModel;
+            descriptor.programFamily = std::string(
+                GetMaterialProgramFamily(descriptor.shadingModel));
+            parameters.workflow =
+                descriptor.shadingModel == MaterialShadingModel::Unlit
+                    ? MaterialSourceWorkflow::Unlit
+                    : MaterialSourceWorkflow::MetallicRoughness;
+        }
+        if (override.blendMode.has_value())
+        {
+            descriptor.blendMode = *override.blendMode;
+            switch (descriptor.blendMode)
+            {
+                case MaterialBlendMode::Opaque:
+                    parameters.alphaMode = MaterialSourceAlphaMode::Opaque;
+                    break;
+                case MaterialBlendMode::Masked:
+                    parameters.alphaMode = MaterialSourceAlphaMode::Mask;
+                    break;
+                case MaterialBlendMode::AlphaBlend:
+                case MaterialBlendMode::Premultiplied:
+                case MaterialBlendMode::Additive:
+                    parameters.alphaMode = MaterialSourceAlphaMode::Blend;
+                    break;
+            }
+        }
+        if (override.translucencyPhase.has_value())
+            descriptor.translucencyPhase = *override.translucencyPhase;
+        if (override.cullMode.has_value())
+        {
+            descriptor.cullMode = *override.cullMode;
+            parameters.doubleSided = descriptor.cullMode == MaterialCullMode::NoCull;
+        }
+        if (override.shadowPolicy.has_value())
+            descriptor.shadowPolicy = *override.shadowPolicy;
+        if (override.sortPriority.has_value())
+            descriptor.sortPriority = *override.sortPriority;
+        if (override.transmission.has_value())
+            parameters.transmission = *override.transmission;
+        if (override.indexOfRefraction.has_value())
+            parameters.indexOfRefraction = *override.indexOfRefraction;
+        if (override.thickness.has_value())
+            parameters.thickness = *override.thickness;
+        if (override.attenuationColorRed.has_value())
+            parameters.attenuationColor.x = *override.attenuationColorRed;
+        if (override.attenuationColorGreen.has_value())
+            parameters.attenuationColor.y = *override.attenuationColorGreen;
+        if (override.attenuationColorBlue.has_value())
+            parameters.attenuationColor.z = *override.attenuationColorBlue;
+        if (override.attenuationDistance.has_value())
+            parameters.attenuationDistance = *override.attenuationDistance;
+        if (override.emissiveStrength.has_value())
+            parameters.emissiveStrength = *override.emissiveStrength;
+    }
+
     bool BuildCookedMaterialArtifact(
         const Material& source,
         const fs::path& artifactSourcePath,
         size_t materialIndex,
         const ModelImportOptions& importOptions,
+        const MaterialCookOverride* materialOverride,
         const std::vector<Resource::TextureReference>& cookedTextures,
         const std::vector<Hash::SHA256Digest>& cookedTextureContentHashes,
         Resource::CookedMaterialArtifact& outArtifact,
@@ -4244,13 +4498,6 @@ namespace
         outArtifact.logicalMaterialId = artifactSourcePath.generic_string() +
             "#material_" + std::to_string(materialIndex);
         MaterialDefinition& material = outArtifact.material;
-        if (importOptions.overrideAllMaterialsToToonLit &&
-            source.GetAlphaMode() == Material::AlphaMode::Blend)
-        {
-            outError =
-                "Cooked ToonLit material override does not support alpha-blend source materials.";
-            return false;
-        }
         material.descriptor.shadingModel = importOptions.overrideAllMaterialsToToonLit
             ? MaterialShadingModel::ToonLit
             : (source.GetWorkflow() == MaterialWorkflow::Unlit
@@ -4307,6 +4554,8 @@ namespace
                 importOptions.toonShadowTintBlue,
             };
         }
+        if (materialOverride)
+            ApplyMaterialCookOverride(*materialOverride, material);
 
         if (!AddCookedMaterialTextureBinding(
                 source.GetBaseColorTexture(), MaterialTextureSlot::BaseColor,
@@ -4368,6 +4617,11 @@ ImportResult ModelImporter::Import(const fs::path& sourcePath,
          importOptions.toonShadowTintBlue < 0.0f || importOptions.toonShadowTintBlue > 1.0f))
     {
         result.error = "Model ToonLit override contains an invalid fixed material parameter.";
+        return result;
+    }
+    if (!ValidateMaterialCookOverrides(importOptions.materialOverrides,
+                                       result.error))
+    {
         return result;
     }
     fs::path artifactSourcePath = sourcePath;
@@ -4499,6 +4753,15 @@ ImportResult ModelImporter::Import(const fs::path& sourcePath,
     }
     for (const std::string& warning : imported.warnings)
         result.warnings.push_back(warning);
+
+    std::vector<const MaterialCookOverride*> resolvedMaterialOverrides;
+    if (!ResolveMaterialCookOverrides(imported.materials,
+                                      importOptions.materialOverrides,
+                                      resolvedMaterialOverrides,
+                                      result.error))
+    {
+        return result;
+    }
 
     std::vector<std::vector<CookedMeshLodPayload>> meshLods;
     meshLods.reserve(imported.meshes.size());
@@ -4703,6 +4966,7 @@ ImportResult ModelImporter::Import(const fs::path& sourcePath,
                 artifactSourcePath,
                 index,
                 importOptions,
+                resolvedMaterialOverrides[index],
                 cookedTextureReferences,
                 cookedTextureContentHashes,
                 materialArtifact,

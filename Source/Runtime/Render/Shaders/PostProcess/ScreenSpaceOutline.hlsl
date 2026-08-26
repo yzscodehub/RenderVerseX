@@ -28,7 +28,7 @@ Texture2D<float> SceneDepth : register(t2, space0);
 Texture2D<float4> OctNormal : register(t3, space0);
 Texture2D<uint> MaterialIdentity : register(t4, space0);
 StructuredBuffer<MaterialParameterData> MaterialParameterTable : register(t5, space0);
-SamplerState PointClampSampler : register(s6, space0);
+SamplerState PointClampSampler : register(s7, space0);
 
 struct VSOutput
 {

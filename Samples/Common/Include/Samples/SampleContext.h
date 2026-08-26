@@ -53,6 +53,11 @@ namespace RVX
         std::filesystem::path resolvedPath;
         Resource::ResourceContentIdentity contentIdentity;
         AssetContentId assetContentId;
+        /**
+         * @brief Require the runner-admitted entry to be consumed as a staged
+         * cooked artifact rather than as authoring source input.
+         */
+        bool packageOnly = false;
     };
 
     enum class SampleAssetRegistryLookupCode : uint8

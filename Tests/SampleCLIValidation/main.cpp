@@ -482,6 +482,7 @@ namespace
             "--quality",
             "low",
             "--toon-outline-qualification-probe",
+            "--translucency-qualification-probe",
             "--diagnostics",
             "--no-validation",
         };
@@ -507,6 +508,7 @@ namespace
         EXPECT_EQ(options.height, 180u);
         EXPECT_EQ(options.quality, "low");
         EXPECT_TRUE(options.toonOutlineQualificationProbeEnabled);
+        EXPECT_TRUE(options.translucencyQualificationProbeEnabled);
         EXPECT_TRUE(options.diagnostics);
         EXPECT_FALSE(options.enableValidation);
     }
@@ -1092,7 +1094,7 @@ namespace
         std::ostringstream stream;
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
-        EXPECT_NE(json.find("\"schemaVersion\": 27"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 29"), std::string::npos);
         EXPECT_NE(json.find("\"validationRunId\": \"" +
                             std::string(32, '1') + "\""),
                   std::string::npos);
@@ -2111,6 +2113,16 @@ namespace
             RVX::ProjectSampleToonLightingExecutionDiagnostics(toonSnapshot);
         report.renderDiagnostics.toonOutlineActualExecution =
             RVX::ProjectSampleToonOutlineExecutionDiagnostics(toonSnapshot);
+        report.renderDiagnostics.transparentAlphaBlendDrawCount = 1;
+        report.renderDiagnostics.transparentPremultipliedDrawCount = 2;
+        report.renderDiagnostics.transparentAdditiveDrawCount = 3;
+        report.renderDiagnostics.transparentThinTransmissionDrawCount = 4;
+        report.renderDiagnostics.transparentOpaqueSceneSnapshotReady = true;
+        report.renderDiagnostics.transparentOpaqueSceneSnapshotCopied = true;
+        report.renderDiagnostics.transparentReactiveMaskAttachmentBound = true;
+        report.renderDiagnostics.transparentReactiveMaskWriteDrawCount = 4;
+        report.renderDiagnostics.transparentPriorityBucketCount = 4;
+        report.renderDiagnostics.transparentFallbackCount = 0;
         report.renderDiagnostics.nativeValidationAvailable = true;
         report.renderDiagnostics.nativeValidationEnabled = true;
         report.renderDiagnostics.nativeValidationReadComplete = true;
@@ -2221,7 +2233,7 @@ namespace
         const std::string json = stream.str();
 
         EXPECT_NE(json.find("\"schemaId\": \"RVX.SampleReport\""), std::string::npos);
-        EXPECT_NE(json.find("\"schemaVersion\": 27"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 29"), std::string::npos);
         EXPECT_NE(json.find("\"sampleName\": \"BasicRHI\""), std::string::npos);
         EXPECT_NE(json.find("\"category\": \"sample\""), std::string::npos);
         EXPECT_NE(json.find("\"requestedBackend\": \"dx12\""), std::string::npos);
@@ -2361,6 +2373,18 @@ namespace
         EXPECT_NE(json.find("\"toonOutlineActualExecution\": {"),
                   std::string::npos);
         EXPECT_NE(json.find("\"outlinedPixelCount\": 128"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"transparentAlphaBlendDrawCount\": 1"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"transparentPremultipliedDrawCount\": 2"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"transparentAdditiveDrawCount\": 3"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"transparentThinTransmissionDrawCount\": 4"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"transparentOpaqueSceneSnapshotCopied\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"transparentReactiveMaskWriteDrawCount\": 4"),
                   std::string::npos);
         EXPECT_EQ(json.find("\"renderWidth\""), std::string::npos);
         EXPECT_NE(json.find("\"temporalAAQualified\": false"),
@@ -2505,7 +2529,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 27"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 29"), std::string::npos);
         EXPECT_NE(json.find("\"contractRevision\": 7"), std::string::npos);
         EXPECT_NE(json.find("\"phase\": \"complete\""),
                   std::string::npos);
@@ -2965,6 +2989,8 @@ namespace
         asset.packageContentId.fileCount = 5;
         asset.cookedAdmissionRequired = true;
         asset.cookedAdmissionAccepted = true;
+        asset.cookPackageOnly = true;
+        asset.actualLoadDomain = "CookedArtifact";
         asset.cookedAdmissionCode = "accepted";
         asset.cookedAdmissionDetail = "manifest and mounted closure verified";
         asset.cookManifestPath = "cooked/CookManifest.rvxmanifest";
@@ -2994,10 +3020,10 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 27"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 29"), std::string::npos);
         EXPECT_NE(json.find("\"packageContentId\""), std::string::npos);
         EXPECT_NE(json.find(asset.packageContentId.digest), std::string::npos);
-        EXPECT_NE(json.find("\"cook\": {\"required\": true, \"accepted\": true, \"code\": \"accepted\""),
+        EXPECT_NE(json.find("\"cook\": {\"required\": true, \"accepted\": true, \"packageOnly\": true, \"actualLoadDomain\": \"CookedArtifact\", \"code\": \"accepted\""),
                   std::string::npos);
         EXPECT_NE(json.find("\"declaredSourceContentIdentity\""),
                   std::string::npos);

@@ -11,6 +11,7 @@
 #include <iterator>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
@@ -324,7 +325,7 @@ TEST(CookedMaterialLoaderValidation,
               (RVX::Vec3{0.2f, 0.6f, 0.9f}));
 }
 
-TEST(CookedMaterialLoaderValidation, RejectsToonTranslucencyUntilGFX15)
+TEST(CookedMaterialLoaderValidation, RejectsUnsupportedToonTranslucency)
 {
     TemporaryDirectory temporary;
     const fs::path materialPath = temporary.Get() / "ToonTranslucent.rvmat";
@@ -346,7 +347,72 @@ TEST(CookedMaterialLoaderValidation, RejectsToonTranslucencyUntilGFX15)
     RVX::Resource::PreparedResourceBundle bundle;
     RVX::Resource::ResourceLoadError error;
     EXPECT_FALSE(loader.Prepare(MakeContext(materialPath), bundle, error));
-    EXPECT_NE(error.message.find("GFX15"), std::string::npos);
+    EXPECT_NE(error.message.find("support matrix"), std::string::npos);
+}
+
+TEST(CookedMaterialLoaderValidation,
+     PreparesThinTransmissionWithLinearTransmissionAndThicknessSlots)
+{
+    TemporaryDirectory temporary;
+    const fs::path materialPath = temporary.Get() / "ThinTransmission.rvmat";
+    const fs::path albedoPath = temporary.Get() / "textures" / "albedo.rva";
+    const fs::path transmissionPath =
+        temporary.Get() / "textures" / "transmission.rva";
+    const fs::path thicknessPath = temporary.Get() / "textures" / "thickness.rva";
+    ASSERT_TRUE(WriteTexture(albedoPath, RVX::Resource::TextureUsage::Color, true));
+    ASSERT_TRUE(WriteTexture(transmissionPath, RVX::Resource::TextureUsage::Data, false));
+    ASSERT_TRUE(WriteTexture(thicknessPath, RVX::Resource::TextureUsage::Data, false));
+
+    auto artifact = MakeArtifact("textures/albedo.rva", HashFile(albedoPath));
+    artifact.material.descriptor.shadingModel =
+        RVX::MaterialShadingModel::ThinTransmission;
+    artifact.material.descriptor.programFamily = std::string(
+        RVX::GetMaterialProgramFamily(
+            RVX::MaterialShadingModel::ThinTransmission));
+    artifact.material.descriptor.blendMode = RVX::MaterialBlendMode::Premultiplied;
+    artifact.material.descriptor.translucencyPhase =
+        RVX::MaterialTranslucencyPhase::Standard;
+    artifact.material.descriptor.shadowPolicy = RVX::MaterialShadowPolicy::Receive;
+    artifact.material.parameters.alphaMode = RVX::MaterialSourceAlphaMode::Blend;
+    artifact.material.parameters.transmission = 0.7f;
+    artifact.material.parameters.indexOfRefraction = 1.33f;
+    artifact.material.parameters.thickness = 0.2f;
+    artifact.material.parameters.attenuationColor = {0.3f, 0.5f, 0.7f};
+    artifact.material.parameters.attenuationDistance = 2.0f;
+
+    for (const auto [slot, path] :
+         {std::pair{RVX::MaterialTextureSlot::Transmission, transmissionPath},
+          std::pair{RVX::MaterialTextureSlot::Thickness, thicknessPath}})
+    {
+        RVX::Resource::CookedMaterialTextureBinding binding;
+        binding.definition.slot = slot;
+        binding.artifactPath = (fs::path("textures") / path.filename()).generic_string();
+        binding.expectedContentHash = HashFile(path);
+        binding.usage = RVX::Resource::TextureUsage::Data;
+        binding.isSRGB = false;
+        binding.fallbackSemantic = RVX::Resource::TextureFallbackSemantic::White;
+        artifact.textureBindings.push_back(std::move(binding));
+    }
+    ASSERT_TRUE(WriteMaterial(materialPath, std::move(artifact)));
+
+    RVX::Resource::CookedMaterialLoader loader;
+    RVX::Resource::PreparedResourceBundle bundle;
+    RVX::Resource::ResourceLoadError error;
+    ASSERT_TRUE(loader.Prepare(MakeContext(materialPath), bundle, error))
+        << error.message;
+    const auto* material = dynamic_cast<RVX::Resource::MaterialResource*>(
+        bundle.GetRoot().Get());
+    ASSERT_NE(material, nullptr);
+    const RVX::MaterialDefinition& definition = material->GetMaterialDefinition();
+    EXPECT_EQ(definition.descriptor.shadingModel,
+              RVX::MaterialShadingModel::ThinTransmission);
+    EXPECT_EQ(definition.descriptor.blendMode,
+              RVX::MaterialBlendMode::Premultiplied);
+    EXPECT_FLOAT_EQ(definition.parameters.transmission, 0.7f);
+    EXPECT_FLOAT_EQ(definition.parameters.attenuationDistance, 2.0f);
+    EXPECT_EQ(definition.parameters.textureFlags, 0xc1u);
+    EXPECT_TRUE(material->GetTexture("transmission"));
+    EXPECT_TRUE(material->GetTexture("thickness"));
 }
 
 TEST(CookedMaterialLoaderValidation,
@@ -377,7 +443,7 @@ TEST(CookedMaterialLoaderValidation,
     RVX::Resource::PreparedResourceBundle bundle;
     RVX::Resource::ResourceLoadError error;
     EXPECT_FALSE(loader.Prepare(MakeContext(materialPath), bundle, error));
-    EXPECT_NE(error.message.find("texture slot"), std::string::npos);
+    EXPECT_NE(error.message.find("ToonRamp"), std::string::npos);
 }
 
 TEST(CookedMaterialLoaderValidation,

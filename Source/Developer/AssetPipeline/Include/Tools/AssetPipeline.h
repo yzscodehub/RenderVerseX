@@ -7,11 +7,13 @@
 
 #include "Core/Types.h"
 #include "RHI/RHIDefinitions.h"
+#include "RenderContracts/RenderMaterial.h"
 #include "ShaderContracts/ShaderProgramProvider.h"
 
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -234,6 +236,33 @@ struct MeshImportOptions
     bool importMaterials = true;
 };
 
+/**
+ * @brief Exact source-material override used by a model cook profile.
+ *
+ * The name is deliberately case-sensitive and is matched against the imported
+ * source material name.  Every value is optional so a profile only changes
+ * the explicitly named aspect of one source material; the cooker derives the
+ * corresponding legacy source representation before validating the artifact.
+ */
+struct MaterialCookOverride
+{
+    std::string materialName;
+    std::optional<MaterialShadingModel> shadingModel;
+    std::optional<MaterialBlendMode> blendMode;
+    std::optional<MaterialTranslucencyPhase> translucencyPhase;
+    std::optional<MaterialCullMode> cullMode;
+    std::optional<MaterialShadowPolicy> shadowPolicy;
+    std::optional<int32> sortPriority;
+    std::optional<float> transmission;
+    std::optional<float> indexOfRefraction;
+    std::optional<float> thickness;
+    std::optional<float> attenuationColorRed;
+    std::optional<float> attenuationColorGreen;
+    std::optional<float> attenuationColorBlue;
+    std::optional<float> attenuationDistance;
+    std::optional<float> emissiveStrength;
+};
+
 /** @brief Static glTF model product options. */
 struct ModelImportOptions
 {
@@ -262,6 +291,9 @@ struct ModelImportOptions
     float toonShadowTintRed = 0.42f;
     float toonShadowTintGreen = 0.48f;
     float toonShadowTintBlue = 0.62f;
+
+    /** Exact, case-sensitive source material overrides from the cook profile. */
+    std::vector<MaterialCookOverride> materialOverrides;
 };
 
 /** @brief Deterministic HDR/EXR environment cook settings. */

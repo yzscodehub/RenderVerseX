@@ -616,12 +616,12 @@ namespace RVX
     // Draw Commands
     // =========================================================================
 
-    void OpenGLCommandContext::PrepareForDraw()
+    bool OpenGLCommandContext::PrepareForDraw()
     {
         if (!m_currentGraphicsPipeline)
         {
             RVX_RHI_ERROR("No graphics pipeline bound for draw call");
-            return;
+            return false;
         }
 
         // Bind program
@@ -649,7 +649,14 @@ namespace RVX
                 auto& binding = m_descriptorSetBindings[i];
                 if (binding.set)
                 {
-                    binding.set->Bind(m_device->GetStateCache(), i, binding.dynamicOffsets);
+                    if (!binding.set->Bind(
+                            m_device->GetStateCache(), i, binding.dynamicOffsets))
+                    {
+                        RVX_RHI_ERROR(
+                            "OpenGL descriptor set {} failed ABI validation; draw is rejected",
+                            i);
+                        return false;
+                    }
                 }
             }
             m_descriptorSetsDirty = false;
@@ -658,6 +665,7 @@ namespace RVX
         // Get or create VAO
         GLuint vao = GetOrCreateVAO();
         m_device->GetStateCache().BindVAO(vao);
+        return vao != 0;
     }
 
     void OpenGLCommandContext::ApplyGraphicsPipelineState()
@@ -807,7 +815,10 @@ namespace RVX
     void OpenGLCommandContext::Draw(uint32 vertexCount, uint32 instanceCount,
                                    uint32 firstVertex, uint32 firstInstance)
     {
-        PrepareForDraw();
+        if (!PrepareForDraw())
+        {
+            return;
+        }
 
         GLenum mode = m_device->GetStateCache().GetPrimitiveTopology();
 
@@ -828,7 +839,10 @@ namespace RVX
                                           uint32 firstIndex, int32 vertexOffset,
                                           uint32 firstInstance)
     {
-        PrepareForDraw();
+        if (!PrepareForDraw())
+        {
+            return;
+        }
 
         GLenum mode = m_device->GetStateCache().GetPrimitiveTopology();
         GLenum indexType = ToGLIndexType(m_indexFormat);
@@ -853,7 +867,10 @@ namespace RVX
     void OpenGLCommandContext::DrawIndirect(RHIBuffer* buffer, uint64 offset,
                                            uint32 drawCount, uint32 stride)
     {
-        PrepareForDraw();
+        if (!PrepareForDraw())
+        {
+            return;
+        }
 
         auto* glBuffer = static_cast<OpenGLBuffer*>(buffer);
         GL_CHECK(glBindBuffer(GL_DRAW_INDIRECT_BUFFER, glBuffer->GetHandle()));
@@ -869,7 +886,10 @@ namespace RVX
     void OpenGLCommandContext::DrawIndexedIndirect(RHIBuffer* buffer, uint64 offset,
                                                   uint32 drawCount, uint32 stride)
     {
-        PrepareForDraw();
+        if (!PrepareForDraw())
+        {
+            return;
+        }
 
         auto* glBuffer = static_cast<OpenGLBuffer*>(buffer);
         GL_CHECK(glBindBuffer(GL_DRAW_INDIRECT_BUFFER, glBuffer->GetHandle()));
@@ -888,12 +908,12 @@ namespace RVX
     // Compute Commands
     // =========================================================================
 
-    void OpenGLCommandContext::PrepareForDispatch()
+    bool OpenGLCommandContext::PrepareForDispatch()
     {
         if (!m_currentComputePipeline)
         {
             RVX_RHI_ERROR("No compute pipeline bound for dispatch");
-            return;
+            return false;
         }
 
         m_device->GetStateCache().BindProgram(m_currentComputePipeline->GetProgramHandle());
@@ -913,16 +933,27 @@ namespace RVX
                 auto& binding = m_descriptorSetBindings[i];
                 if (binding.set)
                 {
-                    binding.set->Bind(m_device->GetStateCache(), i, binding.dynamicOffsets);
+                    if (!binding.set->Bind(
+                            m_device->GetStateCache(), i, binding.dynamicOffsets))
+                    {
+                        RVX_RHI_ERROR(
+                            "OpenGL descriptor set {} failed ABI validation; dispatch is rejected",
+                            i);
+                        return false;
+                    }
                 }
             }
             m_descriptorSetsDirty = false;
         }
+        return true;
     }
 
     void OpenGLCommandContext::Dispatch(uint32 groupCountX, uint32 groupCountY, uint32 groupCountZ)
     {
-        PrepareForDispatch();
+        if (!PrepareForDispatch())
+        {
+            return;
+        }
 
         GL_CHECK(glDispatchCompute(groupCountX, groupCountY, groupCountZ));
         GL_DEBUG_STAT_INC(dispatchCalls);
@@ -930,7 +961,10 @@ namespace RVX
 
     void OpenGLCommandContext::DispatchIndirect(RHIBuffer* buffer, uint64 offset)
     {
-        PrepareForDispatch();
+        if (!PrepareForDispatch())
+        {
+            return;
+        }
 
         auto* glBuffer = static_cast<OpenGLBuffer*>(buffer);
         GL_CHECK(glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, glBuffer->GetHandle()));

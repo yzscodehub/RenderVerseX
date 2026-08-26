@@ -667,6 +667,16 @@ namespace RVX
         uint32 preparedDrawItemCount = 0;
         uint32 executedPacketCount = 0;
         uint32 executedDrawCount = 0;
+        uint32 alphaBlendDrawCount = 0;
+        uint32 premultipliedDrawCount = 0;
+        uint32 additiveDrawCount = 0;
+        uint32 thinTransmissionDrawCount = 0;
+        bool opaqueSceneSnapshotReady = false;
+        bool opaqueSceneSnapshotCopied = false;
+        bool reactiveMaskAttachmentBound = false;
+        uint32 reactiveMaskWriteDrawCount = 0;
+        uint32 translucencyPriorityBucketCount = 0;
+        uint32 translucencyFallbackCount = 0;
         uint32 skippedMaterialBindingCount = 0;
         uint32 skippedResourceCount = 0;
         uint32 skippedExecutionDrawCount = 0;

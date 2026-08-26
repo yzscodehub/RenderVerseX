@@ -104,6 +104,12 @@ namespace
                 return 0x46424B5F4F43434Cull;
             case MaterialUploadTextureSlot::Emissive:
                 return 0x46424B5F454D4953ull;
+            case MaterialUploadTextureSlot::ToonRamp:
+                return 0x46424B5F5452414Dull;
+            case MaterialUploadTextureSlot::Transmission:
+                return 0x46424B5F5452414Eull;
+            case MaterialUploadTextureSlot::Thickness:
+                return 0x46424B5F54484943ull;
         }
         return 0;
     }
@@ -137,6 +143,7 @@ namespace
         HashBindingValue(hash, constants.workflow);
         HashBindingValue(hash, constants.doubleSided);
         HashBindingValue(hash, constants.shadingModel);
+        HashBindingValue(hash, constants.blendMode);
         // A stable table slot is an addressing detail, not draw semantics.
         // Classification-table content hashes still bind this field byte for
         // byte; descriptor semantic keys must remain stable if identical
@@ -148,6 +155,13 @@ namespace
         HashBindingFloat(hash, constants.toonShadowTint.x);
         HashBindingFloat(hash, constants.toonShadowTint.y);
         HashBindingFloat(hash, constants.toonShadowTint.z);
+        HashBindingFloat(hash, constants.thinTransmissionParams.x);
+        HashBindingFloat(hash, constants.thinTransmissionParams.y);
+        HashBindingFloat(hash, constants.thinTransmissionParams.z);
+        HashBindingFloat(hash, constants.thinTransmissionParams.w);
+        HashBindingFloat(hash, constants.attenuationColor.x);
+        HashBindingFloat(hash, constants.attenuationColor.y);
+        HashBindingFloat(hash, constants.attenuationColor.z);
         const MaterialGPUUVTransform identityTransform{};
         for (uint32 slot = 0;
              slot < static_cast<uint32>(constants.uvTransforms.size());
@@ -336,11 +350,17 @@ bool MaterialSystem::Initialize(IRHIDevice* device,
     defaultTextures.metallicRoughness = m_defaultWhiteTextureView.Get();
     defaultTextures.occlusion = m_defaultWhiteTextureView.Get();
     defaultTextures.emissive = m_defaultBlackTextureView.Get();
+    defaultTextures.toonRamp = m_defaultWhiteTextureView.Get();
+    defaultTextures.transmission = m_defaultWhiteTextureView.Get();
+    defaultTextures.thickness = m_defaultWhiteTextureView.Get();
     defaultTextures.baseColorSampler = m_defaultSampler.Get();
     defaultTextures.normalSampler = m_defaultSampler.Get();
     defaultTextures.metallicRoughnessSampler = m_defaultSampler.Get();
     defaultTextures.occlusionSampler = m_defaultSampler.Get();
     defaultTextures.emissiveSampler = m_defaultSampler.Get();
+    defaultTextures.toonRampSampler = m_defaultSampler.Get();
+    defaultTextures.transmissionSampler = m_defaultSampler.Get();
+    defaultTextures.thicknessSampler = m_defaultSampler.Get();
     defaultTextures.materialParameterTable =
         m_defaultMaterialParameterTable.Get();
 
@@ -563,10 +583,36 @@ bool MaterialSystem::ResolveSurfacePipelinePolicy(
     bool& outRequiresUV1,
     SurfacePathEligibility& outSurfacePathEligibility) const noexcept
 {
+    MaterialBlendMode ignoredBlendMode = MaterialBlendMode::Opaque;
+    MaterialShadingModel ignoredShadingModel = MaterialShadingModel::StandardLit;
+    int32 ignoredSortPriority = 0;
+    return ResolveSurfacePipelinePolicy(material,
+                                        outCullMode,
+                                        outShadowPolicy,
+                                        outRequiresUV1,
+                                        outSurfacePathEligibility,
+                                        ignoredBlendMode,
+                                        ignoredShadingModel,
+                                        ignoredSortPriority);
+}
+
+bool MaterialSystem::ResolveSurfacePipelinePolicy(
+    RenderResourceHandle material,
+    MaterialCullMode& outCullMode,
+    MaterialShadowPolicy& outShadowPolicy,
+    bool& outRequiresUV1,
+    SurfacePathEligibility& outSurfacePathEligibility,
+    MaterialBlendMode& outBlendMode,
+    MaterialShadingModel& outShadingModel,
+    int32& outSortPriority) const noexcept
+{
     outCullMode = MaterialCullMode::Back;
     outShadowPolicy = MaterialShadowPolicy::CastAndReceive;
     outRequiresUV1 = false;
     outSurfacePathEligibility = SurfacePathEligibility::Unsupported;
+    outBlendMode = MaterialBlendMode::Opaque;
+    outShadingModel = MaterialShadingModel::StandardLit;
+    outSortPriority = 0;
     if (!material.IsValid() || m_resourceRegistry == nullptr)
     {
         return false;
@@ -587,35 +633,57 @@ bool MaterialSystem::ResolveSurfacePipelinePolicy(
     {
         return false;
     }
-    const bool implementedShadingModel =
-        descriptor.shadingModel == MaterialShadingModel::StandardLit ||
-        descriptor.shadingModel == MaterialShadingModel::ToonLit ||
-        descriptor.shadingModel == MaterialShadingModel::Unlit;
-    const bool implementedBlendMode =
+    const bool opaqueOrMasked =
         descriptor.blendMode == MaterialBlendMode::Opaque ||
-        descriptor.blendMode == MaterialBlendMode::Masked ||
-        descriptor.blendMode == MaterialBlendMode::AlphaBlend;
-    const bool implementedPhase =
-        descriptor.translucencyPhase == MaterialTranslucencyPhase::Opaque ||
-        descriptor.translucencyPhase == MaterialTranslucencyPhase::Standard;
+        descriptor.blendMode == MaterialBlendMode::Masked;
+    const bool translucent = !opaqueOrMasked;
+    bool implementedMaterial = false;
+    switch (descriptor.shadingModel)
+    {
+        case MaterialShadingModel::StandardLit:
+            implementedMaterial = opaqueOrMasked ||
+                descriptor.blendMode == MaterialBlendMode::AlphaBlend ||
+                descriptor.blendMode == MaterialBlendMode::Premultiplied;
+            break;
+        case MaterialShadingModel::Unlit:
+            implementedMaterial = opaqueOrMasked ||
+                descriptor.blendMode == MaterialBlendMode::AlphaBlend ||
+                descriptor.blendMode == MaterialBlendMode::Premultiplied ||
+                descriptor.blendMode == MaterialBlendMode::Additive;
+            break;
+        case MaterialShadingModel::ThinTransmission:
+            implementedMaterial = !opaqueOrMasked &&
+                (descriptor.blendMode == MaterialBlendMode::AlphaBlend ||
+                 descriptor.blendMode == MaterialBlendMode::Premultiplied);
+            break;
+        case MaterialShadingModel::ToonLit:
+            // GFX15 deliberately does not widen ToonLit to translucency.
+            implementedMaterial = opaqueOrMasked;
+            break;
+    }
+    const bool implementedPhase = opaqueOrMasked
+        ? descriptor.translucencyPhase == MaterialTranslucencyPhase::Opaque
+        : descriptor.translucencyPhase == MaterialTranslucencyPhase::Standard;
     if (descriptor.domain != MaterialDomain::Surface ||
-        !implementedShadingModel || !implementedBlendMode ||
+        !implementedMaterial ||
         !implementedPhase ||
         ((descriptor.shadingModel == MaterialShadingModel::StandardLit ||
           descriptor.shadingModel == MaterialShadingModel::ToonLit) &&
          materialData->sourceData.workflow !=
              MaterialSourceWorkflow::MetallicRoughness) ||
-        (descriptor.blendMode == MaterialBlendMode::AlphaBlend &&
-         MaterialShadowPolicyCasts(descriptor.shadowPolicy)) ||
+        (translucent && MaterialShadowPolicyCasts(descriptor.shadowPolicy)) ||
+        (descriptor.shadingModel == MaterialShadingModel::ToonLit &&
+         (descriptor.featureMask &
+          (1ull << static_cast<uint8>(MaterialTextureSlot::ToonRamp))) != 0) ||
         descriptor.programFamily !=
             GetMaterialProgramFamily(descriptor.shadingModel) ||
         descriptor.parameterLayoutHash != GetMaterialParameterLayoutHashV1())
     {
-        // StandardLit and ToonLit implement only Metallic-Roughness source
-        // compatibility. Thin transmission, premultiplied/additive blending,
-        // after-tone-map surfaces and Toon translucency remain transport
-        // contracts until their dedicated renderer features exist. Transparent
-        // casters also have no supported shadow path yet.
+        // GFX15 supports the explicit raster translucency matrix only:
+        // StandardLit Alpha/Premultiplied, Unlit Alpha/Premultiplied/Additive,
+        // and ThinTransmission Alpha/Premultiplied. After-tone-map materials,
+        // Toon translucency, StandardLit additive, Thin additive, and every
+        // transparent shadow caster remain fail-closed.
         return false;
     }
 
@@ -661,6 +729,9 @@ bool MaterialSystem::ResolveSurfacePipelinePolicy(
         outRequiresUV1 = outRequiresUV1 || binding.uvSet == 1;
     }
     outSurfacePathEligibility = surfacePathEligibility;
+    outBlendMode = descriptor.blendMode;
+    outShadingModel = descriptor.shadingModel;
+    outSortPriority = descriptor.sortPriority;
     return true;
 }
 
@@ -977,9 +1048,12 @@ bool MaterialSystem::CreateMaterialBindingSnapshot(
         ResolveMaterialTextures(material, resolvedViewCache, options);
     if (!textures.baseColor || !textures.normal || !textures.metallicRoughness ||
         !textures.occlusion || !textures.emissive ||
+        !textures.toonRamp || !textures.transmission || !textures.thickness ||
         !textures.baseColorSampler || !textures.normalSampler ||
         !textures.metallicRoughnessSampler || !textures.occlusionSampler ||
-        !textures.emissiveSampler || !textures.materialParameterTable)
+        !textures.emissiveSampler || !textures.toonRampSampler ||
+        !textures.transmissionSampler || !textures.thicknessSampler ||
+        !textures.materialParameterTable)
     {
         return false;
     }
@@ -1013,18 +1087,58 @@ bool MaterialSystem::CreateMaterialBindingSnapshot(
     RHIDescriptorSetDesc descriptorDesc;
     descriptorDesc.layout = m_materialSetLayout;
     descriptorDesc.debugName = "ObjectVelocityRecordMaterialDescriptorSet";
-    descriptorDesc.BindBuffer(0, constantBuffer.Get(), 0, stride);
-    descriptorDesc.BindTexture(1, textures.baseColor);
-    descriptorDesc.BindTexture(2, textures.normal);
-    descriptorDesc.BindTexture(3, textures.metallicRoughness);
-    descriptorDesc.BindTexture(4, textures.occlusion);
-    descriptorDesc.BindTexture(5, textures.emissive);
-    descriptorDesc.BindSampler(6, textures.baseColorSampler);
-    descriptorDesc.BindSampler(7, textures.normalSampler);
-    descriptorDesc.BindSampler(8, textures.metallicRoughnessSampler);
-    descriptorDesc.BindSampler(9, textures.occlusionSampler);
-    descriptorDesc.BindSampler(10, textures.emissiveSampler);
-    descriptorDesc.BindBuffer(11, textures.materialParameterTable);
+    descriptorDesc.BindBuffer(RVX_MATERIAL_DESCRIPTOR_CONSTANT_BUFFER_BINDING,
+                              constantBuffer.Get(), 0, stride);
+    descriptorDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                   MaterialUploadTextureSlot::BaseColor),
+                               textures.baseColor);
+    descriptorDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                   MaterialUploadTextureSlot::Normal),
+                               textures.normal);
+    descriptorDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                   MaterialUploadTextureSlot::MetallicRoughness),
+                               textures.metallicRoughness);
+    descriptorDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                   MaterialUploadTextureSlot::Occlusion),
+                               textures.occlusion);
+    descriptorDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                   MaterialUploadTextureSlot::Emissive),
+                               textures.emissive);
+    descriptorDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                   MaterialUploadTextureSlot::ToonRamp),
+                               textures.toonRamp);
+    descriptorDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                   MaterialUploadTextureSlot::Transmission),
+                               textures.transmission);
+    descriptorDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                   MaterialUploadTextureSlot::Thickness),
+                               textures.thickness);
+    descriptorDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                   MaterialUploadTextureSlot::BaseColor),
+                               textures.baseColorSampler);
+    descriptorDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                   MaterialUploadTextureSlot::Normal),
+                               textures.normalSampler);
+    descriptorDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                   MaterialUploadTextureSlot::MetallicRoughness),
+                               textures.metallicRoughnessSampler);
+    descriptorDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                   MaterialUploadTextureSlot::Occlusion),
+                               textures.occlusionSampler);
+    descriptorDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                   MaterialUploadTextureSlot::Emissive),
+                               textures.emissiveSampler);
+    descriptorDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                   MaterialUploadTextureSlot::ToonRamp),
+                               textures.toonRampSampler);
+    descriptorDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                   MaterialUploadTextureSlot::Transmission),
+                               textures.transmissionSampler);
+    descriptorDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                   MaterialUploadTextureSlot::Thickness),
+                               textures.thicknessSampler);
+    descriptorDesc.BindBuffer(RVX_MATERIAL_DESCRIPTOR_PARAMETER_TABLE_BINDING,
+                              textures.materialParameterTable);
     RHIDescriptorSetRef descriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
     if (!descriptorSet)
     {
@@ -1059,12 +1173,15 @@ bool MaterialSystem::CreateMaterialBindingSnapshot(
     outSnapshot.constantBuffer = std::move(constantBuffer);
     outSnapshot.descriptorSet = std::move(descriptorSet);
     outSnapshot.layout = RHIDescriptorSetLayoutRef(m_materialSetLayout);
-    outSnapshot.textureViews.reserve(5);
+    outSnapshot.textureViews.reserve(RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT);
     outSnapshot.textureViews.emplace_back(textures.baseColor);
     outSnapshot.textureViews.emplace_back(textures.normal);
     outSnapshot.textureViews.emplace_back(textures.metallicRoughness);
     outSnapshot.textureViews.emplace_back(textures.occlusion);
     outSnapshot.textureViews.emplace_back(textures.emissive);
+    outSnapshot.textureViews.emplace_back(textures.toonRamp);
+    outSnapshot.textureViews.emplace_back(textures.transmission);
+    outSnapshot.textureViews.emplace_back(textures.thickness);
     outSnapshot.textures.reserve(outSnapshot.textureViews.size());
     for (const RHITextureViewRef& view : outSnapshot.textureViews)
     {
@@ -1081,7 +1198,10 @@ bool MaterialSystem::CreateMaterialBindingSnapshot(
         RHISamplerRef(textures.normalSampler),
         RHISamplerRef(textures.metallicRoughnessSampler),
         RHISamplerRef(textures.occlusionSampler),
-        RHISamplerRef(textures.emissiveSampler)};
+        RHISamplerRef(textures.emissiveSampler),
+        RHISamplerRef(textures.toonRampSampler),
+        RHISamplerRef(textures.transmissionSampler),
+        RHISamplerRef(textures.thicknessSampler)};
     outSnapshot.binding = std::move(binding);
     outSnapshot.binding.descriptorSet = outSnapshot.descriptorSet.Get();
     return outSnapshot.IsDrawable();
@@ -1231,7 +1351,7 @@ uint64 MaterialSystem::BuildSemanticDescriptorContentKey(
 
     for (uint8 slotValue =
              static_cast<uint8>(MaterialUploadTextureSlot::BaseColor);
-         slotValue <= static_cast<uint8>(MaterialUploadTextureSlot::Emissive);
+         slotValue <= static_cast<uint8>(MaterialUploadTextureSlot::Thickness);
          ++slotValue)
     {
         const MaterialUploadTextureSlot slot =
@@ -1324,11 +1444,17 @@ size_t MaterialSystem::MaterialDescriptorKeyHash::operator()(const MaterialDescr
     HashCombine(seed, std::hash<RHITextureView*>{}(key.metallicRoughness));
     HashCombine(seed, std::hash<RHITextureView*>{}(key.occlusion));
     HashCombine(seed, std::hash<RHITextureView*>{}(key.emissive));
+    HashCombine(seed, std::hash<RHITextureView*>{}(key.toonRamp));
+    HashCombine(seed, std::hash<RHITextureView*>{}(key.transmission));
+    HashCombine(seed, std::hash<RHITextureView*>{}(key.thickness));
     HashCombine(seed, std::hash<RHISampler*>{}(key.baseColorSampler));
     HashCombine(seed, std::hash<RHISampler*>{}(key.normalSampler));
     HashCombine(seed, std::hash<RHISampler*>{}(key.metallicRoughnessSampler));
     HashCombine(seed, std::hash<RHISampler*>{}(key.occlusionSampler));
     HashCombine(seed, std::hash<RHISampler*>{}(key.emissiveSampler));
+    HashCombine(seed, std::hash<RHISampler*>{}(key.toonRampSampler));
+    HashCombine(seed, std::hash<RHISampler*>{}(key.transmissionSampler));
+    HashCombine(seed, std::hash<RHISampler*>{}(key.thicknessSampler));
     HashCombine(seed, std::hash<RHIBuffer*>{}(key.materialParameterTable));
     HashCombine(seed, std::hash<uint64>{}(key.viewGeneration));
     HashCombine(seed, std::hash<uint64>{}(key.pageIdentity));
@@ -1487,11 +1613,17 @@ MaterialSystem::ResolvedMaterialTextures MaterialSystem::ResolveMaterialTextures
     textures.metallicRoughness = m_defaultWhiteTextureView.Get();
     textures.occlusion = m_defaultWhiteTextureView.Get();
     textures.emissive = m_defaultBlackTextureView.Get();
+    textures.toonRamp = m_defaultWhiteTextureView.Get();
+    textures.transmission = m_defaultWhiteTextureView.Get();
+    textures.thickness = m_defaultWhiteTextureView.Get();
     textures.baseColorSampler = m_defaultSampler.Get();
     textures.normalSampler = m_defaultSampler.Get();
     textures.metallicRoughnessSampler = m_defaultSampler.Get();
     textures.occlusionSampler = m_defaultSampler.Get();
     textures.emissiveSampler = m_defaultSampler.Get();
+    textures.toonRampSampler = m_defaultSampler.Get();
+    textures.transmissionSampler = m_defaultSampler.Get();
+    textures.thicknessSampler = m_defaultSampler.Get();
     textures.materialParameterTable = options.materialParameterTable
         ? options.materialParameterTable
         : m_defaultMaterialParameterTable.Get();
@@ -1547,6 +1679,24 @@ MaterialSystem::ResolvedMaterialTextures MaterialSystem::ResolveMaterialTextures
                         MaterialTextureFlags::HasEmissive);
                     destination = &textures.emissive;
                     samplerDestination = &textures.emissiveSampler;
+                    break;
+                case MaterialUploadTextureSlot::ToonRamp:
+                    textureFlag = static_cast<uint32>(
+                        MaterialTextureFlags::HasToonRamp);
+                    destination = &textures.toonRamp;
+                    samplerDestination = &textures.toonRampSampler;
+                    break;
+                case MaterialUploadTextureSlot::Transmission:
+                    textureFlag = static_cast<uint32>(
+                        MaterialTextureFlags::HasTransmission);
+                    destination = &textures.transmission;
+                    samplerDestination = &textures.transmissionSampler;
+                    break;
+                case MaterialUploadTextureSlot::Thickness:
+                    textureFlag = static_cast<uint32>(
+                        MaterialTextureFlags::HasThickness);
+                    destination = &textures.thickness;
+                    samplerDestination = &textures.thicknessSampler;
                     break;
                 default:
                     continue;
@@ -1629,11 +1779,17 @@ MaterialSystem::MaterialSetResolveResult MaterialSystem::GetOrCreateMaterialSetF
     key.metallicRoughness = textures.metallicRoughness;
     key.occlusion = textures.occlusion;
     key.emissive = textures.emissive;
+    key.toonRamp = textures.toonRamp;
+    key.transmission = textures.transmission;
+    key.thickness = textures.thickness;
     key.baseColorSampler = textures.baseColorSampler;
     key.normalSampler = textures.normalSampler;
     key.metallicRoughnessSampler = textures.metallicRoughnessSampler;
     key.occlusionSampler = textures.occlusionSampler;
     key.emissiveSampler = textures.emissiveSampler;
+    key.toonRampSampler = textures.toonRampSampler;
+    key.transmissionSampler = textures.transmissionSampler;
+    key.thicknessSampler = textures.thicknessSampler;
     key.materialParameterTable = textures.materialParameterTable;
     key.viewGeneration = textures.viewGeneration;
     key.pageIdentity = textures.pageIdentity;
@@ -1683,7 +1839,10 @@ MaterialSystem::MaterialSetResolveResult MaterialSystem::GetOrCreateMaterialSetF
         RHISamplerRef(textures.normalSampler),
         RHISamplerRef(textures.metallicRoughnessSampler),
         RHISamplerRef(textures.occlusionSampler),
-        RHISamplerRef(textures.emissiveSampler)};
+        RHISamplerRef(textures.emissiveSampler),
+        RHISamplerRef(textures.toonRampSampler),
+        RHISamplerRef(textures.transmissionSampler),
+        RHISamplerRef(textures.thicknessSampler)};
     cacheEntry.materialParameterTable =
         RHIBufferRef(textures.materialParameterTable);
     m_materialDescriptorCache.emplace(key, std::move(cacheEntry));
@@ -1697,9 +1856,12 @@ RHIDescriptorSetRef MaterialSystem::CreateMaterialDescriptorSet(
     if (!m_materialSetLayout || constantBuffer == nullptr ||
         !textures.baseColor || !textures.normal || !textures.metallicRoughness ||
         !textures.occlusion || !textures.emissive ||
+        !textures.toonRamp || !textures.transmission || !textures.thickness ||
         !textures.baseColorSampler || !textures.normalSampler ||
         !textures.metallicRoughnessSampler || !textures.occlusionSampler ||
-        !textures.emissiveSampler || !textures.materialParameterTable)
+        !textures.emissiveSampler || !textures.toonRampSampler ||
+        !textures.transmissionSampler || !textures.thicknessSampler ||
+        !textures.materialParameterTable)
     {
         return {};
     }
@@ -1707,18 +1869,58 @@ RHIDescriptorSetRef MaterialSystem::CreateMaterialDescriptorSet(
     RHIDescriptorSetDesc descSetDesc;
     descSetDesc.layout = m_materialSetLayout;
     descSetDesc.debugName = "MaterialDescriptorSet";
-    descSetDesc.BindBuffer(0, constantBuffer, 0, m_materialConstantStride);
-    descSetDesc.BindTexture(1, textures.baseColor);
-    descSetDesc.BindTexture(2, textures.normal);
-    descSetDesc.BindTexture(3, textures.metallicRoughness);
-    descSetDesc.BindTexture(4, textures.occlusion);
-    descSetDesc.BindTexture(5, textures.emissive);
-    descSetDesc.BindSampler(6, textures.baseColorSampler);
-    descSetDesc.BindSampler(7, textures.normalSampler);
-    descSetDesc.BindSampler(8, textures.metallicRoughnessSampler);
-    descSetDesc.BindSampler(9, textures.occlusionSampler);
-    descSetDesc.BindSampler(10, textures.emissiveSampler);
-    descSetDesc.BindBuffer(11, textures.materialParameterTable);
+    descSetDesc.BindBuffer(RVX_MATERIAL_DESCRIPTOR_CONSTANT_BUFFER_BINDING,
+                           constantBuffer, 0, m_materialConstantStride);
+    descSetDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                MaterialUploadTextureSlot::BaseColor),
+                            textures.baseColor);
+    descSetDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                MaterialUploadTextureSlot::Normal),
+                            textures.normal);
+    descSetDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                MaterialUploadTextureSlot::MetallicRoughness),
+                            textures.metallicRoughness);
+    descSetDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                MaterialUploadTextureSlot::Occlusion),
+                            textures.occlusion);
+    descSetDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                MaterialUploadTextureSlot::Emissive),
+                            textures.emissive);
+    descSetDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                MaterialUploadTextureSlot::ToonRamp),
+                            textures.toonRamp);
+    descSetDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                MaterialUploadTextureSlot::Transmission),
+                            textures.transmission);
+    descSetDesc.BindTexture(GetMaterialTextureDescriptorBinding(
+                                MaterialUploadTextureSlot::Thickness),
+                            textures.thickness);
+    descSetDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                MaterialUploadTextureSlot::BaseColor),
+                            textures.baseColorSampler);
+    descSetDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                MaterialUploadTextureSlot::Normal),
+                            textures.normalSampler);
+    descSetDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                MaterialUploadTextureSlot::MetallicRoughness),
+                            textures.metallicRoughnessSampler);
+    descSetDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                MaterialUploadTextureSlot::Occlusion),
+                            textures.occlusionSampler);
+    descSetDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                MaterialUploadTextureSlot::Emissive),
+                            textures.emissiveSampler);
+    descSetDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                MaterialUploadTextureSlot::ToonRamp),
+                            textures.toonRampSampler);
+    descSetDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                MaterialUploadTextureSlot::Transmission),
+                            textures.transmissionSampler);
+    descSetDesc.BindSampler(GetMaterialSamplerDescriptorBinding(
+                                MaterialUploadTextureSlot::Thickness),
+                            textures.thicknessSampler);
+    descSetDesc.BindBuffer(RVX_MATERIAL_DESCRIPTOR_PARAMETER_TABLE_BINDING,
+                           textures.materialParameterTable);
 
     return m_device->CreateDescriptorSet(descSetDesc);
 }

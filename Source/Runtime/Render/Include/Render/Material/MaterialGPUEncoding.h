@@ -17,7 +17,7 @@ namespace RVX
      *
      * This is the sole CPU encoder for MaterialGPUConstants.  It deliberately
      * lives in RenderRuntimeCore so resource upload and render binding cannot
-     * diverge on the fixed 240-byte shader ABI.
+     * diverge on the fixed MaterialGPUConstants shader ABI.
      */
     [[nodiscard]] MaterialGPUConstants EncodeMaterialGPUConstants(
         const MaterialSourceData& sourceData,

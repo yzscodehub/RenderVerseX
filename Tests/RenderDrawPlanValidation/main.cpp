@@ -187,7 +187,7 @@ namespace
             if (mode != RenderMaterialMode::Transparent)
             {
                 const MeshPassProcessorInput input = MakeInput(
-                    entry, depthOpaqueOrdinal++, entry.draw.depthFromCamera);
+                    entry, depthOpaqueOrdinal++, entry.draw.viewSpaceDepth);
                 preparation.depth.Record(depth.Process(input));
                 preparation.opaque.Record(opaque.Process(input));
             }
@@ -196,12 +196,12 @@ namespace
                 const MeshPassProcessorInput input = MakeInput(
                     entry,
                     transparentOrdinal++,
-                    entry.draw.depthFromCamera);
+                    entry.draw.viewSpaceDepth);
                 preparation.transparent.Record(transparent.Process(input));
             }
 
             const MeshPassProcessorInput shadowInput = MakeInput(
-                entry, shadowOrdinal++, entry.draw.depthFromCamera);
+                entry, shadowOrdinal++, entry.draw.viewSpaceDepth);
             preparation.shadow.Record(shadow.Process(shadowInput));
         }
 
@@ -383,6 +383,7 @@ TEST(RenderDrawPlanValidation,
                                                      allVisible,
                                                      0x1U,
                                                      Vec3{0.0f},
+                                                     Vec3{0.0f, 0.0f, -1.0f},
                                                      opaque,
                                                      masked,
                                                      transparent,
@@ -390,8 +391,11 @@ TEST(RenderDrawPlanValidation,
     EXPECT_EQ(1U, opaque.size());
     EXPECT_TRUE(masked.empty());
     ASSERT_EQ(2U, transparent.size());
-    EXPECT_EQ(103U, transparent[0].packet.objectId);
-    EXPECT_EQ(104U, transparent[1].packet.objectId);
+    // With equal sort priority, the contract is back-to-front by projected
+    // view depth.  The camera looks down -Z, so z=10 is closer in this fixture
+    // and z=30 is farther away; the farther item must be submitted first.
+    EXPECT_EQ(104U, transparent[0].packet.objectId);
+    EXPECT_EQ(103U, transparent[1].packet.objectId);
     EXPECT_TRUE(diagnostics.orderValid);
     EXPECT_TRUE(IsTransparentDrawListStrictlyOrdered(transparent));
 
@@ -400,6 +404,7 @@ TEST(RenderDrawPlanValidation,
                                                      frustumFiltered,
                                                      0x1U,
                                                      Vec3{0.0f},
+                                                     Vec3{0.0f, 0.0f, -1.0f},
                                                      opaque,
                                                      masked,
                                                      transparent));
@@ -442,6 +447,7 @@ TEST(RenderDrawPlanValidation,
                                                      malformedVisibleMask,
                                                      ~0U,
                                                      Vec3{0.0F},
+                                                     Vec3{0.0f, 0.0f, -1.0f},
                                                      opaque,
                                                      masked,
                                                      transparent));

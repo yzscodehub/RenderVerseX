@@ -140,6 +140,17 @@ namespace RVX
             s.dstColorBlend = RHIBlendFactor::One;
             return s;
         }
+
+        static RHIRenderTargetBlendState PremultipliedAlpha()
+        {
+            RHIRenderTargetBlendState s;
+            s.blendEnable = true;
+            s.srcColorBlend = RHIBlendFactor::One;
+            s.dstColorBlend = RHIBlendFactor::InvSrcAlpha;
+            s.srcAlphaBlend = RHIBlendFactor::One;
+            s.dstAlphaBlend = RHIBlendFactor::InvSrcAlpha;
+            return s;
+        }
     };
 
     struct RHIBlendState

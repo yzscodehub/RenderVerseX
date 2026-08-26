@@ -659,6 +659,72 @@
       "deterministicQualification": true
     },
     {
+      "id": "transparent-materials",
+      "domain": "rendering",
+      "intent": "regression",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [
+        "RENDER.CAPABILITY.SORTED_TRANSLUCENCY"
+      ],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "transparent-materials-v1"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1019
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 1.35, 5.5],
+          "target": [0.0, 1.35, 0.0],
+          "verticalFieldOfViewDegrees": 38.0,
+          "nearPlane": 0.05,
+          "farPlane": 100.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [120],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [
+          {
+            "id": "frame",
+            "x": 0.0,
+            "y": 0.0,
+            "width": 1.0,
+            "height": 1.0
+          },
+          {
+            "id": "translucency-panels",
+            "x": 0.14,
+            "y": 0.18,
+            "width": 0.72,
+            "height": 0.62
+          }
+        ],
+        "metrics": [
+          {
+            "code": "VISUAL.METRIC.LUMA_RANGE",
+            "regionOfInterestId": "frame",
+            "minimum": 8.0,
+            "maximum": null
+          },
+          {
+            "code": "VISUAL.METRIC.SUBJECT_CONTRAST",
+            "regionOfInterestId": "translucency-panels",
+            "minimum": 0.1,
+            "maximum": 1.0
+          }
+        ]
+      },
+      "deterministicQualification": true
+    },
+    {
       "id": "temporal-aa",
       "domain": "rendering",
       "intent": "regression",

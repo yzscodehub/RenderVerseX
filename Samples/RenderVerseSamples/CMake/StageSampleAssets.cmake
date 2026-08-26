@@ -2,7 +2,9 @@ cmake_minimum_required(VERSION 3.25)
 
 foreach(_rvx_required SOURCE_ROOT BUILD_ROOT DESTINATION_ROOT STAMP_PATH
                       HDR_FIXTURE_WRITER INTERIOR_FIXTURE_WRITER
-                      COOK_EXECUTABLE COOKED_CATALOG_WRITER TOON_COOK_PROFILE)
+                      TRANSPARENT_MATERIALS_FIXTURE_WRITER
+                      COOK_EXECUTABLE COOKED_CATALOG_WRITER TOON_COOK_PROFILE
+                      TRANSPARENT_MATERIALS_COOK_PROFILE)
     if(NOT DEFINED ${_rvx_required} OR "${${_rvx_required}}" STREQUAL "")
         message(FATAL_ERROR "StageSampleAssets requires ${_rvx_required}")
     endif()
@@ -106,11 +108,76 @@ execute_process(
         --asset-id "stylized-materials-toon"
         --asset-path-relative "cooked/stylized-materials-toon/scene.rva"
         --source-path "scene.gltf"
+        --source-name "RenderVerseX stylized material grid fixture"
+        --source-uri "repo://Samples/RenderVerseSamples/Assets/models/pbr-material-grid/scene.gltf"
+        --source-version "gfx14-toon-cook-v1"
+        --attribution "Generated from the RenderVerseX PBR material grid fixture."
+        --modification-notice "Cooked with the fixed GFX14 ToonLit material profile; source bytes are not staged at runtime."
+        --derived-from "pbr-material-grid"
+        --generation-recipe "rvx-gfx14-toon-material-cook-v1"
     RESULT_VARIABLE _rvx_toon_catalog_result)
 if(NOT _rvx_toon_catalog_result EQUAL 0)
     message(FATAL_ERROR "Stylized Toon cooked catalog publication failed")
 endif()
 file(REMOVE_RECURSE "${_rvx_toon_source_root}")
+
+# GFX15 mirrors the GFX14 transaction discipline, but its source is generated
+# in the staging-only cook root.  The fixture writer and RVXCook are build-time
+# tools; publication admits only manifest-verified cooked bytes.
+set(_rvx_transparent_source_root
+    "${_rvx_staging}/cook-inputs/transparent-materials-v1")
+set(_rvx_transparent_cooked_root
+    "${_rvx_staging}/cooked/transparent-materials-v1")
+set(_rvx_transparent_manifest
+    "${_rvx_transparent_cooked_root}/CookManifest.rvxmanifest")
+file(MAKE_DIRECTORY "${_rvx_transparent_source_root}")
+execute_process(
+    COMMAND "${TRANSPARENT_MATERIALS_FIXTURE_WRITER}"
+        --output "${_rvx_transparent_source_root}/scene.gltf"
+    RESULT_VARIABLE _rvx_transparent_fixture_result)
+if(NOT _rvx_transparent_fixture_result EQUAL 0)
+    message(FATAL_ERROR "Transparent-material fixture generation failed")
+endif()
+execute_process(
+    COMMAND "${COOK_EXECUTABLE}"
+        --source "${_rvx_transparent_source_root}"
+        --output "${_rvx_transparent_cooked_root}"
+        --manifest "${_rvx_transparent_manifest}"
+        --profile "${TRANSPARENT_MATERIALS_COOK_PROFILE}"
+        --model-only
+        --fail-on-errors
+    RESULT_VARIABLE _rvx_transparent_cook_result)
+if(NOT _rvx_transparent_cook_result EQUAL 0)
+    message(FATAL_ERROR "Transparent-material fixture cook failed")
+endif()
+execute_process(
+    COMMAND "${COOKED_CATALOG_WRITER}"
+        --input-catalog "${_rvx_staging}/catalog.json"
+        --output-catalog "${_rvx_staging}/catalog.json"
+        --asset-root "${_rvx_staging}"
+        --source-root "${_rvx_transparent_source_root}"
+        --manifest "${_rvx_transparent_manifest}"
+        --cooked-root "${_rvx_transparent_cooked_root}"
+        --cooked-root-relative "cooked/transparent-materials-v1"
+        --asset-id "transparent-materials-v1"
+        --asset-path-relative "cooked/transparent-materials-v1/scene.rva"
+        --source-path "scene.gltf"
+        --source-name "RenderVerseX transparent-material fixture"
+        --source-uri "repo://Samples/Common/Tools/SampleTransparentMaterialsFixtureWriter.cpp"
+        --source-version "gfx15-transparent-materials-cook-v1"
+        --attribution "Generated from the RenderVerseX deterministic transparent-material fixture."
+        --modification-notice "Cooked with the fixed GFX15 transparency profile; source bytes are not staged at runtime."
+        --derived-from "transparent-materials-fixture"
+        --generation-recipe "rvx-gfx15-transparent-material-cook-v1"
+    RESULT_VARIABLE _rvx_transparent_catalog_result)
+if(NOT _rvx_transparent_catalog_result EQUAL 0)
+    message(FATAL_ERROR "Transparent-material cooked catalog publication failed")
+endif()
+file(REMOVE_RECURSE "${_rvx_transparent_source_root}")
+if(EXISTS "${_rvx_transparent_source_root}")
+    message(FATAL_ERROR
+        "Transparent-material cook input remains after staging; cooked-only runtime admission is unsafe")
+endif()
 file(COPY_FILE "${SOURCE_ROOT}/Manifests/renderverse-samples.json"
      "${_rvx_staging}/renderverse-samples.json" ONLY_IF_DIFFERENT)
 foreach(_rvx_license

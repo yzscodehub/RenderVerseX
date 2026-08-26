@@ -131,14 +131,18 @@ namespace RVX
             // The caller rejects non-finite distances before sorting.  Keep
             // the explicit finite check here as well so an externally supplied
             // list can never acquire an unspecified std::sort ordering.
-            if (!std::isfinite(lhs.depthFromCamera) ||
-                !std::isfinite(rhs.depthFromCamera))
+            if (!std::isfinite(lhs.viewSpaceDepth) ||
+                !std::isfinite(rhs.viewSpaceDepth))
             {
                 return false;
             }
-            if (lhs.depthFromCamera != rhs.depthFromCamera)
+            if (lhs.translucencySortPriority != rhs.translucencySortPriority)
             {
-                return lhs.depthFromCamera > rhs.depthFromCamera;
+                return lhs.translucencySortPriority < rhs.translucencySortPriority;
+            }
+            if (lhs.viewSpaceDepth != rhs.viewSpaceDepth)
+            {
+                return lhs.viewSpaceDepth > rhs.viewSpaceDepth;
             }
             return GetTransparentTieBreak(lhs) < GetTransparentTieBreak(rhs);
         }
@@ -201,7 +205,7 @@ namespace RVX
             item.mesh = batch.mesh;
             item.material = batch.material;
             item.renderMode = batch.materialMode;
-            item.depthFromCamera = length(Vec3(object.worldMatrix[3]) - cameraPosition);
+            item.viewSpaceDepth = 0.0f;
             if (scene.FindCachedDrawPacketTemplate(batch, item.packet))
             {
                 item.packet.objectId = batch.objectId;
@@ -235,7 +239,7 @@ namespace RVX
         {
             if (item.renderMode == MaterialRenderMode::Transparent)
             {
-                if (!std::isfinite(item.depthFromCamera))
+                if (!std::isfinite(item.viewSpaceDepth))
                 {
                     if (transparentDiagnostics != nullptr)
                     {
@@ -335,7 +339,9 @@ bool BuildRenderSceneDrawClassification(
             sources.bindingResolver->Resolve(entry.draw.packet);
         }
         entry.draw.classificationIndex = entry.classificationIndex;
-        entry.draw.depthFromCamera = 0.0f;
+        entry.draw.viewSpaceDepth = 0.0f;
+        entry.draw.translucencySortPriority =
+            entry.draw.packet.translucencySortPriority;
         entry.draw.sortKey = entry.draw.renderMode ==
                                      MaterialRenderMode::Transparent
                                  ? BuildTransparentDrawSortKey(entry.draw)
@@ -412,6 +418,7 @@ bool ProjectRenderSceneDrawClassification(
     std::span<const uint8> visibleObjectMask,
     uint32 viewCullingMask,
     const Vec3& cameraPosition,
+    const Vec3& cameraForward,
     std::vector<RenderDrawItem>& outOpaqueDrawItems,
     std::vector<RenderDrawItem>& outMaskedDrawItems,
     std::vector<RenderDrawItem>& outTransparentDrawItems,
@@ -428,6 +435,12 @@ bool ProjectRenderSceneDrawClassification(
     {
         return false;
     }
+    const float32 forwardLengthSquared = dot(cameraForward, cameraForward);
+    if (!std::isfinite(forwardLengthSquared) || forwardLengthSquared <= 0.0f)
+    {
+        return false;
+    }
+    const Vec3 normalizedCameraForward = cameraForward / std::sqrt(forwardLengthSquared);
 
     for (const RenderSceneDrawClassificationEntry& entry :
          classification.entries)
@@ -440,7 +453,9 @@ bool ProjectRenderSceneDrawClassification(
             continue;
         }
         RenderDrawItem item = entry.draw;
-        item.depthFromCamera = length(entry.worldPosition - cameraPosition);
+        item.viewSpaceDepth = dot(entry.worldPosition - cameraPosition,
+                                  normalizedCameraForward);
+        item.translucencySortPriority = item.packet.translucencySortPriority;
         AppendToMaterialList(std::move(item),
                              outOpaqueDrawItems,
                              outMaskedDrawItems,
@@ -507,6 +522,7 @@ void BuildMaterialDrawLists(const RenderScene& scene,
             visibleMask,
             ~0U,
             cameraPosition,
+            Vec3(0.0f, 0.0f, -1.0f),
             outOpaqueDrawItems,
             outMaskedDrawItems,
             outTransparentDrawItems,
@@ -532,7 +548,8 @@ void BuildMaterialDrawLists(const RenderScene& scene,
     uint64 BuildTransparentDrawSortKey(const RenderDrawItem& item)
     {
         uint64 hash = kTransparentOrderHashSeed;
-        AppendHash(hash, std::bit_cast<uint32>(item.depthFromCamera));
+        AppendHash(hash, static_cast<uint32>(item.translucencySortPriority));
+        AppendHash(hash, std::bit_cast<uint32>(item.viewSpaceDepth));
         const auto [objectId,
                     submeshIndex,
                     materialSlot,
@@ -558,7 +575,7 @@ void BuildMaterialDrawLists(const RenderScene& scene,
         if (std::any_of(drawItems.begin(), drawItems.end(),
                         [](const RenderDrawItem& item)
                         {
-                            return !std::isfinite(item.depthFromCamera);
+                            return !std::isfinite(item.viewSpaceDepth);
                         }))
         {
             return false;

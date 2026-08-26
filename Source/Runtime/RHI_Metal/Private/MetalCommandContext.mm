@@ -2,6 +2,7 @@
 #include "MetalDevice.h"
 #include "MetalResources.h"
 #include "MetalPipeline.h"
+#include "ShaderContracts/MetalBindingABI.h"
 #include "MetalSwapChain.h"
 #include "MetalSynchronization.h"
 #include "MetalConversions.h"
@@ -485,10 +486,34 @@ namespace RVX
 
         const auto& bindings = metalSet->GetBindings();
 
-        // Calculate slot offset based on set index (each set gets a range of binding points)
-        // Set 0: indices 0-15, Set 1: indices 16-31, etc.
-        constexpr uint32 BINDINGS_PER_SET = 16;
-        uint32 slotOffset = slot * BINDINGS_PER_SET;
+        // Direct Metal indices are not descriptor-set offsets. Both the MSL
+        // translator and the runtime consume this shared ABI, which keeps the
+        // material set's b0 and t17 below Metal's buffer-index limit.
+        for (const MetalDescriptorSet::BindingData& binding : bindings)
+        {
+            uint32 index = RVX_INVALID_INDEX;
+            const bool validBuffer =
+                !binding.buffer || MetalBindingABI::TryGetBufferIndex(
+                    slot, binding.binding, binding.arrayElement, index);
+            const bool validTexture =
+                !binding.texture ||
+                (binding.type == RHIBindingType::StorageTexture
+                    ? MetalBindingABI::TryGetStorageTextureIndex(
+                        slot, binding.binding, binding.arrayElement, index)
+                    : MetalBindingABI::TryGetTextureIndex(
+                        slot, binding.binding, binding.arrayElement, index));
+            const bool validSampler =
+                !binding.sampler || MetalBindingABI::TryGetSamplerIndex(
+                    slot, binding.binding, binding.arrayElement, index);
+            if (!validBuffer || !validTexture || !validSampler)
+            {
+                RVX_RHI_ERROR(
+                    "MetalCommandContext: descriptor set {} binding {} is outside the direct Metal binding ABI",
+                    slot,
+                    binding.binding);
+                return;
+            }
+        }
 
         // Track dynamic offset index for dynamic buffers
         size_t dynamicOffsetIndex = 0;
@@ -496,8 +521,32 @@ namespace RVX
         // Direct binding approach - bind each resource at its designated slot
         for (const auto& binding : bindings)
         {
-            const uint32 bindingIndex =
-                slotOffset + binding.binding + binding.arrayElement;
+            uint32 bufferIndex = RVX_INVALID_INDEX;
+            uint32 textureIndex = RVX_INVALID_INDEX;
+            uint32 samplerIndex = RVX_INVALID_INDEX;
+            if (binding.buffer)
+            {
+                MetalBindingABI::TryGetBufferIndex(
+                    slot, binding.binding, binding.arrayElement, bufferIndex);
+            }
+            if (binding.texture)
+            {
+                if (binding.type == RHIBindingType::StorageTexture)
+                {
+                    MetalBindingABI::TryGetStorageTextureIndex(
+                        slot, binding.binding, binding.arrayElement, textureIndex);
+                }
+                else
+                {
+                    MetalBindingABI::TryGetTextureIndex(
+                        slot, binding.binding, binding.arrayElement, textureIndex);
+                }
+            }
+            if (binding.sampler)
+            {
+                MetalBindingABI::TryGetSamplerIndex(
+                    slot, binding.binding, binding.arrayElement, samplerIndex);
+            }
 
             // Calculate effective offset (base offset + dynamic offset if applicable)
             uint64 effectiveOffset = binding.offset;
@@ -514,20 +563,20 @@ namespace RVX
                     // Bind to both vertex and fragment stages
                     [m_renderEncoder setVertexBuffer:binding.buffer 
                                               offset:static_cast<NSUInteger>(effectiveOffset) 
-                                             atIndex:bindingIndex];
+                                             atIndex:bufferIndex];
                     [m_renderEncoder setFragmentBuffer:binding.buffer 
                                                 offset:static_cast<NSUInteger>(effectiveOffset) 
-                                               atIndex:bindingIndex];
+                                               atIndex:bufferIndex];
                 }
                 if (binding.texture)
                 {
-                    [m_renderEncoder setVertexTexture:binding.texture atIndex:bindingIndex];
-                    [m_renderEncoder setFragmentTexture:binding.texture atIndex:bindingIndex];
+                    [m_renderEncoder setVertexTexture:binding.texture atIndex:textureIndex];
+                    [m_renderEncoder setFragmentTexture:binding.texture atIndex:textureIndex];
                 }
                 if (binding.sampler)
                 {
-                    [m_renderEncoder setVertexSamplerState:binding.sampler atIndex:bindingIndex];
-                    [m_renderEncoder setFragmentSamplerState:binding.sampler atIndex:bindingIndex];
+                    [m_renderEncoder setVertexSamplerState:binding.sampler atIndex:samplerIndex];
+                    [m_renderEncoder setFragmentSamplerState:binding.sampler atIndex:samplerIndex];
                 }
             }
             else if (m_computeEncoder)
@@ -536,15 +585,15 @@ namespace RVX
                 {
                     [m_computeEncoder setBuffer:binding.buffer 
                                          offset:static_cast<NSUInteger>(effectiveOffset) 
-                                        atIndex:bindingIndex];
+                                        atIndex:bufferIndex];
                 }
                 if (binding.texture)
                 {
-                    [m_computeEncoder setTexture:binding.texture atIndex:bindingIndex];
+                    [m_computeEncoder setTexture:binding.texture atIndex:textureIndex];
                 }
                 if (binding.sampler)
                 {
-                    [m_computeEncoder setSamplerState:binding.sampler atIndex:bindingIndex];
+                    [m_computeEncoder setSamplerState:binding.sampler atIndex:samplerIndex];
                 }
             }
         }

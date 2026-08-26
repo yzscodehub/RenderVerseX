@@ -19,6 +19,55 @@ namespace RVX
 {
 namespace
 {
+    struct OpaqueSceneSnapshotCopyData
+    {
+        RGTextureHandle source{};
+        RGTextureHandle destination{};
+        std::shared_ptr<OpaqueSceneSnapshotCopyReceipt> receipt;
+    };
+
+    [[nodiscard]] bool AddOpaqueSceneSnapshotCopy(
+        RenderFeatureGraphBuilder& builder,
+        RGTextureHandle source,
+        RGTextureHandle destination,
+        std::shared_ptr<OpaqueSceneSnapshotCopyReceipt> receipt)
+    {
+        if (!receipt)
+        {
+            return false;
+        }
+        return builder.AddPass<OpaqueSceneSnapshotCopyData>(
+            "OpaqueSceneSnapshotCopy",
+            // The snapshot is produced by and immediately consumed on the
+            // graphics queue. Keeping this tiny same-frame copy on graphics
+            // avoids an otherwise unnecessary pair of queue-family ownership
+            // transfers on Vulkan.
+            RenderGraphPassType::Graphics,
+            [source, destination, receipt = std::move(receipt)](
+                RenderGraphBuilder& graphBuilder,
+                OpaqueSceneSnapshotCopyData& data)
+            {
+                data.source = graphBuilder.Read(source, RHIResourceState::CopySource);
+                data.destination = graphBuilder.Write(destination, RHIResourceState::CopyDest);
+                data.receipt = receipt;
+            },
+            [](const OpaqueSceneSnapshotCopyData& data,
+               RenderGraphPassContext& context)
+            {
+                RHITexture* const source = context.GetTexture(data.source);
+                RHITexture* const destination = context.GetTexture(data.destination);
+                if (source == nullptr || destination == nullptr || source == destination)
+                {
+                    context.MarkExecutionFailed("Opaque HDR snapshot copy has invalid aliased resources");
+                    return;
+                }
+                context.Commands().CopyTexture(source, destination);
+                if (data.receipt)
+                {
+                    data.receipt->copied.store(true, std::memory_order_release);
+                }
+            });
+    }
     [[nodiscard]] uint32 CountEligibleToonOutlineMaterials(
         const MaterialParameterTableSnapshot& table) noexcept
     {
@@ -1199,6 +1248,53 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
             [velocityPasses = m_velocityPasses](const IRenderPass& pass)
             {
                 return pass.GetPriority() > PassPriority::Opaque &&
+                       pass.GetPriority() < PassPriority::Transparent &&
+                       !velocityPasses.Contains(&pass);
+            },
+            m_lastPassChainStats,
+            failure))
+    {
+        SetCompositionFailure(std::move(failure));
+        return;
+    }
+
+    RHITextureDesc opaqueSnapshotDesc = RHITextureDesc::Texture2D(
+        m_preparedContext.outputExtent.width,
+        m_preparedContext.outputExtent.height,
+        RHIFormat::RGBA16_FLOAT,
+        RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst);
+    opaqueSnapshotDesc.debugName = "DeferredOpaqueSceneSnapshot";
+    const RGTextureHandle opaqueSceneSnapshot = builder.CreateTexture(
+        opaqueSnapshotDesc);
+    const std::shared_ptr<OpaqueSceneSnapshotCopyReceipt> opaqueSnapshotReceipt =
+        std::make_shared<OpaqueSceneSnapshotCopyReceipt>();
+    if (!opaqueSceneSnapshot.IsValid() ||
+        opaqueSceneSnapshot.index == postLightingContext.view.colorTarget.index ||
+        !AddOpaqueSceneSnapshotCopy(
+            builder,
+            postLightingContext.view.colorTarget,
+            opaqueSceneSnapshot,
+            opaqueSnapshotReceipt))
+    {
+        SetCompositionFailure(
+            "DeferredQuality could not create a distinct post-Sky HDR snapshot");
+        return;
+    }
+    ++m_lastPassChainStats.graphPassCount;
+    m_lastPassChainStats.graphPassNames.push_back("OpaqueSceneSnapshotCopy");
+    RenderPassRecordContext translucencyContext = postLightingContext;
+    translucencyContext.opaqueSceneSnapshot = OpaqueSceneSnapshotRecordInput{
+        postLightingContext.identity,
+        opaqueSceneSnapshot,
+        opaqueSnapshotReceipt};
+    if (!AddLegacyPassRange(
+            builder,
+            translucencyContext,
+            *m_passRegistry,
+            m_opaquePass,
+            [velocityPasses = m_velocityPasses](const IRenderPass& pass)
+            {
+                return pass.GetPriority() >= PassPriority::Transparent &&
                        !velocityPasses.Contains(&pass);
             },
             m_lastPassChainStats,
@@ -1238,6 +1334,9 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
     outputs.reactiveMask = m_recordContext.view.reactiveMaskTarget;
     outputs.reactiveMaskMetadata = MakeMetadata(
         m_preparedContext.outputExtent, SceneTextures::ReactiveMaskContract);
+    outputs.opaqueSceneSnapshot = opaqueSceneSnapshot;
+    outputs.opaqueSceneSnapshotMetadata = MakeMetadata(
+        m_preparedContext.outputExtent, SceneTextures::HDRSceneColorContract);
     outputs.exposureState = m_recordContext.view.exposureState;
     outputs.exposureStateMetadata = MakeExposureStateMetadata(
         m_recordContext.view);
@@ -1249,7 +1348,7 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
         RenderGraphBlackboardCode::Success)
     {
         SetCompositionFailure(
-            "DeferredQuality could not publish TranslucencyOutputs v4");
+            "DeferredQuality could not publish TranslucencyOutputs v5");
     }
 }
 

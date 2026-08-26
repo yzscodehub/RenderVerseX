@@ -28,7 +28,7 @@
 namespace RVX
 {
     /** @brief Current JSON schema version written by sample report producers. */
-    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 27;
+    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 29;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION = 20;
     inline constexpr uint32
@@ -44,6 +44,10 @@ namespace RVX
             25;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_TOON_EXECUTION_SCHEMA_VERSION = 26;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_TRANSLUCENCY_EXECUTION_SCHEMA_VERSION = 27;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_COOKED_ONLY_ADMISSION_SCHEMA_VERSION = 28;
     inline constexpr uint32 RVX_SAMPLE_REPORT_PRE_VISUAL_CONTRACT_SCHEMA_VERSION = 19;
     inline constexpr uint32 RVX_SAMPLE_REPORT_SCENARIO_SCHEMA_VERSION = 12;
     inline constexpr uint32 RVX_SAMPLE_REPORT_ECS_DIAGNOSTICS_SCHEMA_VERSION = 13;
@@ -310,6 +314,8 @@ namespace RVX
          * implements RequestToonOutlineQualificationProbe().
          */
         bool toonOutlineQualificationProbeEnabled = false;
+        /** GFX15 qualification intent; execution evidence remains renderer-owned. */
+        bool translucencyQualificationProbeEnabled = false;
         uint32 width = 1280;
         uint32 height = 720;
         std::string quality = "default";
@@ -923,6 +929,22 @@ namespace RVX
         SampleToonLightingExecutionDiagnostics toonLightingActualExecution{};
         /** Exact, main-view execution projection for HDR Toon outlines. */
         SampleToonOutlineExecutionDiagnostics toonOutlineActualExecution{};
+        /** Renderer-owned GFX15 sorted-translucency receipt facts. */
+        uint32 transparentAlphaBlendDrawCount = 0;
+        uint32 transparentPremultipliedDrawCount = 0;
+        uint32 transparentAdditiveDrawCount = 0;
+        uint32 transparentThinTransmissionDrawCount = 0;
+        bool transparentOpaqueSceneSnapshotReady = false;
+        bool transparentOpaqueSceneSnapshotCopied = false;
+        bool transparentReactiveMaskAttachmentBound = false;
+        uint32 transparentReactiveMaskWriteDrawCount = 0;
+        uint32 transparentPriorityBucketCount = 0;
+        uint32 transparentFallbackCount = 0;
+        /** Exact frame identity for the flat GFX15 renderer projection. */
+        uint64 transparentFrameFeatureSequence = 0;
+        uint64 transparentReceiptFrameSequence = 0;
+        uint64 transparentLastPresentedFrameSequence = 0;
+        bool transparentPresentedFrameAligned = false;
         bool clusteredLightingInitialized = false;
         uint32 clusteredLightingActiveClusters = 0;
         bool textureIBLEnabled = false;
@@ -1186,6 +1208,16 @@ namespace RVX
         bool verified = false;
         bool cookedAdmissionRequired = false;
         bool cookedAdmissionAccepted = false;
+        /** True when the catalog admitted only the staged cooked package. */
+        bool cookPackageOnly = false;
+        /**
+         * @brief Runtime domain observed from the exact loader receipt.
+         *
+         * Values use RuntimeResourcePolicy spelling (for example
+         * CookedArtifact); ResourceContentIdentity fields retain their
+         * lower-case identity-domain spelling.
+         */
+        std::string actualLoadDomain = "Unknown";
         std::string cookedAdmissionCode;
         std::string cookedAdmissionDetail;
         std::filesystem::path cookManifestPath;

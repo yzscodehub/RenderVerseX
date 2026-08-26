@@ -14,6 +14,7 @@
 #include "ShaderCompiler/ShaderCompiler.h"
 #include "VulkanCommon.h"
 #include "VulkanDevice.h"
+#include "VulkanPipeline.h"
 #include "VulkanResources.h"
 
 #define GLFW_INCLUDE_VULKAN
@@ -806,17 +807,17 @@ namespace
         RHIDescriptorSetLayoutDesc materialLayoutDesc;
         materialLayoutDesc.debugName = "VulkanNativeSurfaceAlphaMaterialSet";
         materialLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::AllGraphics);
-        for (uint32 binding = 1; binding <= 5; ++binding)
+        for (uint32 binding = 1; binding <= 8; ++binding)
         {
             materialLayoutDesc.AddBinding(binding, RHIBindingType::SampledTexture,
                                           RHIShaderStage::Pixel);
         }
-        for (uint32 binding = 6; binding <= 10; ++binding)
+        for (uint32 binding = 9; binding <= 16; ++binding)
         {
             materialLayoutDesc.AddBinding(binding, RHIBindingType::Sampler,
                                           RHIShaderStage::Pixel);
         }
-        materialLayoutDesc.AddBinding(11, RHIBindingType::ShaderResourceBuffer,
+        materialLayoutDesc.AddBinding(17, RHIBindingType::ShaderResourceBuffer,
                                       RHIShaderStage::Pixel);
         RHIDescriptorSetLayoutRef materialLayout = device.CreateDescriptorSetLayout(materialLayoutDesc);
         if (!frameLayout || !emptySet1 || !materialLayout)
@@ -853,7 +854,11 @@ namespace
         material.uvTransforms[0].scaleOffset = {1.37f, 0.71f, 0.18f, -0.22f};
         material.uvTransforms[0].rotationUVSet = {0.6f, 0.8f, useUV1 ? 1.0f : 0.0f, 0.0f};
         constexpr uint32 kConstantBufferAlignment = 256u;
-        std::array<uint8, kConstantBufferAlignment> materialBytes{};
+        constexpr uint32 kMaterialConstantBufferSize =
+            (static_cast<uint32>(sizeof(MaterialGPUConstants)) +
+             kConstantBufferAlignment - 1u) /
+            kConstantBufferAlignment * kConstantBufferAlignment;
+        std::array<uint8, kMaterialConstantBufferSize> materialBytes{};
         std::memcpy(materialBytes.data(), &material, sizeof(material));
         RHIBufferRef materialBuffer = CreateVulkanUploadBuffer(
             device, RHIBufferUsage::Constant, 0, materialBytes.data(), materialBytes.size(),
@@ -949,14 +954,16 @@ namespace
         frameSetDesc.BindTexture(
             PipelineCache::DefaultLitAmbientOcclusionBinding,
             sourceTextureView.Get());
+        frameSetDesc.BindTexture(16, sourceTextureView.Get());
         RHIDescriptorSetRef frameSet = device.CreateDescriptorSet(frameSetDesc);
         RHIDescriptorSetDesc materialSetDesc;
         materialSetDesc.layout = materialLayout.Get();
         materialSetDesc.debugName = "VulkanNativeSurfaceAlphaMaterialDescriptorSet";
-        materialSetDesc.BindBuffer(0, materialBuffer.Get(), 0, kConstantBufferAlignment);
-        for (uint32 binding = 1; binding <= 5; ++binding) materialSetDesc.BindTexture(binding, sourceTextureView.Get());
-        for (uint32 binding = 6; binding <= 10; ++binding) materialSetDesc.BindSampler(binding, sampler.Get());
-        materialSetDesc.BindBuffer(11, dummyStructuredBuffer.Get());
+        materialSetDesc.BindBuffer(0, materialBuffer.Get(), 0,
+                                  kMaterialConstantBufferSize);
+        for (uint32 binding = 1; binding <= 8; ++binding) materialSetDesc.BindTexture(binding, sourceTextureView.Get());
+        for (uint32 binding = 9; binding <= 16; ++binding) materialSetDesc.BindSampler(binding, sampler.Get());
+        materialSetDesc.BindBuffer(17, dummyStructuredBuffer.Get());
         RHIDescriptorSetRef materialSet = device.CreateDescriptorSet(materialSetDesc);
 
         RHITextureDesc renderTargetDesc = RHITextureDesc::Texture2D(
@@ -1639,6 +1646,7 @@ TEST(VulkanValidation, RequiredDeviceConfigurationSelectionFailsClosed)
 {
     VulkanRequiredDeviceFeatureSupport supported;
     supported.apiVersion = VK_API_VERSION_1_3;
+    supported.independentBlend = true;
     supported.timelineSemaphore = true;
     supported.dynamicRendering = true;
     supported.synchronization2 = true;
@@ -1647,6 +1655,11 @@ TEST(VulkanValidation, RequiredDeviceConfigurationSelectionFailsClosed)
     VulkanRequiredDeviceFeatureSupport missingApi = supported;
     missingApi.apiVersion = VK_API_VERSION_1_2;
     EXPECT_FALSE(IsVulkanRequiredDeviceConfigurationSupported(missingApi));
+
+    VulkanRequiredDeviceFeatureSupport missingIndependentBlend = supported;
+    missingIndependentBlend.independentBlend = false;
+    EXPECT_FALSE(
+        IsVulkanRequiredDeviceConfigurationSupported(missingIndependentBlend));
 
     VulkanRequiredDeviceFeatureSupport missingTimeline = supported;
     missingTimeline.timelineSemaphore = false;
@@ -1661,6 +1674,14 @@ TEST(VulkanValidation, RequiredDeviceConfigurationSelectionFailsClosed)
     missingSynchronization2.synchronization2 = false;
     EXPECT_FALSE(
         IsVulkanRequiredDeviceConfigurationSupported(missingSynchronization2));
+}
+
+TEST(VulkanValidation, BlendAttachmentSelectionHonorsIndependentBlendContract)
+{
+    EXPECT_EQ(SelectVulkanBlendAttachmentStateIndex(false, 0u), 0u);
+    EXPECT_EQ(SelectVulkanBlendAttachmentStateIndex(false, 3u), 0u);
+    EXPECT_EQ(SelectVulkanBlendAttachmentStateIndex(true, 0u), 0u);
+    EXPECT_EQ(SelectVulkanBlendAttachmentStateIndex(true, 3u), 3u);
 }
 
 TEST(VulkanValidation, OptionalMemoryBudgetExtensionSelectionReflectsAvailability)

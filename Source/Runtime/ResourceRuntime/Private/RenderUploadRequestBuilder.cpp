@@ -537,14 +537,14 @@ namespace
 
         constexpr uint64 supportedTextureFeatureMask =
             (1ull <<
-             (static_cast<uint32>(MaterialTextureSlot::Emissive) + 1U)) -
+             (static_cast<uint32>(MaterialTextureSlot::Thickness) + 1U)) -
             1ull;
         if ((definition.descriptor.featureMask &
              ~supportedTextureFeatureMask) != 0)
         {
-            // The v3 upload enum carries only the five legacy texture slots.
-            // Do not silently drop an active canonical slot until the upload
-            // contract and render bindings have an explicit representation.
+            // The v4 upload enum represents every canonical texture slot.
+            // A definition outside that contract must never be partially
+            // published to Render.
             return {RenderUploadRequestBuildCode::InvalidResource};
         }
 
@@ -557,7 +557,7 @@ namespace
         {
             MaterialUploadTextureSlot uploadSlot;
             MaterialTextureSlot materialSlot;
-            const char* legacyName;
+            const char* resourceName;
         };
         constexpr UploadSlot slots[] = {
             {MaterialUploadTextureSlot::BaseColor,
@@ -569,13 +569,19 @@ namespace
             {MaterialUploadTextureSlot::Occlusion,
              MaterialTextureSlot::Occlusion, "ao"},
             {MaterialUploadTextureSlot::Emissive,
-             MaterialTextureSlot::Emissive, "emissive"}};
+             MaterialTextureSlot::Emissive, "emissive"},
+            {MaterialUploadTextureSlot::ToonRamp,
+             MaterialTextureSlot::ToonRamp, "toon_ramp"},
+            {MaterialUploadTextureSlot::Transmission,
+             MaterialTextureSlot::Transmission, "transmission"},
+            {MaterialUploadTextureSlot::Thickness,
+             MaterialTextureSlot::Thickness, "thickness"}};
 
         std::vector<RenderResourceHandle> dependencies;
         for (const UploadSlot& slot : slots)
         {
             const ResourceHandle<TextureResource> sourceTexture =
-                resource.GetTexture(slot.legacyName);
+                resource.GetTexture(slot.resourceName);
             if (!sourceTexture)
                 continue;
 

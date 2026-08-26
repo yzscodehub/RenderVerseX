@@ -2152,7 +2152,7 @@ TEST(ResourceRuntimePolicyValidation,
 }
 
 TEST(ResourceRuntimePolicyValidation,
-     RenderUploadBuilderRejectsCanonicalTextureSlotsOutsideUploadContract)
+     RenderUploadBuilderPreservesAllCanonicalTextureSlots)
 {
     MaterialResource material;
     material.SetId(205);
@@ -2161,17 +2161,65 @@ TEST(ResourceRuntimePolicyValidation,
     definition.descriptor.shadingModel = MaterialShadingModel::ToonLit;
     definition.descriptor.programFamily =
         std::string(GetMaterialProgramFamily(MaterialShadingModel::ToonLit));
-    MaterialTextureSlotDefinition toonRamp;
-    toonRamp.slot = MaterialTextureSlot::ToonRamp;
-    definition.textureSlots.push_back(toonRamp);
-    definition.descriptor.featureMask =
-        1ull << static_cast<uint32>(MaterialTextureSlot::ToonRamp);
+    constexpr uint32 textureFlags =
+        (1u << (static_cast<uint32>(MaterialTextureSlot::Thickness) + 1u)) - 1u;
+    definition.descriptor.featureMask = textureFlags;
+    definition.parameters.textureFlags = textureFlags;
+    for (uint32 slot = static_cast<uint32>(MaterialTextureSlot::BaseColor);
+         slot <= static_cast<uint32>(MaterialTextureSlot::Thickness);
+         ++slot)
+    {
+        MaterialTextureSlotDefinition textureSlot;
+        textureSlot.slot = static_cast<MaterialTextureSlot>(slot);
+        definition.textureSlots.push_back(textureSlot);
+    }
     ASSERT_TRUE(material.SetMaterialDefinition(definition));
 
+    const auto bindTexture = [&material](const char* slot, ResourceId id)
+    {
+        auto* texture = new TextureResource();
+        texture->SetId(id);
+        ASSERT_TRUE(material.SetTexture(slot, ResourceHandle<TextureResource>(texture)));
+    };
+    bindTexture("albedo", 206);
+    bindTexture("normal", 207);
+    bindTexture("metallic_roughness", 208);
+    bindTexture("ao", 209);
+    bindTexture("emissive", 210);
+    bindTexture("toon_ramp", 211);
+    bindTexture("transmission", 212);
+    bindTexture("thickness", 213);
+
+    // The v4 material upload contract covers all eight canonical slots.
+    // This proves the builder preserves that complete mapping, rather than
+    // retaining the obsolete ToonRamp rejection behavior.
     const RenderUploadRequestBuildResult build =
-        RenderUploadRequestBuilder::Build(material, {10, 2}, 6, {});
-    EXPECT_EQ(build.code, RenderUploadRequestBuildCode::InvalidResource);
-    EXPECT_EQ(build.request, nullptr);
+        RenderUploadRequestBuilder::Build(
+            material,
+            {10, 2},
+            6,
+            [](AssetId assetId, RenderResourceKind kind)
+            {
+                EXPECT_EQ(kind, RenderResourceKind::Texture);
+                return RenderResourceHandle{static_cast<uint32>(assetId.value),
+                                            1};
+            });
+    ASSERT_EQ(build.code, RenderUploadRequestBuildCode::Built);
+    ASSERT_NE(build.request, nullptr);
+
+    const auto& payload =
+        std::get<MaterialUploadPayload>(build.request->GetPayload());
+    EXPECT_EQ(payload.staticDescriptor.featureMask, textureFlags);
+    EXPECT_EQ(payload.sourceData.textureFlags, textureFlags);
+    ASSERT_EQ(payload.textureBindings.size(), 8u);
+    ASSERT_EQ(build.request->GetDependencies().size(), 8u);
+    for (uint32 slot = static_cast<uint32>(MaterialUploadTextureSlot::BaseColor);
+         slot <= static_cast<uint32>(MaterialUploadTextureSlot::Thickness);
+         ++slot)
+    {
+        EXPECT_EQ(payload.textureBindings[slot].slot,
+                  static_cast<MaterialUploadTextureSlot>(slot));
+    }
 }
 
 TEST(ResourceRuntimePolicyValidation, RenderUploadBuilderDescribesCubemapMipStorageExactly)

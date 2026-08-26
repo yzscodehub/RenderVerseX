@@ -1943,7 +1943,8 @@ namespace
                                    asset.entry.kind,
                                    asset.entry.resolvedPath,
                                    asset.entry.contentIdentity,
-                                   asset.entry.assetContentId});
+                                   asset.entry.assetContentId,
+                                   asset.entry.cook.packageOnly});
             };
             append(assets.model);
             for (const ResolvedSampleAsset& additional : assets.additionalModels)
@@ -2199,6 +2200,18 @@ namespace
             sceneOptions.diagnostics = options.common.diagnostics;
             sceneOptions.deterministicCameraOrbit =
                 options.deterministicCameraOrbit;
+
+            // This is a deliberately narrow qualification intent, not a
+            // renderer control surface. The cooked GFX15 scenario consumes
+            // its normal readiness receipt; unrelated Samples must not accept
+            // the flag and accidentally advertise transparency evidence.
+            if (options.common.translucencyQualificationProbeEnabled &&
+                info.id != "transparent-materials")
+            {
+                outError =
+                    "--translucency-qualification-probe requires the transparent-materials sample";
+                return false;
+            }
 
             if (options.renderPathExplicit &&
                 !info.supportsRenderPathSelection)
@@ -2547,12 +2560,29 @@ namespace
                 result.observedContentIdentity = receipt->observed;
                 result.verificationStatus = receipt->status;
                 result.verified = receipt->IsVerified();
+                switch (receipt->observed.domain)
+                {
+                    case Resource::ResourceContentIdentityDomain::Source:
+                        result.actualLoadDomain = "SourceAsset";
+                        break;
+                    case Resource::ResourceContentIdentityDomain::CookedArtifact:
+                        result.actualLoadDomain = "CookedArtifact";
+                        break;
+                    case Resource::ResourceContentIdentityDomain::CookManifest:
+                        result.actualLoadDomain = "CookManifest";
+                        break;
+                    default:
+                        result.actualLoadDomain = "Unknown";
+                        break;
+                }
             }
             result.cookedAdmissionRequired =
                 resolved.cookAdmission.has_value();
             result.cookedAdmissionAccepted =
                 resolved.cookAdmission.has_value() &&
                 resolved.cookAdmission->IsAccepted();
+            result.cookPackageOnly = resolved.entry.cook.declared &&
+                resolved.entry.cook.packageOnly;
             if (resolved.entry.cook.declared)
             {
                 result.cookManifestPath =
@@ -3065,6 +3095,48 @@ namespace
             result.toonOutlineActualExecution =
                 ProjectSampleToonOutlineExecutionDiagnostics(
                     renderDiagnostics);
+            result.transparentAlphaBlendDrawCount =
+                diagnostics.transparent.alphaBlendDrawCount;
+            result.transparentPremultipliedDrawCount =
+                diagnostics.transparent.premultipliedDrawCount;
+            result.transparentAdditiveDrawCount =
+                diagnostics.transparent.additiveDrawCount;
+            result.transparentThinTransmissionDrawCount =
+                diagnostics.transparent.thinTransmissionDrawCount;
+            result.transparentOpaqueSceneSnapshotReady =
+                diagnostics.transparent.opaqueSceneSnapshotReady;
+            result.transparentOpaqueSceneSnapshotCopied =
+                diagnostics.transparent.opaqueSceneSnapshotCopied;
+            result.transparentReactiveMaskAttachmentBound =
+                diagnostics.transparent.reactiveMaskAttachmentBound;
+            result.transparentReactiveMaskWriteDrawCount =
+                diagnostics.transparent.reactiveMaskWriteDrawCount;
+            result.transparentPriorityBucketCount =
+                diagnostics.transparent.translucencyPriorityBucketCount;
+            result.transparentFallbackCount =
+                diagnostics.transparent.translucencyFallbackCount;
+            const RenderFrameFeatureDiagnostics& frameFeatures =
+                renderDiagnostics.frameFeatures;
+            const RenderExecutionReceipt& executionReceipt =
+                frameFeatures.executionReceipt;
+            result.transparentFrameFeatureSequence = frameFeatures.frameSequence;
+            result.transparentReceiptFrameSequence =
+                executionReceipt.frameIdentity.frameSequence;
+            result.transparentLastPresentedFrameSequence =
+                renderDiagnostics.lastPresentedFrameSequence;
+            result.transparentPresentedFrameAligned =
+                frameFeatures.available && executionReceipt.schemaVersion == 11 &&
+                executionReceipt.IsStructurallyValid() &&
+                executionReceipt.available && executionReceipt.graphComposed &&
+                executionReceipt.executionSucceeded && executionReceipt.presented &&
+                executionReceipt.succeeded &&
+                executionReceipt.viewIdentity.role == ViewRole::Main &&
+                executionReceipt.viewIdentity.subViewIndex == 0 &&
+                result.transparentFrameFeatureSequence != 0 &&
+                result.transparentFrameFeatureSequence ==
+                    result.transparentReceiptFrameSequence &&
+                result.transparentReceiptFrameSequence ==
+                    result.transparentLastPresentedFrameSequence;
             result.clusteredLightingInitialized =
                 diagnostics.clusteredLightingInitialized;
             result.clusteredLightingActiveClusters =

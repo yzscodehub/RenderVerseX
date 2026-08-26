@@ -133,10 +133,11 @@ namespace
             1ull;
     }
 
-    constexpr uint32 GetLegacyTextureFlag(MaterialTextureSlot slot) noexcept
+    constexpr uint32 GetMaterialTextureFlag(MaterialTextureSlot slot) noexcept
     {
         const uint32 index = static_cast<uint32>(slot);
-        return index < 5u ? (1u << index) : 0u;
+        return index <= static_cast<uint32>(MaterialTextureSlot::Thickness)
+            ? (1u << index) : 0u;
     }
 
     void SynchronizeTextureSlotMasks(MaterialDefinition& definition) noexcept
@@ -146,7 +147,7 @@ namespace
         for (const MaterialTextureSlotDefinition& slot : definition.textureSlots)
         {
             featureMask |= GetMaterialFeatureBit(slot.slot);
-            textureFlags |= GetLegacyTextureFlag(slot.slot);
+            textureFlags |= GetMaterialTextureFlag(slot.slot);
         }
         definition.descriptor.featureMask &= ~GetTextureSlotFeatureMask();
         definition.descriptor.featureMask |= featureMask;
@@ -322,6 +323,14 @@ namespace
                 case MaterialTextureSlot::Emissive:
                     material->SetEmissiveTexture(info);
                     break;
+                case MaterialTextureSlot::ToonRamp:
+                case MaterialTextureSlot::Transmission:
+                case MaterialTextureSlot::Thickness:
+                    // Geometry::Material is a legacy source-import mirror
+                    // with only the five core glTF slots.  The canonical
+                    // MaterialDefinition and m_textures retain these typed
+                    // runtime bindings; never synthesize a lossy fallback.
+                    break;
                 default:
                     break;
             }
@@ -329,7 +338,7 @@ namespace
         return material;
     }
 
-    std::optional<MaterialTextureSlot> FindLegacyTextureSlot(
+    std::optional<MaterialTextureSlot> FindMaterialTextureSlot(
         const std::string& slot)
     {
         if (slot == "albedo") return MaterialTextureSlot::BaseColor;
@@ -338,6 +347,9 @@ namespace
             return MaterialTextureSlot::MetallicRoughness;
         if (slot == "ao") return MaterialTextureSlot::Occlusion;
         if (slot == "emissive") return MaterialTextureSlot::Emissive;
+        if (slot == "toon_ramp") return MaterialTextureSlot::ToonRamp;
+        if (slot == "transmission") return MaterialTextureSlot::Transmission;
+        if (slot == "thickness") return MaterialTextureSlot::Thickness;
         return std::nullopt;
     }
 
@@ -382,7 +394,7 @@ namespace
                 continue;
 
             const std::optional<MaterialTextureSlot> canonicalSlot =
-                FindLegacyTextureSlot(legacyName);
+                FindMaterialTextureSlot(legacyName);
             if (!canonicalSlot)
                 continue;
 
@@ -594,7 +606,7 @@ bool MaterialResource::SetTexture(const std::string& slot,
         return false;
     }
     const std::optional<MaterialTextureSlot> canonicalSlot =
-        FindLegacyTextureSlot(slot);
+        FindMaterialTextureSlot(slot);
     if (!canonicalSlot || !EnsureDefinitionTextureSlot(
                              m_definition, *canonicalSlot))
     {

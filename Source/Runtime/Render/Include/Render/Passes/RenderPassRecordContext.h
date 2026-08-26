@@ -310,6 +310,18 @@ namespace RVX
         /** Exact DrawIndexed calls issued by this graph execution. */
         uint32 executedPacketCount = 0;
         uint32 executedDrawCount = 0;
+        uint32 alphaBlendDrawCount = 0;
+        uint32 premultipliedDrawCount = 0;
+        uint32 additiveDrawCount = 0;
+        uint32 thinTransmissionDrawCount = 0;
+        bool opaqueSceneSnapshotReady = false;
+        bool opaqueSceneSnapshotCopied = false;
+        bool reactiveMaskAttachmentBound = false;
+        uint32 reactiveMaskWriteDrawCount = 0;
+        uint32 translucencyPriorityBucketCount = 0;
+        uint32 translucencyFallbackCount = 0;
+        uint64 transparentOrderHash = 0;
+        bool transparentOrderValid = false;
         uint32 skippedMaterialBindingCount = 0;
         uint32 skippedResourceCount = 0;
         uint32 skippedExecutionDrawCount = 0;
@@ -359,6 +371,18 @@ namespace RVX
                     identity.graphRecordingGeneration);
     }
 
+    /**
+     * @brief Immutable execution proof for one graph-owned opaque HDR copy.
+     *
+     * The graph copy pass is the sole writer. The receipt is deliberately
+     * paired with the typed record input rather than ViewData so late-bound
+     * graph work cannot mutate a frozen frame snapshot.
+     */
+    struct OpaqueSceneSnapshotCopyReceipt
+    {
+        std::atomic_bool copied{false};
+    };
+
     [[nodiscard]] inline bool HasCurrentGraphProvenance(
         const RGBufferHandle& handle,
         const RenderPassRecordIdentity& identity) noexcept
@@ -368,6 +392,33 @@ namespace RVX
                     handle.recordingGeneration ==
                     identity.graphRecordingGeneration);
     }
+
+    /**
+     * @brief Identity-bound HDR scene input consumed by TransparentPass.
+     *
+     * An empty value is valid when no transparent consumer is recorded. Any
+     * populated value must exactly match its graph recording and carry both a
+     * graph-owned texture and the receipt produced by its copy pass.
+     */
+    struct OpaqueSceneSnapshotRecordInput
+    {
+        RenderPassRecordIdentity identity{};
+        RGTextureHandle texture{};
+        std::shared_ptr<OpaqueSceneSnapshotCopyReceipt> receipt;
+
+        [[nodiscard]] bool IsEmpty() const noexcept
+        {
+            return !identity.IsValid() && !texture.IsValid() && !receipt;
+        }
+
+        [[nodiscard]] bool IsCompatibleWith(
+            const RenderPassRecordIdentity& expected) const noexcept
+        {
+            return identity == expected && texture.IsValid() &&
+                   HasCurrentGraphProvenance(texture, expected) &&
+                   receipt != nullptr;
+        }
+    };
 
     inline bool ObjectVelocityPassStats::MatchesVelocityTarget(
         const RGTextureHandle& handle,
@@ -1243,6 +1294,8 @@ namespace RVX
         RayTracedShadowRecordOutput rayTracedShadow{};
         /** Screen-space AO selected by the typed lighting dependency edge. */
         AmbientOcclusionRecordInput ambientOcclusion{};
+        /** Opaque HDR snapshot late-bound after the immutable frame snapshot. */
+        OpaqueSceneSnapshotRecordInput opaqueSceneSnapshot{};
         /** Explicit value identity for the route's immutable material table. */
         OpaqueMaterialTableExecutionIdentity opaqueMaterialTable{};
         std::shared_ptr<const RenderPassFrameSnapshot> frameSnapshot;
@@ -1328,6 +1381,11 @@ namespace RVX
             {
                 return false;
             }
+            if (!opaqueSceneSnapshot.IsEmpty() &&
+                !opaqueSceneSnapshot.IsCompatibleWith(identity))
+            {
+                return false;
+            }
             return true;
         }
     };
@@ -1347,6 +1405,7 @@ namespace RVX
         DirectionalShadowRecordOutput directionalShadow{};
         RayTracedShadowRecordOutput rayTracedShadow{};
         AmbientOcclusionRecordInput ambientOcclusion{};
+        OpaqueSceneSnapshotRecordInput opaqueSceneSnapshot{};
         OpaqueMaterialTableExecutionIdentity opaqueMaterialTable{};
 
         [[nodiscard]] const RenderFrameExecutionPlan* GetExecutionPlan() const
@@ -1376,6 +1435,11 @@ namespace RVX
         {
             if (!identity.IsValid() || !identity.Matches(*identity.graph) ||
                 !HasCurrentViewDataGraphResources(view, identity))
+            {
+                return false;
+            }
+            if (!opaqueSceneSnapshot.IsEmpty() &&
+                !opaqueSceneSnapshot.IsCompatibleWith(identity))
             {
                 return false;
             }
@@ -1546,6 +1610,7 @@ namespace RVX
         result.directionalShadow = context.directionalShadow;
         result.rayTracedShadow = context.rayTracedShadow;
         result.ambientOcclusion = context.ambientOcclusion;
+        result.opaqueSceneSnapshot = context.opaqueSceneSnapshot;
         result.opaqueMaterialTable = context.opaqueMaterialTable;
         return result;
     }

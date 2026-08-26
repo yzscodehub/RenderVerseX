@@ -149,8 +149,8 @@ namespace RVX
 
     private:
         void ApplyGraphicsPipelineState();
-        void PrepareForDraw();
-        void PrepareForDispatch();
+        [[nodiscard]] bool PrepareForDraw();
+        [[nodiscard]] bool PrepareForDispatch();
         GLuint GetOrCreateVAO();
 
         OpenGLDevice* m_device = nullptr;

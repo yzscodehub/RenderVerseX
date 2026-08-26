@@ -27,6 +27,25 @@ namespace RVX
                     return MaterialGPUShadingModel::StandardLit;
             }
         }
+
+        MaterialGPUBlendMode ToGPUBlendMode(
+            MaterialBlendMode blendMode) noexcept
+        {
+            switch (blendMode)
+            {
+                case MaterialBlendMode::Masked:
+                    return MaterialGPUBlendMode::Masked;
+                case MaterialBlendMode::AlphaBlend:
+                    return MaterialGPUBlendMode::AlphaBlend;
+                case MaterialBlendMode::Premultiplied:
+                    return MaterialGPUBlendMode::Premultiplied;
+                case MaterialBlendMode::Additive:
+                    return MaterialGPUBlendMode::Additive;
+                case MaterialBlendMode::Opaque:
+                default:
+                    return MaterialGPUBlendMode::Opaque;
+            }
+        }
     } // namespace
 
     MaterialGPUConstants EncodeMaterialGPUConstants(
@@ -57,6 +76,8 @@ namespace RVX
         constants.shadingModel = static_cast<uint32>(
             ToGPUShadingModel(staticDescriptor.shadingModel));
         constants.materialTableIndex = materialTableIndex;
+        constants.blendMode = static_cast<uint32>(
+            ToGPUBlendMode(staticDescriptor.blendMode));
         constants.toonBands = sourceData.toonBands;
         constants.toonSpecularThreshold = sourceData.toonSpecularThreshold;
         constants.toonRimStrength = sourceData.toonRimStrength;
@@ -65,6 +86,16 @@ namespace RVX
             sourceData.toonShadowTint.x,
             sourceData.toonShadowTint.y,
             sourceData.toonShadowTint.z,
+            0.0f};
+        constants.thinTransmissionParams = {
+            sourceData.transmission,
+            sourceData.indexOfRefraction,
+            sourceData.thickness,
+            sourceData.attenuationDistance};
+        constants.attenuationColor = {
+            sourceData.attenuationColor.x,
+            sourceData.attenuationColor.y,
+            sourceData.attenuationColor.z,
             0.0f};
 
         switch (sourceData.alphaMode)

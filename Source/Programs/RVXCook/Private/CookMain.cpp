@@ -15,6 +15,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <unordered_map>
 #include <vector>
@@ -54,6 +55,8 @@ namespace
         bool hasModelOptions = false;
         bool hasToonMaterialParameters = false;
         RVX::Tools::ModelImportOptions modelOptions;
+        /** Per-name field masks reject ambiguous duplicate profile assignments. */
+        std::unordered_map<std::string, uint32_t> materialOverrideFieldMasks;
     };
 
     std::string ToLower(std::string value)
@@ -166,6 +169,132 @@ namespace
             return true;
         }
 
+        return false;
+    }
+
+    bool ParseMaterialShadingModel(const std::string& value,
+                                   RVX::MaterialShadingModel& outModel)
+    {
+        const std::string normalized = ToLower(value);
+        if (normalized == "standard-lit" || normalized == "standardlit")
+        {
+            outModel = RVX::MaterialShadingModel::StandardLit;
+            return true;
+        }
+        if (normalized == "toon-lit" || normalized == "toonlit")
+        {
+            outModel = RVX::MaterialShadingModel::ToonLit;
+            return true;
+        }
+        if (normalized == "unlit")
+        {
+            outModel = RVX::MaterialShadingModel::Unlit;
+            return true;
+        }
+        if (normalized == "thin-transmission" || normalized == "thintransmission")
+        {
+            outModel = RVX::MaterialShadingModel::ThinTransmission;
+            return true;
+        }
+        return false;
+    }
+
+    bool ParseMaterialBlendMode(const std::string& value,
+                                RVX::MaterialBlendMode& outMode)
+    {
+        const std::string normalized = ToLower(value);
+        if (normalized == "opaque")
+        {
+            outMode = RVX::MaterialBlendMode::Opaque;
+            return true;
+        }
+        if (normalized == "masked")
+        {
+            outMode = RVX::MaterialBlendMode::Masked;
+            return true;
+        }
+        if (normalized == "alpha-blend" || normalized == "alphablend")
+        {
+            outMode = RVX::MaterialBlendMode::AlphaBlend;
+            return true;
+        }
+        if (normalized == "premultiplied")
+        {
+            outMode = RVX::MaterialBlendMode::Premultiplied;
+            return true;
+        }
+        if (normalized == "additive")
+        {
+            outMode = RVX::MaterialBlendMode::Additive;
+            return true;
+        }
+        return false;
+    }
+
+    bool ParseMaterialTranslucencyPhase(
+        const std::string& value,
+        RVX::MaterialTranslucencyPhase& outPhase)
+    {
+        const std::string normalized = ToLower(value);
+        if (normalized == "opaque")
+        {
+            outPhase = RVX::MaterialTranslucencyPhase::Opaque;
+            return true;
+        }
+        if (normalized == "standard")
+        {
+            outPhase = RVX::MaterialTranslucencyPhase::Standard;
+            return true;
+        }
+        if (normalized == "after-tone-map" || normalized == "aftertonemap")
+        {
+            outPhase = RVX::MaterialTranslucencyPhase::AfterToneMap;
+            return true;
+        }
+        return false;
+    }
+
+    bool ParseMaterialCullMode(const std::string& value,
+                               RVX::MaterialCullMode& outMode)
+    {
+        const std::string normalized = ToLower(value);
+        if (normalized == "back")
+        {
+            outMode = RVX::MaterialCullMode::Back;
+            return true;
+        }
+        if (normalized == "no-cull" || normalized == "nocull")
+        {
+            outMode = RVX::MaterialCullMode::NoCull;
+            return true;
+        }
+        return false;
+    }
+
+    bool ParseMaterialShadowPolicy(const std::string& value,
+                                   RVX::MaterialShadowPolicy& outPolicy)
+    {
+        const std::string normalized = ToLower(value);
+        if (normalized == "none")
+        {
+            outPolicy = RVX::MaterialShadowPolicy::None;
+            return true;
+        }
+        if (normalized == "cast")
+        {
+            outPolicy = RVX::MaterialShadowPolicy::Cast;
+            return true;
+        }
+        if (normalized == "receive")
+        {
+            outPolicy = RVX::MaterialShadowPolicy::Receive;
+            return true;
+        }
+        if (normalized == "cast-and-receive" || normalized == "castandreceive")
+        {
+            outPolicy = RVX::MaterialShadowPolicy::CastAndReceive;
+            return true;
+        }
         return false;
     }
 
@@ -492,6 +621,227 @@ namespace
             {
                 if (!parseToonFloat(profile.modelOptions.toonShadowTintBlue,
                                     "model.material.toonShadowTint.blue")) return false;
+                continue;
+            }
+
+            constexpr std::string_view materialOverridePrefix = "model.material.";
+            if (keyLower.size() >= materialOverridePrefix.size() &&
+                keyLower.compare(0,
+                                 materialOverridePrefix.size(),
+                                 materialOverridePrefix.data(),
+                                 materialOverridePrefix.size()) == 0)
+            {
+                const std::string remainder = key.substr(materialOverridePrefix.size());
+                const size_t fieldSeparator = remainder.find('.');
+                if (fieldSeparator == std::string::npos || fieldSeparator == 0 ||
+                    fieldSeparator + 1 >= remainder.size())
+                {
+                    outError = "Cook profile line " + std::to_string(lineNumber) +
+                               " must use model.material.<ExactMaterialName>.<field>";
+                    return false;
+                }
+
+                const std::string materialName = remainder.substr(0, fieldSeparator);
+                const std::string field = ToLower(remainder.substr(fieldSeparator + 1));
+                if (materialName.find_first_of("\r\n") != std::string::npos ||
+                    materialName.find('\0') != std::string::npos)
+                {
+                    outError = "Cook profile line " + std::to_string(lineNumber) +
+                               " has an invalid exact material name";
+                    return false;
+                }
+
+                RVX::Tools::MaterialCookOverride* materialOverride = nullptr;
+                for (RVX::Tools::MaterialCookOverride& candidate :
+                     profile.modelOptions.materialOverrides)
+                {
+                    if (candidate.materialName == materialName)
+                    {
+                        materialOverride = &candidate;
+                        break;
+                    }
+                }
+                if (!materialOverride)
+                {
+                    profile.modelOptions.materialOverrides.push_back({});
+                    materialOverride =
+                        &profile.modelOptions.materialOverrides.back();
+                    materialOverride->materialName = materialName;
+                }
+
+                constexpr uint32_t shadingModelField = 1u << 0u;
+                constexpr uint32_t blendModeField = 1u << 1u;
+                constexpr uint32_t translucencyPhaseField = 1u << 2u;
+                constexpr uint32_t cullModeField = 1u << 3u;
+                constexpr uint32_t shadowPolicyField = 1u << 4u;
+                constexpr uint32_t sortPriorityField = 1u << 5u;
+                constexpr uint32_t transmissionField = 1u << 6u;
+                constexpr uint32_t indexOfRefractionField = 1u << 7u;
+                constexpr uint32_t thicknessField = 1u << 8u;
+                constexpr uint32_t attenuationColorRedField = 1u << 9u;
+                constexpr uint32_t attenuationColorGreenField = 1u << 10u;
+                constexpr uint32_t attenuationColorBlueField = 1u << 11u;
+                constexpr uint32_t attenuationDistanceField = 1u << 12u;
+                constexpr uint32_t emissiveStrengthField = 1u << 13u;
+
+                uint32_t fieldBit = 0;
+                if (field == "shadingmodel") fieldBit = shadingModelField;
+                else if (field == "blendmode") fieldBit = blendModeField;
+                else if (field == "translucencyphase") fieldBit = translucencyPhaseField;
+                else if (field == "cullmode") fieldBit = cullModeField;
+                else if (field == "shadowpolicy") fieldBit = shadowPolicyField;
+                else if (field == "sortpriority") fieldBit = sortPriorityField;
+                else if (field == "transmission") fieldBit = transmissionField;
+                else if (field == "indexofrefraction") fieldBit = indexOfRefractionField;
+                else if (field == "thickness") fieldBit = thicknessField;
+                else if (field == "attenuationcolor.red") fieldBit = attenuationColorRedField;
+                else if (field == "attenuationcolor.green") fieldBit = attenuationColorGreenField;
+                else if (field == "attenuationcolor.blue") fieldBit = attenuationColorBlueField;
+                else if (field == "attenuationdistance") fieldBit = attenuationDistanceField;
+                else if (field == "emissivestrength") fieldBit = emissiveStrengthField;
+                else
+                {
+                    outError = "Cook profile line " + std::to_string(lineNumber) +
+                               " has unsupported exact material field: " + field;
+                    return false;
+                }
+
+                uint32_t& observedFields =
+                    profile.materialOverrideFieldMasks[materialName];
+                if ((observedFields & fieldBit) != 0u)
+                {
+                    outError = "Cook profile line " + std::to_string(lineNumber) +
+                               " repeats field '" + field + "' for exact material '" +
+                               materialName + "'";
+                    return false;
+                }
+                observedFields |= fieldBit;
+
+                const auto parseFloat = [&](std::optional<float>& destination,
+                                            const char* name,
+                                            float minimum,
+                                            float maximum) -> bool
+                {
+                    float parsed = 0.0f;
+                    if (!ParseFloatValue(value, parsed) || !std::isfinite(parsed) ||
+                        parsed < minimum || parsed > maximum)
+                    {
+                        outError = "Cook profile line " + std::to_string(lineNumber) +
+                                   " has unsupported " + name + " value: " + value;
+                        return false;
+                    }
+                    destination = parsed;
+                    return true;
+                };
+
+                if (field == "shadingmodel")
+                {
+                    RVX::MaterialShadingModel parsed{};
+                    if (!ParseMaterialShadingModel(value, parsed))
+                    {
+                        outError = "Cook profile line " + std::to_string(lineNumber) +
+                                   " has unsupported shadingModel value: " + value;
+                        return false;
+                    }
+                    materialOverride->shadingModel = parsed;
+                }
+                else if (field == "blendmode")
+                {
+                    RVX::MaterialBlendMode parsed{};
+                    if (!ParseMaterialBlendMode(value, parsed))
+                    {
+                        outError = "Cook profile line " + std::to_string(lineNumber) +
+                                   " has unsupported blendMode value: " + value;
+                        return false;
+                    }
+                    materialOverride->blendMode = parsed;
+                }
+                else if (field == "translucencyphase")
+                {
+                    RVX::MaterialTranslucencyPhase parsed{};
+                    if (!ParseMaterialTranslucencyPhase(value, parsed))
+                    {
+                        outError = "Cook profile line " + std::to_string(lineNumber) +
+                                   " has unsupported translucencyPhase value: " + value;
+                        return false;
+                    }
+                    materialOverride->translucencyPhase = parsed;
+                }
+                else if (field == "cullmode")
+                {
+                    RVX::MaterialCullMode parsed{};
+                    if (!ParseMaterialCullMode(value, parsed))
+                    {
+                        outError = "Cook profile line " + std::to_string(lineNumber) +
+                                   " has unsupported cullMode value: " + value;
+                        return false;
+                    }
+                    materialOverride->cullMode = parsed;
+                }
+                else if (field == "shadowpolicy")
+                {
+                    RVX::MaterialShadowPolicy parsed{};
+                    if (!ParseMaterialShadowPolicy(value, parsed))
+                    {
+                        outError = "Cook profile line " + std::to_string(lineNumber) +
+                                   " has unsupported shadowPolicy value: " + value;
+                        return false;
+                    }
+                    materialOverride->shadowPolicy = parsed;
+                }
+                else if (field == "sortpriority")
+                {
+                    int parsed = 0;
+                    if (!ParseIntValue(value, parsed))
+                    {
+                        outError = "Cook profile line " + std::to_string(lineNumber) +
+                                   " has unsupported sortPriority value: " + value;
+                        return false;
+                    }
+                    materialOverride->sortPriority = static_cast<int32_t>(parsed);
+                }
+                else if (field == "transmission")
+                {
+                    if (!parseFloat(materialOverride->transmission, "transmission", 0.0f, 1.0f))
+                        return false;
+                }
+                else if (field == "indexofrefraction")
+                {
+                    if (!parseFloat(materialOverride->indexOfRefraction, "indexOfRefraction", 1.0f, 3.0f))
+                        return false;
+                }
+                else if (field == "thickness")
+                {
+                    if (!parseFloat(materialOverride->thickness, "thickness", 0.0f, 100000.0f))
+                        return false;
+                }
+                else if (field == "attenuationcolor.red")
+                {
+                    if (!parseFloat(materialOverride->attenuationColorRed, "attenuationColor.red", 0.0f, 1.0f))
+                        return false;
+                }
+                else if (field == "attenuationcolor.green")
+                {
+                    if (!parseFloat(materialOverride->attenuationColorGreen, "attenuationColor.green", 0.0f, 1.0f))
+                        return false;
+                }
+                else if (field == "attenuationcolor.blue")
+                {
+                    if (!parseFloat(materialOverride->attenuationColorBlue, "attenuationColor.blue", 0.0f, 1.0f))
+                        return false;
+                }
+                else if (field == "attenuationdistance")
+                {
+                    if (!parseFloat(materialOverride->attenuationDistance, "attenuationDistance", 0.0f, 1000000.0f))
+                        return false;
+                }
+                else
+                {
+                    if (!parseFloat(materialOverride->emissiveStrength, "emissiveStrength", 0.0f, 65504.0f))
+                        return false;
+                }
+
+                profile.hasModelOptions = true;
                 continue;
             }
 

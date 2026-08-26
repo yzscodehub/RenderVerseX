@@ -273,6 +273,64 @@ TEST(EcsSampleModelLoaderValidation,
 }
 
 TEST(EcsSampleModelLoaderValidation,
+     PackageOnlyCatalogModelsRejectSourcePathsAndNonCookedIdentitiesBeforeIO)
+{
+    SceneECS::SceneEcsRuntime scene;
+    RecordingWorldServices services;
+    const Resource::ResourceContentIdentity cookedIdentity = MakeIdentity();
+
+    SampleAssetRegistry sourcePathRegistry({
+        {.id = "package-only-model",
+         .kind = SampleAssetKind::Model,
+         .resolvedPath = "models/source.gltf",
+         .contentIdentity = cookedIdentity,
+         .packageOnly = true},
+    });
+    SampleModelLoader sourcePathLoader(services, scene, sourcePathRegistry);
+    LoadedSampleModel rejectedSourcePath;
+    std::string error;
+    EXPECT_FALSE(sourcePathLoader.RequestByAssetId(
+        "package-only-model", rejectedSourcePath, error));
+    EXPECT_NE(error.find("CookedArtifact .rva"), std::string::npos);
+    EXPECT_TRUE(services.GetRequests().empty());
+
+    Resource::ResourceContentIdentity sourceIdentity = cookedIdentity;
+    sourceIdentity.domain = Resource::ResourceContentIdentityDomain::Source;
+    SampleAssetRegistry sourceIdentityRegistry({
+        {.id = "package-only-model",
+         .kind = SampleAssetKind::Model,
+         .resolvedPath = "cooked/models/model.rva",
+         .contentIdentity = sourceIdentity,
+         .packageOnly = true},
+    });
+    SampleModelLoader sourceIdentityLoader(
+        services, scene, sourceIdentityRegistry);
+    LoadedSampleModel rejectedSourceIdentity;
+    error.clear();
+    EXPECT_FALSE(sourceIdentityLoader.RequestByAssetId(
+        "package-only-model", rejectedSourceIdentity, error));
+    EXPECT_NE(error.find("CookedArtifact .rva"), std::string::npos);
+    EXPECT_TRUE(services.GetRequests().empty());
+
+    SampleAssetRegistry cookedRegistry({
+        {.id = "package-only-model",
+         .kind = SampleAssetKind::Model,
+         .resolvedPath = "cooked/models/model.rva",
+         .contentIdentity = cookedIdentity,
+         .packageOnly = true},
+    });
+    SampleModelLoader cookedLoader(services, scene, cookedRegistry);
+    LoadedSampleModel accepted;
+    error.clear();
+    ASSERT_TRUE(cookedLoader.RequestByAssetId(
+        "package-only-model", accepted, error)) << error;
+    ASSERT_EQ(services.GetRequests().size(), 1u);
+    EXPECT_EQ(services.GetRequests().front().path, "cooked/models/model.rva");
+    EXPECT_EQ(services.GetRequests().front().resourceOptions.expectedContentIdentity,
+              cookedIdentity);
+}
+
+TEST(EcsSampleModelLoaderValidation,
      ImmediateLocalBoundsValidateMemberIdentityAndDoNotReadVisibilityOrResolvedTransforms)
 {
     SceneECS::SceneEcsRuntime scene;

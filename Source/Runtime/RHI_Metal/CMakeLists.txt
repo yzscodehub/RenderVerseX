@@ -27,6 +27,12 @@ target_link_libraries(RVX_RHI_Metal PUBLIC
     RVX::RHI
 )
 
+# Direct Metal binding indices are a shipping ShaderContracts ABI shared with
+# SPIRV-Cross translation; keep this backend's runtime mapping in lockstep.
+target_link_libraries(RVX_RHI_Metal PRIVATE
+    RVX::ShaderContracts
+)
+
 # Link Apple frameworks
 target_link_libraries(RVX_RHI_Metal PRIVATE
     "-framework Metal"

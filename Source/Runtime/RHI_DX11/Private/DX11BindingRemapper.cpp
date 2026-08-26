@@ -2,6 +2,12 @@
 
 namespace RVX
 {
+    namespace
+    {
+        constexpr std::array<uint32, 8> kFrameSamplerLogicalBindings = {
+            0u, 1u, 2u, 5u, 7u, 9u, 13u, 19u};
+    }
+
     DX11BindingRemapper::DX11BindingRemapper()
     {
         Initialize();
@@ -13,13 +19,15 @@ namespace RVX
 
         // Default slot allocation
         // Set 0
-        m_setAssignments[0] = { 0, 4, 0, 32, 0, 2, 0, 4 };
+        m_setAssignments[0] = { 0, 4, 0, 32, 0, 2, 0, 8 };
         // Set 1
-        m_setAssignments[1] = { 4, 4, 32, 32, 2, 2, 4, 4 };
-        // Samplers use the renderer's sparse logical slot ABI directly; see
-        // GetSamplerSlot(). The range values remain for custom assignments.
+        m_setAssignments[1] = { 4, 4, 32, 32, 2, 2, 0, 0 };
+        // Samplers use the fixed lossless ABI in GetSamplerSlot(). The range
+        // values document the physical allocation; sampler mappings are not
+        // configurable because a custom mapping would diverge from FXC
+        // register-space flattening and reflection restoration.
         m_setAssignments[2] = { 8, 4, 64, 32, 4, 2, 8, 8 };
-        // Set 3. D3D11 has only 16 sampler slots; set 3 has no default sampler range.
+        // Set 3. D3D11 has only 16 sampler slots; set 3 has no sampler range.
         m_setAssignments[3] = { 12, 2, 96, 32, 6, 2, 0, 0 };
 
         m_initialized = true;
@@ -64,17 +72,26 @@ namespace RVX
 
     uint32 DX11BindingRemapper::GetSamplerSlot(uint32 set, uint32 binding) const
     {
-        if ((set == 0 || set == 2) && binding < 16)
+        if (set == 0)
         {
-            if (set == 0 || (binding >= 6 && binding <= 10))
+            for (uint32 physicalSlot = 0;
+                 physicalSlot < kFrameSamplerLogicalBindings.size();
+                 ++physicalSlot)
             {
-                return binding;
+                if (kFrameSamplerLogicalBindings[physicalSlot] == binding)
+                {
+                    return physicalSlot;
+                }
             }
+            return UINT32_MAX;
         }
-        if (set >= m_setAssignments.size()) return UINT32_MAX;
-        const auto& assignment = m_setAssignments[set];
-        if (binding >= assignment.samplerSlotCount) return UINT32_MAX;
-        return assignment.samplerSlotBase + binding;
+
+        if (set == 2 && binding >= 9u && binding <= 16u)
+        {
+            return 8u + binding - 9u;
+        }
+
+        return UINT32_MAX;
     }
 
     void DX11BindingRemapper::SetSlotAssignment(uint32 set, const SlotAssignment& assignment)

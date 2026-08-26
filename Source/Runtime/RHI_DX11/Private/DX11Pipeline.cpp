@@ -6,6 +6,7 @@
 #include "DX11BindingRemapper.h"
 
 #include <algorithm>
+#include <array>
 #include <span>
 
 namespace RVX
@@ -95,6 +96,48 @@ namespace RVX
 
         const auto& entries = m_layout->GetEntries();
         auto& remapper = DX11BindingRemapper::Get();
+
+        // DX11 has no descriptor-application error return. If an invalid
+        // logical sampler escaped validation, clear every sampler slot that
+        // could have been inherited from an earlier descriptor set and stop
+        // applying this set. This prevents a stale sampler from turning an
+        // unsupported ABI request into an accidental successful draw.
+        const auto failClosedUnsupportedSampler =
+            [context, stages, setIndex](uint32 binding)
+        {
+            RVX_RHI_ERROR(
+                "DX11: Rejecting unsupported sampler descriptor set {} binding {}; "
+                "the fixed sampler ABI only permits set 0 {{0,1,2,5,7,9,13,19}} "
+                "and set 2 {{9..16}}",
+                setIndex,
+                binding);
+            std::array<ID3D11SamplerState*,
+                       D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT> nullSamplers{};
+            if (HasFlag(stages, RHIShaderStage::Vertex))
+                context->VSSetSamplers(
+                    0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT,
+                    nullSamplers.data());
+            if (HasFlag(stages, RHIShaderStage::Pixel))
+                context->PSSetSamplers(
+                    0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT,
+                    nullSamplers.data());
+            if (HasFlag(stages, RHIShaderStage::Geometry))
+                context->GSSetSamplers(
+                    0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT,
+                    nullSamplers.data());
+            if (HasFlag(stages, RHIShaderStage::Hull))
+                context->HSSetSamplers(
+                    0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT,
+                    nullSamplers.data());
+            if (HasFlag(stages, RHIShaderStage::Domain))
+                context->DSSetSamplers(
+                    0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT,
+                    nullSamplers.data());
+            if (HasFlag(stages, RHIShaderStage::Compute))
+                context->CSSetSamplers(
+                    0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT,
+                    nullSamplers.data());
+        };
 
         // Try to get ID3D11DeviceContext1 for dynamic offset support
         ComPtr<ID3D11DeviceContext1> context1;
@@ -331,12 +374,18 @@ namespace RVX
 
                 case RHIBindingType::Sampler:
                 {
+                    const UINT slot = remapper.GetSamplerSlot(
+                        setIndex, binding.binding);
+                    if (slot == UINT32_MAX)
+                    {
+                        failClosedUnsupportedSampler(binding.binding);
+                        return;
+                    }
+
                     if (binding.sampler)
                     {
                         auto* dx11Sampler = static_cast<DX11Sampler*>(binding.sampler);
                         ID3D11SamplerState* sampler = dx11Sampler->GetSampler();
-                        UINT slot = remapper.GetSamplerSlot(setIndex, binding.binding);
-                        if (slot == UINT32_MAX) slot = binding.binding;
 
                         if (HasFlag(stages, RHIShaderStage::Vertex))
                             context->VSSetSamplers(slot, 1, &sampler);
@@ -353,7 +402,11 @@ namespace RVX
                     UINT srvSlot = remapper.GetSRVSlot(setIndex, binding.binding);
                     UINT samplerSlot = remapper.GetSamplerSlot(setIndex, binding.binding);
                     if (srvSlot == UINT32_MAX) srvSlot = binding.binding;
-                    if (samplerSlot == UINT32_MAX) samplerSlot = binding.binding;
+                    if (samplerSlot == UINT32_MAX)
+                    {
+                        failClosedUnsupportedSampler(binding.binding);
+                        return;
+                    }
                     
                     if (binding.textureView)
                     {

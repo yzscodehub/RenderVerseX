@@ -706,7 +706,7 @@ void ScreenSpaceOutlinePass::AddToGraph(
             descriptorDesc.BindTexture(3, normalView);
             descriptorDesc.BindTexture(4, materialIdentityView);
             descriptorDesc.BindBuffer(5, materialTable);
-            descriptorDesc.BindSampler(6, m_pointClampSampler.Get());
+            descriptorDesc.BindSampler(7, m_pointClampSampler.Get());
             RHIDescriptorSetRef descriptorSet =
                 device->CreateDescriptorSet(descriptorDesc);
             if (!descriptorSet ||

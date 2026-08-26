@@ -1353,17 +1353,17 @@ namespace
         materialLayoutDesc.debugName = "NativeSurfaceAlphaMaterialSet";
         materialLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer,
                                       RHIShaderStage::AllGraphics);
-        for (uint32 binding = 1; binding <= 5; ++binding)
+        for (uint32 binding = 1; binding <= 8; ++binding)
         {
             materialLayoutDesc.AddBinding(binding, RHIBindingType::SampledTexture,
                                           RHIShaderStage::Pixel);
         }
-        for (uint32 binding = 6; binding <= 10; ++binding)
+        for (uint32 binding = 9; binding <= 16; ++binding)
         {
             materialLayoutDesc.AddBinding(binding, RHIBindingType::Sampler,
                                           RHIShaderStage::Pixel);
         }
-        materialLayoutDesc.AddBinding(11, RHIBindingType::ShaderResourceBuffer,
+        materialLayoutDesc.AddBinding(17, RHIBindingType::ShaderResourceBuffer,
                                       RHIShaderStage::Pixel);
         RHIDescriptorSetLayoutRef materialLayout =
             device->CreateDescriptorSetLayout(materialLayoutDesc);
@@ -1422,8 +1422,12 @@ namespace
         material.uvTransforms[0].scaleOffset = {1.37f, 0.71f, 0.18f, -0.22f};
         material.uvTransforms[0].rotationUVSet = {0.6f, 0.8f, useUV1 ? 1.0f : 0.0f, 0.0f};
         constexpr uint32 kConstantBufferAlignment = 256u;
+        constexpr uint32 kMaterialConstantBufferSize =
+            (static_cast<uint32>(sizeof(MaterialGPUConstants)) +
+             kConstantBufferAlignment - 1u) /
+            kConstantBufferAlignment * kConstantBufferAlignment;
         RHIBufferRef materialBuffer = CreateUploadBufferWithData(
-            *device, kConstantBufferAlignment, RHIBufferUsage::Constant,
+            *device, kMaterialConstantBufferSize, RHIBufferUsage::Constant,
             0, &material, sizeof(material), "NativeSurfaceAlphaMaterialConstants");
 
         const std::array<uint8, 16> alphaTexels = normalMapProbe
@@ -1523,21 +1527,23 @@ namespace
         frameSetDesc.BindTexture(
             PipelineCache::DefaultLitAmbientOcclusionBinding,
             sourceTextureView.Get());
+        frameSetDesc.BindTexture(16, sourceTextureView.Get());
         RHIDescriptorSetRef frameSet = device->CreateDescriptorSet(frameSetDesc);
 
         RHIDescriptorSetDesc materialSetDesc;
         materialSetDesc.layout = materialLayout.Get();
         materialSetDesc.debugName = "NativeSurfaceAlphaMaterialDescriptorSet";
-        materialSetDesc.BindBuffer(0, materialBuffer.Get(), 0, kConstantBufferAlignment);
-        for (uint32 binding = 1; binding <= 5; ++binding)
+        materialSetDesc.BindBuffer(0, materialBuffer.Get(), 0,
+                                  kMaterialConstantBufferSize);
+        for (uint32 binding = 1; binding <= 8; ++binding)
         {
             materialSetDesc.BindTexture(binding, sourceTextureView.Get());
         }
-        for (uint32 binding = 6; binding <= 10; ++binding)
+        for (uint32 binding = 9; binding <= 16; ++binding)
         {
             materialSetDesc.BindSampler(binding, sampler.Get());
         }
-        materialSetDesc.BindBuffer(11, dummyStructuredBuffer.Get());
+        materialSetDesc.BindBuffer(17, dummyStructuredBuffer.Get());
         RHIDescriptorSetRef materialSet = device->CreateDescriptorSet(materialSetDesc);
 
         RHITextureRef renderTarget;

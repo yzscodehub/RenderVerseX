@@ -26,7 +26,10 @@ namespace RVX
         RenderResourceHandle mesh;
         RenderResourceHandle material;
         MaterialRenderMode renderMode = MaterialRenderMode::Opaque;
-        float depthFromCamera = 0.0f;
+        /** Positive projection on the normalized view forward axis. */
+        float viewSpaceDepth = 0.0f;
+        /** Author-controlled coarse translucency layer; lower layers draw first. */
+        int32 translucencySortPriority = 0;
         uint64 sortKey = 0;
         RenderDrawPacket packet;
     };
@@ -34,7 +37,7 @@ namespace RVX
     /** @brief Value-only validation result for one transparent draw-list build. */
     struct TransparentDrawListDiagnostics
     {
-        /** Non-finite camera distances are rejected before graph recording. */
+        /** Non-finite view depths are rejected before graph recording. */
         uint32 rejectedNonFiniteDepthCount = 0;
         /** True only when the retained list has the canonical strict order. */
         bool orderValid = true;

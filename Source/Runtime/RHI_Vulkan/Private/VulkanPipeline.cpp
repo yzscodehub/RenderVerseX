@@ -307,7 +307,12 @@ namespace RVX
         std::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachments;
         for (uint32 i = 0; i < desc.numRenderTargets; ++i)
         {
-            const auto& rtBlend = desc.blendState.renderTargets[i];
+            const uint32 blendStateIndex =
+                SelectVulkanBlendAttachmentStateIndex(
+                    desc.blendState.independentBlendEnable,
+                    i);
+            const auto& rtBlend =
+                desc.blendState.renderTargets[blendStateIndex];
             VkPipelineColorBlendAttachmentState attachment = {};
             attachment.blendEnable = rtBlend.blendEnable;
             attachment.srcColorBlendFactor = ToVkBlendFactor(rtBlend.srcColorBlend);
@@ -681,12 +686,22 @@ namespace RVX
 
     RHIPipelineRef CreateVulkanGraphicsPipeline(VulkanDevice* device, const RHIGraphicsPipelineDesc& desc)
     {
-        return Ref<VulkanPipeline>(new VulkanPipeline(device, desc));
+        Ref<VulkanPipeline> pipeline(new VulkanPipeline(device, desc));
+        if (pipeline->GetPipeline() == VK_NULL_HANDLE)
+        {
+            return nullptr;
+        }
+        return pipeline;
     }
 
     RHIPipelineRef CreateVulkanComputePipeline(VulkanDevice* device, const RHIComputePipelineDesc& desc)
     {
-        return Ref<VulkanPipeline>(new VulkanPipeline(device, desc));
+        Ref<VulkanPipeline> pipeline(new VulkanPipeline(device, desc));
+        if (pipeline->GetPipeline() == VK_NULL_HANDLE)
+        {
+            return nullptr;
+        }
+        return pipeline;
     }
 
     RHIDescriptorSetRef CreateVulkanDescriptorSet(VulkanDevice* device, const RHIDescriptorSetDesc& desc)

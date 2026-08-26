@@ -41,6 +41,13 @@ namespace
         std::string assetId;
         std::string assetPathRelative;
         std::string sourcePath;
+        std::string sourceName;
+        std::string sourceUri;
+        std::string sourceVersion;
+        std::string attribution;
+        std::string modificationNotice;
+        std::string derivedFrom;
+        std::string generationRecipe;
     };
 
     struct PackageFile
@@ -64,7 +71,14 @@ namespace
             << "  --cooked-root-relative <path>\n"
             << "  --asset-id <id>\n"
             << "  --asset-path-relative <path>\n"
-            << "  --source-path <path>\n";
+            << "  --source-path <path>\n"
+            << "  --source-name <name>\n"
+            << "  --source-uri <uri>\n"
+            << "  --source-version <version>\n"
+            << "  --attribution <text>\n"
+            << "  --modification-notice <text>\n"
+            << "  --derived-from <id>\n"
+            << "  --generation-recipe <id>\n";
     }
 
     bool ParseOptions(int argc, char** argv, Options& outOptions)
@@ -96,6 +110,13 @@ namespace
             else if (argument == "--asset-id") outOptions.assetId = value;
             else if (argument == "--asset-path-relative") outOptions.assetPathRelative = value;
             else if (argument == "--source-path") outOptions.sourcePath = value;
+            else if (argument == "--source-name") outOptions.sourceName = value;
+            else if (argument == "--source-uri") outOptions.sourceUri = value;
+            else if (argument == "--source-version") outOptions.sourceVersion = value;
+            else if (argument == "--attribution") outOptions.attribution = value;
+            else if (argument == "--modification-notice") outOptions.modificationNotice = value;
+            else if (argument == "--derived-from") outOptions.derivedFrom = value;
+            else if (argument == "--generation-recipe") outOptions.generationRecipe = value;
             else
             {
                 std::cerr << "Unknown argument: " << argument << "\n";
@@ -107,7 +128,11 @@ namespace
                !outOptions.assetRoot.empty() && !outOptions.sourceRoot.empty() &&
                !outOptions.manifestPath.empty() && !outOptions.cookedRoot.empty() &&
                !outOptions.cookedRootRelative.empty() && !outOptions.assetId.empty() &&
-               !outOptions.assetPathRelative.empty() && !outOptions.sourcePath.empty();
+               !outOptions.assetPathRelative.empty() && !outOptions.sourcePath.empty() &&
+               !outOptions.sourceName.empty() && !outOptions.sourceUri.empty() &&
+               !outOptions.sourceVersion.empty() && !outOptions.attribution.empty() &&
+               !outOptions.modificationNotice.empty() && !outOptions.derivedFrom.empty() &&
+               !outOptions.generationRecipe.empty();
     }
 
     bool IsStrictRelativePath(const std::string& path)
@@ -417,10 +442,10 @@ namespace
                 {"coverage", "complete-declared-package"},
             }},
             {"source", {
-                {"name", "RenderVerseX stylized material grid fixture"},
-                {"uri", "repo://Samples/RenderVerseSamples/Assets/models/pbr-material-grid/scene.gltf"},
+                {"name", options.sourceName},
+                {"uri", options.sourceUri},
                 {"author", "RenderVerseX contributors"},
-                {"version", "gfx14-toon-cook-v1"},
+                {"version", options.sourceVersion},
             }},
             {"contentIdentity", ToIdentityJson(MakeArtifactIdentity(*primaryArtifact))},
             {"assetContentId", {
@@ -431,12 +456,12 @@ namespace
                 {"fileCount", static_cast<uint32_t>(packageFiles.size())},
             }},
             {"files", std::move(files)},
-            {"attribution", "Generated from the RenderVerseX PBR material grid fixture."},
-            {"modificationNotice", "Cooked with the fixed GFX14 ToonLit material profile; source bytes are not staged at runtime."},
+            {"attribution", options.attribution},
+            {"modificationNotice", options.modificationNotice},
             {"redistributable", true},
-            {"derivedFrom", Json::array({"pbr-material-grid"})},
+            {"derivedFrom", Json::array({options.derivedFrom})},
             {"generation", {
-                {"recipe", "rvx-gfx14-toon-material-cook-v1"},
+                {"recipe", options.generationRecipe},
                 {"toolVersion", manifest.toolVersion},
                 {"recipeHash", selected.recipeHash},
             }},

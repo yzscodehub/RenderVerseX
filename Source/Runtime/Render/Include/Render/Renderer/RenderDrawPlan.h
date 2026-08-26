@@ -103,6 +103,7 @@ namespace RVX
         std::span<const uint8> visibleObjectMask,
         uint32 viewCullingMask,
         const Vec3& cameraPosition,
+        const Vec3& cameraForward,
         std::vector<RenderDrawItem>& outOpaqueDrawItems,
         std::vector<RenderDrawItem>& outMaskedDrawItems,
         std::vector<RenderDrawItem>& outTransparentDrawItems,

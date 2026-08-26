@@ -112,6 +112,38 @@ class CIWorkflowPolicyTests(unittest.TestCase):
         findings = validate(self.root)
         self.assertTrue(any("--lifetime-min-duration-ms 300000" in item for item in findings))
 
+    def test_gfx15_step_requires_exact_target_label_and_count(self) -> None:
+        self.replace(
+            ".github/workflows/nightly.yml",
+            "-BuildTarget RVXValidationSuiteGfx15Translucency",
+            "-BuildTarget RVXValidationSuiteGfx15TranslucencyBroken",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("RVXValidationSuiteGfx15Translucency" in item
+                            for item in findings))
+
+    def test_gfx15_step_rejects_missing_or_substituted_evidence(self) -> None:
+        self.replace(
+            ".github/workflows/nightly.yml",
+            "RenderVerseSamplesDX12GFX15ForwardPlusTranslucency_640x360.ppm",
+            "RenderVerseSamplesDX12GFX15ForwardPlusTranslucency_missing.ppm",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("GFX15 RequiredEvidence" in item for item in findings))
+
+    def test_gfx15_preset_must_select_the_exact_suite_label(self) -> None:
+        path = self.root / "CMakePresets.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        preset = next(
+            item for item in data["testPresets"]
+            if item["name"] == "win_x64_qualification_debug_gfx15_translucency"
+        )
+        preset["filter"] = {"include": {"label": "^suite\\.wrong$"}}
+        path.write_text(json.dumps(data), encoding="utf-8")
+        findings = validate(self.root)
+        self.assertTrue(any("GFX15 translucency test preset" in item
+                            for item in findings))
+
 
 if __name__ == "__main__":
     unittest.main()

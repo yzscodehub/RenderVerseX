@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -118,6 +119,9 @@ namespace RVX
             std::array<uint32, 1> objectDynamicOffsets{0};
             MaterialBindingSnapshot material{};
             RHIPipelineRef pipeline;
+            MaterialBlendMode blendMode = MaterialBlendMode::Opaque;
+            MaterialShadingModel shadingModel =
+                MaterialShadingModel::StandardLit;
             bool skinned = false;
             bool requiresUV1 = false;
         };
@@ -131,12 +135,12 @@ namespace RVX
             const RenderResourceRegistry* resourceRegistry = nullptr;
             PipelineCache* pipelineCache = nullptr;
             MaterialSystem* materialSystem = nullptr;
-            RHIPipelineRef skinnedPipeline;
-            RHIPipelineRef rigidPipeline;
             RasterObjectBindingSnapshot bindings{};
             std::vector<DrawRecord> draws;
             RGTextureHandle colorHandle{};
             RGTextureHandle depthHandle{};
+            RGTextureHandle opaqueSceneSnapshotReadHandle{};
+            RGTextureHandle reactiveMaskHandle{};
             RGTextureHandle directionalShadowReadHandle{};
             RGTextureHandle rayTracedShadowMaskReadHandle{};
             RGBufferHandle lightConstantsReadHandle{};
@@ -150,6 +154,8 @@ namespace RVX
             RGBufferHandle previousPaletteReadHandle{};
             RGTextureViewHandle colorViewHandle{};
             RGTextureViewHandle depthViewHandle{};
+            RGTextureViewHandle opaqueSceneSnapshotViewHandle{};
+            RGTextureViewHandle reactiveMaskViewHandle{};
             RGTextureViewHandle directionalShadowViewHandle{};
             RGTextureViewHandle rayTracedShadowMaskViewHandle{};
             RGTextureViewHandle environmentIBLIrradianceViewHandle{};
@@ -359,12 +365,6 @@ namespace RVX
                     return false;
                 }
             }
-            if (!RetainResource(builder, data.skinnedPipeline.Get()) ||
-                !RetainResource(builder, data.rigidPipeline.Get()))
-            {
-                return false;
-            }
-
             for (const DrawRecord& draw : data.draws)
             {
                 if (!RetainResource(builder, draw.buffers.positionBuffer) ||
@@ -440,14 +440,16 @@ namespace RVX
             record.submesh = buffers.submeshes[item.submeshIndex];
             record.skinned = skinned;
             record.requiresUV1 = item.packet.pipelineKey.requiresUV1;
+            record.blendMode = item.packet.pipelineKey.blendMode;
+            record.shadingModel = item.packet.pipelineKey.shadingModel;
             record.pipeline = RHIPipelineRef(
-                data.pipelineCache->GetPipelineForVariant(
-                    MaterialPipelineVariant::Transparent,
+                data.pipelineCache->GetTransparentMrtPipeline(
                     data.colorFormat,
                     skinned ? DefaultLitDirectVertexInputMode::Skinned
                             : DefaultLitDirectVertexInputMode::Rigid,
                     item.packet.pipelineKey.cullMode,
-                    item.packet.pipelineKey.reverseWinding));
+                    item.packet.pipelineKey.reverseWinding,
+                    item.packet.pipelineKey.blendMode));
             if (!record.pipeline)
             {
                 return DrawPreparationResult::SkippedResource;
@@ -465,6 +467,7 @@ namespace RVX
             if (record.material.binding.usedFallback)
             {
                 ++stats.materialFallbackBindingCount;
+                ++stats.translucencyFallbackCount;
             }
             stats.materialTextureFlags |= record.material.binding.textureFlags;
             stats.materialFallbackTextureFlags |=
@@ -514,17 +517,39 @@ namespace RVX
                     ? static_cast<uint32>(
                           data.frameSnapshot->transparentDrawItems.size())
                     : 0;
+                data.results->transparentStats.transparentOrderHash =
+                    data.frameSnapshot != nullptr
+                    ? BuildTransparentDrawOrderHash(
+                          data.frameSnapshot->transparentDrawItems)
+                    : 0;
+                data.results->transparentStats.transparentOrderValid =
+                    data.frameSnapshot != nullptr &&
+                    IsTransparentDrawListStrictlyOrdered(
+                        data.frameSnapshot->transparentDrawItems);
             }
             if (!data.contextValid || !data.results || !data.frameSnapshot ||
                 !data.requestedEnabled || !data.pipelineCache ||
                 !data.materialSystem || !data.resourceRegistry)
             {
+                RVX_CORE_WARN(
+                    "TransparentPass: base preflight facts are inconsistent "
+                    "(contextValid={}, results={}, frameSnapshot={}, requestedEnabled={}, "
+                    "pipelineCache={}, materialSystem={}, resourceRegistry={})",
+                    data.contextValid,
+                    data.results != nullptr,
+                    data.frameSnapshot != nullptr,
+                    data.requestedEnabled,
+                    data.pipelineCache != nullptr,
+                    data.materialSystem != nullptr,
+                    data.resourceRegistry != nullptr);
                 MarkTransparentPreflightFailure(
                     data, RenderPolicyReason::InconsistentFacts);
                 return false;
             }
 
             const ViewData& view = data.execution.view;
+            const OpaqueSceneSnapshotRecordInput& opaqueSnapshot =
+                data.execution.opaqueSceneSnapshot;
             if (data.frameSnapshot->transparentDrawItems.empty())
             {
                 TransparentPassDrawStats& stats = data.results->transparentStats;
@@ -539,8 +564,24 @@ namespace RVX
             }
             if (!IsTransparentDrawListStrictlyOrdered(
                     data.frameSnapshot->transparentDrawItems) ||
-                !view.colorTarget.IsValid())
+                !view.colorTarget.IsValid() ||
+                !opaqueSnapshot.IsCompatibleWith(data.identity) ||
+                !view.reactiveMaskTarget.IsValid() ||
+                opaqueSnapshot.IsEmpty())
             {
+                RVX_CORE_WARN(
+                    "TransparentPass: draw-order or scene-input facts are inconsistent "
+                    "(orderValid={}, colorTarget={}, opaqueSnapshotEmpty={}, "
+                    "opaqueSnapshotCompatible={}, opaqueSnapshotTexture={}, "
+                    "opaqueSnapshotReceipt={}, reactiveMaskTarget={})",
+                    IsTransparentDrawListStrictlyOrdered(
+                        data.frameSnapshot->transparentDrawItems),
+                    view.colorTarget.IsValid(),
+                    opaqueSnapshot.IsEmpty(),
+                    opaqueSnapshot.IsCompatibleWith(data.identity),
+                    opaqueSnapshot.texture.IsValid(),
+                    opaqueSnapshot.receipt != nullptr,
+                    view.reactiveMaskTarget.IsValid());
                 MarkTransparentPreflightFailure(
                     data, RenderPolicyReason::InconsistentFacts);
                 return false;
@@ -554,6 +595,44 @@ namespace RVX
                 return false;
             }
             data.colorFormat = colorDesc->format;
+            const RHITextureDesc* const opaqueSnapshotDesc =
+                builder.GetTextureDesc(opaqueSnapshot.texture);
+            const RHITextureDesc* const reactiveMaskDesc =
+                builder.GetTextureDesc(view.reactiveMaskTarget);
+            if (data.colorFormat != RHIFormat::RGBA16_FLOAT ||
+                !HasFlag(colorDesc->usage, RHITextureUsage::CopySrc) ||
+                opaqueSnapshot.texture.index == view.colorTarget.index ||
+                opaqueSnapshotDesc == nullptr ||
+                opaqueSnapshotDesc->format != RHIFormat::RGBA16_FLOAT ||
+                opaqueSnapshotDesc->width != colorDesc->width ||
+                opaqueSnapshotDesc->height != colorDesc->height ||
+                opaqueSnapshotDesc->sampleCount != colorDesc->sampleCount ||
+                !HasFlag(opaqueSnapshotDesc->usage,
+                         RHITextureUsage::ShaderResource) ||
+                !HasFlag(opaqueSnapshotDesc->usage, RHITextureUsage::CopyDst) ||
+                reactiveMaskDesc == nullptr ||
+                reactiveMaskDesc->format != RHIFormat::R8_UNORM ||
+                reactiveMaskDesc->width != colorDesc->width ||
+                reactiveMaskDesc->height != colorDesc->height ||
+                reactiveMaskDesc->sampleCount != colorDesc->sampleCount ||
+                !HasFlag(reactiveMaskDesc->usage,
+                         RHITextureUsage::RenderTarget))
+            {
+                MarkTransparentPreflightFailure(
+                    data, RenderPolicyReason::ResourcesUnavailable);
+                return false;
+            }
+            int32 lastPriority = std::numeric_limits<int32>::min();
+            for (const RenderDrawItem& item :
+                 data.frameSnapshot->transparentDrawItems)
+            {
+                if (item.translucencySortPriority != lastPriority)
+                {
+                    ++data.results->transparentStats.translucencyPriorityBucketCount;
+                    lastPriority = item.translucencySortPriority;
+                }
+            }
+            data.results->transparentStats.opaqueSceneSnapshotReady = true;
             data.depthAvailable = view.depthTarget.IsValid();
 
             const uint64 lightingPlanIdentity =
@@ -747,23 +826,6 @@ namespace RVX
                     data, RenderPolicyReason::ResourcesUnavailable);
                 return false;
             }
-            data.skinnedPipeline = RHIPipelineRef(
-                data.pipelineCache->GetPipelineForVariant(
-                    MaterialPipelineVariant::Transparent,
-                    data.colorFormat,
-                    DefaultLitDirectVertexInputMode::Skinned));
-            data.rigidPipeline = RHIPipelineRef(
-                data.pipelineCache->GetPipelineForVariant(
-                    MaterialPipelineVariant::Transparent,
-                    data.colorFormat,
-                    DefaultLitDirectVertexInputMode::Rigid));
-            if (!data.skinnedPipeline || !data.rigidPipeline)
-            {
-                MarkTransparentPreflightFailure(
-                    data, RenderPolicyReason::PipelineUnavailable);
-                return false;
-            }
-
             for (const RenderDrawItem& item :
                  data.frameSnapshot->transparentDrawItems)
             {
@@ -901,6 +963,42 @@ namespace RVX
                     return false;
                 }
             }
+            data.opaqueSceneSnapshotReadHandle = builder.Read(
+                opaqueSnapshot.texture,
+                RHIResourceState::ShaderResource,
+                RHIShaderStage::Pixel);
+            RHITextureViewDesc snapshotViewDesc;
+            snapshotViewDesc.format = RHIFormat::RGBA16_FLOAT;
+            snapshotViewDesc.dimension = RHITextureDimension::Texture2D;
+            snapshotViewDesc.type = RHITextureViewType::ShaderResource;
+            snapshotViewDesc.debugName = "TransparentOpaqueSceneSnapshotSRV";
+            data.opaqueSceneSnapshotViewHandle = builder.CreateTextureView(
+                data.opaqueSceneSnapshotReadHandle, snapshotViewDesc);
+            data.opaqueSceneSnapshotViewHandle = builder.Read(
+                data.opaqueSceneSnapshotViewHandle,
+                MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                                 RHIShaderStage::Pixel));
+            data.reactiveMaskHandle = view.reactiveMaskTarget;
+            RHITextureViewDesc reactiveViewDesc;
+            reactiveViewDesc.format = RHIFormat::R8_UNORM;
+            reactiveViewDesc.dimension = RHITextureDimension::Texture2D;
+            reactiveViewDesc.type = RHITextureViewType::RenderTarget;
+            reactiveViewDesc.debugName = "TransparentReactiveMaskRTV";
+            data.reactiveMaskViewHandle = builder.CreateTextureView(
+                data.reactiveMaskHandle, reactiveViewDesc);
+            data.reactiveMaskViewHandle = builder.ReadWrite(
+                data.reactiveMaskViewHandle,
+                MakeRGAccessDesc(RHIResourceState::RenderTarget,
+                                 RHIShaderStage::Pixel));
+            if (!data.opaqueSceneSnapshotReadHandle.IsValid() ||
+                !data.opaqueSceneSnapshotViewHandle.IsValid() ||
+                !data.reactiveMaskViewHandle.IsValid())
+            {
+                MarkTransparentPreflightFailure(
+                    data, RenderPolicyReason::ResourcesUnavailable);
+                return false;
+            }
+            data.results->transparentStats.reactiveMaskAttachmentBound = true;
             data.recordingPrepared = true;
             return true;
         }
@@ -912,7 +1010,6 @@ namespace RVX
             if (!data.contextValid || !data.results ||
                 data.results->identity != data.identity || !data.recordingPrepared ||
                 data.draws.empty() ||
-                !data.skinnedPipeline || !data.rigidPipeline ||
                 !data.bindings.IsValid() ||
                 data.execution.lightingPlan == nullptr ||
                 !data.execution.lightingPlan->IsValid() ||
@@ -940,6 +1037,17 @@ namespace RVX
                 data.colorHandle.graphIdentity != data.identity.graphIdentity ||
                 data.colorHandle.recordingGeneration !=
                     data.identity.graphRecordingGeneration ||
+                !data.opaqueSceneSnapshotReadHandle.IsValid() ||
+                !data.opaqueSceneSnapshotViewHandle.IsValid() ||
+                !data.reactiveMaskHandle.IsValid() ||
+                !data.reactiveMaskViewHandle.IsValid() ||
+                data.opaqueSceneSnapshotReadHandle.graphIdentity !=
+                    data.identity.graphIdentity ||
+                data.opaqueSceneSnapshotReadHandle.recordingGeneration !=
+                    data.identity.graphRecordingGeneration ||
+                data.reactiveMaskHandle.graphIdentity != data.identity.graphIdentity ||
+                data.reactiveMaskHandle.recordingGeneration !=
+                    data.identity.graphRecordingGeneration ||
                 (data.depthAvailable &&
                  (!data.depthHandle.IsValid() ||
                   data.depthHandle.graphIdentity != data.identity.graphIdentity ||
@@ -948,7 +1056,6 @@ namespace RVX
             {
                 return false;
             }
-
             const bool hasSkinnedDraw = std::any_of(
                 data.draws.begin(), data.draws.end(),
                 [](const DrawRecord& draw) { return draw.skinned; });
@@ -1124,6 +1231,30 @@ namespace RVX
             }
             lightingRequest.environmentIBL = environmentIBLResources;
             lightingRequest.exposureStateBuffer = RHIBufferRef(exposureState);
+            RHITextureView* const opaqueSceneSnapshotView = context.GetTextureView(
+                data.opaqueSceneSnapshotViewHandle);
+            RHITextureView* const reactiveMaskView = context.GetTextureView(
+                data.reactiveMaskViewHandle);
+            if (opaqueSceneSnapshotView == nullptr || reactiveMaskView == nullptr ||
+                opaqueSceneSnapshotView == colorView ||
+                !data.execution.opaqueSceneSnapshot.IsCompatibleWith(data.identity) ||
+                !data.execution.opaqueSceneSnapshot.receipt->copied.load(
+                    std::memory_order_acquire))
+            {
+                RVX_CORE_WARN(
+                    "TransparentPass: opaque HDR typed-input receipt/reactive MRT binding is invalid "
+                    "(empty={}, compatible={}, texture={}, receipt={})",
+                    data.execution.opaqueSceneSnapshot.IsEmpty(),
+                    data.execution.opaqueSceneSnapshot.IsCompatibleWith(data.identity),
+                    data.execution.opaqueSceneSnapshot.texture.IsValid(),
+                    data.execution.opaqueSceneSnapshot.receipt != nullptr);
+                return false;
+            }
+            data.results->transparentStats.opaqueSceneSnapshotCopied = true;
+            lightingRequest.opaqueSceneSnapshotView =
+                RHITextureViewRef(opaqueSceneSnapshotView);
+            lightingRequest.opaqueSceneSnapshotSampler =
+                data.pipelineCache->GetEnvironmentIBLSamplerRef();
             LightingBindingSnapshot lightingBindings;
             if (!data.pipelineCache->CreateLightingBindingSnapshot(
                     drawView, lightingRequest, lightingBindings) ||
@@ -1137,6 +1268,8 @@ namespace RVX
             RHIRenderPassDesc renderPassDesc;
             renderPassDesc.AddColorAttachment(
                 colorView, RHILoadOp::Load, RHIStoreOp::Store);
+            renderPassDesc.AddColorAttachment(
+                reactiveMaskView, RHILoadOp::Load, RHIStoreOp::Store);
             if (depthView)
             {
                 renderPassDesc.SetDepthStencil(
@@ -1214,6 +1347,23 @@ namespace RVX
                     draw.material.binding));
                 ++stats.executedPacketCount;
                 ++stats.executedDrawCount;
+                ++stats.reactiveMaskWriteDrawCount;
+                if (draw.shadingModel == MaterialShadingModel::ThinTransmission)
+                {
+                    ++stats.thinTransmissionDrawCount;
+                }
+                else if (draw.blendMode == MaterialBlendMode::Premultiplied)
+                {
+                    ++stats.premultipliedDrawCount;
+                }
+                else if (draw.blendMode == MaterialBlendMode::Additive)
+                {
+                    ++stats.additiveDrawCount;
+                }
+                else
+                {
+                    ++stats.alphaBlendDrawCount;
+                }
             }
             ctx.EndRenderPass();
             const bool succeeded = !executionFailed &&
@@ -1368,8 +1518,6 @@ namespace RVX
                 if (!PrepareRecording(data, builder))
                 {
                     data.draws.clear();
-                    data.skinnedPipeline.Reset();
-                    data.rigidPipeline.Reset();
                     data.bindings = {};
                     data.colorHandle = {};
                     data.depthHandle = {};

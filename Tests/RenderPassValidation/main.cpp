@@ -492,6 +492,12 @@ namespace RVX
             return renderer.m_featureCompositionFailureReason;
         }
 
+        static RenderFrameExecutionPlan& MutableSelectedPlanForTesting(
+            SceneRenderer& renderer)
+        {
+            return renderer.m_renderPolicyDiagnostics.selectedPlan;
+        }
+
         static bool ValidateDeferredToneMappingPresentation(
             const PostProcessStackExecuteStats& stats,
             RHIFormat backBufferFormat,
@@ -3261,6 +3267,175 @@ namespace
         }
     }
 
+    struct TransparentFixtureSnapshotCopyData
+    {
+        RGTextureHandle source{};
+        RGTextureHandle destination{};
+        std::shared_ptr<OpaqueSceneSnapshotCopyReceipt> receipt;
+    };
+
+    struct TransparentFixtureReactiveMaskInitializationData
+    {
+        RGTextureHandle target{};
+        RGTextureViewHandle targetView{};
+    };
+
+    void AddTransparentFixtureReactiveMaskInitialization(
+        RenderGraph& graph,
+        RGTextureHandle reactiveMaskTarget)
+    {
+        graph.AddPass<TransparentFixtureReactiveMaskInitializationData>(
+            "TransparentFixtureReactiveMaskInitialize",
+            RenderGraphPassType::Graphics,
+            [reactiveMaskTarget](
+                RenderGraphBuilder& builder,
+                TransparentFixtureReactiveMaskInitializationData& data)
+            {
+                if (!reactiveMaskTarget.IsValid())
+                {
+                    return;
+                }
+
+                const RHITextureDesc* const targetDesc =
+                    builder.GetTextureDesc(reactiveMaskTarget);
+                if (targetDesc == nullptr ||
+                    targetDesc->format != RHIFormat::R8_UNORM)
+                {
+                    return;
+                }
+
+                RHITextureViewDesc targetViewDesc;
+                targetViewDesc.format = targetDesc->format;
+                targetViewDesc.dimension = targetDesc->dimension;
+                targetViewDesc.subresourceRange = RHISubresourceRange::All();
+                targetViewDesc.type = RHITextureViewType::RenderTarget;
+                targetViewDesc.debugName =
+                    "TransparentFixtureReactiveMaskInitializeRTV";
+
+                data.target = reactiveMaskTarget;
+                data.targetView = builder.CreateTextureView(
+                    reactiveMaskTarget, targetViewDesc);
+                data.targetView = builder.Write(
+                    data.targetView,
+                    MakeRGAccessDesc(
+                        RHIResourceState::RenderTarget,
+                        RHIShaderStage::None));
+                if (!data.targetView.IsValid())
+                {
+                    data.target = {};
+                }
+            },
+            [](const TransparentFixtureReactiveMaskInitializationData& data,
+               RenderGraphPassContext& context)
+            {
+                if (!data.target.IsValid() || !data.targetView.IsValid())
+                {
+                    context.MarkExecutionFailed(
+                        "Transparent fixture reactive-mask initialization has invalid graph resources");
+                    return;
+                }
+
+                RHITexture* const target = context.GetTexture(data.target);
+                RHITextureView* const targetView =
+                    context.GetTextureView(data.targetView);
+                if (target == nullptr || targetView == nullptr)
+                {
+                    context.MarkExecutionFailed(
+                        "Transparent fixture reactive-mask initialization could not resolve graph resources");
+                    return;
+                }
+
+                RHIRenderPassDesc renderPassDesc;
+                renderPassDesc.AddColorAttachment(
+                    targetView,
+                    RHILoadOp::Clear,
+                    RHIStoreOp::Store,
+                    RHIClearColor{0.0f, 0.0f, 0.0f, 0.0f});
+                renderPassDesc.SetRenderArea(
+                    0, 0, target->GetWidth(), target->GetHeight());
+                RHICommandContext& commands = context.Commands();
+                commands.BeginRenderPass(renderPassDesc);
+                commands.EndRenderPass();
+            });
+    }
+
+    [[nodiscard]] OpaqueSceneSnapshotRecordInput AddTransparentFixtureSceneTargets(
+        RenderGraph& graph,
+        ViewData& view,
+        const RenderPassRecordIdentity& identity)
+    {
+        const RHITextureDesc* const colorDesc =
+            graph.GetTextureDesc(view.colorTarget);
+        if (colorDesc == nullptr || colorDesc->format != RHIFormat::RGBA16_FLOAT ||
+            !HasFlag(colorDesc->usage, RHITextureUsage::CopySrc))
+        {
+            return {};
+        }
+
+        RHITextureDesc snapshotDesc = RHITextureDesc::Texture2D(
+            colorDesc->width,
+            colorDesc->height,
+            RHIFormat::RGBA16_FLOAT,
+            RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst);
+        snapshotDesc.debugName = "TransparentFixtureOpaqueSceneSnapshot";
+        const RGTextureHandle opaqueSceneSnapshot = graph.CreateTexture(snapshotDesc);
+        if (!view.reactiveMaskTarget.IsValid())
+        {
+            RHITextureDesc reactiveDesc = RHITextureDesc::Texture2D(
+                colorDesc->width,
+                colorDesc->height,
+                RHIFormat::R8_UNORM,
+                RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource);
+            reactiveDesc.debugName = "TransparentFixtureReactiveMask";
+            view.reactiveMaskTarget = graph.CreateTexture(reactiveDesc);
+        }
+        if (!opaqueSceneSnapshot.IsValid() ||
+            !view.reactiveMaskTarget.IsValid() ||
+            opaqueSceneSnapshot.index == view.colorTarget.index)
+        {
+            return {};
+        }
+
+        OpaqueSceneSnapshotRecordInput snapshotInput;
+        snapshotInput.identity = identity;
+        snapshotInput.texture = opaqueSceneSnapshot;
+        snapshotInput.receipt = std::make_shared<OpaqueSceneSnapshotCopyReceipt>();
+        const RGTextureHandle source = view.colorTarget;
+        const RGTextureHandle destination = snapshotInput.texture;
+        const std::shared_ptr<OpaqueSceneSnapshotCopyReceipt> receipt =
+            snapshotInput.receipt;
+        graph.AddPass<TransparentFixtureSnapshotCopyData>(
+            "TransparentFixtureOpaqueSceneSnapshotCopy",
+            RenderGraphPassType::Graphics,
+            [source, destination, receipt](RenderGraphBuilder& builder,
+                                           TransparentFixtureSnapshotCopyData& data)
+            {
+                data.source = builder.Read(source, RHIResourceState::CopySource);
+                data.destination = builder.Write(
+                    destination, RHIResourceState::CopyDest);
+                data.receipt = receipt;
+            },
+            [](const TransparentFixtureSnapshotCopyData& data,
+               RenderGraphPassContext& context)
+            {
+                RHITexture* const source = context.GetTexture(data.source);
+                RHITexture* const destination = context.GetTexture(data.destination);
+                if (source == nullptr || destination == nullptr || source == destination ||
+                    !data.receipt)
+                {
+                    context.MarkExecutionFailed(
+                        "Transparent fixture HDR snapshot copy has invalid resources");
+                    return;
+                }
+                context.Commands().CopyTexture(source, destination);
+                data.receipt->copied.store(true, std::memory_order_release);
+            });
+
+        AddTransparentFixtureReactiveMaskInitialization(
+            graph, view.reactiveMaskTarget);
+        return snapshotInput;
+    }
+
     RenderPassRecordContext MakeTransparentRecordContext(
         RenderGraph& graph,
         ViewData view,
@@ -3282,6 +3457,8 @@ namespace
         context.identity.frameSequence = frameSequence;
         context.identity.viewOrdinal = 0;
         context.identity.recordEpoch = recordEpoch;
+        context.opaqueSceneSnapshot = AddTransparentFixtureSceneTargets(
+            graph, context.view, context.identity);
         context.renderScene = &scene;
         context.transparentDrawItems = &transparentDrawItems;
         context.results = std::make_shared<RenderPassRecordResults>();
@@ -4139,11 +4316,38 @@ namespace
             // stage. Its default items therefore carry a concrete immutable
             // surface route; individual tests override it when exercising a
             // non-default material path.
+            item.packet.pass = mode == MaterialRenderMode::Transparent
+                ? RenderPassKind::Transparent
+                : RenderPassKind::Opaque;
+            item.packet.pipelineKey.materialVariant =
+                GetPipelineVariantForRenderMode(mode);
             item.packet.pipelineKey.materialPolicyValid = true;
             item.packet.pipelineKey.surfacePathEligibility =
                 mode == MaterialRenderMode::Transparent
                     ? SurfacePathEligibility::ForwardTranslucency
                     : SurfacePathEligibility::DeferredOpaque;
+            item.packet.pipelineKey.blendMode =
+                mode == MaterialRenderMode::Transparent
+                    ? MaterialBlendMode::AlphaBlend
+                    : (mode == MaterialRenderMode::Masked
+                        ? MaterialBlendMode::Masked
+                        : MaterialBlendMode::Opaque);
+            item.packet.pipelineKey.shadingModel =
+                MaterialShadingModel::StandardLit;
+            item.packet.pipelineKey.cullMode = MaterialCullMode::Back;
+            item.packet.pipelineKey.shadowPolicy =
+                mode == MaterialRenderMode::Transparent
+                    ? MaterialShadowPolicy::Receive
+                    : MaterialShadowPolicy::CastAndReceive;
+            item.packet.geometryKey.mesh = item.mesh;
+            item.packet.geometryKey.submeshIndex = item.submeshIndex;
+            item.packet.materialKey.material = item.material;
+            item.packet.materialKey.materialMode = mode;
+            if (mode == MaterialRenderMode::Transparent)
+            {
+                item.packet.flags = RenderDrawFlags::Transparent |
+                                    RenderDrawFlags::ReceivesShadow;
+            }
             return item;
         }
 
@@ -11379,17 +11583,28 @@ TEST(SceneRendererPassRecordingValidation,
     renderer.AddPass(std::move(probe));
     EXPECT_EQ(passCountBeforeProbe + 1u, renderer.GetPassCount());
 
-    // AddPass invalidates the renderer's working plan, so establish the
-    // frame identity and mutable caller values after registration.
-    RenderFrameExecutionPlan plan;
-    plan.frameSequence = 7001;
-    // The focused packet carries one primary view, so the record context
-    // must use that view's ordinal rather than an arbitrary legacy value.
-    plan.viewOrdinal = 0;
-    renderer.GetViewData().renderFrameExecutionPlan = &plan;
+    // AddPass invalidates the renderer's working plan. Rebuild the real
+    // empty-frame draw plan and compile it so OpaquePass receives the same
+    // complete frozen partition contract as production, including an empty
+    // Opaque partition rather than a hand-authored identity-only plan.
     renderer.GetViewData().viewportWidth = 401;
     renderer.GetViewData().viewportHeight = 233;
     renderer.GetViewData().frameNumber = 73;
+    ASSERT_TRUE(
+        SceneRendererTestAccess::BuildPreparedDrawPlanForTesting(renderer));
+    renderer.CompileRenderFramePlanForTesting();
+    ASSERT_TRUE(renderer.GetRenderPolicyDiagnostics().planAvailable);
+    const RenderFrameExecutionPlan& plan =
+        renderer.GetRenderPolicyDiagnostics().selectedPlan;
+    EXPECT_EQ(7001u, plan.frameSequence);
+    EXPECT_EQ(0u, plan.viewOrdinal);
+    EXPECT_TRUE(std::any_of(
+        plan.passes.begin(),
+        plan.passes.end(),
+        [](const RenderPassExecutionPlan& passPlan)
+        {
+            return passPlan.pass == RenderPassKind::Opaque;
+        }));
     ASSERT_TRUE(
         SceneRendererTestAccess::PrepareLightingForAcceptedFrameForTesting(
             renderer));
@@ -11447,7 +11662,8 @@ TEST(SceneRendererPassRecordingValidation,
     // observe post-build mutations to SceneRenderer's working ViewData/plan.
     renderer.GetViewData().viewportWidth = 999;
     renderer.GetViewData().frameNumber = 88;
-    plan.frameSequence = 7999;
+    SceneRendererTestAccess::MutableSelectedPlanForTesting(renderer)
+        .frameSequence = 7999;
 
     RenderGraphValidationAccess::Compile(*renderer.GetRenderGraph());
     ASSERT_TRUE(renderer.GetRenderGraph()->GetCompileStats().compileValid);
@@ -20526,6 +20742,21 @@ TEST_F(RenderPassValidationFixture,
         gpuResources.GetHandle(materialResource.GetId());
     ASSERT_TRUE(material.IsValid());
 
+    // This final transparent sanity path needs a real AlphaBlend material;
+    // the earlier opaque material deliberately remains opaque for the mixed
+    // indirect/direct assertion above.
+    auto transparentMaterialData = std::make_shared<Material>();
+    transparentMaterialData->SetAlphaMode(Material::AlphaMode::Blend);
+    Resource::MaterialResource transparentMaterialResource;
+    transparentMaterialResource.SetId(1423);
+    transparentMaterialResource.SetName("MixedGPUAndDirectTransparentMaterial");
+    ASSERT_TRUE(transparentMaterialResource.SetMaterialData(
+        std::move(transparentMaterialData)));
+    ASSERT_TRUE(gpuResources.UploadImmediate(&transparentMaterialResource));
+    const RenderResourceHandle transparentMaterial =
+        gpuResources.GetHandle(transparentMaterialResource.GetId());
+    ASSERT_TRUE(transparentMaterial.IsValid());
+
     scene.GetMutableObject(0).bounds = meshResource->GetBounds();
     const MeshGPUBuffers staticBuffers =
         gpuResources.GetMeshBuffers(meshResource->GetId());
@@ -20589,13 +20820,28 @@ TEST_F(RenderPassValidationFixture,
         RenderDrawFlags::MissingMaterial);
     RenderDrawItem transparentItem =
         MakeDrawItem(MaterialRenderMode::Transparent);
+    transparentItem.material = transparentMaterial;
     transparentItem.packet = MakeOpaquePacket(
-        scene, 0, 0, staticBuffers, transparentItem.material,
-        RenderMaterialMode::Opaque, RenderDrawFlags::None);
+        scene, 0, 0, staticBuffers, transparentMaterial,
+        RenderMaterialMode::Transparent,
+        RenderDrawFlags::Transparent | RenderDrawFlags::ReceivesShadow);
+    transparentItem.packet.pass = RenderPassKind::Transparent;
     transparentItem.packet.pipelineKey.materialVariant =
         MaterialPipelineVariant::Transparent;
+    transparentItem.packet.pipelineKey.materialPolicyValid = true;
+    transparentItem.packet.pipelineKey.surfacePathEligibility =
+        SurfacePathEligibility::ForwardTranslucency;
+    transparentItem.packet.pipelineKey.blendMode =
+        MaterialBlendMode::AlphaBlend;
+    transparentItem.packet.pipelineKey.shadingModel =
+        MaterialShadingModel::StandardLit;
+    transparentItem.packet.pipelineKey.cullMode = MaterialCullMode::Back;
+    transparentItem.packet.pipelineKey.shadowPolicy =
+        MaterialShadowPolicy::Receive;
     transparentItem.packet.materialKey.materialMode =
         MaterialRenderMode::Transparent;
+    transparentItem.packet.flags = RenderDrawFlags::Transparent |
+        RenderDrawFlags::ReceivesShadow;
     std::vector<RenderDrawItem> opaqueItems = {
         gpuCandidate, directItem, specialMissingItem};
     std::vector<RenderDrawItem> maskedItems;
@@ -20625,7 +20871,9 @@ TEST_F(RenderPassValidationFixture,
     preparation.transparent.FinalizeGroups();
     ASSERT_EQ(MeshPassEligibilityReason::SpecialMaterial,
               preparation.opaque.packets[2].reason);
-    ASSERT_EQ(MeshPassEligibilityReason::Transparent,
+    // Transparent receive-only materials must use the Direct lane because
+    // GPUScene does not yet encode their per-material shadow policy.
+    ASSERT_EQ(MeshPassEligibilityReason::SpecialMaterial,
               preparation.transparent.packets[0].reason);
     const RenderFramePlanCompileResult compiled =
         CompileForcedGPUPlan(preparation, 618);
@@ -20756,7 +21004,12 @@ TEST_F(RenderPassValidationFixture,
     RenderGraph transparentGraph;
     RenderGraphValidationAccess::SetDevice(transparentGraph, &device);
     RHITextureRef transparentColor = device.CreateTexture(
-        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+        RHITextureDesc::Texture2D(
+            64,
+            64,
+            RHIFormat::RGBA16_FLOAT,
+            RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource |
+                RHITextureUsage::CopySrc));
     ASSERT_TRUE(transparentColor);
     ViewData transparentView = view;
     // This independent graph uses a new record epoch. It must not inherit the
@@ -22090,7 +22343,12 @@ TEST_F(RenderPassValidationFixture,
         64u, 64u, RHIFormat::D32_FLOAT));
     ASSERT_TRUE(targets.depth.IsValid());
     const RGTextureHandle sceneHDR = graph.CreateTexture(
-        RHITextureDesc::RenderTarget(64u, 64u, RHIFormat::RGBA16_FLOAT));
+        RHITextureDesc::Texture2D(
+            64u,
+            64u,
+            RHIFormat::RGBA16_FLOAT,
+            RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource |
+                RHITextureUsage::CopySrc));
     ASSERT_TRUE(sceneHDR.IsValid());
     graph.SetExportState(sceneHDR, RHIResourceState::RenderTarget);
 
@@ -22723,7 +22981,12 @@ TEST_F(RenderPassValidationFixture,
                                             const std::vector<RenderDrawItem>& items)
     {
         RHITextureRef color = device.CreateTexture(
-            RHITextureDesc::RenderTarget(64u, 64u, RHIFormat::RGBA16_FLOAT));
+            RHITextureDesc::Texture2D(
+                64u,
+                64u,
+                RHIFormat::RGBA16_FLOAT,
+                RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource |
+                    RHITextureUsage::CopySrc));
         RHITextureRef depth = device.CreateTexture(
             RHITextureDesc::DepthStencil(64u, 64u, RHIFormat::D32_FLOAT));
         EXPECT_TRUE(color);
@@ -23102,7 +23365,12 @@ TEST_F(RenderPassValidationFixture,
                                                uint64 recordEpoch)
     {
         targets.color = device.CreateTexture(
-            RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+            RHITextureDesc::Texture2D(
+                64,
+                64,
+                RHIFormat::RGBA16_FLOAT,
+                RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource |
+                    RHITextureUsage::CopySrc));
         targets.depth = device.CreateTexture(
             RHITextureDesc::DepthStencil(
                 64, 64, PipelineCache::GetDefaultDepthStencilFormat()));
@@ -23733,7 +24001,8 @@ TEST_F(RenderPassValidationFixture, OpaquePassFailsGraphRealizationWhenRequested
     EXPECT_NE(device.createdTextureViewDescs.end(), attemptedShadowView);
 }
 
-TEST_F(RenderPassValidationFixture, TransparentPassBindsTransparentPipeline)
+TEST_F(RenderPassValidationFixture,
+       TransparentPassExecutesOpaqueSnapshotAndReactiveMrtWithoutPostProcess)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
@@ -23742,7 +24011,12 @@ TEST_F(RenderPassValidationFixture, TransparentPassBindsTransparentPipeline)
     RenderGraph graph;
     RenderGraphValidationAccess::SetDevice(graph, &device);
     RHITextureRef colorTarget = device.CreateTexture(
-        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+        RHITextureDesc::Texture2D(
+            64,
+            64,
+            RHIFormat::RGBA16_FLOAT,
+            RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource |
+                RHITextureUsage::CopySrc));
     ASSERT_TRUE(colorTarget);
     ViewData graphView = view;
     graphView.viewportWidth = 64;
@@ -23774,6 +24048,17 @@ TEST_F(RenderPassValidationFixture, TransparentPassBindsTransparentPipeline)
     RenderPassRecordContext context = MakeTransparentRecordContext(
         graph, graphView, scene, transparentItems, 1101, 1101);
     AttachDefaultTestLighting(context);
+    // The opaque HDR copy is a graph dependency discovered after the base
+    // frame snapshot is frozen.  It must travel through the typed execution
+    // input, never by mutating the frozen ViewData copy.
+    const OpaqueSceneSnapshotRecordInput lateBoundSnapshot =
+        context.opaqueSceneSnapshot;
+    ASSERT_TRUE(lateBoundSnapshot.IsCompatibleWith(context.identity));
+    context.opaqueSceneSnapshot = {};
+    context.frameSnapshot = MakeRenderPassFrameSnapshot(
+        context, *context.results);
+    ASSERT_TRUE(context.frameSnapshot);
+    context.opaqueSceneSnapshot = lateBoundSnapshot;
     pass.AddToGraph(graph, context);
     RenderGraphValidationAccess::Compile(graph);
     ASSERT_TRUE(graph.GetCompileStats().compileValid);
@@ -23783,6 +24068,8 @@ TEST_F(RenderPassValidationFixture, TransparentPassBindsTransparentPipeline)
 
     ASSERT_EQ(static_cast<size_t>(1), ctx.pipelineSequence.size());
     EXPECT_NE(nullptr, ctx.pipelineSequence[0]);
+    ExpectPipelineDebugName(
+        ctx.pipelineSequence[0], "DefaultTransparentAlphaMrtPipeline");
     EXPECT_EQ(1u, ctx.drawIndexedCount);
     ASSERT_TRUE(context.results);
     const TransparentPassDrawStats& stats = context.results->transparentStats;
@@ -23794,6 +24081,10 @@ TEST_F(RenderPassValidationFixture, TransparentPassBindsTransparentPipeline)
     EXPECT_EQ(1u, stats.preparedDrawItemCount);
     EXPECT_EQ(1u, stats.executedPacketCount);
     EXPECT_EQ(1u, stats.executedDrawCount);
+    EXPECT_TRUE(stats.opaqueSceneSnapshotReady);
+    EXPECT_TRUE(stats.opaqueSceneSnapshotCopied);
+    EXPECT_TRUE(stats.reactiveMaskAttachmentBound);
+    EXPECT_EQ(1u, stats.reactiveMaskWriteDrawCount);
     const RenderPassExecutionReport* execution = FindPassExecutionReport(
         context.results->executionReport, RenderPassKind::Transparent);
     ASSERT_NE(nullptr, execution);
@@ -23820,7 +24111,12 @@ TEST_F(RenderPassValidationFixture,
     RenderGraph graph;
     RenderGraphValidationAccess::SetDevice(graph, &device);
     RHITextureRef colorTarget = device.CreateTexture(
-        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+        RHITextureDesc::Texture2D(
+            64,
+            64,
+            RHIFormat::RGBA16_FLOAT,
+            RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource |
+                RHITextureUsage::CopySrc));
     ASSERT_TRUE(colorTarget);
     ViewData graphView = view;
     graphView.colorTarget = RenderGraphValidationAccess::ImportTexture(graph,
@@ -23877,7 +24173,12 @@ TEST_F(RenderPassValidationFixture,
     RenderGraph graph;
     RenderGraphValidationAccess::SetDevice(graph, &device);
     RHITextureRef colorTarget = device.CreateTexture(
-        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+        RHITextureDesc::Texture2D(
+            64,
+            64,
+            RHIFormat::RGBA16_FLOAT,
+            RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource |
+                RHITextureUsage::CopySrc));
     ASSERT_TRUE(colorTarget);
     ViewData graphView = view;
     graphView.colorTarget = RenderGraphValidationAccess::ImportTexture(
@@ -23921,12 +24222,18 @@ TEST_F(RenderPassValidationFixture, TransparentPassDrawsWhenMaterialBindingUsesF
     RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Transparent);
     item.material = gpuResources.ResolveOrUpload(&materialResource);
     ASSERT_TRUE(item.material.IsValid());
+    item.packet.materialKey.material = item.material;
     std::vector<RenderDrawItem> transparentItems = {item};
 
     RenderGraph graph;
     RenderGraphValidationAccess::SetDevice(graph, &device);
     RHITextureRef colorTarget = device.CreateTexture(
-        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+        RHITextureDesc::Texture2D(
+            64,
+            64,
+            RHIFormat::RGBA16_FLOAT,
+            RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource |
+                RHITextureUsage::CopySrc));
     ASSERT_TRUE(colorTarget);
     ViewData graphView = view;
     graphView.colorTarget = RenderGraphValidationAccess::ImportTexture(graph,
@@ -24020,7 +24327,12 @@ TEST_F(RenderPassValidationFixture,
                                  float viewTranslation)
     {
         targets.color = device.CreateTexture(
-            RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+            RHITextureDesc::Texture2D(
+                64,
+                64,
+                RHIFormat::RGBA16_FLOAT,
+                RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource |
+                    RHITextureUsage::CopySrc));
         targets.depth = device.CreateTexture(
             RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
         EXPECT_TRUE(targets.color);
@@ -24356,7 +24668,7 @@ TEST_F(RenderPassValidationFixture,
     RenderGraphExecution executionB = RenderGraphValidationAccess::TakeExecution(graphB);
     ASSERT_TRUE(executionB);
     ASSERT_EQ(RenderGraphExecutionState::Recorded, executionB.GetState());
-    EXPECT_EQ(1u, commandsB.beginRenderPassCount);
+    EXPECT_EQ(2u, commandsB.beginRenderPassCount);
     EXPECT_EQ(1u, commandsB.drawIndexedCount);
     EXPECT_EQ(retainedBeforeB, batchB.GetRetainedObjectCount());
     const uint32 retainedBeforeA = batchA.GetRetainedObjectCount();
@@ -24365,17 +24677,17 @@ TEST_F(RenderPassValidationFixture,
     RenderGraphExecution executionA = RenderGraphValidationAccess::TakeExecution(graphA);
     ASSERT_TRUE(executionA);
     ASSERT_EQ(RenderGraphExecutionState::Recorded, executionA.GetState());
-    EXPECT_EQ(1u, commandsA.beginRenderPassCount);
+    EXPECT_EQ(2u, commandsA.beginRenderPassCount);
     EXPECT_EQ(2u, commandsA.drawIndexedCount);
     EXPECT_EQ(retainedBeforeA, batchA.GetRetainedObjectCount());
-    ASSERT_EQ(1u, commandsA.renderPasses.size());
-    ASSERT_EQ(1u, commandsB.renderPasses.size());
+    ASSERT_EQ(2u, commandsA.renderPasses.size());
+    ASSERT_EQ(2u, commandsB.renderPasses.size());
     EXPECT_EQ(targetsA.color.Get(),
-              commandsA.renderPasses[0].colorAttachments[0].view->GetTexture());
+              commandsA.renderPasses.back().colorAttachments[0].view->GetTexture());
     EXPECT_EQ(targetsB.color.Get(),
-              commandsB.renderPasses[0].colorAttachments[0].view->GetTexture());
-    ASSERT_TRUE(commandsA.renderPasses[0].hasDepthStencil);
-    EXPECT_TRUE(commandsA.renderPasses[0].depthStencilAttachment.readOnly);
+              commandsB.renderPasses.back().colorAttachments[0].view->GetTexture());
+    ASSERT_TRUE(commandsA.renderPasses.back().hasDepthStencil);
+    EXPECT_TRUE(commandsA.renderPasses.back().depthStencilAttachment.readOnly);
 
     // LightingBindingSnapshot is created only once every exact graph read has
     // resolved, so inspect the set-0 resources after both recordings rather
@@ -24519,7 +24831,13 @@ TEST_F(RenderPassValidationFixture,
     {
         return std::pair<RHITextureRef, RHITextureRef>(
             device.CreateTexture(
-                RHITextureDesc::RenderTarget(extent, extent, RHIFormat::RGBA8_UNORM)),
+                RHITextureDesc::Texture2D(
+                    extent,
+                    extent,
+                    RHIFormat::RGBA16_FLOAT,
+                    RHITextureUsage::RenderTarget |
+                        RHITextureUsage::ShaderResource |
+                        RHITextureUsage::CopySrc)),
             device.CreateTexture(
                 RHITextureDesc::DepthStencil(extent, extent, RHIFormat::D32_FLOAT)));
     };
@@ -24592,8 +24910,8 @@ TEST_F(RenderPassValidationFixture,
     RecordingCommandContext legacyCommands;
     expectNoUsageOrCommands(legacyGraph, legacyCommands);
 
-    // A foreign result object must not be initialized or overwritten before
-    // the target graph has accepted the complete paired context.
+    // A foreign typed snapshot input must not be initialized or overwritten
+    // before the target graph has accepted the complete paired context.
     RenderGraph sourceGraph;
     RenderGraph targetGraph;
     RenderGraphValidationAccess::SetDevice(sourceGraph, &device);
@@ -24604,6 +24922,15 @@ TEST_F(RenderPassValidationFixture,
     RenderPassRecordContext foreign = makeContext(
         sourceGraph, scene, transparentItems,
         sourceTargets.first.Get(), sourceTargets.second.Get(), 1302);
+    ASSERT_FALSE(foreign.opaqueSceneSnapshot.IsEmpty());
+    EXPECT_FALSE(foreign.opaqueSceneSnapshot.IsCompatibleWith(
+        RenderPassRecordIdentity{
+            &targetGraph,
+            targetGraph.GetGraphIdentity(),
+            targetGraph.GetRecordingGeneration(),
+            1302,
+            0,
+            1302}));
     foreign.results->opaqueStats.directDrawCount = 791;
     foreign.frameSnapshot.reset();
     pass.AddToGraph(targetGraph, foreign);
@@ -24629,6 +24956,8 @@ TEST_F(RenderPassValidationFixture,
     RenderPassRecordContext stale = MakeTransparentRecordContext(
         staleGraph, staleView, scene, transparentItems, 1303, 1303);
     AttachDefaultTestLighting(stale);
+    ++stale.opaqueSceneSnapshot.identity.recordEpoch;
+    EXPECT_FALSE(stale.opaqueSceneSnapshot.IsCompatibleWith(stale.identity));
     pass.AddToGraph(staleGraph, stale);
     RecordingCommandContext staleCommands;
     expectNoUsageOrCommands(staleGraph, staleCommands);
@@ -24650,6 +24979,8 @@ TEST_F(RenderPassValidationFixture,
     RenderPassRecordContext forged = MakeTransparentRecordContext(
         forgedGraph, forgedView, scene, transparentItems, 1304, 1304);
     AttachDefaultTestLighting(forged);
+    forged.opaqueSceneSnapshot.receipt.reset();
+    EXPECT_FALSE(forged.opaqueSceneSnapshot.IsCompatibleWith(forged.identity));
     pass.AddToGraph(forgedGraph, forged);
     RecordingCommandContext forgedCommands;
     expectNoUsageOrCommands(forgedGraph, forgedCommands);
@@ -24689,7 +25020,7 @@ TEST_F(RenderPassValidationFixture,
     RenderGraphValidationAccess::Compile(sealedGraph);
     ASSERT_TRUE(sealedGraph.GetCompileStats().compileValid);
     RenderGraphValidationAccess::Execute(sealedGraph, sealedCommands);
-    EXPECT_EQ(1u, sealedCommands.beginRenderPassCount);
+    EXPECT_EQ(2u, sealedCommands.beginRenderPassCount);
     EXPECT_EQ(1u, sealedCommands.drawIndexedCount);
     EXPECT_EQ(0u, sealedBatch.GetRetainedObjectCount());
     EXPECT_EQ(GPUCompletionStatus::Completed, retirement.Poll());
@@ -26569,6 +26900,35 @@ TEST(RenderPostProcessStackValidation, TypedPlannerOrdersByStageOrderAndStableId
     EXPECT_EQ(plan.enabledToneMappingEffectCount, 1u);
     EXPECT_EQ(plan.scheduledToneMappingEffectCount, 0u);
     EXPECT_EQ(plan.graphPassCount, 0u);
+}
+
+TEST(RenderPostProcessStackValidation,
+     SceneRendererStagesCopyableHdrForDirectTransparentRendering)
+{
+    const fs::path shaderDir = FindShaderDirectory();
+    if (shaderDir.empty())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    const fs::path renderRoot = shaderDir.parent_path();
+    const std::string sceneRendererSource = ReadTextFile(
+        renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
+    EXPECT_NE(sceneRendererSource.find(
+                  "const bool transparentSnapshotMayExecute ="),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find(
+                  "const bool requiresHDRSceneColor = postProcessActive ||"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find(
+                  "deferredRecipeRequested || transparentSnapshotMayExecute"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find(
+                  "RHITextureUsage::ShaderResource | RHITextureUsage::CopySrc"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find(
+                  "RenderAntiAliasingMode::TAA ||\n         transparentSnapshotMayExecute"),
+              std::string::npos);
 }
 
 TEST(RenderPostProcessStackValidation, TypedPlannerRejectsZeroOrTwoToneMapsBeforeGraphMutation)

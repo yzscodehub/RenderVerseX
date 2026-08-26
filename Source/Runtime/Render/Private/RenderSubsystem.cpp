@@ -550,6 +550,26 @@ namespace
                 frame.transparentExecutedPacketCount;
             features.transparent.executedDrawCount =
                 frame.transparentExecutedDrawCount;
+            features.transparent.alphaBlendDrawCount =
+                frame.transparentAlphaBlendDrawCount;
+            features.transparent.premultipliedDrawCount =
+                frame.transparentPremultipliedDrawCount;
+            features.transparent.additiveDrawCount =
+                frame.transparentAdditiveDrawCount;
+            features.transparent.thinTransmissionDrawCount =
+                frame.transparentThinTransmissionDrawCount;
+            features.transparent.opaqueSceneSnapshotReady =
+                frame.transparentOpaqueSceneSnapshotReady;
+            features.transparent.opaqueSceneSnapshotCopied =
+                frame.transparentOpaqueSceneSnapshotCopied;
+            features.transparent.reactiveMaskAttachmentBound =
+                frame.transparentReactiveMaskAttachmentBound;
+            features.transparent.reactiveMaskWriteDrawCount =
+                frame.transparentReactiveMaskWriteDrawCount;
+            features.transparent.translucencyPriorityBucketCount =
+                frame.transparentTranslucencyPriorityBucketCount;
+            features.transparent.translucencyFallbackCount =
+                frame.transparentTranslucencyFallbackCount;
             features.transparent.skippedMaterialBindingCount =
                 frame.transparentSkippedMaterialBindingCount;
             features.transparent.skippedResourceCount =

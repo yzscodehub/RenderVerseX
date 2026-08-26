@@ -184,6 +184,7 @@ namespace
         std::vector<ScenarioMetricEqualityRequirement> requiredMetricEquals;
         std::vector<std::string> requiredAssetContentIds;
         std::vector<std::string> requiredAcceptedCookAdmissionAssetIds;
+        std::vector<std::string> requiredPackageOnlyCookedAssetIds;
         std::vector<CookAdmissionRequirement> requiredCookAdmissions;
         std::vector<AssetReceiptRequirement> requiredAssetReceipts;
         std::string requiredPhase;
@@ -230,6 +231,15 @@ namespace
         bool requireAmbientOcclusionNonNeutralProbe = false;
         bool requireToonLightingExecution = false;
         bool requireToonOutlineExecution = false;
+        bool requireTranslucencyExecution = false;
+        bool requireTransparentAlphaBlendExecution = false;
+        bool requireTransparentPremultipliedExecution = false;
+        bool requireTransparentAdditiveExecution = false;
+        bool requireTransparentThinTransmissionExecution = false;
+        bool requireTransparentOpaqueSceneSnapshot = false;
+        bool requireTransparentReactiveMask = false;
+        bool requireTransparentSorting = false;
+        bool forbidTransparentFallbacks = false;
         bool requireReadinessWait = false;
         bool requireGPUDrivenExecution = false;
         bool requireDirectExecution = false;
@@ -1155,6 +1165,42 @@ namespace
             {
                 options.requireToonOutlineExecution = true;
             }
+            else if (arg == "--require-translucency-execution")
+            {
+                options.requireTranslucencyExecution = true;
+            }
+            else if (arg == "--require-transparent-alpha-blend-execution")
+            {
+                options.requireTransparentAlphaBlendExecution = true;
+            }
+            else if (arg == "--require-transparent-premultiplied-execution")
+            {
+                options.requireTransparentPremultipliedExecution = true;
+            }
+            else if (arg == "--require-transparent-additive-execution")
+            {
+                options.requireTransparentAdditiveExecution = true;
+            }
+            else if (arg == "--require-transparent-thin-transmission-execution")
+            {
+                options.requireTransparentThinTransmissionExecution = true;
+            }
+            else if (arg == "--require-transparent-opaque-scene-snapshot")
+            {
+                options.requireTransparentOpaqueSceneSnapshot = true;
+            }
+            else if (arg == "--require-transparent-reactive-mask")
+            {
+                options.requireTransparentReactiveMask = true;
+            }
+            else if (arg == "--require-transparent-sorting")
+            {
+                options.requireTransparentSorting = true;
+            }
+            else if (arg == "--forbid-transparent-fallbacks")
+            {
+                options.forbidTransparentFallbacks = true;
+            }
             else if (arg == "--require-phase")
             {
                 const char* value = requireValue("--require-phase");
@@ -1219,6 +1265,16 @@ namespace
                 }
                 options.requiredAcceptedCookAdmissionAssetIds.emplace_back(
                     value);
+            }
+            else if (arg == "--require-package-only-cooked-asset")
+            {
+                const char* value = requireValue(
+                    "--require-package-only-cooked-asset");
+                if (!value || value[0] == '\0')
+                {
+                    return false;
+                }
+                options.requiredPackageOnlyCookedAssetIds.emplace_back(value);
             }
             else if (arg == "--require-asset-receipt")
             {
@@ -2933,6 +2989,154 @@ namespace
             {
                 passed &= ValidateToonOutlineExecutionProjection(*outline);
             }
+        }
+        return passed;
+    }
+
+    bool ValidateTranslucencyExecutionProjection(const Json& report,
+                                                 const Options* options)
+    {
+        if (options == nullptr)
+        {
+            return true;
+        }
+        const bool requested = options->requireTranslucencyExecution ||
+            options->requireTransparentAlphaBlendExecution ||
+            options->requireTransparentPremultipliedExecution ||
+            options->requireTransparentAdditiveExecution ||
+            options->requireTransparentThinTransmissionExecution ||
+            options->requireTransparentOpaqueSceneSnapshot ||
+            options->requireTransparentReactiveMask ||
+            options->requireTransparentSorting ||
+            options->forbidTransparentFallbacks;
+        if (!requested)
+        {
+            return true;
+        }
+
+        const auto diagnostics = report.find("renderDiagnostics");
+        if (diagnostics == report.end() || !diagnostics->is_object())
+        {
+            std::cerr << "GFX15 translucency qualification requires report renderDiagnostics\n";
+            return false;
+        }
+
+        uint64_t alphaBlend = 0;
+        uint64_t premultiplied = 0;
+        uint64_t additive = 0;
+        uint64_t thinTransmission = 0;
+        uint64_t reactiveWrites = 0;
+        uint64_t priorityBuckets = 0;
+        uint64_t fallbackCount = 0;
+        uint64_t frameFeatureSequence = 0;
+        uint64_t receiptFrameSequence = 0;
+        uint64_t lastPresentedFrameSequence = 0;
+        bool snapshotReady = false;
+        bool snapshotCopied = false;
+        bool reactiveAttachmentBound = false;
+        bool presentedFrameAligned = false;
+        bool passed =
+            ReadUnsignedField(*diagnostics, "transparentAlphaBlendDrawCount",
+                              alphaBlend, "GFX15 translucency") &&
+            ReadUnsignedField(*diagnostics,
+                              "transparentPremultipliedDrawCount",
+                              premultiplied, "GFX15 translucency") &&
+            ReadUnsignedField(*diagnostics, "transparentAdditiveDrawCount",
+                              additive, "GFX15 translucency") &&
+            ReadUnsignedField(*diagnostics,
+                              "transparentThinTransmissionDrawCount",
+                              thinTransmission, "GFX15 translucency") &&
+            ReadBooleanField(*diagnostics,
+                             "transparentOpaqueSceneSnapshotReady",
+                             snapshotReady, "GFX15 translucency") &&
+            ReadBooleanField(*diagnostics,
+                             "transparentOpaqueSceneSnapshotCopied",
+                             snapshotCopied, "GFX15 translucency") &&
+            ReadBooleanField(*diagnostics,
+                             "transparentReactiveMaskAttachmentBound",
+                             reactiveAttachmentBound, "GFX15 translucency") &&
+            ReadUnsignedField(*diagnostics,
+                              "transparentReactiveMaskWriteDrawCount",
+                              reactiveWrites, "GFX15 translucency") &&
+            ReadUnsignedField(*diagnostics,
+                              "transparentPriorityBucketCount",
+                              priorityBuckets, "GFX15 translucency") &&
+            ReadUnsignedField(*diagnostics, "transparentFallbackCount",
+                              fallbackCount, "GFX15 translucency") &&
+            ReadUnsignedField(*diagnostics,
+                              "transparentFrameFeatureSequence",
+                              frameFeatureSequence, "GFX15 translucency") &&
+            ReadUnsignedField(*diagnostics,
+                              "transparentReceiptFrameSequence",
+                              receiptFrameSequence, "GFX15 translucency") &&
+            ReadUnsignedField(*diagnostics,
+                              "transparentLastPresentedFrameSequence",
+                              lastPresentedFrameSequence, "GFX15 translucency") &&
+            ReadBooleanField(*diagnostics,
+                             "transparentPresentedFrameAligned",
+                             presentedFrameAligned, "GFX15 translucency");
+        if (!passed)
+        {
+            return false;
+        }
+
+        const bool requireAllCategories = options->requireTranslucencyExecution;
+        if (frameFeatureSequence == 0 ||
+            frameFeatureSequence != receiptFrameSequence ||
+            receiptFrameSequence != lastPresentedFrameSequence ||
+            !presentedFrameAligned)
+        {
+            std::cerr << "GFX15 translucency receipt is not bound to the "
+                         "presented frame\n";
+            passed = false;
+        }
+        if ((requireAllCategories || options->requireTransparentAlphaBlendExecution) &&
+            alphaBlend == 0)
+        {
+            std::cerr << "GFX15 translucency receipt records no AlphaBlend draw\n";
+            passed = false;
+        }
+        if ((requireAllCategories || options->requireTransparentPremultipliedExecution) &&
+            premultiplied == 0)
+        {
+            std::cerr << "GFX15 translucency receipt records no Premultiplied draw\n";
+            passed = false;
+        }
+        if ((requireAllCategories || options->requireTransparentAdditiveExecution) &&
+            additive == 0)
+        {
+            std::cerr << "GFX15 translucency receipt records no Additive draw\n";
+            passed = false;
+        }
+        if ((requireAllCategories || options->requireTransparentThinTransmissionExecution) &&
+            thinTransmission == 0)
+        {
+            std::cerr << "GFX15 translucency receipt records no ThinTransmission draw\n";
+            passed = false;
+        }
+        if ((requireAllCategories || options->requireTransparentOpaqueSceneSnapshot) &&
+            (!snapshotReady || !snapshotCopied))
+        {
+            std::cerr << "GFX15 translucency receipt lacks an actual opaque scene snapshot\n";
+            passed = false;
+        }
+        if ((requireAllCategories || options->requireTransparentReactiveMask) &&
+            (!reactiveAttachmentBound || reactiveWrites == 0))
+        {
+            std::cerr << "GFX15 translucency receipt lacks a written reactive-mask attachment\n";
+            passed = false;
+        }
+        if ((requireAllCategories || options->requireTransparentSorting) &&
+            priorityBuckets == 0)
+        {
+            std::cerr << "GFX15 translucency receipt lacks sorted priority buckets\n";
+            passed = false;
+        }
+        if ((requireAllCategories || options->forbidTransparentFallbacks) &&
+            fallbackCount != 0)
+        {
+            std::cerr << "GFX15 translucency receipt records a renderer fallback\n";
+            passed = false;
         }
         return passed;
     }
@@ -5385,6 +5589,7 @@ namespace
         }
 
         passed &= ValidateToonExecutionProjections(report, options);
+        passed &= ValidateTranslucencyExecutionProjection(report, options);
 
         std::string requestedBackend;
         std::string backend;
@@ -5955,6 +6160,55 @@ namespace
         return passed;
     }
 
+    bool HasPackageOnlyCookedAssetAdmission(const Json& asset,
+                                            const std::string& assetId)
+    {
+        if (!HasAcceptedCookAdmission(asset, assetId) ||
+            !HasValue(asset, "path", Json::value_t::string))
+        {
+            return false;
+        }
+
+        const std::string path = asset["path"].get<std::string>();
+        if (path.size() < 4 || path.substr(path.size() - 4) != ".rva")
+        {
+            return false;
+        }
+
+        const Json& cook = asset["cook"];
+        const auto packageOnly = cook.find("packageOnly");
+        const auto actualLoadDomain = cook.find("actualLoadDomain");
+        const auto expected = asset.find("expectedContentIdentity");
+        const auto observed = asset.find("observedContentIdentity");
+        return packageOnly != cook.end() && packageOnly->is_boolean() &&
+               packageOnly->get<bool>() &&
+               actualLoadDomain != cook.end() && actualLoadDomain->is_string() &&
+               *actualLoadDomain == "CookedArtifact" &&
+               expected != asset.end() && observed != asset.end() &&
+               IsValidResourceContentIdentity(*expected) &&
+               IsValidResourceContentIdentity(*observed) &&
+               *expected == *observed && (*expected)["domain"] ==
+                   "cooked-artifact";
+    }
+
+    bool ValidatePackageOnlyCookedAssetRequirements(const Json& report,
+                                                    const Options& options)
+    {
+        bool passed = true;
+        for (const std::string& assetId : options.requiredPackageOnlyCookedAssetIds)
+        {
+            const Json* asset = FindUniqueAssetById(report, assetId);
+            if (asset == nullptr ||
+                !HasPackageOnlyCookedAssetAdmission(*asset, assetId))
+            {
+                std::cerr << "Report asset does not prove a package-only "
+                          << "CookedArtifact runtime load: " << assetId << "\n";
+                passed = false;
+            }
+        }
+        return passed;
+    }
+
     bool ContainsAssetId(const Json& report, const std::string& id)
     {
         return std::any_of(report["assets"].begin(), report["assets"].end(),
@@ -6346,6 +6600,186 @@ namespace
         if (!ParseOptions(4, toonParserArguments, parsedToonOptions) ||
             !parsedToonOptions.requireToonLightingExecution ||
             !parsedToonOptions.requireToonOutlineExecution)
+        {
+            return false;
+        }
+
+        char translucencyParserArg0[] = "SampleReportContentValidation";
+        char translucencyParserArg1[] = "--self-test";
+        char translucencyParserArg2[] = "--require-translucency-execution";
+        char translucencyParserArg3[] =
+            "--require-transparent-alpha-blend-execution";
+        char translucencyParserArg4[] =
+            "--require-transparent-premultiplied-execution";
+        char translucencyParserArg5[] =
+            "--require-transparent-additive-execution";
+        char translucencyParserArg6[] =
+            "--require-transparent-thin-transmission-execution";
+        char translucencyParserArg7[] =
+            "--require-transparent-opaque-scene-snapshot";
+        char translucencyParserArg8[] = "--require-transparent-reactive-mask";
+        char translucencyParserArg9[] = "--require-transparent-sorting";
+        char translucencyParserArg10[] = "--forbid-transparent-fallbacks";
+        char translucencyParserArg11[] =
+            "--require-package-only-cooked-asset";
+        char translucencyParserArg12[] = "self-test-model";
+        char* translucencyParserArguments[] = {
+            translucencyParserArg0, translucencyParserArg1,
+            translucencyParserArg2, translucencyParserArg3,
+            translucencyParserArg4, translucencyParserArg5,
+            translucencyParserArg6, translucencyParserArg7,
+            translucencyParserArg8, translucencyParserArg9,
+            translucencyParserArg10, translucencyParserArg11,
+            translucencyParserArg12};
+        Options parsedTranslucencyOptions;
+        if (!ParseOptions(13, translucencyParserArguments,
+                          parsedTranslucencyOptions) ||
+            !parsedTranslucencyOptions.requireTranslucencyExecution ||
+            !parsedTranslucencyOptions.requireTransparentAlphaBlendExecution ||
+            !parsedTranslucencyOptions.requireTransparentPremultipliedExecution ||
+            !parsedTranslucencyOptions.requireTransparentAdditiveExecution ||
+            !parsedTranslucencyOptions
+                 .requireTransparentThinTransmissionExecution ||
+            !parsedTranslucencyOptions
+                 .requireTransparentOpaqueSceneSnapshot ||
+            !parsedTranslucencyOptions.requireTransparentReactiveMask ||
+            !parsedTranslucencyOptions.requireTransparentSorting ||
+            !parsedTranslucencyOptions.forbidTransparentFallbacks ||
+            parsedTranslucencyOptions.requiredPackageOnlyCookedAssetIds !=
+                std::vector<std::string>{"self-test-model"})
+        {
+            return false;
+        }
+        Json qualifiedTranslucencyReport = {
+            {"renderDiagnostics", {
+                {"transparentAlphaBlendDrawCount", 1},
+                {"transparentPremultipliedDrawCount", 1},
+                {"transparentAdditiveDrawCount", 1},
+                {"transparentThinTransmissionDrawCount", 1},
+                {"transparentOpaqueSceneSnapshotReady", true},
+                {"transparentOpaqueSceneSnapshotCopied", true},
+                {"transparentReactiveMaskAttachmentBound", true},
+                {"transparentReactiveMaskWriteDrawCount", 1},
+                {"transparentPriorityBucketCount", 4},
+                {"transparentFallbackCount", 0},
+                {"transparentFrameFeatureSequence", 7},
+                {"transparentReceiptFrameSequence", 7},
+                {"transparentLastPresentedFrameSequence", 7},
+                {"transparentPresentedFrameAligned", true},
+            }},
+        };
+        if (!ValidateTranslucencyExecutionProjection(
+                qualifiedTranslucencyReport, &parsedTranslucencyOptions))
+        {
+            return false;
+        }
+        qualifiedTranslucencyReport["renderDiagnostics"]
+                                  ["transparentFallbackCount"] = 1;
+        if (ValidateTranslucencyExecutionProjection(
+                qualifiedTranslucencyReport, &parsedTranslucencyOptions))
+        {
+            return false;
+        }
+        qualifiedTranslucencyReport["renderDiagnostics"]
+                                  ["transparentFallbackCount"] = 0;
+        qualifiedTranslucencyReport["renderDiagnostics"]
+                                  ["transparentReceiptFrameSequence"] = 8;
+        if (ValidateTranslucencyExecutionProjection(
+                qualifiedTranslucencyReport, &parsedTranslucencyOptions))
+        {
+            return false;
+        }
+
+        const Json packageOnlyCookedAsset = {
+            {"id", "self-test-model"},
+            {"path", "cooked/self-test-model.rva"},
+            {"loaded", true},
+            {"verified", true},
+            {"verificationStatus", "verified"},
+            {"expectedContentIdentity", {
+                {"schemaVersion", 1},
+                {"domain", "cooked-artifact"},
+                {"scope", "self-contained-artifact"},
+                {"algorithm", "sha256"},
+                {"digest", std::string(64, 'a')},
+                {"byteCount", 1},
+                {"fileCount", 1},
+            }},
+            {"observedContentIdentity", {
+                {"schemaVersion", 1},
+                {"domain", "cooked-artifact"},
+                {"scope", "self-contained-artifact"},
+                {"algorithm", "sha256"},
+                {"digest", std::string(64, 'a')},
+                {"byteCount", 1},
+                {"fileCount", 1},
+            }},
+            {"packageContentId", {
+                {"schemaVersion", 1},
+                {"algorithm", "sha256"},
+                {"digest", std::string(64, 'b')},
+                {"byteCount", 1},
+                {"fileCount", 1},
+            }},
+            {"cook", {
+                {"required", true},
+                {"accepted", true},
+                {"packageOnly", true},
+                {"actualLoadDomain", "CookedArtifact"},
+                {"code", "accepted"},
+                {"manifestPath", "cooked/CookManifest.rvxmanifest"},
+                {"cookedRoot", "cooked"},
+                {"declaredSourceContentIdentity", {
+                    {"schemaVersion", 1}, {"domain", "source"},
+                    {"scope", "self-contained-artifact"},
+                    {"algorithm", "sha256"}, {"digest", std::string(64, 'c')},
+                    {"byteCount", 1}, {"fileCount", 1},
+                }},
+                {"observedSourceContentIdentity", {
+                    {"schemaVersion", 1}, {"domain", "source"},
+                    {"scope", "self-contained-artifact"},
+                    {"algorithm", "sha256"}, {"digest", std::string(64, 'c')},
+                    {"byteCount", 1}, {"fileCount", 1},
+                }},
+                {"declaredCookedContentIdentity", {
+                    {"schemaVersion", 1}, {"domain", "cooked-artifact"},
+                    {"scope", "self-contained-artifact"},
+                    {"algorithm", "sha256"}, {"digest", std::string(64, 'd')},
+                    {"byteCount", 1}, {"fileCount", 1},
+                }},
+                {"observedCookedContentIdentity", {
+                    {"schemaVersion", 1}, {"domain", "cooked-artifact"},
+                    {"scope", "self-contained-artifact"},
+                    {"algorithm", "sha256"}, {"digest", std::string(64, 'd')},
+                    {"byteCount", 1}, {"fileCount", 1},
+                }},
+                {"declaredManifestContentIdentity", {
+                    {"schemaVersion", 1}, {"domain", "cook-manifest"},
+                    {"scope", "self-contained-artifact"},
+                    {"algorithm", "sha256"}, {"digest", std::string(64, 'e')},
+                    {"byteCount", 1}, {"fileCount", 1},
+                }},
+                {"observedManifestContentIdentity", {
+                    {"schemaVersion", 1}, {"domain", "cook-manifest"},
+                    {"scope", "self-contained-artifact"},
+                    {"algorithm", "sha256"}, {"digest", std::string(64, 'e')},
+                    {"byteCount", 1}, {"fileCount", 1},
+                }},
+                {"cookSettingsHash", std::string(64, 'f')},
+                {"recipeHash", std::string(64, 'f')},
+                {"toolName", "RVXCook"},
+                {"toolVersion", "2.0.0"},
+            }},
+        };
+        if (!HasPackageOnlyCookedAssetAdmission(
+                packageOnlyCookedAsset, "self-test-model"))
+        {
+            return false;
+        }
+        Json sourcePackageOnlyAsset = packageOnlyCookedAsset;
+        sourcePackageOnlyAsset["cook"]["actualLoadDomain"] = "SourceAsset";
+        if (HasPackageOnlyCookedAssetAdmission(
+                sourcePackageOnlyAsset, "self-test-model"))
         {
             return false;
         }
@@ -8644,6 +9078,16 @@ namespace
             << "  --require-ambient-occlusion-non-neutral-probe\n"
             << "  --require-toon-lighting-execution\n"
             << "  --require-toon-outline-execution\n"
+            << "  --require-translucency-execution\n"
+            << "  --require-transparent-alpha-blend-execution\n"
+            << "  --require-transparent-premultiplied-execution\n"
+            << "  --require-transparent-additive-execution\n"
+            << "  --require-transparent-thin-transmission-execution\n"
+            << "  --require-transparent-opaque-scene-snapshot\n"
+            << "  --require-transparent-reactive-mask\n"
+            << "  --require-transparent-sorting\n"
+            << "  --forbid-transparent-fallbacks\n"
+            << "  --require-package-only-cooked-asset <asset-id>\n"
             << "  --require-temporal-aa-execution\n"
             << "  --require-no-fxaa-execution\n"
             << "  --require-temporal-history-sampled\n"
@@ -8708,6 +9152,7 @@ int main(int argc, char* argv[])
         passed &= ValidateContentReceiptSurface(report);
         passed &= ValidateFeatureRequirements(report, options);
         passed &= ValidateAcceptedCookAdmissionRequirements(report, options);
+        passed &= ValidatePackageOnlyCookedAssetRequirements(report, options);
         passed &= ValidateCookAdmissionRequirements(report, options);
         passed &= ValidateAssetReceiptRequirements(report, options);
     }

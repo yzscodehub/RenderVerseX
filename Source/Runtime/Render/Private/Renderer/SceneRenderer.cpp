@@ -570,7 +570,10 @@ namespace
                     packet.pipelineKey.cullMode,
                     packet.pipelineKey.shadowPolicy,
                     packet.pipelineKey.requiresUV1,
-                    packet.pipelineKey.surfacePathEligibility);
+                    packet.pipelineKey.surfacePathEligibility,
+                    packet.pipelineKey.blendMode,
+                    packet.pipelineKey.shadingModel,
+                    packet.translucencySortPriority);
             packet.flags = ApplyMaterialShadowPolicy(
                 packet.flags,
                 packet.pipelineKey.materialPolicyValid,
@@ -587,6 +590,13 @@ namespace
                 MaterialShadowPolicy::CastAndReceive;
             packet.pipelineKey.materialPolicyValid = true;
             packet.pipelineKey.requiresUV1 = false;
+            packet.pipelineKey.blendMode = packet.materialKey.materialMode ==
+                    RenderMaterialMode::Transparent
+                ? MaterialBlendMode::AlphaBlend
+                : MaterialBlendMode::Opaque;
+            packet.pipelineKey.shadingModel =
+                MaterialShadingModel::StandardLit;
+            packet.translucencySortPriority = 0;
             packet.pipelineKey.surfacePathEligibility =
                 packet.materialKey.materialMode == RenderMaterialMode::Transparent
                     ? SurfacePathEligibility::ForwardTranslucency
@@ -1828,6 +1838,26 @@ void SceneRenderer::RefreshFrameDiagnostics(bool renderAttempted,
             transparentStats.executedPacketCount;
         diagnostics.transparentExecutedDrawCount =
             transparentStats.executedDrawCount;
+        diagnostics.transparentAlphaBlendDrawCount =
+            transparentStats.alphaBlendDrawCount;
+        diagnostics.transparentPremultipliedDrawCount =
+            transparentStats.premultipliedDrawCount;
+        diagnostics.transparentAdditiveDrawCount =
+            transparentStats.additiveDrawCount;
+        diagnostics.transparentThinTransmissionDrawCount =
+            transparentStats.thinTransmissionDrawCount;
+        diagnostics.transparentOpaqueSceneSnapshotReady =
+            transparentStats.opaqueSceneSnapshotReady;
+        diagnostics.transparentOpaqueSceneSnapshotCopied =
+            transparentStats.opaqueSceneSnapshotCopied;
+        diagnostics.transparentReactiveMaskAttachmentBound =
+            transparentStats.reactiveMaskAttachmentBound;
+        diagnostics.transparentReactiveMaskWriteDrawCount =
+            transparentStats.reactiveMaskWriteDrawCount;
+        diagnostics.transparentTranslucencyPriorityBucketCount =
+            transparentStats.translucencyPriorityBucketCount;
+        diagnostics.transparentTranslucencyFallbackCount =
+            transparentStats.translucencyFallbackCount;
         diagnostics.transparentSkippedMaterialBindingCount =
             transparentStats.skippedMaterialBindingCount;
         diagnostics.transparentSkippedResourceCount =
@@ -4582,6 +4612,7 @@ void SceneRenderer::BuildMaterialDrawLists()
         m_renderVisibility.cpuVisibleObjectMask,
         viewCullingMask,
         m_viewData.cameraPosition,
+        m_viewData.cameraForward,
         m_opaqueDrawItems,
         m_maskedDrawItems,
         m_transparentDrawItems,
@@ -4593,6 +4624,7 @@ void SceneRenderer::BuildMaterialDrawLists()
         m_renderVisibility.coarseVisibleObjectMask,
         viewCullingMask,
         m_viewData.cameraPosition,
+        m_viewData.cameraForward,
         m_coarseOpaqueDrawItems,
         m_coarseMaskedDrawItems,
         ignoredTransparentCandidates);
@@ -4653,7 +4685,7 @@ void SceneRenderer::PrepareMeshPassPackets()
                 m_renderResourceRegistry,
                 m_materialSystem.get(),
                 materialSourceOrdinal++,
-                item.depthFromCamera,
+                item.viewSpaceDepth,
                 item.classificationIndex);
             m_meshPassPreparation.depth.Record(depthProcessor.Process(input));
             m_meshPassPreparation.opaque.Record(opaqueProcessor.Process(input));
@@ -4672,7 +4704,7 @@ void SceneRenderer::PrepareMeshPassPackets()
             m_renderResourceRegistry,
             m_materialSystem.get(),
             sourceOrdinal,
-            item.depthFromCamera,
+            item.viewSpaceDepth,
             item.classificationIndex);
         m_meshPassPreparation.transparent.Record(
             transparentProcessor.Process(input));
@@ -4937,10 +4969,16 @@ void SceneRenderer::CompileRenderFramePlan()
             stackStats.planValid &&
             stackStats.enabledEffectCount > 0 &&
             stackStats.toneMappingBoundaryValid;
+        const bool transparentSnapshotMayExecute =
+            !m_transparentDrawItems.empty() && m_transparentPass != nullptr &&
+            m_transparentPass->GetStatus().requestedEnabled &&
+            m_transparentPass->GetStatus().supported &&
+            m_transparentPass->GetStatus().enabled;
         const SceneColorFormatPolicy formatPolicy =
             ResolveSceneColorFormatPolicy(backBufferFormat,
                                           postProcessActive ||
-                                              deferredRecipeRequested);
+                                              deferredRecipeRequested ||
+                                              transparentSnapshotMayExecute);
         opaqueGPUPipelineReady =
             formatPolicy.actualSceneColorFormat != RHIFormat::Unknown;
         for (const RenderDrawGroupRange& group :
@@ -9573,7 +9611,17 @@ void SceneRenderer::BuildRenderGraph()
                                    m_postProcessStats.stackStats.planValid &&
                                    m_postProcessStats.stackStats.toneMappingBoundaryValid &&
                                    deferredToneMappingPresentationReady;
-    m_sceneColorFormatPolicy = ResolveSceneColorFormatPolicy(backBufferFormat, postProcessActive);
+    const RenderPassStatus transparentPassStatus = m_transparentPass != nullptr
+        ? m_transparentPass->GetStatus()
+        : RenderPassStatus{};
+    const bool transparentSnapshotMayExecute =
+        !m_transparentDrawItems.empty() &&
+        transparentPassStatus.requestedEnabled &&
+        transparentPassStatus.supported && transparentPassStatus.enabled;
+    const bool requiresHDRSceneColor = postProcessActive ||
+        deferredRecipeRequested || transparentSnapshotMayExecute;
+    m_sceneColorFormatPolicy = ResolveSceneColorFormatPolicy(
+        backBufferFormat, requiresHDRSceneColor);
     if (m_sceneColorFormatPolicy.toneMappingOutputColorSpace !=
         effectivePostProcessSettings.toneMappingOutputColorSpace)
     {
@@ -9671,8 +9719,9 @@ void SceneRenderer::BuildRenderGraph()
     m_postProcessStats.frameInputTemporalHistoryAvailable =
         !m_viewData.resetTemporalHistory && m_viewData.previousViewProjectionValid != 0;
 
-    if (effectivePostProcessSettings.antiAliasingMode ==
-            RenderAntiAliasingMode::TAA &&
+    if ((effectivePostProcessSettings.antiAliasingMode ==
+             RenderAntiAliasingMode::TAA ||
+         transparentSnapshotMayExecute) &&
         m_viewData.viewportWidth > 0 && m_viewData.viewportHeight > 0)
     {
         RHITextureDesc reactiveMaskDesc = RHITextureDesc::RenderTarget(
@@ -9689,20 +9738,22 @@ void SceneRenderer::BuildRenderGraph()
         if (!m_viewData.reactiveMaskTarget.IsValid())
         {
             m_featureCompositionFailureReason =
-                "TAA requires a graph-owned full-resolution reactive mask";
+                "TAA or transparent rendering requires a graph-owned full-resolution reactive mask";
             return;
         }
         AddReactiveMaskInitializationPass(
             *m_renderGraph, m_viewData.reactiveMaskTarget);
     }
 
-    if (backBufferTarget.IsValid() && postProcessActive)
+    if (backBufferTarget.IsValid() &&
+        (postProcessActive || transparentSnapshotMayExecute))
     {
         if (backBufferDesc)
         {
             RHITextureDesc sceneColorDesc = *backBufferDesc;
             sceneColorDesc.format = m_sceneColorFormatPolicy.actualSceneColorFormat;
-            sceneColorDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
+            sceneColorDesc.usage = RHITextureUsage::RenderTarget |
+                RHITextureUsage::ShaderResource | RHITextureUsage::CopySrc;
             if (deferredRecipeRequested)
             {
                 sceneColorDesc.usage = sceneColorDesc.usage |
@@ -9716,7 +9767,7 @@ void SceneRenderer::BuildRenderGraph()
                 ? RVX_SCENE_COLOR_TRANSIENT_LOAD_FALLBACK_VALUE
                 : clearActions.colorClearValue;
             sceneColorDesc.SetOptimizedClearColor(transientInitializationColor);
-            sceneColorDesc.debugName = "SceneColorPostProcessInput";
+            sceneColorDesc.debugName = "SceneColorGraphInput";
 
             sceneColorTarget = m_renderGraph->CreateTexture(sceneColorDesc);
             m_viewData.colorTarget = sceneColorTarget;
@@ -10280,7 +10331,7 @@ void SceneRenderer::BuildRenderGraph()
 
     // The PostProcessPipeline feature is the sole owner of the typed HDR to
     // presentation boundary. SceneRenderer deliberately has no direct stack
-    // execution bypass: the feature consumes TranslucencyOutputs v4 and
+    // execution bypass: the feature consumes TranslucencyOutputs v5 and
     // publishes PostProcessOutputs v2 inside the same graph composition.
     m_postProcessStats.stackStats = m_postProcessFeature->GetLastPlanStats();
 }

@@ -1183,6 +1183,15 @@
     {
       "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "PipelineCache",
+      "symbol": "m_translucencyPixelShader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
       "symbol": "m_postProcessPipelineLayout",
       "policy": "OwnerSnapshot",
       "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
@@ -5636,24 +5645,6 @@
       "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Source/Runtime/Render/Private/Passes/TransparentPass.cpp",
-      "owner": "GraphPassData",
-      "symbol": "rigidPipeline",
-      "policy": "SubmissionBatch",
-      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
-      "normalRelease": "submission batch transfer to retirement after token completion",
-      "deviceLostRelease": "submission batch explicit device-lost teardown"
-    },
-    {
-      "path": "Source/Runtime/Render/Private/Passes/TransparentPass.cpp",
-      "owner": "GraphPassData",
-      "symbol": "skinnedPipeline",
-      "policy": "SubmissionBatch",
-      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
-      "normalRelease": "submission batch transfer to retirement after token completion",
-      "deviceLostRelease": "submission batch explicit device-lost teardown"
-    },
-    {
       "path": "Source/Runtime/Render/Private/Resources/FrameConstantUploadArena.h",
       "owner": "FrameConstantUploadAllocation",
       "symbol": "buffer",
@@ -6332,6 +6323,51 @@
       "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
       "owner": "FrameDescriptorBindingOwners",
       "symbol": "ambientOcclusionView",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshotRequest",
+      "symbol": "opaqueSceneSnapshotView",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "submission batch transfer to retirement after token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshotRequest",
+      "symbol": "opaqueSceneSnapshotSampler",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "submission batch transfer to retirement after token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshot",
+      "symbol": "opaqueSceneSnapshotView",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "submission batch transfer to retirement after token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshot",
+      "symbol": "opaqueSceneSnapshotSampler",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "submission batch transfer to retirement after token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "FrameDescriptorBindingOwners",
+      "symbol": "opaqueSceneSnapshotView",
       "policy": "OwnerSnapshot",
       "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
       "normalRelease": "owner replacement retires after the captured snapshot completes",

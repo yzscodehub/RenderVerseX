@@ -834,6 +834,9 @@ namespace
         outputs.hdrSceneColor = MakeTextureHandle(provenance, 1);
         outputs.hdrSceneColorMetadata = MakeSceneTextureMetadata(
             SceneTextures::HDRSceneColorContract);
+        outputs.opaqueSceneSnapshot = MakeTextureHandle(provenance, 5);
+        outputs.opaqueSceneSnapshotMetadata = MakeSceneTextureMetadata(
+            SceneTextures::HDRSceneColorContract);
         outputs.deviceDepth = MakeTextureHandle(provenance, 2);
         outputs.deviceDepthMetadata = MakeSceneTextureMetadata(
             SceneTextures::DeviceDepthContract);
@@ -918,6 +921,12 @@ namespace
                     m_context.outputExtent.height,
                     presentableFormat);
             m_sceneColor = m_graph.CreateTexture(sceneColorDesc);
+            RHITextureDesc opaqueSnapshotDesc = RHITextureDesc::Texture2D(
+                m_context.outputExtent.width,
+                m_context.outputExtent.height,
+                RHIFormat::RGBA16_FLOAT,
+                RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst);
+            m_opaqueSceneSnapshot = m_graph.CreateTexture(opaqueSnapshotDesc);
             m_presentableColor = m_graph.CreateTexture(presentableColorDesc);
             m_exposureStateBuffer = RHIBufferRef(new TestBuffer(
                 SceneTextures::ExposureStateStride,
@@ -986,6 +995,10 @@ namespace
             translucency.hdrSceneColorMetadata = MakeSceneTextureMetadata(
                 SceneTextures::HDRSceneColorContract,
                 m_context.outputExtent);
+            translucency.opaqueSceneSnapshot = m_opaqueSceneSnapshot;
+            translucency.opaqueSceneSnapshotMetadata = MakeSceneTextureMetadata(
+                SceneTextures::HDRSceneColorContract,
+                m_context.outputExtent);
             translucency.exposureState = m_exposureState;
             translucency.exposureStateMetadata = {
                 SceneTextures::ExposureStateSchemaVersion,
@@ -1048,6 +1061,7 @@ namespace
         RenderFeatureContext m_context{};
         RenderGraphBlackboardProvenance m_provenance{};
         RGTextureHandle m_sceneColor{};
+        RGTextureHandle m_opaqueSceneSnapshot{};
         RGTextureHandle m_presentableColor{};
         RHIBufferRef m_exposureStateBuffer{};
         RGBufferHandle m_exposureState{};
@@ -2323,6 +2337,20 @@ namespace
         wrongDomain.colorDomain = PostProcessColorDomain::DisplayEncodedLDR;
         EXPECT_EQ(wrongDomainBlackboard.Publish(
                       RenderFeatureId{71}, translucencyProducer, wrongDomain),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+
+        RenderGraphBlackboard missingSnapshotBlackboard(provenance);
+        TranslucencyOutputs missingSnapshot = MakeTranslucencyOutputs(provenance);
+        missingSnapshot.opaqueSceneSnapshot = {};
+        EXPECT_EQ(missingSnapshotBlackboard.Publish(
+                      RenderFeatureId{71}, translucencyProducer, missingSnapshot),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+
+        RenderGraphBlackboard aliasedSnapshotBlackboard(provenance);
+        TranslucencyOutputs aliasedSnapshot = MakeTranslucencyOutputs(provenance);
+        aliasedSnapshot.opaqueSceneSnapshot = aliasedSnapshot.hdrSceneColor;
+        EXPECT_EQ(aliasedSnapshotBlackboard.Publish(
+                      RenderFeatureId{71}, translucencyProducer, aliasedSnapshot),
                   RenderGraphBlackboardCode::InvalidSemanticContract);
 
         RenderGraphBlackboard staleHandleBlackboard(provenance);

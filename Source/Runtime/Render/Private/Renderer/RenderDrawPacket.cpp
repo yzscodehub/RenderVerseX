@@ -114,6 +114,8 @@ bool PipelineKey::operator==(const PipelineKey& other) const noexcept
     return materialVariant == other.materialVariant &&
            cullMode == other.cullMode &&
            shadowPolicy == other.shadowPolicy &&
+           blendMode == other.blendMode &&
+           shadingModel == other.shadingModel &&
            surfacePathEligibility == other.surfacePathEligibility &&
            topology == other.topology &&
            skinned == other.skinned &&
@@ -139,6 +141,8 @@ uint64 GetStableHash(const PipelineKey& key) noexcept
     HashValue(hash, static_cast<uint8>(key.materialVariant));
     HashValue(hash, static_cast<uint8>(key.cullMode));
     HashValue(hash, static_cast<uint8>(key.shadowPolicy));
+    HashValue(hash, static_cast<uint8>(key.blendMode));
+    HashValue(hash, static_cast<uint8>(key.shadingModel));
     HashValue(hash, static_cast<uint8>(key.surfacePathEligibility));
     HashValue(hash, static_cast<uint8>(key.topology));
     HashValue(hash, static_cast<uint8>(key.skinned));

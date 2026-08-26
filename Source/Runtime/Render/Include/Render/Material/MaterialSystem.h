@@ -26,7 +26,41 @@
 namespace RVX
 {
     /** ABI revision of MaterialGPUConstants-backed structured material tables. */
-    inline constexpr uint32 RVX_MATERIAL_PARAMETER_TABLE_SCHEMA_VERSION = 2;
+    inline constexpr uint32 RVX_MATERIAL_PARAMETER_TABLE_SCHEMA_VERSION = 3;
+
+    /**
+     * Fixed set-2 descriptor ABI shared by every DefaultLit material draw.
+     *
+     * Texture and sampler bindings are deliberately derived from the upload
+     * slot ordinal: slots 0..7 map to t1..8 and s9..16 respectively.  The
+     * material parameter table remains the final SRV at t17.  Keep these
+     * names at the public MaterialSystem boundary so recording paths and
+     * validation cannot silently retain the legacy five-texture layout.
+     */
+    inline constexpr uint32 RVX_MATERIAL_DESCRIPTOR_CONSTANT_BUFFER_BINDING = 0;
+    inline constexpr uint32 RVX_MATERIAL_DESCRIPTOR_FIRST_TEXTURE_BINDING = 1;
+    inline constexpr uint32 RVX_MATERIAL_DESCRIPTOR_FIRST_SAMPLER_BINDING =
+        RVX_MATERIAL_DESCRIPTOR_FIRST_TEXTURE_BINDING +
+        RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+    inline constexpr uint32 RVX_MATERIAL_DESCRIPTOR_PARAMETER_TABLE_BINDING =
+        RVX_MATERIAL_DESCRIPTOR_FIRST_SAMPLER_BINDING +
+        RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT;
+
+    [[nodiscard]] constexpr uint32 GetMaterialTextureDescriptorBinding(
+        MaterialUploadTextureSlot slot) noexcept
+    {
+        return RVX_MATERIAL_DESCRIPTOR_FIRST_TEXTURE_BINDING +
+            static_cast<uint32>(slot);
+    }
+
+    [[nodiscard]] constexpr uint32 GetMaterialSamplerDescriptorBinding(
+        MaterialUploadTextureSlot slot) noexcept
+    {
+        return RVX_MATERIAL_DESCRIPTOR_FIRST_SAMPLER_BINDING +
+            static_cast<uint32>(slot);
+    }
+
+    static_assert(RVX_MATERIAL_DESCRIPTOR_PARAMETER_TABLE_BINDING == 17);
 
     class RenderRetirementQueue;
     class FrameConstantUploadArena;
@@ -254,7 +288,7 @@ namespace RVX
         // every backend (notably Vulkan).  Keep the textures alongside the
         // views so a graph recording remains valid until submission retires.
         std::vector<RHITextureRef> textures;
-        std::array<RHISamplerRef, 5> samplers;
+        std::array<RHISamplerRef, RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT> samplers;
         MaterialBindingResult binding;
 
         [[nodiscard]] bool IsDrawable() const noexcept
@@ -355,6 +389,23 @@ namespace RVX
             SurfacePathEligibility& outSurfacePathEligibility) const noexcept;
 
         /**
+         * Resolve the complete draw-owned material classification.
+         *
+         * Blend, shading model, and sort priority are copied only from a
+         * validated descriptor. Failure restores explicit safe defaults so a
+         * caller can never retain a prior translucent classification.
+         */
+        [[nodiscard]] bool ResolveSurfacePipelinePolicy(
+            RenderResourceHandle material,
+            MaterialCullMode& outCullMode,
+            MaterialShadowPolicy& outShadowPolicy,
+            bool& outRequiresUV1,
+            SurfacePathEligibility& outSurfacePathEligibility,
+            MaterialBlendMode& outBlendMode,
+            MaterialShadingModel& outShadingModel,
+            int32& outSortPriority) const noexcept;
+
+        /**
          * @brief Materialize exact-generation parameters at stable handle slots.
          *
          * Duplicate slot generations or incompatible per-mesh normal-map
@@ -403,11 +454,17 @@ namespace RVX
             RHITextureView* metallicRoughness = nullptr;
             RHITextureView* occlusion = nullptr;
             RHITextureView* emissive = nullptr;
+            RHITextureView* toonRamp = nullptr;
+            RHITextureView* transmission = nullptr;
+            RHITextureView* thickness = nullptr;
             RHISampler* baseColorSampler = nullptr;
             RHISampler* normalSampler = nullptr;
             RHISampler* metallicRoughnessSampler = nullptr;
             RHISampler* occlusionSampler = nullptr;
             RHISampler* emissiveSampler = nullptr;
+            RHISampler* toonRampSampler = nullptr;
+            RHISampler* transmissionSampler = nullptr;
+            RHISampler* thicknessSampler = nullptr;
             RHIBuffer* materialParameterTable = nullptr;
             uint32 textureFlags = 0;
             uint32 fallbackTextureFlags = 0;
@@ -426,11 +483,17 @@ namespace RVX
             RHITextureView* metallicRoughness = nullptr;
             RHITextureView* occlusion = nullptr;
             RHITextureView* emissive = nullptr;
+            RHITextureView* toonRamp = nullptr;
+            RHITextureView* transmission = nullptr;
+            RHITextureView* thickness = nullptr;
             RHISampler* baseColorSampler = nullptr;
             RHISampler* normalSampler = nullptr;
             RHISampler* metallicRoughnessSampler = nullptr;
             RHISampler* occlusionSampler = nullptr;
             RHISampler* emissiveSampler = nullptr;
+            RHISampler* toonRampSampler = nullptr;
+            RHISampler* transmissionSampler = nullptr;
+            RHISampler* thicknessSampler = nullptr;
             RHIBuffer* materialParameterTable = nullptr;
             uint64 viewGeneration = 0;
             uint64 pageIdentity = 0;
@@ -442,12 +505,18 @@ namespace RVX
                        metallicRoughness == other.metallicRoughness &&
                        occlusion == other.occlusion &&
                        emissive == other.emissive &&
+                       toonRamp == other.toonRamp &&
+                       transmission == other.transmission &&
+                       thickness == other.thickness &&
                        baseColorSampler == other.baseColorSampler &&
                        normalSampler == other.normalSampler &&
                        metallicRoughnessSampler ==
                            other.metallicRoughnessSampler &&
                        occlusionSampler == other.occlusionSampler &&
                        emissiveSampler == other.emissiveSampler &&
+                       toonRampSampler == other.toonRampSampler &&
+                       transmissionSampler == other.transmissionSampler &&
+                       thicknessSampler == other.thicknessSampler &&
                        materialParameterTable ==
                            other.materialParameterTable &&
                        viewGeneration == other.viewGeneration &&
@@ -463,7 +532,7 @@ namespace RVX
         struct MaterialDescriptorCacheEntry
         {
             RHIDescriptorSetRef descriptorSet;
-            std::array<RHISamplerRef, 5> samplers;
+            std::array<RHISamplerRef, RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT> samplers;
             // A descriptor set only stores backend descriptor addresses. Keep
             // a custom per-frame parameter table alive for as long as the
             // cached descriptor can be reused.

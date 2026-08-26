@@ -456,13 +456,14 @@ namespace RVX
 
             const VulkanRequiredDeviceFeatureSupport requiredSupport = {
                 props.apiVersion,
+                featureSupport.features.independentBlend == VK_TRUE,
                 vulkan12Support.timelineSemaphore == VK_TRUE,
                 vulkan13Support.dynamicRendering == VK_TRUE,
                 vulkan13Support.synchronization2 == VK_TRUE};
             if (!IsVulkanRequiredDeviceConfigurationSupported(requiredSupport))
             {
                 RVX_RHI_DEBUG(
-                    "Skipping GPU {}: Vulkan backend requires API 1.3 plus timelineSemaphore, dynamicRendering, and synchronization2",
+                    "Skipping GPU {}: Vulkan backend requires API 1.3 plus independentBlend, timelineSemaphore, dynamicRendering, and synchronization2",
                     props.deviceName);
                 continue;
             }
@@ -582,6 +583,7 @@ namespace RVX
     bool VulkanDevice::CreateLogicalDevice()
     {
         m_enabledDrawIndirectFirstInstance = false;
+        m_enabledIndependentBlend = false;
         m_enabledTimelineSemaphore = false;
         m_enabledMultiDrawIndirect = false;
         m_enabledDrawIndirectCount = false;
@@ -693,13 +695,14 @@ namespace RVX
 
         const VulkanRequiredDeviceFeatureSupport requiredSupport = {
             properties.apiVersion,
+            supportedFeatures.features.independentBlend == VK_TRUE,
             supportedVulkan12.timelineSemaphore == VK_TRUE,
             supportedVulkan13.dynamicRendering == VK_TRUE,
             supportedVulkan13.synchronization2 == VK_TRUE};
         if (!IsVulkanRequiredDeviceConfigurationSupported(requiredSupport))
         {
             RVX_RHI_ERROR(
-                "Selected Vulkan GPU no longer satisfies the required API 1.3 timelineSemaphore, dynamicRendering, and synchronization2 configuration");
+                "Selected Vulkan GPU no longer satisfies the required API 1.3 independentBlend, timelineSemaphore, dynamicRendering, and synchronization2 configuration");
             return false;
         }
 
@@ -722,6 +725,8 @@ namespace RVX
         // Publish enabled bits only after logical-device creation succeeds.
         const bool enableDrawIndirectFirstInstance =
             supportedFeatures.features.drawIndirectFirstInstance == VK_TRUE;
+        const bool enableIndependentBlend =
+            supportedFeatures.features.independentBlend == VK_TRUE;
         const bool enableTimelineSemaphore =
             supportedVulkan12.timelineSemaphore == VK_TRUE;
         const bool enableMultiDrawIndirect =
@@ -763,6 +768,8 @@ namespace RVX
             supportedFeatures.features.samplerAnisotropy;
         features2.features.fillModeNonSolid =
             supportedFeatures.features.fillModeNonSolid;
+        features2.features.independentBlend =
+            enableIndependentBlend ? VK_TRUE : VK_FALSE;
         features2.features.multiDrawIndirect =
             enableMultiDrawIndirect ? VK_TRUE : VK_FALSE;
         features2.features.geometryShader =
@@ -811,6 +818,7 @@ namespace RVX
         }
 
         m_enabledDrawIndirectFirstInstance = enableDrawIndirectFirstInstance;
+        m_enabledIndependentBlend = enableIndependentBlend;
         m_enabledTimelineSemaphore = enableTimelineSemaphore;
         m_enabledMultiDrawIndirect = enableMultiDrawIndirect;
         m_enabledDrawIndirectCount = enableDrawIndirectCount;
@@ -1861,6 +1869,13 @@ namespace RVX
 
     RHIPipelineRef VulkanDevice::CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc)
     {
+        if (desc.blendState.independentBlendEnable &&
+            !m_enabledIndependentBlend)
+        {
+            RVX_RHI_ERROR(
+                "Vulkan graphics pipeline preflight failed: independent blend was requested but the logical-device feature is disabled");
+            return nullptr;
+        }
         const RHIPipelineValidationResult validation =
             ValidateRHIGraphicsPipelineDesc(desc);
         if (!validation)

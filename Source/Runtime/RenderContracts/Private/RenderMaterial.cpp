@@ -173,13 +173,12 @@ bool ValidateMaterialDefinition(
     }
     constexpr uint64 textureFeatureBits =
         (1ull << (static_cast<uint8>(MaterialTextureSlot::Thickness) + 1u)) - 1u;
-    constexpr uint32 legacyTextureFeatureBits =
-        (1u << (static_cast<uint8>(MaterialTextureSlot::Emissive) + 1u)) - 1u;
+    constexpr uint32 textureParameterBits =
+        (1u << (static_cast<uint8>(MaterialTextureSlot::Thickness) + 1u)) - 1u;
     if ((descriptor.featureMask & textureFeatureBits) !=
             observedTextureFeatures ||
         parameters.textureFlags !=
-            (static_cast<uint32>(observedTextureFeatures) &
-             legacyTextureFeatureBits))
+            (static_cast<uint32>(observedTextureFeatures) & textureParameterBits))
     {
         outError =
             "Material feature masks do not match the declared texture slots";
@@ -261,9 +260,10 @@ bool ValidateMaterialSourceData(
         !IsInRange(sourceData.transmission, 0.0f, 1.0f) ||
         !IsInRange(sourceData.indexOfRefraction, 1.0f, 3.0f) ||
         !IsInRange(sourceData.thickness, 0.0f, 100000.0f) ||
-        !IsFinite(sourceData.attenuationColor) ||
-        !IsInRange(sourceData.attenuationDistance,
-                   std::numeric_limits<float32>::min(), 1000000.0f))
+        !IsInRange(sourceData.attenuationColor.x, 0.0f, 1.0f) ||
+        !IsInRange(sourceData.attenuationColor.y, 0.0f, 1.0f) ||
+        !IsInRange(sourceData.attenuationColor.z, 0.0f, 1.0f) ||
+        !IsInRange(sourceData.attenuationDistance, 0.0f, 1000000.0f))
     {
         outError = "Material parameter block contains an invalid value";
         return false;

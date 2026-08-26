@@ -121,12 +121,18 @@ Texture2D NormalTexture : register(t2, space2);
 Texture2D MetallicRoughnessTexture : register(t3, space2);
 Texture2D OcclusionTexture : register(t4, space2);
 Texture2D EmissiveTexture : register(t5, space2);
-SamplerState BaseColorSampler : register(s6, space2);
-SamplerState NormalSampler : register(s7, space2);
-SamplerState MetallicRoughnessSampler : register(s8, space2);
-SamplerState OcclusionSampler : register(s9, space2);
-SamplerState EmissiveSampler : register(s10, space2);
-StructuredBuffer<MaterialParameterData> MaterialParameterTable : register(t11, space2);
+Texture2D ToonRampTexture : register(t6, space2);
+Texture2D TransmissionTexture : register(t7, space2);
+Texture2D ThicknessTexture : register(t8, space2);
+SamplerState BaseColorSampler : register(s9, space2);
+SamplerState NormalSampler : register(s10, space2);
+SamplerState MetallicRoughnessSampler : register(s11, space2);
+SamplerState OcclusionSampler : register(s12, space2);
+SamplerState EmissiveSampler : register(s13, space2);
+SamplerState ToonRampSampler : register(s14, space2);
+SamplerState TransmissionSampler : register(s15, space2);
+SamplerState ThicknessSampler : register(s16, space2);
+StructuredBuffer<MaterialParameterData> MaterialParameterTable : register(t17, space2);
 Texture2DArray<float> DirectionalShadowMapTexture : register(t1, space0);
 SamplerState DirectionalShadowSampler : register(s2, space0);
 StructuredBuffer<PointLight> PointLights : register(t4, space0);
@@ -145,6 +151,9 @@ StructuredBuffer<RVXExposureState> ExposureStateBuffer : register(t14, space0);
 // Renderer-owned R8 visibility field. Opaque receives the exact GTAO output;
 // later Forward surfaces receive PipelineCache's neutral white fallback.
 Texture2D<float> AmbientOcclusionTexture : register(t15, space0);
+// Immutable graph copy of HDR scene color after Sky. Transparent geometry is
+// the RT writer, so ThinTransmission must only sample this separate resource.
+Texture2D OpaqueSceneSnapshotTexture : register(t16, space0);
 #if !defined(RVX_GPU_SCENE_RASTER)
 StructuredBuffer<GPUInstanceData> GPUDrivenInstances : register(t1, space1);
 #endif
@@ -732,8 +741,10 @@ MaterialParameterData ResolveMaterialParameters(uint materialSlot)
     material.ToonSpecularThreshold = ToonSpecularThreshold;
     material.ToonRimStrength = ToonRimStrength;
     material.ToonOutlineWidth = ToonOutlineWidth;
-    material.ToonPadding = ToonPadding;
+    material.BlendMode = BlendMode;
     material.ToonShadowTint = ToonShadowTint;
+    material.ThinTransmissionParams = ThinTransmissionParams;
+    material.AttenuationColor = AttenuationColor;
     material.BaseColorUVScaleOffset = BaseColorUVScaleOffset;
     material.BaseColorUVRotationSet = BaseColorUVRotationSet;
     material.NormalUVScaleOffset = NormalUVScaleOffset;
@@ -746,6 +757,12 @@ MaterialParameterData ResolveMaterialParameters(uint materialSlot)
     material.OcclusionUVRotationSet = OcclusionUVRotationSet;
     material.EmissiveUVScaleOffset = EmissiveUVScaleOffset;
     material.EmissiveUVRotationSet = EmissiveUVRotationSet;
+    material.ToonRampUVScaleOffset = ToonRampUVScaleOffset;
+    material.ToonRampUVRotationSet = ToonRampUVRotationSet;
+    material.TransmissionUVScaleOffset = TransmissionUVScaleOffset;
+    material.TransmissionUVRotationSet = TransmissionUVRotationSet;
+    material.ThicknessUVScaleOffset = ThicknessUVScaleOffset;
+    material.ThicknessUVRotationSet = ThicknessUVRotationSet;
     return material;
 }
 
@@ -1081,6 +1098,97 @@ float4 PSMain(PSInput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
 {
     return ShadeForwardSurface(
         input, ResolveForwardSurfaceData(input, isFrontFace));
+}
+
+struct ForwardTranslucencyOutput
+{
+    float4 hdrSceneColor : SV_Target0;
+    float reactiveMask : SV_Target1;
+};
+
+float3 RVXApplyThinTransmission(
+    PSInput input,
+    ResolvedForwardSurfaceData surface,
+    float3 litColor)
+{
+    float transmission = saturate(surface.material.ThinTransmissionParams.x);
+    if ((surface.material.TextureFlags & MATERIAL_TEXTURE_TRANSMISSION) != 0u)
+    {
+        transmission *= TransmissionTexture.Sample(
+            TransmissionSampler,
+            RVXResolveMaterialUV(surface.material,
+                                 MATERIAL_TEXTURE_SLOT_TRANSMISSION,
+                                 input.TexCoord,
+                                 input.TexCoord1)).r;
+    }
+    if (surface.material.ShadingModel != MATERIAL_SHADING_MODEL_THIN_TRANSMISSION ||
+        transmission <= 0.0f)
+    {
+        return litColor;
+    }
+
+    uint snapshotWidth;
+    uint snapshotHeight;
+    OpaqueSceneSnapshotTexture.GetDimensions(snapshotWidth, snapshotHeight);
+    const float2 invExtent = 1.0f / max(float2(snapshotWidth, snapshotHeight), 1.0f.xx);
+    const float ior = max(surface.material.ThinTransmissionParams.y, 1.0f);
+    float thickness = max(surface.material.ThinTransmissionParams.z, 0.0f);
+    if ((surface.material.TextureFlags & MATERIAL_TEXTURE_THICKNESS) != 0u)
+    {
+        thickness *= ThicknessTexture.Sample(
+            ThicknessSampler,
+            RVXResolveMaterialUV(surface.material,
+                                 MATERIAL_TEXTURE_SLOT_THICKNESS,
+                                 input.TexCoord,
+                                 input.TexCoord1)).g;
+    }
+    const float attenuationDistance = surface.material.ThinTransmissionParams.w;
+    const float3 viewDirection = RVXSafeNormalize(
+        CameraPosition - input.WorldPos, float3(0.0f, 0.0f, 1.0f));
+    const float f0 = pow((ior - 1.0f) / (ior + 1.0f), 2.0f);
+    const float fresnel = f0 + (1.0f - f0) *
+        pow(1.0f - saturate(dot(surface.normal, viewDirection)), 5.0f);
+    const float refractionScale = (ior - 1.0f) / ior *
+        (0.5f + saturate(surface.roughness));
+    const float2 baseUV = input.Position.xy * invExtent;
+    const float4 baseClip = mul(float4(input.WorldPos, 1.0f), ViewProjection);
+    const float4 normalClip = mul(
+        float4(input.WorldPos + surface.normal, 1.0f), ViewProjection);
+    const float2 screenNormal = (normalClip.xy / max(abs(normalClip.w), 1.0e-4f) -
+                                 baseClip.xy / max(abs(baseClip.w), 1.0e-4f)) *
+        float2(0.5f, -0.5f);
+    const float2 offset = screenNormal * refractionScale * thickness;
+    const float2 roughOffset = max(surface.roughness, 0.02f) * 1.5f * invExtent;
+    const float3 refracted = (
+        OpaqueSceneSnapshotTexture.SampleLevel(IBLLinearClampSampler, baseUV + offset, 0).rgb +
+        OpaqueSceneSnapshotTexture.SampleLevel(IBLLinearClampSampler, baseUV + offset + roughOffset, 0).rgb +
+        OpaqueSceneSnapshotTexture.SampleLevel(IBLLinearClampSampler, baseUV + offset - roughOffset, 0).rgb) / 3.0f;
+    // attenuationDistance==0 is the canonical infinite-distance/no-absorption case.
+    const float3 absorption = attenuationDistance > 0.0f
+        ? exp(-max(thickness, 0.0f) / attenuationDistance *
+              max(-log(max(surface.material.AttenuationColor.xyz, 1.0e-4f)), 0.0f))
+        : float3(1.0f, 1.0f, 1.0f);
+    const float3 transmitted = refracted * absorption;
+    return lerp(transmitted, litColor, saturate(fresnel + (1.0f - transmission)));
+}
+
+ForwardTranslucencyOutput PSForwardTranslucency(
+    PSInput input,
+    bool isFrontFace : SV_IsFrontFace)
+{
+    const ResolvedForwardSurfaceData surface = ResolveForwardSurfaceData(input, isFrontFace);
+    ForwardTranslucencyOutput output;
+    const float3 litColor = ShadeForwardSurface(input, surface).rgb;
+    float3 outputColor = RVXApplyThinTransmission(input, surface, litColor);
+    if (surface.material.BlendMode == MATERIAL_BLEND_PREMULTIPLIED)
+    {
+        outputColor *= surface.baseColor.a;
+    }
+    output.hdrSceneColor = float4(outputColor, surface.baseColor.a);
+    // The MRT is intentionally an overwrite R8 target, so any executed
+    // transparent fragment suppresses stale temporal history at that pixel.
+    output.reactiveMask = 1.0f;
+    return output;
 }
 
 /**

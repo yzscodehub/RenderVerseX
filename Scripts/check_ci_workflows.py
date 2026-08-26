@@ -52,6 +52,25 @@ WEEKLY_PRESETS = {
     "mac_arm64_weekly_soak_debug",
 }
 
+GFX15_CONFIGURE_PRESET = "win_x64_qualification_debug"
+GFX15_TEST_PRESET = "win_x64_qualification_debug_gfx15_translucency"
+GFX15_BUILD_TARGET = "RVXValidationSuiteGfx15Translucency"
+GFX15_LABEL = "suite.gfx15-translucency"
+GFX15_REQUIRED_EVIDENCE = {
+    "Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX15ForwardPlusTranslucency_640x360.ppm",
+    "Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX15DeferredTranslucency_640x360.ppm",
+    "Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX15ForwardPlusTranslucency_640x360.ppm",
+    "Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX15DeferredTranslucency_640x360.ppm",
+    "Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX15ForwardPlusTranslucency_640x360.json",
+    "Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX15DeferredTranslucency_640x360.json",
+    "Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX15ForwardPlusTranslucency_640x360.json",
+    "Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX15DeferredTranslucency_640x360.json",
+    "Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX15ForwardPlusTranslucency_640x360.json",
+    "Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX15DeferredTranslucency_640x360.json",
+    "Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX15ForwardPlusTranslucency_640x360.json",
+    "Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX15DeferredTranslucency_640x360.json",
+}
+
 
 def _read(path: Path) -> str:
     try:
@@ -141,6 +160,29 @@ def validate(root: Path) -> list[str]:
         configure_names = set()
         build_names = set()
         test_names = set()
+
+    if (
+        GFX15_CONFIGURE_PRESET not in configure_names
+        or GFX15_CONFIGURE_PRESET not in build_names
+        or GFX15_TEST_PRESET not in test_names
+    ):
+        findings.append(
+            "GFX15 translucency preset triplet is incomplete: "
+            f"{GFX15_CONFIGURE_PRESET}/{GFX15_TEST_PRESET}"
+        )
+    else:
+        gfx15_test_preset = next(
+            entry
+            for entry in presets["testPresets"]
+            if entry["name"] == GFX15_TEST_PRESET
+        )
+        filter_object = gfx15_test_preset.get("filter")
+        expected_filter = {"include": {"label": "^suite\\.gfx15-translucency$"}}
+        if filter_object != expected_filter:
+            findings.append(
+                "GFX15 translucency test preset must select exactly "
+                "suite.gfx15-translucency"
+            )
 
     for configure, test in PR_SMOKE_PRESETS.items():
         if configure not in configure_names or configure not in build_names or test not in test_names:
@@ -260,6 +302,49 @@ def validate(root: Path) -> list[str]:
     ):
         if token not in nightly:
             findings.append(f"nightly.yml is missing required coverage token {token}")
+
+    gfx15_step = re.search(
+        r"^\s*- name: Run fail-closed GFX15 translucency matrix\s*$"
+        r"(?P<body>.*?)(?=^\s*- (?:name:|if:)|\Z)",
+        nightly,
+        re.MULTILINE | re.DOTALL,
+    )
+    if gfx15_step is None:
+        findings.append("nightly.yml is missing the fail-closed GFX15 translucency step")
+    else:
+        gfx15_body = gfx15_step.group("body")
+        for token in ("Scripts/run_required_suite.ps1",):
+            if token not in gfx15_body:
+                findings.append(f"nightly.yml GFX15 step is missing {token}")
+        for argument, expected in (
+            ("ConfigurePreset", GFX15_CONFIGURE_PRESET),
+            ("BuildPreset", GFX15_CONFIGURE_PRESET),
+            ("TestPreset", GFX15_TEST_PRESET),
+            ("BuildTarget", GFX15_BUILD_TARGET),
+            ("RequiredLabel", GFX15_LABEL),
+            ("ExpectedTestCount", "12"),
+        ):
+            argument_match = re.search(rf"-{argument}\s+(\S+)", gfx15_body)
+            if argument_match is None or argument_match.group(1) != expected:
+                findings.append(
+                    f"nightly.yml GFX15 step must set -{argument} {expected}"
+                )
+        evidence_match = re.search(r'-RequiredEvidence\s+"([^"]*)"', gfx15_body)
+        if evidence_match is None:
+            findings.append("nightly.yml GFX15 step is missing RequiredEvidence")
+        else:
+            actual_evidence = tuple(
+                item for item in evidence_match.group(1).split(";") if item
+            )
+            if (
+                len(actual_evidence) != 12
+                or len(set(actual_evidence)) != 12
+                or set(actual_evidence) != GFX15_REQUIRED_EVIDENCE
+            ):
+                findings.append(
+                    "nightly.yml GFX15 RequiredEvidence must contain the exact "
+                    "four image/report/startup evidence triplets"
+                )
 
     weekly = workflow_text.get("weekly.yml", "")
     for token in (

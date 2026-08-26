@@ -304,6 +304,7 @@ namespace RVX
         }
 
         bool IsLowerSHA256Digest(const std::string& digest);
+        bool IsRvaPath(const std::filesystem::path& path);
         bool ParseStrictPosixRelativePath(const std::string& text,
                                           std::filesystem::path& output,
                                           std::string& outError);
@@ -535,6 +536,40 @@ namespace RVX
             return true;
         }
 
+        bool ValidatePackageOnlyCookContract(const SampleAssetEntry& entry,
+                                             std::string& outError)
+        {
+            if (!entry.cook.declared || !entry.cook.packageOnly)
+            {
+                return true;
+            }
+
+            if (entry.kind != SampleAssetKind::Model ||
+                entry.cook.selector.type != Resource::CookAssetType::Model ||
+                !IsRvaPath(entry.path) || !entry.contentIdentity.IsValid() ||
+                entry.contentIdentity.domain !=
+                    Resource::ResourceContentIdentityDomain::CookedArtifact ||
+                entry.contentIdentity.scope !=
+                    Resource::ResourceContentIdentityScope::SelfContainedArtifact)
+            {
+                outError = "Package-only sample asset must be a model with a "
+                           "self-contained CookedArtifact .rva identity";
+                return false;
+            }
+
+            const std::filesystem::path expectedPath =
+                (entry.cook.cookedRoot /
+                 std::filesystem::path(entry.cook.selector.outputPath))
+                    .lexically_normal();
+            if (!IsSafeRelativePath(expectedPath) || entry.path != expectedPath)
+            {
+                outError = "Package-only sample asset path must exactly equal "
+                           "cookedRoot/selector.outputPath";
+                return false;
+            }
+            return true;
+        }
+
         bool HashFileStreaming(const std::filesystem::path& path,
                                uint64& outByteCount,
                                std::string& outDigest,
@@ -731,6 +766,17 @@ namespace RVX
                                return static_cast<char>(std::tolower(character));
                            });
             return extension == ".gltf";
+        }
+
+        bool IsRvaPath(const std::filesystem::path& path)
+        {
+            std::string extension = path.extension().string();
+            std::transform(extension.begin(), extension.end(), extension.begin(),
+                           [](unsigned char character)
+                           {
+                               return static_cast<char>(std::tolower(character));
+                           });
+            return extension == ".rva";
         }
 
         bool ParseGltfLocalUri(const std::string& uri,
@@ -1345,6 +1391,11 @@ namespace RVX
                 SetError(outError, parseError + " for asset " + entry.id);
                 return false;
             }
+            if (!ValidatePackageOnlyCookContract(entry, parseError))
+            {
+                SetError(outError, parseError + " for asset " + entry.id);
+                return false;
+            }
 
             const std::string canonicalPathKey =
                 MakeCanonicalPathKey(entry.resolvedPath);
@@ -1439,6 +1490,38 @@ namespace RVX
             return result;
         }
 
+        if (entry->cook.packageOnly)
+        {
+            const std::filesystem::path expectedRelative =
+                (entry->cook.cookedRoot /
+                 std::filesystem::path(entry->cook.selector.outputPath))
+                    .lexically_normal();
+            std::filesystem::path runtimePath;
+            std::filesystem::path expectedPath;
+            if (!ResolveCatalogFile(m_assetRoot,
+                                    entry->path,
+                                    "package-only runtime asset",
+                                    runtimePath,
+                                    error) ||
+                !ResolveCatalogFile(m_assetRoot,
+                                    expectedRelative,
+                                    "selected cooked artifact",
+                                    expectedPath,
+                                    error))
+            {
+                result.code = SampleCookedAssetAdmissionCode::CookDataInvalid;
+                result.detail = std::move(error);
+                return result;
+            }
+            if (runtimePath != expectedPath || !IsContainedPath(cookedRoot, runtimePath))
+            {
+                result.code = SampleCookedAssetAdmissionCode::CookDataInvalid;
+                result.detail = "Package-only runtime asset is not the canonical "
+                                "selected artifact below cookedRoot";
+                return result;
+            }
+        }
+
         Resource::CookManifest manifest;
         if (!Resource::LoadCookManifest(manifestPath, manifest, error))
         {
@@ -1470,6 +1553,41 @@ namespace RVX
             result.code = SampleCookedAssetAdmissionCode::ResourceAdmissionFailed;
             result.detail = result.resourceReceipt.detail;
             return result;
+        }
+
+        if (entry->cook.packageOnly)
+        {
+            const uint32 selectedIndex = result.resourceReceipt.selectedEntryIndex;
+            if (selectedIndex >= manifest.entries.size())
+            {
+                result.code = SampleCookedAssetAdmissionCode::CookDataInvalid;
+                result.detail = "Cook admission accepted without a valid selected entry";
+                return result;
+            }
+
+            const Resource::CookManifestEntry& selected =
+                manifest.entries[selectedIndex];
+            const auto selectedArtifact = std::find_if(
+                selected.artifacts.begin(), selected.artifacts.end(),
+                [&entry](const Resource::CookFileIdentity& artifact)
+                {
+                    return artifact.relativePath == entry->cook.selector.outputPath;
+                });
+            if (selectedArtifact == selected.artifacts.end() ||
+                !entry->contentIdentity.IsValid() ||
+                entry->contentIdentity.domain !=
+                    Resource::ResourceContentIdentityDomain::CookedArtifact ||
+                entry->contentIdentity.scope !=
+                    Resource::ResourceContentIdentityScope::SelfContainedArtifact ||
+                entry->contentIdentity.digest != selectedArtifact->sha256 ||
+                entry->contentIdentity.byteCount != selectedArtifact->byteCount ||
+                entry->contentIdentity.fileCount != 1)
+            {
+                result.code = SampleCookedAssetAdmissionCode::CookDataInvalid;
+                result.detail = "Package-only runtime content identity does not "
+                                "match the selected cooked artifact";
+                return result;
+            }
         }
 
         result.code = SampleCookedAssetAdmissionCode::Accepted;

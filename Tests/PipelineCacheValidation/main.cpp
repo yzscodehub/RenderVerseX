@@ -11,6 +11,7 @@
 #include "Render/PostProcess/Exposure.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
+#include "RenderContracts/RenderMaterial.h"
 #include "Resources/RenderRetirementQueue.h"
 #include "Resources/RenderSubmissionTracker.h"
 #include "RHI/RHI.h"
@@ -38,6 +39,12 @@
 namespace
 {
     namespace fs = std::filesystem;
+
+    static_assert(static_cast<RVX::uint8>(RVX::MaterialBlendMode::Opaque) == 0u);
+    static_assert(static_cast<RVX::uint8>(RVX::MaterialBlendMode::Masked) == 1u);
+    static_assert(static_cast<RVX::uint8>(RVX::MaterialBlendMode::AlphaBlend) == 2u);
+    static_assert(static_cast<RVX::uint8>(RVX::MaterialBlendMode::Premultiplied) == 3u);
+    static_assert(static_cast<RVX::uint8>(RVX::MaterialBlendMode::Additive) == 4u);
 
     class PipelineCacheValidationFixture : public ::testing::Test
     {
@@ -3053,6 +3060,13 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     EXPECT_EQ(frameAmbientOcclusion->type, RVX::RHIBindingType::SampledTexture);
     EXPECT_TRUE(RVX::HasFlag(
         frameAmbientOcclusion->visibility, RVX::RHIShaderStage::Pixel));
+    const auto* frameOpaqueSceneSnapshot = FindBinding(
+        frameLayout, RVX::PipelineCache::DefaultLitOpaqueSceneSnapshotBinding);
+    ASSERT_NE(frameOpaqueSceneSnapshot, nullptr);
+    EXPECT_EQ(frameOpaqueSceneSnapshot->type,
+              RVX::RHIBindingType::SampledTexture);
+    EXPECT_TRUE(RVX::HasFlag(
+        frameOpaqueSceneSnapshot->visibility, RVX::RHIShaderStage::Pixel));
 
     ASSERT_FALSE(device.capturedDescriptorSetDescs.empty());
     const RVX::RHIDescriptorSetDesc& frameSetDesc = device.capturedDescriptorSetDescs.front();
@@ -3143,6 +3157,12 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
               1u);
     EXPECT_EQ(fallbackAmbientOcclusion->textureView->GetTexture()->GetHeight(),
               1u);
+    const auto* fallbackOpaqueSceneSnapshot = FindDescriptorBinding(
+        frameSetDesc, RVX::PipelineCache::DefaultLitOpaqueSceneSnapshotBinding);
+    ASSERT_NE(fallbackOpaqueSceneSnapshot, nullptr);
+    ASSERT_NE(fallbackOpaqueSceneSnapshot->textureView, nullptr);
+    EXPECT_EQ(fallbackOpaqueSceneSnapshot->textureView->GetFormat(),
+              RVX::RHIFormat::RGBA8_UNORM);
 
     const auto* object = FindBinding(objectLayout, 0);
     ASSERT_NE(object, nullptr);
@@ -3154,20 +3174,20 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     EXPECT_EQ(materialConstants->type, RVX::RHIBindingType::DynamicUniformBuffer);
     EXPECT_TRUE(materialConstants->isDynamic);
 
-    for (RVX::uint32 binding = 1; binding <= 5; ++binding)
+    for (RVX::uint32 binding = 1; binding <= 8; ++binding)
     {
         const auto* texture = FindBinding(materialLayout, binding);
         ASSERT_NE(texture, nullptr);
         EXPECT_EQ(texture->type, RVX::RHIBindingType::SampledTexture);
     }
 
-    for (RVX::uint32 binding = 6; binding <= 10; ++binding)
+    for (RVX::uint32 binding = 9; binding <= 16; ++binding)
     {
         const auto* sampler = FindBinding(materialLayout, binding);
         ASSERT_NE(sampler, nullptr);
         EXPECT_EQ(sampler->type, RVX::RHIBindingType::Sampler);
     }
-    const auto* materialParameterTable = FindBinding(materialLayout, 11);
+    const auto* materialParameterTable = FindBinding(materialLayout, 17);
     ASSERT_NE(materialParameterTable, nullptr);
     EXPECT_EQ(materialParameterTable->type,
               RVX::RHIBindingType::ShaderResourceBuffer);
@@ -3341,6 +3361,9 @@ TEST_F(PipelineCacheValidationFixture, OpenGLDescriptorBindingsUseStableGLSLBind
     const std::string descriptorSource =
         ReadTextFile(repoRoot / "Source" / "Runtime" / "RHI_OpenGL" / "Private" /
                      "OpenGLDescriptor.cpp");
+    const std::string bindingABISource =
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "ShaderContracts" / "Include" /
+                     "ShaderContracts" / "GLSLBindingABI.h");
 
     EXPECT_NE(translatorSource.find("SortResourcesBySetBinding(glslCompiler, resources.uniform_buffers);"),
               std::string::npos);
@@ -3349,21 +3372,28 @@ TEST_F(PipelineCacheValidationFixture, OpenGLDescriptorBindingsUseStableGLSLBind
     EXPECT_NE(translatorSource.find("SortResourcesBySetBinding(glslCompiler, resources.separate_samplers);"),
               std::string::npos);
 
-    EXPECT_NE(translatorSource.find("GLSLBindingABI::FlattenBinding(RHIBindingType::UniformBuffer, set, binding)"),
-              std::string::npos);
-    EXPECT_NE(translatorSource.find("GLSLBindingABI::FlattenBinding(RHIBindingType::SampledTexture, set, binding)"),
-              std::string::npos);
+    EXPECT_NE(translatorSource.find("GLSLBindingABI::TryFlattenBinding("), std::string::npos);
+    EXPECT_NE(translatorSource.find("OpenGL binding ABI rejects resource"), std::string::npos);
+    EXPECT_EQ(translatorSource.find("GLSLBindingABI::FlattenBinding("), std::string::npos);
     EXPECT_NE(translatorSource.find("GLSLBindingABI::RVX_GLSL_PUSH_CONSTANT_UBO_BINDING"),
               std::string::npos);
 
     EXPECT_NE(descriptorSource.find("glEntry.rhiBinding = binding.binding + binding.arrayElement"),
               std::string::npos);
-    EXPECT_NE(descriptorSource.find("GLSLBindingABI::FlattenBinding(entry.type, setIndex, entry.rhiBinding)"),
+    EXPECT_NE(descriptorSource.find("GLSLBindingABI::TryFlattenBinding("), std::string::npos);
+    EXPECT_NE(descriptorSource.find("GLSLBindingABI::TryGetTextureSamplerUnit("), std::string::npos);
+    EXPECT_NE(descriptorSource.find("if (separateSamplers.size() != 1)"), std::string::npos);
+    EXPECT_NE(descriptorSource.find("cannot pair set {} sampler {} with sampled images"),
               std::string::npos);
-    EXPECT_NE(descriptorSource.find("sampledTextureSlots.push_back(globalBinding);"),
+    EXPECT_EQ(descriptorSource.find("sampledTextureSlots.push_back"), std::string::npos);
+    EXPECT_EQ(descriptorSource.find("for (uint32 slot : sampledTextureSlots)"), std::string::npos);
+
+    EXPECT_NE(bindingABISource.find("if (set == 2 && textureBinding >= 1 && textureBinding <= 8 &&"),
               std::string::npos);
-    EXPECT_NE(descriptorSource.find("separateSamplerBindings.size() == 1"), std::string::npos);
-    EXPECT_NE(descriptorSource.find("for (uint32 slot : sampledTextureSlots)"), std::string::npos);
+    EXPECT_NE(bindingABISource.find("samplerBinding == textureBinding + 8"), std::string::npos);
+    EXPECT_NE(bindingABISource.find("if (set == 0 && textureBinding == 16 && samplerBinding == 13)"),
+              std::string::npos);
+    EXPECT_NE(bindingABISource.find("outTextureUnit = RVX_INVALID_INDEX;"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCoverage)
@@ -5677,6 +5707,8 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitConsumesMaterialWorkflowAndDoub
     EXPECT_NE(surface.find("#define MATERIAL_WORKFLOW_METALLIC_ROUGHNESS 0"), std::string::npos);
     EXPECT_NE(surface.find("#define MATERIAL_WORKFLOW_SPECULAR_GLOSSINESS 1"), std::string::npos);
     EXPECT_NE(surface.find("#define MATERIAL_WORKFLOW_UNLIT 2"), std::string::npos);
+    EXPECT_NE(surface.find("#define MATERIAL_BLEND_PREMULTIPLIED 3u"),
+              std::string::npos);
     EXPECT_NE(shader.find(
                   "if (material.ShadingModel == MATERIAL_SHADING_MODEL_UNLIT)"),
               std::string::npos);
@@ -5708,6 +5740,8 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitConsumesMaterialWorkflowAndDoub
     EXPECT_NE(shader.find("nointerpolation uint MaterialParameterSlot"),
               std::string::npos);
     EXPECT_NE(shader.find("VSMainInstancedMaterial"), std::string::npos);
+    EXPECT_NE(shader.find("surface.material.BlendMode == MATERIAL_BLEND_PREMULTIPLIED"),
+              std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, DefaultLitUsesFrameLocalLightResources)
@@ -9957,7 +9991,7 @@ TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
               std::string::npos);
     EXPECT_NE(shaderSource.find("bool isFrontFace : SV_IsFrontFace"), std::string::npos);
     EXPECT_NE(shaderSource.find("Texture2D BaseColorTexture : register(t1, space2);"), std::string::npos);
-    EXPECT_NE(shaderSource.find("SamplerState MaterialSampler : register(s6, space2);"), std::string::npos);
+    EXPECT_NE(shaderSource.find("SamplerState MaterialSampler : register(s9, space2);"), std::string::npos);
     EXPECT_NE(shaderSource.find("RVXResolveMaterialUV("), std::string::npos);
     EXPECT_NE(shaderSource.find("RVXResolveBaseColorAlpha("), std::string::npos);
     EXPECT_NE(shaderSource.find("RVXApplyAlphaMask("), std::string::npos);
@@ -13620,6 +13654,8 @@ TEST_F(PipelineCacheValidationFixture,
     const std::string outlineVerifier = ReadTextFile(
         FindShaderDirectory() / "PostProcess" /
         "ScreenSpaceOutlineVerifier.hlsl");
+    EXPECT_NE(outline.find("register(s7, space0)"), std::string::npos);
+    EXPECT_EQ(outline.find("register(s6, space0)"), std::string::npos);
     EXPECT_NE(source.find("#include \"Include/DirectionalShadow.hlsli\""),
               std::string::npos);
     EXPECT_NE(defaultLit.find("#include \"Include/DirectionalShadow.hlsli\""),

@@ -20,6 +20,7 @@ target_link_libraries(RVX_AssetPipeline PUBLIC
     RVX::Audio
     RVX::Core
     RVX::RHI
+    RVX::RenderContracts
     RVX::ShaderContracts
 )
 

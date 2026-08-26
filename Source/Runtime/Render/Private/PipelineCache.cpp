@@ -402,7 +402,7 @@ namespace
 
     bool IsRequiredDefaultLitBinding(uint32 set, uint32 binding)
     {
-        if (set == 0 && binding <= 15)
+        if (set == 0 && binding <= PipelineCache::DefaultLitOpaqueSceneSnapshotBinding)
         {
             return true;
         }
@@ -412,7 +412,7 @@ namespace
             return true;
         }
 
-        return set == 2 && binding <= 11;
+        return set == 2 && binding <= 17;
     }
 
     bool BindingTypeMatches(RHIBindingType actual, RHIBindingType expected)
@@ -453,6 +453,9 @@ namespace
         frameLayout.AddBinding(PipelineCache::DefaultLitAmbientOcclusionBinding,
                                RHIBindingType::SampledTexture,
                                RHIShaderStage::Pixel);
+        frameLayout.AddBinding(PipelineCache::DefaultLitOpaqueSceneSnapshotBinding,
+                               RHIBindingType::SampledTexture,
+                               RHIShaderStage::Pixel);
 
         auto& objectLayout = outLayouts[1];
         objectLayout.debugName = "DefaultObjectSetLayout";
@@ -469,12 +472,18 @@ namespace
         materialLayout.AddBinding(3, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
         materialLayout.AddBinding(4, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
         materialLayout.AddBinding(5, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(6, RHIBindingType::Sampler, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(7, RHIBindingType::Sampler, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(8, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(6, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(7, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(8, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
         materialLayout.AddBinding(9, RHIBindingType::Sampler, RHIShaderStage::Pixel);
         materialLayout.AddBinding(10, RHIBindingType::Sampler, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(11, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(11, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(12, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(13, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(14, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(15, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(16, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(17, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
     }
 
     Mat4 ApplyBackendClipConvention(const Mat4& matrix, RHIBackendType backend)
@@ -1430,6 +1439,7 @@ void PipelineCache::Shutdown()
     m_gpuSceneVertexShader.Reset();
     m_gpuSceneInstancedMaterialVertexShader.Reset();
     m_pixelShader.Reset();
+    m_translucencyPixelShader.Reset();
     m_forwardSurfaceDataPixelShader.Reset();
     m_gBufferPixelShader.Reset();
     m_deferredLightingComputeShader.Reset();
@@ -1497,6 +1507,7 @@ void PipelineCache::Shutdown()
     m_gpuSceneVsCompileResult.reset();
     m_gpuSceneInstancedMaterialVsCompileResult.reset();
     m_psCompileResult.reset();
+    m_translucencyPsCompileResult.reset();
     m_forwardSurfaceDataPsCompileResult.reset();
     m_gBufferPsCompileResult.reset();
     m_deferredLightingCsCompileResult.reset();
@@ -1732,6 +1743,20 @@ bool PipelineCache::CompileShaders()
     }
     m_pixelShader = psResult.shader;
     m_psCompileResult = std::make_unique<ShaderProgramMetadata>(std::move(psResult.compileResult));
+
+    RenderShaderLoadDesc translucencyPsDesc = psDesc;
+    translucencyPsDesc.entryPoint = "PSForwardTranslucency";
+    auto translucencyPsResult = m_shaderProgramLoader->LoadFromFile(
+        m_device, translucencyPsDesc);
+    if (!translucencyPsResult.compileResult.success || !translucencyPsResult.shader)
+    {
+        SetLastError("Failed to compile translucent MRT pixel shader: " +
+                     translucencyPsResult.compileResult.errorMessage);
+        return false;
+    }
+    m_translucencyPixelShader = translucencyPsResult.shader;
+    m_translucencyPsCompileResult = std::make_unique<ShaderProgramMetadata>(
+        std::move(translucencyPsResult.compileResult));
 
     RenderShaderLoadDesc forwardSurfacePsDesc = psDesc;
     forwardSurfacePsDesc.entryPoint = "PSForwardSurfaceData";
@@ -3431,7 +3456,7 @@ bool PipelineCache::CreateScreenSpaceOutlinePipelineLayout()
     RHIDescriptorSetLayoutDesc setLayoutDesc;
     setLayoutDesc.debugName = "ScreenSpaceOutlineSetLayout";
     // b0 constants; t1 HDR scene color; t2 depth; t3 oct-normal; t4 exact
-    // R32_UINT material identity; t5 MaterialGPUConstants table; s6 point
+    // R32_UINT material identity; t5 MaterialGPUConstants table; s7 point
     // sampler. All are consumed solely by the fullscreen pixel program.
     setLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer,
                              RHIShaderStage::Pixel);
@@ -3442,7 +3467,7 @@ bool PipelineCache::CreateScreenSpaceOutlinePipelineLayout()
     }
     setLayoutDesc.AddBinding(5, RHIBindingType::ShaderResourceBuffer,
                              RHIShaderStage::Pixel);
-    setLayoutDesc.AddBinding(6, RHIBindingType::Sampler,
+    setLayoutDesc.AddBinding(7, RHIBindingType::Sampler,
                              RHIShaderStage::Pixel);
 
     m_screenSpaceOutlineSetLayout =
@@ -3789,10 +3814,23 @@ bool PipelineCache::BuildReflectedDefaultLitLayouts(std::vector<RHIDescriptorSet
                   RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
     ensureBinding(outLayouts[0], PipelineCache::DefaultLitAmbientOcclusionBinding,
                   RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+    ensureBinding(outLayouts[0], PipelineCache::DefaultLitOpaqueSceneSnapshotBinding,
+                  RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
     ensureBinding(outLayouts[1], 1, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
     ensureBinding(outLayouts[1], 2, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
     ensureBinding(outLayouts[1], 3, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
-    ensureBinding(outLayouts[2], 11, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
+    for (uint32 binding = 1; binding <= 8; ++binding)
+    {
+        ensureBinding(outLayouts[2], binding, RHIBindingType::SampledTexture,
+                      RHIShaderStage::Pixel);
+    }
+    for (uint32 binding = 9; binding <= 16; ++binding)
+    {
+        ensureBinding(outLayouts[2], binding, RHIBindingType::Sampler,
+                      RHIShaderStage::Pixel);
+    }
+    ensureBinding(outLayouts[2], 17, RHIBindingType::ShaderResourceBuffer,
+                  RHIShaderStage::Pixel);
 
     for (uint32 setIndex = 0; setIndex < static_cast<uint32>(outLayouts.size()); ++setIndex)
     {
@@ -3901,6 +3939,9 @@ bool PipelineCache::ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSet
     if (!requireBinding(0, PipelineCache::DefaultLitAmbientOcclusionBinding,
                         RHIBindingType::SampledTexture))
         return false;
+    if (!requireBinding(0, PipelineCache::DefaultLitOpaqueSceneSnapshotBinding,
+                        RHIBindingType::SampledTexture))
+        return false;
     if (!requireBinding(1, 0, RHIBindingType::DynamicUniformBuffer))
         return false;
     if (!requireBinding(1, 1, RHIBindingType::ShaderResourceBuffer))
@@ -3912,16 +3953,19 @@ bool PipelineCache::ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSet
     if (!requireBinding(2, 0, RHIBindingType::DynamicUniformBuffer))
         return false;
 
-    for (uint32 binding = 1; binding <= 5; ++binding)
+    for (uint32 binding = 1; binding <= 8; ++binding)
     {
         if (!requireBinding(2, binding, RHIBindingType::SampledTexture))
             return false;
     }
 
-    if (!requireBinding(2, 6, RHIBindingType::Sampler))
-        return false;
+    for (uint32 binding = 9; binding <= 16; ++binding)
+    {
+        if (!requireBinding(2, binding, RHIBindingType::Sampler))
+            return false;
+    }
 
-    if (!requireBinding(2, 11, RHIBindingType::ShaderResourceBuffer))
+    if (!requireBinding(2, 17, RHIBindingType::ShaderResourceBuffer))
         return false;
 
     return true;
@@ -4639,6 +4683,15 @@ bool PipelineCache::CreateLightingBindingSnapshot(
         snapshot.ambientOcclusionFieldHash =
             RVX_NEUTRAL_AMBIENT_OCCLUSION_FIELD_HASH;
     }
+    // Keep one fixed frame-set ABI for all DefaultLit paths.  A thin
+    // transmission draw replaces this neutral fallback with the graph-owned
+    // HDR snapshot and rejects a missing or incompatible request before draw.
+    snapshot.opaqueSceneSnapshotView = request.opaqueSceneSnapshotView
+        ? request.opaqueSceneSnapshotView
+        : m_fallbackEnvironmentIBLBRDFLUTView;
+    snapshot.opaqueSceneSnapshotSampler = request.opaqueSceneSnapshotSampler
+        ? request.opaqueSceneSnapshotSampler
+        : m_environmentIBLSampler;
     snapshot.frameSetLayout = m_setLayouts[0];
 
     // The descriptor set is deliberately created only after every resource
@@ -4654,7 +4707,9 @@ bool PipelineCache::CreateLightingBindingSnapshot(
         !snapshot.environmentIBLPrefilteredView ||
         !snapshot.environmentIBLBRDFLUTView || !snapshot.environmentIBLSampler ||
         !snapshot.exposureStateBuffer || !snapshot.ambientOcclusionView ||
-        snapshot.ambientOcclusionFieldHash == 0 || !snapshot.frameSetLayout)
+        snapshot.ambientOcclusionFieldHash == 0 ||
+        !snapshot.opaqueSceneSnapshotView || !snapshot.opaqueSceneSnapshotSampler ||
+        !snapshot.frameSetLayout)
     {
         SetLastError("Lighting binding snapshot has incomplete record-owned resources");
         return false;
@@ -4687,6 +4742,8 @@ bool PipelineCache::CreateLightingBindingSnapshot(
                                  snapshot.exposureStateBuffer.Get());
     descriptorSetDesc.BindTexture(DefaultLitAmbientOcclusionBinding,
                                   snapshot.ambientOcclusionView.Get());
+    descriptorSetDesc.BindTexture(DefaultLitOpaqueSceneSnapshotBinding,
+                                  snapshot.opaqueSceneSnapshotView.Get());
 
     snapshot.frameDescriptorSet = m_device->CreateDescriptorSet(descriptorSetDesc);
     if (!snapshot.frameDescriptorSet ||
@@ -5645,6 +5702,9 @@ bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
         frameSetDesc.BindTexture(
             DefaultLitAmbientOcclusionBinding,
             m_fallbackAmbientOcclusionView.Get());
+        frameSetDesc.BindTexture(
+            DefaultLitOpaqueSceneSnapshotBinding,
+            m_fallbackEnvironmentIBLBRDFLUTView.Get());
     }
     RHIDescriptorSetRef frameSet = m_device->CreateDescriptorSet(frameSetDesc);
     if (!frameSet || !frameSet->IsReadyForBinding(m_setLayouts[0].Get()))
@@ -6104,6 +6164,72 @@ RHIPipeline* PipelineCache::GetGPUDrivenDepthOnlyPipeline(
         m_gpuDrivenDepthOnlyPipeline = pipeline;
     }
     return pipeline.Get();
+}
+
+RHIPipeline* PipelineCache::GetTransparentMrtPipeline(
+    RHIFormat hdrFormat,
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding,
+    MaterialBlendMode blendMode)
+{
+    if (!m_translucencyPixelShader ||
+        (inputMode != DefaultLitDirectVertexInputMode::Rigid &&
+         inputMode != DefaultLitDirectVertexInputMode::Skinned) ||
+        !IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError("Transparent MRT pipeline received an invalid shader, vertex mode, or cull mode");
+        return nullptr;
+    }
+    if (hdrFormat == RHIFormat::Unknown)
+    {
+        hdrFormat = m_renderTargetFormat;
+    }
+    if (hdrFormat != RHIFormat::RGBA16_FLOAT)
+    {
+        SetLastError("Transparent MRT pipeline requires an RGBA16_FLOAT HDR target");
+        return nullptr;
+    }
+
+    RHIBlendState blend = RHIBlendState::Default();
+    blend.independentBlendEnable = true;
+    switch (blendMode)
+    {
+        case MaterialBlendMode::AlphaBlend:
+            blend.renderTargets[0] = RHIRenderTargetBlendState::AlphaBlend();
+            break;
+        case MaterialBlendMode::Premultiplied:
+            blend.renderTargets[0] = RHIRenderTargetBlendState::PremultipliedAlpha();
+            break;
+        case MaterialBlendMode::Additive:
+            blend.renderTargets[0] = RHIRenderTargetBlendState::Additive();
+            break;
+        default:
+            SetLastError("Transparent MRT pipeline requires AlphaBlend, Premultiplied, or Additive material blending");
+            return nullptr;
+    }
+    blend.renderTargets[1] = RHIRenderTargetBlendState::Opaque();
+    blend.renderTargets[1].colorWriteMask = 0x1;
+
+    const RHIDepthStencilState depth =
+        BuildDepthStencilState(m_config.reverseZ, false);
+    const char* debugName = blendMode == MaterialBlendMode::Premultiplied
+        ? "DefaultTransparentPremultipliedMrtPipeline"
+        : (blendMode == MaterialBlendMode::Additive
+            ? "DefaultTransparentAdditiveMrtPipeline"
+            : "DefaultTransparentAlphaMrtPipeline");
+    return GetOrCreateDefaultLitPipeline(
+        MaterialPipelineVariant::Transparent,
+        debugName,
+        depth,
+        blend,
+        hdrFormat,
+        inputMode,
+        cullMode,
+        reverseWinding,
+        false,
+        m_translucencyPixelShader.Get(),
+        true).Get();
 }
 
 RHIPipeline* PipelineCache::GetInstancedMaterialPipelineForVariant(
@@ -8149,6 +8275,7 @@ PipelineCache::CreateFrameDescriptorBindingOwners() const
     owners->exposureStateBuffer = m_currentExposureStateBuffer
         ? m_currentExposureStateBuffer : m_fallbackExposureStateBuffer;
     owners->ambientOcclusionView = m_fallbackAmbientOcclusionView;
+    owners->opaqueSceneSnapshotView = m_fallbackEnvironmentIBLBRDFLUTView;
     owners->ambientOcclusionFieldHash =
         RVX_NEUTRAL_AMBIENT_OCCLUSION_FIELD_HASH;
     return owners->IsComplete() ? owners : Ref<FrameDescriptorBindingOwners>{};
@@ -8160,7 +8287,7 @@ std::vector<RHIDescriptorBinding> PipelineCache::BuildFrameDescriptorBindings(
     RVX_ASSERT(owners.IsComplete());
 
     std::vector<RHIDescriptorBinding> bindings;
-    bindings.reserve(16);
+    bindings.reserve(17);
     bindings.push_back({0, owners.viewConstantBuffer.Get(), 0,
                         AlignConstantBufferSize(sizeof(ViewConstants)), nullptr, nullptr});
     bindings.push_back({1, nullptr, 0, 0, owners.directionalShadowView.Get(), nullptr});
@@ -8182,6 +8309,8 @@ std::vector<RHIDescriptorBinding> PipelineCache::BuildFrameDescriptorBindings(
                         0, RVX_WHOLE_SIZE, nullptr, nullptr});
     bindings.push_back({DefaultLitAmbientOcclusionBinding, nullptr, 0, 0,
                         owners.ambientOcclusionView.Get(), nullptr});
+    bindings.push_back({DefaultLitOpaqueSceneSnapshotBinding, nullptr, 0, 0,
+                        owners.opaqueSceneSnapshotView.Get(), nullptr});
     return bindings;
 }
 
@@ -8701,15 +8830,26 @@ RHIPipelineRef PipelineCache::GetOrCreateDefaultLitPipeline(MaterialPipelineVari
                                                              DefaultLitDirectVertexInputMode inputMode,
                                                              MaterialCullMode cullMode,
                                                              bool reverseWinding,
-                                                             bool updatePrimaryStats)
+                                                             bool updatePrimaryStats,
+                                                             RHIShader* pixelShaderOverride,
+                                                             bool reactiveMaskMrt)
 {
     RHIGraphicsPipelineDesc pipelineDesc = BuildDefaultLitPipelineDesc(debugName,
                                                                        depthStencilState,
                                                                        blendState,
                                                                         renderTargetFormat,
-                                                                        inputMode,
-                                                                        cullMode,
-                                                                        reverseWinding);
+                                                                       inputMode,
+                                                                       cullMode,
+                                                                       reverseWinding);
+    if (pixelShaderOverride != nullptr)
+    {
+        pipelineDesc.pixelShader = pixelShaderOverride;
+    }
+    if (reactiveMaskMrt)
+    {
+        pipelineDesc.numRenderTargets = 2;
+        pipelineDesc.renderTargetFormats[1] = RHIFormat::R8_UNORM;
+    }
     if (!pipelineDesc.vertexShader)
     {
         SetLastError("Cannot create pipeline without vertex shader");
@@ -11106,6 +11246,8 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
                 m_gpuSceneInstancedMaterialVsCompileResult.get());
         if (shader == m_pixelShader.Get())
             return ComputeShaderHash(m_psCompileResult.get());
+        if (shader == m_translucencyPixelShader.Get())
+            return ComputeShaderHash(m_translucencyPsCompileResult.get());
         if (shader == m_depthOnlyVertexShader.Get())
             return ComputeShaderHash(m_depthOnlyVsCompileResult.get());
         if (shader == m_rigidDepthOnlyVertexShader.Get())

@@ -109,7 +109,7 @@ namespace
         return true;
     }
 
-    const char* GetLegacyTextureSlotName(MaterialTextureSlot slot) noexcept
+    const char* GetMaterialTextureSlotName(MaterialTextureSlot slot) noexcept
     {
         switch (slot)
         {
@@ -119,6 +119,9 @@ namespace
                 return "metallic_roughness";
             case MaterialTextureSlot::Occlusion: return "ao";
             case MaterialTextureSlot::Emissive: return "emissive";
+            case MaterialTextureSlot::ToonRamp: return "toon_ramp";
+            case MaterialTextureSlot::Transmission: return "transmission";
+            case MaterialTextureSlot::Thickness: return "thickness";
             default: return nullptr;
         }
     }
@@ -127,31 +130,52 @@ namespace
                                     std::string& outError)
     {
         const MaterialStaticDescriptor& descriptor = artifact.material.descriptor;
-        if (descriptor.shadingModel != MaterialShadingModel::StandardLit &&
-            descriptor.shadingModel != MaterialShadingModel::ToonLit &&
-            descriptor.shadingModel != MaterialShadingModel::Unlit)
+        const bool opaqueOrMasked =
+            descriptor.blendMode == MaterialBlendMode::Opaque ||
+            descriptor.blendMode == MaterialBlendMode::Masked;
+        const bool translucent = !opaqueOrMasked;
+        const bool standardSupported =
+            descriptor.shadingModel == MaterialShadingModel::StandardLit &&
+            (opaqueOrMasked || descriptor.blendMode == MaterialBlendMode::AlphaBlend ||
+             descriptor.blendMode == MaterialBlendMode::Premultiplied);
+        const bool unlitSupported =
+            descriptor.shadingModel == MaterialShadingModel::Unlit &&
+            (opaqueOrMasked || descriptor.blendMode == MaterialBlendMode::AlphaBlend ||
+             descriptor.blendMode == MaterialBlendMode::Premultiplied ||
+             descriptor.blendMode == MaterialBlendMode::Additive);
+        const bool thinSupported =
+            descriptor.shadingModel == MaterialShadingModel::ThinTransmission &&
+            translucent && (descriptor.blendMode == MaterialBlendMode::AlphaBlend ||
+                            descriptor.blendMode == MaterialBlendMode::Premultiplied);
+        const bool toonSupported =
+            descriptor.shadingModel == MaterialShadingModel::ToonLit && opaqueOrMasked;
+        if ((!standardSupported && !unlitSupported && !thinSupported && !toonSupported) ||
+            (opaqueOrMasked
+                ? descriptor.translucencyPhase != MaterialTranslucencyPhase::Opaque
+                : descriptor.translucencyPhase != MaterialTranslucencyPhase::Standard) ||
+            (translucent && MaterialShadowPolicyCasts(descriptor.shadowPolicy)))
         {
-            outError = "Cooked material shading model is not implemented by the runtime";
-            return false;
-        }
-        if (descriptor.shadingModel == MaterialShadingModel::ToonLit &&
-            (descriptor.blendMode != MaterialBlendMode::Opaque &&
-             descriptor.blendMode != MaterialBlendMode::Masked))
-        {
-            outError = "Cooked ToonLit translucency is not implemented until GFX15";
-            return false;
-        }
-        if (descriptor.blendMode == MaterialBlendMode::Premultiplied ||
-            descriptor.blendMode == MaterialBlendMode::Additive)
-        {
-            outError = "Cooked material blend mode is not implemented by the runtime";
+            outError = "Cooked material is outside the runtime surface support matrix";
             return false;
         }
         for (const CookedMaterialTextureBinding& binding : artifact.textureBindings)
         {
-            if (GetLegacyTextureSlotName(binding.definition.slot) == nullptr)
+            if (GetMaterialTextureSlotName(binding.definition.slot) == nullptr)
             {
                 outError = "Cooked material texture slot is not implemented by the runtime";
+                return false;
+            }
+            if (binding.definition.slot == MaterialTextureSlot::ToonRamp)
+            {
+                outError = "Cooked ToonRamp is not implemented until the shader samples it";
+                return false;
+            }
+            const bool linearDataSlot =
+                binding.definition.slot == MaterialTextureSlot::Transmission ||
+                binding.definition.slot == MaterialTextureSlot::Thickness;
+            if (linearDataSlot && (binding.usage != TextureUsage::Data || binding.isSRGB))
+            {
+                outError = "Cooked ThinTransmission texture slots require linear data textures";
                 return false;
             }
         }
@@ -299,9 +323,9 @@ bool PrepareCookedMaterialResources(
                 textureId, observedContentHash);
         }
 
-        const char* legacyName = GetLegacyTextureSlotName(binding.definition.slot);
-        if (legacyName == nullptr ||
-            !material->SetTexture(legacyName, texture))
+        const char* textureSlotName = GetMaterialTextureSlotName(binding.definition.slot);
+        if (textureSlotName == nullptr ||
+            !material->SetTexture(textureSlotName, texture))
         {
             outError = "Cooked material resource rejected a prepared texture dependency";
             outResources = {};

@@ -142,6 +142,21 @@ jobs:
           -RequiredEvidence "Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX14ForwardPlusToon_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX14DeferredToon_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX14ForwardPlusToon_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX14DeferredToon_640x360.ppm;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX14ForwardPlusToon_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX14DeferredToon_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX14ForwardPlusToon_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX14DeferredToon_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX14ForwardPlusToon_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX14DeferredToon_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX14ForwardPlusToon_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX14DeferredToon_640x360.json"
           -BaseRef origin/master
           -SkipConfigure
+      - name: Run fail-closed GFX15 translucency matrix
+        shell: pwsh
+        run: >-
+          ./Scripts/run_required_suite.ps1
+          -ConfigurePreset win_x64_qualification_debug
+          -BuildPreset win_x64_qualification_debug
+          -TestPreset win_x64_qualification_debug_gfx15_translucency
+          -BuildDir build/win_x64_qualification_debug
+          -Configuration Debug
+          -BuildTarget RVXValidationSuiteGfx15Translucency
+          -RequiredLabel suite.gfx15-translucency
+          -ExpectedTestCount 12
+          -RequiredEvidence "Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX15ForwardPlusTranslucency_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX15DeferredTranslucency_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX15ForwardPlusTranslucency_640x360.ppm;Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX15DeferredTranslucency_640x360.ppm;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX15ForwardPlusTranslucency_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX15DeferredTranslucency_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX15ForwardPlusTranslucency_640x360.json;Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX15DeferredTranslucency_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX15ForwardPlusTranslucency_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX15DeferredTranslucency_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX15ForwardPlusTranslucency_640x360.json;Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX15DeferredTranslucency_640x360.json"
+          -BaseRef origin/master
+          -SkipConfigure
       - if: always()
         uses: actions/upload-artifact@v4
         with:

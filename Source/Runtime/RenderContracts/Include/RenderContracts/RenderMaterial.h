@@ -151,8 +151,8 @@ namespace RVX
      * StandardLit and ToonLit opaque/masked surfaces are deferred eligible.
      * Unlit opaque and masked surfaces retain the forward-special path. All
      * supported translucent descriptors use the forward translucency path.
-     * Toon translucency remains unsupported until the dedicated GFX15
-     * translucency contract exists.
+     * Toon translucency is explicitly unsupported by the current material
+     * contract.
      */
     [[nodiscard]] SurfacePathEligibility ClassifySurfacePathEligibility(
         const MaterialStaticDescriptor& descriptor);
@@ -210,7 +210,14 @@ namespace RVX
         float indexOfRefraction = 1.5f;
         float thickness = 0.0f;
         Vec3 attenuationColor{1.0f, 1.0f, 1.0f};
-        float attenuationDistance = 1.0f;
+        /**
+         * @brief Beer-Lambert attenuation distance in engine metres.
+         *
+         * Zero is the canonical finite representation of the glTF default
+         * infinite attenuation distance: it disables absorption. Positive
+         * values are consumed by ThinTransmission shading.
+         */
+        float attenuationDistance = 0.0f;
     };
 
     /** @brief UV transform and sampler state for one typed material slot. */

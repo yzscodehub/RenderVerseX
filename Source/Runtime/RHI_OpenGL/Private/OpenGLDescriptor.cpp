@@ -185,10 +185,145 @@ namespace RVX
         m_bindings.push_back(glEntry);
     }
 
-    void OpenGLDescriptorSet::Bind(OpenGLStateCache& stateCache, uint32 setIndex,
+    bool OpenGLDescriptorSet::Bind(OpenGLStateCache& stateCache, uint32 setIndex,
                                    std::span<const uint32> dynamicOffsets)
     {
         GL_DEBUG_SCOPE("BindDescriptorSet");
+
+        struct SampledTextureBinding
+        {
+            uint32 rhiBinding = 0;
+            uint32 textureUnit = 0;
+        };
+
+        struct SeparateSamplerBinding
+        {
+            uint32 rhiBinding = 0;
+            GLuint sampler = 0;
+        };
+
+        std::vector<uint32> flattenedBindings(m_bindings.size());
+        std::vector<SampledTextureBinding> sampledTextures;
+        std::vector<SeparateSamplerBinding> separateSamplers;
+        sampledTextures.reserve(m_bindings.size());
+        separateSamplers.reserve(m_bindings.size());
+
+        const RHICapabilities::OpenGLSpecific* capabilities =
+            m_device ? &m_device->GetCapabilities().opengl : nullptr;
+        for (size_t index = 0; index < m_bindings.size(); ++index)
+        {
+            const OpenGLBindingEntry& entry = m_bindings[index];
+            uint32 globalBinding = RVX_INVALID_INDEX;
+            if (!GLSLBindingABI::TryFlattenBinding(
+                    entry.type, setIndex, entry.rhiBinding, globalBinding))
+            {
+                RVX_RHI_ERROR(
+                    "OpenGL descriptor set '{}' rejects unsupported set {} binding {} type {}",
+                    GetDebugName(),
+                    setIndex,
+                    entry.rhiBinding,
+                    static_cast<uint32>(entry.type));
+                return false;
+            }
+
+            uint32 capacity = 0;
+            switch (entry.type)
+            {
+                case RHIBindingType::UniformBuffer:
+                case RHIBindingType::DynamicUniformBuffer:
+                    capacity = capabilities ? capabilities->maxUniformBufferBindings : 0;
+                    break;
+                case RHIBindingType::ShaderResourceBuffer:
+                case RHIBindingType::StorageBuffer:
+                case RHIBindingType::DynamicStorageBuffer:
+                    capacity = capabilities ? capabilities->maxSSBOBindings : 0;
+                    break;
+                case RHIBindingType::SampledTexture:
+                case RHIBindingType::CombinedTextureSampler:
+                case RHIBindingType::Sampler:
+                    capacity = capabilities ? capabilities->maxTextureUnits : 0;
+                    break;
+                case RHIBindingType::StorageTexture:
+                    capacity = capabilities ? capabilities->maxImageUnits : 0;
+                    break;
+                default:
+                    RVX_RHI_ERROR(
+                        "OpenGL descriptor set '{}' rejects unsupported resource type {}",
+                        GetDebugName(),
+                        static_cast<uint32>(entry.type));
+                    return false;
+            }
+
+            if (capacity == 0 || globalBinding >= capacity)
+            {
+                RVX_RHI_ERROR(
+                    "OpenGL descriptor set '{}' binding {} maps to {} but the device exposes only {} slots",
+                    GetDebugName(),
+                    entry.rhiBinding,
+                    globalBinding,
+                    capacity);
+                return false;
+            }
+
+            flattenedBindings[index] = globalBinding;
+            if (entry.type == RHIBindingType::SampledTexture && entry.texture != 0)
+            {
+                sampledTextures.push_back({entry.rhiBinding, globalBinding});
+            }
+            else if (entry.type == RHIBindingType::Sampler && entry.sampler != 0)
+            {
+                separateSamplers.push_back({entry.rhiBinding, entry.sampler});
+            }
+        }
+
+        std::vector<std::pair<uint32, GLuint>> resolvedSeparateSamplerBindings;
+        for (const SeparateSamplerBinding& sampler : separateSamplers)
+        {
+            bool resolved = false;
+            for (const SampledTextureBinding& texture : sampledTextures)
+            {
+                uint32 pairedUnit = RVX_INVALID_INDEX;
+                if (GLSLBindingABI::TryGetTextureSamplerUnit(
+                        setIndex,
+                        texture.rhiBinding,
+                        sampler.rhiBinding,
+                        pairedUnit))
+                {
+                    if (pairedUnit != texture.textureUnit)
+                    {
+                        RVX_RHI_ERROR(
+                            "OpenGL descriptor set '{}' has inconsistent image/sampler ABI for set {} t{} / s{}",
+                            GetDebugName(),
+                            setIndex,
+                            texture.rhiBinding,
+                            sampler.rhiBinding);
+                        return false;
+                    }
+                    resolvedSeparateSamplerBindings.emplace_back(pairedUnit, sampler.sampler);
+                    resolved = true;
+                }
+            }
+
+            if (!resolved)
+            {
+                // A singleton sampler is the established post-process ABI: it
+                // applies to every sampled image in that descriptor set.
+                if (separateSamplers.size() != 1)
+                {
+                    RVX_RHI_ERROR(
+                        "OpenGL descriptor set '{}' cannot pair set {} sampler {} with sampled images",
+                        GetDebugName(),
+                        setIndex,
+                        sampler.rhiBinding);
+                    return false;
+                }
+                for (const SampledTextureBinding& texture : sampledTextures)
+                {
+                    resolvedSeparateSamplerBindings.emplace_back(
+                        texture.textureUnit, sampler.sampler);
+                }
+            }
+        }
 
         // Track which dynamic offset to use next
         size_t dynamicOffsetIndex = 0;
@@ -199,8 +334,6 @@ namespace RVX
         // Collect texture and sampler bindings for potential batch binding
         std::vector<std::pair<uint32, GLuint>> textureBindings;  // <slot, texture>
         std::vector<std::pair<uint32, GLuint>> samplerBindings;  // <slot, sampler>
-        std::vector<uint32> sampledTextureSlots;
-        std::vector<std::pair<uint32, GLuint>> separateSamplerBindings;
 
         auto addSamplerBinding = [&samplerBindings](uint32 slot, GLuint sampler)
         {
@@ -219,10 +352,10 @@ namespace RVX
             samplerBindings.emplace_back(slot, sampler);
         };
 
-        for (const auto& entry : m_bindings)
+        for (size_t entryIndex = 0; entryIndex < m_bindings.size(); ++entryIndex)
         {
-            uint32 globalBinding =
-                GLSLBindingABI::FlattenBinding(entry.type, setIndex, entry.rhiBinding);
+            const OpenGLBindingEntry& entry = m_bindings[entryIndex];
+            const uint32 globalBinding = flattenedBindings[entryIndex];
 
             switch (entry.type)
             {
@@ -270,7 +403,6 @@ namespace RVX
                 case RHIBindingType::SampledTexture:
                     if (entry.texture != 0)
                     {
-                        sampledTextureSlots.push_back(globalBinding);
                         if (useMultiBind)
                         {
                             textureBindings.emplace_back(globalBinding, entry.texture);
@@ -308,18 +440,8 @@ namespace RVX
                     break;
 
                 case RHIBindingType::Sampler:
-                    if (entry.sampler != 0)
-                    {
-                        separateSamplerBindings.emplace_back(globalBinding, entry.sampler);
-                        if (useMultiBind)
-                        {
-                            addSamplerBinding(globalBinding, entry.sampler);
-                        }
-                        else
-                        {
-                            stateCache.BindSampler(globalBinding, entry.sampler);
-                        }
-                    }
+                    // Separate samplers are bound below to their resolved
+                    // image unit rather than to their logical sampler number.
                     break;
 
                 case RHIBindingType::StorageTexture:
@@ -334,19 +456,15 @@ namespace RVX
             }
         }
 
-        if (separateSamplerBindings.size() == 1)
+        for (const auto& [textureUnit, sampler] : resolvedSeparateSamplerBindings)
         {
-            const GLuint sampler = separateSamplerBindings.front().second;
-            for (uint32 slot : sampledTextureSlots)
+            if (useMultiBind)
             {
-                if (useMultiBind)
-                {
-                    addSamplerBinding(slot, sampler);
-                }
-                else
-                {
-                    stateCache.BindSampler(slot, sampler);
-                }
+                addSamplerBinding(textureUnit, sampler);
+            }
+            else
+            {
+                stateCache.BindSampler(textureUnit, sampler);
             }
         }
 
@@ -443,6 +561,7 @@ namespace RVX
                 stateCache.BindSampler(slot, sampler);
             }
         }
+        return true;
     }
 
 } // namespace RVX

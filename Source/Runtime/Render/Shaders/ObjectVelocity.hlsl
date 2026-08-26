@@ -46,7 +46,7 @@ cbuffer MaterialConstants : register(b0, space2)
 #define EmissiveStrength EmissiveColor_Strength.w
 
 Texture2D BaseColorTexture : register(t1, space2);
-SamplerState MaterialSampler : register(s6, space2);
+SamplerState MaterialSampler : register(s9, space2);
 
 struct VSInput
 {
@@ -116,8 +116,10 @@ MaterialParameterData ResolveMaterialParameters()
     material.ToonSpecularThreshold = ToonSpecularThreshold;
     material.ToonRimStrength = ToonRimStrength;
     material.ToonOutlineWidth = ToonOutlineWidth;
-    material.ToonPadding = ToonPadding;
+    material.BlendMode = BlendMode;
     material.ToonShadowTint = ToonShadowTint;
+    material.ThinTransmissionParams = ThinTransmissionParams;
+    material.AttenuationColor = AttenuationColor;
     material.BaseColorUVScaleOffset = BaseColorUVScaleOffset;
     material.BaseColorUVRotationSet = BaseColorUVRotationSet;
     material.NormalUVScaleOffset = NormalUVScaleOffset;
@@ -128,6 +130,12 @@ MaterialParameterData ResolveMaterialParameters()
     material.OcclusionUVRotationSet = OcclusionUVRotationSet;
     material.EmissiveUVScaleOffset = EmissiveUVScaleOffset;
     material.EmissiveUVRotationSet = EmissiveUVRotationSet;
+    material.ToonRampUVScaleOffset = ToonRampUVScaleOffset;
+    material.ToonRampUVRotationSet = ToonRampUVRotationSet;
+    material.TransmissionUVScaleOffset = TransmissionUVScaleOffset;
+    material.TransmissionUVRotationSet = TransmissionUVRotationSet;
+    material.ThicknessUVScaleOffset = ThicknessUVScaleOffset;
+    material.ThicknessUVRotationSet = ThicknessUVRotationSet;
     return material;
 }
 

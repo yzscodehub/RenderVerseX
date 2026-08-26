@@ -11,6 +11,7 @@
 #include <Windows.h>
 #include <dxcapi.h>
 #include <wrl/client.h>
+#include <array>
 #include <cctype>
 #include <filesystem>
 #include <cstring>
@@ -131,6 +132,59 @@ namespace RVX
             }
         }
 
+        constexpr std::array<uint32, 8> kDX11FrameSamplerLogicalBindings = {
+            0u, 1u, 2u, 5u, 7u, 9u, 13u, 19u};
+
+        bool TryMapDX11SamplerToPhysicalSlot(uint32 space,
+                                              uint32 logicalBinding,
+                                              uint32& outPhysicalSlot)
+        {
+            if (space == 0)
+            {
+                for (uint32 physicalSlot = 0;
+                     physicalSlot < kDX11FrameSamplerLogicalBindings.size();
+                     ++physicalSlot)
+                {
+                    if (kDX11FrameSamplerLogicalBindings[physicalSlot] ==
+                        logicalBinding)
+                    {
+                        outPhysicalSlot = physicalSlot;
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            if (space == 2 && logicalBinding >= 9u && logicalBinding <= 16u)
+            {
+                outPhysicalSlot = 8u + logicalBinding - 9u;
+                return true;
+            }
+
+            return false;
+        }
+
+        bool TryRestoreDX11SamplerFromPhysicalSlot(uint32 physicalSlot,
+                                                    uint32& outSet,
+                                                    uint32& outLogicalBinding)
+        {
+            if (physicalSlot < kDX11FrameSamplerLogicalBindings.size())
+            {
+                outSet = 0;
+                outLogicalBinding = kDX11FrameSamplerLogicalBindings[physicalSlot];
+                return true;
+            }
+
+            if (physicalSlot >= 8u && physicalSlot <= 15u)
+            {
+                outSet = 2;
+                outLogicalBinding = 9u + physicalSlot - 8u;
+                return true;
+            }
+
+            return false;
+        }
+
         uint32 GetDX11FlattenedRegisterBase(char registerType, uint32 space)
         {
             const char lowerType = static_cast<char>(std::tolower(static_cast<unsigned char>(registerType)));
@@ -152,17 +206,12 @@ namespace RVX
                     }
                 case 't': return space * 32;
                 case 'u': return space * 2;
-                // The renderer's sampler ABI already assigns non-overlapping
-                // logical slots across the currently supported descriptor
-                // sets (frame s1/s2/s13 and material s6-s10). Preserve those
-                // slots for SM5 instead of adding a space base that can exceed
-                // D3D11's 16-sampler limit.
-                case 's': return 0;
                 default:  return 0;
             }
         }
 
-        void RestoreDX11SetBinding(ShaderReflection::ResourceBinding& resource)
+        bool RestoreDX11SetBinding(ShaderReflection::ResourceBinding& resource,
+                                   std::string& outError)
         {
             const uint32 slot = resource.binding;
             const auto restoreFromRange = [&resource, slot](uint32 set, uint32 base, uint32 count) -> bool
@@ -184,25 +233,25 @@ namespace RVX
                     {
                         resource.set = 1;
                         resource.binding = 0;
-                        return;
+                        return true;
                     }
                     if (slot == 2)
                     {
                         resource.set = 2;
                         resource.binding = 0;
-                        return;
+                        return true;
                     }
                     if (slot == 4)
                     {
                         resource.set = 3;
                         resource.binding = 0;
-                        return;
+                        return true;
                     }
                     if (slot < 14)
                     {
                         resource.set = 0;
                         resource.binding = slot;
-                        return;
+                        return true;
                     }
                     break;
                 case RHIBindingType::SampledTexture:
@@ -212,7 +261,7 @@ namespace RVX
                         restoreFromRange(2, 64, 32) ||
                         restoreFromRange(3, 96, 32))
                     {
-                        return;
+                        return true;
                     }
                     break;
                 case RHIBindingType::StorageBuffer:
@@ -222,45 +271,58 @@ namespace RVX
                         restoreFromRange(2, 4, 2) ||
                         restoreFromRange(3, 6, 2))
                     {
-                        return;
+                        return true;
                     }
                     break;
                 case RHIBindingType::Sampler:
-                    if (slot >= 6 && slot <= 10)
+                {
+                    uint32 set = 0;
+                    uint32 logicalBinding = 0;
+                    if (TryRestoreDX11SamplerFromPhysicalSlot(
+                            slot, set, logicalBinding))
                     {
-                        resource.set = 2;
-                        resource.binding = slot;
-                        return;
+                        resource.set = set;
+                        resource.binding = logicalBinding;
+                        return true;
                     }
-                    if (slot < 16)
-                    {
-                        resource.set = 0;
-                        resource.binding = slot;
-                        return;
-                    }
-                    break;
+                    outError = "DX11 reflection produced unsupported physical sampler slot s" +
+                        std::to_string(slot);
+                    return false;
+                }
                 default:
                     break;
             }
+
+            return true;
         }
 
-        void RestoreDX11SetBindings(ShaderReflection& reflection)
+        bool RestoreDX11SetBindings(ShaderReflection& reflection,
+                                    std::string& outError)
         {
             for (auto& resource : reflection.resources)
             {
-                RestoreDX11SetBinding(resource);
+                if (!RestoreDX11SetBinding(resource, outError))
+                {
+                    return false;
+                }
             }
+            return true;
         }
 
-        std::string RemapRegisterSpacesForDX11(const char* source)
+        bool RemapRegisterSpacesForDX11(const char* source,
+                                        std::string& outSource,
+                                        std::string& outError)
         {
+            outSource.clear();
+            outError.clear();
             if (!source)
             {
-                return {};
+                outError = "DX11 shader source is null";
+                return false;
             }
 
             static const std::regex registerSpacePattern(
-                R"(register\s*\(\s*([A-Za-z])\s*([0-9]+)\s*,\s*space\s*([0-9]+)\s*\))");
+                R"(register\s*\(\s*([A-Za-z])\s*([0-9]+)(?:\s*,\s*space\s*([0-9]+))?\s*\))");
 
             const std::string input(source);
             std::string output;
@@ -275,8 +337,30 @@ namespace RVX
 
                 const char registerType = match[1].str()[0];
                 const uint32 binding = static_cast<uint32>(std::stoul(match[2].str()));
-                const uint32 space = static_cast<uint32>(std::stoul(match[3].str()));
-                const uint32 flattenedBinding = GetDX11FlattenedRegisterBase(registerType, space) + binding;
+                const uint32 space = match[3].matched
+                    ? static_cast<uint32>(std::stoul(match[3].str()))
+                    : 0u;
+                const char lowerRegisterType = static_cast<char>(
+                    std::tolower(static_cast<unsigned char>(registerType)));
+                uint32 flattenedBinding = 0;
+                if (lowerRegisterType == 's')
+                {
+                    if (!TryMapDX11SamplerToPhysicalSlot(
+                            space, binding, flattenedBinding))
+                    {
+                        outError = "DX11 sampler ABI rejects set " +
+                            std::to_string(space) + " logical sampler s" +
+                            std::to_string(binding) +
+                            "; supported set 0 bindings are "
+                            "{0,1,2,5,7,9,13,19} and set 2 bindings are {9..16}";
+                        return false;
+                    }
+                }
+                else
+                {
+                    flattenedBinding = GetDX11FlattenedRegisterBase(
+                        registerType, space) + binding;
+                }
 
                 output += "register(";
                 output += registerType;
@@ -287,7 +371,8 @@ namespace RVX
             }
 
             output.append(input, lastOffset, std::string::npos);
-            return output;
+            outSource = std::move(output);
+            return true;
         }
 
         std::string NormalizePath(const char* path)
@@ -501,7 +586,12 @@ namespace RVX
                 profile = GetSM5ProfileNarrow(options.stage);
             }
 
-            std::string dx11Source = RemapRegisterSpacesForDX11(options.sourceCode);
+            std::string dx11Source;
+            if (!RemapRegisterSpacesForDX11(
+                    options.sourceCode, dx11Source, result.errorMessage))
+            {
+                return result;
+            }
             const char* sourceCode = dx11Source.c_str();
 
             std::vector<D3D_SHADER_MACRO> macros;
@@ -570,7 +660,13 @@ namespace RVX
                 options.stage,
                 result.bytecode,
                 options.entryPoint);
-            RestoreDX11SetBindings(result.reflection);
+            if (!RestoreDX11SetBindings(result.reflection, result.errorMessage))
+            {
+                result.success = false;
+                result.bytecode.clear();
+                result.reflection = {};
+                return result;
+            }
             CaptureSourceInfo(result, nullptr, options);
             return result;
         }

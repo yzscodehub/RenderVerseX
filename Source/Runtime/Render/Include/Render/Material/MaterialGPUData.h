@@ -45,6 +45,9 @@ namespace RVX
         HasMetallicRoughness = 0x04,
         HasOcclusion        = 0x08,
         HasEmissive         = 0x10,
+        HasToonRamp         = 0x20,
+        HasTransmission     = 0x40,
+        HasThickness        = 0x80,
     };
 
     enum class MaterialGPUAlphaMode : uint32
@@ -76,7 +79,17 @@ namespace RVX
         ThinTransmission = 3,
     };
 
-    inline constexpr uint32 RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT = 5;
+    /** Mirrors MaterialBlendMode so shader output cannot infer blend policy. */
+    enum class MaterialGPUBlendMode : uint32
+    {
+        Opaque = 0,
+        Masked = 1,
+        AlphaBlend = 2,
+        Premultiplied = 3,
+        Additive = 4,
+    };
+
+    inline constexpr uint32 RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT = 8;
 
     /** @brief Packed affine UV transform for one fixed material texture slot. */
     struct MaterialGPUUVTransform
@@ -129,15 +142,21 @@ namespace RVX
 
         float toonRimStrength = 0.0f;
         float toonOutlineWidth = 0.0f;
-        float toonPadding = 0.0f;
+        /** Exact immutable MaterialBlendMode selected by the pipeline policy. */
+        uint32 blendMode = static_cast<uint32>(MaterialGPUBlendMode::Opaque);
         /** xyz = shadow tint; w is reserved and must remain zero. */
         Vec4 toonShadowTint = {0.5f, 0.5f, 0.5f, 0.0f};
+
+        /** x=transmission, y=IOR, z=thickness (m), w=attenuation distance (m). */
+        Vec4 thinTransmissionParams = {0.0f, 1.5f, 0.0f, 0.0f};
+        /** xyz=Beer-Lambert attenuation color; w is reserved and must be zero. */
+        Vec4 attenuationColor = {1.0f, 1.0f, 1.0f, 0.0f};
 
         std::array<MaterialGPUUVTransform,
                    RVX_MATERIAL_GPU_TEXTURE_SLOT_COUNT> uvTransforms{};
     };
 
-    static_assert(sizeof(MaterialGPUConstants) == 272,
+    static_assert(sizeof(MaterialGPUConstants) == 400,
                   "MaterialGPUConstants must match the HLSL cbuffer layout");
     static_assert(offsetof(MaterialGPUConstants, baseColorFactor) == 0);
     static_assert(offsetof(MaterialGPUConstants, metallicFactor) == 16);
@@ -157,9 +176,11 @@ namespace RVX
     static_assert(offsetof(MaterialGPUConstants, toonSpecularThreshold) == 80);
     static_assert(offsetof(MaterialGPUConstants, toonRimStrength) == 84);
     static_assert(offsetof(MaterialGPUConstants, toonOutlineWidth) == 88);
-    static_assert(offsetof(MaterialGPUConstants, toonPadding) == 92);
+    static_assert(offsetof(MaterialGPUConstants, blendMode) == 92);
     static_assert(offsetof(MaterialGPUConstants, toonShadowTint) == 96);
-    static_assert(offsetof(MaterialGPUConstants, uvTransforms) == 112);
+    static_assert(offsetof(MaterialGPUConstants, thinTransmissionParams) == 112);
+    static_assert(offsetof(MaterialGPUConstants, attenuationColor) == 128);
+    static_assert(offsetof(MaterialGPUConstants, uvTransforms) == 144);
     static_assert(
         offsetof(MaterialGPUConstants, uvTransforms) +
             sizeof(MaterialGPUUVTransform) *

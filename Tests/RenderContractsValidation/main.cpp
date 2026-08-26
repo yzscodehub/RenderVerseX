@@ -1095,6 +1095,34 @@ namespace
     }
 
     TEST(RenderContractsValidation,
+         MaterialUploadV4AcceptsEveryDeclaredLogicalTextureSlot)
+    {
+        auto info = MakeValidMaterialRequestInfo();
+        auto& payload = std::get<MaterialUploadPayload>(info.payload);
+        for (uint32 slot =
+                 static_cast<uint32>(MaterialUploadTextureSlot::BaseColor);
+             slot <= static_cast<uint32>(MaterialUploadTextureSlot::Thickness);
+             ++slot)
+        {
+            MaterialUploadTextureBinding binding;
+            binding.slot = static_cast<MaterialUploadTextureSlot>(slot);
+            binding.texture = RenderResourceHandle{slot + 2u, 1u};
+            binding.uvSet = static_cast<int32>(slot % 2u);
+            payload.textureBindings.push_back(binding);
+            payload.sourceData.textureFlags |= 1u << slot;
+            payload.staticDescriptor.featureMask |= 1ull << slot;
+            info.dependencies.push_back(binding.texture);
+        }
+        info.declaredPayloadBytes =
+            static_cast<uint64>(payload.textureBindings.size()) *
+                sizeof(MaterialUploadTextureBinding) +
+            static_cast<uint64>(info.dependencies.size()) *
+                sizeof(RenderResourceHandle);
+
+        ExpectCreationCode(info, ResourceUploadRequestCreateCode::Created);
+    }
+
+    TEST(RenderContractsValidation,
          CanonicalMaterialAllowsMirroredAndZeroTextureScale)
     {
         MaterialDefinition definition;
@@ -1847,6 +1875,7 @@ namespace
         IndexOfRefractionBelowRange,
         ThicknessAboveRange,
         NonFiniteAttenuationColor,
+        AttenuationColorAboveRange,
         ZeroAttenuationDistance
     };
 
@@ -1936,6 +1965,9 @@ namespace
             case MaterialSourceValidationCase::NonFiniteAttenuationColor:
                 source.attenuationColor.x = nan;
                 break;
+            case MaterialSourceValidationCase::AttenuationColorAboveRange:
+                source.attenuationColor.y = 1.01f;
+                break;
             case MaterialSourceValidationCase::ZeroAttenuationDistance:
                 source.attenuationDistance = 0.0f;
                 break;
@@ -2012,7 +2044,9 @@ namespace
             MaterialSourceValidationParameter{
                 MaterialSourceValidationCase::NonFiniteAttenuationColor, false},
             MaterialSourceValidationParameter{
-                MaterialSourceValidationCase::ZeroAttenuationDistance, false}));
+                MaterialSourceValidationCase::AttenuationColorAboveRange, false},
+            MaterialSourceValidationParameter{
+                MaterialSourceValidationCase::ZeroAttenuationDistance, true}));
 
     enum class MaterialRuleCase : uint8
     {

@@ -8,6 +8,21 @@ namespace RVX
 {
     class VulkanDevice;
 
+    /**
+     * @brief Select the RHI blend-state row used by one Vulkan color target.
+     *
+     * When independent blending is disabled, the RHI contract applies render
+     * target zero's state to every attachment.  Keeping this selection explicit
+     * prevents Vulkan from observing accidental per-target differences that the
+     * caller did not enable.
+     */
+    inline uint32 SelectVulkanBlendAttachmentStateIndex(
+        bool independentBlendEnable,
+        uint32 attachmentIndex) noexcept
+    {
+        return independentBlendEnable ? attachmentIndex : 0u;
+    }
+
     // =============================================================================
     // Vulkan Descriptor Set Layout
     // =============================================================================

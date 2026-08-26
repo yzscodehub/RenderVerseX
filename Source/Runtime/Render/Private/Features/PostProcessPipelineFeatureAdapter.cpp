@@ -339,7 +339,7 @@ void PostProcessPipelineFeatureAdapter::AddPasses(
             BuiltinRenderFeatureIds::PostProcessPipeline, Describe(), &code);
     if (translucency == nullptr || code != RenderGraphBlackboardCode::Success)
     {
-        SetCompositionFailure("Post-process requires TranslucencyOutputs v4");
+        SetCompositionFailure("Post-process requires TranslucencyOutputs v5");
         return;
     }
     if (translucency->frameIdentity != m_preparedContext.frameIdentity ||

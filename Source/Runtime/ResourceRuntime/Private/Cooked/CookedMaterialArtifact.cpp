@@ -363,7 +363,7 @@ bool FinalizeCookedMaterialArtifact(
         artifact.material.textureSlots.push_back(binding.definition);
         artifact.material.descriptor.featureMask |=
             1ull << static_cast<uint8>(binding.definition.slot);
-        if (binding.definition.slot <= MaterialTextureSlot::Emissive)
+        if (binding.definition.slot <= MaterialTextureSlot::Thickness)
         {
             artifact.material.parameters.textureFlags |=
                 1u << static_cast<uint8>(binding.definition.slot);

@@ -353,7 +353,7 @@ namespace RVX
     {
         static constexpr RenderBlackboardResourceId ResourceId =
             RenderBlackboardResourceId::TranslucencyOutputs;
-        static constexpr uint32 SchemaVersion = 4;
+        static constexpr uint32 SchemaVersion = 5;
 
         RenderGraphBlackboardProvenance provenance{};
         /** Exact frozen frame/view that produced these graph resources. */
@@ -386,6 +386,9 @@ namespace RVX
         SceneTextures::Metadata velocityMetadata{};
         RGTextureHandle reactiveMask{};
         SceneTextures::Metadata reactiveMaskMetadata{};
+        /** Immutable HDR copy after Sky and before every translucent writer. */
+        RGTextureHandle opaqueSceneSnapshot{};
+        SceneTextures::Metadata opaqueSceneSnapshotMetadata{};
         RGTextureHandle distortionVectors{};
         SceneTextures::Metadata distortionVectorsMetadata{};
         /** Committed prior-presented state used by all HDR producers. */
@@ -718,10 +721,9 @@ namespace RVX
                            entry.roughnessMetallic, provenance) &&
                        HandleMatchesGraph(entry.velocity, provenance) &&
                        HandleMatchesGraph(entry.reactiveMask, provenance) &&
+                       HandleMatchesGraph(entry.opaqueSceneSnapshot, provenance) &&
                        HandleMatchesGraph(entry.distortionVectors, provenance) &&
                        HandleMatchesGraph(entry.exposureState, provenance) &&
-                       HandleMatchesGraph(
-                           entry.opaqueSceneSnapshot, provenance) &&
                        HandleMatchesGraph(entry.gBuffer0, provenance) &&
                        HandleMatchesGraph(entry.gBuffer1, provenance) &&
                        HandleMatchesGraph(entry.gBuffer2, provenance) &&
@@ -761,6 +763,7 @@ namespace RVX
                            entry.materialParameterTable, provenance) &&
                        HandleMatchesGraph(entry.velocity, provenance) &&
                        HandleMatchesGraph(entry.reactiveMask, provenance) &&
+                       HandleMatchesGraph(entry.opaqueSceneSnapshot, provenance) &&
                        HandleMatchesGraph(entry.distortionVectors, provenance) &&
                        HandleMatchesGraph(entry.exposureState, provenance);
             }
@@ -810,6 +813,13 @@ namespace RVX
                    outputs.hdrSceneColor.IsValid() &&
                    MetadataMatches(outputs.hdrSceneColorMetadata,
                                    SceneTextures::HDRSceneColorContract) &&
+                   outputs.opaqueSceneSnapshot.IsValid() &&
+                   MetadataMatches(outputs.opaqueSceneSnapshotMetadata,
+                                   SceneTextures::HDRSceneColorContract) &&
+                   outputs.opaqueSceneSnapshotMetadata.extent ==
+                       outputs.hdrSceneColorMetadata.extent &&
+                   outputs.opaqueSceneSnapshot.index !=
+                       outputs.hdrSceneColor.index &&
                    outputs.colorDomain ==
                        PostProcessColorDomain::SceneLinearHDR &&
                    outputs.transfer == PostProcessTransfer::None &&

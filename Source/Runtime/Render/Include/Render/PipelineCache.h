@@ -282,6 +282,9 @@ namespace RVX
         RHITextureViewRef ambientOcclusionView;
         /** Content identity for ambientOcclusionView; required when a view is supplied. */
         uint64 ambientOcclusionFieldHash = 0;
+        /** Opaque HDR copy produced after Sky and before translucency. */
+        RHITextureViewRef opaqueSceneSnapshotView;
+        RHISamplerRef opaqueSceneSnapshotSampler;
     };
 
     /**
@@ -313,6 +316,8 @@ namespace RVX
         RHIBufferRef exposureStateBuffer;
         RHITextureViewRef ambientOcclusionView;
         uint64 ambientOcclusionFieldHash = 0;
+        RHITextureViewRef opaqueSceneSnapshotView;
+        RHISamplerRef opaqueSceneSnapshotSampler;
         RHIDescriptorSetLayoutRef frameSetLayout;
         RHIDescriptorSetRef frameDescriptorSet;
 
@@ -327,6 +332,7 @@ namespace RVX
                    environmentIBLPrefilteredView && environmentIBLBRDFLUTView &&
                    environmentIBLSampler && exposureStateBuffer &&
                    ambientOcclusionView && ambientOcclusionFieldHash != 0 &&
+                   opaqueSceneSnapshotView && opaqueSceneSnapshotSampler &&
                    frameSetLayout && frameDescriptorSet;
         }
 
@@ -649,6 +655,10 @@ namespace RVX
          * @return Graphics pipeline or nullptr if not available
          */
         RHIPipeline* GetTransparentPipeline() const { return m_transparentPipeline.Get(); }
+        [[nodiscard]] RHISamplerRef GetEnvironmentIBLSamplerRef() const
+        {
+            return m_environmentIBLSampler;
+        }
 
         /**
          * @brief Get a pipeline for a material variant
@@ -660,6 +670,17 @@ namespace RVX
                                            DefaultLitDirectVertexInputMode inputMode,
                                            MaterialCullMode cullMode = MaterialCullMode::Back,
                                            bool reverseWinding = false);
+        /**
+         * Get the transparent HDR + reactive-mask MRT pipeline for the exact
+         * material blend policy.  This is intentionally separate from the
+         * legacy one-target Transparent variant.
+         */
+        RHIPipeline* GetTransparentMrtPipeline(
+            RHIFormat hdrFormat,
+            DefaultLitDirectVertexInputMode inputMode,
+            MaterialCullMode cullMode,
+            bool reverseWinding,
+            MaterialBlendMode blendMode);
         RHIPipeline* GetGPUDrivenPipelineForVariant(
             MaterialPipelineVariant variant,
             RHIFormat renderTargetFormat,
@@ -790,6 +811,7 @@ namespace RVX
         /** Fixed HDR producer binding ABI for pre-exposure state and GTAO visibility. */
         static constexpr uint32 DefaultLitExposureStateBinding = 14u;
         static constexpr uint32 DefaultLitAmbientOcclusionBinding = 15u;
+        static constexpr uint32 DefaultLitOpaqueSceneSnapshotBinding = 16u;
         static constexpr uint32 DeferredLightingExposureStateBinding = 21u;
         static constexpr uint32 DeferredLightingAmbientOcclusionBinding = 22u;
         static constexpr uint32 SkyboxExposureStateBinding = 3u;
@@ -1528,6 +1550,7 @@ namespace RVX
             RHISamplerRef environmentIBLSampler;
             RHIBufferRef exposureStateBuffer;
             RHITextureViewRef ambientOcclusionView;
+            RHITextureViewRef opaqueSceneSnapshotView;
             uint64 ambientOcclusionFieldHash = 0;
 
             [[nodiscard]] bool IsComplete() const noexcept
@@ -1541,6 +1564,7 @@ namespace RVX
                        environmentIBLPrefilteredView &&
                        environmentIBLBRDFLUTView && environmentIBLSampler &&
                        exposureStateBuffer && ambientOcclusionView &&
+                       opaqueSceneSnapshotView &&
                        ambientOcclusionFieldHash != 0;
             }
         };
@@ -1581,7 +1605,9 @@ namespace RVX
                                                       DefaultLitDirectVertexInputMode inputMode,
                                                       MaterialCullMode cullMode,
                                                       bool reverseWinding,
-                                                      bool updatePrimaryStats);
+                                                      bool updatePrimaryStats,
+                                                      RHIShader* pixelShaderOverride = nullptr,
+                                                      bool reactiveMaskMrt = false);
         RHIPipelineRef GetOrCreateGPUDrivenDefaultLitPipeline(MaterialPipelineVariant variant,
                                                               const char* debugName,
                                                               const RHIDepthStencilState& depthStencilState,
@@ -1871,6 +1897,7 @@ namespace RVX
         RHIShaderRef m_gpuSceneVertexShader;
         RHIShaderRef m_gpuSceneInstancedMaterialVertexShader;
         RHIShaderRef m_pixelShader;
+        RHIShaderRef m_translucencyPixelShader;
         RHIShaderRef m_forwardSurfaceDataPixelShader;
         RHIShaderRef m_gBufferPixelShader;
         RHIShaderRef m_deferredLightingComputeShader;
@@ -1938,6 +1965,7 @@ namespace RVX
         std::unique_ptr<ShaderProgramMetadata> m_gpuSceneVsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_gpuSceneInstancedMaterialVsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_psCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_translucencyPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata>
             m_forwardSurfaceDataPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_gBufferPsCompileResult;

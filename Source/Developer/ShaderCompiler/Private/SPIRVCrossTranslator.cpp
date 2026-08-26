@@ -1,6 +1,7 @@
 #include "SPIRVCrossTranslator.h"
 #include "Core/Log.h"
 #include "ShaderContracts/GLSLBindingABI.h"
+#include "ShaderContracts/MetalBindingABI.h"
 
 #ifdef __APPLE__
 #include <spirv_cross/spirv_msl.hpp>
@@ -432,6 +433,123 @@ namespace RVX
 
             mslCompiler.set_entry_point(entryPoint, executionModel);
 
+            const std::unordered_set<spirv_cross::VariableID>
+                activeVariables = mslCompiler.get_active_interface_variables();
+            std::unordered_set<uint32> usedBufferIndices;
+            std::unordered_set<uint32> usedTextureIndices;
+            std::unordered_set<uint32> usedSamplerIndices;
+
+            auto addMSLResourceBinding =
+                [&](const spirv_cross::Resource& resource,
+                    RHIBindingType type) -> bool
+            {
+                if (!activeVariables.contains(resource.id))
+                {
+                    return true;
+                }
+
+                const uint32 set = mslCompiler.get_decoration(
+                    resource.id, spv::DecorationDescriptorSet);
+                const uint32 binding = mslCompiler.get_decoration(
+                    resource.id, spv::DecorationBinding);
+                uint32 metalIndex = RVX_INVALID_INDEX;
+                bool mapped = false;
+                std::unordered_set<uint32>* usedIndices = nullptr;
+
+                switch (type)
+                {
+                    case RHIBindingType::UniformBuffer:
+                    case RHIBindingType::DynamicUniformBuffer:
+                    case RHIBindingType::ShaderResourceBuffer:
+                    case RHIBindingType::StorageBuffer:
+                    case RHIBindingType::DynamicStorageBuffer:
+                        mapped = MetalBindingABI::TryGetBufferIndex(
+                            set, binding, 0, metalIndex);
+                        usedIndices = &usedBufferIndices;
+                        break;
+                    case RHIBindingType::SampledTexture:
+                        mapped = MetalBindingABI::TryGetTextureIndex(
+                            set, binding, 0, metalIndex);
+                        usedIndices = &usedTextureIndices;
+                        break;
+                    case RHIBindingType::Sampler:
+                        mapped = MetalBindingABI::TryGetSamplerIndex(
+                            set, binding, 0, metalIndex);
+                        usedIndices = &usedSamplerIndices;
+                        break;
+                    case RHIBindingType::StorageTexture:
+                        mapped = MetalBindingABI::TryGetStorageTextureIndex(
+                            set, binding, 0, metalIndex);
+                        usedIndices = &usedTextureIndices;
+                        break;
+                    default:
+                        break;
+                }
+
+                if (!mapped || !usedIndices || !usedIndices->insert(metalIndex).second)
+                {
+                    std::string name = mslCompiler.get_name(resource.id);
+                    if (name.empty())
+                    {
+                        name = mslCompiler.get_fallback_name(resource.id);
+                    }
+                    result.errorMessage =
+                        "Metal binding ABI rejects resource '" + name +
+                        "' at set " + std::to_string(set) +
+                        ", binding " + std::to_string(binding);
+                    return false;
+                }
+
+                spirv_cross::MSLResourceBinding mslBinding;
+                mslBinding.stage = executionModel;
+                mslBinding.desc_set = set;
+                mslBinding.binding = binding;
+                switch (type)
+                {
+                    case RHIBindingType::UniformBuffer:
+                    case RHIBindingType::DynamicUniformBuffer:
+                    case RHIBindingType::ShaderResourceBuffer:
+                    case RHIBindingType::StorageBuffer:
+                    case RHIBindingType::DynamicStorageBuffer:
+                        mslBinding.msl_buffer = metalIndex;
+                        break;
+                    case RHIBindingType::SampledTexture:
+                    case RHIBindingType::StorageTexture:
+                        mslBinding.msl_texture = metalIndex;
+                        break;
+                    case RHIBindingType::Sampler:
+                        mslBinding.msl_sampler = metalIndex;
+                        break;
+                    default:
+                        return false;
+                }
+                mslCompiler.add_msl_resource_binding(mslBinding);
+                return true;
+            };
+
+            const auto addResources =
+                [&](const auto& resources, RHIBindingType type) -> bool
+            {
+                for (const spirv_cross::Resource& resource : resources)
+                {
+                    if (!addMSLResourceBinding(resource, type))
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            };
+
+            const auto resources = mslCompiler.get_shader_resources();
+            if (!addResources(resources.uniform_buffers, RHIBindingType::UniformBuffer) ||
+                !addResources(resources.storage_buffers, RHIBindingType::StorageBuffer) ||
+                !addResources(resources.separate_images, RHIBindingType::SampledTexture) ||
+                !addResources(resources.separate_samplers, RHIBindingType::Sampler) ||
+                !addResources(resources.storage_images, RHIBindingType::StorageTexture))
+            {
+                return result;
+            }
+
             // Compile to MSL
             result.mslSource = mslCompiler.compile();
             result.entryPointName = mslCompiler.get_cleansed_entry_point_name(entryPoint, executionModel);
@@ -542,6 +660,27 @@ namespace RVX
             std::unordered_map<spirv_cross::VariableID, GLSLTextureBindingInfo> separateImageBindings;
             std::unordered_map<spirv_cross::VariableID, std::string> separateSamplerNames;
 
+            const auto flattenGLSLBinding =
+                [&](RHIBindingType type,
+                    uint32 set,
+                    uint32 binding,
+                    const std::string& name,
+                    uint32& outBinding) -> bool
+            {
+                if (GLSLBindingABI::TryFlattenBinding(
+                        type, set, binding, outBinding))
+                {
+                    return true;
+                }
+
+                result.errorMessage =
+                    "OpenGL binding ABI rejects resource '" + name +
+                    "' at set " + std::to_string(set) +
+                    ", binding " + std::to_string(binding);
+                RVX_CORE_ERROR("{}", result.errorMessage);
+                return false;
+            };
+
             SortResourcesBySetBinding(glslCompiler, resources.uniform_buffers);
             SortResourcesBySetBinding(glslCompiler, resources.storage_buffers);
             SortResourcesBySetBinding(glslCompiler, resources.sampled_images);
@@ -557,8 +696,16 @@ namespace RVX
                 std::string name = glslCompiler.get_name(ubo.id);
                 if (name.empty()) name = glslCompiler.get_fallback_name(ubo.id);
 
-                const uint32_t glBinding =
-                    GLSLBindingABI::FlattenBinding(RHIBindingType::UniformBuffer, set, binding);
+                uint32 glBinding = RVX_INVALID_INDEX;
+                if (!flattenGLSLBinding(
+                        RHIBindingType::UniformBuffer,
+                        set,
+                        binding,
+                        name,
+                        glBinding))
+                {
+                    return result;
+                }
                 glslCompiler.set_decoration(ubo.id, spv::DecorationBinding, glBinding);
                 glslCompiler.unset_decoration(ubo.id, spv::DecorationDescriptorSet);
 
@@ -580,8 +727,12 @@ namespace RVX
                         spv::DecorationNonWritable)
                         ? RHIBindingType::ShaderResourceBuffer
                         : RHIBindingType::StorageBuffer;
-                const uint32_t glBinding =
-                    GLSLBindingABI::FlattenBinding(bindingType, set, binding);
+                uint32 glBinding = RVX_INVALID_INDEX;
+                if (!flattenGLSLBinding(
+                        bindingType, set, binding, name, glBinding))
+                {
+                    return result;
+                }
                 glslCompiler.set_decoration(ssbo.id, spv::DecorationBinding, glBinding);
                 glslCompiler.unset_decoration(ssbo.id, spv::DecorationDescriptorSet);
 
@@ -598,8 +749,16 @@ namespace RVX
                 std::string name = glslCompiler.get_name(tex.id);
                 if (name.empty()) name = glslCompiler.get_fallback_name(tex.id);
 
-                const uint32_t glBinding =
-                    GLSLBindingABI::FlattenBinding(RHIBindingType::CombinedTextureSampler, set, binding);
+                uint32 glBinding = RVX_INVALID_INDEX;
+                if (!flattenGLSLBinding(
+                        RHIBindingType::CombinedTextureSampler,
+                        set,
+                        binding,
+                        name,
+                        glBinding))
+                {
+                    return result;
+                }
                 glslCompiler.set_decoration(tex.id, spv::DecorationBinding, glBinding);
                 glslCompiler.unset_decoration(tex.id, spv::DecorationDescriptorSet);
 
@@ -616,8 +775,16 @@ namespace RVX
                 std::string name = glslCompiler.get_name(img.id);
                 if (name.empty()) name = glslCompiler.get_fallback_name(img.id);
 
-                const uint32_t glBinding =
-                    GLSLBindingABI::FlattenBinding(RHIBindingType::SampledTexture, set, binding);
+                uint32 glBinding = RVX_INVALID_INDEX;
+                if (!flattenGLSLBinding(
+                        RHIBindingType::SampledTexture,
+                        set,
+                        binding,
+                        name,
+                        glBinding))
+                {
+                    return result;
+                }
                 glslCompiler.set_decoration(img.id, spv::DecorationBinding, glBinding);
                 glslCompiler.unset_decoration(img.id, spv::DecorationDescriptorSet);
 
@@ -635,8 +802,16 @@ namespace RVX
                 std::string name = glslCompiler.get_name(smp.id);
                 if (name.empty()) name = glslCompiler.get_fallback_name(smp.id);
 
-                const uint32_t glBinding =
-                    GLSLBindingABI::FlattenBinding(RHIBindingType::Sampler, set, binding);
+                uint32 glBinding = RVX_INVALID_INDEX;
+                if (!flattenGLSLBinding(
+                        RHIBindingType::Sampler,
+                        set,
+                        binding,
+                        name,
+                        glBinding))
+                {
+                    return result;
+                }
                 glslCompiler.set_decoration(smp.id, spv::DecorationBinding, glBinding);
                 glslCompiler.unset_decoration(smp.id, spv::DecorationDescriptorSet);
 
@@ -702,8 +877,16 @@ namespace RVX
                 std::string name = glslCompiler.get_name(img.id);
                 if (name.empty()) name = glslCompiler.get_fallback_name(img.id);
 
-                const uint32_t glBinding =
-                    GLSLBindingABI::FlattenBinding(RHIBindingType::StorageTexture, set, binding);
+                uint32 glBinding = RVX_INVALID_INDEX;
+                if (!flattenGLSLBinding(
+                        RHIBindingType::StorageTexture,
+                        set,
+                        binding,
+                        name,
+                        glBinding))
+                {
+                    return result;
+                }
                 glslCompiler.set_decoration(img.id, spv::DecorationBinding, glBinding);
                 glslCompiler.unset_decoration(img.id, spv::DecorationDescriptorSet);
 

@@ -12,6 +12,57 @@ namespace RVX
 {
 namespace
 {
+    struct OpaqueSceneSnapshotCopyData
+    {
+        RGTextureHandle source{};
+        RGTextureHandle destination{};
+        std::shared_ptr<OpaqueSceneSnapshotCopyReceipt> receipt;
+    };
+
+    [[nodiscard]] bool AddOpaqueSceneSnapshotCopy(
+        RenderFeatureGraphBuilder& builder,
+        RGTextureHandle source,
+        RGTextureHandle destination,
+        std::shared_ptr<OpaqueSceneSnapshotCopyReceipt> receipt)
+    {
+        if (!receipt)
+        {
+            return false;
+        }
+        return builder.AddPass<OpaqueSceneSnapshotCopyData>(
+            "OpaqueSceneSnapshotCopy",
+            // The snapshot is produced by and immediately consumed on the
+            // graphics queue. Keeping this tiny same-frame copy on graphics
+            // avoids an otherwise unnecessary pair of queue-family ownership
+            // transfers on Vulkan.
+            RenderGraphPassType::Graphics,
+            [source, destination, receipt = std::move(receipt)](
+                RenderGraphBuilder& graphBuilder,
+                OpaqueSceneSnapshotCopyData& data)
+            {
+                data.source = graphBuilder.Read(
+                    source, RHIResourceState::CopySource);
+                data.destination = graphBuilder.Write(
+                    destination, RHIResourceState::CopyDest);
+                data.receipt = receipt;
+            },
+            [](const OpaqueSceneSnapshotCopyData& data,
+               RenderGraphPassContext& context)
+            {
+                RHITexture* const source = context.GetTexture(data.source);
+                RHITexture* const destination = context.GetTexture(data.destination);
+                if (source == nullptr || destination == nullptr || source == destination)
+                {
+                    context.MarkExecutionFailed("Opaque HDR snapshot copy has invalid aliased resources");
+                    return;
+                }
+                context.Commands().CopyTexture(source, destination);
+                if (data.receipt)
+                {
+                    data.receipt->copied.store(true, std::memory_order_release);
+                }
+            });
+    }
     [[nodiscard]] uint32 CountEligibleToonOutlineMaterials(
         const MaterialParameterTableSnapshot& table) noexcept
     {
@@ -690,6 +741,24 @@ void ForwardLightingFeatureAdapter::AddPasses(
     m_lastPassChainStats.graphPassNames.push_back(
         toonOutlineRequested ? "ForwardSurfaceData" : m_opaquePass->GetName());
 
+    RHITextureDesc opaqueSnapshotDesc = RHITextureDesc::Texture2D(
+        m_preparedContext.outputExtent.width,
+        m_preparedContext.outputExtent.height,
+        RHIFormat::RGBA16_FLOAT,
+        RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst);
+    opaqueSnapshotDesc.debugName = "ForwardOpaqueSceneSnapshot";
+    const RGTextureHandle opaqueSceneSnapshot = builder.CreateTexture(
+        opaqueSnapshotDesc);
+    if (!opaqueSceneSnapshot.IsValid() ||
+        opaqueSceneSnapshot.index == opaqueContext.view.colorTarget.index)
+    {
+        SetCompositionFailure("Forward lighting could not allocate a distinct HDR opaque snapshot");
+        return;
+    }
+    const std::shared_ptr<OpaqueSceneSnapshotCopyReceipt> opaqueSnapshotReceipt =
+        std::make_shared<OpaqueSceneSnapshotCopyReceipt>();
+    bool opaqueSnapshotRegistered = false;
+
     const int32 firstLightingConsumerPriority = m_opaquePass->GetPriority();
     for (const std::unique_ptr<IRenderPass>& pass : m_passRegistry->GetPasses())
     {
@@ -721,6 +790,29 @@ void ForwardLightingFeatureAdapter::AddPasses(
         // exact graph-owned shadow state, but not the opaque-only AO field.
         RenderPassRecordContext passContext = opaqueContext;
         passContext.ambientOcclusion = {};
+        if (!opaqueSnapshotRegistered &&
+            pass->GetPriority() >= PassPriority::Transparent)
+        {
+            if (!AddOpaqueSceneSnapshotCopy(
+                    builder,
+                    opaqueContext.view.colorTarget,
+                    opaqueSceneSnapshot,
+                    opaqueSnapshotReceipt))
+            {
+                SetCompositionFailure("Forward lighting could not register the HDR opaque snapshot copy");
+                return;
+            }
+            ++m_lastPassChainStats.graphPassCount;
+            m_lastPassChainStats.graphPassNames.push_back("OpaqueSceneSnapshotCopy");
+            opaqueSnapshotRegistered = true;
+        }
+        if (opaqueSnapshotRegistered)
+        {
+            passContext.opaqueSceneSnapshot = OpaqueSceneSnapshotRecordInput{
+                opaqueContext.identity,
+                opaqueSceneSnapshot,
+                opaqueSnapshotReceipt};
+        }
         if (!builder.AddLegacyPass(*pass, passContext))
         {
             SetCompositionFailure(
@@ -730,6 +822,21 @@ void ForwardLightingFeatureAdapter::AddPasses(
         }
         ++m_lastPassChainStats.graphPassCount;
         m_lastPassChainStats.graphPassNames.push_back(status.name);
+    }
+
+    if (!opaqueSnapshotRegistered)
+    {
+        if (!AddOpaqueSceneSnapshotCopy(
+                builder,
+                opaqueContext.view.colorTarget,
+                opaqueSceneSnapshot,
+                opaqueSnapshotReceipt))
+        {
+            SetCompositionFailure("Forward lighting could not register the HDR opaque snapshot copy");
+            return;
+        }
+        ++m_lastPassChainStats.graphPassCount;
+        m_lastPassChainStats.graphPassNames.push_back("OpaqueSceneSnapshotCopy");
     }
 
     TranslucencyOutputs outputs;
@@ -762,6 +869,9 @@ void ForwardLightingFeatureAdapter::AddPasses(
     outputs.reactiveMask = m_recordContext.view.reactiveMaskTarget;
     outputs.reactiveMaskMetadata = MakeMetadata(
         m_preparedContext.outputExtent, SceneTextures::ReactiveMaskContract);
+    outputs.opaqueSceneSnapshot = opaqueSceneSnapshot;
+    outputs.opaqueSceneSnapshotMetadata = MakeMetadata(
+        m_preparedContext.outputExtent, SceneTextures::HDRSceneColorContract);
     outputs.exposureState = m_recordContext.view.exposureState;
     outputs.exposureStateMetadata = MakeExposureStateMetadata(
         m_recordContext.view);

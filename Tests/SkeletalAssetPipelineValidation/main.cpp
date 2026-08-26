@@ -1114,6 +1114,118 @@ TEST_F(SkeletalAssetPipelineValidation,
 }
 
 TEST_F(SkeletalAssetPipelineValidation,
+       ModelCookAppliesExactMaterialOverrideAndRejectsUnknownOrDuplicateNames)
+{
+    ScopedGLB fixture("exact_material_override", FixtureFault::None);
+    TemporaryDirectory temporary("exact_material_override");
+    const fs::path sourceRoot = temporary.Path() / "Source";
+    const fs::path sourcePath = sourceRoot / "Models" / "Character.glb";
+    fs::create_directories(sourcePath.parent_path());
+    fs::copy_file(fixture.Path(), sourcePath);
+
+    RVX::Resource::GLTFImporter probe;
+    const RVX::Resource::GLTFImportResult imported = probe.Import(
+        sourcePath.string());
+    ASSERT_TRUE(imported.success) << imported.errorMessage;
+    ASSERT_EQ(imported.materials.size(), 1u);
+    ASSERT_TRUE(imported.materials.front());
+    const std::string materialName = imported.materials.front()->GetName();
+    ASSERT_FALSE(materialName.empty());
+
+    RVX::Tools::MaterialCookOverride exactOverride;
+    exactOverride.materialName = materialName;
+    exactOverride.shadingModel = RVX::MaterialShadingModel::ThinTransmission;
+    exactOverride.blendMode = RVX::MaterialBlendMode::Premultiplied;
+    exactOverride.translucencyPhase = RVX::MaterialTranslucencyPhase::Standard;
+    exactOverride.cullMode = RVX::MaterialCullMode::NoCull;
+    exactOverride.shadowPolicy = RVX::MaterialShadowPolicy::Receive;
+    exactOverride.sortPriority = 19;
+    exactOverride.transmission = 0.8f;
+    exactOverride.indexOfRefraction = 1.33f;
+    exactOverride.thickness = 0.25f;
+    exactOverride.attenuationColorRed = 0.2f;
+    exactOverride.attenuationColorGreen = 0.4f;
+    exactOverride.attenuationColorBlue = 0.6f;
+    exactOverride.attenuationDistance = 4.0f;
+    exactOverride.emissiveStrength = 12.0f;
+
+    RVX::Tools::ModelImportOptions options;
+    options.materialOverrides = {exactOverride};
+    RVX::Tools::AssetPipeline pipeline;
+    pipeline.RegisterImporter(std::make_unique<RVX::Tools::ModelImporter>());
+    const fs::path outputRoot = temporary.Path() / "Cooked";
+    const RVX::Tools::CookManifest manifest = pipeline.CookDirectory(
+        sourceRoot,
+        outputRoot,
+        true,
+        outputRoot / "CookManifest.rvxmanifest",
+        nullptr,
+        [&options](const fs::path&, RVX::Tools::AssetType type) -> const void*
+        {
+            return type == RVX::Tools::AssetType::Model ? &options : nullptr;
+        });
+    ASSERT_TRUE(manifest.manifestWritten) << manifest.manifestError;
+    ASSERT_EQ(manifest.entries.size(), 1u);
+    ASSERT_TRUE(manifest.entries.front().success) << manifest.entries.front().error;
+    EXPECT_NE(manifest.entries.front().canonicalCookSettings.find(
+                  "model.material.override.count=1"),
+              std::string::npos);
+
+    RVX::Resource::CookedMaterialArtifact material;
+    std::string error;
+    ASSERT_TRUE(RVX::Resource::DeserializeCookedMaterialArtifact(
+        ReadBytes(outputRoot / "Models" / "Character.rvdeps" / "material_0.rvmat"),
+        material,
+        error)) << error;
+    EXPECT_EQ(material.material.descriptor.shadingModel,
+              RVX::MaterialShadingModel::ThinTransmission);
+    EXPECT_EQ(material.material.descriptor.blendMode,
+              RVX::MaterialBlendMode::Premultiplied);
+    EXPECT_EQ(material.material.descriptor.translucencyPhase,
+              RVX::MaterialTranslucencyPhase::Standard);
+    EXPECT_EQ(material.material.descriptor.cullMode,
+              RVX::MaterialCullMode::NoCull);
+    EXPECT_EQ(material.material.descriptor.shadowPolicy,
+              RVX::MaterialShadowPolicy::Receive);
+    EXPECT_EQ(material.material.descriptor.sortPriority, 19);
+    EXPECT_EQ(material.material.parameters.workflow,
+              RVX::MaterialSourceWorkflow::MetallicRoughness);
+    EXPECT_EQ(material.material.parameters.alphaMode,
+              RVX::MaterialSourceAlphaMode::Blend);
+    EXPECT_FLOAT_EQ(material.material.parameters.transmission, 0.8f);
+    EXPECT_FLOAT_EQ(material.material.parameters.indexOfRefraction, 1.33f);
+    EXPECT_FLOAT_EQ(material.material.parameters.thickness, 0.25f);
+    EXPECT_EQ(material.material.parameters.attenuationColor,
+              (RVX::Vec3{0.2f, 0.4f, 0.6f}));
+    EXPECT_FLOAT_EQ(material.material.parameters.attenuationDistance, 4.0f);
+    EXPECT_FLOAT_EQ(material.material.parameters.emissiveStrength, 12.0f);
+
+    RVX::Tools::ModelImportOptions unknownOptions;
+    RVX::Tools::MaterialCookOverride unknownOverride;
+    unknownOverride.materialName = materialName + "_wrong_case";
+    unknownOverride.transmission = 0.5f;
+    unknownOptions.materialOverrides = {unknownOverride};
+    RVX::Tools::ModelImporter importer;
+    const RVX::Tools::ImportResult unknownResult = importer.Import(
+        sourcePath,
+        temporary.Path() / "Unknown.rva",
+        &unknownOptions);
+    EXPECT_FALSE(unknownResult.success);
+    EXPECT_NE(unknownResult.error.find("unknown exact material name"),
+              std::string::npos);
+
+    RVX::Tools::ModelImportOptions duplicateOptions;
+    duplicateOptions.materialOverrides = {exactOverride, exactOverride};
+    const RVX::Tools::ImportResult duplicateResult = importer.Import(
+        sourcePath,
+        temporary.Path() / "Duplicate.rva",
+        &duplicateOptions);
+    EXPECT_FALSE(duplicateResult.success);
+    EXPECT_NE(duplicateResult.error.find("duplicate exact material override"),
+              std::string::npos);
+}
+
+TEST_F(SkeletalAssetPipelineValidation,
        SkeletalCookProductsAreRootIndependentAndDoNotEmbedTemporaryPaths)
 {
     ScopedGLB fixture("root_independent", FixtureFault::None);

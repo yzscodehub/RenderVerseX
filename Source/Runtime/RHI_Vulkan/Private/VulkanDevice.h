@@ -55,6 +55,7 @@ namespace RVX
     struct VulkanRequiredDeviceFeatureSupport
     {
         uint32 apiVersion = 0;
+        bool independentBlend = false;
         bool timelineSemaphore = false;
         bool dynamicRendering = false;
         bool synchronization2 = false;
@@ -63,14 +64,16 @@ namespace RVX
     /**
      * @brief Whether a physical device can run the backend's unconditional Vulkan 1.3 paths.
      *
-     * Timeline semaphores, dynamic rendering, and synchronization2 are used
-     * throughout the backend without an emulation path, so selection must
-     * fail closed before creating a logical device.
+     * Independent color-target blending, timeline semaphores, dynamic
+     * rendering, and synchronization2 are used throughout the backend without
+     * an emulation path, so selection must fail closed before creating a
+     * logical device.
      */
     inline bool IsVulkanRequiredDeviceConfigurationSupported(
         const VulkanRequiredDeviceFeatureSupport& support)
     {
         return support.apiVersion >= VK_API_VERSION_1_3 &&
+               support.independentBlend &&
                support.timelineSemaphore &&
                support.dynamicRendering &&
                support.synchronization2;
@@ -371,6 +374,7 @@ namespace RVX
         // State
         RHICapabilities m_capabilities;
         bool m_enabledDrawIndirectFirstInstance = false;
+        bool m_enabledIndependentBlend = false;
         bool m_enabledTimelineSemaphore = false;
         bool m_enabledMultiDrawIndirect = false;
         bool m_enabledDrawIndirectCount = false;

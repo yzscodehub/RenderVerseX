@@ -7,6 +7,7 @@
     {"asset":"DefaultLit.hlsl","stage":"Vertex","entry":"VSMainGPUDriven","backends":["DX11","DX12","Vulkan","Metal","OpenGL"]},
     {"asset":"DefaultLit.hlsl","stage":"Vertex","entry":"VSMainInstancedMaterial","backends":["DX11","DX12","Vulkan","Metal","OpenGL"]},
     {"asset":"DefaultLit.hlsl","stage":"Pixel","entry":"PSMain","backends":["DX11","DX12","Vulkan","Metal","OpenGL"]},
+    {"asset":"DefaultLit.hlsl","stage":"Pixel","entry":"PSForwardTranslucency","backends":["DX11","DX12","Vulkan","Metal","OpenGL"]},
     {"asset":"DefaultLit.hlsl","stage":"Pixel","entry":"PSForwardSurfaceData","backends":["DX11","DX12","Vulkan","Metal","OpenGL"]},
     {"asset":"DefaultLit.hlsl","stage":"Pixel","entry":"PSGBuffer","backends":["DX12","Vulkan","Metal"]},
     {"asset":"DeferredLighting.hlsl","stage":"Compute","entry":"CSMain","backends":["DX12","Vulkan","Metal"]},

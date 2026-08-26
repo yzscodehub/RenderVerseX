@@ -18,6 +18,18 @@ namespace RVX
 {
 namespace
 {
+    [[nodiscard]] bool HasCookedModelExtension(
+        const std::filesystem::path& path)
+    {
+        std::string extension = path.extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(),
+                       [](const unsigned char value)
+                       {
+                           return static_cast<char>(std::tolower(value));
+                       });
+        return extension == ".rva";
+    }
+
     [[nodiscard]] bool IsFinite(const Vec3& value)
     {
         return std::isfinite(value.x) && std::isfinite(value.y) &&
@@ -327,6 +339,17 @@ bool SampleModelLoader::RequestByAssetId(
                              std::string(assetId) + "': actual=" +
                              GetSampleAssetKindName(lookup.actualKind)
                        : "SampleAssetRegistry unknown model id: " + std::string(assetId);
+        return false;
+    }
+
+    if (lookup.entry->packageOnly &&
+        (!HasCookedModelExtension(lookup.entry->resolvedPath) ||
+         !lookup.entry->contentIdentity.IsValid() ||
+         lookup.entry->contentIdentity.domain !=
+             Resource::ResourceContentIdentityDomain::CookedArtifact))
+    {
+        outError = "Package-only sample model entry must resolve to a verified "
+                   "CookedArtifact .rva file: " + std::string(assetId);
         return false;
     }
 

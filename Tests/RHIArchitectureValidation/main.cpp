@@ -33,6 +33,8 @@ namespace RVX::Tests
         const std::string vulkanPipeline = ReadSource("Source/Runtime/RHI_Vulkan/Private/VulkanPipeline.cpp");
         const std::string metalResources = ReadSource("Source/Runtime/RHI_Metal/Private/MetalResources.mm");
         const std::string metalCommands = ReadSource("Source/Runtime/RHI_Metal/Private/MetalCommandContext.mm");
+        const std::string metalBindingABI = ReadSource(
+            "Source/Runtime/ShaderContracts/Include/ShaderContracts/MetalBindingABI.h");
 
         EXPECT_NE(descriptorHeader.find("RHIResourceDataVolatility"), std::string::npos);
         EXPECT_NE(descriptorHeader.find("IncompleteSnapshot"), std::string::npos);
@@ -41,7 +43,16 @@ namespace RVX::Tests
         EXPECT_NE(vulkanPipeline.find("GetDescriptorSnapshot()"), std::string::npos);
         EXPECT_NE(vulkanPipeline.find("InitializeNativeSnapshot()"), std::string::npos);
         EXPECT_NE(metalResources.find("snapshotBinding.arrayElement"), std::string::npos);
-        EXPECT_NE(metalCommands.find("binding.binding + binding.arrayElement"), std::string::npos);
+        EXPECT_NE(metalCommands.find("ShaderContracts/MetalBindingABI.h"), std::string::npos);
+        EXPECT_NE(metalCommands.find("MetalBindingABI::TryGetBufferIndex("), std::string::npos);
+        EXPECT_NE(metalCommands.find("MetalBindingABI::TryGetTextureIndex("), std::string::npos);
+        EXPECT_NE(metalCommands.find("MetalBindingABI::TryGetSamplerIndex("), std::string::npos);
+        EXPECT_NE(metalCommands.find("outside the direct Metal binding ABI"), std::string::npos);
+        EXPECT_EQ(metalCommands.find("binding.binding + binding.arrayElement"), std::string::npos);
+        EXPECT_NE(metalBindingABI.find("RVX_METAL_FIRST_MATERIAL_BUFFER_INDEX"),
+                  std::string::npos);
+        EXPECT_NE(metalBindingABI.find("set == 2 && binding == 17 && arrayElement == 0"),
+                  std::string::npos);
     }
 
     TEST(RHIContractValidation, PrimaryBackendsTranslateScopedDependenciesStructurally)

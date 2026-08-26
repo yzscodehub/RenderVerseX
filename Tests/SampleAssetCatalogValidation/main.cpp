@@ -283,6 +283,7 @@ namespace
         RVX::Resource::ResourceContentIdentity sourceIdentity;
         RVX::Resource::ResourceContentIdentity cookedIdentity;
         RVX::Resource::ResourceContentIdentity manifestIdentity;
+        RVX::Resource::ResourceContentIdentity artifactIdentity;
         std::string cookSettingsHash;
         std::string recipeHash;
 
@@ -294,6 +295,12 @@ namespace
             catalog.Write("models/model.gltf", std::string(SourceContents));
             catalog.Write("license.txt", "test license");
             catalog.Write("cooked/models/model.rva", std::string(ArtifactContents));
+            artifactIdentity = MakeContentIdentity(
+                RVX::Resource::ResourceContentIdentityDomain::CookedArtifact,
+                RVX::Resource::ResourceContentIdentityScope::SelfContainedArtifact,
+                HashContents(std::string(ArtifactContents)),
+                ArtifactContents.size(),
+                1);
 
             RVX::Resource::CookManifest manifest;
             manifest.schema = RVX::Resource::CookManifest::SchemaName;
@@ -374,11 +381,38 @@ namespace
                 {"models/model.gltf",
                  "runtime-root",
                  "{\"asset\":{\"version\":\"2.0\"}}"}};
+            const std::string entryFields =
+                cookDeclaration.find("\"packageOnly\":true") != std::string::npos
+                    ? "\"contentIdentity\":" +
+                          MakeIdentityJson(artifactIdentity) + "," +
+                          cookDeclaration
+                    : cookDeclaration;
             catalog.Write("catalog.json",
                           MakeCatalog(MakeV3Entry("model",
                                                   "models/model.gltf",
                                                   files,
-                                                  cookDeclaration),
+                                                  entryFields),
+                                      3));
+        }
+
+        void WritePackageOnlyCatalog()
+        {
+            const std::vector<ManifestFile> files{
+                {"cooked/CookManifest.rvxmanifest",
+                 "cook-manifest",
+                 ReadFileContents(manifestPath)},
+                {"cooked/models/model.rva",
+                 "runtime-root",
+                 "cooked-model-v1"}};
+            const std::string entryFields =
+                "\"contentIdentity\":" + MakeIdentityJson(artifactIdentity) +
+                "," + MakeCookDeclaration(
+                           "cooked/CookManifest.rvxmanifest", "cooked", true);
+            catalog.Write("catalog.json",
+                          MakeCatalog(MakeV3Entry("model",
+                                                  "cooked/models/model.rva",
+                                                  files,
+                                                  entryFields),
                                       3));
         }
     };
@@ -958,8 +992,7 @@ namespace
          QualificationCookAdmissionAllowsExplicitPackageOnlyCatalogAfterSourceRemoval)
     {
         CookAdmissionFixture fixture;
-        fixture.WriteCatalog(fixture.MakeCookDeclaration(
-            "cooked/CookManifest.rvxmanifest", "cooked", true));
+        fixture.WritePackageOnlyCatalog();
 
         RVX::SampleAssetCatalog catalog;
         std::string error;
@@ -978,6 +1011,46 @@ namespace
         const RVX::SampleCookedAssetAdmissionReceipt receipt =
             catalog.RequireCookedAdmission("model");
         EXPECT_TRUE(receipt.IsAccepted()) << receipt.detail;
+    }
+
+    TEST(SampleAssetCatalogValidation,
+         QualificationCookAdmissionRejectsPackageOnlyCatalogPointingToSourceModel)
+    {
+        CookAdmissionFixture fixture;
+        // The CookManifest and every other package-only declaration field are
+        // valid; only the runtime catalog path incorrectly names a .gltf.
+        fixture.WriteCatalog(fixture.MakeCookDeclaration(
+            "cooked/CookManifest.rvxmanifest", "cooked", true));
+
+        RVX::SampleAssetCatalog catalog;
+        std::string error;
+        EXPECT_FALSE(catalog.Load(fixture.catalog.CatalogPath(),
+                                  fixture.catalog.Root(),
+                                  &error));
+        EXPECT_NE(error.find("Package-only"), std::string::npos) << error;
+    }
+
+    TEST(SampleAssetCatalogValidation,
+         CatalogLoadRejectsPackageOnlyArtifactIdentityMismatch)
+    {
+        CookAdmissionFixture fixture;
+        fixture.WritePackageOnlyCatalog();
+
+        std::string catalogText = ReadFileContents(fixture.catalog.CatalogPath());
+        const size_t identityPosition = catalogText.find(fixture.artifactIdentity.digest);
+        ASSERT_NE(identityPosition, std::string::npos);
+        catalogText.replace(identityPosition,
+                            fixture.artifactIdentity.digest.size(),
+                            std::string(64, 'f'));
+        fixture.catalog.Write("catalog.json", catalogText);
+
+        RVX::SampleAssetCatalog catalog;
+        std::string error;
+        EXPECT_FALSE(catalog.Load(fixture.catalog.CatalogPath(),
+                                  fixture.catalog.Root(),
+                                  &error));
+        EXPECT_NE(error.find("hash or byte count drift"), std::string::npos)
+            << error;
     }
 
 #if defined(RVX_SOURCE_DIR)

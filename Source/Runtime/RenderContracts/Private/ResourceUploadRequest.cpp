@@ -108,7 +108,10 @@ namespace
             case MaterialUploadTextureSlot::Normal:
             case MaterialUploadTextureSlot::MetallicRoughness:
             case MaterialUploadTextureSlot::Occlusion:
-            case MaterialUploadTextureSlot::Emissive: return true;
+            case MaterialUploadTextureSlot::Emissive:
+            case MaterialUploadTextureSlot::ToonRamp:
+            case MaterialUploadTextureSlot::Transmission:
+            case MaterialUploadTextureSlot::Thickness: return true;
         }
         return false;
     }
@@ -139,12 +142,12 @@ namespace
         return false;
     }
 
-    constexpr uint32 RVX_LEGACY_MATERIAL_UPLOAD_TEXTURE_FLAGS =
-        (1U << (static_cast<uint32>(MaterialUploadTextureSlot::Emissive) + 1U)) -
+    constexpr uint32 RVX_MATERIAL_UPLOAD_TEXTURE_FLAGS =
+        (1U << (static_cast<uint32>(MaterialUploadTextureSlot::Thickness) + 1U)) -
         1U;
 
-    constexpr uint64 RVX_LEGACY_MATERIAL_UPLOAD_FEATURE_MASK =
-        static_cast<uint64>(RVX_LEGACY_MATERIAL_UPLOAD_TEXTURE_FLAGS);
+    constexpr uint64 RVX_MATERIAL_UPLOAD_FEATURE_MASK =
+        static_cast<uint64>(RVX_MATERIAL_UPLOAD_TEXTURE_FLAGS);
 
     bool IsCanonicalEmpty(const UploadByteRange& range)
     {
@@ -490,10 +493,10 @@ namespace
             return false;
         }
         if ((payload.staticDescriptor.featureMask &
-             ~RVX_LEGACY_MATERIAL_UPLOAD_FEATURE_MASK) != 0)
+             ~RVX_MATERIAL_UPLOAD_FEATURE_MASK) != 0)
         {
             outError =
-                "Material descriptor enables texture slots outside the v3 upload contract";
+                "Material descriptor enables texture slots outside the v4 upload contract";
             return false;
         }
 
@@ -527,7 +530,7 @@ namespace
         }
         if (source.textureFlags != observedTextureFlags ||
             (payload.staticDescriptor.featureMask &
-             RVX_LEGACY_MATERIAL_UPLOAD_FEATURE_MASK) !=
+             RVX_MATERIAL_UPLOAD_FEATURE_MASK) !=
                 static_cast<uint64>(observedTextureFlags))
         {
             outError =

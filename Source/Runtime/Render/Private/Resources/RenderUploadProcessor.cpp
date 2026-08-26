@@ -1722,7 +1722,10 @@ namespace
     {
         static_assert(std::is_trivially_copyable_v<MaterialGPUConstants>);
         const MaterialGPUConstants constants = EncodeMaterialGPUConstants(
-            payload.sourceData, payload.textureBindings);
+            payload.staticDescriptor,
+            payload.sourceData,
+            payload.textureBindings,
+            handle.slot);
         const uint64 constantBytes = AlignUp(sizeof(MaterialGPUConstants), 256);
         RHIBufferDesc bufferDesc;
         bufferDesc.size = constantBytes;

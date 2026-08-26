@@ -3,11 +3,13 @@
 #include "RHI_BackendFactory/RHIBackendFactory.h"
 #include "Common/GpuTestUtils.h"
 #include "ShaderCompiler/ShaderCompiler.h"
+#include "DX11BindingRemapper.h"
 #include "DX11Device.h"
 #include "DX11Resources.h"
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstring>
 #include <vector>
 
@@ -133,6 +135,47 @@ VSOutput main(VSInput input)
 
     auto shader = device->CreateShader(shaderDesc);
     ASSERT_NE(nullptr, shader.Get());
+}
+
+TEST(DX11Validation, SamplerABIRemapperIsLosslessAndFailClosed)
+{
+    const DX11BindingRemapper& remapper = DX11BindingRemapper::Get();
+
+    constexpr std::array<uint32, 8> frameLogicalBindings = {
+        0u, 1u, 2u, 5u, 7u, 9u, 13u, 19u};
+    for (uint32 physicalSlot = 0;
+         physicalSlot < frameLogicalBindings.size();
+         ++physicalSlot)
+    {
+        EXPECT_EQ(remapper.GetSamplerSlot(0u, frameLogicalBindings[physicalSlot]),
+                  physicalSlot);
+    }
+
+    for (uint32 logicalBinding = 9u; logicalBinding <= 16u; ++logicalBinding)
+    {
+        EXPECT_EQ(remapper.GetSamplerSlot(2u, logicalBinding),
+                  8u + logicalBinding - 9u);
+    }
+
+    for (uint32 frameLogicalBinding : frameLogicalBindings)
+    {
+        const uint32 framePhysical = remapper.GetSamplerSlot(
+            0u, frameLogicalBinding);
+        for (uint32 materialLogicalBinding = 9u;
+             materialLogicalBinding <= 16u;
+             ++materialLogicalBinding)
+        {
+            EXPECT_NE(framePhysical,
+                      remapper.GetSamplerSlot(2u, materialLogicalBinding));
+        }
+    }
+
+    EXPECT_EQ(remapper.GetSamplerSlot(0u, 6u), UINT32_MAX);
+    EXPECT_EQ(remapper.GetSamplerSlot(0u, 8u), UINT32_MAX);
+    EXPECT_EQ(remapper.GetSamplerSlot(1u, 9u), UINT32_MAX);
+    EXPECT_EQ(remapper.GetSamplerSlot(2u, 8u), UINT32_MAX);
+    EXPECT_EQ(remapper.GetSamplerSlot(2u, 17u), UINT32_MAX);
+    EXPECT_EQ(remapper.GetSamplerSlot(3u, 9u), UINT32_MAX);
 }
 
 TEST(DX11Validation, UploadBuffer)

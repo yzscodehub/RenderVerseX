@@ -10,6 +10,7 @@
 #include "Render/Material/MaterialGPUData.h"
 #include "Render/Policy/RenderPolicyTypes.h"
 #include "Render/Renderer/MeshBatch.h"
+#include "RenderContracts/RenderMaterial.h"
 
 #include <cstddef>
 
@@ -22,6 +23,10 @@ namespace RVX
         MaterialCullMode cullMode = MaterialCullMode::Back;
         MaterialShadowPolicy shadowPolicy =
             MaterialShadowPolicy::CastAndReceive;
+        /** Static blend policy. This is a graphics-pipeline identity. */
+        MaterialBlendMode blendMode = MaterialBlendMode::Opaque;
+        /** Static shading-model identity consumed by the forward shader family. */
+        MaterialShadingModel shadingModel = MaterialShadingModel::StandardLit;
         /**
          * The one renderer path selected from the immutable material
          * descriptor.  It is deliberately part of the frozen packet identity:
@@ -111,6 +116,12 @@ namespace RVX
         MaterialInstanceBindingKey materialInstanceKey;
         RenderDrawArguments arguments;
         RenderDrawFlags flags = RenderDrawFlags::None;
+        /**
+         * Translucency ordering policy. It deliberately is not part of
+         * PipelineKey: changing authoring priority must not manufacture a new
+         * graphics pipeline.
+         */
+        int32 translucencySortPriority = 0;
 
         [[nodiscard]] bool operator==(const RenderDrawPacket& other) const noexcept = default;
     };

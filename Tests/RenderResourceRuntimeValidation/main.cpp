@@ -1068,7 +1068,7 @@ namespace
         ASSERT_EQ(device.createdBufferDescs.size(), bufferCountBeforeMaterial + 1U);
         const RHIBufferDesc& constantsBuffer =
             device.createdBufferDescs[bufferCountBeforeMaterial];
-        EXPECT_EQ(constantsBuffer.size, 256U);
+        EXPECT_EQ(constantsBuffer.size, 512U);
         EXPECT_TRUE(HasFlag(constantsBuffer.usage, RHIBufferUsage::Constant));
         EXPECT_TRUE(HasFlag(constantsBuffer.usage, RHIBufferUsage::CopyDst));
 
@@ -1119,7 +1119,7 @@ namespace
             registry.ResolveMaterial(materialHandle);
         ASSERT_NE(material, nullptr);
         ASSERT_NE(material->constants, nullptr);
-        EXPECT_EQ(material->constants->GetSize(), 256U);
+        EXPECT_EQ(material->constants->GetSize(), 512U);
     }
 
     TEST_F(RenderResourceRuntimeFixture,

@@ -1633,6 +1633,10 @@ namespace RVX
             {
                 options.toonOutlineQualificationProbeEnabled = true;
             }
+            else if (arg == "--translucency-qualification-probe")
+            {
+                options.translucencyQualificationProbeEnabled = true;
+            }
             else if (arg == "--report")
             {
                 const char* value = requireValue("--report");
@@ -1718,6 +1722,7 @@ namespace RVX
             << "  --exposure-qualification-probe\n"
             << "  --ambient-occlusion-qualification-probe\n"
             << "  --toon-outline-qualification-probe\n"
+            << "  --translucency-qualification-probe\n"
             << "  --report <path.json>\n"
             << "  --width <pixels>\n"
             << "  --height <pixels>\n"
@@ -2181,8 +2186,16 @@ namespace RVX
                               asset.cookedAdmissionRequired)
                        << ", \"accepted\": "
                        << Diagnostics::JsonBool(
-                              asset.cookedAdmissionAccepted)
-                       << ", \"code\": "
+                              asset.cookedAdmissionAccepted);
+                if (report.schemaVersion >
+                    RVX_SAMPLE_REPORT_PRE_COOKED_ONLY_ADMISSION_SCHEMA_VERSION)
+                {
+                    stream << ", \"packageOnly\": "
+                           << Diagnostics::JsonBool(asset.cookPackageOnly)
+                           << ", \"actualLoadDomain\": "
+                           << Diagnostics::JsonString(asset.actualLoadDomain);
+                }
+                stream << ", \"code\": "
                        << Diagnostics::JsonString(
                               asset.cookedAdmissionCode)
                        << ", \"detail\": "
@@ -3062,6 +3075,54 @@ namespace RVX
             stream << "      \"fallbackUsed\": "
                    << Diagnostics::JsonBool(toonOutline.fallbackUsed) << "\n";
             stream << "    },\n";
+        }
+        if (report.schemaVersion >
+            RVX_SAMPLE_REPORT_PRE_TRANSLUCENCY_EXECUTION_SCHEMA_VERSION)
+        {
+            stream << "    \"transparentAlphaBlendDrawCount\": "
+                   << renderDiagnostics.transparentAlphaBlendDrawCount << ",\n";
+            stream << "    \"transparentPremultipliedDrawCount\": "
+                   << renderDiagnostics.transparentPremultipliedDrawCount << ",\n";
+            stream << "    \"transparentAdditiveDrawCount\": "
+                   << renderDiagnostics.transparentAdditiveDrawCount << ",\n";
+            stream << "    \"transparentThinTransmissionDrawCount\": "
+                   << renderDiagnostics.transparentThinTransmissionDrawCount << ",\n";
+            stream << "    \"transparentOpaqueSceneSnapshotReady\": "
+                   << Diagnostics::JsonBool(
+                          renderDiagnostics.transparentOpaqueSceneSnapshotReady)
+                   << ",\n";
+            stream << "    \"transparentOpaqueSceneSnapshotCopied\": "
+                   << Diagnostics::JsonBool(
+                          renderDiagnostics.transparentOpaqueSceneSnapshotCopied)
+                   << ",\n";
+            stream << "    \"transparentReactiveMaskAttachmentBound\": "
+                   << Diagnostics::JsonBool(
+                          renderDiagnostics.transparentReactiveMaskAttachmentBound)
+                   << ",\n";
+            stream << "    \"transparentReactiveMaskWriteDrawCount\": "
+                   << renderDiagnostics.transparentReactiveMaskWriteDrawCount
+                   << ",\n";
+            stream << "    \"transparentPriorityBucketCount\": "
+                   << renderDiagnostics.transparentPriorityBucketCount << ",\n";
+            stream << "    \"transparentFallbackCount\": "
+                   << renderDiagnostics.transparentFallbackCount << ",\n";
+            if (report.schemaVersion >
+                RVX_SAMPLE_REPORT_PRE_COOKED_ONLY_ADMISSION_SCHEMA_VERSION)
+            {
+                stream << "    \"transparentFrameFeatureSequence\": "
+                       << renderDiagnostics.transparentFrameFeatureSequence
+                       << ",\n";
+                stream << "    \"transparentReceiptFrameSequence\": "
+                       << renderDiagnostics.transparentReceiptFrameSequence
+                       << ",\n";
+                stream << "    \"transparentLastPresentedFrameSequence\": "
+                       << renderDiagnostics.transparentLastPresentedFrameSequence
+                       << ",\n";
+                stream << "    \"transparentPresentedFrameAligned\": "
+                       << Diagnostics::JsonBool(
+                              renderDiagnostics.transparentPresentedFrameAligned)
+                       << ",\n";
+            }
         }
         stream << "    \"clusteredLightingInitialized\": "
                << Diagnostics::JsonBool(renderDiagnostics.clusteredLightingInitialized) << ",\n";

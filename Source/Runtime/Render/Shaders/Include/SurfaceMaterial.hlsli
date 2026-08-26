@@ -6,10 +6,19 @@
 #define MATERIAL_TEXTURE_METALLIC_ROUGHNESS 0x04
 #define MATERIAL_TEXTURE_OCCLUSION 0x08
 #define MATERIAL_TEXTURE_EMISSIVE 0x10
+#define MATERIAL_TEXTURE_TOON_RAMP 0x20
+#define MATERIAL_TEXTURE_TRANSMISSION 0x40
+#define MATERIAL_TEXTURE_THICKNESS 0x80
 
 #define MATERIAL_ALPHA_OPAQUE 0
 #define MATERIAL_ALPHA_MASK 1
 #define MATERIAL_ALPHA_BLEND 2
+
+#define MATERIAL_BLEND_OPAQUE 0u
+#define MATERIAL_BLEND_MASKED 1u
+#define MATERIAL_BLEND_ALPHA 2u
+#define MATERIAL_BLEND_PREMULTIPLIED 3u
+#define MATERIAL_BLEND_ADDITIVE 4u
 
 #define MATERIAL_WORKFLOW_METALLIC_ROUGHNESS 0
 #define MATERIAL_WORKFLOW_SPECULAR_GLOSSINESS 1
@@ -25,6 +34,9 @@
 #define MATERIAL_TEXTURE_SLOT_METALLIC_ROUGHNESS 2u
 #define MATERIAL_TEXTURE_SLOT_OCCLUSION 3u
 #define MATERIAL_TEXTURE_SLOT_EMISSIVE 4u
+#define MATERIAL_TEXTURE_SLOT_TOON_RAMP 5u
+#define MATERIAL_TEXTURE_SLOT_TRANSMISSION 6u
+#define MATERIAL_TEXTURE_SLOT_THICKNESS 7u
 
 // Keep this list byte-for-byte compatible with MaterialGPUConstants.
 #define RVX_MATERIAL_PARAMETER_FIELDS \
@@ -45,8 +57,10 @@
     float ToonSpecularThreshold; \
     float ToonRimStrength; \
     float ToonOutlineWidth; \
-    float ToonPadding; \
+    uint BlendMode; \
     float4 ToonShadowTint; \
+    float4 ThinTransmissionParams; \
+    float4 AttenuationColor; \
     float4 BaseColorUVScaleOffset; \
     float4 BaseColorUVRotationSet; \
     float4 NormalUVScaleOffset; \
@@ -56,7 +70,13 @@
     float4 OcclusionUVScaleOffset; \
     float4 OcclusionUVRotationSet; \
     float4 EmissiveUVScaleOffset; \
-    float4 EmissiveUVRotationSet
+    float4 EmissiveUVRotationSet; \
+    float4 ToonRampUVScaleOffset; \
+    float4 ToonRampUVRotationSet; \
+    float4 TransmissionUVScaleOffset; \
+    float4 TransmissionUVRotationSet; \
+    float4 ThicknessUVScaleOffset; \
+    float4 ThicknessUVRotationSet
 
 struct MaterialParameterData
 {
@@ -104,6 +124,18 @@ float2 RVXResolveMaterialUV(
         case MATERIAL_TEXTURE_SLOT_EMISSIVE:
             scaleOffset = material.EmissiveUVScaleOffset;
             rotationSet = material.EmissiveUVRotationSet;
+            break;
+        case MATERIAL_TEXTURE_SLOT_TOON_RAMP:
+            scaleOffset = material.ToonRampUVScaleOffset;
+            rotationSet = material.ToonRampUVRotationSet;
+            break;
+        case MATERIAL_TEXTURE_SLOT_TRANSMISSION:
+            scaleOffset = material.TransmissionUVScaleOffset;
+            rotationSet = material.TransmissionUVRotationSet;
+            break;
+        case MATERIAL_TEXTURE_SLOT_THICKNESS:
+            scaleOffset = material.ThicknessUVScaleOffset;
+            rotationSet = material.ThicknessUVRotationSet;
             break;
     }
     const float2 selectedUV = rotationSet.z >= 0.5f ? uv1 : uv0;
