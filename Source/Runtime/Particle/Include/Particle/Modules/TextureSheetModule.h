@@ -5,10 +5,11 @@
  * @brief Texture sheet animation module - sprite sheet animation
  */
 
-#include "Particle/Modules/IParticleModule.h"
-#include "Particle/Curves/AnimationCurve.h"
-#include "Particle/ParticleTypes.h"
 #include "Core/MathTypes.h"
+#include "Particle/Curves/AnimationCurve.h"
+#include "Particle/Modules/IParticleModule.h"
+#include "Particle/ParticleTypes.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -75,15 +76,18 @@ namespace RVX::Particle
         const char* GetTypeName() const override { return "TextureSheetModule"; }
         ModuleStage GetStage() const override { return ModuleStage::Render; }
 
-        size_t GetGPUDataSize() const override 
-        { 
+        size_t GetGPUDataSize() const override
+        {
             return sizeof(TextureSheetGPUData);
         }
 
         void GetGPUData(void* outData, size_t maxSize) const override
         {
-            if (maxSize < sizeof(TextureSheetGPUData)) return;
-            
+            if (maxSize < sizeof(TextureSheetGPUData))
+            {
+                return;
+            }
+
             TextureSheetGPUData data;
             data.tileSize = Vec2(1.0f / static_cast<float>(tiles.x),
                                  1.0f / static_cast<float>(tiles.y));
@@ -94,7 +98,7 @@ namespace RVX::Particle
             data.frameRate = frameRate;
             data.startFrame = startFrame;
             data.randomStartFrame = randomStartFrame ? 1 : 0;
-            
+
             std::memcpy(outData, &data, sizeof(data));
         }
 
@@ -103,10 +107,10 @@ namespace RVX::Particle
         {
             uint32 totalFrames = frameCount > 0 ? frameCount : tiles.x * tiles.y;
             frame = frame % totalFrames;
-            
+
             uint32 col = frame % tiles.x;
             uint32 row = frame / tiles.x;
-            
+
             outScale = Vec2(1.0f / static_cast<float>(tiles.x),
                            1.0f / static_cast<float>(tiles.y));
             outOffset = Vec2(static_cast<float>(col) * outScale.x,

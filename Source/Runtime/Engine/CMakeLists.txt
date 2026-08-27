@@ -28,30 +28,29 @@ target_include_directories(RVX_Engine PUBLIC
 target_link_libraries(RVX_Engine PUBLIC
     # Foundation
     RVX_Core
-    
+
     # Hardware Abstraction
     RVX_HAL
     RVX_RHI
-    
+
     # Runtime Services
     RVX_RuntimeServices
-    
+
     # World & Scene
     RVX::Physics
     RVX_World
-    
+
     # Rendering
     RVX::Render
     RVX::RenderComposition
     RVX::RenderContracts
     RVX::RenderExtraction
     RVX::ShaderContracts
-    
+
     # Resources
     RVX::ResourceRuntime
     RVX_ResourceSceneAdapters
     RVX::AnimationSceneAdapters
-    
 )
 
 target_link_libraries(RVX_Engine PRIVATE
