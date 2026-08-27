@@ -12,11 +12,12 @@
 namespace RVX::Water
 {
     /**
-     * @brief Owns WaterSurface, WaterSimulation, Caustics, and Underwater state.
+     * @brief Owns immutable Gerstner surface descriptors for ECS bindings.
      *
-     * Water's current runtime objects are CPU/value-only feature objects. The
-     * gateway creates and updates those objects on its construction thread and
-     * exports only WaterRenderSnapshot values through the ECS bridge.
+     * The gateway deliberately owns no mesh, GPU object, renderer pass,
+     * auxiliary water-effect object, or accumulated simulation time. It
+     * validates and publishes a complete value packet; both gameplay and
+     * Render evaluate that packet against the same explicit frame time.
      */
     class WaterEcsRuntimeGateway final : public IWaterEcsGateway
     {

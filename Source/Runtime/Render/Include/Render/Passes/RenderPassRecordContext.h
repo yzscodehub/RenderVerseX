@@ -383,6 +383,12 @@ namespace RVX
         std::atomic_bool copied{false};
     };
 
+    /** @brief Immutable execution proof for the copied D32 surface consumed by water. */
+    struct WaterDepthSnapshotCopyReceipt
+    {
+        std::atomic_bool copied{false};
+    };
+
     [[nodiscard]] inline bool HasCurrentGraphProvenance(
         const RGBufferHandle& handle,
         const RenderPassRecordIdentity& identity) noexcept
@@ -417,6 +423,37 @@ namespace RVX
             return identity == expected && texture.IsValid() &&
                    HasCurrentGraphProvenance(texture, expected) &&
                    receipt != nullptr;
+        }
+    };
+
+    /**
+     * Graph-owned inputs consumed exclusively by WaterFeaturePass.
+     *
+     * Water samples immutable copies instead of the active HDR/depth
+     * attachments. This keeps refraction/thickness legal on explicit APIs and
+     * makes accidental sampled/render-target aliasing structurally impossible.
+     */
+    struct WaterSurfaceRecordInput
+    {
+        RenderPassRecordIdentity identity{};
+        OpaqueSceneSnapshotRecordInput opaqueSceneSnapshot{};
+        RGTextureHandle depthSnapshot{};
+        std::shared_ptr<WaterDepthSnapshotCopyReceipt> depthReceipt{};
+
+        [[nodiscard]] bool IsEmpty() const noexcept
+        {
+            return !identity.IsValid() && opaqueSceneSnapshot.IsEmpty() &&
+                   !depthSnapshot.IsValid() && !depthReceipt;
+        }
+
+        [[nodiscard]] bool IsCompatibleWith(
+            const RenderPassRecordIdentity& expected) const noexcept
+        {
+            return identity == expected &&
+                   opaqueSceneSnapshot.IsCompatibleWith(expected) &&
+                   depthSnapshot.IsValid() &&
+                   HasCurrentGraphProvenance(depthSnapshot, expected) &&
+                   depthReceipt != nullptr;
         }
     };
 
@@ -1305,6 +1342,8 @@ namespace RVX
         RenderPassRecordIdentity identity{};
         /** Full accepted-frame identity paired with this recording. */
         RenderFrameIdentity featureFrameIdentity{};
+        /** Frozen simulation clock shared by all deterministic render effects. */
+        EffectFrameTime effectTime{};
         /** Exact logical view identity paired with this recording. */
         RenderViewIdentity featureViewIdentity{};
         const RenderFrameExecutionPlan* executionPlan = nullptr;
@@ -1336,6 +1375,8 @@ namespace RVX
         AmbientOcclusionRecordInput ambientOcclusion{};
         /** Opaque HDR snapshot late-bound after the immutable frame snapshot. */
         OpaqueSceneSnapshotRecordInput opaqueSceneSnapshot{};
+        /** Opaque HDR plus copied D32 inputs late-bound for deterministic water. */
+        WaterSurfaceRecordInput waterSurface{};
         /** Graph-owned soft-depth/distortion chain late-bound by composition. */
         ParticleVfxRecordInput particleVfx{};
         /** Explicit value identity for the route's immutable material table. */

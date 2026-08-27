@@ -237,6 +237,64 @@ if(EXISTS "${_rvx_particle_ground_source_root}")
         "Particle VFX ground/caster source input remains after staging; cooked-only runtime admission is unsafe")
 endif()
 
+# GFX18 deliberately publishes a distinct, package-only Model V3 identity for
+# its opaque depth/reference geometry.  It uses the hermetic scene fixture as
+# build-time input only; the staged Sample may load neither the source glTF
+# nor an importer fallback.
+set(_rvx_water_reference_id "water-surface-reference-fixture-v1")
+set(_rvx_water_reference_source_root
+    "${_rvx_staging}/cook-inputs/${_rvx_water_reference_id}")
+set(_rvx_water_reference_cooked_root
+    "${_rvx_staging}/cooked/${_rvx_water_reference_id}")
+set(_rvx_water_reference_manifest
+    "${_rvx_water_reference_cooked_root}/CookManifest.rvxmanifest")
+file(MAKE_DIRECTORY "${_rvx_water_reference_source_root}")
+file(COPY_FILE
+    "${SOURCE_ROOT}/Assets/models/shadow-plane-caster/scene.gltf"
+    "${_rvx_water_reference_source_root}/scene.gltf"
+    ONLY_IF_DIFFERENT)
+execute_process(
+    COMMAND "${COOK_EXECUTABLE}"
+        --source "${_rvx_water_reference_source_root}"
+        --output "${_rvx_water_reference_cooked_root}"
+        --manifest "${_rvx_water_reference_manifest}"
+        --model-only
+        --fail-on-errors
+    RESULT_VARIABLE _rvx_water_reference_cook_result)
+if(NOT _rvx_water_reference_cook_result EQUAL 0)
+    message(FATAL_ERROR "Water surface reference fixture cook failed")
+endif()
+execute_process(
+    COMMAND "${COOKED_CATALOG_WRITER}"
+        --input-catalog "${_rvx_staging}/catalog.json"
+        --output-catalog "${_rvx_staging}/catalog.json"
+        --asset-root "${_rvx_staging}"
+        --source-root "${_rvx_water_reference_source_root}"
+        --manifest "${_rvx_water_reference_manifest}"
+        --cooked-root "${_rvx_water_reference_cooked_root}"
+        --cooked-root-relative "cooked/${_rvx_water_reference_id}"
+        --asset-id "${_rvx_water_reference_id}"
+        --asset-kind model
+        --asset-path-relative "cooked/${_rvx_water_reference_id}/scene.rva"
+        --source-path "scene.gltf"
+        --source-name "RenderVerseX deterministic water surface reference fixture"
+        --source-uri "repo://Samples/RenderVerseSamples/Assets/models/shadow-plane-caster/scene.gltf"
+        --source-version "gfx18-water-reference-model-v3-cook-v1"
+        --attribution "Generated from the RenderVerseX shadow plane/caster fixture."
+        --modification-notice "Cooked as the GFX18 water depth/reference fixture; source bytes are not staged in this package."
+        --derived-from "shadow-plane-caster"
+        --generation-recipe "rvx-gfx18-water-reference-model-v3-cook-v1"
+    RESULT_VARIABLE _rvx_water_reference_catalog_result)
+if(NOT _rvx_water_reference_catalog_result EQUAL 0)
+    message(FATAL_ERROR
+        "Water surface reference cooked catalog publication failed")
+endif()
+file(REMOVE_RECURSE "${_rvx_water_reference_source_root}")
+if(EXISTS "${_rvx_water_reference_source_root}")
+    message(FATAL_ERROR
+        "Water surface reference source input remains after staging; cooked-only runtime admission is unsafe")
+endif()
+
 # GFX17 follows the same hermetic publication transaction as the material
 # samples.  The generated atlas is deliberately created before effect.rvxparticle
 # so the cooker's deterministic source traversal resolves the texture product

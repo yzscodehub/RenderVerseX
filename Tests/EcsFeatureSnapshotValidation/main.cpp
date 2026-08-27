@@ -91,13 +91,35 @@ using namespace RVX::SceneECS;
 [[nodiscard]] WaterRenderSnapshotItem MakeWater()
 {
     WaterRenderSnapshotItem item;
+    item.payloadStatus = WaterRenderSnapshotPayloadStatus::Ready;
     item.componentId = 31;
     item.surfaceAssetId = {.value = 201};
     item.materialAssetId = {.value = 202};
+    item.worldBounds = AABB({-5.8f, -4.5f, -10.8f}, {5.8f, 0.5f, 10.8f});
     item.size = {10.0f, 20.0f};
     item.depth = 4.0f;
-    item.resolution = 128;
-    item.cpuSimulationAvailable = true;
+    item.gerstnerWaves.waveCount = 1;
+    item.gerstnerWaves.waves[0] = {
+        .direction = {1.0f, 0.0f}, .amplitude = 0.5f,
+        .wavelength = 8.0f, .steepness = 0.5f, .speed = 1.0f,
+        .phaseOffsetRadians = 0.0f,
+    };
+    static_cast<void>(CanonicalizeWaterGerstnerWaveSet(item.gerstnerWaves));
+    item.shallowColor = {0.02f, 0.24f, 0.30f};
+    item.deepColor = {0.005f, 0.04f, 0.10f};
+    item.foamColor = {0.92f, 0.96f, 1.0f};
+    item.absorptionCoefficient = {0.15f, 0.06f, 0.02f};
+    item.transparency = 0.72f;
+    item.reflectionStrength = 0.65f;
+    item.refractionStrength = 0.08f;
+    item.roughness = 0.08f;
+    item.normalScale = 1.0f;
+    item.foamIntensity = 1.0f;
+    item.foamCrestThreshold = 0.62f;
+    item.reflectionEnabled = true;
+    item.refractionEnabled = true;
+    item.foamEnabled = true;
+    item.contentHash = item.ComputeContentHash();
     return item;
 }
 
@@ -274,6 +296,24 @@ TEST(EcsFeatureSnapshotValidation,
 }
 
 TEST(EcsFeatureSnapshotValidation,
+     RejectsMalformedWaterPacketBeforeItCanBecomeFrozenSceneState)
+{
+    ECS::Registry registry;
+    SceneFeatureSnapshotStore store(registry.GetSceneRuntimeId());
+    const ECS::EntityRef source = registry.GetRef(registry.CreateEntity());
+
+    WaterRenderSnapshotItem invalidHash = MakeWater();
+    ++invalidHash.contentHash;
+    EXPECT_FALSE(store.PublishWater(source, invalidHash, 1));
+
+    WaterRenderSnapshotItem clippedBounds = MakeWater();
+    clippedBounds.worldBounds = AABB({-5.0f, -4.0f, -10.0f}, {5.0f, 0.4f, 10.0f});
+    clippedBounds.contentHash = clippedBounds.ComputeContentHash();
+    EXPECT_FALSE(store.PublishWater(source, clippedBounds, 2));
+    EXPECT_EQ(store.GetCounts().waterCount, 0U);
+}
+
+TEST(EcsFeatureSnapshotValidation,
      SharesImmutableParticlePacketAndExtractsFeatureFullIncrementalAndResetDeltas)
 {
     ECS::Registry registry;
@@ -377,6 +417,8 @@ TEST(EcsFeatureSnapshotValidation,
     WaterRenderSnapshotItem updatedWater = MakeWater();
     updatedWater.depth = 9.0f;
     updatedWater.materialAssetId = {.value = 222};
+    updatedWater.worldBounds = AABB({-5.8f, -9.5f, -10.8f}, {5.8f, 0.5f, 10.8f});
+    updatedWater.contentHash = updatedWater.ComputeContentHash();
     ASSERT_TRUE(store.PublishWater(waterSource, updatedWater, 15));
     FrozenSceneSnapshot secondSnapshot = MakeSnapshot(registry.GetSceneRuntimeId(), 2);
     ASSERT_TRUE(store.FreezeInto(secondSnapshot));

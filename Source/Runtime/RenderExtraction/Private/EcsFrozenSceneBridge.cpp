@@ -690,6 +690,14 @@ bool EcsFrozenSceneBridge::Build(
             result.code = EcsFrozenSceneBridgeCode::SourceIdentityMismatch;
             return fail();
         }
+
+        // Disabled water is a canonical absence marker, not a renderable
+        // retained object. Do not assign it a RenderScene identity: omitting
+        // it lets retained-scene extraction emit the corresponding removal.
+        if (water.state.payloadStatus == WaterRenderSnapshotPayloadStatus::Disabled)
+        {
+            continue;
+        }
         uint64 waterId = 0;
         if (!identityValidator.Register(water.id,
                                         SceneECS::FrozenSceneObjectType::Water,
@@ -701,7 +709,8 @@ bool EcsFrozenSceneBridge::Build(
         const RenderFeatureSourceIdentity expectedSource =
             MakeFeatureSourceIdentity(water.id.sceneRuntimeId,
                                       water.sourceEntity);
-        if (water.state.ValidateChannel(expectedSource) !=
+        if (!water.state.IsStructurallyValid() ||
+            water.state.ValidateChannel(expectedSource) !=
                 RenderFeatureChannelValidationCode::Valid ||
             water.payloadRevision != water.state.header.configurationRevision)
         {

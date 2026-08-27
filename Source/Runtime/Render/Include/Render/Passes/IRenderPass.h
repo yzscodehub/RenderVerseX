@@ -118,6 +118,7 @@ namespace RVX
          * - ShadowPass: 200
          * - OpaquePass: 300
          * - SkyboxPass: 400
+         * - WaterFeaturePass: 450
          * - TransparentPass: 500
          * - PostProcess: 1000
          */
@@ -248,6 +249,8 @@ namespace RVX
         constexpr int32_t Shadow          = 200;
         constexpr int32_t Opaque          = 300;
         constexpr int32_t Skybox          = 400;
+        /** Screen-space water consumes the immutable opaque HDR/depth snapshots. */
+        constexpr int32_t Water           = 450;
         constexpr int32_t Transparent     = 500;
         constexpr int32_t PostProcess     = 1000;
         constexpr int32_t Debug           = 2000;

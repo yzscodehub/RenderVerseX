@@ -382,8 +382,9 @@ namespace
     {
     public:
         [[nodiscard]] Water::WaterEcsRuntimeHandle Create(
-            const Water::WaterEcsRuntimeRequest&) override
+            const Water::WaterEcsRuntimeRequest& request) override
         {
+            m_config = request.config;
             m_alive = true;
             return Water::WaterEcsRuntimeHandle::Create(0, 1);
         }
@@ -402,11 +403,35 @@ namespace
             {
                 return false;
             }
-            outSnapshot.item.resolution = 8;
-            outSnapshot.item.renderGpuPathAvailable = true;
-            outSnapshot.item.cpuSimulationAvailable = true;
-            outSnapshot.payloadRevision = 1;
-            return true;
+            WaterRenderSnapshotItem item;
+            item.payloadStatus = WaterRenderSnapshotPayloadStatus::Ready;
+            item.componentId = handle.GetPackedValue();
+            item.surfaceAssetId = m_config.surfaceAssetId;
+            item.materialAssetId = m_config.materialAssetId;
+            item.worldBounds = AABB({-1.8f, -1.3f, -1.8f}, {1.8f, 0.3f, 1.8f});
+            item.size = m_config.size;
+            item.depth = m_config.depth;
+            item.surfaceType = m_config.surfaceType;
+            item.simulationType = m_config.simulationType;
+            item.gerstnerWaves = m_config.gerstnerWaves;
+            item.shallowColor = m_config.shallowColor;
+            item.deepColor = m_config.deepColor;
+            item.foamColor = m_config.foamColor;
+            item.absorptionCoefficient = m_config.absorptionCoefficient;
+            item.transparency = m_config.transparency;
+            item.reflectionStrength = m_config.reflectionStrength;
+            item.refractionStrength = m_config.refractionStrength;
+            item.roughness = m_config.roughness;
+            item.normalScale = m_config.normalScale;
+            item.foamIntensity = m_config.foamIntensity;
+            item.foamCrestThreshold = m_config.foamCrestThreshold;
+            item.reflectionEnabled = m_config.reflectionEnabled;
+            item.refractionEnabled = m_config.refractionEnabled;
+            item.foamEnabled = m_config.foamEnabled;
+            item.contentHash = item.ComputeContentHash();
+            outSnapshot.item = item;
+            outSnapshot.payloadRevision = m_config.configurationRevision;
+            return item.IsStructurallyValid();
         }
 
         [[nodiscard]] Water::WaterEcsReleaseResult Release(
@@ -427,6 +452,7 @@ namespace
 
     private:
         bool m_alive = false;
+        Water::WaterEcsConfig m_config;
     };
 
     class TerrainFeatureGateway final : public Terrain::ITerrainEcsGateway
@@ -633,10 +659,16 @@ TEST(EcsWorldRuntimeCompositionValidation,
     ASSERT_TRUE(runtime.AddFragment<Particle::ParticleEcsIntent>(featureEntity));
     ASSERT_TRUE(runtime.AddFragment<Particle::ParticleEcsState>(featureEntity));
     ASSERT_TRUE(runtime.AddFragment<SceneECS::WaterRuntimeTag>(featureEntity));
-    ASSERT_TRUE(runtime.AddFragment<Water::WaterEcsConfig>(
-        featureEntity,
-        {.surfaceAssetId = AssetId{18}, .materialAssetId = AssetId{19},
-         .configurationRevision = 1, .resolution = 8}));
+    Water::WaterEcsConfig waterConfig{.surfaceAssetId = AssetId{18},
+                                       .materialAssetId = AssetId{19},
+                                       .configurationRevision = 1};
+    waterConfig.gerstnerWaves.waveCount = 1;
+    waterConfig.gerstnerWaves.waves[0] = {
+        .direction = {1.0f, 0.0f}, .amplitude = 0.3f,
+        .wavelength = 8.0f, .steepness = 0.5f,
+        .speed = 1.0f, .phaseOffsetRadians = 0.0f};
+    ASSERT_TRUE(CanonicalizeWaterGerstnerWaveSet(waterConfig.gerstnerWaves));
+    ASSERT_TRUE(runtime.AddFragment<Water::WaterEcsConfig>(featureEntity, waterConfig));
     ASSERT_TRUE(runtime.AddFragment<Water::WaterEcsIntent>(featureEntity));
     ASSERT_TRUE(runtime.AddFragment<Water::WaterEcsState>(featureEntity));
     ASSERT_TRUE(runtime.AddFragment<SceneECS::TerrainRuntimeTag>(featureEntity));

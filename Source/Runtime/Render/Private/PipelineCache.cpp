@@ -10,6 +10,7 @@
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
 #include "Render/RayTracing/RayTracingResourceBindings.h"
+#include "Render/Renderer/RenderClipConvention.h"
 #include "Render/Renderer/ViewData.h"
 #include "Resources/FrameConstantUploadArena.h"
 #include "Resources/RenderOwnerSnapshotRetirement.h"
@@ -484,23 +485,6 @@ namespace
         materialLayout.AddBinding(15, RHIBindingType::Sampler, RHIShaderStage::Pixel);
         materialLayout.AddBinding(16, RHIBindingType::Sampler, RHIShaderStage::Pixel);
         materialLayout.AddBinding(17, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
-    }
-
-    Mat4 ApplyBackendClipConvention(const Mat4& matrix, RHIBackendType backend)
-    {
-        Mat4 result = matrix;
-        if (backend == RHIBackendType::Vulkan)
-        {
-            // GLM indexes matrices as [column][row]. Vulkan's positive-height
-            // viewport maps clip-space +Y downward, so negate the output Y
-            // row. Negating result[1] would instead mirror the input/world Y
-            // column and move geometry relative to the camera.
-            for (uint32 column = 0; column < 4; ++column)
-            {
-                result[column][1] = -result[column][1];
-            }
-        }
-        return result;
     }
 
     ViewConstants BuildViewConstantsSnapshot(const ViewData& view,

@@ -2916,10 +2916,14 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
             ++m_featureExtractionStats.particleSortingSupportedCount;
         }
     }
-    if (m_particleFeaturePass)
-    {
-        m_particleFeaturePass->SetSnapshot(&m_featureSnapshot->particles);
-    }
+      if (m_particleFeaturePass)
+      {
+          m_particleFeaturePass->SetSnapshot(&m_featureSnapshot->particles);
+      }
+      if (m_waterFeaturePass)
+      {
+          m_waterFeaturePass->SetSnapshot(&m_featureSnapshot->water);
+      }
 
     const RenderEnvironmentSnapshot& environment =
         m_renderScene.GetEnvironment();
@@ -6141,11 +6145,17 @@ const ObjectVelocityPassStats& SceneRenderer::GetObjectVelocityStats() const
     return m_objectVelocityPass ? m_objectVelocityPass->GetStats() : emptyStats;
 }
 
-const ParticleFeaturePassStats& SceneRenderer::GetParticleFeaturePassStats() const
+  const ParticleFeaturePassStats& SceneRenderer::GetParticleFeaturePassStats() const
 {
     static const ParticleFeaturePassStats emptyStats;
     return m_particleFeaturePass ? m_particleFeaturePass->GetStats() : emptyStats;
-}
+  }
+
+  const WaterFeaturePassStats& SceneRenderer::GetWaterFeaturePassStats() const
+  {
+      static const WaterFeaturePassStats emptyStats;
+      return m_waterFeaturePass ? m_waterFeaturePass->GetStats() : emptyStats;
+  }
 
 RHIAccelerationStructure* SceneRenderer::GetRayTracingTopLevelAS() const
 {
@@ -10025,6 +10035,7 @@ void SceneRenderer::BuildRenderGraph()
         recordHeader.requiredSceneRevision,
         recordHeader.surfaceGeneration,
         recordHeader.configurationRevision};
+    passRecordContext.effectTime = m_renderScene.GetViewFamily().effectTime;
     passRecordContext.featureViewIdentity =
         m_renderScene.GetView().identity;
     std::shared_ptr<const RenderDeformationFrameResources>
@@ -10585,7 +10596,8 @@ bool SceneRenderer::RemovePass(const char* name)
         if (m_deferredForwardSpecialFeature)
             m_deferredForwardSpecialFeature->SetVelocityPasses(velocityPasses);
     }
-    if (removed == m_particleFeaturePass) m_particleFeaturePass = nullptr;
+      if (removed == m_particleFeaturePass) m_particleFeaturePass = nullptr;
+      if (removed == m_waterFeaturePass) m_waterFeaturePass = nullptr;
     if (removed == m_transparentPass) m_transparentPass = nullptr;
     if (removed == m_skyboxPass) m_skyboxPass = nullptr;
 
@@ -10628,7 +10640,8 @@ void SceneRenderer::ClearPasses()
     m_rayTracedShadowPass = nullptr;
     m_cameraVelocityPass = nullptr;
     m_objectVelocityPass = nullptr;
-    m_particleFeaturePass = nullptr;
+      m_particleFeaturePass = nullptr;
+      m_waterFeaturePass = nullptr;
     m_rayTracedReflectionPass = nullptr;
     m_rayTracedReflectionDenoisePass = nullptr;
     m_rayTracedReflectionCompositePass = nullptr;

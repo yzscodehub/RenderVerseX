@@ -145,7 +145,13 @@ namespace RVX
                        std::string(assetId);
             return false;
         }
-        return RequestResolved(lookup.entry->resolvedPath,
+        std::string resourcePath;
+        if (!TryGetSampleAssetResourcePath(*lookup.entry, resourcePath, outError))
+        {
+            return false;
+        }
+        return RequestResolved(resourcePath,
+                               lookup.entry->resolvedPath,
                                lookup.entry->contentIdentity,
                                options,
                                output,
@@ -164,11 +170,13 @@ namespace RVX
             outError = "Environment request output already owns a live ECS request reference.";
             return false;
         }
-        return RequestResolved(path, contentIdentity, options, output, outError);
+        return RequestResolved(path.generic_string(), path, contentIdentity,
+                               options, output, outError);
     }
 
     bool SampleEnvironmentLoader::RequestResolved(
-        const std::filesystem::path& path,
+        const std::string& resourcePath,
+        const std::filesystem::path& sourcePath,
         const Resource::ResourceContentIdentity& expectedContentIdentity,
         const SampleEnvironmentLoadOptions& options,
         LoadedSampleEnvironment& output,
@@ -179,9 +187,9 @@ namespace RVX
             outError = "Environment request requires a valid exact Scene runtime id.";
             return false;
         }
-        if (path.empty())
+        if (resourcePath.empty() || sourcePath.empty())
         {
-            outError = "Environment path must not be empty";
+            outError = "Environment resource and evidence paths must not be empty";
             return false;
         }
         if (!expectedContentIdentity.IsValid())
@@ -194,9 +202,9 @@ namespace RVX
             outError = "Environment exposure must be finite and positive";
             return false;
         }
-        if (!IsSupportedEnvironmentPath(path))
+        if (!IsSupportedEnvironmentPath(std::filesystem::path(resourcePath)))
         {
-            outError = "Environment must use an .hdr or .exr file: " + path.string();
+            outError = "Environment must use an .hdr or .exr file: " + resourcePath;
             return false;
         }
 
@@ -208,7 +216,7 @@ namespace RVX
         }
 
         ResourceSceneAdapters::EcsEnvironmentLoadDesc desc;
-        desc.path = path.string();
+        desc.path = resourcePath;
         Resource::EnvironmentLoadOptions environmentOptions;
         environmentOptions.quality = quality;
         environmentOptions.exposure = options.exposure;
@@ -239,7 +247,7 @@ namespace RVX
             }
             return false;
         }
-        requested.sourcePath = path;
+        requested.sourcePath = sourcePath;
         requested.status.sceneRuntimeId = m_sceneRuntimeId;
         output = std::move(requested);
         return true;

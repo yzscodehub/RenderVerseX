@@ -1,11 +1,5 @@
 #include "Water/ECS/WaterEcsRuntimeGateway.h"
 
-#include "Water/Caustics.h"
-#include "Water/Underwater.h"
-#include "Water/WaterSimulation.h"
-#include "Water/WaterSurface.h"
-
-#include <algorithm>
 #include <cmath>
 #include <thread>
 #include <utility>
@@ -15,18 +9,24 @@ namespace RVX::Water
 {
 namespace
 {
-    [[nodiscard]] bool IsFinite(float value)
+    [[nodiscard]] bool IsFinite(float32 value) noexcept
     {
         return std::isfinite(value);
     }
 
-    [[nodiscard]] bool IsFinite(const Vec2& value)
+    [[nodiscard]] bool IsFinite(const Vec2& value) noexcept
     {
         return IsFinite(value.x) && IsFinite(value.y);
     }
 
-    [[nodiscard]] bool IsFinite(const Mat4& value)
+    [[nodiscard]] bool IsFinite(const Vec3& value) noexcept
     {
+        return IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
+    }
+
+    [[nodiscard]] bool IsTranslationOnlyYUp(const Mat4& value) noexcept
+    {
+        constexpr float32 tolerance = 0.0001f;
         for (uint32 column = 0; column < 4; ++column)
         {
             for (uint32 row = 0; row < 4; ++row)
@@ -37,61 +37,124 @@ namespace
                 }
             }
         }
-        return true;
+        return std::abs(value[0][0] - 1.0f) <= tolerance &&
+               std::abs(value[1][1] - 1.0f) <= tolerance &&
+               std::abs(value[2][2] - 1.0f) <= tolerance &&
+               std::abs(value[3][3] - 1.0f) <= tolerance &&
+               std::abs(value[0][1]) <= tolerance && std::abs(value[0][2]) <= tolerance &&
+               std::abs(value[0][3]) <= tolerance && std::abs(value[1][0]) <= tolerance &&
+               std::abs(value[1][2]) <= tolerance && std::abs(value[1][3]) <= tolerance &&
+               std::abs(value[2][0]) <= tolerance && std::abs(value[2][1]) <= tolerance &&
+               std::abs(value[2][3]) <= tolerance;
     }
 
-    [[nodiscard]] bool IsValidRequest(const WaterEcsRuntimeRequest& request)
-    {
-        const WaterEcsConfig& config = request.config;
-        return config.surfaceAssetId.IsValid() && config.materialAssetId.IsValid() &&
-               config.configurationRevision != 0 && IsFinite(config.size) &&
-               config.size.x > 0.0f && config.size.y > 0.0f && IsFinite(config.depth) &&
-               config.depth >= 0.0f && config.resolution != 0 &&
-               IsFinite(request.worldTransform) && std::isfinite(request.deltaSeconds) &&
-               request.deltaSeconds >= 0.0;
-    }
-
-    [[nodiscard]] bool IsKnownCommand(WaterEcsCommand command)
+    [[nodiscard]] bool IsKnownCommand(WaterEcsCommand command) noexcept
     {
         return command >= WaterEcsCommand::None && command <= WaterEcsCommand::Refresh;
     }
 
-    [[nodiscard]] WaterSurfaceType ToWaterSurfaceType(WaterRenderSnapshotSurfaceType type)
+    [[nodiscard]] Vec3 ExtractTranslation(const Mat4& transform) noexcept
+    {
+        return {transform[3][0], transform[3][1], transform[3][2]};
+    }
+
+    [[nodiscard]] bool IsKnownSurfaceType(
+        WaterRenderSnapshotSurfaceType type) noexcept
     {
         switch (type)
         {
             case WaterRenderSnapshotSurfaceType::Ocean:
-                return WaterSurfaceType::Ocean;
             case WaterRenderSnapshotSurfaceType::Lake:
-                return WaterSurfaceType::Lake;
             case WaterRenderSnapshotSurfaceType::River:
-                return WaterSurfaceType::River;
             case WaterRenderSnapshotSurfaceType::Pool:
-                return WaterSurfaceType::Pool;
+                return true;
+            default:
+                return false;
         }
-
-        return WaterSurfaceType::Ocean;
     }
 
-    [[nodiscard]] WaterSimulationType ToWaterSimulationType(
-        WaterRenderSnapshotSimulationType type)
+    [[nodiscard]] bool IsFiniteAndNonNegative(const Vec3& value) noexcept
     {
-        switch (type)
+        return IsFinite(value) && value.x >= 0.0f && value.y >= 0.0f &&
+               value.z >= 0.0f;
+    }
+
+    [[nodiscard]] bool IsAuthoringConfigValid(const WaterEcsConfig& config) noexcept
+    {
+        return config.surfaceAssetId.IsValid() && config.materialAssetId.IsValid() &&
+               config.configurationRevision != 0 && IsFinite(config.size) &&
+               config.size.x > 0.0f && config.size.y > 0.0f &&
+               IsFinite(config.depth) && config.depth >= 0.0f &&
+               IsKnownSurfaceType(config.surfaceType) &&
+               config.simulationType == WaterRenderSnapshotSimulationType::Gerstner &&
+               config.gerstnerWaves.IsStructurallyValid() &&
+               IsFiniteAndNonNegative(config.shallowColor) &&
+               IsFiniteAndNonNegative(config.deepColor) &&
+               IsFiniteAndNonNegative(config.foamColor) &&
+               IsFiniteAndNonNegative(config.absorptionCoefficient) &&
+               IsFinite(config.transparency) && IsFinite(config.reflectionStrength) &&
+               IsFinite(config.refractionStrength) && IsFinite(config.roughness) &&
+               IsFinite(config.normalScale) && IsFinite(config.foamIntensity) &&
+               IsFinite(config.foamCrestThreshold);
+    }
+
+    [[nodiscard]] WaterRenderSnapshotItem MakeReadyPacket(
+        const WaterEcsConfig& config,
+        const Mat4& transform,
+        uint64 componentId) noexcept
+    {
+        WaterRenderSnapshotItem item;
+        if (!IsAuthoringConfigValid(config) || !IsTranslationOnlyYUp(transform) ||
+            componentId == 0)
         {
-            case WaterRenderSnapshotSimulationType::Simple:
-                return WaterSimulationType::Simple;
-            case WaterRenderSnapshotSimulationType::Gerstner:
-                return WaterSimulationType::Gerstner;
-            case WaterRenderSnapshotSimulationType::FFT:
-                return WaterSimulationType::FFT;
+            return item;
         }
 
-        return WaterSimulationType::Gerstner;
-    }
+        constexpr float32 twoPi = 6.28318530717958647692f;
+        float32 verticalEnvelope = 0.0f;
+        float32 horizontalEnvelope = 0.0f;
+        for (uint32 index = 0; index < config.gerstnerWaves.waveCount; ++index)
+        {
+            const WaterGerstnerWave& wave = config.gerstnerWaves.waves[index];
+            verticalEnvelope += wave.amplitude;
+            horizontalEnvelope += wave.steepness /
+                (twoPi / wave.wavelength);
+        }
 
-    [[nodiscard]] Vec3 ExtractTranslation(const Mat4& transform)
-    {
-        return {transform[3][0], transform[3][1], transform[3][2]};
+        const Vec3 worldPosition = ExtractTranslation(transform);
+        item.payloadStatus = WaterRenderSnapshotPayloadStatus::Ready;
+        item.componentId = componentId;
+        item.surfaceAssetId = config.surfaceAssetId;
+        item.materialAssetId = config.materialAssetId;
+        item.worldPosition = worldPosition;
+        item.worldBounds = AABB(
+            worldPosition - Vec3(config.size.x * 0.5f + horizontalEnvelope,
+                                 config.depth + verticalEnvelope,
+                                 config.size.y * 0.5f + horizontalEnvelope),
+            worldPosition + Vec3(config.size.x * 0.5f + horizontalEnvelope,
+                                 verticalEnvelope,
+                                 config.size.y * 0.5f + horizontalEnvelope));
+        item.size = config.size;
+        item.depth = config.depth;
+        item.surfaceType = config.surfaceType;
+        item.simulationType = config.simulationType;
+        item.gerstnerWaves = config.gerstnerWaves;
+        item.shallowColor = config.shallowColor;
+        item.deepColor = config.deepColor;
+        item.foamColor = config.foamColor;
+        item.absorptionCoefficient = config.absorptionCoefficient;
+        item.transparency = config.transparency;
+        item.reflectionStrength = config.reflectionStrength;
+        item.refractionStrength = config.refractionStrength;
+        item.roughness = config.roughness;
+        item.normalScale = config.normalScale;
+        item.foamIntensity = config.foamIntensity;
+        item.foamCrestThreshold = config.foamCrestThreshold;
+        item.reflectionEnabled = config.reflectionEnabled;
+        item.refractionEnabled = config.refractionEnabled;
+        item.foamEnabled = config.foamEnabled;
+        item.contentHash = item.ComputeContentHash();
+        return item.IsStructurallyValid() ? item : WaterRenderSnapshotItem{};
     }
 } // namespace
 
@@ -99,10 +162,6 @@ struct WaterEcsRuntimeGateway::State
 {
     struct Entry
     {
-        std::unique_ptr<WaterSurface> surface;
-        std::unique_ptr<WaterSimulation> simulation;
-        std::unique_ptr<Caustics> caustics;
-        std::unique_ptr<Underwater> underwater;
         WaterEcsConfig config;
         Mat4 worldTransform{1.0f};
         uint64 payloadRevision = 0;
@@ -116,96 +175,52 @@ struct WaterEcsRuntimeGateway::State
     {
     }
 
-    [[nodiscard]] bool IsOwnerThread() const
+    [[nodiscard]] bool IsOwnerThread() const noexcept
     {
         return std::this_thread::get_id() == ownerThread;
     }
 
-    [[nodiscard]] Entry* Find(WaterEcsRuntimeHandle handle)
+    [[nodiscard]] Entry* Find(WaterEcsRuntimeHandle handle) noexcept
     {
         if (!handle.IsValid() || handle.GetIndex() >= entries.size())
         {
             return nullptr;
         }
-
         Entry& entry = entries[handle.GetIndex()];
         return entry.allocated && entry.generation == handle.GetGeneration() ? &entry : nullptr;
     }
 
-    [[nodiscard]] const Entry* Find(WaterEcsRuntimeHandle handle) const
+    [[nodiscard]] const Entry* Find(WaterEcsRuntimeHandle handle) const noexcept
     {
-        if (!handle.IsValid() || handle.GetIndex() >= entries.size())
-        {
-            return nullptr;
-        }
-
-        const Entry& entry = entries[handle.GetIndex()];
-        return entry.allocated && entry.generation == handle.GetGeneration() ? &entry : nullptr;
+        return const_cast<State*>(this)->Find(handle);
     }
 
     [[nodiscard]] static bool BuildEntry(const WaterEcsRuntimeRequest& request,
-                                         Entry& outEntry)
+                                         Entry& outEntry) noexcept
     {
-        if (!IsValidRequest(request))
+        if (!IsKnownCommand(request.command) || !IsTranslationOnlyYUp(request.worldTransform))
         {
             return false;
         }
-
-        auto surface = std::make_unique<WaterSurface>();
-        WaterSurfaceDesc surfaceDesc;
-        surfaceDesc.size = request.config.size;
-        surfaceDesc.resolution = request.config.resolution;
-        surfaceDesc.type = ToWaterSurfaceType(request.config.surfaceType);
-        if (!surface->Create(surfaceDesc))
+        WaterEcsConfig canonicalConfig = request.config;
+        if (!CanonicalizeWaterGerstnerWaveSet(canonicalConfig.gerstnerWaves) ||
+            !IsAuthoringConfigValid(canonicalConfig))
         {
             return false;
         }
-
-        auto simulation = std::make_unique<WaterSimulation>();
-        WaterSimulationDesc simulationDesc;
-        simulationDesc.type = ToWaterSimulationType(request.config.simulationType);
-        simulationDesc.resolution = request.config.resolution;
-        simulationDesc.domainSize = std::max(request.config.size.x, request.config.size.y);
-        simulationDesc.oceanParams.depth = request.config.depth;
-        if (!simulation->Initialize(simulationDesc))
+        if (!MakeReadyPacket(canonicalConfig, request.worldTransform, 1).IsStructurallyValid())
         {
             return false;
         }
-
-        std::unique_ptr<Caustics> caustics;
-        if (request.config.causticsEnabled)
-        {
-            caustics = std::make_unique<Caustics>();
-            CausticsDesc causticsDesc;
-            causticsDesc.maxDepth = request.config.depth;
-            if (!caustics->Initialize(causticsDesc))
-            {
-                return false;
-            }
-        }
-
-        std::unique_ptr<Underwater> underwater;
-        if (request.config.underwaterEffectsEnabled)
-        {
-            underwater = std::make_unique<Underwater>();
-            if (!underwater->Initialize({}))
-            {
-                return false;
-            }
-        }
-
-        outEntry.surface = std::move(surface);
-        outEntry.simulation = std::move(simulation);
-        outEntry.caustics = std::move(caustics);
-        outEntry.underwater = std::move(underwater);
-        outEntry.config = request.config;
+        outEntry.config = std::move(canonicalConfig);
         outEntry.worldTransform = request.worldTransform;
-        outEntry.payloadRevision = request.config.configurationRevision;
-        outEntry.active = request.config.autoActivate;
+        outEntry.payloadRevision = outEntry.config.configurationRevision;
+        outEntry.active = outEntry.config.autoActivate;
         return true;
     }
 
-    [[nodiscard]] static bool ApplyCommand(Entry& entry, WaterEcsCommand command)
+    [[nodiscard]] static bool ApplyCommand(Entry& entry,
+                                           WaterEcsCommand command) noexcept
     {
         switch (command)
         {
@@ -214,29 +229,17 @@ struct WaterEcsRuntimeGateway::State
             case WaterEcsCommand::Activate:
             case WaterEcsCommand::Refresh:
                 entry.active = true;
-                if (entry.simulation)
-                {
-                    entry.simulation->SetPaused(false);
-                }
                 return true;
             case WaterEcsCommand::Deactivate:
                 entry.active = false;
-                if (entry.simulation)
-                {
-                    entry.simulation->SetPaused(true);
-                }
                 return true;
+            default:
+                return false;
         }
-
-        return false;
     }
 
-    void Retire(Entry& entry)
+    void Retire(Entry& entry) noexcept
     {
-        entry.underwater.reset();
-        entry.caustics.reset();
-        entry.simulation.reset();
-        entry.surface.reset();
         entry.config = {};
         entry.worldTransform = Mat4(1.0f);
         entry.payloadRevision = 0;
@@ -268,10 +271,10 @@ WaterEcsRuntimeHandle WaterEcsRuntimeGateway::Create(const WaterEcsRuntimeReques
         return WaterEcsRuntimeHandle::Invalid();
     }
 
-    State::Entry candidate;
     try
     {
-        if (!IsKnownCommand(request.command) || !State::BuildEntry(request, candidate) ||
+        State::Entry candidate;
+        if (!State::BuildEntry(request, candidate) ||
             !State::ApplyCommand(candidate, request.command))
         {
             return WaterEcsRuntimeHandle::Invalid();
@@ -282,7 +285,7 @@ WaterEcsRuntimeHandle WaterEcsRuntimeGateway::Create(const WaterEcsRuntimeReques
         {
             if (m_state->entries.size() == m_state->entries.capacity())
             {
-                m_state->entries.reserve(m_state->entries.size() + 1u);
+                m_state->entries.reserve(m_state->entries.size() + 1U);
             }
             index = static_cast<uint32>(m_state->entries.size());
             m_state->entries.emplace_back();
@@ -311,12 +314,10 @@ WaterEcsRuntimeHandle WaterEcsRuntimeGateway::Create(const WaterEcsRuntimeReques
 bool WaterEcsRuntimeGateway::Update(WaterEcsRuntimeHandle handle,
                                     const WaterEcsRuntimeRequest& request)
 {
-    if (m_state == nullptr || !m_state->IsOwnerThread() || !IsValidRequest(request) ||
-        !IsKnownCommand(request.command))
+    if (m_state == nullptr || !m_state->IsOwnerThread())
     {
         return false;
     }
-
     State::Entry* entry = m_state->Find(handle);
     if (entry == nullptr)
     {
@@ -325,48 +326,16 @@ bool WaterEcsRuntimeGateway::Update(WaterEcsRuntimeHandle handle,
 
     try
     {
-        const bool rebuild = entry->config.configurationRevision !=
-                                 request.config.configurationRevision ||
-                             request.command == WaterEcsCommand::Refresh;
-        const bool wasActive = entry->active;
-        if (rebuild)
-        {
-            State::Entry replacement;
-            if (!State::BuildEntry(request, replacement))
-            {
-                return false;
-            }
-            replacement.generation = entry->generation;
-            replacement.allocated = true;
-            replacement.active = wasActive;
-            if (!replacement.active && replacement.simulation)
-            {
-                replacement.simulation->SetPaused(true);
-            }
-            *entry = std::move(replacement);
-        }
-
-        entry->worldTransform = request.worldTransform;
-        entry->config = request.config;
-        entry->payloadRevision = request.config.configurationRevision;
-        if (!State::ApplyCommand(*entry, request.command))
+        State::Entry replacement;
+        if (!State::BuildEntry(request, replacement))
         {
             return false;
         }
-        if (entry->active)
-        {
-            const float deltaSeconds = static_cast<float>(request.deltaSeconds);
-            entry->simulation->Update(deltaSeconds);
-            if (entry->caustics)
-            {
-                entry->caustics->Update(deltaSeconds, entry->simulation.get());
-            }
-            if (entry->underwater)
-            {
-                entry->underwater->Update(deltaSeconds);
-            }
-        }
-        return true;
+        replacement.generation = entry->generation;
+        replacement.allocated = true;
+        replacement.active = entry->active;
+        *entry = std::move(replacement);
+        return State::ApplyCommand(*entry, request.command);
     }
     catch (...)
     {
@@ -381,61 +350,22 @@ bool WaterEcsRuntimeGateway::CaptureSnapshot(WaterEcsRuntimeHandle handle,
     {
         return false;
     }
-
     const State::Entry* entry = m_state->Find(handle);
-    if (entry == nullptr || entry->surface == nullptr || entry->simulation == nullptr)
+    if (entry == nullptr)
     {
         return false;
     }
 
-    const Vec3 worldPosition = ExtractTranslation(entry->worldTransform);
-    const Vec2 size = entry->surface->GetSize();
-    const float waveAmplitude = 5.0f;
-    const Vec3 minimum = worldPosition -
-                         Vec3(size.x * 0.5f, entry->config.depth, size.y * 0.5f);
-    const Vec3 maximum = worldPosition + Vec3(size.x * 0.5f, waveAmplitude, size.y * 0.5f);
-    const WaterVisualProperties& visual = entry->surface->GetVisualProperties();
-
-    WaterRenderSnapshotItem item;
-    item.componentId = handle.GetPackedValue();
-    item.surfaceAssetId = entry->config.surfaceAssetId;
-    item.materialAssetId = entry->config.materialAssetId;
-    item.worldPosition = worldPosition;
-    item.worldBounds = AABB(minimum, maximum);
-    item.size = size;
-    item.depth = entry->config.depth;
-    item.resolution = entry->surface->GetResolution();
-    item.surfaceType = entry->config.surfaceType;
-    item.simulationType = entry->config.simulationType;
-    item.shallowColor = visual.shallowColor;
-    item.deepColor = visual.deepColor;
-    item.foamColor = visual.foamColor;
-    item.transparency = visual.transparency;
-    item.reflectionStrength = visual.reflectionStrength;
-    item.refractionStrength = visual.refractionStrength;
-    item.roughness = visual.roughness;
-    item.foamIntensity = visual.foamIntensity;
-    item.reflectionEnabled = entry->config.reflectionEnabled;
-    item.refractionEnabled = entry->config.refractionEnabled;
-    item.causticsEnabled = entry->caustics != nullptr;
-    item.underwaterEffectsEnabled = entry->underwater != nullptr;
-    item.foamEnabled = entry->config.foamEnabled;
-    item.gpuInitialized = false;
-    item.cpuSimulationAvailable = true;
-    item.renderGpuPathAvailable = false;
-    item.gpuInitializationReason =
-        "Water feature module exports CPU state only; GPU resources are owned by Render water passes";
-    item.renderPathReason =
-        "Render-owned water surface, caustics, and underwater passes are not connected to this snapshot yet";
-    if (entry->config.simulationType == WaterRenderSnapshotSimulationType::FFT)
-    {
-        item.simulationFallbackReason =
-            "FFT water simulation uses a deterministic CPU fallback until Render-owned GPU simulation is implemented";
-    }
-
-    outSnapshot.item = std::move(item);
+    outSnapshot = {};
     outSnapshot.payloadRevision = entry->payloadRevision;
-    return true;
+    if (!entry->active)
+    {
+        return true;
+    }
+    outSnapshot.item = MakeReadyPacket(entry->config,
+                                        entry->worldTransform,
+                                        handle.GetPackedValue());
+    return outSnapshot.item.IsStructurallyValid();
 }
 
 WaterEcsReleaseResult WaterEcsRuntimeGateway::Release(WaterEcsRuntimeHandle handle)
@@ -444,7 +374,6 @@ WaterEcsReleaseResult WaterEcsRuntimeGateway::Release(WaterEcsRuntimeHandle hand
     {
         return WaterEcsReleaseResult::Failed;
     }
-
     State::Entry* entry = m_state->Find(handle);
     if (entry == nullptr)
     {
@@ -455,22 +384,22 @@ WaterEcsReleaseResult WaterEcsRuntimeGateway::Release(WaterEcsRuntimeHandle hand
     {
         if (m_state->freeEntries.size() == m_state->freeEntries.capacity())
         {
-            m_state->freeEntries.reserve(m_state->freeEntries.size() + 1u);
+            m_state->freeEntries.reserve(m_state->freeEntries.size() + 1U);
         }
+        const uint32 index = handle.GetIndex();
+        m_state->Retire(*entry);
+        m_state->freeEntries.push_back(index);
+        return WaterEcsReleaseResult::Released;
     }
     catch (...)
     {
         return WaterEcsReleaseResult::Failed;
     }
-
-    const uint32 index = handle.GetIndex();
-    m_state->Retire(*entry);
-    m_state->freeEntries.push_back(index);
-    return WaterEcsReleaseResult::Released;
 }
 
 bool WaterEcsRuntimeGateway::IsAlive(WaterEcsRuntimeHandle handle) const
 {
-    return m_state != nullptr && m_state->IsOwnerThread() && m_state->Find(handle) != nullptr;
+    return m_state != nullptr && m_state->IsOwnerThread() &&
+           m_state->Find(handle) != nullptr;
 }
 } // namespace RVX::Water

@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <exception>
 #include <filesystem>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <string>
 #include <unordered_set>
 
@@ -13,6 +15,14 @@ namespace
 {
     struct Options
     {
+        struct NormalizedRoi
+        {
+            double x = 0.0;
+            double y = 0.0;
+            double width = 0.0;
+            double height = 0.0;
+        };
+
         std::filesystem::path image;
         RVX::uint32 minWidth = 1;
         RVX::uint32 minHeight = 1;
@@ -22,10 +32,19 @@ namespace
         double nearBlackThreshold = 8.0;
         double maxNearBlackRatio = 0.98;
         double minTopBottomLumaDelta = 0.0;
+        double maxTopBottomLumaDelta = 0.0;
         double minPBRMetallicLumaDelta = 40.0;
         double minPBRRoughnessContrastDelta = 2.0;
+        std::optional<NormalizedRoi> normalizedRoi;
+        RVX::uint32 minRoiUniqueColors = 0;
+        double minRoiNormalizedLumaRange = 0.0;
+        double minRoiNormalizedLumaContrast = 0.0;
         bool requireTopBottomLumaDelta = false;
+        bool requireMaxTopBottomLumaDelta = false;
         bool requirePBRGridResponse = false;
+        bool requireRoiUniqueColors = false;
+        bool requireRoiNormalizedLumaRange = false;
+        bool requireRoiNormalizedLumaContrast = false;
         bool showHelp = false;
     };
 
@@ -40,11 +59,21 @@ namespace
             << "  --min-luma-range <0-255>       Minimum sampled luma range\n"
             << "  --near-black-threshold <0-255> Luma threshold for near-black pixels\n"
             << "  --max-near-black-ratio <0-1>   Maximum sampled near-black ratio\n"
-            << "  --min-top-bottom-luma-delta <0-255>\n"
+            << "  --min-top-bottom-luma-delta <-255..255>\n"
             << "                                  Minimum top-band minus bottom-band luma\n"
+            << "  --max-top-bottom-luma-delta <-255..255>\n"
+            << "                                  Maximum top-band minus bottom-band luma\n"
             << "  --require-pbr-grid-response     Validate both 5x5 PBR response matrices\n"
             << "  --min-pbr-metallic-luma-delta <0-255>\n"
             << "  --min-pbr-roughness-contrast-delta <0-255>\n"
+            << "  --roi-normalized <x> <y> <width> <height>\n"
+            << "                                  Normalized half-open ROI within [0, 1]\n"
+            << "  --min-roi-unique-colors <count>\n"
+            << "                                  Minimum sampled RGB colors within ROI\n"
+            << "  --min-roi-normalized-luma-range <0-1>\n"
+            << "                                  Minimum ROI luma range divided by 255\n"
+            << "  --min-roi-normalized-luma-contrast <0-1>\n"
+            << "                                  Minimum ROI luma standard deviation / 255\n"
             << "  --sample-step <pixels>         Sample every N pixels, default 1\n";
     }
 
@@ -116,6 +145,13 @@ namespace
                 options.minTopBottomLumaDelta = std::stod(value);
                 options.requireTopBottomLumaDelta = true;
             }
+            else if (arg == "--max-top-bottom-luma-delta")
+            {
+                const char* value = requireValue("--max-top-bottom-luma-delta");
+                if (!value) return false;
+                options.maxTopBottomLumaDelta = std::stod(value);
+                options.requireMaxTopBottomLumaDelta = true;
+            }
             else if (arg == "--require-pbr-grid-response")
             {
                 options.requirePBRGridResponse = true;
@@ -133,6 +169,44 @@ namespace
                     requireValue("--min-pbr-roughness-contrast-delta");
                 if (!value) return false;
                 options.minPBRRoughnessContrastDelta = std::stod(value);
+            }
+            else if (arg == "--roi-normalized")
+            {
+                const char* x = requireValue("--roi-normalized <x>");
+                const char* y = requireValue("--roi-normalized <y>");
+                const char* width = requireValue("--roi-normalized <width>");
+                const char* height = requireValue("--roi-normalized <height>");
+                if (!x || !y || !width || !height) return false;
+                options.normalizedRoi = Options::NormalizedRoi{
+                    .x = std::stod(x),
+                    .y = std::stod(y),
+                    .width = std::stod(width),
+                    .height = std::stod(height),
+                };
+            }
+            else if (arg == "--min-roi-unique-colors")
+            {
+                const char* value = requireValue("--min-roi-unique-colors");
+                if (!value) return false;
+                options.minRoiUniqueColors =
+                    static_cast<RVX::uint32>(std::stoul(value));
+                options.requireRoiUniqueColors = true;
+            }
+            else if (arg == "--min-roi-normalized-luma-range")
+            {
+                const char* value =
+                    requireValue("--min-roi-normalized-luma-range");
+                if (!value) return false;
+                options.minRoiNormalizedLumaRange = std::stod(value);
+                options.requireRoiNormalizedLumaRange = true;
+            }
+            else if (arg == "--min-roi-normalized-luma-contrast")
+            {
+                const char* value =
+                    requireValue("--min-roi-normalized-luma-contrast");
+                if (!value) return false;
+                options.minRoiNormalizedLumaContrast = std::stod(value);
+                options.requireRoiNormalizedLumaContrast = true;
             }
             else if (arg == "--sample-step")
             {
@@ -160,6 +234,61 @@ namespace
             return false;
         }
 
+        const bool hasRoiRequirement =
+            options.requireRoiUniqueColors ||
+            options.requireRoiNormalizedLumaRange ||
+            options.requireRoiNormalizedLumaContrast;
+        if (hasRoiRequirement && !options.normalizedRoi.has_value())
+        {
+            std::cerr << "ROI thresholds require --roi-normalized\n";
+            return false;
+        }
+
+        if (options.normalizedRoi.has_value())
+        {
+            const Options::NormalizedRoi& roi = *options.normalizedRoi;
+            const double right = roi.x + roi.width;
+            const double bottom = roi.y + roi.height;
+            if (!std::isfinite(roi.x) || !std::isfinite(roi.y) ||
+                !std::isfinite(roi.width) || !std::isfinite(roi.height) ||
+                roi.x < 0.0 || roi.y < 0.0 || roi.width <= 0.0 ||
+                roi.height <= 0.0 || right > 1.0 || bottom > 1.0)
+            {
+                std::cerr << "--roi-normalized must be finite, non-empty, and contained in [0, 1]\n";
+                return false;
+            }
+        }
+
+        const auto isNormalizedThreshold = [](double value)
+        {
+            return std::isfinite(value) && value >= 0.0 && value <= 1.0;
+        };
+        if ((options.requireRoiNormalizedLumaRange &&
+             !isNormalizedThreshold(options.minRoiNormalizedLumaRange)) ||
+            (options.requireRoiNormalizedLumaContrast &&
+             !isNormalizedThreshold(options.minRoiNormalizedLumaContrast)))
+        {
+            std::cerr << "ROI normalized luma thresholds must be finite values in [0, 1]\n";
+            return false;
+        }
+        if (options.requireRoiUniqueColors && options.minRoiUniqueColors == 0)
+        {
+            std::cerr << "--min-roi-unique-colors must be greater than zero\n";
+            return false;
+        }
+
+        if ((options.requireTopBottomLumaDelta &&
+             !std::isfinite(options.minTopBottomLumaDelta)) ||
+            (options.requireMaxTopBottomLumaDelta &&
+             !std::isfinite(options.maxTopBottomLumaDelta)) ||
+            (options.requireTopBottomLumaDelta &&
+             options.requireMaxTopBottomLumaDelta &&
+             options.minTopBottomLumaDelta > options.maxTopBottomLumaDelta))
+        {
+            std::cerr << "Top-to-bottom luma bounds must be finite and ordered\n";
+            return false;
+        }
+
         return true;
     }
 
@@ -175,6 +304,49 @@ namespace
         double mean = 0.0;
         double contrast = 0.0;
     };
+
+    struct RoiPixelBounds
+    {
+        RVX::uint32 minX = 0;
+        RVX::uint32 minY = 0;
+        RVX::uint32 maxXExclusive = 0;
+        RVX::uint32 maxYExclusive = 0;
+    };
+
+    [[nodiscard]] bool ResolveRoiPixelBounds(
+        const Options::NormalizedRoi& roi,
+        const RVX::Test::ImageData& image,
+        RoiPixelBounds& outBounds)
+    {
+        if (image.width == 0 || image.height == 0)
+        {
+            std::cerr << "ROI validation requires a non-empty image\n";
+            return false;
+        }
+
+        const double minX = std::floor(roi.x * static_cast<double>(image.width));
+        const double minY = std::floor(roi.y * static_cast<double>(image.height));
+        const double maxX = std::ceil(
+            (roi.x + roi.width) * static_cast<double>(image.width));
+        const double maxY = std::ceil(
+            (roi.y + roi.height) * static_cast<double>(image.height));
+        if (!std::isfinite(minX) || !std::isfinite(minY) ||
+            !std::isfinite(maxX) || !std::isfinite(maxY) ||
+            minX < 0.0 || minY < 0.0 || maxX > image.width ||
+            maxY > image.height || minX >= maxX || minY >= maxY)
+        {
+            std::cerr << "Normalized ROI resolves outside the image or to zero pixels\n";
+            return false;
+        }
+
+        outBounds = RoiPixelBounds{
+            .minX = static_cast<RVX::uint32>(minX),
+            .minY = static_cast<RVX::uint32>(minY),
+            .maxXExclusive = static_cast<RVX::uint32>(maxX),
+            .maxYExclusive = static_cast<RVX::uint32>(maxY),
+        };
+        return true;
+    }
 
     PatchMetrics MeasurePatch(const RVX::Test::ImageData& image,
                               RVX::uint32 centerX,
@@ -529,7 +701,16 @@ namespace
 int main(int argc, char** argv)
 {
     Options options;
-    if (!ParseOptions(argc, argv, options))
+    bool parsed = false;
+    try
+    {
+        parsed = ParseOptions(argc, argv, options);
+    }
+    catch (const std::exception& error)
+    {
+        std::cerr << "Invalid argument value: " << error.what() << "\n";
+    }
+    if (!parsed)
     {
         PrintUsage();
         return 2;
@@ -556,7 +737,19 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    std::optional<RoiPixelBounds> roiBounds;
+    if (options.normalizedRoi.has_value())
+    {
+        RoiPixelBounds resolvedBounds;
+        if (!ResolveRoiPixelBounds(*options.normalizedRoi, image, resolvedBounds))
+        {
+            return 1;
+        }
+        roiBounds = resolvedBounds;
+    }
+
     std::unordered_set<RVX::uint32> uniqueColors;
+    std::unordered_set<RVX::uint32> roiUniqueColors;
     RVX::uint64 sampledPixels = 0;
     RVX::uint64 nearBlackPixels = 0;
     RVX::uint64 topBandPixels = 0;
@@ -565,6 +758,11 @@ int main(int argc, char** argv)
     double bottomBandLuma = 0.0;
     double minLuma = std::numeric_limits<double>::max();
     double maxLuma = std::numeric_limits<double>::lowest();
+    RVX::uint64 roiSampledPixels = 0;
+    double roiLumaSum = 0.0;
+    double roiLumaSumSquared = 0.0;
+    double roiMinLuma = std::numeric_limits<double>::max();
+    double roiMaxLuma = std::numeric_limits<double>::lowest();
 
     for (RVX::uint32 y = 0; y < image.height; y += options.sampleStep)
     {
@@ -603,6 +801,25 @@ int main(int argc, char** argv)
                 uniqueColors.insert(color);
             }
 
+            if (roiBounds.has_value() &&
+                x >= roiBounds->minX && x < roiBounds->maxXExclusive &&
+                y >= roiBounds->minY && y < roiBounds->maxYExclusive)
+            {
+                roiMinLuma = std::min(roiMinLuma, luma);
+                roiMaxLuma = std::max(roiMaxLuma, luma);
+                roiLumaSum += luma;
+                roiLumaSumSquared += luma * luma;
+                if (roiUniqueColors.size() < options.minRoiUniqueColors)
+                {
+                    const RVX::uint32 color =
+                        (static_cast<RVX::uint32>(r) << 16u) |
+                        (static_cast<RVX::uint32>(g) << 8u) |
+                        static_cast<RVX::uint32>(b);
+                    roiUniqueColors.insert(color);
+                }
+                ++roiSampledPixels;
+            }
+
             ++sampledPixels;
         }
     }
@@ -621,6 +838,17 @@ int main(int argc, char** argv)
             ? topBandLuma / static_cast<double>(topBandPixels) -
                   bottomBandLuma / static_cast<double>(bottomBandPixels)
             : 0.0;
+    const double roiNormalizedLumaRange = roiSampledPixels > 0
+        ? (roiMaxLuma - roiMinLuma) / 255.0
+        : 0.0;
+    const double roiNormalizedLumaContrast = roiSampledPixels > 0
+        ? std::sqrt(std::max(
+              0.0,
+              roiLumaSumSquared / static_cast<double>(roiSampledPixels) -
+                  std::pow(
+                      roiLumaSum / static_cast<double>(roiSampledPixels),
+                      2.0))) / 255.0
+        : 0.0;
 
     std::cout << "ImageContentValidation\n"
               << "  image:            " << options.image << "\n"
@@ -629,9 +857,20 @@ int main(int argc, char** argv)
               << "  unique colors:    " << uniqueColors.size() << "\n"
               << "  luma range:       " << lumaRange << "\n"
               << "  near-black ratio: " << nearBlackRatio << "\n";
-    if (options.requireTopBottomLumaDelta)
+    if (options.requireTopBottomLumaDelta ||
+        options.requireMaxTopBottomLumaDelta)
     {
         std::cout << "  top-bottom luma:  " << topBottomLumaDelta << "\n";
+    }
+    if (roiBounds.has_value())
+    {
+        std::cout << "  roi pixels:       " << roiSampledPixels << " ["
+                  << roiBounds->minX << "," << roiBounds->minY << ")-["
+                  << roiBounds->maxXExclusive << ","
+                  << roiBounds->maxYExclusive << ")\n"
+                  << "  roi unique colors:" << roiUniqueColors.size() << "\n"
+                  << "  roi luma range:   " << roiNormalizedLumaRange << "\n"
+                  << "  roi luma contrast:" << roiNormalizedLumaContrast << "\n";
     }
 
     if (uniqueColors.size() < options.minUniqueColors)
@@ -657,6 +896,41 @@ int main(int argc, char** argv)
          topBottomLumaDelta < options.minTopBottomLumaDelta))
     {
         std::cerr << "Image top-to-bottom orientation contract failed\n";
+        return 1;
+    }
+
+    if (options.requireMaxTopBottomLumaDelta &&
+        (topBandPixels == 0 || bottomBandPixels == 0 ||
+         topBottomLumaDelta > options.maxTopBottomLumaDelta))
+    {
+        std::cerr << "Image top-to-bottom orientation contract failed\n";
+        return 1;
+    }
+
+    if (roiBounds.has_value() && roiSampledPixels == 0)
+    {
+        std::cerr << "Normalized ROI contains no sampled pixels\n";
+        return 1;
+    }
+
+    if (options.requireRoiUniqueColors &&
+        roiUniqueColors.size() < options.minRoiUniqueColors)
+    {
+        std::cerr << "ROI has too few unique colors\n";
+        return 1;
+    }
+
+    if (options.requireRoiNormalizedLumaRange &&
+        roiNormalizedLumaRange < options.minRoiNormalizedLumaRange)
+    {
+        std::cerr << "ROI normalized luma range is too small\n";
+        return 1;
+    }
+
+    if (options.requireRoiNormalizedLumaContrast &&
+        roiNormalizedLumaContrast < options.minRoiNormalizedLumaContrast)
+    {
+        std::cerr << "ROI normalized luma contrast is too small\n";
         return 1;
     }
 

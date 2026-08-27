@@ -93,6 +93,10 @@ def base_contract() -> dict:
                     {
                         "path": "Tests/WaterEcsRuntimeGatewayValidation/CMakeLists.txt",
                         "contains": "WaterEcsRuntimeGatewayValidation",
+                    },
+                    {
+                        "path": "Tests/WaterEcsRuntimeGatewayValidation/main.cpp",
+                        "contains": "capture sealed water snapshot",
                     }
                 ],
             },
@@ -104,8 +108,16 @@ def base_contract() -> dict:
                 "shippingSupported": False,
                 "requiredEvidence": [
                     {
-                        "path": "Source/Runtime/Render/Private/Passes/WaterPass.cpp",
-                        "contains": "water pass scheduling is enabled",
+                        "path": "Source/Runtime/Render/Include/Render/Passes/WaterFeaturePass.h",
+                        "contains": "Render-owned deterministic Gerstner water pass",
+                    },
+                    {
+                        "path": "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp",
+                        "contains": "WaterSurface.GerstnerPipeline",
+                    },
+                    {
+                        "path": "Tests/WaterRenderValidation/main.cpp",
+                        "contains": "RendererCompositionAndCookedShaderCatalogAreHonest",
                     }
                 ],
             },
@@ -285,6 +297,10 @@ def write_fixture(root: Path) -> None:
         "NAME WaterEcsRuntimeGatewayValidation\n",
     )
     write(
+        root / "Tests/WaterEcsRuntimeGatewayValidation/main.cpp",
+        "capture sealed water snapshot\n",
+    )
+    write(
         root / "Tests/TerrainEcsRuntimeGatewayValidation/CMakeLists.txt",
         "NAME TerrainEcsRuntimeGatewayValidation\n",
     )
@@ -293,8 +309,16 @@ def write_fixture(root: Path) -> None:
         "particle draw implementation is not connected\n",
     )
     write(
-        root / "Source/Runtime/Render/Private/Passes/WaterPass.cpp",
-        "water pass scheduling is enabled\n",
+        root / "Source/Runtime/Render/Include/Render/Passes/WaterFeaturePass.h",
+        "Render-owned deterministic Gerstner water pass\n",
+    )
+    write(
+        root / "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp",
+        "WaterSurface.GerstnerPipeline\n",
+    )
+    write(
+        root / "Tests/WaterRenderValidation/main.cpp",
+        "RendererCompositionAndCookedShaderCatalogAreHonest\n",
     )
     write(
         root / "Source/Runtime/Render/Private/Passes/TerrainPass.cpp",

@@ -19,7 +19,13 @@ namespace RVX::Water
         RuntimeRejected, SynchronizationFailed,
     };
 
-    /** @brief POD authoring data; resource objects and WaterSurface stay gateway-owned. */
+    /**
+     * @brief POD authoring data for a Gerstner-only, renderer-neutral surface.
+     *
+     * The wave set is sealed by the gateway before it is published. The
+     * resulting snapshot is timeless: gameplay and Render supply their own
+     * shared frozen EffectFrameTime when evaluating it.
+     */
     struct WaterEcsConfig
     {
         AssetId surfaceAssetId{};
@@ -27,14 +33,23 @@ namespace RVX::Water
         uint64 configurationRevision = 1;
         Vec2 size{1.0f, 1.0f};
         float depth = 1.0f;
-        uint32 resolution = 1;
         WaterRenderSnapshotSurfaceType surfaceType = WaterRenderSnapshotSurfaceType::Ocean;
         WaterRenderSnapshotSimulationType simulationType = WaterRenderSnapshotSimulationType::Gerstner;
+        WaterGerstnerWaveSet gerstnerWaves;
+        Vec3 shallowColor{0.02f, 0.24f, 0.30f};
+        Vec3 deepColor{0.005f, 0.04f, 0.10f};
+        Vec3 foamColor{0.92f, 0.96f, 1.0f};
+        Vec3 absorptionCoefficient{0.15f, 0.06f, 0.02f};
+        float transparency = 0.72f;
+        float reflectionStrength = 0.65f;
+        float refractionStrength = 0.08f;
+        float roughness = 0.08f;
+        float normalScale = 1.0f;
+        float foamIntensity = 1.0f;
+        float foamCrestThreshold = 0.62f;
         bool autoActivate = true;
         bool reflectionEnabled = true;
         bool refractionEnabled = true;
-        bool causticsEnabled = true;
-        bool underwaterEffectsEnabled = true;
         bool foamEnabled = true;
     };
     struct WaterEcsIntent { WaterEcsCommand command = WaterEcsCommand::None; uint64 sequence = 0; };
@@ -57,7 +72,6 @@ namespace RVX::Water
         WaterEcsConfig config;
         Mat4 worldTransform{1.0f};
         WaterEcsCommand command = WaterEcsCommand::None;
-        float64 deltaSeconds = 0.0;
     };
     struct WaterEcsRuntimeSnapshot { WaterRenderSnapshotItem item; uint64 payloadRevision = 0; };
     enum class WaterEcsReleaseResult : uint8 { Released = 0, AlreadyAbsent, Failed };

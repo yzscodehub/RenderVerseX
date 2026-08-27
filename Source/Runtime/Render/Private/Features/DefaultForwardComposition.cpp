@@ -20,6 +20,7 @@
 #include "Render/Passes/ObjectVelocityPass.h"
 #include "Render/Passes/OpaquePass.h"
 #include "Render/Passes/ParticleFeaturePass.h"
+#include "Render/Passes/WaterFeaturePass.h"
 #include "Render/Passes/RayTracedReflectionCompositePass.h"
 #include "Render/Passes/RayTracedReflectionDenoisePass.h"
 #include "Render/Passes/RayTracedReflectionPass.h"
@@ -127,6 +128,14 @@ bool SceneRenderer::SetupDefaultRenderFeatures()
     skyboxPass->SetResourceRegistry(m_renderResourceRegistry);
     m_skyboxPass = skyboxPass.get();
     AddPass(std::move(skyboxPass));
+
+    auto waterFeaturePass = std::make_unique<WaterFeaturePass>();
+    waterFeaturePass->SetSnapshot(&m_featureSnapshot->water);
+    waterFeaturePass->SetShaderProgramProvider(m_shaderProgramProvider.get());
+    waterFeaturePass->SetReverseZ(
+        m_pipelineCache != nullptr && m_pipelineCache->GetConfig().reverseZ);
+    m_waterFeaturePass = waterFeaturePass.get();
+    AddPass(std::move(waterFeaturePass));
 
     auto transparentPass = std::make_unique<TransparentPass>();
     transparentPass->SetResources(m_pipelineCache.get(),

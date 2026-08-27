@@ -47,6 +47,7 @@ target_link_libraries(RenderVerseSamples PRIVATE
     RVX::Scene
     RVX::World
     RVX::Gfx17SampleScenarios
+    RVX::Gfx18SampleScenarios
 )
 
 # GFX17 scenarios compile against the narrow scenario contracts only. Their
@@ -86,12 +87,50 @@ rvx_register_module_target(
     ALIASES RVX::Gfx17SampleScenarios
 )
 
+# GFX18 follows the narrow scenario boundary established for GFX17.  It may
+# author public Water/ECS values and use the public gameplay evaluator, but it
+# cannot pull renderer, RHI, backend, importer, or compiler implementation
+# objects into scenario code.
+add_library(RVX_Gfx18SampleScenarios STATIC
+    Scenes/WaterSurfaceSample.cpp
+)
+target_compile_features(RVX_Gfx18SampleScenarios PRIVATE cxx_std_20)
+target_include_directories(RVX_Gfx18SampleScenarios PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+rvx_apply_scenario_contract_include_roots(
+    RVX_Gfx18SampleScenarios
+    RVX_Animation
+    RVX_AssetContracts
+    RVX_Core
+    RVX_ECS
+    RVX_Geometry
+    RVX_Physics
+    RVX_RenderContracts
+    RVX_ResourceRuntime
+    RVX_ResourceSceneAdapters
+    RVX_Scene
+    RVX_Water
+    RVX_World
+)
+target_link_libraries(RVX_Gfx18SampleScenarios PRIVATE
+    RVX::SampleScenarioContracts
+    RVX::Water
+    glm::glm-header-only
+)
+add_library(RVX::Gfx18SampleScenarios ALIAS RVX_Gfx18SampleScenarios)
+rvx_register_module_target(
+    TARGET RVX_Gfx18SampleScenarios
+    MODULE Samples
+    ALIASES RVX::Gfx18SampleScenarios
+)
+
 # Keep the GFX17 scene target honest even while the legacy SampleCommon host
 # still has broader historical dependencies. This configure-time check walks
 # its complete CMake target closure, including static-library LINK_ONLY
 # dependencies, and rejects forbidden composition modules; the source scan
 # independently rejects direct private renderer/backend includes.
-function(rvx_gfx17_link_item_is_forbidden _rvx_link _rvx_out_result)
+function(rvx_gfx_sample_link_item_is_forbidden _rvx_link _rvx_out_result)
     set(_rvx_normalized "${_rvx_link}")
     if(_rvx_normalized MATCHES "^\\$<LINK_ONLY:(.+)>$")
         set(_rvx_normalized "${CMAKE_MATCH_1}")
@@ -109,7 +148,13 @@ function(rvx_gfx17_link_item_is_forbidden _rvx_link _rvx_out_result)
     endif()
 endfunction()
 
-function(rvx_assert_gfx17_scenario_closure _rvx_target)
+function(rvx_assert_gfx_sample_scenario_closure _rvx_target)
+    cmake_parse_arguments(RVX_GFX_SCENARIO "" ""
+        "SOURCE_CONTRACT_FILES" ${ARGN})
+    if(NOT RVX_GFX_SCENARIO_SOURCE_CONTRACT_FILES)
+        message(FATAL_ERROR
+            "GFX scenario closure check requires SOURCE_CONTRACT_FILES")
+    endif()
     set(_rvx_pending "${_rvx_target}")
     set(_rvx_visited)
     set(_rvx_forbidden
@@ -128,17 +173,17 @@ function(rvx_assert_gfx17_scenario_closure _rvx_target)
         foreach(_rvx_forbidden_target IN LISTS _rvx_forbidden)
             if("${_rvx_current}" STREQUAL "${_rvx_forbidden_target}")
                 message(FATAL_ERROR
-                    "GFX17 scenario closure reached forbidden target ${_rvx_current}")
+                    "GFX scenario closure reached forbidden target ${_rvx_current}")
             endif()
         endforeach()
-        rvx_gfx17_link_item_is_forbidden(
+        rvx_gfx_sample_link_item_is_forbidden(
             "${_rvx_current}" _rvx_current_is_forbidden)
         if(_rvx_current MATCHES "^\\$<LINK_ONLY:(.+)>$")
             set(_rvx_current "${CMAKE_MATCH_1}")
         endif()
         if(_rvx_current_is_forbidden)
             message(FATAL_ERROR
-                "GFX17 scenario closure reached forbidden target ${_rvx_current}")
+                "GFX scenario closure reached forbidden target ${_rvx_current}")
         endif()
         if(NOT TARGET "${_rvx_current}")
             continue()
@@ -156,21 +201,13 @@ function(rvx_assert_gfx17_scenario_closure _rvx_target)
         endforeach()
     endwhile()
 
-    set(_rvx_gfx17_source_contract_files
-        "${CMAKE_CURRENT_SOURCE_DIR}/Scenes/ParticleVfxSamples.cpp"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Scenes/ParticleVfxSamples.h"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleContext.h"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleFeatureReporter.h"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleParticleEffectLoader.h"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleParticleVfxDiagnostics.h"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleRenderPathPolicy.h")
-    foreach(_rvx_gfx17_source_contract_file IN LISTS _rvx_gfx17_source_contract_files)
-        file(STRINGS "${_rvx_gfx17_source_contract_file}"
-             _rvx_gfx17_private_includes
+    foreach(_rvx_gfx_source_contract_file IN LISTS RVX_GFX_SCENARIO_SOURCE_CONTRACT_FILES)
+        file(STRINGS "${_rvx_gfx_source_contract_file}"
+             _rvx_gfx_private_includes
              REGEX "^[ \\t]*#include[ \\t]+\"(RHI/|Render/|RenderGraph|AssetImport|ShaderCompiler|EngineDevelopmentComposition)")
-        if(_rvx_gfx17_private_includes)
+        if(_rvx_gfx_private_includes)
             message(FATAL_ERROR
-                "GFX17 narrow scenario source contract includes forbidden renderer/developer headers in ${_rvx_gfx17_source_contract_file}: ${_rvx_gfx17_private_includes}")
+                "GFX narrow scenario source contract includes forbidden renderer/developer headers in ${_rvx_gfx_source_contract_file}: ${_rvx_gfx_private_includes}")
         endif()
     endforeach()
 endfunction()
@@ -178,13 +215,32 @@ endfunction()
 # Regression proof for the static closure checker itself. A future attempt to
 # hide RHI behind LINK_ONLY must remain detectable rather than weakening this
 # check to a consumer-interface-only inspection.
-rvx_gfx17_link_item_is_forbidden(
+rvx_gfx_sample_link_item_is_forbidden(
     "$<LINK_ONLY:RVX::RHI>" _rvx_gfx17_link_only_rhi_rejected)
 if(NOT _rvx_gfx17_link_only_rhi_rejected)
     message(FATAL_ERROR
         "GFX17 closure check does not reject LINK_ONLY RHI dependencies")
 endif()
-rvx_assert_gfx17_scenario_closure(RVX_Gfx17SampleScenarios)
+rvx_assert_gfx_sample_scenario_closure(
+    RVX_Gfx17SampleScenarios
+    SOURCE_CONTRACT_FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/Scenes/ParticleVfxSamples.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Scenes/ParticleVfxSamples.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleContext.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleFeatureReporter.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleParticleEffectLoader.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleParticleVfxDiagnostics.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleRenderPathPolicy.h")
+rvx_assert_gfx_sample_scenario_closure(
+    RVX_Gfx18SampleScenarios
+    SOURCE_CONTRACT_FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/Scenes/WaterSurfaceSample.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Scenes/WaterSurfaceSample.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleContext.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleFeatureReporter.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleModelLoader.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleWaterSurfaceDiagnostics.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleRenderPathPolicy.h")
 
 if(RVX_ENABLE_DX11)
     target_link_libraries(RenderVerseSamples PRIVATE RVX::RHI_DX11)

@@ -40,6 +40,8 @@ namespace RVX
         std::filesystem::path environmentPath;
         std::filesystem::path catalogPath;
         std::filesystem::path assetRoot;
+        /** Explicit strict shader artifact root for a runtime-only execution. */
+        std::filesystem::path cookedShaderRoot;
         SamplePipelineRecipe pipelineRecipe =
             SamplePipelineRecipe::ForwardStandard;
         SampleQualityTier qualityTier = SampleQualityTier::Default;
@@ -76,6 +78,12 @@ namespace RVX
         bool readyMaxFramesExplicit = false;
         bool waitReady = false;
         bool deterministicCameraOrbit = false;
+        /**
+         * Select the fail-closed Runtime composition rather than Development
+         * composition.  This is execution evidence only: the host executable
+         * may still contain legacy Developer-linked scenarios.
+         */
+        bool runtimeOnlyComposition = false;
         bool listSamples = false;
 
         [[nodiscard]] bool HasLifetimeQualification() const noexcept

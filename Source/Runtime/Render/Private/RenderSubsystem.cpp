@@ -863,6 +863,60 @@ namespace
                 particles.batchReceiptsOverflow;
             features.particles.reason = particles.unsupportedReason;
 
+            const WaterFeaturePassStats& water =
+                m_sceneRenderer->GetWaterFeaturePassStats();
+            features.water.requested = water.requested;
+            features.water.supported = water.supported;
+            features.water.enabled = water.enabled;
+            features.water.graphPassScheduled = water.graphPassScheduled;
+            features.water.drawSubmitted = water.drawSubmitted;
+            features.water.uploadPublished = water.uploadPublished;
+            features.water.opaqueSceneSnapshotReady =
+                water.opaqueSceneSnapshotReady;
+            features.water.depthSnapshotReady = water.depthSnapshotReady;
+            features.water.depthLinearizationReady = water.depthLinearizationReady;
+            features.water.layeredNormalsEvaluated = water.layeredNormalsEvaluated;
+            features.water.fresnelEvaluated = water.fresnelEvaluated;
+            features.water.thicknessEvaluated = water.thicknessEvaluated;
+            features.water.beerLambertEvaluated = water.beerLambertEvaluated;
+            features.water.foamEvaluated = water.foamEvaluated;
+            features.water.reactiveMaskWriteEnabled = water.reactiveMaskWriteEnabled;
+            features.water.itemCount = water.itemCount;
+            features.water.drawCallCount = water.drawCallCount;
+            features.water.waveCount = water.waveCount;
+            features.water.fallbackCount = water.fallbackCount;
+            features.water.waitIdleCallCount = water.waitIdleCallCount;
+            features.water.frameSlot = water.frameSlot;
+            features.water.reactiveMaskWriteDrawCount =
+                water.reactiveMaskWriteDrawCount;
+            features.water.uploadBytes = water.uploadBytes;
+            features.water.resourceCreationCount = water.resourceCreationCount;
+            features.water.pipelineCreationCount = water.pipelineCreationCount;
+            features.water.gridVertexCount = water.gridVertexCount;
+            features.water.gridIndexCount = water.gridIndexCount;
+            features.water.recordFrameIdentity = water.recordFrameIdentity;
+            features.water.recordGraphIdentity = water.recordGraphIdentity;
+            features.water.recordGraphGeneration = water.recordGraphGeneration;
+            features.water.recordEpoch = water.recordEpoch;
+            features.water.executionReceiptFrameSequence =
+                features.executionReceipt.frameIdentity.frameSequence;
+            features.water.presentedFrameSequence = features.frameSequence;
+            features.water.recordIdentityMatchesExecutionReceipt =
+                water.recordFrameIdentity.IsValid() &&
+                water.recordFrameIdentity == features.executionReceipt.frameIdentity;
+            features.water.surfaceReceipts.reserve(water.surfaceReceipts.size());
+            for (const WaterFeatureSurfaceReceipt& receipt : water.surfaceReceipts)
+            {
+                features.water.surfaceReceipts.push_back(RenderWaterSurfaceReceipt{
+                    .componentId = receipt.componentId,
+                    .contentHash = receipt.contentHash,
+                    .waveContentHash = receipt.waveContentHash,
+                    .waveCount = receipt.waveCount,
+                });
+            }
+            features.water.surfaceReceiptsOverflow = water.surfaceReceiptsOverflow;
+            features.water.reason = water.unsupportedReason;
+
             if (MaterialSystem* materials =
                     m_sceneRenderer->GetMaterialSystem())
             {

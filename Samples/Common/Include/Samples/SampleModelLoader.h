@@ -28,6 +28,9 @@ namespace RVX
         ResourceSceneAdapters::EcsModelAssetLoadRef request;
         Resource::ResourceLoadRequestId resourceRequestId;
         ResourceSceneAdapters::EcsSceneAssetLoadStatus status;
+        /** @brief Exact logical path issued to the Resource runtime. */
+        std::string resourcePath;
+        /** @brief Physical catalog path retained solely for evidence/report lookup. */
         std::filesystem::path sourcePath;
 
         /** @brief Pointer-free root identity from the latest status snapshot. */
@@ -153,7 +156,8 @@ namespace RVX
 
     private:
         [[nodiscard]] bool RequestResolved(
-            const std::filesystem::path& path,
+            std::string resourcePath,
+            const std::filesystem::path& sourcePath,
             Resource::ResourceLoadOptions resourceOptions,
             LoadedSampleModel& outModel,
             std::string& outError) const;

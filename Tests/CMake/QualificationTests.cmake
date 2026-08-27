@@ -108,6 +108,15 @@ if(RVX_ENABLE_GFX17_VFX_NATIVE)
 elseif(NOT WIN32)
     message(STATUS "GFX17 VFX qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
 endif()
+option(RVX_ENABLE_GFX18_WATER_NATIVE
+    "Register the fail-closed DX12/Vulkan GFX18 Forward+/Deferred water gate" OFF)
+if(RVX_ENABLE_GFX18_WATER_NATIVE)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_GFX18_WATER_NATIVE requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "GFX18 water qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
 option(RVX_ENABLE_PR_SMOKE
     "Register only the fixed primary-backend SceneLifecycle PR smoke" OFF)
 option(RVX_ENABLE_COMPATIBILITY_SMOKE
@@ -136,7 +145,8 @@ if((RVX_ENABLE_P0_QUALIFICATION_MATRIX OR RVX_ENABLE_P1_QUALIFICATION_MATRIX
     OR RVX_ENABLE_GFX09_ANIMATION_NATIVE OR RVX_ENABLE_GFX10_POST_PROCESS_NATIVE
     OR RVX_ENABLE_GFX11_TAA_NATIVE OR RVX_ENABLE_GFX12_EXPOSURE_NATIVE
     OR RVX_ENABLE_GFX13_GTAO_NATIVE OR RVX_ENABLE_GFX14_TOON_NATIVE
-    OR RVX_ENABLE_GFX15_TRANSLUCENCY_NATIVE OR RVX_ENABLE_GFX17_VFX_NATIVE)
+    OR RVX_ENABLE_GFX15_TRANSLUCENCY_NATIVE OR RVX_ENABLE_GFX17_VFX_NATIVE
+    OR RVX_ENABLE_GFX18_WATER_NATIVE)
    AND (NOT TARGET VisualGoldenValidation OR NOT TARGET ImageContentValidation OR NOT TARGET SampleReportContentValidation))
     message(FATAL_ERROR "Enabled qualification matrices require visual and SampleReport validators")
 endif()
@@ -1626,6 +1636,206 @@ function(rvx_add_renderverse_gfx17_vfx_native
         TAGS product.samples trait.visual trait.gpu trait.native trait.vfx
             backend.${BACKEND_NAME} suite.gfx17-vfx
         SUITE gfx17-vfx
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+# GFX18 covers one Cooked-only deterministic Gerstner surface. The strict
+# matrix is exactly DX12/Vulkan x Forward+/Deferred x Capture/Image/Receipt =
+# 12 native CTest cases; gameplay and renderer contract tests stay outside
+# this suite so its required count cannot hide extra producers.  The Cooked
+# shader fixture must also track every source it admits; otherwise an
+# incremental qualification build could run a newer renderer against stale
+# shader artifacts from a prior source revision.
+file(GLOB_RECURSE RVX_GFX18_WATER_SHADER_SOURCE_DEPENDENCIES
+    CONFIGURE_DEPENDS
+    LIST_DIRECTORIES FALSE
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/*.hlsl"
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/*.hlsli")
+
+function(rvx_add_renderverse_gfx18_water_native
+         BACKEND_NAME BACKEND_LABEL PIPELINE_NAME PIPELINE_LABEL)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation OR
+       NOT TARGET RVXCook)
+        message(FATAL_ERROR "GFX18 water qualification requires RenderVerseSamples and report/image validators")
+    endif()
+
+    # This is a build fixture, not a CTest producer: suite.gfx18-water stays
+    # exactly Capture/Image/Receipt for each backend and raster recipe.  The
+    # rendered Sample receives this exact backend-cooked root through its
+    # runtime-only composition rather than ever consulting a source compiler.
+    set(cooked_shader_root
+        "${CMAKE_CURRENT_BINARY_DIR}/Fixtures/Gfx18WaterShaders/${BACKEND_LABEL}")
+    set(cooked_shader_stamp "${cooked_shader_root}/.rvx-gfx18-water-shaders")
+    set(cooked_shader_target "RVXGfx18WaterCookedShaders${BACKEND_LABEL}")
+    if(NOT TARGET ${cooked_shader_target})
+        add_custom_command(
+            OUTPUT "${cooked_shader_stamp}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${cooked_shader_root}"
+            COMMAND $<TARGET_FILE:RVXCook>
+                --source "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders"
+                --output "${cooked_shader_root}"
+                --shader-catalog "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                --shader-backend ${BACKEND_LABEL}
+                --fail-on-errors
+            COMMAND ${CMAKE_COMMAND} -E touch "${cooked_shader_stamp}"
+            DEPENDS
+                RVXCook
+                "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                ${RVX_GFX18_WATER_SHADER_SOURCE_DEPENDENCIES}
+            VERBATIM)
+        add_custom_target(${cooked_shader_target}
+            DEPENDS "${cooked_shader_stamp}")
+        rvx_register_module_target(
+            TARGET ${cooked_shader_target}
+            MODULE Tests)
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}GFX18${PIPELINE_LABEL}WaterSurface")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(startup_report
+        "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(pipeline_receipt_args)
+    if(PIPELINE_NAME STREQUAL "deferred")
+        list(APPEND pipeline_receipt_args --require-deferred-opaque-execution)
+    endif()
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}Capture
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample water-surface
+            --backend ${BACKEND_NAME}
+            --runtime-only-composition
+            --cooked-shader-root "${cooked_shader_root}"
+            --pipeline ${PIPELINE_NAME}
+            --render-path direct
+            --quality high
+            --smoke
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 2400
+            --view hero
+            --fixed-delta 0.0166666666666667
+            --capture-tick 120
+            --width 640
+            --height 360
+            --screenshot "${capture}"
+            --report "${report}"
+            --startup-report "${startup_report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS
+            RenderVerseSamples
+            ImageContentValidation
+            SampleReportContentValidation
+            ${cooked_shader_target}
+        TAGS product.samples trait.visual trait.gpu trait.native trait.water
+            backend.${BACKEND_NAME} suite.gfx18-water
+        SUITE gfx18-water
+        TIMEOUT 300
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 16
+            --min-luma-range 4
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --roi-normalized 0.12 0.34 0.76 0.55
+            --min-roi-unique-colors 32
+            --min-roi-normalized-luma-range 0.10
+            --min-roi-normalized-luma-contrast 0.04
+            --max-top-bottom-luma-delta -100
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.water
+            backend.${BACKEND_NAME} suite.gfx18-water
+        SUITE gfx18-water
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ReceiptValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name water-surface
+            --category visual
+            --backend ${BACKEND_NAME}
+            --require-requested-backend ${BACKEND_NAME}
+            --require-actual-backend ${BACKEND_NAME}
+            --quality high
+            --min-frame-count 120
+            --min-visible-objects 1
+            --require-ready
+            --require-readiness-wait
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-direct-execution
+            --require-render-pipeline ${PIPELINE_NAME}
+            ${pipeline_receipt_args}
+            --asset-id water-surface-reference-fixture-v1
+            --require-cook-admission-accepted water-surface-reference-fixture-v1
+            --require-package-only-cooked-asset water-surface-reference-fixture-v1
+            --require-post-process-execution
+            --require-exactly-one-tone-map
+            --require-temporal-aa-execution
+            --require-no-fxaa-execution
+            --require-temporal-history-sampled
+            --require-temporal-history-committed
+            --require-water-surface-execution
+            --require-cooked-shader-provider
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-phase stable
+            --require-enabled-feature CookedWaterSurfaceReferenceAdmissionRequired
+            --require-enabled-feature CookedWaterSurfaceReferenceResident
+            --require-enabled-feature GerstnerWaterSurfaceRequested
+            --require-enabled-feature WaterDepthThicknessRequested
+            --require-enabled-feature WaterBeerLambertRequested
+            --require-enabled-feature WaterReactiveMaskRequested
+            --require-enabled-feature WaterSurfaceDeterministicEpochStarted
+            --require-enabled-feature WaterSurfaceEcsRefreshApplied
+            --require-enabled-feature WaterSurfaceGameplayQueryQualified
+            --require-enabled-feature WaterSurfaceActualExecutionQualified
+            --forbid-fallback-reasons
+            --forbid-render-feature-fallbacks
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.water
+            backend.${BACKEND_NAME} suite.gfx18-water
+        SUITE gfx18-water
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         FIXTURES_REQUIRED "${test_prefix}FreshCapture"
@@ -3990,6 +4200,15 @@ if(RVX_ENABLE_GFX17_VFX_NATIVE)
     rvx_add_renderverse_gfx17_vfx_native(vulkan Vulkan forward-plus ForwardPlus particle-smoke ParticleSmoke 180)
     rvx_add_renderverse_gfx17_vfx_native(vulkan Vulkan deferred Deferred particle-fire ParticleFire 120)
     rvx_add_renderverse_gfx17_vfx_native(vulkan Vulkan deferred Deferred particle-smoke ParticleSmoke 180)
+endif()
+
+if(RVX_ENABLE_GFX18_WATER_NATIVE)
+    # Exactly 12 strict native tests: DX12/Vulkan x Forward+/Deferred x
+    # Capture/Image/Receipt. No contract or gameplay test carries suite.gfx18-water.
+    rvx_add_renderverse_gfx18_water_native(dx12 DX12 forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx18_water_native(dx12 DX12 deferred Deferred)
+    rvx_add_renderverse_gfx18_water_native(vulkan Vulkan forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx18_water_native(vulkan Vulkan deferred Deferred)
 endif()
 
 if(WIN32

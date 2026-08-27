@@ -9,6 +9,7 @@
 #include "Render/Passes/DeferredLightingPass.h"
 #include "Render/Passes/OpaquePass.h"
 #include "Render/Passes/ParticleFeaturePass.h"
+#include "Render/Passes/WaterFeaturePass.h"
 #include "Render/PipelineCache.h"
 #include "Renderer/RenderPassRegistry.h"
 
@@ -76,6 +77,53 @@ namespace
         RGTextureHandle destination{};
     };
 
+    struct WaterDepthSnapshotCopyData
+    {
+        RGTextureHandle source{};
+        RGTextureHandle destination{};
+        std::shared_ptr<WaterDepthSnapshotCopyReceipt> receipt;
+    };
+
+    [[nodiscard]] bool AddWaterDepthSnapshotCopy(
+        RenderFeatureGraphBuilder& builder,
+        RGTextureHandle source,
+        RGTextureHandle destination,
+        std::shared_ptr<WaterDepthSnapshotCopyReceipt> receipt)
+    {
+        if (!receipt)
+        {
+            return false;
+        }
+        return builder.AddPass<WaterDepthSnapshotCopyData>(
+            "WaterDepthSnapshotCopy", RenderGraphPassType::Graphics,
+            [source, destination, receipt = std::move(receipt)](
+                RenderGraphBuilder& graphBuilder, WaterDepthSnapshotCopyData& data)
+            {
+                data.source = graphBuilder.Read(source, RHIResourceState::CopySource);
+                data.destination = graphBuilder.Write(destination, RHIResourceState::CopyDest);
+                data.receipt = receipt;
+            },
+            [](const WaterDepthSnapshotCopyData& data, RenderGraphPassContext& context)
+            {
+                RHITexture* const source = context.GetTexture(data.source);
+                RHITexture* const destination = context.GetTexture(data.destination);
+                if (source == nullptr || destination == nullptr || source == destination ||
+                    source->GetWidth() != destination->GetWidth() ||
+                    source->GetHeight() != destination->GetHeight() ||
+                    source->GetFormat() != RHIFormat::D32_FLOAT ||
+                    destination->GetFormat() != RHIFormat::D32_FLOAT)
+                {
+                    context.MarkExecutionFailed("Water depth snapshot copy has invalid source/destination provenance");
+                    return;
+                }
+                context.Commands().CopyTexture(source, destination);
+                if (data.receipt)
+                {
+                    data.receipt->copied.store(true, std::memory_order_release);
+                }
+            });
+    }
+
     [[nodiscard]] bool AddParticleSoftDepthSnapshotCopy(
         RenderFeatureGraphBuilder& builder,
         RGTextureHandle source,
@@ -120,6 +168,75 @@ namespace
             }
         }
         return nullptr;
+    }
+
+    [[nodiscard]] const WaterFeaturePass* FindWaterFeaturePass(
+        const RenderPassRegistry& registry) noexcept
+    {
+        for (const std::unique_ptr<IRenderPass>& pass : registry.GetPasses())
+        {
+            if (const auto* const water =
+                    dynamic_cast<const WaterFeaturePass*>(pass.get()))
+            {
+                return water;
+            }
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] bool BuildWaterSurfaceRecordInput(
+        RenderFeatureGraphBuilder& builder,
+        const RenderPassRecordContext& context,
+        const RenderPassRegistry& registry,
+        RenderOutputExtent extent,
+        WaterSurfaceRecordInput& outInput,
+        std::string& outFailure)
+    {
+        outInput = {};
+        const WaterFeaturePass* const water = FindWaterFeaturePass(registry);
+        if (water == nullptr || !water->GetRequirements().requested)
+        {
+            return true;
+        }
+        const WaterSurfaceRequirements requirements = water->GetRequirements();
+        if (!requirements.opaqueSceneSnapshotRequired ||
+            !context.opaqueSceneSnapshot.IsCompatibleWith(context.identity))
+        {
+            outFailure = "Water requires the current graph's immutable HDR opaque snapshot";
+            return false;
+        }
+        const RHITextureDesc* const depthDesc = builder.GetGraph().GetTextureDesc(
+            context.view.depthTarget);
+        const bool validDepthSource = context.view.depthTarget.IsValid() &&
+            HasCurrentGraphProvenance(context.view.depthTarget, context.identity) &&
+            depthDesc != nullptr && depthDesc->format == RHIFormat::D32_FLOAT &&
+            depthDesc->width == extent.width && depthDesc->height == extent.height &&
+            depthDesc->sampleCount == RHISampleCount::Count1 &&
+            HasFlag(depthDesc->usage, RHITextureUsage::CopySrc);
+        if (!validDepthSource)
+        {
+            outFailure = "Water requires a D32 CopySrc depth surface matching the view extent";
+            return false;
+        }
+        RHITextureDesc depthSnapshotDesc = RHITextureDesc::DepthStencil(
+            extent.width, extent.height, RHIFormat::D32_FLOAT);
+        depthSnapshotDesc.usage = depthSnapshotDesc.usage |
+            RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst;
+        depthSnapshotDesc.debugName = "WaterDepthSnapshot";
+        outInput.identity = context.identity;
+        outInput.opaqueSceneSnapshot = context.opaqueSceneSnapshot;
+        outInput.depthSnapshot = builder.CreateTexture(depthSnapshotDesc);
+        outInput.depthReceipt = std::make_shared<WaterDepthSnapshotCopyReceipt>();
+        if (!outInput.depthSnapshot.IsValid() ||
+            outInput.depthSnapshot.index == context.view.depthTarget.index ||
+            !AddWaterDepthSnapshotCopy(
+                builder, context.view.depthTarget, outInput.depthSnapshot,
+                outInput.depthReceipt))
+        {
+            outFailure = "Water depth snapshot allocation/copy registration failed";
+            return false;
+        }
+        return true;
     }
 
     [[nodiscard]] bool BuildParticleVfxRecordInput(
@@ -1402,7 +1519,7 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
             [velocityPasses = m_velocityPasses](const IRenderPass& pass)
             {
                 return pass.GetPriority() > PassPriority::Opaque &&
-                       pass.GetPriority() < PassPriority::Transparent &&
+                       pass.GetPriority() < PassPriority::Water &&
                        !velocityPasses.Contains(&pass);
             },
             m_lastPassChainStats,
@@ -1441,6 +1558,15 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
         postLightingContext.identity,
         opaqueSceneSnapshot,
         opaqueSnapshotReceipt};
+    std::string waterSurfaceFailure;
+    if (!BuildWaterSurfaceRecordInput(
+            builder, translucencyContext, *m_passRegistry,
+            m_preparedContext.outputExtent, translucencyContext.waterSurface,
+            waterSurfaceFailure))
+    {
+        SetCompositionFailure(std::move(waterSurfaceFailure));
+        return;
+    }
     std::string particleVfxFailure;
     if (!BuildParticleVfxRecordInput(
             builder,
@@ -1461,7 +1587,7 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
             m_opaquePass,
             [velocityPasses = m_velocityPasses](const IRenderPass& pass)
             {
-                return pass.GetPriority() >= PassPriority::Transparent &&
+                return pass.GetPriority() >= PassPriority::Water &&
                        !velocityPasses.Contains(&pass);
             },
             m_lastPassChainStats,

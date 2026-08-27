@@ -16,6 +16,7 @@
 #include "Render/GPUScene/GPUSceneDiagnostics.h"
 #include "Render/Policy/RenderPolicyDiagnostics.h"
 #include "RenderContracts/ParticleRenderSnapshot.h"
+#include "RenderContracts/WaterRenderSnapshot.h"
 #include "RenderContracts/RenderIdentity.h"
 #include "RenderContracts/RenderFrameTypes.h"
 
@@ -1095,6 +1096,57 @@ namespace RVX
         std::string reason{};
     };
 
+    /** Public, value-only proof for one deterministic Gerstner surface draw. */
+    struct RenderWaterSurfaceReceipt
+    {
+        uint64 componentId = 0;
+        uint64 contentHash = 0;
+        uint64 waveContentHash = 0;
+        uint32 waveCount = 0;
+    };
+
+    /** Execution-only diagnostics for graph-owned deterministic water. */
+    struct RenderWaterFeatureDiagnostics
+    {
+        bool requested = false;
+        bool supported = false;
+        bool enabled = false;
+        bool graphPassScheduled = false;
+        bool drawSubmitted = false;
+        bool uploadPublished = false;
+        bool opaqueSceneSnapshotReady = false;
+        bool depthSnapshotReady = false;
+        bool depthLinearizationReady = false;
+        bool layeredNormalsEvaluated = false;
+        bool fresnelEvaluated = false;
+        bool thicknessEvaluated = false;
+        bool beerLambertEvaluated = false;
+        bool foamEvaluated = false;
+        bool reactiveMaskWriteEnabled = false;
+        uint32 itemCount = 0;
+        uint32 drawCallCount = 0;
+        uint32 waveCount = 0;
+        uint32 fallbackCount = 0;
+        uint32 waitIdleCallCount = 0;
+        uint32 frameSlot = RVX_INVALID_INDEX;
+        uint32 reactiveMaskWriteDrawCount = 0;
+        uint64 uploadBytes = 0;
+        uint64 resourceCreationCount = 0;
+        uint64 pipelineCreationCount = 0;
+        uint64 gridVertexCount = 0;
+        uint64 gridIndexCount = 0;
+        RenderFrameIdentity recordFrameIdentity{};
+        uint64 recordGraphIdentity = 0;
+        uint64 recordGraphGeneration = 0;
+        uint64 recordEpoch = 0;
+        uint64 executionReceiptFrameSequence = 0;
+        uint64 presentedFrameSequence = 0;
+        bool recordIdentityMatchesExecutionReceipt = false;
+        std::vector<RenderWaterSurfaceReceipt> surfaceReceipts{};
+        bool surfaceReceiptsOverflow = false;
+        std::string reason{};
+    };
+
     struct RenderMaterialFeatureDiagnostics
     {
         bool ready = false;
@@ -1334,6 +1386,7 @@ namespace RVX
         RenderMutationEvidenceDiagnostics mutationEvidence{};
         RenderPolicyDiagnostics policy{};
         RenderParticleFeatureDiagnostics particles{};
+        RenderWaterFeatureDiagnostics water{};
         RenderMaterialFeatureDiagnostics material{};
         RenderSkinningPaletteDiagnostics skinning{};
         RenderInstancingDiagnostics instancing{};

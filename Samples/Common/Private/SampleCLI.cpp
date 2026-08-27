@@ -1326,6 +1326,99 @@ namespace RVX
         return diagnostics.particleVfxActualExecution;
     }
 
+    SampleWaterSurfaceExecutionDiagnostics
+        ProjectSampleWaterSurfaceExecutionDiagnostics(
+            const RenderDiagnosticsSnapshot& renderDiagnostics)
+    {
+        SampleWaterSurfaceExecutionDiagnostics result;
+        const RenderFrameFeatureDiagnostics& frameFeatures =
+            renderDiagnostics.frameFeatures;
+        const RenderExecutionReceipt& receipt = frameFeatures.executionReceipt;
+        if (!frameFeatures.available || receipt.schemaVersion != 11 ||
+            !receipt.IsStructurallyValid() || !receipt.presented ||
+            !receipt.succeeded || receipt.viewIdentity.role != ViewRole::Main ||
+            receipt.viewIdentity.subViewIndex != 0)
+        {
+            return result;
+        }
+
+        const RenderWaterFeatureDiagnostics& water = frameFeatures.water;
+        result.available = receipt.available;
+        result.executionReceiptSchemaVersion = receipt.schemaVersion;
+        result.executionReceiptStructurallyValid = true;
+        result.executionReceiptPresented = receipt.presented;
+        result.executionReceiptSucceeded = receipt.succeeded;
+        result.mainView = true;
+        result.requested = water.requested;
+        result.supported = water.supported;
+        result.enabled = water.enabled;
+        result.graphPassScheduled = water.graphPassScheduled;
+        result.drawSubmitted = water.drawSubmitted;
+        result.uploadPublished = water.uploadPublished;
+        result.opaqueSceneSnapshotReady = water.opaqueSceneSnapshotReady;
+        result.depthSnapshotReady = water.depthSnapshotReady;
+        result.depthLinearizationReady = water.depthLinearizationReady;
+        result.layeredNormalsEvaluated = water.layeredNormalsEvaluated;
+        result.fresnelEvaluated = water.fresnelEvaluated;
+        result.thicknessEvaluated = water.thicknessEvaluated;
+        result.beerLambertEvaluated = water.beerLambertEvaluated;
+        result.foamEvaluated = water.foamEvaluated;
+        result.reactiveMaskWriteEnabled = water.reactiveMaskWriteEnabled;
+        result.itemCount = water.itemCount;
+        result.drawCallCount = water.drawCallCount;
+        result.waveCount = water.waveCount;
+        result.fallbackCount = water.fallbackCount;
+        result.waitIdleCallCount = water.waitIdleCallCount;
+        result.frameSlot = water.frameSlot;
+        result.reactiveMaskWriteDrawCount = water.reactiveMaskWriteDrawCount;
+        result.uploadBytes = water.uploadBytes;
+        result.resourceCreationCount = water.resourceCreationCount;
+        result.pipelineCreationCount = water.pipelineCreationCount;
+        result.gridVertexCount = water.gridVertexCount;
+        result.gridIndexCount = water.gridIndexCount;
+        result.recordFrameSequence = water.recordFrameIdentity.frameSequence;
+        result.recordSceneRevision = water.recordFrameIdentity.sceneRevision;
+        result.recordSurfaceGeneration =
+            water.recordFrameIdentity.surfaceGeneration;
+        result.recordConfigurationRevision =
+            water.recordFrameIdentity.configurationRevision;
+        result.recordGraphIdentity = water.recordGraphIdentity;
+        result.recordGraphGeneration = water.recordGraphGeneration;
+        result.recordEpoch = water.recordEpoch;
+        result.executionReceiptFrameSequence =
+            water.executionReceiptFrameSequence;
+        result.presentedFrameSequence = water.presentedFrameSequence;
+        result.recordIdentityMatchesExecutionReceipt =
+            water.recordIdentityMatchesExecutionReceipt;
+        result.presentedFrameAligned =
+            result.recordFrameSequence != 0 &&
+            result.recordFrameSequence == result.executionReceiptFrameSequence &&
+            result.executionReceiptFrameSequence == result.presentedFrameSequence &&
+            result.presentedFrameSequence == renderDiagnostics.lastPresentedFrameSequence;
+        result.surfaceReceiptsOverflow = water.surfaceReceiptsOverflow;
+        result.surfaceReceiptCount = static_cast<uint32>(
+            std::min<size_t>(water.surfaceReceipts.size(),
+                             std::numeric_limits<uint32>::max()));
+        for (const RenderWaterSurfaceReceipt& surface : water.surfaceReceipts)
+        {
+            if (result.componentId == 0)
+            {
+                result.componentId = surface.componentId;
+                result.contentHash = surface.contentHash;
+                result.waveContentHash = surface.waveContentHash;
+            }
+        }
+        result.diagnostic = water.reason;
+        return result;
+    }
+
+    const SampleWaterSurfaceExecutionDiagnostics&
+        GetSampleWaterSurfaceExecutionDiagnostics(
+            const SampleRenderDiagnostics& diagnostics) noexcept
+    {
+        return diagnostics.waterSurfaceActualExecution;
+    }
+
     bool IsSampleRenderPathExecutionQualified(
         const SampleRenderPath requestedPath,
         const SampleRenderDiagnostics& diagnostics)
@@ -2177,6 +2270,41 @@ namespace RVX
                << Diagnostics::JsonString(report.requestedRenderPath) << ",\n";
         stream << "  \"actualRenderPath\": "
                << Diagnostics::JsonString(report.actualRenderPath) << ",\n";
+        if (report.schemaVersion >
+            RVX_SAMPLE_REPORT_PRE_RUNTIME_ONLY_COMPOSITION_SCHEMA_VERSION)
+        {
+            const SampleRuntimeCompositionEvidence& runtime =
+                report.runtimeComposition;
+            stream << "  \"runtimeComposition\": {\n";
+            stream << "    \"runtimeOnlyComposition\": "
+                   << Diagnostics::JsonBool(runtime.runtimeOnlyComposition)
+                   << ",\n";
+            stream << "    \"cookedShaderProvider\": "
+                   << Diagnostics::JsonBool(runtime.cookedShaderProvider)
+                   << ",\n";
+            stream << "    \"sourceShaderFallbackEnabled\": "
+                   << Diagnostics::JsonBool(runtime.sourceShaderFallbackEnabled)
+                   << ",\n";
+            stream << "    \"cookedResourcePolicy\": "
+                   << Diagnostics::JsonBool(runtime.cookedResourcePolicy)
+                   << ",\n";
+            stream << "    \"cookedShaderRoot\": "
+                   << Diagnostics::JsonString(runtime.cookedShaderRoot.string())
+                   << ",\n";
+            stream << "    \"cookedResourceRoot\": "
+                   << Diagnostics::JsonString(runtime.cookedResourceRoot.string())
+                   << ",\n";
+            stream << "    \"shaderProgramProvider\": "
+                   << Diagnostics::JsonString(runtime.shaderProgramProvider)
+                   << ",\n";
+            stream << "    \"qualifiedCookedShaderProvider\": "
+                   << Diagnostics::JsonBool(
+                          runtime.HasCookedOnlyShaderProvider())
+                   << ",\n";
+            stream << "    \"diagnostic\": "
+                   << Diagnostics::JsonString(runtime.diagnostic) << "\n";
+            stream << "  },\n";
+        }
         stream << "  \"requestedPhysicsBackend\": "
                << Diagnostics::JsonString(report.requestedPhysicsBackend) << ",\n";
         stream << "  \"actualPhysicsBackend\": "
@@ -3402,6 +3530,125 @@ namespace RVX
                    << Diagnostics::JsonBool(particle.HasSmokeExecution()) << ",\n";
             stream << "      \"diagnostic\": "
                    << Diagnostics::JsonString(particle.diagnostic) << "\n";
+            stream << "    },\n";
+        }
+        if (report.schemaVersion >
+            RVX_SAMPLE_REPORT_PRE_WATER_SURFACE_EXECUTION_SCHEMA_VERSION)
+        {
+            const SampleWaterSurfaceExecutionDiagnostics& water =
+                renderDiagnostics.waterSurfaceActualExecution;
+            stream << "    \"waterSurfaceActualExecution\": {\n";
+            stream << "      \"available\": "
+                   << Diagnostics::JsonBool(water.available) << ",\n";
+            stream << "      \"executionReceiptSchemaVersion\": "
+                   << water.executionReceiptSchemaVersion << ",\n";
+            stream << "      \"executionReceiptStructurallyValid\": "
+                   << Diagnostics::JsonBool(
+                          water.executionReceiptStructurallyValid)
+                   << ",\n";
+            stream << "      \"executionReceiptPresented\": "
+                   << Diagnostics::JsonBool(water.executionReceiptPresented)
+                   << ",\n";
+            stream << "      \"executionReceiptSucceeded\": "
+                   << Diagnostics::JsonBool(water.executionReceiptSucceeded)
+                   << ",\n";
+            stream << "      \"mainView\": "
+                   << Diagnostics::JsonBool(water.mainView) << ",\n";
+            stream << "      \"requested\": "
+                   << Diagnostics::JsonBool(water.requested) << ",\n";
+            stream << "      \"supported\": "
+                   << Diagnostics::JsonBool(water.supported) << ",\n";
+            stream << "      \"enabled\": "
+                   << Diagnostics::JsonBool(water.enabled) << ",\n";
+            stream << "      \"graphPassScheduled\": "
+                   << Diagnostics::JsonBool(water.graphPassScheduled)
+                   << ",\n";
+            stream << "      \"drawSubmitted\": "
+                   << Diagnostics::JsonBool(water.drawSubmitted) << ",\n";
+            stream << "      \"uploadPublished\": "
+                   << Diagnostics::JsonBool(water.uploadPublished) << ",\n";
+            stream << "      \"opaqueSceneSnapshotReady\": "
+                   << Diagnostics::JsonBool(water.opaqueSceneSnapshotReady)
+                   << ",\n";
+            stream << "      \"depthSnapshotReady\": "
+                   << Diagnostics::JsonBool(water.depthSnapshotReady) << ",\n";
+            stream << "      \"depthLinearizationReady\": "
+                   << Diagnostics::JsonBool(water.depthLinearizationReady)
+                   << ",\n";
+            stream << "      \"layeredNormalsEvaluated\": "
+                   << Diagnostics::JsonBool(water.layeredNormalsEvaluated)
+                   << ",\n";
+            stream << "      \"fresnelEvaluated\": "
+                   << Diagnostics::JsonBool(water.fresnelEvaluated) << ",\n";
+            stream << "      \"thicknessEvaluated\": "
+                   << Diagnostics::JsonBool(water.thicknessEvaluated) << ",\n";
+            stream << "      \"beerLambertEvaluated\": "
+                   << Diagnostics::JsonBool(water.beerLambertEvaluated)
+                   << ",\n";
+            stream << "      \"foamEvaluated\": "
+                   << Diagnostics::JsonBool(water.foamEvaluated) << ",\n";
+            stream << "      \"reactiveMaskWriteEnabled\": "
+                   << Diagnostics::JsonBool(water.reactiveMaskWriteEnabled)
+                   << ",\n";
+            stream << "      \"itemCount\": " << water.itemCount << ",\n";
+            stream << "      \"drawCallCount\": " << water.drawCallCount
+                   << ",\n";
+            stream << "      \"waveCount\": " << water.waveCount << ",\n";
+            stream << "      \"fallbackCount\": " << water.fallbackCount
+                   << ",\n";
+            stream << "      \"waitIdleCallCount\": "
+                   << water.waitIdleCallCount << ",\n";
+            stream << "      \"frameSlot\": " << water.frameSlot << ",\n";
+            stream << "      \"reactiveMaskWriteDrawCount\": "
+                   << water.reactiveMaskWriteDrawCount << ",\n";
+            stream << "      \"surfaceReceiptCount\": "
+                   << water.surfaceReceiptCount << ",\n";
+            stream << "      \"surfaceReceiptsOverflow\": "
+                   << Diagnostics::JsonBool(water.surfaceReceiptsOverflow)
+                   << ",\n";
+            stream << "      \"uploadBytes\": " << water.uploadBytes << ",\n";
+            stream << "      \"resourceCreationCount\": "
+                   << water.resourceCreationCount << ",\n";
+            stream << "      \"pipelineCreationCount\": "
+                   << water.pipelineCreationCount << ",\n";
+            stream << "      \"gridVertexCount\": "
+                   << water.gridVertexCount << ",\n";
+            stream << "      \"gridIndexCount\": " << water.gridIndexCount
+                   << ",\n";
+            stream << "      \"componentId\": " << water.componentId << ",\n";
+            stream << "      \"contentHash\": " << water.contentHash << ",\n";
+            stream << "      \"waveContentHash\": " << water.waveContentHash
+                   << ",\n";
+            stream << "      \"recordFrameSequence\": "
+                   << water.recordFrameSequence << ",\n";
+            stream << "      \"recordSceneRevision\": "
+                   << water.recordSceneRevision << ",\n";
+            stream << "      \"recordSurfaceGeneration\": "
+                   << water.recordSurfaceGeneration << ",\n";
+            stream << "      \"recordConfigurationRevision\": "
+                   << water.recordConfigurationRevision << ",\n";
+            stream << "      \"recordGraphIdentity\": "
+                   << water.recordGraphIdentity << ",\n";
+            stream << "      \"recordGraphGeneration\": "
+                   << water.recordGraphGeneration << ",\n";
+            stream << "      \"recordEpoch\": " << water.recordEpoch
+                   << ",\n";
+            stream << "      \"executionReceiptFrameSequence\": "
+                   << water.executionReceiptFrameSequence << ",\n";
+            stream << "      \"presentedFrameSequence\": "
+                   << water.presentedFrameSequence << ",\n";
+            stream << "      \"recordIdentityMatchesExecutionReceipt\": "
+                   << Diagnostics::JsonBool(
+                          water.recordIdentityMatchesExecutionReceipt)
+                   << ",\n";
+            stream << "      \"presentedFrameAligned\": "
+                   << Diagnostics::JsonBool(water.presentedFrameAligned)
+                   << ",\n";
+            stream << "      \"qualifiedWater\": "
+                   << Diagnostics::JsonBool(water.HasWaterExecution())
+                   << ",\n";
+            stream << "      \"diagnostic\": "
+                   << Diagnostics::JsonString(water.diagnostic) << "\n";
             stream << "    },\n";
         }
         if (report.schemaVersion >

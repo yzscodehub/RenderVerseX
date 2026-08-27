@@ -7,10 +7,13 @@
 #include "Samples/SampleLifetimeQualification.h"
 #include "Samples/SampleManifest.h"
 #include "Samples/SampleRunner.h"
+#include "Samples/SampleScreenshotWriter.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <limits>
 #include <sstream>
@@ -1014,6 +1017,57 @@ namespace
         EXPECT_FALSE(capture.HasMatchingCompletedPixelProbe());
     }
 
+    TEST(SampleCLIValidation,
+         ScreenshotWriterNormalizesBottomLeftCaptureRowsToTopDownPpm)
+    {
+        RVX::RenderFrameCaptureResult capture;
+        capture.code = RVX::RenderFrameCaptureResultCode::Completed;
+        capture.requestId = 17;
+        capture.frameSequence = 19;
+        capture.width = 2;
+        capture.height = 2;
+        capture.rowPitch = 8;
+        capture.bytesPerPixel = 4;
+        capture.format = RVX::RHIFormat::RGBA8_UNORM;
+        capture.originBottomLeft = true;
+        capture.bytes = {
+            0, 0, 255, 255, 0, 255, 0, 255,
+            255, 0, 0, 255, 255, 255, 255, 255,
+        };
+
+        const std::filesystem::path output =
+            std::filesystem::path(::testing::TempDir()) /
+            "rvx-screenshot-bottom-left-normalization.ppm";
+        std::error_code removeError;
+        std::filesystem::remove(output, removeError);
+
+        std::string error;
+        ASSERT_TRUE(RVX::WriteSampleScreenshotPPM(capture, output, &error))
+            << error;
+
+        std::ifstream stream(output, std::ios::binary);
+        ASSERT_TRUE(stream.is_open());
+        const std::string actual((std::istreambuf_iterator<char>(stream)),
+                                 std::istreambuf_iterator<char>());
+        std::string expected = "P6\n2 2\n255\n";
+        const auto appendPixel = [&expected](RVX::uint8 r,
+                                             RVX::uint8 g,
+                                             RVX::uint8 b)
+        {
+            expected.push_back(static_cast<char>(r));
+            expected.push_back(static_cast<char>(g));
+            expected.push_back(static_cast<char>(b));
+        };
+        appendPixel(255, 0, 0);
+        appendPixel(255, 255, 255);
+        appendPixel(0, 0, 255);
+        appendPixel(0, 255, 0);
+        EXPECT_EQ(actual, expected);
+
+        stream.close();
+        std::filesystem::remove(output, removeError);
+    }
+
     TEST(SampleCLIValidation, PixelProbeReportEmitsRawBitsOnlyWhenComplete)
     {
         RVX::SampleReport report;
@@ -1094,7 +1148,11 @@ namespace
         std::ostringstream stream;
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
-        EXPECT_NE(json.find("\"schemaVersion\": 30"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 32"), std::string::npos);
+        EXPECT_NE(json.find("\"waterSurfaceActualExecution\": {"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"qualifiedWater\": false"),
+                  std::string::npos);
         EXPECT_NE(json.find("\"validationRunId\": \"" +
                             std::string(32, '1') + "\""),
                   std::string::npos);
@@ -1908,6 +1966,77 @@ namespace
         EXPECT_NE(error.find("--assessment-report"), std::string::npos);
     }
 
+    TEST(SampleCLIValidation, ParsesStrictRuntimeOnlyCookedShaderRoot)
+    {
+        const char* argv[] = {
+            "RenderVerseSamples",
+            "--sample", "water-surface",
+            "--backend", "dx12",
+            "--runtime-only-composition",
+            "--cooked-shader-root", "Artifacts/Shaders/DX12",
+        };
+
+        RVX::SampleRunnerCLIOptions options;
+        std::string error;
+        ASSERT_TRUE(RVX::ParseSampleRunnerCLI(
+            static_cast<int>(std::size(argv)), argv, options, &error))
+            << error;
+        EXPECT_TRUE(options.runtimeOnlyComposition);
+        EXPECT_EQ(options.cookedShaderRoot,
+                  std::filesystem::path("Artifacts/Shaders/DX12"));
+    }
+
+    TEST(SampleCLIValidation, StrictRuntimeOnlyCookedShaderRootIsFailClosed)
+    {
+        const char* missingRoot[] = {
+            "RenderVerseSamples", "--runtime-only-composition",
+        };
+        RVX::SampleRunnerCLIOptions missingRootOptions;
+        std::string missingRootError;
+        EXPECT_FALSE(RVX::ParseSampleRunnerCLI(
+            static_cast<int>(std::size(missingRoot)), missingRoot,
+            missingRootOptions, &missingRootError));
+        EXPECT_NE(missingRootError.find("--cooked-shader-root"),
+                  std::string::npos);
+
+        const char* missingMode[] = {
+            "RenderVerseSamples", "--cooked-shader-root", "Artifacts/Shaders/DX12",
+        };
+        RVX::SampleRunnerCLIOptions missingModeOptions;
+        std::string missingModeError;
+        EXPECT_FALSE(RVX::ParseSampleRunnerCLI(
+            static_cast<int>(std::size(missingMode)), missingMode,
+            missingModeOptions, &missingModeError));
+        EXPECT_NE(missingModeError.find("--runtime-only-composition"),
+                  std::string::npos);
+    }
+
+    TEST(SampleCLIValidation, CurrentReportWritesRuntimeOnlyCompositionEvidence)
+    {
+        RVX::SampleReport report;
+        report.schemaVersion = RVX::RVX_SAMPLE_REPORT_SCHEMA_VERSION;
+        report.runtimeComposition.runtimeOnlyComposition = true;
+        report.runtimeComposition.cookedShaderProvider = true;
+        report.runtimeComposition.sourceShaderFallbackEnabled = false;
+        report.runtimeComposition.cookedResourcePolicy = true;
+        report.runtimeComposition.cookedShaderRoot = "Artifacts/Shaders/DX12";
+        report.runtimeComposition.cookedResourceRoot = "Assets/Samples/cooked/water";
+        report.runtimeComposition.shaderProgramProvider = "CookedShaderArtifactV2";
+
+        std::ostringstream stream;
+        RVX::WriteSampleReportJson(stream, report);
+        const std::string json = stream.str();
+        EXPECT_NE(json.find("\"runtimeComposition\": {"), std::string::npos);
+        EXPECT_NE(json.find("\"runtimeOnlyComposition\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"cookedShaderProvider\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"sourceShaderFallbackEnabled\": false"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"qualifiedCookedShaderProvider\": true"),
+                  std::string::npos);
+    }
+
     TEST(SampleCLIValidation, NonSmokeAssessmentProfilesRequireAssessmentReport)
     {
         for (const char* profile : {"qualification", "benchmark"})
@@ -2233,7 +2362,7 @@ namespace
         const std::string json = stream.str();
 
         EXPECT_NE(json.find("\"schemaId\": \"RVX.SampleReport\""), std::string::npos);
-        EXPECT_NE(json.find("\"schemaVersion\": 30"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 32"), std::string::npos);
         EXPECT_NE(json.find("\"sampleName\": \"BasicRHI\""), std::string::npos);
         EXPECT_NE(json.find("\"category\": \"sample\""), std::string::npos);
         EXPECT_NE(json.find("\"requestedBackend\": \"dx12\""), std::string::npos);
@@ -2529,7 +2658,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 30"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 32"), std::string::npos);
         EXPECT_NE(json.find("\"contractRevision\": 7"), std::string::npos);
         EXPECT_NE(json.find("\"phase\": \"complete\""),
                   std::string::npos);
@@ -3020,7 +3149,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 30"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 32"), std::string::npos);
         EXPECT_NE(json.find("\"packageContentId\""), std::string::npos);
         EXPECT_NE(json.find(asset.packageContentId.digest), std::string::npos);
         EXPECT_NE(json.find("\"cook\": {\"required\": true, \"accepted\": true, \"packageOnly\": true, \"actualLoadDomain\": \"CookedArtifact\", \"code\": \"accepted\""),

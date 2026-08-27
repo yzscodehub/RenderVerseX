@@ -649,6 +649,22 @@ if(TARGET RVX_SampleCommon)
         TAGS product.samples subsystem.particle suite.particle-vfx
         TIMEOUT 30
     )
+
+    # GFX18 receipt predicates and immutable sample metadata are ordinary
+    # deterministic unit coverage.  The native qualification matrix owns the
+    # sole GFX18 water qualification tag, so this target deliberately carries only
+    # a distinct, non-qualification tag.
+    if(TARGET RVX_Gfx18SampleScenarios)
+        rvx_add_gtest(
+            NAME WaterSurfaceSampleValidation
+            LANE unit
+            SOURCES WaterSurfaceSampleValidation/main.cpp
+            LIBS RVX::Gfx18SampleScenarios RVX::SampleCommon RVX::ResourceRuntime
+            INCLUDES ${CMAKE_SOURCE_DIR}/Samples/RenderVerseSamples
+            TAGS product.samples subsystem.water suite.water-sample
+            TIMEOUT 30
+        )
+    endif()
 endif()
 
 rvx_add_gtest(
@@ -678,6 +694,26 @@ rvx_add_gtest(
     SOURCES ParticleRenderValidation/main.cpp
     LIBS RVX::RenderParticles
     TAGS subsystem.render subsystem.particle
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME WaterValidation
+    LANE unit
+    SOURCES WaterValidation/main.cpp
+    LIBS RVX::Water
+    DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    TAGS subsystem.water subsystem.scene suite.water
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME WaterRenderValidation
+    LANE unit
+    SOURCES WaterRenderValidation/main.cpp
+    LIBS RVX::RenderWater
+    DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    TAGS subsystem.render subsystem.water suite.water
     TIMEOUT 30
 )
 

@@ -184,9 +184,35 @@ using namespace RVX::SceneECS;
                       ECS::EntityHandle::Create(8, 12),
                       FrozenSceneObjectType::Water);
     water.sourceEntity = water.id.entity;
+    water.state.payloadStatus = WaterRenderSnapshotPayloadStatus::Ready;
     water.state.componentId = 801;
     water.state.surfaceAssetId = {.value = 501};
     water.state.materialAssetId = {.value = 502};
+    water.state.worldBounds = AABB({-5.8f, -4.5f, -10.8f}, {5.8f, 0.5f, 10.8f});
+    water.state.size = {10.0f, 20.0f};
+    water.state.depth = 4.0f;
+    water.state.gerstnerWaves.waveCount = 1;
+    water.state.gerstnerWaves.waves[0] = {
+        .direction = {1.0f, 0.0f}, .amplitude = 0.5f,
+        .wavelength = 8.0f, .steepness = 0.5f,
+        .speed = 1.0f, .phaseOffsetRadians = 0.0f,
+    };
+    static_cast<void>(CanonicalizeWaterGerstnerWaveSet(water.state.gerstnerWaves));
+    water.state.shallowColor = {0.02f, 0.24f, 0.30f};
+    water.state.deepColor = {0.005f, 0.04f, 0.10f};
+    water.state.foamColor = {0.92f, 0.96f, 1.0f};
+    water.state.absorptionCoefficient = {0.15f, 0.06f, 0.02f};
+    water.state.transparency = 0.72f;
+    water.state.reflectionStrength = 0.65f;
+    water.state.refractionStrength = 0.08f;
+    water.state.roughness = 0.08f;
+    water.state.normalScale = 1.0f;
+    water.state.foamIntensity = 1.0f;
+    water.state.foamCrestThreshold = 0.62f;
+    water.state.reflectionEnabled = true;
+    water.state.refractionEnabled = true;
+    water.state.foamEnabled = true;
+    water.state.contentHash = water.state.ComputeContentHash();
     water.payloadRevision = 62;
     water.state.header.captureSequence = 1;
     water.state.header.configurationRevision = water.payloadRevision;
@@ -461,6 +487,23 @@ TEST(EcsFrozenSceneBridgeValidation,
     {
         snapshot.terrain.front().state.header.schemaVersion++;
     });
+}
+
+TEST(EcsFrozenSceneBridgeValidation,
+     CanonicalDisabledWaterIsSuppressedBeforeRetainedSceneIdentityAssignment)
+{
+    FrozenSceneSnapshot snapshot = MakeCompleteSnapshot();
+    ASSERT_EQ(snapshot.water.size(), 1U);
+    WaterRenderSnapshotItem disabled;
+    disabled.header = snapshot.water.front().state.header;
+    ASSERT_TRUE(disabled.IsCanonicalDisabled());
+    snapshot.water.front().state = disabled;
+
+    EcsFrozenSceneBridgeOutput output;
+    EcsFrozenSceneBridgeResult result;
+    EXPECT_TRUE(EcsFrozenSceneBridge{}.Build(snapshot, output, &result));
+    EXPECT_TRUE(output.water.empty());
+    EXPECT_TRUE(output.renderProxies.metadata.complete);
 }
 
 TEST(EcsFrozenSceneBridgeValidation, RejectsCameraWithoutExplicitCutRevision)

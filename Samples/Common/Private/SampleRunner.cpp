@@ -5,6 +5,7 @@
 #include "Core/Core.h"
 #include "Core/Diagnostics/Trace.h"
 #include "Engine/Engine.h"
+#include "Engine/ShippingRuntimeComposition.h"
 #include "EngineDevelopmentComposition/EngineDevelopmentComposition.h"
 #include "HAL/Input/KeyCodes.h"
 #include "Render/RenderSubsystem.h"
@@ -1686,6 +1687,7 @@ namespace
             return argument == "--sample" || argument == "--asset" ||
                    argument == "--model" || argument == "--catalog" ||
                    argument == "--asset-root" ||
+                   argument == "--cooked-shader-root" ||
                    argument == "--environment" ||
                    argument == "--environment-file" ||
                    argument == "--pipeline" ||
@@ -1928,10 +1930,12 @@ namespace
         }
 
         SampleAssetRegistry MakeSampleAssetRegistry(
-            const ResolvedSampleAssets& assets)
+            const ResolvedSampleAssets& assets,
+            const bool runtimeOnlyComposition)
         {
             std::vector<SampleAssetRegistryEntry> entries;
-            const auto append = [&entries](const ResolvedSampleAsset& asset)
+            const auto append = [&entries, runtimeOnlyComposition](
+                                    const ResolvedSampleAsset& asset)
             {
                 // Explicit paths intentionally have no catalog id and are not
                 // visible to catalog-id loader requests.
@@ -1941,12 +1945,25 @@ namespace
                     return;
                 }
 
-                entries.push_back({asset.entry.id,
-                                   asset.entry.kind,
-                                   asset.entry.resolvedPath,
-                                   asset.entry.contentIdentity,
-                                   asset.entry.assetContentId,
-                                   asset.entry.cook.packageOnly});
+                SampleAssetRegistryEntry entry;
+                entry.id = asset.entry.id;
+                entry.kind = asset.entry.kind;
+                entry.resolvedPath = asset.entry.resolvedPath;
+                entry.contentIdentity = asset.entry.contentIdentity;
+                entry.assetContentId = asset.entry.assetContentId;
+                entry.packageOnly = asset.entry.cook.packageOnly;
+                entry.requiresCookedResourcePath = runtimeOnlyComposition;
+                if (runtimeOnlyComposition && entry.packageOnly)
+                {
+                    const std::string logicalPath =
+                        asset.entry.path.lexically_normal().generic_string();
+                    const std::string cookedPath = "cooked://" + logicalPath;
+                    if (IsStrictSampleCookedResourcePath(cookedPath))
+                    {
+                        entry.resourcePath = cookedPath;
+                    }
+                }
+                entries.push_back(std::move(entry));
             };
             append(assets.model);
             for (const ResolvedSampleAsset& additional : assets.additionalModels)
@@ -3168,6 +3185,9 @@ namespace
             result.particleVfxActualExecution =
                 ProjectSampleParticleVfxExecutionDiagnostics(
                     renderDiagnostics);
+            result.waterSurfaceActualExecution =
+                ProjectSampleWaterSurfaceExecutionDiagnostics(
+                    renderDiagnostics);
             result.transparentAlphaBlendDrawCount =
                 diagnostics.transparent.alphaBlendDrawCount;
             result.transparentPremultipliedDrawCount =
@@ -3961,6 +3981,11 @@ namespace
                 options.deterministicCameraOrbit = true;
                 continue;
             }
+            if (argument == "--runtime-only-composition")
+            {
+                options.runtimeOnlyComposition = true;
+                continue;
+            }
             if (argument == "--quality")
             {
                 options.qualityExplicit = true;
@@ -4082,6 +4107,10 @@ namespace
                 else if (argument == "--catalog")
                 {
                     options.catalogPath = value;
+                }
+                else if (argument == "--cooked-shader-root")
+                {
+                    options.cookedShaderRoot = value;
                 }
                 else if (argument == "--ready-timeout-ms")
                 {
@@ -4297,6 +4326,18 @@ namespace
                      "GPUScene and Direct Opaque readback qualifications are mutually exclusive");
             return false;
         }
+        if (!options.runtimeOnlyComposition && !options.cookedShaderRoot.empty())
+        {
+            SetError(outError,
+                     "--cooked-shader-root requires --runtime-only-composition");
+            return false;
+        }
+        if (options.runtimeOnlyComposition && options.cookedShaderRoot.empty())
+        {
+            SetError(outError,
+                     "--runtime-only-composition requires --cooked-shader-root");
+            return false;
+        }
         const uint32 executionReceiptProbeCount =
             (options.common.exposureQualificationProbeEnabled ? 1u : 0u) +
             (options.common.ambientOcclusionQualificationProbeEnabled ? 1u : 0u) +
@@ -4382,6 +4423,8 @@ namespace
             << "  --environment-file <path.hdr|path.exr>\n"
             << "  --catalog <catalog.json>\n"
             << "  --asset-root <directory>\n"
+            << "  --runtime-only-composition\n"
+            << "  --cooked-shader-root <directory>\n"
             << "  --pipeline <forward-plus|deferred|hybrid-rt>\n"
             << "  --view <bookmark-id>\n"
             << "  --fixed-delta <seconds>\n"
@@ -4847,7 +4890,81 @@ namespace
                           sceneOptions.environmentPath.string());
         }
 
-        Engine engine(CreateDevelopmentEngineRuntimeDependencies());
+        SampleRuntimeCompositionEvidence runtimeComposition;
+        runtimeComposition.runtimeOnlyComposition =
+            options.runtimeOnlyComposition;
+        std::filesystem::path cookedResourceRoot;
+        if (options.runtimeOnlyComposition)
+        {
+            const ResolvedSampleAsset& primaryModel = resolvedAssets.model;
+            if (!primaryModel.selected || !primaryModel.cookAdmission.has_value() ||
+                !primaryModel.cookAdmission->IsAccepted() ||
+                !primaryModel.entry.cook.declared ||
+                primaryModel.entry.cook.cookedRoot.empty())
+            {
+                std::cerr << "Runtime-only Sample execution requires an admitted "
+                             "package-only primary cooked model\n";
+                static_cast<void>(WriteEarlyFailureAssessment(
+                    options.assessmentReportPath,
+                    sample.get(),
+                    registeredInfo->id,
+                    options.common.backend,
+                    "RESOURCE.RUNTIME_ONLY_PRIMARY_MODEL_REJECTED",
+                    "RESOURCE",
+                    AssessmentCheckpoints::EngineBaseline,
+                    "Runtime-only Sample composition requires the primary model's "
+                    "accepted cooked package.",
+                    "The selected primary model did not retain an accepted CookManifest "
+                    "admission receipt."));
+                static_cast<void>(startupTimeline.Finalize());
+                Log::Shutdown();
+                return 1;
+            }
+
+            std::error_code filesystemError;
+            // Registry requests are package-relative (`cooked://...`) rather
+            // than catalog absolute paths.  Mount the catalog asset root so
+            // every admitted package entry resolves beneath one policy root;
+            // the individual CookManifest remains the admission authority.
+            cookedResourceRoot = primaryModel.assetRoot.lexically_normal();
+            const std::filesystem::path cookedShaderRoot =
+                options.cookedShaderRoot.lexically_normal();
+            if (!std::filesystem::is_directory(cookedResourceRoot,
+                                               filesystemError) ||
+                filesystemError)
+            {
+                std::cerr << "Runtime-only Sample cooked resource root is unavailable: "
+                          << cookedResourceRoot.string() << "\n";
+                static_cast<void>(startupTimeline.Finalize());
+                Log::Shutdown();
+                return 1;
+            }
+            filesystemError.clear();
+            if (!std::filesystem::is_directory(cookedShaderRoot,
+                                               filesystemError) ||
+                filesystemError)
+            {
+                std::cerr << "Runtime-only Sample cooked shader root is unavailable: "
+                          << cookedShaderRoot.string() << "\n";
+                static_cast<void>(startupTimeline.Finalize());
+                Log::Shutdown();
+                return 1;
+            }
+
+            runtimeComposition.cookedShaderProvider = true;
+            runtimeComposition.sourceShaderFallbackEnabled = false;
+            runtimeComposition.cookedResourcePolicy = true;
+            runtimeComposition.cookedShaderRoot = cookedShaderRoot;
+            runtimeComposition.cookedResourceRoot = cookedResourceRoot;
+            runtimeComposition.shaderProgramProvider = "CookedShaderArtifactV2";
+        }
+
+        EngineRuntimeDependencies engineDependencies =
+            options.runtimeOnlyComposition
+                ? CreateShippingEngineRuntimeDependencies(
+                      runtimeComposition.cookedShaderRoot)
+                : CreateDevelopmentEngineRuntimeDependencies();
+        Engine engine(std::move(engineDependencies));
         const std::string applicationName =
             "RenderVerseX - " + registeredInfo->displayName;
         EngineConfig engineConfig;
@@ -4895,7 +5012,10 @@ namespace
 
         auto* resourceSubsystem =
             engine.AddSubsystem<Resource::ResourceSubsystem>();
-        Resource::ResourceManagerConfig resourceConfig;
+        Resource::ResourceManagerConfig resourceConfig =
+            options.runtimeOnlyComposition
+                ? CreateShippingResourceManagerConfig(cookedResourceRoot)
+                : Resource::ResourceManagerConfig{};
         resourceConfig.asyncThreadCount =
             std::max(resourceConfig.asyncThreadCount, 1);
         resourceConfig.startupTraceContext = startupTraceContext;
@@ -5143,7 +5263,8 @@ namespace
 
             RenderFrameSettings renderSettings = engine.GetRenderFrameSettings();
             const SampleAssetRegistry assetRegistry =
-                MakeSampleAssetRegistry(resolvedAssets);
+                MakeSampleAssetRegistry(resolvedAssets,
+                                        options.runtimeOnlyComposition);
             SampleModelLoader models(
                 *runtimeServices,
                 *scene,
@@ -7204,6 +7325,7 @@ namespace
                                              ? readinessWaitBudget.timeoutMs
                                              : 0;
             report.readiness.reason = readinessReason;
+            report.runtimeComposition = runtimeComposition;
             if (resolvedAssets.model.selected)
             {
                 report.assets.push_back(MakeReportAsset("model",

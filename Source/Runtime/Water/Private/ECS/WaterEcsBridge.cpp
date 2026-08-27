@@ -24,6 +24,19 @@ namespace
                 if (!IsFinite(value[column][row])) return false;
         return true;
     }
+    [[nodiscard]] bool IsTranslationOnlyYUp(const Mat4& value)
+    {
+        constexpr float32 tolerance = 0.0001f;
+        return IsFinite(value) && std::abs(value[0][0] - 1.0f) <= tolerance &&
+               std::abs(value[1][1] - 1.0f) <= tolerance &&
+               std::abs(value[2][2] - 1.0f) <= tolerance &&
+               std::abs(value[3][3] - 1.0f) <= tolerance &&
+               std::abs(value[0][1]) <= tolerance && std::abs(value[0][2]) <= tolerance &&
+               std::abs(value[0][3]) <= tolerance && std::abs(value[1][0]) <= tolerance &&
+               std::abs(value[1][2]) <= tolerance && std::abs(value[1][3]) <= tolerance &&
+               std::abs(value[2][0]) <= tolerance && std::abs(value[2][1]) <= tolerance &&
+               std::abs(value[2][3]) <= tolerance;
+    }
     [[nodiscard]] bool IsKnown(WaterEcsCommand value)
     { return value >= WaterEcsCommand::None && value <= WaterEcsCommand::Refresh; }
     [[nodiscard]] bool IsValid(const WaterEcsConfig& value)
@@ -31,7 +44,10 @@ namespace
         return value.surfaceAssetId.IsValid() && value.materialAssetId.IsValid() &&
                value.configurationRevision != 0 && IsFinite(value.size) &&
                value.size.x > 0.0f && value.size.y > 0.0f && IsFinite(value.depth) &&
-               value.depth >= 0.0f && value.resolution != 0;
+               value.depth >= 0.0f &&
+               value.simulationType == WaterRenderSnapshotSimulationType::Gerstner &&
+               value.gerstnerWaves.waveCount > 0 &&
+               value.gerstnerWaves.waveCount <= RVX_WATER_MAX_GERSTNER_WAVES;
     }
     [[nodiscard]] bool NeedsCleanup(const SceneECS::EntityLifecycleState* lifecycle)
     {
@@ -128,42 +144,37 @@ struct WaterEcsBridge::State
             !registry.IsFragmentEnabled<WaterEcsIntent>(entity) || !registry.IsFragmentEnabled<WaterEcsState>(entity) ||
             !registry.IsFragmentEnabled<SceneECS::WaterRuntimeTag>(entity) ||
             !registry.IsFragmentEnabled<SceneECS::RenderWorldTransform>(entity)) return result;
-        if (!IsValid(*result.config) || !IsFinite(result.transform->matrix))
+        if (!IsValid(*result.config) || !IsTranslationOnlyYUp(result.transform->matrix))
         { result.failure = WaterEcsBindingStatus::InvalidConfiguration; return result; }
         result.value = true; return result;
     }
     [[nodiscard]] bool PublishInactive(ECS::ProcessorExecutionContext& context, ECS::EntityHandle entity,
-                                        const WaterEcsConfig* config, const SceneECS::RenderWorldTransform* transform,
-                                        std::string reason)
+                                        const WaterEcsConfig* config)
     {
         WaterRenderSnapshotItem item;
-        item.surfaceAssetId = config != nullptr ? config->surfaceAssetId : AssetId{};
-        item.materialAssetId = config != nullptr ? config->materialAssetId : AssetId{};
-        item.worldPosition = transform != nullptr ? Position(transform->matrix) : Vec3(0.0f);
-        item.size = config != nullptr ? config->size : Vec2(0.0f);
-        item.depth = config != nullptr ? config->depth : 0.0f;
-        item.resolution = config != nullptr ? config->resolution : 0;
-        item.renderGpuPathAvailable = false; item.cpuSimulationAvailable = false;
-        item.renderPathReason = std::move(reason);
+        const uint64 revision = config != nullptr && config->configurationRevision != 0 ?
+            config->configurationRevision : 1;
         if (!runtime->PublishWaterFeatureSnapshot(entity, std::move(item),
-                                                  config != nullptr ? config->configurationRevision : 0))
+                                                  revision))
         { context.ReportFailure("Water feature snapshot publication was rejected."); return false; }
         return true;
     }
     [[nodiscard]] bool Publish(ECS::ProcessorExecutionContext& context, ECS::EntityHandle entity, Binding& binding,
-                               const WaterEcsConfig& config, const SceneECS::RenderWorldTransform& transform)
+                               const WaterEcsConfig& config)
     {
         WaterEcsRuntimeSnapshot output;
         if (!gateway->CaptureSnapshot(binding.runtime, output))
         {
             ++synchronizationFailureCount; binding.status = WaterEcsBindingStatus::SynchronizationFailed;
             Write(context.registry, entity, binding.status);
-            return PublishInactive(context, entity, &config, &transform,
-                                   "Water gateway did not provide a complete value snapshot.");
+            return PublishInactive(context, entity, &config);
         }
-        output.item.surfaceAssetId = config.surfaceAssetId;
-        output.item.materialAssetId = config.materialAssetId;
-        output.item.worldPosition = Position(transform.matrix);
+        if (!output.item.IsStructurallyValid())
+        {
+            ++synchronizationFailureCount; binding.status = WaterEcsBindingStatus::SynchronizationFailed;
+            Write(context.registry, entity, binding.status);
+            return PublishInactive(context, entity, &config);
+        }
         const uint64 revision = output.payloadRevision != 0 ? output.payloadRevision : config.configurationRevision;
         if (!runtime->PublishWaterFeatureSnapshot(entity, std::move(output.item), revision))
         { context.ReportFailure("Water feature snapshot publication was rejected."); return false; }
@@ -178,7 +189,7 @@ struct WaterEcsBridge::State
         {
             if (!IsKnown(intent.command) || intent.sequence == 0)
             { ++rejectedCommandCount; Write(context.registry, entity, WaterEcsBindingStatus::InvalidConfiguration);
-              static_cast<void>(PublishInactive(context, entity, &config, &transform, "Water command is invalid.")); return; }
+              static_cast<void>(PublishInactive(context, entity, &config)); return; }
             if (intent.sequence > current.lastConsumedCommandSequence) { command = intent.command; sequence = intent.sequence; }
         }
         uint32 bindingIndex = Find(entity);
@@ -186,36 +197,36 @@ struct WaterEcsBridge::State
         {
             if (!Add(entity, bindingIndex))
             { ++rejectedConfigurationCount; Write(context.registry, entity, WaterEcsBindingStatus::RuntimeRejected);
-              static_cast<void>(PublishInactive(context, entity, &config, &transform, "Water bridge side-table allocation failed.")); return; }
+              static_cast<void>(PublishInactive(context, entity, &config)); return; }
             Binding& binding = bindings[bindingIndex];
-            binding.runtime = gateway->Create({.config = config, .worldTransform = transform.matrix, .command = command, .deltaSeconds = context.deltaSeconds});
+            binding.runtime = gateway->Create({.config = config, .worldTransform = transform.matrix, .command = command});
             if (!binding.runtime.IsValid() || !gateway->IsAlive(binding.runtime))
             {
                 if (binding.runtime.IsValid() && !Release(binding)) { context.ReportFailure("Water gateway release failed after a rejected create."); return; }
                 ++rejectedConfigurationCount; Erase(bindingIndex); Write(context.registry, entity, WaterEcsBindingStatus::RuntimeRejected);
-                static_cast<void>(PublishInactive(context, entity, &config, &transform, "Water gateway rejected the ECS configuration.")); return;
+                static_cast<void>(PublishInactive(context, entity, &config)); return;
             }
             ++createdRuntimeCount;
         }
         if (bindingIndex == RVX_INVALID_INDEX)
         { Write(context.registry, entity, WaterEcsBindingStatus::Inactive, {}, sequence);
-          static_cast<void>(PublishInactive(context, entity, &config, &transform, "Water runtime is inactive.")); return; }
+          static_cast<void>(PublishInactive(context, entity, &config)); return; }
         Binding& binding = bindings[bindingIndex];
         if (!binding.runtime.IsValid() || !gateway->IsAlive(binding.runtime))
         {
             if (!Release(binding)) { context.ReportFailure("Water gateway retirement failed after absence detection."); return; }
             Erase(bindingIndex); Write(context.registry, entity, WaterEcsBindingStatus::Inactive);
-            static_cast<void>(PublishInactive(context, entity, &config, &transform, "Water runtime is no longer alive.")); return;
+            static_cast<void>(PublishInactive(context, entity, &config)); return;
         }
-        if (!gateway->Update(binding.runtime, {.config = config, .worldTransform = transform.matrix, .command = command, .deltaSeconds = context.deltaSeconds}))
+        if (!gateway->Update(binding.runtime, {.config = config, .worldTransform = transform.matrix, .command = command}))
         {
             ++synchronizationFailureCount; binding.status = WaterEcsBindingStatus::SynchronizationFailed;
-            Write(context.registry, entity, binding.status); static_cast<void>(PublishInactive(context, entity, &config, &transform, "Water gateway synchronization failed.")); return;
+            Write(context.registry, entity, binding.status); static_cast<void>(PublishInactive(context, entity, &config)); return;
         }
         binding.configurationRevision = config.configurationRevision;
         binding.status = command == WaterEcsCommand::Deactivate ? WaterEcsBindingStatus::Inactive : WaterEcsBindingStatus::Active;
         Write(context.registry, entity, binding.status, config.configurationRevision, sequence);
-        static_cast<void>(Publish(context, entity, binding, config, transform));
+        static_cast<void>(Publish(context, entity, binding, config));
     }
     void Reconcile(ECS::ProcessorExecutionContext& context)
     {
@@ -249,7 +260,7 @@ struct WaterEcsBridge::State
                 if (eligible.failure == WaterEcsBindingStatus::InvalidConfiguration) ++rejectedConfigurationCount;
                 Write(context.registry, entity, eligible.failure);
                 if (eligible.config != nullptr && eligible.transform != nullptr)
-                    static_cast<void>(PublishInactive(context, entity, eligible.config, eligible.transform, "Water feature is inactive or invalid."));
+                    static_cast<void>(PublishInactive(context, entity, eligible.config));
                 continue;
             }
             Process(context, entity, eligible); if (context.HasReportedFailure()) return;

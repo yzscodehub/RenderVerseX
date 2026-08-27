@@ -70,9 +70,44 @@ rvx_register_module_target(
     ALIASES RVX::Engine
 )
 
+# Runtime-only consumers such as the cooked qualification Sample path need the
+# same explicit dependency composition as a shipping product even when the
+# broader shipping-product preset is disabled.  Keep this value-only
+# composition in Runtime; it has no Developer edge and does not make a Sample
+# executable a Shipping target closure.
+add_library(RVX_EngineRuntimeOnlyComposition STATIC
+    Private/ShippingRuntimeComposition.cpp
+)
+
+target_include_directories(RVX_EngineRuntimeOnlyComposition PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Include>
+    $<INSTALL_INTERFACE:include>
+)
+
+target_link_libraries(RVX_EngineRuntimeOnlyComposition
+    PUBLIC
+        RVX::Engine
+    PRIVATE
+        RVX::ResourceRuntime
+        RVX::ShaderRuntime
+)
+
+target_compile_features(RVX_EngineRuntimeOnlyComposition PUBLIC cxx_std_20)
+
+add_library(RVX::EngineRuntimeOnlyComposition
+    ALIAS RVX_EngineRuntimeOnlyComposition)
+
+rvx_register_module_target(
+    TARGET RVX_EngineRuntimeOnlyComposition
+    MODULE Engine
+    ALIASES RVX::EngineRuntimeOnlyComposition
+)
+
 if(RVX_BUILD_SHIPPING_PRODUCTS)
+    # Keep a real buildable product root for Shipping validation without
+    # recompiling the runtime-only implementation.
     add_library(RVXShippingProduct STATIC
-        Private/ShippingRuntimeComposition.cpp
+        Private/ShippingProductAnchor.cpp
     )
 
     target_include_directories(RVXShippingProduct PUBLIC
@@ -82,10 +117,7 @@ if(RVX_BUILD_SHIPPING_PRODUCTS)
 
     target_link_libraries(RVXShippingProduct
         PUBLIC
-            RVX::Engine
-        PRIVATE
-            RVX::ResourceRuntime
-            RVX::ShaderRuntime
+            RVX::EngineRuntimeOnlyComposition
     )
 
     target_compile_features(RVXShippingProduct PUBLIC cxx_std_20)

@@ -271,7 +271,7 @@ add_library(RVX::RenderParticles ALIAS RVX_RenderParticles)
 
 add_library(RVX_RenderWater STATIC)
 target_sources(RVX_RenderWater PRIVATE
-    Private/Passes/WaterPass.cpp
+    Private/Passes/WaterFeaturePass.cpp
 )
 rvx_configure_render_component(RVX_RenderWater)
 target_link_libraries(RVX_RenderWater PUBLIC

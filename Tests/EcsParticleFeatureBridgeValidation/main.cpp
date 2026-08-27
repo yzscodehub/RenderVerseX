@@ -38,7 +38,14 @@ namespace
     public:
         RVX::Water::WaterEcsRuntimeHandle Create(const RVX::Water::WaterEcsRuntimeRequest&) override { m_alive = true; return RVX::Water::WaterEcsRuntimeHandle::Create(0, 1); }
         bool Update(RVX::Water::WaterEcsRuntimeHandle handle, const RVX::Water::WaterEcsRuntimeRequest&) override { return IsAlive(handle); }
-        bool CaptureSnapshot(RVX::Water::WaterEcsRuntimeHandle handle, RVX::Water::WaterEcsRuntimeSnapshot& out) const override { if (!IsAlive(handle)) return false; out.item.resolution = 8; out.payloadRevision = 1; return true; }
+        bool CaptureSnapshot(RVX::Water::WaterEcsRuntimeHandle handle, RVX::Water::WaterEcsRuntimeSnapshot& out) const override
+        {
+            if (!IsAlive(handle)) return false;
+            out.item.payloadStatus = RVX::WaterRenderSnapshotPayloadStatus::Disabled;
+            out.item.componentId = 0;
+            out.payloadRevision = 1;
+            return true;
+        }
         RVX::Water::WaterEcsReleaseResult Release(RVX::Water::WaterEcsRuntimeHandle handle) override { if (!IsAlive(handle)) return RVX::Water::WaterEcsReleaseResult::AlreadyAbsent; m_alive = false; return RVX::Water::WaterEcsReleaseResult::Released; }
         bool IsAlive(RVX::Water::WaterEcsRuntimeHandle handle) const override { return m_alive && handle == RVX::Water::WaterEcsRuntimeHandle::Create(0, 1); }
     private: bool m_alive = false;

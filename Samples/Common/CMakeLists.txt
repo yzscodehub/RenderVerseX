@@ -72,6 +72,7 @@ target_link_libraries(RVX_SampleCommon PUBLIC
 target_link_libraries(RVX_SampleCommon PRIVATE
     RVX::AssetImport
     RVX::EngineDevelopmentComposition
+    RVX::EngineRuntimeOnlyComposition
     nlohmann_json::nlohmann_json
 )
 

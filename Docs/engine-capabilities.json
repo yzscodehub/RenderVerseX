@@ -236,7 +236,7 @@
       "shippingSupported": false,
       "requiredEvidence": [
         { "path": "Tests/WaterEcsRuntimeGatewayValidation/CMakeLists.txt", "contains": "WaterEcsRuntimeGatewayValidation" },
-        { "path": "Tests/WaterEcsRuntimeGatewayValidation/main.cpp", "contains": "capture water snapshot" }
+        { "path": "Tests/WaterEcsRuntimeGatewayValidation/main.cpp", "contains": "capture sealed water snapshot" }
       ]
     },
     {
@@ -246,8 +246,9 @@
       "runtimeComposition": "engine-required",
       "shippingSupported": false,
       "requiredEvidence": [
-        { "path": "Source/Runtime/Water/Private/ECS/WaterEcsRuntimeGateway.cpp", "contains": "Render-owned water surface, caustics, and underwater passes are not connected to this snapshot yet" },
-        { "path": "Source/Runtime/Render/Private/Passes/WaterPass.cpp", "contains": "Declare snapshot-driven resource usage once water pass scheduling is enabled" }
+        { "path": "Source/Runtime/Render/Include/Render/Passes/WaterFeaturePass.h", "contains": "Render-owned deterministic Gerstner water pass" },
+        { "path": "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp", "contains": "WaterSurface.GerstnerPipeline" },
+        { "path": "Tests/WaterRenderValidation/main.cpp", "contains": "RendererCompositionAndCookedShaderCatalogAreHonest" }
       ]
     },
     {

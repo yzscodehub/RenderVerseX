@@ -144,6 +144,48 @@ class CIWorkflowPolicyTests(unittest.TestCase):
         self.assertTrue(any("GFX15 translucency test preset" in item
                             for item in findings))
 
+    def test_gfx18_step_requires_exact_target_label_and_count(self) -> None:
+        self.replace(
+            ".github/workflows/nightly.yml",
+            "-BuildTarget RVXValidationSuiteGfx18Water",
+            "-BuildTarget RVXValidationSuiteGfx18WaterBroken",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("RVXValidationSuiteGfx18Water" in item
+                            for item in findings))
+
+    def test_gfx18_step_rejects_missing_or_substituted_evidence(self) -> None:
+        self.replace(
+            ".github/workflows/nightly.yml",
+            "RenderVerseSamplesDX12GFX18ForwardPlusWaterSurface_640x360.ppm",
+            "RenderVerseSamplesDX12GFX18ForwardPlusWaterSurface_missing.ppm",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("GFX18 RequiredEvidence" in item for item in findings))
+
+    def test_gfx18_preset_must_select_the_exact_suite_label(self) -> None:
+        path = self.root / "CMakePresets.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        preset = next(
+            item for item in data["testPresets"]
+            if item["name"] == "win_x64_qualification_debug_gfx18_water"
+        )
+        preset["filter"] = {"include": {"label": "^suite\\.wrong$"}}
+        path.write_text(json.dumps(data), encoding="utf-8")
+        findings = validate(self.root)
+        self.assertTrue(any("GFX18 water test preset" in item
+                            for item in findings))
+
+    def test_gfx18_qualification_requires_runtime_only_cooked_provider(self) -> None:
+        self.replace(
+            "Tests/CMake/QualificationTests.cmake",
+            "--require-cooked-shader-provider",
+            "--require-development-shader-provider",
+        )
+        findings = validate(self.root)
+        self.assertTrue(any("--require-cooked-shader-provider" in item
+                            for item in findings))
+
 
 if __name__ == "__main__":
     unittest.main()

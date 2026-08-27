@@ -3,6 +3,7 @@
 #include "Core/Log.h"
 #include "Core/MathTypes.h"
 #include "Render/Particles/ParticleBillboardDrawPlan.h"
+#include "Render/Renderer/RenderClipConvention.h"
 #include "Resources/RenderResourceRegistry.h"
 #include "ShaderContracts/ShaderProgramProvider.h"
 
@@ -408,7 +409,11 @@ namespace RVX
             }
 
             ParticleBillboardFrameConstants constants;
-            constants.viewProjection = view.jitteredViewProjectionMatrix;
+            // Particle billboards are feature-owned draws, but their raster
+            // clip convention must exactly match PipelineCache scene draws.
+            constants.viewProjection = ApplyBackendClipConvention(
+                view.jitteredViewProjectionMatrix,
+                m_device->GetBackendType());
             // The raster position and depth reconstruction must use the same
             // jittered projection. Mixing a jittered VP with the canonical
             // inverse projection produces a frame-varying soft-depth seam.

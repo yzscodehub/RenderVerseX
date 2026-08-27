@@ -93,7 +93,8 @@ namespace RVX
 
     private:
         bool RequestResolved(
-            const std::filesystem::path& path,
+            const std::string& resourcePath,
+            const std::filesystem::path& sourcePath,
             const Resource::ResourceContentIdentity& expectedContentIdentity,
             const SampleEnvironmentLoadOptions& options,
             LoadedSampleEnvironment& output,

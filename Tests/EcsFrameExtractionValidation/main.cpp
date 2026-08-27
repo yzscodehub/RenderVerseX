@@ -181,6 +181,35 @@ void AddTypedFeatureSources(FrozenSceneSnapshot& snapshot)
                       FrozenSceneObjectType::Water);
     water.sourceEntity = waterEntity;
     water.payloadRevision = 12;
+    water.state.payloadStatus = WaterRenderSnapshotPayloadStatus::Ready;
+    water.state.componentId = 4201;
+    water.state.surfaceAssetId = {.value = 421};
+    water.state.materialAssetId = {.value = 422};
+    water.state.worldBounds = AABB({-5.8f, -4.5f, -10.8f}, {5.8f, 0.5f, 10.8f});
+    water.state.size = {10.0f, 20.0f};
+    water.state.depth = 4.0f;
+    water.state.gerstnerWaves.waveCount = 1;
+    water.state.gerstnerWaves.waves[0] = {
+        .direction = {1.0f, 0.0f}, .amplitude = 0.5f,
+        .wavelength = 8.0f, .steepness = 0.5f,
+        .speed = 1.0f, .phaseOffsetRadians = 0.0f,
+    };
+    static_cast<void>(CanonicalizeWaterGerstnerWaveSet(water.state.gerstnerWaves));
+    water.state.shallowColor = {0.02f, 0.24f, 0.30f};
+    water.state.deepColor = {0.005f, 0.04f, 0.10f};
+    water.state.foamColor = {0.92f, 0.96f, 1.0f};
+    water.state.absorptionCoefficient = {0.15f, 0.06f, 0.02f};
+    water.state.transparency = 0.72f;
+    water.state.reflectionStrength = 0.65f;
+    water.state.refractionStrength = 0.08f;
+    water.state.roughness = 0.08f;
+    water.state.normalScale = 1.0f;
+    water.state.foamIntensity = 1.0f;
+    water.state.foamCrestThreshold = 0.62f;
+    water.state.reflectionEnabled = true;
+    water.state.refractionEnabled = true;
+    water.state.foamEnabled = true;
+    water.state.contentHash = water.state.ComputeContentHash();
     water.state.header.captureSequence = 1;
     water.state.header.configurationRevision = water.payloadRevision;
     water.state.header.source =

@@ -17,6 +17,7 @@
 #include "Samples/SampleFeatureReporter.h"
 #include "Samples/SampleInfo.h"
 #include "Samples/SampleParticleVfxDiagnostics.h"
+#include "Samples/SampleWaterSurfaceDiagnostics.h"
 
 #include <array>
 #include <cmath>
@@ -30,7 +31,7 @@
 namespace RVX
 {
     /** @brief Current JSON schema version written by sample report producers. */
-    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 30;
+    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 32;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION = 20;
     inline constexpr uint32
@@ -52,6 +53,10 @@ namespace RVX
         RVX_SAMPLE_REPORT_PRE_COOKED_ONLY_ADMISSION_SCHEMA_VERSION = 28;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_PARTICLE_VFX_EXECUTION_SCHEMA_VERSION = 29;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_WATER_SURFACE_EXECUTION_SCHEMA_VERSION = 30;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_RUNTIME_ONLY_COMPOSITION_SCHEMA_VERSION = 31;
     inline constexpr uint32 RVX_SAMPLE_REPORT_PRE_VISUAL_CONTRACT_SCHEMA_VERSION = 19;
     inline constexpr uint32 RVX_SAMPLE_REPORT_SCENARIO_SCHEMA_VERSION = 12;
     inline constexpr uint32 RVX_SAMPLE_REPORT_ECS_DIAGNOSTICS_SCHEMA_VERSION = 13;
@@ -935,6 +940,8 @@ namespace RVX
         SampleToonOutlineExecutionDiagnostics toonOutlineActualExecution{};
         /** Exact, main-view execution projection for GFX17 CPU billboard VFX. */
         SampleParticleVfxExecutionDiagnostics particleVfxActualExecution{};
+        /** Exact, main-view execution projection for GFX18 Gerstner water. */
+        SampleWaterSurfaceExecutionDiagnostics waterSurfaceActualExecution{};
         /** Renderer-owned GFX15 sorted-translucency receipt facts. */
         uint32 transparentAlphaBlendDrawCount = 0;
         uint32 transparentPremultipliedDrawCount = 0;
@@ -1307,6 +1314,28 @@ namespace RVX
         std::vector<SampleReportScenarioMetric> metrics;
     };
 
+    /** @brief Exact runtime composition selected for this Sample execution. */
+    struct SampleRuntimeCompositionEvidence
+    {
+        bool runtimeOnlyComposition = false;
+        bool cookedShaderProvider = false;
+        bool sourceShaderFallbackEnabled = true;
+        bool cookedResourcePolicy = false;
+        std::filesystem::path cookedShaderRoot;
+        std::filesystem::path cookedResourceRoot;
+        std::string shaderProgramProvider = "Development";
+        std::string diagnostic;
+
+        [[nodiscard]] bool HasCookedOnlyShaderProvider() const noexcept
+        {
+            return runtimeOnlyComposition && cookedShaderProvider &&
+                   !sourceShaderFallbackEnabled && cookedResourcePolicy &&
+                   !cookedShaderRoot.empty() && !cookedResourceRoot.empty() &&
+                   shaderProgramProvider == "CookedShaderArtifactV2" &&
+                   diagnostic.empty();
+        }
+    };
+
     /**
      * @brief Completion-qualified evidence for one Sample visual contract.
      *
@@ -1441,6 +1470,7 @@ namespace RVX
         bool assetLoaded = false;
         std::vector<SampleReportAsset> assets;
         SampleReportReadiness readiness;
+        SampleRuntimeCompositionEvidence runtimeComposition;
         SampleAssessmentSummary assessment;
         SampleReportScenario scenario;
         std::optional<SampleVisualContractReceipt> visualContractReceipt;
@@ -1511,6 +1541,9 @@ namespace RVX
             const RenderDiagnosticsSnapshot& renderDiagnostics);
     [[nodiscard]] SampleParticleVfxExecutionDiagnostics
         ProjectSampleParticleVfxExecutionDiagnostics(
+            const RenderDiagnosticsSnapshot& renderDiagnostics);
+    [[nodiscard]] SampleWaterSurfaceExecutionDiagnostics
+        ProjectSampleWaterSurfaceExecutionDiagnostics(
             const RenderDiagnosticsSnapshot& renderDiagnostics);
 
     /** Terminal state of the exact presented Toon-outline qualification target. */

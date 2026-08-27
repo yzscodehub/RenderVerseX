@@ -144,6 +144,7 @@
         "RVX_ENABLE_GFX14_TOON_NATIVE": "ON",
         "RVX_ENABLE_GFX15_TRANSLUCENCY_NATIVE": "ON",
         "RVX_ENABLE_GFX17_VFX_NATIVE": "ON",
+        "RVX_ENABLE_GFX18_WATER_NATIVE": "ON",
         "RVX_ENABLE_PR_SMOKE": "OFF"
       }
     },
@@ -840,6 +841,17 @@
       },
       "output": { "outputOnFailure": true },
       "filter": { "include": { "label": "^suite\\.gfx17-vfx$" } }
+    },
+    {
+      "name": "win_x64_qualification_debug_gfx18_water",
+      "inherits": "win_x64_qualification_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx18-water$" } }
     },
     {
       "name": "linux_x64_debug_lane_base",

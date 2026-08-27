@@ -886,6 +886,53 @@
       "deterministicQualification": true
     },
     {
+      "id": "water-surface",
+      "domain": "rendering",
+      "intent": "regression",
+      "defaultRecipe": "forward-plus",
+      "defaultQualityProfile": "high",
+      "requiredCapabilities": [
+        "RENDER.CAPABILITY.GERSTNER_WATER_SURFACE",
+        "RENDER.CAPABILITY.WATER_DEPTH_THICKNESS",
+        "RENDER.CAPABILITY.WATER_BEER_LAMBERT",
+        "RENDER.CAPABILITY.WATER_REACTIVE_MASK"
+      ],
+      "optionalCapabilities": [],
+      "allowedFallbacks": [],
+      "cookedAssetIds": [
+        "water-surface-reference-fixture-v1"
+      ],
+      "fixedTime": {
+        "numerator": 1,
+        "denominator": 60,
+        "deterministicSeed": 1801
+      },
+      "cameraBookmarks": [
+        {
+          "id": "hero",
+          "position": [0.0, 5.40, 10.80],
+          "target": [0.0, 0.20, 0.0],
+          "verticalFieldOfViewDegrees": 42.0,
+          "nearPlane": 0.05,
+          "farPlane": 120.0,
+          "exposure": 1.0
+        }
+      ],
+      "captureTicks": [120],
+      "visualContractVersion": 1,
+      "roiMetricPolicy": {
+        "regionsOfInterest": [
+          {"id": "frame", "x": 0.0, "y": 0.0, "width": 1.0, "height": 1.0},
+          {"id": "water", "x": 0.12, "y": 0.34, "width": 0.76, "height": 0.55}
+        ],
+        "metrics": [
+          {"code": "VISUAL.METRIC.LUMA_RANGE", "regionOfInterestId": "frame", "minimum": 4.0, "maximum": null},
+          {"code": "VISUAL.METRIC.SUBJECT_CONTRAST", "regionOfInterestId": "water", "minimum": 0.04, "maximum": 1.0}
+        ]
+      },
+      "deterministicQualification": true
+    },
+    {
       "id": "rendering-stress",
       "domain": "rendering",
       "intent": "stress",

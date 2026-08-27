@@ -22,6 +22,7 @@
 #include "Scenes/StylizedMaterialsSample.h"
 #include "Scenes/TemporalAASample.h"
 #include "Scenes/TransparentMaterialsSample.h"
+#include "Scenes/WaterSurfaceSample.h"
 #include "Samples/SampleRegistry.h"
 
 #include <memory>
@@ -102,6 +103,8 @@ namespace RVX
                RegisterBuiltInSample<ParticleFireSample>(
                    manifest, registry, outError) &&
                RegisterBuiltInSample<ParticleSmokeSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<WaterSurfaceSample>(
                    manifest, registry, outError) &&
                RegisterBuiltInSample<RenderingStressSample>(
                    manifest, registry, outError) &&

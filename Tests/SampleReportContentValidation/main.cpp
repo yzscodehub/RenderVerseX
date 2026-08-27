@@ -246,6 +246,8 @@ namespace
         bool requireParticleVfxExecution = false;
         bool requireParticleFireExecution = false;
         bool requireParticleSmokeExecution = false;
+        bool requireWaterSurfaceExecution = false;
+        bool requireCookedShaderProvider = false;
         bool requireReadinessWait = false;
         bool requireGPUDrivenExecution = false;
         bool requireDirectExecution = false;
@@ -822,6 +824,16 @@ namespace
             if (arg == "--require-particle-smoke-execution")
             {
                 options.requireParticleSmokeExecution = true;
+                continue;
+            }
+            if (arg == "--require-water-surface-execution")
+            {
+                options.requireWaterSurfaceExecution = true;
+                continue;
+            }
+            if (arg == "--require-cooked-shader-provider")
+            {
+                options.requireCookedShaderProvider = true;
                 continue;
             }
 
@@ -3404,6 +3416,222 @@ namespace
         return passed;
     }
 
+    // Runtime-only Sample execution is intentionally distinct from the host
+    // executable's target closure: legacy Sample scenarios still link
+    // Developer code.  This check proves the exact executed composition used
+    // a staged cooked shader provider and a cooked-resource policy, with no
+    // source fallback permission.
+    bool ValidateCookedShaderProvider(const Json& report, const Options* options)
+    {
+        if (options == nullptr || !options->requireCookedShaderProvider)
+        {
+            return true;
+        }
+
+        const auto runtime = report.find("runtimeComposition");
+        if (runtime == report.end() || !runtime->is_object())
+        {
+            std::cerr << "Runtime-only qualification requires runtimeComposition\n";
+            return false;
+        }
+
+        constexpr const char* Context = "Runtime-only cooked shader provider";
+        bool runtimeOnly = false;
+        bool cookedProvider = false;
+        bool sourceFallbackEnabled = true;
+        bool cookedResourcePolicy = false;
+        bool qualified = false;
+        std::string shaderRoot;
+        std::string resourceRoot;
+        std::string provider;
+        std::string diagnostic;
+        const bool parsed =
+            ReadBooleanField(*runtime, "runtimeOnlyComposition", runtimeOnly, Context) &&
+            ReadBooleanField(*runtime, "cookedShaderProvider", cookedProvider, Context) &&
+            ReadBooleanField(*runtime, "sourceShaderFallbackEnabled", sourceFallbackEnabled, Context) &&
+            ReadBooleanField(*runtime, "cookedResourcePolicy", cookedResourcePolicy, Context) &&
+            ReadStringField(*runtime, "cookedShaderRoot", shaderRoot, Context, true) &&
+            ReadStringField(*runtime, "cookedResourceRoot", resourceRoot, Context, true) &&
+            ReadStringField(*runtime, "shaderProgramProvider", provider, Context, true) &&
+            ReadBooleanField(*runtime, "qualifiedCookedShaderProvider", qualified, Context) &&
+            // A successful runtime-only composition reports an explicitly
+            // present but empty diagnostic.  Require the field/type without
+            // incorrectly treating success as malformed.
+            ReadStringField(*runtime, "diagnostic", diagnostic, Context, false);
+        if (!parsed)
+        {
+            return false;
+        }
+        if (!runtimeOnly || !cookedProvider || sourceFallbackEnabled ||
+            !cookedResourcePolicy || shaderRoot.empty() || resourceRoot.empty() ||
+            provider != "CookedShaderArtifactV2" || !qualified ||
+            !diagnostic.empty())
+        {
+            std::cerr << "Runtime-only qualification requires the staged "
+                         "CookedShaderArtifactV2 provider with source fallback disabled\n";
+            return false;
+        }
+        return true;
+    }
+
+    // GFX18 is qualified only by a renderer-owned, presented water receipt.
+    // The scenario's authored wave data, gameplay query, or screenshot alone
+    // must never satisfy this gate.
+    bool ValidateWaterSurfaceExecutionProjection(const Json& report,
+                                                 const Options* options)
+    {
+        if (options == nullptr || !options->requireWaterSurfaceExecution)
+        {
+            return true;
+        }
+
+        const auto diagnostics = report.find("renderDiagnostics");
+        if (diagnostics == report.end() || !diagnostics->is_object())
+        {
+            std::cerr << "GFX18 water qualification requires report renderDiagnostics\n";
+            return false;
+        }
+        const auto water = diagnostics->find("waterSurfaceActualExecution");
+        if (water == diagnostics->end() || !water->is_object())
+        {
+            std::cerr << "GFX18 water qualification requires water execution projection\n";
+            return false;
+        }
+
+        constexpr const char* Context = "GFX18 water surface";
+        bool available = false;
+        bool receiptValid = false;
+        bool receiptPresented = false;
+        bool receiptSucceeded = false;
+        bool mainView = false;
+        bool requested = false;
+        bool supported = false;
+        bool enabled = false;
+        bool graphScheduled = false;
+        bool drawSubmitted = false;
+        bool uploadPublished = false;
+        bool opaqueSnapshotReady = false;
+        bool depthSnapshotReady = false;
+        bool depthLinearizationReady = false;
+        bool layeredNormalsEvaluated = false;
+        bool fresnelEvaluated = false;
+        bool thicknessEvaluated = false;
+        bool beerLambertEvaluated = false;
+        bool foamEvaluated = false;
+        bool reactiveMaskWriteEnabled = false;
+        bool receiptsOverflow = false;
+        bool recordMatchesReceipt = false;
+        bool presentedAligned = false;
+        bool qualifiedWater = false;
+        uint64_t receiptSchema = 0;
+        uint64_t itemCount = 0;
+        uint64_t drawCount = 0;
+        uint64_t waveCount = 0;
+        uint64_t fallbackCount = 0;
+        uint64_t waitIdleCount = 0;
+        uint64_t reactiveWriteCount = 0;
+        uint64_t surfaceReceiptCount = 0;
+        uint64_t uploadBytes = 0;
+        uint64_t resourceCreationCount = 0;
+        uint64_t pipelineCreationCount = 0;
+        uint64_t gridVertexCount = 0;
+        uint64_t gridIndexCount = 0;
+        uint64_t componentId = 0;
+        uint64_t contentHash = 0;
+        uint64_t waveContentHash = 0;
+        uint64_t recordFrame = 0;
+        uint64_t recordSceneRevision = 0;
+        uint64_t recordSurfaceGeneration = 0;
+        uint64_t recordConfigurationRevision = 0;
+        uint64_t recordGraphIdentity = 0;
+        uint64_t recordGraphGeneration = 0;
+        uint64_t recordEpoch = 0;
+        uint64_t receiptFrame = 0;
+        uint64_t presentedFrame = 0;
+        std::string diagnostic;
+
+        const bool parsed =
+            ReadBooleanField(*water, "available", available, Context) &&
+            ReadUnsignedField(*water, "executionReceiptSchemaVersion", receiptSchema, Context) &&
+            ReadBooleanField(*water, "executionReceiptStructurallyValid", receiptValid, Context) &&
+            ReadBooleanField(*water, "executionReceiptPresented", receiptPresented, Context) &&
+            ReadBooleanField(*water, "executionReceiptSucceeded", receiptSucceeded, Context) &&
+            ReadBooleanField(*water, "mainView", mainView, Context) &&
+            ReadBooleanField(*water, "requested", requested, Context) &&
+            ReadBooleanField(*water, "supported", supported, Context) &&
+            ReadBooleanField(*water, "enabled", enabled, Context) &&
+            ReadBooleanField(*water, "graphPassScheduled", graphScheduled, Context) &&
+            ReadBooleanField(*water, "drawSubmitted", drawSubmitted, Context) &&
+            ReadBooleanField(*water, "uploadPublished", uploadPublished, Context) &&
+            ReadBooleanField(*water, "opaqueSceneSnapshotReady", opaqueSnapshotReady, Context) &&
+            ReadBooleanField(*water, "depthSnapshotReady", depthSnapshotReady, Context) &&
+            ReadBooleanField(*water, "depthLinearizationReady", depthLinearizationReady, Context) &&
+            ReadBooleanField(*water, "layeredNormalsEvaluated", layeredNormalsEvaluated, Context) &&
+            ReadBooleanField(*water, "fresnelEvaluated", fresnelEvaluated, Context) &&
+            ReadBooleanField(*water, "thicknessEvaluated", thicknessEvaluated, Context) &&
+            ReadBooleanField(*water, "beerLambertEvaluated", beerLambertEvaluated, Context) &&
+            ReadBooleanField(*water, "foamEvaluated", foamEvaluated, Context) &&
+            ReadBooleanField(*water, "reactiveMaskWriteEnabled", reactiveMaskWriteEnabled, Context) &&
+            ReadUnsignedField(*water, "itemCount", itemCount, Context) &&
+            ReadUnsignedField(*water, "drawCallCount", drawCount, Context) &&
+            ReadUnsignedField(*water, "waveCount", waveCount, Context) &&
+            ReadUnsignedField(*water, "fallbackCount", fallbackCount, Context) &&
+            ReadUnsignedField(*water, "waitIdleCallCount", waitIdleCount, Context) &&
+            ReadUnsignedField(*water, "reactiveMaskWriteDrawCount", reactiveWriteCount, Context) &&
+            ReadUnsignedField(*water, "surfaceReceiptCount", surfaceReceiptCount, Context) &&
+            ReadBooleanField(*water, "surfaceReceiptsOverflow", receiptsOverflow, Context) &&
+            ReadUnsignedField(*water, "uploadBytes", uploadBytes, Context) &&
+            ReadUnsignedField(*water, "resourceCreationCount", resourceCreationCount, Context) &&
+            ReadUnsignedField(*water, "pipelineCreationCount", pipelineCreationCount, Context) &&
+            ReadUnsignedField(*water, "gridVertexCount", gridVertexCount, Context) &&
+            ReadUnsignedField(*water, "gridIndexCount", gridIndexCount, Context) &&
+            ReadUnsignedField(*water, "componentId", componentId, Context) &&
+            ReadUnsignedField(*water, "contentHash", contentHash, Context) &&
+            ReadUnsignedField(*water, "waveContentHash", waveContentHash, Context) &&
+            ReadUnsignedField(*water, "recordFrameSequence", recordFrame, Context) &&
+            ReadUnsignedField(*water, "recordSceneRevision", recordSceneRevision, Context) &&
+            ReadUnsignedField(*water, "recordSurfaceGeneration", recordSurfaceGeneration, Context) &&
+            ReadUnsignedField(*water, "recordConfigurationRevision", recordConfigurationRevision, Context) &&
+            ReadUnsignedField(*water, "recordGraphIdentity", recordGraphIdentity, Context) &&
+            ReadUnsignedField(*water, "recordGraphGeneration", recordGraphGeneration, Context) &&
+            ReadUnsignedField(*water, "recordEpoch", recordEpoch, Context) &&
+            ReadUnsignedField(*water, "executionReceiptFrameSequence", receiptFrame, Context) &&
+            ReadUnsignedField(*water, "presentedFrameSequence", presentedFrame, Context) &&
+            ReadBooleanField(*water, "recordIdentityMatchesExecutionReceipt", recordMatchesReceipt, Context) &&
+            ReadBooleanField(*water, "presentedFrameAligned", presentedAligned, Context) &&
+            ReadBooleanField(*water, "qualifiedWater", qualifiedWater, Context) &&
+            ReadStringField(*water, "diagnostic", diagnostic, Context);
+        if (!parsed)
+        {
+            return false;
+        }
+
+        const bool qualified = qualifiedWater && available && receiptSchema == 11u &&
+            receiptValid && receiptPresented && receiptSucceeded && mainView &&
+            requested && supported && enabled && graphScheduled && drawSubmitted &&
+            uploadPublished && opaqueSnapshotReady && depthSnapshotReady &&
+            depthLinearizationReady && layeredNormalsEvaluated && fresnelEvaluated &&
+            thicknessEvaluated && beerLambertEvaluated && foamEvaluated &&
+            reactiveMaskWriteEnabled && itemCount == 1u && drawCount == 1u &&
+            waveCount != 0 && fallbackCount == 0 && waitIdleCount == 0 &&
+            reactiveWriteCount == 1u && surfaceReceiptCount == 1u &&
+            !receiptsOverflow && uploadBytes != 0 && resourceCreationCount != 0 &&
+            pipelineCreationCount != 0 && gridVertexCount != 0 &&
+            gridIndexCount != 0 && componentId != 0 && contentHash != 0 &&
+            waveContentHash != 0 && recordFrame != 0 &&
+            recordSceneRevision != 0 && recordSurfaceGeneration != 0 &&
+            recordConfigurationRevision != 0 && recordGraphIdentity != 0 &&
+            recordGraphGeneration != 0 && recordEpoch != 0 &&
+            recordMatchesReceipt && recordFrame == receiptFrame &&
+            receiptFrame == presentedFrame && presentedAligned &&
+            diagnostic.empty();
+        if (!qualified)
+        {
+            std::cerr << "GFX18 water receipt lacks exact grid/snapshot/shading/presentation evidence\n";
+        }
+        return qualified;
+    }
+
     bool ValidateAmbientOcclusionExecutionProjectionSchemaV26(
         const Json& ambientOcclusion,
         const Options* options)
@@ -5854,6 +6082,8 @@ namespace
         passed &= ValidateToonExecutionProjections(report, options);
         passed &= ValidateTranslucencyExecutionProjection(report, options);
         passed &= ValidateParticleVfxExecutionProjection(report, options);
+        passed &= ValidateCookedShaderProvider(report, options);
+        passed &= ValidateWaterSurfaceExecutionProjection(report, options);
 
         std::string requestedBackend;
         std::string backend;
@@ -7159,6 +7389,127 @@ namespace
         smokeParticle["softDepthLinearizationReady"] = false;
         if (ValidateParticleVfxExecutionProjection(
                 qualifiedParticleSmokeReport, &parsedParticleSmokeOptions))
+        {
+            return false;
+        }
+
+        char waterParserArg0[] = "SampleReportContentValidation";
+        char waterParserArg1[] = "--self-test";
+        char waterParserArg2[] = "--require-water-surface-execution";
+        char* waterParserArguments[] = {
+            waterParserArg0, waterParserArg1, waterParserArg2};
+        Options parsedWaterOptions;
+        if (!ParseOptions(3, waterParserArguments, parsedWaterOptions) ||
+            !parsedWaterOptions.requireWaterSurfaceExecution)
+        {
+            return false;
+        }
+        Json qualifiedWaterReport = {
+            {"renderDiagnostics", {
+                {"waterSurfaceActualExecution", {
+                    {"available", true},
+                    {"executionReceiptSchemaVersion", 11},
+                    {"executionReceiptStructurallyValid", true},
+                    {"executionReceiptPresented", true},
+                    {"executionReceiptSucceeded", true},
+                    {"mainView", true},
+                    {"requested", true},
+                    {"supported", true},
+                    {"enabled", true},
+                    {"graphPassScheduled", true},
+                    {"drawSubmitted", true},
+                    {"uploadPublished", true},
+                    {"opaqueSceneSnapshotReady", true},
+                    {"depthSnapshotReady", true},
+                    {"depthLinearizationReady", true},
+                    {"layeredNormalsEvaluated", true},
+                    {"fresnelEvaluated", true},
+                    {"thicknessEvaluated", true},
+                    {"beerLambertEvaluated", true},
+                    {"foamEvaluated", true},
+                    {"reactiveMaskWriteEnabled", true},
+                    {"itemCount", 1},
+                    {"drawCallCount", 1},
+                    {"waveCount", 4},
+                    {"fallbackCount", 0},
+                    {"waitIdleCallCount", 0},
+                    {"reactiveMaskWriteDrawCount", 1},
+                    {"surfaceReceiptCount", 1},
+                    {"surfaceReceiptsOverflow", false},
+                    {"uploadBytes", 512},
+                    {"resourceCreationCount", 1},
+                    {"pipelineCreationCount", 1},
+                    {"gridVertexCount", 4225},
+                    {"gridIndexCount", 24576},
+                    {"componentId", 7},
+                    {"contentHash", 8},
+                    {"waveContentHash", 9},
+                    {"recordFrameSequence", 11},
+                    {"recordSceneRevision", 3},
+                    {"recordSurfaceGeneration", 1},
+                    {"recordConfigurationRevision", 2},
+                    {"recordGraphIdentity", 6},
+                    {"recordGraphGeneration", 1},
+                    {"recordEpoch", 1},
+                    {"executionReceiptFrameSequence", 11},
+                    {"presentedFrameSequence", 11},
+                    {"recordIdentityMatchesExecutionReceipt", true},
+                    {"presentedFrameAligned", true},
+                    {"qualifiedWater", true},
+                    {"diagnostic", ""},
+                }},
+            }},
+        };
+        if (!ValidateWaterSurfaceExecutionProjection(
+                qualifiedWaterReport, &parsedWaterOptions))
+        {
+            return false;
+        }
+        qualifiedWaterReport["renderDiagnostics"]
+                            ["waterSurfaceActualExecution"]
+                            ["waveContentHash"] = 0;
+        if (ValidateWaterSurfaceExecutionProjection(
+                qualifiedWaterReport, &parsedWaterOptions))
+        {
+            return false;
+        }
+
+        char cookedProviderParserArg0[] = "SampleReportContentValidation";
+        char cookedProviderParserArg1[] = "--self-test";
+        char cookedProviderParserArg2[] = "--require-cooked-shader-provider";
+        char* cookedProviderParserArguments[] = {
+            cookedProviderParserArg0,
+            cookedProviderParserArg1,
+            cookedProviderParserArg2};
+        Options parsedCookedProviderOptions;
+        if (!ParseOptions(3, cookedProviderParserArguments,
+                          parsedCookedProviderOptions) ||
+            !parsedCookedProviderOptions.requireCookedShaderProvider)
+        {
+            return false;
+        }
+        Json qualifiedCookedProviderReport = {
+            {"runtimeComposition", {
+                {"runtimeOnlyComposition", true},
+                {"cookedShaderProvider", true},
+                {"sourceShaderFallbackEnabled", false},
+                {"cookedResourcePolicy", true},
+                {"cookedShaderRoot", "Fixtures/Gfx18WaterShaders/DX12"},
+                {"cookedResourceRoot", "Assets/Samples/cooked/water-surface-reference-fixture-v1"},
+                {"shaderProgramProvider", "CookedShaderArtifactV2"},
+                {"qualifiedCookedShaderProvider", true},
+                {"diagnostic", ""},
+            }},
+        };
+        if (!ValidateCookedShaderProvider(qualifiedCookedProviderReport,
+                                          &parsedCookedProviderOptions))
+        {
+            return false;
+        }
+        qualifiedCookedProviderReport["runtimeComposition"]
+                                   ["sourceShaderFallbackEnabled"] = true;
+        if (ValidateCookedShaderProvider(qualifiedCookedProviderReport,
+                                         &parsedCookedProviderOptions))
         {
             return false;
         }
@@ -9640,6 +9991,8 @@ namespace
             << "  --require-particle-vfx-execution\n"
             << "  --require-particle-fire-execution\n"
             << "  --require-particle-smoke-execution\n"
+            << "  --require-water-surface-execution\n"
+            << "  --require-cooked-shader-provider\n"
             << "  --require-package-only-cooked-asset <asset-id>\n"
             << "  --require-temporal-aa-execution\n"
             << "  --require-no-fxaa-execution\n"

@@ -344,37 +344,33 @@ namespace
         MixAABB(hash, state.worldBounds);
         MixVec2(hash, state.size);
         MixFloat(hash, state.depth);
-        Diagnostics::MixContentHashValue(hash, state.resolution);
         Diagnostics::MixContentHashValue(
             hash, static_cast<uint64>(state.surfaceType));
         Diagnostics::MixContentHashValue(
             hash, static_cast<uint64>(state.simulationType));
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(state.payloadStatus));
+        Diagnostics::MixContentHashValue(
+            hash, state.gerstnerWaves.contentHash);
+        Diagnostics::MixContentHashValue(
+            hash, state.gerstnerWaves.waveCount);
         MixVec3(hash, state.shallowColor);
         MixVec3(hash, state.deepColor);
         MixVec3(hash, state.foamColor);
+        MixVec3(hash, state.absorptionCoefficient);
         MixFloat(hash, state.transparency);
         MixFloat(hash, state.reflectionStrength);
         MixFloat(hash, state.refractionStrength);
         MixFloat(hash, state.roughness);
+        MixFloat(hash, state.normalScale);
         MixFloat(hash, state.foamIntensity);
+        MixFloat(hash, state.foamCrestThreshold);
         Diagnostics::MixContentHashValue(
             hash, state.reflectionEnabled ? 1U : 0U);
         Diagnostics::MixContentHashValue(
             hash, state.refractionEnabled ? 1U : 0U);
-        Diagnostics::MixContentHashValue(hash,
-                                         state.causticsEnabled ? 1U : 0U);
-        Diagnostics::MixContentHashValue(
-            hash, state.underwaterEffectsEnabled ? 1U : 0U);
         Diagnostics::MixContentHashValue(hash, state.foamEnabled ? 1U : 0U);
-        Diagnostics::MixContentHashValue(hash,
-                                         state.gpuInitialized ? 1U : 0U);
-        Diagnostics::MixContentHashValue(
-            hash, state.cpuSimulationAvailable ? 1U : 0U);
-        Diagnostics::MixContentHashValue(
-            hash, state.renderGpuPathAvailable ? 1U : 0U);
-        MixString(hash, state.gpuInitializationReason);
-        MixString(hash, state.simulationFallbackReason);
-        MixString(hash, state.renderPathReason);
+        Diagnostics::MixContentHashValue(hash, state.contentHash);
         return hash;
     }
 

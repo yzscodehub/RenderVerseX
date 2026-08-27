@@ -20,6 +20,7 @@
 #include <iterator>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace
@@ -656,12 +657,13 @@ namespace
         EXPECT_TRUE(entry->assetContentId.IsValid());
         EXPECT_EQ(entry->files.front().resolvedPath, entry->resolvedPath);
 
-        RVX::SampleAssetRegistry registry({
-            {entry->id,
-             entry->kind,
-             entry->resolvedPath,
-             entry->contentIdentity,
-             entry->assetContentId}});
+        RVX::SampleAssetRegistryEntry registryEntry;
+        registryEntry.id = entry->id;
+        registryEntry.kind = entry->kind;
+        registryEntry.resolvedPath = entry->resolvedPath;
+        registryEntry.contentIdentity = entry->contentIdentity;
+        registryEntry.assetContentId = entry->assetContentId;
+        RVX::SampleAssetRegistry registry({std::move(registryEntry)});
         const RVX::SampleAssetRegistryLookupResult animationLookup =
             registry.Lookup("walk", RVX::SampleAssetKind::Animation);
         ASSERT_TRUE(animationLookup.IsFound());
@@ -706,9 +708,13 @@ namespace
         EXPECT_EQ(entry->kind, RVX::SampleAssetKind::Effect);
         EXPECT_EQ(entry->path.generic_string(), "effects/fire/effect.rvxvfx");
 
-        RVX::SampleAssetRegistry registry({
-            {entry->id, entry->kind, entry->resolvedPath,
-             entry->contentIdentity, entry->assetContentId}});
+        RVX::SampleAssetRegistryEntry registryEntry;
+        registryEntry.id = entry->id;
+        registryEntry.kind = entry->kind;
+        registryEntry.resolvedPath = entry->resolvedPath;
+        registryEntry.contentIdentity = entry->contentIdentity;
+        registryEntry.assetContentId = entry->assetContentId;
+        RVX::SampleAssetRegistry registry({std::move(registryEntry)});
         EXPECT_TRUE(registry.Lookup("particle-fire-v1",
                                     RVX::SampleAssetKind::Effect).IsFound());
         EXPECT_EQ(registry.Lookup("particle-fire-v1",

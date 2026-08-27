@@ -2108,18 +2108,135 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
-      "path": "Source/Runtime/Render/Private/Passes/WaterPass.cpp",
-      "owner": "WaterPass",
-      "symbol": "m_surfacePipeline",
-      "policy": "SurfaceGeneration",
-      "completionSource": "surface generation last Graphics completion point",
-      "normalRelease": "old surface generation releases after Graphics completion or one compatibility WaitIdle",
-      "deviceLostRelease": "surface explicit device-lost teardown"
+      "path": "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp",
+      "owner": "Submission",
+      "symbol": "constantsBuffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "RenderGraph submission completion token for the batch retaining this Water submission",
+      "normalRelease": "submission-owned references release after the retained batch completion token signals",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
     },
     {
-      "path": "Source/Runtime/Render/Private/Passes/WaterPass.cpp",
-      "owner": "WaterPass",
-      "symbol": "m_underwaterPipeline",
+      "path": "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp",
+      "owner": "Submission",
+      "symbol": "gridVertexBuffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "RenderGraph submission completion token for the batch retaining this Water submission",
+      "normalRelease": "submission-owned references release after the retained batch completion token signals",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp",
+      "owner": "Submission",
+      "symbol": "gridIndexBuffer",
+      "policy": "SubmissionBatch",
+      "completionSource": "RenderGraph submission completion token for the batch retaining this Water submission",
+      "normalRelease": "submission-owned references release after the retained batch completion token signals",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp",
+      "owner": "Submission",
+      "symbol": "descriptorSetLayout",
+      "policy": "SubmissionBatch",
+      "completionSource": "RenderGraph submission completion token for the batch retaining this Water submission",
+      "normalRelease": "submission-owned references release after the retained batch completion token signals",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp",
+      "owner": "Submission",
+      "symbol": "linearClampSampler",
+      "policy": "SubmissionBatch",
+      "completionSource": "RenderGraph submission completion token for the batch retaining this Water submission",
+      "normalRelease": "submission-owned references release after the retained batch completion token signals",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp",
+      "owner": "Submission",
+      "symbol": "pipeline",
+      "policy": "SubmissionBatch",
+      "completionSource": "RenderGraph submission completion token for the batch retaining this Water submission",
+      "normalRelease": "submission-owned references release after the retained batch completion token signals",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp",
+      "owner": "FrameSlot",
+      "symbol": "constantsBuffer",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp",
+      "owner": "WaterSurfaceRenderer",
+      "symbol": "m_gridVertexBuffer",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp",
+      "owner": "WaterSurfaceRenderer",
+      "symbol": "m_gridIndexBuffer",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp",
+      "owner": "WaterSurfaceRenderer",
+      "symbol": "m_descriptorSetLayout",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp",
+      "owner": "WaterSurfaceRenderer",
+      "symbol": "m_pipelineLayout",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp",
+      "owner": "WaterSurfaceRenderer",
+      "symbol": "m_vertexShader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp",
+      "owner": "WaterSurfaceRenderer",
+      "symbol": "m_pixelShader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp",
+      "owner": "WaterSurfaceRenderer",
+      "symbol": "m_linearClampSampler",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/WaterFeaturePass.cpp",
+      "owner": "WaterSurfaceRenderer",
+      "symbol": "m_pipeline",
       "policy": "OwnerSnapshot",
       "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
       "normalRelease": "owner replacement retires after the captured snapshot completes",

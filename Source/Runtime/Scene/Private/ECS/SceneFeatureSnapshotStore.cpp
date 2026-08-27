@@ -20,6 +20,12 @@ namespace
         return ready ? state.HasValidCpuPacket() : state.HasNoCpuPacket();
     }
 
+    [[nodiscard]] bool HasValidWaterPacketShape(
+        const WaterRenderSnapshotItem& state) noexcept
+    {
+        return state.IsStructurallyValid();
+    }
+
     template<typename State, typename Entries>
     [[nodiscard]] bool PublishTypedEntry(
         const RenderFeatureChannelRegistry& channelRegistry,
@@ -204,7 +210,7 @@ bool SceneFeatureSnapshotStore::PublishWater(const ECS::EntityRef& source,
 {
     const std::optional<SceneFeatureSnapshotSource> identity =
         MakeSourceIdentity(source);
-    if (!identity.has_value())
+    if (!identity.has_value() || !HasValidWaterPacketShape(state))
     {
         return false;
     }
@@ -254,7 +260,7 @@ bool SceneFeatureSnapshotStore::PublishWaterChannel(
 {
     const std::optional<SceneFeatureSnapshotSource> identity =
         MakeSourceIdentity(source);
-    return identity.has_value() &&
+    return identity.has_value() && HasValidWaterPacketShape(state) &&
            PublishTypedEntry(m_channelRegistry,
                              m_water,
                              identity->entity,

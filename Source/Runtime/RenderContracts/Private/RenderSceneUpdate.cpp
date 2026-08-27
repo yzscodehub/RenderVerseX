@@ -420,34 +420,8 @@ bool AreWaterRenderSnapshotItemsEqual(
 {
     return left.header == right.header &&
            left.componentId == right.componentId &&
-           left.surfaceAssetId == right.surfaceAssetId &&
-           left.materialAssetId == right.materialAssetId &&
-           left.worldPosition == right.worldPosition &&
-           EqualBounds(left.worldBounds, right.worldBounds) &&
-           left.size == right.size && left.depth == right.depth &&
-           left.resolution == right.resolution &&
-           left.surfaceType == right.surfaceType &&
-           left.simulationType == right.simulationType &&
-           left.shallowColor == right.shallowColor &&
-           left.deepColor == right.deepColor &&
-           left.foamColor == right.foamColor &&
-           left.transparency == right.transparency &&
-           left.reflectionStrength == right.reflectionStrength &&
-           left.refractionStrength == right.refractionStrength &&
-           left.roughness == right.roughness &&
-           left.foamIntensity == right.foamIntensity &&
-           left.reflectionEnabled == right.reflectionEnabled &&
-           left.refractionEnabled == right.refractionEnabled &&
-           left.causticsEnabled == right.causticsEnabled &&
-           left.underwaterEffectsEnabled == right.underwaterEffectsEnabled &&
-           left.foamEnabled == right.foamEnabled &&
-           left.gpuInitialized == right.gpuInitialized &&
-           left.cpuSimulationAvailable == right.cpuSimulationAvailable &&
-           left.renderGpuPathAvailable == right.renderGpuPathAvailable &&
-           left.gpuInitializationReason == right.gpuInitializationReason &&
-           left.simulationFallbackReason ==
-               right.simulationFallbackReason &&
-           left.renderPathReason == right.renderPathReason;
+           left.payloadStatus == right.payloadStatus &&
+           left.contentHash == right.contentHash;
 }
 
 bool AreTerrainRenderSnapshotItemsEqual(

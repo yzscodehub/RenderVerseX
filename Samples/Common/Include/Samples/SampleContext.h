@@ -51,7 +51,26 @@ namespace RVX
     {
         std::string id;
         SampleAssetKind kind = SampleAssetKind::Model;
+        /**
+         * @brief Physical catalog path retained for evidence and report output.
+         *
+         * This is intentionally never substituted into a mounted runtime
+         * resource request.  Runtime-only compositions consume @ref resourcePath.
+         */
         std::filesystem::path resolvedPath;
+        /**
+         * @brief Logical path presented to Resource/ECS loaders.
+         *
+         * Runtime-only package entries use a strict `cooked://` path rooted at
+         * the runner-mounted Sample asset root.  Legacy compositions leave
+         * this empty and intentionally use @ref resolvedPath.
+         */
+        std::string resourcePath;
+        /**
+         * @brief Reject instead of falling back to a physical path when the
+         * entry is used by a runtime-only composition.
+         */
+        bool requiresCookedResourcePath = false;
         Resource::ResourceContentIdentity contentIdentity;
         AssetContentId assetContentId;
         /**
@@ -60,6 +79,81 @@ namespace RVX
          */
         bool packageOnly = false;
     };
+
+    /**
+     * @brief Validate one package-relative cooked URI without touching disk.
+     *
+     * A mounted runtime root accepts only paths below that root.  Keeping this
+     * validation at the Sample registry boundary prevents absolute catalog
+     * paths, traversal, and alternate schemes from reaching a loader.
+     */
+    [[nodiscard]] inline bool IsStrictSampleCookedResourcePath(
+        const std::string_view resourcePath) noexcept
+    {
+        constexpr std::string_view Prefix = "cooked://";
+        if (!resourcePath.starts_with(Prefix))
+        {
+            return false;
+        }
+        const std::string_view logicalPath = resourcePath.substr(Prefix.size());
+        if (logicalPath.empty() || logicalPath.find("://") != std::string_view::npos ||
+            logicalPath.front() == '/' || logicalPath.front() == '\\')
+        {
+            return false;
+        }
+
+        const std::filesystem::path path{std::string(logicalPath)};
+        if (path.empty() || path.is_absolute() || path.has_root_name() ||
+            path.has_root_directory())
+        {
+            return false;
+        }
+        for (const std::filesystem::path& segment : path)
+        {
+            const std::string value = segment.generic_string();
+            if (value.empty() || value == "." || value == ".." ||
+                value.find(':') != std::string::npos)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * @brief Return the only loader path admitted for a registry entry.
+     *
+     * Runtime-only entries never fall back to their physical evidence path.
+     * This is deliberately shared by model, environment, animation, and
+     * particle-effect loaders so a new catalog type cannot bypass the policy.
+     */
+    [[nodiscard]] inline bool TryGetSampleAssetResourcePath(
+        const SampleAssetRegistryEntry& entry,
+        std::string& outResourcePath,
+        std::string& outError)
+    {
+        if (entry.requiresCookedResourcePath)
+        {
+            if (!IsStrictSampleCookedResourcePath(entry.resourcePath))
+            {
+                outError = "Runtime-only Sample asset has no valid package-relative cooked resource path: " +
+                    entry.id;
+                return false;
+            }
+            outResourcePath = entry.resourcePath;
+            return true;
+        }
+
+        outResourcePath = entry.resourcePath.empty()
+            ? entry.resolvedPath.generic_string()
+            : entry.resourcePath;
+        if (outResourcePath.empty())
+        {
+            outError = "Sample asset has no resource path: " + entry.id;
+            return false;
+        }
+        return true;
+    }
 
     enum class SampleAssetRegistryLookupCode : uint8
     {

@@ -26,7 +26,10 @@ namespace RVX
     // cadence/resource identity. Consumers must reject the former GFX16
     // payload shape rather than interpreting absent effect fields as defaults.
     inline constexpr uint32 RVX_PARTICLE_RENDER_SNAPSHOT_SCHEMA_VERSION = 3;
-    inline constexpr uint32 RVX_WATER_RENDER_SNAPSHOT_SCHEMA_VERSION = 2;
+    // GFX18 replaces the placeholder Water payload with a bounded, canonical
+    // Gerstner descriptor. Consumers must reject the former CPU-simulation and
+    // fake-FFT fields rather than inventing a compatibility fallback.
+    inline constexpr uint32 RVX_WATER_RENDER_SNAPSHOT_SCHEMA_VERSION = 3;
     inline constexpr uint32 RVX_TERRAIN_RENDER_SNAPSHOT_SCHEMA_VERSION = 2;
 
     /** @brief Explicit generation-qualified Scene source; opaque render IDs are not decoded. */

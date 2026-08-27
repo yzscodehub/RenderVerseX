@@ -71,6 +71,25 @@ GFX15_REQUIRED_EVIDENCE = {
     "Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX15DeferredTranslucency_640x360.json",
 }
 
+GFX18_CONFIGURE_PRESET = "win_x64_qualification_debug"
+GFX18_TEST_PRESET = "win_x64_qualification_debug_gfx18_water"
+GFX18_BUILD_TARGET = "RVXValidationSuiteGfx18Water"
+GFX18_LABEL = "suite.gfx18-water"
+GFX18_REQUIRED_EVIDENCE = {
+    "Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX18ForwardPlusWaterSurface_640x360.ppm",
+    "Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX18DeferredWaterSurface_640x360.ppm",
+    "Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX18ForwardPlusWaterSurface_640x360.ppm",
+    "Tests/VisualArtifacts/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX18DeferredWaterSurface_640x360.ppm",
+    "Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX18ForwardPlusWaterSurface_640x360.json",
+    "Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX18DeferredWaterSurface_640x360.json",
+    "Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX18ForwardPlusWaterSurface_640x360.json",
+    "Tests/SampleReports/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX18DeferredWaterSurface_640x360.json",
+    "Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX18ForwardPlusWaterSurface_640x360.json",
+    "Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesDX12GFX18DeferredWaterSurface_640x360.json",
+    "Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX18ForwardPlusWaterSurface_640x360.json",
+    "Tests/StartupTimelines/Debug/RenderVerseSamples/RenderVerseSamplesVulkanGFX18DeferredWaterSurface_640x360.json",
+}
+
 
 def _read(path: Path) -> str:
     try:
@@ -182,6 +201,28 @@ def validate(root: Path) -> list[str]:
             findings.append(
                 "GFX15 translucency test preset must select exactly "
                 "suite.gfx15-translucency"
+            )
+
+    if (
+        GFX18_CONFIGURE_PRESET not in configure_names
+        or GFX18_CONFIGURE_PRESET not in build_names
+        or GFX18_TEST_PRESET not in test_names
+    ):
+        findings.append(
+            "GFX18 water preset triplet is incomplete: "
+            f"{GFX18_CONFIGURE_PRESET}/{GFX18_TEST_PRESET}"
+        )
+    else:
+        gfx18_test_preset = next(
+            entry
+            for entry in presets["testPresets"]
+            if entry["name"] == GFX18_TEST_PRESET
+        )
+        filter_object = gfx18_test_preset.get("filter")
+        expected_filter = {"include": {"label": "^suite\\.gfx18-water$"}}
+        if filter_object != expected_filter:
+            findings.append(
+                "GFX18 water test preset must select exactly suite.gfx18-water"
             )
 
     for configure, test in PR_SMOKE_PRESETS.items():
@@ -346,6 +387,48 @@ def validate(root: Path) -> list[str]:
                     "four image/report/startup evidence triplets"
                 )
 
+    gfx18_step = re.search(
+        r"^\s*- name: Run fail-closed GFX18 water matrix\s*$"
+        r"(?P<body>.*?)(?=^\s*- (?:name:|if:)|\Z)",
+        nightly,
+        re.MULTILINE | re.DOTALL,
+    )
+    if gfx18_step is None:
+        findings.append("nightly.yml is missing the fail-closed GFX18 water step")
+    else:
+        gfx18_body = gfx18_step.group("body")
+        if "Scripts/run_required_suite.ps1" not in gfx18_body:
+            findings.append("nightly.yml GFX18 step is missing Scripts/run_required_suite.ps1")
+        for argument, expected in (
+            ("ConfigurePreset", GFX18_CONFIGURE_PRESET),
+            ("BuildPreset", GFX18_CONFIGURE_PRESET),
+            ("TestPreset", GFX18_TEST_PRESET),
+            ("BuildTarget", GFX18_BUILD_TARGET),
+            ("RequiredLabel", GFX18_LABEL),
+            ("ExpectedTestCount", "12"),
+        ):
+            argument_match = re.search(rf"-{argument}\s+(\S+)", gfx18_body)
+            if argument_match is None or argument_match.group(1) != expected:
+                findings.append(
+                    f"nightly.yml GFX18 step must set -{argument} {expected}"
+                )
+        evidence_match = re.search(r'-RequiredEvidence\s+"([^"]*)"', gfx18_body)
+        if evidence_match is None:
+            findings.append("nightly.yml GFX18 step is missing RequiredEvidence")
+        else:
+            actual_evidence = tuple(
+                item for item in evidence_match.group(1).split(";") if item
+            )
+            if (
+                len(actual_evidence) != 12
+                or len(set(actual_evidence)) != 12
+                or set(actual_evidence) != GFX18_REQUIRED_EVIDENCE
+            ):
+                findings.append(
+                    "nightly.yml GFX18 RequiredEvidence must contain the exact "
+                    "four image/report/startup evidence triplets"
+                )
+
     weekly = workflow_text.get("weekly.yml", "")
     for token in (
         "schedule:",
@@ -361,6 +444,30 @@ def validate(root: Path) -> list[str]:
         if token not in weekly:
             findings.append(f"weekly.yml is missing required soak token {token}")
     qualification = _read(root / "Tests" / "CMake" / "QualificationTests.cmake")
+    gfx18_function_match = re.search(
+        r"function\(rvx_add_renderverse_gfx18_water_native\b(?P<body>.*?)\nendfunction\(\)",
+        qualification,
+        re.DOTALL,
+    )
+    gfx18_function = gfx18_function_match.group("body") if gfx18_function_match else ""
+    if not gfx18_function:
+        findings.append("GFX18 water qualification implementation function is missing")
+    else:
+        for token in (
+            "--runtime-only-composition",
+            "--cooked-shader-root",
+            "--require-cooked-shader-provider",
+            "--require-water-surface-execution",
+            "SUITE gfx18-water",
+        ):
+            if token not in gfx18_function:
+                findings.append(
+                    f"GFX18 water qualification is missing required token {token}"
+                )
+        if gfx18_function.count("SUITE gfx18-water") != 3:
+            findings.append(
+                "GFX18 water qualification must register exactly Capture/Image/Receipt"
+            )
     weekly_function_match = re.search(
         r"function\(rvx_add_renderverse_weekly_soak\b(?P<body>.*?)\nendfunction\(\)",
         qualification,

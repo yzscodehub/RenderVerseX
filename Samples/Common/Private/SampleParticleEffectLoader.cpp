@@ -90,8 +90,13 @@ bool SampleParticleEffectLoader::RequestByAssetId(
 
     Resource::ResourceLoadOptions options;
     options.expectedContentIdentity = lookup.entry->contentIdentity;
+    std::string resourcePath;
+    if (!TryGetSampleAssetResourcePath(*lookup.entry, resourcePath, outError))
+    {
+        return false;
+    }
     auto request = m_resources.RequestAsync<Particle::ParticleSystemResource>(
-        lookup.entry->resolvedPath.string(), std::move(options));
+        resourcePath, std::move(options));
     if (!request.IsValid())
     {
         outError = "ResourceSubsystem rejected cooked particle effect request: " +
