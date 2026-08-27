@@ -91,7 +91,7 @@ try
         throw "Unable to create temporary repository for fingerprint self-test"
     }
     Set-Content -LiteralPath (Join-Path $fingerprintRoot "tracked.txt") -Value "tracked" -Encoding utf8
-    & git -C $fingerprintRoot add -- tracked.txt
+    & git -c core.excludesFile=/dev/null -C $fingerprintRoot add -- tracked.txt
     if ($LASTEXITCODE -ne 0)
     {
         throw "Unable to stage fingerprint self-test input"
@@ -112,6 +112,52 @@ try
     if ($firstFingerprint.digest -eq $secondFingerprint.digest)
     {
         throw "Working-source fingerprint did not change after untracked content changed."
+    }
+
+    New-Item -ItemType Directory -Path (Join-Path $fingerprintRoot ".agent-harness\receipts") | Out-Null
+    Set-Content -LiteralPath (Join-Path $fingerprintRoot "feature_list.json") -Value "ledger-one" -Encoding utf8
+    Set-Content -LiteralPath (Join-Path $fingerprintRoot "progress.md") -Value "progress-one" -Encoding utf8
+    Set-Content -LiteralPath (Join-Path $fingerprintRoot "session-handoff.md") -Value "handoff-one" -Encoding utf8
+    Set-Content -LiteralPath (Join-Path $fingerprintRoot ".agent-harness\receipts\BuildTruth.test.json") -Value "receipt-one" -Encoding utf8
+    $controlPlaneFingerprint = Get-BuildTruthWorkingSourceFingerprint `
+        -Root $fingerprintRoot `
+        -GitSafeDirectory $fingerprintSafeDirectory
+    Assert-Equal -Actual $controlPlaneFingerprint.digest -Expected $secondFingerprint.digest `
+        -Message "mutable control-plane files do not alter product fingerprint"
+    Set-Content -LiteralPath (Join-Path $fingerprintRoot "feature_list.json") -Value "ledger-two" -Encoding utf8
+    Set-Content -LiteralPath (Join-Path $fingerprintRoot ".agent-harness\receipts\BuildTruth.test.json") -Value "receipt-two" -Encoding utf8
+    $updatedControlPlaneFingerprint = Get-BuildTruthWorkingSourceFingerprint `
+        -Root $fingerprintRoot `
+        -GitSafeDirectory $fingerprintSafeDirectory
+    Assert-Equal -Actual $updatedControlPlaneFingerprint.digest -Expected $secondFingerprint.digest `
+        -Message "control-plane updates do not alter product fingerprint"
+
+    Set-Content -LiteralPath (Join-Path $fingerprintRoot "init.ps1") -Value "product contract" -Encoding utf8
+    $contractFingerprint = Get-BuildTruthWorkingSourceFingerprint `
+        -Root $fingerprintRoot `
+        -GitSafeDirectory $fingerprintSafeDirectory
+    if ($contractFingerprint.digest -eq $secondFingerprint.digest)
+    {
+        throw "Product fingerprint ignored an init.ps1 contract change."
+    }
+
+    $userExcludeFile = Join-Path $fingerprintRoot "user-global-ignore.txt"
+    Set-Content -LiteralPath $userExcludeFile -Value "hidden-by-user.txt" -Encoding utf8
+    & git -C $fingerprintRoot config core.excludesFile $userExcludeFile
+    if ($LASTEXITCODE -ne 0)
+    {
+        throw "Unable to configure the temporary global-excludes self-test"
+    }
+    $beforeExcludedProduct = Get-BuildTruthWorkingSourceFingerprint `
+        -Root $fingerprintRoot `
+        -GitSafeDirectory $fingerprintSafeDirectory
+    Set-Content -LiteralPath (Join-Path $fingerprintRoot "hidden-by-user.txt") -Value "must remain visible" -Encoding utf8
+    $afterExcludedProduct = Get-BuildTruthWorkingSourceFingerprint `
+        -Root $fingerprintRoot `
+        -GitSafeDirectory $fingerprintSafeDirectory
+    if ($beforeExcludedProduct.digest -eq $afterExcludedProduct.digest)
+    {
+        throw "Product fingerprint was affected by core.excludesFile."
     }
 
     $validJUnit = Join-Path $temporaryRoot "valid.junit.xml"
@@ -403,7 +449,7 @@ try
     $receiptRunId = "0123456789abcdef0123456789abcdef"
     $receiptValue = [ordered]@{
         schema = "RVX.AgentHarness.BuildTruthReceipt"
-        schemaVersion = 1
+        schemaVersion = 2
         runId = $receiptRunId
         immutableReceiptPath = ".agent-harness/receipts/BuildTruth.$receiptRunId.json"
         generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
@@ -425,6 +471,22 @@ try
     {
         throw "Build Truth receipt publisher does not bind softwareAdapterAllowed."
     }
+    if ($buildTruthRunnerSource -notmatch '\[switch\]\$AllowSoftwareAdapter' -or
+        $buildTruthRunnerSource -notmatch 'RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER\s*=\s*"1"' -or
+        $buildTruthRunnerSource -notmatch 'Remove-Item Env:RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER')
+    {
+        throw "Build Truth native software-adapter policy is not invocation-bound."
+    }
+    $receiptValue.schemaVersion = 1
+    Assert-BuildTruthFailure -Category "ReceiptSchema" -Action {
+        Write-BuildTruthImmutableReceipt `
+            -RepositoryRoot $receiptRepository `
+            -ReceiptKind "BuildTruth" `
+            -RunId $receiptRunId `
+            -Value $receiptValue `
+            -Status "passed" | Out-Null
+    }
+    $receiptValue.schemaVersion = 2
     $receipt = Write-BuildTruthImmutableReceipt `
         -RepositoryRoot $receiptRepository `
         -ReceiptKind "BuildTruth" `
@@ -492,7 +554,7 @@ try
     $failedRunId = "abcdefabcdefabcdefabcdefabcdefab"
     $failedReceiptValue = [ordered]@{
         schema = "RVX.AgentHarness.BuildTruthReceipt"
-        schemaVersion = 1
+        schemaVersion = 2
         runId = $failedRunId
         immutableReceiptPath = ".agent-harness/receipts/BuildTruth.$failedRunId.json"
     }

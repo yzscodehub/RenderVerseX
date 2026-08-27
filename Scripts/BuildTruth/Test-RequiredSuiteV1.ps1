@@ -148,7 +148,7 @@ try
     $receiptRunId = "fedcba9876543210fedcba9876543210"
     $receiptValue = [ordered]@{
         schema = "RVX.AgentHarness.RequiredSuiteReceipt"
-        schemaVersion = 1
+        schemaVersion = 2
         runId = $receiptRunId
         immutableReceiptPath = ".agent-harness/receipts/RequiredSuite.$receiptRunId.json"
         generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
@@ -167,6 +167,16 @@ try
     {
         throw "Required Suite receipt publisher does not bind skipConfigure."
     }
+    $receiptValue.schemaVersion = 1
+    Assert-RequiredSuiteFailure -Category "ReceiptSchema" -Action {
+        Write-BuildTruthImmutableReceipt `
+            -RepositoryRoot $receiptRepository `
+            -ReceiptKind "RequiredSuite" `
+            -RunId $receiptRunId `
+            -Value $receiptValue `
+            -Status "passed" | Out-Null
+    }
+    $receiptValue.schemaVersion = 2
     $receipt = Write-BuildTruthImmutableReceipt `
         -RepositoryRoot $receiptRepository `
         -ReceiptKind "RequiredSuite" `
@@ -187,7 +197,7 @@ try
             -Status "passed" | Out-Null
     }
 
-    Write-Host "Required Suite v1 self-test passed."
+    Write-Host "Required Suite receipt v2 self-test passed."
 }
 finally
 {

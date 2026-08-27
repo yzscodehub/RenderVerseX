@@ -1,5 +1,14 @@
 Set-StrictMode -Version Latest
 
+$script:BuildTruthMutableControlPlanePaths = @(
+    "feature_list.json",
+    "progress.md",
+    "session-handoff.md"
+)
+$script:BuildTruthMutableControlPlanePrefixes = @(
+    ".agent-harness/receipts/"
+)
+
 function New-BuildTruthFailure
 {
     param(
@@ -104,14 +113,35 @@ function Get-BuildTruthWorkingSourceFingerprint
     # Disable Git's C-style quoting so non-ASCII repository paths are passed
     # to the filesystem as their actual Unicode names rather than quoted
     # escape sequences that are not valid Windows paths.
-    $paths = @(& git -c "safe.directory=$GitSafeDirectory" -c core.quotePath=false -C $Root ls-files --cached --others --exclude-standard)
+    $paths = @(& git -c "safe.directory=$GitSafeDirectory" -c core.quotePath=false `
+        -c core.excludesFile=/dev/null -C $Root `
+        ls-files --cached --others --exclude-standard)
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0)
     {
         Throw-BuildTruthFailure -Category "SourceFingerprint" -Message (
             "Unable to enumerate tracked and non-ignored untracked files (exit code $exitCode)")
     }
-    return Get-BuildTruthPathFingerprint -Root $Root -RelativePaths $paths
+    $comparison = Get-BuildTruthPathStringComparison
+    $productPaths = @($paths | Where-Object {
+        $relativePath = ([string]$_).Replace("\", "/")
+        foreach ($mutablePath in $script:BuildTruthMutableControlPlanePaths)
+        {
+            if ([string]::Equals($relativePath, $mutablePath, $comparison))
+            {
+                return $false
+            }
+        }
+        foreach ($mutablePrefix in $script:BuildTruthMutableControlPlanePrefixes)
+        {
+            if ($relativePath.StartsWith($mutablePrefix, $comparison))
+            {
+                return $false
+            }
+        }
+        return $true
+    })
+    return Get-BuildTruthPathFingerprint -Root $Root -RelativePaths $productPaths
 }
 
 function Get-BuildTruthCTestInventory
@@ -278,6 +308,36 @@ function Test-BuildTruthPathContained
     return $candidatePath.StartsWith($prefix, $comparison)
 }
 
+function Get-BuildTruthRepositoryRelativePath
+{
+    param(
+        [Parameter(Mandatory)][string]$RepositoryRoot,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    $rootPath = [IO.Path]::GetFullPath($RepositoryRoot).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar)
+    $candidatePath = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-BuildTruthPathContained `
+        -Root $rootPath `
+        -Candidate $candidatePath `
+        -AllowRoot))
+    {
+        Throw-BuildTruthFailure -Category "PathEscape" -Message (
+            "Path '$Path' resolves outside '$rootPath'")
+    }
+
+    if ($candidatePath.Length -eq $rootPath.Length)
+    {
+        return "."
+    }
+
+    return $candidatePath.Substring($rootPath.Length).TrimStart(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar).Replace("\", "/")
+}
+
 function Test-BuildTruthLinkOrReparsePoint
 {
     param([Parameter(Mandatory)][object]$Item)
@@ -317,7 +377,20 @@ function Assert-BuildTruthExistingPathAncestors
             "Containment root is missing or not a directory: $rootPath")
     }
 
-    $relativePath = [IO.Path]::GetRelativePath($rootPath, $candidatePath)
+    # System.IO.Path.GetRelativePath is unavailable in Windows PowerShell 5.1,
+    # which is still used by some repository launcher shims.  Containment was
+    # already proved above, so deriving the suffix directly is both portable
+    # and avoids URI escaping/case-normalization differences across hosts.
+    $relativePath = if ($candidatePath.Length -eq $rootPath.Length)
+    {
+        ""
+    }
+    else
+    {
+        $candidatePath.Substring($rootPath.Length).TrimStart(
+            [IO.Path]::DirectorySeparatorChar,
+            [IO.Path]::AltDirectorySeparatorChar)
+    }
     $segments = @($relativePath -split "[\\/]" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     $currentPath = $rootPath
     $pathsToCheck = [System.Collections.Generic.List[string]]::new()
@@ -913,12 +986,9 @@ function Get-BuildTruthReceiptFileEvidence
             "Receipt evidence is not a file: $absolutePath")
     }
 
-    $repositoryPath = [IO.Path]::GetFullPath($RepositoryRoot).TrimEnd(
-        [IO.Path]::DirectorySeparatorChar,
-        [IO.Path]::AltDirectorySeparatorChar)
-    $relativePath = [IO.Path]::GetRelativePath($repositoryPath, $absolutePath).Replace(
-        [IO.Path]::DirectorySeparatorChar,
-        "/")
+    $relativePath = Get-BuildTruthRepositoryRelativePath `
+        -RepositoryRoot $RepositoryRoot `
+        -Path $absolutePath
     if ([string]::IsNullOrWhiteSpace($relativePath) -or
         [IO.Path]::IsPathRooted($relativePath) -or
         $relativePath -match "(^|/)\.\.(/|$)")
@@ -1089,7 +1159,7 @@ function Write-BuildTruthImmutableReceipt
     if ($null -eq $receiptSchema -or
         $receiptSchema -ne $expectedSchema -or
         $null -eq $receiptSchemaVersion -or
-        $receiptSchemaVersion -ne 1 -or
+        $receiptSchemaVersion -ne 2 -or
         $null -eq $receiptRunId -or
         $receiptRunId -ne $RunId -or
         $null -eq $receiptIdentityPath -or
@@ -1251,10 +1321,46 @@ function Write-BuildTruthReceiptPointer
             $stream.Dispose()
         }
 
-        # The overwrite overload maps to a same-volume replace operation, so
-        # readers observe either the previous complete pointer or the new
-        # complete pointer, never the temporary file.
-        [IO.File]::Move($temporaryPath, $pointerPath, $true)
+        # PowerShell 7 exposes File.Move(source, destination, overwrite), while
+        # Windows PowerShell 5.1 targets .NET Framework where that overload is
+        # absent.  Prefer it when available; otherwise use same-volume Move for
+        # first publication and File.Replace for an existing pointer.
+        $overwriteMove = @([IO.File].GetMethods() | Where-Object {
+            $_.Name -eq "Move" -and
+            $_.GetParameters().Count -eq 3 -and
+            $_.GetParameters()[2].ParameterType -eq [bool]
+        } | Select-Object -First 1)
+        if ($overwriteMove.Count -ne 0)
+        {
+            [IO.File]::Move($temporaryPath, $pointerPath, $true)
+        }
+        elseif (Test-Path -LiteralPath $pointerPath)
+        {
+            $backupPath = Join-Path $receiptDirectory (
+                ".$PointerFileName." + [guid]::NewGuid().ToString("N") + ".bak")
+            [IO.File]::Replace($temporaryPath, $pointerPath, $backupPath)
+            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+        }
+        else
+        {
+            try
+            {
+                [IO.File]::Move($temporaryPath, $pointerPath)
+            }
+            catch [IO.IOException]
+            {
+                # A publisher for another build tree may have created the
+                # global latest pointer after the existence check.
+                if (-not (Test-Path -LiteralPath $pointerPath))
+                {
+                    throw
+                }
+                $backupPath = Join-Path $receiptDirectory (
+                    ".$PointerFileName." + [guid]::NewGuid().ToString("N") + ".bak")
+                [IO.File]::Replace($temporaryPath, $pointerPath, $backupPath)
+                Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+            }
+        }
     }
     catch
     {
@@ -1296,6 +1402,7 @@ Export-ModuleMember -Function @(
     "Get-BuildTruthPathFingerprint",
     "Get-BuildTruthPathStringComparison",
     "Get-BuildTruthReceiptFileEvidence",
+    "Get-BuildTruthRepositoryRelativePath",
     "Get-BuildTruthRunnerDigest",
     "Get-BuildTruthTestLabels",
     "Get-BuildTruthTestLanes",

@@ -94,12 +94,9 @@ function Get-RequiredSuiteRepositoryRelativeDirectory
         Throw-BuildTruthFailure -Category "ReceiptPath" -Message (
             "Directory '$Path' is not an existing repository-contained directory")
     }
-    $repositoryPath = [IO.Path]::GetFullPath($RepositoryRoot).TrimEnd(
-        [IO.Path]::DirectorySeparatorChar,
-        [IO.Path]::AltDirectorySeparatorChar)
-    return [IO.Path]::GetRelativePath($repositoryPath, $absolutePath).Replace(
-        [IO.Path]::DirectorySeparatorChar,
-        "/")
+    return Get-BuildTruthRepositoryRelativePath `
+        -RepositoryRoot $RepositoryRoot `
+        -Path $absolutePath
 }
 
 function Publish-RequiredSuiteImmutableReceipt
@@ -176,7 +173,7 @@ function Publish-RequiredSuiteImmutableReceipt
     $receiptPath = ".agent-harness/receipts/RequiredSuite.$RunId.json"
     $receipt = [ordered]@{
         schema = "RVX.AgentHarness.RequiredSuiteReceipt"
-        schemaVersion = 1
+        schemaVersion = 2
         runId = $RunId
         immutableReceiptPath = $receiptPath
         generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")

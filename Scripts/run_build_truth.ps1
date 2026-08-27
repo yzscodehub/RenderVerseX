@@ -6,6 +6,7 @@ param(
     [string]$Configuration = "Debug",
     [string]$BaseRef = "master",
     [string]$RequiredNativeBackend = "",
+    [switch]$AllowSoftwareAdapter,
     [switch]$Fresh
 )
 
@@ -83,14 +84,6 @@ function Get-BuildTruthLanePresetList
     return @($presets)
 }
 
-function Test-BuildTruthEnabledEnvironmentFlag
-{
-    param([AllowNull()][string]$Value)
-
-    return -not [string]::IsNullOrWhiteSpace($Value) -and
-        $Value -match "^(?i:1|true)$"
-}
-
 function Get-BuildTruthRepositoryRelativeDirectory
 {
     param(
@@ -106,12 +99,9 @@ function Get-BuildTruthRepositoryRelativeDirectory
         Throw-BuildTruthFailure -Category "ReceiptPath" -Message (
             "Directory '$Path' is not an existing repository-contained directory")
     }
-    $repositoryPath = [IO.Path]::GetFullPath($RepositoryRoot).TrimEnd(
-        [IO.Path]::DirectorySeparatorChar,
-        [IO.Path]::AltDirectorySeparatorChar)
-    return [IO.Path]::GetRelativePath($repositoryPath, $absolutePath).Replace(
-        [IO.Path]::DirectorySeparatorChar,
-        "/")
+    return Get-BuildTruthRepositoryRelativePath `
+        -RepositoryRoot $RepositoryRoot `
+        -Path $absolutePath
 }
 
 function Publish-BuildTruthImmutableReceipt
@@ -241,7 +231,7 @@ function Publish-BuildTruthImmutableReceipt
     $receiptPath = ".agent-harness/receipts/BuildTruth.$RunId.json"
     $receipt = [ordered]@{
         schema = "RVX.AgentHarness.BuildTruthReceipt"
-        schemaVersion = 1
+        schemaVersion = 2
         runId = $RunId
         immutableReceiptPath = $receiptPath
         generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
@@ -436,8 +426,17 @@ try
         $previousValidationSourceCommit =
             $env:RVX_VALIDATION_SOURCE_COMMIT
         $previousValidationPreset = $env:RVX_VALIDATION_PRESET
+        $previousSoftwareAdapterAllowed = $env:RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER
         $env:RVX_VALIDATION_SOURCE_COMMIT = $sourceCommit
         $env:RVX_VALIDATION_PRESET = $testPreset
+        if ($AllowSoftwareAdapter)
+        {
+            $env:RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER = "1"
+        }
+        else
+        {
+            Remove-Item Env:RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER -ErrorAction SilentlyContinue
+        }
         if ($isNativeLane -and -not [string]::IsNullOrWhiteSpace($RequiredNativeBackend))
         {
             $nativeLifecycleTests = @(
@@ -490,6 +489,14 @@ try
             {
                 $env:RVX_VALIDATION_PRESET = $previousValidationPreset
             }
+            if ($null -eq $previousSoftwareAdapterAllowed)
+            {
+                Remove-Item Env:RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER -ErrorAction SilentlyContinue
+            }
+            else
+            {
+                $env:RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER = $previousSoftwareAdapterAllowed
+            }
         }
 
         $laneJUnitEvidence = Get-BuildTruthReceiptFileEvidence `
@@ -527,8 +534,7 @@ try
                 -SourceCommit $sourceCommit `
                 -TestPreset $testPreset `
                 -RequestedBackend $RequiredNativeBackend `
-                -SoftwareAdapterAllowed (Test-BuildTruthEnabledEnvironmentFlag `
-                    -Value $env:RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER)
+                -SoftwareAdapterAllowed ([bool]$AllowSoftwareAdapter)
             Write-BuildTruthJson -Value $nativeEvidence -Path $nativeEvidencePath
             $nativeRuntimeEvidence = [ordered]@{
                 raw = Get-BuildTruthReceiptFileEvidence `
@@ -645,8 +651,7 @@ finally
                     -LaneRuntimeEvidence $laneRuntimeEvidence `
                     -NativeEvidence $nativeEvidence `
                     -NativeRuntimeEvidence $nativeRuntimeEvidence `
-                    -SoftwareAdapterAllowed (Test-BuildTruthEnabledEnvironmentFlag `
-                        -Value $env:RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER) `
+                    -SoftwareAdapterAllowed ([bool]$AllowSoftwareAdapter) `
                     -NativeLifecyclePath $nativeLifecyclePath `
                     -NativeEvidencePath $nativeEvidencePath
             }
