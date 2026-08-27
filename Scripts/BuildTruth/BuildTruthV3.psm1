@@ -248,6 +248,110 @@ function Assert-BuildTruthRequiredSelection
     }
 }
 
+function Get-BuildTruthPathStringComparison
+{
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT)
+    {
+        return [StringComparison]::OrdinalIgnoreCase
+    }
+    return [StringComparison]::Ordinal
+}
+
+function Test-BuildTruthPathContained
+{
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$Candidate,
+        [switch]$AllowRoot
+    )
+
+    $rootPath = [IO.Path]::GetFullPath($Root).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar)
+    $candidatePath = [IO.Path]::GetFullPath($Candidate)
+    $comparison = Get-BuildTruthPathStringComparison
+    if ($AllowRoot -and [string]::Equals($candidatePath, $rootPath, $comparison))
+    {
+        return $true
+    }
+    $prefix = $rootPath + [IO.Path]::DirectorySeparatorChar
+    return $candidatePath.StartsWith($prefix, $comparison)
+}
+
+function Test-BuildTruthLinkOrReparsePoint
+{
+    param([Parameter(Mandatory)][object]$Item)
+
+    if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+    {
+        return $true
+    }
+    $linkType = $Item.PSObject.Properties["LinkType"]
+    if ($null -ne $linkType -and -not [string]::IsNullOrWhiteSpace([string]$linkType.Value))
+    {
+        return $true
+    }
+    $target = $Item.PSObject.Properties["Target"]
+    return $null -ne $target -and $null -ne $target.Value -and @($target.Value).Count -ne 0
+}
+
+function Assert-BuildTruthExistingPathAncestors
+{
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    $rootPath = [IO.Path]::GetFullPath($Root).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar)
+    $candidatePath = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-BuildTruthPathContained -Root $rootPath -Candidate $candidatePath -AllowRoot))
+    {
+        Throw-BuildTruthFailure -Category "PathEscape" -Message (
+            "Path '$Path' resolves outside '$rootPath'")
+    }
+    if (-not (Test-Path -LiteralPath $rootPath -PathType Container))
+    {
+        Throw-BuildTruthFailure -Category "MissingArtifact" -Message (
+            "Containment root is missing or not a directory: $rootPath")
+    }
+
+    $relativePath = [IO.Path]::GetRelativePath($rootPath, $candidatePath)
+    $segments = @($relativePath -split "[\\/]" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $currentPath = $rootPath
+    $pathsToCheck = [System.Collections.Generic.List[string]]::new()
+    $pathsToCheck.Add($currentPath)
+    foreach ($segment in $segments)
+    {
+        $currentPath = Join-Path $currentPath $segment
+        if (-not (Test-Path -LiteralPath $currentPath))
+        {
+            break
+        }
+        $pathsToCheck.Add($currentPath)
+    }
+
+    foreach ($existingPath in $pathsToCheck)
+    {
+        $item = Get-Item -LiteralPath $existingPath -Force
+        if (Test-BuildTruthLinkOrReparsePoint -Item $item)
+        {
+            Throw-BuildTruthFailure -Category "PathEscape" -Message (
+                "Path '$Path' has a link or reparse-point ancestor '$existingPath'")
+        }
+        $resolvedPath = (Resolve-Path -LiteralPath $existingPath).Path
+        if (-not (Test-BuildTruthPathContained `
+            -Root $rootPath `
+            -Candidate $resolvedPath `
+            -AllowRoot))
+        {
+            Throw-BuildTruthFailure -Category "PathEscape" -Message (
+                "Path '$Path' resolves through an ancestor outside '$rootPath'")
+        }
+    }
+}
+
 function Resolve-BuildTruthContainedPath
 {
     param(
@@ -267,23 +371,45 @@ function Resolve-BuildTruthContainedPath
     {
         [IO.Path]::GetFullPath((Join-Path $rootPath $Path))
     }
-    $prefix = $rootPath + [IO.Path]::DirectorySeparatorChar
-    if (-not $candidate.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase))
+    if (-not (Test-BuildTruthPathContained -Root $rootPath -Candidate $candidate))
     {
         Throw-BuildTruthFailure -Category "PathEscape" -Message (
             "Path '$Path' resolves outside '$rootPath'")
     }
 
+    # A cold configure may legitimately target a build root which does not
+    # exist yet.  There are no ancestors to dereference in that case, so allow
+    # the already-checked lexical containment only for the explicit missing
+    # path call site.  Every artifact read/write re-enters this helper without
+    # -AllowMissing after the root exists and therefore still performs the
+    # reparse-point/ancestor checks below.
+    if (-not (Test-Path -LiteralPath $rootPath -PathType Container))
+    {
+        if (Test-Path -LiteralPath $rootPath)
+        {
+            Throw-BuildTruthFailure -Category "MissingArtifact" -Message (
+                "Containment root is not a directory: $rootPath")
+        }
+        if ($AllowMissing)
+        {
+            return $candidate
+        }
+        Throw-BuildTruthFailure -Category "MissingArtifact" -Message (
+            "Containment root is missing: $rootPath")
+    }
+
+    Assert-BuildTruthExistingPathAncestors -Root $rootPath -Path $candidate
+
     if (Test-Path -LiteralPath $candidate)
     {
         $resolved = (Resolve-Path -LiteralPath $candidate).Path
-        if (-not $resolved.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase))
+        if (-not (Test-BuildTruthPathContained -Root $rootPath -Candidate $resolved))
         {
             Throw-BuildTruthFailure -Category "PathEscape" -Message (
                 "Path '$Path' resolves through a link outside '$rootPath'")
         }
         $item = Get-Item -LiteralPath $candidate -Force
-        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+        if (Test-BuildTruthLinkOrReparsePoint -Item $item)
         {
             Throw-BuildTruthFailure -Category "PathEscape" -Message (
                 "Path '$Path' is a reparse point")
@@ -455,6 +581,165 @@ function Assert-BuildTruthJUnitOutcome
     }
 }
 
+function Assert-BuildTruthJUnitOutcomeMatches
+{
+    param(
+        [Parameter(Mandatory)][object]$Expected,
+        [Parameter(Mandatory)][object]$Actual,
+        [string]$Context = "JUnit receipt evidence"
+    )
+
+    foreach ($propertyName in @(
+        "testCaseCount", "failureCount", "errorCount", "skippedCount",
+        "notRunCount", "disabledSuiteCount"))
+    {
+        $expectedValue = Get-BuildTruthObjectPropertyValue `
+            -Value $Expected `
+            -Name $propertyName
+        $actualValue = Get-BuildTruthObjectPropertyValue `
+            -Value $Actual `
+            -Name $propertyName
+        if ($null -eq $expectedValue -or $null -eq $actualValue -or
+            [int]$expectedValue -ne [int]$actualValue)
+        {
+            Throw-BuildTruthFailure -Category "ReceiptTampered" -Message (
+                "$Context changed '$propertyName' after execution")
+        }
+    }
+}
+
+function Assert-BuildTruthNativeEvidenceIdentity
+{
+    param(
+        [Parameter(Mandatory)][object]$Expected,
+        [Parameter(Mandatory)][object]$Actual,
+        [string]$Context = "native receipt evidence"
+    )
+
+    foreach ($propertyName in @("requestedBackend", "actualBackend"))
+    {
+        $expectedValue = Get-BuildTruthObjectPropertyValue `
+            -Value $Expected `
+            -Name $propertyName
+        $actualValue = Get-BuildTruthObjectPropertyValue `
+            -Value $Actual `
+            -Name $propertyName
+        if ([string]$expectedValue -ne [string]$actualValue)
+        {
+            Throw-BuildTruthFailure -Category "ReceiptTampered" -Message (
+                "$Context changed '$propertyName' after execution")
+        }
+    }
+
+    $expectedFallback = Get-BuildTruthObjectPropertyValue -Value $Expected -Name "fallback"
+    $actualFallback = Get-BuildTruthObjectPropertyValue -Value $Actual -Name "fallback"
+    foreach ($propertyName in @(
+        "backendFallback", "softwareAdapter", "softwareAdapterAllowed"))
+    {
+        $expectedValue = Get-BuildTruthObjectPropertyValue `
+            -Value $expectedFallback `
+            -Name $propertyName
+        $actualValue = Get-BuildTruthObjectPropertyValue `
+            -Value $actualFallback `
+            -Name $propertyName
+        if ([bool]$expectedValue -ne [bool]$actualValue)
+        {
+            Throw-BuildTruthFailure -Category "ReceiptTampered" -Message (
+                "$Context changed fallback '$propertyName' after execution")
+        }
+    }
+}
+
+function Enter-BuildTruthRunLock
+{
+    param([Parameter(Mandatory)][string]$BuildPath)
+
+    $normalizedPath = [IO.Path]::GetFullPath($BuildPath).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar)
+    $lockIdentity = if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT)
+    {
+        $normalizedPath.ToUpperInvariant()
+    }
+    else
+    {
+        $normalizedPath
+    }
+    $bytes = [Text.Encoding]::UTF8.GetBytes($lockIdentity)
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try
+    {
+        $digest = ([BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace("-", "").ToLowerInvariant()
+    }
+    finally
+    {
+        $sha256.Dispose()
+    }
+    $name = "RVX.BuildTruth.RunLock.$digest"
+    $createdNew = $false
+    try
+    {
+        $mutex = [Threading.Mutex]::new($false, $name, [ref]$createdNew)
+    }
+    catch
+    {
+        Throw-BuildTruthFailure -Category "RunLock" -Message (
+            "Unable to create run lock '$name': $($_.Exception.Message)")
+    }
+
+    $acquired = $false
+    try
+    {
+        try
+        {
+            $acquired = $mutex.WaitOne(0)
+        }
+        catch [Threading.AbandonedMutexException]
+        {
+            # The OS transfers ownership to this process. The stale owner is
+            # gone, so continue while retaining the normal release discipline.
+            $acquired = $true
+        }
+        if (-not $acquired)
+        {
+            Throw-BuildTruthFailure -Category "RunLock" -Message (
+                "Another Build Truth or Required Suite run owns build directory '$normalizedPath'")
+        }
+        return [pscustomobject]@{
+            name = $name
+            buildPath = $normalizedPath
+            mutex = $mutex
+            acquired = $true
+        }
+    }
+    catch
+    {
+        $mutex.Dispose()
+        throw
+    }
+}
+
+function Exit-BuildTruthRunLock
+{
+    param([AllowNull()][object]$Lock)
+
+    if ($null -eq $Lock)
+    {
+        return
+    }
+    try
+    {
+        if ($Lock.acquired)
+        {
+            $Lock.mutex.ReleaseMutex()
+        }
+    }
+    finally
+    {
+        $Lock.mutex.Dispose()
+    }
+}
+
 function Invoke-BuildTruthCTestLane
 {
     param(
@@ -612,22 +897,416 @@ function Get-BuildTruthNativeEvidence
     }
 }
 
+function Get-BuildTruthReceiptFileEvidence
+{
+    param(
+        [Parameter(Mandatory)][string]$RepositoryRoot,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    $absolutePath = Resolve-BuildTruthContainedPath `
+        -Root $RepositoryRoot `
+        -Path $Path
+    if (-not (Test-Path -LiteralPath $absolutePath -PathType Leaf))
+    {
+        Throw-BuildTruthFailure -Category "MissingArtifact" -Message (
+            "Receipt evidence is not a file: $absolutePath")
+    }
+
+    $repositoryPath = [IO.Path]::GetFullPath($RepositoryRoot).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar)
+    $relativePath = [IO.Path]::GetRelativePath($repositoryPath, $absolutePath).Replace(
+        [IO.Path]::DirectorySeparatorChar,
+        "/")
+    if ([string]::IsNullOrWhiteSpace($relativePath) -or
+        [IO.Path]::IsPathRooted($relativePath) -or
+        $relativePath -match "(^|/)\.\.(/|$)")
+    {
+        Throw-BuildTruthFailure -Category "ReceiptPath" -Message (
+            "Receipt evidence path is not repository-relative: $Path")
+    }
+
+    $item = Get-Item -LiteralPath $absolutePath -Force
+    return [ordered]@{
+        path = $relativePath
+        sha256 = (Get-FileHash -LiteralPath $absolutePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        size = $item.Length
+    }
+}
+
+function Get-BuildTruthObjectPropertyValue
+{
+    param(
+        [Parameter(Mandatory)][object]$Value,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    if ($Value -is [Collections.IDictionary])
+    {
+        if ($Value.Contains($Name))
+        {
+            return $Value[$Name]
+        }
+        return $null
+    }
+    $property = $Value.PSObject.Properties[$Name]
+    if ($null -eq $property)
+    {
+        return $null
+    }
+    return $property.Value
+}
+
+function Assert-BuildTruthReceiptFileEvidence
+{
+    param(
+        [Parameter(Mandatory)][string]$RepositoryRoot,
+        [Parameter(Mandatory)][object]$Evidence,
+        [string]$Context = "receipt evidence"
+    )
+
+    $pathValue = Get-BuildTruthObjectPropertyValue -Value $Evidence -Name "path"
+    $hashValue = Get-BuildTruthObjectPropertyValue -Value $Evidence -Name "sha256"
+    if ($null -eq $pathValue -or $null -eq $hashValue)
+    {
+        Throw-BuildTruthFailure -Category "ReceiptSchema" -Message (
+            "$Context is missing path or sha256")
+    }
+    $path = [string]$pathValue
+    $expectedHash = [string]$hashValue
+    if ([IO.Path]::IsPathRooted($path) -or $path -match "(^|[\\/])\.\.([\\/]|$)")
+    {
+        Throw-BuildTruthFailure -Category "ReceiptPath" -Message (
+            "$Context has an unsafe repository-relative path '$path'")
+    }
+    if ($expectedHash -notmatch "^[0-9a-f]{64}$")
+    {
+        Throw-BuildTruthFailure -Category "ReceiptSchema" -Message (
+            "$Context has an invalid SHA-256 digest")
+    }
+
+    $actual = Get-BuildTruthReceiptFileEvidence `
+        -RepositoryRoot $RepositoryRoot `
+        -Path $path
+    if ($actual.sha256 -ne $expectedHash)
+    {
+        Throw-BuildTruthFailure -Category "ReceiptTampered" -Message (
+            "$Context SHA-256 does not match '$path'")
+    }
+}
+
+function Get-BuildTruthRunnerDigest
+{
+    param(
+        [Parameter(Mandatory)][string]$RepositoryRoot,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Paths
+    )
+
+    if ($Paths.Count -eq 0)
+    {
+        Throw-BuildTruthFailure -Category "ReceiptSchema" -Message (
+            "Runner digest requires at least one script path")
+    }
+
+    $files = [System.Collections.Generic.List[object]]::new()
+    foreach ($path in ($Paths | Sort-Object -Unique))
+    {
+        $files.Add((Get-BuildTruthReceiptFileEvidence `
+            -RepositoryRoot $RepositoryRoot `
+            -Path $path))
+    }
+    $serialized = @(
+        $files | ForEach-Object { "$($_.path)`0$($_.sha256)" }
+    ) -join "`n"
+    $bytes = [Text.Encoding]::UTF8.GetBytes($serialized)
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try
+    {
+        $digest = ([BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace("-", "").ToLowerInvariant()
+    }
+    finally
+    {
+        $sha256.Dispose()
+    }
+
+    return [ordered]@{
+        algorithm = "sha256:path-content-v1"
+        digest = $digest
+        files = @($files)
+    }
+}
+
+function Write-BuildTruthImmutableReceipt
+{
+    param(
+        [Parameter(Mandatory)][string]$RepositoryRoot,
+        [Parameter(Mandatory)][ValidateSet("BuildTruth", "RequiredSuite")][string]$ReceiptKind,
+        [Parameter(Mandatory)][string]$RunId,
+        [Parameter(Mandatory)][object]$Value,
+        [Parameter(Mandatory)][string]$Status
+    )
+
+    if ($Status -ne "passed")
+    {
+        Throw-BuildTruthFailure -Category "ReceiptStatus" -Message (
+            "A $ReceiptKind receipt cannot be written for status '$Status'")
+    }
+    if ($RunId -notmatch "^[0-9a-f]{32}$")
+    {
+        Throw-BuildTruthFailure -Category "ReceiptSchema" -Message (
+            "Receipt runId must be a 32-character lowercase hexadecimal value")
+    }
+
+    $repositoryPath = [IO.Path]::GetFullPath($RepositoryRoot).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar)
+    $receiptDirectory = [IO.Path]::GetFullPath((Join-Path $repositoryPath ".agent-harness/receipts"))
+    $relativeReceiptPath = ".agent-harness/receipts/$ReceiptKind.$RunId.json"
+    $receiptPath = [IO.Path]::GetFullPath((Join-Path $repositoryPath $relativeReceiptPath))
+    if (-not (Test-BuildTruthPathContained `
+        -Root $repositoryPath `
+        -Candidate $receiptPath))
+    {
+        Throw-BuildTruthFailure -Category "ReceiptPath" -Message (
+            "Receipt destination escapes the repository: $receiptPath")
+    }
+
+    $expectedSchema = if ($ReceiptKind -eq "BuildTruth")
+    {
+        "RVX.AgentHarness.BuildTruthReceipt"
+    }
+    else
+    {
+        "RVX.AgentHarness.RequiredSuiteReceipt"
+    }
+    $receiptSchema = Get-BuildTruthObjectPropertyValue -Value $Value -Name "schema"
+    $receiptSchemaVersion = Get-BuildTruthObjectPropertyValue -Value $Value -Name "schemaVersion"
+    $receiptRunId = Get-BuildTruthObjectPropertyValue -Value $Value -Name "runId"
+    $receiptIdentityPath = Get-BuildTruthObjectPropertyValue `
+        -Value $Value `
+        -Name "immutableReceiptPath"
+    if ($null -eq $receiptSchema -or
+        $receiptSchema -ne $expectedSchema -or
+        $null -eq $receiptSchemaVersion -or
+        $receiptSchemaVersion -ne 1 -or
+        $null -eq $receiptRunId -or
+        $receiptRunId -ne $RunId -or
+        $null -eq $receiptIdentityPath -or
+        $receiptIdentityPath -ne $relativeReceiptPath)
+    {
+        Throw-BuildTruthFailure -Category "ReceiptSchema" -Message (
+            "$ReceiptKind receipt does not match its immutable schema identity")
+    }
+
+    # Validate all existing ancestors before creating anything beneath the
+    # repository. Repeat after creation to reject a raced-in link/reparse
+    # point before opening a temporary or final receipt file.
+    Assert-BuildTruthExistingPathAncestors -Root $repositoryPath -Path $receiptDirectory
+    New-Item -ItemType Directory -Force -Path $receiptDirectory | Out-Null
+    Assert-BuildTruthExistingPathAncestors -Root $repositoryPath -Path $receiptDirectory
+    if (Test-Path -LiteralPath $receiptPath)
+    {
+        Throw-BuildTruthFailure -Category "ReceiptCollision" -Message (
+            "Immutable receipt already exists: $relativeReceiptPath")
+    }
+
+    $temporaryPath = Join-Path $receiptDirectory (".$ReceiptKind.$RunId." + [guid]::NewGuid().ToString("N") + ".tmp")
+    try
+    {
+        $serialized = $Value | ConvertTo-Json -Depth 32
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes($serialized + [Environment]::NewLine)
+        $stream = [IO.File]::Open(
+            $temporaryPath,
+            [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write,
+            [IO.FileShare]::None)
+        try
+        {
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+        }
+        finally
+        {
+            $stream.Dispose()
+        }
+
+        try
+        {
+            [IO.File]::Move($temporaryPath, $receiptPath)
+        }
+        catch
+        {
+            if (Test-Path -LiteralPath $receiptPath)
+            {
+                Throw-BuildTruthFailure -Category "ReceiptCollision" -Message (
+                    "Immutable receipt already exists: $relativeReceiptPath")
+            }
+            Throw-BuildTruthFailure -Category "ReceiptWrite" -Message (
+                "Unable to publish immutable receipt '$relativeReceiptPath': $($_.Exception.Message)")
+        }
+    }
+    finally
+    {
+        if (Test-Path -LiteralPath $temporaryPath)
+        {
+            Remove-Item -LiteralPath $temporaryPath -Force
+        }
+    }
+
+    $evidence = Get-BuildTruthReceiptFileEvidence `
+        -RepositoryRoot $repositoryPath `
+        -Path $relativeReceiptPath
+    return [ordered]@{
+        runId = $RunId
+        immutableReceiptPath = $relativeReceiptPath
+        sha256 = $evidence.sha256
+    }
+}
+
+function Write-BuildTruthReceiptPointer
+{
+    param(
+        [Parameter(Mandatory)][string]$RepositoryRoot,
+        [Parameter(Mandatory)][ValidateSet("BuildTruth", "RequiredSuite")][string]$ReceiptKind,
+        [Parameter(Mandatory)][string]$PointerFileName,
+        [Parameter(Mandatory)][string]$RunId,
+        [Parameter(Mandatory)][string]$ImmutableReceiptPath,
+        [Parameter(Mandatory)][string]$ImmutableReceiptSha256
+    )
+
+    if ($PointerFileName -notmatch "^[A-Za-z0-9][A-Za-z0-9_.-]*\.json$")
+    {
+        Throw-BuildTruthFailure -Category "ReceiptPath" -Message (
+            "Receipt pointer file name is unsafe: $PointerFileName")
+    }
+    if ($RunId -notmatch "^[0-9a-f]{32}$" -or
+        $ImmutableReceiptSha256 -notmatch "^[0-9a-f]{64}$")
+    {
+        Throw-BuildTruthFailure -Category "ReceiptSchema" -Message (
+            "Receipt pointer has an invalid immutable receipt identity")
+    }
+
+    $receiptEvidence = Get-BuildTruthReceiptFileEvidence `
+        -RepositoryRoot $RepositoryRoot `
+        -Path $ImmutableReceiptPath
+    if ($receiptEvidence.sha256 -ne $ImmutableReceiptSha256)
+    {
+        Throw-BuildTruthFailure -Category "ReceiptTampered" -Message (
+            "Immutable receipt changed before its pointer could be written")
+    }
+
+    $repositoryPath = [IO.Path]::GetFullPath($RepositoryRoot).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar)
+    $receiptDirectory = [IO.Path]::GetFullPath((Join-Path $repositoryPath ".agent-harness/receipts"))
+    $pointerPath = [IO.Path]::GetFullPath((Join-Path $receiptDirectory $PointerFileName))
+    if (-not (Test-BuildTruthPathContained `
+        -Root $receiptDirectory `
+        -Candidate $pointerPath))
+    {
+        Throw-BuildTruthFailure -Category "ReceiptPath" -Message (
+            "Receipt pointer escapes the receipt directory: $PointerFileName")
+    }
+
+    Assert-BuildTruthExistingPathAncestors -Root $repositoryPath -Path $receiptDirectory
+    New-Item -ItemType Directory -Force -Path $receiptDirectory | Out-Null
+    Assert-BuildTruthExistingPathAncestors -Root $repositoryPath -Path $receiptDirectory
+    $pointer = [ordered]@{
+        schema = "RVX.AgentHarness.ImmutableReceiptPointer"
+        schemaVersion = 1
+        receiptKind = $ReceiptKind
+        updatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+        runId = $RunId
+        immutableReceiptPath = $ImmutableReceiptPath
+        immutableReceiptSha256 = $ImmutableReceiptSha256
+    }
+    $temporaryPath = Join-Path $receiptDirectory (".$PointerFileName." + [guid]::NewGuid().ToString("N") + ".tmp")
+    try
+    {
+        $serialized = $pointer | ConvertTo-Json -Depth 8
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes($serialized + [Environment]::NewLine)
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try
+        {
+            $pointerSha256 = ([BitConverter]::ToString(
+                $sha256.ComputeHash($bytes))).Replace("-", "").ToLowerInvariant()
+        }
+        finally
+        {
+            $sha256.Dispose()
+        }
+        $stream = [IO.File]::Open(
+            $temporaryPath,
+            [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write,
+            [IO.FileShare]::None)
+        try
+        {
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+        }
+        finally
+        {
+            $stream.Dispose()
+        }
+
+        # The overwrite overload maps to a same-volume replace operation, so
+        # readers observe either the previous complete pointer or the new
+        # complete pointer, never the temporary file.
+        [IO.File]::Move($temporaryPath, $pointerPath, $true)
+    }
+    catch
+    {
+        Throw-BuildTruthFailure -Category "ReceiptWrite" -Message (
+            "Unable to publish receipt pointer '$PointerFileName': $($_.Exception.Message)")
+    }
+    finally
+    {
+        if (Test-Path -LiteralPath $temporaryPath)
+        {
+            Remove-Item -LiteralPath $temporaryPath -Force
+        }
+    }
+
+    # Nothing after the atomic replacement can fail: a failed publication must
+    # never leave a pointer that advances to a receipt the runner reports as
+    # failed. The returned digest is over exactly the published byte sequence.
+    return [ordered]@{
+        path = ".agent-harness/receipts/" + $PointerFileName
+        sha256 = $pointerSha256
+        size = $bytes.Length
+    }
+}
+
 Export-ModuleMember -Function @(
+    "Assert-BuildTruthExistingPathAncestors",
     "Assert-BuildTruthInventoryLanes",
     "Assert-BuildTruthJUnitOutcome",
+    "Assert-BuildTruthJUnitOutcomeMatches",
+    "Assert-BuildTruthNativeEvidenceIdentity",
     "Assert-BuildTruthRequiredSelection",
+    "Enter-BuildTruthRunLock",
+    "Exit-BuildTruthRunLock",
     "Get-BuildTruthCTestInventory",
     "Get-BuildTruthFailureCategory",
     "Get-BuildTruthFileEvidence",
     "Get-BuildTruthJUnitOutcome",
     "Get-BuildTruthNativeEvidence",
     "Get-BuildTruthPathFingerprint",
+    "Get-BuildTruthPathStringComparison",
+    "Get-BuildTruthReceiptFileEvidence",
+    "Get-BuildTruthRunnerDigest",
     "Get-BuildTruthTestLabels",
     "Get-BuildTruthTestLanes",
     "Get-BuildTruthWorkingSourceFingerprint",
     "Invoke-BuildTruthCTestLane",
     "New-BuildTruthFailure",
     "Resolve-BuildTruthContainedPath",
+    "Assert-BuildTruthReceiptFileEvidence",
+    "Test-BuildTruthPathContained",
     "Throw-BuildTruthFailure",
+    "Write-BuildTruthImmutableReceipt",
+    "Write-BuildTruthReceiptPointer",
     "Write-BuildTruthJson"
 )

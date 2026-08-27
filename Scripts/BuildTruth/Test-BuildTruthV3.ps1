@@ -266,6 +266,249 @@ try
             -SoftwareAdapterAllowed $false | Out-Null
     }
 
+    $receiptRepository = Join-Path $temporaryRoot "receipt-repository"
+    New-Item -ItemType Directory -Path $receiptRepository | Out-Null
+    $receiptInputPath = Join-Path $receiptRepository "evidence.txt"
+    Set-Content -LiteralPath $receiptInputPath -Value "before" -Encoding utf8
+    $receiptEvidence = Get-BuildTruthReceiptFileEvidence `
+        -RepositoryRoot $receiptRepository `
+        -Path $receiptInputPath
+    Assert-BuildTruthReceiptFileEvidence `
+        -RepositoryRoot $receiptRepository `
+        -Evidence $receiptEvidence `
+        -Context "self-test receipt evidence"
+    Set-Content -LiteralPath $receiptInputPath -Value "after" -Encoding utf8
+    Assert-BuildTruthFailure -Category "ReceiptTampered" -Action {
+        Assert-BuildTruthReceiptFileEvidence `
+            -RepositoryRoot $receiptRepository `
+            -Evidence $receiptEvidence `
+            -Context "self-test tampering"
+    }
+    Assert-BuildTruthFailure -Category "PathEscape" -Action {
+        Get-BuildTruthReceiptFileEvidence `
+            -RepositoryRoot $receiptRepository `
+            -Path (Join-Path $temporaryRoot "outside.txt") | Out-Null
+    }
+
+    $missingBuildRoot = Join-Path $temporaryRoot "missing-build-root"
+    $missingBuildPath = Join-Path $missingBuildRoot "cold-build"
+    $resolvedMissingBuildPath = Resolve-BuildTruthContainedPath `
+        -Root $missingBuildRoot `
+        -Path $missingBuildPath `
+        -AllowMissing
+    Assert-Equal `
+        -Actual $resolvedMissingBuildPath `
+        -Expected ([IO.Path]::GetFullPath($missingBuildPath)) `
+        -Message "missing build root lexical containment"
+    Assert-BuildTruthFailure -Category "MissingArtifact" -Action {
+        Resolve-BuildTruthContainedPath `
+            -Root $missingBuildRoot `
+            -Path $missingBuildPath | Out-Null
+    }
+
+    $caseRoot = Join-Path $temporaryRoot "case-root"
+    New-Item -ItemType Directory -Path $caseRoot | Out-Null
+    $caseCandidate = Join-Path $caseRoot.ToUpperInvariant() "inside.txt"
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT)
+    {
+        Resolve-BuildTruthContainedPath `
+            -Root $caseRoot `
+            -Path $caseCandidate `
+            -AllowMissing | Out-Null
+    }
+    else
+    {
+        Assert-BuildTruthFailure -Category "PathEscape" -Action {
+            Resolve-BuildTruthContainedPath `
+                -Root $caseRoot `
+                -Path $caseCandidate `
+                -AllowMissing | Out-Null
+        }
+    }
+
+    $linkRoot = Join-Path $temporaryRoot "link-root"
+    $outsideRoot = Join-Path $temporaryRoot "outside-root"
+    New-Item -ItemType Directory -Path $linkRoot, $outsideRoot | Out-Null
+    $linkPath = Join-Path $linkRoot "linked"
+    $linkCreated = $false
+    try
+    {
+        New-Item -ItemType SymbolicLink -Path $linkPath -Target $outsideRoot -ErrorAction Stop | Out-Null
+        $linkCreated = $true
+    }
+    catch
+    {
+        Write-Host "Symbolic-link ancestor self-test skipped: $($_.Exception.Message)"
+    }
+    if ($linkCreated)
+    {
+        Assert-BuildTruthFailure -Category "PathEscape" -Action {
+            Resolve-BuildTruthContainedPath `
+                -Root $linkRoot `
+                -Path (Join-Path $linkPath "escaped.txt") `
+                -AllowMissing | Out-Null
+        }
+    }
+
+    $lockPath = Join-Path $temporaryRoot "locked-build"
+    $firstLock = Enter-BuildTruthRunLock -BuildPath $lockPath
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT)
+    {
+        $caseVariantLock = Enter-BuildTruthRunLock -BuildPath $lockPath.ToUpperInvariant()
+        try
+        {
+            Assert-Equal -Actual $caseVariantLock.name -Expected $firstLock.name `
+                -Message "Windows run lock path casing"
+        }
+        finally
+        {
+            Exit-BuildTruthRunLock -Lock $caseVariantLock
+        }
+    }
+    $lockJob = $null
+    try
+    {
+        $lockJob = Start-Job -ScriptBlock {
+            param([string]$Name)
+            $mutex = [Threading.Mutex]::OpenExisting($Name)
+            try
+            {
+                if ($mutex.WaitOne(0))
+                {
+                    $mutex.ReleaseMutex()
+                    return "acquired"
+                }
+                return "blocked"
+            }
+            finally
+            {
+                $mutex.Dispose()
+            }
+        } -ArgumentList $firstLock.name
+        Wait-Job -Job $lockJob -Timeout 15 | Out-Null
+        $lockResult = Receive-Job -Job $lockJob -ErrorAction Stop
+        Assert-Equal -Actual $lockResult -Expected "blocked" -Message "cross-process run lock contention"
+    }
+    finally
+    {
+        if ($null -ne $lockJob)
+        {
+            Remove-Job -Job $lockJob -Force -ErrorAction SilentlyContinue
+        }
+        Exit-BuildTruthRunLock -Lock $firstLock
+    }
+    $secondLock = Enter-BuildTruthRunLock -BuildPath $lockPath
+    Exit-BuildTruthRunLock -Lock $secondLock
+
+    $receiptRunId = "0123456789abcdef0123456789abcdef"
+    $receiptValue = [ordered]@{
+        schema = "RVX.AgentHarness.BuildTruthReceipt"
+        schemaVersion = 1
+        runId = $receiptRunId
+        immutableReceiptPath = ".agent-harness/receipts/BuildTruth.$receiptRunId.json"
+        generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+        request = [ordered]@{ softwareAdapterAllowed = $false }
+        source = [ordered]@{}
+        report = [ordered]@{}
+        junit = [ordered]@{ lanes = @() }
+        lanes = @()
+        nativeEvidence = $null
+    }
+    Assert-Equal `
+        -Actual $receiptValue.request.softwareAdapterAllowed `
+        -Expected $false `
+        -Message "Build Truth receipt software adapter request"
+    $buildTruthRunnerSource = Get-Content `
+        -LiteralPath (Join-Path $PSScriptRoot "..\run_build_truth.ps1") `
+        -Raw
+    if ($buildTruthRunnerSource -notmatch 'softwareAdapterAllowed\s*=\s*\$SoftwareAdapterAllowed')
+    {
+        throw "Build Truth receipt publisher does not bind softwareAdapterAllowed."
+    }
+    $receipt = Write-BuildTruthImmutableReceipt `
+        -RepositoryRoot $receiptRepository `
+        -ReceiptKind "BuildTruth" `
+        -RunId $receiptRunId `
+        -Value $receiptValue `
+        -Status "passed"
+    Assert-Equal `
+        -Actual $receipt.immutableReceiptPath `
+        -Expected ".agent-harness/receipts/BuildTruth.$receiptRunId.json" `
+        -Message "immutable receipt path"
+    if ($receipt.sha256 -notmatch "^[0-9a-f]{64}$")
+    {
+        throw "Immutable receipt SHA-256 is incomplete."
+    }
+    $pointer = Write-BuildTruthReceiptPointer `
+        -RepositoryRoot $receiptRepository `
+        -ReceiptKind "BuildTruth" `
+        -PointerFileName "BuildTruth.latest.json" `
+        -RunId $receipt.runId `
+        -ImmutableReceiptPath $receipt.immutableReceiptPath `
+        -ImmutableReceiptSha256 $receipt.sha256
+    if ($pointer.path -ne ".agent-harness/receipts/BuildTruth.latest.json")
+    {
+        throw "Build Truth receipt pointer path is incomplete."
+    }
+
+    $secondReceiptRunId = "11111111111111111111111111111111"
+    $receiptValue.runId = $secondReceiptRunId
+    $receiptValue.immutableReceiptPath = ".agent-harness/receipts/BuildTruth.$secondReceiptRunId.json"
+    $secondReceipt = Write-BuildTruthImmutableReceipt `
+        -RepositoryRoot $receiptRepository `
+        -ReceiptKind "BuildTruth" `
+        -RunId $secondReceiptRunId `
+        -Value $receiptValue `
+        -Status "passed"
+    Write-BuildTruthReceiptPointer `
+        -RepositoryRoot $receiptRepository `
+        -ReceiptKind "BuildTruth" `
+        -PointerFileName "BuildTruth.latest.json" `
+        -RunId $secondReceipt.runId `
+        -ImmutableReceiptPath $secondReceipt.immutableReceiptPath `
+        -ImmutableReceiptSha256 $secondReceipt.sha256 | Out-Null
+    $pointerContent = Get-Content -LiteralPath (Join-Path $receiptRepository $pointer.path) -Raw | ConvertFrom-Json
+    Assert-Equal -Actual $pointerContent.runId -Expected $secondReceiptRunId -Message "atomic receipt pointer replacement"
+    Assert-BuildTruthFailure -Category "ReceiptTampered" -Action {
+        Write-BuildTruthReceiptPointer `
+            -RepositoryRoot $receiptRepository `
+            -ReceiptKind "BuildTruth" `
+            -PointerFileName "BuildTruth.latest.json" `
+            -RunId $secondReceipt.runId `
+            -ImmutableReceiptPath $secondReceipt.immutableReceiptPath `
+            -ImmutableReceiptSha256 ("0" * 64) | Out-Null
+    }
+    $pointerAfterFailure = Get-Content -LiteralPath (Join-Path $receiptRepository $pointer.path) -Raw | ConvertFrom-Json
+    Assert-Equal -Actual $pointerAfterFailure.runId -Expected $secondReceiptRunId -Message "failed pointer publication does not advance"
+    Assert-BuildTruthFailure -Category "ReceiptCollision" -Action {
+        Write-BuildTruthImmutableReceipt `
+            -RepositoryRoot $receiptRepository `
+            -ReceiptKind "BuildTruth" `
+            -RunId $secondReceiptRunId `
+            -Value $receiptValue `
+            -Status "passed" | Out-Null
+    }
+
+    $failedRunId = "abcdefabcdefabcdefabcdefabcdefab"
+    $failedReceiptValue = [ordered]@{
+        schema = "RVX.AgentHarness.BuildTruthReceipt"
+        schemaVersion = 1
+        runId = $failedRunId
+        immutableReceiptPath = ".agent-harness/receipts/BuildTruth.$failedRunId.json"
+    }
+    Assert-BuildTruthFailure -Category "ReceiptStatus" -Action {
+        Write-BuildTruthImmutableReceipt `
+            -RepositoryRoot $receiptRepository `
+            -ReceiptKind "BuildTruth" `
+            -RunId $failedRunId `
+            -Value $failedReceiptValue `
+            -Status "failed" | Out-Null
+    }
+    if (Test-Path -LiteralPath (Join-Path $receiptRepository $failedReceiptValue.immutableReceiptPath))
+    {
+        throw "A failed run wrote an immutable receipt."
+    }
+
     Write-Host "Build Truth v3 module self-test passed."
 }
 finally

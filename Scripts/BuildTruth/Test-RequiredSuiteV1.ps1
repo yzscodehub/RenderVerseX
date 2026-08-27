@@ -112,6 +112,81 @@ try
         throw "Required evidence fingerprint is incomplete."
     }
 
+    $junitPath = Join-Path $buildRoot "required-suite.junit.xml"
+    @"
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="1"><testsuite name="required" tests="1"><testcase name="one"/></testsuite></testsuites>
+"@ | Set-Content -LiteralPath $junitPath -Encoding utf8
+    $executionJUnitEvidence = Get-BuildTruthReceiptFileEvidence `
+        -RepositoryRoot $temporaryRoot `
+        -Path $junitPath
+    $executionJUnitOutcome = Get-BuildTruthJUnitOutcome -Path $junitPath
+    Assert-BuildTruthJUnitOutcome `
+        -Outcome $executionJUnitOutcome `
+        -ExpectedTestCount 1 `
+        -Context "required suite execution self-test"
+    @"
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="1"><testsuite name="required" tests="1"><testcase name="one"><failure/></testcase></testsuite></testsuites>
+"@ | Set-Content -LiteralPath $junitPath -Encoding utf8
+    Assert-RequiredSuiteFailure -Category "ReceiptTampered" -Action {
+        Assert-BuildTruthReceiptFileEvidence `
+            -RepositoryRoot $temporaryRoot `
+            -Evidence $executionJUnitEvidence `
+            -Context "Required Suite execution JUnit"
+    }
+    $tamperedJUnitOutcome = Get-BuildTruthJUnitOutcome -Path $junitPath
+    Assert-RequiredSuiteFailure -Category "ReceiptTampered" -Action {
+        Assert-BuildTruthJUnitOutcomeMatches `
+            -Expected $executionJUnitOutcome `
+            -Actual $tamperedJUnitOutcome `
+            -Context "Required Suite execution JUnit"
+    }
+
+    $receiptRepository = Join-Path $temporaryRoot "receipt-repository"
+    New-Item -ItemType Directory -Path $receiptRepository | Out-Null
+    $receiptRunId = "fedcba9876543210fedcba9876543210"
+    $receiptValue = [ordered]@{
+        schema = "RVX.AgentHarness.RequiredSuiteReceipt"
+        schemaVersion = 1
+        runId = $receiptRunId
+        immutableReceiptPath = ".agent-harness/receipts/RequiredSuite.$receiptRunId.json"
+        generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+        request = [ordered]@{}
+        source = [ordered]@{}
+        report = [ordered]@{}
+        junit = [ordered]@{}
+        requiredLabel = "suite.pr-smoke"
+        selectedTests = @("Smoke.Producer", "Smoke.Validator")
+        semanticArtifacts = @()
+    }
+    $requiredSuiteRunnerSource = Get-Content `
+        -LiteralPath (Join-Path $PSScriptRoot "..\run_required_suite.ps1") `
+        -Raw
+    if ($requiredSuiteRunnerSource -notmatch 'skipConfigure\s*=\s*\$SkipConfigure')
+    {
+        throw "Required Suite receipt publisher does not bind skipConfigure."
+    }
+    $receipt = Write-BuildTruthImmutableReceipt `
+        -RepositoryRoot $receiptRepository `
+        -ReceiptKind "RequiredSuite" `
+        -RunId $receiptRunId `
+        -Value $receiptValue `
+        -Status "passed"
+    if ($receipt.immutableReceiptPath -ne ".agent-harness/receipts/RequiredSuite.$receiptRunId.json" -or
+        $receipt.sha256 -notmatch "^[0-9a-f]{64}$")
+    {
+        throw "Required suite immutable receipt is incomplete."
+    }
+    Assert-RequiredSuiteFailure -Category "ReceiptCollision" -Action {
+        Write-BuildTruthImmutableReceipt `
+            -RepositoryRoot $receiptRepository `
+            -ReceiptKind "RequiredSuite" `
+            -RunId $receiptRunId `
+            -Value $receiptValue `
+            -Status "passed" | Out-Null
+    }
+
     Write-Host "Required Suite v1 self-test passed."
 }
 finally

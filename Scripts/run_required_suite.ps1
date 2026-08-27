@@ -79,19 +79,170 @@ function Get-RequiredSuiteToken
     return $token.Trim("-", ".", "_")
 }
 
+function Get-RequiredSuiteRepositoryRelativeDirectory
+{
+    param(
+        [Parameter(Mandatory)][string]$RepositoryRoot,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    $absolutePath = Resolve-BuildTruthContainedPath `
+        -Root $RepositoryRoot `
+        -Path $Path
+    if (-not (Test-Path -LiteralPath $absolutePath -PathType Container))
+    {
+        Throw-BuildTruthFailure -Category "ReceiptPath" -Message (
+            "Directory '$Path' is not an existing repository-contained directory")
+    }
+    $repositoryPath = [IO.Path]::GetFullPath($RepositoryRoot).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar)
+    return [IO.Path]::GetRelativePath($repositoryPath, $absolutePath).Replace(
+        [IO.Path]::DirectorySeparatorChar,
+        "/")
+}
+
+function Publish-RequiredSuiteImmutableReceipt
+{
+    param(
+        [Parameter(Mandatory)][string]$RepositoryRoot,
+        [Parameter(Mandatory)][string]$RunId,
+        [Parameter(Mandatory)][string]$PointerFileName,
+        [Parameter(Mandatory)][string]$ReportPath,
+        [Parameter(Mandatory)][string]$BuildPath,
+        [Parameter(Mandatory)][string]$BaseRef,
+        [Parameter(Mandatory)][string]$ConfigurePreset,
+        [Parameter(Mandatory)][string]$BuildPreset,
+        [Parameter(Mandatory)][string]$TestPreset,
+        [Parameter(Mandatory)][string]$Configuration,
+        [Parameter(Mandatory)][string[]]$BuildTargets,
+        [Parameter(Mandatory)][string]$RequiredLabel,
+        [Parameter(Mandatory)][int]$ExpectedTestCount,
+        [Parameter(Mandatory)][bool]$Fresh,
+        [Parameter(Mandatory)][bool]$SkipConfigure,
+        [Parameter(Mandatory)][string]$SourceCommit,
+        [Parameter(Mandatory)][object]$SourceFingerprintAtStart,
+        [Parameter(Mandatory)][object]$SourceFingerprintAtEnd,
+        [Parameter(Mandatory)][object]$Inventory,
+        [Parameter(Mandatory)][string]$JUnitPath,
+        [Parameter(Mandatory)][object]$JUnitOutcome,
+        [Parameter(Mandatory)][object]$JUnitEvidence,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$SemanticEvidence
+    )
+
+    $selectedTests = @($Inventory.tests | ForEach-Object { $_.name })
+    if ($selectedTests.Count -eq 0)
+    {
+        Throw-BuildTruthFailure -Category "ZeroTests" -Message (
+            "A passed required suite has no selected tests")
+    }
+    Assert-BuildTruthReceiptFileEvidence `
+        -RepositoryRoot $RepositoryRoot `
+        -Evidence $JUnitEvidence `
+        -Context "Required Suite JUnit"
+    $currentJUnitOutcome = Get-BuildTruthJUnitOutcome -Path $JUnitPath
+    Assert-BuildTruthJUnitOutcome `
+        -Outcome $currentJUnitOutcome `
+        -ExpectedTestCount $selectedTests.Count `
+        -Context "required suite receipt"
+    Assert-BuildTruthJUnitOutcomeMatches `
+        -Expected $JUnitOutcome `
+        -Actual $currentJUnitOutcome `
+        -Context "Required Suite JUnit"
+
+    $semanticArtifacts = [System.Collections.Generic.List[object]]::new()
+    foreach ($semanticArtifact in $SemanticEvidence)
+    {
+        $currentEvidence = Get-BuildTruthReceiptFileEvidence `
+            -RepositoryRoot $RepositoryRoot `
+            -Path $semanticArtifact.path
+        if ($currentEvidence.sha256 -ne $semanticArtifact.sha256)
+        {
+            Throw-BuildTruthFailure -Category "ReceiptTampered" -Message (
+                "Semantic artifact changed after validation: $($semanticArtifact.path)")
+        }
+        $semanticArtifacts.Add($currentEvidence)
+    }
+
+    $relativeBuildDirectory = Get-RequiredSuiteRepositoryRelativeDirectory `
+        -RepositoryRoot $RepositoryRoot `
+        -Path $BuildPath
+    $runnerDigest = Get-BuildTruthRunnerDigest `
+        -RepositoryRoot $RepositoryRoot `
+        -Paths @(
+            "Scripts/run_required_suite.ps1",
+            "Scripts/BuildTruth/BuildTruthV3.psm1"
+        )
+    $receiptPath = ".agent-harness/receipts/RequiredSuite.$RunId.json"
+    $receipt = [ordered]@{
+        schema = "RVX.AgentHarness.RequiredSuiteReceipt"
+        schemaVersion = 1
+        runId = $RunId
+        immutableReceiptPath = $receiptPath
+        generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+        request = [ordered]@{
+            baseRef = $BaseRef
+            configurePreset = $ConfigurePreset
+            buildPreset = $BuildPreset
+            testPreset = $TestPreset
+            buildDir = $relativeBuildDirectory
+            configuration = $Configuration
+            buildTargets = @($BuildTargets)
+            requiredLabel = $RequiredLabel
+            expectedTestCount = if ($ExpectedTestCount -gt 0) { $ExpectedTestCount } else { $null }
+            fresh = $Fresh
+            skipConfigure = $SkipConfigure
+            runnerDigest = $runnerDigest
+        }
+        source = [ordered]@{
+            commit = $SourceCommit
+            fingerprintBefore = $SourceFingerprintAtStart
+            fingerprintAfter = $SourceFingerprintAtEnd
+        }
+        report = Get-BuildTruthReceiptFileEvidence `
+            -RepositoryRoot $RepositoryRoot `
+            -Path $ReportPath
+        junit = [ordered]@{
+            path = $JUnitEvidence.path
+            sha256 = $JUnitEvidence.sha256
+            outcome = $currentJUnitOutcome
+        }
+        requiredLabel = $RequiredLabel
+        selectedTests = @($selectedTests)
+        semanticArtifacts = @($semanticArtifacts)
+    }
+    $immutableReceipt = Write-BuildTruthImmutableReceipt `
+        -RepositoryRoot $RepositoryRoot `
+        -ReceiptKind "RequiredSuite" `
+        -RunId $RunId `
+        -Value $receipt `
+        -Status "passed"
+    $latestPointer = Write-BuildTruthReceiptPointer `
+        -RepositoryRoot $RepositoryRoot `
+        -ReceiptKind "RequiredSuite" `
+        -PointerFileName $PointerFileName `
+        -RunId $immutableReceipt.runId `
+        -ImmutableReceiptPath $immutableReceipt.immutableReceiptPath `
+        -ImmutableReceiptSha256 $immutableReceipt.sha256
+    return [ordered]@{
+        runId = $immutableReceipt.runId
+        immutableReceiptPath = $immutableReceipt.immutableReceiptPath
+        sha256 = $immutableReceipt.sha256
+        latestPointerPath = $latestPointer.path
+        latestPointerSha256 = $latestPointer.sha256
+    }
+}
+
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $gitSafeDirectory = $repoRoot.Replace(
     [IO.Path]::DirectorySeparatorChar,
     [IO.Path]::AltDirectorySeparatorChar)
 $buildRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "build"))
 $buildPath = [IO.Path]::GetFullPath((Join-Path $repoRoot $BuildDir))
-$buildRootPrefix = $buildRoot.TrimEnd(
-    [IO.Path]::DirectorySeparatorChar,
-    [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-if (-not $buildPath.StartsWith($buildRootPrefix, [StringComparison]::OrdinalIgnoreCase))
-{
-    throw "BuildDir must resolve below '$buildRoot': $buildPath"
-}
+$null = Resolve-BuildTruthContainedPath `
+    -Root $buildRoot `
+    -Path $buildPath `
+    -AllowMissing
 
 $suiteToken = Get-RequiredSuiteToken -Label $RequiredLabel
 if ([string]::IsNullOrWhiteSpace($suiteToken))
@@ -112,12 +263,16 @@ $sourceFingerprintAtStart = $null
 $sourceFingerprintAtEnd = $null
 $inventory = $null
 $junitOutcome = $null
+$junitExecutionEvidence = $null
 $semanticEvidence = @()
 $startedAt = Get-Date
-
-Push-Location $repoRoot
+$receiptInfo = $null
+$runLock = Enter-BuildTruthRunLock -BuildPath $buildPath
+$locationPushed = $false
 try
 {
+    Push-Location $repoRoot
+    $locationPushed = $true
     Invoke-RequiredSuiteNativeCommand `
         -Commands $commands `
         -Name "verify-base-ref" `
@@ -240,6 +395,19 @@ try
             -ExpectedTestCount $selectedTests.Count `
             -Lane $RequiredLabel
         $junitOutcome = $laneRun.outcome
+        $junitExecutionEvidence = Get-BuildTruthReceiptFileEvidence `
+            -RepositoryRoot $repoRoot `
+            -Path $junitPath
+        $capturedJUnitOutcome = Get-BuildTruthJUnitOutcome -Path $junitPath
+        Assert-BuildTruthJUnitOutcome `
+            -Outcome $capturedJUnitOutcome `
+            -ExpectedTestCount $selectedTests.Count `
+            -Context "required suite captured JUnit"
+        Assert-BuildTruthJUnitOutcomeMatches `
+            -Expected $junitOutcome `
+            -Actual $capturedJUnitOutcome `
+            -Context "Required Suite captured JUnit"
+        $junitOutcome = $capturedJUnitOutcome
     }
     finally
     {
@@ -306,48 +474,113 @@ catch
 }
 finally
 {
-    New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
-    $junitEvidence = $null
-    if (Test-Path -LiteralPath $junitPath -PathType Leaf)
+    try
     {
-        $junitEvidence = [ordered]@{
-            path = $junitPath
-            sha256 = (Get-FileHash -LiteralPath $junitPath -Algorithm SHA256).Hash.ToLowerInvariant()
-            outcome = $junitOutcome
+        New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
+        $junitEvidence = $null
+        if (Test-Path -LiteralPath $junitPath -PathType Leaf)
+        {
+            $junitEvidence = [ordered]@{
+                path = $junitPath
+                sha256 = (Get-FileHash -LiteralPath $junitPath -Algorithm SHA256).Hash.ToLowerInvariant()
+                outcome = $junitOutcome
+            }
+        }
+        $report = [ordered]@{
+            schema = "RVX.RequiredSuite.Report"
+            schemaVersion = 1
+            runId = $runId
+            sourceCommit = $sourceCommit
+            baseRef = $BaseRef
+            sourceFingerprintBefore = $sourceFingerprintAtStart
+            sourceFingerprintAfter = $sourceFingerprintAtEnd
+            configurePreset = $ConfigurePreset
+            buildPreset = $BuildPreset
+            testPreset = $TestPreset
+            buildDir = $buildPath
+            configuration = $Configuration
+            buildTargets = @($BuildTarget)
+            requiredLabel = $RequiredLabel
+            expectedTestCount = if ($ExpectedTestCount -gt 0) { $ExpectedTestCount } else { $null }
+            selectedTests = if ($null -eq $inventory) { @() } else { @($inventory.tests | ForEach-Object { $_.name }) }
+            inventoryPath = if ($null -eq $inventory) { $null } else { $inventoryPath }
+            junitPath = if ($null -eq $junitEvidence) { $null } else { $junitEvidence.path }
+            junitSha256 = if ($null -eq $junitEvidence) { $null } else { $junitEvidence.sha256 }
+            junit = $junitEvidence
+            semanticArtifacts = @($semanticEvidence)
+            commands = @($commands)
+            startedAtUtc = $startedAt.ToUniversalTime().ToString("o")
+            durationMs = [int]((Get-Date) - $startedAt).TotalMilliseconds
+            status = $status
+            failureCategory = if ([string]::IsNullOrWhiteSpace($failureCategory)) { $null } else { $failureCategory }
+            failure = if ([string]::IsNullOrWhiteSpace($failure)) { $null } else { [ordered]@{
+                category = $failureCategory
+                message = $failure
+            }}
+        }
+        Write-BuildTruthJson -Value $report -Path $reportPath -Depth 16
+
+        if ($status -eq "passed")
+        {
+            try
+            {
+                $receiptInfo = Publish-RequiredSuiteImmutableReceipt `
+                    -RepositoryRoot $repoRoot `
+                    -RunId $runId `
+                    -PointerFileName "RequiredSuite.$suiteToken.latest.json" `
+                    -ReportPath $reportPath `
+                    -BuildPath $buildPath `
+                    -BaseRef $BaseRef `
+                    -ConfigurePreset $ConfigurePreset `
+                    -BuildPreset $BuildPreset `
+                    -TestPreset $TestPreset `
+                    -Configuration $Configuration `
+                    -BuildTargets @($BuildTarget) `
+                    -RequiredLabel $RequiredLabel `
+                    -ExpectedTestCount $ExpectedTestCount `
+                    -Fresh ([bool]$Fresh) `
+                    -SkipConfigure ([bool]$SkipConfigure) `
+                    -SourceCommit $sourceCommit `
+                    -SourceFingerprintAtStart $sourceFingerprintAtStart `
+                    -SourceFingerprintAtEnd $sourceFingerprintAtEnd `
+                    -Inventory $inventory `
+                    -JUnitPath $junitPath `
+                    -JUnitOutcome $junitOutcome `
+                    -JUnitEvidence $junitExecutionEvidence `
+                    -SemanticEvidence @($semanticEvidence)
+            }
+            catch
+            {
+                $status = "failed"
+                $failureCategory = "ReceiptPublication"
+                $failure = "BT3.ReceiptPublication: $($_.Exception.Message)"
+                $report.status = $status
+                $report.failureCategory = $failureCategory
+                $report.failure = [ordered]@{
+                    category = $failureCategory
+                    message = $failure
+                }
+                Write-BuildTruthJson -Value $report -Path $reportPath -Depth 16
+                Throw-BuildTruthFailure -Category $failureCategory -Message $failure
+            }
         }
     }
-    $report = [ordered]@{
-        schema = "RVX.RequiredSuite.Report"
-        schemaVersion = 1
-        runId = $runId
-        sourceCommit = $sourceCommit
-        baseRef = $BaseRef
-        sourceFingerprintBefore = $sourceFingerprintAtStart
-        sourceFingerprintAfter = $sourceFingerprintAtEnd
-        configurePreset = $ConfigurePreset
-        buildPreset = $BuildPreset
-        testPreset = $TestPreset
-        buildDir = $buildPath
-        configuration = $Configuration
-        buildTargets = @($BuildTarget)
-        requiredLabel = $RequiredLabel
-        expectedTestCount = if ($ExpectedTestCount -gt 0) { $ExpectedTestCount } else { $null }
-        selectedTests = if ($null -eq $inventory) { @() } else { @($inventory.tests | ForEach-Object { $_.name }) }
-        inventoryPath = if ($null -eq $inventory) { $null } else { $inventoryPath }
-        junitPath = if ($null -eq $junitEvidence) { $null } else { $junitEvidence.path }
-        junitSha256 = if ($null -eq $junitEvidence) { $null } else { $junitEvidence.sha256 }
-        junit = $junitEvidence
-        semanticArtifacts = @($semanticEvidence)
-        commands = @($commands)
-        startedAtUtc = $startedAt.ToUniversalTime().ToString("o")
-        durationMs = [int]((Get-Date) - $startedAt).TotalMilliseconds
-        status = $status
-        failureCategory = if ([string]::IsNullOrWhiteSpace($failureCategory)) { $null } else { $failureCategory }
-        failure = if ([string]::IsNullOrWhiteSpace($failure)) { $null } else { [ordered]@{
-            category = $failureCategory
-            message = $failure
-        }}
+    finally
+    {
+        try
+        {
+            if ($locationPushed)
+            {
+                Pop-Location
+            }
+        }
+        finally
+        {
+            Exit-BuildTruthRunLock -Lock $runLock
+        }
     }
-    Write-BuildTruthJson -Value $report -Path $reportPath -Depth 16
-    Pop-Location
 }
+
+Write-Host "Required suite passed. Report: $reportPath"
+Write-Host "Immutable receipt: $($receiptInfo.immutableReceiptPath) (runId=$($receiptInfo.runId), sha256=$($receiptInfo.sha256))"
+Write-Host "Latest pointer: $($receiptInfo.latestPointerPath) (sha256=$($receiptInfo.latestPointerSha256))"
