@@ -3,7 +3,7 @@
 /**
  * @file Water.h
  * @brief Main header for the Water module
- * 
+ *
  * The Water module provides a pure deterministic Gerstner query contract.
  * Render owns grid resources, shading, reflection/refraction, and foam passes.
  */
