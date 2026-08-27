@@ -131,6 +131,12 @@ namespace RVX::Particle
             return m_simulationTick;
         }
 
+        /** @brief Exact effective delta used to produce the latest CPU packet tick. */
+        [[nodiscard]] float GetLastFixedDeltaSeconds() const noexcept
+        {
+            return m_lastFixedDeltaSeconds;
+        }
+
         /** @brief Configured seed used to derive deterministic emission and CPU RNG seeds. */
         [[nodiscard]] uint32 GetDeterministicSimulationSeed() const noexcept
         {
@@ -317,6 +323,7 @@ namespace RVX::Particle
         uint64 m_deterministicInstanceKey = 1;
         uint32 m_effectiveSimulationSeed = 0;
         bool m_hasExplicitSimulationTick = false;
+        float m_lastFixedDeltaSeconds = 0.0f;
 
         // Transform
         Mat4 m_worldTransform = Mat4Identity();

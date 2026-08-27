@@ -638,6 +638,17 @@ if(TARGET RVX_SampleCommon)
     )
     target_compile_definitions(SampleAssetCatalogValidation PRIVATE
         RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
+    # GFX17 receipt predicates are ordinary deterministic unit coverage. The
+    # native qualification suite owns the sole suite.gfx17-vfx label.
+    rvx_add_gtest(
+        NAME ParticleVfxSampleValidation
+        LANE unit
+        SOURCES ParticleVfxSampleValidation/main.cpp
+        LIBS RVX::SampleCommon
+        TAGS product.samples subsystem.particle suite.particle-vfx
+        TIMEOUT 30
+    )
 endif()
 
 rvx_add_gtest(
@@ -1128,6 +1139,15 @@ rvx_add_gtest(
     SOURCES CookedMaterialArtifactValidation/main.cpp
     LIBS RVX::Core RVX::ResourceRuntime
     TAGS subsystem.resource suite.cook suite.material
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME CookedParticleEffectArtifactValidation
+    LANE unit
+    SOURCES CookedParticleEffectArtifactValidation/main.cpp
+    LIBS RVX::Core RVX::ResourceRuntime
+    TAGS subsystem.particle subsystem.resource suite.cook trait.artifact
     TIMEOUT 30
 )
 

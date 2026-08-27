@@ -211,7 +211,7 @@ ShaderProgramProviderFactory CreateDevelopmentShaderProgramProviderFactory(
 ResourceManagerDependencies CreateDevelopmentResourceManagerDependencies()
 {
     ResourceManagerDependencies dependencies =
-        Resource::CreateRuntimeResourceManagerDependencies();
+        CreateEngineResourceManagerDependencies();
     std::string error;
     const bool added = ResourceSource::AddSourceResourceDependencies(
         dependencies, error);

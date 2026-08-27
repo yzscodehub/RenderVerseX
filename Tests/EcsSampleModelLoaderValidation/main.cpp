@@ -1,4 +1,7 @@
+#include "AnimationSceneAdapters/ECS/EcsAnimationAssetService.h"
 #include "Core/Log.h"
+#include "Engine/ECS/IWorldEcsRuntimeServices.h"
+#include "ResourceSceneAdapters/ECS/EcsEnvironmentLoadCoordinator.h"
 #include "Samples/SampleModelLoader.h"
 
 #include <gtest/gtest.h>

@@ -104,9 +104,10 @@ if(RVX_ENABLE_DX12 OR RVX_ENABLE_VULKAN)
     endif()
 
     # GTest metadata is materialized through one configuration-independent
-    # file(GENERATE) include.  Keep fixture paths configuration-independent as
-    # the existing native-test registration model requires; DX12 and Vulkan
-    # remain isolated below their own roots.
+    # file(GENERATE) include. Keep fixture paths configuration-independent as
+    # the existing native-test registration model requires. RVXCook owns the
+    # backend directory below this catalog root, and the runtime provider
+    # applies that same directory component when resolving an artifact.
     set(RVX_PARTICLE_NATIVE_SHADER_ROOT_BASE
         "${CMAKE_CURRENT_BINARY_DIR}/ParticleNativeShaders")
     set(RVX_PARTICLE_NATIVE_FIXTURES "")
@@ -121,13 +122,13 @@ if(RVX_ENABLE_DX12 OR RVX_ENABLE_VULKAN)
 
     if(RVX_ENABLE_DX12)
         set(RVX_PARTICLE_NATIVE_SHADER_ROOT_DX12
-            "${RVX_PARTICLE_NATIVE_SHADER_ROOT_BASE}/DX12")
+            "${RVX_PARTICLE_NATIVE_SHADER_ROOT_BASE}")
         rvx_add_validation_test(
             LANE native
             NAME ParticleNativeCookedShadersDX12
             COMMAND $<TARGET_FILE:RVXCook>
                 --source "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders"
-                --output "${RVX_PARTICLE_NATIVE_SHADER_ROOT_DX12}"
+                --output "${RVX_PARTICLE_NATIVE_SHADER_ROOT_BASE}"
                 --shader-catalog "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
                 --shader-backend DX12
                 --fail-on-errors
@@ -151,13 +152,13 @@ if(RVX_ENABLE_DX12 OR RVX_ENABLE_VULKAN)
 
     if(RVX_ENABLE_VULKAN)
         set(RVX_PARTICLE_NATIVE_SHADER_ROOT_VULKAN
-            "${RVX_PARTICLE_NATIVE_SHADER_ROOT_BASE}/Vulkan")
+            "${RVX_PARTICLE_NATIVE_SHADER_ROOT_BASE}")
         rvx_add_validation_test(
             LANE native
             NAME ParticleNativeCookedShadersVulkan
             COMMAND $<TARGET_FILE:RVXCook>
                 --source "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders"
-                --output "${RVX_PARTICLE_NATIVE_SHADER_ROOT_VULKAN}"
+                --output "${RVX_PARTICLE_NATIVE_SHADER_ROOT_BASE}"
                 --shader-catalog "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
                 --shader-backend Vulkan
                 --fail-on-errors

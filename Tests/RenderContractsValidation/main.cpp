@@ -922,6 +922,144 @@ namespace
     }
 
     TEST(RenderContractsValidation,
+         ParticleEffectDescriptorBindsPacketIdentityAndRejectsMalformedAtlasState)
+    {
+        ParticleRenderEffectDescriptor effect;
+        effect.flipbook.textureAssetId = {41U};
+        effect.flipbook.texture = {7U, 3U};
+        effect.flipbook.committedContentRevision = 9U;
+        effect.flipbook.tiles = {4U, 4U};
+        effect.flipbook.firstFrame = 4U;
+        effect.flipbook.frameCount = 8U;
+        effect.flipbook.framesPerSecond = 12.0f;
+        effect.flipbook.uvOffset = {0.25f, 0.0f};
+        effect.flipbook.uvScale = {0.25f, 0.25f};
+        effect.flipbook.required = true;
+        effect.softDepthMode = ParticleRenderSoftDepthMode::Required;
+        effect.softDepthFadeMeters = 0.5f;
+        effect.softDepthContrast = 1.5f;
+        effect.distortionStrengthPixels = 2.0f;
+        effect.reactiveContribution = 0.4f;
+        effect.lightHint.enabled = true;
+        effect.lightHint.color = {1.0f, 0.5f, 0.25f};
+        effect.lightHint.intensityCandela = 100.0f;
+        effect.lightHint.rangeMeters = 2.0f;
+        effect.lightHint.flickerFrequencyHz = 1.0f;
+        effect.contentHash = effect.ComputeContentHash();
+        ASSERT_TRUE(effect.IsStructurallyValid());
+        ASSERT_TRUE(effect.flipbook.IsBound());
+
+        ParticleCpuPacket packet;
+        packet.simulationTick = 3U;
+        packet.deterministicSeed = 0x51A7U;
+        packet.deterministicInstanceKey = 0xC0FFEEU;
+        packet.effectiveSimulationSeed = 0xA11CEU;
+        packet.fixedDeltaSeconds = 1.0f / 60.0f;
+        packet.effectDescriptorHash = effect.contentHash;
+        packet.lightHint = {
+            .enabled = true,
+            .stableLightId = 17U,
+            .sampleTick = 3U,
+            .sourceParticleId = 2U,
+            .position = {1.0f, 2.0f, 3.0f},
+            .color = {1.0f, 0.5f, 0.25f},
+            .intensityCandela = 50.0f,
+            .rangeMeters = 2.0f,
+            .modulation = 0.5f,
+        };
+        packet.particles.push_back({
+            .stableParticleId = 2U,
+            .position = {1.0f, 2.0f, 3.0f},
+            .lifetime = 2.0f,
+            .velocity = {0.0f, 1.0f, 0.0f},
+            .age = 0.25f,
+            .color = {1.0f, 1.0f, 1.0f, 1.0f},
+            .size = {1.0f, 1.0f},
+            .flipbookFrameIndex = 6U,
+        });
+        packet.contentHash = packet.ComputeContentHash();
+
+        ParticleRenderSnapshotItem item;
+        item.simulationBackend = ParticleRenderSnapshotSimulationBackend::CPU;
+        item.payloadStatus = ParticleRenderSnapshotPayloadStatus::CpuPacketReady;
+        item.aliveParticleCount = 1U;
+        item.maxParticleCount = 8U;
+        item.effectDescriptor = effect;
+        item.cpuPacket = packet;
+        EXPECT_TRUE(item.HasValidCpuPacket());
+
+        ParticleRenderEffectDescriptor untexturedEffect;
+        untexturedEffect.distortionStrengthPixels = 1.0f;
+        untexturedEffect.reactiveContribution = 0.5f;
+        untexturedEffect.contentHash = untexturedEffect.ComputeContentHash();
+        ASSERT_TRUE(untexturedEffect.IsStructurallyValid());
+        ASSERT_TRUE(untexturedEffect.flipbook.IsCanonicalUntextured());
+        ParticleCpuPacket untexturedPacket = packet;
+        untexturedPacket.effectDescriptorHash = untexturedEffect.contentHash;
+        untexturedPacket.lightHint = {};
+        untexturedPacket.particles.front().flipbookFrameIndex = 0U;
+        untexturedPacket.contentHash = untexturedPacket.ComputeContentHash();
+        ParticleRenderSnapshotItem untexturedItem = item;
+        untexturedItem.effectDescriptor = untexturedEffect;
+        untexturedItem.cpuPacket = untexturedPacket;
+        EXPECT_TRUE(untexturedItem.HasValidCpuPacket());
+
+        item.cpuPacket.effectDescriptorHash ^= 1U;
+        item.cpuPacket.contentHash = item.cpuPacket.ComputeContentHash();
+        EXPECT_FALSE(item.HasValidCpuPacket());
+
+        item.cpuPacket = packet;
+        item.cpuPacket.particles.front().flipbookFrameIndex = 12U;
+        item.cpuPacket.contentHash = item.cpuPacket.ComputeContentHash();
+        EXPECT_FALSE(item.HasValidCpuPacket());
+
+        item.cpuPacket = packet;
+        item.cpuPacket.lightHint.sampleTick = packet.simulationTick + 1U;
+        item.cpuPacket.contentHash = item.cpuPacket.ComputeContentHash();
+        EXPECT_FALSE(item.HasValidCpuPacket());
+
+        item.cpuPacket = packet;
+        item.cpuPacket.lightHint.color.x = -0.01f;
+        item.cpuPacket.contentHash = item.cpuPacket.ComputeContentHash();
+        EXPECT_FALSE(item.HasValidCpuPacket());
+
+        ParticleRenderEffectDescriptor overflow = effect;
+        overflow.flipbook.tiles = {65535U, 65535U};
+        overflow.flipbook.firstFrame = std::numeric_limits<uint32>::max();
+        overflow.contentHash = overflow.ComputeContentHash();
+        EXPECT_FALSE(overflow.IsStructurallyValid());
+
+        ParticleRenderEffectDescriptor unpackableAtlas = effect;
+        unpackableAtlas.flipbook.tiles = {65536U, 1U};
+        unpackableAtlas.flipbook.firstFrame = 0U;
+        unpackableAtlas.flipbook.frameCount = 1U;
+        unpackableAtlas.contentHash = unpackableAtlas.ComputeContentHash();
+        EXPECT_FALSE(unpackableAtlas.IsStructurallyValid());
+
+        ParticleRenderEffectDescriptor escapingUvTransform = effect;
+        escapingUvTransform.flipbook.uvOffset = {0.9f, 0.0f};
+        escapingUvTransform.flipbook.uvScale = {0.2f, 1.0f};
+        escapingUvTransform.contentHash =
+            escapingUvTransform.ComputeContentHash();
+        EXPECT_FALSE(escapingUvTransform.IsStructurallyValid());
+
+        ParticleRenderEffectDescriptor invalidSoftDepth = effect;
+        invalidSoftDepth.softDepthFadeMeters = 0.0f;
+        invalidSoftDepth.contentHash = invalidSoftDepth.ComputeContentHash();
+        EXPECT_FALSE(invalidSoftDepth.IsStructurallyValid());
+
+        ParticleRenderEffectDescriptor invalidReactive = effect;
+        invalidReactive.reactiveContribution = 1.1f;
+        invalidReactive.contentHash = invalidReactive.ComputeContentHash();
+        EXPECT_FALSE(invalidReactive.IsStructurallyValid());
+
+        ParticleRenderEffectDescriptor invalidLightColor = effect;
+        invalidLightColor.lightHint.color.z = -0.01f;
+        invalidLightColor.contentHash = invalidLightColor.ComputeContentHash();
+        EXPECT_FALSE(invalidLightColor.IsStructurallyValid());
+    }
+
+    TEST(RenderContractsValidation,
          FeatureChannelRegistryRequiresCompleteUniqueRoutesBeforeSeal)
     {
         const auto registrationFor = [](RenderFeatureChannelId channelId)

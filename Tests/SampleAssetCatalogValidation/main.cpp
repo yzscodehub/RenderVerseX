@@ -683,6 +683,52 @@ namespace
     }
 
     TEST(SampleAssetCatalogValidation,
+         ParsesSchemaV3EffectAndRejectsUnknownOrDuplicateEffectKind)
+    {
+        TemporaryCatalog fixture;
+        constexpr std::string_view EffectBytes = "cooked effect fixture";
+        fixture.Write("effects/fire/effect.rvxvfx", std::string(EffectBytes));
+        fixture.Write("license.txt", "test license");
+        const std::vector<ManifestFile> files{
+            {"effects/fire/effect.rvxvfx", "runtime-root",
+             std::string(EffectBytes)}};
+        const std::string effectEntry = MakeV3Entry(
+            "particle-fire-v1", "effects/fire/effect.rvxvfx", files,
+            {}, {}, "effect");
+        fixture.Write("catalog.json", MakeCatalog(effectEntry, 3));
+
+        RVX::SampleAssetCatalog catalog;
+        std::string error;
+        ASSERT_TRUE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error))
+            << error;
+        const RVX::SampleAssetEntry* entry = catalog.Find("particle-fire-v1");
+        ASSERT_NE(entry, nullptr);
+        EXPECT_EQ(entry->kind, RVX::SampleAssetKind::Effect);
+        EXPECT_EQ(entry->path.generic_string(), "effects/fire/effect.rvxvfx");
+
+        RVX::SampleAssetRegistry registry({
+            {entry->id, entry->kind, entry->resolvedPath,
+             entry->contentIdentity, entry->assetContentId}});
+        EXPECT_TRUE(registry.Lookup("particle-fire-v1",
+                                    RVX::SampleAssetKind::Effect).IsFound());
+        EXPECT_EQ(registry.Lookup("particle-fire-v1",
+                                  RVX::SampleAssetKind::Model).code,
+                  RVX::SampleAssetRegistryLookupCode::KindMismatch);
+
+        fixture.Write("catalog.json", MakeCatalog(
+            MakeV3Entry("particle-fire-v1", "effects/fire/effect.rvxvfx",
+                        files, {}, {}, "not-an-effect"), 3));
+        error.clear();
+        EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
+        EXPECT_NE(error.find("kind"), std::string::npos) << error;
+
+        fixture.Write("catalog.json", MakeCatalog(effectEntry + "," + effectEntry, 3));
+        error.clear();
+        EXPECT_FALSE(catalog.Load(fixture.CatalogPath(), fixture.Root(), &error));
+        EXPECT_NE(error.find("Duplicate"), std::string::npos) << error;
+    }
+
+    TEST(SampleAssetCatalogValidation,
          RejectsUnsortedSchemaV3ManifestAndContentDrift)
     {
         TemporaryCatalog fixture;

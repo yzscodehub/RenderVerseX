@@ -387,6 +387,23 @@ TEST(ResourceRuntimePolicyValidation, BuiltinLoaderCompositionIsExplicit)
 
 }
 
+TEST(ResourceRuntimePolicyValidation,
+     UnschemedParticleEffectProductUsesCookedRuntimeDomain)
+{
+    ResourceRuntimePolicy policy;
+    policy.mode = ResourceRuntimeMode::CookedRuntime;
+    policy.allowSourceAssetReads = false;
+    policy.requireCookedArtifacts = true;
+    policy.cookedRoot = fs::temp_directory_path().string();
+
+    const ResourcePathResolution resolution = ResolveRuntimeResourcePath(
+        policy, "", "Vfx/Fire.rvxvfx");
+    EXPECT_TRUE(resolution.allowed) << resolution.diagnosticMessage;
+    EXPECT_EQ(resolution.domain, ResourceLoadDomain::CookedArtifact);
+    EXPECT_TRUE(resolution.cookedArtifactRead);
+    EXPECT_FALSE(resolution.sourceAssetRead);
+}
+
 TEST(ResourceRuntimePolicyValidation, RejectsSourceAssetsWhenCookedArtifactsAreRequired)
 {
     ResourceManagerConfig config;

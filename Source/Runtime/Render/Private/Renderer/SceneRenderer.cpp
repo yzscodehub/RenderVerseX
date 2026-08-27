@@ -2585,6 +2585,10 @@ void SceneRenderer::PrepareFrameApplyResources(
     {
         m_transparentPass->SetResourceRegistry(&registry);
     }
+    if (m_particleFeaturePass)
+    {
+        m_particleFeaturePass->SetResourceRegistry(&registry);
+    }
     if (m_skyboxPass)
     {
         m_skyboxPass->SetResourceRegistry(&registry);
@@ -4972,11 +4976,17 @@ void SceneRenderer::CompileRenderFramePlan()
             m_transparentPass->GetStatus().requestedEnabled &&
             m_transparentPass->GetStatus().supported &&
             m_transparentPass->GetStatus().enabled;
+        const bool particleSnapshotMayExecute =
+            m_particleFeaturePass != nullptr &&
+            m_particleFeaturePass->GetStatus().requestedEnabled &&
+            m_particleFeaturePass->GetStatus().supported &&
+            m_particleFeaturePass->GetStatus().enabled;
         const SceneColorFormatPolicy formatPolicy =
             ResolveSceneColorFormatPolicy(backBufferFormat,
                                           postProcessActive ||
                                               deferredRecipeRequested ||
-                                              transparentSnapshotMayExecute);
+                                              transparentSnapshotMayExecute ||
+                                              particleSnapshotMayExecute);
         opaqueGPUPipelineReady =
             formatPolicy.actualSceneColorFormat != RHIFormat::Unknown;
         for (const RenderDrawGroupRange& group :
@@ -7931,6 +7941,74 @@ bool SceneRenderer::PrepareLightingFramePlan(std::string& outDiagnostic)
         request.lightCandidates.push_back(std::move(candidate));
     }
 
+    // Particle systems contribute at most one value-owned, unshadowed point
+    // light each. This happens before LightingFramePlan is sealed so every
+    // raster path consumes the same admitted set; particle draw submission
+    // never reaches back into LightManager.
+    std::vector<ParticleRenderLightHint> particleLightHints;
+    if (m_particleFeaturePass != nullptr)
+    {
+        std::string particleLightDiagnostic;
+        if (!m_particleFeaturePass->CollectLightingHints(
+                particleLightHints, particleLightDiagnostic))
+        {
+            m_particleFeaturePass->SetLightingHintAdmissionStats(0u, 0u, 0u);
+            outDiagnostic = particleLightDiagnostic.empty()
+                ? "Particle light hint validation failed"
+                : std::move(particleLightDiagnostic);
+            return false;
+        }
+        if (particleLightHints.size() > std::numeric_limits<uint32>::max())
+        {
+            m_particleFeaturePass->SetLightingHintAdmissionStats(0u, 0u, 0u);
+            outDiagnostic = "Particle light hint count exceeds uint32 diagnostics";
+            return false;
+        }
+        request.lightCandidates.reserve(request.lightCandidates.size() +
+                                        particleLightHints.size());
+        for (const ParticleRenderLightHint& hint : particleLightHints)
+        {
+            LightingLightCandidate candidate;
+            candidate.lightId = hint.stableLightId;
+            candidate.type = RenderLightType::Point;
+            candidate.priority = 0u;
+            candidate.position = hint.position;
+            candidate.color = hint.color;
+            candidate.normalizedIntensity = hint.intensityCandela;
+            candidate.range = hint.rangeMeters;
+            candidate.layerMask = m_viewData.cullingMask;
+            candidate.castsShadows = false;
+            request.lightCandidates.push_back(std::move(candidate));
+        }
+    }
+
+    // The candidate order and capacity selection are data, not insertion
+    // order. In particular this gives particle hints stable admission when a
+    // declared local-light truncation policy is enabled in a future recipe.
+    std::sort(request.lightCandidates.begin(), request.lightCandidates.end(),
+              [](const LightingLightCandidate& left,
+                 const LightingLightCandidate& right)
+              {
+                  return left.lightId < right.lightId;
+              });
+    for (size_t index = 1; index < request.lightCandidates.size(); ++index)
+    {
+        if (request.lightCandidates[index - 1].lightId ==
+            request.lightCandidates[index].lightId)
+        {
+            if (m_particleFeaturePass != nullptr)
+            {
+                const uint32 requested = static_cast<uint32>(
+                    particleLightHints.size());
+                m_particleFeaturePass->SetLightingHintAdmissionStats(
+                    requested, 0u, requested);
+            }
+            outDiagnostic =
+                "Lighting frame plan rejects duplicate authored or particle stable light identities";
+            return false;
+        }
+    }
+
     // The frame's accepted scene revision is the authoritative incremental
     // lighting-state revision. Candidate values are additionally mixed into
     // the plan identity by LightingFramePlanBuilder.
@@ -8024,10 +8102,38 @@ bool SceneRenderer::PrepareLightingFramePlan(std::string& outDiagnostic)
     LightingFramePlanBuildResult result = builder.Build(request);
     if (!result.Succeeded() || !result.plan.IsValid())
     {
+        if (m_particleFeaturePass != nullptr)
+        {
+            const uint32 requested = static_cast<uint32>(particleLightHints.size());
+            // A failed plan publishes no local-light set, so none of the
+            // packet hints may be reported as admitted.
+            m_particleFeaturePass->SetLightingHintAdmissionStats(
+                requested, 0u, requested);
+        }
         outDiagnostic = result.diagnostic.empty()
             ? GetLightingFramePlanCodeName(result.code)
             : std::move(result.diagnostic);
         return false;
+    }
+
+    if (m_particleFeaturePass != nullptr)
+    {
+        uint32 admitted = 0u;
+        const std::vector<LightingLightCandidate>& localLights =
+            result.plan.GetLocalLights();
+        for (const ParticleRenderLightHint& hint : particleLightHints)
+        {
+            const bool wasAdmitted = std::any_of(
+                localLights.begin(), localLights.end(),
+                [&hint](const LightingLightCandidate& candidate)
+                {
+                    return candidate.lightId == hint.stableLightId;
+                });
+            admitted += wasAdmitted ? 1u : 0u;
+        }
+        const uint32 requested = static_cast<uint32>(particleLightHints.size());
+        m_particleFeaturePass->SetLightingHintAdmissionStats(
+            requested, admitted, requested - admitted);
     }
 
     m_lightingFramePlan =
@@ -8295,7 +8401,8 @@ void SceneRenderer::EnsureDepthBuffer(uint32_t width, uint32_t height)
         depthDesc.arraySize = 1;
         depthDesc.format = PipelineCache::GetDefaultDepthStencilFormat();
         depthDesc.dimension = RHITextureDimension::Texture2D;
-        depthDesc.usage = RHITextureUsage::DepthStencil | RHITextureUsage::ShaderResource;
+        depthDesc.usage = RHITextureUsage::DepthStencil |
+            RHITextureUsage::ShaderResource | RHITextureUsage::CopySrc;
         depthDesc.SetOptimizedClearDepthStencil({
             m_pipelineCache ? m_pipelineCache->GetDepthClearValue()
                             : PipelineCache::GetDepthClearValue(false),
@@ -9616,8 +9723,18 @@ void SceneRenderer::BuildRenderGraph()
         !m_transparentDrawItems.empty() &&
         transparentPassStatus.requestedEnabled &&
         transparentPassStatus.supported && transparentPassStatus.enabled;
+    const ParticleVfxRequirements particleVfxRequirements =
+        m_particleFeaturePass != nullptr
+            ? m_particleFeaturePass->GetVfxRequirements()
+            : ParticleVfxRequirements{};
+    const bool particleSnapshotMayExecute =
+        m_particleFeaturePass != nullptr &&
+        m_particleFeaturePass->GetStatus().requestedEnabled &&
+        m_particleFeaturePass->GetStatus().supported &&
+        m_particleFeaturePass->GetStatus().enabled;
     const bool requiresHDRSceneColor = postProcessActive ||
-        deferredRecipeRequested || transparentSnapshotMayExecute;
+        deferredRecipeRequested || transparentSnapshotMayExecute ||
+        particleSnapshotMayExecute;
     m_sceneColorFormatPolicy = ResolveSceneColorFormatPolicy(
         backBufferFormat, requiresHDRSceneColor);
     if (m_sceneColorFormatPolicy.toneMappingOutputColorSpace !=
@@ -9719,7 +9836,8 @@ void SceneRenderer::BuildRenderGraph()
 
     if ((effectivePostProcessSettings.antiAliasingMode ==
              RenderAntiAliasingMode::TAA ||
-         transparentSnapshotMayExecute) &&
+         transparentSnapshotMayExecute ||
+         particleSnapshotMayExecute) &&
         m_viewData.viewportWidth > 0 && m_viewData.viewportHeight > 0)
     {
         RHITextureDesc reactiveMaskDesc = RHITextureDesc::RenderTarget(
@@ -9744,7 +9862,8 @@ void SceneRenderer::BuildRenderGraph()
     }
 
     if (backBufferTarget.IsValid() &&
-        (postProcessActive || transparentSnapshotMayExecute))
+        (postProcessActive || transparentSnapshotMayExecute ||
+         particleSnapshotMayExecute))
     {
         if (backBufferDesc)
         {

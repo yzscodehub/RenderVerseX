@@ -230,7 +230,7 @@ bool Engine::Initialize()
         try
         {
             m_particleEcsGateway = std::make_unique<Particle::ParticleEcsRuntimeGateway>(
-                resources->GetManager());
+                resources->GetManager(), resources);
             m_waterEcsGateway = std::make_unique<Water::WaterEcsRuntimeGateway>();
             m_terrainEcsGateway = std::make_unique<Terrain::TerrainEcsRuntimeGateway>();
         }

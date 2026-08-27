@@ -158,6 +158,9 @@ namespace
         std::string requestedPhysicsBackend;
         std::string actualPhysicsBackend;
         std::string assetId;
+        // Existing callers remain strict Model consumers unless they opt in
+        // to another supported primary product kind explicitly.
+        std::string assetKind = "model";
         std::string environmentAssetId;
         std::string assetLicenseSpdx;
         std::string environmentLicenseSpdx;
@@ -240,6 +243,9 @@ namespace
         bool requireTransparentReactiveMask = false;
         bool requireTransparentSorting = false;
         bool forbidTransparentFallbacks = false;
+        bool requireParticleVfxExecution = false;
+        bool requireParticleFireExecution = false;
+        bool requireParticleSmokeExecution = false;
         bool requireReadinessWait = false;
         bool requireGPUDrivenExecution = false;
         bool requireDirectExecution = false;
@@ -800,6 +806,25 @@ namespace
                 return argv[++i];
             };
 
+            // Keep newly added narrow receipt flags out of the long legacy
+            // else-if chain below: MSVC otherwise reaches its block-nesting
+            // limit before it can compile this validator.
+            if (arg == "--require-particle-vfx-execution")
+            {
+                options.requireParticleVfxExecution = true;
+                continue;
+            }
+            if (arg == "--require-particle-fire-execution")
+            {
+                options.requireParticleFireExecution = true;
+                continue;
+            }
+            if (arg == "--require-particle-smoke-execution")
+            {
+                options.requireParticleSmokeExecution = true;
+                continue;
+            }
+
             if (arg == "--report")
             {
                 const char* value = requireValue("--report");
@@ -904,6 +929,20 @@ namespace
                 const char* value = requireValue("--asset-id");
                 if (!value) return false;
                 options.assetId = value;
+            }
+            else if (arg == "--asset-kind")
+            {
+                const char* value = requireValue("--asset-kind");
+                if (!value) return false;
+                options.assetKind = value;
+                if (options.assetKind != "model" &&
+                    options.assetKind != "effect")
+                {
+                    std::cerr << "Unsupported --asset-kind value: "
+                              << options.assetKind
+                              << " (expected model or effect)\n";
+                    return false;
+                }
             }
             else if (arg == "--environment-asset-id")
             {
@@ -3137,6 +3176,230 @@ namespace
         {
             std::cerr << "GFX15 translucency receipt records a renderer fallback\n";
             passed = false;
+        }
+        return passed;
+    }
+
+    // GFX17 is deliberately not a generic "frame presented" gate.  A VFX
+    // scenario is qualified only by the renderer-owned receipt that proves the
+    // CPU packet, atlas generation, upload, draw, and presentation all refer
+    // to the same frame.  This value projection keeps Samples independent of
+    // RenderGraph and RHI private objects.
+    bool ValidateParticleVfxExecutionProjection(const Json& report,
+                                                const Options* options)
+    {
+        if (options == nullptr)
+        {
+            return true;
+        }
+        const bool requested = options->requireParticleVfxExecution ||
+            options->requireParticleFireExecution ||
+            options->requireParticleSmokeExecution;
+        if (!requested)
+        {
+            return true;
+        }
+        if (options->requireParticleFireExecution &&
+            options->requireParticleSmokeExecution)
+        {
+            std::cerr << "GFX17 receipt cannot require fire and smoke in one sample\n";
+            return false;
+        }
+
+        const auto diagnostics = report.find("renderDiagnostics");
+        if (diagnostics == report.end() || !diagnostics->is_object())
+        {
+            std::cerr << "GFX17 VFX qualification requires report renderDiagnostics\n";
+            return false;
+        }
+        const auto particle = diagnostics->find("particleVfxActualExecution");
+        if (particle == diagnostics->end() || !particle->is_object())
+        {
+            std::cerr << "GFX17 VFX qualification requires particle execution projection\n";
+            return false;
+        }
+
+        constexpr const char* Context = "GFX17 particle VFX";
+        bool available = false;
+        bool receiptValid = false;
+        bool receiptPresented = false;
+        bool receiptSucceeded = false;
+        bool mainView = false;
+        bool requestedByRenderer = false;
+        bool supported = false;
+        bool enabled = false;
+        bool graphScheduled = false;
+        bool drawSubmitted = false;
+        bool uploadPublished = false;
+        bool flipbookRequested = false;
+        bool flipbookValidated = false;
+        bool receiptsOverflow = false;
+        bool softDepthRequested = false;
+        bool softDepthRequired = false;
+        bool softDepthSnapshot = false;
+        bool softDepthLinearization = false;
+        bool softDepthEnabled = false;
+        bool softDepthOptionalFallback = false;
+        bool reactiveRequested = false;
+        bool reactiveWriteEnabled = false;
+        bool distortionRequested = false;
+        bool distortionScheduled = false;
+        bool distortionExecuted = false;
+        bool distortionComposite = false;
+        bool recordMatchesReceipt = false;
+        bool presentedAligned = false;
+        bool qualifiedFire = false;
+        bool qualifiedSmoke = false;
+        uint64_t receiptSchema = 0;
+        uint64_t itemCount = 0;
+        uint64_t packetCount = 0;
+        uint64_t aliveCount = 0;
+        uint64_t drawCount = 0;
+        uint64_t instanceCount = 0;
+        uint64_t fallbackCount = 0;
+        uint64_t uploadBytes = 0;
+        uint64_t resourceCreationCount = 0;
+        uint64_t pipelineCreationCount = 0;
+        uint64_t additiveCount = 0;
+        uint64_t premultipliedCount = 0;
+        uint64_t textureResolvedCount = 0;
+        uint64_t effectHash = 0;
+        uint64_t textureAssetId = 0;
+        uint64_t textureGeneration = 0;
+        uint64_t textureRevision = 0;
+        uint64_t batchReceiptCount = 0;
+        uint64_t reactiveWriteCount = 0;
+        uint64_t lightRequestedCount = 0;
+        uint64_t lightAdmittedCount = 0;
+        uint64_t lightDroppedCount = 0;
+        uint64_t recordFrame = 0;
+        uint64_t recordSceneRevision = 0;
+        uint64_t recordSurfaceGeneration = 0;
+        uint64_t recordConfigurationRevision = 0;
+        uint64_t recordGraphIdentity = 0;
+        uint64_t recordGraphGeneration = 0;
+        uint64_t recordEpoch = 0;
+        uint64_t receiptFrame = 0;
+        uint64_t presentedFrame = 0;
+        std::string diagnostic;
+
+        bool passed =
+            ReadBooleanField(*particle, "available", available, Context) &&
+            ReadUnsignedField(*particle, "executionReceiptSchemaVersion", receiptSchema, Context) &&
+            ReadBooleanField(*particle, "executionReceiptStructurallyValid", receiptValid, Context) &&
+            ReadBooleanField(*particle, "executionReceiptPresented", receiptPresented, Context) &&
+            ReadBooleanField(*particle, "executionReceiptSucceeded", receiptSucceeded, Context) &&
+            ReadBooleanField(*particle, "mainView", mainView, Context) &&
+            ReadBooleanField(*particle, "requested", requestedByRenderer, Context) &&
+            ReadBooleanField(*particle, "supported", supported, Context) &&
+            ReadBooleanField(*particle, "enabled", enabled, Context) &&
+            ReadBooleanField(*particle, "graphPassScheduled", graphScheduled, Context) &&
+            ReadBooleanField(*particle, "drawSubmitted", drawSubmitted, Context) &&
+            ReadBooleanField(*particle, "uploadPublished", uploadPublished, Context) &&
+            ReadUnsignedField(*particle, "itemCount", itemCount, Context) &&
+            ReadUnsignedField(*particle, "cpuPacketReadyItemCount", packetCount, Context) &&
+            ReadUnsignedField(*particle, "totalAliveParticles", aliveCount, Context) &&
+            ReadUnsignedField(*particle, "drawCallCount", drawCount, Context) &&
+            ReadUnsignedField(*particle, "instanceCount", instanceCount, Context) &&
+            ReadUnsignedField(*particle, "fallbackCount", fallbackCount, Context) &&
+            ReadUnsignedField(*particle, "uploadBytes", uploadBytes, Context) &&
+            ReadUnsignedField(*particle, "resourceCreationCount", resourceCreationCount, Context) &&
+            ReadUnsignedField(*particle, "pipelineCreationCount", pipelineCreationCount, Context) &&
+            ReadBooleanField(*particle, "flipbookRequested", flipbookRequested, Context) &&
+            ReadBooleanField(*particle, "flipbookValidated", flipbookValidated, Context) &&
+            ReadUnsignedField(*particle, "additiveBatchCount", additiveCount, Context) &&
+            ReadUnsignedField(*particle, "premultipliedBatchCount", premultipliedCount, Context) &&
+            ReadUnsignedField(*particle, "textureResolvedBatchCount", textureResolvedCount, Context) &&
+            ReadUnsignedField(*particle, "effectDescriptorHash", effectHash, Context) &&
+            ReadUnsignedField(*particle, "textureAssetId", textureAssetId, Context) &&
+            ReadUnsignedField(*particle, "textureGeneration", textureGeneration, Context) &&
+            ReadUnsignedField(*particle, "textureContentRevision", textureRevision, Context) &&
+            ReadUnsignedField(*particle, "batchReceiptCount", batchReceiptCount, Context) &&
+            ReadBooleanField(*particle, "batchReceiptsOverflow", receiptsOverflow, Context) &&
+            ReadBooleanField(*particle, "softDepthRequested", softDepthRequested, Context) &&
+            ReadBooleanField(*particle, "softDepthRequired", softDepthRequired, Context) &&
+            ReadBooleanField(*particle, "softDepthSnapshotReady", softDepthSnapshot, Context) &&
+            ReadBooleanField(*particle, "softDepthLinearizationReady", softDepthLinearization, Context) &&
+            ReadBooleanField(*particle, "softDepthEnabled", softDepthEnabled, Context) &&
+            ReadBooleanField(*particle, "softDepthOptionalFallback", softDepthOptionalFallback, Context) &&
+            ReadBooleanField(*particle, "reactiveMaskRequested", reactiveRequested, Context) &&
+            ReadBooleanField(*particle, "reactiveMaskWriteEnabled", reactiveWriteEnabled, Context) &&
+            ReadUnsignedField(*particle, "reactiveMaskWriteDrawCount", reactiveWriteCount, Context) &&
+            ReadBooleanField(*particle, "distortionRequested", distortionRequested, Context) &&
+            ReadBooleanField(*particle, "distortionPassScheduled", distortionScheduled, Context) &&
+            ReadBooleanField(*particle, "distortionPassExecuted", distortionExecuted, Context) &&
+            ReadBooleanField(*particle, "distortionCompositeExecuted", distortionComposite, Context) &&
+            ReadUnsignedField(*particle, "lightHintRequestedCount", lightRequestedCount, Context) &&
+            ReadUnsignedField(*particle, "lightHintAdmittedCount", lightAdmittedCount, Context) &&
+            ReadUnsignedField(*particle, "lightHintDroppedCount", lightDroppedCount, Context) &&
+            ReadUnsignedField(*particle, "recordFrameSequence", recordFrame, Context) &&
+            ReadUnsignedField(*particle, "recordSceneRevision", recordSceneRevision, Context) &&
+            ReadUnsignedField(*particle, "recordSurfaceGeneration", recordSurfaceGeneration, Context) &&
+            ReadUnsignedField(*particle, "recordConfigurationRevision", recordConfigurationRevision, Context) &&
+            ReadUnsignedField(*particle, "recordGraphIdentity", recordGraphIdentity, Context) &&
+            ReadUnsignedField(*particle, "recordGraphGeneration", recordGraphGeneration, Context) &&
+            ReadUnsignedField(*particle, "recordEpoch", recordEpoch, Context) &&
+            ReadUnsignedField(*particle, "executionReceiptFrameSequence", receiptFrame, Context) &&
+            ReadUnsignedField(*particle, "presentedFrameSequence", presentedFrame, Context) &&
+            ReadBooleanField(*particle, "recordIdentityMatchesExecutionReceipt", recordMatchesReceipt, Context) &&
+            ReadBooleanField(*particle, "presentedFrameAligned", presentedAligned, Context) &&
+            ReadBooleanField(*particle, "qualifiedFire", qualifiedFire, Context) &&
+            ReadBooleanField(*particle, "qualifiedSmoke", qualifiedSmoke, Context) &&
+            ReadStringField(*particle, "diagnostic", diagnostic, Context);
+        if (!passed)
+        {
+            return false;
+        }
+
+        const bool common = available && receiptSchema == 11u && receiptValid &&
+            receiptPresented && receiptSucceeded && mainView && requestedByRenderer &&
+            supported && enabled && graphScheduled && drawSubmitted && uploadPublished &&
+            itemCount != 0 && packetCount != 0 && aliveCount != 0 &&
+            drawCount != 0 && instanceCount != 0 && uploadBytes != 0 &&
+            fallbackCount == 0 && flipbookRequested && flipbookValidated &&
+            batchReceiptCount == 1u && !receiptsOverflow &&
+            textureResolvedCount == batchReceiptCount && effectHash != 0 &&
+            textureAssetId != 0 && textureGeneration != 0 && textureRevision != 0 &&
+            recordFrame != 0 && recordSceneRevision != 0 &&
+            recordSurfaceGeneration != 0 && recordConfigurationRevision != 0 &&
+            recordGraphIdentity != 0 && recordGraphGeneration != 0 &&
+            recordEpoch != 0 && recordMatchesReceipt &&
+            recordFrame == receiptFrame && receiptFrame == presentedFrame &&
+            presentedAligned && diagnostic.empty();
+        if (!common)
+        {
+            std::cerr << "GFX17 particle receipt lacks exact packet/upload/draw/presentation evidence\n";
+            passed = false;
+        }
+
+        if (options->requireParticleFireExecution)
+        {
+            const bool fire = qualifiedFire && additiveCount != 0 &&
+                premultipliedCount == 0 && distortionRequested &&
+                distortionScheduled && distortionExecuted && distortionComposite &&
+                reactiveRequested && reactiveWriteEnabled && reactiveWriteCount != 0 &&
+                lightRequestedCount == 1u && lightAdmittedCount == 1u &&
+                lightDroppedCount == 0;
+            if (!fire)
+            {
+                std::cerr << "GFX17 fire receipt lacks additive/distortion/reactive/light evidence\n";
+                passed = false;
+            }
+        }
+        if (options->requireParticleSmokeExecution)
+        {
+            const bool smoke = qualifiedSmoke && premultipliedCount != 0 &&
+                additiveCount == 0 && softDepthRequested && softDepthRequired &&
+                softDepthSnapshot && softDepthLinearization && softDepthEnabled &&
+                !softDepthOptionalFallback && reactiveRequested &&
+                reactiveWriteEnabled && reactiveWriteCount != 0 &&
+                !distortionRequested && !distortionScheduled &&
+                !distortionExecuted && !distortionComposite;
+            if (!smoke)
+            {
+                std::cerr << "GFX17 smoke receipt lacks required soft-depth/reactive evidence\n";
+                passed = false;
+            }
         }
         return passed;
     }
@@ -5590,6 +5853,7 @@ namespace
 
         passed &= ValidateToonExecutionProjections(report, options);
         passed &= ValidateTranslucencyExecutionProjection(report, options);
+        passed &= ValidateParticleVfxExecutionProjection(report, options);
 
         std::string requestedBackend;
         std::string backend;
@@ -5920,6 +6184,80 @@ namespace
         return result;
     }
 
+    bool IsSupportedPrimaryAssetKind(const std::string& kind)
+    {
+        return kind == "model" || kind == "effect";
+    }
+
+    bool HasStrictCookedProductContract(const Json& asset)
+    {
+        if (!asset.is_object() ||
+            !HasValue(asset, "role", Json::value_t::string) ||
+            !HasValue(asset, "kind", Json::value_t::string) ||
+            !HasValue(asset, "path", Json::value_t::string))
+        {
+            return false;
+        }
+
+        const std::string& role = asset["role"].get_ref<const std::string&>();
+        const std::string& kind = asset["kind"].get_ref<const std::string&>();
+        const std::string& path = asset["path"].get_ref<const std::string&>();
+        if (role != kind || !IsSupportedPrimaryAssetKind(kind))
+        {
+            return false;
+        }
+
+        // SampleAssetCatalog admits these kinds only when their manifest
+        // selector is respectively CookAssetType::Model or
+        // CookAssetType::Effect. Keep the report consumer equally strict
+        // about the corresponding immutable runtime product extension.
+        const std::string expectedExtension =
+            kind == "effect" ? ".rvxvfx" : ".rva";
+        return std::filesystem::path(path).extension().string() ==
+               expectedExtension;
+    }
+
+    bool ValidatePrimaryAssetRequirement(const Json& report,
+                                         const std::string& assetId,
+                                         const std::string& assetKind)
+    {
+        if (!IsSupportedPrimaryAssetKind(assetKind))
+        {
+            std::cerr << "Unsupported primary asset kind: " << assetKind
+                      << "\n";
+            return false;
+        }
+
+        bool passed =
+            RequireExactReportString(report, "assetId", assetId) &&
+            RequireExactReportString(report, "assetKind", assetKind);
+        const Json* asset = FindUniqueAsset(report, assetKind, assetId);
+        if (asset == nullptr ||
+            !HasValue(*asset, "kind", Json::value_t::string) ||
+            (*asset)["kind"] != assetKind ||
+            !HasVerifiedAssetContentReceipt(*asset))
+        {
+            std::cerr << "Report must contain exactly one verified primary "
+                      << assetKind << " asset entry: " << assetId << "\n";
+            return false;
+        }
+
+        const auto topLevelPath = report.find("assetPath");
+        const auto topLevelLoaded = report.find("assetLoaded");
+        if (topLevelPath == report.end() || !topLevelPath->is_string() ||
+            topLevelLoaded == report.end() || !topLevelLoaded->is_boolean() ||
+            !topLevelLoaded->get<bool>() ||
+            !HasValue(*asset, "path", Json::value_t::string) ||
+            *topLevelPath != (*asset)["path"])
+        {
+            std::cerr << "Primary asset top-level identity does not match its "
+                         "verified assets[] entry: "
+                      << assetId << "\n";
+            passed = false;
+        }
+        return passed;
+    }
+
     bool MatchesCookIdentityRequirement(
         const Json& identity,
         const CookIdentityRequirement& requirement)
@@ -6164,13 +6502,7 @@ namespace
                                             const std::string& assetId)
     {
         if (!HasAcceptedCookAdmission(asset, assetId) ||
-            !HasValue(asset, "path", Json::value_t::string))
-        {
-            return false;
-        }
-
-        const std::string path = asset["path"].get<std::string>();
-        if (path.size() < 4 || path.substr(path.size() - 4) != ".rva")
+            !HasStrictCookedProductContract(asset))
         {
             return false;
         }
@@ -6690,8 +7022,151 @@ namespace
             return false;
         }
 
+        char particleParserArg0[] = "SampleReportContentValidation";
+        char particleParserArg1[] = "--self-test";
+        char particleParserArg2[] = "--require-particle-vfx-execution";
+        char particleParserArg3[] = "--require-particle-fire-execution";
+        char* particleParserArguments[] = {
+            particleParserArg0, particleParserArg1, particleParserArg2,
+            particleParserArg3};
+        Options parsedParticleFireOptions;
+        if (!ParseOptions(4, particleParserArguments, parsedParticleFireOptions) ||
+            !parsedParticleFireOptions.requireParticleVfxExecution ||
+            !parsedParticleFireOptions.requireParticleFireExecution ||
+            parsedParticleFireOptions.requireParticleSmokeExecution)
+        {
+            return false;
+        }
+
+        Json qualifiedParticleFireReport = {
+            {"renderDiagnostics", {
+                {"particleVfxActualExecution", {
+                    {"available", true},
+                    {"executionReceiptSchemaVersion", 11},
+                    {"executionReceiptStructurallyValid", true},
+                    {"executionReceiptPresented", true},
+                    {"executionReceiptSucceeded", true},
+                    {"mainView", true},
+                    {"requested", true},
+                    {"supported", true},
+                    {"enabled", true},
+                    {"graphPassScheduled", true},
+                    {"drawSubmitted", true},
+                    {"uploadPublished", true},
+                    {"itemCount", 1},
+                    {"cpuPacketReadyItemCount", 1},
+                    {"totalAliveParticles", 8},
+                    {"drawCallCount", 1},
+                    {"instanceCount", 8},
+                    {"fallbackCount", 0},
+                    {"uploadBytes", 128},
+                    {"resourceCreationCount", 0},
+                    {"pipelineCreationCount", 0},
+                    {"flipbookRequested", true},
+                    {"flipbookValidated", true},
+                    {"additiveBatchCount", 1},
+                    {"premultipliedBatchCount", 0},
+                    {"textureResolvedBatchCount", 1},
+                    {"effectDescriptorHash", 7},
+                    {"textureAssetId", 8},
+                    {"textureGeneration", 1},
+                    {"textureContentRevision", 9},
+                    {"batchReceiptCount", 1},
+                    {"batchReceiptsOverflow", false},
+                    {"softDepthRequested", false},
+                    {"softDepthRequired", false},
+                    {"softDepthSnapshotReady", false},
+                    {"softDepthLinearizationReady", false},
+                    {"softDepthEnabled", false},
+                    {"softDepthOptionalFallback", false},
+                    {"reactiveMaskRequested", true},
+                    {"reactiveMaskWriteEnabled", true},
+                    {"reactiveMaskWriteDrawCount", 1},
+                    {"distortionRequested", true},
+                    {"distortionPassScheduled", true},
+                    {"distortionPassExecuted", true},
+                    {"distortionCompositeExecuted", true},
+                    {"lightHintRequestedCount", 1},
+                    {"lightHintAdmittedCount", 1},
+                    {"lightHintDroppedCount", 0},
+                    {"recordFrameSequence", 7},
+                    {"recordSceneRevision", 3},
+                    {"recordSurfaceGeneration", 1},
+                    {"recordConfigurationRevision", 2},
+                    {"recordGraphIdentity", 6},
+                    {"recordGraphGeneration", 1},
+                    {"recordEpoch", 1},
+                    {"executionReceiptFrameSequence", 7},
+                    {"presentedFrameSequence", 7},
+                    {"recordIdentityMatchesExecutionReceipt", true},
+                    {"presentedFrameAligned", true},
+                    {"qualifiedFire", true},
+                    {"qualifiedSmoke", false},
+                    {"diagnostic", ""},
+                }},
+            }},
+        };
+        if (!ValidateParticleVfxExecutionProjection(
+                qualifiedParticleFireReport, &parsedParticleFireOptions))
+        {
+            return false;
+        }
+        qualifiedParticleFireReport["renderDiagnostics"]
+                                  ["particleVfxActualExecution"]
+                                  ["lightHintAdmittedCount"] = 0;
+        if (ValidateParticleVfxExecutionProjection(
+                qualifiedParticleFireReport, &parsedParticleFireOptions))
+        {
+            return false;
+        }
+
+        char particleSmokeParserArg0[] = "SampleReportContentValidation";
+        char particleSmokeParserArg1[] = "--self-test";
+        char particleSmokeParserArg2[] = "--require-particle-smoke-execution";
+        char* particleSmokeParserArguments[] = {
+            particleSmokeParserArg0, particleSmokeParserArg1,
+            particleSmokeParserArg2};
+        Options parsedParticleSmokeOptions;
+        if (!ParseOptions(3, particleSmokeParserArguments,
+                          parsedParticleSmokeOptions) ||
+            !parsedParticleSmokeOptions.requireParticleSmokeExecution)
+        {
+            return false;
+        }
+        Json qualifiedParticleSmokeReport = qualifiedParticleFireReport;
+        Json& smokeParticle = qualifiedParticleSmokeReport["renderDiagnostics"]
+                                                           ["particleVfxActualExecution"];
+        smokeParticle["lightHintAdmittedCount"] = 0;
+        smokeParticle["lightHintRequestedCount"] = 0;
+        smokeParticle["additiveBatchCount"] = 0;
+        smokeParticle["premultipliedBatchCount"] = 1;
+        smokeParticle["softDepthRequested"] = true;
+        smokeParticle["softDepthRequired"] = true;
+        smokeParticle["softDepthSnapshotReady"] = true;
+        smokeParticle["softDepthLinearizationReady"] = true;
+        smokeParticle["softDepthEnabled"] = true;
+        smokeParticle["distortionRequested"] = false;
+        smokeParticle["distortionPassScheduled"] = false;
+        smokeParticle["distortionPassExecuted"] = false;
+        smokeParticle["distortionCompositeExecuted"] = false;
+        smokeParticle["qualifiedFire"] = false;
+        smokeParticle["qualifiedSmoke"] = true;
+        if (!ValidateParticleVfxExecutionProjection(
+                qualifiedParticleSmokeReport, &parsedParticleSmokeOptions))
+        {
+            return false;
+        }
+        smokeParticle["softDepthLinearizationReady"] = false;
+        if (ValidateParticleVfxExecutionProjection(
+                qualifiedParticleSmokeReport, &parsedParticleSmokeOptions))
+        {
+            return false;
+        }
+
         const Json packageOnlyCookedAsset = {
             {"id", "self-test-model"},
+            {"role", "model"},
+            {"kind", "model"},
             {"path", "cooked/self-test-model.rva"},
             {"loaded", true},
             {"verified", true},
@@ -6773,6 +7248,78 @@ namespace
         };
         if (!HasPackageOnlyCookedAssetAdmission(
                 packageOnlyCookedAsset, "self-test-model"))
+        {
+            return false;
+        }
+        Json packageOnlyCookedEffect = packageOnlyCookedAsset;
+        packageOnlyCookedEffect["id"] = "self-test-effect";
+        packageOnlyCookedEffect["role"] = "effect";
+        packageOnlyCookedEffect["kind"] = "effect";
+        packageOnlyCookedEffect["path"] =
+            "cooked/self-test-effect.rvxvfx";
+        if (!HasPackageOnlyCookedAssetAdmission(
+                packageOnlyCookedEffect, "self-test-effect"))
+        {
+            return false;
+        }
+
+        Json wrongEffectExtension = packageOnlyCookedEffect;
+        wrongEffectExtension["path"] = "cooked/self-test-effect.rva";
+        Json wrongEffectKind = packageOnlyCookedEffect;
+        wrongEffectKind["kind"] = "model";
+        Json wrongEffectRole = packageOnlyCookedEffect;
+        wrongEffectRole["role"] = "model";
+        Json wrongModelExtension = packageOnlyCookedAsset;
+        wrongModelExtension["path"] = "cooked/self-test-model.rvxvfx";
+        if (HasPackageOnlyCookedAssetAdmission(
+                wrongEffectExtension, "self-test-effect") ||
+            HasPackageOnlyCookedAssetAdmission(
+                wrongEffectKind, "self-test-effect") ||
+            HasPackageOnlyCookedAssetAdmission(
+                wrongEffectRole, "self-test-effect") ||
+            HasPackageOnlyCookedAssetAdmission(
+                wrongModelExtension, "self-test-model"))
+        {
+            return false;
+        }
+
+        Json primaryEffectReport = {
+            {"assetId", "self-test-effect"},
+            {"assetKind", "effect"},
+            {"assetPath", "cooked/self-test-effect.rvxvfx"},
+            {"assetLoaded", true},
+            {"assets", Json::array({packageOnlyCookedEffect})},
+        };
+        if (!ValidatePrimaryAssetRequirement(
+                primaryEffectReport, "self-test-effect", "effect"))
+        {
+            return false;
+        }
+        Json mismatchedPrimaryEffect = primaryEffectReport;
+        mismatchedPrimaryEffect["assetKind"] = "model";
+        Json mismatchedPrimaryPath = primaryEffectReport;
+        mismatchedPrimaryPath["assetPath"] = "cooked/not-the-effect.rvxvfx";
+        if (ValidatePrimaryAssetRequirement(
+                mismatchedPrimaryEffect, "self-test-effect", "effect") ||
+            ValidatePrimaryAssetRequirement(
+                mismatchedPrimaryPath, "self-test-effect", "effect") ||
+            ValidatePrimaryAssetRequirement(
+                primaryEffectReport, "self-test-effect", "model"))
+        {
+            return false;
+        }
+
+        Json primaryModelReport = {
+            {"assetId", "self-test-model"},
+            {"assetKind", "model"},
+            {"assetPath", "cooked/self-test-model.rva"},
+            {"assetLoaded", true},
+            {"assets", Json::array({packageOnlyCookedAsset})},
+        };
+        if (!ValidatePrimaryAssetRequirement(
+                primaryModelReport, "self-test-model", "model") ||
+            ValidatePrimaryAssetRequirement(
+                primaryModelReport, "self-test-model", "effect"))
         {
             return false;
         }
@@ -9022,6 +9569,9 @@ namespace
         std::cout
             << "Usage: SampleReportContentValidation --report <path> [gates]\n"
             << "       SampleReportContentValidation --self-test\n\n"
+            << "Primary asset gates default to Model and may opt into the "
+               "strict Effect product contract:\n"
+            << "  --asset-id <id> [--asset-kind model|effect]\n\n"
             << "Cook admission gates are repeatable and bind every value to one "
                "unique top-level assets[] entry by assetId:\n"
             << "  --require-cook-admission-accepted <asset-id>\n"
@@ -9087,6 +9637,9 @@ namespace
             << "  --require-transparent-reactive-mask\n"
             << "  --require-transparent-sorting\n"
             << "  --forbid-transparent-fallbacks\n"
+            << "  --require-particle-vfx-execution\n"
+            << "  --require-particle-fire-execution\n"
+            << "  --require-particle-smoke-execution\n"
             << "  --require-package-only-cooked-asset <asset-id>\n"
             << "  --require-temporal-aa-execution\n"
             << "  --require-no-fxaa-execution\n"
@@ -9334,23 +9887,8 @@ int main(int argc, char* argv[])
     }
     if (!options.assetId.empty())
     {
-        passed &= RequireExactReportString(report, "assetId", options.assetId);
-        const Json* modelAsset =
-            FindUniqueAsset(report, "model", options.assetId);
-        if (modelAsset == nullptr)
-        {
-            std::cerr << "Report must contain exactly one primary model asset entry: "
-                      << options.assetId << "\n";
-            passed = false;
-        }
-        else
-        {
-            if (!HasVerifiedAssetContentReceipt(*modelAsset))
-            {
-                std::cerr << "Primary model content receipt is not loaded, verified, and exact\n";
-                passed = false;
-            }
-        }
+        passed &= ValidatePrimaryAssetRequirement(
+            report, options.assetId, options.assetKind);
     }
     if (!options.environmentAssetId.empty())
     {

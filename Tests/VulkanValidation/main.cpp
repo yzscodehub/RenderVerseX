@@ -12,6 +12,7 @@
 #include "RHI/RHI.h"
 #include "RHI_BackendFactory/RHIBackendFactory.h"
 #include "ShaderCompiler/ShaderCompiler.h"
+#include "VulkanCommandContext.h"
 #include "VulkanCommon.h"
 #include "VulkanDevice.h"
 #include "VulkanPipeline.h"
@@ -3270,6 +3271,66 @@ TEST(VulkanValidation, TextureCreation)
     ASSERT_NE(nullptr, texture.Get());
     EXPECT_EQ(texture->GetWidth(), 512u);
     EXPECT_EQ(texture->GetHeight(), 512u);
+}
+
+TEST(VulkanValidation, TextureCopyAspectContractFailsClosed)
+{
+    const VulkanTextureCopyContract colorCopy =
+        ResolveVulkanTextureCopyContract(
+            RHIFormat::RGBA8_UNORM,
+            RHIFormat::RGBA8_UNORM);
+    EXPECT_TRUE(colorCopy.IsValid());
+    EXPECT_EQ(colorCopy.status, VulkanTextureCopyContractStatus::Compatible);
+    EXPECT_EQ(colorCopy.aspectMask, VK_IMAGE_ASPECT_COLOR_BIT);
+
+    const VulkanTextureCopyContract depthCopy =
+        ResolveVulkanTextureCopyContract(
+            RHIFormat::D32_FLOAT,
+            RHIFormat::D32_FLOAT);
+    EXPECT_TRUE(depthCopy.IsValid());
+    EXPECT_EQ(depthCopy.status, VulkanTextureCopyContractStatus::Compatible);
+    EXPECT_EQ(depthCopy.aspectMask, VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    const VulkanTextureCopyContract aspectMismatch =
+        ResolveVulkanTextureCopyContract(
+            RHIFormat::D32_FLOAT,
+            RHIFormat::RGBA8_UNORM);
+    EXPECT_FALSE(aspectMismatch.IsValid());
+    EXPECT_EQ(aspectMismatch.status,
+              VulkanTextureCopyContractStatus::AspectMismatch);
+    EXPECT_EQ(aspectMismatch.aspectMask, 0u);
+
+    const VulkanTextureCopyContract colorFormatMismatch =
+        ResolveVulkanTextureCopyContract(
+            RHIFormat::RGBA8_UNORM,
+            RHIFormat::BGRA8_UNORM);
+    EXPECT_FALSE(colorFormatMismatch.IsValid());
+    EXPECT_EQ(colorFormatMismatch.status,
+              VulkanTextureCopyContractStatus::FormatMismatch);
+
+    const VulkanTextureCopyContract depthFormatMismatch =
+        ResolveVulkanTextureCopyContract(
+            RHIFormat::D16_UNORM,
+            RHIFormat::D32_FLOAT);
+    EXPECT_FALSE(depthFormatMismatch.IsValid());
+    EXPECT_EQ(depthFormatMismatch.status,
+              VulkanTextureCopyContractStatus::FormatMismatch);
+
+    const VulkanTextureCopyContract unknownFormat =
+        ResolveVulkanTextureCopyContract(
+            RHIFormat::Unknown,
+            RHIFormat::Unknown);
+    EXPECT_FALSE(unknownFormat.IsValid());
+    EXPECT_EQ(unknownFormat.status,
+              VulkanTextureCopyContractStatus::UnknownFormat);
+
+    const VulkanTextureCopyContract depthStencilCopy =
+        ResolveVulkanTextureCopyContract(
+            RHIFormat::D24_UNORM_S8_UINT,
+            RHIFormat::D24_UNORM_S8_UINT);
+    EXPECT_FALSE(depthStencilCopy.IsValid());
+    EXPECT_EQ(depthStencilCopy.status,
+              VulkanTextureCopyContractStatus::UnsupportedStencilAspect);
 }
 
 TEST(VulkanValidation, RenderTargetTexture)

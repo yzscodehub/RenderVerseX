@@ -14,6 +14,7 @@
 #include "Resource/Cooked/CookedEnvironmentArtifact.h"
 #include "Resource/Cooked/CookedMaterialArtifact.h"
 #include "Resource/Cooked/CookedModelArtifact.h"
+#include "Resource/Cooked/CookedParticleEffectArtifact.h"
 #include "AssetImport/GLTFImporter.h"
 #if defined(RVX_ENABLE_FBX)
 #include "AssetImport/FBXImporter.h"
@@ -139,6 +140,7 @@ namespace
             case AssetType::Animation: return "Animation";
             case AssetType::Audio:     return "Audio";
             case AssetType::Environment: return "Environment";
+            case AssetType::Effect:    return "Effect";
             case AssetType::Font:      return "Font";
             case AssetType::Prefab:    return "Prefab";
             case AssetType::Scene:     return "Scene";
@@ -2456,6 +2458,12 @@ namespace
                 AppendCanonicalUInt64(settings, "audio.loopEndFrame", resolved.loopEndFrame);
                 break;
             }
+            case AssetType::Effect:
+            {
+                settings += "effect.schema=RVX_PARTICLE_EFFECT_AUTHORING_V1\n";
+                settings += "effect.runtime=cpu-billboard-only\n";
+                break;
+            }
             default:
                 settings += "options=none\n";
                 break;
@@ -2582,6 +2590,7 @@ namespace
         result.success = false;
         result.error = "Asset import reported success without writing output: " + outputPath.string();
         result.outputPaths.clear();
+        result.dependencyOutputPaths.clear();
     }
 
     bool IsStrictlySortedByRelativePath(const std::vector<CookContentIdentity>& identities)
@@ -3730,6 +3739,27 @@ CookManifest AssetPipeline::CookDirectory(const fs::path& sourceDir,
     {
         std::vector<fs::path> filesToImport =
             CollectImportableFiles(*this, canonicalSourceRoot, recursive);
+        // Effects bind an already cooked sidecar product (for example a
+        // flipbook .rva). Keep the lexical order within each phase, but make
+        // the dependency contract explicit: every non-Effect product cooks
+        // before every Effect. This deliberately is not a general asset DAG.
+        std::vector<fs::path> nonEffectFiles;
+        std::vector<fs::path> effectFiles;
+        nonEffectFiles.reserve(filesToImport.size());
+        effectFiles.reserve(filesToImport.size());
+        for (const fs::path& filePath : filesToImport)
+        {
+            const IAssetImporter* const importer =
+                GetImporter(filePath.extension().string());
+            const AssetType type = importer
+                ? importer->GetAssetType()
+                : GetAssetTypeFromExtension(ToLower(filePath.extension().string()));
+            (type == AssetType::Effect ? effectFiles : nonEffectFiles).push_back(filePath);
+        }
+        filesToImport.clear();
+        filesToImport.reserve(nonEffectFiles.size() + effectFiles.size());
+        filesToImport.insert(filesToImport.end(), nonEffectFiles.begin(), nonEffectFiles.end());
+        filesToImport.insert(filesToImport.end(), effectFiles.begin(), effectFiles.end());
         size_t processed = 0;
         for (const fs::path& filePath : filesToImport)
         {
@@ -3752,10 +3782,13 @@ CookManifest AssetPipeline::CookDirectory(const fs::path& sourceDir,
             else
             {
                 entry.sourcePath = relativePath.generic_string();
+                const std::string outputExtension = assetType == AssetType::Effect
+                    ? ".rvxvfx"
+                    : ".rva";
                 fs::path outPath = publication.stagingOutputRoot / relativePath;
-                outPath.replace_extension(".rva");
+                outPath.replace_extension(outputExtension);
                 fs::path relativeOutputPath = relativePath;
-                relativeOutputPath.replace_extension(".rva");
+                relativeOutputPath.replace_extension(outputExtension);
                 entry.outputPath = ToGenericPathString(relativeOutputPath);
                 if (!IsCanonicalRelativePath(entry.outputPath))
                 {
@@ -3854,9 +3887,20 @@ CookManifest AssetPipeline::CookDirectory(const fs::path& sourceDir,
                                 productPaths.emplace_back(productPath);
                             }
 
+                            // Existing importers report their owned products in
+                            // outputPaths. Those products remain part of the
+                            // source entry's runtime closure. Importers which
+                            // consume a product owned by another source report
+                            // it explicitly in dependencyOutputPaths so it is
+                            // never misattributed as an artifact here.
                             std::vector<fs::path> dependencyPaths;
-                            dependencyPaths.reserve(result.outputPaths.size());
+                            dependencyPaths.reserve(result.outputPaths.size() +
+                                                    result.dependencyOutputPaths.size());
                             for (const std::string& dependencyPath : result.outputPaths)
+                            {
+                                dependencyPaths.emplace_back(dependencyPath);
+                            }
+                            for (const std::string& dependencyPath : result.dependencyOutputPaths)
                             {
                                 dependencyPaths.emplace_back(dependencyPath);
                             }
@@ -4031,6 +4075,7 @@ AssetType AssetPipeline::GetAssetTypeFromExtension(const std::string& ext)
         {".mp3", AssetType::Audio},
         {".ogg", AssetType::Audio},
         {".flac", AssetType::Audio},
+        {".rvxparticle", AssetType::Effect},
         {".ttf", AssetType::Font},
         {".otf", AssetType::Font},
     };

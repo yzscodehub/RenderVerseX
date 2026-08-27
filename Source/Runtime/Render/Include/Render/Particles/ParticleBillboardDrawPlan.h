@@ -38,6 +38,14 @@ namespace RVX
         ParticleRenderParticleData particle{};
         ParticleRenderSnapshotBlendMode blendMode =
             ParticleRenderSnapshotBlendMode::AlphaBlend;
+        /**
+         * Immutable effect state paired with the sealed CPU packet.  It is
+         * copied into the plan so render submission never reaches back into a
+         * mutable particle-system object while recording a view.
+         */
+        ParticleRenderEffectDescriptor effectDescriptor{};
+        /** Exact packet/effect identity used for contiguous submission batches. */
+        uint64 effectDescriptorHash = 0;
         /** Stable source asset identity; never a RenderScene allocation ID. */
         uint64 systemAssetId = 0;
         /** Packet-sealed owner identity used for deterministic alpha ordering. */
@@ -55,6 +63,10 @@ namespace RVX
     {
         ParticleRenderSnapshotBlendMode blendMode =
             ParticleRenderSnapshotBlendMode::AlphaBlend;
+        uint64 effectDescriptorHash = 0;
+        /** Exact generation-qualified atlas identity; invalid denotes procedural fallback. */
+        RenderResourceHandle flipbookTexture{};
+        uint64 flipbookContentRevision = 0;
         uint32 firstItem = 0;
         uint32 itemCount = 0;
     };

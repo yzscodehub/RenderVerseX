@@ -39,6 +39,7 @@ namespace
         fs::path cookedRoot;
         std::string cookedRootRelative;
         std::string assetId;
+        std::string assetKind = "model";
         std::string assetPathRelative;
         std::string sourcePath;
         std::string sourceName;
@@ -70,6 +71,7 @@ namespace
             << "  --cooked-root <path>\n"
             << "  --cooked-root-relative <path>\n"
             << "  --asset-id <id>\n"
+            << "  --asset-kind <model|effect>\n"
             << "  --asset-path-relative <path>\n"
             << "  --source-path <path>\n"
             << "  --source-name <name>\n"
@@ -108,6 +110,7 @@ namespace
             else if (argument == "--cooked-root") outOptions.cookedRoot = value;
             else if (argument == "--cooked-root-relative") outOptions.cookedRootRelative = value;
             else if (argument == "--asset-id") outOptions.assetId = value;
+            else if (argument == "--asset-kind") outOptions.assetKind = value;
             else if (argument == "--asset-path-relative") outOptions.assetPathRelative = value;
             else if (argument == "--source-path") outOptions.sourcePath = value;
             else if (argument == "--source-name") outOptions.sourceName = value;
@@ -132,7 +135,8 @@ namespace
                !outOptions.sourceName.empty() && !outOptions.sourceUri.empty() &&
                !outOptions.sourceVersion.empty() && !outOptions.attribution.empty() &&
                !outOptions.modificationNotice.empty() && !outOptions.derivedFrom.empty() &&
-               !outOptions.generationRecipe.empty();
+               !outOptions.generationRecipe.empty() &&
+               (outOptions.assetKind == "model" || outOptions.assetKind == "effect");
     }
 
     bool IsStrictRelativePath(const std::string& path)
@@ -290,7 +294,9 @@ namespace
         expectation.selector.sourcePath = options.sourcePath;
         expectation.selector.outputPath = fs::path(options.assetPathRelative)
             .lexically_relative(options.cookedRootRelative).generic_string();
-        expectation.selector.type = RVX::Resource::CookAssetType::Model;
+        expectation.selector.type = options.assetKind == "effect"
+            ? RVX::Resource::CookAssetType::Effect
+            : RVX::Resource::CookAssetType::Model;
         const RVX::Resource::CookManifestAdmissionReceipt cookReceipt =
             RVX::Resource::VerifyCookedAssetAdmission(
                 manifest, options.sourceRoot, options.cookedRoot, expectation);
@@ -316,7 +322,7 @@ namespace
             });
         if (primaryArtifact == selected.artifacts.end())
         {
-            outError = "Selected RVXCook model entry has no primary model artifact";
+            outError = "Selected RVXCook entry has no primary cooked artifact";
             return false;
         }
 
@@ -434,7 +440,7 @@ namespace
 
         Json entry = {
             {"id", options.assetId},
-            {"kind", "model"},
+            {"kind", options.assetKind},
             {"path", options.assetPathRelative},
             {"license", {
                 {"spdxId", "LicenseRef-RenderVerseX-Generated"},

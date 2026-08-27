@@ -27,7 +27,9 @@ namespace RVX
         Model = 0,
         Texture,
         Environment,
-        Animation
+        Animation,
+        /** @brief Strict cooked CPU billboard effect package (.rvxvfx). */
+        Effect
     };
 
     struct SampleAssetLicense

@@ -420,6 +420,46 @@ namespace RVX
         }
     };
 
+    /**
+     * Graph-owned inputs reserved for the particle VFX chain.
+     *
+     * The color destination is deliberately distinct from the particle color
+     * attachment: DistortionComposite samples the latter and writes the
+     * former, so graph recording can reject accidental HDR read/write aliasing.
+     */
+    struct ParticleVfxRecordInput
+    {
+        RenderPassRecordIdentity identity{};
+        RGTextureHandle softDepthSnapshot{};
+        RGTextureHandle distortionVectors{};
+        RGTextureHandle compositedSceneColor{};
+        bool softDepthRequested = false;
+        bool softDepthRequired = false;
+        bool reactiveMaskRequested = false;
+        bool distortionRequested = false;
+
+        [[nodiscard]] bool IsEmpty() const noexcept
+        {
+            return !identity.IsValid() && !softDepthSnapshot.IsValid() &&
+                   !distortionVectors.IsValid() && !compositedSceneColor.IsValid() &&
+                   !softDepthRequested && !softDepthRequired &&
+                   !reactiveMaskRequested && !distortionRequested;
+        }
+
+        [[nodiscard]] bool IsCompatibleWith(
+            const RenderPassRecordIdentity& expected) const noexcept
+        {
+            const bool softDepthCompatible = softDepthSnapshot.IsValid()
+                ? HasCurrentGraphProvenance(softDepthSnapshot, expected)
+                : !softDepthRequired;
+            const bool distortionCompatible = !distortionRequested ||
+                (HasCurrentGraphProvenance(distortionVectors, expected) &&
+                 HasCurrentGraphProvenance(compositedSceneColor, expected));
+            return identity == expected && softDepthCompatible &&
+                   distortionCompatible;
+        }
+    };
+
     inline bool ObjectVelocityPassStats::MatchesVelocityTarget(
         const RGTextureHandle& handle,
         const RenderPassRecordIdentity& expected) const noexcept
@@ -1296,6 +1336,8 @@ namespace RVX
         AmbientOcclusionRecordInput ambientOcclusion{};
         /** Opaque HDR snapshot late-bound after the immutable frame snapshot. */
         OpaqueSceneSnapshotRecordInput opaqueSceneSnapshot{};
+        /** Graph-owned soft-depth/distortion chain late-bound by composition. */
+        ParticleVfxRecordInput particleVfx{};
         /** Explicit value identity for the route's immutable material table. */
         OpaqueMaterialTableExecutionIdentity opaqueMaterialTable{};
         std::shared_ptr<const RenderPassFrameSnapshot> frameSnapshot;

@@ -4,6 +4,7 @@
  */
 
 #include "Samples/SampleCLI.h"
+#include "Samples/SampleRenderPathPolicy.h"
 
 #include "Core/Diagnostics/JsonWriter.h"
 #include "Render/Material/MaterialSystem.h"
@@ -1200,6 +1201,194 @@ namespace RVX
         result.materialTableContentHash = toon.materialTableContentHash;
         result.diagnostic = toon.diagnostic;
         return result;
+    }
+
+    SampleParticleVfxExecutionDiagnostics
+        ProjectSampleParticleVfxExecutionDiagnostics(
+            const RenderDiagnosticsSnapshot& renderDiagnostics)
+    {
+        SampleParticleVfxExecutionDiagnostics result;
+        const RenderFrameFeatureDiagnostics& frameFeatures =
+            renderDiagnostics.frameFeatures;
+        const RenderExecutionReceipt& receipt = frameFeatures.executionReceipt;
+
+        // As with the Toon projections, a Sample only receives particle facts
+        // from one structurally valid, presented main-view receipt.  Requested
+        // settings, source authoring, and an arbitrary rendered frame never
+        // satisfy this public execution contract.
+        if (!frameFeatures.available || receipt.schemaVersion != 11 ||
+            !receipt.IsStructurallyValid() || !receipt.presented ||
+            !receipt.succeeded || receipt.viewIdentity.role != ViewRole::Main ||
+            receipt.viewIdentity.subViewIndex != 0)
+        {
+            return result;
+        }
+
+        const RenderParticleFeatureDiagnostics& particles =
+            frameFeatures.particles;
+        result.available = receipt.available;
+        result.executionReceiptSchemaVersion = receipt.schemaVersion;
+        result.executionReceiptStructurallyValid = true;
+        result.executionReceiptPresented = receipt.presented;
+        result.executionReceiptSucceeded = receipt.succeeded;
+        result.mainView = true;
+        result.requested = particles.requested;
+        result.supported = particles.supported;
+        result.enabled = particles.enabled;
+        result.graphPassScheduled = particles.graphPassScheduled;
+        result.drawSubmitted = particles.drawSubmitted;
+        result.uploadPublished = particles.uploadPublished;
+        result.itemCount = particles.itemCount;
+        result.cpuPacketReadyItemCount = particles.cpuPacketReadyItemCount;
+        result.totalAliveParticles = particles.totalAliveParticles;
+        result.drawCallCount = particles.drawCallCount;
+        result.instanceCount = particles.instanceCount;
+        result.fallbackCount = particles.fallbackCount;
+        result.uploadBytes = particles.uploadBytes;
+        result.resourceCreationCount = particles.resourceCreationCount;
+        result.pipelineCreationCount = particles.pipelineCreationCount;
+        result.flipbookRequested = particles.flipbookRequested;
+        result.flipbookValidated = particles.flipbookValidated;
+        result.softDepthRequested = particles.softDepthRequested;
+        result.softDepthRequired = particles.softDepthRequired;
+        result.softDepthSnapshotReady = particles.softDepthSnapshotReady;
+        result.softDepthLinearizationReady = particles.softDepthLinearizationReady;
+        result.softDepthEnabled = particles.softDepthEnabled;
+        result.softDepthOptionalFallback = particles.softDepthOptionalFallback;
+        result.reactiveMaskRequested = particles.reactiveMaskRequested;
+        result.reactiveMaskWriteEnabled = particles.reactiveMaskWriteEnabled;
+        result.reactiveMaskWriteDrawCount = particles.reactiveMaskWriteDrawCount;
+        result.distortionRequested = particles.distortionRequested;
+        result.distortionPassScheduled = particles.distortionPassScheduled;
+        result.distortionPassExecuted = particles.distortionPassExecuted;
+        result.distortionCompositeExecuted = particles.distortionCompositeExecuted;
+        result.lightHintRequestedCount = particles.lightHintRequestedCount;
+        result.lightHintAdmittedCount = particles.lightHintAdmittedCount;
+        result.lightHintDroppedCount = particles.lightHintDroppedCount;
+        result.recordFrameSequence = particles.recordFrameIdentity.frameSequence;
+        result.recordSceneRevision = particles.recordFrameIdentity.sceneRevision;
+        result.recordSurfaceGeneration =
+            particles.recordFrameIdentity.surfaceGeneration;
+        result.recordConfigurationRevision =
+            particles.recordFrameIdentity.configurationRevision;
+        result.recordGraphIdentity = particles.recordGraphIdentity;
+        result.recordGraphGeneration = particles.recordGraphGeneration;
+        result.recordEpoch = particles.recordEpoch;
+        result.executionReceiptFrameSequence =
+            particles.executionReceiptFrameSequence;
+        result.presentedFrameSequence = particles.presentedFrameSequence;
+        result.recordIdentityMatchesExecutionReceipt =
+            particles.recordIdentityMatchesExecutionReceipt;
+        result.presentedFrameAligned =
+            result.recordFrameSequence != 0 &&
+            result.recordFrameSequence == result.executionReceiptFrameSequence &&
+            result.executionReceiptFrameSequence == result.presentedFrameSequence &&
+            result.presentedFrameSequence == renderDiagnostics.lastPresentedFrameSequence;
+        result.batchReceiptsOverflow = particles.batchReceiptsOverflow;
+        result.batchReceiptCount = static_cast<uint32>(
+            std::min<size_t>(particles.batchReceipts.size(),
+                             std::numeric_limits<uint32>::max()));
+        for (const RenderParticleBatchReceipt& batch : particles.batchReceipts)
+        {
+            if (batch.blendMode == ParticleRenderSnapshotBlendMode::Additive)
+            {
+                ++result.additiveBatchCount;
+            }
+            else if (batch.blendMode ==
+                     ParticleRenderSnapshotBlendMode::Premultiplied)
+            {
+                ++result.premultipliedBatchCount;
+            }
+            if (batch.textureResolved)
+            {
+                ++result.textureResolvedBatchCount;
+            }
+
+            // GFX17 scenarios publish exactly one emitter.  Recording the
+            // first receipt preserves a stable, bounded Sample ABI while the
+            // count/overflow fields prevent it from hiding extra work.
+            if (result.effectDescriptorHash == 0)
+            {
+                result.effectDescriptorHash = batch.effectDescriptorHash;
+                result.textureAssetId = batch.textureAssetId.value;
+                result.textureGeneration = batch.textureResourceGeneration;
+                result.textureContentRevision = batch.textureContentRevision;
+            }
+        }
+        result.diagnostic = particles.reason;
+        return result;
+    }
+
+    const SampleParticleVfxExecutionDiagnostics&
+        GetSampleParticleVfxExecutionDiagnostics(
+            const SampleRenderDiagnostics& diagnostics) noexcept
+    {
+        return diagnostics.particleVfxActualExecution;
+    }
+
+    bool IsSampleRenderPathExecutionQualified(
+        const SampleRenderPath requestedPath,
+        const SampleRenderDiagnostics& diagnostics)
+    {
+        const char* expectedMode = nullptr;
+        switch (requestedPath)
+        {
+            case SampleRenderPath::Auto: expectedMode = "Auto"; break;
+            case SampleRenderPath::Direct: expectedMode = "ForceDisabled"; break;
+            case SampleRenderPath::GPUDriven: expectedMode = "ForceEnabled"; break;
+            default: return false;
+        }
+
+        const uint64 frameSequence = diagnostics.renderPolicyRequestFrameSequence;
+        const bool completedFramePolicy =
+            diagnostics.renderPolicyRequestAvailable &&
+            diagnostics.renderPolicyPlanAvailable &&
+            diagnostics.renderPolicyReportAvailable && frameSequence != 0 &&
+            frameSequence == diagnostics.renderPolicyPlanFrameSequence &&
+            frameSequence == diagnostics.renderPolicyReportFrameSequence &&
+            frameSequence == diagnostics.completedPresentedFrameSequence &&
+            diagnostics.renderPolicyRequestedMode == expectedMode &&
+            diagnostics.renderPolicyExecutionStatus == "Completed" &&
+            diagnostics.renderPolicySelectedTier == diagnostics.renderPolicyExecutedTier;
+        if (!completedFramePolicy)
+        {
+            return false;
+        }
+
+        const bool directTier = diagnostics.renderPolicyExecutedTier == "Direct";
+        const bool directExecution =
+            directTier && !diagnostics.gpuDrivenEnabled &&
+            !diagnostics.gpuDrivenOpaqueIndirectRequested &&
+            !diagnostics.gpuDrivenOpaqueIndirectEligible &&
+            !diagnostics.gpuDrivenOpaqueIndirectSubmitted &&
+            diagnostics.gpuDrivenOpaqueIndirectBatchCount == 0 &&
+            diagnostics.gpuDrivenOpaqueDirectDrawCount > 0 &&
+            diagnostics.opaqueExecutionCompleted &&
+            diagnostics.opaqueExecutedDrawCountAvailable &&
+            diagnostics.opaqueExecutedDrawCount > 0;
+        const bool indirectTier =
+            diagnostics.renderPolicyExecutedTier == "IndirectGrouped" ||
+            diagnostics.renderPolicyExecutedTier == "GPUResidentScene";
+        const bool indirectExecution =
+            indirectTier && diagnostics.gpuDrivenEnabled &&
+            diagnostics.gpuDrivenGraphPassAdded &&
+            diagnostics.gpuDrivenGraphPassRecorded &&
+            diagnostics.gpuDrivenExecutionRecorded &&
+            diagnostics.gpuDrivenOpaqueIndirectRequested &&
+            diagnostics.gpuDrivenOpaqueIndirectEligible &&
+            diagnostics.gpuDrivenOpaqueIndirectSubmitted &&
+            diagnostics.gpuDrivenOpaqueIndirectBatchCount > 0 &&
+            diagnostics.gpuDrivenOpaqueIndirectDrawUpperBound > 0 &&
+            diagnostics.gpuDrivenOpaqueDirectDrawCount == 0 &&
+            diagnostics.opaqueExecutionCompleted;
+
+        switch (requestedPath)
+        {
+            case SampleRenderPath::Direct: return directExecution;
+            case SampleRenderPath::GPUDriven: return indirectExecution;
+            case SampleRenderPath::Auto: return directExecution || indirectExecution;
+            default: return false;
+        }
     }
 
     SampleToonOutlineQualificationTargetEvaluation
@@ -3074,6 +3263,145 @@ namespace RVX
                    << ",\n";
             stream << "      \"fallbackUsed\": "
                    << Diagnostics::JsonBool(toonOutline.fallbackUsed) << "\n";
+            stream << "    },\n";
+        }
+        if (report.schemaVersion >
+            RVX_SAMPLE_REPORT_PRE_PARTICLE_VFX_EXECUTION_SCHEMA_VERSION)
+        {
+            const SampleParticleVfxExecutionDiagnostics& particle =
+                renderDiagnostics.particleVfxActualExecution;
+            stream << "    \"particleVfxActualExecution\": {\n";
+            stream << "      \"available\": "
+                   << Diagnostics::JsonBool(particle.available) << ",\n";
+            stream << "      \"executionReceiptSchemaVersion\": "
+                   << particle.executionReceiptSchemaVersion << ",\n";
+            stream << "      \"executionReceiptStructurallyValid\": "
+                   << Diagnostics::JsonBool(
+                          particle.executionReceiptStructurallyValid)
+                   << ",\n";
+            stream << "      \"executionReceiptPresented\": "
+                   << Diagnostics::JsonBool(particle.executionReceiptPresented)
+                   << ",\n";
+            stream << "      \"executionReceiptSucceeded\": "
+                   << Diagnostics::JsonBool(particle.executionReceiptSucceeded)
+                   << ",\n";
+            stream << "      \"mainView\": "
+                   << Diagnostics::JsonBool(particle.mainView) << ",\n";
+            stream << "      \"requested\": "
+                   << Diagnostics::JsonBool(particle.requested) << ",\n";
+            stream << "      \"supported\": "
+                   << Diagnostics::JsonBool(particle.supported) << ",\n";
+            stream << "      \"enabled\": "
+                   << Diagnostics::JsonBool(particle.enabled) << ",\n";
+            stream << "      \"graphPassScheduled\": "
+                   << Diagnostics::JsonBool(particle.graphPassScheduled) << ",\n";
+            stream << "      \"drawSubmitted\": "
+                   << Diagnostics::JsonBool(particle.drawSubmitted) << ",\n";
+            stream << "      \"uploadPublished\": "
+                   << Diagnostics::JsonBool(particle.uploadPublished) << ",\n";
+            stream << "      \"itemCount\": " << particle.itemCount
+                   << ",\n";
+            stream << "      \"cpuPacketReadyItemCount\": "
+                   << particle.cpuPacketReadyItemCount << ",\n";
+            stream << "      \"totalAliveParticles\": "
+                   << particle.totalAliveParticles << ",\n";
+            stream << "      \"drawCallCount\": "
+                   << particle.drawCallCount << ",\n";
+            stream << "      \"instanceCount\": "
+                   << particle.instanceCount << ",\n";
+            stream << "      \"fallbackCount\": "
+                   << particle.fallbackCount << ",\n";
+            stream << "      \"uploadBytes\": " << particle.uploadBytes
+                   << ",\n";
+            stream << "      \"resourceCreationCount\": "
+                   << particle.resourceCreationCount << ",\n";
+            stream << "      \"pipelineCreationCount\": "
+                   << particle.pipelineCreationCount << ",\n";
+            stream << "      \"flipbookRequested\": "
+                   << Diagnostics::JsonBool(particle.flipbookRequested) << ",\n";
+            stream << "      \"flipbookValidated\": "
+                   << Diagnostics::JsonBool(particle.flipbookValidated) << ",\n";
+            stream << "      \"additiveBatchCount\": "
+                   << particle.additiveBatchCount << ",\n";
+            stream << "      \"premultipliedBatchCount\": "
+                   << particle.premultipliedBatchCount << ",\n";
+            stream << "      \"textureResolvedBatchCount\": "
+                   << particle.textureResolvedBatchCount << ",\n";
+            stream << "      \"effectDescriptorHash\": "
+                   << particle.effectDescriptorHash << ",\n";
+            stream << "      \"textureAssetId\": "
+                   << particle.textureAssetId << ",\n";
+            stream << "      \"textureGeneration\": "
+                   << particle.textureGeneration << ",\n";
+            stream << "      \"textureContentRevision\": "
+                   << particle.textureContentRevision << ",\n";
+            stream << "      \"batchReceiptCount\": "
+                   << particle.batchReceiptCount << ",\n";
+            stream << "      \"batchReceiptsOverflow\": "
+                   << Diagnostics::JsonBool(particle.batchReceiptsOverflow) << ",\n";
+            stream << "      \"softDepthRequested\": "
+                   << Diagnostics::JsonBool(particle.softDepthRequested) << ",\n";
+            stream << "      \"softDepthRequired\": "
+                   << Diagnostics::JsonBool(particle.softDepthRequired) << ",\n";
+            stream << "      \"softDepthSnapshotReady\": "
+                   << Diagnostics::JsonBool(particle.softDepthSnapshotReady) << ",\n";
+            stream << "      \"softDepthLinearizationReady\": "
+                   << Diagnostics::JsonBool(particle.softDepthLinearizationReady) << ",\n";
+            stream << "      \"softDepthEnabled\": "
+                   << Diagnostics::JsonBool(particle.softDepthEnabled) << ",\n";
+            stream << "      \"softDepthOptionalFallback\": "
+                   << Diagnostics::JsonBool(particle.softDepthOptionalFallback) << ",\n";
+            stream << "      \"reactiveMaskRequested\": "
+                   << Diagnostics::JsonBool(particle.reactiveMaskRequested) << ",\n";
+            stream << "      \"reactiveMaskWriteEnabled\": "
+                   << Diagnostics::JsonBool(particle.reactiveMaskWriteEnabled) << ",\n";
+            stream << "      \"reactiveMaskWriteDrawCount\": "
+                   << particle.reactiveMaskWriteDrawCount << ",\n";
+            stream << "      \"distortionRequested\": "
+                   << Diagnostics::JsonBool(particle.distortionRequested) << ",\n";
+            stream << "      \"distortionPassScheduled\": "
+                   << Diagnostics::JsonBool(particle.distortionPassScheduled) << ",\n";
+            stream << "      \"distortionPassExecuted\": "
+                   << Diagnostics::JsonBool(particle.distortionPassExecuted) << ",\n";
+            stream << "      \"distortionCompositeExecuted\": "
+                   << Diagnostics::JsonBool(particle.distortionCompositeExecuted) << ",\n";
+            stream << "      \"lightHintRequestedCount\": "
+                   << particle.lightHintRequestedCount << ",\n";
+            stream << "      \"lightHintAdmittedCount\": "
+                   << particle.lightHintAdmittedCount << ",\n";
+            stream << "      \"lightHintDroppedCount\": "
+                   << particle.lightHintDroppedCount << ",\n";
+            stream << "      \"recordFrameSequence\": "
+                   << particle.recordFrameSequence << ",\n";
+            stream << "      \"recordSceneRevision\": "
+                   << particle.recordSceneRevision << ",\n";
+            stream << "      \"recordSurfaceGeneration\": "
+                   << particle.recordSurfaceGeneration << ",\n";
+            stream << "      \"recordConfigurationRevision\": "
+                   << particle.recordConfigurationRevision << ",\n";
+            stream << "      \"recordGraphIdentity\": "
+                   << particle.recordGraphIdentity << ",\n";
+            stream << "      \"recordGraphGeneration\": "
+                   << particle.recordGraphGeneration << ",\n";
+            stream << "      \"recordEpoch\": " << particle.recordEpoch
+                   << ",\n";
+            stream << "      \"executionReceiptFrameSequence\": "
+                   << particle.executionReceiptFrameSequence << ",\n";
+            stream << "      \"presentedFrameSequence\": "
+                   << particle.presentedFrameSequence << ",\n";
+            stream << "      \"recordIdentityMatchesExecutionReceipt\": "
+                   << Diagnostics::JsonBool(
+                          particle.recordIdentityMatchesExecutionReceipt)
+                   << ",\n";
+            stream << "      \"presentedFrameAligned\": "
+                   << Diagnostics::JsonBool(particle.presentedFrameAligned)
+                   << ",\n";
+            stream << "      \"qualifiedFire\": "
+                   << Diagnostics::JsonBool(particle.HasFireExecution()) << ",\n";
+            stream << "      \"qualifiedSmoke\": "
+                   << Diagnostics::JsonBool(particle.HasSmokeExecution()) << ",\n";
+            stream << "      \"diagnostic\": "
+                   << Diagnostics::JsonString(particle.diagnostic) << "\n";
             stream << "    },\n";
         }
         if (report.schemaVersion >

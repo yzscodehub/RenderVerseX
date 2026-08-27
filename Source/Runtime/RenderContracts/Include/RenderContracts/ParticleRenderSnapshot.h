@@ -11,6 +11,7 @@
 #include "RenderContracts/FeatureChannelContracts.h"
 #include "RenderContracts/RenderIdentity.h"
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -60,6 +61,306 @@ namespace RVX
         CpuPacketReady
     };
 
+    /** @brief Render-facing soft-depth policy. Render resolves optional inputs explicitly. */
+    enum class ParticleRenderSoftDepthMode : uint8
+    {
+        Disabled = 0,
+        Optional,
+        Required
+    };
+
+    inline constexpr uint32 RVX_PARTICLE_RENDER_EFFECT_SCHEMA_VERSION = 1;
+
+    /**
+     * @brief Immutable atlas identity and sampling layout for one particle effect.
+     *
+     * `texture` is populated only by the update-owner resource-publication
+     * view. It is never synthesized by Particle from a resource pointer.
+     */
+    struct ParticleRenderFlipbookDescriptor
+    {
+        AssetId textureAssetId{};
+        RenderResourceHandle texture{};
+        uint64 committedContentRevision = 0;
+        UVec2 tiles{1U, 1U};
+        uint32 firstFrame = 0;
+        uint32 frameCount = 1;
+        float framesPerSecond = 0.0f;
+        Vec2 uvOffset{0.0f, 0.0f};
+        Vec2 uvScale{1.0f, 1.0f};
+        /** @brief A missing/stale publication must prevent packet publication. */
+        bool required = false;
+
+        [[nodiscard]] bool IsBound() const noexcept
+        {
+            return textureAssetId.IsValid() && texture.IsValid() &&
+                   committedContentRevision != 0;
+        }
+
+        [[nodiscard]] bool IsAtlasRangeValid() const noexcept
+        {
+            if (tiles.x == 0U || tiles.y == 0U || tiles.x > 65535U ||
+                tiles.y > 65535U || frameCount == 0U ||
+                !std::isfinite(framesPerSecond) || framesPerSecond < 0.0f ||
+                !std::isfinite(uvOffset.x) || !std::isfinite(uvOffset.y) ||
+                !std::isfinite(uvScale.x) || !std::isfinite(uvScale.y) ||
+                uvOffset.x < 0.0f || uvOffset.y < 0.0f ||
+                uvScale.x <= 0.0f || uvScale.y <= 0.0f ||
+                uvOffset.x + uvScale.x > 1.0f ||
+                uvOffset.y + uvScale.y > 1.0f)
+            {
+                return false;
+            }
+
+            const uint64 totalTiles = static_cast<uint64>(tiles.x) *
+                                      static_cast<uint64>(tiles.y);
+            const uint64 endFrame = static_cast<uint64>(firstFrame) +
+                                    static_cast<uint64>(frameCount);
+            return totalTiles <= std::numeric_limits<uint32>::max() &&
+                   static_cast<uint64>(firstFrame) < totalTiles &&
+                   endFrame <= totalTiles;
+        }
+
+        [[nodiscard]] bool IsCanonicalUntextured() const noexcept
+        {
+            return !textureAssetId.IsValid() && !texture.IsValid() &&
+                   committedContentRevision == 0 && tiles == UVec2{1U, 1U} &&
+                   firstFrame == 0 && frameCount == 1 &&
+                   framesPerSecond == 0.0f && uvOffset == Vec2{0.0f, 0.0f} &&
+                   uvScale == Vec2{1.0f, 1.0f} && !required;
+        }
+
+        [[nodiscard]] bool IsStructurallyValid() const noexcept
+        {
+            if (!IsAtlasRangeValid())
+            {
+                return false;
+            }
+
+            if (required && !textureAssetId.IsValid())
+            {
+                return false;
+            }
+
+            if (texture.IsValid() != (committedContentRevision != 0))
+            {
+                return false;
+            }
+
+            return !texture.IsValid() || textureAssetId.IsValid();
+        }
+    };
+
+    /** @brief One bounded, no-shadow light policy carried by an effect descriptor. */
+    struct ParticleRenderLightHintSettings
+    {
+        bool enabled = false;
+        Vec3 color{0.0f, 0.0f, 0.0f};
+        float intensityCandela = 0.0f;
+        float rangeMeters = 0.0f;
+        float flickerFrequencyHz = 0.0f;
+    };
+
+    /**
+     * @brief Immutable, backend-neutral rendering parameters for one effect.
+     *
+     * The descriptor is value-owned by every snapshot item. Its content hash
+     * covers the exact atlas generation so a packet cannot be consumed against
+     * a replacement resource generation.
+     */
+    struct ParticleRenderEffectDescriptor
+    {
+        uint32 schemaVersion = RVX_PARTICLE_RENDER_EFFECT_SCHEMA_VERSION;
+        ParticleRenderFlipbookDescriptor flipbook;
+        ParticleRenderSoftDepthMode softDepthMode =
+            ParticleRenderSoftDepthMode::Disabled;
+        float softDepthFadeMeters = 0.0f;
+        float softDepthContrast = 1.0f;
+        float distortionStrengthPixels = 0.0f;
+        float reactiveContribution = 0.0f;
+        ParticleRenderLightHintSettings lightHint;
+        uint64 contentHash = 0;
+
+        [[nodiscard]] uint64 ComputeContentHash() const noexcept
+        {
+            constexpr uint64 offsetBasis = 14695981039346656037ull;
+            uint64 value = offsetBasis;
+            const auto mixByte = [&value](uint8 byte)
+            {
+                value ^= byte;
+                value *= 1099511628211ull;
+            };
+            const auto mixUnsigned = [&mixByte](uint64 source, uint32 byteCount)
+            {
+                for (uint32 byte = 0; byte < byteCount; ++byte)
+                {
+                    mixByte(static_cast<uint8>(source & 0xffU));
+                    source >>= 8U;
+                }
+            };
+            const auto mixFloat = [&mixUnsigned](float source)
+            {
+                mixUnsigned(std::bit_cast<uint32>(source), sizeof(uint32));
+            };
+
+            mixUnsigned(schemaVersion, sizeof(schemaVersion));
+            mixUnsigned(flipbook.textureAssetId.value,
+                        sizeof(flipbook.textureAssetId.value));
+            mixUnsigned(flipbook.texture.slot, sizeof(flipbook.texture.slot));
+            mixUnsigned(flipbook.texture.generation,
+                        sizeof(flipbook.texture.generation));
+            mixUnsigned(flipbook.committedContentRevision,
+                        sizeof(flipbook.committedContentRevision));
+            mixUnsigned(flipbook.tiles.x, sizeof(flipbook.tiles.x));
+            mixUnsigned(flipbook.tiles.y, sizeof(flipbook.tiles.y));
+            mixUnsigned(flipbook.firstFrame, sizeof(flipbook.firstFrame));
+            mixUnsigned(flipbook.frameCount, sizeof(flipbook.frameCount));
+            mixFloat(flipbook.framesPerSecond);
+            mixFloat(flipbook.uvOffset.x);
+            mixFloat(flipbook.uvOffset.y);
+            mixFloat(flipbook.uvScale.x);
+            mixFloat(flipbook.uvScale.y);
+            mixUnsigned(flipbook.required ? 1U : 0U, 1U);
+            mixUnsigned(static_cast<uint8>(softDepthMode), 1U);
+            mixFloat(softDepthFadeMeters);
+            mixFloat(softDepthContrast);
+            mixFloat(distortionStrengthPixels);
+            mixFloat(reactiveContribution);
+            mixUnsigned(lightHint.enabled ? 1U : 0U, 1U);
+            mixFloat(lightHint.color.x);
+            mixFloat(lightHint.color.y);
+            mixFloat(lightHint.color.z);
+            mixFloat(lightHint.intensityCandela);
+            mixFloat(lightHint.rangeMeters);
+            mixFloat(lightHint.flickerFrequencyHz);
+            return value;
+        }
+
+        [[nodiscard]] bool IsCanonicalDisabled() const noexcept
+        {
+            return schemaVersion == RVX_PARTICLE_RENDER_EFFECT_SCHEMA_VERSION &&
+                   flipbook.IsCanonicalUntextured() &&
+                   softDepthMode == ParticleRenderSoftDepthMode::Disabled &&
+                   softDepthFadeMeters == 0.0f && softDepthContrast == 1.0f &&
+                   distortionStrengthPixels == 0.0f &&
+                   reactiveContribution == 0.0f && !lightHint.enabled &&
+                   lightHint.color == Vec3{0.0f, 0.0f, 0.0f} &&
+                   lightHint.intensityCandela == 0.0f &&
+                   lightHint.rangeMeters == 0.0f &&
+                   lightHint.flickerFrequencyHz == 0.0f && contentHash == 0;
+        }
+
+        [[nodiscard]] bool IsStructurallyValid() const noexcept
+        {
+            if (schemaVersion != RVX_PARTICLE_RENDER_EFFECT_SCHEMA_VERSION ||
+                !flipbook.IsStructurallyValid() ||
+                !std::isfinite(softDepthFadeMeters) ||
+                !std::isfinite(softDepthContrast) ||
+                !std::isfinite(distortionStrengthPixels) ||
+                !std::isfinite(reactiveContribution) ||
+                !std::isfinite(lightHint.color.x) ||
+                !std::isfinite(lightHint.color.y) ||
+                !std::isfinite(lightHint.color.z) ||
+                !std::isfinite(lightHint.intensityCandela) ||
+                !std::isfinite(lightHint.rangeMeters) ||
+                !std::isfinite(lightHint.flickerFrequencyHz) ||
+                distortionStrengthPixels < 0.0f ||
+                distortionStrengthPixels > 64.0f || reactiveContribution < 0.0f ||
+                reactiveContribution > 1.0f)
+            {
+                return false;
+            }
+
+            if (softDepthMode == ParticleRenderSoftDepthMode::Disabled)
+            {
+                if (softDepthFadeMeters != 0.0f || softDepthContrast != 1.0f)
+                {
+                    return false;
+                }
+            }
+            else if (softDepthMode != ParticleRenderSoftDepthMode::Optional &&
+                     softDepthMode != ParticleRenderSoftDepthMode::Required)
+            {
+                return false;
+            }
+            else if (softDepthFadeMeters <= 0.0f ||
+                     softDepthFadeMeters > 1000.0f || softDepthContrast <= 0.0f ||
+                     softDepthContrast > 16.0f)
+            {
+                return false;
+            }
+
+            if (lightHint.enabled)
+            {
+                if (lightHint.color.x < 0.0f || lightHint.color.x > 65504.0f ||
+                    lightHint.color.y < 0.0f || lightHint.color.y > 65504.0f ||
+                    lightHint.color.z < 0.0f || lightHint.color.z > 65504.0f ||
+                    lightHint.intensityCandela <= 0.0f ||
+                    lightHint.intensityCandela > 100000.0f ||
+                    lightHint.rangeMeters <= 0.0f || lightHint.rangeMeters > 1000.0f ||
+                    lightHint.flickerFrequencyHz < 0.0f ||
+                    lightHint.flickerFrequencyHz > 10.0f)
+                {
+                    return false;
+                }
+            }
+            else if (lightHint.color != Vec3{0.0f, 0.0f, 0.0f} ||
+                     lightHint.intensityCandela != 0.0f ||
+                     lightHint.rangeMeters != 0.0f ||
+                     lightHint.flickerFrequencyHz != 0.0f)
+            {
+                return false;
+            }
+
+            return IsCanonicalDisabled() || contentHash == ComputeContentHash();
+        }
+    };
+
+    /** @brief One deterministic, bounded light hint for a CPU particle packet. */
+    struct ParticleRenderLightHint
+    {
+        bool enabled = false;
+        /** @brief Stable per-system identity used for deterministic light admission. */
+        uint64 stableLightId = 0;
+        /** @brief Fixed simulation tick at which this low-frequency sample began. */
+        uint64 sampleTick = 0;
+        uint32 sourceParticleId = RVX_INVALID_INDEX;
+        Vec3 position{0.0f, 0.0f, 0.0f};
+        Vec3 color{0.0f, 0.0f, 0.0f};
+        float intensityCandela = 0.0f;
+        float rangeMeters = 0.0f;
+        float modulation = 0.0f;
+
+        [[nodiscard]] bool IsStructurallyValid() const noexcept
+        {
+            const bool finite = std::isfinite(position.x) && std::isfinite(position.y) &&
+                                std::isfinite(position.z) && std::isfinite(color.x) &&
+                                std::isfinite(color.y) && std::isfinite(color.z) &&
+                                std::isfinite(intensityCandela) &&
+                                std::isfinite(rangeMeters) && std::isfinite(modulation);
+            if (!finite)
+            {
+                return false;
+            }
+            if (!enabled)
+            {
+                return sourceParticleId == RVX_INVALID_INDEX &&
+                       stableLightId == 0 && sampleTick == 0 &&
+                       position == Vec3{0.0f, 0.0f, 0.0f} &&
+                       color == Vec3{0.0f, 0.0f, 0.0f} &&
+                       intensityCandela == 0.0f && rangeMeters == 0.0f &&
+                       modulation == 0.0f;
+            }
+            return stableLightId != 0 && sourceParticleId != RVX_INVALID_INDEX &&
+                   color.x >= 0.0f && color.x <= 65504.0f &&
+                   color.y >= 0.0f && color.y <= 65504.0f &&
+                   color.z >= 0.0f && color.z <= 65504.0f &&
+                   intensityCandela > 0.0f &&
+                   intensityCandela <= 100000.0f && rangeMeters > 0.0f &&
+                   rangeMeters <= 1000.0f && modulation >= 0.0f && modulation <= 1.0f;
+        }
+    };
+
     struct ParticleRenderParticleData
     {
         /**
@@ -84,10 +385,12 @@ namespace RVX
         Vec2 size{1.0f, 1.0f};
         float rotation = 0.0f;
         uint32 flags = 0;
+        /** @brief Final atlas frame resolved by the deterministic CPU policy. */
+        uint32 flipbookFrameIndex = 0;
     };
 
     /** @brief Schema for the immutable CPU particle packet carried to Render. */
-    inline constexpr uint32 RVX_PARTICLE_CPU_PACKET_SCHEMA_VERSION = 1;
+    inline constexpr uint32 RVX_PARTICLE_CPU_PACKET_SCHEMA_VERSION = 2;
 
     /**
      * @brief One immutable CPU particle payload captured for one simulation tick.
@@ -106,6 +409,12 @@ namespace RVX
         uint64 deterministicInstanceKey = 0;
         /** @brief Exact CPU simulator RNG seed after key derivation. */
         uint32 effectiveSimulationSeed = 0;
+        /** @brief Exact caller-owned fixed delta consumed by this packet's tick. */
+        float fixedDeltaSeconds = 0.0f;
+        /** @brief Must match the immutable payload effect descriptor hash. */
+        uint64 effectDescriptorHash = 0;
+        /** @brief At most one deterministic, bounded, no-shadow light hint. */
+        ParticleRenderLightHint lightHint;
         uint64 contentHash = 0;
         std::vector<ParticleRenderParticleData> particles;
 
@@ -137,6 +446,21 @@ namespace RVX
             mixUnsigned(deterministicSeed, sizeof(deterministicSeed));
             mixUnsigned(deterministicInstanceKey, sizeof(deterministicInstanceKey));
             mixUnsigned(effectiveSimulationSeed, sizeof(effectiveSimulationSeed));
+            mixFloat(fixedDeltaSeconds);
+            mixUnsigned(effectDescriptorHash, sizeof(effectDescriptorHash));
+            mixUnsigned(lightHint.enabled ? 1U : 0U, 1U);
+            mixUnsigned(lightHint.stableLightId, sizeof(lightHint.stableLightId));
+            mixUnsigned(lightHint.sampleTick, sizeof(lightHint.sampleTick));
+            mixUnsigned(lightHint.sourceParticleId, sizeof(lightHint.sourceParticleId));
+            mixFloat(lightHint.position.x);
+            mixFloat(lightHint.position.y);
+            mixFloat(lightHint.position.z);
+            mixFloat(lightHint.color.x);
+            mixFloat(lightHint.color.y);
+            mixFloat(lightHint.color.z);
+            mixFloat(lightHint.intensityCandela);
+            mixFloat(lightHint.rangeMeters);
+            mixFloat(lightHint.modulation);
             mixUnsigned(static_cast<uint64>(particles.size()), sizeof(uint64));
             for (const ParticleRenderParticleData& particle : particles)
             {
@@ -157,6 +481,8 @@ namespace RVX
                 mixFloat(particle.size.y);
                 mixFloat(particle.rotation);
                 mixUnsigned(particle.flags, sizeof(particle.flags));
+                mixUnsigned(particle.flipbookFrameIndex,
+                            sizeof(particle.flipbookFrameIndex));
             }
             return value;
         }
@@ -173,6 +499,9 @@ namespace RVX
             if (schemaVersion != RVX_PARTICLE_CPU_PACKET_SCHEMA_VERSION ||
                 deterministicInstanceKey == 0 ||
                 particles.size() > maxParticleCount ||
+                !std::isfinite(fixedDeltaSeconds) || fixedDeltaSeconds < 0.0f ||
+                (lightHint.enabled && lightHint.sampleTick > simulationTick) ||
+                !lightHint.IsStructurallyValid() ||
                 contentHash != ComputeContentHash())
             {
                 return false;
@@ -235,6 +564,9 @@ namespace RVX
         ParticleRenderSnapshotSimulationBackend simulationBackend = ParticleRenderSnapshotSimulationBackend::None;
         ParticleRenderSnapshotPayloadStatus payloadStatus = ParticleRenderSnapshotPayloadStatus::MetadataOnly;
 
+        /** @brief Immutable effect state resolved from the owning particle asset. */
+        ParticleRenderEffectDescriptor effectDescriptor;
+
         uint32 aliveParticleCount = 0;
         uint32 maxParticleCount = 0;
         uint32 lodLevel = 0;
@@ -280,6 +612,9 @@ namespace RVX
                    cpuPacket.deterministicSeed == 0 &&
                    cpuPacket.deterministicInstanceKey == 0 &&
                    cpuPacket.effectiveSimulationSeed == 0 &&
+                   cpuPacket.fixedDeltaSeconds == 0.0f &&
+                   cpuPacket.effectDescriptorHash == 0 &&
+                   cpuPacket.lightHint.IsStructurallyValid() &&
                    cpuPacket.contentHash == 0 && cpuPacket.particles.empty();
         }
 
@@ -289,6 +624,8 @@ namespace RVX
             return payloadStatus == ParticleRenderSnapshotPayloadStatus::CpuPacketReady &&
                    simulationBackend == ParticleRenderSnapshotSimulationBackend::CPU &&
                    cpuPacket.schemaVersion == RVX_PARTICLE_CPU_PACKET_SCHEMA_VERSION &&
+                   effectDescriptor.IsStructurallyValid() &&
+                   cpuPacket.effectDescriptorHash == effectDescriptor.contentHash &&
                    aliveParticleCount == cpuPacket.particles.size() &&
                    cpuPacket.particles.size() <= maxParticleCount;
         }
@@ -297,7 +634,21 @@ namespace RVX
         [[nodiscard]] bool HasValidCpuPacket() const noexcept
         {
             return IsCpuPacketReady() &&
-                   cpuPacket.IsStructurallyValid(maxParticleCount);
+                   cpuPacket.IsStructurallyValid(maxParticleCount) &&
+                   (effectDescriptor.flipbook.IsCanonicalUntextured() ||
+                    (effectDescriptor.flipbook.IsBound() &&
+                     std::all_of(cpuPacket.particles.begin(),
+                                 cpuPacket.particles.end(),
+                                 [this](const ParticleRenderParticleData& particle)
+                                 {
+                                     const uint64 first =
+                                         effectDescriptor.flipbook.firstFrame;
+                                     const uint64 end = first +
+                                         effectDescriptor.flipbook.frameCount;
+                                     return static_cast<uint64>(particle.flipbookFrameIndex) >=
+                                                first &&
+                                            static_cast<uint64>(particle.flipbookFrameIndex) < end;
+                                 })));
         }
     };
 

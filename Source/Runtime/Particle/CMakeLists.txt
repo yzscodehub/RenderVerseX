@@ -20,6 +20,7 @@ set(PARTICLE_HEADERS
     Include/Particle/ParticleTypes.h
     Include/Particle/ParticleSystem.h
     Include/Particle/ParticleSystemInstance.h
+    Include/Particle/ParticleEffectRenderPolicy.h
     Include/Particle/ParticleSubsystem.h
     Include/Particle/ParticleLOD.h
     Include/Particle/ParticlePool.h
@@ -78,6 +79,7 @@ set(PARTICLE_PRIVATE_HEADERS
 set(PARTICLE_SOURCES
     Private/ParticleSystem.cpp
     Private/ParticleSystemInstance.cpp
+    Private/ParticleEffectRenderPolicy.cpp
     Private/ParticleSubsystem.cpp
     Private/ParticlePool.cpp
     Private/ParticleSystemLoader.cpp
@@ -156,6 +158,7 @@ source_group("Include\\Particle" FILES
     Include/Particle/ParticleTypes.h
     Include/Particle/ParticleSystem.h
     Include/Particle/ParticleSystemInstance.h
+    Include/Particle/ParticleEffectRenderPolicy.h
     Include/Particle/ParticleSubsystem.h
     Include/Particle/ParticleLOD.h
     Include/Particle/ParticlePool.h
@@ -188,6 +191,7 @@ source_group("Include\\Particle\\Rendering" FILES
 source_group("Private" FILES 
     Private/ParticleSystem.cpp
     Private/ParticleSystemInstance.cpp
+    Private/ParticleEffectRenderPolicy.cpp
     Private/ParticleSubsystem.cpp
     Private/ParticlePool.cpp
     Private/ParticleSystemLoader.cpp

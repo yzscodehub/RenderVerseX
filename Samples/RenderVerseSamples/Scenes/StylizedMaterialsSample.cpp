@@ -4,6 +4,7 @@
 
 #include "Core/MathTypes.h"
 #include "RenderContracts/RenderFrameTypes.h"
+#include "Samples/SampleCLI.h"
 #include "Samples/SampleContext.h"
 #include "Samples/SampleRenderPathPolicy.h"
 #include "Scene/ECS/RenderFragments.h"

@@ -242,6 +242,14 @@ TEST(ShaderProgramCatalogValidation,
     const fs::path sourcePath =
         RepositoryShaderRoot() / "Particle" / "ParticleBillboard.hlsl";
     ASSERT_TRUE(fs::is_regular_file(sourcePath)) << sourcePath;
+    const std::string source = ReadText(sourcePath);
+    EXPECT_NE(source.find("../Include/FullscreenTriangle.hlsli"),
+              std::string::npos);
+    EXPECT_NE(source.find("gAuxiliaryTexture.Load"), std::string::npos)
+        << "D32 soft depth must use an exact integer texel fetch";
+    EXPECT_EQ(source.find("gAuxiliaryTexture.SampleLevel"),
+              std::string::npos)
+        << "D32 soft depth must not linearly filter across discontinuities";
 
     const std::array expectedBackends = {
         RVX::RHIBackendType::DX11,
@@ -267,11 +275,27 @@ TEST(ShaderProgramCatalogValidation,
 
     for (const auto [stage, entryPoint] : {
              std::pair{RVX::RHIShaderStage::Vertex, std::string_view{"VSMain"}},
-             std::pair{RVX::RHIShaderStage::Pixel, std::string_view{"PSMain"}}})
+             std::pair{RVX::RHIShaderStage::Pixel, std::string_view{"PSMain"}},
+             std::pair{RVX::RHIShaderStage::Pixel,
+                       std::string_view{"PSDistortionMain"}},
+             std::pair{RVX::RHIShaderStage::Vertex,
+                       std::string_view{"DistortionCompositeVS"}},
+             std::pair{RVX::RHIShaderStage::Pixel,
+                       std::string_view{"DistortionCompositePS"}}})
     {
         const RVX::Tools::ShaderProgramCatalogEntry* program =
             findProgram(stage, entryPoint);
         ASSERT_NE(program, nullptr) << entryPoint;
+        const auto clipYDefine = std::find_if(
+            program->defines.begin(), program->defines.end(),
+            [](const RVX::ShaderMacro& define)
+            {
+                return define.name == "RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y" &&
+                       define.value == "$backend.clipY";
+            });
+        ASSERT_NE(clipYDefine, program->defines.end())
+            << entryPoint
+            << " includes the shared fullscreen helper and therefore needs the backend clip-Y permutation";
 
         for (const RVX::RHIBackendType backend : expectedBackends)
         {
@@ -286,6 +310,15 @@ TEST(ShaderProgramCatalogValidation,
             EXPECT_EQ(request.stage, stage);
             EXPECT_EQ(request.entryPoint, entryPoint);
             EXPECT_EQ(request.backend, backend);
+            const auto resolvedClipYDefine = std::find_if(
+                request.defines.begin(), request.defines.end(),
+                [](const RVX::ShaderMacro& define)
+                {
+                    return define.name == "RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y";
+                });
+            ASSERT_NE(resolvedClipYDefine, request.defines.end()) << entryPoint;
+            EXPECT_TRUE(resolvedClipYDefine->value == "0" ||
+                        resolvedClipYDefine->value == "1");
         }
     }
 }

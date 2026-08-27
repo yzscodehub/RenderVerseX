@@ -375,6 +375,8 @@ bool AreParticleRenderSnapshotItemsEqual(
         left.sortingSupported != right.sortingSupported ||
         left.softParticlesEnabled != right.softParticlesEnabled ||
         left.softParticleFadeDistance != right.softParticleFadeDistance ||
+        left.effectDescriptor.schemaVersion != right.effectDescriptor.schemaVersion ||
+        left.effectDescriptor.contentHash != right.effectDescriptor.contentHash ||
         left.unsupportedReason != right.unsupportedReason ||
         left.renderPayloadReason != right.renderPayloadReason ||
         left.sortingReason != right.sortingReason ||
@@ -389,6 +391,17 @@ bool AreParticleRenderSnapshotItemsEqual(
             right.cpuPacket.deterministicInstanceKey ||
         left.cpuPacket.effectiveSimulationSeed !=
             right.cpuPacket.effectiveSimulationSeed ||
+        left.cpuPacket.fixedDeltaSeconds != right.cpuPacket.fixedDeltaSeconds ||
+        left.cpuPacket.effectDescriptorHash != right.cpuPacket.effectDescriptorHash ||
+        left.cpuPacket.lightHint.enabled != right.cpuPacket.lightHint.enabled ||
+        left.cpuPacket.lightHint.sourceParticleId !=
+            right.cpuPacket.lightHint.sourceParticleId ||
+        left.cpuPacket.lightHint.position != right.cpuPacket.lightHint.position ||
+        left.cpuPacket.lightHint.color != right.cpuPacket.lightHint.color ||
+        left.cpuPacket.lightHint.intensityCandela !=
+            right.cpuPacket.lightHint.intensityCandela ||
+        left.cpuPacket.lightHint.rangeMeters != right.cpuPacket.lightHint.rangeMeters ||
+        left.cpuPacket.lightHint.modulation != right.cpuPacket.lightHint.modulation ||
         left.cpuPacket.particles.size() != right.cpuPacket.particles.size() ||
         left.cpuPacket.contentHash != right.cpuPacket.contentHash)
     {

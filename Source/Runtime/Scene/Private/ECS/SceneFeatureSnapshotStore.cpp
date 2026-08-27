@@ -13,7 +13,11 @@ namespace
     {
         const bool ready = state.payloadStatus ==
             ParticleRenderSnapshotPayloadStatus::CpuPacketReady;
-        return ready ? state.IsCpuPacketReady() : state.HasNoCpuPacket();
+        // The GFX17 payload carries an immutable effect descriptor. Validate
+        // the packet/content identity before this cross-module snapshot store
+        // accepts it; a stale atlas generation must not become a frozen Scene
+        // value merely because its vector count is plausible.
+        return ready ? state.HasValidCpuPacket() : state.HasNoCpuPacket();
     }
 
     template<typename State, typename Entries>

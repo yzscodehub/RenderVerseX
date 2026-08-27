@@ -29,8 +29,14 @@ namespace RVX::Particle
         /// Ratio of particles that emit light (0-1)
         float ratio = 0.1f;
 
-        /// Maximum number of particle lights
-        uint32 maxLights = 10;
+        /**
+         * @brief Maximum render hint count.
+         *
+         * GFX17 publishes at most one deterministic, no-shadow light hint per
+         * particle effect. Values above one are rejected at the cooked-effect
+         * boundary and clamped by legacy runtime processors.
+         */
+        uint32 maxLights = 1;
 
         /// Use particle color for light
         bool useParticleColor = true;
@@ -50,7 +56,7 @@ namespace RVX::Particle
         /// Affect specular
         bool affectsSpecular = true;
 
-        /// Shadow casting (expensive!)
+        /** @brief Retained for legacy source compatibility; particle hints never cast shadows. */
         bool castShadows = false;
 
         const char* GetTypeName() const override { return "LightsModule"; }

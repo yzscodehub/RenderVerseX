@@ -1,4 +1,5 @@
 #include "Tools/AssetPipeline.h"
+#include "Tools/Importers/ParticleEffectImporter.h"
 #include "Tools/ShaderProgramCatalog.h"
 
 #include "Core/Log.h"
@@ -1727,6 +1728,7 @@ namespace
             pipeline.RegisterImporter(std::make_unique<RVX::Tools::EnvironmentImporter>());
             pipeline.RegisterImporter(std::make_unique<RVX::Tools::ShaderImporter>());
             pipeline.RegisterImporter(std::make_unique<RVX::Tools::AudioImporter>());
+            pipeline.RegisterImporter(std::make_unique<RVX::Tools::ParticleEffectImporter>());
         }
         pipeline.RegisterImporter(std::make_unique<RVX::Tools::ModelImporter>());
         return pipeline;

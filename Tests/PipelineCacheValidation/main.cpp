@@ -3570,6 +3570,71 @@ TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCove
     EXPECT_NE(particleFeaturePass.find("ParticleRenderSnapshotPayloadStatus::MetadataOnly"), std::string::npos);
 }
 
+TEST_F(PipelineCacheValidationFixture,
+       ParticleFallbackAndCompositePipelineDeclareNativeAttachmentContracts)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    const fs::path repoRoot = RepositoryRootFromShaderDirectory(FindShaderDirectory());
+    const std::string particlePass =
+        ReadTextFile(repoRoot / "Source" / "Runtime" / "Render" / "Private" /
+                     "Passes" / "ParticleFeaturePass.cpp");
+
+    // The fallback is bound as an SRV even on permutations that do not sample
+    // it. Keep its first upload and terminal sampled state explicit so Vulkan
+    // descriptor validation cannot observe VK_IMAGE_LAYOUT_UNDEFINED.
+    EXPECT_NE(particlePass.find(
+                  "RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst"),
+              std::string::npos);
+    const size_t fallbackBegin = particlePass.find(
+        "bool InitializeFallbackTextureForSampling(");
+    ASSERT_NE(fallbackBegin, std::string::npos);
+    const size_t fallbackEnd = particlePass.find(
+        "bool ValidateParticleGraphTargets(", fallbackBegin);
+    ASSERT_NE(fallbackEnd, std::string::npos);
+    const std::string_view fallbackInitializer(
+        particlePass.data() + fallbackBegin, fallbackEnd - fallbackBegin);
+    EXPECT_NE(fallbackInitializer.find("ParticleBillboard.FallbackTextureUpload"),
+              std::string_view::npos);
+    const size_t firstUploadBarrier = fallbackInitializer.find(
+        "RHIResourceState::Undefined");
+    const size_t copy = fallbackInitializer.find("uploadContext->CopyBufferToTexture");
+    const size_t finalSampledBarrier = fallbackInitializer.find(
+        "RHIResourceState::ShaderResource");
+    ASSERT_NE(firstUploadBarrier, std::string_view::npos);
+    ASSERT_NE(copy, std::string_view::npos);
+    ASSERT_NE(finalSampledBarrier, std::string_view::npos);
+    EXPECT_LT(firstUploadBarrier, copy);
+    EXPECT_LT(copy, finalSampledBarrier);
+    EXPECT_NE(fallbackInitializer.find(
+                  "return !device.GetCapabilities().supportsExplicitResourceBarriers"),
+              std::string_view::npos);
+
+    const size_t compositeBegin = particlePass.find(
+        "RHIGraphicsPipelineDesc compositePipelineDesc;");
+    ASSERT_NE(compositeBegin, std::string::npos);
+    const size_t compositeCreate = particlePass.find(
+        "m_compositePipeline = m_device->CreateGraphicsPipeline", compositeBegin);
+    ASSERT_NE(compositeCreate, std::string::npos);
+    const std::string_view compositeDesc(
+        particlePass.data() + compositeBegin, compositeCreate - compositeBegin);
+
+    // The fullscreen composite begins a depthless, single-sample render pass.
+    // Do not inherit RHIGraphicsPipelineDesc's default D24 attachment.
+    EXPECT_NE(compositeDesc.find(
+                  "compositePipelineDesc.depthStencilFormat = RHIFormat::Unknown"),
+              std::string_view::npos);
+    EXPECT_NE(compositeDesc.find(
+                  "compositePipelineDesc.sampleCount = RHISampleCount::Count1"),
+              std::string_view::npos);
+    EXPECT_NE(particlePass.find(
+                  "desc->sampleCount == RHISampleCount::Count1"),
+              std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture, RVXCookWorkflowDocumentationCoversCurrentCliContract)
 {
     if (!HasShaderFixtures())

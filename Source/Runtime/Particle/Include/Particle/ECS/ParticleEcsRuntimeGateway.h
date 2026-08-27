@@ -13,6 +13,7 @@
 namespace RVX::Resource
 {
     class ResourceManager;
+    class IResourcePublicationView;
 }
 
 namespace RVX::Particle
@@ -29,7 +30,9 @@ namespace RVX::Particle
     class ParticleEcsRuntimeGateway final : public IParticleEcsGateway
     {
     public:
-        explicit ParticleEcsRuntimeGateway(Resource::ResourceManager& resourceManager);
+        explicit ParticleEcsRuntimeGateway(
+            Resource::ResourceManager& resourceManager,
+            const Resource::IResourcePublicationView* publicationView = nullptr);
         ~ParticleEcsRuntimeGateway() override;
 
         ParticleEcsRuntimeGateway(const ParticleEcsRuntimeGateway&) = delete;

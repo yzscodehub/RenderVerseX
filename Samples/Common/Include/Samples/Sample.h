@@ -4,6 +4,7 @@
 
 #include "Core/Types.h"
 #include "Samples/FrameworkAssessment.h"
+#include "Samples/SampleFeatureReporter.h"
 #include "Samples/SampleInfo.h"
 #include "Samples/SampleWorldRequirements.h"
 
@@ -13,7 +14,6 @@
 namespace RVX
 {
     struct SampleContext;
-    class SampleFeatureReporter;
     struct SampleRenderDiagnostics;
 
     enum class SampleReadinessState : uint8

@@ -222,13 +222,6 @@ namespace RVX
                      "Particle billboard rendering supports only Billboard render mode");
                 return plan;
             }
-            if (item.softParticlesEnabled)
-            {
-                Fail(plan,
-                     ParticleBillboardDrawPlanFailure::UnsupportedSoftParticles,
-                     "Particle billboard rendering does not support soft particles before GFX17");
-                return plan;
-            }
             if (!IsSupportedBlendMode(item.blendMode))
             {
                 Fail(plan,
@@ -268,6 +261,9 @@ namespace RVX
                 // already consumed by the emitter and a second application
                 // would move translated systems twice.
                 drawItem.blendMode = item.blendMode;
+                drawItem.effectDescriptor = item.effectDescriptor;
+                drawItem.effectDescriptorHash =
+                    item.cpuPacket.effectDescriptorHash;
                 drawItem.systemAssetId = item.systemAssetId.value;
                 drawItem.deterministicInstanceKey =
                     item.cpuPacket.deterministicInstanceKey;
@@ -324,13 +320,22 @@ namespace RVX
 
         for (uint32 index = 0; index < plan.items.size(); ++index)
         {
-            const ParticleRenderSnapshotBlendMode blendMode =
-                plan.items[index].blendMode;
+            const ParticleBillboardDrawItem& item = plan.items[index];
             if (plan.batches.empty() ||
-                plan.batches.back().blendMode != blendMode)
+                plan.batches.back().blendMode != item.blendMode ||
+                plan.batches.back().effectDescriptorHash !=
+                    item.effectDescriptorHash ||
+                plan.batches.back().flipbookTexture !=
+                    item.effectDescriptor.flipbook.texture ||
+                plan.batches.back().flipbookContentRevision !=
+                    item.effectDescriptor.flipbook.committedContentRevision)
             {
                 plan.batches.push_back(ParticleBillboardDrawBatch{
-                    .blendMode = blendMode,
+                    .blendMode = item.blendMode,
+                    .effectDescriptorHash = item.effectDescriptorHash,
+                    .flipbookTexture = item.effectDescriptor.flipbook.texture,
+                    .flipbookContentRevision =
+                        item.effectDescriptor.flipbook.committedContentRevision,
                     .firstItem = index,
                     .itemCount = 0,
                 });

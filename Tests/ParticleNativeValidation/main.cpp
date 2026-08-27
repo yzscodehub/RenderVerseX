@@ -5,6 +5,7 @@
 #include "Render/Passes/RenderPassRecordContext.h"
 #include "RHI/RHI.h"
 #include "RHI/RHICommandContext.h"
+#include "ShaderContracts/ShaderArtifact.h"
 #include "ShaderRuntime/CookedShaderProgramProvider.h"
 
 #include <gtest/gtest.h>
@@ -77,7 +78,8 @@ namespace
                                       RVX::uint64 deterministicInstanceKey,
                                       RVX::ParticleRenderSnapshotBlendMode blendMode,
                                       const RVX::Vec3& position,
-                                      const RVX::Vec4& color)
+                                      const RVX::Vec4& color,
+                                      bool distortion)
         {
             RVX::ParticleCpuPacket packet;
             packet.simulationTick = 17u;
@@ -125,6 +127,15 @@ namespace
             item.visible = true;
             item.simulationSupported = true;
             item.sortingSupported = true;
+            if (distortion)
+            {
+                item.effectDescriptor.distortionStrengthPixels = 2.0f;
+                item.effectDescriptor.reactiveContribution = 0.75f;
+                item.effectDescriptor.contentHash =
+                    item.effectDescriptor.ComputeContentHash();
+                packet.effectDescriptorHash = item.effectDescriptor.contentHash;
+                packet.contentHash = packet.ComputeContentHash();
+            }
             item.cpuPacket = std::move(packet);
             snapshot.items.push_back(std::move(item));
         };
@@ -133,13 +144,16 @@ namespace
         // one contiguous batch for each supported blend pipeline.
         addBatchItem(101u, 31u, 13u, 0xA11CE013u,
                      RVX::ParticleRenderSnapshotBlendMode::AlphaBlend,
-                     {-0.45f, 0.0f, 0.20f}, {1.0f, 0.20f, 0.10f, 0.90f});
+                     {-0.45f, 0.0f, 0.20f}, {1.0f, 0.20f, 0.10f, 0.90f},
+                     false);
         addBatchItem(102u, 32u, 14u, 0xA11CE014u,
                      RVX::ParticleRenderSnapshotBlendMode::Premultiplied,
-                     {0.00f, 0.0f, 0.40f}, {0.10f, 0.80f, 0.15f, 0.85f});
+                     {0.00f, 0.0f, 0.40f}, {0.10f, 0.80f, 0.15f, 0.85f},
+                     false);
         addBatchItem(103u, 33u, 15u, 0xA11CE015u,
                      RVX::ParticleRenderSnapshotBlendMode::Additive,
-                     {0.45f, 0.0f, 0.60f}, {0.15f, 0.25f, 1.00f, 0.80f});
+                     {0.45f, 0.0f, 0.60f}, {0.15f, 0.25f, 1.00f, 0.80f},
+                     true);
         snapshot.MarkComplete();
         return snapshot;
     }
@@ -176,6 +190,29 @@ namespace
         ASSERT_TRUE(fs::is_directory(shaderRoot))
             << "The cooked shader fixture did not stage its output: "
             << shaderRoot.generic_string();
+
+        RVX::ShaderProgramRequest cookedPathRequest;
+        cookedPathRequest.logicalAssetId = "Particle/ParticleBillboard.hlsl";
+        cookedPathRequest.stage = RVX::RHIShaderStage::Vertex;
+        cookedPathRequest.entryPoint = "VSMain";
+        cookedPathRequest.backend = backend;
+        cookedPathRequest.defines = {{
+            "RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y",
+            backend == RVX::RHIBackendType::Vulkan ? "1" : "0"}};
+        const fs::path artifactRelativePath =
+            RVX::BuildShaderArtifactRelativePath(cookedPathRequest);
+        const fs::path backendDirectoryName = artifactRelativePath.parent_path();
+        ASSERT_FALSE(backendDirectoryName.empty());
+        ASSERT_TRUE(shaderRoot.filename() != backendDirectoryName.filename())
+            << "The cooked shader root must be the catalog root, not the "
+            << "backend-specific artifact directory.";
+        const fs::path expectedArtifactPath =
+            shaderRoot / artifactRelativePath;
+        ASSERT_TRUE(fs::is_regular_file(expectedArtifactPath))
+            << "The cooked shader fixture must place a resolved particle "
+            << "artifact directly below the catalog root: "
+            << expectedArtifactPath.generic_string();
+        ASSERT_TRUE(expectedArtifactPath.parent_path().parent_path() == shaderRoot);
 
         RVX::RHIDeviceDesc deviceDesc;
         deviceDesc.enableDebugLayer = true;
@@ -214,6 +251,18 @@ namespace
         pass.OnAdd(device.get());
         pass.SetSnapshot(&snapshot);
 
+        const RVX::RHINativeValidationDiagnostics nativeValidationBefore =
+            device->GetNativeValidationDiagnostics();
+        ASSERT_TRUE(nativeValidationBefore.available)
+            << RVX::ToString(backend)
+            << " native validation telemetry is required for the particle proof";
+        ASSERT_TRUE(nativeValidationBefore.enabled)
+            << RVX::ToString(backend)
+            << " native validation must be enabled for the particle proof";
+        ASSERT_TRUE(nativeValidationBefore.readComplete)
+            << RVX::ToString(backend)
+            << " native validation telemetry was incomplete before particle execution";
+
         RVX::RHITextureDesc colorDesc = RVX::RHITextureDesc::RenderTarget(
             kTargetExtent, kTargetExtent, RVX::RHIFormat::RGBA16_FLOAT);
         colorDesc.usage = colorDesc.usage | RVX::RHITextureUsage::CopySrc;
@@ -227,6 +276,12 @@ namespace
         depthDesc.debugName = "GFX16ParticleNativeDepth";
         RVX::RHITextureRef depthTarget = device->CreateTexture(depthDesc);
         ASSERT_NE(depthTarget.Get(), nullptr);
+        RVX::RHITextureDesc reactiveMaskDesc = RVX::RHITextureDesc::RenderTarget(
+            kTargetExtent, kTargetExtent, RVX::RHIFormat::R8_UNORM);
+        reactiveMaskDesc.SetOptimizedClearColor({0.0f, 0.0f, 0.0f, 0.0f});
+        reactiveMaskDesc.debugName = "GFX17ParticleNativeReactiveMask";
+        RVX::RHITextureRef reactiveMaskTarget = device->CreateTexture(reactiveMaskDesc);
+        ASSERT_NE(reactiveMaskTarget.Get(), nullptr);
 
         RVX::RHITextureViewDesc colorClearViewDesc;
         colorClearViewDesc.type = RVX::RHITextureViewType::RenderTarget;
@@ -248,6 +303,16 @@ namespace
         RVX::RHITextureViewRef depthClearView = device->CreateTextureView(
             depthTarget.Get(), depthClearViewDesc);
         ASSERT_NE(depthClearView.Get(), nullptr);
+
+        RVX::RHITextureViewDesc reactiveMaskClearViewDesc;
+        reactiveMaskClearViewDesc.type = RVX::RHITextureViewType::RenderTarget;
+        reactiveMaskClearViewDesc.format = RVX::RHIFormat::R8_UNORM;
+        reactiveMaskClearViewDesc.dimension = RVX::RHITextureDimension::Texture2D;
+        reactiveMaskClearViewDesc.subresourceRange = RVX::RHISubresourceRange::All();
+        reactiveMaskClearViewDesc.debugName = "GFX17ParticleNativeReactiveMaskClearRTV";
+        RVX::RHITextureViewRef reactiveMaskClearView = device->CreateTextureView(
+            reactiveMaskTarget.Get(), reactiveMaskClearViewDesc);
+        ASSERT_NE(reactiveMaskClearView.Get(), nullptr);
 
         RVX::RHIBufferDesc readbackDesc;
         readbackDesc.size = static_cast<RVX::uint64>(kReadbackRowPitch) *
@@ -274,17 +339,52 @@ namespace
             graph, colorTarget.Get(), RVX::RHIResourceState::RenderTarget);
         view.depthTarget = RVX::RenderGraphValidationAccess::ImportTexture(
             graph, depthTarget.Get(), RVX::RHIResourceState::DepthRead);
+        view.reactiveMaskTarget = RVX::RenderGraphValidationAccess::ImportTexture(
+            graph, reactiveMaskTarget.Get(), RVX::RHIResourceState::RenderTarget);
         ASSERT_TRUE(view.colorTarget.IsValid());
         ASSERT_TRUE(view.depthTarget.IsValid());
+        ASSERT_TRUE(view.reactiveMaskTarget.IsValid());
         graph.SetExportState(view.colorTarget, RVX::RHIResourceState::RenderTarget);
         graph.SetExportState(view.depthTarget, RVX::RHIResourceState::DepthRead);
+        graph.SetExportState(view.reactiveMaskTarget,
+                             RVX::RHIResourceState::RenderTarget);
 
-        pass.AddToGraph(graph, RVX::MakeRenderPassRecordContext(graph, view));
+        RVX::RHITextureDesc distortionDesc = RVX::RHITextureDesc::RenderTarget(
+            kTargetExtent, kTargetExtent, RVX::RHIFormat::RG16_FLOAT);
+        distortionDesc.debugName = "GFX17ParticleNativeDistortion";
+        const RVX::RGTextureHandle distortionVectors = graph.CreateTexture(
+            distortionDesc);
+        RVX::RHITextureDesc compositeDesc = RVX::RHITextureDesc::RenderTarget(
+            kTargetExtent, kTargetExtent, RVX::RHIFormat::RGBA16_FLOAT);
+        compositeDesc.usage = compositeDesc.usage | RVX::RHITextureUsage::CopySrc;
+        compositeDesc.debugName = "GFX17ParticleNativeDistortionComposite";
+        const RVX::RGTextureHandle compositedSceneColor = graph.CreateTexture(
+            compositeDesc);
+        ASSERT_TRUE(distortionVectors.IsValid());
+        ASSERT_TRUE(compositedSceneColor.IsValid());
+        ASSERT_NE(distortionVectors.index, view.colorTarget.index);
+        ASSERT_NE(compositedSceneColor.index, view.colorTarget.index);
+        graph.SetExportState(compositedSceneColor,
+                             RVX::RHIResourceState::RenderTarget);
+
+        RVX::RenderPassRecordContext particleContext =
+            RVX::MakeRenderPassRecordContext(graph, view);
+        particleContext.particleVfx = {
+            .identity = particleContext.identity,
+            .distortionVectors = distortionVectors,
+            .compositedSceneColor = compositedSceneColor,
+            .distortionRequested = true,
+        };
+        pass.AddToGraph(graph, particleContext);
         const RVX::ParticleFeaturePassStats preparedStats = pass.GetStats();
         ASSERT_TRUE(preparedStats.requested) << preparedStats.unsupportedReason;
         ASSERT_TRUE(preparedStats.supported) << preparedStats.unsupportedReason;
         ASSERT_TRUE(preparedStats.enabled) << preparedStats.unsupportedReason;
         ASSERT_TRUE(preparedStats.graphPassScheduled) << preparedStats.unsupportedReason;
+        ASSERT_TRUE(pass.HasRegisteredDistortionComposite())
+            << preparedStats.unsupportedReason;
+        ASSERT_TRUE(preparedStats.distortionPassScheduled)
+            << preparedStats.unsupportedReason;
         ASSERT_TRUE(preparedStats.uploadPublished) << preparedStats.unsupportedReason;
         ASSERT_EQ(preparedStats.instanceCount, 3u);
         ASSERT_GT(preparedStats.uploadBytes, 0u);
@@ -315,6 +415,19 @@ namespace
         ASSERT_NE(depthReadUsage, compiledParticlePass->usages.end())
             << "Particle billboard graph must declare its D32 depth read edge\n"
             << graph.ExportDiagnosticsText();
+        for (const char* passName : {"ParticleDistortion",
+                                     "ParticleDistortionComposite"})
+        {
+            const auto distortionPass = std::find_if(
+                compiledDiagnostics.passes.begin(), compiledDiagnostics.passes.end(),
+                [passName](const RVX::RenderGraph::PassDiagnostic& diagnostic)
+                {
+                    return diagnostic.name == passName && !diagnostic.culled;
+                });
+            ASSERT_NE(distortionPass, compiledDiagnostics.passes.end())
+                << passName << " was not registered as part of the atomic particle distortion chain\n"
+                << graph.ExportDiagnosticsText();
+        }
 
         RVX::RHICommandContextRef commandContext = device->CreateCommandContext(
             RVX::RHICommandQueueType::Graphics);
@@ -331,8 +444,14 @@ namespace
         commandContext->TextureBarrier(
             depthTarget.Get(), RVX::RHIResourceState::Undefined,
             RVX::RHIResourceState::DepthWrite);
+        commandContext->TextureBarrier(
+            reactiveMaskTarget.Get(), RVX::RHIResourceState::Undefined,
+            RVX::RHIResourceState::RenderTarget);
         RVX::RHIRenderPassDesc clearPass;
         clearPass.AddColorAttachment(colorClearView.Get(), RVX::RHILoadOp::Clear,
+                                     RVX::RHIStoreOp::Store,
+                                     {0.0f, 0.0f, 0.0f, 0.0f});
+        clearPass.AddColorAttachment(reactiveMaskClearView.Get(), RVX::RHILoadOp::Clear,
                                      RVX::RHIStoreOp::Store,
                                      {0.0f, 0.0f, 0.0f, 0.0f});
         clearPass.SetDepthStencil(depthClearView.Get(), RVX::RHILoadOp::Clear,
@@ -345,8 +464,19 @@ namespace
             RVX::RHIResourceState::DepthRead);
 
         RVX::RenderGraphValidationAccess::Execute(graph, *commandContext);
+        // Graph-owned transient resources become physical only during graph
+        // execution. Resolve the actual composite target after that point,
+        // while this command context still owns its terminal RenderTarget
+        // state, then read back that output rather than the pre-composite HDR.
+        RVX::RHITexture* const compositedSceneColorTexture =
+            RVX::RenderGraphValidationAccess::GetTexture(
+                graph, compositedSceneColor);
+        ASSERT_NE(compositedSceneColorTexture, nullptr)
+            << "Particle distortion composite must materialize its HDR output";
+        ASSERT_EQ(compositedSceneColorTexture->GetFormat(),
+                  RVX::RHIFormat::RGBA16_FLOAT);
         commandContext->TextureBarrier(
-            colorTarget.Get(), RVX::RHIResourceState::RenderTarget,
+            compositedSceneColorTexture, RVX::RHIResourceState::RenderTarget,
             RVX::RHIResourceState::CopySource);
         commandContext->BufferBarrier(
             readbackBuffer.Get(), RVX::RHIResourceState::Common,
@@ -356,7 +486,7 @@ namespace
         readbackCopy.bufferImageHeight = kTargetExtent;
         readbackCopy.textureRegion = {0, 0, kTargetExtent, kTargetExtent};
         commandContext->CopyTextureToBuffer(
-            colorTarget.Get(), readbackBuffer.Get(), readbackCopy);
+            compositedSceneColorTexture, readbackBuffer.Get(), readbackCopy);
         commandContext->BufferBarrier(
             readbackBuffer.Get(), RVX::RHIResourceState::CopyDest,
             RVX::RHIResourceState::Common);
@@ -369,6 +499,21 @@ namespace
             << " did not accept the GFX16 particle graph submission";
         device->WaitForFence(fence.Get(), submittedValue);
         ASSERT_GE(fence->GetCompletedValue(), submittedValue);
+        device->WaitIdle();
+
+        const RVX::RHINativeValidationDiagnostics nativeValidationAfter =
+            device->GetNativeValidationDiagnostics();
+        EXPECT_TRUE(nativeValidationAfter.available);
+        EXPECT_TRUE(nativeValidationAfter.enabled);
+        EXPECT_TRUE(nativeValidationAfter.readComplete);
+        EXPECT_EQ(nativeValidationAfter.errorCount,
+                  nativeValidationBefore.errorCount)
+            << RVX::ToString(backend)
+            << " particle fallback texture or composite pipeline emitted a native error";
+        EXPECT_EQ(nativeValidationAfter.corruptionCount,
+                  nativeValidationBefore.corruptionCount)
+            << RVX::ToString(backend)
+            << " particle fallback texture or composite pipeline emitted native corruption";
 
         const auto* const readbackPixels = static_cast<const std::uint16_t*>(
             readbackBuffer->Map());
@@ -400,7 +545,7 @@ namespace
             << " produced non-finite RGBA16F particle color output";
         ASSERT_TRUE(foundVisibleParticlePixel)
             << RVX::ToString(backend)
-            << " submitted particle draws but did not produce a visible HDR pixel";
+            << " submitted the particle distortion chain but did not produce a visible composite HDR pixel";
 
         const RVX::RenderGraph::Diagnostics executedDiagnostics =
             graph.GetDiagnostics();
@@ -422,6 +567,10 @@ namespace
         EXPECT_TRUE(executedStats.enabled) << executedStats.unsupportedReason;
         EXPECT_TRUE(executedStats.graphPassScheduled);
         EXPECT_TRUE(executedStats.uploadPublished);
+        EXPECT_TRUE(executedStats.reactiveMaskEnabled);
+        EXPECT_TRUE(executedStats.distortionPassScheduled);
+        EXPECT_TRUE(executedStats.distortionPassExecuted);
+        EXPECT_TRUE(executedStats.distortionCompositeExecuted);
         EXPECT_TRUE(executedStats.drawSubmitted) << executedStats.unsupportedReason;
         EXPECT_EQ(executedStats.drawCallCount, 3u);
         EXPECT_EQ(executedStats.instanceCount, 3u);

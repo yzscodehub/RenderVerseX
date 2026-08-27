@@ -12,6 +12,7 @@ add_library(RVX_Engine STATIC)
 
 target_sources(RVX_Engine PRIVATE
     Private/Engine.cpp
+    Private/EngineResourceComposition.cpp
     Private/ECS/EcsRenderFramePipeline.cpp
     Private/ECS/EcsRenderEntityRetirementCoordinator.cpp
     Private/ECS/EcsSceneRenderProofGateway.cpp

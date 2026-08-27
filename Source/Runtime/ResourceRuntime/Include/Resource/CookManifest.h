@@ -38,6 +38,8 @@ namespace RVX::Resource
         Script = 10,
         Model = 11,
         Environment = 12,
+        /** @brief Strict cooked CPU billboard particle effect product. */
+        Effect = 13,
     };
 
     /** @brief One canonical relative file record embedded in a v2 manifest. */

@@ -1,3 +1,4 @@
+#include "Samples/SampleCLI.h"
 #include "Samples/SampleRenderPathPolicy.h"
 
 #include <gtest/gtest.h>

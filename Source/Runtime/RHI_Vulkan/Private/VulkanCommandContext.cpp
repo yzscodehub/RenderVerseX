@@ -10,6 +10,45 @@
 
 namespace RVX
 {
+    VulkanTextureCopyContract ResolveVulkanTextureCopyContract(
+        RHIFormat sourceFormat,
+        RHIFormat destinationFormat) noexcept
+    {
+        if (ToVkFormat(sourceFormat) == VK_FORMAT_UNDEFINED ||
+            ToVkFormat(destinationFormat) == VK_FORMAT_UNDEFINED)
+        {
+            return {VulkanTextureCopyContractStatus::UnknownFormat, 0};
+        }
+
+        const bool sourceIsDepth = IsDepthFormat(sourceFormat);
+        const bool destinationIsDepth = IsDepthFormat(destinationFormat);
+        if (sourceIsDepth != destinationIsDepth)
+        {
+            return {VulkanTextureCopyContractStatus::AspectMismatch, 0};
+        }
+
+        if (sourceFormat != destinationFormat)
+        {
+            return {VulkanTextureCopyContractStatus::FormatMismatch, 0};
+        }
+
+        // RHITextureCopyDesc does not select an individual depth/stencil
+        // aspect. Recording a single region would therefore either violate
+        // VkImageSubresourceLayers or silently omit part of the resource.
+        if (IsStencilFormat(sourceFormat))
+        {
+            return {
+                VulkanTextureCopyContractStatus::UnsupportedStencilAspect,
+                0};
+        }
+
+        return {
+            VulkanTextureCopyContractStatus::Compatible,
+            static_cast<VkImageAspectFlags>(
+                sourceIsDepth ? VK_IMAGE_ASPECT_DEPTH_BIT
+                              : VK_IMAGE_ASPECT_COLOR_BIT)};
+    }
+
     namespace
     {
         bool RequiresScopedBarrier(bool hasScopedAccess,
@@ -961,6 +1000,27 @@ namespace RVX
 
     void VulkanCommandContext::CopyTexture(RHITexture* src, RHITexture* dst, const RHITextureCopyDesc& desc)
     {
+        if (src == nullptr || dst == nullptr)
+        {
+            RVX_RHI_ERROR("Vulkan CopyTexture rejected a null texture");
+            return;
+        }
+
+        const RHIFormat sourceFormat = src->GetFormat();
+        const RHIFormat destinationFormat = dst->GetFormat();
+        const VulkanTextureCopyContract copyContract =
+            ResolveVulkanTextureCopyContract(sourceFormat, destinationFormat);
+        if (!copyContract.IsValid())
+        {
+            RVX_RHI_ERROR(
+                "Vulkan CopyTexture rejected source format {} and destination "
+                "format {} (contract status {})",
+                static_cast<uint32>(sourceFormat),
+                static_cast<uint32>(destinationFormat),
+                static_cast<uint32>(copyContract.status));
+            return;
+        }
+
         FlushBarriers();
 
         auto* vkSrc = static_cast<VulkanTexture*>(src);
@@ -969,12 +1029,12 @@ namespace RVX
         const auto dstSubresource = DecodeTextureSubresource(desc.dstSubresource, dst->GetMipLevels());
 
         VkImageCopy copyRegion = {};
-        copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copyRegion.srcSubresource.aspectMask = copyContract.aspectMask;
         copyRegion.srcSubresource.mipLevel = srcSubresource.mipLevel;
         copyRegion.srcSubresource.baseArrayLayer = srcSubresource.physicalLayer;
         copyRegion.srcSubresource.layerCount = 1;
         copyRegion.srcOffset = {static_cast<int32>(desc.srcX), static_cast<int32>(desc.srcY), static_cast<int32>(desc.srcZ)};
-        copyRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copyRegion.dstSubresource.aspectMask = copyContract.aspectMask;
         copyRegion.dstSubresource.mipLevel = dstSubresource.mipLevel;
         copyRegion.dstSubresource.baseArrayLayer = dstSubresource.physicalLayer;
         copyRegion.dstSubresource.layerCount = 1;

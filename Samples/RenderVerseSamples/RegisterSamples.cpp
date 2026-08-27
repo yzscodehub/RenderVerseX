@@ -14,6 +14,7 @@
 #include "Scenes/PBRMaterialsSample.h"
 #include "Scenes/PhysicsSandboxSample.h"
 #include "Scenes/PhysicalExposureSample.h"
+#include "Scenes/ParticleVfxSamples.h"
 #include "Scenes/PostProcessingShowcaseSample.h"
 #include "Scenes/RenderPipelineShowcaseSample.h"
 #include "Scenes/RenderingStressSample.h"
@@ -97,6 +98,10 @@ namespace RVX
                RegisterBuiltInSample<StylizedMaterialsSample>(
                    manifest, registry, outError) &&
                RegisterBuiltInSample<TransparentMaterialsSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<ParticleFireSample>(
+                   manifest, registry, outError) &&
+               RegisterBuiltInSample<ParticleSmokeSample>(
                    manifest, registry, outError) &&
                RegisterBuiltInSample<RenderingStressSample>(
                    manifest, registry, outError) &&

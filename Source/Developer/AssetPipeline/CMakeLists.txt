@@ -9,6 +9,7 @@ target_sources(RVX_AssetPipeline PRIVATE
     Private/AssetDatabase.cpp
     Private/AnimationRootMotionDeriver.cpp
     Private/Importers/AudioImporter.cpp
+    Private/Importers/ParticleEffectImporter.cpp
 )
 
 target_include_directories(RVX_AssetPipeline PUBLIC

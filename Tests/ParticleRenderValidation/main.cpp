@@ -4,6 +4,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -91,6 +95,14 @@ namespace
         view.cameraPosition = {0.0f, 0.0f, 0.0f};
         view.cameraForward = {0.0f, 0.0f, -1.0f};
         return view;
+    }
+
+    void ResealEffectDescriptor(RVX::ParticleRenderSnapshotItem& item)
+    {
+        item.effectDescriptor.contentHash =
+            item.effectDescriptor.ComputeContentHash();
+        item.cpuPacket.effectDescriptorHash = item.effectDescriptor.contentHash;
+        item.cpuPacket.contentHash = item.cpuPacket.ComputeContentHash();
     }
 } // namespace
 
@@ -210,20 +222,233 @@ TEST(ParticleRenderValidation, RejectsPacketCorruptionAndInvisibleAggregateMisma
               RVX::ParticleBillboardDrawPlanFailure::InvalidParticleCount);
 }
 
-TEST(ParticleRenderValidation, RejectsSoftParticleItemsUntilGfx17)
+TEST(ParticleRenderValidation, AcceptsSealedGfx17SoftDepthDescriptor)
 {
     RVX::ParticleRenderSnapshot snapshot = MakeCompleteSnapshot({
         MakeReadyItem(1u, 1u, 1u,
                       RVX::ParticleRenderSnapshotBlendMode::AlphaBlend,
                       {MakeParticle(1u, -2.0f)}),
     });
-    snapshot.items.front().softParticlesEnabled = true;
+    RVX::ParticleRenderSnapshotItem& item = snapshot.items.front();
+    item.effectDescriptor.softDepthMode =
+        RVX::ParticleRenderSoftDepthMode::Optional;
+    item.effectDescriptor.softDepthFadeMeters = 1.5f;
+    item.effectDescriptor.softDepthContrast = 2.0f;
+    ResealEffectDescriptor(item);
 
     const RVX::ParticleBillboardDrawPlan plan =
         RVX::BuildParticleBillboardDrawPlan(snapshot, MakeView());
-    EXPECT_FALSE(plan.valid);
-    EXPECT_EQ(plan.failure,
-              RVX::ParticleBillboardDrawPlanFailure::UnsupportedSoftParticles);
+    ASSERT_TRUE(plan.valid) << plan.diagnostic;
+    ASSERT_EQ(plan.items.size(), 1u);
+    EXPECT_EQ(plan.items.front().effectDescriptor.softDepthMode,
+              RVX::ParticleRenderSoftDepthMode::Optional);
+    EXPECT_EQ(plan.items.front().effectDescriptorHash,
+              item.effectDescriptor.contentHash);
+}
+
+TEST(ParticleRenderValidation,
+     SplitsContiguousBatchesForExactEffectAndFlipbookGenerations)
+{
+    RVX::ParticleRenderSnapshot snapshot = MakeCompleteSnapshot({
+        MakeReadyItem(1u, 1u, 1u,
+                      RVX::ParticleRenderSnapshotBlendMode::Additive,
+                      {MakeParticle(1u, -2.0f)}),
+        MakeReadyItem(2u, 2u, 2u,
+                      RVX::ParticleRenderSnapshotBlendMode::Additive,
+                      {MakeParticle(2u, -2.0f)}),
+    });
+
+    for (RVX::uint32 index = 0u; index < snapshot.items.size(); ++index)
+    {
+        RVX::ParticleRenderSnapshotItem& item = snapshot.items[index];
+        item.effectDescriptor.flipbook = {
+            .textureAssetId = RVX::AssetId{100u + index},
+            .texture = RVX::RenderResourceHandle{10u, 5u + index},
+            .committedContentRevision = 20u + index,
+            .tiles = {1u, 1u},
+            .firstFrame = 0u,
+            .frameCount = 1u,
+            .framesPerSecond = 0.0f,
+            .uvOffset = {0.0f, 0.0f},
+            .uvScale = {1.0f, 1.0f},
+            .required = false,
+        };
+        ResealEffectDescriptor(item);
+    }
+
+    const RVX::ParticleBillboardDrawPlan plan =
+        RVX::BuildParticleBillboardDrawPlan(snapshot, MakeView());
+    ASSERT_TRUE(plan.valid) << plan.diagnostic;
+    ASSERT_EQ(plan.batches.size(), 2u);
+    EXPECT_NE(plan.batches[0].effectDescriptorHash,
+              plan.batches[1].effectDescriptorHash);
+    EXPECT_NE(plan.batches[0].flipbookTexture,
+              plan.batches[1].flipbookTexture);
+    EXPECT_NE(plan.batches[0].flipbookContentRevision,
+              plan.batches[1].flipbookContentRevision);
+}
+
+TEST(ParticleRenderValidation,
+     RejectsLightHintsThatDoNotMatchTheirSealedSourceAndEffectPolicy)
+{
+    RVX::ParticleRenderSnapshot snapshot = MakeCompleteSnapshot({
+        MakeReadyItem(1u, 1u, 1u,
+                      RVX::ParticleRenderSnapshotBlendMode::Additive,
+                      {MakeParticle(7u, -2.0f)}),
+    });
+    RVX::ParticleRenderSnapshotItem& item = snapshot.items.front();
+    const RVX::ParticleRenderParticleData& particle =
+        item.cpuPacket.particles.front();
+    item.effectDescriptor.lightHint = {
+        .enabled = true,
+        .color = {2.0f, 4.0f, 6.0f},
+        .intensityCandela = 12.0f,
+        .rangeMeters = 5.0f,
+        .flickerFrequencyHz = 0.0f,
+    };
+    item.effectDescriptor.contentHash = item.effectDescriptor.ComputeContentHash();
+    item.cpuPacket.effectDescriptorHash = item.effectDescriptor.contentHash;
+    item.cpuPacket.lightHint = {
+        .enabled = true,
+        .stableLightId = 0xCAFEu,
+        .sampleTick = item.cpuPacket.simulationTick,
+        .sourceParticleId = particle.stableParticleId,
+        .position = particle.position,
+        .color = {item.effectDescriptor.lightHint.color.x * particle.color.x,
+                  item.effectDescriptor.lightHint.color.y * particle.color.y,
+                  item.effectDescriptor.lightHint.color.z * particle.color.z},
+        .intensityCandela = 6.0f,
+        .rangeMeters = item.effectDescriptor.lightHint.rangeMeters,
+        .modulation = 0.5f,
+    };
+    item.cpuPacket.contentHash = item.cpuPacket.ComputeContentHash();
+
+    RVX::ParticleFeaturePass pass;
+    pass.SetSnapshot(&snapshot);
+    std::vector<RVX::ParticleRenderLightHint> acceptedHints;
+    std::string diagnostic;
+    ASSERT_TRUE(pass.CollectLightingHints(acceptedHints, diagnostic)) << diagnostic;
+    ASSERT_EQ(acceptedHints.size(), 1u);
+    EXPECT_EQ(acceptedHints.front().stableLightId, 0xCAFEu);
+
+    RVX::ParticleRenderSnapshot altered = snapshot;
+    altered.items.front().cpuPacket.lightHint.rangeMeters += 1.0f;
+    altered.items.front().cpuPacket.contentHash =
+        altered.items.front().cpuPacket.ComputeContentHash();
+    pass.SetSnapshot(&altered);
+    EXPECT_FALSE(pass.CollectLightingHints(acceptedHints, diagnostic));
+    EXPECT_NE(diagnostic.find("sealed effect policy"), std::string::npos);
+}
+
+TEST(ParticleRenderValidation,
+     SoftDepthReferenceUsesViewLinearMetersAcrossDepthEncodings)
+{
+    const auto softFadeMeters = [](float sceneMeters,
+                                   float particleMeters,
+                                   float fadeMeters)
+    {
+        return std::clamp((sceneMeters - particleMeters) / fadeMeters,
+                          0.0f, 1.0f);
+    };
+    const auto reverseDeviceDepth = [](float meters, float nearPlane)
+    {
+        return nearPlane / meters;
+    };
+    const auto reverseLinearDepth = [](float deviceDepth, float nearPlane)
+    {
+        return nearPlane / deviceDepth;
+    };
+    const auto forwardDeviceDepth = [](float meters,
+                                       float nearPlane,
+                                       float farPlane)
+    {
+        return farPlane / (farPlane - nearPlane) -
+            (nearPlane * farPlane) / ((farPlane - nearPlane) * meters);
+    };
+    const auto forwardLinearDepth = [](float deviceDepth,
+                                       float nearPlane,
+                                       float farPlane)
+    {
+        return (nearPlane * farPlane) /
+            (farPlane - deviceDepth * (farPlane - nearPlane));
+    };
+
+    constexpr float particleMeters = 4.0f;
+    constexpr float sceneMeters = 4.5f;
+    constexpr float fadeMeters = 1.0f;
+    const float reverseNear = softFadeMeters(
+        reverseLinearDepth(reverseDeviceDepth(sceneMeters, 0.1f), 0.1f),
+        reverseLinearDepth(reverseDeviceDepth(particleMeters, 0.1f), 0.1f),
+        fadeMeters);
+    const float reverseFar = softFadeMeters(
+        reverseLinearDepth(reverseDeviceDepth(sceneMeters, 1.0f), 1.0f),
+        reverseLinearDepth(reverseDeviceDepth(particleMeters, 1.0f), 1.0f),
+        fadeMeters);
+    const float forwardShortRange = softFadeMeters(
+        forwardLinearDepth(forwardDeviceDepth(sceneMeters, 0.1f, 25.0f),
+                           0.1f, 25.0f),
+        forwardLinearDepth(forwardDeviceDepth(particleMeters, 0.1f, 25.0f),
+                           0.1f, 25.0f),
+        fadeMeters);
+    const float forwardLongRange = softFadeMeters(
+        forwardLinearDepth(forwardDeviceDepth(sceneMeters, 0.5f, 5000.0f),
+                           0.5f, 5000.0f),
+        forwardLinearDepth(forwardDeviceDepth(particleMeters, 0.5f, 5000.0f),
+                           0.5f, 5000.0f),
+        fadeMeters);
+
+    EXPECT_NEAR(reverseNear, 0.5f, 1.0e-5f);
+    EXPECT_NEAR(reverseFar, 0.5f, 1.0e-5f);
+    EXPECT_NEAR(forwardShortRange, 0.5f, 2.0e-5f);
+    EXPECT_NEAR(forwardLongRange, 0.5f, 2.0e-5f);
+}
+
+TEST(ParticleRenderValidation,
+     SoftDepthDiscontinuityReferenceUsesTheCoveredIntegerTexel)
+{
+    // A linear D32 sample on this edge would blend foreground and background
+    // depth, making the fade depend on sub-pixel position. The renderer's
+    // shader uses Texture.Load() so the covered depth texel is deterministic.
+    constexpr std::array<float, 2> deviceDepth = {0.20f, 0.80f};
+    const auto integerLoad = [&deviceDepth](float fragmentX)
+    {
+        const size_t pixel = std::min<size_t>(
+            static_cast<size_t>(std::floor(std::max(fragmentX, 0.0f))),
+            deviceDepth.size() - 1u);
+        return deviceDepth[pixel];
+    };
+    const auto linearSample = [&deviceDepth](float normalizedX)
+    {
+        return deviceDepth[0] * (1.0f - normalizedX) +
+            deviceDepth[1] * normalizedX;
+    };
+
+    EXPECT_FLOAT_EQ(integerLoad(0.99f), 0.20f);
+    EXPECT_FLOAT_EQ(integerLoad(1.01f), 0.80f);
+    EXPECT_NEAR(linearSample(0.51f), 0.506f, 1.0e-6f);
+    EXPECT_NE(integerLoad(1.01f), linearSample(0.51f));
+}
+
+TEST(ParticleRenderValidation,
+     StraightAlphaReferenceSuppressesPremultipliedAndAdditiveTransparentTexels)
+{
+    const auto finalAlpha = [](float particleAlpha,
+                               float textureAlpha,
+                               float attenuation)
+    {
+        return std::clamp(particleAlpha * textureAlpha * attenuation,
+                          0.0f, 1.0f);
+    };
+    constexpr float sourceRgb = 8.0f;
+    const float transparentAlpha = finalAlpha(0.9f, 0.0f, 1.0f);
+    const float translucentAlpha = finalAlpha(0.8f, 0.5f, 0.75f);
+    const float premultipliedRgb = sourceRgb * translucentAlpha;
+    const float additiveRgb = sourceRgb * translucentAlpha;
+
+    EXPECT_FLOAT_EQ(sourceRgb * transparentAlpha, 0.0f);
+    EXPECT_FLOAT_EQ(sourceRgb * transparentAlpha, 0.0f);
+    EXPECT_LE(premultipliedRgb, sourceRgb);
+    EXPECT_LE(additiveRgb, sourceRgb);
 }
 
 TEST(ParticleRenderValidation,

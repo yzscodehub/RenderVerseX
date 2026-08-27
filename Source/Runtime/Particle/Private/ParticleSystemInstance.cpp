@@ -86,6 +86,7 @@ void ParticleSystemInstance::Initialize()
     m_effectiveSimulationSeed = DeriveEffectiveSimulationSeed(
         m_deterministicSeed, m_deterministicInstanceKey);
     m_hasExplicitSimulationTick = false;
+    m_lastFixedDeltaSeconds = 0.0f;
     m_boundsDirty = true;
 }
 
@@ -130,6 +131,7 @@ void ParticleSystemInstance::Play()
         m_emissionAccumulator = 0.0f;
         m_simulationTick = 0;
         m_hasExplicitSimulationTick = false;
+        m_lastFixedDeltaSeconds = 0.0f;
         ResetDeterministicSimulator();
         
         // Handle prewarm
@@ -149,6 +151,7 @@ void ParticleSystemInstance::Stop()
     m_simulationTime = 0.0f;
     m_simulationTick = 0;
     m_hasExplicitSimulationTick = false;
+    m_lastFixedDeltaSeconds = 0.0f;
 }
 
 void ParticleSystemInstance::Pause()
@@ -225,6 +228,7 @@ void ParticleSystemInstance::Simulate(float deltaTime)
     
     // Update simulation time
     m_simulationTime += effectiveDeltaTime;
+    m_lastFixedDeltaSeconds = effectiveDeltaTime;
     
     // Check for non-looping completion
     if (!m_system->looping && m_simulationTime >= m_system->duration)

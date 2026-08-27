@@ -174,7 +174,8 @@ namespace RVX::Resource
         bool IsCookedArtifactExtension(const std::string& path)
         {
             const std::string extension = GetExtensionLower(path);
-            return extension == ".rva" || extension == ".rvxanim";
+            return extension == ".rva" || extension == ".rvxanim" ||
+                extension == ".rvxvfx";
         }
 
         ResourcePathResolution Deny(ResourcePathResolution resolution,

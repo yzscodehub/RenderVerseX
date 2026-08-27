@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 
 foreach(_rvx_required SOURCE_ROOT BUILD_ROOT DESTINATION_ROOT STAMP_PATH
                       HDR_FIXTURE_WRITER INTERIOR_FIXTURE_WRITER
-                      TRANSPARENT_MATERIALS_FIXTURE_WRITER
+                      TRANSPARENT_MATERIALS_FIXTURE_WRITER PARTICLE_VFX_FIXTURE_WRITER
                       COOK_EXECUTABLE COOKED_CATALOG_WRITER TOON_COOK_PROFILE
                       TRANSPARENT_MATERIALS_COOK_PROFILE)
     if(NOT DEFINED ${_rvx_required} OR "${${_rvx_required}}" STREQUAL "")
@@ -178,6 +178,134 @@ if(EXISTS "${_rvx_transparent_source_root}")
     message(FATAL_ERROR
         "Transparent-material cook input remains after staging; cooked-only runtime admission is unsafe")
 endif()
+
+# The particle qualification scenes need an opaque depth/shadow fixture, but
+# the existing shadow-plane-caster catalog entry intentionally remains a source
+# model for other Samples.  Publish a distinct cooked-only identity from the
+# same hermetic input so GFX17 never admits the source entry as a fallback.
+set(_rvx_particle_ground_id "particle-vfx-ground-caster-v1")
+set(_rvx_particle_ground_source_root
+    "${_rvx_staging}/cook-inputs/${_rvx_particle_ground_id}")
+set(_rvx_particle_ground_cooked_root
+    "${_rvx_staging}/cooked/${_rvx_particle_ground_id}")
+set(_rvx_particle_ground_manifest
+    "${_rvx_particle_ground_cooked_root}/CookManifest.rvxmanifest")
+file(MAKE_DIRECTORY "${_rvx_particle_ground_source_root}")
+file(COPY_FILE
+    "${SOURCE_ROOT}/Assets/models/shadow-plane-caster/scene.gltf"
+    "${_rvx_particle_ground_source_root}/scene.gltf"
+    ONLY_IF_DIFFERENT)
+execute_process(
+    COMMAND "${COOK_EXECUTABLE}"
+        --source "${_rvx_particle_ground_source_root}"
+        --output "${_rvx_particle_ground_cooked_root}"
+        --manifest "${_rvx_particle_ground_manifest}"
+        --model-only
+        --fail-on-errors
+    RESULT_VARIABLE _rvx_particle_ground_cook_result)
+if(NOT _rvx_particle_ground_cook_result EQUAL 0)
+    message(FATAL_ERROR "Particle VFX ground/caster fixture cook failed")
+endif()
+execute_process(
+    COMMAND "${COOKED_CATALOG_WRITER}"
+        --input-catalog "${_rvx_staging}/catalog.json"
+        --output-catalog "${_rvx_staging}/catalog.json"
+        --asset-root "${_rvx_staging}"
+        --source-root "${_rvx_particle_ground_source_root}"
+        --manifest "${_rvx_particle_ground_manifest}"
+        --cooked-root "${_rvx_particle_ground_cooked_root}"
+        --cooked-root-relative "cooked/${_rvx_particle_ground_id}"
+        --asset-id "${_rvx_particle_ground_id}"
+        --asset-kind model
+        --asset-path-relative "cooked/${_rvx_particle_ground_id}/scene.rva"
+        --source-path "scene.gltf"
+        --source-name "RenderVerseX particle VFX opaque ground/caster fixture"
+        --source-uri "repo://Samples/RenderVerseSamples/Assets/models/shadow-plane-caster/scene.gltf"
+        --source-version "gfx17-particle-vfx-ground-caster-cook-v1"
+        --attribution "Generated from the RenderVerseX shadow plane/caster fixture."
+        --modification-notice "Cooked as the GFX17 opaque depth/shadow fixture; source bytes are not staged in this package."
+        --derived-from "shadow-plane-caster"
+        --generation-recipe "rvx-gfx17-particle-vfx-ground-caster-cook-v1"
+    RESULT_VARIABLE _rvx_particle_ground_catalog_result)
+if(NOT _rvx_particle_ground_catalog_result EQUAL 0)
+    message(FATAL_ERROR
+        "Particle VFX ground/caster cooked catalog publication failed")
+endif()
+file(REMOVE_RECURSE "${_rvx_particle_ground_source_root}")
+if(EXISTS "${_rvx_particle_ground_source_root}")
+    message(FATAL_ERROR
+        "Particle VFX ground/caster source input remains after staging; cooked-only runtime admission is unsafe")
+endif()
+
+# GFX17 follows the same hermetic publication transaction as the material
+# samples.  The generated atlas is deliberately created before effect.rvxparticle
+# so the cooker's deterministic source traversal resolves the texture product
+# before the effect's package-relative "atlas.rva" dependency.  Authoring bytes
+# never cross the staging boundary.
+function(rvx_stage_particle_vfx _rvx_id _rvx_kind _rvx_effect_directory)
+    set(_rvx_source_root "${_rvx_staging}/cook-inputs/${_rvx_id}")
+    set(_rvx_effect_source_directory
+        "${_rvx_source_root}/Effects/${_rvx_effect_directory}")
+    set(_rvx_cooked_root "${_rvx_staging}/cooked/${_rvx_id}")
+    set(_rvx_manifest "${_rvx_cooked_root}/CookManifest.rvxmanifest")
+    set(_rvx_effect_relative "Effects/${_rvx_effect_directory}/effect.rvxvfx")
+
+    file(MAKE_DIRECTORY "${_rvx_effect_source_directory}")
+    execute_process(
+        COMMAND "${PARTICLE_VFX_FIXTURE_WRITER}"
+            --output-dir "${_rvx_effect_source_directory}"
+            --kind "${_rvx_kind}"
+        RESULT_VARIABLE _rvx_fixture_result)
+    if(NOT _rvx_fixture_result EQUAL 0)
+        message(FATAL_ERROR "${_rvx_id} particle fixture generation failed")
+    endif()
+
+    execute_process(
+        COMMAND "${COOK_EXECUTABLE}"
+            --source "${_rvx_source_root}"
+            --output "${_rvx_cooked_root}"
+            --manifest "${_rvx_manifest}"
+            --fail-on-errors
+        RESULT_VARIABLE _rvx_cook_result)
+    if(NOT _rvx_cook_result EQUAL 0)
+        message(FATAL_ERROR "${_rvx_id} particle effect cook failed")
+    endif()
+
+    execute_process(
+        COMMAND "${COOKED_CATALOG_WRITER}"
+            --input-catalog "${_rvx_staging}/catalog.json"
+            --output-catalog "${_rvx_staging}/catalog.json"
+            --asset-root "${_rvx_staging}"
+            --source-root "${_rvx_source_root}"
+            --manifest "${_rvx_manifest}"
+            --cooked-root "${_rvx_cooked_root}"
+            --cooked-root-relative "cooked/${_rvx_id}"
+            --asset-id "${_rvx_id}"
+            --asset-kind effect
+            --asset-path-relative "cooked/${_rvx_id}/${_rvx_effect_relative}"
+            --source-path "Effects/${_rvx_effect_directory}/effect.rvxparticle"
+            --source-name "RenderVerseX deterministic ${_rvx_kind} particle fixture"
+            --source-uri "repo://Samples/Common/Tools/SampleParticleVfxFixtureWriter.cpp"
+            --source-version "gfx17-${_rvx_kind}-particle-cook-v1"
+            --attribution "Generated from the RenderVerseX deterministic ${_rvx_kind} particle fixture."
+            --modification-notice "Cooked GFX17 particle product with a package-relative atlas; authoring bytes are not staged at runtime."
+            --derived-from "${_rvx_kind}-particle-fixture"
+            --generation-recipe "rvx-gfx17-${_rvx_kind}-particle-cook-v1"
+        RESULT_VARIABLE _rvx_catalog_result)
+    if(NOT _rvx_catalog_result EQUAL 0)
+        message(FATAL_ERROR "${_rvx_id} cooked catalog publication failed")
+    endif()
+
+    file(REMOVE_RECURSE "${_rvx_source_root}")
+    if(EXISTS "${_rvx_source_root}")
+        message(FATAL_ERROR
+            "${_rvx_id} source inputs remain after staging; cooked-only runtime admission is unsafe")
+    endif()
+endfunction()
+
+rvx_stage_particle_vfx("particle-fire-v1" "fire" "Fire")
+rvx_stage_particle_vfx("particle-smoke-v1" "smoke" "Smoke")
+
 file(COPY_FILE "${SOURCE_ROOT}/Manifests/renderverse-samples.json"
      "${_rvx_staging}/renderverse-samples.json" ONLY_IF_DIFFERENT)
 foreach(_rvx_license

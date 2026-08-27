@@ -2,6 +2,7 @@
 #include "Core/Log.h"
 #include "Particle/GPU/CPUParticleSimulator.h"
 #include "Particle/GPU/IParticleSimulator.h"
+#include "Particle/ParticleEffectRenderPolicy.h"
 #include "Resource/ResourceSubsystem.h"
 #include <algorithm>
 #include <utility>
@@ -62,19 +63,6 @@ namespace
         return RVX::ParticleRenderSnapshotSimulationBackend::External;
     }
 
-    bool IsGfx16CpuBillboardPolicy(
-        RVX::ParticleRenderSnapshotMode renderMode,
-        RVX::ParticleRenderSnapshotBlendMode blendMode,
-        RVX::ParticleRenderSnapshotSimulationBackend simulationBackend,
-        bool softParticlesEnabled) noexcept
-    {
-        return renderMode == RVX::ParticleRenderSnapshotMode::Billboard &&
-               simulationBackend == RVX::ParticleRenderSnapshotSimulationBackend::CPU &&
-               !softParticlesEnabled &&
-               (blendMode == RVX::ParticleRenderSnapshotBlendMode::AlphaBlend ||
-                blendMode == RVX::ParticleRenderSnapshotBlendMode::Premultiplied ||
-                blendMode == RVX::ParticleRenderSnapshotBlendMode::Additive);
-    }
 } // namespace
 
 ParticleSubsystem* ParticleSubsystem::s_activeSubsystem = nullptr;
@@ -304,6 +292,7 @@ bool ParticleSubsystem::BuildRenderSnapshot(RVX::ParticleRenderSnapshot& outSnap
         RVX::ParticleRenderSnapshotItem item;
         item.instanceId = instance->GetInstanceId();
         item.systemId = system->id;
+        item.systemAssetId = AssetId{system->id};
         item.systemName = system->name;
         item.worldMatrix = instance->GetTransform();
         item.worldBounds = instance->GetWorldBounds();
@@ -321,13 +310,28 @@ bool ParticleSubsystem::BuildRenderSnapshot(RVX::ParticleRenderSnapshot& outSnap
         item.softParticlesEnabled = system->softParticleConfig.enabled;
         item.softParticleFadeDistance = system->softParticleConfig.fadeDistance;
 
-        if (!IsGfx16CpuBillboardPolicy(item.renderMode,
-                                       item.blendMode,
-                                       item.simulationBackend,
-                                       item.softParticlesEnabled))
+        const ParticleEffectDescriptorResolution effectResolution =
+            ParticleEffectRenderPolicy::ResolveDescriptor(system->renderEffect, nullptr);
+        item.effectDescriptor = effectResolution.descriptor;
+
+        if (!ParticleEffectRenderPolicy::SupportsCpuBillboard(
+                item.renderMode,
+                item.blendMode,
+                item.simulationBackend))
         {
             item.renderPayloadReason =
-                "GFX16 accepts only non-soft CPU Billboard particles using AlphaBlend, Premultiplied, or Additive blending.";
+                "Particle rendering accepts only CPU Billboard particles using AlphaBlend, Premultiplied, or Additive blending.";
+        }
+        else if (item.effectDescriptor.IsCanonicalDisabled() &&
+                 item.softParticlesEnabled)
+        {
+            item.renderPayloadReason =
+                "Legacy particle soft depth has no immutable GFX17 effect descriptor.";
+        }
+        else if (!effectResolution.IsReady())
+        {
+            item.renderPayloadReason = std::string(
+                ParticleEffectRenderPolicy::Describe(effectResolution.code));
         }
         else if (const IParticleSimulator* simulator = instance->GetSimulator())
         {
@@ -337,10 +341,14 @@ bool ParticleSubsystem::BuildRenderSnapshot(RVX::ParticleRenderSnapshot& outSnap
             packet.deterministicInstanceKey =
                 instance->GetDeterministicInstanceKey();
             packet.effectiveSimulationSeed = instance->GetEffectiveSimulationSeed();
+            packet.fixedDeltaSeconds = instance->GetLastFixedDeltaSeconds();
             if (simulator->BuildRenderParticlePayload(packet.particles))
             {
-                packet.contentHash = packet.ComputeContentHash();
-                if (packet.IsStructurallyValid(item.maxParticleCount) &&
+                const TextureSheetModule* textureSheet =
+                    system->GetModule<TextureSheetModule>();
+                if (ParticleEffectRenderPolicy::FinalizeCpuPacket(
+                        packet, item.effectDescriptor, textureSheet) &&
+                    packet.IsStructurallyValid(item.maxParticleCount) &&
                     packet.particles.size() == item.aliveParticleCount)
                 {
                     item.cpuPacket = std::move(packet);
@@ -352,7 +360,7 @@ bool ParticleSubsystem::BuildRenderSnapshot(RVX::ParticleRenderSnapshot& outSnap
                 else
                 {
                     item.renderPayloadReason =
-                        "CPU particle packet failed count, content-hash, or structural validation.";
+                    "CPU particle packet failed effect/frame, count, content-hash, or structural validation.";
                 }
             }
         }

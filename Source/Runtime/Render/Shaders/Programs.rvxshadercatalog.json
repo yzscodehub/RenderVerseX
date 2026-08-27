@@ -68,8 +68,11 @@
     {"asset":"Skybox.hlsl","stage":"Vertex","entry":"VSMain","backends":["DX11","DX12","Vulkan","Metal","OpenGL"],"defines":[{"name":"RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y","value":"$backend.clipY"}]},
     {"asset":"Skybox.hlsl","stage":"Pixel","entry":"PSMain","backends":["DX11","DX12","Vulkan","Metal","OpenGL"],"defines":[{"name":"RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y","value":"$backend.clipY"}]},
 
-    {"asset":"Particle/ParticleBillboard.hlsl","stage":"Vertex","entry":"VSMain","backends":["DX11","DX12","Vulkan","Metal","OpenGL"]},
-    {"asset":"Particle/ParticleBillboard.hlsl","stage":"Pixel","entry":"PSMain","backends":["DX11","DX12","Vulkan","Metal","OpenGL"]},
+    {"asset":"Particle/ParticleBillboard.hlsl","stage":"Vertex","entry":"VSMain","backends":["DX11","DX12","Vulkan","Metal","OpenGL"],"defines":[{"name":"RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y","value":"$backend.clipY"}]},
+    {"asset":"Particle/ParticleBillboard.hlsl","stage":"Pixel","entry":"PSMain","backends":["DX11","DX12","Vulkan","Metal","OpenGL"],"defines":[{"name":"RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y","value":"$backend.clipY"}]},
+    {"asset":"Particle/ParticleBillboard.hlsl","stage":"Pixel","entry":"PSDistortionMain","backends":["DX11","DX12","Vulkan","Metal","OpenGL"],"defines":[{"name":"RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y","value":"$backend.clipY"}]},
+    {"asset":"Particle/ParticleBillboard.hlsl","stage":"Vertex","entry":"DistortionCompositeVS","backends":["DX11","DX12","Vulkan","Metal","OpenGL"],"defines":[{"name":"RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y","value":"$backend.clipY"}]},
+    {"asset":"Particle/ParticleBillboard.hlsl","stage":"Pixel","entry":"DistortionCompositePS","backends":["DX11","DX12","Vulkan","Metal","OpenGL"],"defines":[{"name":"RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y","value":"$backend.clipY"}]},
 
     {"asset":"GPUDriven/GPUCulling.hlsl","stage":"Compute","entry":"CSFrustumCull","backends":["DX12","Vulkan","Metal"]},
     {"asset":"GPUDriven/GPUCulling.hlsl","stage":"Compute","entry":"CSCompactDraws","backends":["DX12","Vulkan","Metal"]},

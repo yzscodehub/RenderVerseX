@@ -31,4 +31,14 @@ namespace RVX
         EngineRuntimeDependencies(EngineRuntimeDependencies&&) noexcept = default;
         EngineRuntimeDependencies& operator=(EngineRuntimeDependencies&&) noexcept = default;
     };
+
+    /**
+     * @brief Compose the Engine-owned cooked runtime loaders.
+     *
+     * ResourceRuntime provides generic cooked resources; Engine owns the
+     * feature-level Particle loader registration so ResourceRuntime does not
+     * acquire an illegal dependency on a runtime feature module.
+     */
+    [[nodiscard]] ResourceManagerDependencies
+        CreateEngineResourceManagerDependencies();
 } // namespace RVX

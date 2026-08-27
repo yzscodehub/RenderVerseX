@@ -211,6 +211,11 @@ namespace RVX
                 output = SampleAssetKind::Animation;
                 return true;
             }
+            if (text == "effect")
+            {
+                output = SampleAssetKind::Effect;
+                return true;
+            }
             return false;
         }
 
@@ -305,6 +310,7 @@ namespace RVX
 
         bool IsLowerSHA256Digest(const std::string& digest);
         bool IsRvaPath(const std::filesystem::path& path);
+        bool IsRvxVfxPath(const std::filesystem::path& path);
         bool ParseStrictPosixRelativePath(const std::string& text,
                                           std::filesystem::path& output,
                                           std::string& outError);
@@ -325,6 +331,7 @@ namespace RVX
             if (text == "Script") { output = CookAssetType::Script; return true; }
             if (text == "Model") { output = CookAssetType::Model; return true; }
             if (text == "Environment") { output = CookAssetType::Environment; return true; }
+            if (text == "Effect") { output = CookAssetType::Effect; return true; }
             return false;
         }
 
@@ -544,16 +551,24 @@ namespace RVX
                 return true;
             }
 
-            if (entry.kind != SampleAssetKind::Model ||
-                entry.cook.selector.type != Resource::CookAssetType::Model ||
-                !IsRvaPath(entry.path) || !entry.contentIdentity.IsValid() ||
+            const bool modelArtifact =
+                entry.kind == SampleAssetKind::Model &&
+                entry.cook.selector.type == Resource::CookAssetType::Model &&
+                IsRvaPath(entry.path);
+            const bool effectArtifact =
+                entry.kind == SampleAssetKind::Effect &&
+                entry.cook.selector.type == Resource::CookAssetType::Effect &&
+                IsRvxVfxPath(entry.path);
+            if ((!modelArtifact && !effectArtifact) ||
+                !entry.contentIdentity.IsValid() ||
                 entry.contentIdentity.domain !=
                     Resource::ResourceContentIdentityDomain::CookedArtifact ||
                 entry.contentIdentity.scope !=
                     Resource::ResourceContentIdentityScope::SelfContainedArtifact)
             {
-                outError = "Package-only sample asset must be a model with a "
-                           "self-contained CookedArtifact .rva identity";
+                outError = "Package-only sample asset must be either a Model "
+                           "(.rva) or Effect (.rvxvfx) with a matching selector "
+                           "and self-contained CookedArtifact identity";
                 return false;
             }
 
@@ -777,6 +792,17 @@ namespace RVX
                                return static_cast<char>(std::tolower(character));
                            });
             return extension == ".rva";
+        }
+
+        bool IsRvxVfxPath(const std::filesystem::path& path)
+        {
+            std::string extension = path.extension().string();
+            std::transform(extension.begin(), extension.end(), extension.begin(),
+                           [](unsigned char character)
+                           {
+                               return static_cast<char>(std::tolower(character));
+                           });
+            return extension == ".rvxvfx";
         }
 
         bool ParseGltfLocalUri(const std::string& uri,
@@ -1051,6 +1077,7 @@ namespace RVX
             case SampleAssetKind::Texture: return "texture";
             case SampleAssetKind::Environment: return "environment";
             case SampleAssetKind::Animation: return "animation";
+            case SampleAssetKind::Effect: return "effect";
             default: return "unknown";
         }
     }

@@ -6,7 +6,6 @@
  */
 
 #include "Core/Math/AABB.h"
-#include "Engine/ECS/IWorldEcsRuntimeServices.h"
 #include "Resource/ResourceContentIdentity.h"
 #include "ResourceSceneAdapters/ECS/EcsSceneAssetLoadCoordinator.h"
 #include "Samples/SampleContext.h"
@@ -21,6 +20,8 @@
 
 namespace RVX
 {
+    class IWorldEcsRuntimeServices;
+
     /** @brief Value-only state retained by one sample model request. */
     struct LoadedSampleModel
     {

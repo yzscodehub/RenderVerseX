@@ -3,7 +3,7 @@
 #include "Core/MathTypes.h"
 #include <vector>
 #include <algorithm>
-#include <random>
+#include <limits>
 
 namespace RVX::Particle
 {
@@ -44,8 +44,8 @@ public:
 
     void Initialize(uint32 maxLights)
     {
-        m_maxLights = maxLights;
-        m_lights.reserve(maxLights);
+        m_maxLights = std::min(maxLights, 1U);
+        m_lights.reserve(1U);
     }
 
     void Shutdown()
@@ -76,32 +76,35 @@ public:
 
         // Determine which particles should emit lights
         std::vector<uint32> lightEmitters;
-        lightEmitters.reserve(std::min(static_cast<size_t>(module.maxLights), aliveIndices.size()));
-
-        if (module.randomDistribution)
+        lightEmitters.reserve(1U);
+        const float ratio = std::clamp(module.ratio, 0.0f, 1.0f);
+        const uint32 permittedCount = std::min(module.maxLights, m_maxLights);
+        if (permittedCount != 0U)
         {
-            // Randomly select particles based on ratio
-            for (uint32 idx : aliveIndices)
+            // Never use process entropy. Stable particle randomSeed and slot
+            // index are sufficient to choose one reproducible candidate.
+            uint32 selected = RVX_INVALID_INDEX;
+            uint32 selectedRank = std::numeric_limits<uint32>::max();
+            for (uint32 index : aliveIndices)
             {
-                if (lightEmitters.size() >= module.maxLights)
-                    break;
-
-                float roll = static_cast<float>(m_rng() % 10000) / 10000.0f;
-                if (roll < module.ratio)
+                if (index >= particles.size())
                 {
-                    lightEmitters.push_back(idx);
+                    continue;
+                }
+                const CPUParticle& particle = particles[index];
+                uint32 rank = particle.randomSeed ^ (index * 0x9e3779b9U);
+                rank ^= rank >> 16U;
+                const float threshold = static_cast<float>(rank & 0xffffU) /
+                                        static_cast<float>(0x10000U);
+                if (threshold < ratio && rank < selectedRank)
+                {
+                    selected = index;
+                    selectedRank = rank;
                 }
             }
-        }
-        else
-        {
-            // Select first N particles based on ratio
-            size_t count = static_cast<size_t>(aliveIndices.size() * module.ratio);
-            count = std::min(count, static_cast<size_t>(module.maxLights));
-            
-            for (size_t i = 0; i < count && i < aliveIndices.size(); ++i)
+            if (selected != RVX_INVALID_INDEX)
             {
-                lightEmitters.push_back(aliveIndices[i]);
+                lightEmitters.push_back(selected);
             }
         }
 
@@ -236,7 +239,7 @@ public:
                 light.color,
                 light.intensity,
                 light.range,
-                module.castShadows,
+                false,
                 module.affectsSpecular
             );
         }
@@ -250,8 +253,7 @@ public:
 
 private:
     std::vector<ParticleLight> m_lights;
-    uint32 m_maxLights = 10;
-    std::minstd_rand m_rng{std::random_device{}()};
+    uint32 m_maxLights = 1;
 };
 
 } // namespace RVX::Particle

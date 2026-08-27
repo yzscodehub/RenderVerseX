@@ -5,14 +5,16 @@
  * @brief Particle system asset - defines particle behavior and appearance
  */
 
-#include "Particle/ParticleTypes.h"
 #include "Particle/Emitters/IEmitter.h"
 #include "Particle/Modules/IParticleModule.h"
-#include "Particle/Rendering/SoftParticleConfig.h"
 #include "Particle/ParticleLOD.h"
+#include "Particle/ParticleTypes.h"
+#include "Particle/Rendering/SoftParticleConfig.h"
+#include "RenderContracts/ParticleRenderSnapshot.h"
+
 #include <memory>
-#include <vector>
 #include <string>
+#include <vector>
 
 namespace RVX::Particle
 {
@@ -152,6 +154,16 @@ namespace RVX::Particle
 
         /// Texture path (if no material)
         std::string texturePath;
+
+        /**
+         * @brief Immutable backend-neutral effect policy captured into render snapshots.
+         *
+         * Loaders author the logical atlas AssetId and sampling policy only.
+         * The exact RenderResourceHandle/content revision is resolved later by
+         * the owner-thread Resource publication view; a ParticleSystem never
+         * owns or manufactures a render resource handle.
+         */
+        ParticleRenderEffectDescriptor renderEffect;
 
         /// Soft particle configuration
         SoftParticleConfig softParticleConfig;

@@ -46,7 +46,145 @@ target_link_libraries(RenderVerseSamples PRIVATE
     RVX::SampleCommon
     RVX::Scene
     RVX::World
+    RVX::Gfx17SampleScenarios
 )
+
+# GFX17 scenarios compile against the narrow scenario contracts only. Their
+# final symbols are resolved by the existing Sample host/SampleCommon runtime,
+# but their target closure intentionally cannot pull Renderer, RHI, a backend,
+# or Developer composition into scene code.
+add_library(RVX_Gfx17SampleScenarios STATIC
+    Scenes/ParticleVfxSamples.cpp
+)
+target_compile_features(RVX_Gfx17SampleScenarios PRIVATE cxx_std_20)
+target_include_directories(RVX_Gfx17SampleScenarios PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+rvx_apply_scenario_contract_include_roots(
+    RVX_Gfx17SampleScenarios
+    RVX_Animation
+    RVX_AssetContracts
+    RVX_Core
+    RVX_ECS
+    RVX_Geometry
+    Particle
+    RVX_Physics
+    RVX_RenderContracts
+    RVX_ResourceRuntime
+    RVX_ResourceSceneAdapters
+    RVX_Scene
+    RVX_World
+)
+target_link_libraries(RVX_Gfx17SampleScenarios PRIVATE
+    RVX::SampleScenarioContracts
+    glm::glm-header-only
+)
+add_library(RVX::Gfx17SampleScenarios ALIAS RVX_Gfx17SampleScenarios)
+rvx_register_module_target(
+    TARGET RVX_Gfx17SampleScenarios
+    MODULE Samples
+    ALIASES RVX::Gfx17SampleScenarios
+)
+
+# Keep the GFX17 scene target honest even while the legacy SampleCommon host
+# still has broader historical dependencies. This configure-time check walks
+# its complete CMake target closure, including static-library LINK_ONLY
+# dependencies, and rejects forbidden composition modules; the source scan
+# independently rejects direct private renderer/backend includes.
+function(rvx_gfx17_link_item_is_forbidden _rvx_link _rvx_out_result)
+    set(_rvx_normalized "${_rvx_link}")
+    if(_rvx_normalized MATCHES "^\\$<LINK_ONLY:(.+)>$")
+        set(_rvx_normalized "${CMAKE_MATCH_1}")
+    endif()
+    set(_rvx_forbidden
+        RVX::RHI RVX_RHI
+        RVX::Render RVX_Render
+        RVX::AssetImport RVX_AssetImport
+        RVX::ShaderCompiler RVX_ShaderCompiler
+        RVX::EngineDevelopmentComposition RVX_EngineDevelopmentComposition)
+    list(FIND _rvx_forbidden "${_rvx_normalized}" _rvx_forbidden_index)
+    set(${_rvx_out_result} FALSE PARENT_SCOPE)
+    if(NOT _rvx_forbidden_index EQUAL -1)
+        set(${_rvx_out_result} TRUE PARENT_SCOPE)
+    endif()
+endfunction()
+
+function(rvx_assert_gfx17_scenario_closure _rvx_target)
+    set(_rvx_pending "${_rvx_target}")
+    set(_rvx_visited)
+    set(_rvx_forbidden
+        RVX::RHI RVX_RHI
+        RVX::Render RVX_Render
+        RVX::AssetImport RVX_AssetImport
+        RVX::ShaderCompiler RVX_ShaderCompiler
+        RVX::EngineDevelopmentComposition RVX_EngineDevelopmentComposition)
+    while(_rvx_pending)
+        list(POP_FRONT _rvx_pending _rvx_current)
+        list(FIND _rvx_visited "${_rvx_current}" _rvx_seen)
+        if(NOT _rvx_seen EQUAL -1)
+            continue()
+        endif()
+        list(APPEND _rvx_visited "${_rvx_current}")
+        foreach(_rvx_forbidden_target IN LISTS _rvx_forbidden)
+            if("${_rvx_current}" STREQUAL "${_rvx_forbidden_target}")
+                message(FATAL_ERROR
+                    "GFX17 scenario closure reached forbidden target ${_rvx_current}")
+            endif()
+        endforeach()
+        rvx_gfx17_link_item_is_forbidden(
+            "${_rvx_current}" _rvx_current_is_forbidden)
+        if(_rvx_current MATCHES "^\\$<LINK_ONLY:(.+)>$")
+            set(_rvx_current "${CMAKE_MATCH_1}")
+        endif()
+        if(_rvx_current_is_forbidden)
+            message(FATAL_ERROR
+                "GFX17 scenario closure reached forbidden target ${_rvx_current}")
+        endif()
+        if(NOT TARGET "${_rvx_current}")
+            continue()
+        endif()
+        foreach(_rvx_property LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+            get_target_property(_rvx_links "${_rvx_current}" ${_rvx_property})
+            if(_rvx_links AND NOT _rvx_links STREQUAL "_rvx_links-NOTFOUND")
+                foreach(_rvx_link IN LISTS _rvx_links)
+                    if(_rvx_link MATCHES "^::@")
+                        continue()
+                    endif()
+                    list(APPEND _rvx_pending "${_rvx_link}")
+                endforeach()
+            endif()
+        endforeach()
+    endwhile()
+
+    set(_rvx_gfx17_source_contract_files
+        "${CMAKE_CURRENT_SOURCE_DIR}/Scenes/ParticleVfxSamples.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Scenes/ParticleVfxSamples.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleContext.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleFeatureReporter.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleParticleEffectLoader.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleParticleVfxDiagnostics.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Common/Include/Samples/SampleRenderPathPolicy.h")
+    foreach(_rvx_gfx17_source_contract_file IN LISTS _rvx_gfx17_source_contract_files)
+        file(STRINGS "${_rvx_gfx17_source_contract_file}"
+             _rvx_gfx17_private_includes
+             REGEX "^[ \\t]*#include[ \\t]+\"(RHI/|Render/|RenderGraph|AssetImport|ShaderCompiler|EngineDevelopmentComposition)")
+        if(_rvx_gfx17_private_includes)
+            message(FATAL_ERROR
+                "GFX17 narrow scenario source contract includes forbidden renderer/developer headers in ${_rvx_gfx17_source_contract_file}: ${_rvx_gfx17_private_includes}")
+        endif()
+    endforeach()
+endfunction()
+
+# Regression proof for the static closure checker itself. A future attempt to
+# hide RHI behind LINK_ONLY must remain detectable rather than weakening this
+# check to a consumer-interface-only inspection.
+rvx_gfx17_link_item_is_forbidden(
+    "$<LINK_ONLY:RVX::RHI>" _rvx_gfx17_link_only_rhi_rejected)
+if(NOT _rvx_gfx17_link_only_rhi_rejected)
+    message(FATAL_ERROR
+        "GFX17 closure check does not reject LINK_ONLY RHI dependencies")
+endif()
+rvx_assert_gfx17_scenario_closure(RVX_Gfx17SampleScenarios)
 
 if(RVX_ENABLE_DX11)
     target_link_libraries(RenderVerseSamples PRIVATE RVX::RHI_DX11)
@@ -106,6 +244,7 @@ add_custom_command(
         "-DHDR_FIXTURE_WRITER=$<TARGET_FILE:RVXSampleHDRFixtureWriter>"
         "-DINTERIOR_FIXTURE_WRITER=$<TARGET_FILE:RVXSampleInteriorFixtureWriter>"
         "-DTRANSPARENT_MATERIALS_FIXTURE_WRITER=$<TARGET_FILE:RVXSampleTransparentMaterialsFixtureWriter>"
+        "-DPARTICLE_VFX_FIXTURE_WRITER=$<TARGET_FILE:RVXSampleParticleVfxFixtureWriter>"
         "-DCOOK_EXECUTABLE=$<TARGET_FILE:RVXCook>"
         "-DCOOKED_CATALOG_WRITER=$<TARGET_FILE:RVXSampleCookedCatalogWriter>"
         "-DTOON_COOK_PROFILE=${CMAKE_CURRENT_SOURCE_DIR}/AssetRecipes/stylized-materials-toon.rvxprofile"
@@ -116,6 +255,7 @@ add_custom_command(
         RVXSampleHDRFixtureWriter
         RVXSampleInteriorFixtureWriter
         RVXSampleTransparentMaterialsFixtureWriter
+        RVXSampleParticleVfxFixtureWriter
         RVXCook
         RVXSampleCookedCatalogWriter
     COMMENT "Staging a clean, dependency-tracked RenderVerseSamples asset tree"

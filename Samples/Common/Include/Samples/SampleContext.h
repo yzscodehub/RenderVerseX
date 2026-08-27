@@ -6,7 +6,6 @@
  */
 
 #include "Core/Types.h"
-#include "Engine/ECS/IWorldEcsRuntimeServices.h"
 #include "RenderContracts/RenderFrameTypes.h"
 #include "Resource/ResourceDiagnosticsView.h"
 #include "Resource/ResourcePublicationView.h"
@@ -27,9 +26,11 @@
 namespace RVX
 {
     class InputSubsystem;
+    class IWorldEcsRuntimeServices;
     class SampleAnimationLoader;
     class SampleEnvironmentLoader;
     class SampleModelLoader;
+    class SampleParticleEffectLoader;
     class World;
 
     /** @brief One legacy host-resolved model input; contains no loader policy. */
@@ -143,6 +144,10 @@ namespace RVX
         std::string environmentAssetId;
         /** @brief Required animation catalog ids in deterministic request order. */
         std::vector<std::string> animationAssetIds;
+        /** @brief Required cooked effect catalog ids in deterministic request order. */
+        std::vector<std::string> effectAssetIds;
+        /** @brief Primary cooked effect id for an effect-focused VFX scenario. */
+        std::string effectAssetId;
 
         // Compatibility-only path fields. New catalog-backed sample scenes must
         // use the ids above with RequestByAssetId().
@@ -157,6 +162,9 @@ namespace RVX
         SampleQualityTier qualityTier = SampleQualityTier::Default;
         SamplePipelineRecipe pipelineRecipe =
             SamplePipelineRecipe::ForwardStandard;
+        /** Manifest-owned rational time step for deterministic scenarios. */
+        uint32 fixedTimeNumerator = 0;
+        uint32 fixedTimeDenominator = 0;
         uint32 deterministicSeed = 0;
         SampleRenderPath renderPath = SampleRenderPath::Auto;
         std::optional<SampleWorkloadProfile> workloadProfile;
@@ -192,6 +200,8 @@ namespace RVX
         SampleModelLoader& models;
         SampleEnvironmentLoader& environments;
         SampleAnimationLoader& animations;
+        /** Cooked-only CPU billboard effect admission for VFX scenarios. */
+        SampleParticleEffectLoader& particleEffects;
         /** Host-owned scope for direct procedural sample entities only. */
         SampleSceneLifetimeScope& sceneLifetime;
         const SampleSceneOptions& options;

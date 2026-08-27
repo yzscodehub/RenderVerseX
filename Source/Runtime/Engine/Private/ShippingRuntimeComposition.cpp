@@ -17,7 +17,7 @@ namespace RVX
     {
         EngineRuntimeDependencies dependencies;
         dependencies.resourceManager.emplace(
-            Resource::CreateRuntimeResourceManagerDependencies());
+            CreateEngineResourceManagerDependencies());
         dependencies.shaderPrograms =
             CreateCookedShaderProgramProviderFactory(
                 std::move(cookedShaderRoot));

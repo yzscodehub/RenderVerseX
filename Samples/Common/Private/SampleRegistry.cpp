@@ -82,6 +82,7 @@ namespace RVX
             return false;
         };
         if (!requireDeclaredAsset(info.defaultAssetId) ||
+            !requireDeclaredAsset(info.defaultEffectAssetId) ||
             !requireDeclaredAsset(info.defaultEnvironmentId))
         {
             return false;

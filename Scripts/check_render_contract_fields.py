@@ -701,6 +701,7 @@ FUNDAMENTAL_LEAVES = {
     "std::uint64_t",
 }
 MATH_LEAVES = {
+    "glm::uvec2",
     "glm::vec2",
     "glm::vec3",
     "glm::vec4",

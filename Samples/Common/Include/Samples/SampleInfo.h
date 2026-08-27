@@ -318,5 +318,7 @@ namespace RVX
         std::string visualContractId;
         /** Whether captures must use the deterministic qualification timeline. */
         bool deterministicQualification = false;
+        /** Cooked-only primary effect asset used by an effect-focused VFX scenario. */
+        std::string defaultEffectAssetId;
     };
 } // namespace RVX

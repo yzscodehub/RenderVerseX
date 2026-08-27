@@ -1,8 +1,10 @@
 #include "Particle/ECS/ParticleEcsRuntimeGateway.h"
 
 #include "Particle/GPU/CPUParticleSimulator.h"
+#include "Particle/ParticleEffectRenderPolicy.h"
 #include "Particle/ParticleSystemInstance.h"
 #include "Particle/ParticleSystemLoader.h"
+#include "Resource/ResourcePublicationView.h"
 #include "Resource/ResourceManager.h"
 
 #include <cmath>
@@ -52,23 +54,6 @@ namespace
                config.simulationSpeed >= 0.0f && IsFinite(request.worldTransform) &&
                std::isfinite(request.deltaSeconds) && request.deltaSeconds >= 0.0 &&
                request.deterministicInstanceKey != 0;
-    }
-
-    [[nodiscard]] bool IsGfx16CpuBillboardPolicy(
-        ParticleRenderSnapshotMode renderMode,
-        ParticleRenderSnapshotBlendMode blendMode,
-        ParticleRenderSnapshotSimulationBackend simulationBackend,
-        bool softParticlesEnabled) noexcept
-    {
-        if (renderMode != ParticleRenderSnapshotMode::Billboard ||
-            simulationBackend != ParticleRenderSnapshotSimulationBackend::CPU ||
-            softParticlesEnabled)
-        {
-            return false;
-        }
-        return blendMode == ParticleRenderSnapshotBlendMode::AlphaBlend ||
-               blendMode == ParticleRenderSnapshotBlendMode::Premultiplied ||
-               blendMode == ParticleRenderSnapshotBlendMode::Additive;
     }
 
     [[nodiscard]] ParticleRenderSnapshotMode ToSnapshotRenderMode(ParticleRenderMode mode)
@@ -145,8 +130,10 @@ struct ParticleEcsRuntimeGateway::State
         bool allocated = false;
     };
 
-    explicit State(Resource::ResourceManager& manager)
+    explicit State(Resource::ResourceManager& manager,
+                   const Resource::IResourcePublicationView* view)
         : resourceManager(&manager)
+        , publicationView(view)
         , ownerThread(std::this_thread::get_id())
     {
     }
@@ -321,14 +308,17 @@ struct ParticleEcsRuntimeGateway::State
     }
 
     Resource::ResourceManager* resourceManager = nullptr;
+    const Resource::IResourcePublicationView* publicationView = nullptr;
     std::thread::id ownerThread;
     std::string lastFailureReason;
     std::vector<Entry> entries;
     std::vector<uint32> freeEntries;
 };
 
-ParticleEcsRuntimeGateway::ParticleEcsRuntimeGateway(Resource::ResourceManager& resourceManager)
-    : m_state(std::make_unique<State>(resourceManager))
+ParticleEcsRuntimeGateway::ParticleEcsRuntimeGateway(
+    Resource::ResourceManager& resourceManager,
+    const Resource::IResourcePublicationView* publicationView)
+    : m_state(std::make_unique<State>(resourceManager, publicationView))
 {
 }
 
@@ -502,25 +492,44 @@ bool ParticleEcsRuntimeGateway::CaptureSnapshot(
     item.sortingSupported = false;
     item.sortingReason = "Particle sorting is deferred to Render-owned feature passes";
 
-    const bool supportedPolicy = IsGfx16CpuBillboardPolicy(
-        item.renderMode, item.blendMode, item.simulationBackend,
-        item.softParticlesEnabled);
+    const ParticleEffectDescriptorResolution effectResolution =
+        ParticleEffectRenderPolicy::ResolveDescriptor(
+            system->renderEffect, m_state->publicationView);
+    item.effectDescriptor = effectResolution.descriptor;
+
+    const bool supportedPolicy = ParticleEffectRenderPolicy::SupportsCpuBillboard(
+        item.renderMode, item.blendMode, item.simulationBackend);
     if (!supportedPolicy)
     {
         item.renderPayloadReason =
-            "GFX16 accepts only non-soft CPU Billboard particles using AlphaBlend, Premultiplied, or Additive blending.";
+            "Particle rendering accepts only CPU Billboard particles using AlphaBlend, Premultiplied, or Additive blending.";
+    }
+    else if (item.effectDescriptor.IsCanonicalDisabled() &&
+             item.softParticlesEnabled)
+    {
+        item.renderPayloadReason =
+            "Legacy particle soft depth has no immutable GFX17 effect descriptor.";
+    }
+    else if (!effectResolution.IsReady())
+    {
+        item.renderPayloadReason = std::string(
+            ParticleEffectRenderPolicy::Describe(effectResolution.code));
     }
     else if (const IParticleSimulator* simulator = instance.GetSimulator())
     {
         ParticleCpuPacket packet;
-        packet.simulationTick = entry->lastSimulationTick;
+        packet.simulationTick = instance.GetSimulationTick();
         packet.deterministicSeed = entry->config.deterministicSeed;
         packet.deterministicInstanceKey = entry->deterministicInstanceKey;
         packet.effectiveSimulationSeed = instance.GetEffectiveSimulationSeed();
+        packet.fixedDeltaSeconds = instance.GetLastFixedDeltaSeconds();
         if (simulator->BuildRenderParticlePayload(packet.particles))
         {
-            packet.contentHash = packet.ComputeContentHash();
-            if (packet.IsStructurallyValid(item.maxParticleCount) &&
+            const TextureSheetModule* textureSheet =
+                system->GetModule<TextureSheetModule>();
+            if (ParticleEffectRenderPolicy::FinalizeCpuPacket(
+                    packet, item.effectDescriptor, textureSheet) &&
+                packet.IsStructurallyValid(item.maxParticleCount) &&
                 packet.particles.size() == item.aliveParticleCount)
             {
                 item.cpuPacket = std::move(packet);
@@ -530,7 +539,7 @@ bool ParticleEcsRuntimeGateway::CaptureSnapshot(
             else
             {
                 item.renderPayloadReason =
-                    "CPU particle packet failed count, content-hash, or structural validation.";
+                    "CPU particle packet failed effect/frame, count, content-hash, or structural validation.";
             }
         }
     }

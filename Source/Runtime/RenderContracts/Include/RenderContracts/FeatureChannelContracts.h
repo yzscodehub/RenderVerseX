@@ -22,7 +22,10 @@ namespace RVX
         Terrain = 3,
     };
 
-    inline constexpr uint32 RVX_PARTICLE_RENDER_SNAPSHOT_SCHEMA_VERSION = 2;
+    // GFX17 adds an immutable effect descriptor and packet-level frame
+    // cadence/resource identity. Consumers must reject the former GFX16
+    // payload shape rather than interpreting absent effect fields as defaults.
+    inline constexpr uint32 RVX_PARTICLE_RENDER_SNAPSHOT_SCHEMA_VERSION = 3;
     inline constexpr uint32 RVX_WATER_RENDER_SNAPSHOT_SCHEMA_VERSION = 2;
     inline constexpr uint32 RVX_TERRAIN_RENDER_SNAPSHOT_SCHEMA_VERSION = 2;
 

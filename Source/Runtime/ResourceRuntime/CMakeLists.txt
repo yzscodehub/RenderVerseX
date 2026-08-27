@@ -41,6 +41,7 @@ target_sources(RVX_ResourceRuntime PRIVATE
     Private/Cooked/CookedEnvironmentArtifact.cpp
     Private/Cooked/CookedMaterialArtifact.cpp
     Private/Cooked/CookedModelArtifact.cpp
+    Private/Cooked/CookedParticleEffectArtifact.cpp
     Private/Cooked/CookedTextureArtifact.cpp
 
     # Concrete resource types

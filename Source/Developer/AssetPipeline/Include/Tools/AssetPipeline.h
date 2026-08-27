@@ -47,7 +47,9 @@ enum class AssetType : uint8
     Scene = 9,
     Script = 10,
     Model = 11,
-    Environment = 12
+    Environment = 12,
+    /** @brief Strict authoring JSON cooked to a .rvxvfx product. */
+    Effect = 13
 };
 
 /**
@@ -57,7 +59,17 @@ struct ImportResult
 {
     bool success = false;
     std::string error;
+    /**
+     * Cooked products owned and emitted by this source asset.  CookDirectory
+     * records these as artifacts of the source entry.
+     */
     std::vector<std::string> outputPaths;
+    /**
+     * Pre-existing cooked products consumed by this source asset.  These are
+     * recorded as content-bound dependencies only; they are never attributed
+     * as artifacts of this source entry.
+     */
+    std::vector<std::string> dependencyOutputPaths;
     std::vector<std::string> warnings;
 };
 

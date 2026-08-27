@@ -2,6 +2,7 @@
 
 #include "Render/Material/MaterialSystem.h"
 #include "Render/Passes/OpaquePass.h"
+#include "Render/Passes/ParticleFeaturePass.h"
 #include "Renderer/RenderPassRegistry.h"
 
 #include <algorithm>
@@ -62,6 +63,153 @@ namespace
                     data.receipt->copied.store(true, std::memory_order_release);
                 }
             });
+    }
+
+    struct ParticleSoftDepthSnapshotCopyData
+    {
+        RGTextureHandle source{};
+        RGTextureHandle destination{};
+    };
+
+    [[nodiscard]] bool AddParticleSoftDepthSnapshotCopy(
+        RenderFeatureGraphBuilder& builder,
+        RGTextureHandle source,
+        RGTextureHandle destination)
+    {
+        return builder.AddPass<ParticleSoftDepthSnapshotCopyData>(
+            "ParticleSoftDepthSnapshotCopy",
+            RenderGraphPassType::Graphics,
+            [source, destination](RenderGraphBuilder& graphBuilder,
+                                  ParticleSoftDepthSnapshotCopyData& data)
+            {
+                data.source = graphBuilder.Read(source, RHIResourceState::CopySource);
+                data.destination = graphBuilder.Write(destination, RHIResourceState::CopyDest);
+            },
+            [](const ParticleSoftDepthSnapshotCopyData& data,
+               RenderGraphPassContext& context)
+            {
+                RHITexture* const source = context.GetTexture(data.source);
+                RHITexture* const destination = context.GetTexture(data.destination);
+                if (source == nullptr || destination == nullptr || source == destination ||
+                    source->GetWidth() != destination->GetWidth() ||
+                    source->GetHeight() != destination->GetHeight() ||
+                    source->GetFormat() != destination->GetFormat())
+                {
+                    context.MarkExecutionFailed(
+                        "Particle soft-depth snapshot copy has invalid source/destination provenance");
+                    return;
+                }
+                context.Commands().CopyTexture(source, destination);
+            });
+    }
+
+    [[nodiscard]] const ParticleFeaturePass* FindParticleFeaturePass(
+        const RenderPassRegistry* registry) noexcept
+    {
+        if (registry == nullptr)
+        {
+            return nullptr;
+        }
+        for (const std::unique_ptr<IRenderPass>& pass : registry->GetPasses())
+        {
+            if (const auto* const particle =
+                    dynamic_cast<const ParticleFeaturePass*>(pass.get()))
+            {
+                return particle;
+            }
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] bool BuildParticleVfxRecordInput(
+        RenderFeatureGraphBuilder& builder,
+        const RenderPassRecordContext& context,
+        const RenderPassRegistry& registry,
+        RenderOutputExtent extent,
+        ParticleVfxRecordInput& outInput,
+        std::string& outFailure)
+    {
+        outInput = {};
+        const ParticleFeaturePass* const particle = FindParticleFeaturePass(&registry);
+        if (particle == nullptr)
+        {
+            return true;
+        }
+
+        const ParticleVfxRequirements requirements =
+            particle->GetVfxRequirements();
+        if (!requirements.requested)
+        {
+            return true;
+        }
+
+        outInput.identity = context.identity;
+        outInput.softDepthRequested = requirements.softDepthRequested;
+        outInput.softDepthRequired = requirements.softDepthRequired;
+        outInput.reactiveMaskRequested = requirements.reactiveMaskRequested;
+        outInput.distortionRequested = requirements.distortionRequested;
+
+        if (requirements.softDepthRequested)
+        {
+            const RHITextureDesc* const depthDesc = builder.GetGraph().GetTextureDesc(
+                context.view.depthTarget);
+            const bool validSource = context.view.depthTarget.IsValid() &&
+                HasCurrentGraphProvenance(context.view.depthTarget, context.identity) &&
+                depthDesc != nullptr && depthDesc->format == RHIFormat::D32_FLOAT &&
+                depthDesc->width == extent.width && depthDesc->height == extent.height &&
+                depthDesc->sampleCount == RHISampleCount::Count1 &&
+                HasFlag(depthDesc->usage, RHITextureUsage::CopySrc);
+            if (!validSource)
+            {
+                if (requirements.softDepthRequired)
+                {
+                    outFailure =
+                        "Particle required soft depth needs a D32 CopySrc depth surface matching the view extent";
+                    return false;
+                }
+            }
+            else
+            {
+                RHITextureDesc softDepthDesc = RHITextureDesc::DepthStencil(
+                    extent.width, extent.height, RHIFormat::D32_FLOAT);
+                // Explicitly retain sampled-depth capability: this transient
+                // is copied once, then bound exclusively as the particle PS
+                // SRV; the original depth stays a read-only DSV.
+                softDepthDesc.usage = softDepthDesc.usage |
+                    RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst;
+                softDepthDesc.debugName = "ParticleSoftDepthSnapshot";
+                outInput.softDepthSnapshot = builder.CreateTexture(softDepthDesc);
+                if (!outInput.softDepthSnapshot.IsValid() ||
+                    outInput.softDepthSnapshot.index == context.view.depthTarget.index ||
+                    !AddParticleSoftDepthSnapshotCopy(
+                        builder, context.view.depthTarget, outInput.softDepthSnapshot))
+                {
+                    outFailure = "Particle soft-depth snapshot allocation/copy registration failed";
+                    return false;
+                }
+            }
+        }
+
+        if (requirements.distortionRequested)
+        {
+            RHITextureDesc distortionDesc = RHITextureDesc::RenderTarget(
+                extent.width, extent.height, RHIFormat::RG16_FLOAT);
+            distortionDesc.debugName = "ParticleDistortionVectors";
+            outInput.distortionVectors = builder.CreateTexture(distortionDesc);
+
+            RHITextureDesc compositeDesc = RHITextureDesc::RenderTarget(
+                extent.width, extent.height, RHIFormat::RGBA16_FLOAT);
+            compositeDesc.debugName = "ParticleDistortionCompositeSceneColor";
+            outInput.compositedSceneColor = builder.CreateTexture(compositeDesc);
+            if (!outInput.distortionVectors.IsValid() ||
+                !outInput.compositedSceneColor.IsValid() ||
+                outInput.compositedSceneColor.index == context.view.colorTarget.index)
+            {
+                outFailure = "Particle distortion requires distinct RG16F and HDR graph outputs";
+                return false;
+            }
+        }
+        return true;
     }
     [[nodiscard]] uint32 CountEligibleToonOutlineMaterials(
         const MaterialParameterTableSnapshot& table) noexcept
@@ -759,6 +907,21 @@ void ForwardLightingFeatureAdapter::AddPasses(
         std::make_shared<OpaqueSceneSnapshotCopyReceipt>();
     bool opaqueSnapshotRegistered = false;
 
+    ParticleVfxRecordInput particleVfx;
+    std::string particleVfxFailure;
+    if (!BuildParticleVfxRecordInput(
+            builder,
+            opaqueContext,
+            *m_passRegistry,
+            m_preparedContext.outputExtent,
+            particleVfx,
+            particleVfxFailure))
+    {
+        SetCompositionFailure(std::move(particleVfxFailure));
+        return;
+    }
+    RGTextureHandle activeSceneColor = opaqueContext.view.colorTarget;
+
     const int32 firstLightingConsumerPriority = m_opaquePass->GetPriority();
     for (const std::unique_ptr<IRenderPass>& pass : m_passRegistry->GetPasses())
     {
@@ -789,13 +952,15 @@ void ForwardLightingFeatureAdapter::AddPasses(
         // Later surfaces intentionally receive no screen AO. They retain the
         // exact graph-owned shadow state, but not the opaque-only AO field.
         RenderPassRecordContext passContext = opaqueContext;
+        passContext.view.colorTarget = activeSceneColor;
+        passContext.particleVfx = particleVfx;
         passContext.ambientOcclusion = {};
         if (!opaqueSnapshotRegistered &&
             pass->GetPriority() >= PassPriority::Transparent)
         {
             if (!AddOpaqueSceneSnapshotCopy(
                     builder,
-                    opaqueContext.view.colorTarget,
+                    activeSceneColor,
                     opaqueSceneSnapshot,
                     opaqueSnapshotReceipt))
             {
@@ -820,6 +985,13 @@ void ForwardLightingFeatureAdapter::AddPasses(
                 status.name + "'");
             return;
         }
+        if (const auto* const particle =
+                dynamic_cast<const ParticleFeaturePass*>(pass.get());
+            particle != nullptr && particleVfx.compositedSceneColor.IsValid() &&
+            particle->HasRegisteredDistortionComposite())
+        {
+            activeSceneColor = particleVfx.compositedSceneColor;
+        }
         ++m_lastPassChainStats.graphPassCount;
         m_lastPassChainStats.graphPassNames.push_back(status.name);
     }
@@ -828,7 +1000,7 @@ void ForwardLightingFeatureAdapter::AddPasses(
     {
         if (!AddOpaqueSceneSnapshotCopy(
                 builder,
-                opaqueContext.view.colorTarget,
+                activeSceneColor,
                 opaqueSceneSnapshot,
                 opaqueSnapshotReceipt))
         {
@@ -843,7 +1015,7 @@ void ForwardLightingFeatureAdapter::AddPasses(
     outputs.provenance = builder.GetProvenance();
     outputs.frameIdentity = m_preparedContext.frameIdentity;
     outputs.viewIdentity = m_preparedContext.viewIdentity;
-    outputs.hdrSceneColor = m_recordContext.view.colorTarget;
+    outputs.hdrSceneColor = activeSceneColor;
     outputs.hdrSceneColorMetadata = MakeMetadata(
         m_preparedContext.outputExtent, SceneTextures::HDRSceneColorContract);
     outputs.deviceDepth = m_recordContext.view.depthTarget;
@@ -869,6 +1041,14 @@ void ForwardLightingFeatureAdapter::AddPasses(
     outputs.reactiveMask = m_recordContext.view.reactiveMaskTarget;
     outputs.reactiveMaskMetadata = MakeMetadata(
         m_preparedContext.outputExtent, SceneTextures::ReactiveMaskContract);
+    outputs.distortionVectors = particleVfx.distortionVectors;
+    if (outputs.distortionVectors.IsValid())
+    {
+        outputs.distortionVectorsMetadata = MakeMetadata(
+            m_preparedContext.outputExtent,
+            SceneTextures::FormatContract{
+                RHIFormat::RG16_FLOAT, RHISampleCount::Count1});
+    }
     outputs.opaqueSceneSnapshot = opaqueSceneSnapshot;
     outputs.opaqueSceneSnapshotMetadata = MakeMetadata(
         m_preparedContext.outputExtent, SceneTextures::HDRSceneColorContract);

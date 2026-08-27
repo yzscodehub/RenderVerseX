@@ -2,6 +2,7 @@
 
 #include "Samples/SampleModelLoader.h"
 
+#include "Engine/ECS/IWorldEcsRuntimeServices.h"
 #include "Scene/ECS/Fragments.h"
 #include "Scene/ECS/RenderFragments.h"
 #include "Scene/ECS/TransformMath.h"

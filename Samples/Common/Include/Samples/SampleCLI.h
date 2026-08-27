@@ -14,7 +14,9 @@
 #include "RHI/RHIDefinitions.h"
 #include "Resource/ResourceContentIdentity.h"
 #include "Samples/SampleAssetCatalog.h"
+#include "Samples/SampleFeatureReporter.h"
 #include "Samples/SampleInfo.h"
+#include "Samples/SampleParticleVfxDiagnostics.h"
 
 #include <array>
 #include <cmath>
@@ -28,7 +30,7 @@
 namespace RVX
 {
     /** @brief Current JSON schema version written by sample report producers. */
-    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 29;
+    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 30;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION = 20;
     inline constexpr uint32
@@ -48,6 +50,8 @@ namespace RVX
         RVX_SAMPLE_REPORT_PRE_TRANSLUCENCY_EXECUTION_SCHEMA_VERSION = 27;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_COOKED_ONLY_ADMISSION_SCHEMA_VERSION = 28;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_PARTICLE_VFX_EXECUTION_SCHEMA_VERSION = 29;
     inline constexpr uint32 RVX_SAMPLE_REPORT_PRE_VISUAL_CONTRACT_SCHEMA_VERSION = 19;
     inline constexpr uint32 RVX_SAMPLE_REPORT_SCENARIO_SCHEMA_VERSION = 12;
     inline constexpr uint32 RVX_SAMPLE_REPORT_ECS_DIAGNOSTICS_SCHEMA_VERSION = 13;
@@ -929,6 +933,8 @@ namespace RVX
         SampleToonLightingExecutionDiagnostics toonLightingActualExecution{};
         /** Exact, main-view execution projection for HDR Toon outlines. */
         SampleToonOutlineExecutionDiagnostics toonOutlineActualExecution{};
+        /** Exact, main-view execution projection for GFX17 CPU billboard VFX. */
+        SampleParticleVfxExecutionDiagnostics particleVfxActualExecution{};
         /** Renderer-owned GFX15 sorted-translucency receipt facts. */
         uint32 transparentAlphaBlendDrawCount = 0;
         uint32 transparentPremultipliedDrawCount = 0;
@@ -1468,24 +1474,6 @@ namespace RVX
         uint32 frameCount = 0;
     };
 
-    class SampleFeatureReporter
-    {
-    public:
-        explicit SampleFeatureReporter(SampleReport& report);
-
-        void Enable(std::string feature);
-        void Unsupported(std::string feature);
-        void Fallback(std::string reason);
-        void ResourceDiagnostic(std::string diagnostic);
-        void SetScenarioContractRevision(uint32 contractRevision);
-        void SetScenarioPhase(std::string phase);
-        bool AppendScenarioAction(SampleReportScenarioAction action);
-        bool AppendScenarioInvariant(SampleReportScenarioInvariant invariant);
-        bool AppendScenarioMetric(SampleReportScenarioMetric metric);
-
-    private:
-        SampleReport* m_report = nullptr;
-    };
     bool ParseSampleBackend(const std::string& text, RHIBackendType& outBackend);
     const char* GetSampleBackendName(RHIBackendType backend);
 
@@ -1520,6 +1508,9 @@ namespace RVX
             const RenderDiagnosticsSnapshot& renderDiagnostics);
     [[nodiscard]] SampleToonOutlineExecutionDiagnostics
         ProjectSampleToonOutlineExecutionDiagnostics(
+            const RenderDiagnosticsSnapshot& renderDiagnostics);
+    [[nodiscard]] SampleParticleVfxExecutionDiagnostics
+        ProjectSampleParticleVfxExecutionDiagnostics(
             const RenderDiagnosticsSnapshot& renderDiagnostics);
 
     /** Terminal state of the exact presented Toon-outline qualification target. */

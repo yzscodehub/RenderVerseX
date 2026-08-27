@@ -185,7 +185,7 @@ namespace
             { "Audio", CookAssetType::Audio }, { "Font", CookAssetType::Font },
             { "Prefab", CookAssetType::Prefab }, { "Scene", CookAssetType::Scene },
             { "Script", CookAssetType::Script }, { "Model", CookAssetType::Model },
-            { "Environment", CookAssetType::Environment },
+            { "Environment", CookAssetType::Environment }, { "Effect", CookAssetType::Effect },
         };
         for (const auto& [name, type] : Types)
         {
@@ -581,6 +581,7 @@ const char* GetCookAssetTypeName(const CookAssetType type)
         case CookAssetType::Script: return "Script";
         case CookAssetType::Model: return "Model";
         case CookAssetType::Environment: return "Environment";
+        case CookAssetType::Effect: return "Effect";
         default: return "Unknown";
     }
 }

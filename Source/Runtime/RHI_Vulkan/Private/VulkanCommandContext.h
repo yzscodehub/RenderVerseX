@@ -9,6 +9,32 @@ namespace RVX
     class VulkanPipeline;
     struct RHIQueueSubmissionPlan;
 
+    enum class VulkanTextureCopyContractStatus : uint8
+    {
+        Compatible = 0,
+        UnknownFormat,
+        AspectMismatch,
+        FormatMismatch,
+        UnsupportedStencilAspect,
+    };
+
+    struct VulkanTextureCopyContract
+    {
+        VulkanTextureCopyContractStatus status =
+            VulkanTextureCopyContractStatus::UnknownFormat;
+        VkImageAspectFlags aspectMask = 0;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return status == VulkanTextureCopyContractStatus::Compatible &&
+                   aspectMask != 0;
+        }
+    };
+
+    [[nodiscard]] VulkanTextureCopyContract ResolveVulkanTextureCopyContract(
+        RHIFormat sourceFormat,
+        RHIFormat destinationFormat) noexcept;
+
     // =============================================================================
     // Vulkan Command Context
     // =============================================================================

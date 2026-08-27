@@ -9,6 +9,8 @@
 #include "Particle/Curves/AnimationCurve.h"
 #include "Particle/ParticleTypes.h"
 #include "Core/MathTypes.h"
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace RVX::Particle
@@ -111,23 +113,118 @@ namespace RVX::Particle
                             static_cast<float>(row) * outScale.y);
         }
 
-        /// Calculate frame index for a given normalized age
-        uint32 GetFrameIndex(float normalizedAge) const
+        /**
+         * @brief Resolve an atlas frame using only explicit simulation inputs.
+         *
+         * The legacy normalized-age overload could not implement Speed mode
+         * and silently ignored random row/start settings.  This overload is
+         * used when sealing CPU render packets and never touches wall clock or
+         * process entropy.
+         */
+        [[nodiscard]] uint32 GetFrameIndex(float ageSeconds,
+                                           float lifetimeSeconds,
+                                           uint32 deterministicSeed,
+                                           uint64 deterministicInstanceKey,
+                                           uint32 stableParticleId,
+                                           uint64 simulationTick,
+                                           float fixedDeltaSeconds) const noexcept
         {
-            uint32 totalFrames = frameCount > 0 ? frameCount : tiles.x * tiles.y;
-            
+            static_cast<void>(simulationTick);
+            if (tiles.x == 0U || tiles.y == 0U || !std::isfinite(ageSeconds) ||
+                !std::isfinite(lifetimeSeconds) || lifetimeSeconds <= 0.0f ||
+                !std::isfinite(frameRate) || frameRate < 0.0f ||
+                !std::isfinite(cycles) || cycles < 0.0f ||
+                !std::isfinite(fixedDeltaSeconds) || fixedDeltaSeconds < 0.0f)
+            {
+                return 0U;
+            }
+
+            const uint64 totalTiles64 = static_cast<uint64>(tiles.x) *
+                                         static_cast<uint64>(tiles.y);
+            if (totalTiles64 == 0U || totalTiles64 > RVX_INVALID_INDEX)
+            {
+                return 0U;
+            }
+            const uint32 totalTiles = static_cast<uint32>(totalTiles64);
+
+            const uint64 identity = MixDeterministicIdentity(
+                deterministicSeed,
+                deterministicInstanceKey,
+                stableParticleId);
+            const uint32 selectedRow = mode == TextureSheetAnimationMode::SingleRow
+                ? (randomRow ? static_cast<uint32>(identity % tiles.y)
+                             : rowIndex % tiles.y)
+                : 0U;
+            const uint32 rowStart = mode == TextureSheetAnimationMode::SingleRow
+                ? selectedRow * tiles.x
+                : 0U;
+            const uint32 localFirstFrame = mode == TextureSheetAnimationMode::SingleRow
+                ? startFrame % tiles.x
+                : std::min(startFrame, totalTiles - 1U);
+            const uint32 rangeStart = rowStart + localFirstFrame;
+            const uint32 availableFrames = mode == TextureSheetAnimationMode::SingleRow
+                ? tiles.x - localFirstFrame
+                : totalTiles - localFirstFrame;
+            const uint32 configuredFrames = frameCount == 0U
+                ? availableFrames
+                : std::min(frameCount, availableFrames);
+            if (configuredFrames == 0U)
+            {
+                return 0U;
+            }
+
+            const uint32 randomizedStart = randomStartFrame
+                ? static_cast<uint32>((identity >> 32U) % configuredFrames)
+                : 0U;
+            uint32 animatedFrame = 0U;
             if (timeMode == TextureSheetTimeMode::Lifetime)
             {
-                float t = frameOverTime.Evaluate(normalizedAge);
-                t = t * cycles;
-                t = t - std::floor(t);  // Wrap to 0-1
-                return static_cast<uint32>(t * static_cast<float>(totalFrames)) % totalFrames;
+                const float normalizedAge = std::clamp(ageSeconds / lifetimeSeconds,
+                                                       0.0f,
+                                                       1.0f);
+                float progress = frameOverTime.Evaluate(normalizedAge) * cycles;
+                progress -= std::floor(progress);
+                animatedFrame = std::min(
+                    static_cast<uint32>(progress * static_cast<float>(configuredFrames)),
+                    configuredFrames - 1U);
             }
             else
             {
-                // Speed mode - would need actual time, not age
-                return startFrame;
+                const float elapsed = std::max(0.0f, ageSeconds);
+                const uint64 steps = static_cast<uint64>(
+                    std::floor(elapsed * frameRate));
+                animatedFrame = static_cast<uint32>(steps % configuredFrames);
             }
+
+            return rangeStart +
+                ((randomizedStart + animatedFrame) % configuredFrames);
+        }
+
+        /** @brief Compatibility helper for non-packet editor tooling. */
+        [[nodiscard]] uint32 GetFrameIndex(float normalizedAge) const noexcept
+        {
+            return GetFrameIndex(normalizedAge,
+                                 1.0f,
+                                 0U,
+                                 1U,
+                                 0U,
+                                 0U,
+                                 0.0f);
+        }
+
+    private:
+        [[nodiscard]] static uint64 MixDeterministicIdentity(
+            uint32 seed,
+            uint64 instanceKey,
+            uint32 particleId) noexcept
+        {
+            uint64 value = (static_cast<uint64>(seed) << 32U) ^ instanceKey;
+            value ^= static_cast<uint64>(particleId) * 0xbf58476d1ce4e5b9ull;
+            value ^= value >> 30U;
+            value *= 0xbf58476d1ce4e5b9ull;
+            value ^= value >> 27U;
+            value *= 0x94d049bb133111ebull;
+            return value ^ (value >> 31U);
         }
     };
 

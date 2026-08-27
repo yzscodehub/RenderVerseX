@@ -15,6 +15,7 @@
 #include "Render/GPUDriven/GPUDrivenPolicy.h"
 #include "Render/GPUScene/GPUSceneDiagnostics.h"
 #include "Render/Policy/RenderPolicyDiagnostics.h"
+#include "RenderContracts/ParticleRenderSnapshot.h"
 #include "RenderContracts/RenderIdentity.h"
 #include "RenderContracts/RenderFrameTypes.h"
 
@@ -1031,6 +1032,20 @@ namespace RVX
         GPUSceneCullingQualificationDiagnostics gpuSceneOpaqueQualification{};
     };
 
+    /** Public, value-only proof for one submitted particle billboard batch. */
+    struct RenderParticleBatchReceipt
+    {
+        ParticleRenderSnapshotBlendMode blendMode =
+            ParticleRenderSnapshotBlendMode::AlphaBlend;
+        uint64 effectDescriptorHash = 0;
+        AssetId textureAssetId{};
+        RenderResourceHandle texture{};
+        uint32 textureResourceGeneration = 0;
+        uint64 textureContentRevision = 0;
+        uint32 instanceCount = 0;
+        bool textureResolved = false;
+    };
+
     struct RenderParticleFeatureDiagnostics
     {
         bool requested = false;
@@ -1050,6 +1065,33 @@ namespace RVX
         uint64 uploadBytes = 0;
         uint64 resourceCreationCount = 0;
         uint64 pipelineCreationCount = 0;
+        bool softDepthRequested = false;
+        bool softDepthRequired = false;
+        bool softDepthSnapshotReady = false;
+        bool softDepthLinearizationReady = false;
+        bool softDepthEnabled = false;
+        bool softDepthOptionalFallback = false;
+        bool flipbookRequested = false;
+        bool flipbookValidated = false;
+        bool reactiveMaskRequested = false;
+        bool reactiveMaskWriteEnabled = false;
+        uint32 reactiveMaskWriteDrawCount = 0;
+        bool distortionRequested = false;
+        bool distortionPassScheduled = false;
+        bool distortionPassExecuted = false;
+        bool distortionCompositeExecuted = false;
+        uint32 lightHintRequestedCount = 0;
+        uint32 lightHintAdmittedCount = 0;
+        uint32 lightHintDroppedCount = 0;
+        RenderFrameIdentity recordFrameIdentity{};
+        uint64 recordGraphIdentity = 0;
+        uint64 recordGraphGeneration = 0;
+        uint64 recordEpoch = 0;
+        uint64 executionReceiptFrameSequence = 0;
+        uint64 presentedFrameSequence = 0;
+        bool recordIdentityMatchesExecutionReceipt = false;
+        std::vector<RenderParticleBatchReceipt> batchReceipts{};
+        bool batchReceiptsOverflow = false;
         std::string reason{};
     };
 

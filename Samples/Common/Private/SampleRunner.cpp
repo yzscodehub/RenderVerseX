@@ -20,6 +20,7 @@
 #include "Samples/SampleEnvironmentLoader.h"
 #include "Samples/SampleLifetimeQualification.h"
 #include "Samples/SampleModelLoader.h"
+#include "Samples/SampleParticleEffectLoader.h"
 #include "Samples/SampleRegistry.h"
 #include "Samples/SampleScreenshotWriter.h"
 #include "World/World.h"
@@ -1723,6 +1724,7 @@ namespace
             std::vector<ResolvedSampleAsset> additionalModels;
             ResolvedSampleAsset environment;
             std::vector<ResolvedSampleAsset> animations;
+            std::vector<ResolvedSampleAsset> effects;
         };
 
         struct AssetContentVerificationSummary
@@ -1956,6 +1958,10 @@ namespace
             {
                 append(animation);
             }
+            for (const ResolvedSampleAsset& effect : assets.effects)
+            {
+                append(effect);
+            }
             return SampleAssetRegistry(std::move(entries));
         }
 
@@ -2010,11 +2016,22 @@ namespace
                        : std::nullopt;
         }
 
+        std::optional<Resource::ResourceContentVerificationReceipt>
+        GetEffectContentVerificationReceipt(
+            const SampleParticleEffectLoader& effects,
+            const ResolvedSampleAsset& asset)
+        {
+            return asset.selected && asset.entry.kind == SampleAssetKind::Effect
+                ? effects.GetContentVerificationReceipt(asset.entry.resolvedPath)
+                : std::nullopt;
+        }
+
         AssetContentVerificationSummary BuildAssetContentVerificationSummary(
             const ResolvedSampleAssets& assets,
             const SampleModelLoader& models,
             const SampleEnvironmentLoader& environments,
             const SampleAnimationLoader& animations,
+            const SampleParticleEffectLoader& effects,
             FrameworkAssessmentSession& assessmentSession)
         {
             struct AssetEvidence
@@ -2027,7 +2044,8 @@ namespace
             };
 
             std::map<std::pair<std::string, std::string>, AssetEvidence> evidence;
-            const auto append = [&evidence, &models, &environments, &animations](
+            const auto append = [&evidence, &models, &environments, &animations,
+                                 &effects](
                                     const ResolvedSampleAsset& asset)
             {
                 if (!asset.selected)
@@ -2071,6 +2089,17 @@ namespace
                         value.hasReceipt = true;
                     }
                 }
+                else if (asset.entry.kind == SampleAssetKind::Effect)
+                {
+                    const std::optional<Resource::ResourceContentVerificationReceipt>
+                        receipt = GetEffectContentVerificationReceipt(
+                            effects, asset);
+                    if (receipt.has_value())
+                    {
+                        value.receipt = *receipt;
+                        value.hasReceipt = true;
+                    }
+                }
 
                 // Catalog ids are the portable logical identity. An explicit
                 // path intentionally has no id and cannot enter assetSet.
@@ -2086,6 +2115,10 @@ namespace
             for (const ResolvedSampleAsset& animation : assets.animations)
             {
                 append(animation);
+            }
+            for (const ResolvedSampleAsset& effect : assets.effects)
+            {
+                append(effect);
             }
 
             AssetContentVerificationSummary result;
@@ -2154,13 +2187,17 @@ namespace
             const std::string selectedEnvironmentId =
                 options.environmentId.empty() ? info.defaultEnvironmentId
                                               : options.environmentId;
+            const std::string selectedEffectId = info.defaultEffectAssetId;
             sceneOptions.assetId = selectedModelId;
             sceneOptions.environmentAssetId = selectedEnvironmentId;
+            sceneOptions.effectAssetId = selectedEffectId;
             sceneOptions.width = options.common.width;
             sceneOptions.height = options.common.height;
             sceneOptions.quality = options.common.quality;
             sceneOptions.qualityTier = options.qualityTier;
             sceneOptions.pipelineRecipe = options.pipelineRecipe;
+            sceneOptions.fixedTimeNumerator = options.fixedTimeNumerator;
+            sceneOptions.fixedTimeDenominator = options.fixedTimeDenominator;
             sceneOptions.deterministicSeed = options.deterministicSeed;
             RenderPipelineRecipe validatedRecipe{};
             RenderQualityTier validatedQuality{};
@@ -2236,9 +2273,10 @@ namespace
                 outError = "Sample requires an environment asset: " + info.id;
                 return false;
             }
-            if (selectedModelId.empty() && options.modelPath.empty())
+            if (selectedModelId.empty() && options.modelPath.empty() &&
+                selectedEffectId.empty())
             {
-                outError = "Sample has no default asset and --asset was not provided: " +
+                outError = "Sample has no default model or effect asset and --asset was not provided: " +
                            info.id;
                 return false;
             }
@@ -2259,7 +2297,8 @@ namespace
                 return false;
             }
 
-            const bool modelUsesCatalog = options.modelPath.empty();
+            const bool modelUsesCatalog = options.modelPath.empty() &&
+                                          !selectedModelId.empty();
             const bool environmentUsesCatalog = options.environmentPath.empty() &&
                                                 !selectedEnvironmentId.empty();
             const bool animationsUseCatalog =
@@ -2312,7 +2351,7 @@ namespace
                                  "model",
                                  resolvedAssets.model);
             }
-            else
+            else if (modelUsesCatalog)
             {
                 if (!ResolveCatalogAsset(catalog,
                                          selectedModelId,
@@ -2327,12 +2366,12 @@ namespace
                 sceneOptions.modelPath =
                     resolvedAssets.model.entry.resolvedPath;
             }
-            sceneOptions.modelAssets.push_back({
-                sceneOptions.assetId,
-                sceneOptions.modelPath,
-            });
             if (!sceneOptions.assetId.empty())
             {
+                sceneOptions.modelAssets.push_back({
+                    sceneOptions.assetId,
+                    sceneOptions.modelPath,
+                });
                 sceneOptions.modelAssetIds.push_back(sceneOptions.assetId);
             }
 
@@ -2446,6 +2485,23 @@ namespace
                 resolvedAssets.animations.push_back(std::move(animation));
             }
 
+            if (!selectedEffectId.empty())
+            {
+                ResolvedSampleAsset effect;
+                if (!ResolveCatalogAsset(catalog,
+                                         selectedEffectId,
+                                         SampleAssetKind::Effect,
+                                         "effect",
+                                         options.common.smoke,
+                                         effect,
+                                         outError))
+                {
+                    return false;
+                }
+                sceneOptions.effectAssetIds.push_back(effect.entry.id);
+                resolvedAssets.effects.push_back(std::move(effect));
+            }
+
             std::vector<std::string> admittedCookedIds;
             admittedCookedIds.reserve(info.requiredCookedAssetIds.size());
             for (const std::string& cookedId : info.requiredCookedAssetIds)
@@ -2498,6 +2554,20 @@ namespace
                     if (animationIt != resolvedAssets.animations.end())
                     {
                         selectedAsset = &*animationIt;
+                    }
+                }
+                if (!selectedAsset)
+                {
+                    const auto effectIt = std::find_if(
+                        resolvedAssets.effects.begin(),
+                        resolvedAssets.effects.end(),
+                        [&cookedId](const ResolvedSampleAsset& asset)
+                        {
+                            return asset.entry.id == cookedId;
+                        });
+                    if (effectIt != resolvedAssets.effects.end())
+                    {
+                        selectedAsset = &*effectIt;
                     }
                 }
                 if (!selectedAsset)
@@ -3094,6 +3164,9 @@ namespace
                     renderDiagnostics);
             result.toonOutlineActualExecution =
                 ProjectSampleToonOutlineExecutionDiagnostics(
+                    renderDiagnostics);
+            result.particleVfxActualExecution =
+                ProjectSampleParticleVfxExecutionDiagnostics(
                     renderDiagnostics);
             result.transparentAlphaBlendDrawCount =
                 diagnostics.transparent.alphaBlendDrawCount;
@@ -5084,6 +5157,9 @@ namespace
                 *runtimeServices,
                 scene->GetSceneRuntimeId(),
                 assetRegistry);
+            SampleParticleEffectLoader particleEffects(
+                *resourceSubsystem,
+                assetRegistry);
             SampleSceneLifetimeScope sceneLifetime(*scene);
             const SceneECS::SceneEcsDiagnosticsSnapshot engineBaselineScene =
                 scene->GetDiagnosticsSnapshot();
@@ -5105,6 +5181,7 @@ namespace
                 models,
                 environments,
                 animations,
+                particleEffects,
                 sceneLifetime,
                 sceneOptions,
                 assessmentSession.GetChannel(),
@@ -6833,12 +6910,37 @@ namespace
                     models,
                     environments,
                     animations,
+                    particleEffects,
                     assessmentSession);
             const auto primaryModelContentReceipt =
                 GetModelContentVerificationReceipt(models, resolvedAssets.model);
-            const bool primaryModelLoaded =
-                primaryModelContentReceipt.has_value() &&
-                primaryModelContentReceipt->IsVerified();
+            // Preserve the long-standing Model primary-asset contract, but do
+            // not manufacture a Model identity for effect-only scenarios.
+            // A mixed scenario keeps its selected Model as primary; otherwise
+            // the explicitly selected effect becomes the report's primary
+            // asset and is backed by its own owner-thread verification receipt.
+            const ResolvedSampleAsset* primaryAsset =
+                resolvedAssets.model.selected ? &resolvedAssets.model : nullptr;
+            std::optional<Resource::ResourceContentVerificationReceipt>
+                primaryAssetContentReceipt = primaryModelContentReceipt;
+            if (primaryAsset == nullptr && !sceneOptions.effectAssetId.empty())
+            {
+                const auto selectedEffect = std::find_if(
+                    resolvedAssets.effects.begin(),
+                    resolvedAssets.effects.end(),
+                    [&sceneOptions](const ResolvedSampleAsset& asset)
+                    {
+                        return asset.selected &&
+                               asset.entry.id == sceneOptions.effectAssetId;
+                    });
+                if (selectedEffect != resolvedAssets.effects.end())
+                {
+                    primaryAsset = &*selectedEffect;
+                    primaryAssetContentReceipt =
+                        GetEffectContentVerificationReceipt(
+                            particleEffects, *selectedEffect);
+                }
+            }
             const SceneECS::SceneEcsDiagnosticsSnapshot reportSceneDiagnostics =
                 scene->GetDiagnosticsSnapshot();
             const WorldEcsRuntimeServicesDiagnostics reportServiceDiagnostics =
@@ -7070,23 +7172,28 @@ namespace
             }
             report.diagnostics = options.common.diagnostics;
             report.screenshotPath = options.common.screenshotPath;
-            report.assetId = sceneOptions.assetId;
-            report.assetPath = sceneOptions.modelPath;
-            report.assetKind =
-                GetSampleAssetKindName(resolvedAssets.model.entry.kind);
-            report.catalogPath = resolvedAssets.model.catalogPath;
-            report.assetRoot = resolvedAssets.model.assetRoot;
-            report.assetLicenseSpdx =
-                resolvedAssets.model.entry.license.spdxId;
-            report.assetLicenseFile =
-                resolvedAssets.model.entry.license.resolvedFile;
-            report.assetSourceName = resolvedAssets.model.entry.source.name;
-            report.assetSourceUri = resolvedAssets.model.entry.source.uri;
-            report.assetAuthor = resolvedAssets.model.entry.source.author;
-            report.assetAttribution = resolvedAssets.model.entry.attribution;
-            report.assetRedistributable =
-                resolvedAssets.model.entry.redistributable;
-            report.assetLoaded = primaryModelLoaded;
+            if (primaryAsset != nullptr)
+            {
+                report.assetId = primaryAsset->entry.id;
+                report.assetPath = primaryAsset->entry.resolvedPath;
+                report.assetKind =
+                    GetSampleAssetKindName(primaryAsset->entry.kind);
+                report.catalogPath = primaryAsset->catalogPath;
+                report.assetRoot = primaryAsset->assetRoot;
+                report.assetLicenseSpdx =
+                    primaryAsset->entry.license.spdxId;
+                report.assetLicenseFile =
+                    primaryAsset->entry.license.resolvedFile;
+                report.assetSourceName = primaryAsset->entry.source.name;
+                report.assetSourceUri = primaryAsset->entry.source.uri;
+                report.assetAuthor = primaryAsset->entry.source.author;
+                report.assetAttribution = primaryAsset->entry.attribution;
+                report.assetRedistributable =
+                    primaryAsset->entry.redistributable;
+                report.assetLoaded =
+                    primaryAssetContentReceipt.has_value() &&
+                    primaryAssetContentReceipt->IsVerified();
+            }
             report.readiness.waitRequested = effectiveReadyWait;
             report.readiness.ready = sampleReady;
             report.readiness.minimumFrames = options.common.frames;
@@ -7097,9 +7204,12 @@ namespace
                                              ? readinessWaitBudget.timeoutMs
                                              : 0;
             report.readiness.reason = readinessReason;
-            report.assets.push_back(MakeReportAsset("model",
-                                                    resolvedAssets.model,
-                                                    primaryModelContentReceipt));
+            if (resolvedAssets.model.selected)
+            {
+                report.assets.push_back(MakeReportAsset("model",
+                                                        resolvedAssets.model,
+                                                        primaryModelContentReceipt));
+            }
             for (const ResolvedSampleAsset& additional :
                  resolvedAssets.additionalModels)
             {
@@ -7124,6 +7234,12 @@ namespace
                     animation,
                     GetAnimationContentVerificationReceipt(
                         animations, animation)));
+            }
+            for (const ResolvedSampleAsset& effect : resolvedAssets.effects)
+            {
+                report.assets.push_back(MakeReportAsset(
+                    "effect", effect,
+                    GetEffectContentVerificationReceipt(particleEffects, effect)));
             }
             report.renderDiagnostics = sampleRenderDiagnostics;
             if (options.common.pixelProbeEnabled)

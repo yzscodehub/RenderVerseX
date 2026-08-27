@@ -800,6 +800,67 @@ namespace
                 particles.resourceCreationCount;
             features.particles.pipelineCreationCount =
                 particles.pipelineCreationCount;
+            features.particles.softDepthRequested = particles.softDepthRequested;
+            features.particles.softDepthRequired = particles.softDepthRequired;
+            features.particles.softDepthSnapshotReady =
+                particles.softDepthSnapshotReady;
+            features.particles.softDepthLinearizationReady =
+                particles.softDepthLinearizationReady;
+            features.particles.softDepthEnabled = particles.softDepthEnabled;
+            features.particles.softDepthOptionalFallback =
+                particles.softDepthOptionalFallback;
+            features.particles.flipbookRequested = particles.flipbookRequested;
+            features.particles.flipbookValidated = particles.flipbookValidated;
+            features.particles.reactiveMaskRequested =
+                particles.reactiveMaskRequested;
+            features.particles.reactiveMaskWriteEnabled =
+                particles.reactiveMaskWriteEnabled;
+            features.particles.reactiveMaskWriteDrawCount =
+                particles.reactiveMaskWriteDrawCount;
+            features.particles.distortionRequested = particles.distortionRequested;
+            features.particles.distortionPassScheduled =
+                particles.distortionPassScheduled;
+            features.particles.distortionPassExecuted =
+                particles.distortionPassExecuted;
+            features.particles.distortionCompositeExecuted =
+                particles.distortionCompositeExecuted;
+            features.particles.lightHintRequestedCount =
+                particles.lightHintRequestedCount;
+            features.particles.lightHintAdmittedCount =
+                particles.lightHintAdmittedCount;
+            features.particles.lightHintDroppedCount =
+                particles.lightHintDroppedCount;
+            features.particles.recordFrameIdentity =
+                particles.recordFrameIdentity;
+            features.particles.recordGraphIdentity = particles.recordGraphIdentity;
+            features.particles.recordGraphGeneration =
+                particles.recordGraphGeneration;
+            features.particles.recordEpoch = particles.recordEpoch;
+            features.particles.executionReceiptFrameSequence =
+                features.executionReceipt.frameIdentity.frameSequence;
+            features.particles.presentedFrameSequence = features.frameSequence;
+            features.particles.recordIdentityMatchesExecutionReceipt =
+                particles.recordFrameIdentity.IsValid() &&
+                particles.recordFrameIdentity == features.executionReceipt.frameIdentity;
+            features.particles.batchReceipts.reserve(
+                particles.batchReceipts.size());
+            for (const ParticleFeatureBatchReceipt& batch :
+                 particles.batchReceipts)
+            {
+                features.particles.batchReceipts.push_back(
+                    RenderParticleBatchReceipt{
+                        .blendMode = batch.blendMode,
+                        .effectDescriptorHash = batch.effectDescriptorHash,
+                        .textureAssetId = batch.textureAssetId,
+                        .texture = batch.texture,
+                        .textureResourceGeneration = batch.textureResourceGeneration,
+                        .textureContentRevision = batch.textureContentRevision,
+                        .instanceCount = batch.instanceCount,
+                        .textureResolved = batch.textureResolved,
+                    });
+            }
+            features.particles.batchReceiptsOverflow =
+                particles.batchReceiptsOverflow;
             features.particles.reason = particles.unsupportedReason;
 
             if (MaterialSystem* materials =

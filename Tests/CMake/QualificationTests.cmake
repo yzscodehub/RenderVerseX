@@ -99,6 +99,15 @@ if(RVX_ENABLE_GFX15_TRANSLUCENCY_NATIVE)
 elseif(NOT WIN32)
     message(STATUS "GFX15 translucency qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
 endif()
+option(RVX_ENABLE_GFX17_VFX_NATIVE
+    "Register the fail-closed DX12/Vulkan GFX17 fire-and-smoke VFX gate" OFF)
+if(RVX_ENABLE_GFX17_VFX_NATIVE)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_GFX17_VFX_NATIVE requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "GFX17 VFX qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
 option(RVX_ENABLE_PR_SMOKE
     "Register only the fixed primary-backend SceneLifecycle PR smoke" OFF)
 option(RVX_ENABLE_COMPATIBILITY_SMOKE
@@ -127,7 +136,7 @@ if((RVX_ENABLE_P0_QUALIFICATION_MATRIX OR RVX_ENABLE_P1_QUALIFICATION_MATRIX
     OR RVX_ENABLE_GFX09_ANIMATION_NATIVE OR RVX_ENABLE_GFX10_POST_PROCESS_NATIVE
     OR RVX_ENABLE_GFX11_TAA_NATIVE OR RVX_ENABLE_GFX12_EXPOSURE_NATIVE
     OR RVX_ENABLE_GFX13_GTAO_NATIVE OR RVX_ENABLE_GFX14_TOON_NATIVE
-    OR RVX_ENABLE_GFX15_TRANSLUCENCY_NATIVE)
+    OR RVX_ENABLE_GFX15_TRANSLUCENCY_NATIVE OR RVX_ENABLE_GFX17_VFX_NATIVE)
    AND (NOT TARGET VisualGoldenValidation OR NOT TARGET ImageContentValidation OR NOT TARGET SampleReportContentValidation))
     message(FATAL_ERROR "Enabled qualification matrices require visual and SampleReport validators")
 endif()
@@ -1448,6 +1457,175 @@ function(rvx_add_renderverse_gfx15_translucency_native
         TAGS product.samples trait.visual trait.gpu trait.native trait.translucency
             backend.${BACKEND_NAME} suite.gfx15-translucency
         SUITE gfx15-translucency
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+# GFX17 uses two single-emitter cooked-only scenarios.  The 640x360 matrix is
+# functional evidence only: detailed beauty/ROI qualification is deliberately
+# deferred to GFX24.  Each producer has one image and one structured receipt
+# validator, so the strict matrix remains exactly 2 samples x 2 backends x 2
+# paths x 3 tests = 24 CTest cases.
+function(rvx_add_renderverse_gfx17_vfx_native
+         BACKEND_NAME BACKEND_LABEL PIPELINE_NAME PIPELINE_LABEL
+         SAMPLE_ID SAMPLE_LABEL CAPTURE_TICK)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation)
+        message(FATAL_ERROR "GFX17 VFX qualification requires RenderVerseSamples and report/image validators")
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}GFX17${PIPELINE_LABEL}${SAMPLE_LABEL}")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(startup_report
+        "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(pipeline_receipt_args)
+    if(PIPELINE_NAME STREQUAL "deferred")
+        list(APPEND pipeline_receipt_args --require-deferred-opaque-execution)
+    endif()
+    set(vfx_receipt_args --require-particle-vfx-execution)
+    set(vfx_feature_args)
+    if(SAMPLE_ID STREQUAL "particle-fire")
+        list(APPEND vfx_receipt_args --require-particle-fire-execution)
+        list(APPEND vfx_feature_args
+            --require-enabled-feature CookedParticleFireAdmissionRequired
+            --require-enabled-feature CpuBillboardRequested
+            --require-enabled-feature AdditiveHdrFlipbookRequested
+            --require-enabled-feature ParticleDistortionAndReactiveMaskRequested
+            --require-enabled-feature ParticleFireDeterministicEpochResetQueued
+            --require-enabled-feature ParticleFireDeterministicEpochResetApplied
+            --require-enabled-feature CookedParticleFireResident
+            --require-enabled-feature ParticleFireEcsEmitterCreated
+            --require-enabled-feature ParticleFireActualExecutionQualified)
+    elseif(SAMPLE_ID STREQUAL "particle-smoke")
+        list(APPEND vfx_receipt_args --require-particle-smoke-execution)
+        list(APPEND vfx_feature_args
+            --require-enabled-feature CookedParticleSmokeAdmissionRequired
+            --require-enabled-feature CpuBillboardRequested
+            --require-enabled-feature PremultipliedSoftDepthRequested
+            --require-enabled-feature ParticleReactiveMaskRequested
+            --require-enabled-feature ParticleSmokeDeterministicEpochResetQueued
+            --require-enabled-feature ParticleSmokeDeterministicEpochResetApplied
+            --require-enabled-feature CookedParticleSmokeResident
+            --require-enabled-feature ParticleSmokeEcsEmitterCreated
+            --require-enabled-feature ParticleSmokeActualExecutionQualified)
+    else()
+        message(FATAL_ERROR "GFX17 VFX qualification has unsupported sample: ${SAMPLE_ID}")
+    endif()
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}Capture
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample ${SAMPLE_ID}
+            --backend ${BACKEND_NAME}
+            --pipeline ${PIPELINE_NAME}
+            --render-path direct
+            --quality high
+            --smoke
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 2400
+            --view hero
+            --fixed-delta 0.0166666666666667
+            --capture-tick ${CAPTURE_TICK}
+            --width 640
+            --height 360
+            --screenshot "${capture}"
+            --report "${report}"
+            --startup-report "${startup_report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS RenderVerseSamples ImageContentValidation SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.vfx
+            backend.${BACKEND_NAME} suite.gfx17-vfx
+        SUITE gfx17-vfx
+        TIMEOUT 300
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.vfx
+            backend.${BACKEND_NAME} suite.gfx17-vfx
+        SUITE gfx17-vfx
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ReceiptValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name ${SAMPLE_ID}
+            --category visual
+            --backend ${BACKEND_NAME}
+            --require-requested-backend ${BACKEND_NAME}
+            --require-actual-backend ${BACKEND_NAME}
+            --quality high
+            --min-frame-count ${CAPTURE_TICK}
+            --require-ready
+            --require-readiness-wait
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-direct-execution
+            --require-render-pipeline ${PIPELINE_NAME}
+            ${pipeline_receipt_args}
+            --asset-id ${SAMPLE_ID}-v1
+            --require-cook-admission-accepted ${SAMPLE_ID}-v1
+            --require-package-only-cooked-asset ${SAMPLE_ID}-v1
+            --require-post-process-execution
+            --require-exactly-one-tone-map
+            --require-temporal-aa-execution
+            --require-no-fxaa-execution
+            --require-temporal-history-sampled
+            --require-temporal-history-committed
+            ${vfx_receipt_args}
+            --asset-kind effect
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-phase stable
+            ${vfx_feature_args}
+            --forbid-fallback-reasons
+            --forbid-render-feature-fallbacks
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native trait.vfx
+            backend.${BACKEND_NAME} suite.gfx17-vfx
+        SUITE gfx17-vfx
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         FIXTURES_REQUIRED "${test_prefix}FreshCapture"
@@ -3798,6 +3976,20 @@ if(RVX_ENABLE_GFX15_TRANSLUCENCY_NATIVE)
         vulkan Vulkan forward-plus ForwardPlus)
     rvx_add_renderverse_gfx15_translucency_native(
         vulkan Vulkan deferred Deferred)
+endif()
+
+if(RVX_ENABLE_GFX17_VFX_NATIVE)
+    # Exactly 24 strict native tests: fire/smoke x DX12/Vulkan x
+    # Forward+/Deferred x Capture/Image/Receipt.  No unit or integration test
+    # carries suite.gfx17-vfx.
+    rvx_add_renderverse_gfx17_vfx_native(dx12 DX12 forward-plus ForwardPlus particle-fire ParticleFire 120)
+    rvx_add_renderverse_gfx17_vfx_native(dx12 DX12 forward-plus ForwardPlus particle-smoke ParticleSmoke 180)
+    rvx_add_renderverse_gfx17_vfx_native(dx12 DX12 deferred Deferred particle-fire ParticleFire 120)
+    rvx_add_renderverse_gfx17_vfx_native(dx12 DX12 deferred Deferred particle-smoke ParticleSmoke 180)
+    rvx_add_renderverse_gfx17_vfx_native(vulkan Vulkan forward-plus ForwardPlus particle-fire ParticleFire 120)
+    rvx_add_renderverse_gfx17_vfx_native(vulkan Vulkan forward-plus ForwardPlus particle-smoke ParticleSmoke 180)
+    rvx_add_renderverse_gfx17_vfx_native(vulkan Vulkan deferred Deferred particle-fire ParticleFire 120)
+    rvx_add_renderverse_gfx17_vfx_native(vulkan Vulkan deferred Deferred particle-smoke ParticleSmoke 180)
 endif()
 
 if(WIN32

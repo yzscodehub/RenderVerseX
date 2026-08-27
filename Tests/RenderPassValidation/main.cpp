@@ -278,11 +278,18 @@ namespace RVX
             SceneRenderer& renderer,
             uint64 frameSequence,
             RenderPipelineRecipe recipe =
-                RenderPipelineRecipe::ForwardStandard)
+                RenderPipelineRecipe::ForwardStandard,
+            RenderAntiAliasingMode antiAliasingMode =
+                RenderAntiAliasingMode::FXAA,
+            bool postProcessEnabled = true)
         {
             RenderSceneDatabase sceneDatabase;
             const std::unique_ptr<const RenderFramePacketV5> frame =
-                MakeEmptyFrameForTesting(sceneDatabase, frameSequence, recipe);
+                MakeEmptyFrameForTesting(sceneDatabase,
+                                         frameSequence,
+                                         recipe,
+                                         antiAliasingMode,
+                                         postProcessEnabled);
             if (!frame)
             {
                 return false;
@@ -324,9 +331,16 @@ namespace RVX
             SceneRenderer& renderer,
             uint64 frameSequence,
             RenderPipelineRecipe recipe =
-                RenderPipelineRecipe::ForwardStandard)
+                RenderPipelineRecipe::ForwardStandard,
+            RenderAntiAliasingMode antiAliasingMode =
+                RenderAntiAliasingMode::FXAA,
+            bool postProcessEnabled = true)
         {
-            if (!AcceptEmptyFrameForTesting(renderer, frameSequence, recipe))
+            if (!AcceptEmptyFrameForTesting(renderer,
+                                            frameSequence,
+                                            recipe,
+                                            antiAliasingMode,
+                                            postProcessEnabled))
             {
                 return false;
             }
@@ -334,6 +348,13 @@ namespace RVX
             renderer.PreparePassesForFrame();
             return renderer.m_lightingFramePlan &&
                 renderer.m_lightingFramePlan->IsValid();
+        }
+
+        static void BindParticleFeatureForStagingTesting(
+            SceneRenderer& renderer,
+            ParticleFeaturePass* pass) noexcept
+        {
+            renderer.m_particleFeaturePass = pass;
         }
 
         static bool PrepareLightingForAcceptedFrameForTesting(
@@ -12978,6 +12999,146 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_EQ(stats.stackStats.supportedToneMappingEffectCount, 1u);
     EXPECT_EQ(stats.stackStats.enabledToneMappingEffectCount, 1u);
     EXPECT_TRUE(stats.sceneColorStagingUsed);
+}
+
+TEST_F(RenderPassValidationFixture,
+       ForwardParticleWithoutPostProcessOrTransparencyUsesHdrSceneColor)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    SceneRenderer renderer;
+    renderer.SetRenderFeatureReportDeviceForTesting(&device);
+    auto graph = std::make_unique<RenderGraph>();
+    RenderGraphValidationAccess::SetDevice(*graph, &device);
+    renderer.SetRenderGraphForTesting(std::move(graph));
+
+    const fs::path shaderDirectory = FindShaderDirectory();
+    ASSERT_FALSE(shaderDirectory.empty());
+    ASSERT_TRUE(
+        SceneRendererTestAccess::InstallMinimalLightingRuntimeForGraphBuild(
+            renderer, device, shaderDirectory.string()));
+    ASSERT_TRUE(
+        SceneRendererTestAccess::InstallMinimalPostProcessRuntimeForGraphBuild(
+            renderer, device));
+
+    ASSERT_TRUE(SceneRendererTestAccess::AcceptEmptyFrameForTesting(
+        renderer,
+        713u,
+        RenderPipelineRecipe::ForwardStandard,
+        RenderAntiAliasingMode::None,
+        false));
+
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(
+        32, 32, RHIFormat::RGBA8_UNORM);
+    colorDesc.usage = RHITextureUsage::RenderTarget |
+        RHITextureUsage::ShaderResource;
+    RHITextureRef colorTarget = device.CreateTexture(colorDesc);
+    RHITextureRef depthTarget = device.CreateTexture(
+        RHITextureDesc::DepthStencil(
+            32, 32, PipelineCache::GetDefaultDepthStencilFormat()));
+    ASSERT_TRUE(colorTarget);
+    ASSERT_TRUE(depthTarget);
+
+    SceneRendererExternalTargetDesc externalTarget;
+    externalTarget.colorTarget = colorTarget;
+    externalTarget.depthTarget = depthTarget;
+    externalTarget.colorInitialState = RHIResourceState::ShaderResource;
+    externalTarget.colorFinalState = RHIResourceState::ShaderResource;
+    externalTarget.depthInitialState = RHIResourceState::DepthRead;
+    externalTarget.depthFinalState = RHIResourceState::DepthRead;
+    renderer.SetExternalRenderTarget(externalTarget);
+
+    ParticleCpuPacket packet;
+    packet.simulationTick = 1u;
+    packet.deterministicSeed = 0x713u;
+    packet.deterministicInstanceKey = 0x713000001ULL;
+    packet.effectiveSimulationSeed =
+        packet.deterministicSeed ^ static_cast<uint32>(
+            packet.deterministicInstanceKey);
+    packet.fixedDeltaSeconds = 1.0f / 60.0f;
+    packet.particles.push_back({
+        .stableParticleId = 0u,
+        .position = {0.0f, 0.0f, -2.0f},
+        .lifetime = 1.0f,
+        .velocity = {0.0f, 0.0f, 0.0f},
+        .age = 0.25f,
+        .color = {1.0f, 0.5f, 0.25f, 0.75f},
+        .size = {1.0f, 1.0f},
+        .rotation = 0.0f,
+    });
+    packet.contentHash = packet.ComputeContentHash();
+
+    ParticleRenderSnapshotItem item;
+    item.systemId = 1u;
+    item.instanceId = 1u;
+    item.header = {
+        .channelId = RenderFeatureChannelId::Particle,
+        .schemaVersion =
+            ParticleRenderFeatureChannelDescriptor::SchemaVersion,
+        .captureSequence = 713u,
+        .configurationRevision = 1u,
+        .source = {
+            .sceneRuntimeId = 1u,
+            .entitySlot = 1u,
+            .entityGeneration = 1u,
+        },
+    };
+    item.renderMode = ParticleRenderSnapshotMode::Billboard;
+    item.blendMode = ParticleRenderSnapshotBlendMode::Premultiplied;
+    item.simulationBackend =
+        ParticleRenderSnapshotSimulationBackend::CPU;
+    item.payloadStatus =
+        ParticleRenderSnapshotPayloadStatus::CpuPacketReady;
+    item.aliveParticleCount = 1u;
+    item.maxParticleCount = 1u;
+    item.visible = true;
+    item.simulationSupported = true;
+    item.sortingSupported = true;
+    item.cpuPacket = std::move(packet);
+
+    ParticleRenderSnapshot snapshot;
+    snapshot.BeginBuild(713u);
+    snapshot.items.push_back(std::move(item));
+    snapshot.MarkComplete();
+
+    ParticleFeaturePass particlePass;
+    particlePass.SetSnapshot(&snapshot);
+    const RenderPassStatus particleStatus = particlePass.GetStatus();
+    ASSERT_TRUE(particleStatus.requestedEnabled);
+    ASSERT_TRUE(particleStatus.supported)
+        << particleStatus.unsupportedReason;
+    ASSERT_TRUE(particleStatus.enabled);
+    SceneRendererTestAccess::BindParticleFeatureForStagingTesting(
+        renderer, &particlePass);
+
+    ASSERT_TRUE(
+        SceneRendererTestAccess::PrepareLightingForAcceptedFrameForTesting(
+            renderer));
+    const RenderPassStatus preparedParticleStatus = particlePass.GetStatus();
+    ASSERT_TRUE(preparedParticleStatus.requestedEnabled);
+    ASSERT_TRUE(preparedParticleStatus.supported)
+        << preparedParticleStatus.unsupportedReason;
+    ASSERT_TRUE(preparedParticleStatus.enabled);
+    renderer.BuildRenderGraphForTesting();
+
+    const SceneRenderPostProcessStats& stats = renderer.GetPostProcessStats();
+    const std::string compositionFailure =
+        SceneRendererTestAccess::GetFeatureCompositionFailureReason(renderer);
+    EXPECT_TRUE(stats.sceneColorStagingUsed) << compositionFailure;
+    EXPECT_TRUE(stats.hdrSceneColorEnabled);
+    EXPECT_FALSE(stats.directToBackBuffer);
+    EXPECT_EQ(stats.actualSceneColorFormat, RHIFormat::RGBA16_FLOAT);
+
+    const RGTextureHandle graphColor = renderer.GetViewData().colorTarget;
+    ASSERT_TRUE(graphColor.IsValid());
+    const RHITextureDesc* const graphColorDesc =
+        renderer.GetRenderGraph()->GetTextureDesc(graphColor);
+    ASSERT_NE(graphColorDesc, nullptr);
+    EXPECT_EQ(graphColorDesc->format, RHIFormat::RGBA16_FLOAT);
+    EXPECT_NE(graphColorDesc->format, colorTarget->GetFormat());
+
+    SceneRendererTestAccess::BindParticleFeatureForStagingTesting(
+        renderer, nullptr);
 }
 
 TEST(SceneRendererDeferredPresentationValidation,

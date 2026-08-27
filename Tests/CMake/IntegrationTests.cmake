@@ -485,6 +485,19 @@ if(TARGET RVXCook)
     add_dependencies(RenderHonestyValidation RVXCook)
     target_compile_definitions(RenderHonestyValidation PRIVATE
         RVX_COOK_EXECUTABLE_PATH="$<TARGET_FILE:RVXCook>")
+
+    rvx_add_gtest(
+        NAME ParticleEffectCookPipelineValidation
+        LANE integration
+        SOURCES ParticleEffectCookPipelineValidation/main.cpp
+        LIBS RVX::AssetPipeline RVX::Core RVX::Particle RVX::ResourceRuntime
+        DEFINES
+            RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+            RVX_COOK_EXECUTABLE_PATH="$<TARGET_FILE:RVXCook>"
+        TAGS product.tools subsystem.particle subsystem.resource suite.cook
+        TIMEOUT 120
+    )
+    add_dependencies(ParticleEffectCookPipelineValidation RVXCook)
 endif()
 
 if(RVX_ENABLE_FBX AND TARGET RVXCook)
