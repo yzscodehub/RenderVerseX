@@ -10,6 +10,47 @@ param(
     [switch]$Fresh
 )
 
+# Some Windows launchers expose a pwsh shim that actually starts Windows
+# PowerShell. Re-enter through a real PowerShell 7 binary before computing
+# fingerprints or publishing immutable validation receipts.
+if ($PSVersionTable.PSVersion.Major -lt 7)
+{
+    $forward = @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PSCommandPath,
+        "-ConfigurePreset", $ConfigurePreset,
+        "-BuildPreset", $BuildPreset,
+        "-BuildDir", $BuildDir,
+        "-Configuration", $Configuration,
+        "-BaseRef", $BaseRef
+    )
+    if (-not [string]::IsNullOrWhiteSpace($RequiredNativeBackend))
+    {
+        $forward += @("-RequiredNativeBackend", $RequiredNativeBackend)
+    }
+    if ($LaneTestPresets.Count -gt 0)
+    {
+        $forward += @("-LaneTestPresets", ($LaneTestPresets -join ","))
+    }
+    if ($AllowSoftwareAdapter) { $forward += "-AllowSoftwareAdapter" }
+    if ($Fresh) { $forward += "-Fresh" }
+
+    $candidates = @(Get-Command pwsh -All -ErrorAction SilentlyContinue |
+        ForEach-Object Source | Select-Object -Unique)
+    foreach ($candidate in $candidates)
+    {
+        $major = & $candidate -NoProfile -Command (
+            "[Console]::Write(`$PSVersionTable.PSVersion.Major)") 2>$null
+        if ($LASTEXITCODE -eq 0 -and [string]$major -match "^\s*(\d+)\s*$" -and
+            [int]$Matches[1] -ge 7)
+        {
+            Write-Warning "The first pwsh is PowerShell $($PSVersionTable.PSVersion); re-launching with '$candidate'."
+            & $candidate @forward
+            exit $LASTEXITCODE
+        }
+    }
+    throw "PowerShell 7 or newer is required, but no usable pwsh 7 executable was found"
+}
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 

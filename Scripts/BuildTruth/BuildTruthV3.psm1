@@ -59,8 +59,22 @@ function Get-BuildTruthPathFingerprint
     )
 
     $records = [System.Collections.Generic.List[string]]::new()
-    foreach ($relativePath in ($RelativePaths | Sort-Object -Unique))
+    $sortedPaths = [string[]]@($RelativePaths)
+    [Array]::Sort($sortedPaths, [StringComparer]::Ordinal)
+    $previousPath = $null
+    $hasPreviousPath = $false
+    foreach ($relativePath in $sortedPaths)
     {
+        if ($hasPreviousPath -and [string]::Equals(
+                $relativePath,
+                $previousPath,
+                [StringComparison]::Ordinal))
+        {
+            continue
+        }
+        $previousPath = $relativePath
+        $hasPreviousPath = $true
+
         if ([string]::IsNullOrWhiteSpace($relativePath) -or
             [IO.Path]::IsPathRooted($relativePath) -or
             $relativePath -match "(^|[\\/])\.\.([\\/]|$)")

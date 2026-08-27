@@ -99,6 +99,20 @@ try
     Set-Content -LiteralPath (Join-Path $fingerprintRoot "untracked.txt") -Value "first" -Encoding utf8
     $unicodeFileName = [string]::new([char[]]@(0x672A, 0x8DDF, 0x8E2A)) + ".txt"
     Set-Content -LiteralPath (Join-Path $fingerprintRoot $unicodeFileName) -Value "unicode path" -Encoding utf8
+    $orderedFingerprint = Get-BuildTruthPathFingerprint `
+        -Root $fingerprintRoot `
+        -RelativePaths @("tracked.txt", $unicodeFileName, "untracked.txt", "tracked.txt")
+    $reorderedFingerprint = Get-BuildTruthPathFingerprint `
+        -Root $fingerprintRoot `
+        -RelativePaths @("untracked.txt", "tracked.txt", $unicodeFileName)
+    Assert-Equal `
+        -Actual $orderedFingerprint.fileCount `
+        -Expected 3 `
+        -Message "path fingerprint removes exact duplicates"
+    Assert-Equal `
+        -Actual $orderedFingerprint.digest `
+        -Expected $reorderedFingerprint.digest `
+        -Message "path fingerprint uses order-independent ordinal serialization"
     $fingerprintSafeDirectory = $fingerprintRoot.Replace(
         [IO.Path]::DirectorySeparatorChar,
         [IO.Path]::AltDirectorySeparatorChar)
