@@ -1356,6 +1356,14 @@ namespace
             PipelineCache::DefaultLitLocalShadowAtlasBinding,
             RHIBindingType::SampledTexture,
             RHIShaderStage::Pixel);
+        // Keep the native fixture aligned with DefaultLit's fixed frame-set
+        // ABI. PSMain samples this Texture3D through the existing s13
+        // linear-clamp sampler even when the scenario renders only opaque
+        // material coverage.
+        frameLayoutDesc.AddBinding(
+            PipelineCache::DefaultLitFroxelVolumetricLightingBinding,
+            RHIBindingType::SampledTexture,
+            RHIShaderStage::Pixel);
         RHIDescriptorSetLayoutRef frameLayout = device->CreateDescriptorSetLayout(frameLayoutDesc);
         RHIDescriptorSetLayoutDesc emptyLayoutDesc;
         emptyLayoutDesc.debugName = "NativeSurfaceAlphaEmptySet";
@@ -1507,9 +1515,39 @@ namespace
         localShadowAtlasViewDesc.debugName = "NativeSurfaceAlphaLocalShadowAtlasSRV";
         RHITextureViewRef localShadowAtlasView = device->CreateTextureView(
             localShadowAtlas.Get(), localShadowAtlasViewDesc);
+        // Match PipelineCache's identity fallback: a real 1x1x1 RGBA16F
+        // Texture3D whose scattering is zero and transmittance is one. A 2D
+        // placeholder would satisfy neither DefaultLit's reflection nor its
+        // sampled surface-extinction contract.
+        RHITextureDesc froxelVolumeDesc = RHITextureDesc::Texture2D(
+            1u, 1u, RHIFormat::RGBA16_FLOAT,
+            RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst);
+        froxelVolumeDesc.dimension = RHITextureDimension::Texture3D;
+        froxelVolumeDesc.depth = 1u;
+        froxelVolumeDesc.arraySize = 1u;
+        froxelVolumeDesc.mipLevels = 1u;
+        froxelVolumeDesc.debugName = "NativeSurfaceAlphaFroxelVolume";
+        RHITextureRef froxelVolume = device->CreateTexture(froxelVolumeDesc);
+        RHITextureViewDesc froxelVolumeViewDesc;
+        froxelVolumeViewDesc.type = RHITextureViewType::ShaderResource;
+        froxelVolumeViewDesc.format = RHIFormat::RGBA16_FLOAT;
+        froxelVolumeViewDesc.dimension = RHITextureDimension::Texture3D;
+        froxelVolumeViewDesc.subresourceRange = RHISubresourceRange::All();
+        froxelVolumeViewDesc.debugName = "NativeSurfaceAlphaFroxelVolumeSRV";
+        RHITextureViewRef froxelVolumeView = device->CreateTextureView(
+            froxelVolume.Get(), froxelVolumeViewDesc);
+        const std::array<uint16, 4> neutralFroxelTexel = {
+            0u, 0u, 0u, 0x3c00u}; // (0, 0, 0, 1) in RGBA16F.
+        RHIBufferRef froxelVolumeUpload = CreateTextureUploadBuffer2D(
+            *device, neutralFroxelTexel.data(), 1u, 1u,
+            static_cast<uint32>(sizeof(neutralFroxelTexel)), kRowPitch,
+            "NativeSurfaceAlphaFroxelVolumeUpload");
         RHISamplerDesc samplerDesc = RHISamplerDesc::PointClamp();
         samplerDesc.debugName = "NativeSurfaceAlphaPointClamp";
         RHISamplerRef sampler = device->CreateSampler(samplerDesc);
+        RHISamplerDesc froxelSamplerDesc = RHISamplerDesc::LinearClamp();
+        froxelSamplerDesc.debugName = "NativeSurfaceAlphaFroxelLinearClamp";
+        RHISamplerRef froxelSampler = device->CreateSampler(froxelSamplerDesc);
 
         std::array<uint8, 512> zeroedFrameConstants{};
         if (normalMapProbe)
@@ -1559,7 +1597,7 @@ namespace
         frameSetDesc.BindTexture(10, environmentCubeView.Get());
         frameSetDesc.BindTexture(11, environmentCubeView.Get());
         frameSetDesc.BindTexture(12, sourceTextureView.Get());
-        frameSetDesc.BindSampler(13, sampler.Get());
+        frameSetDesc.BindSampler(13, froxelSampler.Get());
         frameSetDesc.BindBuffer(PipelineCache::DefaultLitExposureStateBinding,
                                 exposureStateBuffer.Get());
         frameSetDesc.BindTexture(
@@ -1571,6 +1609,9 @@ namespace
         frameSetDesc.BindTexture(
             PipelineCache::DefaultLitLocalShadowAtlasBinding,
             localShadowAtlasView.Get());
+        frameSetDesc.BindTexture(
+            PipelineCache::DefaultLitFroxelVolumetricLightingBinding,
+            froxelVolumeView.Get());
         RHIDescriptorSetRef frameSet = device->CreateDescriptorSet(frameSetDesc);
 
         RHIDescriptorSetDesc materialSetDesc;
@@ -1628,7 +1669,8 @@ namespace
         RHIBufferRef readbackBuffer = device->CreateBuffer(readbackDesc);
         if (!vertexBuffer || !materialBuffer || !textureUpload || !sourceTexture ||
             !sourceTextureView || !environmentCube || !environmentCubeView ||
-            !localShadowAtlas || !localShadowAtlasView || !sampler ||
+            !localShadowAtlas || !localShadowAtlasView || !froxelVolume ||
+            !froxelVolumeView || !froxelVolumeUpload || !sampler || !froxelSampler ||
             !frameConstantsBuffer ||
             !dummyStructuredBuffer || !exposureStateBuffer || !frameSet ||
             !materialSet || !readbackBuffer ||
@@ -1684,6 +1726,17 @@ namespace
         uploadCopy.textureRegion = {0, 0, 2, 2};
         context->CopyBufferToTexture(textureUpload.Get(), sourceTexture.Get(), uploadCopy);
         context->TextureBarrier(sourceTexture.Get(), RHIResourceState::CopyDest,
+                                RHIResourceState::ShaderResource);
+        context->TextureBarrier(froxelVolume.Get(), RHIResourceState::Common,
+                                RHIResourceState::CopyDest);
+        RHIBufferTextureCopyDesc froxelUploadCopy;
+        froxelUploadCopy.bufferRowPitch = kRowPitch;
+        froxelUploadCopy.bufferImageHeight = 1u;
+        froxelUploadCopy.textureRegion = {0, 0, 1, 1};
+        froxelUploadCopy.textureDepthSlice = 0u;
+        context->CopyBufferToTexture(
+            froxelVolumeUpload.Get(), froxelVolume.Get(), froxelUploadCopy);
+        context->TextureBarrier(froxelVolume.Get(), RHIResourceState::CopyDest,
                                 RHIResourceState::ShaderResource);
         if (isDepthOnly)
         {

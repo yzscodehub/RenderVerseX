@@ -8,8 +8,12 @@
 // path exists at runtime.
 // =============================================================================
 
-#include "Include/BRDF.hlsli"
-#include "Include/Lighting.hlsli"
+// This program is compiled with Volumetric as its source directory by the
+// runtime shader loader. Keep shared includes source-relative so DXC,
+// glslang, and cooked compilation all resolve the same files without a
+// caller-specific shader-root search path.
+#include "../Include/BRDF.hlsli"
+#include "../Include/Lighting.hlsli"
 
 cbuffer FroxelVolumetricConstants : register(b0)
 {
