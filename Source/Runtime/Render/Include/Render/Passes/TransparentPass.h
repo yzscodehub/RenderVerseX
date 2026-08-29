@@ -3,7 +3,7 @@
 /**
  * @file TransparentPass.h
  * @brief Transparent geometry render pass with alpha blending
- * 
+ *
  * TransparentPass renders transparent/alpha-blended geometry after opaque passes,
  * using back-to-front sorting for correct blending order.
  */
@@ -54,9 +54,9 @@ namespace RVX
 
     /**
      * @brief Transparent geometry render pass
-     * 
+     *
      * Renders objects with alpha blending in back-to-front order.
-     * 
+     *
      * Key characteristics:
      * - Runs after opaque pass (priority 500)
      * - Reads depth buffer (no depth write)
@@ -99,9 +99,9 @@ namespace RVX
         // =========================================================================
 
         const char* GetName() const override { return "TransparentPass"; }
-        
+
         int32_t GetPriority() const override { return 500; }  // After opaque (300), sky (400)
-        
+
         RenderGraphPassType GetPassType() const override { return RenderGraphPassType::Graphics; }
 
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;

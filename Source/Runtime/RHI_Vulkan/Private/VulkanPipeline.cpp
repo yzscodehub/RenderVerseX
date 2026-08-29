@@ -246,7 +246,7 @@ namespace RVX
 
         // Shader stages
         std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
-        
+
         if (desc.vertexShader)
         {
             auto* vkShader = static_cast<VulkanShader*>(desc.vertexShader);
@@ -441,7 +441,7 @@ namespace RVX
         renderingInfo.pColorAttachmentFormats = colorFormats.data();
         renderingInfo.depthAttachmentFormat = ToVkFormat(desc.depthStencilFormat);
         // Set stencil format for depth-stencil formats (D24S8, D32S8)
-        renderingInfo.stencilAttachmentFormat = IsStencilFormat(desc.depthStencilFormat) ? 
+        renderingInfo.stencilAttachmentFormat = IsStencilFormat(desc.depthStencilFormat) ?
             ToVkFormat(desc.depthStencilFormat) : VK_FORMAT_UNDEFINED;
 
         // Create pipeline
@@ -462,9 +462,9 @@ namespace RVX
         pipelineInfo.renderPass = VK_NULL_HANDLE;  // Using dynamic rendering
         pipelineInfo.subpass = 0;
 
-        VkResult result = vkCreateGraphicsPipelines(m_device->GetDevice(), m_device->GetPipelineCache(), 1, 
+        VkResult result = vkCreateGraphicsPipelines(m_device->GetDevice(), m_device->GetPipelineCache(), 1,
             &pipelineInfo, nullptr, &m_pipeline);
-        
+
         if (result != VK_SUCCESS)
         {
             RVX_RHI_ERROR("Failed to create Vulkan graphics pipeline: {}", VkResultToString(result));
@@ -1253,7 +1253,7 @@ namespace RVX
                     RVX_RHI_ERROR("VulkanDescriptorSet: texture binding {} has no native image view", binding.binding);
                     return false;
                 }
-                
+
                 VkDescriptorImageInfo imageInfo = {};
                 imageInfo.imageView = vkView->GetImageView();
 
@@ -1292,7 +1292,7 @@ namespace RVX
                         RVX_RHI_ERROR("VulkanDescriptorSet: binding {} expects non-texture type", binding.binding);
                         return false;
                 }
-                
+
                 imageInfos.push_back(imageInfo);
                 write.pImageInfo = &imageInfos.back();
             }
@@ -1310,11 +1310,11 @@ namespace RVX
                     RVX_RHI_ERROR("VulkanDescriptorSet: sampler binding {} has no native sampler", binding.binding);
                     return false;
                 }
-                
+
                 VkDescriptorImageInfo imageInfo = {};
                 imageInfo.sampler = vkSampler->GetSampler();
                 imageInfos.push_back(imageInfo);
-                
+
                 write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
                 write.pImageInfo = &imageInfos.back();
             }
