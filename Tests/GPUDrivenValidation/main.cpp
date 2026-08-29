@@ -5134,7 +5134,11 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
     const std::string source =
         ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
     const std::string featureCompositionSource =
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Features" / "DefaultRenderComposition.cpp");
+    const std::string defaultCompositionSource =
         ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Features" / "DefaultForwardComposition.cpp");
+    const std::string passBundleSource =
+        ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Features" / "DefaultRenderPassBundle.cpp");
     const std::string featureAdapterSource =
         ReadTextFile(root / "Source" / "Runtime" / "Render" / "Private" / "Features" / "LegacyForwardFeatureAdapter.cpp");
     const std::string depthHeader =
@@ -5156,6 +5160,8 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
     ASSERT_FALSE(header.empty());
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(featureCompositionSource.empty());
+    ASSERT_FALSE(defaultCompositionSource.empty());
+    ASSERT_FALSE(passBundleSource.empty());
     ASSERT_FALSE(featureAdapterSource.empty());
     ASSERT_FALSE(depthHeader.empty());
     ASSERT_FALSE(depthSource.empty());
@@ -5201,9 +5207,9 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
     ASSERT_NE(prepareMeshPasses, std::string::npos);
     EXPECT_LT(prepareMeshPasses, prepareMeshDefinition - buildDrawLists);
     EXPECT_EQ(buildMaterialSegment.find("BuildGPUDrivenVisibilityInputs();"), std::string::npos);
-    EXPECT_EQ(buildMaterialSegment.find("m_objectVelocityPass->SetRenderScene"), std::string::npos);
-    EXPECT_EQ(buildMaterialSegment.find("m_objectVelocityPass->SetRenderTargets"), std::string::npos);
-    EXPECT_EQ(buildMaterialSegment.find("m_objectVelocityPass->SetDrawItems"), std::string::npos);
+    EXPECT_EQ(buildMaterialSegment.find("FindCompositionPass<ObjectVelocityPass>()->SetRenderScene"), std::string::npos);
+    EXPECT_EQ(buildMaterialSegment.find("FindCompositionPass<ObjectVelocityPass>()->SetRenderTargets"), std::string::npos);
+    EXPECT_EQ(buildMaterialSegment.find("FindCompositionPass<ObjectVelocityPass>()->SetDrawItems"), std::string::npos);
 
     EXPECT_FALSE(std::filesystem::exists(
         root / "Source" / "Runtime" / "Render" / "Private" / "Renderer" / "RenderFrameResourceBinder.h"));
@@ -5215,10 +5221,10 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
     EXPECT_EQ(source.find("UpdatePassResources"), std::string::npos);
     EXPECT_EQ(source.find("ExecutePasses"), std::string::npos);
     EXPECT_EQ(renderCMake.find("RenderFrameResourceBinder"), std::string::npos);
-    EXPECT_EQ(source.find("m_skyboxPass->SetCubemap"), std::string::npos);
-    EXPECT_EQ(source.find("m_skyboxPass->SetProceduralSkyParams"), std::string::npos);
-    EXPECT_EQ(source.find("m_skyboxPass->SetSolidColor"), std::string::npos);
-    EXPECT_EQ(source.find("m_skyboxPass->ClearSkybox"), std::string::npos);
+    EXPECT_EQ(source.find("FindCompositionPass<SkyboxPass>()->SetCubemap"), std::string::npos);
+    EXPECT_EQ(source.find("FindCompositionPass<SkyboxPass>()->SetProceduralSkyParams"), std::string::npos);
+    EXPECT_EQ(source.find("FindCompositionPass<SkyboxPass>()->SetSolidColor"), std::string::npos);
+    EXPECT_EQ(source.find("FindCompositionPass<SkyboxPass>()->ClearSkybox"), std::string::npos);
     EXPECT_EQ(skyboxHeader.find("SetCubemap"), std::string::npos);
     EXPECT_EQ(skyboxHeader.find("SetProceduralSkyParams"), std::string::npos);
     EXPECT_EQ(skyboxHeader.find("SetSolidColor"), std::string::npos);
@@ -5339,11 +5345,11 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
     const size_t cullGraphCall = source.find(
         "AddGPUDrivenCullingPass(passRecordContext.identity);", buildGraph);
     const size_t setFeatureRecordContext = source.find(
-        "m_legacyForwardFeature->SetRecordContext(passRecordContext);", buildGraph);
+        "FindCompositionFeature<LegacyForwardFeatureAdapter>()->SetRecordContext(passRecordContext);", buildGraph);
     const size_t featureAddPasses = source.find(
-        "m_renderFeatureRegistry->AddPasses(featureGraphBuilder, blackboard);", buildGraph);
+        "GetRenderFeatureRegistry()->AddPasses(featureGraphBuilder, blackboard);", buildGraph);
     const size_t passRegistryLoop = featureAdapterSource.find(
-        "for (const std::unique_ptr<IRenderPass>& pass : m_passRegistry->GetPasses())");
+        "m_passBundle->GetRegistry().GetPasses()");
     ASSERT_NE(cullGraphCall, std::string::npos);
     ASSERT_NE(setFeatureRecordContext, std::string::npos);
     ASSERT_NE(featureAddPasses, std::string::npos);
@@ -5354,9 +5360,15 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
         "builder.AddLegacyPass(*pass, passContext)", passRegistryLoop);
     ASSERT_NE(typedPassRecord, std::string::npos);
     EXPECT_LT(passRegistryLoop, typedPassRecord);
-    EXPECT_NE(featureCompositionSource.find("SetupDefaultRenderFeatures"),
+    EXPECT_NE(defaultCompositionSource.find("SetupDefaultRenderFeatures"),
               std::string::npos);
-    EXPECT_NE(featureCompositionSource.find("m_renderFeatureRegistry = std::move(registry)"),
+    EXPECT_NE(featureCompositionSource.find("m_featureRegistry = std::make_unique<RenderFeatureRegistry>()"),
+              std::string::npos);
+    EXPECT_NE(defaultCompositionSource.find("CreateDefaultRenderPassBundle(dependencies)"),
+              std::string::npos);
+    EXPECT_NE(defaultCompositionSource.find("InstallDefaultPassBundle"),
+              std::string::npos);
+    EXPECT_NE(passBundleSource.find("auto objectVelocityPass = std::make_unique<ObjectVelocityPass>();"),
               std::string::npos);
     EXPECT_EQ(source.find("pass->AddToGraph(*m_renderGraph, m_viewData)"),
               std::string::npos);
@@ -5369,9 +5381,9 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
     EXPECT_NE(source.find("RHIResourceState::UnorderedAccess,"), std::string::npos);
     EXPECT_NE(source.find("data.indirectDraws = builder.Write(data.indirectDraws, unorderedAccess)"),
               std::string::npos);
-    EXPECT_EQ(source.find("m_depthPrepass->SetGPUDriven" "RenderGraphResources"),
+    EXPECT_EQ(source.find("FindCompositionPass<DepthPrepass>()->SetGPUDriven" "RenderGraphResources"),
               std::string::npos);
-    EXPECT_EQ(source.find("m_opaquePass->SetGPUDriven" "RenderGraphResources"),
+    EXPECT_EQ(source.find("FindCompositionPass<OpaquePass>()->SetGPUDriven" "RenderGraphResources"),
               std::string::npos);
     EXPECT_NE(source.find("RenderPassRecordContext passRecordContext"), std::string::npos);
     EXPECT_NE(source.find("passRecordContext.depthGPUDriven"), std::string::npos);
@@ -5383,7 +5395,7 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
     EXPECT_EQ(source.find("owner->Cull(ctx, cullViewMatrix, cullProjectionMatrix)"),
               std::string::npos);
     EXPECT_NE(source.find("cullingStatsSink->gpuExecutionRecorded"), std::string::npos);
-    EXPECT_NE(source.find("m_opaquePass->GetDrawStats()"), std::string::npos);
+    EXPECT_NE(source.find("FindCompositionPass<OpaquePass>()->GetDrawStats()"), std::string::npos);
     EXPECT_NE(source.find("m_gpuDrivenCullingStats.opaqueIndirectRequested"), std::string::npos);
     EXPECT_NE(source.find("m_gpuDrivenCullingStats.opaqueGpuDrivenIndirectDrawCount"), std::string::npos);
     EXPECT_NE(source.find(

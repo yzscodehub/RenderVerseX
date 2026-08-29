@@ -1,6 +1,6 @@
 /**
  * @file DefaultForwardComposition.cpp
- * @brief Compatibility-preserving ForwardStandard renderer composition.
+ * @brief Composition-owned Forward+, Deferred, and Hybrid RT feature wiring.
  */
 
 #include "Render/Renderer/SceneRenderer.h"
@@ -8,29 +8,15 @@
 #include "Context/RenderContextInternal.h"
 #include "Core/Log.h"
 #include "Features/AmbientOcclusionFeatureAdapter.h"
+#include "Features/DefaultRenderComposition.h"
+#include "Features/DefaultRenderPassBundle.h"
 #include "Features/DeferredRecipeFeatureAdapter.h"
 #include "Features/LegacyForwardFeatureAdapter.h"
 #include "Features/PostProcessPipelineFeatureAdapter.h"
 #include "Features/ReflectionFeatureAdapter.h"
 #include "Features/TranslucencyFeatureAdapter.h"
-#include "Render/Features/RenderFeatureRegistry.h"
-#include "Render/Lighting/ClusteredLighting.h"
-#include "Render/Lighting/LightManager.h"
-#include "Render/Passes/CameraVelocityPass.h"
-#include "Render/Passes/DepthPrepass.h"
 #include "Render/Passes/DeferredLightingPass.h"
-#include "Render/Passes/ObjectVelocityPass.h"
 #include "Render/Passes/OpaquePass.h"
-#include "Render/Passes/ParticleFeaturePass.h"
-#include "Render/Passes/WaterFeaturePass.h"
-#include "Render/Passes/RayTracedReflectionCompositePass.h"
-#include "Render/Passes/RayTracedReflectionDenoisePass.h"
-#include "Render/Passes/RayTracedReflectionPass.h"
-#include "Render/Passes/RayTracedShadowPass.h"
-#include "Render/Passes/ShadowPass.h"
-#include "Render/Passes/SkyboxPass.h"
-#include "Render/Passes/TransparentPass.h"
-#include "Renderer/RenderPassRegistry.h"
 
 #include <memory>
 #include <utility>
@@ -40,125 +26,46 @@ namespace RVX
 {
 bool SceneRenderer::SetupDefaultRenderFeatures()
 {
-    auto depthPrepass = std::make_unique<DepthPrepass>();
-    depthPrepass->SetResources(m_pipelineCache.get());
-    depthPrepass->SetMaterialSystem(m_materialSystem.get());
-    depthPrepass->SetResourceRegistry(m_renderResourceRegistry);
-    m_depthPrepass = depthPrepass.get();
-    AddPass(std::move(depthPrepass));
+    if (m_defaultRenderComposition == nullptr)
+    {
+        m_defaultRenderComposition =
+            std::make_unique<DefaultRenderComposition>();
+    }
+    else if (m_defaultRenderComposition->HasInstalledDefaultPassBundle())
+    {
+        return EnsureDefaultRenderComposition();
+    }
 
-    auto shadowPass = std::make_unique<ShadowPass>();
-    shadowPass->SetResources(
-        m_pipelineCache.get(), m_materialSystem.get());
-    shadowPass->SetResourceRegistry(m_renderResourceRegistry);
-    shadowPass->SetConfig(m_shadowPassConfig);
-    m_shadowPass = shadowPass.get();
-    AddPass(std::move(shadowPass));
+    DefaultRenderPassBundleDependencies dependencies{};
+    dependencies.device = m_renderContext != nullptr
+        ? m_renderContext->GetDevice()
+        : nullptr;
+    dependencies.pipelineCache = m_pipelineCache.get();
+    dependencies.materialSystem = m_materialSystem.get();
+    dependencies.lightManager = m_lightManager.get();
+    dependencies.clusteredLighting = m_clusteredLighting.get();
+    dependencies.resourceViewCache = m_resourceViewCache.get();
+    dependencies.resourceRegistry = m_renderResourceRegistry;
+    dependencies.rayTracingScene = m_rayTracingSceneManager.get();
+    dependencies.submissionTracker = m_renderContext != nullptr
+        ? RenderContextInternalAccess::GetSubmissionTracker(*m_renderContext)
+        : nullptr;
+    dependencies.shaderProgramProvider = m_shaderProgramProvider.get();
+    dependencies.featureSnapshot = m_featureSnapshot.get();
+    dependencies.shadowConfig = m_shadowPassConfig;
+    dependencies.reverseZ = m_pipelineCache != nullptr &&
+        m_pipelineCache->GetConfig().reverseZ;
 
-    auto rayTracedShadowPass = std::make_unique<RayTracedShadowPass>();
-    rayTracedShadowPass->SetResources(
-        m_pipelineCache.get(),
-        m_resourceViewCache.get());
-    rayTracedShadowPass->SetResourceRegistry(m_renderResourceRegistry);
-    rayTracedShadowPass->SetRayTracingScene(m_rayTracingSceneManager.get());
-    rayTracedShadowPass->SetSubmissionTracker(
-        m_renderContext
-            ? RenderContextInternalAccess::GetSubmissionTracker(*m_renderContext)
-            : nullptr);
-    rayTracedShadowPass->SetConfig(m_shadowPassConfig);
-    m_rayTracedShadowPass = rayTracedShadowPass.get();
-    AddPass(std::move(rayTracedShadowPass));
-
-    auto cameraVelocityPass = std::make_unique<CameraVelocityPass>();
-    cameraVelocityPass->SetResources(
-        m_pipelineCache.get(), m_resourceViewCache.get());
-    m_cameraVelocityPass = cameraVelocityPass.get();
-    AddPass(std::move(cameraVelocityPass));
-
-    auto objectVelocityPass = std::make_unique<ObjectVelocityPass>();
-    objectVelocityPass->SetResources(
-        m_pipelineCache.get(),
-        m_resourceViewCache.get(),
-        m_materialSystem.get());
-    objectVelocityPass->SetResourceRegistry(m_renderResourceRegistry);
-    m_objectVelocityPass = objectVelocityPass.get();
-    AddPass(std::move(objectVelocityPass));
-
-    auto rayTracedReflectionPass =
-        std::make_unique<RayTracedReflectionPass>();
-    rayTracedReflectionPass->SetResources(
-        m_pipelineCache.get(), m_resourceViewCache.get());
-    rayTracedReflectionPass->SetResourceRegistry(m_renderResourceRegistry);
-    rayTracedReflectionPass->SetRayTracingScene(
-        m_rayTracingSceneManager.get());
-    m_rayTracedReflectionPass = rayTracedReflectionPass.get();
-    AddPass(std::move(rayTracedReflectionPass));
-
-    auto rayTracedReflectionDenoisePass =
-        std::make_unique<RayTracedReflectionDenoisePass>();
-    rayTracedReflectionDenoisePass->SetResources(
-        m_pipelineCache.get(), m_resourceViewCache.get());
-    rayTracedReflectionDenoisePass->SetReflectionSource(
-        m_rayTracedReflectionPass);
-    m_rayTracedReflectionDenoisePass =
-        rayTracedReflectionDenoisePass.get();
-    AddPass(std::move(rayTracedReflectionDenoisePass));
-
-    auto rayTracedReflectionCompositePass =
-        std::make_unique<RayTracedReflectionCompositePass>();
-    rayTracedReflectionCompositePass->SetResources(
-        m_pipelineCache.get(), m_resourceViewCache.get());
-    rayTracedReflectionCompositePass->SetReflectionSource(
-        m_rayTracedReflectionPass);
-    rayTracedReflectionCompositePass->SetDenoisedReflectionSource(
-        m_rayTracedReflectionDenoisePass);
-    m_rayTracedReflectionCompositePass =
-        rayTracedReflectionCompositePass.get();
-    AddPass(std::move(rayTracedReflectionCompositePass));
-
-    auto opaquePass = std::make_unique<OpaquePass>();
-    opaquePass->SetResources(m_pipelineCache.get(),
-                             m_materialSystem.get(),
-                             m_lightManager.get(),
-                             m_clusteredLighting.get());
-    opaquePass->SetResourceRegistry(m_renderResourceRegistry);
-    m_opaquePass = opaquePass.get();
-    AddPass(std::move(opaquePass));
-
-    auto skyboxPass = std::make_unique<SkyboxPass>();
-    skyboxPass->SetResources(m_pipelineCache.get());
-    skyboxPass->SetResourceRegistry(m_renderResourceRegistry);
-    m_skyboxPass = skyboxPass.get();
-    AddPass(std::move(skyboxPass));
-
-    auto waterFeaturePass = std::make_unique<WaterFeaturePass>();
-    waterFeaturePass->SetSnapshot(&m_featureSnapshot->water);
-    waterFeaturePass->SetShaderProgramProvider(m_shaderProgramProvider.get());
-    waterFeaturePass->SetReverseZ(
-        m_pipelineCache != nullptr && m_pipelineCache->GetConfig().reverseZ);
-    m_waterFeaturePass = waterFeaturePass.get();
-    AddPass(std::move(waterFeaturePass));
-
-    auto transparentPass = std::make_unique<TransparentPass>();
-    transparentPass->SetResources(m_pipelineCache.get(),
-                                  m_materialSystem.get(),
-                                  m_lightManager.get(),
-                                  m_clusteredLighting.get());
-    transparentPass->SetResourceRegistry(m_renderResourceRegistry);
-    m_transparentPass = transparentPass.get();
-    AddPass(std::move(transparentPass));
-
-    auto particleFeaturePass = std::make_unique<ParticleFeaturePass>();
-    particleFeaturePass->SetSnapshot(&m_featureSnapshot->particles);
-    particleFeaturePass->SetShaderProgramProvider(m_shaderProgramProvider.get());
-    particleFeaturePass->SetResourceRegistry(m_renderResourceRegistry);
-    particleFeaturePass->SetReverseZ(
-        m_pipelineCache != nullptr && m_pipelineCache->GetConfig().reverseZ);
-    m_particleFeaturePass = particleFeaturePass.get();
-    AddPass(std::move(particleFeaturePass));
-
-    m_deferredLightingPass = std::make_unique<DeferredLightingPass>();
-    m_deferredLightingPass->SetPipelineCache(m_pipelineCache.get());
+    std::unique_ptr<DefaultRenderPassBundle> passBundle =
+        CreateDefaultRenderPassBundle(dependencies);
+    if (passBundle == nullptr)
+    {
+        RVX_RENDER_ERROR(
+            "SceneRenderer: default pass-bundle construction failed");
+        return false;
+    }
+    m_defaultRenderComposition->InstallDefaultPassBundle(
+        std::move(passBundle));
 
     if (!EnsureDefaultRenderComposition())
     {
@@ -167,85 +74,91 @@ bool SceneRenderer::SetupDefaultRenderFeatures()
 
     RVX_RENDER_DEBUG(
         "SceneRenderer: raster compositions sealed with {} feature(s)",
-        m_renderFeatureRegistry->GetFeatureCount());
+        m_defaultRenderComposition->GetFeatureCount());
     return true;
 }
 
 bool SceneRenderer::EnsureDefaultRenderComposition()
 {
-    const bool deferredDependenciesReady = m_opaquePass != nullptr &&
-        m_pipelineCache != nullptr && m_deferredLightingPass != nullptr;
-    const bool fullCompositionReady = m_legacyForwardFeature != nullptr &&
-        m_ambientOcclusionFeature != nullptr &&
-        m_forwardLightingFeature != nullptr &&
-        m_reflectionFeature != nullptr &&
-        m_forwardSpecialFeature != nullptr &&
-        m_translucencyFeature != nullptr &&
-        m_postProcessFeature != nullptr &&
-        m_deferredGeometryFeature != nullptr &&
-        m_deferredLightingFeature != nullptr &&
-        m_deferredForwardSpecialFeature != nullptr;
-    if (m_renderFeatureRegistry != nullptr && fullCompositionReady)
+    if (m_defaultRenderComposition == nullptr)
+    {
+        RVX_RENDER_ERROR(
+            "SceneRenderer: cannot compose raster recipes without a composition owner");
+        return false;
+    }
+
+    DefaultRenderPassBundle& passBundle =
+        m_defaultRenderComposition->GetPassBundle();
+    const bool deferredDependenciesReady =
+        passBundle.FindPass<OpaquePass>() != nullptr &&
+        m_pipelineCache != nullptr &&
+        passBundle.FindPass<DeferredLightingPass>() != nullptr;
+    const bool fullCompositionReady =
+        m_defaultRenderComposition->GetFeatureRegistry() != nullptr &&
+        m_defaultRenderComposition
+                ->FindFeature<LegacyForwardFeatureAdapter>() != nullptr &&
+        m_defaultRenderComposition
+                ->FindFeature<AmbientOcclusionFeatureAdapter>() != nullptr &&
+        m_defaultRenderComposition
+                ->FindFeature<ForwardLightingFeatureAdapter>() != nullptr &&
+        m_defaultRenderComposition
+                ->FindFeature<ReflectionFeatureAdapter>() != nullptr &&
+        m_defaultRenderComposition
+                ->FindFeature<ForwardSpecialFeatureAdapter>() != nullptr &&
+        m_defaultRenderComposition
+                ->FindFeature<TranslucencyFeatureAdapter>() != nullptr &&
+        m_defaultRenderComposition
+                ->FindFeature<PostProcessPipelineFeatureAdapter>() != nullptr &&
+        m_defaultRenderComposition
+                ->FindFeature<DeferredGeometryFeatureAdapter>() != nullptr &&
+        m_defaultRenderComposition
+                ->FindFeature<DeferredLightingFeatureAdapter>() != nullptr &&
+        m_defaultRenderComposition
+                ->FindFeature<DeferredForwardSpecialFeatureAdapter>() != nullptr;
+    if (fullCompositionReady)
     {
         return true;
     }
 
-    // A focused/tooling renderer may record ForwardStandard before the full
-    // runtime is initialized. Keep that composition narrow and upgrade it
-    // atomically once the Deferred dependencies become available.
     const bool forwardOnlyCompositionReady =
-        m_renderFeatureRegistry != nullptr &&
-        m_legacyForwardFeature != nullptr &&
-        m_ambientOcclusionFeature != nullptr &&
-        m_forwardLightingFeature != nullptr &&
-        m_reflectionFeature != nullptr &&
-        m_forwardSpecialFeature != nullptr &&
-        m_translucencyFeature != nullptr &&
-        m_postProcessFeature != nullptr &&
-        m_deferredGeometryFeature == nullptr &&
-        m_deferredLightingFeature == nullptr &&
-        m_deferredForwardSpecialFeature == nullptr;
+        m_defaultRenderComposition->GetFeatureRegistry() != nullptr &&
+        m_defaultRenderComposition
+                ->FindFeature<LegacyForwardFeatureAdapter>() != nullptr &&
+        m_defaultRenderComposition
+                ->FindFeature<AmbientOcclusionFeatureAdapter>() != nullptr &&
+        m_defaultRenderComposition
+                ->FindFeature<ForwardLightingFeatureAdapter>() != nullptr &&
+        m_defaultRenderComposition
+                ->FindFeature<ReflectionFeatureAdapter>() != nullptr &&
+        m_defaultRenderComposition
+                ->FindFeature<ForwardSpecialFeatureAdapter>() != nullptr &&
+        m_defaultRenderComposition
+                ->FindFeature<TranslucencyFeatureAdapter>() != nullptr &&
+        m_defaultRenderComposition
+                ->FindFeature<PostProcessPipelineFeatureAdapter>() != nullptr &&
+        m_defaultRenderComposition
+                ->FindFeature<DeferredGeometryFeatureAdapter>() == nullptr &&
+        m_defaultRenderComposition
+                ->FindFeature<DeferredLightingFeatureAdapter>() == nullptr &&
+        m_defaultRenderComposition
+                ->FindFeature<DeferredForwardSpecialFeatureAdapter>() == nullptr;
     if (forwardOnlyCompositionReady)
     {
         if (!deferredDependenciesReady)
         {
             return true;
         }
-        m_renderFeatureRegistry.reset();
-        m_legacyForwardFeature = nullptr;
-        m_ambientOcclusionFeature = nullptr;
-        m_forwardLightingFeature = nullptr;
-        m_reflectionFeature = nullptr;
-        m_forwardSpecialFeature = nullptr;
-        m_translucencyFeature = nullptr;
-        m_postProcessFeature = nullptr;
+        m_defaultRenderComposition->ResetFeatures();
     }
 
-    if (m_renderFeatureRegistry != nullptr || m_legacyForwardFeature != nullptr ||
-        m_ambientOcclusionFeature != nullptr ||
-        m_forwardLightingFeature != nullptr ||
-        m_reflectionFeature != nullptr ||
-        m_forwardSpecialFeature != nullptr ||
-        m_translucencyFeature != nullptr ||
-        m_postProcessFeature != nullptr ||
-        m_deferredGeometryFeature != nullptr ||
-        m_deferredLightingFeature != nullptr ||
-        m_deferredForwardSpecialFeature != nullptr)
+    if (m_defaultRenderComposition->GetFeatureRegistry() != nullptr)
     {
         RVX_RENDER_ERROR(
             "SceneRenderer: raster composition ownership is inconsistent");
         return false;
     }
-    if (m_passRegistry == nullptr)
-    {
-        RVX_RENDER_ERROR(
-            "SceneRenderer: cannot compose raster recipes without a pass registry");
-        return false;
-    }
 
-    auto registry = std::make_unique<RenderFeatureRegistry>();
-    const VelocityPassBindings velocityPasses{
-        m_cameraVelocityPass, m_objectVelocityPass};
+    m_defaultRenderComposition->BeginFeatureRegistration();
     std::vector<RenderPipelineRecipe> recipes = {
         RenderPipelineRecipe::ForwardStandard};
     if (deferredDependenciesReady)
@@ -256,27 +169,24 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
     for (const RenderPipelineRecipe recipe : recipes)
     {
         const RenderFeatureRegistryCode recipeCode =
-            registry->DeclareImplementedRecipe(recipe);
+            m_defaultRenderComposition->DeclareImplementedRecipe(recipe);
         if (recipeCode != RenderFeatureRegistryCode::Success)
         {
             RVX_RENDER_ERROR(
                 "SceneRenderer: failed to declare '{}' recipe: {}",
                 GetRenderPipelineRecipeName(recipe),
                 GetRenderFeatureRegistryCodeName(recipeCode));
+            m_defaultRenderComposition->ResetFeatures();
             return false;
         }
     }
 
-    auto legacyForward = std::make_unique<LegacyForwardFeatureAdapter>(
-        m_passRegistry.get(), m_opaquePass, velocityPasses);
-    LegacyForwardFeatureAdapter* const legacyForwardFeature =
-        legacyForward.get();
-    const auto registerFeature = [&registry](
+    const auto registerFeature = [this](
         std::unique_ptr<IRenderFeature> feature,
         const char* name)
     {
         const RenderFeatureRegistryCode code =
-            registry->Register(std::move(feature));
+            m_defaultRenderComposition->RegisterFeature(std::move(feature));
         if (code != RenderFeatureRegistryCode::Success)
         {
             RVX_RENDER_ERROR(
@@ -287,114 +197,67 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
         }
         return true;
     };
-    if (!registerFeature(std::move(legacyForward), "ForwardStandard"))
-    {
-        return false;
-    }
 
-    auto ambientOcclusion =
-        std::make_unique<AmbientOcclusionFeatureAdapter>(
-            m_pipelineCache.get());
-    AmbientOcclusionFeatureAdapter* const ambientOcclusionFeature =
-        ambientOcclusion.get();
     if (!registerFeature(
-            std::move(ambientOcclusion), "AmbientOcclusion"))
+            std::make_unique<LegacyForwardFeatureAdapter>(&passBundle),
+            "ForwardStandard") ||
+        !registerFeature(
+            std::make_unique<AmbientOcclusionFeatureAdapter>(
+                m_pipelineCache.get()),
+            "AmbientOcclusion") ||
+        !registerFeature(
+            std::make_unique<ForwardLightingFeatureAdapter>(&passBundle),
+            "ForwardLighting") ||
+        !registerFeature(
+            std::make_unique<ReflectionFeatureAdapter>(
+                &passBundle, m_pipelineCache.get()),
+            "ReflectionResolve") ||
+        !registerFeature(
+            std::make_unique<ForwardSpecialFeatureAdapter>(&passBundle),
+            "ForwardSpecial") ||
+        !registerFeature(
+            std::make_unique<TranslucencyFeatureAdapter>(
+                &passBundle, m_pipelineCache.get()),
+            "Translucency") ||
+        !registerFeature(
+            std::make_unique<PostProcessPipelineFeatureAdapter>(
+                GetPostProcessStack()),
+            "PostProcessPipeline"))
     {
+        m_defaultRenderComposition->ResetFeatures();
         return false;
     }
 
-    auto forwardLighting =
-        std::make_unique<ForwardLightingFeatureAdapter>(
-            m_passRegistry.get(), m_opaquePass);
-    ForwardLightingFeatureAdapter* const forwardLightingFeature =
-        forwardLighting.get();
-    if (!registerFeature(std::move(forwardLighting), "ForwardLighting"))
-    {
-        return false;
-    }
-
-    auto reflection = std::make_unique<ReflectionFeatureAdapter>(
-        m_pipelineCache.get());
-    ReflectionFeatureAdapter* const reflectionFeature = reflection.get();
-    if (!registerFeature(std::move(reflection), "ReflectionResolve"))
-    {
-        return false;
-    }
-
-    auto forwardSpecial = std::make_unique<ForwardSpecialFeatureAdapter>(
-        m_passRegistry.get(), m_opaquePass, velocityPasses);
-    ForwardSpecialFeatureAdapter* const forwardSpecialFeature =
-        forwardSpecial.get();
-    if (!registerFeature(std::move(forwardSpecial), "ForwardSpecial"))
-    {
-        return false;
-    }
-
-    auto translucency = std::make_unique<TranslucencyFeatureAdapter>(
-        m_passRegistry.get(), m_pipelineCache.get());
-    TranslucencyFeatureAdapter* const translucencyFeature =
-        translucency.get();
-    if (!registerFeature(std::move(translucency), "Translucency"))
-    {
-        return false;
-    }
-
-    auto postProcess = std::make_unique<PostProcessPipelineFeatureAdapter>(
-        m_postProcessStack.get());
-    PostProcessPipelineFeatureAdapter* const postProcessFeature =
-        postProcess.get();
-    if (!registerFeature(std::move(postProcess), "PostProcessPipeline"))
-    {
-        return false;
-    }
-
-    DeferredGeometryFeatureAdapter* deferredGeometryFeature = nullptr;
-    DeferredLightingFeatureAdapter* deferredLightingFeature = nullptr;
-    DeferredForwardSpecialFeatureAdapter* deferredForwardSpecialFeature = nullptr;
     if (deferredDependenciesReady)
     {
-        auto deferredGeometry =
-            std::make_unique<DeferredGeometryFeatureAdapter>(
-                m_passRegistry.get(), m_opaquePass, m_pipelineCache.get(),
-                velocityPasses);
-        deferredGeometryFeature = deferredGeometry.get();
-        auto deferredLighting =
-            std::make_unique<DeferredLightingFeatureAdapter>(
-                m_deferredLightingPass.get(), m_pipelineCache.get());
-        deferredLightingFeature = deferredLighting.get();
-        auto deferredForwardSpecial =
-            std::make_unique<DeferredForwardSpecialFeatureAdapter>(
-                m_passRegistry.get(), m_opaquePass, velocityPasses);
-        deferredForwardSpecialFeature = deferredForwardSpecial.get();
-        if (!registerFeature(std::move(deferredGeometry), "DeferredGeometry") ||
-            !registerFeature(std::move(deferredLighting), "DeferredLighting") ||
-            !registerFeature(std::move(deferredForwardSpecial),
-                             "DeferredForwardSpecial"))
+        if (!registerFeature(
+                std::make_unique<DeferredGeometryFeatureAdapter>(
+                    &passBundle, m_pipelineCache.get()),
+                "DeferredGeometry") ||
+            !registerFeature(
+                std::make_unique<DeferredLightingFeatureAdapter>(
+                    &passBundle, m_pipelineCache.get()),
+                "DeferredLighting") ||
+            !registerFeature(
+                std::make_unique<DeferredForwardSpecialFeatureAdapter>(
+                    &passBundle),
+                "DeferredForwardSpecial"))
         {
+            m_defaultRenderComposition->ResetFeatures();
             return false;
         }
     }
 
-    const RenderFeatureRegistryCode sealCode = registry->Seal();
+    const RenderFeatureRegistryCode sealCode =
+        m_defaultRenderComposition->SealFeatures();
     if (sealCode != RenderFeatureRegistryCode::Success)
     {
         RVX_RENDER_ERROR(
             "SceneRenderer: failed to seal raster compositions: {}",
             GetRenderFeatureRegistryCodeName(sealCode));
+        m_defaultRenderComposition->ResetFeatures();
         return false;
     }
-
-    m_legacyForwardFeature = legacyForwardFeature;
-    m_ambientOcclusionFeature = ambientOcclusionFeature;
-    m_forwardLightingFeature = forwardLightingFeature;
-    m_reflectionFeature = reflectionFeature;
-    m_forwardSpecialFeature = forwardSpecialFeature;
-    m_translucencyFeature = translucencyFeature;
-    m_postProcessFeature = postProcessFeature;
-    m_deferredGeometryFeature = deferredGeometryFeature;
-    m_deferredLightingFeature = deferredLightingFeature;
-    m_deferredForwardSpecialFeature = deferredForwardSpecialFeature;
-    m_renderFeatureRegistry = std::move(registry);
     return true;
 }
 } // namespace RVX

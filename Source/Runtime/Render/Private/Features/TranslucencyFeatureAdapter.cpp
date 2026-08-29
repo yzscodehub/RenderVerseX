@@ -1,12 +1,13 @@
 #include "Features/TranslucencyFeatureAdapter.h"
 
+#include "Features/DefaultRenderPassBundle.h"
+
 #include "Render/PipelineCache.h"
 #include "Render/Passes/ParticleFeaturePass.h"
 #include "Render/Passes/TransparentPass.h"
 #include "Render/Particles/ParticleBillboardDrawPlan.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Translucency/TranslucencyFramePlan.h"
-#include "Renderer/RenderPassRegistry.h"
 #include "RHI/RHIRenderPass.h"
 
 #include <algorithm>
@@ -431,58 +432,34 @@ namespace
     }
 
     [[nodiscard]] const ParticleFeaturePass* FindParticleFeaturePass(
-        const RenderPassRegistry& registry) noexcept
+        const DefaultRenderPassBundle& bundle) noexcept
     {
-        for (const std::unique_ptr<IRenderPass>& pass : registry.GetPasses())
-        {
-            if (const auto* const particle =
-                    dynamic_cast<const ParticleFeaturePass*>(pass.get()))
-            {
-                return particle;
-            }
-        }
-        return nullptr;
+        return bundle.FindPass<ParticleFeaturePass>();
     }
 
     [[nodiscard]] ParticleFeaturePass* FindParticleFeaturePass(
-        RenderPassRegistry& registry) noexcept
+        DefaultRenderPassBundle& bundle) noexcept
     {
-        for (const std::unique_ptr<IRenderPass>& pass : registry.GetPasses())
-        {
-            if (auto* const particle =
-                    dynamic_cast<ParticleFeaturePass*>(pass.get()))
-            {
-                return particle;
-            }
-        }
-        return nullptr;
+        return bundle.FindPass<ParticleFeaturePass>();
     }
 
     [[nodiscard]] TransparentPass* FindTransparentPass(
-        RenderPassRegistry& registry) noexcept
+        DefaultRenderPassBundle& bundle) noexcept
     {
-        for (const std::unique_ptr<IRenderPass>& pass : registry.GetPasses())
-        {
-            if (auto* const transparent =
-                    dynamic_cast<TransparentPass*>(pass.get()))
-            {
-                return transparent;
-            }
-        }
-        return nullptr;
+        return bundle.FindPass<TransparentPass>();
     }
 
     [[nodiscard]] bool BuildParticleVfxRecordInput(
         RenderFeatureGraphBuilder& builder,
         const RenderPassRecordContext& context,
-        const RenderPassRegistry& registry,
+        const DefaultRenderPassBundle& bundle,
         RenderOutputExtent extent,
         ParticleVfxRecordInput& outInput,
         std::string& outFailure)
     {
         outInput = {};
         const ParticleFeaturePass* const particle =
-            FindParticleFeaturePass(registry);
+            FindParticleFeaturePass(bundle);
         if (particle == nullptr)
         {
             return true;
@@ -590,9 +567,9 @@ namespace
 } // namespace
 
 TranslucencyFeatureAdapter::TranslucencyFeatureAdapter(
-    RenderPassRegistry* passRegistry,
+    DefaultRenderPassBundle* passBundle,
     PipelineCache* pipelineCache) noexcept
-    : m_passRegistry(passRegistry)
+    : m_passBundle(passBundle)
     , m_pipelineCache(pipelineCache)
 {
 }
@@ -653,7 +630,7 @@ void TranslucencyFeatureAdapter::Prepare(
     const bool framePlanReady =
         BuildFramePlan(context, framePlanDiagnostic);
     m_readiness.pipelineReady =
-        m_passRegistry != nullptr && framePlanReady;
+        m_passBundle != nullptr && framePlanReady;
     m_readiness.inputsReady = HasMatchingRecordContext(context) &&
         hasValidLightingPlan && m_readiness.pipelineReady;
     if (!m_readiness.hardwareSupported)
@@ -776,7 +753,8 @@ void TranslucencyFeatureAdapter::AddPasses(
         inputs->opaqueSceneSnapshotReceipt};
 
     m_lastPassChainStats.frameSequence = context.identity.frameSequence;
-    m_lastPassChainStats.passStatuses = m_passRegistry->GetPassStatuses();
+    m_lastPassChainStats.passStatuses =
+        m_passBundle->GetRegistry().GetPassStatuses();
     m_lastPassChainStats.registeredPassCount =
         m_lastPassChainStats.passStatuses.size();
     if (m_framePlan == nullptr || m_particleDrawPlan == nullptr ||
@@ -794,9 +772,9 @@ void TranslucencyFeatureAdapter::AddPasses(
     const TranslucencyRouteSummary& routeSummary =
         m_framePlan->GetSummary();
     TransparentPass* const transparentPass =
-        FindTransparentPass(*m_passRegistry);
+        FindTransparentPass(*m_passBundle);
     ParticleFeaturePass* const particlePass =
-        FindParticleFeaturePass(*m_passRegistry);
+        FindParticleFeaturePass(*m_passBundle);
     if (routeSummary.meshCandidateCount != 0 && transparentPass == nullptr)
     {
         SetCompositionFailure(
@@ -819,7 +797,7 @@ void TranslucencyFeatureAdapter::AddPasses(
         if (!BuildParticleVfxRecordInput(
                 builder,
                 context,
-                *m_passRegistry,
+                *m_passBundle,
                 m_preparedContext.outputExtent,
                 context.particleVfx,
                 particleFailure))
@@ -1163,7 +1141,7 @@ bool TranslucencyFeatureAdapter::BuildFramePlan(
 {
     m_particleDrawPlan.reset();
     m_framePlan.reset();
-    if (m_passRegistry == nullptr || !HasMatchingRecordContext(context) ||
+    if (m_passBundle == nullptr || !HasMatchingRecordContext(context) ||
         m_recordContext.frameSnapshot == nullptr)
     {
         outDiagnostic =
@@ -1216,7 +1194,7 @@ bool TranslucencyFeatureAdapter::BuildFramePlan(
     }
 
     ParticleFeaturePass* const particlePass =
-        FindParticleFeaturePass(*m_passRegistry);
+        FindParticleFeaturePass(*m_passBundle);
     const bool particleRequested =
         particlePass != nullptr && particlePass->IsRequestedEnabled();
     auto particlePlan = std::make_shared<ParticleBillboardDrawPlan>();

@@ -5,9 +5,13 @@
 
 #include "Features/DeferredRecipeFeatureAdapter.h"
 
+#include "Features/DefaultRenderPassBundle.h"
+
 #include "Render/Material/MaterialSystem.h"
+#include "Render/Passes/CameraVelocityPass.h"
 #include "Render/Passes/DeferredLightingPass.h"
 #include "Render/Passes/OpaquePass.h"
+#include "Render/Passes/ObjectVelocityPass.h"
 #include "Render/Passes/ParticleFeaturePass.h"
 #include "Render/Passes/RayTracedReflectionCompositePass.h"
 #include "Render/Passes/RayTracedReflectionDenoisePass.h"
@@ -16,7 +20,6 @@
 #include "Render/Passes/ShadowPass.h"
 #include "Render/Passes/WaterFeaturePass.h"
 #include "Render/PipelineCache.h"
-#include "Renderer/RenderPassRegistry.h"
 
 #include <algorithm>
 #include <array>
@@ -193,43 +196,27 @@ namespace
     }
 
     [[nodiscard]] const ParticleFeaturePass* FindParticleFeaturePass(
-        const RenderPassRegistry& registry) noexcept
+        const DefaultRenderPassBundle& bundle) noexcept
     {
-        for (const std::unique_ptr<IRenderPass>& pass : registry.GetPasses())
-        {
-            if (const auto* const particle =
-                    dynamic_cast<const ParticleFeaturePass*>(pass.get()))
-            {
-                return particle;
-            }
-        }
-        return nullptr;
+        return bundle.FindPass<ParticleFeaturePass>();
     }
 
     [[nodiscard]] const WaterFeaturePass* FindWaterFeaturePass(
-        const RenderPassRegistry& registry) noexcept
+        const DefaultRenderPassBundle& bundle) noexcept
     {
-        for (const std::unique_ptr<IRenderPass>& pass : registry.GetPasses())
-        {
-            if (const auto* const water =
-                    dynamic_cast<const WaterFeaturePass*>(pass.get()))
-            {
-                return water;
-            }
-        }
-        return nullptr;
+        return bundle.FindPass<WaterFeaturePass>();
     }
 
     [[nodiscard]] bool BuildWaterSurfaceRecordInput(
         RenderFeatureGraphBuilder& builder,
         const RenderPassRecordContext& context,
-        const RenderPassRegistry& registry,
+        const DefaultRenderPassBundle& bundle,
         RenderOutputExtent extent,
         WaterSurfaceRecordInput& outInput,
         std::string& outFailure)
     {
         outInput = {};
-        const WaterFeaturePass* const water = FindWaterFeaturePass(registry);
+        const WaterFeaturePass* const water = FindWaterFeaturePass(bundle);
         if (water == nullptr || !water->GetRequirements().requested)
         {
             return true;
@@ -278,13 +265,13 @@ namespace
     [[nodiscard]] bool BuildParticleVfxRecordInput(
         RenderFeatureGraphBuilder& builder,
         const RenderPassRecordContext& context,
-        const RenderPassRegistry& registry,
+        const DefaultRenderPassBundle& bundle,
         RenderOutputExtent extent,
         ParticleVfxRecordInput& outInput,
         std::string& outFailure)
     {
         outInput = {};
-        const ParticleFeaturePass* const particle = FindParticleFeaturePass(registry);
+        const ParticleFeaturePass* const particle = FindParticleFeaturePass(bundle);
         if (particle == nullptr)
         {
             return true;
@@ -551,7 +538,7 @@ namespace
     [[nodiscard]] bool AddLegacyPassRange(
         RenderFeatureGraphBuilder& builder,
         RenderPassRecordContext context,
-        RenderPassRegistry& registry,
+        DefaultRenderPassBundle& bundle,
         const OpaquePass* opaquePass,
         IncludePredicate include,
         DeferredRecipeFeaturePassChainStats& stats,
@@ -559,6 +546,7 @@ namespace
         RGTextureHandle* outFinalSceneColor = nullptr)
     {
         stats.frameSequence = context.identity.frameSequence;
+        auto& registry = bundle.GetRegistry();
         stats.passStatuses = registry.GetPassStatuses();
         stats.registeredPassCount = stats.passStatuses.size();
 
@@ -634,7 +622,7 @@ namespace
     [[nodiscard]] bool AddCanonicalVelocityPasses(
         RenderFeatureGraphBuilder& builder,
         const RenderPassRecordContext& context,
-        const VelocityPassBindings& bindings,
+        DefaultRenderPassBundle& bundle,
         RenderOutputExtent extent,
         DeferredRecipeFeaturePassChainStats& stats,
         std::string& outFailure)
@@ -646,7 +634,13 @@ namespace
             HasFlag(builder.GetGraph()
                         .GetTextureDesc(context.view.velocityTarget)->usage,
                     RHITextureUsage::RenderTarget);
-        if (!bindings.IsComplete())
+        CameraVelocityPass* const camera =
+            bundle.FindPass<CameraVelocityPass>();
+        ObjectVelocityPass* const object =
+            bundle.FindPass<ObjectVelocityPass>();
+        if (camera == nullptr || object == nullptr ||
+            static_cast<IRenderPass*>(camera) ==
+                static_cast<IRenderPass*>(object))
         {
             if (context.view.velocityTarget.IsValid())
             {
@@ -657,8 +651,7 @@ namespace
             return true;
         }
 
-        const std::array<IRenderPass*, 2> producers = {
-            bindings.camera, bindings.object};
+        const std::array<IRenderPass*, 2> producers = {camera, object};
         const std::array<const char*, 2> expectedNames = {
             "CameraVelocityPass", "ObjectVelocityPass"};
         bool anyRequested = false;
@@ -719,14 +712,10 @@ namespace
 } // namespace
 
 DeferredGeometryFeatureAdapter::DeferredGeometryFeatureAdapter(
-    RenderPassRegistry* passRegistry,
-    OpaquePass* opaquePass,
-    PipelineCache* pipelineCache,
-    VelocityPassBindings velocityPasses) noexcept
-    : m_passRegistry(passRegistry)
-    , m_opaquePass(opaquePass)
+    DefaultRenderPassBundle* passBundle,
+    PipelineCache* pipelineCache) noexcept
+    : m_passBundle(passBundle)
     , m_pipelineCache(pipelineCache)
-    , m_velocityPasses(velocityPasses)
 {
 }
 
@@ -739,11 +728,6 @@ void DeferredGeometryFeatureAdapter::SetRecordContext(
     m_readiness = {};
     m_lastPassChainStats = {};
     m_lastReceipt = {};
-}
-
-void DeferredGeometryFeatureAdapter::SetOpaquePass(OpaquePass* opaquePass) noexcept
-{
-    m_opaquePass = opaquePass;
 }
 
 RenderFeatureDescriptor DeferredGeometryFeatureAdapter::Describe() const
@@ -777,9 +761,12 @@ void DeferredGeometryFeatureAdapter::Prepare(const RenderFeatureContext& context
     m_readiness.hardwareSupported = HasGraphicsCapability(
         context.hardwareCapabilities) && IsNativeDeferredBackend(context.backend);
     m_readiness.implementationSupported = UsesDeferredOpaqueComposition(context);
+    OpaquePass* const opaquePass = m_passBundle != nullptr
+        ? m_passBundle->FindPass<OpaquePass>()
+        : nullptr;
     OpaqueRasterPipelinePreflightResult opaquePipelinePreflight;
     if (m_readiness.hardwareSupported &&
-        m_readiness.implementationSupported && m_opaquePass != nullptr &&
+        m_readiness.implementationSupported && opaquePass != nullptr &&
         m_pipelineCache != nullptr)
     {
         // A DeferredQuality frame may be selected only after the shared
@@ -787,15 +774,15 @@ void DeferredGeometryFeatureAdapter::Prepare(const RenderFeatureContext& context
         // route request. This deliberately does not synthesize a rigid
         // baseline: masked, skinned, and sealed GPU variants are all
         // preflighted from the current frame plan before graph registration.
-        opaquePipelinePreflight = m_opaquePass->PreflightRasterPipelines(
+        opaquePipelinePreflight = opaquePass->PreflightRasterPipelines(
             m_recordContext,
             OpaqueRasterOutputFamily::DeferredGBuffer,
             OpaqueRasterSurfaceRoute::DeferredOpaque);
     }
     m_readiness.pipelineReady = opaquePipelinePreflight.Succeeded();
     m_readiness.inputsReady = HasMatchingRecordContext(context) &&
-        HasDeferredTargets() && m_opaquePass != nullptr &&
-        m_passRegistry != nullptr;
+        HasDeferredTargets() && opaquePass != nullptr &&
+        m_passBundle != nullptr;
 
     if (!m_readiness.hardwareSupported)
     {
@@ -807,7 +794,7 @@ void DeferredGeometryFeatureAdapter::Prepare(const RenderFeatureContext& context
         m_readiness.diagnostic =
             "Deferred geometry requires a deferred-opaque recipe";
     }
-    else if (m_opaquePass == nullptr || m_passRegistry == nullptr ||
+    else if (opaquePass == nullptr || m_passBundle == nullptr ||
              m_pipelineCache == nullptr)
     {
         m_readiness.diagnostic =
@@ -861,13 +848,21 @@ void DeferredGeometryFeatureAdapter::AddPasses(
             "Deferred geometry record context does not match the target graph");
         return;
     }
+    OpaquePass* const opaquePass = m_passBundle != nullptr
+        ? m_passBundle->FindPass<OpaquePass>()
+        : nullptr;
+    if (opaquePass == nullptr)
+    {
+        SetCompositionFailure("Deferred geometry opaque pass is unavailable");
+        return;
+    }
 
     std::string failure;
     if (!AddLegacyPassRange(
             builder,
             m_recordContext,
-            *m_passRegistry,
-            m_opaquePass,
+            *m_passBundle,
+            opaquePass,
             [resolvedRecipe = m_preparedContext.resolvedRecipe](
                 const IRenderPass& pass)
             {
@@ -917,8 +912,7 @@ void DeferredGeometryFeatureAdapter::AddPasses(
     // before graph import so GBuffer3 can never address undefined rows.
     MaterialParameterTableSnapshot materialTable;
     std::string materialTableError;
-    if (m_opaquePass == nullptr ||
-        !m_opaquePass->CreateMaterialClassificationTableSnapshot(
+    if (!opaquePass->CreateMaterialClassificationTableSnapshot(
             m_recordContext,
             OpaqueRasterSurfaceRoute::DeferredOpaque,
             materialTable,
@@ -960,7 +954,7 @@ void DeferredGeometryFeatureAdapter::AddPasses(
         !builder.AddGraphCallback(
             "DeferredGBuffer",
             opaqueContext,
-            [opaque = m_opaquePass,
+            [opaque = opaquePass,
              context = opaqueContext,
              targets = OpaqueDeferredGBufferTargets{
                  {textures.gBuffer0, textures.gBuffer1, textures.gBuffer2,
@@ -978,7 +972,7 @@ void DeferredGeometryFeatureAdapter::AddPasses(
     m_lastPassChainStats.graphPassNames.push_back("DeferredGBuffer");
 
     if (!AddCanonicalVelocityPasses(
-            builder, m_recordContext, m_velocityPasses, extent,
+            builder, m_recordContext, *m_passBundle, extent,
             m_lastPassChainStats, failure))
     {
         SetCompositionFailure(std::move(failure));
@@ -1072,9 +1066,9 @@ void DeferredGeometryFeatureAdapter::SetCompositionFailure(std::string diagnosti
 }
 
 DeferredLightingFeatureAdapter::DeferredLightingFeatureAdapter(
-    DeferredLightingPass* lightingPass,
+    DefaultRenderPassBundle* passBundle,
     PipelineCache* pipelineCache) noexcept
-    : m_lightingPass(lightingPass)
+    : m_passBundle(passBundle)
     , m_pipelineCache(pipelineCache)
 {
 }
@@ -1087,12 +1081,6 @@ void DeferredLightingFeatureAdapter::SetRecordContext(
     m_preparedContext = {};
     m_readiness = {};
     m_lastReceipt = {};
-}
-
-void DeferredLightingFeatureAdapter::SetLightingPass(
-    DeferredLightingPass* lightingPass) noexcept
-{
-    m_lightingPass = lightingPass;
 }
 
 RenderFeatureDescriptor DeferredLightingFeatureAdapter::Describe() const
@@ -1135,12 +1123,15 @@ void DeferredLightingFeatureAdapter::Prepare(const RenderFeatureContext& context
         context.hardwareCapabilities) && IsNativeDeferredBackend(context.backend);
     m_readiness.implementationSupported = UsesDeferredOpaqueComposition(context);
     const bool hasValidLightingPlan = HasValidLightingPlan(context);
-    const bool createdPipeline = hasValidLightingPlan && m_lightingPass != nullptr &&
-        m_lightingPass->EnsurePipelineReady();
+    DeferredLightingPass* const lightingPass = m_passBundle != nullptr
+        ? m_passBundle->FindPass<DeferredLightingPass>()
+        : nullptr;
+    const bool createdPipeline = hasValidLightingPlan && lightingPass != nullptr &&
+        lightingPass->EnsurePipelineReady();
     m_readiness.pipelineReady = createdPipeline && m_pipelineCache != nullptr &&
         m_pipelineCache->IsDeferredLightingPipelineReady();
     m_readiness.inputsReady = HasMatchingRecordContext(context) &&
-        hasValidLightingPlan && m_lightingPass != nullptr;
+        hasValidLightingPlan && lightingPass != nullptr;
 
     if (!m_readiness.hardwareSupported)
     {
@@ -1157,18 +1148,18 @@ void DeferredLightingFeatureAdapter::Prepare(const RenderFeatureContext& context
         m_readiness.diagnostic =
             "Deferred lighting requires a valid LightingFramePlan for the current frame and view";
     }
-    else if (m_lightingPass == nullptr || m_pipelineCache == nullptr)
+    else if (lightingPass == nullptr || m_pipelineCache == nullptr)
     {
         m_readiness.diagnostic = "Deferred lighting composition dependencies are unavailable";
     }
     else if (!m_readiness.pipelineReady)
     {
-        m_readiness.diagnostic = m_lightingPass->GetUnsupportedReason();
+        m_readiness.diagnostic = lightingPass->GetUnsupportedReason();
     }
-    else if (!m_lightingPass->IsSupported())
+    else if (!lightingPass->IsSupported())
     {
         m_readiness.pipelineReady = false;
-        m_readiness.diagnostic = m_lightingPass->GetUnsupportedReason();
+        m_readiness.diagnostic = lightingPass->GetUnsupportedReason();
     }
     else if (!HasMatchingRecordContext(context))
     {
@@ -1191,6 +1182,14 @@ void DeferredLightingFeatureAdapter::AddPasses(
     m_readiness.executed = false;
     if (!m_readiness.IsReadyToExecute())
     {
+        return;
+    }
+    DeferredLightingPass* const lightingPass = m_passBundle != nullptr
+        ? m_passBundle->FindPass<DeferredLightingPass>()
+        : nullptr;
+    if (lightingPass == nullptr)
+    {
+        SetCompositionFailure("Deferred lighting pass is unavailable");
         return;
     }
     if (!HasValidLightingPlan(m_preparedContext))
@@ -1444,9 +1443,9 @@ void DeferredLightingFeatureAdapter::AddPasses(
             lightingResources->environmentIBLBRDFLUTView;
     }
     if (!inputs.IsComplete() ||
-        !m_lightingPass->AddToGraph(builder, lightingView, inputs))
+        !lightingPass->AddToGraph(builder, lightingView, inputs))
     {
-        SetCompositionFailure(m_lightingPass->GetUnsupportedReason());
+        SetCompositionFailure(lightingPass->GetUnsupportedReason());
         return;
     }
 
@@ -1557,12 +1556,8 @@ void DeferredLightingFeatureAdapter::SetCompositionFailure(std::string diagnosti
 }
 
 DeferredForwardSpecialFeatureAdapter::DeferredForwardSpecialFeatureAdapter(
-    RenderPassRegistry* passRegistry,
-    OpaquePass* opaquePass,
-    VelocityPassBindings velocityPasses) noexcept
-    : m_passRegistry(passRegistry)
-    , m_opaquePass(opaquePass)
-    , m_velocityPasses(velocityPasses)
+    DefaultRenderPassBundle* passBundle) noexcept
+    : m_passBundle(passBundle)
 {
 }
 
@@ -1575,12 +1570,6 @@ void DeferredForwardSpecialFeatureAdapter::SetRecordContext(
     m_readiness = {};
     m_lastPassChainStats = {};
     m_lastReceipt = {};
-}
-
-void DeferredForwardSpecialFeatureAdapter::SetOpaquePass(
-    OpaquePass* opaquePass) noexcept
-{
-    m_opaquePass = opaquePass;
 }
 
 RenderFeatureDescriptor DeferredForwardSpecialFeatureAdapter::Describe() const
@@ -1620,23 +1609,26 @@ void DeferredForwardSpecialFeatureAdapter::Prepare(
         context.hardwareCapabilities) && IsNativeDeferredBackend(context.backend);
     m_readiness.implementationSupported = UsesDeferredOpaqueComposition(context);
     const bool hasValidLightingPlan = HasValidLightingPlan(context);
+    OpaquePass* const opaquePass = m_passBundle != nullptr
+        ? m_passBundle->FindPass<OpaquePass>()
+        : nullptr;
     OpaqueRasterPipelinePreflightResult opaquePipelinePreflight;
     if (m_readiness.hardwareSupported &&
         m_readiness.implementationSupported && hasValidLightingPlan &&
-        m_opaquePass != nullptr)
+        opaquePass != nullptr)
     {
         // The post-lighting opaque subset is still required renderer work.
         // Resolve every pipeline from the same frozen frame plan before the
         // GBuffer/lighting graph can be registered, including the legitimate
         // ReadyNoWork case for a frame with no special opaque surfaces.
-        opaquePipelinePreflight = m_opaquePass->PreflightRasterPipelines(
+        opaquePipelinePreflight = opaquePass->PreflightRasterPipelines(
             m_recordContext,
             OpaqueRasterOutputFamily::ForwardSceneHDR,
             OpaqueRasterSurfaceRoute::ForwardSpecialOpaque);
     }
     m_readiness.pipelineReady = opaquePipelinePreflight.Succeeded();
     m_readiness.inputsReady = HasMatchingRecordContext(context) &&
-        hasValidLightingPlan && m_passRegistry != nullptr && m_opaquePass != nullptr;
+        hasValidLightingPlan && m_passBundle != nullptr && opaquePass != nullptr;
     if (!m_readiness.hardwareSupported)
     {
         m_readiness.diagnostic =
@@ -1652,7 +1644,7 @@ void DeferredForwardSpecialFeatureAdapter::Prepare(
         m_readiness.diagnostic =
             "Deferred forward-special chain requires a valid LightingFramePlan for the current frame and view";
     }
-    else if (m_passRegistry == nullptr || m_opaquePass == nullptr)
+    else if (m_passBundle == nullptr || opaquePass == nullptr)
     {
         m_readiness.diagnostic =
             "Deferred forward-special composition dependencies are unavailable";
@@ -1688,6 +1680,18 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
     {
         return;
     }
+    OpaquePass* const opaquePass = m_passBundle != nullptr
+        ? m_passBundle->FindPass<OpaquePass>()
+        : nullptr;
+    if (opaquePass == nullptr)
+    {
+        SetCompositionFailure("Deferred forward-special opaque pass is unavailable");
+        return;
+    }
+    const IRenderPass* const cameraVelocity =
+        m_passBundle->FindPass<CameraVelocityPass>();
+    const IRenderPass* const objectVelocity =
+        m_passBundle->FindPass<ObjectVelocityPass>();
     if (!HasValidLightingPlan(m_preparedContext))
     {
         SetCompositionFailure(
@@ -1774,7 +1778,7 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
         !builder.AddGraphCallback(
             "DeferredForwardSpecialOpaque",
             postLightingContext,
-            [opaque = m_opaquePass, context = postLightingContext](RenderGraph& graph)
+            [opaque = opaquePass, context = postLightingContext](RenderGraph& graph)
             {
                 opaque->AddForwardSpecialToGraph(graph, context);
             }))
@@ -1790,13 +1794,13 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
     if (!AddLegacyPassRange(
             builder,
             postLightingContext,
-            *m_passRegistry,
-            m_opaquePass,
-            [velocityPasses = m_velocityPasses](const IRenderPass& pass)
+            *m_passBundle,
+            opaquePass,
+            [cameraVelocity, objectVelocity](const IRenderPass& pass)
             {
                 return pass.GetPriority() > PassPriority::Opaque &&
                        pass.GetPriority() < PassPriority::Water &&
-                       !velocityPasses.Contains(&pass) &&
+                       &pass != cameraVelocity && &pass != objectVelocity &&
                        !IsHybridRayTracingReflectionPass(pass);
             },
             m_lastPassChainStats,
@@ -1837,7 +1841,7 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
         opaqueSnapshotReceipt};
     std::string waterSurfaceFailure;
     if (!BuildWaterSurfaceRecordInput(
-            builder, translucencyContext, *m_passRegistry,
+            builder, translucencyContext, *m_passBundle,
             m_preparedContext.outputExtent, translucencyContext.waterSurface,
             waterSurfaceFailure))
     {
@@ -1848,13 +1852,13 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
     if (!AddLegacyPassRange(
             builder,
             translucencyContext,
-            *m_passRegistry,
-            m_opaquePass,
-            [velocityPasses = m_velocityPasses](const IRenderPass& pass)
+            *m_passBundle,
+            opaquePass,
+            [cameraVelocity, objectVelocity](const IRenderPass& pass)
             {
                 return pass.GetPriority() >= PassPriority::Water &&
                        pass.GetPriority() < PassPriority::Transparent &&
-                       !velocityPasses.Contains(&pass) &&
+                       &pass != cameraVelocity && &pass != objectVelocity &&
                        !IsHybridRayTracingReflectionPass(pass);
             },
             m_lastPassChainStats,

@@ -5,6 +5,8 @@
 
 #include "Features/ReflectionFeatureAdapter.h"
 
+#include "Features/DefaultRenderPassBundle.h"
+
 #include "Render/Passes/RayTracedReflectionCompositePass.h"
 #include "Render/Passes/RayTracedReflectionDenoisePass.h"
 #include "Render/Passes/RayTracedReflectionPass.h"
@@ -29,7 +31,9 @@ namespace
 } // namespace
 
 ReflectionFeatureAdapter::ReflectionFeatureAdapter(
+    DefaultRenderPassBundle* passBundle,
     PipelineCache* pipelineCache) noexcept
+    : m_passBundle(passBundle)
 {
     m_ssr.SetResources(pipelineCache);
 }
@@ -90,9 +94,6 @@ void ReflectionFeatureAdapter::SetRecordContext(
     m_probeTextures = {};
     m_probeReady = {};
     m_hybridRayTracingPlan.reset();
-    m_rayTracedReflectionPass = nullptr;
-    m_rayTracedReflectionDenoisePass = nullptr;
-    m_rayTracedReflectionCompositePass = nullptr;
     m_hasRecordContext = true;
     m_requiresReflectionPlan = false;
     m_preparedContext = {};
@@ -114,11 +115,6 @@ void ReflectionFeatureAdapter::SetRecordContext(
     m_probeTextures = context.probeTextures;
     m_probeReady = context.probeReady;
     m_hybridRayTracingPlan = std::move(context.hybridRayTracingPlan);
-    m_rayTracedReflectionPass = context.rayTracedReflectionPass;
-    m_rayTracedReflectionDenoisePass =
-        context.rayTracedReflectionDenoisePass;
-    m_rayTracedReflectionCompositePass =
-        context.rayTracedReflectionCompositePass;
     m_hasRecordContext = true;
     m_requiresReflectionPlan = true;
     m_preparedContext = {};
@@ -407,12 +403,26 @@ void ReflectionFeatureAdapter::AddPasses(
 
     if (UsesHybridRayTracedReflectionRoute())
     {
-        if (!HasReadyRayTracedReflectionPasses() ||
-            !builder.AddLegacyPass(*m_rayTracedReflectionPass,
+        RayTracedReflectionPass* const reflectionPass =
+            m_passBundle != nullptr
+                ? m_passBundle->FindPass<RayTracedReflectionPass>()
+                : nullptr;
+        RayTracedReflectionDenoisePass* const denoisePass =
+            m_passBundle != nullptr
+                ? m_passBundle->FindPass<RayTracedReflectionDenoisePass>()
+                : nullptr;
+        RayTracedReflectionCompositePass* const compositePass =
+            m_passBundle != nullptr
+                ? m_passBundle->FindPass<RayTracedReflectionCompositePass>()
+                : nullptr;
+        if (reflectionPass == nullptr || denoisePass == nullptr ||
+            compositePass == nullptr || !reflectionPass->IsEnabled() ||
+            !denoisePass->IsEnabled() || !compositePass->IsEnabled() ||
+            !builder.AddLegacyPass(*reflectionPass,
                                    m_recordContext) ||
-            !builder.AddLegacyPass(*m_rayTracedReflectionDenoisePass,
+            !builder.AddLegacyPass(*denoisePass,
                                    m_recordContext) ||
-            !builder.AddLegacyPass(*m_rayTracedReflectionCompositePass,
+            !builder.AddLegacyPass(*compositePass,
                                    m_recordContext))
         {
             SetCompositionFailure(
@@ -421,9 +431,9 @@ void ReflectionFeatureAdapter::AddPasses(
         }
 
         const RGTextureHandle rawReflection =
-            m_rayTracedReflectionPass->GetReflectionHandle();
+            reflectionPass->GetReflectionHandle();
         const RGTextureHandle denoisedReflection =
-            m_rayTracedReflectionDenoisePass->GetDenoisedReflectionHandle();
+            denoisePass->GetDenoisedReflectionHandle();
         // Composite writes the canonical LightingOutputs HDR target in place.
         // When the concrete passes declare their graph outputs, retain the
         // producer handles for downstream diagnostics. Exact graph execution
@@ -590,12 +600,21 @@ bool ReflectionFeatureAdapter::HasValidHybridRayTracingPlan(
 bool ReflectionFeatureAdapter::HasReadyRayTracedReflectionPasses() const
     noexcept
 {
-    return m_rayTracedReflectionPass != nullptr &&
-           m_rayTracedReflectionDenoisePass != nullptr &&
-           m_rayTracedReflectionCompositePass != nullptr &&
-           m_rayTracedReflectionPass->IsEnabled() &&
-           m_rayTracedReflectionDenoisePass->IsEnabled() &&
-           m_rayTracedReflectionCompositePass->IsEnabled();
+    const RayTracedReflectionPass* const reflectionPass =
+        m_passBundle != nullptr
+            ? m_passBundle->FindPass<RayTracedReflectionPass>()
+            : nullptr;
+    const RayTracedReflectionDenoisePass* const denoisePass =
+        m_passBundle != nullptr
+            ? m_passBundle->FindPass<RayTracedReflectionDenoisePass>()
+            : nullptr;
+    const RayTracedReflectionCompositePass* const compositePass =
+        m_passBundle != nullptr
+            ? m_passBundle->FindPass<RayTracedReflectionCompositePass>()
+            : nullptr;
+    return reflectionPass != nullptr && denoisePass != nullptr &&
+           compositePass != nullptr && reflectionPass->IsEnabled() &&
+           denoisePass->IsEnabled() && compositePass->IsEnabled();
 }
 
 bool ReflectionFeatureAdapter::UsesHybridRayTracedReflectionRoute() const

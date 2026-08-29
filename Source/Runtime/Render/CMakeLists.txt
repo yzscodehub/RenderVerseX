@@ -309,7 +309,9 @@ add_library(RVX_RenderComposition STATIC)
 target_sources(RVX_RenderComposition PRIVATE
     Private/Renderer/RenderPassRegistry.cpp
     Private/Renderer/SceneRenderer.cpp
+    Private/Features/DefaultRenderComposition.cpp
     Private/Features/DefaultForwardComposition.cpp
+    Private/Features/DefaultRenderPassBundle.cpp
     Private/Features/AmbientOcclusionFeatureAdapter.cpp
     Private/Features/DeferredRecipeFeatureAdapter.cpp
     Private/Features/LegacyForwardFeatureAdapter.cpp

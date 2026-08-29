@@ -328,13 +328,26 @@ TEST(WaterFeaturePassValidation, RendererCompositionAndCookedShaderCatalogAreHon
     EXPECT_NE(renderCMake.find("WaterFeaturePass.cpp"), std::string::npos);
     EXPECT_EQ(renderCMake.find("Private/Passes/WaterPass.cpp"), std::string::npos);
 
-    const std::string forwardComposition = ReadTextFile(
+    const std::string defaultComposition = ReadTextFile(
         root / "Source/Runtime/Render/Private/Features/DefaultForwardComposition.cpp");
+    const std::string renderComposition = ReadTextFile(
+        root / "Source/Runtime/Render/Private/Features/DefaultRenderComposition.cpp");
+    const std::string passBundle = ReadTextFile(
+        root / "Source/Runtime/Render/Private/Features/DefaultRenderPassBundle.cpp");
     const std::string forwardAdapter = ReadTextFile(
         root / "Source/Runtime/Render/Private/Features/LegacyForwardFeatureAdapter.cpp");
     const std::string deferredAdapter = ReadTextFile(
         root / "Source/Runtime/Render/Private/Features/DeferredRecipeFeatureAdapter.cpp");
-    EXPECT_NE(forwardComposition.find("WaterFeaturePass"), std::string::npos);
+    EXPECT_NE(defaultComposition.find("CreateDefaultRenderPassBundle(dependencies)"),
+              std::string::npos);
+    EXPECT_NE(renderComposition.find("m_passBundle(std::make_unique<DefaultRenderPassBundle>())"),
+              std::string::npos);
+    EXPECT_NE(passBundle.find("auto waterFeaturePass = std::make_unique<WaterFeaturePass>();"),
+              std::string::npos);
+    EXPECT_NE(passBundle.find("waterFeaturePass->SetSnapshot"),
+              std::string::npos);
+    EXPECT_NE(passBundle.find("waterFeaturePass->SetShaderProgramProvider"),
+              std::string::npos);
     EXPECT_NE(forwardAdapter.find("PassPriority::Water"), std::string::npos);
     EXPECT_NE(forwardAdapter.find("BuildWaterSurfaceRecordInput"), std::string::npos);
     EXPECT_NE(deferredAdapter.find("PassPriority::Water"), std::string::npos);

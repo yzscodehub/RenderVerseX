@@ -19,9 +19,7 @@
 namespace RVX
 {
     class PipelineCache;
-    class RayTracedReflectionCompositePass;
-    class RayTracedReflectionDenoisePass;
-    class RayTracedReflectionPass;
+    class DefaultRenderPassBundle;
 
     /** Exact graph resources paired with one sealed ReflectionFramePlan. */
     struct ReflectionFeatureRecordContext
@@ -39,11 +37,6 @@ namespace RVX
          * registering graph work for the already accepted frame.
          */
         std::optional<HybridRayTracingFramePlan> hybridRayTracingPlan{};
-        RayTracedReflectionPass* rayTracedReflectionPass = nullptr;
-        RayTracedReflectionDenoisePass* rayTracedReflectionDenoisePass =
-            nullptr;
-        RayTracedReflectionCompositePass* rayTracedReflectionCompositePass =
-            nullptr;
     };
 
     /**
@@ -57,6 +50,7 @@ namespace RVX
     {
     public:
         explicit ReflectionFeatureAdapter(
+            DefaultRenderPassBundle* passBundle = nullptr,
             PipelineCache* pipelineCache = nullptr) noexcept;
 
         /** Compatibility path used by focused typed-blackboard tests. */
@@ -131,11 +125,7 @@ namespace RVX
             m_probeTextures{};
         std::array<bool, RVX_SSR_LOCAL_PROBE_CAPACITY> m_probeReady{};
         std::optional<HybridRayTracingFramePlan> m_hybridRayTracingPlan{};
-        RayTracedReflectionPass* m_rayTracedReflectionPass = nullptr;
-        RayTracedReflectionDenoisePass* m_rayTracedReflectionDenoisePass =
-            nullptr;
-        RayTracedReflectionCompositePass* m_rayTracedReflectionCompositePass =
-            nullptr;
+        DefaultRenderPassBundle* m_passBundle = nullptr;
         SSR m_ssr{};
         RenderFeatureContext m_preparedContext{};
         mutable RenderFeatureExecutionReceipt m_lastReceipt{};

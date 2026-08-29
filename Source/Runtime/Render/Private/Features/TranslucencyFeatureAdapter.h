@@ -14,7 +14,7 @@
 
 namespace RVX
 {
-    class RenderPassRegistry;
+    class DefaultRenderPassBundle;
     class PipelineCache;
     struct ParticleBillboardDrawPlan;
     class TranslucencyFramePlan;
@@ -56,7 +56,7 @@ namespace RVX
     {
     public:
         explicit TranslucencyFeatureAdapter(
-            RenderPassRegistry* passRegistry,
+            DefaultRenderPassBundle* passBundle,
             PipelineCache* pipelineCache = nullptr) noexcept;
 
         void SetRecordContext(RenderPassRecordContext context);
@@ -91,7 +91,7 @@ namespace RVX
             std::string& outDiagnostic);
         void SetCompositionFailure(std::string diagnostic);
 
-        RenderPassRegistry* m_passRegistry = nullptr;
+        DefaultRenderPassBundle* m_passBundle = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         RenderPassRecordContext m_recordContext{};
         RenderFeatureContext m_preparedContext{};

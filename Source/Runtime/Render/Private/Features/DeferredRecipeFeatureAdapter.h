@@ -10,7 +10,6 @@
  * order GBuffer, compute lighting, and forward-special surfaces.
  */
 
-#include "Features/VelocityPassBindings.h"
 #include "Render/Features/IRenderFeature.h"
 #include "Render/Passes/RenderPassRecordContext.h"
 
@@ -20,10 +19,8 @@
 
 namespace RVX
 {
-    class DeferredLightingPass;
-    class OpaquePass;
+    class DefaultRenderPassBundle;
     class PipelineCache;
-    class RenderPassRegistry;
 
     /** @brief Observable split-chain accounting for the deferred recipe. */
     struct DeferredRecipeFeaturePassChainStats
@@ -42,18 +39,11 @@ namespace RVX
     class DeferredGeometryFeatureAdapter final : public IRenderFeature
     {
     public:
-        DeferredGeometryFeatureAdapter(RenderPassRegistry* passRegistry,
-                                       OpaquePass* opaquePass,
-                                       PipelineCache* pipelineCache,
-                                       VelocityPassBindings velocityPasses = {}) noexcept;
+        DeferredGeometryFeatureAdapter(
+            DefaultRenderPassBundle* passBundle,
+            PipelineCache* pipelineCache) noexcept;
 
         void SetRecordContext(RenderPassRecordContext context);
-        void SetOpaquePass(OpaquePass* opaquePass) noexcept;
-        void SetVelocityPasses(VelocityPassBindings velocityPasses) noexcept
-        {
-            m_velocityPasses = velocityPasses;
-        }
-
         [[nodiscard]] RenderFeatureDescriptor Describe() const override;
         void Prepare(const RenderFeatureContext& context) override;
         [[nodiscard]] RenderFeatureReadiness ResolveReadiness() const override;
@@ -73,10 +63,8 @@ namespace RVX
         [[nodiscard]] bool HasDeferredTargets() const noexcept;
         void SetCompositionFailure(std::string diagnostic);
 
-        RenderPassRegistry* m_passRegistry = nullptr;
-        OpaquePass* m_opaquePass = nullptr;
+        DefaultRenderPassBundle* m_passBundle = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
-        VelocityPassBindings m_velocityPasses{};
         RenderPassRecordContext m_recordContext{};
         RenderFeatureContext m_preparedContext{};
         DeferredRecipeFeaturePassChainStats m_lastPassChainStats{};
@@ -89,12 +77,11 @@ namespace RVX
     class DeferredLightingFeatureAdapter final : public IRenderFeature
     {
     public:
-        DeferredLightingFeatureAdapter(DeferredLightingPass* lightingPass,
-                                       PipelineCache* pipelineCache) noexcept;
+        DeferredLightingFeatureAdapter(
+            DefaultRenderPassBundle* passBundle,
+            PipelineCache* pipelineCache) noexcept;
 
         void SetRecordContext(RenderPassRecordContext context);
-        void SetLightingPass(DeferredLightingPass* lightingPass) noexcept;
-
         [[nodiscard]] RenderFeatureDescriptor Describe() const override;
         void Prepare(const RenderFeatureContext& context) override;
         [[nodiscard]] RenderFeatureReadiness ResolveReadiness() const override;
@@ -109,7 +96,7 @@ namespace RVX
             const RenderFeatureContext& context) const noexcept;
         void SetCompositionFailure(std::string diagnostic);
 
-        DeferredLightingPass* m_lightingPass = nullptr;
+        DefaultRenderPassBundle* m_passBundle = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         RenderPassRecordContext m_recordContext{};
         RenderFeatureContext m_preparedContext{};
@@ -122,17 +109,10 @@ namespace RVX
     class DeferredForwardSpecialFeatureAdapter final : public IRenderFeature
     {
     public:
-        DeferredForwardSpecialFeatureAdapter(RenderPassRegistry* passRegistry,
-                                             OpaquePass* opaquePass,
-                                             VelocityPassBindings velocityPasses = {}) noexcept;
+        explicit DeferredForwardSpecialFeatureAdapter(
+            DefaultRenderPassBundle* passBundle) noexcept;
 
         void SetRecordContext(RenderPassRecordContext context);
-        void SetOpaquePass(OpaquePass* opaquePass) noexcept;
-        void SetVelocityPasses(VelocityPassBindings velocityPasses) noexcept
-        {
-            m_velocityPasses = velocityPasses;
-        }
-
         [[nodiscard]] RenderFeatureDescriptor Describe() const override;
         void Prepare(const RenderFeatureContext& context) override;
         [[nodiscard]] RenderFeatureReadiness ResolveReadiness() const override;
@@ -153,9 +133,7 @@ namespace RVX
             const RenderFeatureContext& context) const noexcept;
         void SetCompositionFailure(std::string diagnostic);
 
-        RenderPassRegistry* m_passRegistry = nullptr;
-        OpaquePass* m_opaquePass = nullptr;
-        VelocityPassBindings m_velocityPasses{};
+        DefaultRenderPassBundle* m_passBundle = nullptr;
         RenderPassRecordContext m_recordContext{};
         RenderFeatureContext m_preparedContext{};
         DeferredRecipeFeaturePassChainStats m_lastPassChainStats{};

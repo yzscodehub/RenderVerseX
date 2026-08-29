@@ -7,21 +7,25 @@
 #include "Render/Lighting/LocalShadowAtlas.h"
 #include "Render/Lighting/LocalShadowFramePlan.h"
 #include "Render/Material/MaterialGPUData.h"
+#include "Render/Passes/CameraVelocityPass.h"
 #include "Render/Passes/LocalShadowPass.h"
+#include "Render/Passes/ObjectVelocityPass.h"
 #include "Render/Passes/OpaquePass.h"
 #include "Render/Passes/RayTracedReflectionCompositePass.h"
 #include "Render/Passes/RayTracedReflectionDenoisePass.h"
 #include "Render/Passes/RayTracedReflectionPass.h"
 #include "Render/RayTracing/HybridRayTracingFramePlan.h"
 #include "Render/Reflection/ReflectionFramePlan.h"
+#include "Render/Renderer/SceneRenderer.h"
 #include "RHI/RHICommandContext.h"
 
+#include "Features/DefaultRenderComposition.h"
+#include "Features/DefaultRenderPassBundle.h"
 #include "Features/DeferredRecipeFeatureAdapter.h"
 #include "Features/LegacyForwardFeatureAdapter.h"
 #include "Features/PostProcessPipelineFeatureAdapter.h"
 #include "Features/ReflectionFeatureAdapter.h"
 #include "Features/TranslucencyFeatureAdapter.h"
-#include "Renderer/RenderPassRegistry.h"
 #include "../Common/RenderGraphValidationAccess.h"
 
 #include <algorithm>
@@ -172,6 +176,12 @@ namespace
         void WaitFence(RHIFence*, uint64) override {}
     };
 
+    struct TestLegacyPassLifecycle
+    {
+        uint32 onAddCount = 0;
+        uint32 onRemoveCount = 0;
+    };
+
     class TestLegacyPass final : public IRenderPass
     {
     public:
@@ -180,13 +190,15 @@ namespace
                        bool requestedEnabled,
                        bool supported,
                        bool enabled,
-                       bool recordsResourceUsage = true)
+                       bool recordsResourceUsage = true,
+                       std::shared_ptr<TestLegacyPassLifecycle> lifecycle = {})
             : m_name(std::move(name))
             , m_priority(priority)
             , m_requestedEnabled(requestedEnabled)
             , m_supported(supported)
             , m_enabled(enabled)
             , m_recordsResourceUsage(recordsResourceUsage)
+            , m_lifecycle(std::move(lifecycle))
             , m_buffer(RHIBufferRef(new TestBuffer()))
         {
         }
@@ -254,6 +266,20 @@ namespace
 
         void Setup(RenderGraphBuilder&, const ViewData&) override {}
         void Execute(RHICommandContext&, const ViewData&) override {}
+        void OnAdd(IRHIDevice*) override
+        {
+            if (m_lifecycle != nullptr)
+            {
+                ++m_lifecycle->onAddCount;
+            }
+        }
+        void OnRemove() override
+        {
+            if (m_lifecycle != nullptr)
+            {
+                ++m_lifecycle->onRemoveCount;
+            }
+        }
 
         [[nodiscard]] uint32 GetExecuteCount() const noexcept
         {
@@ -272,6 +298,7 @@ namespace
         bool m_supported = false;
         bool m_enabled = false;
         bool m_recordsResourceUsage = true;
+        std::shared_ptr<TestLegacyPassLifecycle> m_lifecycle;
         std::string m_unsupportedReason = "Test unsupported legacy pass";
         RHIBufferRef m_buffer{};
         uint32 m_executeCount = 0;
@@ -352,6 +379,58 @@ namespace
         {
             AddTestHybridRayTracingPass(graph, context, GetName());
         }
+    };
+
+    class TestCameraVelocityPass final : public CameraVelocityPass
+    {
+    public:
+        bool IsRequestedEnabled() const override { return true; }
+        bool IsSupported() const override { return true; }
+        bool IsEnabled() const override { return true; }
+
+        void AddToGraph(RenderGraph& graph,
+                        const RenderPassRecordContext& context) override
+        {
+            m_receivedMatchingContext = context.MatchesTargetGraph(graph);
+            AddTestHybridRayTracingPass(graph, context, GetName());
+        }
+
+        [[nodiscard]] bool ReceivedMatchingContext() const noexcept
+        {
+            return m_receivedMatchingContext;
+        }
+
+    private:
+        bool m_receivedMatchingContext = false;
+    };
+
+    class TestObjectVelocityPass final : public ObjectVelocityPass
+    {
+    public:
+        explicit TestObjectVelocityPass(bool supported = true) noexcept
+            : m_supported(supported)
+        {
+        }
+
+        bool IsRequestedEnabled() const override { return true; }
+        bool IsSupported() const override { return m_supported; }
+        bool IsEnabled() const override { return m_supported; }
+
+        void AddToGraph(RenderGraph& graph,
+                        const RenderPassRecordContext& context) override
+        {
+            m_receivedMatchingContext = context.MatchesTargetGraph(graph);
+            AddTestHybridRayTracingPass(graph, context, GetName());
+        }
+
+        [[nodiscard]] bool ReceivedMatchingContext() const noexcept
+        {
+            return m_receivedMatchingContext;
+        }
+
+    private:
+        bool m_supported = true;
+        bool m_receivedMatchingContext = false;
     };
 
     /**
@@ -1535,7 +1614,7 @@ namespace
                   RenderGraphBlackboardCode::Success);
         EXPECT_EQ(graph.GetRecordedPassCount(), 0U);
 
-        ForwardSpecialFeatureAdapter forwardSpecial(nullptr, nullptr);
+        ForwardSpecialFeatureAdapter forwardSpecial(nullptr);
         RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
         const ReflectionOutputs* const outputs =
             blackboard.Require<ReflectionOutputs>(
@@ -1640,18 +1719,19 @@ namespace
         ASSERT_EQ(hybridPlan.GetReflectionRoute(),
                   HybridRayTracingReflectionRoute::RayTraced);
 
-        TestRayTracedReflectionPass reflectionPass;
-        TestRayTracedReflectionDenoisePass denoisePass;
-        TestRayTracedReflectionCompositePass compositePass;
+        DefaultRenderPassBundle passBundle;
+        passBundle.AddPass(
+            std::make_unique<TestRayTracedReflectionPass>(), nullptr);
+        passBundle.AddPass(
+            std::make_unique<TestRayTracedReflectionDenoisePass>(), nullptr);
+        passBundle.AddPass(
+            std::make_unique<TestRayTracedReflectionCompositePass>(), nullptr);
         ReflectionFeatureRecordContext recordContext;
         recordContext.pass = std::move(passContext);
         recordContext.plan = reflectionPlan;
         recordContext.hybridRayTracingPlan = hybridPlan;
-        recordContext.rayTracedReflectionPass = &reflectionPass;
-        recordContext.rayTracedReflectionDenoisePass = &denoisePass;
-        recordContext.rayTracedReflectionCompositePass = &compositePass;
 
-        ReflectionFeatureAdapter adapter;
+        ReflectionFeatureAdapter adapter(&passBundle);
         adapter.SetRecordContext(std::move(recordContext));
         adapter.Prepare(context);
         ASSERT_TRUE(adapter.ResolveReadiness().IsReadyToExecute());
@@ -1716,7 +1796,7 @@ namespace
         EXPECT_LT(indexOf(composite), indexOf(water));
         EXPECT_LT(indexOf(composite), indexOf(transparent));
 
-        ForwardSpecialFeatureAdapter consumer(nullptr, nullptr);
+        ForwardSpecialFeatureAdapter consumer(nullptr);
         RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
         const ReflectionOutputs* const outputs =
             blackboard.Require<ReflectionOutputs>(
@@ -1757,9 +1837,6 @@ namespace
         EXPECT_FALSE(adapter.ResolveReadiness().inputsReady);
         EXPECT_FALSE(adapter.ResolveReadiness().IsReadyToExecute());
 
-        TestRayTracedReflectionPass reflectionPass;
-        TestRayTracedReflectionDenoisePass denoisePass;
-        TestRayTracedReflectionCompositePass compositePass;
         RenderFeatureContext mismatchedContext = context;
         ++mismatchedContext.frameIdentity.sceneRevision;
         ReflectionFeatureRecordContext mismatchedPlan;
@@ -1767,9 +1844,6 @@ namespace
         mismatchedPlan.plan = reflectionPlan;
         mismatchedPlan.hybridRayTracingPlan =
             MakeValidHybridRayTracingPlan(mismatchedContext);
-        mismatchedPlan.rayTracedReflectionPass = &reflectionPass;
-        mismatchedPlan.rayTracedReflectionDenoisePass = &denoisePass;
-        mismatchedPlan.rayTracedReflectionCompositePass = &compositePass;
         adapter.SetRecordContext(std::move(mismatchedPlan));
         adapter.Prepare(context);
         EXPECT_FALSE(adapter.ResolveReadiness().inputsReady);
@@ -1792,18 +1866,9 @@ namespace
             MakeValidReflectionPlan(context, lightingPlan->GetIdentityHash());
         ASSERT_NE(nullptr, reflectionPlan);
 
-        TestRayTracedReflectionPass reflectionPass;
-        TestRayTracedReflectionDenoisePass denoisePass;
-        TestRayTracedReflectionCompositePass compositePass;
         ReflectionFeatureRecordContext recordContext;
         recordContext.pass = std::move(passContext);
         recordContext.plan = reflectionPlan;
-        // These pointers deliberately model an enabled global pass inventory.
-        // A non-Hybrid resolved recipe must still select neither RT route.
-        recordContext.rayTracedReflectionPass = &reflectionPass;
-        recordContext.rayTracedReflectionDenoisePass = &denoisePass;
-        recordContext.rayTracedReflectionCompositePass = &compositePass;
-
         ReflectionFeatureAdapter adapter;
         adapter.SetRecordContext(std::move(recordContext));
         adapter.Prepare(context);
@@ -2318,13 +2383,13 @@ namespace
     TEST(RenderFeatureValidation,
          RasterRecipeAdaptersDeclareAUniqueRecipeNeutralTranslucencyBoundary)
     {
-        LegacyForwardFeatureAdapter forwardGeometry(nullptr, nullptr);
-        ForwardLightingFeatureAdapter forwardLighting(nullptr, nullptr);
-        DeferredGeometryFeatureAdapter geometry(nullptr, nullptr, nullptr);
+        LegacyForwardFeatureAdapter forwardGeometry(nullptr);
+        ForwardLightingFeatureAdapter forwardLighting(nullptr);
+        DeferredGeometryFeatureAdapter geometry(nullptr, nullptr);
         DeferredLightingFeatureAdapter lighting(nullptr, nullptr);
         ReflectionFeatureAdapter reflection;
-        ForwardSpecialFeatureAdapter forwardSpecial(nullptr, nullptr);
-        DeferredForwardSpecialFeatureAdapter deferredSpecial(nullptr, nullptr);
+        ForwardSpecialFeatureAdapter forwardSpecial(nullptr);
+        DeferredForwardSpecialFeatureAdapter deferredSpecial(nullptr);
         TranslucencyFeatureAdapter translucency(nullptr);
 
         const RenderFeatureDescriptor forwardGeometryDescriptor =
@@ -2513,7 +2578,7 @@ namespace
     TEST(RenderFeatureValidation,
          PreTranslucencyOutputsEnforcesSchemaAndExactGraphProvenance)
     {
-        ForwardSpecialFeatureAdapter producer(nullptr, nullptr);
+        ForwardSpecialFeatureAdapter producer(nullptr);
         TranslucencyFeatureAdapter consumer(nullptr);
         const RenderFeatureDescriptor producerDescriptor =
             producer.Describe();
@@ -2588,7 +2653,7 @@ namespace
          TranslucencyFeatureTransformsTheExactPreBoundaryIntoPostOutputs)
     {
         RenderGraph graph;
-        RenderPassRegistry passes;
+        DefaultRenderPassBundle passes;
         RenderPassRecordContext recordContext =
             MakeValidRecordContext(graph);
         auto frozenFrame = std::make_shared<RenderPassFrameSnapshot>();
@@ -2616,7 +2681,7 @@ namespace
             context.recordingViewOrdinal,
             context.recordEpoch};
         RenderGraphBlackboard blackboard(provenance);
-        ForwardSpecialFeatureAdapter producer(nullptr, nullptr);
+        ForwardSpecialFeatureAdapter producer(nullptr);
         PreTranslucencyOutputs inputs =
             MakePreTranslucencyOutputs(provenance);
         inputs.frameIdentity = context.frameIdentity;
@@ -3198,7 +3263,7 @@ namespace
 
         RenderFeatureRegistry forwardRegistry;
         RenderFeatureDescriptor forwardGeometry =
-            LegacyForwardFeatureAdapter(nullptr, nullptr).Describe();
+            LegacyForwardFeatureAdapter(nullptr).Describe();
         RenderFeatureDescriptor ambientOcclusion = MakeDescriptor(
             BuiltinRenderFeatureIds::AmbientOcclusion.value, "gtao",
             RenderFeaturePhase::Lighting);
@@ -3206,11 +3271,11 @@ namespace
         ambientOcclusion.producedResources.push_back(
             AmbientOcclusionOutputsContract);
         RenderFeatureDescriptor forwardLighting =
-            ForwardLightingFeatureAdapter(nullptr, nullptr).Describe();
+            ForwardLightingFeatureAdapter(nullptr).Describe();
         RenderFeatureDescriptor forwardReflection =
             ReflectionFeatureAdapter{}.Describe();
         RenderFeatureDescriptor forwardSpecial =
-            ForwardSpecialFeatureAdapter(nullptr, nullptr).Describe();
+            ForwardSpecialFeatureAdapter(nullptr).Describe();
         RenderFeatureDescriptor forwardTranslucency =
             TranslucencyFeatureAdapter(nullptr).Describe();
 
@@ -3250,7 +3315,7 @@ namespace
 
         RenderFeatureRegistry deferredRegistry;
         RenderFeatureDescriptor deferredGeometry =
-            DeferredGeometryFeatureAdapter(nullptr, nullptr, nullptr).Describe();
+            DeferredGeometryFeatureAdapter(nullptr, nullptr).Describe();
         RenderFeatureDescriptor deferredAO = MakeDescriptor(
             BuiltinRenderFeatureIds::AmbientOcclusion.value, "deferred-gtao",
             RenderFeaturePhase::Lighting);
@@ -3263,7 +3328,7 @@ namespace
         RenderFeatureDescriptor deferredReflection =
             ReflectionFeatureAdapter{}.Describe();
         RenderFeatureDescriptor deferredSpecial =
-            DeferredForwardSpecialFeatureAdapter(nullptr, nullptr).Describe();
+            DeferredForwardSpecialFeatureAdapter(nullptr).Describe();
         RenderFeatureDescriptor deferredTranslucency =
             TranslucencyFeatureAdapter(nullptr).Describe();
         ASSERT_EQ(deferredRegistry.Register(
@@ -4754,7 +4819,7 @@ namespace
         RenderGraph graph;
         const RenderPassRecordContext recordContext =
             MakeValidRecordContext(graph);
-        RenderPassRegistry passes;
+        DefaultRenderPassBundle passes;
 
         auto later = std::make_unique<TestLegacyPass>(
             "Later", 200, true, true, true);
@@ -4774,8 +4839,7 @@ namespace
         TestLegacyPass* const firstRaw = first.get();
         passes.AddPass(std::move(first), nullptr);
 
-        auto legacy = std::make_unique<LegacyForwardFeatureAdapter>(
-            &passes, nullptr);
+        auto legacy = std::make_unique<LegacyForwardFeatureAdapter>(&passes);
         LegacyForwardFeatureAdapter* const legacyRaw = legacy.get();
         legacy->SetRecordContext(recordContext);
 
@@ -4881,20 +4945,15 @@ namespace
         recordContext.view.velocityTarget = MakeVelocityTarget(graph);
         ASSERT_TRUE(recordContext.view.velocityTarget.IsValid());
 
-        RenderPassRegistry passes;
-        auto camera = std::make_unique<TestLegacyPass>(
-            "CameraVelocityPass", PassPriority::PostProcess - 300,
-            true, true, true);
-        TestLegacyPass* const cameraRaw = camera.get();
+        DefaultRenderPassBundle passes;
+        auto camera = std::make_unique<TestCameraVelocityPass>();
+        TestCameraVelocityPass* const cameraRaw = camera.get();
         passes.AddPass(std::move(camera), nullptr);
-        auto object = std::make_unique<TestLegacyPass>(
-            "ObjectVelocityPass", PassPriority::PostProcess - 250,
-            true, true, true);
-        TestLegacyPass* const objectRaw = object.get();
+        auto object = std::make_unique<TestObjectVelocityPass>();
+        TestObjectVelocityPass* const objectRaw = object.get();
         passes.AddPass(std::move(object), nullptr);
 
-        LegacyForwardFeatureAdapter adapter(
-            &passes, nullptr, VelocityPassBindings{cameraRaw, objectRaw});
+        LegacyForwardFeatureAdapter adapter(&passes);
         adapter.SetRecordContext(recordContext);
         adapter.Prepare(MakeValidContext());
         ASSERT_TRUE(adapter.ResolveReadiness().IsReadyToExecute());
@@ -4951,20 +5010,13 @@ namespace
             graph, RHIFormat::RGBA16_FLOAT);
         ASSERT_TRUE(recordContext.view.velocityTarget.IsValid());
 
-        RenderPassRegistry passes;
-        auto camera = std::make_unique<TestLegacyPass>(
-            "CameraVelocityPass", PassPriority::PostProcess - 300,
-            true, true, true);
-        TestLegacyPass* const cameraRaw = camera.get();
+        DefaultRenderPassBundle passes;
+        auto camera = std::make_unique<TestCameraVelocityPass>();
         passes.AddPass(std::move(camera), nullptr);
-        auto object = std::make_unique<TestLegacyPass>(
-            "ObjectVelocityPass", PassPriority::PostProcess - 250,
-            true, true, true);
-        TestLegacyPass* const objectRaw = object.get();
+        auto object = std::make_unique<TestObjectVelocityPass>();
         passes.AddPass(std::move(object), nullptr);
 
-        LegacyForwardFeatureAdapter adapter(
-            &passes, nullptr, VelocityPassBindings{cameraRaw, objectRaw});
+        LegacyForwardFeatureAdapter adapter(&passes);
         adapter.SetRecordContext(recordContext);
         adapter.Prepare(MakeValidContext());
         ASSERT_TRUE(adapter.ResolveReadiness().IsReadyToExecute());
@@ -5004,20 +5056,13 @@ namespace
         recordContext.view.velocityTarget = MakeVelocityTarget(graph);
         ASSERT_TRUE(recordContext.view.velocityTarget.IsValid());
 
-        RenderPassRegistry passes;
-        auto camera = std::make_unique<TestLegacyPass>(
-            "CameraVelocityPass", PassPriority::PostProcess - 300,
-            true, true, true);
-        TestLegacyPass* const cameraRaw = camera.get();
+        DefaultRenderPassBundle passes;
+        auto camera = std::make_unique<TestCameraVelocityPass>();
         passes.AddPass(std::move(camera), nullptr);
-        auto object = std::make_unique<TestLegacyPass>(
-            "ObjectVelocityPass", PassPriority::PostProcess - 250,
-            true, false, false);
-        TestLegacyPass* const objectRaw = object.get();
+        auto object = std::make_unique<TestObjectVelocityPass>(false);
         passes.AddPass(std::move(object), nullptr);
 
-        LegacyForwardFeatureAdapter adapter(
-            &passes, nullptr, VelocityPassBindings{cameraRaw, objectRaw});
+        LegacyForwardFeatureAdapter adapter(&passes);
         adapter.SetRecordContext(recordContext);
         adapter.Prepare(MakeValidContext());
         ASSERT_TRUE(adapter.ResolveReadiness().IsReadyToExecute());
@@ -5056,7 +5101,7 @@ namespace
         RenderGraph graph;
         const RenderPassRecordContext recordContext =
             MakeValidRecordContext(graph);
-        RenderPassRegistry passes;
+        DefaultRenderPassBundle passes;
 
         auto working = std::make_unique<TestLegacyPass>(
             "Working", 10, true, true, true);
@@ -5065,8 +5110,7 @@ namespace
             "Empty", 20, true, true, true, false);
         passes.AddPass(std::move(empty), nullptr);
 
-        auto legacy = std::make_unique<LegacyForwardFeatureAdapter>(
-            &passes, nullptr);
+        auto legacy = std::make_unique<LegacyForwardFeatureAdapter>(&passes);
         legacy->SetRecordContext(recordContext);
 
         RenderFeatureRegistry registry;
@@ -5115,8 +5159,8 @@ namespace
          LegacyAdapterRejectsStaleFrameViewAndRecordEpochContexts)
     {
         RenderGraph graph;
-        RenderPassRegistry passes;
-        LegacyForwardFeatureAdapter adapter(&passes, nullptr);
+        DefaultRenderPassBundle passes;
+        LegacyForwardFeatureAdapter adapter(&passes);
         const RenderFeatureContext featureContext = MakeValidContext();
 
         RenderPassRecordContext wrongFrame = MakeValidRecordContext(graph);
@@ -5148,7 +5192,7 @@ namespace
         RenderGraph graph;
         const RenderPassRecordContext recordContext =
             MakeValidRecordContext(graph);
-        RenderPassRegistry passes;
+        DefaultRenderPassBundle passes;
         passes.AddPass(std::make_unique<TestLegacyPass>(
                           "NotRequested", 10, false, true, false),
                       nullptr);
@@ -5156,8 +5200,7 @@ namespace
                           "Unsupported", 20, true, false, false),
                       nullptr);
 
-        auto legacy = std::make_unique<LegacyForwardFeatureAdapter>(
-            &passes, nullptr);
+        auto legacy = std::make_unique<LegacyForwardFeatureAdapter>(&passes);
         LegacyForwardFeatureAdapter* const legacyRaw = legacy.get();
         legacy->SetRecordContext(recordContext);
 
@@ -5211,7 +5254,7 @@ namespace
     TEST(RenderFeatureValidation,
          LegacyAdapterReceiptRetainsFinalizedEvidenceAfterGraphDestruction)
     {
-        RenderPassRegistry passes;
+        DefaultRenderPassBundle passes;
         passes.AddPass(std::make_unique<TestLegacyPass>(
                           "Working", 10, true, true, true),
                       nullptr);
@@ -5219,8 +5262,7 @@ namespace
         auto recordedGraph = std::make_unique<RenderGraph>();
         const RenderPassRecordContext recordContext =
             MakeValidRecordContext(*recordedGraph);
-        auto legacy = std::make_unique<LegacyForwardFeatureAdapter>(
-            &passes, nullptr);
+        auto legacy = std::make_unique<LegacyForwardFeatureAdapter>(&passes);
         legacy->SetRecordContext(recordContext);
         RenderFeatureRegistry registry;
         ASSERT_EQ(registry.Register(std::move(legacy)),
@@ -5266,7 +5308,7 @@ namespace
     TEST(RenderFeatureValidation,
          RegistryRejectsReplacementGraphAndLegacyReceiptRemainsLifetimeSafe)
     {
-        RenderPassRegistry passes;
+        DefaultRenderPassBundle passes;
         passes.AddPass(std::make_unique<TestLegacyPass>(
                           "Working", 10, true, true, true),
                       nullptr);
@@ -5274,8 +5316,7 @@ namespace
         auto recordedGraph = std::make_unique<RenderGraph>();
         const RenderPassRecordContext recordContext =
             MakeValidRecordContext(*recordedGraph);
-        auto legacy = std::make_unique<LegacyForwardFeatureAdapter>(
-            &passes, nullptr);
+        auto legacy = std::make_unique<LegacyForwardFeatureAdapter>(&passes);
         legacy->SetRecordContext(recordContext);
         RenderFeatureRegistry registry;
         ASSERT_EQ(registry.Register(std::move(legacy)),
@@ -5316,16 +5357,23 @@ namespace
     }
 
     TEST(RenderFeatureValidation,
-         LegacyAdapterAcceptsClearedOpaquePointerBeforeOwnerTeardown)
+        LegacyAdapterDoesNotRetainRemovedOpaquePass)
     {
-        RenderPassRegistry passes;
-        auto opaque = std::make_unique<OpaquePass>();
-        OpaquePass* const opaqueRaw = opaque.get();
+        ScopedTestLog log;
+        DefaultRenderPassBundle passes;
+        // This test exercises ownership invalidation only. Avoid invoking the
+        // native OpaquePass::OnAdd path with a deliberately absent device.
+        passes.GetRegistry().GetPasses().push_back(
+            std::make_unique<OpaquePass>());
+        LegacyForwardFeatureAdapter adapter(&passes);
+        ASSERT_NE(passes.FindPass<OpaquePass>(), nullptr);
+        ASSERT_TRUE(passes.RemovePass("OpaquePass"));
+        EXPECT_EQ(passes.FindPass<OpaquePass>(), nullptr);
 
-        LegacyForwardFeatureAdapter adapter(&passes, opaqueRaw);
-        adapter.SetOpaquePass(nullptr);
-        opaque.reset();
-
+        // The static ownership gate proves that the adapter cannot cache a
+        // concrete pass pointer. Recording after invalidation proves that the
+        // adapter resolves the live bundle instead of dereferencing stale
+        // state retained from construction.
         RenderGraph graph;
         adapter.SetRecordContext(MakeValidRecordContext(graph));
         adapter.Prepare(MakeValidContext());
@@ -5336,6 +5384,103 @@ namespace
         adapter.AddPasses(builder, blackboard);
         EXPECT_TRUE(adapter.ResolveReadiness().IsReadyToExecute());
         EXPECT_EQ(adapter.CollectReceipt().graphPassCount, 0U);
+    }
+
+    TEST(RenderFeatureValidation,
+         DefaultCompositionPreservesPreInitializePassesDuringInstallation)
+    {
+        DefaultRenderComposition composition;
+        auto customPass = std::make_unique<TestLegacyPass>(
+            "PreInitializeCustom", PassPriority::Opaque, true, true, true);
+        IRenderPass* const customIdentity = customPass.get();
+        composition.GetPassBundle().AddPass(std::move(customPass), nullptr);
+
+        auto defaultBundle = std::make_unique<DefaultRenderPassBundle>();
+        auto defaultPass = std::make_unique<TestLegacyPass>(
+            "DefaultOwned", PassPriority::Opaque, true, true, true);
+        IRenderPass* const defaultIdentity = defaultPass.get();
+        defaultBundle->AddPass(std::move(defaultPass), nullptr);
+
+        composition.InstallDefaultPassBundle(std::move(defaultBundle));
+
+        const auto& installed =
+            composition.GetPassBundle().GetRegistry().GetPasses();
+        ASSERT_EQ(installed.size(), 2U);
+        EXPECT_EQ(installed[0].get(), customIdentity);
+        EXPECT_STREQ(installed[0]->GetName(), "PreInitializeCustom");
+        EXPECT_EQ(installed[1].get(), defaultIdentity);
+        EXPECT_STREQ(installed[1]->GetName(), "DefaultOwned");
+
+        auto duplicateDefaults = std::make_unique<DefaultRenderPassBundle>();
+        duplicateDefaults->AddPass(
+            std::make_unique<TestLegacyPass>(
+                "DuplicateDefault", PassPriority::Opaque,
+                true, true, true),
+            nullptr);
+        composition.ResetFeatures();
+        composition.InstallDefaultPassBundle(std::move(duplicateDefaults));
+        EXPECT_EQ(composition.GetPassBundle().GetPassCount(), 2U);
+        EXPECT_EQ(composition.GetPassBundle().GetRegistry().GetPasses()[0].get(),
+                  customIdentity);
+    }
+
+    TEST(RenderFeatureValidation,
+         DefaultPassBundleMoveAndDestructionBalancePassLifecycle)
+    {
+        auto originalLifecycle =
+            std::make_shared<TestLegacyPassLifecycle>();
+        auto replacementLifecycle =
+            std::make_shared<TestLegacyPassLifecycle>();
+
+        {
+            DefaultRenderPassBundle source;
+            source.AddPass(
+                std::make_unique<TestLegacyPass>(
+                    "Original", PassPriority::Opaque,
+                    true, true, true, true, originalLifecycle),
+                nullptr);
+            EXPECT_EQ(originalLifecycle->onAddCount, 1U);
+
+            DefaultRenderPassBundle destination(std::move(source));
+            DefaultRenderPassBundle replacement;
+            replacement.AddPass(
+                std::make_unique<TestLegacyPass>(
+                    "Replacement", PassPriority::Opaque,
+                    true, true, true, true, replacementLifecycle),
+                nullptr);
+
+            destination = std::move(replacement);
+            EXPECT_EQ(originalLifecycle->onRemoveCount, 1U);
+            EXPECT_EQ(replacementLifecycle->onAddCount, 1U);
+            EXPECT_EQ(replacementLifecycle->onRemoveCount, 0U);
+        }
+
+        EXPECT_EQ(originalLifecycle->onRemoveCount, 1U);
+        EXPECT_EQ(replacementLifecycle->onRemoveCount, 1U);
+    }
+
+    TEST(RenderFeatureValidation,
+         SceneRendererBalancesPreInitializePassLifecycleOnShutdown)
+    {
+        ScopedTestLog log;
+        auto lifecycle = std::make_shared<TestLegacyPassLifecycle>();
+
+        {
+            SceneRenderer renderer;
+            renderer.AddPass(
+                std::make_unique<TestLegacyPass>(
+                    "PreInitialize", PassPriority::Opaque,
+                    true, true, true, true, lifecycle));
+            EXPECT_EQ(lifecycle->onAddCount, 1U);
+            EXPECT_EQ(lifecycle->onRemoveCount, 0U);
+
+            renderer.Shutdown();
+            EXPECT_EQ(lifecycle->onRemoveCount, 1U);
+            renderer.Shutdown();
+            EXPECT_EQ(lifecycle->onRemoveCount, 1U);
+        }
+
+        EXPECT_EQ(lifecycle->onRemoveCount, 1U);
     }
 
     TEST(RenderFeatureValidation,

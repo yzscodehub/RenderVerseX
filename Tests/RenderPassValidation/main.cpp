@@ -30,6 +30,8 @@
 #include "Common/RenderGraphValidationAccess.h"
 #include "Common/RenderRuntimeTestHarness.h"
 #include "Render/Features/RenderFeatureRegistry.h"
+#include "Features/DefaultRenderComposition.h"
+#include "Features/DefaultRenderPassBundle.h"
 #include "Features/ReflectionFeatureAdapter.h"
 #include "Render/Debug/DebugRenderer.h"
 #include "Render/Decal/DecalRenderer.h"
@@ -215,6 +217,23 @@ namespace RVX
                                          std::unique_ptr<RenderResourceRegistry>>
             s_retainedFrameRegistries;
 
+        static DefaultRenderComposition& EnsureDefaultRenderComposition(
+            SceneRenderer& renderer)
+        {
+            if (renderer.m_defaultRenderComposition == nullptr)
+            {
+                renderer.m_defaultRenderComposition =
+                    std::make_unique<DefaultRenderComposition>();
+            }
+            return *renderer.m_defaultRenderComposition;
+        }
+
+        static DefaultRenderPassBundle& GetPassBundleForTesting(
+            SceneRenderer& renderer)
+        {
+            return EnsureDefaultRenderComposition(renderer).GetPassBundle();
+        }
+
         static std::unique_ptr<const RenderFramePacketV5>
             MakeEmptyFrameForTesting(
             RenderSceneDatabase& sceneDatabase,
@@ -319,18 +338,46 @@ namespace RVX
             return accepted;
         }
 
-        static void BindScreenSpaceOutlineForTesting(
-            SceneRenderer& renderer,
-            ScreenSpaceOutlinePass* pass) noexcept
+        static ScreenSpaceOutlinePass*
+            InitializeScreenSpaceOutlineForTesting(
+                SceneRenderer& renderer,
+                IRHIDevice& device)
         {
-            renderer.m_screenSpaceOutlinePostProcess = pass;
+            DefaultRenderComposition& composition =
+                EnsureDefaultRenderComposition(renderer);
+            if (!composition.InitializePostProcess(&device, nullptr, nullptr))
+            {
+                return nullptr;
+            }
+
+            PostProcessStack* const stack = composition.GetPostProcessStack();
+            return stack != nullptr
+                ? stack->GetEffect<ScreenSpaceOutlinePass>()
+                : nullptr;
         }
 
-        static void BindReflectionFeatureForQualificationTesting(
-            SceneRenderer& renderer,
-            ReflectionFeatureAdapter* feature) noexcept
+        static ReflectionFeatureAdapter*
+            InstallReflectionFeatureForQualificationTesting(
+                SceneRenderer& renderer)
         {
-            renderer.m_reflectionFeature = feature;
+            DefaultRenderComposition& composition =
+                EnsureDefaultRenderComposition(renderer);
+            composition.ResetFeatures();
+            composition.BeginFeatureRegistration();
+
+            auto feature = std::make_unique<ReflectionFeatureAdapter>(
+                &composition.GetPassBundle(), renderer.m_pipelineCache.get());
+            ReflectionFeatureAdapter* const installed = feature.get();
+            if (composition.RegisterFeature(std::move(feature)) !=
+                RenderFeatureRegistryCode::Success)
+            {
+                composition.ResetFeatures();
+                return nullptr;
+            }
+            return composition.FindFeature<ReflectionFeatureAdapter>() ==
+                    installed
+                ? installed
+                : nullptr;
         }
 
         static void SeedCompletedHiZReflectionQualificationForTesting(
@@ -396,11 +443,21 @@ namespace RVX
                 renderer.m_lightingFramePlan->IsValid();
         }
 
-        static void BindParticleFeatureForStagingTesting(
-            SceneRenderer& renderer,
-            ParticleFeaturePass* pass) noexcept
+        static ParticleFeaturePass* InstallParticleFeatureForStagingTesting(
+            SceneRenderer& renderer)
         {
-            renderer.m_particleFeaturePass = pass;
+            DefaultRenderPassBundle& bundle = GetPassBundleForTesting(renderer);
+            if (bundle.FindPass<ParticleFeaturePass>() != nullptr)
+            {
+                return nullptr;
+            }
+
+            auto pass = std::make_unique<ParticleFeaturePass>();
+            ParticleFeaturePass* const installed = pass.get();
+            bundle.AddPass(std::move(pass), nullptr);
+            return bundle.FindPass<ParticleFeaturePass>() == installed
+                ? installed
+                : nullptr;
         }
 
         static bool PrepareLightingForAcceptedFrameForTesting(
@@ -451,11 +508,12 @@ namespace RVX
         static bool InstallMinimalForwardSurfaceRuntimeForGraphBuild(
             SceneRenderer& renderer)
         {
+            DefaultRenderPassBundle& bundle = GetPassBundleForTesting(renderer);
             if (renderer.m_pipelineCache == nullptr ||
                 renderer.m_resourceViewCache == nullptr ||
-                renderer.m_opaquePass != nullptr ||
-                renderer.m_cameraVelocityPass != nullptr ||
-                renderer.m_objectVelocityPass != nullptr)
+                bundle.FindPass<OpaquePass>() != nullptr ||
+                bundle.FindPass<CameraVelocityPass>() != nullptr ||
+                bundle.FindPass<ObjectVelocityPass>() != nullptr)
             {
                 return false;
             }
@@ -465,8 +523,7 @@ namespace RVX
                 renderer.m_pipelineCache.get(),
                 renderer.m_resourceViewCache.get());
             cameraVelocity->SetEnabled(false);
-            renderer.m_cameraVelocityPass = cameraVelocity.get();
-            renderer.AddPass(std::move(cameraVelocity));
+            bundle.AddPass(std::move(cameraVelocity), nullptr);
 
             auto objectVelocity = std::make_unique<ObjectVelocityPass>();
             objectVelocity->SetResources(
@@ -476,8 +533,7 @@ namespace RVX
             objectVelocity->SetResourceRegistry(
                 renderer.m_renderResourceRegistry);
             objectVelocity->SetEnabled(false);
-            renderer.m_objectVelocityPass = objectVelocity.get();
-            renderer.AddPass(std::move(objectVelocity));
+            bundle.AddPass(std::move(objectVelocity), nullptr);
 
             auto opaque = std::make_unique<OpaquePass>();
             opaque->SetResources(
@@ -486,9 +542,10 @@ namespace RVX
                 renderer.m_lightManager.get(),
                 renderer.m_clusteredLighting.get());
             opaque->SetResourceRegistry(renderer.m_renderResourceRegistry);
-            renderer.m_opaquePass = opaque.get();
-            renderer.AddPass(std::move(opaque));
-            return true;
+            bundle.AddPass(std::move(opaque), nullptr);
+            return bundle.FindPass<OpaquePass>() != nullptr &&
+                bundle.FindPass<CameraVelocityPass>() != nullptr &&
+                bundle.FindPass<ObjectVelocityPass>() != nullptr;
         }
 
         /**
@@ -505,9 +562,11 @@ namespace RVX
             SceneRenderer& renderer,
             IRHIDevice& device)
         {
+            DefaultRenderComposition& composition =
+                EnsureDefaultRenderComposition(renderer);
             if (renderer.m_pipelineCache == nullptr ||
                 renderer.m_resourceViewCache != nullptr ||
-                renderer.m_postProcessStack != nullptr)
+                composition.GetPostProcessStack() != nullptr)
             {
                 return false;
             }
@@ -519,38 +578,39 @@ namespace RVX
                 return false;
             }
 
-            auto stack = std::make_unique<PostProcessStack>();
-            stack->Initialize(&device);
-            if (!stack->IsInitialized())
+            if (!composition.InitializePostProcess(
+                    &device, renderer.m_pipelineCache.get(), viewCache.get()))
             {
                 return false;
             }
 
+            PostProcessStack* const stack = composition.GetPostProcessStack();
             ToneMappingPass* const toneMapping =
-                stack->AddEffect<ToneMappingPass>();
-            if (toneMapping == nullptr)
+                stack != nullptr ? stack->GetEffect<ToneMappingPass>() : nullptr;
+            if (toneMapping == nullptr || !stack->IsInitialized())
             {
                 return false;
             }
-            toneMapping->SetResources(renderer.m_pipelineCache.get(),
-                                      viewCache.get());
             if (!toneMapping->IsSupported())
             {
                 return false;
             }
 
-            stack->SetExposureResources(renderer.m_pipelineCache.get());
             stack->ApplySettings(renderer.m_postProcessSettings);
             renderer.m_resourceViewCache = std::move(viewCache);
-            renderer.m_postProcessStack = std::move(stack);
             return true;
         }
 
-        static void InstallPostProcessStack(
+        static bool InitializePostProcessStack(
             SceneRenderer& renderer,
-            std::unique_ptr<PostProcessStack> stack)
+            IRHIDevice& device,
+            PipelineCache* pipelineCache,
+            ResourceViewCache* resourceViewCache)
         {
-            renderer.m_postProcessStack = std::move(stack);
+            DefaultRenderComposition& composition =
+                EnsureDefaultRenderComposition(renderer);
+            return composition.InitializePostProcess(
+                &device, pipelineCache, resourceViewCache);
         }
 
         static std::string GetFeatureCompositionFailureReason(
@@ -963,15 +1023,21 @@ namespace RVX
         static bool ConfigureLaneAggregationForTesting(
             SceneRenderer& renderer,
             std::unique_ptr<PipelineCache> pipelineCache,
-            DepthPrepass* depthPass,
-            OpaquePass* opaquePass,
+            std::unique_ptr<DepthPrepass> depthPass,
+            std::unique_ptr<OpaquePass> opaquePass,
             std::unique_ptr<GPUCulling> opaqueOwner)
         {
             renderer.m_pipelineCache = std::move(pipelineCache);
-            renderer.m_depthPrepass = depthPass;
-            renderer.m_opaquePass = opaquePass;
-            renderer.m_shadowPass = nullptr;
-            renderer.m_transparentPass = nullptr;
+            DefaultRenderPassBundle& bundle = GetPassBundleForTesting(renderer);
+            bundle.Clear();
+            if (depthPass != nullptr)
+            {
+                bundle.AddPass(std::move(depthPass), nullptr);
+            }
+            if (opaquePass != nullptr)
+            {
+                bundle.AddPass(std::move(opaquePass), nullptr);
+            }
             renderer.m_depthGPUCulling.reset();
             renderer.m_opaqueGPUCulling = std::move(opaqueOwner);
             renderer.m_meshPassPreparation.Clear();
@@ -1110,9 +1176,13 @@ namespace RVX
             renderer.m_frameDiagnostics.graphCompileValid = true;
             renderer.m_renderPolicyDiagnostics.executionReport.status =
                 RenderExecutionStatus::Completed;
-            renderer.m_renderFeatureRegistry = installFeatureRegistry
-                ? std::make_unique<RenderFeatureRegistry>()
-                : nullptr;
+            DefaultRenderComposition& composition =
+                EnsureDefaultRenderComposition(renderer);
+            composition.ResetFeatures();
+            if (installFeatureRegistry)
+            {
+                composition.BeginFeatureRegistration();
+            }
             renderer.m_pendingRenderExecutionReceipt.reset();
         }
 
@@ -1122,11 +1192,29 @@ namespace RVX
             return renderer.HasSubmissionFailure();
         }
 
-        static void SetPostProcessFeatureForTesting(
+        static PostProcessPipelineFeatureAdapter*
+            InstallPostProcessFeatureForTesting(
             SceneRenderer& renderer,
-            PostProcessPipelineFeatureAdapter* feature) noexcept
+            PostProcessStack* stack)
         {
-            renderer.m_postProcessFeature = feature;
+            DefaultRenderComposition& composition =
+                EnsureDefaultRenderComposition(renderer);
+            composition.ResetFeatures();
+            composition.BeginFeatureRegistration();
+
+            auto feature = std::make_unique<PostProcessPipelineFeatureAdapter>(
+                stack);
+            PostProcessPipelineFeatureAdapter* const installed = feature.get();
+            if (composition.RegisterFeature(std::move(feature)) !=
+                RenderFeatureRegistryCode::Success)
+            {
+                composition.ResetFeatures();
+                return nullptr;
+            }
+            return composition.FindFeature<PostProcessPipelineFeatureAdapter>() ==
+                    installed
+                ? installed
+                : nullptr;
         }
     };
 } // namespace RVX
@@ -5604,8 +5692,8 @@ TEST_F(RenderPassValidationFixture,
 
     auto scenePipelineCache = MakeD4b2PipelineCache(device, shaderDir);
     ASSERT_NE(nullptr, scenePipelineCache);
-    OpaquePass opaquePass;
-    opaquePass.SetResources(scenePipelineCache.get(), nullptr);
+    auto opaquePass = std::make_unique<OpaquePass>();
+    opaquePass->SetResources(scenePipelineCache.get(), nullptr);
     auto opaqueOwner = MakeD4b2CullingOwner(
         device, 0u, static_cast<uint32>(GPUScenePassMask::Opaque));
     ASSERT_NE(nullptr, opaqueOwner);
@@ -5625,7 +5713,7 @@ TEST_F(RenderPassValidationFixture,
         renderer,
         std::move(scenePipelineCache),
         nullptr,
-        &opaquePass,
+        std::move(opaquePass),
         std::move(opaqueOwner)));
 
     renderer.CompileRenderFramePlanForTesting();
@@ -5669,8 +5757,8 @@ TEST_F(RenderPassValidationFixture,
 
     auto scenePipelineCache = MakeD4b2PipelineCache(device, shaderDir);
     ASSERT_NE(nullptr, scenePipelineCache);
-    OpaquePass opaquePass;
-    opaquePass.SetResources(scenePipelineCache.get(), nullptr);
+    auto opaquePass = std::make_unique<OpaquePass>();
+    opaquePass->SetResources(scenePipelineCache.get(), nullptr);
     auto opaqueOwner = MakeD4b2CullingOwner(
         device, 0u, static_cast<uint32>(GPUScenePassMask::Opaque));
     ASSERT_NE(nullptr, opaqueOwner);
@@ -5691,7 +5779,7 @@ TEST_F(RenderPassValidationFixture,
         renderer,
         std::move(scenePipelineCache),
         nullptr,
-        &opaquePass,
+        std::move(opaquePass),
         std::move(opaqueOwner)));
 
     // Deliberately poison the retained setting with shader-side sRGB output.
@@ -12206,7 +12294,7 @@ TEST(SceneRendererExternalTargetValidation, ImportsExternalColorAndDepthTargets)
     renderer.BuildRenderGraphForTesting();
 
     EXPECT_EQ(
-        "Raster render feature composition is unavailable",
+        "Forward opaque pass is unavailable",
         SceneRendererTestAccess::GetFeatureCompositionFailureReason(renderer));
 
     const SceneRendererExternalTargetStats& stats = renderer.GetExternalRenderTargetStats();
@@ -12222,10 +12310,11 @@ TEST(SceneRendererExternalTargetValidation, ImportsExternalColorAndDepthTargets)
     EXPECT_EQ(stats.depthFinalState, RHIResourceState::DepthRead);
     EXPECT_TRUE(stats.fallbackReason.empty());
 
-    // This focused harness deliberately does not install the raster feature
-    // composition.  BuildRenderGraph therefore fails before it may mutate
-    // the accepted frame's graph/view bindings; the exact failure above is
-    // the contract under test.  Full composition coverage owns the positive
+    // This focused harness installs the feature registry but deliberately
+    // omits the composition-owned raster pass bundle. BuildRenderGraph
+    // therefore fails before it may mutate the accepted frame's graph/view
+    // bindings; the exact failure above is the contract under test. Full
+    // composition coverage owns the positive
     // import/binding assertions.
     EXPECT_EQ(renderer.GetViewData().viewportWidth, 32u);
     EXPECT_EQ(renderer.GetViewData().viewportHeight, 32u);
@@ -12503,7 +12592,7 @@ TEST(SceneRendererExternalTargetValidation, FloatExternalTargetKeepsToneMappingO
     renderer.BuildRenderGraphForTesting();
 
     EXPECT_EQ(
-        "Raster render feature composition is unavailable",
+        "Forward opaque pass is unavailable",
         SceneRendererTestAccess::GetFeatureCompositionFailureReason(renderer));
 
     const SceneRenderPostProcessStats& stats = renderer.GetPostProcessStats();
@@ -12720,10 +12809,10 @@ TEST(SceneRendererTemporalHistoryValidation,
     // a stale renderer-side candidate and ensure an unsubmitted frame never
     // reports that candidate as pending after the adapter's abandon hook.
     PostProcessStack stack;
-    PostProcessPipelineFeatureAdapter postProcess(&stack);
     SceneRenderer renderer;
-    SceneRendererTestAccess::SetPostProcessFeatureForTesting(
-        renderer, &postProcess);
+    ASSERT_NE(nullptr,
+              SceneRendererTestAccess::InstallPostProcessFeatureForTesting(
+                  renderer, &stack));
 
     RenderExecutionReceipt pending;
     pending.schemaVersion = 7;
@@ -13690,11 +13779,8 @@ TEST_F(RenderPassValidationFixture,
         SceneRendererTestAccess::GetPipelineCacheForTesting(renderer);
     ASSERT_NE(rendererPipelineCache, nullptr);
 
-    auto stack = std::make_unique<PostProcessStack>();
-    auto* toneMapping = stack->AddEffect<ToneMappingPass>();
-    toneMapping->SetResources(rendererPipelineCache, &viewCache);
-    stack->SetExposureResources(rendererPipelineCache);
-    SceneRendererTestAccess::InstallPostProcessStack(renderer, std::move(stack));
+    ASSERT_TRUE(SceneRendererTestAccess::InitializePostProcessStack(
+        renderer, device, rendererPipelineCache, &viewCache));
 
     PostProcessSettings userSettings;
     userSettings.enableToneMapping = false;
@@ -13838,20 +13924,20 @@ TEST_F(RenderPassValidationFixture,
     snapshot.items.push_back(std::move(item));
     snapshot.MarkComplete();
 
-    ParticleFeaturePass particlePass;
-    particlePass.SetSnapshot(&snapshot);
-    const RenderPassStatus particleStatus = particlePass.GetStatus();
+    ParticleFeaturePass* const particlePass =
+        SceneRendererTestAccess::InstallParticleFeatureForStagingTesting(
+            renderer);
+    ASSERT_NE(nullptr, particlePass);
+    particlePass->SetSnapshot(&snapshot);
+    const RenderPassStatus particleStatus = particlePass->GetStatus();
     ASSERT_TRUE(particleStatus.requestedEnabled);
     ASSERT_TRUE(particleStatus.supported)
         << particleStatus.unsupportedReason;
     ASSERT_TRUE(particleStatus.enabled);
-    SceneRendererTestAccess::BindParticleFeatureForStagingTesting(
-        renderer, &particlePass);
-
     ASSERT_TRUE(
         SceneRendererTestAccess::PrepareLightingForAcceptedFrameForTesting(
             renderer));
-    const RenderPassStatus preparedParticleStatus = particlePass.GetStatus();
+    const RenderPassStatus preparedParticleStatus = particlePass->GetStatus();
     ASSERT_TRUE(preparedParticleStatus.requestedEnabled);
     ASSERT_TRUE(preparedParticleStatus.supported)
         << preparedParticleStatus.unsupportedReason;
@@ -13874,13 +13960,12 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_EQ(graphColorDesc->format, RHIFormat::RGBA16_FLOAT);
     EXPECT_NE(graphColorDesc->format, colorTarget->GetFormat());
 
-    SceneRendererTestAccess::BindParticleFeatureForStagingTesting(
-        renderer, nullptr);
 }
 
 TEST(SceneRendererDeferredPresentationValidation,
      UnavailableToneMappingFailsClosedBeforeHDRStagingAndCannotSucceed)
 {
+    ScopedCoreLogForTest log;
     FakeDevice device;
     device.EnableBasicCapabilities();
     SceneRenderer renderer;
@@ -13889,9 +13974,8 @@ TEST(SceneRendererDeferredPresentationValidation,
     RenderGraphValidationAccess::SetDevice(*graph, &device);
     renderer.SetRenderGraphForTesting(std::move(graph));
 
-    auto stack = std::make_unique<PostProcessStack>();
-    (void)stack->AddEffect<ToneMappingPass>();
-    SceneRendererTestAccess::InstallPostProcessStack(renderer, std::move(stack));
+    ASSERT_TRUE(SceneRendererTestAccess::InitializePostProcessStack(
+        renderer, device, nullptr, nullptr));
 
     PostProcessSettings userSettings;
     userSettings.enableToneMapping = false;
@@ -15838,26 +15922,29 @@ TEST(RenderPostProcessStackValidation, SceneRendererWiresLDREffectsWithoutFlippi
     const fs::path sceneRendererPath = shaderDir.parent_path() /
         "Private" / "Renderer" / "SceneRenderer.cpp";
     const std::string source = ReadTextFile(sceneRendererPath);
+    const std::string compositionSource = ReadTextFile(
+        shaderDir.parent_path() / "Private" / "Features" /
+        "DefaultRenderComposition.cpp");
 
     EXPECT_NE(source.find("settings.enableColorGrading = false;"), std::string::npos);
     EXPECT_NE(source.find("settings.enableChromaticAberration = false;"), std::string::npos);
     EXPECT_NE(source.find("settings.antiAliasingMode = RenderAntiAliasingMode::None;"), std::string::npos);
     EXPECT_NE(source.find("settings.enableVignette = false;"), std::string::npos);
-    EXPECT_NE(source.find("m_colorGradingPostProcess = m_postProcessStack->AddEffect<ColorGradingPass>();"),
+    EXPECT_NE(compositionSource.find("m_postProcessStack->AddEffect<ColorGradingPass>();"),
               std::string::npos);
-    EXPECT_NE(source.find("m_colorGradingPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());"),
+    EXPECT_NE(compositionSource.find("colorGrading->SetResources(pipelineCache, resourceViewCache);"),
               std::string::npos);
-    EXPECT_NE(source.find("m_chromaticAberrationPostProcess = m_postProcessStack->AddEffect<ChromaticAberrationPass>();"),
+    EXPECT_NE(compositionSource.find("m_postProcessStack->AddEffect<ChromaticAberrationPass>();"),
               std::string::npos);
-    EXPECT_NE(source.find("m_chromaticAberrationPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());"),
+    EXPECT_NE(compositionSource.find("chromaticAberration->SetResources(pipelineCache, resourceViewCache);"),
               std::string::npos);
-    EXPECT_NE(source.find("m_vignettePostProcess = m_postProcessStack->AddEffect<VignettePass>();"),
+    EXPECT_NE(compositionSource.find("m_postProcessStack->AddEffect<VignettePass>();"),
               std::string::npos);
-    EXPECT_NE(source.find("m_vignettePostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());"),
+    EXPECT_NE(compositionSource.find("vignette->SetResources(pipelineCache, resourceViewCache);"),
               std::string::npos);
-    EXPECT_NE(source.find("m_fxaaPostProcess = m_postProcessStack->AddEffect<FXAAPass>();"),
+    EXPECT_NE(compositionSource.find("m_postProcessStack->AddEffect<FXAAPass>();"),
               std::string::npos);
-    EXPECT_NE(source.find("m_fxaaPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());"),
+    EXPECT_NE(compositionSource.find("fxaa->SetResources(pipelineCache, resourceViewCache);"),
               std::string::npos);
 }
 
@@ -15957,37 +16044,39 @@ TEST_F(RenderPassValidationFixture, NoSupportedEffectsCannotSilentlyChangeColorD
 TEST(RenderPassValidation,
      SceneRendererPreservesUnboundToonOutlineProbeUntilFrameDisposition)
 {
-    ScreenSpaceOutlinePass outline;
+    ScopedCoreLogForTest log;
+    FakeDevice device;
+    device.EnableBasicCapabilities();
     SceneRenderer renderer;
-    SceneRendererTestAccess::BindScreenSpaceOutlineForTesting(
-        renderer, &outline);
+    ScreenSpaceOutlinePass* const outline =
+        SceneRendererTestAccess::InitializeScreenSpaceOutlineForTesting(
+            renderer, device);
+    ASSERT_NE(nullptr, outline);
 
     ASSERT_TRUE(renderer.ArmToonOutlineQualificationProbe());
-    ASSERT_TRUE(outline.HasPendingQualificationProbe());
+    ASSERT_TRUE(outline->HasPendingQualificationProbe());
 
     // Accepting the frame establishes its history candidate.  It must not
     // discard the Render-owner request that is waiting to bind while this
     // exact frame records the outline graph.
     ASSERT_TRUE(SceneRendererTestAccess::AcceptEmptyFrameForTesting(
         renderer, 4113u));
-    EXPECT_TRUE(outline.HasPendingQualificationProbe());
+    EXPECT_TRUE(outline->HasPendingQualificationProbe());
 
     // Once this accepted frame is known not to have reached submission, the
     // one-shot request must be cancelled rather than leaking to another frame.
     renderer.ReleaseUnsubmittedFrame();
-    EXPECT_FALSE(outline.HasPendingQualificationProbe());
-
-    SceneRendererTestAccess::BindScreenSpaceOutlineForTesting(
-        renderer, nullptr);
+    EXPECT_FALSE(outline->HasPendingQualificationProbe());
 }
 
 TEST(SceneRendererReflectionQualificationValidation,
      ConsecutiveArmsClearPriorCompletionUntilTheNewestProbeCompletes)
 {
-    ReflectionFeatureAdapter reflectionFeature;
     SceneRenderer renderer;
-    SceneRendererTestAccess::BindReflectionFeatureForQualificationTesting(
-        renderer, &reflectionFeature);
+    ReflectionFeatureAdapter* const reflectionFeature =
+        SceneRendererTestAccess::InstallReflectionFeatureForQualificationTesting(
+            renderer);
+    ASSERT_NE(nullptr, reflectionFeature);
     SceneRendererTestAccess::SeedCompletedHiZReflectionQualificationForTesting(
         renderer);
 
@@ -15997,7 +16086,7 @@ TEST(SceneRendererReflectionQualificationValidation,
                     .hiZReflectionQualificationReceipt.available);
 
     ASSERT_TRUE(renderer.ArmHiZReflectionQualificationProbe());
-    EXPECT_TRUE(reflectionFeature.HasPendingSSRQualificationProbe());
+    EXPECT_TRUE(reflectionFeature->HasPendingSSRQualificationProbe());
     EXPECT_EQ(SceneRendererTestAccess::HiZReflectionProbeGenerationForTesting(
                   renderer),
               1u);
@@ -16009,10 +16098,10 @@ TEST(SceneRendererReflectionQualificationValidation,
     // The first request cannot produce a source frame, so its abandon is a
     // failure path. A following arm must remain unavailable rather than
     // surfacing the completion seeded before either request.
-    reflectionFeature.AbandonSSRQualificationProbe();
-    ASSERT_FALSE(reflectionFeature.HasPendingSSRQualificationProbe());
+    reflectionFeature->AbandonSSRQualificationProbe();
+    ASSERT_FALSE(reflectionFeature->HasPendingSSRQualificationProbe());
     ASSERT_TRUE(renderer.ArmHiZReflectionQualificationProbe());
-    EXPECT_TRUE(reflectionFeature.HasPendingSSRQualificationProbe());
+    EXPECT_TRUE(reflectionFeature->HasPendingSSRQualificationProbe());
     EXPECT_EQ(SceneRendererTestAccess::HiZReflectionProbeGenerationForTesting(
                   renderer),
               2u);
@@ -16021,36 +16110,32 @@ TEST(SceneRendererReflectionQualificationValidation,
     EXPECT_FALSE(renderer.GetFrameDiagnostics()
                      .hiZReflectionQualificationReceipt.available);
 
-    reflectionFeature.AbandonSSRQualificationProbe();
-    SceneRendererTestAccess::BindReflectionFeatureForQualificationTesting(
-        renderer, nullptr);
+    reflectionFeature->AbandonSSRQualificationProbe();
 }
 
 TEST(SceneRendererReflectionQualificationValidation,
      PreservesUnboundProbeUntilExactAcceptedFrameDisposition)
 {
-    ReflectionFeatureAdapter reflectionFeature;
     SceneRenderer renderer;
-    SceneRendererTestAccess::BindReflectionFeatureForQualificationTesting(
-        renderer, &reflectionFeature);
+    ReflectionFeatureAdapter* const reflectionFeature =
+        SceneRendererTestAccess::InstallReflectionFeatureForQualificationTesting(
+            renderer);
+    ASSERT_NE(nullptr, reflectionFeature);
 
     ASSERT_TRUE(renderer.ArmHiZReflectionQualificationProbe());
-    ASSERT_TRUE(reflectionFeature.HasPendingSSRQualificationProbe());
+    ASSERT_TRUE(reflectionFeature->HasPendingSSRQualificationProbe());
 
     // RenderThreadRuntime arms immediately before ConsumeFrameV5.  Frame
     // acceptance clears prior temporal candidates, but must not discard this
     // still-unbound request before the exact frame can build its SSR graph.
     ASSERT_TRUE(SceneRendererTestAccess::AcceptEmptyFrameForTesting(
         renderer, 4114u));
-    EXPECT_TRUE(reflectionFeature.HasPendingSSRQualificationProbe());
+    EXPECT_TRUE(reflectionFeature->HasPendingSSRQualificationProbe());
 
     // If that accepted frame never reaches a submission boundary, the
     // one-shot request is cancelled and cannot leak into a later frame.
     renderer.ReleaseUnsubmittedFrame();
-    EXPECT_FALSE(reflectionFeature.HasPendingSSRQualificationProbe());
-
-    SceneRendererTestAccess::BindReflectionFeatureForQualificationTesting(
-        renderer, nullptr);
+    EXPECT_FALSE(reflectionFeature->HasPendingSSRQualificationProbe());
 }
 
 TEST_F(RenderPassValidationFixture,
@@ -28388,6 +28473,9 @@ TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeFeatur
     const std::string defaultForwardCompositionSource =
         ReadTextFile(renderRoot / "Private" / "Features" /
                      "DefaultForwardComposition.cpp");
+    const std::string defaultPassBundleSource =
+        ReadTextFile(renderRoot / "Private" / "Features" /
+                     "DefaultRenderPassBundle.cpp");
     const std::string artifactSource =
         ReadTextFile(renderRoot / "Private" / "Diagnostics" / "RenderToolArtifacts.cpp");
     const std::string renderCMake = ReadTextFile(renderRoot / "CMakeLists.txt");
@@ -28399,7 +28487,10 @@ TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeFeatur
     EXPECT_NE(sceneRendererHeader.find(
                   "std::shared_ptr<const RenderFeatureSnapshot> m_featureSnapshot"),
               std::string::npos);
-    EXPECT_NE(sceneRendererHeader.find("ParticleFeaturePass* m_particleFeaturePass = nullptr;"),
+    EXPECT_NE(sceneRendererHeader.find(
+                  "std::unique_ptr<DefaultRenderComposition> m_defaultRenderComposition"),
+              std::string::npos);
+    EXPECT_EQ(sceneRendererHeader.find("ParticleFeaturePass* m_particleFeaturePass"),
               std::string::npos);
     EXPECT_NE(sceneRendererHeader.find("const ParticleFeaturePassStats& GetParticleFeaturePassStats() const;"),
               std::string::npos);
@@ -28414,14 +28505,16 @@ TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposeFeatur
     // SceneRenderer. Feature extraction and frame diagnostics remain the
     // renderer's responsibility, while construction/wiring of the particle
     // pass belongs to the composition root.
-    EXPECT_NE(defaultForwardCompositionSource.find("std::make_unique<ParticleFeaturePass>()"),
+    EXPECT_NE(defaultPassBundleSource.find("std::make_unique<ParticleFeaturePass>()"),
               std::string::npos);
     EXPECT_NE(defaultForwardCompositionSource.find(
-                  "m_particleFeaturePass = particleFeaturePass.get();"),
+                  "CreateDefaultRenderPassBundle(dependencies)"),
               std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("m_particleFeaturePass->SetSnapshot(&m_featureSnapshot->particles)"),
+    EXPECT_NE(sceneRendererSource.find(
+                  "FindCompositionPass<ParticleFeaturePass>()->SetSnapshot"),
               std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("return m_particleFeaturePass ? m_particleFeaturePass->GetStats()"),
+    EXPECT_NE(sceneRendererSource.find(
+                  "FindCompositionPass<ParticleFeaturePass>()->GetStats()"),
               std::string::npos);
     EXPECT_NE(sceneRendererSource.find("m_featureSnapshot->GetMetadata()"), std::string::npos);
     EXPECT_NE(sceneRendererSource.find(

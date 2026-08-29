@@ -237,3 +237,32 @@ Keep at most the ten most useful recent entries.
   `06e9fa064d583782334b2efc214524a1a0868e469bd51c7399ca13e27faa574a`.
 - Follow-up: macOS Metal native confirmation remains pending remote CI; GFX23
   should add froxel volumetric lighting as a separately claimed feature.
+
+### 2026-08-29 - gfx-22a - renderer ownership and composition convergence
+
+- Outcome: introduced one `DefaultRenderComposition` owner and one
+  `DefaultRenderPassBundle`; `SceneRenderer` now orchestrates them without
+  retaining built-in feature or concrete pass pointer caches. Feature adapters
+  borrow the bundle and resolve pass dependencies only for the current call.
+  Destruction, move assignment, pre-initialize custom passes, partial
+  initialization, and duplicate installation now have balanced lifecycle
+  coverage. A fail-closed Architecture checker prevents central pass
+  reconstruction and mutable pass-pointer ownership from returning.
+- Verification: checker self-tests passed 8/8 and focused tests passed 76/76;
+  after the line-ending-only cleanup in `43c56f79`, the complete Debug Build
+  Truth passed branch and working diff hygiene, Architecture 63/63, Unit
+  1947/1947, Integration 745/745, and real DX12 Native 61/61 with no backend
+  fallback or software adapter. Shipping passed 5/5 before the mechanical
+  cleanup and will be rebound after the implementation commit.
+- Evidence: Architecture receipt
+  `.agent-harness/receipts/Architecture.33227f7de8944e649bffba00529469a5.json`,
+  Shipping receipt
+  `.agent-harness/receipts/RequiredSuite.1addaa46297a41e884287c83c33b988a.json`,
+  and Build Truth receipt
+  `.agent-harness/receipts/BuildTruth.e5274260b1b5457db981bfa622e8c8ac.json`
+  bind commit `43c56f79` and
+  product digest
+  `a0c4e0119dc233471743c19ac9913c0be96b0c01000b1084c5e44e42eb0392e7`.
+- Follow-up: commit the reviewed GFX22A paths, rerun Architecture, complete
+  Debug Build Truth, and Shipping against the new HEAD, then transition the
+  feature to passing before starting GFX23.

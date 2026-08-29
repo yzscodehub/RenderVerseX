@@ -77,20 +77,11 @@ namespace RVX
     class OpaquePass;
     class ParticleFeaturePass;
     class WaterFeaturePass;
-    class AmbientOcclusionFeatureAdapter;
-    class LegacyForwardFeatureAdapter;
-    class ForwardLightingFeatureAdapter;
-    class ForwardSpecialFeatureAdapter;
-    class TranslucencyFeatureAdapter;
-    class ReflectionFeatureAdapter;
+    class DefaultRenderComposition;
     class ReflectionFramePlan;
     class LocalShadowFramePlan;
     class LocalShadowAtlasPlan;
     class LocalShadowPass;
-    class PostProcessPipelineFeatureAdapter;
-    class DeferredGeometryFeatureAdapter;
-    class DeferredLightingFeatureAdapter;
-    class DeferredForwardSpecialFeatureAdapter;
     class DeferredLightingPass;
     class RenderFeatureRegistry;
     class RenderPassRegistry;
@@ -1591,8 +1582,8 @@ namespace RVX
         const SceneRayTracingBudgetSettings& GetRayTracingBudgetSettings() const { return m_rayTracingBudgetSettings; }
 
         /// Get runtime post-process stack.
-        PostProcessStack* GetPostProcessStack() { return m_postProcessStack.get(); }
-        const PostProcessStack* GetPostProcessStack() const { return m_postProcessStack.get(); }
+        PostProcessStack* GetPostProcessStack();
+        const PostProcessStack* GetPostProcessStack() const;
 
         /// Apply runtime post-process settings.
         void ApplyPostProcessSettings(const PostProcessSettings& settings);
@@ -1714,6 +1705,16 @@ namespace RVX
         void SetupDefaultPostProcess();
         [[nodiscard]] bool SetupDefaultRenderFeatures();
         [[nodiscard]] bool EnsureDefaultRenderComposition();
+        template <typename T>
+        [[nodiscard]] T* FindCompositionPass() const noexcept;
+        template <typename T>
+        [[nodiscard]] T* FindCompositionFeature() const noexcept;
+        template <typename T>
+        [[nodiscard]] T* FindPostProcessEffect() const noexcept;
+        [[nodiscard]] RenderFeatureRegistry*
+            GetRenderFeatureRegistry() const noexcept;
+        [[nodiscard]] RenderPassRegistry*
+            GetRenderPassRegistry() const noexcept;
         SceneColorFormatPolicy ResolveSceneColorFormatPolicy(RHIFormat backBufferFormat,
                                                              bool postProcessActive) const;
         ToneMappingOutputColorSpace ResolveToneMappingOutputColorSpace(RHIFormat outputFormat) const;
@@ -1781,22 +1782,9 @@ namespace RVX
         std::unique_ptr<MaterialSystem> m_materialSystem;
         std::unique_ptr<LightManager> m_lightManager;
         std::unique_ptr<ClusteredLighting> m_clusteredLighting;
-        std::unique_ptr<DeferredLightingPass> m_deferredLightingPass;
         std::unique_ptr<TransientResourcePool> m_transientResourcePool;
         std::unique_ptr<ResourceViewCache> m_resourceViewCache;
-        std::unique_ptr<RenderPassRegistry> m_passRegistry;
-        std::unique_ptr<RenderFeatureRegistry> m_renderFeatureRegistry;
-        LegacyForwardFeatureAdapter* m_legacyForwardFeature = nullptr;
-        AmbientOcclusionFeatureAdapter* m_ambientOcclusionFeature = nullptr;
-        ForwardLightingFeatureAdapter* m_forwardLightingFeature = nullptr;
-        ReflectionFeatureAdapter* m_reflectionFeature = nullptr;
-        ForwardSpecialFeatureAdapter* m_forwardSpecialFeature = nullptr;
-        TranslucencyFeatureAdapter* m_translucencyFeature = nullptr;
-        PostProcessPipelineFeatureAdapter* m_postProcessFeature = nullptr;
-        DeferredGeometryFeatureAdapter* m_deferredGeometryFeature = nullptr;
-        DeferredLightingFeatureAdapter* m_deferredLightingFeature = nullptr;
-        DeferredForwardSpecialFeatureAdapter*
-            m_deferredForwardSpecialFeature = nullptr;
+        std::unique_ptr<DefaultRenderComposition> m_defaultRenderComposition;
         // Each GPU-capable pass owns its instance/group/indirect/count stream.
         // Candidate extraction remains shared, but compaction and resource
         // lifetime are intentionally pass-local.
@@ -1875,7 +1863,6 @@ namespace RVX
             GPUDrivenGraphFailureInjection::None;
         GPUDrivenTierExecutionTestProbe m_gpuDrivenTierExecutionTestProbe{};
         std::shared_ptr<std::atomic_bool> m_gpuSceneRasterCommandRecordingFailed;
-        std::unique_ptr<PostProcessStack> m_postProcessStack;
         std::unique_ptr<RayTracingSceneManager> m_rayTracingSceneManager;
         std::unique_ptr<GPUSceneUpdate> m_gpuSceneUpdate;
         std::unique_ptr<GPUSceneUploader> m_gpuSceneUploader;
@@ -2102,29 +2089,6 @@ namespace RVX
         RenderVisibilityResult m_renderVisibility;
         std::vector<std::string> m_loggedUnsupportedPassNames;
         std::vector<PreGraphPrepareCallbackEntry> m_preGraphPrepareCallbacks;
-
-        DepthPrepass* m_depthPrepass = nullptr;  // Cached pointer to optional depth prepass
-        OpaquePass* m_opaquePass = nullptr;  // Cached pointer to opaque pass
-        ShadowPass* m_shadowPass = nullptr;  // Cached pointer to shadow pass
-        RayTracedShadowPass* m_rayTracedShadowPass = nullptr;  // Cached pointer to ray traced shadow pass
-        CameraVelocityPass* m_cameraVelocityPass = nullptr;  // Cached pointer to camera velocity pass
-        ObjectVelocityPass* m_objectVelocityPass = nullptr;  // Cached pointer to object velocity pass
-        ParticleFeaturePass* m_particleFeaturePass = nullptr;  // Cached pointer to particle feature pass
-        WaterFeaturePass* m_waterFeaturePass = nullptr;  // Cached pointer to deterministic water feature pass
-        RayTracedReflectionPass* m_rayTracedReflectionPass = nullptr;  // Cached pointer to ray traced reflection pass
-        RayTracedReflectionDenoisePass* m_rayTracedReflectionDenoisePass = nullptr;  // Cached pointer to RT reflection denoise pass
-        RayTracedReflectionCompositePass* m_rayTracedReflectionCompositePass = nullptr;  // Cached pointer to RT reflection composite pass
-        TransparentPass* m_transparentPass = nullptr;  // Cached pointer to transparent pass
-        SkyboxPass* m_skyboxPass = nullptr;  // Cached pointer to skybox pass
-        BloomPass* m_bloomPostProcess = nullptr;
-        ToneMappingPass* m_toneMappingPostProcess = nullptr;
-        ColorGradingPass* m_colorGradingPostProcess = nullptr;
-        ChromaticAberrationPass* m_chromaticAberrationPostProcess = nullptr;
-        VignettePass* m_vignettePostProcess = nullptr;
-        FilmGrainPass* m_filmGrainPostProcess = nullptr;
-        FXAAPass* m_fxaaPostProcess = nullptr;
-        TAA* m_taaPostProcess = nullptr;
-        ScreenSpaceOutlinePass* m_screenSpaceOutlinePostProcess = nullptr;
 
         // Depth buffer
         RHITextureRef m_depthTexture;

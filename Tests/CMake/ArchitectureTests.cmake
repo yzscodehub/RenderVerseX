@@ -214,6 +214,16 @@ rvx_add_validation_test(
 
 rvx_add_validation_test(
     LANE architecture
+    NAME Architecture.RendererFeatureOwnershipChecker
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/test_renderer_feature_ownership.py
+        -v
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+rvx_add_validation_test(
+    LANE architecture
     NAME Architecture.CIWorkflowChecker
     COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_SOURCE_DIR}/Scripts/test_ci_workflows.py
@@ -420,6 +430,19 @@ rvx_add_validation_test(
     TIMEOUT 30
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     REQUIRED_FILES ${RVX_ARCH_POLICY_REQUIRED_FILES}
+)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.RendererFeatureOwnership
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/check_renderer_feature_ownership.py
+        --root ${CMAKE_SOURCE_DIR}
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    REQUIRED_FILES
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include/Render/Renderer/SceneRenderer.h
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private/Features/DefaultForwardComposition.cpp
 )
 
 rvx_add_validation_test(

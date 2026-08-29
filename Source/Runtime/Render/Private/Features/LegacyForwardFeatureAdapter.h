@@ -5,7 +5,6 @@
  * @brief Recipe-specific halves of the established forward pass chain.
  */
 
-#include "Features/VelocityPassBindings.h"
 #include "Render/Features/IRenderFeature.h"
 #include "Render/Passes/RenderPassRecordContext.h"
 
@@ -15,8 +14,7 @@
 
 namespace RVX
 {
-    class OpaquePass;
-    class RenderPassRegistry;
+    class DefaultRenderPassBundle;
 
     /** @brief Per-frame observable accounting for the legacy forward chain. */
     struct LegacyForwardFeaturePassChainStats
@@ -41,23 +39,11 @@ namespace RVX
     class LegacyForwardFeatureAdapter final : public IRenderFeature
     {
     public:
-        LegacyForwardFeatureAdapter(RenderPassRegistry* passRegistry,
-                                    OpaquePass* opaquePass,
-                                    VelocityPassBindings velocityPasses = {}) noexcept;
+        explicit LegacyForwardFeatureAdapter(
+            DefaultRenderPassBundle* passBundle) noexcept;
 
         /** @brief Replace the value-owned context used for the next graph build. */
         void SetRecordContext(RenderPassRecordContext context);
-
-        /** @brief Clear or replace the non-owning opaque-pass bridge safely. */
-        void SetOpaquePass(OpaquePass* opaquePass) noexcept
-        {
-            m_opaquePass = opaquePass;
-        }
-
-        void SetVelocityPasses(VelocityPassBindings velocityPasses) noexcept
-        {
-            m_velocityPasses = velocityPasses;
-        }
 
         [[nodiscard]] RenderFeatureDescriptor Describe() const override;
         void Prepare(const RenderFeatureContext& context) override;
@@ -97,9 +83,7 @@ namespace RVX
             const RenderFeatureContext& context) const noexcept;
         void SetCompositionFailure(std::string diagnostic);
 
-        RenderPassRegistry* m_passRegistry = nullptr;
-        OpaquePass* m_opaquePass = nullptr;
-        VelocityPassBindings m_velocityPasses{};
+        DefaultRenderPassBundle* m_passBundle = nullptr;
         RenderPassRecordContext m_recordContext{};
         RenderFeatureContext m_preparedContext{};
         LegacyForwardFeaturePassChainStats m_lastPassChainStats{};
@@ -112,14 +96,10 @@ namespace RVX
     class ForwardLightingFeatureAdapter final : public IRenderFeature
     {
     public:
-        ForwardLightingFeatureAdapter(RenderPassRegistry* passRegistry,
-                                      OpaquePass* opaquePass) noexcept;
+        explicit ForwardLightingFeatureAdapter(
+            DefaultRenderPassBundle* passBundle) noexcept;
 
         void SetRecordContext(RenderPassRecordContext context);
-        void SetOpaquePass(OpaquePass* opaquePass) noexcept
-        {
-            m_opaquePass = opaquePass;
-        }
         [[nodiscard]] RenderFeatureDescriptor Describe() const override;
         void Prepare(const RenderFeatureContext& context) override;
         [[nodiscard]] RenderFeatureReadiness ResolveReadiness() const override;
@@ -147,8 +127,7 @@ namespace RVX
             const RenderFeatureContext& context) const noexcept;
         void SetCompositionFailure(std::string diagnostic);
 
-        RenderPassRegistry* m_passRegistry = nullptr;
-        OpaquePass* m_opaquePass = nullptr;
+        DefaultRenderPassBundle* m_passBundle = nullptr;
         RenderPassRecordContext m_recordContext{};
         RenderFeatureContext m_preparedContext{};
         LegacyForwardFeaturePassChainStats m_lastPassChainStats{};
@@ -167,20 +146,10 @@ namespace RVX
     class ForwardSpecialFeatureAdapter final : public IRenderFeature
     {
     public:
-        ForwardSpecialFeatureAdapter(RenderPassRegistry* passRegistry,
-                                     OpaquePass* opaquePass,
-                                     VelocityPassBindings velocityPasses = {}) noexcept;
+        explicit ForwardSpecialFeatureAdapter(
+            DefaultRenderPassBundle* passBundle) noexcept;
 
         void SetRecordContext(RenderPassRecordContext context);
-        void SetOpaquePass(OpaquePass* opaquePass) noexcept
-        {
-            m_opaquePass = opaquePass;
-        }
-        void SetVelocityPasses(VelocityPassBindings velocityPasses) noexcept
-        {
-            m_velocityPasses = velocityPasses;
-        }
-
         [[nodiscard]] RenderFeatureDescriptor Describe() const override;
         void Prepare(const RenderFeatureContext& context) override;
         [[nodiscard]] RenderFeatureReadiness ResolveReadiness() const override;
@@ -208,9 +177,7 @@ namespace RVX
             const RenderFeatureContext& context) const noexcept;
         void SetCompositionFailure(std::string diagnostic);
 
-        RenderPassRegistry* m_passRegistry = nullptr;
-        OpaquePass* m_opaquePass = nullptr;
-        VelocityPassBindings m_velocityPasses{};
+        DefaultRenderPassBundle* m_passBundle = nullptr;
         RenderPassRecordContext m_recordContext{};
         RenderFeatureContext m_preparedContext{};
         LegacyForwardFeaturePassChainStats m_lastPassChainStats{};

@@ -8,6 +8,7 @@
 #include "Context/RenderContextInternal.h"
 #include "GPUScene/GPUSceneUpdate.h"
 #include "GPUScene/GPUSceneUploader.h"
+#include "Features/DefaultRenderComposition.h"
 #include "Features/AmbientOcclusionFeatureAdapter.h"
 #include "Features/DeferredRecipeFeatureAdapter.h"
 #include "Features/LegacyForwardFeatureAdapter.h"
@@ -80,6 +81,60 @@
 
 namespace RVX
 {
+template <typename T>
+T* SceneRenderer::FindCompositionPass() const noexcept
+{
+    return m_defaultRenderComposition != nullptr
+        ? m_defaultRenderComposition->FindPass<T>()
+        : nullptr;
+}
+
+template <typename T>
+T* SceneRenderer::FindCompositionFeature() const noexcept
+{
+    return m_defaultRenderComposition != nullptr
+        ? m_defaultRenderComposition->FindFeature<T>()
+        : nullptr;
+}
+
+PostProcessStack* SceneRenderer::GetPostProcessStack()
+{
+    return m_defaultRenderComposition != nullptr
+        ? m_defaultRenderComposition->GetPostProcessStack()
+        : nullptr;
+}
+
+const PostProcessStack* SceneRenderer::GetPostProcessStack() const
+{
+    return m_defaultRenderComposition != nullptr
+        ? m_defaultRenderComposition->GetPostProcessStack()
+        : nullptr;
+}
+
+template <typename T>
+T* SceneRenderer::FindPostProcessEffect() const noexcept
+{
+    PostProcessStack* const stack = m_defaultRenderComposition != nullptr
+        ? m_defaultRenderComposition->GetPostProcessStack()
+        : nullptr;
+    return stack != nullptr ? stack->GetEffect<T>() : nullptr;
+}
+
+RenderFeatureRegistry*
+SceneRenderer::GetRenderFeatureRegistry() const noexcept
+{
+    return m_defaultRenderComposition != nullptr
+        ? m_defaultRenderComposition->GetFeatureRegistry()
+        : nullptr;
+}
+
+RenderPassRegistry* SceneRenderer::GetRenderPassRegistry() const noexcept
+{
+    return m_defaultRenderComposition != nullptr
+        ? &m_defaultRenderComposition->GetPassBundle().GetRegistry()
+        : nullptr;
+}
+
 namespace
 {
     [[nodiscard]] RenderFeatureCapabilityMask
@@ -1378,7 +1433,11 @@ void SceneRenderer::Initialize(
     m_renderContext = renderContext;
     m_renderResourceRegistry = resourceRegistry;
     m_retirementQueue = retirementQueue;
-    m_passRegistry = std::make_unique<RenderPassRegistry>();
+    if (m_defaultRenderComposition == nullptr)
+    {
+        m_defaultRenderComposition =
+            std::make_unique<DefaultRenderComposition>();
+    }
     m_rayTracingSceneManager = std::make_unique<RayTracingSceneManager>();
     m_rayTracingSceneManager->Initialize(m_renderContext->GetDevice());
     m_rayTracingSceneStats = m_rayTracingSceneManager->GetStats();
@@ -1508,7 +1567,15 @@ void SceneRenderer::Initialize(
     // Seal the compatibility ForwardStandard composition before any frame.
     if (!SetupDefaultRenderFeatures())
     {
-        ClearPasses();
+        // A failed registration attempt must not leave an "installed" marker
+        // paired with a cleared or partially composed pass set. Tear down the
+        // entire private composition so a later Initialize retry starts from
+        // a coherent ownership boundary.
+        if (m_defaultRenderComposition != nullptr)
+        {
+            m_defaultRenderComposition->Shutdown();
+            m_defaultRenderComposition.reset();
+        }
         return;
     }
     SetupDefaultPostProcess();
@@ -1521,35 +1588,35 @@ void SceneRenderer::Shutdown()
 {
     InvalidateRenderFramePlan();
     AbandonAcceptedFrameHistory();
-    if (m_postProcessStack)
+    if (GetPostProcessStack())
     {
-        m_postProcessStack->GetExposureController()
+        GetPostProcessStack()->GetExposureController()
             .CancelQualificationProbe();
     }
     m_exposureProbeCompletion.reset();
     m_exposureProbeHistoryIdentity.reset();
     m_exposureProbeSourceExecutionReceipt.reset();
     m_exposureProbePresented = false;
-    if (m_ambientOcclusionFeature != nullptr)
+    if (FindCompositionFeature<AmbientOcclusionFeatureAdapter>() != nullptr)
     {
-        m_ambientOcclusionFeature->AbandonQualificationProbe();
+        FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->AbandonQualificationProbe();
     }
     m_ambientOcclusionProbeHistoryIdentity.reset();
     m_ambientOcclusionProbeSourceExecutionReceipt.reset();
     m_ambientOcclusionProbeSubmissionAccepted = false;
     m_ambientOcclusionProbePresented = false;
     m_ambientOcclusionProbeAbandoned = false;
-    if (m_screenSpaceOutlinePostProcess != nullptr)
+    if (FindPostProcessEffect<ScreenSpaceOutlinePass>() != nullptr)
     {
-        m_screenSpaceOutlinePostProcess->AbandonQualificationProbe();
+        FindPostProcessEffect<ScreenSpaceOutlinePass>()->AbandonQualificationProbe();
     }
     m_toonOutlineProbeSourceExecutionReceipt.reset();
     m_toonOutlineProbeSubmissionAccepted = false;
     m_toonOutlineProbePresented = false;
     m_toonOutlineProbeAbandoned = false;
-    if (m_reflectionFeature != nullptr)
+    if (FindCompositionFeature<ReflectionFeatureAdapter>() != nullptr)
     {
-        m_reflectionFeature->AbandonSSRQualificationProbe();
+        FindCompositionFeature<ReflectionFeatureAdapter>()->AbandonSSRQualificationProbe();
     }
     m_reflectionProbeSourceExecutionReceipt.reset();
     m_reflectionProbeSourceDiagnostics.reset();
@@ -1574,9 +1641,6 @@ void SceneRenderer::Shutdown()
     {
         m_gpuSceneUpdate->Clear();
     }
-    if (!m_initialized)
-        return;
-
     if (m_submissionBatch)
     {
         RVX_ASSERT_MSG(m_retirementQueue != nullptr,
@@ -1585,50 +1649,23 @@ void SceneRenderer::Shutdown()
         m_submissionBatch.reset();
     }
 
-    // The registry owns the adapter while the stack is SceneRenderer-owned.
-    // Explicitly sever the borrowed binding before either owner is released.
-    if (m_postProcessFeature != nullptr)
+    // The composition owns both the registry adapter and post-process stack,
+    // while the adapter still borrows the stack. Sever that internal binding
+    // before the composition tears both sides down.
+    if (FindCompositionFeature<PostProcessPipelineFeatureAdapter>() != nullptr)
     {
-        m_postProcessFeature->SetStack(nullptr);
+        FindCompositionFeature<PostProcessPipelineFeatureAdapter>()->SetStack(nullptr);
     }
-    if (m_ambientOcclusionFeature != nullptr)
+    if (FindCompositionFeature<AmbientOcclusionFeatureAdapter>() != nullptr)
     {
-        m_ambientOcclusionFeature->Shutdown();
+        FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->Shutdown();
     }
-    m_renderFeatureRegistry.reset();
-    m_legacyForwardFeature = nullptr;
-    m_ambientOcclusionFeature = nullptr;
-    m_forwardLightingFeature = nullptr;
-    m_reflectionFeature = nullptr;
-    m_forwardSpecialFeature = nullptr;
-    m_translucencyFeature = nullptr;
-    m_postProcessFeature = nullptr;
-    m_deferredGeometryFeature = nullptr;
-    m_deferredLightingFeature = nullptr;
-    m_deferredForwardSpecialFeature = nullptr;
     m_activeLocalShadowPass.reset();
-    m_deferredLightingPass.reset();
-    ClearPasses();
-    m_depthPrepass = nullptr;
-    m_opaquePass = nullptr;
-    m_shadowPass = nullptr;
-    m_rayTracedShadowPass = nullptr;
-    m_cameraVelocityPass = nullptr;
-    m_objectVelocityPass = nullptr;
-    m_rayTracedReflectionPass = nullptr;
-    m_rayTracedReflectionDenoisePass = nullptr;
-    m_rayTracedReflectionCompositePass = nullptr;
-    m_transparentPass = nullptr;
-    m_skyboxPass = nullptr;
-    m_bloomPostProcess = nullptr;
-    m_toneMappingPostProcess = nullptr;
-    m_colorGradingPostProcess = nullptr;
-    m_chromaticAberrationPostProcess = nullptr;
-    m_vignettePostProcess = nullptr;
-    m_filmGrainPostProcess = nullptr;
-    m_fxaaPostProcess = nullptr;
-    m_taaPostProcess = nullptr;
-    m_screenSpaceOutlinePostProcess = nullptr;
+    if (m_defaultRenderComposition != nullptr)
+    {
+        m_defaultRenderComposition->Shutdown();
+        m_defaultRenderComposition.reset();
+    }
     m_pendingRenderExecutionReceipt.reset();
     m_pendingReflectionDiagnostics.reset();
     m_lastAttemptedRenderExecutionReceipt = {};
@@ -1640,12 +1677,6 @@ void SceneRenderer::Shutdown()
     m_presentedTemporalPresentationState.reset();
     m_activeRenderDeformationResources.reset();
     m_featureCompositionFailureReason.clear();
-    if (m_postProcessStack)
-    {
-        m_postProcessStack->Shutdown();
-        m_postProcessStack.reset();
-    }
-
     if (m_materialSystem)
     {
         m_materialSystem->Shutdown();
@@ -1722,7 +1753,6 @@ void SceneRenderer::Shutdown()
     m_depthTexture.Reset();
     m_depthWidth = 0;
     m_depthHeight = 0;
-    m_passRegistry.reset();
     m_rayTracingSceneStats = {};
     m_rayTracingFrameBudgetStats = {};
     m_completedPresentedMaterialBindingsAvailable = false;
@@ -1739,16 +1769,19 @@ void SceneRenderer::Shutdown()
     m_renderContext = nullptr;
     m_initialized = false;
 
-    RVX_CORE_DEBUG("SceneRenderer shutdown");
+    if (Log::GetCoreLogger())
+    {
+        RVX_CORE_DEBUG("SceneRenderer shutdown");
+    }
 }
 
 void SceneRenderer::RequestTemporalHistoryReset()
 {
     m_pendingTemporalHistoryReset = true;
     m_presentedTemporalPresentationState.reset();
-    if (m_ambientOcclusionFeature != nullptr)
+    if (FindCompositionFeature<AmbientOcclusionFeatureAdapter>() != nullptr)
     {
-        m_ambientOcclusionFeature->ResetHistory();
+        FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->ResetHistory();
     }
     if (m_viewHistoryCoordinator)
     {
@@ -1807,35 +1840,35 @@ void SceneRenderer::EvaluateAcceptedFrameHistory(
 
 void SceneRenderer::AbandonAcceptedFrameHistory() noexcept
 {
-    if (m_ambientOcclusionFeature)
+    if (FindCompositionFeature<AmbientOcclusionFeatureAdapter>())
     {
         if (m_ambientOcclusionProbeSubmissionAccepted &&
             !m_ambientOcclusionProbePresented)
         {
-            m_ambientOcclusionFeature->AbandonQualificationProbe();
+            FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->AbandonQualificationProbe();
             m_ambientOcclusionProbeAbandoned = true;
         }
-        m_ambientOcclusionFeature->AbandonHistoryCandidate();
+        FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->AbandonHistoryCandidate();
     }
-    if (m_screenSpaceOutlinePostProcess != nullptr)
+    if (FindPostProcessEffect<ScreenSpaceOutlinePass>() != nullptr)
     {
         if (m_toonOutlineProbeSubmissionAccepted &&
             !m_toonOutlineProbePresented)
         {
-            m_screenSpaceOutlinePostProcess->AbandonQualificationProbe();
+            FindPostProcessEffect<ScreenSpaceOutlinePass>()->AbandonQualificationProbe();
             m_toonOutlineProbeAbandoned = true;
         }
     }
     const bool reflectionProbeBoundToAcceptedFrame =
-        m_reflectionFeature != nullptr &&
-        m_reflectionFeature->GetPendingSSRQualificationProbeIdentity()
+        FindCompositionFeature<ReflectionFeatureAdapter>() != nullptr &&
+        FindCompositionFeature<ReflectionFeatureAdapter>()->GetPendingSSRQualificationProbeIdentity()
             .has_value();
-    if (m_reflectionFeature != nullptr &&
+    if (FindCompositionFeature<ReflectionFeatureAdapter>() != nullptr &&
         !m_reflectionProbePresented &&
         (m_reflectionProbeSubmissionAccepted ||
          reflectionProbeBoundToAcceptedFrame))
     {
-        m_reflectionFeature->AbandonSSRQualificationProbe();
+        FindCompositionFeature<ReflectionFeatureAdapter>()->AbandonSSRQualificationProbe();
         m_reflectionProbeSourceExecutionReceipt.reset();
         m_reflectionProbeSourceDiagnostics.reset();
         m_hiZReflectionProbeBinding = {};
@@ -1843,14 +1876,14 @@ void SceneRenderer::AbandonAcceptedFrameHistory() noexcept
         m_reflectionProbePresented = false;
         m_reflectionProbeAbandoned = true;
     }
-    if (m_postProcessFeature)
+    if (FindCompositionFeature<PostProcessPipelineFeatureAdapter>())
     {
-        m_postProcessFeature->AbandonTemporalHistoryCandidate();
+        FindCompositionFeature<PostProcessPipelineFeatureAdapter>()->AbandonTemporalHistoryCandidate();
     }
-    if (m_rayTracedReflectionPass != nullptr &&
+    if (FindCompositionPass<RayTracedReflectionPass>() != nullptr &&
         m_activeViewHistoryCandidate.has_value())
     {
-        m_rayTracedReflectionPass->AbandonSubmittedHistory(
+        FindCompositionPass<RayTracedReflectionPass>()->AbandonSubmittedHistory(
             *m_activeViewHistoryCandidate);
     }
     if (m_activeViewHistoryCandidate.has_value() &&
@@ -2747,41 +2780,41 @@ void SceneRenderer::PrepareFrameApplyResources(
     // from the previously accepted frame as if it belonged to this attempt.
     ClearPreparedDrawState();
     m_renderResourceRegistry = &registry;
-    if (m_depthPrepass)
+    if (FindCompositionPass<DepthPrepass>())
     {
-        m_depthPrepass->SetResourceRegistry(&registry);
+        FindCompositionPass<DepthPrepass>()->SetResourceRegistry(&registry);
     }
-    if (m_shadowPass)
+    if (FindCompositionPass<ShadowPass>())
     {
-        m_shadowPass->SetResourceRegistry(&registry);
+        FindCompositionPass<ShadowPass>()->SetResourceRegistry(&registry);
     }
-    if (m_objectVelocityPass)
+    if (FindCompositionPass<ObjectVelocityPass>())
     {
-        m_objectVelocityPass->SetResourceRegistry(&registry);
+        FindCompositionPass<ObjectVelocityPass>()->SetResourceRegistry(&registry);
     }
-    if (m_opaquePass)
+    if (FindCompositionPass<OpaquePass>())
     {
-        m_opaquePass->SetResourceRegistry(&registry);
+        FindCompositionPass<OpaquePass>()->SetResourceRegistry(&registry);
     }
-    if (m_transparentPass)
+    if (FindCompositionPass<TransparentPass>())
     {
-        m_transparentPass->SetResourceRegistry(&registry);
+        FindCompositionPass<TransparentPass>()->SetResourceRegistry(&registry);
     }
-    if (m_particleFeaturePass)
+    if (FindCompositionPass<ParticleFeaturePass>())
     {
-        m_particleFeaturePass->SetResourceRegistry(&registry);
+        FindCompositionPass<ParticleFeaturePass>()->SetResourceRegistry(&registry);
     }
-    if (m_skyboxPass)
+    if (FindCompositionPass<SkyboxPass>())
     {
-        m_skyboxPass->SetResourceRegistry(&registry);
+        FindCompositionPass<SkyboxPass>()->SetResourceRegistry(&registry);
     }
-    if (m_rayTracedShadowPass)
+    if (FindCompositionPass<RayTracedShadowPass>())
     {
-        m_rayTracedShadowPass->SetResourceRegistry(&registry);
+        FindCompositionPass<RayTracedShadowPass>()->SetResourceRegistry(&registry);
     }
-    if (m_rayTracedReflectionPass)
+    if (FindCompositionPass<RayTracedReflectionPass>())
     {
-        m_rayTracedReflectionPass->SetResourceRegistry(&registry);
+        FindCompositionPass<RayTracedReflectionPass>()->SetResourceRegistry(&registry);
     }
 }
 
@@ -2985,9 +3018,9 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
     m_postProcessSettings.enableBloom =
         frameSettings.postProcess.enabled &&
         frameSettings.postProcess.enableBloom;
-    if (m_depthPrepass != nullptr)
+    if (FindCompositionPass<DepthPrepass>() != nullptr)
     {
-        m_depthPrepass->SetEnabled(
+        FindCompositionPass<DepthPrepass>()->SetEnabled(
             resolvedAmbientOcclusion.enabled &&
             frameSettings.pipelineRequest.recipe ==
                 RenderPipelineRecipe::ForwardStandard);
@@ -3052,13 +3085,13 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
     m_shadowPassConfig.cascadeBlendRatio =
         frameSettings.shadows.cascadeBlendRatio;
     ApplyShadowPassConfig(m_shadowPassConfig);
-    if (m_shadowPass)
+    if (FindCompositionPass<ShadowPass>())
     {
-        m_shadowPass->SetEnabled(frameSettings.shadows.enabled);
+        FindCompositionPass<ShadowPass>()->SetEnabled(frameSettings.shadows.enabled);
     }
-    if (m_rayTracedShadowPass)
+    if (FindCompositionPass<RayTracedShadowPass>())
     {
-        m_rayTracedShadowPass->SetEnabled(
+        FindCompositionPass<RayTracedShadowPass>()->SetEnabled(
             frameSettings.rayTracing.enabled &&
             frameSettings.rayTracing.enableShadows);
     }
@@ -3129,13 +3162,13 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
             ++m_featureExtractionStats.particleSortingSupportedCount;
         }
     }
-      if (m_particleFeaturePass)
+      if (FindCompositionPass<ParticleFeaturePass>())
       {
-          m_particleFeaturePass->SetSnapshot(&m_featureSnapshot->particles);
+          FindCompositionPass<ParticleFeaturePass>()->SetSnapshot(&m_featureSnapshot->particles);
       }
-      if (m_waterFeaturePass)
+      if (FindCompositionPass<WaterFeaturePass>())
       {
-          m_waterFeaturePass->SetSnapshot(&m_featureSnapshot->water);
+          FindCompositionPass<WaterFeaturePass>()->SetSnapshot(&m_featureSnapshot->water);
       }
 
     const RenderEnvironmentSnapshot& environment =
@@ -3223,10 +3256,10 @@ RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()
     m_currentCpuFrameTiming = {};
     result.frameSequence = m_renderScene.GetAcceptedHeader().sequence;
     result.referencedResources = m_renderScene.GetReferencedResources();
-    if (m_toneMappingPostProcess)
+    if (FindPostProcessEffect<ToneMappingPass>())
     {
         const RenderFrameHeaderV5& header = m_renderScene.GetAcceptedHeader();
-        m_toneMappingPostProcess->SetPixelProbeRequest(
+        FindPostProcessEffect<ToneMappingPass>()->SetPixelProbeRequest(
             m_renderScene.GetCaptureRequest(),
             header.sequence,
             header.requiredSceneRevision,
@@ -3244,7 +3277,7 @@ RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()
                 m_renderPolicyDiagnostics.executionReport.status),
             GetGPUDrivenFrameFailureStageName(
                 m_gpuDrivenFrameFailureStage));
-        if (m_renderFeatureRegistry != nullptr &&
+        if (GetRenderFeatureRegistry() != nullptr &&
             !m_pendingRenderExecutionReceipt.has_value())
         {
             const RenderExecutionReceipt& attempted =
@@ -3311,8 +3344,8 @@ bool SceneRenderer::CompleteToneMappingPixelProbe(
     RenderFramePixelProbeResult& outResult)
 {
     const bool completed =
-        m_toneMappingPostProcess != nullptr &&
-        m_toneMappingPostProcess->CompletePixelProbe(
+        FindPostProcessEffect<ToneMappingPass>() != nullptr &&
+        FindPostProcessEffect<ToneMappingPass>()->CompletePixelProbe(
             requestId, frameSequence, outResult);
     return completed;
 }
@@ -3338,10 +3371,10 @@ bool SceneRenderer::ArmDirectOpaqueRasterReadbackQualificationCapture()
 
 bool SceneRenderer::ArmExposureQualificationProbe()
 {
-    if (m_postProcessFeature == nullptr || m_exposureProbeCompletion ||
+    if (FindCompositionFeature<PostProcessPipelineFeatureAdapter>() == nullptr || m_exposureProbeCompletion ||
         m_exposureProbeHistoryIdentity.has_value() ||
         m_exposureProbeSourceExecutionReceipt.has_value() ||
-        !m_postProcessFeature->RequestExposureQualificationProbe())
+        !FindCompositionFeature<PostProcessPipelineFeatureAdapter>()->RequestExposureQualificationProbe())
     {
         return false;
     }
@@ -3351,11 +3384,11 @@ bool SceneRenderer::ArmExposureQualificationProbe()
 
 bool SceneRenderer::ArmAmbientOcclusionQualificationProbe()
 {
-    if (m_ambientOcclusionFeature == nullptr ||
+    if (FindCompositionFeature<AmbientOcclusionFeatureAdapter>() == nullptr ||
         m_ambientOcclusionProbeSubmissionAccepted ||
         m_ambientOcclusionProbeHistoryIdentity.has_value() ||
         m_ambientOcclusionProbeSourceExecutionReceipt.has_value() ||
-        !m_ambientOcclusionFeature->RequestQualificationProbe())
+        !FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->RequestQualificationProbe())
     {
         return false;
     }
@@ -3366,11 +3399,11 @@ bool SceneRenderer::ArmAmbientOcclusionQualificationProbe()
 
 bool SceneRenderer::ArmToonOutlineQualificationProbe()
 {
-    if (m_screenSpaceOutlinePostProcess == nullptr ||
+    if (FindPostProcessEffect<ScreenSpaceOutlinePass>() == nullptr ||
         m_toonOutlineProbeSubmissionAccepted ||
         m_toonOutlineProbeSourceExecutionReceipt.has_value() ||
-        m_screenSpaceOutlinePostProcess->HasPendingQualificationProbe() ||
-        !m_screenSpaceOutlinePostProcess->ArmQualificationProbe())
+        FindPostProcessEffect<ScreenSpaceOutlinePass>()->HasPendingQualificationProbe() ||
+        !FindPostProcessEffect<ScreenSpaceOutlinePass>()->ArmQualificationProbe())
     {
         return false;
     }
@@ -3398,12 +3431,12 @@ void SceneRenderer::ClearHiZReflectionQualificationCompletion() noexcept
 
 bool SceneRenderer::ArmHiZReflectionQualificationProbe()
 {
-    if (m_reflectionFeature == nullptr ||
+    if (FindCompositionFeature<ReflectionFeatureAdapter>() == nullptr ||
         m_reflectionProbeSubmissionAccepted ||
         m_reflectionProbeSourceExecutionReceipt.has_value() ||
         m_reflectionProbeSourceDiagnostics.has_value() ||
-        m_reflectionFeature->HasPendingSSRQualificationProbe() ||
-        !m_reflectionFeature->ArmSSRQualificationProbe())
+        FindCompositionFeature<ReflectionFeatureAdapter>()->HasPendingSSRQualificationProbe() ||
+        !FindCompositionFeature<ReflectionFeatureAdapter>()->ArmSSRQualificationProbe())
     {
         return false;
     }
@@ -3444,12 +3477,12 @@ void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
             tracker.Query(*m_exposureProbeCompletion);
         if ((status == GPUCompletionStatus::Completed ||
              status == GPUCompletionStatus::CompatibilityWaitIdle) &&
-            m_exposureProbePresented && m_postProcessFeature != nullptr)
+            m_exposureProbePresented && FindCompositionFeature<PostProcessPipelineFeatureAdapter>() != nullptr)
         {
             const RenderViewHistoryIdentity identity =
                 *m_exposureProbeHistoryIdentity;
             RenderPostProcessExecutionReceipt postProcess;
-            if (m_postProcessFeature->CompleteExposureQualificationProbe(
+            if (FindCompositionFeature<PostProcessPipelineFeatureAdapter>()->CompleteExposureQualificationProbe(
                     identity, postProcess))
             {
                 if (m_exposureProbeSourceExecutionReceipt.has_value() &&
@@ -3501,9 +3534,9 @@ void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
         }
         else if (status == GPUCompletionStatus::Lost)
         {
-            if (m_postProcessStack)
+            if (GetPostProcessStack())
             {
-                m_postProcessStack->GetExposureController()
+                GetPostProcessStack()->GetExposureController()
                     .CancelQualificationProbe();
             }
             m_exposureProbeCompletion.reset();
@@ -3514,7 +3547,7 @@ void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
     }
 
     if (m_ambientOcclusionProbeSubmissionAccepted &&
-        m_ambientOcclusionFeature != nullptr &&
+        FindCompositionFeature<AmbientOcclusionFeatureAdapter>() != nullptr &&
         (m_ambientOcclusionProbePresented ||
          m_ambientOcclusionProbeAbandoned))
     {
@@ -3523,7 +3556,7 @@ void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
                 ? *m_ambientOcclusionProbeSourceExecutionReceipt
                 : RenderExecutionReceipt{};
         const bool completed =
-            m_ambientOcclusionFeature->CompleteQualificationProbe(
+            FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->CompleteQualificationProbe(
                 tracker, qualified.ambientOcclusion);
         if (completed && m_ambientOcclusionProbePresented &&
             m_ambientOcclusionProbeHistoryIdentity.has_value() &&
@@ -3542,7 +3575,7 @@ void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
             m_ambientOcclusionProbePresented = false;
             m_ambientOcclusionProbeAbandoned = false;
         }
-        else if (!m_ambientOcclusionFeature->HasPendingQualificationProbe())
+        else if (!FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->HasPendingQualificationProbe())
         {
             m_lastAttemptedRenderExecutionReceipt =
                 m_ambientOcclusionProbeSourceExecutionReceipt.has_value()
@@ -3560,12 +3593,12 @@ void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
     }
 
     if (m_toonOutlineProbeSubmissionAccepted &&
-        m_screenSpaceOutlinePostProcess != nullptr &&
+        FindPostProcessEffect<ScreenSpaceOutlinePass>() != nullptr &&
         (m_toonOutlineProbePresented || m_toonOutlineProbeAbandoned))
     {
         ScreenSpaceOutlineQualificationProbeStats probeStats;
         const bool completed =
-            m_screenSpaceOutlinePostProcess->PollQualificationProbe(
+            FindPostProcessEffect<ScreenSpaceOutlinePass>()->PollQualificationProbe(
                 tracker, probeStats);
         RenderExecutionReceipt qualified =
             m_toonOutlineProbeSourceExecutionReceipt.has_value()
@@ -3631,7 +3664,7 @@ void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
             m_toonOutlineProbePresented = false;
             m_toonOutlineProbeAbandoned = false;
         }
-        else if (!m_screenSpaceOutlinePostProcess
+        else if (!FindPostProcessEffect<ScreenSpaceOutlinePass>()
                       ->HasPendingQualificationProbe())
         {
             const std::string failure = probeStats.failure.empty()
@@ -3652,11 +3685,11 @@ void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
     }
 
     if (m_reflectionProbeSubmissionAccepted &&
-        m_reflectionFeature != nullptr &&
+        FindCompositionFeature<ReflectionFeatureAdapter>() != nullptr &&
         (m_reflectionProbePresented || m_reflectionProbeAbandoned))
     {
         SSRQualificationProbeStats probeStats;
-        const bool completed = m_reflectionFeature->PollSSRQualificationProbe(
+        const bool completed = FindCompositionFeature<ReflectionFeatureAdapter>()->PollSSRQualificationProbe(
             tracker, probeStats);
         const bool sourceMatches = completed && probeStats.IsValid() &&
             m_reflectionProbePresented &&
@@ -3759,7 +3792,7 @@ void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
             m_reflectionProbePresented = false;
             m_reflectionProbeAbandoned = false;
         }
-        else if (!m_reflectionFeature->HasPendingSSRQualificationProbe())
+        else if (!FindCompositionFeature<ReflectionFeatureAdapter>()->HasPendingSSRQualificationProbe())
         {
             const std::string failure = probeStats.failure.empty()
                 ? "Hi-Z reflection qualification probe failed or lost its presented source"
@@ -3974,10 +4007,10 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
         RVX_RENDER_WARN(
             "SceneRenderer: Direct Opaque readback qualification completion evidence was rejected");
     }
-    if (m_postProcessStack != nullptr)
+    if (GetPostProcessStack() != nullptr)
     {
         const ExposureControllerStats& exposureStats =
-            m_postProcessStack->GetExposureController().GetLastStats();
+            GetPostProcessStack()->GetExposureController().GetLastStats();
         if (exposureStats.qualificationProbeRequested)
         {
             if (!exposureStats.qualificationProbeRecorded ||
@@ -3986,7 +4019,7 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
                     *m_activeViewHistoryCandidate ||
                 m_exposureProbeCompletion)
             {
-                m_postProcessStack->GetExposureController()
+                GetPostProcessStack()->GetExposureController()
                     .CancelQualificationProbe();
                 RVX_RENDER_WARN(
                     "SceneRenderer: exposure qualification probe did not bind exact submission evidence");
@@ -4001,12 +4034,12 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
             }
         }
     }
-    if (m_ambientOcclusionFeature != nullptr &&
-        m_ambientOcclusionFeature->RequiresHistoryCommit())
+    if (FindCompositionFeature<AmbientOcclusionFeatureAdapter>() != nullptr &&
+        FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->RequiresHistoryCommit())
     {
         const bool historySubmissionAccepted =
             m_activeViewHistoryCandidate.has_value() &&
-            m_ambientOcclusionFeature->NotifyHistorySubmission(
+            FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->NotifyHistorySubmission(
                 *m_activeViewHistoryCandidate);
         if (!historySubmissionAccepted)
         {
@@ -4014,18 +4047,18 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
                 "SceneRenderer: ambient-occlusion history did not bind the exact submitted view");
         }
     }
-    if (m_ambientOcclusionFeature != nullptr &&
-        m_ambientOcclusionFeature->HasPendingQualificationProbe())
+    if (FindCompositionFeature<AmbientOcclusionFeatureAdapter>() != nullptr &&
+        FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->HasPendingQualificationProbe())
     {
         const bool exactIdentityAvailable =
             m_activeViewHistoryCandidate.has_value();
         const bool accepted = exactIdentityAvailable &&
             !m_ambientOcclusionProbeSubmissionAccepted &&
-            m_ambientOcclusionFeature->NotifyQualificationProbeSubmission(
+            FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->NotifyQualificationProbeSubmission(
                 *m_activeViewHistoryCandidate, completion, *tracker);
         if (!accepted)
         {
-            m_ambientOcclusionFeature->AbandonQualificationProbe();
+            FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->AbandonQualificationProbe();
             RVX_RENDER_WARN(
                 "SceneRenderer: ambient-occlusion qualification probe did not bind exact submission evidence");
         }
@@ -4039,11 +4072,11 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
             m_ambientOcclusionProbeAbandoned = false;
         }
     }
-    if (m_screenSpaceOutlinePostProcess != nullptr &&
-        m_screenSpaceOutlinePostProcess->HasPendingQualificationProbe())
+    if (FindPostProcessEffect<ScreenSpaceOutlinePass>() != nullptr &&
+        FindPostProcessEffect<ScreenSpaceOutlinePass>()->HasPendingQualificationProbe())
     {
         const auto pendingIdentity =
-            m_screenSpaceOutlinePostProcess
+            FindPostProcessEffect<ScreenSpaceOutlinePass>()
                 ->GetPendingQualificationProbeIdentity();
         const bool exactIdentityAvailable =
             pendingIdentity.has_value() &&
@@ -4053,12 +4086,12 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
             pendingIdentity->frameIndex == m_viewData.frameNumber;
         const bool accepted = exactIdentityAvailable &&
             !m_toonOutlineProbeSubmissionAccepted &&
-            m_screenSpaceOutlinePostProcess
+            FindPostProcessEffect<ScreenSpaceOutlinePass>()
                 ->NotifyQualificationProbeSubmission(
                     *pendingIdentity, completion, *tracker);
         if (!accepted)
         {
-            m_screenSpaceOutlinePostProcess->AbandonQualificationProbe();
+            FindPostProcessEffect<ScreenSpaceOutlinePass>()->AbandonQualificationProbe();
             m_toonOutlineProbeSubmissionAccepted = false;
             m_toonOutlineProbePresented = false;
             m_toonOutlineProbeAbandoned = true;
@@ -4073,11 +4106,11 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
             m_toonOutlineProbeAbandoned = false;
         }
     }
-    if (m_reflectionFeature != nullptr &&
-        m_reflectionFeature->HasPendingSSRQualificationProbe())
+    if (FindCompositionFeature<ReflectionFeatureAdapter>() != nullptr &&
+        FindCompositionFeature<ReflectionFeatureAdapter>()->HasPendingSSRQualificationProbe())
     {
         const auto pendingIdentity =
-            m_reflectionFeature->GetPendingSSRQualificationProbeIdentity();
+            FindCompositionFeature<ReflectionFeatureAdapter>()->GetPendingSSRQualificationProbeIdentity();
         const bool exactIdentityAvailable = pendingIdentity.has_value() &&
             pendingIdentity->IsValid() &&
             m_hiZReflectionProbeBinding.generation != 0 &&
@@ -4097,11 +4130,11 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
                 pendingIdentity->depthPyramidIdentity;
         const bool accepted = exactIdentityAvailable &&
             !m_reflectionProbeSubmissionAccepted &&
-            m_reflectionFeature->NotifySSRQualificationProbeSubmission(
+            FindCompositionFeature<ReflectionFeatureAdapter>()->NotifySSRQualificationProbeSubmission(
                 *pendingIdentity, completion, *tracker);
         if (!accepted)
         {
-            m_reflectionFeature->AbandonSSRQualificationProbe();
+            FindCompositionFeature<ReflectionFeatureAdapter>()->AbandonSSRQualificationProbe();
             m_hiZReflectionProbeBinding = {};
             m_reflectionProbeSubmissionAccepted = false;
             m_reflectionProbePresented = false;
@@ -4146,14 +4179,14 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
     {
         ReclaimGPUSceneRetiredRows();
     }
-    if (m_rayTracedShadowPass)
+    if (FindCompositionPass<RayTracedShadowPass>())
     {
-        m_rayTracedShadowPass->NotifySubmission(
+        FindCompositionPass<RayTracedShadowPass>()->NotifySubmission(
             m_activeRenderPassIdentity, completion);
     }
     bool rayTracedReflectionHistorySubmissionAccepted =
         !m_hybridRayTracingFramePlan.has_value();
-    if (m_rayTracedReflectionPass)
+    if (FindCompositionPass<RayTracedReflectionPass>())
     {
         const bool hybridReflectionRecorded =
             m_hybridRayTracingFramePlan.has_value() &&
@@ -4163,7 +4196,7 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
         {
             rayTracedReflectionHistorySubmissionAccepted =
                 m_activeViewHistoryCandidate.has_value() &&
-                m_rayTracedReflectionPass->NotifySubmission(
+                FindCompositionPass<RayTracedReflectionPass>()->NotifySubmission(
                     m_activeRenderPassIdentity,
                     *m_activeViewHistoryCandidate,
                     completion);
@@ -4176,7 +4209,7 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
         }
         else
         {
-            m_rayTracedReflectionPass->NotifySubmission(
+            FindCompositionPass<RayTracedReflectionPass>()->NotifySubmission(
                 m_activeRenderPassIdentity, completion);
         }
     }
@@ -4327,41 +4360,41 @@ void SceneRenderer::ReleaseUnsubmittedFrame()
     // discarded before recording begins. None reached Present, so their
     // compatibility candidate must not advance committed temporal history.
     AbandonAcceptedFrameHistory();
-    if (m_ambientOcclusionFeature != nullptr &&
+    if (FindCompositionFeature<AmbientOcclusionFeatureAdapter>() != nullptr &&
         !m_ambientOcclusionProbeSubmissionAccepted)
     {
         // A one-shot request may be armed before frame consumption. Preserve
         // it across ApplyFrameV5, but explicitly cancel it once that frame is
         // known not to have reached a real submission boundary.
-        m_ambientOcclusionFeature->AbandonQualificationProbe();
+        FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->AbandonQualificationProbe();
         m_ambientOcclusionProbeHistoryIdentity.reset();
         m_ambientOcclusionProbeSourceExecutionReceipt.reset();
         m_ambientOcclusionProbePresented = false;
         m_ambientOcclusionProbeAbandoned = false;
     }
-    if (m_screenSpaceOutlinePostProcess != nullptr &&
+    if (FindPostProcessEffect<ScreenSpaceOutlinePass>() != nullptr &&
         !m_toonOutlineProbeSubmissionAccepted &&
-        m_screenSpaceOutlinePostProcess->HasPendingQualificationProbe())
+        FindPostProcessEffect<ScreenSpaceOutlinePass>()->HasPendingQualificationProbe())
     {
         // Match the AO lifecycle above: accepting a frame must preserve a
         // Render-owner-armed request until that frame can record it.  Once
         // the frame is known not to have reached submission, however, the
         // one-shot request must fail closed instead of leaking to a later
         // frame.
-        m_screenSpaceOutlinePostProcess->AbandonQualificationProbe();
+        FindPostProcessEffect<ScreenSpaceOutlinePass>()->AbandonQualificationProbe();
         m_toonOutlineProbeSourceExecutionReceipt.reset();
         m_toonOutlineProbePresented = false;
         m_toonOutlineProbeAbandoned = false;
     }
-    if (m_reflectionFeature != nullptr &&
+    if (FindCompositionFeature<ReflectionFeatureAdapter>() != nullptr &&
         !m_reflectionProbeSubmissionAccepted &&
-        m_reflectionFeature->HasPendingSSRQualificationProbe())
+        FindCompositionFeature<ReflectionFeatureAdapter>()->HasPendingSSRQualificationProbe())
     {
         // A render-owner request is armed before ApplyFrameV5 so it can bind
         // the exact admitted frame.  Accepting that frame must preserve the
         // still-unbound request, while a frame that never reaches submission
         // must cancel it rather than allowing it to attach to a later frame.
-        m_reflectionFeature->AbandonSSRQualificationProbe();
+        FindCompositionFeature<ReflectionFeatureAdapter>()->AbandonSSRQualificationProbe();
         m_reflectionProbeSourceExecutionReceipt.reset();
         m_reflectionProbeSourceDiagnostics.reset();
         m_hiZReflectionProbeBinding = {};
@@ -4371,9 +4404,9 @@ void SceneRenderer::ReleaseUnsubmittedFrame()
     const bool preservePresentedExposureProbe =
         m_exposureProbeCompletion && m_exposureProbePresented &&
         m_exposureProbeSourceExecutionReceipt.has_value();
-    if (!preservePresentedExposureProbe && m_postProcessStack)
+    if (!preservePresentedExposureProbe && GetPostProcessStack())
     {
-        m_postProcessStack->GetExposureController()
+        GetPostProcessStack()->GetExposureController()
             .CancelQualificationProbe();
     }
     if (!preservePresentedExposureProbe)
@@ -4389,15 +4422,15 @@ void SceneRenderer::ReleaseUnsubmittedFrame()
         // lifecycle evidence. Copy that post-process receipt before exposing
         // this failed attempt, otherwise diagnostics could falsely claim an
         // unpresented candidate was still pending.
-        if (m_postProcessFeature != nullptr)
+        if (FindCompositionFeature<PostProcessPipelineFeatureAdapter>() != nullptr)
         {
             m_pendingRenderExecutionReceipt->postProcess =
-                m_postProcessFeature->GetLastExecutionReceipt();
+                FindCompositionFeature<PostProcessPipelineFeatureAdapter>()->GetLastExecutionReceipt();
         }
-        if (m_ambientOcclusionFeature != nullptr)
+        if (FindCompositionFeature<AmbientOcclusionFeatureAdapter>() != nullptr)
         {
             RenderAmbientOcclusionExecutionReceipt ambientOcclusion =
-                m_ambientOcclusionFeature->GetLastExecutionReceipt();
+                FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->GetLastExecutionReceipt();
             ambientOcclusion.lightingConsumerExecuted =
                 m_pendingRenderExecutionReceipt->ambientOcclusion
                     .lightingConsumerExecuted;
@@ -4457,14 +4490,14 @@ void SceneRenderer::ReleaseUnsubmittedFrame()
     {
         m_gpuSceneUploader->ReleaseUnsubmittedFrame();
     }
-    if (m_rayTracedShadowPass)
+    if (FindCompositionPass<RayTracedShadowPass>())
     {
-        m_rayTracedShadowPass->ReleaseUnsubmittedFrame(
+        FindCompositionPass<RayTracedShadowPass>()->ReleaseUnsubmittedFrame(
             m_activeRenderPassIdentity);
     }
-    if (m_rayTracedReflectionPass)
+    if (FindCompositionPass<RayTracedReflectionPass>())
     {
-        m_rayTracedReflectionPass->ReleaseUnsubmittedFrame(
+        FindCompositionPass<RayTracedReflectionPass>()->ReleaseUnsubmittedFrame(
             m_activeRenderPassIdentity);
     }
     if (m_rayTracingSceneManager != nullptr &&
@@ -4682,14 +4715,14 @@ void SceneRenderer::RetireOwnerSnapshots(
         m_rayTracingSceneManager->RetireOwnerSnapshots(
             completion, *m_retirementQueue);
     }
-    if (m_rayTracedShadowPass)
+    if (FindCompositionPass<RayTracedShadowPass>())
     {
-        m_rayTracedShadowPass->RetireOwnerSnapshots(
+        FindCompositionPass<RayTracedShadowPass>()->RetireOwnerSnapshots(
             completion, *m_retirementQueue);
     }
-    if (m_rayTracedReflectionPass)
+    if (FindCompositionPass<RayTracedReflectionPass>())
     {
-        m_rayTracedReflectionPass->RetireOwnerSnapshots(
+        FindCompositionPass<RayTracedReflectionPass>()->RetireOwnerSnapshots(
             completion, *m_retirementQueue);
     }
 }
@@ -4737,11 +4770,11 @@ void SceneRenderer::MarkAcceptedFramePresented(
         presentedTemporalCandidate = m_pendingTemporalPresentationState;
 
     const bool postProcessRequiresHistoryCommit =
-        m_postProcessFeature != nullptr &&
-        m_postProcessFeature->RequiresTemporalHistoryCommit();
+        FindCompositionFeature<PostProcessPipelineFeatureAdapter>() != nullptr &&
+        FindCompositionFeature<PostProcessPipelineFeatureAdapter>()->RequiresTemporalHistoryCommit();
     const bool ambientOcclusionRequiresHistoryCommit =
-        m_ambientOcclusionFeature != nullptr &&
-        m_ambientOcclusionFeature->RequiresHistoryCommit();
+        FindCompositionFeature<AmbientOcclusionFeatureAdapter>() != nullptr &&
+        FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->RequiresHistoryCommit();
     const bool rayTracedReflectionHistoryRequired =
         m_hybridRayTracingFramePlan.has_value() &&
         m_hybridRayTracingFramePlan->GetReflectionRoute() ==
@@ -4760,22 +4793,22 @@ void SceneRenderer::MarkAcceptedFramePresented(
     // leave the coordinator committed while TAA rejected its history.
     const bool postProcessCanCommit =
         !postProcessRequiresHistoryCommit ||
-        (coordinatorCanCommit && m_postProcessFeature != nullptr &&
+        (coordinatorCanCommit && FindCompositionFeature<PostProcessPipelineFeatureAdapter>() != nullptr &&
          m_activeViewHistoryCandidate.has_value() &&
-         m_postProcessFeature->CanCommitTemporalHistoryAfterPresent(
+         FindCompositionFeature<PostProcessPipelineFeatureAdapter>()->CanCommitTemporalHistoryAfterPresent(
              *m_activeViewHistoryCandidate));
     const bool ambientOcclusionCanCommit =
         !ambientOcclusionRequiresHistoryCommit ||
-        (coordinatorCanCommit && m_ambientOcclusionFeature != nullptr &&
+        (coordinatorCanCommit && FindCompositionFeature<AmbientOcclusionFeatureAdapter>() != nullptr &&
          m_activeViewHistoryCandidate.has_value() &&
-         m_ambientOcclusionFeature->CanCommitHistoryAfterPresent(
+         FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->CanCommitHistoryAfterPresent(
              *m_activeViewHistoryCandidate));
     const bool rayTracedReflectionCanCommit =
         !rayTracedReflectionHistoryRequired ||
-        (coordinatorCanCommit && m_rayTracedReflectionPass != nullptr &&
-         m_rayTracedReflectionPass->RequiresHistoryCommit() &&
+        (coordinatorCanCommit && FindCompositionPass<RayTracedReflectionPass>() != nullptr &&
+         FindCompositionPass<RayTracedReflectionPass>()->RequiresHistoryCommit() &&
          m_activeViewHistoryCandidate.has_value() &&
-         m_rayTracedReflectionPass->CanCommitHistoryAfterPresent(
+         FindCompositionPass<RayTracedReflectionPass>()->CanCommitHistoryAfterPresent(
              *m_activeViewHistoryCandidate));
 
     bool historyCommitted = false;
@@ -4794,14 +4827,14 @@ void SceneRenderer::MarkAcceptedFramePresented(
         if (historyCommitted && postProcessRequiresHistoryCommit)
         {
             postProcessHistoryCommitted =
-                m_postProcessFeature->CommitTemporalHistoryAfterPresent(
+                FindCompositionFeature<PostProcessPipelineFeatureAdapter>()->CommitTemporalHistoryAfterPresent(
                     *m_activeViewHistoryCandidate);
         }
         if (historyCommitted && postProcessHistoryCommitted &&
             ambientOcclusionRequiresHistoryCommit)
         {
             ambientOcclusionHistoryCommitted =
-                m_ambientOcclusionFeature->CommitHistoryAfterPresent(
+                FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->CommitHistoryAfterPresent(
                     *m_activeViewHistoryCandidate);
         }
         if (historyCommitted && postProcessHistoryCommitted &&
@@ -4809,7 +4842,7 @@ void SceneRenderer::MarkAcceptedFramePresented(
             rayTracedReflectionHistoryRequired)
         {
             rayTracedReflectionHistoryCommitted =
-                m_rayTracedReflectionPass->CommitHistoryAfterPresent(
+                FindCompositionPass<RayTracedReflectionPass>()->CommitHistoryAfterPresent(
                     *m_activeViewHistoryCandidate);
         }
     }
@@ -4819,20 +4852,20 @@ void SceneRenderer::MarkAcceptedFramePresented(
     {
         m_viewHistoryCoordinator->Abandon(*m_activeViewHistoryCandidate);
     }
-    if (!postProcessHistoryCommitted && m_postProcessFeature != nullptr)
+    if (!postProcessHistoryCommitted && FindCompositionFeature<PostProcessPipelineFeatureAdapter>() != nullptr)
     {
-        m_postProcessFeature->AbandonTemporalHistoryCandidate();
+        FindCompositionFeature<PostProcessPipelineFeatureAdapter>()->AbandonTemporalHistoryCandidate();
     }
     if (!ambientOcclusionHistoryCommitted &&
-        m_ambientOcclusionFeature != nullptr)
+        FindCompositionFeature<AmbientOcclusionFeatureAdapter>() != nullptr)
     {
-        m_ambientOcclusionFeature->AbandonHistoryCandidate();
+        FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->AbandonHistoryCandidate();
     }
     if (!rayTracedReflectionHistoryCommitted &&
-        m_rayTracedReflectionPass != nullptr &&
+        FindCompositionPass<RayTracedReflectionPass>() != nullptr &&
         m_activeViewHistoryCandidate.has_value())
     {
-        m_rayTracedReflectionPass->AbandonSubmittedHistory(
+        FindCompositionPass<RayTracedReflectionPass>()->AbandonSubmittedHistory(
             *m_activeViewHistoryCandidate);
     }
     if (!historyCommitted || !postProcessHistoryCommitted ||
@@ -4860,16 +4893,16 @@ void SceneRenderer::MarkAcceptedFramePresented(
             m_viewHistoryCoordinator->HasPendingReset();
     }
     if (m_pendingRenderExecutionReceipt.has_value() &&
-        m_postProcessFeature != nullptr)
+        FindCompositionFeature<PostProcessPipelineFeatureAdapter>() != nullptr)
     {
         m_pendingRenderExecutionReceipt->postProcess =
-            m_postProcessFeature->GetLastExecutionReceipt();
+            FindCompositionFeature<PostProcessPipelineFeatureAdapter>()->GetLastExecutionReceipt();
     }
     if (m_pendingRenderExecutionReceipt.has_value() &&
-        m_ambientOcclusionFeature != nullptr)
+        FindCompositionFeature<AmbientOcclusionFeatureAdapter>() != nullptr)
     {
         RenderAmbientOcclusionExecutionReceipt ambientOcclusion =
-            m_ambientOcclusionFeature->GetLastExecutionReceipt();
+            FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->GetLastExecutionReceipt();
         ambientOcclusion.lightingConsumerExecuted =
             m_pendingRenderExecutionReceipt->ambientOcclusion
                 .lightingConsumerExecuted;
@@ -4937,7 +4970,7 @@ void SceneRenderer::MarkAcceptedFramePresented(
         m_pendingReflectionDiagnostics->reflectionPlanIdentity != 0 &&
         m_pendingReflectionDiagnostics->lightingPlanIdentity != 0;
     if (m_ambientOcclusionProbeSubmissionAccepted &&
-        m_ambientOcclusionFeature != nullptr)
+        FindCompositionFeature<AmbientOcclusionFeatureAdapter>() != nullptr)
     {
         const bool probeMatchesPresentation =
             presentationQualified && presentedTemporalCandidate.has_value() &&
@@ -4951,7 +4984,7 @@ void SceneRenderer::MarkAcceptedFramePresented(
         }
         else
         {
-            m_ambientOcclusionFeature->AbandonQualificationProbe();
+            FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->AbandonQualificationProbe();
             m_ambientOcclusionProbePresented = false;
             m_ambientOcclusionProbeAbandoned = true;
         }
@@ -4971,9 +5004,9 @@ void SceneRenderer::MarkAcceptedFramePresented(
         }
         else
         {
-            if (m_postProcessStack)
+            if (GetPostProcessStack())
             {
-                m_postProcessStack->GetExposureController()
+                GetPostProcessStack()->GetExposureController()
                     .CancelQualificationProbe();
             }
             m_exposureProbeCompletion.reset();
@@ -4983,10 +5016,10 @@ void SceneRenderer::MarkAcceptedFramePresented(
         }
     }
     if (m_toonOutlineProbeSubmissionAccepted &&
-        m_screenSpaceOutlinePostProcess != nullptr)
+        FindPostProcessEffect<ScreenSpaceOutlinePass>() != nullptr)
     {
         const auto pendingIdentity =
-            m_screenSpaceOutlinePostProcess
+            FindPostProcessEffect<ScreenSpaceOutlinePass>()
                 ->GetPendingQualificationProbeIdentity();
         const bool probeMatchesPresentation =
             presentationQualified &&
@@ -4996,7 +5029,7 @@ void SceneRenderer::MarkAcceptedFramePresented(
                 presentedTemporalCandidate->historyIdentity &&
             pendingIdentity->frameIndex == presentedFrameSequence;
         if (probeMatchesPresentation &&
-            m_screenSpaceOutlinePostProcess
+            FindPostProcessEffect<ScreenSpaceOutlinePass>()
                 ->MarkQualificationProbePresented(*pendingIdentity))
         {
             m_toonOutlineProbePresented = true;
@@ -5004,16 +5037,16 @@ void SceneRenderer::MarkAcceptedFramePresented(
         }
         else
         {
-            m_screenSpaceOutlinePostProcess->AbandonQualificationProbe();
+            FindPostProcessEffect<ScreenSpaceOutlinePass>()->AbandonQualificationProbe();
             m_toonOutlineProbePresented = false;
             m_toonOutlineProbeAbandoned = true;
         }
     }
     if (m_reflectionProbeSubmissionAccepted &&
-        m_reflectionFeature != nullptr)
+        FindCompositionFeature<ReflectionFeatureAdapter>() != nullptr)
     {
         const auto pendingIdentity =
-            m_reflectionFeature->GetPendingSSRQualificationProbeIdentity();
+            FindCompositionFeature<ReflectionFeatureAdapter>()->GetPendingSSRQualificationProbeIdentity();
         const bool probeMatchesPresentation = presentationQualified &&
             pendingIdentity.has_value() && pendingIdentity->IsValid() &&
             m_hiZReflectionProbeBinding.IsBound() &&
@@ -5047,7 +5080,7 @@ void SceneRenderer::MarkAcceptedFramePresented(
             m_reflectionProbeSourceDiagnostics->depthPyramidIdentity ==
                 pendingIdentity->depthPyramidIdentity;
         if (probeMatchesPresentation &&
-            m_reflectionFeature->MarkSSRQualificationProbePresented(
+            FindCompositionFeature<ReflectionFeatureAdapter>()->MarkSSRQualificationProbePresented(
                 *pendingIdentity))
         {
             m_reflectionProbePresented = true;
@@ -5055,7 +5088,7 @@ void SceneRenderer::MarkAcceptedFramePresented(
         }
         else
         {
-            m_reflectionFeature->AbandonSSRQualificationProbe();
+            FindCompositionFeature<ReflectionFeatureAdapter>()->AbandonSSRQualificationProbe();
             m_reflectionProbePresented = false;
             m_reflectionProbeAbandoned = true;
         }
@@ -5102,9 +5135,9 @@ void SceneRenderer::MarkAcceptedFramePresented(
                     m_completedReflectionDiagnostics;
             }
             else if (m_reflectionProbeSubmissionAccepted &&
-                     m_reflectionFeature != nullptr)
+                     FindCompositionFeature<ReflectionFeatureAdapter>() != nullptr)
             {
-                m_reflectionFeature->AbandonSSRQualificationProbe();
+                FindCompositionFeature<ReflectionFeatureAdapter>()->AbandonSSRQualificationProbe();
                 m_reflectionProbePresented = false;
                 m_reflectionProbeAbandoned = true;
             }
@@ -5129,10 +5162,10 @@ void SceneRenderer::MarkAcceptedFramePresented(
             }
             if (m_toonOutlineProbeSubmissionAccepted &&
                 m_toonOutlineProbePresented &&
-                m_screenSpaceOutlinePostProcess != nullptr)
+                FindPostProcessEffect<ScreenSpaceOutlinePass>() != nullptr)
             {
                 const auto pendingIdentity =
-                    m_screenSpaceOutlinePostProcess
+                    FindPostProcessEffect<ScreenSpaceOutlinePass>()
                         ->GetPendingQualificationProbeIdentity();
                 if (pendingIdentity.has_value() &&
                     presentedTemporalCandidate.has_value() &&
@@ -5146,7 +5179,7 @@ void SceneRenderer::MarkAcceptedFramePresented(
                 }
                 else
                 {
-                    m_screenSpaceOutlinePostProcess
+                    FindPostProcessEffect<ScreenSpaceOutlinePass>()
                         ->AbandonQualificationProbe();
                     m_toonOutlineProbePresented = false;
                     m_toonOutlineProbeAbandoned = true;
@@ -5178,24 +5211,24 @@ void SceneRenderer::MarkAcceptedFramePresented(
             presented.diagnostic =
                 "Presented render execution receipt failed structural validation";
             if (m_ambientOcclusionProbeSubmissionAccepted &&
-                m_ambientOcclusionFeature != nullptr)
+                FindCompositionFeature<AmbientOcclusionFeatureAdapter>() != nullptr)
             {
-                m_ambientOcclusionFeature->AbandonQualificationProbe();
+                FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->AbandonQualificationProbe();
                 m_ambientOcclusionProbePresented = false;
                 m_ambientOcclusionProbeAbandoned = true;
             }
             if (m_toonOutlineProbeSubmissionAccepted &&
-                m_screenSpaceOutlinePostProcess != nullptr)
+                FindPostProcessEffect<ScreenSpaceOutlinePass>() != nullptr)
             {
-                m_screenSpaceOutlinePostProcess
+                FindPostProcessEffect<ScreenSpaceOutlinePass>()
                     ->AbandonQualificationProbe();
                 m_toonOutlineProbePresented = false;
                 m_toonOutlineProbeAbandoned = true;
             }
             if (m_reflectionProbeSubmissionAccepted &&
-                m_reflectionFeature != nullptr)
+                FindCompositionFeature<ReflectionFeatureAdapter>() != nullptr)
             {
-                m_reflectionFeature->AbandonSSRQualificationProbe();
+                FindCompositionFeature<ReflectionFeatureAdapter>()->AbandonSSRQualificationProbe();
                 m_reflectionProbePresented = false;
                 m_reflectionProbeAbandoned = true;
             }
@@ -5224,9 +5257,9 @@ void SceneRenderer::MarkAcceptedFramePresented(
                 ? "Presented frame failed temporal history qualification"
                 : "Presented frame failed TAA temporal history qualification";
         if (m_reflectionProbeSubmissionAccepted &&
-            m_reflectionFeature != nullptr)
+            FindCompositionFeature<ReflectionFeatureAdapter>() != nullptr)
         {
-            m_reflectionFeature->AbandonSSRQualificationProbe();
+            FindCompositionFeature<ReflectionFeatureAdapter>()->AbandonSSRQualificationProbe();
             m_reflectionProbePresented = false;
             m_reflectionProbeAbandoned = true;
         }
@@ -5856,7 +5889,7 @@ void SceneRenderer::CompileRenderFramePlan()
         const bool deferredRecipeRequested = UsesDeferredOpaquePath(
             m_renderScene.GetSettings().pipelineRequest.recipe);
         PostProcessStackExecuteStats stackStats;
-        if (m_postProcessStack)
+        if (GetPostProcessStack())
         {
             // Derive the presentation transfer from the immutable surface
             // before evaluating the chain. An sRGB target expects linear
@@ -5868,23 +5901,23 @@ void SceneRenderer::CompileRenderFramePlan()
             {
                 effectiveSettings.enableToneMapping = true;
             }
-            m_postProcessStack->ApplySettings(effectiveSettings);
-            stackStats = m_postProcessStack->EvaluateEffects(backBufferFormat);
+            GetPostProcessStack()->ApplySettings(effectiveSettings);
+            stackStats = GetPostProcessStack()->EvaluateEffects(backBufferFormat);
         }
         const bool postProcessActive =
             stackStats.planValid &&
             stackStats.enabledEffectCount > 0 &&
             stackStats.toneMappingBoundaryValid;
         const bool transparentSnapshotMayExecute =
-            !m_transparentDrawItems.empty() && m_transparentPass != nullptr &&
-            m_transparentPass->GetStatus().requestedEnabled &&
-            m_transparentPass->GetStatus().supported &&
-            m_transparentPass->GetStatus().enabled;
+            !m_transparentDrawItems.empty() && FindCompositionPass<TransparentPass>() != nullptr &&
+            FindCompositionPass<TransparentPass>()->GetStatus().requestedEnabled &&
+            FindCompositionPass<TransparentPass>()->GetStatus().supported &&
+            FindCompositionPass<TransparentPass>()->GetStatus().enabled;
         const bool particleSnapshotMayExecute =
-            m_particleFeaturePass != nullptr &&
-            m_particleFeaturePass->GetStatus().requestedEnabled &&
-            m_particleFeaturePass->GetStatus().supported &&
-            m_particleFeaturePass->GetStatus().enabled;
+            FindCompositionPass<ParticleFeaturePass>() != nullptr &&
+            FindCompositionPass<ParticleFeaturePass>()->GetStatus().requestedEnabled &&
+            FindCompositionPass<ParticleFeaturePass>()->GetStatus().supported &&
+            FindCompositionPass<ParticleFeaturePass>()->GetStatus().enabled;
         const SceneColorFormatPolicy formatPolicy =
             ResolveSceneColorFormatPolicy(backBufferFormat,
                                           postProcessActive ||
@@ -5906,22 +5939,22 @@ void SceneRenderer::CompileRenderFramePlan()
     }
     input.passes = {
         MakeRenderPassPolicyFacts(RenderPassKind::Depth,
-                                  m_depthPrepass,
+                                  FindCompositionPass<DepthPrepass>(),
                                   m_meshPassPreparation.depth,
                                   depthGPUExecution,
                                   depthGPUPipelineReady),
         MakeRenderPassPolicyFacts(RenderPassKind::Opaque,
-                                  m_opaquePass,
+                                  FindCompositionPass<OpaquePass>(),
                                   m_meshPassPreparation.opaque,
                                   opaqueGPUExecution,
                                   opaqueGPUPipelineReady),
         MakeRenderPassPolicyFacts(RenderPassKind::Shadow,
-                                  m_shadowPass,
+                                  FindCompositionPass<ShadowPass>(),
                                   m_meshPassPreparation.shadow,
                                   GPUCullingExecutionDecision{},
                                   false),
         MakeRenderPassPolicyFacts(RenderPassKind::Transparent,
-                                  m_transparentPass,
+                                  FindCompositionPass<TransparentPass>(),
                                   m_meshPassPreparation.transparent,
                                   GPUCullingExecutionDecision{},
                                   false),
@@ -7030,7 +7063,7 @@ const CameraVelocityPassStats& SceneRenderer::GetCameraVelocityStats() const
     {
         return m_activeRenderPassResults->cameraVelocityStats;
     }
-    return m_cameraVelocityPass ? m_cameraVelocityPass->GetStats()
+    return FindCompositionPass<CameraVelocityPass>() ? FindCompositionPass<CameraVelocityPass>()->GetStats()
                                 : emptyStats;
 }
 
@@ -7042,19 +7075,19 @@ const ObjectVelocityPassStats& SceneRenderer::GetObjectVelocityStats() const
     {
         return m_activeRenderPassResults->objectVelocityStats;
     }
-    return m_objectVelocityPass ? m_objectVelocityPass->GetStats() : emptyStats;
+    return FindCompositionPass<ObjectVelocityPass>() ? FindCompositionPass<ObjectVelocityPass>()->GetStats() : emptyStats;
 }
 
   const ParticleFeaturePassStats& SceneRenderer::GetParticleFeaturePassStats() const
 {
     static const ParticleFeaturePassStats emptyStats;
-    return m_particleFeaturePass ? m_particleFeaturePass->GetStats() : emptyStats;
+    return FindCompositionPass<ParticleFeaturePass>() ? FindCompositionPass<ParticleFeaturePass>()->GetStats() : emptyStats;
   }
 
   const WaterFeaturePassStats& SceneRenderer::GetWaterFeaturePassStats() const
   {
       static const WaterFeaturePassStats emptyStats;
-      return m_waterFeaturePass ? m_waterFeaturePass->GetStats() : emptyStats;
+      return FindCompositionPass<WaterFeaturePass>() ? FindCompositionPass<WaterFeaturePass>()->GetStats() : emptyStats;
   }
 
 RHIAccelerationStructure* SceneRenderer::GetRayTracingTopLevelAS() const
@@ -7069,25 +7102,25 @@ const RayTracedShadowPassStats& SceneRenderer::GetRayTracedShadowStats() const
     // the completion-published sample rather than a current graph-owned
     // snapshot, which may be unsubmitted, rejected, or awaiting timestamp
     // readback.
-    return m_rayTracedShadowPass ? m_rayTracedShadowPass->GetStats() : emptyStats;
+    return FindCompositionPass<RayTracedShadowPass>() ? FindCompositionPass<RayTracedShadowPass>()->GetStats() : emptyStats;
 }
 
 const RayTracedReflectionPassStats& SceneRenderer::GetRayTracedReflectionStats() const
 {
     static const RayTracedReflectionPassStats emptyStats;
-    return m_rayTracedReflectionPass ? m_rayTracedReflectionPass->GetStats() : emptyStats;
+    return FindCompositionPass<RayTracedReflectionPass>() ? FindCompositionPass<RayTracedReflectionPass>()->GetStats() : emptyStats;
 }
 
 const RayTracedReflectionDenoisePassStats& SceneRenderer::GetRayTracedReflectionDenoiseStats() const
 {
     static const RayTracedReflectionDenoisePassStats emptyStats;
-    return m_rayTracedReflectionDenoisePass ? m_rayTracedReflectionDenoisePass->GetStats() : emptyStats;
+    return FindCompositionPass<RayTracedReflectionDenoisePass>() ? FindCompositionPass<RayTracedReflectionDenoisePass>()->GetStats() : emptyStats;
 }
 
 const RayTracedReflectionCompositePassStats& SceneRenderer::GetRayTracedReflectionCompositeStats() const
 {
     static const RayTracedReflectionCompositePassStats emptyStats;
-    return m_rayTracedReflectionCompositePass ? m_rayTracedReflectionCompositePass->GetStats() : emptyStats;
+    return FindCompositionPass<RayTracedReflectionCompositePass>() ? FindCompositionPass<RayTracedReflectionCompositePass>()->GetStats() : emptyStats;
 }
 
 SceneRayTracingFrameStats SceneRenderer::GetRayTracingFrameStats() const
@@ -7255,9 +7288,9 @@ SceneRayTracingFrameStats SceneRenderer::GetRayTracingFrameStats() const
 void SceneRenderer::ApplyPostProcessSettings(const PostProcessSettings& settings)
 {
     m_postProcessSettings = settings;
-    if (m_postProcessStack)
+    if (GetPostProcessStack())
     {
-        m_postProcessStack->ApplySettings(m_postProcessSettings);
+        GetPostProcessStack()->ApplySettings(m_postProcessSettings);
     }
 }
 
@@ -7339,13 +7372,13 @@ void SceneRenderer::ApplyRayTracingBudgetSettings(const SceneRayTracingBudgetSet
 void SceneRenderer::ApplyShadowPassConfig(const ShadowPassConfig& config)
 {
     m_shadowPassConfig = config;
-    if (m_shadowPass)
+    if (FindCompositionPass<ShadowPass>())
     {
-        m_shadowPass->SetConfig(m_shadowPassConfig);
+        FindCompositionPass<ShadowPass>()->SetConfig(m_shadowPassConfig);
     }
-    if (m_rayTracedShadowPass)
+    if (FindCompositionPass<RayTracedShadowPass>())
     {
-        m_rayTracedShadowPass->SetConfig(m_shadowPassConfig);
+        FindCompositionPass<RayTracedShadowPass>()->SetConfig(m_shadowPassConfig);
     }
 }
 
@@ -7388,7 +7421,7 @@ bool SceneRenderer::HasSubmissionFailure() const noexcept
     // feature. CollectExecutionReceipt() validates the exact graph recording,
     // its semantic consumers, and every required feature receipt. If that
     // validation rejected the current frame, do not submit or present it.
-    if (m_renderFeatureRegistry != nullptr &&
+    if (GetRenderFeatureRegistry() != nullptr &&
         (!m_pendingRenderExecutionReceipt.has_value() ||
          !m_pendingRenderExecutionReceipt->executionSucceeded ||
          !m_pendingRenderExecutionReceipt->IsStructurallyValid()))
@@ -7455,24 +7488,24 @@ void SceneRenderer::Render()
     const auto policyStart = std::chrono::steady_clock::now();
 
     const bool rayTracedReflectionsRequested =
-        m_postProcessSettings.enableRayTracedReflections && m_rayTracedReflectionPass != nullptr;
+        m_postProcessSettings.enableRayTracedReflections && FindCompositionPass<RayTracedReflectionPass>() != nullptr;
     const bool rayTracedReflectionDenoiseRequested =
         rayTracedReflectionsRequested && m_postProcessSettings.enableRayTracedReflectionDenoise;
     const bool rayTracedShadowsRequested =
-        m_rayTracedShadowPass && m_rayTracedShadowPass->IsRequestedEnabled();
+        FindCompositionPass<RayTracedShadowPass>() && FindCompositionPass<RayTracedShadowPass>()->IsRequestedEnabled();
     // Motion vectors are a resolved feature dependency. TAA and temporally
     // filtered GTAO request the same canonical Camera + Object field even
     // when a caller did not explicitly ask to expose velocity diagnostics.
     const bool cameraVelocityRequested =
         m_postProcessSettings.enableVelocityOutput;
-    if (m_cameraVelocityPass)
+    if (FindCompositionPass<CameraVelocityPass>())
     {
-        m_cameraVelocityPass->SetEnabled(cameraVelocityRequested);
+        FindCompositionPass<CameraVelocityPass>()->SetEnabled(cameraVelocityRequested);
     }
-    if (m_objectVelocityPass)
+    if (FindCompositionPass<ObjectVelocityPass>())
     {
-        const bool objectVelocityRequested = m_cameraVelocityPass && m_cameraVelocityPass->IsEnabled();
-        m_objectVelocityPass->SetEnabled(objectVelocityRequested);
+        const bool objectVelocityRequested = FindCompositionPass<CameraVelocityPass>() && FindCompositionPass<CameraVelocityPass>()->IsEnabled();
+        FindCompositionPass<ObjectVelocityPass>()->SetEnabled(objectVelocityRequested);
     }
 
     ShadowPassConfig effectiveShadowConfig = m_shadowPassConfig;
@@ -7540,42 +7573,42 @@ void SceneRenderer::Render()
                           rayTracedShadowsRequested,
                           rayTracedReflectionsRequested,
                           rayTracedReflectionDenoiseRequested);
-    if (m_rayTracedShadowPass)
+    if (FindCompositionPass<RayTracedShadowPass>())
     {
-        m_rayTracedShadowPass->SetConfig(effectiveShadowConfig);
+        FindCompositionPass<RayTracedShadowPass>()->SetConfig(effectiveShadowConfig);
     }
 
-    if (m_rayTracedReflectionPass && rayTracedReflectionsRequested)
+    if (FindCompositionPass<RayTracedReflectionPass>() && rayTracedReflectionsRequested)
     {
-        m_rayTracedReflectionPass->SetRayTracingScene(m_rayTracingSceneManager.get());
-        m_rayTracedReflectionPass->SetConfig(reflectionConfig);
-        m_rayTracedReflectionPass->SetEnabled(true);
-        if (m_rayTracedReflectionDenoisePass)
+        FindCompositionPass<RayTracedReflectionPass>()->SetRayTracingScene(m_rayTracingSceneManager.get());
+        FindCompositionPass<RayTracedReflectionPass>()->SetConfig(reflectionConfig);
+        FindCompositionPass<RayTracedReflectionPass>()->SetEnabled(true);
+        if (FindCompositionPass<RayTracedReflectionDenoisePass>())
         {
-            m_rayTracedReflectionDenoisePass->SetReflectionSource(m_rayTracedReflectionPass);
-            m_rayTracedReflectionDenoisePass->SetConfig(denoiseConfig);
-            m_rayTracedReflectionDenoisePass->SetEnabled(rayTracedReflectionDenoiseRequested);
+            FindCompositionPass<RayTracedReflectionDenoisePass>()->SetReflectionSource(FindCompositionPass<RayTracedReflectionPass>());
+            FindCompositionPass<RayTracedReflectionDenoisePass>()->SetConfig(denoiseConfig);
+            FindCompositionPass<RayTracedReflectionDenoisePass>()->SetEnabled(rayTracedReflectionDenoiseRequested);
         }
-        if (m_rayTracedReflectionCompositePass)
+        if (FindCompositionPass<RayTracedReflectionCompositePass>())
         {
-            m_rayTracedReflectionCompositePass->SetReflectionSource(m_rayTracedReflectionPass);
-            m_rayTracedReflectionCompositePass->SetDenoisedReflectionSource(m_rayTracedReflectionDenoisePass);
-            m_rayTracedReflectionCompositePass->SetEnabled(true);
+            FindCompositionPass<RayTracedReflectionCompositePass>()->SetReflectionSource(FindCompositionPass<RayTracedReflectionPass>());
+            FindCompositionPass<RayTracedReflectionCompositePass>()->SetDenoisedReflectionSource(FindCompositionPass<RayTracedReflectionDenoisePass>());
+            FindCompositionPass<RayTracedReflectionCompositePass>()->SetEnabled(true);
         }
     }
     else
     {
-        if (m_rayTracedReflectionPass)
+        if (FindCompositionPass<RayTracedReflectionPass>())
         {
-            m_rayTracedReflectionPass->SetEnabled(false);
+            FindCompositionPass<RayTracedReflectionPass>()->SetEnabled(false);
         }
-        if (m_rayTracedReflectionDenoisePass)
+        if (FindCompositionPass<RayTracedReflectionDenoisePass>())
         {
-            m_rayTracedReflectionDenoisePass->SetEnabled(false);
+            FindCompositionPass<RayTracedReflectionDenoisePass>()->SetEnabled(false);
         }
-        if (m_rayTracedReflectionCompositePass)
+        if (FindCompositionPass<RayTracedReflectionCompositePass>())
         {
-            m_rayTracedReflectionCompositePass->SetEnabled(false);
+            FindCompositionPass<RayTracedReflectionCompositePass>()->SetEnabled(false);
         }
     }
 
@@ -7747,39 +7780,39 @@ void SceneRenderer::Render()
                         ? RenderPolicyReason::PlannedFallback
                         : RenderPolicyReason::None;
                 PopulateSubmissionMeasurement(m_renderPolicyDiagnostics);
-                if (m_shadowPass)
+                if (FindCompositionPass<ShadowPass>())
                 {
-                    m_shadowPass->PublishRecordResults(
+                    FindCompositionPass<ShadowPass>()->PublishRecordResults(
                         m_activeRenderPassResults,
                         m_activeRenderPassIdentity);
                 }
-                if (m_depthPrepass)
+                if (FindCompositionPass<DepthPrepass>())
                 {
-                    m_depthPrepass->PublishRecordResults(
+                    FindCompositionPass<DepthPrepass>()->PublishRecordResults(
                         m_activeRenderPassResults,
                         m_activeRenderPassIdentity);
                 }
-                if (m_opaquePass)
+                if (FindCompositionPass<OpaquePass>())
                 {
-                    m_opaquePass->PublishRecordResults(
+                    FindCompositionPass<OpaquePass>()->PublishRecordResults(
                         m_activeRenderPassResults,
                         m_activeRenderPassIdentity);
                 }
-                if (m_transparentPass)
+                if (FindCompositionPass<TransparentPass>())
                 {
-                    m_transparentPass->PublishRecordResults(
+                    FindCompositionPass<TransparentPass>()->PublishRecordResults(
                         m_activeRenderPassResults,
                         m_activeRenderPassIdentity);
                 }
-                if (m_objectVelocityPass)
+                if (FindCompositionPass<ObjectVelocityPass>())
                 {
-                    m_objectVelocityPass->PublishRecordResults(
+                    FindCompositionPass<ObjectVelocityPass>()->PublishRecordResults(
                         m_activeRenderPassResults,
                         m_activeRenderPassIdentity);
                 }
-                if (m_cameraVelocityPass)
+                if (FindCompositionPass<CameraVelocityPass>())
                 {
-                    m_cameraVelocityPass->PublishRecordResults(
+                    FindCompositionPass<CameraVelocityPass>()->PublishRecordResults(
                         m_activeRenderPassResults,
                         m_activeRenderPassIdentity);
                 }
@@ -7803,9 +7836,9 @@ void SceneRenderer::Render()
             }
             PublishProvisionalFrameAccessSnapshots(realizedDepthAccessPtr,
                                                    realizedBackBufferAccessPtr);
-            if (m_opaquePass)
+            if (FindCompositionPass<OpaquePass>())
             {
-                const OpaquePassDrawStats& opaqueStats = m_opaquePass->GetDrawStats();
+                const OpaquePassDrawStats& opaqueStats = FindCompositionPass<OpaquePass>()->GetDrawStats();
                 m_instancingDiagnostics.requestedMode =
                     opaqueStats.instancingMode;
                 m_instancingDiagnostics.opaquePlanAvailable =
@@ -8000,10 +8033,10 @@ void SceneRenderer::Render()
         }
     }
 
-    if (m_renderFeatureRegistry && graphExecuted && graphCompileValid)
+    if (GetRenderFeatureRegistry() && graphExecuted && graphCompileValid)
     {
         const RenderFeatureRegistryCode evidenceCode =
-            m_renderFeatureRegistry->FinalizeGraphExecution(*m_renderGraph);
+            GetRenderFeatureRegistry()->FinalizeGraphExecution(*m_renderGraph);
         if (evidenceCode != RenderFeatureRegistryCode::Success &&
             executionSkippedReason == nullptr)
         {
@@ -8016,12 +8049,12 @@ void SceneRenderer::Render()
     // completion evidence. Keep it pending until the matching render receipt
     // passes the separate presentation transaction below.
     m_pendingReflectionDiagnostics.reset();
-    if (m_reflectionFeature != nullptr &&
+    if (FindCompositionFeature<ReflectionFeatureAdapter>() != nullptr &&
         m_reflectionFramePlan != nullptr &&
-        m_reflectionFeature->HasFinalizedSSRComputeStats())
+        FindCompositionFeature<ReflectionFeatureAdapter>()->HasFinalizedSSRComputeStats())
     {
         const SSRComputeStats& stats =
-            m_reflectionFeature->GetFinalizedSSRComputeStats();
+            FindCompositionFeature<ReflectionFeatureAdapter>()->GetFinalizedSSRComputeStats();
         const ReflectionSSRIdentity& ssrIdentity =
             m_reflectionFramePlan->GetSSRIdentity();
         const bool identitiesMatch = m_lightingFramePlan != nullptr &&
@@ -8083,10 +8116,10 @@ void SceneRenderer::Render()
 
     FinalizeRenderExecutionReportStatus(graphExecuted);
 
-    if (m_renderFeatureRegistry)
+    if (GetRenderFeatureRegistry())
     {
         RenderExecutionReceipt receipt =
-            m_renderFeatureRegistry->CollectExecutionReceipt(
+            GetRenderFeatureRegistry()->CollectExecutionReceipt(
                 m_executionBuildIdentity);
         receipt.schemaVersion = RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION;
         if (m_activeRenderPassResults != nullptr &&
@@ -8353,10 +8386,10 @@ void SceneRenderer::Render()
                        feature.executedGraphPassCount ==
                            feature.graphPassCount;
             });
-        if (m_ambientOcclusionFeature != nullptr)
+        if (FindCompositionFeature<AmbientOcclusionFeatureAdapter>() != nullptr)
         {
             receipt.ambientOcclusion =
-                m_ambientOcclusionFeature->GetLastExecutionReceipt();
+                FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->GetLastExecutionReceipt();
         }
         if (receipt.ambientOcclusion.requested &&
             activeRenderPassResultsMatchReceipt)
@@ -8392,12 +8425,12 @@ void SceneRenderer::Render()
                        feature.executedGraphPassCount ==
                            feature.graphPassCount;
             });
-        if (m_postProcessFeature != nullptr)
+        if (FindCompositionFeature<PostProcessPipelineFeatureAdapter>() != nullptr)
         {
             receipt.postProcess =
-                m_postProcessFeature->GetLastExecutionReceipt();
+                FindCompositionFeature<PostProcessPipelineFeatureAdapter>()->GetLastExecutionReceipt();
             receipt.toonOutline =
-                m_postProcessFeature
+                FindCompositionFeature<PostProcessPipelineFeatureAdapter>()
                     ->GetLastToonOutlineExecutionReceipt();
         }
         bool hybridRayTracingExecutionEvidenceValid = true;
@@ -8578,9 +8611,9 @@ void SceneRenderer::ApplyRayTracingBudget(ShadowPassConfig& shadowConfig,
                                           bool reflectionRequested,
                                           bool denoiseRequested)
 {
-    if (m_rayTracedShadowPass)
+    if (FindCompositionPass<RayTracedShadowPass>())
     {
-        m_rayTracedShadowPass->RefreshCompletionDiagnostics();
+        FindCompositionPass<RayTracedShadowPass>()->RefreshCompletionDiagnostics();
     }
 
     SceneRayTracingFrameStats budgetStats;
@@ -9128,13 +9161,13 @@ bool SceneRenderer::PrepareLightingFramePlan(std::string& outDiagnostic)
     // raster path consumes the same admitted set; particle draw submission
     // never reaches back into LightManager.
     std::vector<ParticleRenderLightHint> particleLightHints;
-    if (m_particleFeaturePass != nullptr)
+    if (FindCompositionPass<ParticleFeaturePass>() != nullptr)
     {
         std::string particleLightDiagnostic;
-        if (!m_particleFeaturePass->CollectLightingHints(
+        if (!FindCompositionPass<ParticleFeaturePass>()->CollectLightingHints(
                 particleLightHints, particleLightDiagnostic))
         {
-            m_particleFeaturePass->SetLightingHintAdmissionStats(0u, 0u, 0u);
+            FindCompositionPass<ParticleFeaturePass>()->SetLightingHintAdmissionStats(0u, 0u, 0u);
             outDiagnostic = particleLightDiagnostic.empty()
                 ? "Particle light hint validation failed"
                 : std::move(particleLightDiagnostic);
@@ -9142,7 +9175,7 @@ bool SceneRenderer::PrepareLightingFramePlan(std::string& outDiagnostic)
         }
         if (particleLightHints.size() > std::numeric_limits<uint32>::max())
         {
-            m_particleFeaturePass->SetLightingHintAdmissionStats(0u, 0u, 0u);
+            FindCompositionPass<ParticleFeaturePass>()->SetLightingHintAdmissionStats(0u, 0u, 0u);
             outDiagnostic = "Particle light hint count exceeds uint32 diagnostics";
             return false;
         }
@@ -9178,11 +9211,11 @@ bool SceneRenderer::PrepareLightingFramePlan(std::string& outDiagnostic)
         if (request.lightCandidates[index - 1].lightId ==
             request.lightCandidates[index].lightId)
         {
-            if (m_particleFeaturePass != nullptr)
+            if (FindCompositionPass<ParticleFeaturePass>() != nullptr)
             {
                 const uint32 requested = static_cast<uint32>(
                     particleLightHints.size());
-                m_particleFeaturePass->SetLightingHintAdmissionStats(
+                FindCompositionPass<ParticleFeaturePass>()->SetLightingHintAdmissionStats(
                     requested, 0u, requested);
             }
             outDiagnostic =
@@ -9284,12 +9317,12 @@ bool SceneRenderer::PrepareLightingFramePlan(std::string& outDiagnostic)
     LightingFramePlanBuildResult result = builder.Build(request);
     if (!result.Succeeded() || !result.plan.IsValid())
     {
-        if (m_particleFeaturePass != nullptr)
+        if (FindCompositionPass<ParticleFeaturePass>() != nullptr)
         {
             const uint32 requested = static_cast<uint32>(particleLightHints.size());
             // A failed plan publishes no local-light set, so none of the
             // packet hints may be reported as admitted.
-            m_particleFeaturePass->SetLightingHintAdmissionStats(
+            FindCompositionPass<ParticleFeaturePass>()->SetLightingHintAdmissionStats(
                 requested, 0u, requested);
         }
         outDiagnostic = result.diagnostic.empty()
@@ -9298,7 +9331,7 @@ bool SceneRenderer::PrepareLightingFramePlan(std::string& outDiagnostic)
         return false;
     }
 
-    if (m_particleFeaturePass != nullptr)
+    if (FindCompositionPass<ParticleFeaturePass>() != nullptr)
     {
         uint32 admitted = 0u;
         const std::vector<LightingLightCandidate>& localLights =
@@ -9314,7 +9347,7 @@ bool SceneRenderer::PrepareLightingFramePlan(std::string& outDiagnostic)
             admitted += wasAdmitted ? 1u : 0u;
         }
         const uint32 requested = static_cast<uint32>(particleLightHints.size());
-        m_particleFeaturePass->SetLightingHintAdmissionStats(
+        FindCompositionPass<ParticleFeaturePass>()->SetLightingHintAdmissionStats(
             requested, admitted, requested - admitted);
     }
 
@@ -9588,33 +9621,33 @@ void SceneRenderer::PreparePassesForFrame()
     m_viewData.rayTracedShadowFilterRadiusPixels = 1.0f;
     m_viewData.rayTracedShadowMode = RayTracedShadowMode::ComplementRaster;
 
-    if (m_rayTracedShadowPass)
+    if (FindCompositionPass<RayTracedShadowPass>())
     {
-        m_rayTracedShadowPass->SetRayTracingScene(m_rayTracingSceneManager.get());
+        FindCompositionPass<RayTracedShadowPass>()->SetRayTracingScene(m_rayTracingSceneManager.get());
     }
-    if (m_cameraVelocityPass)
+    if (FindCompositionPass<CameraVelocityPass>())
     {
-        m_cameraVelocityPass->SetEnabled(false);
+        FindCompositionPass<CameraVelocityPass>()->SetEnabled(false);
     }
-    if (m_objectVelocityPass)
+    if (FindCompositionPass<ObjectVelocityPass>())
     {
-        m_objectVelocityPass->SetEnabled(false);
+        FindCompositionPass<ObjectVelocityPass>()->SetEnabled(false);
     }
-    if (m_rayTracedReflectionPass)
+    if (FindCompositionPass<RayTracedReflectionPass>())
     {
-        m_rayTracedReflectionPass->SetEnabled(false);
-        m_rayTracedReflectionPass->SetRayTracingScene(m_rayTracingSceneManager.get());
+        FindCompositionPass<RayTracedReflectionPass>()->SetEnabled(false);
+        FindCompositionPass<RayTracedReflectionPass>()->SetRayTracingScene(m_rayTracingSceneManager.get());
     }
-    if (m_rayTracedReflectionDenoisePass)
+    if (FindCompositionPass<RayTracedReflectionDenoisePass>())
     {
-        m_rayTracedReflectionDenoisePass->SetEnabled(false);
-        m_rayTracedReflectionDenoisePass->SetReflectionSource(m_rayTracedReflectionPass);
+        FindCompositionPass<RayTracedReflectionDenoisePass>()->SetEnabled(false);
+        FindCompositionPass<RayTracedReflectionDenoisePass>()->SetReflectionSource(FindCompositionPass<RayTracedReflectionPass>());
     }
-    if (m_rayTracedReflectionCompositePass)
+    if (FindCompositionPass<RayTracedReflectionCompositePass>())
     {
-        m_rayTracedReflectionCompositePass->SetEnabled(false);
-        m_rayTracedReflectionCompositePass->SetReflectionSource(m_rayTracedReflectionPass);
-        m_rayTracedReflectionCompositePass->SetDenoisedReflectionSource(m_rayTracedReflectionDenoisePass);
+        FindCompositionPass<RayTracedReflectionCompositePass>()->SetEnabled(false);
+        FindCompositionPass<RayTracedReflectionCompositePass>()->SetReflectionSource(FindCompositionPass<RayTracedReflectionPass>());
+        FindCompositionPass<RayTracedReflectionCompositePass>()->SetDenoisedReflectionSource(FindCompositionPass<RayTracedReflectionDenoisePass>());
     }
 
     if (m_lightManager)
@@ -11154,8 +11187,8 @@ void SceneRenderer::BuildRenderGraph()
     }
 
     const bool velocityTargetRequested =
-        (m_cameraVelocityPass && m_cameraVelocityPass->IsEnabled()) ||
-        (m_objectVelocityPass && m_objectVelocityPass->IsEnabled());
+        (FindCompositionPass<CameraVelocityPass>() && FindCompositionPass<CameraVelocityPass>()->IsEnabled()) ||
+        (FindCompositionPass<ObjectVelocityPass>() && FindCompositionPass<ObjectVelocityPass>()->IsEnabled());
     if (velocityTargetRequested &&
         m_viewData.depthTarget.IsValid() &&
         m_viewData.viewportWidth > 0 &&
@@ -11205,11 +11238,11 @@ void SceneRenderer::BuildRenderGraph()
     m_postProcessSettings.toneMappingOutputColorSpace =
         effectivePostProcessSettings.toneMappingOutputColorSpace;
     std::string deferredToneMappingPresentationDiagnostic;
-    if (m_postProcessStack)
+    if (GetPostProcessStack())
     {
-        m_postProcessStack->ApplySettings(effectivePostProcessSettings);
+        GetPostProcessStack()->ApplySettings(effectivePostProcessSettings);
         m_postProcessStats.stackStats =
-            m_postProcessStack->EvaluateEffects(backBufferFormat);
+            GetPostProcessStack()->EvaluateEffects(backBufferFormat);
     }
     const bool deferredToneMappingPresentationReady =
         !deferredRecipeRequested ||
@@ -11221,22 +11254,22 @@ void SceneRenderer::BuildRenderGraph()
                                    m_postProcessStats.stackStats.planValid &&
                                    m_postProcessStats.stackStats.toneMappingBoundaryValid &&
                                    deferredToneMappingPresentationReady;
-    const RenderPassStatus transparentPassStatus = m_transparentPass != nullptr
-        ? m_transparentPass->GetStatus()
+    const RenderPassStatus transparentPassStatus = FindCompositionPass<TransparentPass>() != nullptr
+        ? FindCompositionPass<TransparentPass>()->GetStatus()
         : RenderPassStatus{};
     const bool transparentSnapshotMayExecute =
         !m_transparentDrawItems.empty() &&
         transparentPassStatus.requestedEnabled &&
         transparentPassStatus.supported && transparentPassStatus.enabled;
     const ParticleVfxRequirements particleVfxRequirements =
-        m_particleFeaturePass != nullptr
-            ? m_particleFeaturePass->GetVfxRequirements()
+        FindCompositionPass<ParticleFeaturePass>() != nullptr
+            ? FindCompositionPass<ParticleFeaturePass>()->GetVfxRequirements()
             : ParticleVfxRequirements{};
     const bool particleSnapshotMayExecute =
-        m_particleFeaturePass != nullptr &&
-        m_particleFeaturePass->GetStatus().requestedEnabled &&
-        m_particleFeaturePass->GetStatus().supported &&
-        m_particleFeaturePass->GetStatus().enabled;
+        FindCompositionPass<ParticleFeaturePass>() != nullptr &&
+        FindCompositionPass<ParticleFeaturePass>()->GetStatus().requestedEnabled &&
+        FindCompositionPass<ParticleFeaturePass>()->GetStatus().supported &&
+        FindCompositionPass<ParticleFeaturePass>()->GetStatus().enabled;
     const bool requiresHDRSceneColor = postProcessActive ||
         deferredRecipeRequested || transparentSnapshotMayExecute ||
         particleSnapshotMayExecute;
@@ -11255,7 +11288,7 @@ void SceneRenderer::BuildRenderGraph()
     // the finite bootstrap buffer; it never mutates committed history until a
     // matching candidate crosses Present later in this frame lifecycle.
     ExposureFrameInput exposureFrameInput;
-    if (m_postProcessStack == nullptr || m_pipelineCache == nullptr ||
+    if (GetPostProcessStack() == nullptr || m_pipelineCache == nullptr ||
         !m_activeViewHistoryCandidate.has_value() ||
         !m_activeViewHistoryAvailability.has_value())
     {
@@ -11264,7 +11297,7 @@ void SceneRenderer::BuildRenderGraph()
         return;
     }
     exposureFrameInput =
-        m_postProcessStack->GetExposureController().PrepareFrameInput(
+        GetPostProcessStack()->GetExposureController().PrepareFrameInput(
             effectivePostProcessSettings.exposureSettings,
             *m_activeViewHistoryCandidate,
             m_activeViewHistoryAvailability->available,
@@ -11441,17 +11474,17 @@ void SceneRenderer::BuildRenderGraph()
         const bool shadowPipelineReady = m_pipelineCache != nullptr &&
             m_pipelineCache->GetRayTracedShadowPipeline() != nullptr &&
             m_pipelineCache->GetRayTracedShadowShaderTable() != nullptr &&
-            m_rayTracedShadowPass != nullptr &&
-            m_rayTracedShadowPass->IsSupported();
+            FindCompositionPass<RayTracedShadowPass>() != nullptr &&
+            FindCompositionPass<RayTracedShadowPass>()->IsSupported();
         const bool reflectionPipelineReady = m_pipelineCache != nullptr &&
             m_pipelineCache->GetRayTracedReflectionPipeline() != nullptr &&
             m_pipelineCache->GetRayTracedReflectionShaderTable() != nullptr &&
-            m_rayTracedReflectionPass != nullptr &&
-            m_rayTracedReflectionPass->IsSupported() &&
-            m_rayTracedReflectionDenoisePass != nullptr &&
-            m_rayTracedReflectionDenoisePass->IsEnabled() &&
-            m_rayTracedReflectionCompositePass != nullptr &&
-            m_rayTracedReflectionCompositePass->IsEnabled();
+            FindCompositionPass<RayTracedReflectionPass>() != nullptr &&
+            FindCompositionPass<RayTracedReflectionPass>()->IsSupported() &&
+            FindCompositionPass<RayTracedReflectionDenoisePass>() != nullptr &&
+            FindCompositionPass<RayTracedReflectionDenoisePass>()->IsEnabled() &&
+            FindCompositionPass<RayTracedReflectionCompositePass>() != nullptr &&
+            FindCompositionPass<RayTracedReflectionCompositePass>()->IsEnabled();
 
         HybridRayTracingFramePlanRequest request;
         const RenderFrameHeaderV5& hybridHeader =
@@ -11498,9 +11531,9 @@ void SceneRenderer::BuildRenderGraph()
 
         request.shadowRequirement = HybridRayTracingRequirement::Required;
         request.reflectionRequirement = HybridRayTracingRequirement::Required;
-        request.shadow.requested = m_rayTracedShadowPass != nullptr &&
-            m_rayTracedShadowPass->IsRequestedEnabled();
-        request.shadow.compiled = m_rayTracedShadowPass != nullptr;
+        request.shadow.requested = FindCompositionPass<RayTracedShadowPass>() != nullptr &&
+            FindCompositionPass<RayTracedShadowPass>()->IsRequestedEnabled();
+        request.shadow.compiled = FindCompositionPass<RayTracedShadowPass>() != nullptr;
         request.shadow.hardwareSupported =
             hybridCapabilities.supportsRaytracing;
         request.shadow.implementationSupported = productionHybridBackend;
@@ -11510,16 +11543,16 @@ void SceneRenderer::BuildRenderGraph()
         request.shadow.dispatchReady = request.shadow.requested &&
             request.shadow.pipelineReady && request.shadow.inputsReady;
         request.reflection.requested =
-            m_rayTracedReflectionPass != nullptr &&
-            m_rayTracedReflectionPass->IsRequestedEnabled() &&
-            m_rayTracedReflectionDenoisePass != nullptr &&
-            m_rayTracedReflectionDenoisePass->IsRequestedEnabled() &&
-            m_rayTracedReflectionCompositePass != nullptr &&
-            m_rayTracedReflectionCompositePass->IsRequestedEnabled();
+            FindCompositionPass<RayTracedReflectionPass>() != nullptr &&
+            FindCompositionPass<RayTracedReflectionPass>()->IsRequestedEnabled() &&
+            FindCompositionPass<RayTracedReflectionDenoisePass>() != nullptr &&
+            FindCompositionPass<RayTracedReflectionDenoisePass>()->IsRequestedEnabled() &&
+            FindCompositionPass<RayTracedReflectionCompositePass>() != nullptr &&
+            FindCompositionPass<RayTracedReflectionCompositePass>()->IsRequestedEnabled();
         request.reflection.compiled =
-            m_rayTracedReflectionPass != nullptr &&
-            m_rayTracedReflectionDenoisePass != nullptr &&
-            m_rayTracedReflectionCompositePass != nullptr;
+            FindCompositionPass<RayTracedReflectionPass>() != nullptr &&
+            FindCompositionPass<RayTracedReflectionDenoisePass>() != nullptr &&
+            FindCompositionPass<RayTracedReflectionCompositePass>() != nullptr;
         request.reflection.hardwareSupported =
             hybridCapabilities.supportsRaytracing;
         request.reflection.implementationSupported = productionHybridBackend;
@@ -11530,8 +11563,8 @@ void SceneRenderer::BuildRenderGraph()
             m_viewData.exposureState.IsValid();
         request.reflection.dispatchReady = request.reflection.requested &&
             request.reflection.pipelineReady && request.reflection.inputsReady;
-        request.rasterCSMReady = m_shadowPass != nullptr &&
-            m_shadowPass->IsEnabled() &&
+        request.rasterCSMReady = FindCompositionPass<ShadowPass>() != nullptr &&
+            FindCompositionPass<ShadowPass>()->IsEnabled() &&
             m_lightingFramePlan->GetCSMRequest().inputsReady;
         request.screenSpaceReflectionReady =
             m_reflectionFramePlan != nullptr &&
@@ -11795,41 +11828,41 @@ void SceneRenderer::BuildRenderGraph()
     // that same inventory around shared opaque submission and real compute
     // lighting; RenderGraph edges remain the authoritative execution order.
     const bool selectedCompositionMissing =
-        m_renderFeatureRegistry == nullptr ||
-        m_legacyForwardFeature == nullptr ||
-        m_ambientOcclusionFeature == nullptr ||
-        m_forwardLightingFeature == nullptr ||
-        m_reflectionFeature == nullptr ||
-        m_forwardSpecialFeature == nullptr ||
-        m_translucencyFeature == nullptr ||
-        m_postProcessFeature == nullptr ||
+        GetRenderFeatureRegistry() == nullptr ||
+        FindCompositionFeature<LegacyForwardFeatureAdapter>() == nullptr ||
+        FindCompositionFeature<AmbientOcclusionFeatureAdapter>() == nullptr ||
+        FindCompositionFeature<ForwardLightingFeatureAdapter>() == nullptr ||
+        FindCompositionFeature<ReflectionFeatureAdapter>() == nullptr ||
+        FindCompositionFeature<ForwardSpecialFeatureAdapter>() == nullptr ||
+        FindCompositionFeature<TranslucencyFeatureAdapter>() == nullptr ||
+        FindCompositionFeature<PostProcessPipelineFeatureAdapter>() == nullptr ||
         (deferredRecipeRequested &&
-         (m_deferredGeometryFeature == nullptr ||
-          m_deferredLightingFeature == nullptr ||
-          m_deferredForwardSpecialFeature == nullptr));
-    if (m_passRegistry != nullptr && selectedCompositionMissing &&
+         (FindCompositionFeature<DeferredGeometryFeatureAdapter>() == nullptr ||
+          FindCompositionFeature<DeferredLightingFeatureAdapter>() == nullptr ||
+          FindCompositionFeature<DeferredForwardSpecialFeatureAdapter>() == nullptr));
+    if (GetRenderPassRegistry() != nullptr && selectedCompositionMissing &&
         !EnsureDefaultRenderComposition())
     {
         m_featureCompositionFailureReason =
             "Raster render feature composition could not be established";
         return;
     }
-    if (!m_passRegistry || !m_renderFeatureRegistry ||
-        !m_legacyForwardFeature || !m_ambientOcclusionFeature ||
-        !m_forwardLightingFeature || !m_reflectionFeature ||
-        !m_forwardSpecialFeature || !m_translucencyFeature ||
-        !m_postProcessFeature ||
+    if (!GetRenderPassRegistry() || !GetRenderFeatureRegistry() ||
+        !FindCompositionFeature<LegacyForwardFeatureAdapter>() || !FindCompositionFeature<AmbientOcclusionFeatureAdapter>() ||
+        !FindCompositionFeature<ForwardLightingFeatureAdapter>() || !FindCompositionFeature<ReflectionFeatureAdapter>() ||
+        !FindCompositionFeature<ForwardSpecialFeatureAdapter>() || !FindCompositionFeature<TranslucencyFeatureAdapter>() ||
+        !FindCompositionFeature<PostProcessPipelineFeatureAdapter>() ||
         (deferredRecipeRequested &&
-         (!m_deferredGeometryFeature || !m_deferredLightingFeature ||
-          !m_deferredForwardSpecialFeature)))
+         (!FindCompositionFeature<DeferredGeometryFeatureAdapter>() || !FindCompositionFeature<DeferredLightingFeatureAdapter>() ||
+          !FindCompositionFeature<DeferredForwardSpecialFeatureAdapter>())))
     {
         m_featureCompositionFailureReason =
             "Raster render feature composition is unavailable";
         return;
     }
 
-    m_legacyForwardFeature->SetRecordContext(passRecordContext);
-    m_forwardLightingFeature->SetRecordContext(passRecordContext);
+    FindCompositionFeature<LegacyForwardFeatureAdapter>()->SetRecordContext(passRecordContext);
+    FindCompositionFeature<ForwardLightingFeatureAdapter>()->SetRecordContext(passRecordContext);
     ReflectionFeatureRecordContext reflectionRecordContext;
     reflectionRecordContext.pass = passRecordContext;
     reflectionRecordContext.plan = m_reflectionFramePlan;
@@ -11838,12 +11871,6 @@ void SceneRenderer::BuildRenderGraph()
         reflectionRecordContext.hybridRayTracingPlan =
             *m_hybridRayTracingFramePlan;
     }
-    reflectionRecordContext.rayTracedReflectionPass =
-        m_rayTracedReflectionPass;
-    reflectionRecordContext.rayTracedReflectionDenoisePass =
-        m_rayTracedReflectionDenoisePass;
-    reflectionRecordContext.rayTracedReflectionCompositePass =
-        m_rayTracedReflectionCompositePass;
     if (m_reflectionFramePlan != nullptr)
     {
         const std::vector<ReflectionProbeSelection>& probes =
@@ -11879,10 +11906,10 @@ void SceneRenderer::BuildRenderGraph()
             m_frameExternalTextureAccesses.push_back({handle, graphTexture});
         }
     }
-    m_reflectionFeature->SetRecordContext(
+    FindCompositionFeature<ReflectionFeatureAdapter>()->SetRecordContext(
         std::move(reflectionRecordContext));
-    m_forwardSpecialFeature->SetRecordContext(passRecordContext);
-    m_translucencyFeature->SetRecordContext(passRecordContext);
+    FindCompositionFeature<ForwardSpecialFeatureAdapter>()->SetRecordContext(passRecordContext);
+    FindCompositionFeature<TranslucencyFeatureAdapter>()->SetRecordContext(passRecordContext);
     AmbientOcclusionFeatureRecordContext ambientOcclusionRecordContext;
     ambientOcclusionRecordContext.passRecordContext = passRecordContext;
     ambientOcclusionRecordContext.settings = ResolveAmbientOcclusionSettings(
@@ -11897,19 +11924,19 @@ void SceneRenderer::BuildRenderGraph()
         ambientOcclusionRecordContext.historyAvailable =
             effectiveTemporalHistory.available;
     }
-    m_ambientOcclusionFeature->SetRecordContext(
+    FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->SetRecordContext(
         std::move(ambientOcclusionRecordContext));
-    if (m_deferredGeometryFeature != nullptr)
+    if (FindCompositionFeature<DeferredGeometryFeatureAdapter>() != nullptr)
     {
-        m_deferredGeometryFeature->SetRecordContext(passRecordContext);
+        FindCompositionFeature<DeferredGeometryFeatureAdapter>()->SetRecordContext(passRecordContext);
     }
-    if (m_deferredLightingFeature != nullptr)
+    if (FindCompositionFeature<DeferredLightingFeatureAdapter>() != nullptr)
     {
-        m_deferredLightingFeature->SetRecordContext(passRecordContext);
+        FindCompositionFeature<DeferredLightingFeatureAdapter>()->SetRecordContext(passRecordContext);
     }
-    if (m_deferredForwardSpecialFeature != nullptr)
+    if (FindCompositionFeature<DeferredForwardSpecialFeatureAdapter>() != nullptr)
     {
-        m_deferredForwardSpecialFeature->SetRecordContext(passRecordContext);
+        FindCompositionFeature<DeferredForwardSpecialFeatureAdapter>()->SetRecordContext(passRecordContext);
     }
     PostProcessPipelineRecordContext postProcessRecordContext;
     postProcessRecordContext.frameIdentity =
@@ -11967,7 +11994,7 @@ void SceneRenderer::BuildRenderGraph()
             ? PostProcessColorDomain::DisplayLinearLDR
             : PostProcessColorDomain::DisplayEncodedLDR;
     postProcessRecordContext.passRecordContext = passRecordContext;
-    m_postProcessFeature->SetRecordContext(
+    FindCompositionFeature<PostProcessPipelineFeatureAdapter>()->SetRecordContext(
         std::move(postProcessRecordContext));
 
     const RenderFrameHeaderV5& acceptedHeader =
@@ -12014,7 +12041,7 @@ void SceneRenderer::BuildRenderGraph()
     }
 
     const RenderFeatureFramePrepareResult featurePrepare =
-        m_renderFeatureRegistry->PrepareFrame(featureContext);
+        GetRenderFeatureRegistry()->PrepareFrame(featureContext);
     if (!featurePrepare.Succeeded())
     {
         m_featureCompositionFailureReason =
@@ -12022,7 +12049,7 @@ void SceneRenderer::BuildRenderGraph()
                 ? GetRenderFeatureRegistryCodeName(featurePrepare.code)
                 : featurePrepare.diagnostic;
         m_lastAttemptedRenderExecutionReceipt =
-            m_renderFeatureRegistry->CollectExecutionReceipt(
+            GetRenderFeatureRegistry()->CollectExecutionReceipt(
                 m_executionBuildIdentity);
         return;
     }
@@ -12036,17 +12063,17 @@ void SceneRenderer::BuildRenderGraph()
     RenderGraphBlackboard blackboard(provenance);
     RenderFeatureGraphBuilder featureGraphBuilder(*m_renderGraph, provenance);
     const RenderFeatureRegistryCode compositionCode =
-        m_renderFeatureRegistry->AddPasses(featureGraphBuilder, blackboard);
+        GetRenderFeatureRegistry()->AddPasses(featureGraphBuilder, blackboard);
 
     LegacyForwardFeaturePassChainStats passChain;
     const TranslucencyFeaturePassChainStats translucencyChain =
-        m_translucencyFeature->GetPassChainStats();
+        FindCompositionFeature<TranslucencyFeatureAdapter>()->GetPassChainStats();
     if (UsesDeferredOpaquePath(featurePrepare.pipeline.resolvedRecipe))
     {
         const DeferredRecipeFeaturePassChainStats geometryChain =
-            m_deferredGeometryFeature->GetPassChainStatsSnapshot();
+            FindCompositionFeature<DeferredGeometryFeatureAdapter>()->GetPassChainStatsSnapshot();
         const DeferredRecipeFeaturePassChainStats postLightingChain =
-            m_deferredForwardSpecialFeature->GetPassChainStatsSnapshot();
+            FindCompositionFeature<DeferredForwardSpecialFeatureAdapter>()->GetPassChainStatsSnapshot();
         passChain.frameSequence = geometryChain.frameSequence != 0
             ? geometryChain.frameSequence
             : (postLightingChain.frameSequence != 0
@@ -12088,11 +12115,11 @@ void SceneRenderer::BuildRenderGraph()
     else
     {
         const LegacyForwardFeaturePassChainStats surfaceChain =
-            m_legacyForwardFeature->GetPassChainStatsSnapshot();
+            FindCompositionFeature<LegacyForwardFeatureAdapter>()->GetPassChainStatsSnapshot();
         const LegacyForwardFeaturePassChainStats lightingChain =
-            m_forwardLightingFeature->GetPassChainStatsSnapshot();
+            FindCompositionFeature<ForwardLightingFeatureAdapter>()->GetPassChainStatsSnapshot();
         const LegacyForwardFeaturePassChainStats specialChain =
-            m_forwardSpecialFeature->GetPassChainStatsSnapshot();
+            FindCompositionFeature<ForwardSpecialFeatureAdapter>()->GetPassChainStatsSnapshot();
         passChain.frameSequence = surfaceChain.frameSequence != 0
             ? surfaceChain.frameSequence
             : (lightingChain.frameSequence != 0
@@ -12190,30 +12217,30 @@ void SceneRenderer::BuildRenderGraph()
         if (UsesDeferredOpaquePath(featurePrepare.pipeline.resolvedRecipe))
         {
             readinessCandidates = {
-                m_deferredGeometryFeature->ResolveReadiness(),
-                m_ambientOcclusionFeature->ResolveReadiness(),
-                m_deferredLightingFeature->ResolveReadiness(),
-                m_reflectionFeature->ResolveReadiness(),
-                m_deferredForwardSpecialFeature->ResolveReadiness(),
-                m_translucencyFeature->ResolveReadiness(),
-                m_postProcessFeature->ResolveReadiness()};
+                FindCompositionFeature<DeferredGeometryFeatureAdapter>()->ResolveReadiness(),
+                FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->ResolveReadiness(),
+                FindCompositionFeature<DeferredLightingFeatureAdapter>()->ResolveReadiness(),
+                FindCompositionFeature<ReflectionFeatureAdapter>()->ResolveReadiness(),
+                FindCompositionFeature<DeferredForwardSpecialFeatureAdapter>()->ResolveReadiness(),
+                FindCompositionFeature<TranslucencyFeatureAdapter>()->ResolveReadiness(),
+                FindCompositionFeature<PostProcessPipelineFeatureAdapter>()->ResolveReadiness()};
         }
         else
         {
             readinessCandidates.push_back(
-                m_legacyForwardFeature->ResolveReadiness());
+                FindCompositionFeature<LegacyForwardFeatureAdapter>()->ResolveReadiness());
             readinessCandidates.push_back(
-                m_ambientOcclusionFeature->ResolveReadiness());
+                FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->ResolveReadiness());
             readinessCandidates.push_back(
-                m_forwardLightingFeature->ResolveReadiness());
+                FindCompositionFeature<ForwardLightingFeatureAdapter>()->ResolveReadiness());
             readinessCandidates.push_back(
-                m_reflectionFeature->ResolveReadiness());
+                FindCompositionFeature<ReflectionFeatureAdapter>()->ResolveReadiness());
             readinessCandidates.push_back(
-                m_forwardSpecialFeature->ResolveReadiness());
+                FindCompositionFeature<ForwardSpecialFeatureAdapter>()->ResolveReadiness());
             readinessCandidates.push_back(
-                m_translucencyFeature->ResolveReadiness());
+                FindCompositionFeature<TranslucencyFeatureAdapter>()->ResolveReadiness());
             readinessCandidates.push_back(
-                m_postProcessFeature->ResolveReadiness());
+                FindCompositionFeature<PostProcessPipelineFeatureAdapter>()->ResolveReadiness());
         }
         const auto failedReadiness = std::find_if(
             readinessCandidates.begin(), readinessCandidates.end(),
@@ -12227,7 +12254,7 @@ void SceneRenderer::BuildRenderGraph()
             m_featureCompositionFailureReason = failedReadiness->diagnostic;
         }
         m_lastAttemptedRenderExecutionReceipt =
-            m_renderFeatureRegistry->CollectExecutionReceipt(
+            GetRenderFeatureRegistry()->CollectExecutionReceipt(
                 m_executionBuildIdentity);
         return;
     }
@@ -12236,24 +12263,28 @@ void SceneRenderer::BuildRenderGraph()
     // presentation boundary. SceneRenderer deliberately has no direct stack
     // execution bypass: the feature consumes TranslucencyOutputs v5 and
     // publishes PostProcessOutputs v2 inside the same graph composition.
-    m_postProcessStats.stackStats = m_postProcessFeature->GetLastPlanStats();
+    m_postProcessStats.stackStats = FindCompositionFeature<PostProcessPipelineFeatureAdapter>()->GetLastPlanStats();
 }
 
 void SceneRenderer::AddPass(std::unique_ptr<IRenderPass> pass)
 {
     InvalidateRenderFramePlan();
-    if (!m_passRegistry)
-        m_passRegistry = std::make_unique<RenderPassRegistry>();
-
-    m_passRegistry->AddPass(std::move(pass), m_renderContext ? m_renderContext->GetDevice() : nullptr);
+    if (m_defaultRenderComposition == nullptr)
+    {
+        m_defaultRenderComposition =
+            std::make_unique<DefaultRenderComposition>();
+    }
+    m_defaultRenderComposition->GetPassBundle().AddPass(
+        std::move(pass),
+        m_renderContext != nullptr ? m_renderContext->GetDevice() : nullptr);
 }
 
 void SceneRenderer::RefreshFrameDiagnosticsForTesting(bool graphBuilt)
 {
     m_passChainStats = {};
-    if (m_passRegistry)
+    if (GetRenderPassRegistry())
     {
-        m_passChainStats.passStatuses = m_passRegistry->GetPassStatuses();
+        m_passChainStats.passStatuses = GetRenderPassRegistry()->GetPassStatuses();
         m_passChainStats.registeredPassCount = m_passChainStats.passStatuses.size();
 
         for (const RenderPassStatus& status : m_passChainStats.passStatuses)
@@ -12286,157 +12317,27 @@ void SceneRenderer::RefreshFrameDiagnosticsForTesting(bool graphBuilt)
 bool SceneRenderer::RemovePass(const char* name)
 {
     InvalidateRenderFramePlan();
-    if (!m_passRegistry || name == nullptr)
+    if (m_defaultRenderComposition == nullptr || name == nullptr)
     {
         return false;
     }
-
-    IRenderPass* removed = nullptr;
-    for (const std::unique_ptr<IRenderPass>& pass :
-         m_passRegistry->GetPasses())
-    {
-        if (pass != nullptr && std::strcmp(pass->GetName(), name) == 0)
-        {
-            removed = pass.get();
-            break;
-        }
-    }
-    if (removed == nullptr)
-    {
-        return false;
-    }
-
-    if (removed == m_rayTracedReflectionPass)
-    {
-        if (m_rayTracedReflectionDenoisePass)
-        {
-            m_rayTracedReflectionDenoisePass->SetReflectionSource(nullptr);
-        }
-        if (m_rayTracedReflectionCompositePass)
-        {
-            m_rayTracedReflectionCompositePass->SetReflectionSource(nullptr);
-        }
-        m_rayTracedReflectionPass = nullptr;
-    }
-    if (removed == m_rayTracedReflectionDenoisePass)
-    {
-        if (m_rayTracedReflectionCompositePass)
-        {
-            m_rayTracedReflectionCompositePass
-                ->SetDenoisedReflectionSource(nullptr);
-        }
-        m_rayTracedReflectionDenoisePass = nullptr;
-    }
-    if (removed == m_rayTracedReflectionCompositePass)
-    {
-        m_rayTracedReflectionCompositePass = nullptr;
-    }
-    if (removed == m_opaquePass)
-    {
-        m_opaquePass = nullptr;
-        if (m_legacyForwardFeature)
-        {
-            m_legacyForwardFeature->SetOpaquePass(nullptr);
-        }
-        if (m_forwardLightingFeature)
-        {
-            m_forwardLightingFeature->SetOpaquePass(nullptr);
-        }
-        if (m_forwardSpecialFeature)
-        {
-            m_forwardSpecialFeature->SetOpaquePass(nullptr);
-        }
-        if (m_deferredGeometryFeature)
-        {
-            m_deferredGeometryFeature->SetOpaquePass(nullptr);
-        }
-        if (m_deferredForwardSpecialFeature)
-        {
-            m_deferredForwardSpecialFeature->SetOpaquePass(nullptr);
-        }
-    }
-    if (removed == m_depthPrepass) m_depthPrepass = nullptr;
-    if (removed == m_shadowPass) m_shadowPass = nullptr;
-    if (removed == m_rayTracedShadowPass) m_rayTracedShadowPass = nullptr;
-    const bool velocityPassRemoved =
-        removed == m_cameraVelocityPass || removed == m_objectVelocityPass;
-    if (removed == m_cameraVelocityPass) m_cameraVelocityPass = nullptr;
-    if (removed == m_objectVelocityPass) m_objectVelocityPass = nullptr;
-    if (velocityPassRemoved)
-    {
-        const VelocityPassBindings velocityPasses{
-            m_cameraVelocityPass, m_objectVelocityPass};
-        if (m_legacyForwardFeature)
-            m_legacyForwardFeature->SetVelocityPasses(velocityPasses);
-        if (m_forwardSpecialFeature)
-            m_forwardSpecialFeature->SetVelocityPasses(velocityPasses);
-        if (m_deferredGeometryFeature)
-            m_deferredGeometryFeature->SetVelocityPasses(velocityPasses);
-        if (m_deferredForwardSpecialFeature)
-            m_deferredForwardSpecialFeature->SetVelocityPasses(velocityPasses);
-    }
-      if (removed == m_particleFeaturePass) m_particleFeaturePass = nullptr;
-      if (removed == m_waterFeaturePass) m_waterFeaturePass = nullptr;
-    if (removed == m_transparentPass) m_transparentPass = nullptr;
-    if (removed == m_skyboxPass) m_skyboxPass = nullptr;
-
-    return m_passRegistry->RemovePass(name);
+    return m_defaultRenderComposition->GetPassBundle().RemovePass(name);
 }
 
 void SceneRenderer::ClearPasses()
 {
     InvalidateRenderFramePlan();
-    if (m_legacyForwardFeature)
+    if (m_defaultRenderComposition != nullptr)
     {
-        m_legacyForwardFeature->SetOpaquePass(nullptr);
+        m_defaultRenderComposition->GetPassBundle().Clear();
     }
-    if (m_forwardLightingFeature)
-    {
-        m_forwardLightingFeature->SetOpaquePass(nullptr);
-    }
-    if (m_forwardSpecialFeature)
-    {
-        m_forwardSpecialFeature->SetOpaquePass(nullptr);
-    }
-    if (m_deferredGeometryFeature)
-    {
-        m_deferredGeometryFeature->SetOpaquePass(nullptr);
-    }
-    if (m_deferredForwardSpecialFeature)
-    {
-        m_deferredForwardSpecialFeature->SetOpaquePass(nullptr);
-    }
-    if (m_legacyForwardFeature)
-        m_legacyForwardFeature->SetVelocityPasses({});
-    if (m_forwardSpecialFeature)
-        m_forwardSpecialFeature->SetVelocityPasses({});
-    if (m_deferredGeometryFeature)
-        m_deferredGeometryFeature->SetVelocityPasses({});
-    if (m_deferredForwardSpecialFeature)
-        m_deferredForwardSpecialFeature->SetVelocityPasses({});
-    if (m_passRegistry)
-        m_passRegistry->Clear();
-
-    m_depthPrepass = nullptr;
-    m_opaquePass = nullptr;
-    m_shadowPass = nullptr;
-    m_rayTracedShadowPass = nullptr;
-    m_cameraVelocityPass = nullptr;
-    m_objectVelocityPass = nullptr;
-      m_particleFeaturePass = nullptr;
-      m_waterFeaturePass = nullptr;
-    m_rayTracedReflectionPass = nullptr;
-    m_rayTracedReflectionDenoisePass = nullptr;
-    m_rayTracedReflectionCompositePass = nullptr;
-    m_transparentPass = nullptr;
-    m_skyboxPass = nullptr;
     m_passChainStats = {};
     m_loggedUnsupportedPassNames.clear();
 }
 
 size_t SceneRenderer::GetPassCount() const
 {
-    return m_passRegistry ? m_passRegistry->GetPassCount() : 0;
+    return GetRenderPassRegistry() ? GetRenderPassRegistry()->GetPassCount() : 0;
 }
 
 bool SceneRenderer::AddPreGraphPrepareCallback(const void* owner, PreGraphPrepareCallback callback)
@@ -12507,62 +12408,20 @@ void SceneRenderer::RunPreGraphPrepareCallbacks()
 
 void SceneRenderer::SetupDefaultPostProcess()
 {
-    if (!m_renderContext || !m_renderContext->GetDevice())
+    if (!m_renderContext || !m_renderContext->GetDevice() ||
+        m_defaultRenderComposition == nullptr)
+    {
         return;
-
-    m_postProcessStack = std::make_unique<PostProcessStack>();
-    m_postProcessStack->Initialize(m_renderContext->GetDevice());
-    m_postProcessStack->SetExposureResources(m_pipelineCache.get());
-    m_bloomPostProcess = m_postProcessStack->AddEffect<BloomPass>();
-    m_toneMappingPostProcess = m_postProcessStack->AddEffect<ToneMappingPass>();
-    m_colorGradingPostProcess = m_postProcessStack->AddEffect<ColorGradingPass>();
-    m_chromaticAberrationPostProcess = m_postProcessStack->AddEffect<ChromaticAberrationPass>();
-    m_vignettePostProcess = m_postProcessStack->AddEffect<VignettePass>();
-    m_filmGrainPostProcess = m_postProcessStack->AddEffect<FilmGrainPass>();
-    m_fxaaPostProcess = m_postProcessStack->AddEffect<FXAAPass>();
-    m_taaPostProcess = m_postProcessStack->AddEffect<TAA>();
-    m_screenSpaceOutlinePostProcess =
-        m_postProcessStack->AddEffect<ScreenSpaceOutlinePass>();
-
-    if (m_bloomPostProcess)
-    {
-        m_bloomPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
     }
 
-    if (m_toneMappingPostProcess)
+    if (!m_defaultRenderComposition->InitializePostProcess(
+            m_renderContext->GetDevice(),
+            m_pipelineCache.get(),
+            m_resourceViewCache.get()))
     {
-        m_toneMappingPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
-    }
-
-    if (m_colorGradingPostProcess)
-    {
-        m_colorGradingPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
-    }
-
-    if (m_chromaticAberrationPostProcess)
-    {
-        m_chromaticAberrationPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
-    }
-
-    if (m_vignettePostProcess)
-    {
-        m_vignettePostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
-    }
-
-    if (m_filmGrainPostProcess)
-    {
-        m_filmGrainPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
-    }
-
-    if (m_fxaaPostProcess)
-    {
-        m_fxaaPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
-    }
-
-    if (m_screenSpaceOutlinePostProcess)
-    {
-        m_screenSpaceOutlinePostProcess->SetResources(
-            m_pipelineCache.get(), m_resourceViewCache.get());
+        RVX_RENDER_ERROR(
+            "SceneRenderer: failed to initialize default post-process composition");
+        return;
     }
 
     ApplyPostProcessSettings(MakeDefaultRuntimePostProcessSettings());
@@ -12570,14 +12429,10 @@ void SceneRenderer::SetupDefaultPostProcess()
     // SetupDefaultRenderFeatures may seal the registry before this stack is
     // constructed. Bind only after the stack, its effects, and its settings
     // are complete; SetStack invalidates any prior frozen graph state.
-    if (m_postProcessFeature != nullptr)
+    if (FindCompositionFeature<PostProcessPipelineFeatureAdapter>() != nullptr)
     {
-        m_postProcessFeature->SetStack(m_postProcessStack.get());
-    }
-
-    if (m_taaPostProcess)
-    {
-        m_taaPostProcess->SetResources(m_pipelineCache.get(), m_resourceViewCache.get());
+        FindCompositionFeature<PostProcessPipelineFeatureAdapter>()->SetStack(
+            GetPostProcessStack());
     }
 }
 
