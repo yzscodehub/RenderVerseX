@@ -53,6 +53,8 @@ namespace RVX::Tests
                   std::string::npos);
         EXPECT_NE(metalBindingABI.find("set == 2 && binding == 17 && arrayElement == 0"),
                   std::string::npos);
+        EXPECT_NE(metalBindingABI.find("binding <= 23"),
+                  std::string::npos);
     }
 
     TEST(RHIContractValidation, PrimaryBackendsTranslateScopedDependenciesStructurally)

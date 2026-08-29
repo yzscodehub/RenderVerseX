@@ -689,6 +689,34 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME HybridRayTracingPolicyValidation
+    LANE unit
+    SOURCES HybridRayTracingPolicyValidation/main.cpp
+    LIBS RVX::RenderRayTracing
+    TAGS subsystem.render subsystem.ray-tracing suite.contract
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME TranslucencyFramePlanValidation
+    LANE unit
+    SOURCES TranslucencyFramePlanValidation/main.cpp
+    LIBS RVX::RenderFoundation
+    TAGS subsystem.render subsystem.translucency suite.contract
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME RayTracingSceneLifecycleValidation
+    LANE unit
+    SOURCES RayTracingSceneLifecycleValidation/main.cpp
+    LIBS RVX::RenderRayTracing
+    INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
+    TAGS subsystem.render subsystem.ray-tracing suite.contract
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
     NAME ParticleRenderValidation
     LANE unit
     SOURCES ParticleRenderValidation/main.cpp
@@ -998,6 +1026,59 @@ rvx_add_gtest(
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
     TAGS subsystem.render subsystem.lighting suite.contract
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME LocalShadowRenderValidation
+    LANE unit
+    SOURCES LocalShadowRenderValidation/main.cpp
+    LIBS RVX::Core RVX::RenderFoundation
+    INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+    TAGS subsystem.render subsystem.lighting suite.contract
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME LocalShadowAtlasValidation
+    LANE unit
+    SOURCES LocalShadowAtlasValidation/main.cpp
+    LIBS RVX::Core RVX::RenderFoundation
+    INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+    TAGS subsystem.render subsystem.lighting suite.contract
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME LocalShadowPassValidation
+    LANE unit
+    SOURCES LocalShadowPassValidation/main.cpp
+    LIBS RVX::Core RVX::RenderLighting
+    INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+    TAGS subsystem.render subsystem.lighting suite.contract
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME ReflectionProbeValidation
+    LANE unit
+    SOURCES ReflectionProbeValidation/main.cpp
+    LIBS RVX::Core RVX::RenderFoundation
+    INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+    TAGS subsystem.render subsystem.reflection suite.contract
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME HiZReflectionValidation
+    LANE unit
+    SOURCES HiZReflectionValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::RenderFoundation
+        RVX::RenderPostProcess
+    INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+    TAGS subsystem.render subsystem.reflection suite.contract
     TIMEOUT 30
 )
 

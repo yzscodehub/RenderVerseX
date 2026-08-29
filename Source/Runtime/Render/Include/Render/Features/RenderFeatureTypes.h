@@ -55,6 +55,12 @@ namespace RVX
         inline constexpr RenderFeatureId AmbientOcclusion{7};
         /** Forward lighting/special-surface consumer after GTAO publication. */
         inline constexpr RenderFeatureId ForwardLighting{8};
+        /** Recipe-neutral reflection resolve over the lit HDR scene surface. */
+        inline constexpr RenderFeatureId ReflectionResolve{9};
+        /** ForwardStandard special surfaces after the reflection resolve. */
+        inline constexpr RenderFeatureId ForwardSpecialChain{10};
+        /** Recipe-neutral mesh/particle translucency composition. */
+        inline constexpr RenderFeatureId Translucency{11};
     } // namespace BuiltinRenderFeatureIds
 
     /** @brief Legal feature bands. Resource edges determine actual execution order. */
@@ -82,8 +88,10 @@ namespace RVX
         SceneTextures = 0,
         VisibilityOutputs,
         ShadowOutputs,
+        LocalShadowOutputs,
         LightingOutputs,
         ReflectionOutputs,
+        PreTranslucencyOutputs,
         TranslucencyOutputs,
         PostProcessOutputs,
         AmbientOcclusionOutputs,
@@ -1231,10 +1239,146 @@ namespace RVX
         }
     };
 
+    enum class RenderHybridRayTracingShadowRoute : uint8
+    {
+        None = 0,
+        RayTraced,
+        RasterCSM,
+        Failed,
+    };
+
+    enum class RenderHybridRayTracingReflectionRoute : uint8
+    {
+        None = 0,
+        RayTraced,
+        ScreenSpaceReflection,
+        ReflectionProbe,
+        ImageBasedLighting,
+        Failed,
+    };
+
+    /**
+     * @brief Public, backend-neutral projection of one frozen Hybrid RT plan.
+     *
+     * The internal plan remains owned by RenderRayTracing. This POD projection
+     * lets diagnostics and Samples consume exact graph/submission/presentation
+     * evidence without creating a RenderFoundation -> feature-target cycle.
+     */
+    struct RenderHybridRayTracingExecutionReceipt
+    {
+        bool available = false;
+        uint64 planIdentityHash = 0;
+        uint64 scenePreparationGeneration = 0;
+        uint64 sceneStructuralHash = 0;
+        RenderFrameIdentity frameIdentity{};
+        RenderViewIdentity viewIdentity{};
+        RenderOutputExtent fullResolution{};
+        RenderOutputExtent halfResolution{};
+        RenderHistoryResetReason historyResetReasons =
+            RenderHistoryResetReason::None;
+        RenderPipelineRecipe recipe = RenderPipelineRecipe::HybridRayTracing;
+        RenderQualityTier quality = RenderQualityTier::High;
+        uint64 profileHash = 0;
+        RenderHybridRayTracingShadowRoute shadowRoute =
+            RenderHybridRayTracingShadowRoute::None;
+        RenderHybridRayTracingReflectionRoute reflectionRoute =
+            RenderHybridRayTracingReflectionRoute::None;
+        bool graphExecutionSucceeded = false;
+        bool sceneBuildAccepted = false;
+        bool shadowDispatchRecorded = false;
+        bool reflectionDispatchRecorded = false;
+        bool spatialDenoiseRecorded = false;
+        bool temporalResolveRecorded = false;
+        bool compositeRecorded = false;
+        bool compositeUsedDenoisedSource = false;
+        bool submissionAccepted = false;
+        bool presentationQualified = false;
+        bool succeeded = false;
+
+        [[nodiscard]] bool IsEmpty() const noexcept
+        {
+            return !available && planIdentityHash == 0 &&
+                   scenePreparationGeneration == 0 &&
+                   sceneStructuralHash == 0 &&
+                   !frameIdentity.IsValid() && !viewIdentity.IsValid() &&
+                   !fullResolution.IsValid() && !halfResolution.IsValid() &&
+                   historyResetReasons == RenderHistoryResetReason::None &&
+                   profileHash == 0 &&
+                   shadowRoute == RenderHybridRayTracingShadowRoute::None &&
+                   reflectionRoute ==
+                       RenderHybridRayTracingReflectionRoute::None &&
+                   !graphExecutionSucceeded && !sceneBuildAccepted &&
+                   !shadowDispatchRecorded && !reflectionDispatchRecorded &&
+                   !spatialDenoiseRecorded && !temporalResolveRecorded &&
+                   !compositeRecorded && !compositeUsedDenoisedSource &&
+                   !submissionAccepted && !presentationQualified &&
+                   !succeeded;
+        }
+
+        [[nodiscard]] bool IsStructurallyValid() const noexcept
+        {
+            if (!available)
+            {
+                return IsEmpty();
+            }
+            const bool extentValid = fullResolution.IsValid() &&
+                halfResolution.IsValid() &&
+                halfResolution.width ==
+                    fullResolution.width / 2U + fullResolution.width % 2U &&
+                halfResolution.height ==
+                    fullResolution.height / 2U + fullResolution.height % 2U;
+            const bool frozenIdentityValid = planIdentityHash != 0 &&
+                scenePreparationGeneration != 0 && sceneStructuralHash != 0 &&
+                frameIdentity.IsValid() && viewIdentity.IsValid() &&
+                extentValid && recipe == RenderPipelineRecipe::HybridRayTracing &&
+                IsDeclaredRenderQualityTier(quality) &&
+                profileHash == ComputeRenderPipelineProfileHash(recipe, quality) &&
+                shadowRoute == RenderHybridRayTracingShadowRoute::RayTraced &&
+                reflectionRoute ==
+                    RenderHybridRayTracingReflectionRoute::RayTraced;
+            const bool dispatchChainRecorded = IsGraphExecutionReady();
+            const bool submissionConsistent = !submissionAccepted ||
+                (dispatchChainRecorded && sceneBuildAccepted);
+            const bool presentationConsistent = !presentationQualified ||
+                submissionAccepted;
+            const bool expectedSuccess = dispatchChainRecorded &&
+                sceneBuildAccepted && submissionAccepted &&
+                presentationQualified;
+            return frozenIdentityValid && submissionConsistent &&
+                   presentationConsistent && succeeded == expectedSuccess;
+        }
+
+        [[nodiscard]] bool IsGraphExecutionReady() const noexcept
+        {
+            return available && graphExecutionSucceeded &&
+                   shadowRoute ==
+                       RenderHybridRayTracingShadowRoute::RayTraced &&
+                   reflectionRoute ==
+                       RenderHybridRayTracingReflectionRoute::RayTraced &&
+                   shadowDispatchRecorded && reflectionDispatchRecorded &&
+                   spatialDenoiseRecorded && temporalResolveRecorded &&
+                   compositeRecorded && compositeUsedDenoisedSource;
+        }
+
+        [[nodiscard]] bool IsSubmissionReady() const noexcept
+        {
+            return IsGraphExecutionReady() && sceneBuildAccepted &&
+                   submissionAccepted;
+        }
+
+        [[nodiscard]] bool IsPresentationReady() const noexcept
+        {
+            return IsSubmissionReady() && presentationQualified && succeeded;
+        }
+    };
+
+    /** @brief Current ABI of @ref RenderExecutionReceipt. */
+    inline constexpr uint32 RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION = 12;
+
     /** @brief Candidate or presentation-qualified evidence for one frame/view. */
     struct RenderExecutionReceipt
     {
-        uint32 schemaVersion = 11;
+        uint32 schemaVersion = RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION;
         bool available = false;
         bool graphComposed = false;
         bool executionSucceeded = false;
@@ -1264,6 +1408,8 @@ namespace RVX
         RenderToonLightingExecutionReceipt toonLighting{};
         /** Exact HDR outline execution and optional presented-frame readback. */
         RenderToonOutlineExecutionReceipt toonOutline{};
+        /** Required Hybrid RT graph/submission/presentation evidence. */
+        RenderHybridRayTracingExecutionReceipt hybridRayTracing{};
         std::vector<RenderFeatureExecutionReceipt> features{};
         std::string diagnostic{};
 
@@ -1273,7 +1419,7 @@ namespace RVX
                  schemaVersion != 4 && schemaVersion != 5 &&
                  schemaVersion != 6 && schemaVersion != 7 &&
                  schemaVersion != 8 && schemaVersion != 10 &&
-                 schemaVersion != 11) ||
+                 schemaVersion != 11 && schemaVersion != 12) ||
                 !frameIdentity.IsValid() ||
                 !viewIdentity.IsValid() || backend == RHIBackendType::None ||
                 !IsDeclaredRenderPipelineRecipe(requestedRecipe) ||
@@ -1289,12 +1435,17 @@ namespace RVX
                 return false;
             }
             if (schemaVersion != 10 && schemaVersion != 11 &&
+                schemaVersion != 12 &&
                 !ambientOcclusion.IsEmpty())
             {
                 return false;
             }
-            if (schemaVersion != 11 &&
+            if (schemaVersion != 11 && schemaVersion != 12 &&
                 (!toonLighting.IsEmpty() || !toonOutline.IsEmpty()))
+            {
+                return false;
+            }
+            if (schemaVersion != 12 && !hybridRayTracing.IsEmpty())
             {
                 return false;
             }
@@ -1435,10 +1586,62 @@ namespace RVX
                  (toonOutline.executed && toonLighting.executed &&
                   toonOutline.materialTableContentHash !=
                       toonLighting.materialTableContentHash));
+            const bool schemaTwelveInvalid = schemaVersion == 12 &&
+                (!deferredOpaque.IsStructurallyValid() ||
+                 (!lighting.IsEmpty() && !lighting.IsStructurallyValid()) ||
+                 (!deformation.IsEmpty() &&
+                  !deformation.IsStructurallyValid()) ||
+                 (!postProcess.IsEmpty() &&
+                  !postProcess.IsStructurallyValid()) ||
+                 (!ambientOcclusion.IsEmpty() &&
+                  !ambientOcclusion.IsStructurallyValid()) ||
+                 (!toonLighting.IsEmpty() &&
+                  !toonLighting.IsStructurallyValid()) ||
+                 (!toonOutline.IsEmpty() &&
+                  !toonOutline.IsStructurallyValid()) ||
+                 (!hybridRayTracing.IsEmpty() &&
+                  !hybridRayTracing.IsStructurallyValid()) ||
+                 (hybridRayTracing.available &&
+                  (resolvedRecipe != RenderPipelineRecipe::HybridRayTracing ||
+                   hybridRayTracing.frameIdentity != frameIdentity ||
+                   hybridRayTracing.viewIdentity != viewIdentity ||
+                   hybridRayTracing.recipe != resolvedRecipe ||
+                   hybridRayTracing.quality != quality ||
+                   hybridRayTracing.profileHash != profileHash)) ||
+                 (resolvedRecipe != RenderPipelineRecipe::HybridRayTracing &&
+                  !hybridRayTracing.IsEmpty()) ||
+                 (resolvedRecipe == RenderPipelineRecipe::HybridRayTracing &&
+                  executionSucceeded &&
+                  !hybridRayTracing.IsGraphExecutionReady()) ||
+                 ((executionSucceeded || presented) &&
+                  (!lighting.IsStructurallyValid() ||
+                   !deformation.IsStructurallyValid() ||
+                   !postProcess.IsStructurallyValid())) ||
+                 (presented && postProcess.taaRequested &&
+                  !postProcess.historyCommitted) ||
+                 (presented && !postProcess.exposureHistoryCommitted) ||
+                 (postProcess.exposureProbeReady &&
+                  (!presented || !postProcess.exposureHistoryCommitted ||
+                   postProcess.exposureHistoryAbandoned)) ||
+                 (ambientOcclusion.probeReady &&
+                  (!presented || !ambientOcclusion.historyCommitted ||
+                   ambientOcclusion.historyAbandoned)) ||
+                 (toonOutline.qualificationReady && !presented) ||
+                 (toonOutline.qualificationRequested &&
+                  !toonLighting.IsExecutionReady()) ||
+                 (toonOutline.executed && toonLighting.executed &&
+                  toonOutline.materialTableContentHash !=
+                      toonLighting.materialTableContentHash) ||
+                 (presented &&
+                  resolvedRecipe == RenderPipelineRecipe::HybridRayTracing &&
+                  !hybridRayTracing.IsPresentationReady()) ||
+                 (hybridRayTracing.presentationQualified && !presented) ||
+                 (hybridRayTracing.succeeded &&
+                  (!presented || !succeeded)));
             if (schemaOneInvalid || schemaTwoInvalid || schemaFourInvalid ||
                 schemaFiveInvalid || schemaSixInvalid || schemaSevenInvalid ||
                 schemaEightInvalid || schemaTenInvalid ||
-                schemaElevenInvalid)
+                schemaElevenInvalid || schemaTwelveInvalid)
             {
                 return false;
             }
@@ -1530,7 +1733,9 @@ namespace RVX
                 {
                     return false;
                 }
-                if (schemaVersion == 10 && executionSucceeded &&
+                if ((schemaVersion == 10 || schemaVersion == 11 ||
+                     schemaVersion == RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION) &&
+                    executionSucceeded &&
                     feature.readiness.executed &&
                     feature.graphPassCount == 0 &&
                     !feature.contractCompletedWithoutGraphWork)

@@ -344,6 +344,13 @@ namespace
             return m_probe->toonOutlineQualificationProbeAccepted;
         }
 
+        bool RequestHiZReflectionQualificationProbe() override
+        {
+            m_probe->Record(
+                RenderRuntimeTestEvent::HiZReflectionQualificationProbe);
+            return m_probe->hiZReflectionQualificationProbeAccepted;
+        }
+
         void PollCompletion() override
         {
             m_probe->Record(RenderRuntimeTestEvent::Poll);

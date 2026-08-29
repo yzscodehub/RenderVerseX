@@ -602,4 +602,57 @@ void BuildMaterialDrawLists(const RenderScene& scene,
         return MixSortBits(hash);
     }
 
+    uint64 BuildTransparentDrawItemIdentityHash(
+        const RenderDrawItem& item) noexcept
+    {
+        uint64 hash = kTransparentOrderHashSeed;
+        AppendHash(hash, item.classificationIndex);
+        AppendHash(hash, item.objectIndex);
+        AppendHash(hash, item.submeshIndex);
+        AppendHash(hash, item.mesh.slot);
+        AppendHash(hash, item.mesh.generation);
+        AppendHash(hash, item.material.slot);
+        AppendHash(hash, item.material.generation);
+        AppendHash(hash, static_cast<uint8>(item.renderMode));
+        AppendFloatHash(hash, item.viewSpaceDepth);
+        AppendHash(hash, static_cast<uint32>(item.translucencySortPriority));
+        AppendHash(hash, item.sortKey);
+
+        const RenderDrawPacket& packet = item.packet;
+        AppendHash(hash, packet.objectId);
+        AppendHash(hash, packet.primitiveData);
+        AppendHash(hash, packet.submeshIndex);
+        AppendHash(hash, static_cast<uint8>(packet.pass));
+        AppendHash(hash, GetStableHash(packet.pipelineKey));
+        AppendHash(hash, GetStableHash(packet.geometryKey));
+        AppendHash(hash, GetStableHash(packet.materialKey));
+        AppendHash(hash, packet.materialInstanceKey.textureBindingHash);
+        AppendHash(
+            hash,
+            static_cast<uint8>(
+                packet.materialInstanceKey.parameterTableCompatible));
+        AppendHash(hash, packet.arguments.indexCount);
+        AppendHash(hash, packet.arguments.instanceCount);
+        AppendHash(hash, packet.arguments.firstIndex);
+        AppendHash(hash, static_cast<uint32>(packet.arguments.vertexOffset));
+        AppendHash(hash, packet.arguments.firstInstance);
+        AppendHash(hash, static_cast<uint32>(packet.flags));
+        AppendHash(hash, static_cast<uint32>(packet.translucencySortPriority));
+        hash = MixSortBits(hash);
+        return hash == 0 ? kTransparentOrderHashSeed : hash;
+    }
+
+    uint64 BuildTransparentDrawSourceIdentityHash(
+        const std::vector<RenderDrawItem>& drawItems) noexcept
+    {
+        uint64 hash = kTransparentOrderHashSeed;
+        AppendHash(hash, static_cast<uint64>(drawItems.size()));
+        for (const RenderDrawItem& item : drawItems)
+        {
+            AppendHash(hash, BuildTransparentDrawItemIdentityHash(item));
+        }
+        hash = MixSortBits(hash);
+        return hash == 0 ? kTransparentOrderHashSeed : hash;
+    }
+
 } // namespace RVX

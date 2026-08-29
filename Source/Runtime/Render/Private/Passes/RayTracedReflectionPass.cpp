@@ -3,12 +3,14 @@
 #include "RHI/RHIRayTracing.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/PipelineCache.h"
+#include "Render/RayTracing/HybridRayTracingFramePlan.h"
 #include "Render/RayTracing/RayTracingResourceBindings.h"
 #include "Render/RayTracing/RayTracingSceneManager.h"
 #include "Render/Renderer/ViewData.h"
 #include "Resources/RenderSubmissionResourceBatch.h"
 #include "Resources/RenderOwnerSnapshotRetirement.h"
 #include "Resources/RenderResourceRegistry.h"
+#include "Resources/RenderSubmissionTracker.h"
 
 #include <algorithm>
 #include <cmath>
@@ -33,6 +35,32 @@ namespace RVX
         constexpr uint32 RVX_RAY_TRACED_REFLECTION_TIMING_START_QUERY_OFFSET = 0;
         constexpr uint32 RVX_RAY_TRACED_REFLECTION_TIMING_END_QUERY_OFFSET = 1;
         constexpr uint64 RVX_RAY_TRACED_REFLECTION_TIMING_READBACK_BYTES = sizeof(uint64) * 2;
+
+        [[nodiscard]] bool IsCanonicalSubmittedCompletion(
+            const GPUCompletionToken& completion) noexcept
+        {
+            if (completion.count == 0 ||
+                completion.count > completion.points.size())
+            {
+                return false;
+            }
+            for (uint8 index = 0; index < completion.count; ++index)
+            {
+                const GPUCompletionPoint point = completion.points[index];
+                if (!IsDeclaredGPUQueueDomain(point.domain) || point.value == 0)
+                {
+                    return false;
+                }
+                for (uint8 prior = 0; prior < index; ++prior)
+                {
+                    if (completion.points[prior].domain == point.domain)
+                    {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
 
         RenderResourceHandle UnpackRenderResourceHandle(uint64 value)
         {
@@ -130,11 +158,117 @@ namespace RVX
 
     } // namespace
 
+    /**
+     * @brief One temporal-history writer reserved by a graph recording.
+     *
+     * The reservation intentionally owns no mutable RHI state.  It captures
+     * the immutable graph identity and the realized history handles which are
+     * projected back to the pass only after exact submission, then becomes
+     * reusable only after the matching presentation succeeds.
+     */
+    struct RayTracedReflectionHistoryReservation
+    {
+        RenderPassRecordIdentity identity{};
+        uint64 allocationGeneration = 0;
+        uint32 readIndex = RVX_INVALID_INDEX;
+        uint32 writeIndex = RVX_INVALID_INDEX;
+        RayTracedReflectionPassConfig config{};
+        Mat4 currentViewProjection = Mat4Identity();
+        RayTracedReflectionPassStats recordedStats{};
+        RGTextureHandle reflectionReadHandle{};
+        RGTextureHandle reflectionWriteHandle{};
+        RGTextureHandle depthReadHandle{};
+        RGTextureHandle depthWriteHandle{};
+        RGTextureHandle normalReadHandle{};
+        RGTextureHandle normalWriteHandle{};
+        bool graphPassExecuted = false;
+        bool recorded = false;
+        bool submissionAccepted = false;
+        RenderViewHistoryIdentity presentationIdentity{};
+        bool cancelled = false;
+    };
+
+    struct RayTracedReflectionSubmissionRecord
+    {
+        RenderPassRecordIdentity identity{};
+        RayTracedReflectionPassStats stats{};
+        bool legacyAdapter = false;
+    };
+
+    struct RayTracedReflectionHistoryOwner
+    {
+        std::vector<std::shared_ptr<RayTracedReflectionHistoryReservation>>
+            reservations;
+        std::vector<std::shared_ptr<RayTracedReflectionSubmissionRecord>>
+            submissionRecords;
+        RenderPassRecordIdentity lastCommittedIdentity{};
+        RenderPassRecordIdentity lastSubmittedIdentity{};
+        RenderViewHistoryIdentity lastCommittedPresentationIdentity{};
+    };
+
+    namespace
+    {
+        [[nodiscard]] bool IsNewerReflectionRecording(
+            const RenderPassRecordIdentity& candidate,
+            const RenderPassRecordIdentity& previous) noexcept
+        {
+            if (!previous.IsValid())
+            {
+                return true;
+            }
+            if (candidate.frameSequence != previous.frameSequence)
+            {
+                return candidate.frameSequence > previous.frameSequence;
+            }
+            if (candidate.viewOrdinal != previous.viewOrdinal)
+            {
+                return candidate.viewOrdinal > previous.viewOrdinal;
+            }
+            return candidate.recordEpoch > previous.recordEpoch;
+        }
+
+        struct RayTracedReflectionFrameState
+        {
+            RenderPassExecutionData execution{};
+            std::shared_ptr<RayTracedReflectionHistoryReservation> reservation;
+            std::shared_ptr<RayTracedReflectionSubmissionRecord> submissionRecord;
+            RHIAccelerationStructureRef topLevelAS;
+            RGBufferHandle topLevelASStorageHandle{};
+            bool contextValid = false;
+            bool legacyAdapter = false;
+        };
+
+        void PublishRayTracedReflectionRecordStats(
+            const RenderPassExecutionData& execution,
+            bool legacyAdapter,
+            const RayTracedReflectionPassStats& stats)
+        {
+            // Legacy ViewData adapters intentionally remain diagnostic-only:
+            // they do not carry a renderer-issued record identity and must
+            // never become production receipt evidence.
+            if (!legacyAdapter && execution.results != nullptr &&
+                execution.results->identity == execution.identity)
+            {
+                execution.results->rayTracedReflectionStats = stats;
+            }
+        }
+    } // namespace
+
     void RayTracedReflectionPass::OnAdd(IRHIDevice* device)
     {
+        if (!m_historyOwner)
+        {
+            m_historyOwner = std::make_shared<RayTracedReflectionHistoryOwner>();
+        }
         if (m_device != device)
         {
             ResetHistoryTextures();
+            m_historyOwner->reservations.clear();
+            m_historyOwner->submissionRecords.clear();
+            m_historyOwner->lastCommittedIdentity = {};
+            m_historyOwner->lastSubmittedIdentity = {};
+            m_historyOwner->lastCommittedPresentationIdentity = {};
+            m_activeHistoryReservation.reset();
             m_constantBuffer.Reset();
             m_fallbackVelocityTexture.Reset();
             m_timingQueryPool.Reset();
@@ -171,6 +305,15 @@ namespace RVX
     void RayTracedReflectionPass::OnRemove()
     {
         ResetHistoryTextures();
+        if (m_historyOwner)
+        {
+            m_historyOwner->reservations.clear();
+            m_historyOwner->submissionRecords.clear();
+            m_historyOwner->lastCommittedIdentity = {};
+            m_historyOwner->lastSubmittedIdentity = {};
+            m_historyOwner->lastCommittedPresentationIdentity = {};
+        }
+        m_activeHistoryReservation.reset();
         m_device = nullptr;
         m_resourceRegistry = nullptr;
         m_pipelineCache = nullptr;
@@ -316,12 +459,173 @@ namespace RVX
         return true;
     }
 
+    void RayTracedReflectionPass::AddToGraph(RenderGraph& graph,
+                                             const ViewData& view)
+    {
+        AddToGraph(graph, MakeRenderPassRecordContext(graph, view));
+    }
+
+    void RayTracedReflectionPass::AddToGraph(
+        RenderGraph& graph,
+        const RenderPassRecordContext& context)
+    {
+        const RenderPassExecutionData execution =
+            MakeRenderPassExecutionData(context);
+        auto state = std::make_shared<RayTracedReflectionFrameState>();
+        state->execution = execution;
+        state->legacyAdapter = context.legacyAdapter;
+        state->contextValid = context.MatchesTargetGraph(graph) &&
+            execution.MatchesTargetGraph(graph) && execution.IsFrameIdentityValid() &&
+            (context.legacyAdapter ||
+             execution.rayTracingScene.IsCompatibleWith(execution.identity)) &&
+            m_historyOwner != nullptr;
+
+        graph.AddPass<std::shared_ptr<RayTracedReflectionFrameState>>(
+            GetName(),
+            GetPassType(),
+            [this, state, legacyAdapter = context.legacyAdapter](
+                RenderGraphBuilder& builder,
+                std::shared_ptr<RayTracedReflectionFrameState>& data)
+            {
+                data = state;
+                if (!data || !data->contextValid || !m_historyOwner)
+                {
+                    return;
+                }
+
+                data->topLevelAS = data->legacyAdapter
+                    ? RHIAccelerationStructureRef(
+                          m_sceneManager ? m_sceneManager->GetTopLevelAS() : nullptr)
+                    : data->execution.rayTracingScene.topLevelAS;
+                if (!data->legacyAdapter)
+                {
+                    data->topLevelASStorageHandle = builder.Read(
+                        data->execution.rayTracingScene.topLevelASStorage,
+                        RHIResourceState::AccelerationStructureRead,
+                        RHIShaderStage::AllRayTracing);
+                    if (!data->topLevelAS ||
+                        !data->topLevelASStorageHandle.IsValid())
+                    {
+                        data->contextValid = false;
+                        return;
+                    }
+                }
+
+                RayTracedReflectionHistoryOwner& owner = *m_historyOwner;
+                const auto duplicate = std::find_if(
+                    owner.submissionRecords.begin(),
+                    owner.submissionRecords.end(),
+                    [&data](const std::shared_ptr<RayTracedReflectionSubmissionRecord>& record)
+                    {
+                        return record && record->identity == data->execution.identity;
+                    });
+                const bool hasOutstandingReservation = std::any_of(
+                    owner.reservations.begin(),
+                    owner.reservations.end(),
+                    [](const std::shared_ptr<RayTracedReflectionHistoryReservation>& reservation)
+                    {
+                        return reservation && !reservation->cancelled;
+                    });
+                if (duplicate != owner.submissionRecords.end() ||
+                    hasOutstandingReservation)
+                {
+                    // One pass instance owns one imported history ring.  Do
+                    // not allow a second recording to overwrite a history
+                    // writer whose submission outcome is still unknown.
+                    data->contextValid = false;
+                    return;
+                }
+
+                data->submissionRecord =
+                    std::make_shared<RayTracedReflectionSubmissionRecord>();
+                data->submissionRecord->identity = data->execution.identity;
+                data->submissionRecord->legacyAdapter = legacyAdapter;
+                owner.submissionRecords.push_back(data->submissionRecord);
+
+                m_activeTopLevelAS = data->topLevelAS;
+                m_activeTopLevelASStorageHandle =
+                    data->topLevelASStorageHandle;
+                m_activeTopLevelASStorageId = data->legacyAdapter
+                    ? RHIResourceInstanceId{}
+                    : data->execution.rayTracingScene.storageResourceId;
+                m_activeTopLevelASDependencyRequired = !data->legacyAdapter;
+                Setup(builder, data->execution.view);
+                m_activeTopLevelAS.Reset();
+                m_activeTopLevelASStorageHandle = {};
+                m_activeTopLevelASStorageId = {};
+                m_activeTopLevelASDependencyRequired = false;
+                data->submissionRecord->stats = m_stats;
+                PublishRayTracedReflectionRecordStats(
+                    data->execution, data->legacyAdapter, m_stats);
+                if (!m_stats.outputDeclared)
+                {
+                    return;
+                }
+
+                data->reservation =
+                    std::make_shared<RayTracedReflectionHistoryReservation>();
+                data->reservation->identity = data->execution.identity;
+                data->reservation->allocationGeneration =
+                    m_historyAllocationGeneration;
+                data->reservation->readIndex = m_currentHistoryReadIndex;
+                data->reservation->writeIndex = m_currentHistoryWriteIndex;
+                data->reservation->config = m_config;
+                data->reservation->currentViewProjection =
+                    data->execution.view.jitteredViewProjectionMatrix;
+                data->reservation->reflectionReadHandle = m_historyReadHandle;
+                data->reservation->reflectionWriteHandle = m_reflectionHandle;
+                data->reservation->depthReadHandle = m_historyDepthReadHandle;
+                data->reservation->depthWriteHandle = m_historyDepthWriteHandle;
+                data->reservation->normalReadHandle = m_historyNormalReadHandle;
+                data->reservation->normalWriteHandle = m_historyNormalWriteHandle;
+                m_stats.historyReservationRecorded = true;
+                data->submissionRecord->stats = m_stats;
+                PublishRayTracedReflectionRecordStats(
+                    data->execution, data->legacyAdapter, m_stats);
+                owner.reservations.push_back(data->reservation);
+            },
+            [this](const std::shared_ptr<RayTracedReflectionFrameState>& data,
+                   RenderGraphPassContext& graphContext)
+            {
+                if (!data || !data->contextValid || !data->reservation ||
+                    data->reservation->cancelled)
+                {
+                    return;
+                }
+
+                m_activeHistoryReservation = data->reservation;
+                m_activeTopLevelAS = data->topLevelAS;
+                m_activeTopLevelASStorageHandle =
+                    data->topLevelASStorageHandle;
+                m_activeTopLevelASStorageId = data->legacyAdapter
+                    ? RHIResourceInstanceId{}
+                    : data->execution.rayTracingScene.storageResourceId;
+                m_activeTopLevelASDependencyRequired = !data->legacyAdapter;
+                Execute(graphContext, data->execution.view);
+                data->reservation->graphPassExecuted = m_stats.dispatchRecorded;
+                data->reservation->recorded = m_stats.dispatchRecorded;
+                data->reservation->recordedStats = m_stats;
+                if (data->submissionRecord)
+                {
+                    data->submissionRecord->stats = m_stats;
+                }
+                PublishRayTracedReflectionRecordStats(
+                    data->execution, data->legacyAdapter, m_stats);
+                m_activeHistoryReservation.reset();
+                m_activeTopLevelAS.Reset();
+                m_activeTopLevelASStorageHandle = {};
+                m_activeTopLevelASStorageId = {};
+                m_activeTopLevelASDependencyRequired = false;
+            });
+    }
+
     void RayTracedReflectionPass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     {
         m_stats = {};
         m_stats.requested = m_enabled;
         m_stats.supported = IsSupported();
-        m_stats.tlasAvailable = m_sceneManager && m_sceneManager->GetTopLevelAS();
+        m_stats.tlasAvailable = m_activeTopLevelAS != nullptr ||
+            (m_sceneManager && m_sceneManager->GetTopLevelAS());
         m_stats.materialMetadataAvailable = m_sceneManager && m_sceneManager->GetInstanceMaterialMetadataBuffer();
         const size_t sceneMaterialTextureCount =
             m_sceneManager ? m_sceneManager->GetInstanceMaterialTextureTable().size() : 0u;
@@ -407,9 +711,21 @@ namespace RVX
         m_stats.gpuTimestampFrequency = m_timingQueryPool ? m_timingQueryPool->GetTimestampFrequency() : 0;
         TryReadbackTimingResult(timingFrameIndex);
         const float resolutionScale = ResolveReflectionResolutionScale(m_config.resolutionScale);
-        const uint32 outputWidth = ResolveScaledReflectionDimension(view.viewportWidth, resolutionScale);
-        const uint32 outputHeight = ResolveScaledReflectionDimension(view.viewportHeight, resolutionScale);
-        m_stats.resolutionScale = resolutionScale;
+        uint32 outputWidth = ResolveScaledReflectionDimension(view.viewportWidth, resolutionScale);
+        uint32 outputHeight = ResolveScaledReflectionDimension(view.viewportHeight, resolutionScale);
+        if (m_config.fixedHalfResolution)
+        {
+            const HybridRayTracingHalfResolution halfResolution =
+                ResolveHybridRayTracingHalfResolution(
+                    {view.viewportWidth, view.viewportHeight});
+            outputWidth = halfResolution.halfResolution.width;
+            outputHeight = halfResolution.halfResolution.height;
+            m_stats.resolutionScale = 0.5f;
+        }
+        else
+        {
+            m_stats.resolutionScale = resolutionScale;
+        }
         m_stats.samplesPerPixel = ResolveReflectionSamplesPerPixel(m_config.samplesPerPixel);
         m_stats.intensity = ClampFiniteRange(m_config.intensity, 1.0f, 0.0f, 1.0f);
         m_stats.maxTraceDistance = ResolveReflectionMaxTraceDistance(m_config.maxTraceDistance, view.farPlane);
@@ -544,7 +860,7 @@ namespace RVX
                 return;
             m_velocityReadHandle = builder.ImportTexture(
                 m_fallbackVelocityTexture,
-                RHIResourceState::ShaderResource);
+                RHIResourceState::Undefined);
         }
         m_velocityViewHandle = createReadView(
             m_velocityReadHandle, "RayTracedReflectionVelocitySRV");
@@ -664,7 +980,9 @@ namespace RVX
             return;
         }
 
-        RHIAccelerationStructure* tlas = m_sceneManager->GetTopLevelAS();
+        RHIAccelerationStructure* tlas = m_activeTopLevelAS
+            ? m_activeTopLevelAS.Get()
+            : m_sceneManager->GetTopLevelAS();
         RHIBuffer* materialMetadataBuffer = m_sceneManager->GetInstanceMaterialMetadataBuffer();
         RHIBuffer* geometryMetadataBuffer = m_sceneManager->GetInstanceAlphaMetadataBuffer();
         RHITexture* sceneColor = context.GetTexture(m_sceneColorReadHandle);
@@ -681,6 +999,19 @@ namespace RVX
         RHITexture* currentNormalHistory =
             context.GetTexture(m_historyNormalWriteHandle);
         RHITexture* reflectionOutput = context.GetTexture(m_reflectionHandle);
+        if (m_activeTopLevelASDependencyRequired &&
+            (!m_activeTopLevelASStorageHandle.IsValid() || !tlas ||
+             tlas->GetStorageBuffer() == nullptr ||
+             context.GetBuffer(m_activeTopLevelASStorageHandle) !=
+                 tlas->GetStorageBuffer() ||
+             tlas->GetStorageBuffer()->GetResourceInstanceId() !=
+                 m_activeTopLevelASStorageId))
+        {
+            m_stats.dispatchRecorded = false;
+            context.MarkExecutionFailed(
+                "RayTracedReflectionPass TLAS storage dependency is stale or unavailable");
+            return;
+        }
         if (!tlas || !materialMetadataBuffer || !geometryMetadataBuffer || !sceneColor || !sceneDepth ||
             !sceneVelocity ||
             !exposureStateBuffer ||
@@ -906,31 +1237,384 @@ namespace RVX
             }
         }
 
-        m_historyTextureStates[m_currentHistoryReadIndex] = RHIResourceState::ShaderResource;
-        m_historyTextureStates[m_currentHistoryWriteIndex] = RHIResourceState::ShaderResource;
-        m_historyDepthTextureStates[m_currentHistoryReadIndex] = RHIResourceState::ShaderResource;
-        m_historyDepthTextureStates[m_currentHistoryWriteIndex] = RHIResourceState::ShaderResource;
-        m_historyNormalTextureStates[m_currentHistoryReadIndex] = RHIResourceState::ShaderResource;
-        m_historyNormalTextureStates[m_currentHistoryWriteIndex] = RHIResourceState::ShaderResource;
-        m_historyValid = true;
-        m_lastHistoryConfig = m_config;
-        m_lastHistoryConfigValid = true;
-        m_historyViewValid = m_pendingHistoryViewValid;
-        if (m_pendingHistoryViewValid)
-        {
-            m_lastHistoryViewProjection = m_pendingHistoryViewProjection;
-        }
-        m_historyWriteIndex = 1u - m_currentHistoryWriteIndex;
         m_stats.materialTexturesBound = static_cast<uint32>(materialTextureViews.size());
         m_stats.geometryIndexBufferCount = static_cast<uint32>(geometryIndexBuffers.size());
         m_stats.geometryUVBufferCount = static_cast<uint32>(geometryUVBuffers.size());
         m_stats.geometryNormalBufferCount = static_cast<uint32>(geometryNormalBuffers.size());
         m_stats.geometryTangentBufferCount = static_cast<uint32>(geometryTangentBuffers.size());
-        m_stats.historyAvailable = true;
-        m_stats.depthHistoryAvailable = true;
-        m_stats.normalHistoryAvailable = true;
+        // A graph recording is not a temporal-history publication.  The
+        // exact reservation below becomes visible only from
+        // NotifySubmission(identity, historyIdentity, completion), then the
+        // exact CommitHistoryAfterPresent(historyIdentity); an aborted
+        // command list must never become the next frame's reprojection
+        // source.
+        m_stats.historySubmitted = false;
+        // The ray generation program writes the current reflection/depth/
+        // normal history in this dispatch whenever temporal accumulation is
+        // enabled. This records the resolve/store stage even on the first
+        // frame, where temporalAccumulated must remain false because no
+        // presented prior history exists yet.
+        m_stats.temporalResolveRecorded =
+            m_config.temporalAccumulation && m_pendingHistoryViewValid;
         m_stats.temporalAccumulated = m_temporalAccumulatedThisFrame;
         m_stats.dispatchRecorded = true;
+    }
+
+    bool RayTracedReflectionPass::NotifySubmission(
+        const RenderPassRecordIdentity& identity,
+        const RenderViewHistoryIdentity& historyIdentity,
+        const GPUCompletionToken& completion)
+    {
+        if (!m_historyOwner || !identity.IsValid() ||
+            !IsCanonicalSubmittedCompletion(completion))
+        {
+            return false;
+        }
+
+        RayTracedReflectionHistoryOwner& owner = *m_historyOwner;
+        const auto submission = std::find_if(
+            owner.submissionRecords.begin(),
+            owner.submissionRecords.end(),
+            [&identity](const std::shared_ptr<RayTracedReflectionSubmissionRecord>& record)
+            {
+                return record && record->identity == identity;
+            });
+        if (submission == owner.submissionRecords.end())
+        {
+            return false;
+        }
+
+        const bool newestSubmission =
+            IsNewerReflectionRecording(identity, owner.lastSubmittedIdentity);
+        if (newestSubmission)
+        {
+            owner.lastSubmittedIdentity = identity;
+        }
+
+        const auto reservationIt = std::find_if(
+            owner.reservations.begin(),
+            owner.reservations.end(),
+            [&identity](const std::shared_ptr<RayTracedReflectionHistoryReservation>& reservation)
+            {
+                return reservation && reservation->identity == identity;
+            });
+        if (reservationIt == owner.reservations.end())
+        {
+            if (newestSubmission)
+            {
+                m_stats = (*submission)->stats;
+            }
+            owner.submissionRecords.erase(submission);
+            return false;
+        }
+
+        const std::shared_ptr<RayTracedReflectionHistoryReservation> reservation =
+            *reservationIt;
+        const bool hasExactPresentationIdentity = historyIdentity.IsValid() &&
+            historyIdentity.previousFrame.frameSequence == identity.frameSequence;
+        const bool canBindSubmission = !reservation->cancelled &&
+            reservation->recorded && reservation->graphPassExecuted &&
+            reservation->allocationGeneration == m_historyAllocationGeneration &&
+            newestSubmission &&
+            IsNewerReflectionRecording(
+                reservation->identity, owner.lastCommittedIdentity);
+        if (!canBindSubmission)
+        {
+            if (newestSubmission)
+            {
+                m_stats = (*submission)->stats;
+            }
+            owner.reservations.erase(reservationIt);
+            owner.submissionRecords.erase(submission);
+            return false;
+        }
+
+        if (reservation->readIndex == RVX_INVALID_INDEX ||
+            reservation->writeIndex == RVX_INVALID_INDEX)
+        {
+            owner.reservations.erase(reservationIt);
+            owner.submissionRecords.erase(submission);
+            return false;
+        }
+
+        // The graph has now reached a canonical GPU submission boundary, so
+        // its realized persistent-resource state is authoritative. This is a
+        // physical access transition only: an unpresented result must never
+        // advance the logical ring or become a reprojection source.
+        m_historyTextureStates[reservation->readIndex] =
+            RHIResourceState::ShaderResource;
+        m_historyTextureStates[reservation->writeIndex] =
+            RHIResourceState::ShaderResource;
+        m_historyDepthTextureStates[reservation->readIndex] =
+            RHIResourceState::ShaderResource;
+        m_historyDepthTextureStates[reservation->writeIndex] =
+            RHIResourceState::ShaderResource;
+        m_historyNormalTextureStates[reservation->readIndex] =
+            RHIResourceState::ShaderResource;
+        m_historyNormalTextureStates[reservation->writeIndex] =
+            RHIResourceState::ShaderResource;
+
+        reservation->submissionAccepted = hasExactPresentationIdentity;
+        reservation->presentationIdentity = historyIdentity;
+        reservation->recordedStats.historySubmitted = true;
+        (*submission)->stats = reservation->recordedStats;
+        if (newestSubmission)
+        {
+            m_stats = (*submission)->stats;
+        }
+        if (!hasExactPresentationIdentity)
+        {
+            // The GPU work happened, so retain its realized access state and
+            // submission diagnostics. Without an exact canonical view
+            // identity it is nevertheless ineligible for temporal reuse.
+            owner.reservations.erase(reservationIt);
+            owner.submissionRecords.erase(submission);
+            return false;
+        }
+        return true;
+    }
+
+    void RayTracedReflectionPass::NotifySubmission(
+        const RenderPassRecordIdentity& identity,
+        const GPUCompletionToken& completion)
+    {
+        // Legacy ViewData recordings have no RenderViewHistoryIdentity, so
+        // they cannot satisfy the presentation-qualified history contract.
+        // Keep their submission diagnostics/resource access honest while
+        // explicitly discarding their semantic candidate.
+        static_cast<void>(NotifySubmission(
+            identity, RenderViewHistoryIdentity{}, completion));
+    }
+
+    void RayTracedReflectionPass::NotifySubmission(
+        const GPUCompletionToken& completion)
+    {
+        if (!m_historyOwner)
+        {
+            return;
+        }
+        const auto legacy = std::find_if(
+            m_historyOwner->submissionRecords.begin(),
+            m_historyOwner->submissionRecords.end(),
+            [](const std::shared_ptr<RayTracedReflectionSubmissionRecord>& record)
+            {
+                return record && record->legacyAdapter;
+            });
+        if (legacy != m_historyOwner->submissionRecords.end())
+        {
+            NotifySubmission((*legacy)->identity, completion);
+        }
+    }
+
+    bool RayTracedReflectionPass::RequiresHistoryCommit() const noexcept
+    {
+        if (!m_historyOwner)
+        {
+            return false;
+        }
+        return std::any_of(
+            m_historyOwner->reservations.begin(),
+            m_historyOwner->reservations.end(),
+            [](const std::shared_ptr<RayTracedReflectionHistoryReservation>& reservation)
+            {
+                return reservation && !reservation->cancelled &&
+                    reservation->recorded && reservation->graphPassExecuted;
+            });
+    }
+
+    bool RayTracedReflectionPass::CanCommitHistoryAfterPresent(
+        const RenderViewHistoryIdentity& identity) const noexcept
+    {
+        if (!m_historyOwner || !identity.IsValid())
+        {
+            return false;
+        }
+        return std::any_of(
+            m_historyOwner->reservations.begin(),
+            m_historyOwner->reservations.end(),
+            [this, &identity](
+                const std::shared_ptr<RayTracedReflectionHistoryReservation>& reservation)
+            {
+                return reservation && !reservation->cancelled &&
+                    reservation->recorded && reservation->graphPassExecuted &&
+                    reservation->submissionAccepted &&
+                    reservation->allocationGeneration ==
+                        m_historyAllocationGeneration &&
+                    reservation->presentationIdentity == identity;
+            });
+    }
+
+    bool RayTracedReflectionPass::CommitHistoryAfterPresent(
+        const RenderViewHistoryIdentity& identity) noexcept
+    {
+        if (!CanCommitHistoryAfterPresent(identity) || !m_historyOwner)
+        {
+            return false;
+        }
+
+        RayTracedReflectionHistoryOwner& owner = *m_historyOwner;
+        const auto reservationIt = std::find_if(
+            owner.reservations.begin(),
+            owner.reservations.end(),
+            [&identity](const std::shared_ptr<RayTracedReflectionHistoryReservation>& reservation)
+            {
+                return reservation && !reservation->cancelled &&
+                    reservation->submissionAccepted &&
+                    reservation->presentationIdentity == identity;
+            });
+        if (reservationIt == owner.reservations.end())
+        {
+            return false;
+        }
+
+        const std::shared_ptr<RayTracedReflectionHistoryReservation> reservation =
+            *reservationIt;
+        if (reservation->writeIndex == RVX_INVALID_INDEX)
+        {
+            return false;
+        }
+
+        m_historyValid = true;
+        m_historyViewValid = true;
+        m_lastHistoryConfig = reservation->config;
+        m_lastHistoryConfigValid = true;
+        m_lastHistoryViewProjection = reservation->currentViewProjection;
+        m_historyWriteIndex = 1U - reservation->writeIndex;
+        owner.lastCommittedIdentity = reservation->identity;
+        owner.lastCommittedPresentationIdentity = identity;
+        reservation->recordedStats.historyAvailable = true;
+        reservation->recordedStats.depthHistoryAvailable = true;
+        reservation->recordedStats.normalHistoryAvailable = true;
+        reservation->recordedStats.historySubmitted = true;
+
+        const auto submission = std::find_if(
+            owner.submissionRecords.begin(),
+            owner.submissionRecords.end(),
+            [&reservation](const std::shared_ptr<RayTracedReflectionSubmissionRecord>& record)
+            {
+                return record && record->identity == reservation->identity;
+            });
+        if (submission != owner.submissionRecords.end())
+        {
+            (*submission)->stats = reservation->recordedStats;
+            m_stats = (*submission)->stats;
+            owner.submissionRecords.erase(submission);
+        }
+        else
+        {
+            m_stats = reservation->recordedStats;
+        }
+        owner.reservations.erase(reservationIt);
+        return true;
+    }
+
+    void RayTracedReflectionPass::AbandonSubmittedHistory(
+        const RenderViewHistoryIdentity& identity) noexcept
+    {
+        if (!m_historyOwner || !identity.IsValid())
+        {
+            return;
+        }
+
+        RayTracedReflectionHistoryOwner& owner = *m_historyOwner;
+        const auto reservationIt = std::find_if(
+            owner.reservations.begin(),
+            owner.reservations.end(),
+            [&identity](const std::shared_ptr<RayTracedReflectionHistoryReservation>& reservation)
+            {
+                return reservation && !reservation->cancelled &&
+                    reservation->submissionAccepted &&
+                    reservation->presentationIdentity == identity;
+            });
+        if (reservationIt == owner.reservations.end())
+        {
+            return;
+        }
+
+        const std::shared_ptr<RayTracedReflectionHistoryReservation> reservation =
+            *reservationIt;
+        reservation->cancelled = true;
+        std::erase_if(owner.submissionRecords,
+            [&reservation](const std::shared_ptr<RayTracedReflectionSubmissionRecord>& record)
+            {
+                return !record || record->identity == reservation->identity;
+            });
+        owner.reservations.erase(reservationIt);
+        if (m_activeHistoryReservation == reservation)
+        {
+            m_activeHistoryReservation.reset();
+        }
+    }
+
+    void RayTracedReflectionPass::ReleaseUnsubmittedFrame(
+        const RenderPassRecordIdentity& identity)
+    {
+        if (!m_historyOwner || !identity.IsValid())
+        {
+            return;
+        }
+        const bool hasSubmittedCandidate = std::any_of(
+            m_historyOwner->reservations.begin(),
+            m_historyOwner->reservations.end(),
+            [&identity](const std::shared_ptr<RayTracedReflectionHistoryReservation>& reservation)
+            {
+                return reservation && !reservation->cancelled &&
+                    reservation->identity == identity &&
+                    reservation->submissionAccepted;
+            });
+        if (hasSubmittedCandidate)
+        {
+            // Submission has already established physical access state. The
+            // caller must now abandon through the exact
+            // RenderViewHistoryIdentity, never through a weaker record-only
+            // release path.
+            return;
+        }
+        for (const std::shared_ptr<RayTracedReflectionHistoryReservation>&
+                 reservation : m_historyOwner->reservations)
+        {
+            if (reservation && reservation->identity == identity)
+            {
+                // RenderGraph callbacks retain their own shared_ptr. Mark the
+                // value before erasing owner indices so a late execution
+                // cannot record work for an explicitly abandoned identity.
+                reservation->cancelled = true;
+            }
+        }
+        std::erase_if(m_historyOwner->reservations,
+            [&identity](const std::shared_ptr<RayTracedReflectionHistoryReservation>& reservation)
+            {
+                return !reservation || reservation->identity == identity;
+            });
+        std::erase_if(m_historyOwner->submissionRecords,
+            [&identity](const std::shared_ptr<RayTracedReflectionSubmissionRecord>& record)
+            {
+                return !record || record->identity == identity;
+            });
+        if (m_activeHistoryReservation &&
+            m_activeHistoryReservation->identity == identity)
+        {
+            m_activeHistoryReservation.reset();
+        }
+    }
+
+    void RayTracedReflectionPass::ReleaseUnsubmittedFrame()
+    {
+        if (!m_historyOwner)
+        {
+            return;
+        }
+        const auto legacy = std::find_if(
+            m_historyOwner->submissionRecords.begin(),
+            m_historyOwner->submissionRecords.end(),
+            [](const std::shared_ptr<RayTracedReflectionSubmissionRecord>& record)
+            {
+                return record && record->legacyAdapter;
+            });
+        if (legacy != m_historyOwner->submissionRecords.end())
+        {
+            ReleaseUnsubmittedFrame((*legacy)->identity);
+        }
     }
 
     uint32 RayTracedReflectionPass::GetTimingFrameIndex() const
@@ -1046,12 +1730,12 @@ namespace RVX
 
         m_outputWidth = width;
         m_outputHeight = height;
-        m_historyTextureStates[0] = RHIResourceState::Common;
-        m_historyTextureStates[1] = RHIResourceState::Common;
-        m_historyDepthTextureStates[0] = RHIResourceState::Common;
-        m_historyDepthTextureStates[1] = RHIResourceState::Common;
-        m_historyNormalTextureStates[0] = RHIResourceState::Common;
-        m_historyNormalTextureStates[1] = RHIResourceState::Common;
+        m_historyTextureStates[0] = RHIResourceState::Undefined;
+        m_historyTextureStates[1] = RHIResourceState::Undefined;
+        m_historyDepthTextureStates[0] = RHIResourceState::Undefined;
+        m_historyDepthTextureStates[1] = RHIResourceState::Undefined;
+        m_historyNormalTextureStates[0] = RHIResourceState::Undefined;
+        m_historyNormalTextureStates[1] = RHIResourceState::Undefined;
         return true;
     }
 
@@ -1072,6 +1756,40 @@ namespace RVX
 
     void RayTracedReflectionPass::ResetHistoryTextures()
     {
+        if (m_historyOwner)
+        {
+            // A resize/device/configuration reset invalidates the physical
+            // allocation behind every outstanding candidate. Retained graph
+            // callbacks observe cancelled before they can publish work, and
+            // no stale pre-reset identity can later pass presentation
+            // preflight.
+            const bool hadOutstandingReservation =
+                !m_historyOwner->reservations.empty();
+            for (const std::shared_ptr<RayTracedReflectionHistoryReservation>&
+                     reservation : m_historyOwner->reservations)
+            {
+                if (reservation)
+                {
+                    reservation->cancelled = true;
+                }
+            }
+            m_historyOwner->reservations.clear();
+            if (hadOutstandingReservation)
+            {
+                // Setup may allocate a history ring after it has already
+                // registered the current graph's submission record but before
+                // it has created a reservation. Preserve that in-flight
+                // record; only a real pre-reset candidate is invalidated.
+                m_historyOwner->submissionRecords.clear();
+                m_historyOwner->lastCommittedIdentity = {};
+                m_historyOwner->lastSubmittedIdentity = {};
+                m_historyOwner->lastCommittedPresentationIdentity = {};
+            }
+        }
+        if (m_activeHistoryReservation)
+        {
+            m_activeHistoryReservation.reset();
+        }
         if (m_viewCache)
         {
             for (RHITextureRef& texture : m_historyTextures)
@@ -1110,12 +1828,12 @@ namespace RVX
             m_historyNormalTextures[0], m_pendingOwnerRetirements);
         QueueRenderOwnerRetirement(
             m_historyNormalTextures[1], m_pendingOwnerRetirements);
-        m_historyTextureStates[0] = RHIResourceState::Common;
-        m_historyTextureStates[1] = RHIResourceState::Common;
-        m_historyDepthTextureStates[0] = RHIResourceState::Common;
-        m_historyDepthTextureStates[1] = RHIResourceState::Common;
-        m_historyNormalTextureStates[0] = RHIResourceState::Common;
-        m_historyNormalTextureStates[1] = RHIResourceState::Common;
+        m_historyTextureStates[0] = RHIResourceState::Undefined;
+        m_historyTextureStates[1] = RHIResourceState::Undefined;
+        m_historyDepthTextureStates[0] = RHIResourceState::Undefined;
+        m_historyDepthTextureStates[1] = RHIResourceState::Undefined;
+        m_historyNormalTextureStates[0] = RHIResourceState::Undefined;
+        m_historyNormalTextureStates[1] = RHIResourceState::Undefined;
         m_outputWidth = 0;
         m_outputHeight = 0;
         m_historyWriteIndex = 0;
@@ -1131,6 +1849,11 @@ namespace RVX
         m_pendingHistoryViewValid = false;
         m_lastHistoryConfigValid = false;
         m_temporalAccumulatedThisFrame = false;
+        ++m_historyAllocationGeneration;
+        if (m_historyAllocationGeneration == 0)
+        {
+            ++m_historyAllocationGeneration;
+        }
     }
 
     bool RayTracedReflectionPass::EnsureConstantBuffer()

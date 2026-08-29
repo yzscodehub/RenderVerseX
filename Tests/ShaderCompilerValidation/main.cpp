@@ -23,6 +23,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -151,6 +152,71 @@ namespace
         return magic == 0x07230203u;
     }
 
+    bool HasSPIRVExtension(
+        const std::vector<RVX::uint8>& bytecode,
+        std::string_view extension)
+    {
+        return std::search(
+                   bytecode.begin(),
+                   bytecode.end(),
+                   extension.begin(),
+                   extension.end(),
+                   [](RVX::uint8 byte, char character)
+                   {
+                       return byte == static_cast<RVX::uint8>(character);
+                   }) != bytecode.end();
+    }
+
+    bool HasSPIRVCapability(
+        const std::vector<RVX::uint8>& bytecode,
+        RVX::uint32 expectedCapability)
+    {
+        constexpr RVX::uint32 SPIRV_CAPABILITY_OPCODE = 17u;
+        constexpr size_t SPIRV_HEADER_WORD_COUNT = 5u;
+
+        if (!HasSPIRVHeader(bytecode) ||
+            bytecode.size() % sizeof(RVX::uint32) != 0u)
+        {
+            return false;
+        }
+
+        const size_t wordCount = bytecode.size() / sizeof(RVX::uint32);
+        for (size_t wordIndex = SPIRV_HEADER_WORD_COUNT;
+             wordIndex < wordCount;)
+        {
+            RVX::uint32 instruction = 0;
+            std::memcpy(
+                &instruction,
+                bytecode.data() + wordIndex * sizeof(RVX::uint32),
+                sizeof(instruction));
+
+            const RVX::uint32 instructionWordCount = instruction >> 16u;
+            const RVX::uint32 opcode = instruction & 0xffffu;
+            if (instructionWordCount == 0u ||
+                instructionWordCount > wordCount - wordIndex)
+            {
+                return false;
+            }
+
+            if (opcode == SPIRV_CAPABILITY_OPCODE && instructionWordCount >= 2u)
+            {
+                RVX::uint32 capability = 0;
+                std::memcpy(
+                    &capability,
+                    bytecode.data() + (wordIndex + 1u) * sizeof(RVX::uint32),
+                    sizeof(capability));
+                if (capability == expectedCapability)
+                {
+                    return true;
+                }
+            }
+
+            wordIndex += instructionWordCount;
+        }
+
+        return false;
+    }
+
     struct SurfaceShaderCompileCase
     {
         const char* label = nullptr;
@@ -164,9 +230,10 @@ namespace
         const char* requiredResource = nullptr;
     };
 
-    constexpr std::array<SurfaceShaderCompileCase, 20> GFX06_SURFACE_SHADER_CASES = {{
+    constexpr std::array<SurfaceShaderCompileCase, 21> GFX06_SURFACE_SHADER_CASES = {{
         // DefaultLit is used by direct, GPU-driven, and GPU-scene raster paths.
         {"DefaultLit PS", "DefaultLit.hlsl", RVX::RHIShaderStage::Pixel, "PSMain", false},
+        {"DefaultLit Forward surface data PS", "DefaultLit.hlsl", RVX::RHIShaderStage::Pixel, "PSForwardSurfaceData", false},
         {"DefaultLit VS direct", "DefaultLit.hlsl", RVX::RHIShaderStage::Vertex, "VSMain", true},
         {"DefaultLit VS rigid", "DefaultLit.hlsl", RVX::RHIShaderStage::Vertex, "VSMainRigid", true},
         {"DefaultLit VS GPU-driven", "DefaultLit.hlsl", RVX::RHIShaderStage::Vertex, "VSMainGPUDriven", true, nullptr, nullptr, false, "GPUDrivenInstances"},
@@ -337,6 +404,245 @@ namespace
         // Keep compatibility-backend exclusions explicit and measurable. A
         // GPU-scene permutation is not silently replaced by a direct shader.
         EXPECT_EQ(compiledCaseCount, expectedCaseCount);
+    }
+
+    constexpr std::array<const char*, 4> GFX19_SSR_ENTRY_POINTS = {
+        "PSHiZBase",
+        "PSHiZReduce",
+        "PSTrace",
+        "PSResolve",
+    };
+
+    void VerifyGFX19SSRShaderMatrix(
+        RVX::IShaderCompiler& compiler,
+        RVX::RHIBackendType backend)
+    {
+        const fs::path shaderPath =
+            fs::path(RVX_SOURCE_DIR) / "Source" / "Runtime" / "Render" /
+            "Shaders" / "Reflection" / "HiZScreenSpaceReflection.hlsl";
+        ASSERT_TRUE(fs::exists(shaderPath))
+            << "Missing GFX19 SSR shader: " << shaderPath.string();
+        const std::string source = ReadTextFile(shaderPath);
+        ASSERT_FALSE(source.empty())
+            << "Failed to read GFX19 SSR shader: " << shaderPath.string();
+        const std::string shaderPathString = shaderPath.string();
+
+        for (const char* const entryPoint : GFX19_SSR_ENTRY_POINTS)
+        {
+            SCOPED_TRACE(
+                std::string("GFX19 SSR ") + entryPoint + " backend " +
+                std::to_string(static_cast<RVX::uint32>(backend)));
+            RVX::ShaderCompileOptions options;
+            options.stage = RVX::RHIShaderStage::Pixel;
+            options.entryPoint = entryPoint;
+            options.sourceCode = source.c_str();
+            options.sourcePath = shaderPathString.c_str();
+            options.targetBackend = backend;
+            options.enableOptimization = false;
+
+            const RVX::ShaderCompileSupport support =
+                compiler.QuerySupport(options);
+            ASSERT_TRUE(support.IsSupported()) << support.reason;
+
+            const RVX::ShaderCompileResult result = compiler.Compile(options);
+            ASSERT_TRUE(result.success) << result.errorMessage;
+            ASSERT_TRUE(result.reflection.valid);
+            ASSERT_FALSE(result.bytecode.empty());
+            if (backend == RVX::RHIBackendType::DX12)
+            {
+                EXPECT_TRUE(HasDXILContainerHeader(result.bytecode));
+            }
+            else if (backend == RVX::RHIBackendType::Vulkan)
+            {
+                EXPECT_TRUE(HasSPIRVHeader(result.bytecode));
+            }
+
+            // PSResolve is the ABI owner of the fixed-capacity local-probe
+            // array and the materialized reflection-surface inputs. Check
+            // compiled reflection, rather than source text, so register drift
+            // cannot hide behind a stale descriptor layout.
+            if (std::string_view(entryPoint) != "PSResolve")
+            {
+                continue;
+            }
+            const auto findResource = [&result](const char* name)
+            {
+                return std::find_if(
+                    result.reflection.resources.begin(),
+                    result.reflection.resources.end(),
+                    [name](const RVX::ShaderReflection::ResourceBinding& resource)
+                    {
+                        return resource.name == name;
+                    });
+            };
+            const auto localProbes = findResource("LocalProbes");
+            ASSERT_NE(localProbes, result.reflection.resources.end());
+            EXPECT_EQ(localProbes->set, 0u);
+            EXPECT_EQ(localProbes->binding, 7u);
+            EXPECT_EQ(localProbes->type, RVX::RHIBindingType::SampledTexture);
+            EXPECT_EQ(localProbes->count, 8u);
+
+            const auto baseIndirectSpecular = findResource("BaseIndirectSpecular");
+            ASSERT_NE(baseIndirectSpecular, result.reflection.resources.end());
+            EXPECT_EQ(baseIndirectSpecular->set, 0u);
+            EXPECT_EQ(baseIndirectSpecular->binding, 15u);
+            EXPECT_EQ(baseIndirectSpecular->type, RVX::RHIBindingType::SampledTexture);
+            EXPECT_EQ(baseIndirectSpecular->count, 1u);
+
+            const auto exposureState = findResource("ExposureState");
+            ASSERT_NE(exposureState, result.reflection.resources.end());
+            EXPECT_EQ(exposureState->set, 0u);
+            EXPECT_EQ(exposureState->binding, 16u);
+            EXPECT_EQ(exposureState->type, RVX::RHIBindingType::ShaderResourceBuffer);
+            EXPECT_EQ(exposureState->count, 1u);
+
+            const auto specularResponse = findResource("SpecularResponse");
+            ASSERT_NE(specularResponse, result.reflection.resources.end());
+            EXPECT_EQ(specularResponse->set, 0u);
+            EXPECT_EQ(specularResponse->binding, 17u);
+            EXPECT_EQ(specularResponse->type, RVX::RHIBindingType::SampledTexture);
+            EXPECT_EQ(specularResponse->count, 1u);
+
+            const auto sampler = findResource("LinearClampSampler");
+            ASSERT_NE(sampler, result.reflection.resources.end());
+            EXPECT_EQ(sampler->set, 0u);
+            EXPECT_EQ(sampler->binding, 19u);
+            EXPECT_EQ(sampler->type, RVX::RHIBindingType::Sampler);
+            EXPECT_EQ(sampler->count, 1u);
+
+            if (backend == RVX::RHIBackendType::OpenGL)
+            {
+                EXPECT_FALSE(result.glslSource.empty());
+                EXPECT_NE(result.glslSource.find("#version"), std::string::npos);
+            }
+            else if (backend == RVX::RHIBackendType::Metal)
+            {
+                EXPECT_FALSE(result.mslSource.empty());
+                EXPECT_FALSE(result.mslEntryPoint.empty());
+            }
+        }
+    }
+
+    void VerifyGFX22WeightedBlendedOITShaderMatrix(
+        RVX::IShaderCompiler& compiler,
+        RVX::RHIBackendType backend)
+    {
+        struct ShaderCase
+        {
+            const char* asset;
+            RVX::RHIShaderStage stage;
+            const char* entry;
+            bool fullscreenPermutation = false;
+        };
+        constexpr std::array cases = {
+            ShaderCase{"DefaultLit.hlsl", RVX::RHIShaderStage::Pixel,
+                       "PSWeightedBlendedOIT", false},
+            ShaderCase{"Particle/ParticleBillboard.hlsl",
+                       RVX::RHIShaderStage::Pixel,
+                       "PSWeightedBlendedOIT", true},
+            ShaderCase{"Translucency/WeightedBlendedOITComposite.hlsl",
+                       RVX::RHIShaderStage::Vertex, "VSMain", true},
+            ShaderCase{"Translucency/WeightedBlendedOITComposite.hlsl",
+                       RVX::RHIShaderStage::Pixel, "PSMain", true},
+        };
+        const fs::path shaderDirectory =
+            fs::path(RVX_SOURCE_DIR) / "Source" / "Runtime" / "Render" /
+            "Shaders";
+
+        for (const ShaderCase& shaderCase : cases)
+        {
+            const fs::path shaderPath = shaderDirectory / shaderCase.asset;
+            SCOPED_TRACE(
+                std::string("GFX22 WBOIT ") + shaderCase.asset + ":" +
+                shaderCase.entry + " backend " +
+                std::to_string(static_cast<RVX::uint32>(backend)));
+            ASSERT_TRUE(fs::exists(shaderPath)) << shaderPath.string();
+            const std::string source = ReadTextFile(shaderPath);
+            ASSERT_FALSE(source.empty()) << shaderPath.string();
+            const std::string shaderPathString = shaderPath.string();
+
+            RVX::ShaderCompileOptions options;
+            options.stage = shaderCase.stage;
+            options.entryPoint = shaderCase.entry;
+            options.sourceCode = source.c_str();
+            options.sourcePath = shaderPathString.c_str();
+            options.targetBackend = backend;
+            options.enableOptimization = false;
+            if (shaderCase.fullscreenPermutation)
+            {
+                options.defines.push_back({
+                    "RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y",
+                    backend == RVX::RHIBackendType::Vulkan ||
+                            backend == RVX::RHIBackendType::OpenGL
+                        ? "1"
+                        : "0"});
+            }
+
+            const RVX::ShaderCompileSupport support =
+                compiler.QuerySupport(options);
+            ASSERT_TRUE(support.IsSupported()) << support.reason;
+            const RVX::ShaderCompileResult result = compiler.Compile(options);
+            ASSERT_TRUE(result.success) << result.errorMessage;
+            ASSERT_TRUE(result.reflection.valid);
+            ASSERT_FALSE(result.bytecode.empty());
+            if (backend != RVX::RHIBackendType::DX11)
+            {
+                EXPECT_TRUE(HasTrackedInclude(
+                    result, "WeightedBlendedOIT.hlsli"));
+            }
+            if (backend == RVX::RHIBackendType::DX12)
+            {
+                EXPECT_TRUE(HasDXILContainerHeader(result.bytecode));
+            }
+            else if (backend == RVX::RHIBackendType::DX11)
+            {
+                EXPECT_TRUE(HasDXBCContainerHeader(result.bytecode));
+            }
+            else if (backend == RVX::RHIBackendType::Vulkan ||
+                     backend == RVX::RHIBackendType::OpenGL)
+            {
+                EXPECT_TRUE(HasSPIRVHeader(result.bytecode));
+            }
+            if (backend == RVX::RHIBackendType::OpenGL)
+            {
+                EXPECT_FALSE(result.glslSource.empty());
+            }
+            else if (backend == RVX::RHIBackendType::Metal)
+            {
+                EXPECT_FALSE(result.mslSource.empty());
+                EXPECT_EQ(result.mslEntryPoint, shaderCase.entry);
+            }
+
+            if (std::string_view(shaderCase.asset) !=
+                    "Translucency/WeightedBlendedOITComposite.hlsl" ||
+                shaderCase.stage != RVX::RHIShaderStage::Pixel)
+            {
+                continue;
+            }
+            const auto findResource = [&result](const char* name)
+            {
+                return std::find_if(
+                    result.reflection.resources.begin(),
+                    result.reflection.resources.end(),
+                    [name](const RVX::ShaderReflection::ResourceBinding& resource)
+                    {
+                        return resource.name == name;
+                    });
+            };
+            for (const auto [name, binding] : {
+                     std::pair{"SourceSceneHDR", 0u},
+                     std::pair{"OITAccumulation", 1u},
+                     std::pair{"OITRevealage", 2u}})
+            {
+                const auto resource = findResource(name);
+                ASSERT_NE(resource, result.reflection.resources.end()) << name;
+                EXPECT_EQ(resource->set, 0u) << name;
+                EXPECT_EQ(resource->binding, binding) << name;
+                EXPECT_EQ(resource->type, RVX::RHIBindingType::SampledTexture)
+                    << name;
+                EXPECT_EQ(resource->count, 1u) << name;
+            }
+        }
     }
 
     std::string TestVertexShaderSource()
@@ -1101,6 +1407,113 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         readWriteIt->type,
         RVX::RHIBindingType::StorageBuffer);
 }
+
+TEST_F(
+    ShaderCompilerValidationFixture,
+    VulkanRayTracingLibrariesAllowDescriptorIndexingWithoutRayQuery)
+{
+    constexpr RVX::uint32 SPIRV_CAPABILITY_RAY_TRACING_KHR = 4479u;
+    constexpr RVX::uint32 SPIRV_CAPABILITY_RAY_QUERY_KHR = 4472u;
+    constexpr RVX::uint32 SPIRV_CAPABILITY_SHADER_NON_UNIFORM_EXT = 5301u;
+
+    const std::string rayTracingSource = R"(
+RaytracingAccelerationStructure Scene : register(t0, space0);
+Texture2D<float4> MaterialTextures[] : register(t1, space0);
+RWTexture2D<float4> Output : register(u0, space0);
+
+struct RayPayload
+{
+    float3 radiance;
+};
+
+[shader("raygeneration")]
+void RayGen()
+{
+    const uint materialTextureIndex =
+        NonUniformResourceIndex(DispatchRaysIndex().x & 1u);
+    RayDesc ray;
+    ray.Origin = float3(0.0f, 0.0f, 0.0f);
+    ray.Direction = float3(0.0f, 0.0f, 1.0f);
+    ray.TMin = 0.001f;
+    ray.TMax = 1000.0f;
+
+    RayPayload payload = (RayPayload)0;
+    TraceRay(Scene, RAY_FLAG_NONE, 0xff, 0, 0, 0, ray, payload);
+    Output[DispatchRaysIndex().xy] =
+        MaterialTextures[materialTextureIndex].Load(int3(0, 0, 0)) +
+        float4(payload.radiance, 1.0f);
+}
+)";
+
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    RVX::ShaderCompileOptions rayTracingOptions;
+    rayTracingOptions.stage = RVX::RHIShaderStage::RayGeneration;
+    rayTracingOptions.entryPoint = "RayGen";
+    rayTracingOptions.sourceCode = rayTracingSource.c_str();
+    rayTracingOptions.sourcePath = "VulkanRayTracingDescriptorIndexing.hlsl";
+    rayTracingOptions.targetProfile = "lib_6_3";
+    rayTracingOptions.targetBackend = RVX::RHIBackendType::Vulkan;
+    rayTracingOptions.enableOptimization = false;
+
+    const RVX::ShaderCompileSupport rayTracingSupport =
+        compiler->QuerySupport(rayTracingOptions);
+    ASSERT_TRUE(rayTracingSupport.IsSupported()) << rayTracingSupport.reason;
+
+    const RVX::ShaderCompileResult rayTracingResult =
+        compiler->Compile(rayTracingOptions);
+    ASSERT_TRUE(rayTracingResult.success) << rayTracingResult.errorMessage;
+    ASSERT_TRUE(HasSPIRVHeader(rayTracingResult.bytecode));
+    EXPECT_TRUE(HasSPIRVExtension(
+        rayTracingResult.bytecode,
+        "SPV_KHR_ray_tracing"));
+    EXPECT_TRUE(HasSPIRVExtension(
+        rayTracingResult.bytecode,
+        "SPV_EXT_descriptor_indexing"));
+    EXPECT_FALSE(HasSPIRVExtension(
+        rayTracingResult.bytecode,
+        "SPV_KHR_ray_query"));
+    EXPECT_TRUE(HasSPIRVCapability(
+        rayTracingResult.bytecode,
+        SPIRV_CAPABILITY_RAY_TRACING_KHR));
+    EXPECT_TRUE(HasSPIRVCapability(
+        rayTracingResult.bytecode,
+        SPIRV_CAPABILITY_SHADER_NON_UNIFORM_EXT));
+    EXPECT_FALSE(HasSPIRVCapability(
+        rayTracingResult.bytecode,
+        SPIRV_CAPABILITY_RAY_QUERY_KHR));
+
+    const std::string rasterSource = R"(
+[numthreads(1, 1, 1)]
+void main()
+{
+}
+)";
+    RVX::ShaderCompileOptions rasterOptions;
+    rasterOptions.stage = RVX::RHIShaderStage::Compute;
+    rasterOptions.entryPoint = "main";
+    rasterOptions.sourceCode = rasterSource.c_str();
+    rasterOptions.sourcePath = "VulkanRasterBaseline.hlsl";
+    rasterOptions.targetBackend = RVX::RHIBackendType::Vulkan;
+    rasterOptions.enableOptimization = false;
+
+    const RVX::ShaderCompileResult rasterResult = compiler->Compile(rasterOptions);
+    ASSERT_TRUE(rasterResult.success) << rasterResult.errorMessage;
+    ASSERT_TRUE(HasSPIRVHeader(rasterResult.bytecode));
+    EXPECT_FALSE(HasSPIRVExtension(
+        rasterResult.bytecode,
+        "SPV_KHR_ray_tracing"));
+    EXPECT_FALSE(HasSPIRVExtension(
+        rasterResult.bytecode,
+        "SPV_EXT_descriptor_indexing"));
+    EXPECT_FALSE(HasSPIRVCapability(
+        rasterResult.bytecode,
+        SPIRV_CAPABILITY_RAY_TRACING_KHR));
+    EXPECT_FALSE(HasSPIRVCapability(
+        rasterResult.bytecode,
+        SPIRV_CAPABILITY_SHADER_NON_UNIFORM_EXT));
+}
 #endif
 
 #if RVX_ENABLE_OPENGL
@@ -1150,9 +1563,58 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     const auto readOnlyIt = findResource("gReadOnly");
     ASSERT_NE(readOnlyIt, result.reflection.resources.end());
     EXPECT_EQ(readOnlyIt->type, RVX::RHIBindingType::ShaderResourceBuffer);
+    EXPECT_EQ(readOnlyIt->count, 1u);
     const auto readWriteIt = findResource("gReadWrite");
     ASSERT_NE(readWriteIt, result.reflection.resources.end());
     EXPECT_EQ(readWriteIt->type, RVX::RHIBindingType::StorageBuffer);
+    EXPECT_EQ(readWriteIt->count, 1u);
+}
+
+TEST_F(
+    ShaderCompilerValidationFixture,
+    OpenGLReflectionPreservesStaticSeparateImageDescriptorArrayCount)
+{
+    const std::string source = R"(
+Texture2D<float4> FixedTextures[3] : register(t4, space0);
+
+float4 main(float4 position : SV_Position) : SV_Target
+{
+    return FixedTextures[0].Load(int3(0, 0, 0)) +
+           FixedTextures[1].Load(int3(0, 0, 0)) +
+           FixedTextures[2].Load(int3(0, 0, 0));
+}
+)";
+
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    RVX::ShaderCompileOptions options;
+    options.stage = RVX::RHIShaderStage::Pixel;
+    options.entryPoint = "main";
+    options.sourceCode = source.c_str();
+    options.sourcePath = "OpenGLStaticDescriptorArrayReflection.hlsl";
+    options.targetBackend = RVX::RHIBackendType::OpenGL;
+    options.enableOptimization = false;
+
+    const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
+
+    const RVX::ShaderCompileResult result = compiler->Compile(options);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    ASSERT_TRUE(result.reflection.valid);
+
+    const auto texture = std::find_if(
+        result.reflection.resources.begin(),
+        result.reflection.resources.end(),
+        [](const RVX::ShaderReflection::ResourceBinding& resource)
+        {
+            return resource.name == "FixedTextures";
+        });
+    ASSERT_NE(texture, result.reflection.resources.end());
+    EXPECT_EQ(texture->set, 0u);
+    EXPECT_EQ(texture->binding, 4u);
+    EXPECT_EQ(texture->type, RVX::RHIBindingType::SampledTexture);
+    EXPECT_EQ(texture->count, 3u);
 }
 #endif
 
@@ -1511,6 +1973,51 @@ TEST_F(ShaderCompilerValidationFixture,
 
 #if RVX_ENABLE_DX12
 TEST_F(ShaderCompilerValidationFixture,
+       DeferredLightingCompilesExactReflectionReplacementUAVsAsDXIL)
+{
+    const fs::path shaderPath =
+        fs::path(RVX_SOURCE_DIR) / "Source" / "Runtime" / "Render" /
+        "Shaders" / "DeferredLighting.hlsl";
+    const std::string source = ReadTextFile(shaderPath);
+    ASSERT_FALSE(source.empty()) << shaderPath.string();
+
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    const std::string shaderPathString = shaderPath.string();
+    RVX::ShaderCompileOptions options;
+    options.stage = RVX::RHIShaderStage::Compute;
+    options.entryPoint = "CSMain";
+    options.sourceCode = source.c_str();
+    options.sourcePath = shaderPathString.c_str();
+    options.targetBackend = RVX::RHIBackendType::DX12;
+    options.enableOptimization = false;
+
+    const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
+    ASSERT_TRUE(support.IsSupported()) << support.reason;
+    const RVX::ShaderCompileResult result = compiler->Compile(options);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    ASSERT_TRUE(result.reflection.valid);
+    EXPECT_TRUE(HasDXILContainerHeader(result.bytecode));
+
+    const auto expectUAV = [&result](const char* name, RVX::uint32 binding)
+    {
+        const auto resource = std::find_if(
+            result.reflection.resources.begin(), result.reflection.resources.end(),
+            [name](const RVX::ShaderReflection::ResourceBinding& candidate)
+            {
+                return candidate.name == name;
+            });
+        ASSERT_NE(result.reflection.resources.end(), resource) << name;
+        EXPECT_EQ(0u, resource->set) << name;
+        EXPECT_EQ(binding, resource->binding) << name;
+        EXPECT_EQ(RVX::RHIBindingType::StorageTexture, resource->type) << name;
+    };
+    expectUAV("BaseIndirectSpecular", 24u);
+    expectUAV("SpecularResponse", 25u);
+}
+
+TEST_F(ShaderCompilerValidationFixture,
        GFX06SurfaceShadersCompileAsDXIL)
 {
     auto compiler = RVX::CreateShaderCompiler();
@@ -1527,6 +2034,24 @@ TEST_F(ShaderCompilerValidationFixture,
     ASSERT_TRUE(support.IsSupported()) << support.reason;
 
     VerifyGFX06SurfaceShaderMatrix(*compiler, RVX::RHIBackendType::DX12);
+}
+
+TEST_F(ShaderCompilerValidationFixture,
+       GFX19SSRShadersCompileAsDXILWithProbeFallbackABI)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    VerifyGFX19SSRShaderMatrix(*compiler, RVX::RHIBackendType::DX12);
+}
+
+TEST_F(ShaderCompilerValidationFixture,
+       GFX22WeightedBlendedOITShadersCompileAsDXIL)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+    VerifyGFX22WeightedBlendedOITShaderMatrix(
+        *compiler, RVX::RHIBackendType::DX12);
 }
 #endif
 
@@ -1549,6 +2074,15 @@ TEST_F(ShaderCompilerValidationFixture,
 
     VerifyGFX06SurfaceShaderMatrix(*compiler, RVX::RHIBackendType::DX11);
 }
+
+TEST_F(ShaderCompilerValidationFixture,
+       GFX22WeightedBlendedOITShadersCompileAsDXBC)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+    VerifyGFX22WeightedBlendedOITShaderMatrix(
+        *compiler, RVX::RHIBackendType::DX11);
+}
 #endif
 
 #if RVX_ENABLE_VULKAN
@@ -1570,6 +2104,24 @@ TEST_F(ShaderCompilerValidationFixture,
 
     VerifyGFX06SurfaceShaderMatrix(*compiler, RVX::RHIBackendType::Vulkan);
 }
+
+TEST_F(ShaderCompilerValidationFixture,
+       GFX19SSRShadersCompileAsSPIRVWithProbeFallbackABI)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    VerifyGFX19SSRShaderMatrix(*compiler, RVX::RHIBackendType::Vulkan);
+}
+
+TEST_F(ShaderCompilerValidationFixture,
+       GFX22WeightedBlendedOITShadersCompileAsSPIRV)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+    VerifyGFX22WeightedBlendedOITShaderMatrix(
+        *compiler, RVX::RHIBackendType::Vulkan);
+}
 #endif
 
 #if RVX_ENABLE_OPENGL
@@ -1590,6 +2142,24 @@ TEST_F(ShaderCompilerValidationFixture,
     ASSERT_TRUE(support.IsSupported()) << support.reason;
 
     VerifyGFX06SurfaceShaderMatrix(*compiler, RVX::RHIBackendType::OpenGL);
+}
+
+TEST_F(ShaderCompilerValidationFixture,
+       GFX19SSRShadersCompileAsOpenGLGLSLWithMaterializedReflectionABI)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    VerifyGFX19SSRShaderMatrix(*compiler, RVX::RHIBackendType::OpenGL);
+}
+
+TEST_F(ShaderCompilerValidationFixture,
+       GFX22WeightedBlendedOITShadersCompileAsOpenGLGLSL)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+    VerifyGFX22WeightedBlendedOITShaderMatrix(
+        *compiler, RVX::RHIBackendType::OpenGL);
 }
 
 TEST_F(ShaderCompilerValidationFixture,
@@ -1648,6 +2218,24 @@ TEST_F(ShaderCompilerValidationFixture,
     ASSERT_TRUE(support.IsSupported()) << support.reason;
 
     VerifyGFX06SurfaceShaderMatrix(*compiler, RVX::RHIBackendType::Metal);
+}
+
+TEST_F(ShaderCompilerValidationFixture,
+       GFX19SSRShadersCompileAsMSLWithMaterializedReflectionABI)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    VerifyGFX19SSRShaderMatrix(*compiler, RVX::RHIBackendType::Metal);
+}
+
+TEST_F(ShaderCompilerValidationFixture,
+       GFX22WeightedBlendedOITShadersCompileAsMSL)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+    VerifyGFX22WeightedBlendedOITShaderMatrix(
+        *compiler, RVX::RHIBackendType::Metal);
 }
 #endif
 
@@ -1854,7 +2442,7 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
     ASSERT_TRUE(result.success) << result.errorMessage;
     EXPECT_FALSE(result.glslSource.empty());
 
-    static_assert(RVX::RVX_SHADER_COMPILER_CACHE_ABI_VERSION >= 15,
+    static_assert(RVX::RVX_SHADER_COMPILER_CACHE_ABI_VERSION >= 16,
                    "OpenGL GLSL binding ABI changes must invalidate cached GLSL");
     EXPECT_EQ(RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::UniformBuffer, 0, 0), 1u);
     EXPECT_EQ(RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::UniformBuffer, 2, 0), 9u);
@@ -2047,7 +2635,7 @@ TEST_F(ShaderCompilerValidationFixture, OpenGLPermutationUsesGeneratedGLSLSource
 
 TEST(ShaderBindingABIValidation, MaterialSet2UsesCompletePairedOpenGLAndMetalMappings)
 {
-    static_assert(RVX::RVX_SHADER_COMPILER_CACHE_ABI_VERSION >= 15,
+    static_assert(RVX::RVX_SHADER_COMPILER_CACHE_ABI_VERSION >= 16,
                   "Cross-backend resource-index ABI changes must invalidate cached shader source");
 
     constexpr std::array<RVX::uint32, 8> expectedOpenGLTextureUnits = {
@@ -2091,6 +2679,62 @@ TEST(ShaderBindingABIValidation, MaterialSet2UsesCompletePairedOpenGLAndMetalMap
     EXPECT_FALSE(RVX::GLSLBindingABI::TryGetTextureSamplerUnit(
         0, 16, 2, invalidOpaqueSnapshotPair));
 
+    RVX::uint32 localShadowUnit = RVX::RVX_INVALID_INDEX;
+    EXPECT_TRUE(RVX::GLSLBindingABI::TryGetTextureSamplerUnit(
+        0, 17, 2, localShadowUnit));
+    EXPECT_EQ(localShadowUnit, 0u);
+
+    RVX::uint32 invalidLocalShadowPair = RVX::RVX_INVALID_INDEX;
+    EXPECT_FALSE(RVX::GLSLBindingABI::TryGetTextureSamplerUnit(
+        0, 17, 13, invalidLocalShadowPair));
+
+    // GFX19's resolve shader has one read-only exposure SSBO and two
+    // integer-load materialized surface textures. The latter must not gain a
+    // sampler association as that would silently change the shader contract.
+    static_assert(
+        RVX::GLSLBindingABI::FlattenStorageBufferBinding(0, 16) == 0u,
+        "The GFX19 exposure state must fit the OpenGL storage-buffer ABI");
+    static_assert(
+        RVX::GLSLBindingABI::FlattenTextureBinding(0, 15) == 15u,
+        "The GFX19 base indirect texture must retain logical t15");
+    static_assert(
+        RVX::GLSLBindingABI::FlattenTextureBinding(0, 17) == 0u,
+        "The GFX19 specular response texture must fit the OpenGL texture ABI");
+    static_assert(
+        RVX::GLSLBindingABI::FlattenSamplerBinding(0, 19) == 14u,
+        "The GFX19 local-probe sampler must retain its reflected ABI slot");
+
+    EXPECT_EQ(
+        RVX::GLSLBindingABI::FlattenBinding(
+            RVX::RHIBindingType::ShaderResourceBuffer, 0, 16),
+        0u);
+    EXPECT_EQ(
+        RVX::GLSLBindingABI::FlattenBinding(
+            RVX::RHIBindingType::SampledTexture, 0, 15),
+        15u);
+    EXPECT_EQ(
+        RVX::GLSLBindingABI::FlattenBinding(
+            RVX::RHIBindingType::SampledTexture, 0, 17),
+        0u);
+
+    constexpr std::array<RVX::uint32, 9> gfx19SamplerTextures = {
+        1u, 7u, 8u, 9u, 10u, 11u, 12u, 13u, 14u};
+    for (const RVX::uint32 textureBinding : gfx19SamplerTextures)
+    {
+        RVX::uint32 samplerUnit = RVX::RVX_INVALID_INDEX;
+        EXPECT_TRUE(RVX::GLSLBindingABI::TryGetTextureSamplerUnit(
+            0, textureBinding, 19, samplerUnit));
+        EXPECT_EQ(
+            samplerUnit,
+            RVX::GLSLBindingABI::FlattenTextureBinding(0, textureBinding));
+    }
+
+    RVX::uint32 invalidGfx19SamplerPair = RVX::RVX_INVALID_INDEX;
+    EXPECT_FALSE(RVX::GLSLBindingABI::TryGetTextureSamplerUnit(
+        0, 15, 19, invalidGfx19SamplerPair));
+    EXPECT_FALSE(RVX::GLSLBindingABI::TryGetTextureSamplerUnit(
+        0, 17, 19, invalidGfx19SamplerPair));
+
     RVX::uint32 materialConstants = RVX::RVX_INVALID_INDEX;
     RVX::uint32 materialTable = RVX::RVX_INVALID_INDEX;
     EXPECT_TRUE(RVX::MetalBindingABI::TryGetBufferIndex(2, 0, 0, materialConstants));
@@ -2098,6 +2742,28 @@ TEST(ShaderBindingABIValidation, MaterialSet2UsesCompletePairedOpenGLAndMetalMap
     EXPECT_EQ(materialConstants, 20u);
     EXPECT_EQ(materialTable, 21u);
     EXPECT_LE(materialTable, RVX::MetalBindingABI::RVX_METAL_MAX_BUFFER_INDEX);
+
+    RVX::uint32 deferredLocalShadowTexture = RVX::RVX_INVALID_INDEX;
+    EXPECT_TRUE(RVX::MetalBindingABI::TryGetTextureIndex(
+        0, 23, 0, deferredLocalShadowTexture));
+    EXPECT_EQ(deferredLocalShadowTexture, 31u);
+
+    RVX::uint32 gfx19BaseIndirectSpecular = RVX::RVX_INVALID_INDEX;
+    RVX::uint32 gfx19ExposureState = RVX::RVX_INVALID_INDEX;
+    RVX::uint32 gfx19SpecularResponse = RVX::RVX_INVALID_INDEX;
+    RVX::uint32 gfx19LinearClampSampler = RVX::RVX_INVALID_INDEX;
+    EXPECT_TRUE(RVX::MetalBindingABI::TryGetTextureIndex(
+        0, 15, 0, gfx19BaseIndirectSpecular));
+    EXPECT_TRUE(RVX::MetalBindingABI::TryGetBufferIndex(
+        0, 16, 0, gfx19ExposureState));
+    EXPECT_TRUE(RVX::MetalBindingABI::TryGetTextureIndex(
+        0, 17, 0, gfx19SpecularResponse));
+    EXPECT_TRUE(RVX::MetalBindingABI::TryGetSamplerIndex(
+        0, 19, 0, gfx19LinearClampSampler));
+    EXPECT_EQ(gfx19BaseIndirectSpecular, 23u);
+    EXPECT_EQ(gfx19ExposureState, 16u);
+    EXPECT_EQ(gfx19SpecularResponse, 25u);
+    EXPECT_EQ(gfx19LinearClampSampler, 15u);
 
     RVX::uint32 ignored = RVX::RVX_INVALID_INDEX;
     EXPECT_FALSE(RVX::GLSLBindingABI::TryFlattenBinding(
@@ -2123,6 +2789,35 @@ TEST_F(ShaderCompilerValidationFixture,
     options.entryPoint = "main";
     options.sourceCode = source.c_str();
     options.sourcePath = "GFX06MetalCapability.hlsl";
+    options.targetBackend = RVX::RHIBackendType::Metal;
+
+    const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
+    EXPECT_FALSE(support.IsSupported());
+    EXPECT_EQ(
+        support.code,
+        RVX::ShaderCompileSupportCode::BackendUnsupported);
+    EXPECT_FALSE(support.reason.empty());
+}
+
+TEST_F(ShaderCompilerValidationFixture,
+       GFX19MetalSSRShaderCapabilityIsExplicitlyUnsupportedOnNonApple)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    const fs::path shaderPath =
+        fs::path(RVX_SOURCE_DIR) / "Source" / "Runtime" / "Render" /
+        "Shaders" / "Reflection" / "HiZScreenSpaceReflection.hlsl";
+    ASSERT_TRUE(fs::exists(shaderPath)) << shaderPath.string();
+    const std::string source = ReadTextFile(shaderPath);
+    ASSERT_FALSE(source.empty()) << shaderPath.string();
+    const std::string shaderPathString = shaderPath.string();
+
+    RVX::ShaderCompileOptions options;
+    options.stage = RVX::RHIShaderStage::Pixel;
+    options.entryPoint = "PSResolve";
+    options.sourceCode = source.c_str();
+    options.sourcePath = shaderPathString.c_str();
     options.targetBackend = RVX::RHIBackendType::Metal;
 
     const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);

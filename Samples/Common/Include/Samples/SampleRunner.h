@@ -9,6 +9,7 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace RVX
 {
@@ -104,6 +105,7 @@ namespace RVX
                    common.gpuSceneCullingQualificationEnabled ||
                    common.directOpaqueRasterReadbackQualificationEnabled ||
                    common.exposureQualificationProbeEnabled ||
+                   common.hiZReflectionQualificationProbeEnabled ||
                    HasLifetimeQualification() || HasFrameworkAssessment();
         }
     };
@@ -161,6 +163,17 @@ namespace RVX
         [[nodiscard]] static bool ValidateManifestAssessmentContract(
             const SampleScenarioManifest& manifest,
             const SampleAssessmentContract& contract,
+            std::string& outError);
+
+        /**
+         * @brief Activates the narrow GFX19 Hi-Z reflection qualification
+         *        profile without changing the base scenario contract.
+         */
+        [[nodiscard]] static bool ApplyHiZReflectionQualificationProfile(
+            std::string_view sampleId,
+            bool probeEnabled,
+            SampleScenarioManifest& manifest,
+            SampleAssessmentContract& contract,
             std::string& outError);
 
         [[nodiscard]] static uint64 ResolveSceneRemovalPublicationSequence(

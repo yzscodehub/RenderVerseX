@@ -96,6 +96,7 @@ namespace RVX
             const std::string& resourcePath,
             const std::filesystem::path& sourcePath,
             const Resource::ResourceContentIdentity& expectedContentIdentity,
+            bool packageOnly,
             const SampleEnvironmentLoadOptions& options,
             LoadedSampleEnvironment& output,
             std::string& outError) const;

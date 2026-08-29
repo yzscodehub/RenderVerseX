@@ -179,6 +179,94 @@ namespace
                                 camera.farPlane);
     }
 
+    [[nodiscard]] bool IsFinite(const Vec3& value) noexcept
+    {
+        return std::isfinite(value.x) && std::isfinite(value.y) &&
+               std::isfinite(value.z);
+    }
+
+    [[nodiscard]] bool IsFinite(const Vec4& value) noexcept
+    {
+        return std::isfinite(value.x) && std::isfinite(value.y) &&
+               std::isfinite(value.z) && std::isfinite(value.w);
+    }
+
+    [[nodiscard]] bool IsFinite(const Mat4& value) noexcept
+    {
+        return IsFinite(value[0]) && IsFinite(value[1]) &&
+               IsFinite(value[2]) && IsFinite(value[3]);
+    }
+
+    [[nodiscard]] std::optional<RenderProbeShape> ToRenderProbeShape(
+        SceneECS::ReflectionProbeShape shape) noexcept
+    {
+        switch (shape)
+        {
+            case SceneECS::ReflectionProbeShape::Box:
+                return RenderProbeShape::Box;
+            case SceneECS::ReflectionProbeShape::Sphere:
+                return RenderProbeShape::Sphere;
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] std::optional<RenderProbeMode> ToRenderProbeMode(
+        SceneECS::ReflectionProbeAssetSource source) noexcept
+    {
+        switch (source)
+        {
+            case SceneECS::ReflectionProbeAssetSource::Baked:
+                return RenderProbeMode::Baked;
+            case SceneECS::ReflectionProbeAssetSource::Custom:
+                return RenderProbeMode::Custom;
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] AssetId GetReflectionProbeCubemapAssetId(
+        const SceneECS::ReflectionProbe& probe) noexcept
+    {
+        switch (probe.assetSource)
+        {
+            case SceneECS::ReflectionProbeAssetSource::Baked:
+                return probe.bakedCubemapAssetId;
+            case SceneECS::ReflectionProbeAssetSource::Custom:
+                return probe.customCubemapAssetId;
+        }
+        return {};
+    }
+
+    [[nodiscard]] bool IsValidReflectionProbeSource(
+        const SceneECS::ReflectionProbe& probe,
+        const Mat4& worldTransform) noexcept
+    {
+        const std::optional<RenderProbeShape> shape =
+            ToRenderProbeShape(probe.shape);
+        const std::optional<RenderProbeMode> mode =
+            ToRenderProbeMode(probe.assetSource);
+        if (!shape.has_value() || !mode.has_value() || !IsFinite(worldTransform) ||
+            !IsFinite(probe.influenceExtent) ||
+            !IsFinite(probe.boxProjectionSize) ||
+            !IsFinite(probe.boxProjectionOffset) ||
+            !std::isfinite(probe.blendDistance) ||
+            !std::isfinite(probe.nearClip) || !std::isfinite(probe.farClip) ||
+            probe.influenceExtent.x <= 0.0f || probe.influenceExtent.y <= 0.0f ||
+            probe.influenceExtent.z <= 0.0f || probe.blendDistance < 0.0f ||
+            probe.nearClip <= 0.0f || probe.farClip <= probe.nearClip)
+        {
+            return false;
+        }
+        if (probe.useBoxProjection &&
+            (*shape != RenderProbeShape::Box ||
+             probe.boxProjectionSize.x <= 0.0f ||
+             probe.boxProjectionSize.y <= 0.0f ||
+             probe.boxProjectionSize.z <= 0.0f))
+        {
+            return false;
+        }
+        return !probe.hasValidData || GetReflectionProbeCubemapAssetId(probe).IsValid();
+    }
+
     void ClearForFailure(EcsFrozenSceneBridgeOutput& output,
                          uint64 snapshotRevision) noexcept
     {
@@ -322,6 +410,7 @@ bool EcsFrozenSceneBridge::Build(
     outOutput.lightValues.reserve(snapshot.lights.size());
     outOutput.cameras.reserve(snapshot.cameras.size());
     outOutput.skyboxes.reserve(snapshot.skyboxes.size());
+    outOutput.reflectionProbes.reserve(snapshot.reflectionProbes.size());
     outOutput.particles.reserve(snapshot.particles.size());
     outOutput.water.reserve(snapshot.water.size());
     outOutput.terrain.reserve(snapshot.terrain.size());
@@ -640,6 +729,74 @@ bool EcsFrozenSceneBridge::Build(
         });
     }
 
+    for (const SceneECS::FrozenSceneReflectionProbe& probe :
+         snapshot.reflectionProbes)
+    {
+        const ECS::EntityHandle sourceEntity = probe.sourceEntity.IsValid() ?
+                                                    probe.sourceEntity :
+                                                    probe.id.entity;
+        if (sourceEntity != probe.id.entity)
+        {
+            result.code = EcsFrozenSceneBridgeCode::SourceIdentityMismatch;
+            return fail();
+        }
+        if (!IsValidReflectionProbeSource(probe.source, probe.worldTransform))
+        {
+            result.code = EcsFrozenSceneBridgeCode::InvalidReflectionProbeSource;
+            return fail();
+        }
+
+        // An invisible probe is canonical absence in the retained RenderScene.
+        // It is intentionally not assigned an ID so a visibility transition
+        // becomes an ordinary RemoveProbe mutation downstream.
+        if (!probe.visibility.visible)
+        {
+            continue;
+        }
+
+        uint64 probeId = 0;
+        if (!identityValidator.Register(probe.id,
+                                        SceneECS::FrozenSceneObjectType::Probe,
+                                        probeId))
+        {
+            return fail();
+        }
+        const std::optional<RenderProbeShape> shape =
+            ToRenderProbeShape(probe.source.shape);
+        const std::optional<RenderProbeMode> mode =
+            ToRenderProbeMode(probe.source.assetSource);
+        if (!shape.has_value() || !mode.has_value())
+        {
+            result.code = EcsFrozenSceneBridgeCode::InvalidReflectionProbeSource;
+            return fail();
+        }
+
+        outOutput.reflectionProbes.push_back({
+            .id = probeId,
+            .source = MakeObjectSourceIdentity(probe.id.sceneRuntimeId,
+                                               sourceEntity),
+            .sourceEntity = sourceEntity,
+            .kind = RenderProbeKind::Reflection,
+            .shape = *shape,
+            .mode = *mode,
+            .cubemapAssetId = GetReflectionProbeCubemapAssetId(probe.source),
+            .worldTransform = probe.worldTransform,
+            .influenceExtent = probe.source.influenceExtent,
+            .blendDistance = probe.source.blendDistance,
+            .boxProjectionSize = probe.source.boxProjectionSize,
+            .boxProjectionOffset = probe.source.boxProjectionOffset,
+            .layerMask = probe.visibility.layerMask,
+            .priority = probe.source.priority,
+            .nearClip = probe.source.nearClip,
+            .farClip = probe.source.farClip,
+            .useBoxProjection = probe.source.useBoxProjection,
+            .useHDR = probe.source.useHDR,
+            .hasValidData = probe.source.hasValidData,
+            .transformSourceRevision = probe.transformSourceRevision,
+            .visibilityWriteVersion = probe.visibilityWriteVersion,
+        });
+    }
+
     for (const SceneECS::FrozenSceneParticle& particle : snapshot.particles)
     {
         if (!particle.sourceEntity.IsValid() ||
@@ -793,6 +950,8 @@ bool EcsFrozenSceneBridge::Build(
         static_cast<uint32>(outOutput.materialBindings.size());
     result.cameraCount = static_cast<uint32>(outOutput.cameras.size());
     result.skyboxCount = static_cast<uint32>(outOutput.skyboxes.size());
+    result.reflectionProbeCount =
+        static_cast<uint32>(outOutput.reflectionProbes.size());
     result.particleCount = static_cast<uint32>(outOutput.particles.size());
     result.waterCount = static_cast<uint32>(outOutput.water.size());
     result.terrainCount = static_cast<uint32>(outOutput.terrain.size());

@@ -12,7 +12,9 @@
 #include "RHI/RHIHeap.h"
 
 #include <atomic>
+#include <mutex>
 #include <string>
+#include <vector>
 
 namespace RVX
 {
@@ -72,6 +74,47 @@ namespace RVX
 
         void* m_mappedData = nullptr;
         bool m_isMappedForAccess = false;
+    };
+
+    /** @brief DXR post-build compacted-size storage with one-shot query state. */
+    class DX12AccelerationStructureCompactedSizeQuery final
+        : public RHIAccelerationStructureCompactedSizeQuery
+    {
+    public:
+        DX12AccelerationStructureCompactedSizeQuery(
+            DX12Device* device,
+            const RHIAccelerationStructureCompactedSizeQueryDesc& desc);
+
+        uint32 GetCount() const override { return m_desc.count; }
+        RHICommandQueueType GetQueueType() const override
+        {
+            return m_desc.queueType;
+        }
+
+        DX12Buffer* GetResultBuffer() const
+        {
+            return static_cast<DX12Buffer*>(m_resultBuffer.Get());
+        }
+        bool Reserve(uint32 firstQuery, uint32 queryCount);
+        bool CanResolve(uint32 firstQuery, uint32 queryCount) const;
+        void Commit();
+        void Discard();
+
+    private:
+        enum class State : uint8
+        {
+            Available,
+            Pending,
+            Submitted,
+        };
+
+        DX12Device* m_device = nullptr;
+        RHIAccelerationStructureCompactedSizeQueryDesc m_desc;
+        RHIBufferRef m_resultBuffer;
+        mutable std::mutex m_mutex;
+        State m_state = State::Available;
+        uint32 m_firstQuery = 0;
+        uint32 m_queryCount = 0;
     };
 
     // =============================================================================
@@ -222,13 +265,49 @@ namespace RVX
         RHIAccelerationStructureType GetType() const override { return m_desc.type; }
         uint64 GetSize() const override { return m_desc.size; }
         uint64 GetGPUVirtualAddress() const override;
+        RHIBuffer* GetStorageBuffer() const override
+        {
+            return m_storageBuffer.Get();
+        }
 
         ID3D12Resource* GetResource() const;
+
+        bool HasSubmittedBuild() const noexcept
+        {
+            return m_hasSubmittedBuild.load(std::memory_order_acquire);
+        }
+        bool SubmittedBuildAllowsCompaction() const noexcept
+        {
+            return HasSubmittedBuild() &&
+                   (m_submittedBuildFlags.load(std::memory_order_acquire) &
+                    static_cast<uint32>(
+                        RHIAccelerationStructureBuildFlags::AllowCompaction)) != 0;
+        }
+        bool SubmittedBuildWasOnQueue(RHICommandQueueType queueType) const noexcept
+        {
+            return HasSubmittedBuild() &&
+                   m_submittedBuildQueueType.load(std::memory_order_acquire) ==
+                       static_cast<uint8>(queueType);
+        }
+        void CommitSubmittedBuildFlags(
+            RHIAccelerationStructureBuildFlags flags,
+            RHICommandQueueType queueType) noexcept
+        {
+            m_submittedBuildQueueType.store(
+                static_cast<uint8>(queueType), std::memory_order_relaxed);
+            m_submittedBuildFlags.store(
+                static_cast<uint32>(flags), std::memory_order_release);
+            m_hasSubmittedBuild.store(true, std::memory_order_release);
+        }
 
     private:
         DX12Device* m_device = nullptr;
         RHIAccelerationStructureDesc m_desc;
         RHIBufferRef m_storageBuffer;
+        std::atomic<uint32> m_submittedBuildFlags{0};
+        std::atomic<uint8> m_submittedBuildQueueType{
+            static_cast<uint8>(RHICommandQueueType::Graphics)};
+        std::atomic<bool> m_hasSubmittedBuild{false};
     };
 
     // =============================================================================
@@ -266,6 +345,10 @@ namespace RVX
     RHISamplerRef CreateDX12Sampler(DX12Device* device, const RHISamplerDesc& desc);
     RHIShaderRef CreateDX12Shader(DX12Device* device, const RHIShaderDesc& desc);
     RHIAccelerationStructureRef CreateDX12AccelerationStructure(DX12Device* device, const RHIAccelerationStructureDesc& desc);
+    RHIAccelerationStructureCompactedSizeQueryRef
+    CreateDX12AccelerationStructureCompactedSizeQuery(
+        DX12Device* device,
+        const RHIAccelerationStructureCompactedSizeQueryDesc& desc);
     RHIFenceRef CreateDX12Fence(DX12Device* device, uint64 initialValue);
     void WaitForDX12Fence(DX12Device* device, RHIFence* fence, uint64 value);
 

@@ -162,6 +162,26 @@ namespace
             RenderToonOutlineQualificationRequestState::RejectedByRuntimeShutdown) ==
         4);
 
+    static_assert(
+        std::is_same_v<
+            std::underlying_type_t<RenderHiZReflectionQualificationRequestState>,
+            uint8>);
+    static_assert(
+        static_cast<uint8>(
+            RenderHiZReflectionQualificationRequestState::NotRequested) == 0);
+    static_assert(
+        static_cast<uint8>(RenderHiZReflectionQualificationRequestState::
+                               PendingRenderOwnerAdmission) == 1);
+    static_assert(
+        static_cast<uint8>(
+            RenderHiZReflectionQualificationRequestState::Accepted) == 2);
+    static_assert(
+        static_cast<uint8>(RenderHiZReflectionQualificationRequestState::
+                               RejectedByRenderOwner) == 3);
+    static_assert(
+        static_cast<uint8>(RenderHiZReflectionQualificationRequestState::
+                               RejectedByRuntimeShutdown) == 4);
+
     constexpr auto RVX_TEST_TIMEOUT = 2s;
 
     class BlockingRuntimeBootstrapHook final
@@ -609,6 +629,23 @@ namespace
         while (std::chrono::steady_clock::now() < deadline)
         {
             if (runtime.GetToonOutlineQualificationProbeRequestResult()
+                    .IsTerminal())
+            {
+                return true;
+            }
+            std::this_thread::sleep_for(1ms);
+        }
+        return false;
+    }
+
+    bool WaitForHiZReflectionQualificationRequestTerminal(
+        const RenderThreadRuntime& runtime)
+    {
+        const auto deadline =
+            std::chrono::steady_clock::now() + RVX_TEST_TIMEOUT;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            if (runtime.GetHiZReflectionQualificationProbeRequestResult()
                     .IsTerminal())
             {
                 return true;
@@ -1825,6 +1862,262 @@ namespace
 
         EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
         EXPECT_FALSE(runtime.RequestAmbientOcclusionQualificationProbe());
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         HiZReflectionQualificationProbeRequestIsOneShotAndOwnerDelivered)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->hiZReflectionQualificationProbeAccepted = true;
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe));
+
+        EXPECT_FALSE(runtime.RequestHiZReflectionQualificationProbe());
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        EXPECT_EQ(runtime.GetHiZReflectionQualificationProbeRequestResult().state,
+                  RenderHiZReflectionQualificationRequestState::NotRequested);
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::HiZReflectionQualificationProbe),
+                  0U);
+
+        EXPECT_TRUE(runtime.RequestHiZReflectionQualificationProbe());
+        EXPECT_FALSE(runtime.RequestHiZReflectionQualificationProbe());
+        const uint64 pumpIterationsAfterRequest =
+            runtime.GetDiagnosticsSnapshot().pumpIterationCount;
+        runtime.Wake();
+        ASSERT_TRUE(WaitForPumpIterationCount(
+            runtime, pumpIterationsAfterRequest + 1U));
+        EXPECT_EQ(runtime.GetHiZReflectionQualificationProbeRequestResult().state,
+                  RenderHiZReflectionQualificationRequestState::
+                      PendingRenderOwnerAdmission);
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::HiZReflectionQualificationProbe),
+                  0U);
+        EXPECT_EQ(probe->GetEventCount(RenderRuntimeTestEvent::Frame), 0U);
+
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(8140)).code,
+                  RenderFramePublishCode::Accepted);
+        ASSERT_TRUE(probe->WaitForEventCount(
+            RenderRuntimeTestEvent::HiZReflectionQualificationProbe,
+            1U,
+            RVX_TEST_TIMEOUT));
+        ASSERT_TRUE(probe->WaitForEventCount(
+            RenderRuntimeTestEvent::Frame, 1U, RVX_TEST_TIMEOUT));
+        ASSERT_TRUE(WaitForPresentedFrame(runtime, 8140));
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::HiZReflectionQualificationProbe),
+                  1U);
+        EXPECT_EQ(probe->GetEventCount(RenderRuntimeTestEvent::Frame), 1U);
+        const std::vector<RenderRuntimeTestEvent> events = probe->GetEvents();
+        const auto qualification = std::find(
+            events.begin(),
+            events.end(),
+            RenderRuntimeTestEvent::HiZReflectionQualificationProbe);
+        const auto frame = std::find(
+            events.begin(), events.end(), RenderRuntimeTestEvent::Frame);
+        ASSERT_NE(events.end(), qualification);
+        ASSERT_NE(events.end(), frame);
+        EXPECT_LT(std::distance(events.begin(), qualification),
+                  std::distance(events.begin(), frame));
+        const RenderHiZReflectionQualificationRequestResult result =
+            runtime.GetHiZReflectionQualificationProbeRequestResult();
+        EXPECT_TRUE(result.IsTerminal());
+        EXPECT_TRUE(result.IsAccepted());
+        EXPECT_FALSE(result.IsRejected());
+        EXPECT_EQ(result.state,
+                  RenderHiZReflectionQualificationRequestState::Accepted);
+        EXPECT_EQ(result.targetFrameSequence, 8140U);
+        EXPECT_STREQ(
+            result.diagnostic,
+            "Hi-Z reflection qualification probe was accepted by the render owner");
+
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+        EXPECT_FALSE(runtime.RequestHiZReflectionQualificationProbe());
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         HiZReflectionQualificationProbeConsumerRejectionIsTerminalAndDiagnostic)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe));
+
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        ASSERT_TRUE(runtime.RequestHiZReflectionQualificationProbe());
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(8141)).code,
+                  RenderFramePublishCode::Accepted);
+        ASSERT_TRUE(probe->WaitForEventCount(
+            RenderRuntimeTestEvent::HiZReflectionQualificationProbe,
+            1U,
+            RVX_TEST_TIMEOUT));
+        ASSERT_TRUE(WaitForHiZReflectionQualificationRequestTerminal(runtime));
+        ASSERT_TRUE(probe->WaitForEventCount(
+            RenderRuntimeTestEvent::Frame, 1U, RVX_TEST_TIMEOUT));
+        ASSERT_TRUE(WaitForPresentedFrame(runtime, 8141));
+
+        const RenderHiZReflectionQualificationRequestResult result =
+            runtime.GetHiZReflectionQualificationProbeRequestResult();
+        EXPECT_TRUE(result.IsTerminal());
+        EXPECT_FALSE(result.IsAccepted());
+        EXPECT_TRUE(result.IsRejected());
+        EXPECT_EQ(result.state,
+                  RenderHiZReflectionQualificationRequestState::
+                      RejectedByRenderOwner);
+        EXPECT_EQ(result.targetFrameSequence, 0U);
+        EXPECT_STREQ(
+            result.diagnostic,
+            "Hi-Z reflection qualification probe was rejected by the render owner");
+        EXPECT_FALSE(runtime.RequestHiZReflectionQualificationProbe());
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::HiZReflectionQualificationProbe),
+                  1U);
+
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         HiZReflectionQualificationProbeSkipsAlreadyPublishedFrameAndBindsNextFrame)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->hiZReflectionQualificationProbeAccepted = true;
+        auto acquireHook = std::make_shared<BlockingFrameAcquireHook>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe),
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            acquireHook);
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+
+        acquireHook->Arm();
+        runtime.Wake();
+        const bool ownerReachedAcquire = acquireHook->WaitUntilEntered(
+            RVX_TEST_TIMEOUT);
+        if (!ownerReachedAcquire)
+        {
+            acquireHook->Release();
+            EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+            FAIL() << "Render owner did not reach the frame acquire seam";
+            return;
+        }
+
+        const RenderFramePublishResult oldFrame =
+            PublishFrame(runtime, MakePacket(8142));
+        const bool requestAccepted =
+            runtime.RequestHiZReflectionQualificationProbe();
+        acquireHook->Release();
+
+        ASSERT_EQ(oldFrame.code, RenderFramePublishCode::Accepted);
+        ASSERT_TRUE(requestAccepted);
+        ASSERT_TRUE(probe->WaitForEventCount(
+            RenderRuntimeTestEvent::Frame, 1U, RVX_TEST_TIMEOUT));
+        ASSERT_TRUE(WaitForPresentedFrame(runtime, 8142));
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::HiZReflectionQualificationProbe),
+                  0U);
+        const RenderHiZReflectionQualificationRequestResult pending =
+            runtime.GetHiZReflectionQualificationProbeRequestResult();
+        EXPECT_EQ(pending.state,
+                  RenderHiZReflectionQualificationRequestState::
+                      PendingRenderOwnerAdmission);
+        EXPECT_EQ(pending.targetFrameSequence, 0U);
+
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(8143)).code,
+                  RenderFramePublishCode::Accepted);
+        ASSERT_TRUE(probe->WaitForEventCount(
+            RenderRuntimeTestEvent::HiZReflectionQualificationProbe,
+            1U,
+            RVX_TEST_TIMEOUT));
+        ASSERT_TRUE(probe->WaitForEventCount(
+            RenderRuntimeTestEvent::Frame, 2U, RVX_TEST_TIMEOUT));
+        ASSERT_TRUE(WaitForPresentedFrame(runtime, 8143));
+
+        const std::vector<RenderRuntimeTestEvent> events = probe->GetEvents();
+        const auto firstFrame = std::find(
+            events.begin(), events.end(), RenderRuntimeTestEvent::Frame);
+        ASSERT_NE(events.end(), firstFrame);
+        const auto qualification = std::find(
+            std::next(firstFrame),
+            events.end(),
+            RenderRuntimeTestEvent::HiZReflectionQualificationProbe);
+        ASSERT_NE(events.end(), qualification);
+        const auto secondFrame = std::find(
+            std::next(qualification),
+            events.end(),
+            RenderRuntimeTestEvent::Frame);
+        ASSERT_NE(events.end(), secondFrame);
+
+        const RenderHiZReflectionQualificationRequestResult result =
+            runtime.GetHiZReflectionQualificationProbeRequestResult();
+        EXPECT_TRUE(result.IsAccepted());
+        EXPECT_EQ(result.state,
+                  RenderHiZReflectionQualificationRequestState::Accepted);
+        EXPECT_EQ(result.targetFrameSequence, 8143U);
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         PendingHiZReflectionQualificationProbeIsRejectedByShutdownWithoutOwnerCallback)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->hiZReflectionQualificationProbeAccepted = true;
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe));
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+
+        const uint64 pumpIterationsBeforeRequest =
+            runtime.GetDiagnosticsSnapshot().pumpIterationCount;
+        ASSERT_TRUE(runtime.RequestHiZReflectionQualificationProbe());
+        ASSERT_TRUE(WaitForPumpIterationCount(
+            runtime, pumpIterationsBeforeRequest + 1U));
+        EXPECT_EQ(runtime.GetHiZReflectionQualificationProbeRequestResult().state,
+                  RenderHiZReflectionQualificationRequestState::
+                      PendingRenderOwnerAdmission);
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::HiZReflectionQualificationProbe),
+                  0U);
+
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+        const RenderHiZReflectionQualificationRequestResult result =
+            runtime.GetHiZReflectionQualificationProbeRequestResult();
+        EXPECT_TRUE(result.IsTerminal());
+        EXPECT_TRUE(result.IsRejected());
+        EXPECT_EQ(result.state,
+                  RenderHiZReflectionQualificationRequestState::
+                      RejectedByRuntimeShutdown);
+        EXPECT_EQ(result.targetFrameSequence, 0U);
+        EXPECT_STREQ(
+            result.diagnostic,
+            "Hi-Z reflection qualification probe was rejected because the render runtime sealed before admission");
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::HiZReflectionQualificationProbe),
+                  0U);
     }
 
     TEST(RenderThreadRuntimeValidation,
@@ -4318,6 +4611,16 @@ namespace
         ASSERT_NE(clearBegin, std::string::npos);
         const std::string accepted =
             source.substr(acceptedBegin, clearBegin - acceptedBegin);
+        const size_t completionToken = accepted.find(
+            "const bool completionTokenRepresented");
+        const size_t semanticQualification = accepted.find(
+            "IsPendingSubmissionSemanticallyQualified()");
+        const size_t semanticFailureCode = accepted.find(
+            "result.code = RenderRuntimeCode::RenderGraphValidationFailed",
+            semanticQualification);
+        const size_t semanticFailureMessage = accepted.find(
+            "Submitted frame failed exact semantic qualification",
+            semanticQualification);
         const size_t present = accepted.find("m_context->Present()");
         const size_t health = accepted.find("RenderRuntimeResult health", present);
         const size_t healthFailure = accepted.find(
@@ -4326,8 +4629,12 @@ namespace
         const size_t bind = accepted.find("BindSubmittedFrameTiming(");
         const size_t capture = accepted.find("CompleteCapture(capture)");
         const size_t watermark = accepted.find(
-            "m_sceneRenderer->MarkAcceptedFramePresented()");
+            "m_sceneRenderer->MarkAcceptedFramePresented(");
         const size_t firstPresent = accepted.find("RecordFirstPresent(frameSequence");
+        ASSERT_NE(completionToken, std::string::npos);
+        ASSERT_NE(semanticQualification, std::string::npos);
+        ASSERT_NE(semanticFailureCode, std::string::npos);
+        ASSERT_NE(semanticFailureMessage, std::string::npos);
         ASSERT_NE(present, std::string::npos);
         ASSERT_NE(health, std::string::npos);
         ASSERT_NE(healthFailure, std::string::npos);
@@ -4336,6 +4643,11 @@ namespace
         ASSERT_NE(capture, std::string::npos);
         ASSERT_NE(watermark, std::string::npos);
         ASSERT_NE(firstPresent, std::string::npos);
+        EXPECT_LT(completionToken, semanticQualification);
+        EXPECT_LT(semanticQualification, semanticFailureCode);
+        EXPECT_LT(semanticFailureCode, semanticFailureMessage);
+        EXPECT_LT(semanticFailureMessage, present);
+        EXPECT_LT(completionToken, present);
         EXPECT_LT(present, health);
         EXPECT_LT(healthFailure, watermark);
         EXPECT_LT(healthFailureReturn, watermark);

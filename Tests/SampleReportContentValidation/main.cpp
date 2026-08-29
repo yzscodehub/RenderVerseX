@@ -235,6 +235,8 @@ namespace
         bool requireToonLightingExecution = false;
         bool requireToonOutlineExecution = false;
         bool requireTranslucencyExecution = false;
+        bool requireWeightedBlendedOITExecution = false;
+        bool requireWeightedBlendedOITFrameContract = false;
         bool requireTransparentAlphaBlendExecution = false;
         bool requireTransparentPremultipliedExecution = false;
         bool requireTransparentAdditiveExecution = false;
@@ -248,12 +250,15 @@ namespace
         bool requireParticleSmokeExecution = false;
         bool requireWaterSurfaceExecution = false;
         bool requireCookedShaderProvider = false;
+        std::string requiredCookedShaderRoot;
         bool requireReadinessWait = false;
         bool requireGPUDrivenExecution = false;
         bool requireDirectExecution = false;
         bool requireOpaqueExecution = false;
         bool requireOpaqueMaterialsReady = false;
         bool requireDirectionalShadow = false;
+        bool requireLocalShadowExecution = false;
+        bool requireHiZReflectionExecution = false;
         bool requireInteriorP0A = false;
         bool forbidUnsupportedPostProcess = false;
         bool requireAssessmentSummary = false;
@@ -834,6 +839,37 @@ namespace
             if (arg == "--require-cooked-shader-provider")
             {
                 options.requireCookedShaderProvider = true;
+                continue;
+            }
+            if (arg == "--require-cooked-shader-root")
+            {
+                const char* value = requireValue("--require-cooked-shader-root");
+                if (!value) return false;
+                options.requireCookedShaderProvider = true;
+                options.requiredCookedShaderRoot = value;
+                continue;
+            }
+            if (arg == "--require-local-shadow-execution")
+            {
+                options.requireLocalShadowExecution = true;
+                continue;
+            }
+            if (arg == "--require-hiz-reflection-execution")
+            {
+                options.requireHiZReflectionExecution = true;
+                continue;
+            }
+            if (arg == "--require-weighted-blended-oit-execution")
+            {
+                options.requireWeightedBlendedOITExecution = true;
+                continue;
+            }
+            if (arg == "--require-weighted-blended-oit-frame-contract")
+            {
+                // The mixed mesh/particle contract is a strict extension of
+                // the general OIT execution proof, never an alternate path.
+                options.requireWeightedBlendedOITExecution = true;
+                options.requireWeightedBlendedOITFrameContract = true;
                 continue;
             }
 
@@ -3192,6 +3228,301 @@ namespace
         return passed;
     }
 
+    // GFX19 local shadows are qualified only by the public projection of the
+    // exact caster -> atlas -> receiver execution accepted by SceneRenderer.
+    // Light creation, shadow requests, or atlas allocation alone cannot pass.
+    bool ValidateLocalShadowExecutionProjection(const Json& report,
+                                                const Options* options)
+    {
+        if (options == nullptr || !options->requireLocalShadowExecution)
+        {
+            return true;
+        }
+
+        const auto diagnostics = report.find("renderDiagnostics");
+        if (diagnostics == report.end() || !diagnostics->is_object())
+        {
+            std::cerr << "GFX19 local-shadow qualification requires report renderDiagnostics\n";
+            return false;
+        }
+
+        constexpr const char* Context = "GFX19 local shadows";
+        bool localLightingAvailable = false;
+        bool pointShadowSupported = false;
+        bool spotShadowSupported = false;
+        bool localShadowAtlasReady = false;
+        uint64_t pointLightRequestedCount = 0;
+        uint64_t pointLightAdmittedCount = 0;
+        uint64_t pointLightOverflowCount = 0;
+        uint64_t spotLightRequestedCount = 0;
+        uint64_t spotLightAdmittedCount = 0;
+        uint64_t spotLightOverflowCount = 0;
+        uint64_t pointShadowRequestedCount = 0;
+        uint64_t spotShadowRequestedCount = 0;
+        uint64_t localShadowRequestCount = 0;
+        uint64_t localShadowCasterDrawCount = 0;
+        std::string localShadowFallbackReason;
+        const bool parsed =
+            ReadBooleanField(*diagnostics, "localLightingAvailable",
+                             localLightingAvailable, Context) &&
+            ReadUnsignedField(*diagnostics, "pointLightRequestedCount",
+                              pointLightRequestedCount, Context) &&
+            ReadUnsignedField(*diagnostics, "pointLightAdmittedCount",
+                              pointLightAdmittedCount, Context) &&
+            ReadUnsignedField(*diagnostics, "pointLightOverflowCount",
+                              pointLightOverflowCount, Context) &&
+            ReadUnsignedField(*diagnostics, "spotLightRequestedCount",
+                              spotLightRequestedCount, Context) &&
+            ReadUnsignedField(*diagnostics, "spotLightAdmittedCount",
+                              spotLightAdmittedCount, Context) &&
+            ReadUnsignedField(*diagnostics, "spotLightOverflowCount",
+                              spotLightOverflowCount, Context) &&
+            ReadUnsignedField(*diagnostics, "pointShadowRequestedCount",
+                              pointShadowRequestedCount, Context) &&
+            ReadBooleanField(*diagnostics, "pointShadowSupported",
+                             pointShadowSupported, Context) &&
+            ReadUnsignedField(*diagnostics, "spotShadowRequestedCount",
+                              spotShadowRequestedCount, Context) &&
+            ReadBooleanField(*diagnostics, "spotShadowSupported",
+                             spotShadowSupported, Context) &&
+            ReadUnsignedField(*diagnostics, "localShadowRequestCount",
+                              localShadowRequestCount, Context) &&
+            ReadUnsignedField(*diagnostics, "localShadowCasterDrawCount",
+                              localShadowCasterDrawCount, Context) &&
+            ReadBooleanField(*diagnostics, "localShadowAtlasReady",
+                             localShadowAtlasReady, Context) &&
+            ReadStringField(*diagnostics, "localShadowFallbackReason",
+                            localShadowFallbackReason, Context, false);
+        if (!parsed)
+        {
+            return false;
+        }
+
+        const bool exactRequestSet = pointLightRequestedCount == 1u &&
+            pointLightAdmittedCount == 1u && pointLightOverflowCount == 0u &&
+            spotLightRequestedCount == 1u && spotLightAdmittedCount == 1u &&
+            spotLightOverflowCount == 0u &&
+            pointShadowRequestedCount == 1u &&
+            spotShadowRequestedCount == 1u &&
+            localShadowRequestCount == 2u &&
+            localShadowRequestCount ==
+                pointShadowRequestedCount + spotShadowRequestedCount;
+        if (!localLightingAvailable || !exactRequestSet ||
+            !pointShadowSupported || !spotShadowSupported ||
+            localShadowCasterDrawCount == 0 || !localShadowAtlasReady ||
+            !localShadowFallbackReason.empty())
+        {
+            std::cerr
+                << "GFX19 local-shadow qualification requires exactly one admitted point and spot shadow, at least one caster draw, an exact executed atlas receiver, and no fallback\n";
+            return false;
+        }
+        return true;
+    }
+
+    // GFX19 Hi-Z reflections have an additional asynchronous qualification
+    // boundary: graph composition/submit cannot prove that a screen-space ray
+    // hit any pixel.  Require the matching presented route-mask readback and
+    // reject a probe/IBL-only frame even when its fallback chain was healthy.
+    bool ValidateHiZReflectionExecutionProjection(const Json& report,
+                                                  const Options* options)
+    {
+        if (options == nullptr || !options->requireHiZReflectionExecution)
+        {
+            return true;
+        }
+
+        const auto diagnostics = report.find("renderDiagnostics");
+        if (diagnostics == report.end() || !diagnostics->is_object())
+        {
+            std::cerr << "GFX19 Hi-Z reflection qualification requires report renderDiagnostics\n";
+            return false;
+        }
+        const auto reflection = diagnostics->find("hizReflectionActualExecution");
+        if (reflection == diagnostics->end() || !reflection->is_object())
+        {
+            std::cerr << "GFX19 Hi-Z reflection qualification requires its exact public receipt\n";
+            return false;
+        }
+
+        constexpr const char* Context = "GFX19 Hi-Z reflections";
+        bool available = false;
+        bool executionReceiptStructurallyValid = false;
+        bool executionReceiptAvailable = false;
+        bool executionReceiptGraphComposed = false;
+        bool executionReceiptExecutionSucceeded = false;
+        bool executionReceiptPresented = false;
+        bool executionReceiptSucceeded = false;
+        bool presentedFrameAligned = false;
+        bool mainView = false;
+        bool graphExecutionFinalized = false;
+        bool requested = false;
+        bool supported = false;
+        bool scheduled = false;
+        bool executed = false;
+        bool hiZBuilt = false;
+        bool globalIBLReady = false;
+        bool fallbackChainResolved = false;
+        bool screenSpaceApplied = false;
+        bool probesApplied = false;
+        bool reflectionRouteEvidenceReady = false;
+        bool localProbeRadianceQualified = false;
+        bool globalIBLRadianceQualified = false;
+        uint64_t executionReceiptSchemaVersion = 0;
+        uint64_t routeMaskRadianceSchemaVersion = 0;
+        uint64_t frameFeatureSequence = 0;
+        uint64_t receiptFrameSequence = 0;
+        uint64_t lastPresentedFrameSequence = 0;
+        uint64_t hiZMipCount = 0;
+        uint64_t readyProbeCount = 0;
+        uint64_t hiZGraphPassCount = 0;
+        uint64_t traceGraphPassCount = 0;
+        uint64_t resolveGraphPassCount = 0;
+        uint64_t reflectionFrameSequence = 0;
+        uint64_t reflectionPlanIdentity = 0;
+        uint64_t lightingPlanIdentity = 0;
+        uint64_t depthPyramidIdentity = 0;
+        uint64_t reflectionSurfaceIdentity = 0;
+        uint64_t exposureStateContentHash = 0;
+        uint64_t screenSpaceHitPixelCount = 0;
+        uint64_t localProbePixelCount = 0;
+        uint64_t globalIBLPixelCount = 0;
+        uint64_t reflectionReadbackSampleCount = 0;
+        uint64_t reflectionRouteSampleCount = 0;
+        uint64_t backgroundPixelCount = 0;
+        uint64_t nonReflectivePixelCount = 0;
+        std::string fallbackReason;
+        const bool parsed =
+            ReadBooleanField(*reflection, "available", available, Context) &&
+            ReadUnsignedField(*reflection, "executionReceiptSchemaVersion",
+                              executionReceiptSchemaVersion, Context) &&
+            ReadBooleanField(*reflection, "executionReceiptStructurallyValid",
+                             executionReceiptStructurallyValid, Context) &&
+            ReadBooleanField(*reflection, "executionReceiptAvailable",
+                             executionReceiptAvailable, Context) &&
+            ReadBooleanField(*reflection, "executionReceiptGraphComposed",
+                             executionReceiptGraphComposed, Context) &&
+            ReadBooleanField(*reflection, "executionReceiptExecutionSucceeded",
+                             executionReceiptExecutionSucceeded, Context) &&
+            ReadBooleanField(*reflection, "executionReceiptPresented",
+                             executionReceiptPresented, Context) &&
+            ReadBooleanField(*reflection, "executionReceiptSucceeded",
+                             executionReceiptSucceeded, Context) &&
+            ReadUnsignedField(*reflection, "frameFeatureSequence",
+                              frameFeatureSequence, Context) &&
+            ReadUnsignedField(*reflection, "receiptFrameSequence",
+                              receiptFrameSequence, Context) &&
+            ReadUnsignedField(*reflection, "lastPresentedFrameSequence",
+                              lastPresentedFrameSequence, Context) &&
+            ReadBooleanField(*reflection, "presentedFrameAligned",
+                             presentedFrameAligned, Context) &&
+            ReadBooleanField(*reflection, "mainView", mainView, Context) &&
+            ReadBooleanField(*reflection, "graphExecutionFinalized",
+                             graphExecutionFinalized, Context) &&
+            ReadBooleanField(*reflection, "requested", requested, Context) &&
+            ReadBooleanField(*reflection, "supported", supported, Context) &&
+            ReadBooleanField(*reflection, "scheduled", scheduled, Context) &&
+            ReadBooleanField(*reflection, "executed", executed, Context) &&
+            ReadBooleanField(*reflection, "hiZBuilt", hiZBuilt, Context) &&
+            ReadBooleanField(*reflection, "globalIBLReady", globalIBLReady,
+                             Context) &&
+            ReadBooleanField(*reflection, "fallbackChainResolved",
+                             fallbackChainResolved, Context) &&
+            ReadBooleanField(*reflection, "screenSpaceApplied",
+                             screenSpaceApplied, Context) &&
+            ReadBooleanField(*reflection, "probesApplied", probesApplied,
+                             Context) &&
+            ReadBooleanField(*reflection, "reflectionRouteEvidenceReady",
+                             reflectionRouteEvidenceReady, Context) &&
+            ReadUnsignedField(*reflection, "routeMaskRadianceSchemaVersion",
+                              routeMaskRadianceSchemaVersion, Context) &&
+            ReadBooleanField(*reflection, "localProbeRadianceQualified",
+                             localProbeRadianceQualified, Context) &&
+            ReadBooleanField(*reflection, "globalIBLRadianceQualified",
+                             globalIBLRadianceQualified, Context) &&
+            ReadUnsignedField(*reflection, "hiZMipCount", hiZMipCount,
+                              Context) &&
+            ReadUnsignedField(*reflection, "readyProbeCount", readyProbeCount,
+                              Context) &&
+            ReadUnsignedField(*reflection, "hiZGraphPassCount",
+                              hiZGraphPassCount, Context) &&
+            ReadUnsignedField(*reflection, "traceGraphPassCount",
+                              traceGraphPassCount, Context) &&
+            ReadUnsignedField(*reflection, "resolveGraphPassCount",
+                              resolveGraphPassCount, Context) &&
+            ReadUnsignedField(*reflection, "reflectionFrameSequence",
+                              reflectionFrameSequence, Context) &&
+            ReadUnsignedField(*reflection, "reflectionPlanIdentity",
+                              reflectionPlanIdentity, Context) &&
+            ReadUnsignedField(*reflection, "lightingPlanIdentity",
+                              lightingPlanIdentity, Context) &&
+            ReadUnsignedField(*reflection, "depthPyramidIdentity",
+                              depthPyramidIdentity, Context) &&
+            ReadUnsignedField(*reflection, "reflectionSurfaceIdentity",
+                              reflectionSurfaceIdentity, Context) &&
+            ReadUnsignedField(*reflection, "exposureStateContentHash",
+                              exposureStateContentHash, Context) &&
+            ReadUnsignedField(*reflection, "screenSpaceHitPixelCount",
+                              screenSpaceHitPixelCount, Context) &&
+            ReadUnsignedField(*reflection, "localProbePixelCount",
+                              localProbePixelCount, Context) &&
+            ReadUnsignedField(*reflection, "globalIBLPixelCount",
+                              globalIBLPixelCount, Context) &&
+            ReadUnsignedField(*reflection, "reflectionReadbackSampleCount",
+                              reflectionReadbackSampleCount, Context) &&
+            ReadUnsignedField(*reflection, "reflectionRouteSampleCount",
+                              reflectionRouteSampleCount, Context) &&
+            ReadUnsignedField(*reflection, "backgroundPixelCount",
+                              backgroundPixelCount, Context) &&
+            ReadUnsignedField(*reflection, "nonReflectivePixelCount",
+                              nonReflectivePixelCount, Context) &&
+            ReadStringField(*reflection, "fallbackReason", fallbackReason,
+                            Context, false);
+        if (!parsed)
+        {
+            return false;
+        }
+
+        const bool receiptExact = executionReceiptSchemaVersion == 12u &&
+            executionReceiptStructurallyValid && executionReceiptAvailable &&
+            executionReceiptGraphComposed && executionReceiptExecutionSucceeded &&
+            executionReceiptPresented && executionReceiptSucceeded;
+        const bool identitiesMatch = frameFeatureSequence != 0u &&
+            frameFeatureSequence == receiptFrameSequence &&
+            receiptFrameSequence == lastPresentedFrameSequence &&
+            reflectionFrameSequence == receiptFrameSequence &&
+            reflectionPlanIdentity != 0u && lightingPlanIdentity != 0u &&
+            depthPyramidIdentity != 0u && reflectionSurfaceIdentity != 0u &&
+            exposureStateContentHash != 0u;
+        const bool exactHiZRoute = graphExecutionFinalized && requested &&
+            supported && scheduled && executed && hiZBuilt && globalIBLReady &&
+            fallbackChainResolved && screenSpaceApplied && probesApplied &&
+            reflectionRouteEvidenceReady &&
+            routeMaskRadianceSchemaVersion == 1u &&
+            localProbeRadianceQualified && globalIBLRadianceQualified &&
+            readyProbeCount != 0u &&
+            hiZMipCount != 0u &&
+            hiZGraphPassCount == hiZMipCount && traceGraphPassCount == 1u &&
+            resolveGraphPassCount == 1u && screenSpaceHitPixelCount != 0u &&
+            localProbePixelCount != 0u && globalIBLPixelCount != 0u &&
+            reflectionReadbackSampleCount != 0u &&
+            reflectionRouteSampleCount != 0u &&
+            screenSpaceHitPixelCount + localProbePixelCount +
+                    globalIBLPixelCount ==
+                reflectionRouteSampleCount &&
+            backgroundPixelCount + nonReflectivePixelCount +
+                    reflectionRouteSampleCount ==
+                reflectionReadbackSampleCount &&
+            fallbackReason.empty();
+        if (!available || !receiptExact || !presentedFrameAligned || !mainView ||
+            !identitiesMatch || !exactHiZRoute)
+        {
+            std::cerr
+                << "GFX19 Hi-Z reflection qualification requires an exact presented SSR route-mask readback with nonzero finite Probe/IBL HDR contributions, nonzero screen-space hits, matching identities, the SSR -> probe -> IBL fallback chain, and no fallback\n";
+            return false;
+        }
+        return true;
+    }
+
     // GFX17 is deliberately not a generic "frame presented" gate.  A VFX
     // scenario is qualified only by the renderer-owned receipt that proves the
     // CPU packet, atlas generation, upload, draw, and presentation all refer
@@ -3363,7 +3694,7 @@ namespace
             return false;
         }
 
-        const bool common = available && receiptSchema == 11u && receiptValid &&
+        const bool common = available && receiptSchema == 12u && receiptValid &&
             receiptPresented && receiptSucceeded && mainView && requestedByRenderer &&
             supported && enabled && graphScheduled && drawSubmitted && uploadPublished &&
             itemCount != 0 && packetCount != 0 && aliveCount != 0 &&
@@ -3470,6 +3801,22 @@ namespace
             std::cerr << "Runtime-only qualification requires the staged "
                          "CookedShaderArtifactV2 provider with source fallback disabled\n";
             return false;
+        }
+        if (!options->requiredCookedShaderRoot.empty())
+        {
+            const std::filesystem::path expectedRoot =
+                std::filesystem::path(options->requiredCookedShaderRoot)
+                    .lexically_normal();
+            const std::filesystem::path actualRoot =
+                std::filesystem::path(shaderRoot).lexically_normal();
+            if (actualRoot != expectedRoot)
+            {
+                std::cerr << "Runtime-only qualification consumed cooked shader root '"
+                          << actualRoot.generic_string()
+                          << "', expected the required backend root '"
+                          << expectedRoot.generic_string() << "'\n";
+                return false;
+            }
         }
         return true;
     }
@@ -3606,7 +3953,7 @@ namespace
             return false;
         }
 
-        const bool qualified = qualifiedWater && available && receiptSchema == 11u &&
+        const bool qualified = qualifiedWater && available && receiptSchema == 12u &&
             receiptValid && receiptPresented && receiptSucceeded && mainView &&
             requested && supported && enabled && graphScheduled && drawSubmitted &&
             uploadPublished && opaqueSnapshotReady && depthSnapshotReady &&
@@ -3634,6 +3981,7 @@ namespace
 
     bool ValidateAmbientOcclusionExecutionProjectionSchemaV26(
         const Json& ambientOcclusion,
+        uint64_t reportSchemaVersion,
         const Options* options)
     {
         constexpr uint64_t ExpectedIndirectOnlyConsumerMask = 0x7u;
@@ -3856,8 +4204,11 @@ namespace
         {
             return value <= std::numeric_limits<uint32_t>::max();
         };
+        const uint64_t expectedExecutionReceiptSchemaVersion =
+            reportSchemaVersion >= 33 ? 12u : 10u;
         const bool presentationAligned = available &&
-            executionReceiptSchemaVersion == 10 &&
+            executionReceiptSchemaVersion ==
+                expectedExecutionReceiptSchemaVersion &&
             executionReceiptStructurallyValid && executionReceiptAvailable &&
             executionReceiptGraphComposed &&
             executionReceiptExecutionSucceeded && executionReceiptPresented &&
@@ -4277,6 +4628,205 @@ namespace
                renderWidth != 0 && renderHeight != 0 && diagnostic.empty();
     }
 
+    bool ValidateHybridRayTracingReceiptSchemaV12(
+        const Json& hybrid,
+        const Json& expectedFrameIdentity,
+        const Json& expectedViewIdentity,
+        const std::string& resolvedRecipe,
+        const std::string& quality,
+        uint64_t profileHash)
+    {
+        constexpr const char* Context =
+            "Hybrid ray-tracing execution receipt v12";
+        if (!hybrid.is_object())
+        {
+            std::cerr << Context << " is not an object\n";
+            return false;
+        }
+
+        const std::set<std::string> expectedFields = {
+            "available",
+            "planIdentityHash",
+            "scenePreparationGeneration",
+            "sceneStructuralHash",
+            "frameIdentity",
+            "viewIdentity",
+            "fullResolution",
+            "halfResolution",
+            "historyResetReasons",
+            "recipe",
+            "quality",
+            "profileHash",
+            "shadowRoute",
+            "reflectionRoute",
+            "graphExecutionSucceeded",
+            "sceneBuildAccepted",
+            "shadowDispatchRecorded",
+            "reflectionDispatchRecorded",
+            "spatialDenoiseRecorded",
+            "temporalResolveRecorded",
+            "compositeRecorded",
+            "compositeUsedDenoisedSource",
+            "submissionAccepted",
+            "presentationQualified",
+            "succeeded",
+        };
+        bool passed = ValidateExactObjectFields(hybrid, expectedFields, Context);
+
+        bool available = false;
+        bool graphExecutionSucceeded = false;
+        bool sceneBuildAccepted = false;
+        bool shadowDispatchRecorded = false;
+        bool reflectionDispatchRecorded = false;
+        bool spatialDenoiseRecorded = false;
+        bool temporalResolveRecorded = false;
+        bool compositeRecorded = false;
+        bool compositeUsedDenoisedSource = false;
+        bool submissionAccepted = false;
+        bool presentationQualified = false;
+        bool succeeded = false;
+        for (const auto& [field, value] : {
+                 std::pair{"available", &available},
+                 {"graphExecutionSucceeded", &graphExecutionSucceeded},
+                 {"sceneBuildAccepted", &sceneBuildAccepted},
+                 {"shadowDispatchRecorded", &shadowDispatchRecorded},
+                 {"reflectionDispatchRecorded", &reflectionDispatchRecorded},
+                 {"spatialDenoiseRecorded", &spatialDenoiseRecorded},
+                 {"temporalResolveRecorded", &temporalResolveRecorded},
+                 {"compositeRecorded", &compositeRecorded},
+                 {"compositeUsedDenoisedSource",
+                  &compositeUsedDenoisedSource},
+                 {"submissionAccepted", &submissionAccepted},
+                 {"presentationQualified", &presentationQualified},
+                 {"succeeded", &succeeded}})
+        {
+            passed &= ReadBooleanField(hybrid, field, *value, Context);
+        }
+
+        uint64_t planIdentityHash = 0;
+        uint64_t scenePreparationGeneration = 0;
+        uint64_t sceneStructuralHash = 0;
+        uint64_t historyResetReasons = 0;
+        uint64_t hybridProfileHash = 0;
+        for (const auto& [field, value] : {
+                 std::pair{"planIdentityHash", &planIdentityHash},
+                 {"scenePreparationGeneration", &scenePreparationGeneration},
+                 {"sceneStructuralHash", &sceneStructuralHash},
+                 {"historyResetReasons", &historyResetReasons},
+                 {"profileHash", &hybridProfileHash}})
+        {
+            passed &= ReadUnsignedField(hybrid, field, *value, Context);
+        }
+
+        std::string recipe;
+        std::string hybridQuality;
+        std::string shadowRoute;
+        std::string reflectionRoute;
+        passed &= ReadStringField(hybrid, "recipe", recipe, Context, true);
+        passed &= ReadStringField(hybrid, "quality", hybridQuality, Context,
+                                  true);
+        passed &= ReadStringField(hybrid, "shadowRoute", shadowRoute, Context,
+                                  true);
+        passed &= ReadStringField(hybrid, "reflectionRoute", reflectionRoute,
+                                  Context, true);
+
+        const auto frameIdentity = hybrid.find("frameIdentity");
+        const auto viewIdentity = hybrid.find("viewIdentity");
+        const auto fullResolution = hybrid.find("fullResolution");
+        const auto halfResolution = hybrid.find("halfResolution");
+        const std::set<std::string> identityFields = {
+            "frameSequence", "sceneRevision", "surfaceGeneration",
+            "configurationRevision"};
+        const std::set<std::string> viewFields = {
+            "sceneRuntimeId", "cameraEntityPacked", "subViewIndex", "role"};
+        const std::set<std::string> extentFields = {"width", "height"};
+        if (frameIdentity == hybrid.end() || !frameIdentity->is_object() ||
+            viewIdentity == hybrid.end() || !viewIdentity->is_object() ||
+            fullResolution == hybrid.end() || !fullResolution->is_object() ||
+            halfResolution == hybrid.end() || !halfResolution->is_object())
+        {
+            std::cerr << Context << " is missing identity or extent evidence\n";
+            return false;
+        }
+        passed &= ValidateExactObjectFields(*frameIdentity, identityFields,
+                                            Context);
+        passed &= ValidateExactObjectFields(*viewIdentity, viewFields, Context);
+        passed &= ValidateExactObjectFields(*fullResolution, extentFields,
+                                            Context);
+        passed &= ValidateExactObjectFields(*halfResolution, extentFields,
+                                            Context);
+
+        uint64_t fullWidth = 0;
+        uint64_t fullHeight = 0;
+        uint64_t halfWidth = 0;
+        uint64_t halfHeight = 0;
+        passed &= ReadUnsignedField(*fullResolution, "width", fullWidth,
+                                    Context);
+        passed &= ReadUnsignedField(*fullResolution, "height", fullHeight,
+                                    Context);
+        passed &= ReadUnsignedField(*halfResolution, "width", halfWidth,
+                                    Context);
+        passed &= ReadUnsignedField(*halfResolution, "height", halfHeight,
+                                    Context);
+        if (!passed)
+        {
+            return false;
+        }
+
+        const Json emptyFrameIdentity = {
+            {"frameSequence", 0},
+            {"sceneRevision", 0},
+            {"surfaceGeneration", 0},
+            {"configurationRevision", 0}};
+        const Json emptyViewIdentity = {
+            {"sceneRuntimeId", 0},
+            {"cameraEntityPacked", 0},
+            {"subViewIndex", 0},
+            {"role", "main"}};
+        const uint64_t maximumUInt32 =
+            std::numeric_limits<uint32_t>::max();
+        const bool isHybridRecipe = resolvedRecipe == "hybrid-rt";
+        const bool empty = !available && planIdentityHash == 0 &&
+            scenePreparationGeneration == 0 && sceneStructuralHash == 0 &&
+            *frameIdentity == emptyFrameIdentity &&
+            *viewIdentity == emptyViewIdentity && fullWidth == 0 &&
+            fullHeight == 0 && halfWidth == 0 && halfHeight == 0 &&
+            historyResetReasons == 0 && recipe == "hybrid-rt" &&
+            hybridQuality == "high" && hybridProfileHash == 0 &&
+            shadowRoute == "none" && reflectionRoute == "none" &&
+            !graphExecutionSucceeded && !sceneBuildAccepted &&
+            !shadowDispatchRecorded && !reflectionDispatchRecorded &&
+            !spatialDenoiseRecorded && !temporalResolveRecorded &&
+            !compositeRecorded && !compositeUsedDenoisedSource &&
+            !submissionAccepted && !presentationQualified && !succeeded;
+        const bool completed = available && planIdentityHash != 0 &&
+            scenePreparationGeneration != 0 && sceneStructuralHash != 0 &&
+            *frameIdentity == expectedFrameIdentity &&
+            *viewIdentity == expectedViewIdentity && fullWidth != 0 &&
+            fullHeight != 0 && halfWidth == fullWidth / 2 + fullWidth % 2 &&
+            halfHeight == fullHeight / 2 + fullHeight % 2 &&
+            fullWidth <= maximumUInt32 && fullHeight <= maximumUInt32 &&
+            halfWidth <= maximumUInt32 && halfHeight <= maximumUInt32 &&
+            historyResetReasons <= maximumUInt32 &&
+            recipe == "hybrid-rt" && recipe == resolvedRecipe &&
+            hybridQuality == quality && hybridProfileHash != 0 &&
+            hybridProfileHash == profileHash && shadowRoute == "ray-traced" &&
+            reflectionRoute == "ray-traced" && graphExecutionSucceeded &&
+            sceneBuildAccepted && shadowDispatchRecorded &&
+            reflectionDispatchRecorded && spatialDenoiseRecorded &&
+            temporalResolveRecorded && compositeRecorded &&
+            compositeUsedDenoisedSource && submissionAccepted &&
+            presentationQualified && succeeded;
+        if ((!isHybridRecipe && !empty) || (isHybridRecipe && !completed))
+        {
+            std::cerr << Context
+                      << " does not bind the required frozen route, graph, "
+                         "submission, and presented-frame evidence\n";
+            return false;
+        }
+        return true;
+    }
+
     bool ValidateRenderExecutionReceiptSchemaV21(
         const Json& execution,
         uint64_t captureCarryingFrameSequence,
@@ -4321,34 +4871,39 @@ namespace
         };
         if (schemaVersion == 2 || schemaVersion == 4 || schemaVersion == 5 ||
             schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8 ||
-            schemaVersion == 10 || schemaVersion == 11)
+            schemaVersion == 10 || schemaVersion == 11 || schemaVersion == 12)
         {
             expectedFields.insert("deferredOpaque");
         }
         if (schemaVersion == 4 || schemaVersion == 5 || schemaVersion == 6 ||
             schemaVersion == 7 || schemaVersion == 8 || schemaVersion == 10 ||
-            schemaVersion == 11)
+            schemaVersion == 11 || schemaVersion == 12)
         {
             expectedFields.insert("lighting");
         }
         if (schemaVersion == 5 || schemaVersion == 6 || schemaVersion == 7 ||
-            schemaVersion == 8 || schemaVersion == 10 || schemaVersion == 11)
+            schemaVersion == 8 || schemaVersion == 10 || schemaVersion == 11 ||
+            schemaVersion == 12)
         {
             expectedFields.insert("deformation");
         }
         if (schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8 ||
-            schemaVersion == 10 || schemaVersion == 11)
+            schemaVersion == 10 || schemaVersion == 11 || schemaVersion == 12)
         {
             expectedFields.insert("postProcess");
         }
-        if (schemaVersion == 10 || schemaVersion == 11)
+        if (schemaVersion == 10 || schemaVersion == 11 || schemaVersion == 12)
         {
             expectedFields.insert("ambientOcclusion");
         }
-        if (schemaVersion == 11)
+        if (schemaVersion == 11 || schemaVersion == 12)
         {
             expectedFields.insert("toonLighting");
             expectedFields.insert("toonOutline");
+        }
+        if (schemaVersion == 12)
+        {
+            expectedFields.insert("hybridRayTracing");
         }
         passed &= ValidateExactObjectFields(
             execution, expectedFields, "Render execution receipt v21");
@@ -4393,7 +4948,7 @@ namespace
              schemaVersion != 4 && schemaVersion != 5 &&
                  schemaVersion != 6 && schemaVersion != 7 &&
                  schemaVersion != 8 && schemaVersion != 10 &&
-                 schemaVersion != 11) || !available ||
+                 schemaVersion != 11 && schemaVersion != 12) || !available ||
             !graphComposed ||
             !executionSucceeded || !presented || !succeeded)
         {
@@ -4402,7 +4957,7 @@ namespace
         }
         if (schemaVersion == 2 || schemaVersion == 4 || schemaVersion == 5 ||
             schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8 ||
-            schemaVersion == 10 || schemaVersion == 11)
+            schemaVersion == 10 || schemaVersion == 11 || schemaVersion == 12)
         {
             const auto deferredOpaque = execution.find("deferredOpaque");
             if (deferredOpaque == execution.end() ||
@@ -4473,7 +5028,7 @@ namespace
         }
         if (schemaVersion == 4 || schemaVersion == 5 || schemaVersion == 6 ||
             schemaVersion == 7 || schemaVersion == 8 || schemaVersion == 10 ||
-            schemaVersion == 11)
+            schemaVersion == 11 || schemaVersion == 12)
         {
             const auto lighting = execution.find("lighting");
             if (lighting == execution.end() || !lighting->is_object())
@@ -4618,7 +5173,8 @@ namespace
              options->requireSkinnedShadowExecution ||
              options->requireSkinnedVelocityExecution);
         if (schemaVersion == 5 || schemaVersion == 6 || schemaVersion == 7 ||
-            schemaVersion == 8 || schemaVersion == 10 || schemaVersion == 11)
+            schemaVersion == 8 || schemaVersion == 10 || schemaVersion == 11 ||
+            schemaVersion == 12)
         {
             const auto deformation = execution.find("deformation");
             if (deformation == execution.end() || !deformation->is_object())
@@ -4771,7 +5327,7 @@ namespace
              options->requireAmbientOcclusionIndirectOnlyLighting ||
              options->requireAmbientOcclusionNonNeutralProbe);
         if (schemaVersion == 6 || schemaVersion == 7 || schemaVersion == 8 ||
-            schemaVersion == 10 || schemaVersion == 11)
+            schemaVersion == 10 || schemaVersion == 11 || schemaVersion == 12)
         {
             const auto postProcess = execution.find("postProcess");
             if (postProcess == execution.end() || !postProcess->is_object())
@@ -4792,7 +5348,8 @@ namespace
                     "hdrInputReady", "displayLinearOutputReady",
                     "encodedOutputReady", "fallbackUsed"};
                 if (schemaVersion == 7 || schemaVersion == 8 ||
-                    schemaVersion == 10 || schemaVersion == 11)
+                    schemaVersion == 10 || schemaVersion == 11 ||
+                    schemaVersion == 12)
                 {
                     expectedPostProcessFields.insert({
                         "antiAliasingMode", "taaRequested", "taaPipelineReady",
@@ -4805,7 +5362,7 @@ namespace
                         "taaHistoryStoreGraphPassCount"});
                 }
                 if (schemaVersion == 8 || schemaVersion == 10 ||
-                    schemaVersion == 11)
+                    schemaVersion == 11 || schemaVersion == 12)
                 {
                     expectedPostProcessFields.insert({
                         "exposureStateContentHash",
@@ -4906,7 +5463,8 @@ namespace
                 passed &= ReadUnsignedField(*postProcess, "taaPassCount",
                                             taaPassCount, context);
                 if (schemaVersion == 7 || schemaVersion == 8 ||
-                    schemaVersion == 10 || schemaVersion == 11)
+                    schemaVersion == 10 || schemaVersion == 11 ||
+                    schemaVersion == 12)
                 {
                     passed &= ReadStringField(*postProcess, "antiAliasingMode",
                                               antiAliasingMode, context, true);
@@ -4972,7 +5530,7 @@ namespace
                         "previousJitterPixels", previousJitterX, previousJitterY);
                 }
                 if (schemaVersion == 8 || schemaVersion == 10 ||
-                    schemaVersion == 11)
+                    schemaVersion == 11 || schemaVersion == 12)
                 {
                     passed &= ReadUnsignedField(*postProcess,
                                                 "exposureStateContentHash",
@@ -5129,7 +5687,8 @@ namespace
                      isDirectEncodedPresentationContract);
                 bool aaStructurallyValid = taaPassCount == 0;
                 if (schemaVersion == 7 || schemaVersion == 8 ||
-                    schemaVersion == 10 || schemaVersion == 11)
+                    schemaVersion == 10 || schemaVersion == 11 ||
+                    schemaVersion == 12)
                 {
                     const bool temporalJitterProgressed =
                         currentJitterX != previousJitterX ||
@@ -5166,7 +5725,7 @@ namespace
                 bool exposureStructurallyValid = true;
                 bool sharedExposureState = false;
                 if (schemaVersion == 8 || schemaVersion == 10 ||
-                    schemaVersion == 11)
+                    schemaVersion == 11 || schemaVersion == 12)
                 {
                     sharedExposureState =
                         exposureStateContentHash != 0 &&
@@ -5239,7 +5798,8 @@ namespace
                       taaPassCount != 0) ||
                      (options->requireTemporalAAExecution &&
                     ((schemaVersion != 7 && schemaVersion != 8 &&
-                        schemaVersion != 10 && schemaVersion != 11) ||
+                        schemaVersion != 10 && schemaVersion != 11 &&
+                        schemaVersion != 12) ||
                        antiAliasingMode != "taa" ||
                        taaPassCount != 1 || !taaRequested ||
                        !taaPipelineReady || !taaInputsReady ||
@@ -5251,19 +5811,21 @@ namespace
                      (options->requireNoFXAAExecution && fxaaPassCount != 0) ||
                      (options->requireTemporalHistorySampled &&
                     ((schemaVersion != 7 && schemaVersion != 8 &&
-                        schemaVersion != 10 && schemaVersion != 11) ||
+                        schemaVersion != 10 && schemaVersion != 11 &&
+                        schemaVersion != 12) ||
                        !historyAvailableBefore ||
                        !historySampled ||
                        (currentJitterX == previousJitterX &&
                         currentJitterY == previousJitterY))) ||
                      (options->requireTemporalHistoryCommitted &&
                     ((schemaVersion != 7 && schemaVersion != 8 &&
-                        schemaVersion != 10 && schemaVersion != 11) ||
+                        schemaVersion != 10 && schemaVersion != 11 &&
+                        schemaVersion != 12) ||
                        !historyCandidateProduced ||
                        !historyCommitted || historyAbandoned)) ||
                      (options->requireManualEV100Exposure &&
                     ((schemaVersion != 8 && schemaVersion != 10 &&
-                        schemaVersion != 11) ||
+                        schemaVersion != 11 && schemaVersion != 12) ||
                        exposureMode != "manual-ev100" ||
                        exposureHistogramPassCount != 0 ||
                        exposureAdaptationPassCount != 1 ||
@@ -5280,7 +5842,7 @@ namespace
                            previousPreExposure, exposureScale))) ||
                      (options->requireHistogramAutoExposure &&
                     ((schemaVersion != 8 && schemaVersion != 10 &&
-                        schemaVersion != 11) ||
+                        schemaVersion != 11 && schemaVersion != 12) ||
                        exposureMode != "histogram-auto" ||
                        exposureHistogramPassCount != 2 ||
                        exposureAdaptationPassCount != 1 ||
@@ -5294,7 +5856,7 @@ namespace
                        !(targetEV100 + 1.0e-4 < adaptedEV100))) ||
                      (options->requireExposureProbe &&
                     ((schemaVersion != 8 && schemaVersion != 10 &&
-                        schemaVersion != 11) ||
+                        schemaVersion != 11 && schemaVersion != 12) ||
                        !exposureProbeRequested ||
                        !exposureProbeReady || !std::isfinite(targetEV100) ||
                        !std::isfinite(adaptedEV100) ||
@@ -5303,7 +5865,7 @@ namespace
                        !IsValidExposureScale(previousPreExposure))) ||
                      (options->requireSharedExposureState &&
                     ((schemaVersion != 8 && schemaVersion != 10 &&
-                        schemaVersion != 11) ||
+                        schemaVersion != 11 && schemaVersion != 12) ||
                        !sharedExposureState))) )
                 {
                     std::cerr << "Render execution receipt does not satisfy required post-process evidence\n";
@@ -5316,7 +5878,7 @@ namespace
             std::cerr << "Render execution receipt predates required post-process evidence\n";
             passed = false;
         }
-        if (schemaVersion == 10 || schemaVersion == 11)
+        if (schemaVersion == 10 || schemaVersion == 11 || schemaVersion == 12)
         {
             const auto ambientOcclusion = execution.find("ambientOcclusion");
             if (ambientOcclusion == execution.end() ||
@@ -5331,7 +5893,7 @@ namespace
             std::cerr << "Render execution receipt predates required ambient-occlusion evidence\n";
             passed = false;
         }
-        if (schemaVersion == 11)
+        if (schemaVersion == 11 || schemaVersion == 12)
         {
             const auto toonLighting = execution.find("toonLighting");
             const auto toonOutline = execution.find("toonOutline");
@@ -5509,6 +6071,24 @@ namespace
             passed = false;
         }
 
+        if (schemaVersion == 12)
+        {
+            const auto hybridRayTracing = execution.find("hybridRayTracing");
+            if (hybridRayTracing == execution.end() ||
+                frameIdentity == execution.end() ||
+                viewIdentity == execution.end())
+            {
+                std::cerr << "Render execution receipt v12 missing Hybrid RT evidence\n";
+                passed = false;
+            }
+            else
+            {
+                passed &= ValidateHybridRayTracingReceiptSchemaV12(
+                    *hybridRayTracing, *frameIdentity, *viewIdentity,
+                    resolvedRecipe, quality, profileHash);
+            }
+        }
+
         const auto features = execution.find("features");
         if (features == execution.end() || !features->is_array() ||
             features->empty() || features->size() > 1024)
@@ -5544,7 +6124,7 @@ namespace
         // The explicit contract-only completion marker was added with the
         // schema-10 receipt.  Older receipt versions retain their published
         // feature shape and therefore must not accept or require this field.
-        if (schemaVersion == 10 || schemaVersion == 11)
+        if (schemaVersion == 10 || schemaVersion == 11 || schemaVersion == 12)
         {
             expectedFeatureFields.insert(
                 "contractCompletedWithoutGraphWork");
@@ -5608,7 +6188,8 @@ namespace
             passed &= ReadUnsignedField(feature, "executedGraphPassCount",
                                         executedGraphPassCount,
                                         "Render feature execution receipt v21");
-            if (schemaVersion == 10 || schemaVersion == 11)
+            if (schemaVersion == 10 || schemaVersion == 11 ||
+                schemaVersion == 12)
             {
                 passed &= ReadBooleanField(
                     feature, "contractCompletedWithoutGraphWork",
@@ -5709,7 +6290,8 @@ namespace
             const bool ready = compiled && hardwareSupported &&
                 implementationSupported && pipelineReady && inputsReady;
             const bool contractOnlyExecution =
-                (schemaVersion == 10 || schemaVersion == 11) &&
+                (schemaVersion == 10 || schemaVersion == 11 ||
+                 schemaVersion == 12) &&
                 contractCompletedWithoutGraphWork && ready && executed &&
                 !fallbackUsed && graphPassCount == 0 &&
                 executedGraphPassCount == 0;
@@ -5791,6 +6373,251 @@ namespace
             }
         }
         return passed;
+    }
+
+    bool ValidateWeightedBlendedOITExecutionReceipt(const Json& execution,
+                                                    const Options* options)
+    {
+        if (options == nullptr || !options->requireWeightedBlendedOITExecution)
+        {
+            return true;
+        }
+        constexpr uint64_t TranslucencyFeatureId = 11;
+        constexpr const char* ClearPassName = "WeightedBlendedOITClear";
+        constexpr const char* MeshWeightedPassName =
+            "TransparentWeightedBlendedOIT";
+        constexpr const char* ParticleWeightedPassName =
+            "ParticleWeightedBlendedOIT";
+        constexpr const char* CompositePassName = "WeightedBlendedOITComposite";
+        constexpr const char* MeshDirectPassName =
+            "TransparentSortedAndAdditive";
+        constexpr const char* ParticleDirectPassName =
+            "ParticleDirectTranslucency";
+        constexpr const char* Context = "Weighted-blended OIT execution receipt";
+
+        if (!execution.is_object())
+        {
+            std::cerr << Context << " is not an object\n";
+            return false;
+        }
+
+        uint64_t schemaVersion = 0;
+        bool available = false;
+        bool graphComposed = false;
+        bool executionSucceeded = false;
+        bool presented = false;
+        bool succeeded = false;
+        bool passed =
+            ReadUnsignedField(execution, "schemaVersion", schemaVersion, Context) &&
+            ReadBooleanField(execution, "available", available, Context) &&
+            ReadBooleanField(execution, "graphComposed", graphComposed, Context) &&
+            ReadBooleanField(execution, "executionSucceeded", executionSucceeded,
+                             Context) &&
+            ReadBooleanField(execution, "presented", presented, Context) &&
+            ReadBooleanField(execution, "succeeded", succeeded, Context);
+
+        const auto frameIdentity = execution.find("frameIdentity");
+        const auto viewIdentity = execution.find("viewIdentity");
+        if (frameIdentity == execution.end() || !frameIdentity->is_object() ||
+            viewIdentity == execution.end() || !viewIdentity->is_object())
+        {
+            std::cerr << Context << " is missing frame/view identity\n";
+            return false;
+        }
+        uint64_t frameSequence = 0;
+        uint64_t subViewIndex = 0;
+        std::string viewRole;
+        passed &= ReadUnsignedField(*frameIdentity, "frameSequence", frameSequence,
+                                    Context);
+        passed &= ReadUnsignedField(*viewIdentity, "subViewIndex", subViewIndex,
+                                    Context);
+        passed &= ReadStringField(*viewIdentity, "role", viewRole, Context,
+                                  true);
+        if (!passed)
+        {
+            return false;
+        }
+        if (schemaVersion != 12 || !available || !graphComposed ||
+            !executionSucceeded || !presented || !succeeded ||
+            frameSequence == 0 || subViewIndex != 0 || viewRole != "main")
+        {
+            std::cerr << Context << " is not a current presented main-view receipt\n";
+            return false;
+        }
+
+        const auto features = execution.find("features");
+        if (features == execution.end() || !features->is_array())
+        {
+            std::cerr << Context << " is missing feature evidence\n";
+            return false;
+        }
+
+        const Json* translucencyFeature = nullptr;
+        for (const Json& feature : *features)
+        {
+            if (!feature.is_object())
+            {
+                continue;
+            }
+            uint64_t featureId = 0;
+            if (!ReadUnsignedField(feature, "featureId", featureId, Context))
+            {
+                return false;
+            }
+            if (featureId != TranslucencyFeatureId)
+            {
+                continue;
+            }
+            if (translucencyFeature != nullptr)
+            {
+                std::cerr << Context << " contains duplicate translucent features\n";
+                return false;
+            }
+            translucencyFeature = &feature;
+        }
+        if (translucencyFeature == nullptr)
+        {
+            std::cerr << Context << " is missing translucent feature id 11\n";
+            return false;
+        }
+
+        bool selected = false;
+        bool fallbackUsed = false;
+        uint64_t graphPassCount = 0;
+        uint64_t executedGraphPassCount = 0;
+        std::string requirement;
+        std::string featureDiagnostic;
+        bool featurePassed =
+            ReadBooleanField(*translucencyFeature, "selected", selected, Context) &&
+            ReadBooleanField(*translucencyFeature, "fallbackUsed", fallbackUsed,
+                             Context) &&
+            ReadStringField(*translucencyFeature, "requirement", requirement,
+                            Context, true) &&
+            ReadUnsignedField(*translucencyFeature, "graphPassCount",
+                              graphPassCount, Context) &&
+            ReadUnsignedField(*translucencyFeature, "executedGraphPassCount",
+                              executedGraphPassCount, Context) &&
+            ReadStringField(*translucencyFeature, "diagnostic",
+                            featureDiagnostic, Context);
+        const auto readiness = translucencyFeature->find("readiness");
+        const auto graphPassNames = translucencyFeature->find("graphPassNames");
+        if (!featurePassed || readiness == translucencyFeature->end() ||
+            !readiness->is_object() || graphPassNames == translucencyFeature->end() ||
+            !graphPassNames->is_array())
+        {
+            std::cerr << Context << " is missing translucent feature execution facts\n";
+            return false;
+        }
+        bool compiled = false;
+        bool hardwareSupported = false;
+        bool implementationSupported = false;
+        bool pipelineReady = false;
+        bool inputsReady = false;
+        bool executed = false;
+        featurePassed &=
+            ReadBooleanField(*readiness, "compiled", compiled, Context) &&
+            ReadBooleanField(*readiness, "hardwareSupported", hardwareSupported,
+                             Context) &&
+            ReadBooleanField(*readiness, "implementationSupported",
+                             implementationSupported, Context) &&
+            ReadBooleanField(*readiness, "pipelineReady", pipelineReady,
+                             Context) &&
+            ReadBooleanField(*readiness, "inputsReady", inputsReady, Context) &&
+            ReadBooleanField(*readiness, "executed", executed, Context);
+        if (!featurePassed || !selected || requirement != "required" ||
+            fallbackUsed || !compiled || !hardwareSupported ||
+            !implementationSupported || !pipelineReady || !inputsReady ||
+            !executed || graphPassCount == 0 ||
+            executedGraphPassCount != graphPassCount ||
+            graphPassNames->size() != graphPassCount ||
+            !featureDiagnostic.empty())
+        {
+            std::cerr << Context << " does not prove required, complete feature execution\n";
+            return false;
+        }
+
+        uint64_t clearCount = 0;
+        uint64_t meshWeightedCount = 0;
+        uint64_t particleWeightedCount = 0;
+        uint64_t compositeCount = 0;
+        uint64_t meshDirectCount = 0;
+        uint64_t particleDirectCount = 0;
+        uint64_t clearIndex = std::numeric_limits<uint64_t>::max();
+        uint64_t firstWeightedIndex = std::numeric_limits<uint64_t>::max();
+        uint64_t lastWeightedIndex = 0;
+        uint64_t compositeIndex = std::numeric_limits<uint64_t>::max();
+        uint64_t firstMeshDirectIndex = std::numeric_limits<uint64_t>::max();
+        uint64_t firstParticleDirectIndex =
+            std::numeric_limits<uint64_t>::max();
+        for (size_t index = 0; index < graphPassNames->size(); ++index)
+        {
+            const Json& value = (*graphPassNames)[index];
+            if (!value.is_string())
+            {
+                std::cerr << Context << " contains a non-string pass name\n";
+                return false;
+            }
+            const std::string& passName = value.get_ref<const std::string&>();
+            if (passName == ClearPassName)
+            {
+                ++clearCount;
+                clearIndex = static_cast<uint64_t>(index);
+            }
+            else if (passName == MeshWeightedPassName)
+            {
+                ++meshWeightedCount;
+                firstWeightedIndex = std::min(
+                    firstWeightedIndex, static_cast<uint64_t>(index));
+                lastWeightedIndex = std::max(
+                    lastWeightedIndex, static_cast<uint64_t>(index));
+            }
+            else if (passName == ParticleWeightedPassName)
+            {
+                ++particleWeightedCount;
+                firstWeightedIndex = std::min(
+                    firstWeightedIndex, static_cast<uint64_t>(index));
+                lastWeightedIndex = std::max(
+                    lastWeightedIndex, static_cast<uint64_t>(index));
+            }
+            else if (passName == CompositePassName)
+            {
+                ++compositeCount;
+                compositeIndex = static_cast<uint64_t>(index);
+            }
+            else if (passName == MeshDirectPassName)
+            {
+                ++meshDirectCount;
+                firstMeshDirectIndex = std::min(
+                    firstMeshDirectIndex, static_cast<uint64_t>(index));
+            }
+            else if (passName == ParticleDirectPassName)
+            {
+                ++particleDirectCount;
+                firstParticleDirectIndex = std::min(
+                    firstParticleDirectIndex, static_cast<uint64_t>(index));
+            }
+        }
+
+        const bool hasWeightedContributor =
+            meshWeightedCount + particleWeightedCount != 0;
+        if (clearCount != 1 || !hasWeightedContributor || compositeCount != 1 ||
+            !(clearIndex < firstWeightedIndex &&
+              lastWeightedIndex < compositeIndex))
+        {
+            std::cerr << Context << " does not prove clear -> weighted -> composite ordering\n";
+            return false;
+        }
+        if (options->requireWeightedBlendedOITFrameContract &&
+            (meshWeightedCount == 0 || particleWeightedCount == 0 ||
+             meshDirectCount == 0 || !(compositeIndex < firstMeshDirectIndex) ||
+             (particleDirectCount != 0 &&
+              !(compositeIndex < firstParticleDirectIndex))))
+        {
+            std::cerr << Context
+                      << " does not prove the mixed mesh/particle OIT frame contract\n";
+            return false;
+        }
+        return true;
     }
 
     bool ValidateVisualContractReceiptSchemaV21(
@@ -5929,6 +6756,8 @@ namespace
             quality,
             expectedBuildIdentity,
             options);
+        passed &= ValidateWeightedBlendedOITExecutionReceipt(*execution,
+                                                              options);
         return passed;
     }
 
@@ -6014,7 +6843,7 @@ namespace
                     else
                     {
                         passed &= ValidateAmbientOcclusionExecutionProjectionSchemaV26(
-                            *ambientOcclusion, options);
+                            *ambientOcclusion, schemaVersion, options);
 
                         const auto visualContract =
                             report.find("visualContractReceipt");
@@ -6081,6 +6910,8 @@ namespace
 
         passed &= ValidateToonExecutionProjections(report, options);
         passed &= ValidateTranslucencyExecutionProjection(report, options);
+        passed &= ValidateLocalShadowExecutionProjection(report, options);
+        passed &= ValidateHiZReflectionExecutionProjection(report, options);
         passed &= ValidateParticleVfxExecutionProjection(report, options);
         passed &= ValidateCookedShaderProvider(report, options);
         passed &= ValidateWaterSurfaceExecutionProjection(report, options);
@@ -6432,17 +7263,28 @@ namespace
         const std::string& role = asset["role"].get_ref<const std::string&>();
         const std::string& kind = asset["kind"].get_ref<const std::string&>();
         const std::string& path = asset["path"].get_ref<const std::string&>();
-        if (role != kind || !IsSupportedPrimaryAssetKind(kind))
+        if (role != kind)
         {
             return false;
         }
 
-        // SampleAssetCatalog admits these kinds only when their manifest
-        // selector is respectively CookAssetType::Model or
-        // CookAssetType::Effect. Keep the report consumer equally strict
-        // about the corresponding immutable runtime product extension.
-        const std::string expectedExtension =
-            kind == "effect" ? ".rvxvfx" : ".rva";
+        // Package-only requirements may name supporting products as well as
+        // the scenario's primary model/effect. Keep every admitted kind tied
+        // to its immutable runtime product extension; unknown kinds fail
+        // closed instead of inheriting the generic resource extension.
+        std::string expectedExtension;
+        if (kind == "model" || kind == "environment")
+        {
+            expectedExtension = ".rva";
+        }
+        else if (kind == "effect")
+        {
+            expectedExtension = ".rvxvfx";
+        }
+        else
+        {
+            return false;
+        }
         return std::filesystem::path(path).extension().string() ==
                expectedExtension;
     }
@@ -7100,13 +7942,14 @@ namespace
         char parserArg10[] = "--require-skinned-opaque-execution";
         char parserArg11[] = "--require-skinned-shadow-execution";
         char parserArg12[] = "--require-skinned-velocity-execution";
+        char parserArg13[] = "--require-local-shadow-execution";
         char* parserArguments[] = {
             parserArg0, parserArg1, parserArg2, parserArg3,
             parserArg4, parserArg5, parserArg6, parserArg7,
             parserArg8, parserArg9, parserArg10, parserArg11,
-            parserArg12};
+            parserArg12, parserArg13};
         Options parsedLightingOptions;
-        if (!ParseOptions(13, parserArguments, parsedLightingOptions) ||
+        if (!ParseOptions(14, parserArguments, parsedLightingOptions) ||
             !parsedLightingOptions.selfTest ||
             !parsedLightingOptions.requireLightingPlan ||
             !parsedLightingOptions.requireCSMRequested ||
@@ -7118,7 +7961,222 @@ namespace
             !parsedLightingOptions.requirePreviousSkinningPalette ||
             !parsedLightingOptions.requireSkinnedOpaqueExecution ||
             !parsedLightingOptions.requireSkinnedShadowExecution ||
-            !parsedLightingOptions.requireSkinnedVelocityExecution)
+            !parsedLightingOptions.requireSkinnedVelocityExecution ||
+            !parsedLightingOptions.requireLocalShadowExecution)
+        {
+            return false;
+        }
+
+        Json qualifiedLocalShadowReport = {
+            {"renderDiagnostics", {
+                {"localLightingAvailable", true},
+                {"pointLightRequestedCount", 1},
+                {"pointLightAdmittedCount", 1},
+                {"pointLightOverflowCount", 0},
+                {"spotLightRequestedCount", 1},
+                {"spotLightAdmittedCount", 1},
+                {"spotLightOverflowCount", 0},
+                {"pointShadowRequestedCount", 1},
+                {"pointShadowSupported", true},
+                {"spotShadowRequestedCount", 1},
+                {"spotShadowSupported", true},
+                {"localShadowRequestCount", 2},
+                {"localShadowCasterDrawCount", 4},
+                {"localShadowAtlasReady", true},
+                {"localShadowFallbackReason", ""},
+            }},
+        };
+        if (!ValidateLocalShadowExecutionProjection(
+                qualifiedLocalShadowReport, &parsedLightingOptions))
+        {
+            return false;
+        }
+        Json missingLocalShadowCasterDrawCount = qualifiedLocalShadowReport;
+        missingLocalShadowCasterDrawCount["renderDiagnostics"].erase(
+            "localShadowCasterDrawCount");
+        if (ValidateLocalShadowExecutionProjection(
+                missingLocalShadowCasterDrawCount, &parsedLightingOptions))
+        {
+            return false;
+        }
+        qualifiedLocalShadowReport["renderDiagnostics"]
+                                  ["localShadowCasterDrawCount"] = 0;
+        if (ValidateLocalShadowExecutionProjection(
+                qualifiedLocalShadowReport, &parsedLightingOptions))
+        {
+            return false;
+        }
+        qualifiedLocalShadowReport["renderDiagnostics"]
+                                  ["localShadowCasterDrawCount"] = 4;
+        qualifiedLocalShadowReport["renderDiagnostics"]
+                                  ["localShadowAtlasReady"] = false;
+        if (ValidateLocalShadowExecutionProjection(
+                qualifiedLocalShadowReport, &parsedLightingOptions))
+        {
+            return false;
+        }
+        qualifiedLocalShadowReport["renderDiagnostics"]
+                                  ["localShadowAtlasReady"] = true;
+        qualifiedLocalShadowReport["renderDiagnostics"]
+                                  ["localShadowFallbackReason"] =
+            "receiver identity mismatch";
+        if (ValidateLocalShadowExecutionProjection(
+                qualifiedLocalShadowReport, &parsedLightingOptions))
+        {
+            return false;
+        }
+
+        char hizParserArg0[] = "SampleReportContentValidation";
+        char hizParserArg1[] = "--self-test";
+        char hizParserArg2[] = "--require-hiz-reflection-execution";
+        char* hizParserArguments[] = {
+            hizParserArg0, hizParserArg1, hizParserArg2};
+        Options parsedHiZOptions;
+        if (!ParseOptions(3, hizParserArguments, parsedHiZOptions) ||
+            !parsedHiZOptions.selfTest ||
+            !parsedHiZOptions.requireHiZReflectionExecution)
+        {
+            return false;
+        }
+        Json qualifiedHiZReflectionReport = {
+            {"renderDiagnostics", {
+                {"hizReflectionActualExecution", {
+                    {"available", true},
+                    {"executionReceiptSchemaVersion", 12},
+                    {"executionReceiptStructurallyValid", true},
+                    {"executionReceiptAvailable", true},
+                    {"executionReceiptGraphComposed", true},
+                    {"executionReceiptExecutionSucceeded", true},
+                    {"executionReceiptPresented", true},
+                    {"executionReceiptSucceeded", true},
+                    {"frameFeatureSequence", 71},
+                    {"receiptFrameSequence", 71},
+                    {"lastPresentedFrameSequence", 71},
+                    {"presentedFrameAligned", true},
+                    {"mainView", true},
+                    {"graphExecutionFinalized", true},
+                    {"requested", true},
+                    {"supported", true},
+                    {"scheduled", true},
+                    {"executed", true},
+                    {"hiZBuilt", true},
+                    {"globalIBLReady", true},
+                    {"fallbackChainResolved", true},
+                    {"screenSpaceApplied", true},
+                    {"probesApplied", true},
+                    {"reflectionRouteEvidenceReady", true},
+                    {"routeMaskRadianceSchemaVersion", 1},
+                    {"localProbeRadianceQualified", true},
+                    {"globalIBLRadianceQualified", true},
+                    {"hiZMipCount", 6},
+                    {"readyProbeCount", 1},
+                    {"hiZGraphPassCount", 6},
+                    {"traceGraphPassCount", 1},
+                    {"resolveGraphPassCount", 1},
+                    {"reflectionFrameSequence", 71},
+                    {"reflectionPlanIdentity", 101},
+                    {"lightingPlanIdentity", 202},
+                    {"depthPyramidIdentity", 303},
+                    {"reflectionSurfaceIdentity", 404},
+                    {"exposureStateContentHash", 505},
+                    {"screenSpaceHitPixelCount", 17},
+                    {"localProbePixelCount", 23},
+                    {"globalIBLPixelCount", 24},
+                    {"reflectionReadbackSampleCount", 76},
+                    {"reflectionRouteSampleCount", 64},
+                    {"backgroundPixelCount", 5},
+                    {"nonReflectivePixelCount", 7},
+                    {"fallbackReason", ""},
+                }},
+            }},
+        };
+        if (!ValidateHiZReflectionExecutionProjection(
+                qualifiedHiZReflectionReport, &parsedHiZOptions))
+        {
+            return false;
+        }
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["executionReceiptSchemaVersion"] = 11;
+        if (ValidateHiZReflectionExecutionProjection(
+                qualifiedHiZReflectionReport, &parsedHiZOptions))
+        {
+            return false;
+        }
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["executionReceiptSchemaVersion"] = 12;
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["routeMaskRadianceSchemaVersion"] = 0;
+        if (ValidateHiZReflectionExecutionProjection(
+                qualifiedHiZReflectionReport, &parsedHiZOptions))
+        {
+            return false;
+        }
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["routeMaskRadianceSchemaVersion"] = 1;
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["localProbeRadianceQualified"] = false;
+        if (ValidateHiZReflectionExecutionProjection(
+                qualifiedHiZReflectionReport, &parsedHiZOptions))
+        {
+            return false;
+        }
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["localProbeRadianceQualified"] = true;
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["globalIBLRadianceQualified"] = false;
+        if (ValidateHiZReflectionExecutionProjection(
+                qualifiedHiZReflectionReport, &parsedHiZOptions))
+        {
+            return false;
+        }
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["globalIBLRadianceQualified"] = true;
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["screenSpaceHitPixelCount"] = 0;
+        if (ValidateHiZReflectionExecutionProjection(
+                qualifiedHiZReflectionReport, &parsedHiZOptions))
+        {
+            return false;
+        }
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["screenSpaceHitPixelCount"] = 17;
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["probesApplied"] = false;
+        if (ValidateHiZReflectionExecutionProjection(
+                qualifiedHiZReflectionReport, &parsedHiZOptions))
+        {
+            return false;
+        }
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["probesApplied"] = true;
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["globalIBLPixelCount"] = 0;
+        if (ValidateHiZReflectionExecutionProjection(
+                qualifiedHiZReflectionReport, &parsedHiZOptions))
+        {
+            return false;
+        }
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["globalIBLPixelCount"] = 24;
+        qualifiedHiZReflectionReport["renderDiagnostics"]
+                                  ["hizReflectionActualExecution"]
+                                  ["fallbackReason"] = "IBL-only route";
+        if (ValidateHiZReflectionExecutionProjection(
+                qualifiedHiZReflectionReport, &parsedHiZOptions))
         {
             return false;
         }
@@ -7252,6 +8310,202 @@ namespace
             return false;
         }
 
+        char weightedBlendedOitParserArg0[] = "SampleReportContentValidation";
+        char weightedBlendedOitParserArg1[] = "--self-test";
+        char weightedBlendedOitParserArg2[] =
+            "--require-weighted-blended-oit-execution";
+        char* weightedBlendedOitParserArguments[] = {
+            weightedBlendedOitParserArg0, weightedBlendedOitParserArg1,
+            weightedBlendedOitParserArg2};
+        Options parsedWeightedBlendedOitOptions;
+        if (!ParseOptions(3, weightedBlendedOitParserArguments,
+                          parsedWeightedBlendedOitOptions) ||
+            !parsedWeightedBlendedOitOptions
+                 .requireWeightedBlendedOITExecution)
+        {
+            return false;
+        }
+        Json qualifiedWeightedBlendedOitReceipt = {
+            {"schemaVersion", 12},
+            {"available", true},
+            {"graphComposed", true},
+            {"executionSucceeded", true},
+            {"presented", true},
+            {"succeeded", true},
+            {"frameIdentity", {{"frameSequence", 7}}},
+            {"viewIdentity", {{"subViewIndex", 0}, {"role", "main"}}},
+            {"features", Json::array({{{"featureId", 11},
+                                        {"requirement", "required"},
+                                        {"selected", true},
+                                        {"fallbackUsed", false},
+                                        {"graphPassCount", 3},
+                                        {"executedGraphPassCount", 3},
+                                        {"readiness", {{"compiled", true},
+                                                       {"hardwareSupported", true},
+                                                       {"implementationSupported", true},
+                                                       {"pipelineReady", true},
+                                                       {"inputsReady", true},
+                                                       {"executed", true}}},
+                                        {"graphPassNames",
+                                         Json::array({"WeightedBlendedOITClear",
+                                                      "TransparentWeightedBlendedOIT",
+                                                      "WeightedBlendedOITComposite"})},
+                                        {"diagnostic", ""}}})},
+        };
+        if (!ValidateWeightedBlendedOITExecutionReceipt(
+                qualifiedWeightedBlendedOitReceipt,
+                &parsedWeightedBlendedOitOptions))
+        {
+            return false;
+        }
+        Json badWeightedBlendedOitOrder = qualifiedWeightedBlendedOitReceipt;
+        badWeightedBlendedOitOrder["features"][0]["graphPassNames"] =
+            Json::array({"TransparentWeightedBlendedOIT",
+                         "WeightedBlendedOITClear",
+                         "WeightedBlendedOITComposite"});
+        if (ValidateWeightedBlendedOITExecutionReceipt(
+                badWeightedBlendedOitOrder,
+                &parsedWeightedBlendedOitOptions))
+        {
+            return false;
+        }
+        Json badWeightedBlendedOitExecution =
+            qualifiedWeightedBlendedOitReceipt;
+        badWeightedBlendedOitExecution["features"][0]
+                                     ["executedGraphPassCount"] = 2;
+        if (ValidateWeightedBlendedOITExecutionReceipt(
+                badWeightedBlendedOitExecution,
+                &parsedWeightedBlendedOitOptions))
+        {
+            return false;
+        }
+
+        char weightedBlendedOitFrameParserArg0[] =
+            "SampleReportContentValidation";
+        char weightedBlendedOitFrameParserArg1[] = "--self-test";
+        char weightedBlendedOitFrameParserArg2[] =
+            "--require-weighted-blended-oit-frame-contract";
+        char* weightedBlendedOitFrameParserArguments[] = {
+            weightedBlendedOitFrameParserArg0,
+            weightedBlendedOitFrameParserArg1,
+            weightedBlendedOitFrameParserArg2};
+        Options parsedWeightedBlendedOitFrameOptions;
+        if (!ParseOptions(3, weightedBlendedOitFrameParserArguments,
+                          parsedWeightedBlendedOitFrameOptions) ||
+            !parsedWeightedBlendedOitFrameOptions
+                 .requireWeightedBlendedOITExecution ||
+            !parsedWeightedBlendedOitFrameOptions
+                 .requireWeightedBlendedOITFrameContract)
+        {
+            return false;
+        }
+
+        const auto SetWeightedBlendedOitPasses = [](Json& receipt,
+                                                     Json passNames)
+        {
+            Json& feature = receipt["features"][0];
+            const uint64_t passCount = passNames.size();
+            feature["graphPassNames"] = std::move(passNames);
+            feature["graphPassCount"] = passCount;
+            feature["executedGraphPassCount"] = passCount;
+        };
+        Json qualifiedMixedWeightedBlendedOitReceipt =
+            qualifiedWeightedBlendedOitReceipt;
+        SetWeightedBlendedOitPasses(
+            qualifiedMixedWeightedBlendedOitReceipt,
+            Json::array({"WeightedBlendedOITClear",
+                         "TransparentWeightedBlendedOIT",
+                         "ParticleWeightedBlendedOIT",
+                         "WeightedBlendedOITComposite",
+                         "TransparentSortedAndAdditive",
+                         "ParticleDirectTranslucency"}));
+        if (!ValidateWeightedBlendedOITExecutionReceipt(
+                qualifiedMixedWeightedBlendedOitReceipt,
+                &parsedWeightedBlendedOitFrameOptions))
+        {
+            return false;
+        }
+
+        Json meshOnlyWeightedBlendedOitReceipt =
+            qualifiedMixedWeightedBlendedOitReceipt;
+        SetWeightedBlendedOitPasses(
+            meshOnlyWeightedBlendedOitReceipt,
+            Json::array({"WeightedBlendedOITClear",
+                         "TransparentWeightedBlendedOIT",
+                         "WeightedBlendedOITComposite",
+                         "TransparentSortedAndAdditive"}));
+        if (ValidateWeightedBlendedOITExecutionReceipt(
+                meshOnlyWeightedBlendedOitReceipt,
+                &parsedWeightedBlendedOitFrameOptions))
+        {
+            return false;
+        }
+
+        Json particleOnlyWeightedBlendedOitReceipt =
+            qualifiedMixedWeightedBlendedOitReceipt;
+        SetWeightedBlendedOitPasses(
+            particleOnlyWeightedBlendedOitReceipt,
+            Json::array({"WeightedBlendedOITClear",
+                         "ParticleWeightedBlendedOIT",
+                         "WeightedBlendedOITComposite",
+                         "TransparentSortedAndAdditive"}));
+        if (ValidateWeightedBlendedOITExecutionReceipt(
+                particleOnlyWeightedBlendedOitReceipt,
+                &parsedWeightedBlendedOitFrameOptions))
+        {
+            return false;
+        }
+
+        Json directBeforeCompositeWeightedBlendedOitReceipt =
+            qualifiedMixedWeightedBlendedOitReceipt;
+        SetWeightedBlendedOitPasses(
+            directBeforeCompositeWeightedBlendedOitReceipt,
+            Json::array({"WeightedBlendedOITClear",
+                         "TransparentWeightedBlendedOIT",
+                         "ParticleWeightedBlendedOIT",
+                         "TransparentSortedAndAdditive",
+                         "WeightedBlendedOITComposite"}));
+        if (ValidateWeightedBlendedOITExecutionReceipt(
+                directBeforeCompositeWeightedBlendedOitReceipt,
+                &parsedWeightedBlendedOitFrameOptions))
+        {
+            return false;
+        }
+
+        Json duplicateClearWeightedBlendedOitReceipt =
+            qualifiedMixedWeightedBlendedOitReceipt;
+        SetWeightedBlendedOitPasses(
+            duplicateClearWeightedBlendedOitReceipt,
+            Json::array({"WeightedBlendedOITClear",
+                         "WeightedBlendedOITClear",
+                         "TransparentWeightedBlendedOIT",
+                         "ParticleWeightedBlendedOIT",
+                         "WeightedBlendedOITComposite",
+                         "TransparentSortedAndAdditive"}));
+        if (ValidateWeightedBlendedOITExecutionReceipt(
+                duplicateClearWeightedBlendedOitReceipt,
+                &parsedWeightedBlendedOitFrameOptions))
+        {
+            return false;
+        }
+
+        Json duplicateCompositeWeightedBlendedOitReceipt =
+            qualifiedMixedWeightedBlendedOitReceipt;
+        SetWeightedBlendedOitPasses(
+            duplicateCompositeWeightedBlendedOitReceipt,
+            Json::array({"WeightedBlendedOITClear",
+                         "TransparentWeightedBlendedOIT",
+                         "ParticleWeightedBlendedOIT",
+                         "WeightedBlendedOITComposite",
+                         "WeightedBlendedOITComposite",
+                         "TransparentSortedAndAdditive"}));
+        if (ValidateWeightedBlendedOITExecutionReceipt(
+                duplicateCompositeWeightedBlendedOitReceipt,
+                &parsedWeightedBlendedOitFrameOptions))
+        {
+            return false;
+        }
+
         char particleParserArg0[] = "SampleReportContentValidation";
         char particleParserArg1[] = "--self-test";
         char particleParserArg2[] = "--require-particle-vfx-execution";
@@ -7272,7 +8526,7 @@ namespace
             {"renderDiagnostics", {
                 {"particleVfxActualExecution", {
                     {"available", true},
-                    {"executionReceiptSchemaVersion", 11},
+                    {"executionReceiptSchemaVersion", 12},
                     {"executionReceiptStructurallyValid", true},
                     {"executionReceiptPresented", true},
                     {"executionReceiptSucceeded", true},
@@ -7343,6 +8597,17 @@ namespace
         }
         qualifiedParticleFireReport["renderDiagnostics"]
                                   ["particleVfxActualExecution"]
+                                  ["executionReceiptSchemaVersion"] = 11;
+        if (ValidateParticleVfxExecutionProjection(
+                qualifiedParticleFireReport, &parsedParticleFireOptions))
+        {
+            return false;
+        }
+        qualifiedParticleFireReport["renderDiagnostics"]
+                                  ["particleVfxActualExecution"]
+                                  ["executionReceiptSchemaVersion"] = 12;
+        qualifiedParticleFireReport["renderDiagnostics"]
+                                  ["particleVfxActualExecution"]
                                   ["lightHintAdmittedCount"] = 0;
         if (ValidateParticleVfxExecutionProjection(
                 qualifiedParticleFireReport, &parsedParticleFireOptions))
@@ -7408,7 +8673,7 @@ namespace
             {"renderDiagnostics", {
                 {"waterSurfaceActualExecution", {
                     {"available", true},
-                    {"executionReceiptSchemaVersion", 11},
+                    {"executionReceiptSchemaVersion", 12},
                     {"executionReceiptStructurallyValid", true},
                     {"executionReceiptPresented", true},
                     {"executionReceiptSucceeded", true},
@@ -7467,6 +8732,17 @@ namespace
         }
         qualifiedWaterReport["renderDiagnostics"]
                             ["waterSurfaceActualExecution"]
+                            ["executionReceiptSchemaVersion"] = 11;
+        if (ValidateWaterSurfaceExecutionProjection(
+                qualifiedWaterReport, &parsedWaterOptions))
+        {
+            return false;
+        }
+        qualifiedWaterReport["renderDiagnostics"]
+                            ["waterSurfaceActualExecution"]
+                            ["executionReceiptSchemaVersion"] = 12;
+        qualifiedWaterReport["renderDiagnostics"]
+                            ["waterSurfaceActualExecution"]
                             ["waveContentHash"] = 0;
         if (ValidateWaterSurfaceExecutionProjection(
                 qualifiedWaterReport, &parsedWaterOptions))
@@ -7477,14 +8753,20 @@ namespace
         char cookedProviderParserArg0[] = "SampleReportContentValidation";
         char cookedProviderParserArg1[] = "--self-test";
         char cookedProviderParserArg2[] = "--require-cooked-shader-provider";
+        char cookedProviderParserArg3[] = "--require-cooked-shader-root";
+        char cookedProviderParserArg4[] = "Fixtures/Gfx18WaterShaders/DX12";
         char* cookedProviderParserArguments[] = {
             cookedProviderParserArg0,
             cookedProviderParserArg1,
-            cookedProviderParserArg2};
+            cookedProviderParserArg2,
+            cookedProviderParserArg3,
+            cookedProviderParserArg4};
         Options parsedCookedProviderOptions;
-        if (!ParseOptions(3, cookedProviderParserArguments,
+        if (!ParseOptions(5, cookedProviderParserArguments,
                           parsedCookedProviderOptions) ||
-            !parsedCookedProviderOptions.requireCookedShaderProvider)
+            !parsedCookedProviderOptions.requireCookedShaderProvider ||
+            parsedCookedProviderOptions.requiredCookedShaderRoot !=
+                "Fixtures/Gfx18WaterShaders/DX12")
         {
             return false;
         }
@@ -7508,6 +8790,16 @@ namespace
         }
         qualifiedCookedProviderReport["runtimeComposition"]
                                    ["sourceShaderFallbackEnabled"] = true;
+        if (ValidateCookedShaderProvider(qualifiedCookedProviderReport,
+                                         &parsedCookedProviderOptions))
+        {
+            return false;
+        }
+        qualifiedCookedProviderReport["runtimeComposition"]
+                                   ["sourceShaderFallbackEnabled"] = false;
+        qualifiedCookedProviderReport["runtimeComposition"]
+                                   ["cookedShaderRoot"] =
+            "Fixtures/Gfx18WaterShaders/Vulkan";
         if (ValidateCookedShaderProvider(qualifiedCookedProviderReport,
                                          &parsedCookedProviderOptions))
         {
@@ -7613,6 +8905,17 @@ namespace
         {
             return false;
         }
+        Json packageOnlyCookedEnvironment = packageOnlyCookedAsset;
+        packageOnlyCookedEnvironment["id"] = "self-test-environment";
+        packageOnlyCookedEnvironment["role"] = "environment";
+        packageOnlyCookedEnvironment["kind"] = "environment";
+        packageOnlyCookedEnvironment["path"] =
+            "cooked/self-test-environment.rva";
+        if (!HasPackageOnlyCookedAssetAdmission(
+                packageOnlyCookedEnvironment, "self-test-environment"))
+        {
+            return false;
+        }
 
         Json wrongEffectExtension = packageOnlyCookedEffect;
         wrongEffectExtension["path"] = "cooked/self-test-effect.rva";
@@ -7622,6 +8925,14 @@ namespace
         wrongEffectRole["role"] = "model";
         Json wrongModelExtension = packageOnlyCookedAsset;
         wrongModelExtension["path"] = "cooked/self-test-model.rvxvfx";
+        Json wrongEnvironmentExtension = packageOnlyCookedEnvironment;
+        wrongEnvironmentExtension["path"] =
+            "cooked/self-test-environment.rvxvfx";
+        Json wrongEnvironmentRole = packageOnlyCookedEnvironment;
+        wrongEnvironmentRole["role"] = "model";
+        Json unsupportedCookedKind = packageOnlyCookedEnvironment;
+        unsupportedCookedKind["role"] = "texture";
+        unsupportedCookedKind["kind"] = "texture";
         if (HasPackageOnlyCookedAssetAdmission(
                 wrongEffectExtension, "self-test-effect") ||
             HasPackageOnlyCookedAssetAdmission(
@@ -7629,7 +8940,13 @@ namespace
             HasPackageOnlyCookedAssetAdmission(
                 wrongEffectRole, "self-test-effect") ||
             HasPackageOnlyCookedAssetAdmission(
-                wrongModelExtension, "self-test-model"))
+                wrongModelExtension, "self-test-model") ||
+            HasPackageOnlyCookedAssetAdmission(
+                wrongEnvironmentExtension, "self-test-environment") ||
+            HasPackageOnlyCookedAssetAdmission(
+                wrongEnvironmentRole, "self-test-environment") ||
+            HasPackageOnlyCookedAssetAdmission(
+                unsupportedCookedKind, "self-test-environment"))
         {
             return false;
         }
@@ -8897,6 +10214,31 @@ namespace
         {
             return false;
         }
+        Json currentGTAOProjection =
+            schema25GTAOReport["renderDiagnostics"]
+                              ["ambientOcclusionActualExecution"];
+        if (ValidateAmbientOcclusionExecutionProjectionSchemaV26(
+                currentGTAOProjection, 33u, &strictGTAOEvidence))
+        {
+            return false;
+        }
+        currentGTAOProjection["executionReceiptSchemaVersion"] = 11;
+        if (ValidateAmbientOcclusionExecutionProjectionSchemaV26(
+                currentGTAOProjection, 33u, &strictGTAOEvidence))
+        {
+            return false;
+        }
+        if (ValidateAmbientOcclusionExecutionProjectionSchemaV26(
+                currentGTAOProjection, 32u, &strictGTAOEvidence))
+        {
+            return false;
+        }
+        currentGTAOProjection["executionReceiptSchemaVersion"] = 12;
+        if (!ValidateAmbientOcclusionExecutionProjectionSchemaV26(
+                currentGTAOProjection, 33u, &strictGTAOEvidence))
+        {
+            return false;
+        }
 
         // A schema-10 feature may publish a typed contract without adding a
         // GPU graph pass (for example, an empty scene can still publish its
@@ -9039,6 +10381,181 @@ namespace
             ValidateSampleReportV12Root(
                 unknownGTAOProjectionField, expectedBuildIdentity,
                 &strictGTAOEvidence))
+        {
+            return false;
+        }
+
+        // Schema 12 always carries a fully shaped Hybrid RT object. A
+        // non-Hybrid recipe must retain the exact empty projection; a Hybrid
+        // recipe must bind its frozen frame/view/profile and all graph,
+        // submission, and Present-qualified evidence.
+        const Json emptyHybridRayTracing = {
+            {"available", false},
+            {"planIdentityHash", 0},
+            {"scenePreparationGeneration", 0},
+            {"sceneStructuralHash", 0},
+            {"frameIdentity", { {"frameSequence", 0},
+                                {"sceneRevision", 0},
+                                {"surfaceGeneration", 0},
+                                {"configurationRevision", 0} }},
+            {"viewIdentity", { {"sceneRuntimeId", 0},
+                               {"cameraEntityPacked", 0},
+                               {"subViewIndex", 0},
+                               {"role", "main"} }},
+            {"fullResolution", {{"width", 0}, {"height", 0}}},
+            {"halfResolution", {{"width", 0}, {"height", 0}}},
+            {"historyResetReasons", 0},
+            {"recipe", "hybrid-rt"},
+            {"quality", "high"},
+            {"profileHash", 0},
+            {"shadowRoute", "none"},
+            {"reflectionRoute", "none"},
+            {"graphExecutionSucceeded", false},
+            {"sceneBuildAccepted", false},
+            {"shadowDispatchRecorded", false},
+            {"reflectionDispatchRecorded", false},
+            {"spatialDenoiseRecorded", false},
+            {"temporalResolveRecorded", false},
+            {"compositeRecorded", false},
+            {"compositeUsedDenoisedSource", false},
+            {"submissionAccepted", false},
+            {"presentationQualified", false},
+            {"succeeded", false},
+        };
+        const Json emptyToonLighting = {
+            {"requested", false},
+            {"pipelineReady", false},
+            {"inputsReady", false},
+            {"executed", false},
+            {"programFamilyHash", 0},
+            {"materialCount", 0},
+            {"drawCount", 0},
+            {"forwardShadedDrawCount", 0},
+            {"deferredShadedDrawCount", 0},
+            {"standardLitFallbackCount", 0},
+            {"materialFallbackCount", 0},
+            {"bandsApplied", false},
+            {"specularThresholdApplied", false},
+            {"rimApplied", false},
+            {"shadowTintApplied", false},
+            {"materialTableSchemaVersion", 0},
+            {"materialTableContentHash", 0},
+        };
+        const Json emptyToonOutline = {
+            {"requested", false},
+            {"pipelineReady", false},
+            {"inputsReady", false},
+            {"executed", false},
+            {"depthInputReady", false},
+            {"worldNormalInputReady", false},
+            {"materialIdentityInputReady", false},
+            {"materialTableInputReady", false},
+            {"temporalOrderingValidated", false},
+            {"taaSequenceIndex", 0},
+            {"outlineSequenceIndex", 0},
+            {"toneMapSequenceIndex", 0},
+            {"eligibleToonMaterialCount", 0},
+            {"qualificationRequested", false},
+            {"qualificationReady", false},
+            {"outlinedPixelCount", 0},
+            {"nonToonAffectedPixelCount", 0},
+            {"resolutionAware", false},
+            {"renderWidth", 0},
+            {"renderHeight", 0},
+            {"settingsHash", 0},
+            {"materialTableContentHash", 0},
+            {"fallbackUsed", false},
+            {"diagnostic", ""},
+        };
+        Json schema12DeferredReceipt = schema25GTAOReport;
+        Json& schema12DeferredExecution =
+            schema12DeferredReceipt["visualContractReceipt"]
+                                  ["renderExecutionReceipt"];
+        schema12DeferredExecution["schemaVersion"] = 12;
+        schema12DeferredExecution["toonLighting"] = emptyToonLighting;
+        schema12DeferredExecution["toonOutline"] = emptyToonOutline;
+        schema12DeferredExecution["hybridRayTracing"] =
+            emptyHybridRayTracing;
+        if (!ValidateSampleReportV12Root(
+                schema12DeferredReceipt, expectedBuildIdentity))
+        {
+            return false;
+        }
+        Json missingHybridReceipt = schema12DeferredReceipt;
+        missingHybridReceipt["visualContractReceipt"]
+                            ["renderExecutionReceipt"].erase(
+                                "hybridRayTracing");
+        Json nonHybridWithRoute = schema12DeferredReceipt;
+        nonHybridWithRoute["visualContractReceipt"]
+                         ["renderExecutionReceipt"]
+                         ["hybridRayTracing"]["available"] = true;
+        Json nonHybridWithNonCanonicalViewRole = schema12DeferredReceipt;
+        nonHybridWithNonCanonicalViewRole["visualContractReceipt"]
+                                          ["renderExecutionReceipt"]
+                                          ["hybridRayTracing"]
+                                          ["viewIdentity"]
+                                          ["role"] = "invalid";
+        if (ValidateSampleReportV12Root(
+                missingHybridReceipt, expectedBuildIdentity) ||
+            ValidateSampleReportV12Root(
+                nonHybridWithRoute, expectedBuildIdentity) ||
+            ValidateSampleReportV12Root(
+                nonHybridWithNonCanonicalViewRole, expectedBuildIdentity))
+        {
+            return false;
+        }
+
+        Json schema12HybridReceipt = schema12DeferredReceipt;
+        Json& schema12HybridVisual =
+            schema12HybridReceipt["visualContractReceipt"];
+        schema12HybridVisual["requestedPipeline"] = "hybrid-rt";
+        schema12HybridVisual["observedPipeline"] = "hybrid-rt";
+        Json& schema12HybridExecution =
+            schema12HybridVisual["renderExecutionReceipt"];
+        schema12HybridExecution["requestedRecipe"] = "hybrid-rt";
+        schema12HybridExecution["resolvedRecipe"] = "hybrid-rt";
+        schema12HybridExecution["profileHash"] =
+            ComputeRenderPipelineProfileHash(3, 2);
+        Json& hybrid = schema12HybridExecution["hybridRayTracing"];
+        hybrid = {
+            {"available", true},
+            {"planIdentityHash", 701},
+            {"scenePreparationGeneration", 7},
+            {"sceneStructuralHash", 702},
+            {"frameIdentity", schema12HybridExecution["frameIdentity"]},
+            {"viewIdentity", schema12HybridExecution["viewIdentity"]},
+            {"fullResolution", {{"width", 1280}, {"height", 720}}},
+            {"halfResolution", {{"width", 640}, {"height", 360}}},
+            {"historyResetReasons", 0},
+            {"recipe", "hybrid-rt"},
+            {"quality", "high"},
+            {"profileHash", ComputeRenderPipelineProfileHash(3, 2)},
+            {"shadowRoute", "ray-traced"},
+            {"reflectionRoute", "ray-traced"},
+            {"graphExecutionSucceeded", true},
+            {"sceneBuildAccepted", true},
+            {"shadowDispatchRecorded", true},
+            {"reflectionDispatchRecorded", true},
+            {"spatialDenoiseRecorded", true},
+            {"temporalResolveRecorded", true},
+            {"compositeRecorded", true},
+            {"compositeUsedDenoisedSource", true},
+            {"submissionAccepted", true},
+            {"presentationQualified", true},
+            {"succeeded", true},
+        };
+        if (!ValidateSampleReportV12Root(
+                schema12HybridReceipt, expectedBuildIdentity))
+        {
+            return false;
+        }
+        Json missingHybridTemporalResolve = schema12HybridReceipt;
+        missingHybridTemporalResolve["visualContractReceipt"]
+                                   ["renderExecutionReceipt"]
+                                   ["hybridRayTracing"]
+                                   ["temporalResolveRecorded"] = false;
+        if (ValidateSampleReportV12Root(
+                missingHybridTemporalResolve, expectedBuildIdentity))
         {
             return false;
         }
@@ -9957,6 +11474,8 @@ namespace
             << "  --require-lighting-plan\n"
             << "  --require-csm-requested\n"
             << "  --require-csm-execution-ready\n"
+            << "  --require-local-shadow-execution\n"
+            << "  --require-hiz-reflection-execution\n"
             << "  --require-ibl-requested\n"
             << "  --require-ibl-execution-ready\n"
             << "  --require-deformation-plan\n"
@@ -9980,6 +11499,8 @@ namespace
             << "  --require-toon-lighting-execution\n"
             << "  --require-toon-outline-execution\n"
             << "  --require-translucency-execution\n"
+            << "  --require-weighted-blended-oit-execution\n"
+            << "  --require-weighted-blended-oit-frame-contract\n"
             << "  --require-transparent-alpha-blend-execution\n"
             << "  --require-transparent-premultiplied-execution\n"
             << "  --require-transparent-additive-execution\n"
@@ -9993,6 +11514,7 @@ namespace
             << "  --require-particle-smoke-execution\n"
             << "  --require-water-surface-execution\n"
             << "  --require-cooked-shader-provider\n"
+            << "  --require-cooked-shader-root <path>\n"
             << "  --require-package-only-cooked-asset <asset-id>\n"
             << "  --require-temporal-aa-execution\n"
             << "  --require-no-fxaa-execution\n"

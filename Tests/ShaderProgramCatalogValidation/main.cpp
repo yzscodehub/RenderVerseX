@@ -277,6 +277,8 @@ TEST(ShaderProgramCatalogValidation,
              std::pair{RVX::RHIShaderStage::Vertex, std::string_view{"VSMain"}},
              std::pair{RVX::RHIShaderStage::Pixel, std::string_view{"PSMain"}},
              std::pair{RVX::RHIShaderStage::Pixel,
+                       std::string_view{"PSWeightedBlendedOIT"}},
+             std::pair{RVX::RHIShaderStage::Pixel,
                        std::string_view{"PSDistortionMain"}},
              std::pair{RVX::RHIShaderStage::Vertex,
                        std::string_view{"DistortionCompositeVS"}},
@@ -321,6 +323,104 @@ TEST(ShaderProgramCatalogValidation,
                         resolvedClipYDefine->value == "1");
         }
     }
+}
+
+TEST(ShaderProgramCatalogValidation,
+     WeightedBlendedOITProgramsAreCookedForEveryRasterBackend)
+{
+    std::vector<RVX::Tools::ShaderProgramCatalogEntry> entries;
+    std::string error;
+    ASSERT_TRUE(RVX::Tools::LoadShaderProgramCatalog(
+        RepositoryCatalogPath(), entries, error)) << error;
+
+    struct ExpectedProgram
+    {
+        std::string_view asset;
+        RVX::RHIShaderStage stage;
+        std::string_view entry;
+        bool needsClipYDefine = false;
+    };
+    constexpr std::array expectedPrograms = {
+        ExpectedProgram{"DefaultLit.hlsl", RVX::RHIShaderStage::Pixel,
+                        "PSWeightedBlendedOIT", false},
+        ExpectedProgram{"Particle/ParticleBillboard.hlsl",
+                        RVX::RHIShaderStage::Pixel,
+                        "PSWeightedBlendedOIT", true},
+        ExpectedProgram{"Translucency/WeightedBlendedOITComposite.hlsl",
+                        RVX::RHIShaderStage::Vertex, "VSMain", true},
+        ExpectedProgram{"Translucency/WeightedBlendedOITComposite.hlsl",
+                        RVX::RHIShaderStage::Pixel, "PSMain", true},
+    };
+    constexpr std::array expectedBackends = {
+        RVX::RHIBackendType::DX11,
+        RVX::RHIBackendType::DX12,
+        RVX::RHIBackendType::Vulkan,
+        RVX::RHIBackendType::Metal,
+        RVX::RHIBackendType::OpenGL,
+    };
+
+    for (const ExpectedProgram& expected : expectedPrograms)
+    {
+        const auto program = std::find_if(
+            entries.begin(), entries.end(),
+            [&expected](const RVX::Tools::ShaderProgramCatalogEntry& entry)
+            {
+                return entry.logicalAssetId == expected.asset &&
+                       entry.stage == expected.stage &&
+                       entry.entryPoint == expected.entry;
+            });
+        ASSERT_NE(program, entries.end())
+            << expected.asset << ":" << expected.entry;
+        EXPECT_EQ(program->backends.size(), expectedBackends.size());
+        for (const RVX::RHIBackendType backend : expectedBackends)
+        {
+            EXPECT_NE(std::find(program->backends.begin(),
+                                program->backends.end(), backend),
+                      program->backends.end())
+                << expected.asset << ":" << expected.entry;
+        }
+
+        const auto clipYDefine = std::find_if(
+            program->defines.begin(), program->defines.end(),
+            [](const RVX::ShaderMacro& define)
+            {
+                return define.name ==
+                           "RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y" &&
+                       define.value == "$backend.clipY";
+            });
+        EXPECT_EQ(clipYDefine != program->defines.end(),
+                  expected.needsClipYDefine)
+            << expected.asset << ":" << expected.entry;
+    }
+
+    const fs::path shaderRoot = RepositoryShaderRoot();
+    const std::string sharedSource = ReadText(
+        shaderRoot / "Translucency" / "WeightedBlendedOIT.hlsli");
+    const std::string defaultLitSource =
+        ReadText(shaderRoot / "DefaultLit.hlsl");
+    const std::string particleSource =
+        ReadText(shaderRoot / "Particle" / "ParticleBillboard.hlsl");
+    const std::string compositeSource = ReadText(
+        shaderRoot / "Translucency" /
+        "WeightedBlendedOITComposite.hlsl");
+    EXPECT_NE(sharedSource.find("RVXWeightedBlendedOITWeight"),
+              std::string::npos);
+    EXPECT_NE(sharedSource.find("RVX_WEIGHTED_OIT_MAX_WEIGHT = 4.0f"),
+              std::string::npos);
+    EXPECT_NE(sharedSource.find("RVX_WEIGHTED_OIT_MAX_HDR_CHANNEL = 16.0f"),
+              std::string::npos);
+    EXPECT_NE(sharedSource.find("RVXCanonicalizeWeightedBlendedOITDepth"),
+              std::string::npos);
+    EXPECT_NE(defaultLitSource.find("!eligibleShadingModel || !eligibleBlendMode"),
+              std::string::npos);
+    EXPECT_NE(particleSource.find("if (input.BlendMode > 1u)"),
+              std::string::npos);
+    EXPECT_NE(compositeSource.find("SourceSceneHDR.Load"),
+              std::string::npos);
+    EXPECT_NE(compositeSource.find("OITAccumulation.Load"),
+              std::string::npos);
+    EXPECT_NE(compositeSource.find("OITRevealage.Load"),
+              std::string::npos);
 }
 
 TEST(ShaderProgramCatalogValidation,

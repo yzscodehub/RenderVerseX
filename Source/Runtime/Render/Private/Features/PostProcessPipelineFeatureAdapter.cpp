@@ -28,8 +28,7 @@ namespace
     [[nodiscard]] bool IsPresentableRecipe(
         RenderPipelineRecipe recipe) noexcept
     {
-        return recipe == RenderPipelineRecipe::ForwardStandard ||
-               recipe == RenderPipelineRecipe::DeferredQuality;
+        return IsPresentableRasterRecipe(recipe);
     }
 
     [[nodiscard]] bool HandleMatchesBuilder(
@@ -262,7 +261,8 @@ RenderFeatureDescriptor PostProcessPipelineFeatureAdapter::Describe() const
     descriptor.requiredCapabilities = ToMask(RenderFeatureCapability::Graphics);
     descriptor.requiredRecipes =
         ToMask(RenderPipelineRecipe::ForwardStandard) |
-        ToMask(RenderPipelineRecipe::DeferredQuality);
+        ToMask(RenderPipelineRecipe::DeferredQuality) |
+        ToMask(RenderPipelineRecipe::HybridRayTracing);
     descriptor.qualityTiers = RVX_ALL_RENDER_QUALITY_TIERS;
     descriptor.fallbackPolicy = RenderFeatureFallbackPolicy::None;
     descriptor.shaderPipelineFamily = "PostProcessPipeline";

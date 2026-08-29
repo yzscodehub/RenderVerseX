@@ -595,6 +595,12 @@ namespace RVX
         m_enabledSynchronization2 = false;
         m_enabledDynamicRendering = false;
         m_enabledMemoryBudget = false;
+        m_enabledRayTracing = false;
+        m_rayTracingFunctions = {};
+        m_accelerationStructureProperties = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
+        m_rayTracingPipelineProperties = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
         m_indexedIndirectCountDispatch =
             VulkanIndexedIndirectCountDispatch::None;
         m_vkCmdDrawIndexedIndirectCount = nullptr;
@@ -671,6 +677,14 @@ namespace RVX
             enableExtension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
         }
 
+        const bool rayTracingExtensionsAvailable =
+            hasAvailableExtension(
+                VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
+            hasAvailableExtension(
+                VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) &&
+            hasAvailableExtension(
+                VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+
 #ifdef VK_EXT_device_fault
         const bool deviceFaultExtensionAvailable =
             hasAvailableExtension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
@@ -686,10 +700,32 @@ namespace RVX
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
         VkPhysicalDeviceVulkan13Features supportedVulkan13 = {
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR
+            supportedAccelerationStructure = {
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+        VkPhysicalDeviceRayTracingPipelineFeaturesKHR
+            supportedRayTracingPipeline = {
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
         supportedFeatures.pNext = &supportedVulkan12;
         supportedVulkan12.pNext = &supportedVulkan13;
+        if (rayTracingExtensionsAvailable)
+        {
+            supportedVulkan13.pNext = &supportedAccelerationStructure;
+            supportedAccelerationStructure.pNext =
+                &supportedRayTracingPipeline;
+        }
 #ifdef VK_EXT_device_fault
-        supportedVulkan13.pNext = &deviceFaultFeatures;
+        if (deviceFaultExtensionAvailable)
+        {
+            if (rayTracingExtensionsAvailable)
+            {
+                supportedRayTracingPipeline.pNext = &deviceFaultFeatures;
+            }
+            else
+            {
+                supportedVulkan13.pNext = &deviceFaultFeatures;
+            }
+        }
 #endif
         vkGetPhysicalDeviceFeatures2(m_physicalDevice, &supportedFeatures);
 
@@ -712,15 +748,15 @@ namespace RVX
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
         VkPhysicalDeviceVulkan13Features vulkan13Features = {
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR
+            accelerationStructureFeatures = {
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+        VkPhysicalDeviceRayTracingPipelineFeaturesKHR
+            rayTracingPipelineFeatures = {
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
 
         features2.pNext = &vulkan12Features;
         vulkan12Features.pNext = &vulkan13Features;
-#ifdef VK_EXT_device_fault
-        if (deviceFaultExtensionAvailable)
-        {
-            vulkan13Features.pNext = &deviceFaultFeatures;
-        }
-#endif
 
         // Publish enabled bits only after logical-device creation succeeds.
         const bool enableDrawIndirectFirstInstance =
@@ -746,6 +782,36 @@ namespace RVX
             supportedVulkan13.synchronization2 == VK_TRUE;
         const bool enableDynamicRendering =
             supportedVulkan13.dynamicRendering == VK_TRUE;
+        VulkanRayTracingFeatureSupport rayTracingFeatureSupport;
+        rayTracingFeatureSupport.extensionsAvailable =
+            rayTracingExtensionsAvailable;
+        rayTracingFeatureSupport.bufferDeviceAddress =
+            enableBufferDeviceAddress;
+        rayTracingFeatureSupport.descriptorIndexing =
+            enableDescriptorIndexing;
+        rayTracingFeatureSupport.descriptorBindingPartiallyBound =
+            supportedVulkan12.descriptorBindingPartiallyBound == VK_TRUE;
+        rayTracingFeatureSupport.runtimeDescriptorArray =
+            supportedVulkan12.runtimeDescriptorArray == VK_TRUE;
+        rayTracingFeatureSupport.shaderSampledImageArrayNonUniformIndexing =
+            supportedVulkan12.shaderSampledImageArrayNonUniformIndexing ==
+            VK_TRUE;
+        rayTracingFeatureSupport.shaderStorageBufferArrayNonUniformIndexing =
+            supportedVulkan12.shaderStorageBufferArrayNonUniformIndexing ==
+            VK_TRUE;
+        rayTracingFeatureSupport.accelerationStructure =
+            supportedAccelerationStructure.accelerationStructure == VK_TRUE;
+        rayTracingFeatureSupport.rayTracingPipeline =
+            supportedRayTracingPipeline.rayTracingPipeline == VK_TRUE;
+        const bool enableRayTracing =
+            IsVulkanRayTracingFeatureSetSupported(rayTracingFeatureSupport);
+
+        if (enableRayTracing)
+        {
+            enableExtension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+            enableExtension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+            enableExtension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+        }
 
 #ifdef VK_EXT_device_fault
         m_deviceFaultEnabled = false;
@@ -755,10 +821,6 @@ namespace RVX
         if (m_deviceFaultEnabled)
         {
             enableExtension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
-        }
-        else
-        {
-            vulkan13Features.pNext = nullptr;
         }
 #endif
 
@@ -784,9 +846,23 @@ namespace RVX
         vulkan12Features.descriptorIndexing =
             enableDescriptorIndexing ? VK_TRUE : VK_FALSE;
         vulkan12Features.descriptorBindingPartiallyBound =
-            supportedVulkan12.descriptorBindingPartiallyBound;
+            enableDescriptorIndexing
+                ? supportedVulkan12.descriptorBindingPartiallyBound
+                : VK_FALSE;
         vulkan12Features.runtimeDescriptorArray =
-            supportedVulkan12.runtimeDescriptorArray;
+            enableDescriptorIndexing
+                ? supportedVulkan12.runtimeDescriptorArray
+                : VK_FALSE;
+        vulkan12Features.shaderSampledImageArrayNonUniformIndexing =
+            enableDescriptorIndexing
+                ? supportedVulkan12
+                      .shaderSampledImageArrayNonUniformIndexing
+                : VK_FALSE;
+        vulkan12Features.shaderStorageBufferArrayNonUniformIndexing =
+            enableDescriptorIndexing
+                ? supportedVulkan12
+                      .shaderStorageBufferArrayNonUniformIndexing
+                : VK_FALSE;
         vulkan12Features.timelineSemaphore =
             enableTimelineSemaphore ? VK_TRUE : VK_FALSE;
         vulkan12Features.bufferDeviceAddress =
@@ -796,6 +872,30 @@ namespace RVX
             enableDynamicRendering ? VK_TRUE : VK_FALSE;
         vulkan13Features.synchronization2 =
             enableSynchronization2 ? VK_TRUE : VK_FALSE;
+
+        accelerationStructureFeatures.accelerationStructure =
+            enableRayTracing ? VK_TRUE : VK_FALSE;
+        rayTracingPipelineFeatures.rayTracingPipeline =
+            enableRayTracing ? VK_TRUE : VK_FALSE;
+
+        if (enableRayTracing)
+        {
+            vulkan13Features.pNext = &accelerationStructureFeatures;
+            accelerationStructureFeatures.pNext = &rayTracingPipelineFeatures;
+        }
+#ifdef VK_EXT_device_fault
+        if (m_deviceFaultEnabled)
+        {
+            if (enableRayTracing)
+            {
+                rayTracingPipelineFeatures.pNext = &deviceFaultFeatures;
+            }
+            else
+            {
+                vulkan13Features.pNext = &deviceFaultFeatures;
+            }
+        }
+#endif
 
         VkDeviceCreateInfo createInfo = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
         createInfo.pNext = &features2;
@@ -830,6 +930,7 @@ namespace RVX
         m_enabledDynamicRendering = enableDynamicRendering;
         m_enabledSynchronization2 = enableSynchronization2;
         m_enabledMemoryBudget = memoryBudgetExtensionEnabled;
+        m_enabledRayTracing = enableRayTracing;
         m_vkCmdDrawIndexedIndirectCount =
             reinterpret_cast<PFN_vkCmdDrawIndexedIndirectCount>(
                 vkGetDeviceProcAddr(m_device, "vkCmdDrawIndexedIndirectCount"));
@@ -848,6 +949,13 @@ namespace RVX
         {
             RVX_RHI_WARN(
                 "Vulkan indexed indirect-count was enabled but no usable command entry point loaded");
+        }
+
+        if (m_enabledRayTracing && !LoadRayTracingFunctions())
+        {
+            RVX_RHI_WARN(
+                "Vulkan ray tracing extensions/features were enabled but required device commands were unavailable; disabling the RHI ray tracing capability");
+            m_enabledRayTracing = false;
         }
 
         vkGetDeviceQueue(m_device, m_queueFamilies.graphicsFamily.value(), 0, &m_graphicsQueue);
@@ -992,6 +1100,11 @@ namespace RVX
             {VK_DESCRIPTOR_TYPE_SAMPLER, 1000},
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10000},
         };
+        if (m_enabledRayTracing && m_rayTracingFunctions.IsComplete())
+        {
+            poolSizes.push_back(
+                {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1000});
+        }
 
         VkDescriptorPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
@@ -1121,6 +1234,93 @@ namespace RVX
         }
     }
 
+    bool VulkanDevice::LoadRayTracingFunctions()
+    {
+        m_rayTracingFunctions = {};
+        if (m_device == VK_NULL_HANDLE)
+        {
+            return false;
+        }
+
+        m_rayTracingFunctions.createAccelerationStructure =
+            reinterpret_cast<PFN_vkCreateAccelerationStructureKHR>(
+                vkGetDeviceProcAddr(m_device,
+                                    "vkCreateAccelerationStructureKHR"));
+        m_rayTracingFunctions.destroyAccelerationStructure =
+            reinterpret_cast<PFN_vkDestroyAccelerationStructureKHR>(
+                vkGetDeviceProcAddr(m_device,
+                                    "vkDestroyAccelerationStructureKHR"));
+        m_rayTracingFunctions.getAccelerationStructureBuildSizes =
+            reinterpret_cast<PFN_vkGetAccelerationStructureBuildSizesKHR>(
+                vkGetDeviceProcAddr(m_device,
+                                    "vkGetAccelerationStructureBuildSizesKHR"));
+        m_rayTracingFunctions.getAccelerationStructureDeviceAddress =
+            reinterpret_cast<PFN_vkGetAccelerationStructureDeviceAddressKHR>(
+                vkGetDeviceProcAddr(
+                    m_device,
+                    "vkGetAccelerationStructureDeviceAddressKHR"));
+        m_rayTracingFunctions.cmdBuildAccelerationStructures =
+            reinterpret_cast<PFN_vkCmdBuildAccelerationStructuresKHR>(
+                vkGetDeviceProcAddr(m_device,
+                                    "vkCmdBuildAccelerationStructuresKHR"));
+        m_rayTracingFunctions.cmdWriteAccelerationStructuresProperties =
+            reinterpret_cast<PFN_vkCmdWriteAccelerationStructuresPropertiesKHR>(
+                vkGetDeviceProcAddr(
+                    m_device,
+                    "vkCmdWriteAccelerationStructuresPropertiesKHR"));
+        m_rayTracingFunctions.cmdCopyAccelerationStructure =
+            reinterpret_cast<PFN_vkCmdCopyAccelerationStructureKHR>(
+                vkGetDeviceProcAddr(m_device,
+                                    "vkCmdCopyAccelerationStructureKHR"));
+        m_rayTracingFunctions.createRayTracingPipelines =
+            reinterpret_cast<PFN_vkCreateRayTracingPipelinesKHR>(
+                vkGetDeviceProcAddr(m_device,
+                                    "vkCreateRayTracingPipelinesKHR"));
+        m_rayTracingFunctions.getRayTracingShaderGroupHandles =
+            reinterpret_cast<PFN_vkGetRayTracingShaderGroupHandlesKHR>(
+                vkGetDeviceProcAddr(
+                    m_device,
+                    "vkGetRayTracingShaderGroupHandlesKHR"));
+        m_rayTracingFunctions.cmdTraceRays =
+            reinterpret_cast<PFN_vkCmdTraceRaysKHR>(
+                vkGetDeviceProcAddr(m_device, "vkCmdTraceRaysKHR"));
+
+        if (!m_rayTracingFunctions.IsComplete())
+        {
+            return false;
+        }
+
+        m_accelerationStructureProperties = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
+        m_rayTracingPipelineProperties = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
+        VkPhysicalDeviceProperties2 properties = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        properties.pNext = &m_accelerationStructureProperties;
+        m_accelerationStructureProperties.pNext =
+            &m_rayTracingPipelineProperties;
+        vkGetPhysicalDeviceProperties2(m_physicalDevice, &properties);
+
+        const bool validProperties =
+            m_accelerationStructureProperties
+                    .minAccelerationStructureScratchOffsetAlignment != 0 &&
+            m_rayTracingPipelineProperties.shaderGroupHandleSize != 0 &&
+            m_rayTracingPipelineProperties.shaderGroupHandleAlignment != 0 &&
+            m_rayTracingPipelineProperties.shaderGroupBaseAlignment != 0 &&
+            m_rayTracingPipelineProperties.maxShaderGroupStride != 0 &&
+            m_rayTracingPipelineProperties.maxRayHitAttributeSize != 0 &&
+            m_rayTracingPipelineProperties.maxRayRecursionDepth != 0;
+        if (!validProperties)
+        {
+            RVX_RHI_WARN(
+                "Vulkan ray tracing extensions exposed invalid acceleration-structure or pipeline properties");
+            m_rayTracingFunctions = {};
+            return false;
+        }
+
+        return true;
+    }
+
     void VulkanDevice::RecordValidationMessage(
         VkDebugUtilsMessageSeverityFlagBitsEXT severity) noexcept
     {
@@ -1211,18 +1411,32 @@ namespace RVX
         // backend has not implemented the RHI bindless resource model.
         m_capabilities.supportsBindless = false;
 
-        // Vulkan ray tracing stays disabled until the backend implements AS creation,
-        // AS builds, RT pipeline state, shader tables, and DispatchRays.
-        constexpr bool hasRayTracingExtensions = false;
-        m_capabilities.supportsRaytracing = false;
-        m_capabilities.supportsRaytracingPipeline = false;
+        // Publish ray tracing only after its optional extension set, feature
+        // chain, physical limits, and every RHI entry point are available on the
+        // logical device.  This lets raster-only hardware retain the Vulkan
+        // backend without accidentally advertising a partial RT implementation.
+        const bool hasRayTracingImplementation =
+            m_enabledRayTracing && m_rayTracingFunctions.IsComplete();
+        m_capabilities.supportsRaytracing = hasRayTracingImplementation;
+        m_capabilities.supportsRaytracingPipeline =
+            hasRayTracingImplementation;
         m_capabilities.supportsRayQuery = false;
-        m_capabilities.supportsAccelerationStructureUpdate = false;
-        m_capabilities.supportsAccelerationStructureCompaction = false;
-        m_capabilities.maxRayRecursionDepth = 0;
-        m_capabilities.shaderGroupHandleSize = 0;
-        m_capabilities.shaderGroupHandleAlignment = 0;
-        m_capabilities.shaderTableBaseAlignment = 0;
+        m_capabilities.supportsAccelerationStructureUpdate =
+            hasRayTracingImplementation;
+        m_capabilities.supportsAccelerationStructureCompaction =
+            hasRayTracingImplementation;
+        m_capabilities.maxRayRecursionDepth = hasRayTracingImplementation
+            ? m_rayTracingPipelineProperties.maxRayRecursionDepth
+            : 0;
+        m_capabilities.shaderGroupHandleSize = hasRayTracingImplementation
+            ? m_rayTracingPipelineProperties.shaderGroupHandleSize
+            : 0;
+        m_capabilities.shaderGroupHandleAlignment = hasRayTracingImplementation
+            ? m_rayTracingPipelineProperties.shaderGroupHandleAlignment
+            : 0;
+        m_capabilities.shaderTableBaseAlignment = hasRayTracingImplementation
+            ? m_rayTracingPipelineProperties.shaderGroupBaseAlignment
+            : 0;
 
         // Mesh/task shader extension and feature chains are not enabled on this
         // logical device, so physical-device availability must not be reported.
@@ -1245,9 +1459,9 @@ namespace RVX
         m_capabilities.supportsQueueSubmissionPlan = true;
         m_capabilities.emulatesQueueFences = false;
 
-        RVX_RHI_DEBUG("Vulkan Capabilities: Raytracing={}, RaytracingExtensions={}, MeshShaders={}, VRS={}",
+        RVX_RHI_DEBUG("Vulkan Capabilities: Raytracing={}, RaytracingImplementation={}, MeshShaders={}, VRS={}",
             m_capabilities.supportsRaytracing,
-            hasRayTracingExtensions,
+            hasRayTracingImplementation,
             m_capabilities.supportsMeshShaders,
             m_capabilities.supportsVariableRateShading);
 
@@ -1263,6 +1477,34 @@ namespace RVX
         m_capabilities.maxComputeWorkGroupSize[1] = props.limits.maxComputeWorkGroupSize[1];
         m_capabilities.maxComputeWorkGroupSize[2] = props.limits.maxComputeWorkGroupSize[2];
         m_capabilities.maxPushConstantSize = props.limits.maxPushConstantsSize;
+
+        m_capabilities.supportsIndependentColorAttachmentBlend =
+            m_enabledIndependentBlend;
+        for (uint32 value = 1;
+             value < static_cast<uint32>(RHIFormat::Count);
+             ++value)
+        {
+            const RHIFormat format = static_cast<RHIFormat>(value);
+            const VkFormat nativeFormat = ToVkFormat(format);
+            if (nativeFormat == VK_FORMAT_UNDEFINED)
+            {
+                continue;
+            }
+
+            VkFormatProperties formatProperties{};
+            vkGetPhysicalDeviceFormatProperties(
+                m_physicalDevice, nativeFormat, &formatProperties);
+            const VkFormatFeatureFlags features =
+                formatProperties.optimalTilingFeatures;
+            RHIFormatCapabilities& published =
+                m_capabilities.formatCapabilities[value];
+            published.colorAttachment =
+                (features & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) != 0;
+            published.colorAttachmentBlend =
+                published.colorAttachment &&
+                (features &
+                 VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT) != 0;
+        }
 
         // Vulkan-specific
         m_capabilities.vulkan.maxPushConstantSize = props.limits.maxPushConstantsSize;
@@ -1876,6 +2118,7 @@ namespace RVX
                 "Vulkan graphics pipeline preflight failed: independent blend was requested but the logical-device feature is disabled");
             return nullptr;
         }
+
         const RHIPipelineValidationResult validation =
             ValidateRHIGraphicsPipelineDesc(desc);
         if (!validation)
@@ -1885,12 +2128,198 @@ namespace RVX
                 FormatRHIPipelineValidationResult(validation));
             return nullptr;
         }
+        const RHIPipelineValidationResult capabilityValidation =
+            ValidateRHIGraphicsPipelineCapabilities(desc, m_capabilities);
+        if (!capabilityValidation)
+        {
+            RVX_RHI_ERROR(
+                "Vulkan graphics pipeline capability preflight failed: {}",
+                FormatRHIPipelineValidationResult(capabilityValidation));
+            return nullptr;
+        }
         return CreateVulkanGraphicsPipeline(this, desc);
     }
 
     RHIPipelineRef VulkanDevice::CreateComputePipeline(const RHIComputePipelineDesc& desc)
     {
         return CreateVulkanComputePipeline(this, desc);
+    }
+
+    RHIPipelineRef VulkanDevice::CreateRayTracingPipeline(
+        const RHIRayTracingPipelineDesc& desc)
+    {
+        if (!m_capabilities.supportsRaytracingPipeline)
+        {
+            RVX_RHI_WARN(
+                "Vulkan ray tracing pipeline creation skipped because the complete RT implementation is unavailable");
+            return nullptr;
+        }
+
+        return CreateVulkanRayTracingPipeline(this, desc);
+    }
+
+    RHIShaderTableRef VulkanDevice::CreateShaderTable(
+        const RHIShaderTableDesc& desc)
+    {
+        if (!m_capabilities.supportsRaytracingPipeline)
+        {
+            RVX_RHI_WARN(
+                "Vulkan shader table creation skipped because the complete RT implementation is unavailable");
+            return nullptr;
+        }
+
+        return CreateVulkanShaderTable(this, desc);
+    }
+
+    RHIAccelerationStructureBuildSizes
+    VulkanDevice::GetBottomLevelASBuildSizes(const RHIBottomLevelASDesc& desc)
+    {
+        if (!m_capabilities.supportsRaytracing ||
+            !m_rayTracingFunctions.getAccelerationStructureBuildSizes)
+        {
+            return {};
+        }
+
+        const RHIRayTracingValidationResult validation =
+            ValidateRHIBottomLevelASDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("Vulkan BLAS size query rejected: {}",
+                          validation.message);
+            return {};
+        }
+        if (!ValidateVulkanRayTracingBuildFlags(
+                m_capabilities, desc.buildFlags, "BLAS size query"))
+        {
+            return {};
+        }
+        if (!ValidateVulkanBottomLevelASDeviceLimits(
+                m_accelerationStructureProperties,
+                desc,
+                "BLAS size query"))
+        {
+            return {};
+        }
+
+        std::vector<VkAccelerationStructureGeometryKHR> geometries;
+        std::vector<VkAccelerationStructureBuildRangeInfoKHR> ranges;
+        VkAccelerationStructureBuildGeometryInfoKHR buildInfo = {};
+        if (!BuildVulkanBottomLevelASBuildInputs(
+                m_physicalDevice,
+                desc,
+                ToVkAccelerationStructureBuildFlags(desc.buildFlags),
+                geometries, ranges, buildInfo))
+        {
+            return {};
+        }
+
+        std::vector<uint32> primitiveCounts;
+        primitiveCounts.reserve(ranges.size());
+        for (const VkAccelerationStructureBuildRangeInfoKHR& range : ranges)
+        {
+            primitiveCounts.push_back(range.primitiveCount);
+        }
+
+        VkAccelerationStructureBuildSizesInfoKHR nativeSizes = {
+            VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+        m_rayTracingFunctions.getAccelerationStructureBuildSizes(
+            m_device,
+            VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+            &buildInfo,
+            primitiveCounts.data(),
+            &nativeSizes);
+
+        RHIAccelerationStructureBuildSizes sizes;
+        sizes.accelerationStructureSize =
+            AlignVulkanAccelerationStructureSize(
+                nativeSizes.accelerationStructureSize);
+        sizes.buildScratchSize = nativeSizes.buildScratchSize;
+        sizes.updateScratchSize = nativeSizes.updateScratchSize;
+        if (!sizes.IsValid())
+        {
+            RVX_RHI_ERROR(
+                "Vulkan BLAS size query returned invalid or unaligned native sizes");
+            return {};
+        }
+        return sizes;
+    }
+
+    RHIAccelerationStructureBuildSizes
+    VulkanDevice::GetTopLevelASBuildSizes(const RHITopLevelASDesc& desc)
+    {
+        if (!m_capabilities.supportsRaytracing ||
+            !m_rayTracingFunctions.getAccelerationStructureBuildSizes)
+        {
+            return {};
+        }
+
+        const RHIRayTracingValidationResult validation =
+            ValidateRHITopLevelASDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("Vulkan TLAS size query rejected: {}",
+                          validation.message);
+            return {};
+        }
+        if (!ValidateVulkanRayTracingBuildFlags(
+                m_capabilities, desc.buildFlags, "TLAS size query"))
+        {
+            return {};
+        }
+        if (!ValidateVulkanTopLevelASDeviceLimits(
+                m_accelerationStructureProperties,
+                desc,
+                "TLAS size query"))
+        {
+            return {};
+        }
+
+        VkAccelerationStructureGeometryKHR geometry = {};
+        VkAccelerationStructureBuildRangeInfoKHR range = {};
+        VkAccelerationStructureBuildGeometryInfoKHR buildInfo = {};
+        if (!BuildVulkanTopLevelASBuildInputs(
+                desc, ToVkAccelerationStructureBuildFlags(desc.buildFlags),
+                geometry, range, buildInfo))
+        {
+            return {};
+        }
+
+        VkAccelerationStructureBuildSizesInfoKHR nativeSizes = {
+            VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+        const uint32 primitiveCount = range.primitiveCount;
+        m_rayTracingFunctions.getAccelerationStructureBuildSizes(
+            m_device,
+            VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+            &buildInfo,
+            &primitiveCount,
+            &nativeSizes);
+
+        RHIAccelerationStructureBuildSizes sizes;
+        sizes.accelerationStructureSize =
+            AlignVulkanAccelerationStructureSize(
+                nativeSizes.accelerationStructureSize);
+        sizes.buildScratchSize = nativeSizes.buildScratchSize;
+        sizes.updateScratchSize = nativeSizes.updateScratchSize;
+        if (!sizes.IsValid())
+        {
+            RVX_RHI_ERROR(
+                "Vulkan TLAS size query returned invalid or unaligned native sizes");
+            return {};
+        }
+        return sizes;
+    }
+
+    RHIAccelerationStructureRef VulkanDevice::CreateAccelerationStructure(
+        const RHIAccelerationStructureDesc& desc)
+    {
+        return CreateVulkanAccelerationStructure(this, desc);
+    }
+
+    RHIAccelerationStructureCompactedSizeQueryRef
+    VulkanDevice::CreateAccelerationStructureCompactedSizeQuery(
+        const RHIAccelerationStructureCompactedSizeQueryDesc& desc)
+    {
+        return CreateVulkanAccelerationStructureCompactedSizeQuery(this, desc);
     }
 
     RHIDescriptorSetRef VulkanDevice::CreateDescriptorSet(const RHIDescriptorSetDesc& desc)

@@ -281,6 +281,35 @@ namespace RVX
         virtual RHIAccelerationStructureType GetType() const = 0;
         virtual uint64 GetSize() const = 0;
         virtual uint64 GetGPUVirtualAddress() const = 0;
+        /** Backing storage tracked by RenderGraph for build-to-trace hazards. */
+        virtual RHIBuffer* GetStorageBuffer() const = 0;
+    };
+
+    /**
+     * @brief A dedicated, backend-neutral storage object for compacted-AS sizes.
+     *
+     * This deliberately is not an RHIQueryPool: Vulkan's general query-pool
+     * implementation is not part of the public baseline, while acceleration
+     * structure compaction needs only this narrow post-build query contract.
+     * A query is single-use. Its result becomes CPU-readable only after the
+     * caller waits for the fence that covers ResolveAccelerationStructureCompactedSizes.
+     * The caller retains the query, queried acceleration structures, and
+     * readback buffer until that fence completes.
+     */
+    struct RHIAccelerationStructureCompactedSizeQueryDesc
+    {
+        uint32 count = 1;
+        RHICommandQueueType queueType = RHICommandQueueType::Graphics;
+        const char* debugName = nullptr;
+    };
+
+    class RHIAccelerationStructureCompactedSizeQuery : public RHIResource
+    {
+    public:
+        virtual ~RHIAccelerationStructureCompactedSizeQuery() = default;
+
+        virtual uint32 GetCount() const = 0;
+        virtual RHICommandQueueType GetQueueType() const = 0;
     };
 
     // =============================================================================
@@ -376,6 +405,32 @@ namespace RVX
     inline RHIRayTracingValidationResult RHIRayTracingValidationFail(const char* message)
     {
         return {false, message};
+    }
+
+    inline RHIRayTracingValidationResult
+    ValidateRHIAccelerationStructureCompactedSizeQueryDesc(
+        const RHIAccelerationStructureCompactedSizeQueryDesc& desc)
+    {
+        if (desc.count == 0)
+        {
+            return RHIRayTracingValidationFail(
+                "acceleration structure compacted-size query count must be non-zero");
+        }
+
+        if (desc.queueType == RHICommandQueueType::Copy)
+        {
+            return RHIRayTracingValidationFail(
+                "acceleration structure compacted-size queries require the graphics or compute queue");
+        }
+
+        if (desc.queueType != RHICommandQueueType::Graphics &&
+            desc.queueType != RHICommandQueueType::Compute)
+        {
+            return RHIRayTracingValidationFail(
+                "acceleration structure compacted-size query queue type is invalid");
+        }
+
+        return RHIRayTracingValidationPass();
     }
 
     inline RHIRayTracingValidationResult ValidateRHIAccelerationStructureDesc(

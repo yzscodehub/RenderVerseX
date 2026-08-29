@@ -40,16 +40,21 @@ namespace RVX
         std::string m_modelFailure;
         bool m_skyboxCreated = false;
         bool m_lightCreated = false;
+        /** Sample-owned product probe reuses the realized environment cubemap. */
+        bool m_reflectionProbeCreated = false;
         bool m_bloomCapabilityPublished = false;
         bool m_toneMappingCapabilityPublished = false;
         bool m_colorGradingCapabilityPublished = false;
         bool m_fxaaCapabilityPublished = false;
         bool m_ambientOcclusionCapabilityPublished = false;
+        bool m_hizReflectionCapabilityPublished = false;
         /** Exact latest presented-frame post-process qualification result. */
         bool m_postProcessExecutionQualified = false;
         /** Renderer execution is intentionally independent of the opt-in probe. */
         bool m_ambientOcclusionExecutionReady = false;
         /** True only after the explicit post-Present GTAO probe is complete. */
         bool m_ambientOcclusionQualificationReady = false;
+        /** True only after the presented-frame route-mask readback completes. */
+        bool m_hizReflectionExecutionReady = false;
     };
 } // namespace RVX

@@ -3,6 +3,7 @@
 #include "Core/Log.h"
 #include "Core/MathTypes.h"
 #include "Render/Particles/ParticleBillboardDrawPlan.h"
+#include "Render/PipelineCache.h"
 #include "Render/Renderer/RenderClipConvention.h"
 #include "Resources/RenderResourceRegistry.h"
 #include "ShaderContracts/ShaderProgramProvider.h"
@@ -301,6 +302,7 @@ namespace RVX
             RHITextureRef fallbackTexture;
             RHITextureViewRef fallbackTextureView;
             std::array<RHIPipelineRef, 3> pipelines{};
+            RHIPipelineRef weightedBlendedPipeline;
             RHIPipelineRef distortionPipeline;
             RHIPipelineRef compositePipeline;
             uint32 frameSlot = RVX_INVALID_INDEX;
@@ -363,11 +365,33 @@ namespace RVX
             m_device = nullptr;
         }
 
+        /**
+         * The feature planner must be able to prove that the exact weighted
+         * particle path can be materialized before it seals a WBOIT route.
+         * Do not involve a RenderGraph here: this only reaches the persistent
+         * shader/pipeline cache used by Prepare().
+         */
+        [[nodiscard]] bool PreflightWeightedBlendedPipeline(
+            std::string& outDiagnostic)
+        {
+            outDiagnostic.clear();
+            if (EnsureWeightedBlendedPipeline())
+            {
+                return true;
+            }
+
+            outDiagnostic = m_unavailableReason.empty()
+                ? "Particle weighted-blended graphics pipeline is unavailable"
+                : m_unavailableReason;
+            return false;
+        }
+
         [[nodiscard]] Submission Prepare(
             std::shared_ptr<const ParticleBillboardDrawPlan> plan,
             const ViewData& view,
             bool softDepthAvailable,
-            const std::vector<bool>& spriteTextureAvailableByBatch)
+            const std::vector<bool>& spriteTextureAvailableByBatch,
+            bool weightedBlendedRequired = false)
         {
             Submission submission;
             submission.plan = std::move(plan);
@@ -390,6 +414,12 @@ namespace RVX
                 return submission;
             }
             if (!EnsurePipelineResources())
+            {
+                submission.diagnostic = m_unavailableReason;
+                return submission;
+            }
+            if (weightedBlendedRequired &&
+                !EnsureWeightedBlendedPipeline())
             {
                 submission.diagnostic = m_unavailableReason;
                 return submission;
@@ -525,6 +555,7 @@ namespace RVX
             submission.fallbackTexture = m_fallbackTexture;
             submission.fallbackTextureView = m_fallbackTextureView;
             submission.pipelines = m_pipelines;
+            submission.weightedBlendedPipeline = m_weightedBlendedPipeline;
             submission.distortionPipeline = m_distortionPipeline;
             submission.compositePipeline = m_compositePipeline;
             submission.frameSlot = frameSlot;
@@ -550,6 +581,7 @@ namespace RVX
             m_distortionPixelShader.Reset();
             m_compositeVertexShader.Reset();
             m_compositePixelShader.Reset();
+            m_weightedBlendedPixelShader.Reset();
             m_linearClampSampler.Reset();
             m_fallbackTextureView.Reset();
             m_fallbackTexture.Reset();
@@ -561,6 +593,7 @@ namespace RVX
             }
             m_distortionPipeline.Reset();
             m_compositePipeline.Reset();
+            m_weightedBlendedPipeline.Reset();
             m_unavailableReason.clear();
         }
 
@@ -616,7 +649,7 @@ namespace RVX
                                      RHIShaderStage::Pixel);
             setLayoutDesc.AddBinding(3, RHIBindingType::SampledTexture,
                                      RHIShaderStage::Pixel);
-            setLayoutDesc.AddBinding(4, RHIBindingType::Sampler,
+            setLayoutDesc.AddBinding(5, RHIBindingType::Sampler,
                                      RHIShaderStage::Pixel);
             m_descriptorSetLayout = m_device->CreateDescriptorSetLayout(setLayoutDesc);
             if (!m_descriptorSetLayout)
@@ -820,6 +853,73 @@ namespace RVX
             return true;
         }
 
+        [[nodiscard]] bool EnsureWeightedBlendedPipeline()
+        {
+            if (m_weightedBlendedPipeline)
+            {
+                return true;
+            }
+            if (!EnsurePipelineResources() || m_device == nullptr ||
+                m_shaderProgramProvider == nullptr)
+            {
+                return false;
+            }
+
+            ShaderProgramRequest request;
+            request.logicalAssetId = "Particle/ParticleBillboard.hlsl";
+            request.stage = RHIShaderStage::Pixel;
+            request.entryPoint = "PSWeightedBlendedOIT";
+            request.backend = m_device->GetBackendType();
+            request.defines = {{
+                "RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y",
+                request.backend == RHIBackendType::Vulkan ||
+                        request.backend == RHIBackendType::OpenGL
+                    ? "1"
+                    : "0"}};
+            ShaderProgramResult pixel = m_shaderProgramProvider->Load(
+                *m_device, request);
+            if (!pixel.Succeeded())
+            {
+                m_unavailableReason =
+                    "Particle weighted-blended cooked shader program load failed: " +
+                    pixel.diagnostic;
+                return false;
+            }
+
+            RHIGraphicsPipelineDesc pipelineDesc;
+            pipelineDesc.vertexShader = m_vertexShader.Get();
+            pipelineDesc.pixelShader = pixel.shader.Get();
+            pipelineDesc.rasterizerState = RHIRasterizerState::NoCull();
+            pipelineDesc.depthStencilState = RHIDepthStencilState::ReadOnly();
+            pipelineDesc.depthStencilState.depthCompareOp = m_reverseZ
+                ? RHICompareOp::GreaterEqual : RHICompareOp::LessEqual;
+            pipelineDesc.blendState =
+                PipelineCache::BuildWeightedBlendedOITAccumulationBlendState();
+            pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+            pipelineDesc.numRenderTargets = 2;
+            pipelineDesc.renderTargetFormats[0] =
+                PipelineCache::GetWeightedBlendedOITAccumulationFormat();
+            pipelineDesc.renderTargetFormats[1] =
+                PipelineCache::GetWeightedBlendedOITRevealageFormat();
+            pipelineDesc.depthStencilFormat = RHIFormat::D32_FLOAT;
+            pipelineDesc.sampleCount = RHISampleCount::Count1;
+            pipelineDesc.pipelineLayout = m_pipelineLayout.Get();
+            pipelineDesc.debugName =
+                "ParticleBillboard.WeightedBlendedOITAccumulationPipeline";
+            RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(
+                pipelineDesc);
+            if (!pipeline)
+            {
+                m_unavailableReason =
+                    "Particle weighted-blended graphics pipeline creation failed";
+                return false;
+            }
+            m_weightedBlendedPixelShader = std::move(pixel.shader);
+            m_weightedBlendedPipeline = std::move(pipeline);
+            ++m_pipelineCreationCount;
+            return true;
+        }
+
         [[nodiscard]] bool EnsureSlot(FrameSlot& slot, uint32 requiredInstances)
         {
             if (m_device == nullptr || requiredInstances == 0)
@@ -905,28 +1005,67 @@ namespace RVX
         RHIShaderRef m_distortionPixelShader;
         RHIShaderRef m_compositeVertexShader;
         RHIShaderRef m_compositePixelShader;
+        RHIShaderRef m_weightedBlendedPixelShader;
         RHISamplerRef m_linearClampSampler;
         RHITextureRef m_fallbackTexture;
         RHITextureViewRef m_fallbackTextureView;
         std::array<RHIPipelineRef, 3> m_pipelines{};
         RHIPipelineRef m_distortionPipeline;
         RHIPipelineRef m_compositePipeline;
+        RHIPipelineRef m_weightedBlendedPipeline;
         uint64 m_resourceCreationCount = 0;
         uint64 m_pipelineCreationCount = 0;
         std::string m_unavailableReason;
     };
 
+    struct ParticleTextureBinding
+    {
+        RenderResourceHandle resource{};
+        RHITextureRef texture;
+        RHITextureAccessSnapshot accessSnapshot{};
+        bool required = false;
+        RGTextureHandle graphTexture{};
+        RGTextureViewHandle graphView{};
+    };
+
+    enum class ParticleFeatureGraphStage : uint8
+    {
+        LegacyDirect = 0,
+        WeightedBlended,
+        Direct,
+        Distortion,
+        DistortionComposite,
+    };
+
+    struct ParticleGraphPassData;
+
+    /** Translation-unit definition of the public opaque prepared handle. */
+    class ParticleFeaturePreparedRecording final
+    {
+    public:
+        std::shared_ptr<const TranslucencyFramePlan> translucencyPlan;
+        ParticleBillboardRenderer::Submission submission{};
+        RenderPassExecutionData execution{};
+        ParticleFeaturePassStats initialStats{};
+        std::vector<ParticleTextureBinding> textureBindings;
+        ParticleVfxRecordInput particleVfx{};
+        RenderPassRecordResults* results = nullptr;
+        ParticleFeaturePass* owner = nullptr;
+        const ParticleRenderSnapshot* snapshot = nullptr;
+        uint64 snapshotSequence = 0;
+        std::vector<uint32> weightedBatchIndices;
+        std::vector<uint32> directBatchIndices;
+        RGTextureHandle weightedAccumulation{};
+        RGTextureHandle weightedRevealage{};
+        std::shared_ptr<ParticleGraphPassData> graphResources;
+        bool contextValid = false;
+        bool weightedRecorded = false;
+        bool directRecorded = false;
+        bool commonResourcesPrepared = false;
+    };
+
     namespace
     {
-        struct ParticleTextureBinding
-        {
-            RenderResourceHandle resource{};
-            RHITextureRef texture;
-            RHITextureAccessSnapshot accessSnapshot{};
-            bool required = false;
-            RGTextureHandle graphTexture{};
-            RGTextureViewHandle graphView{};
-        };
 
         [[nodiscard]] bool ResolveParticleTextureBindings(
             const ParticleBillboardDrawPlan& plan,
@@ -985,7 +1124,9 @@ namespace RVX
             return true;
         }
 
-        struct ParticleGraphPassData
+    } // namespace
+
+    struct ParticleGraphPassData
         {
             ParticleBillboardRenderer::Submission submission{};
             RenderPassExecutionData execution{};
@@ -1003,16 +1144,27 @@ namespace RVX
             RGTextureViewHandle distortionView{};
             RGTextureViewHandle compositeSourceView{};
             RGTextureViewHandle compositeTargetView{};
+            RGTextureHandle accumulationHandle{};
+            RGTextureHandle revealageHandle{};
+            RGTextureViewHandle accumulationView{};
+            RGTextureViewHandle revealageView{};
             std::vector<ParticleTextureBinding> textureBindings;
+            std::vector<uint32> batchIndices;
             ParticleVfxRecordInput particleVfx{};
             RenderPassRecordResults* results = nullptr;
             bool contextValid = false;
+            ParticleFeatureGraphStage stage =
+                ParticleFeatureGraphStage::LegacyDirect;
             ParticleFeaturePass* owner = nullptr;
         };
 
+    namespace
+    {
+
         [[nodiscard]] bool PrepareGraphResources(
             ParticleGraphPassData& data,
-            RenderGraphBuilder& builder)
+            RenderGraphBuilder& builder,
+            bool prepareDirectTargets)
         {
             if (!data.contextValid || !data.submission.IsReady() ||
                 !data.execution.view.colorTarget.IsValid() ||
@@ -1040,7 +1192,10 @@ namespace RVX
                 !Retain(builder, data.submission.fallbackTexture.Get()) ||
                 !Retain(builder, data.submission.fallbackTextureView.Get()) ||
                 !Retain(builder, data.submission.distortionPipeline.Get()) ||
-                !Retain(builder, data.submission.compositePipeline.Get()))
+                !Retain(builder, data.submission.compositePipeline.Get()) ||
+                (data.submission.weightedBlendedPipeline &&
+                 !Retain(builder,
+                         data.submission.weightedBlendedPipeline.Get())))
             {
                 return false;
             }
@@ -1121,53 +1276,58 @@ namespace RVX
                 }
             }
 
-            data.colorHandle = view.colorTarget;
-            RHITextureViewDesc colorViewDesc;
-            colorViewDesc.format = colorDesc->format;
-            colorViewDesc.dimension = colorDesc->dimension;
-            colorViewDesc.subresourceRange = RHISubresourceRange::All();
-            colorViewDesc.type = RHITextureViewType::RenderTarget;
-            colorViewDesc.debugName = "ParticleBillboard.ColorRTV";
-            data.colorView = builder.CreateTextureView(data.colorHandle, colorViewDesc);
-            data.colorView = builder.ReadWrite(
-                data.colorView,
-                MakeRGAccessDesc(RHIResourceState::RenderTarget,
-                                 RHIShaderStage::Pixel));
-            if (!data.colorView.IsValid())
+            if (prepareDirectTargets)
             {
-                return false;
-            }
+                data.colorHandle = view.colorTarget;
+                RHITextureViewDesc colorViewDesc;
+                colorViewDesc.format = colorDesc->format;
+                colorViewDesc.dimension = colorDesc->dimension;
+                colorViewDesc.subresourceRange = RHISubresourceRange::All();
+                colorViewDesc.type = RHITextureViewType::RenderTarget;
+                colorViewDesc.debugName = "ParticleBillboard.ColorRTV";
+                data.colorView = builder.CreateTextureView(
+                    data.colorHandle, colorViewDesc);
+                data.colorView = builder.ReadWrite(
+                    data.colorView,
+                    MakeRGAccessDesc(RHIResourceState::RenderTarget,
+                                     RHIShaderStage::Pixel));
+                if (!data.colorView.IsValid())
+                {
+                    return false;
+                }
 
-            if (!view.reactiveMaskTarget.IsValid() ||
-                !HasCurrentGraphProvenance(view.reactiveMaskTarget,
-                                           data.execution.identity))
-            {
-                return false;
-            }
-            const RHITextureDesc* const reactiveMaskDesc =
-                builder.GetTextureDesc(view.reactiveMaskTarget);
-            if (reactiveMaskDesc == nullptr ||
-                reactiveMaskDesc->format != RHIFormat::R8_UNORM ||
-                reactiveMaskDesc->width != colorDesc->width ||
-                reactiveMaskDesc->height != colorDesc->height)
-            {
-                return false;
-            }
-            data.reactiveMaskHandle = view.reactiveMaskTarget;
-            RHITextureViewDesc reactiveMaskViewDesc;
-            reactiveMaskViewDesc.format = reactiveMaskDesc->format;
-            reactiveMaskViewDesc.dimension = reactiveMaskDesc->dimension;
-            reactiveMaskViewDesc.type = RHITextureViewType::RenderTarget;
-            reactiveMaskViewDesc.debugName = "ParticleBillboard.ReactiveMaskRTV";
-            data.reactiveMaskView = builder.CreateTextureView(
-                data.reactiveMaskHandle, reactiveMaskViewDesc);
-            data.reactiveMaskView = builder.ReadWrite(
-                data.reactiveMaskView,
-                MakeRGAccessDesc(RHIResourceState::RenderTarget,
-                                 RHIShaderStage::Pixel));
-            if (!data.reactiveMaskView.IsValid())
-            {
-                return false;
+                if (!view.reactiveMaskTarget.IsValid() ||
+                    !HasCurrentGraphProvenance(view.reactiveMaskTarget,
+                                               data.execution.identity))
+                {
+                    return false;
+                }
+                const RHITextureDesc* const reactiveMaskDesc =
+                    builder.GetTextureDesc(view.reactiveMaskTarget);
+                if (reactiveMaskDesc == nullptr ||
+                    reactiveMaskDesc->format != RHIFormat::R8_UNORM ||
+                    reactiveMaskDesc->width != colorDesc->width ||
+                    reactiveMaskDesc->height != colorDesc->height)
+                {
+                    return false;
+                }
+                data.reactiveMaskHandle = view.reactiveMaskTarget;
+                RHITextureViewDesc reactiveMaskViewDesc;
+                reactiveMaskViewDesc.format = reactiveMaskDesc->format;
+                reactiveMaskViewDesc.dimension = reactiveMaskDesc->dimension;
+                reactiveMaskViewDesc.type = RHITextureViewType::RenderTarget;
+                reactiveMaskViewDesc.debugName =
+                    "ParticleBillboard.ReactiveMaskRTV";
+                data.reactiveMaskView = builder.CreateTextureView(
+                    data.reactiveMaskHandle, reactiveMaskViewDesc);
+                data.reactiveMaskView = builder.ReadWrite(
+                    data.reactiveMaskView,
+                    MakeRGAccessDesc(RHIResourceState::RenderTarget,
+                                     RHIShaderStage::Pixel));
+                if (!data.reactiveMaskView.IsValid())
+                {
+                    return false;
+                }
             }
 
             if (!HasCurrentGraphProvenance(view.depthTarget,
@@ -1241,6 +1401,146 @@ namespace RVX
             return true;
         }
 
+        [[nodiscard]] bool PrepareDirectGraphTargets(
+            ParticleGraphPassData& data,
+            RenderGraphBuilder& builder,
+            const ParticleDirectRecordTargets& targets)
+        {
+            if (!data.contextValid || !targets.hdrSceneColor.IsValid() ||
+                !targets.reactiveMask.IsValid() ||
+                !HasCurrentGraphProvenance(
+                    targets.hdrSceneColor, data.execution.identity) ||
+                !HasCurrentGraphProvenance(
+                    targets.reactiveMask, data.execution.identity))
+            {
+                return false;
+            }
+            const RHITextureDesc* const colorDesc =
+                builder.GetTextureDesc(targets.hdrSceneColor);
+            const RHITextureDesc* const reactiveMaskDesc =
+                builder.GetTextureDesc(targets.reactiveMask);
+            if (colorDesc == nullptr || reactiveMaskDesc == nullptr ||
+                colorDesc->format != RHIFormat::RGBA16_FLOAT ||
+                reactiveMaskDesc->format != RHIFormat::R8_UNORM ||
+                colorDesc->width != data.execution.view.viewportWidth ||
+                colorDesc->height != data.execution.view.viewportHeight ||
+                reactiveMaskDesc->width != colorDesc->width ||
+                reactiveMaskDesc->height != colorDesc->height ||
+                colorDesc->sampleCount != RHISampleCount::Count1 ||
+                reactiveMaskDesc->sampleCount != RHISampleCount::Count1)
+            {
+                return false;
+            }
+
+            data.colorHandle = targets.hdrSceneColor;
+            RHITextureViewDesc colorViewDesc;
+            colorViewDesc.format = RHIFormat::RGBA16_FLOAT;
+            colorViewDesc.dimension = colorDesc->dimension;
+            colorViewDesc.type = RHITextureViewType::RenderTarget;
+            colorViewDesc.debugName = "ParticleBillboard.DirectColorRTV";
+            data.colorView = builder.CreateTextureView(
+                data.colorHandle, colorViewDesc);
+            data.colorView = builder.ReadWrite(
+                data.colorView,
+                MakeRGAccessDesc(RHIResourceState::RenderTarget,
+                                 RHIShaderStage::Pixel));
+
+            data.reactiveMaskHandle = targets.reactiveMask;
+            RHITextureViewDesc reactiveViewDesc;
+            reactiveViewDesc.format = RHIFormat::R8_UNORM;
+            reactiveViewDesc.dimension = reactiveMaskDesc->dimension;
+            reactiveViewDesc.type = RHITextureViewType::RenderTarget;
+            reactiveViewDesc.debugName =
+                "ParticleBillboard.DirectReactiveMaskRTV";
+            data.reactiveMaskView = builder.CreateTextureView(
+                data.reactiveMaskHandle, reactiveViewDesc);
+            data.reactiveMaskView = builder.ReadWrite(
+                data.reactiveMaskView,
+                MakeRGAccessDesc(RHIResourceState::RenderTarget,
+                                 RHIShaderStage::Pixel));
+            return data.colorView.IsValid() &&
+                   data.reactiveMaskView.IsValid();
+        }
+
+        [[nodiscard]] bool PrepareWeightedBlendedGraphTargets(
+            ParticleGraphPassData& data,
+            RenderGraphBuilder& builder,
+            const ParticleWeightedBlendedRecordTargets& targets)
+        {
+            if (!data.contextValid ||
+                !data.submission.weightedBlendedPipeline ||
+                !targets.accumulation.IsValid() ||
+                !targets.revealage.IsValid() ||
+                targets.accumulation.index == targets.revealage.index ||
+                targets.accumulation.index ==
+                    data.execution.view.colorTarget.index ||
+                targets.accumulation.index ==
+                    data.execution.view.reactiveMaskTarget.index ||
+                targets.accumulation.index ==
+                    data.execution.view.depthTarget.index ||
+                targets.revealage.index ==
+                    data.execution.view.colorTarget.index ||
+                targets.revealage.index ==
+                    data.execution.view.reactiveMaskTarget.index ||
+                targets.revealage.index ==
+                    data.execution.view.depthTarget.index ||
+                !HasCurrentGraphProvenance(
+                    targets.accumulation, data.execution.identity) ||
+                !HasCurrentGraphProvenance(
+                    targets.revealage, data.execution.identity))
+            {
+                return false;
+            }
+            const RHITextureDesc* const accumulationDesc =
+                builder.GetTextureDesc(targets.accumulation);
+            const RHITextureDesc* const revealageDesc =
+                builder.GetTextureDesc(targets.revealage);
+            if (accumulationDesc == nullptr || revealageDesc == nullptr ||
+                accumulationDesc->format !=
+                    PipelineCache::GetWeightedBlendedOITAccumulationFormat() ||
+                revealageDesc->format !=
+                    PipelineCache::GetWeightedBlendedOITRevealageFormat() ||
+                accumulationDesc->width != data.execution.view.viewportWidth ||
+                accumulationDesc->height != data.execution.view.viewportHeight ||
+                revealageDesc->width != accumulationDesc->width ||
+                revealageDesc->height != accumulationDesc->height ||
+                accumulationDesc->sampleCount != RHISampleCount::Count1 ||
+                revealageDesc->sampleCount != RHISampleCount::Count1)
+            {
+                return false;
+            }
+
+            data.accumulationHandle = targets.accumulation;
+            RHITextureViewDesc accumulationViewDesc;
+            accumulationViewDesc.format = accumulationDesc->format;
+            accumulationViewDesc.dimension = accumulationDesc->dimension;
+            accumulationViewDesc.type = RHITextureViewType::RenderTarget;
+            accumulationViewDesc.debugName =
+                "ParticleBillboard.WeightedAccumulationRTV";
+            data.accumulationView = builder.CreateTextureView(
+                data.accumulationHandle, accumulationViewDesc);
+            data.accumulationView = builder.ReadWrite(
+                data.accumulationView,
+                MakeRGAccessDesc(RHIResourceState::RenderTarget,
+                                 RHIShaderStage::Pixel));
+
+            data.revealageHandle = targets.revealage;
+            RHITextureViewDesc revealageViewDesc;
+            revealageViewDesc.format = revealageDesc->format;
+            revealageViewDesc.dimension = revealageDesc->dimension;
+            revealageViewDesc.type = RHITextureViewType::RenderTarget;
+            revealageViewDesc.debugName =
+                "ParticleBillboard.WeightedRevealageRTV";
+            data.revealageView = builder.CreateTextureView(
+                data.revealageHandle, revealageViewDesc);
+            data.revealageView = builder.ReadWrite(
+                data.revealageView,
+                MakeRGAccessDesc(RHIResourceState::RenderTarget,
+                                 RHIShaderStage::Pixel));
+            return data.accumulationView.IsValid() &&
+                   data.revealageView.IsValid();
+        }
+
         [[nodiscard]] bool PrepareDistortionGraphResources(
             ParticleGraphPassData& data,
             RenderGraphBuilder& builder)
@@ -1294,6 +1594,53 @@ namespace RVX
                                  RHIShaderStage::Pixel));
             return data.constantsHandle.IsValid() && data.instanceHandle.IsValid() &&
                 data.distortionView.IsValid();
+        }
+
+        [[nodiscard]] bool PrepareReusedCommonGraphResources(
+            ParticleGraphPassData& data,
+            RenderGraphBuilder& builder)
+        {
+            if (!data.contextValid || !data.submission.IsReady() ||
+                !data.constantsHandle.IsValid() ||
+                !data.instanceHandle.IsValid() ||
+                !data.depthView.IsValid())
+            {
+                return false;
+            }
+            data.constantsHandle = builder.Read(
+                data.constantsHandle,
+                MakeRHIAccessSnapshot(RHIResourceState::ConstantBuffer,
+                                      RHIShaderStage::Vertex));
+            data.instanceHandle = builder.Read(
+                data.instanceHandle,
+                MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                                      RHIShaderStage::Vertex));
+            data.depthView = builder.Read(
+                data.depthView,
+                MakeRGAccessDesc(RHIResourceState::DepthRead,
+                                 RHIShaderStage::Vertex |
+                                     RHIShaderStage::Pixel));
+            for (ParticleTextureBinding& binding : data.textureBindings)
+            {
+                if (binding.graphView.IsValid())
+                {
+                    binding.graphView = builder.Read(
+                        binding.graphView,
+                        MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                                         RHIShaderStage::Pixel));
+                }
+            }
+            if (data.softDepthView.IsValid())
+            {
+                data.softDepthView = builder.Read(
+                    data.softDepthView,
+                    MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                                     RHIShaderStage::Pixel));
+            }
+            return data.constantsHandle.IsValid() &&
+                   data.instanceHandle.IsValid() && data.depthView.IsValid() &&
+                   (!data.particleVfx.softDepthRequired ||
+                    data.softDepthView.IsValid());
         }
 
         [[nodiscard]] bool PrepareDistortionCompositeGraphResources(
@@ -1422,7 +1769,7 @@ namespace RVX
                 .BindBuffer(1, data.submission.instanceBuffer.Get())
                 .BindTexture(2, spriteView)
                 .BindTexture(3, depthOrDistortionView)
-                .BindSampler(4, data.submission.linearClampSampler.Get());
+                .BindSampler(5, data.submission.linearClampSampler.Get());
             RHIDescriptorSetRef descriptorSet = device->CreateDescriptorSet(descriptorDesc);
             if (!descriptorSet || !descriptorSet->IsReadyForBinding(
                     data.submission.descriptorSetLayout.Get()) ||
@@ -1451,6 +1798,16 @@ namespace RVX
                     currentStats.distortionPassExecuted;
                 stats.distortionCompositeExecuted =
                     currentStats.distortionCompositeExecuted;
+                stats.weightedDrawCallCount =
+                    currentStats.weightedDrawCallCount;
+                stats.directDrawCallCount =
+                    currentStats.directDrawCallCount;
+                stats.weightedGraphPassScheduled =
+                    currentStats.weightedGraphPassScheduled;
+                stats.directGraphPassScheduled =
+                    currentStats.directGraphPassScheduled;
+                stats.drawCallCount = currentStats.drawCallCount;
+                stats.drawSubmitted = currentStats.drawSubmitted;
             }
             stats.requested = data.submission.plan != nullptr &&
                 !data.submission.plan->items.empty();
@@ -1524,10 +1881,24 @@ namespace RVX
             commands.BeginRenderPass(renderPassDesc);
             commands.SetViewport(data.execution.view.GetRHIViewport());
             commands.SetScissor(data.execution.view.GetRHIScissor());
-            for (uint32 batchIndex = 0;
-                 batchIndex < data.submission.plan->batches.size();
-                 ++batchIndex)
+            const bool useAllBatches =
+                data.stage == ParticleFeatureGraphStage::LegacyDirect;
+            const uint32 selectedBatchCount = useAllBatches
+                ? static_cast<uint32>(data.submission.plan->batches.size())
+                : static_cast<uint32>(data.batchIndices.size());
+            uint32 stageDrawCallCount = 0;
+            for (uint32 selectedIndex = 0;
+                 selectedIndex < selectedBatchCount;
+                 ++selectedIndex)
             {
+                const uint32 batchIndex = useAllBatches
+                    ? selectedIndex : data.batchIndices[selectedIndex];
+                if (batchIndex >= data.submission.plan->batches.size())
+                {
+                    commands.EndRenderPass();
+                    fail("Particle direct stage references a batch outside its immutable plan");
+                    return;
+                }
                 const ParticleBillboardDrawBatch& batch =
                     data.submission.plan->batches[batchIndex];
                 const uint32 pipelineIndex = BlendPipelineIndex(batch.blendMode);
@@ -1550,11 +1921,156 @@ namespace RVX
                 commands.SetPipeline(data.submission.pipelines[pipelineIndex].Get());
                 commands.SetDescriptorSet(0, descriptorSet.Get());
                 commands.Draw(6, batch.itemCount, 0, batch.firstItem);
-                ++stats.drawCallCount;
+                ++stageDrawCallCount;
             }
             commands.EndRenderPass();
+            if (data.stage == ParticleFeatureGraphStage::Direct)
+            {
+                stats.directDrawCallCount = stageDrawCallCount;
+                stats.drawCallCount = stats.weightedDrawCallCount +
+                    stats.directDrawCallCount;
+            }
+            else
+            {
+                stats.drawCallCount = stageDrawCallCount;
+            }
+            stats.drawSubmitted = stats.drawSubmitted ||
+                stageDrawCallCount != 0;
+            stats.reactiveMaskWriteDrawCount = stageDrawCallCount;
+            if (data.owner != nullptr)
+            {
+                data.owner->PublishExecutionStats(stats);
+            }
+        }
+
+        void ExecuteWeightedBlendedGraphPass(
+            const ParticleGraphPassData& data,
+            RenderGraphPassContext& context)
+        {
+            ParticleFeaturePassStats stats = data.initialStats;
+            if (data.owner != nullptr)
+            {
+                const ParticleFeaturePassStats& currentStats =
+                    data.owner->GetStats();
+                stats.directDrawCallCount = currentStats.directDrawCallCount;
+                stats.weightedGraphPassScheduled =
+                    currentStats.weightedGraphPassScheduled;
+                stats.directGraphPassScheduled =
+                    currentStats.directGraphPassScheduled;
+                stats.distortionPassScheduled =
+                    currentStats.distortionPassScheduled;
+            }
+            const auto fail = [&data, &context, &stats](const char* reason)
+            {
+                ++stats.fallbackCount;
+                stats.supported = false;
+                stats.enabled = false;
+                stats.unsupportedReason = reason;
+                if (data.owner != nullptr)
+                {
+                    data.owner->PublishExecutionStats(stats);
+                }
+                context.MarkExecutionFailed(reason);
+            };
+
+            if (!data.contextValid || !data.submission.IsReady() ||
+                !data.submission.weightedBlendedPipeline ||
+                !data.constantsHandle.IsValid() ||
+                !data.instanceHandle.IsValid() ||
+                !data.accumulationHandle.IsValid() ||
+                !data.revealageHandle.IsValid() ||
+                !data.accumulationView.IsValid() ||
+                !data.revealageView.IsValid() ||
+                !data.depthHandle.IsValid() || !data.depthView.IsValid() ||
+                (data.particleVfx.softDepthRequired &&
+                 (!data.softDepthHandle.IsValid() ||
+                  !data.softDepthView.IsValid())))
+            {
+                fail("Particle weighted-blended graph recording prerequisites are unavailable");
+                return;
+            }
+
+            RHITexture* const accumulationTexture =
+                context.GetTexture(data.accumulationHandle);
+            RHITextureView* const accumulationView =
+                context.GetTextureView(data.accumulationView);
+            RHITextureView* const revealageView =
+                context.GetTextureView(data.revealageView);
+            RHITextureView* const depthView =
+                context.GetTextureView(data.depthView);
+            if (accumulationTexture == nullptr || accumulationView == nullptr ||
+                revealageView == nullptr || depthView == nullptr ||
+                context.GetBuffer(data.constantsHandle) !=
+                    data.submission.constantsBuffer.Get() ||
+                context.GetBuffer(data.instanceHandle) !=
+                    data.submission.instanceBuffer.Get())
+            {
+                fail("Particle weighted-blended graph resources could not be realized");
+                return;
+            }
+
+            RHIRenderPassDesc renderPassDesc;
+            renderPassDesc.AddColorAttachment(
+                accumulationView, RHILoadOp::Load, RHIStoreOp::Store);
+            renderPassDesc.AddColorAttachment(
+                revealageView, RHILoadOp::Load, RHIStoreOp::Store);
+            renderPassDesc.SetDepthStencil(
+                depthView, RHILoadOp::Load, RHIStoreOp::Store, 1.0f, 0);
+            renderPassDesc.depthStencilAttachment.readOnly = true;
+            renderPassDesc.SetRenderArea(
+                0, 0, accumulationTexture->GetWidth(),
+                accumulationTexture->GetHeight());
+
+            RHICommandContext& commands = context.Commands();
+            commands.BeginRenderPass(renderPassDesc);
+            commands.SetViewport(data.execution.view.GetRHIViewport());
+            commands.SetScissor(data.execution.view.GetRHIScissor());
+            uint32 stageDrawCallCount = 0;
+            for (uint32 batchIndex : data.batchIndices)
+            {
+                if (batchIndex >= data.submission.plan->batches.size())
+                {
+                    commands.EndRenderPass();
+                    fail("Particle weighted-blended stage references a batch outside its immutable plan");
+                    return;
+                }
+                const ParticleBillboardDrawBatch& batch =
+                    data.submission.plan->batches[batchIndex];
+                if (batch.blendMode !=
+                        ParticleRenderSnapshotBlendMode::AlphaBlend &&
+                    batch.blendMode !=
+                        ParticleRenderSnapshotBlendMode::Premultiplied)
+                {
+                    commands.EndRenderPass();
+                    fail("Particle weighted-blended stage rejected a non-alpha batch");
+                    return;
+                }
+                RHIDescriptorSetRef descriptorSet =
+                    CreateParticleDescriptorSet(
+                        data, context, batchIndex, false);
+                if (!descriptorSet)
+                {
+                    commands.EndRenderPass();
+                    fail("Particle weighted-blended descriptor bindings are unavailable");
+                    return;
+                }
+                commands.SetPipeline(
+                    data.submission.weightedBlendedPipeline.Get());
+                commands.SetDescriptorSet(0, descriptorSet.Get());
+                commands.Draw(6, batch.itemCount, 0, batch.firstItem);
+                ++stageDrawCallCount;
+            }
+            commands.EndRenderPass();
+
+            stats.requested = true;
+            stats.supported = true;
+            stats.enabled = true;
+            stats.graphPassScheduled = true;
+            stats.uploadPublished = true;
+            stats.weightedDrawCallCount = stageDrawCallCount;
+            stats.drawCallCount = stats.weightedDrawCallCount +
+                stats.directDrawCallCount;
             stats.drawSubmitted = stats.drawCallCount != 0;
-            stats.reactiveMaskWriteDrawCount = stats.drawCallCount;
             if (data.owner != nullptr)
             {
                 data.owner->PublishExecutionStats(stats);
@@ -1888,6 +2404,797 @@ namespace RVX
         m_stats = stats;
     }
 
+    bool ParticleFeaturePass::PreflightWeightedBlendedPipeline(
+        std::string& outDiagnostic)
+    {
+        outDiagnostic.clear();
+        if (m_renderer == nullptr)
+        {
+            outDiagnostic =
+                "Particle weighted-blended renderer instance is unavailable";
+            return false;
+        }
+
+        return m_renderer->PreflightWeightedBlendedPipeline(outDiagnostic);
+    }
+
+    ParticleFeaturePreparedRecordingResult
+    ParticleFeaturePass::PrepareTranslucencyRecording(
+        const TranslucencyFramePlan& plan,
+        std::shared_ptr<const ParticleBillboardDrawPlan> drawPlan,
+        const RenderPassRecordContext& context)
+    {
+        RebuildStats();
+        ParticleFeaturePreparedRecordingResult result;
+        result.translucencyPlanIdentity = plan.GetIdentityHash();
+        const auto fail = [this, &result](
+            ParticleFeatureRecordingCode code,
+            std::string diagnostic)
+        {
+            result.code = code;
+            result.diagnostic = std::move(diagnostic);
+            ++m_stats.fallbackCount;
+            m_stats.supported = false;
+            m_stats.enabled = false;
+            m_stats.unsupportedReason = result.diagnostic;
+            return result;
+        };
+
+        if (!plan.IsStructurallyValid())
+        {
+            return fail(
+                ParticleFeatureRecordingCode::InvalidFramePlan,
+                "Particle translucency preparation requires a structurally valid frame plan");
+        }
+        if (plan.HasRequiredCapabilityFailure())
+        {
+            return fail(
+                ParticleFeatureRecordingCode::RequiredCapabilityUnavailable,
+                "Particle translucency preparation rejected unavailable required WBOIT capability");
+        }
+        if (!plan.IsExecutable())
+        {
+            return fail(
+                ParticleFeatureRecordingCode::InvalidFramePlan,
+                "Particle translucency frame plan is not executable");
+        }
+        if (!context.identity.IsValid() || context.identity.graph == nullptr ||
+            !context.MatchesTargetGraph(*context.identity.graph) ||
+            !context.IsFrameIdentityValid() ||
+            context.featureFrameIdentity != plan.GetFrameIdentity() ||
+            context.featureViewIdentity != plan.GetViewIdentity() ||
+            context.identity.frameSequence !=
+                plan.GetFrameIdentity().frameSequence)
+        {
+            return fail(
+                ParticleFeatureRecordingCode::InvalidRecordContext,
+                "Particle translucency plan and graph recording identities do not match");
+        }
+        if (drawPlan == nullptr || !drawPlan->valid)
+        {
+            return fail(
+                ParticleFeatureRecordingCode::PlanInventoryMismatch,
+                drawPlan != nullptr && !drawPlan->diagnostic.empty()
+                    ? drawPlan->diagnostic
+                    : "Particle translucency preparation requires a valid immutable draw plan");
+        }
+        if (m_snapshot == nullptr || !m_stats.supported ||
+            m_snapshot->metadata.sequence == 0 ||
+            (!drawPlan->items.empty() && !m_stats.enabled))
+        {
+            return fail(
+                ParticleFeatureRecordingCode::PlanInventoryMismatch,
+                "Particle prepared draw plan has no matching complete snapshot generation");
+        }
+
+        const uint64 particleSourceIdentity =
+            BuildParticleBillboardSourceIdentityHash(*drawPlan);
+        const TranslucencyRouteSummary& routeSummary = plan.GetSummary();
+        if (particleSourceIdentity == 0 ||
+            particleSourceIdentity != plan.GetParticleSourceIdentityHash() ||
+            routeSummary.particleBatchCandidateCount !=
+                drawPlan->batches.size() ||
+            routeSummary.particleItemCount != drawPlan->items.size())
+        {
+            return fail(
+                ParticleFeatureRecordingCode::PlanInventoryMismatch,
+                "Particle draw-plan inventory does not match the translucency frame plan");
+        }
+
+        std::vector<bool> routedBatches(drawPlan->batches.size(), false);
+        std::vector<uint32> weightedBatchIndices;
+        std::vector<uint32> directBatchIndices;
+        uint32 weightedItemCount = 0;
+        uint32 directItemCount = 0;
+        uint32 optionalFallbackBatchCount = 0;
+        uint32 optionalFallbackItemCount = 0;
+        for (const TranslucencyPlanEntry& entry : plan.GetEntries())
+        {
+            if (entry.sourceKind != TranslucencySourceKind::Particle)
+            {
+                continue;
+            }
+            if (entry.sourceOrdinal >= drawPlan->batches.size() ||
+                routedBatches[entry.sourceOrdinal])
+            {
+                return fail(
+                    ParticleFeatureRecordingCode::PlanInventoryMismatch,
+                    "Particle translucency frame plan contains a duplicate or out-of-range batch");
+            }
+            const ParticleBillboardDrawBatch& batch =
+                drawPlan->batches[entry.sourceOrdinal];
+            if (entry.sourceIdentityHash !=
+                    BuildParticleBillboardBatchIdentityHash(
+                        *drawPlan, entry.sourceOrdinal) ||
+                entry.firstItem != batch.firstItem ||
+                entry.itemCount != batch.itemCount ||
+                entry.particleBlendMode != batch.blendMode)
+            {
+                return fail(
+                    ParticleFeatureRecordingCode::PlanInventoryMismatch,
+                    "Particle translucency route does not bind the exact immutable batch identity");
+            }
+            routedBatches[entry.sourceOrdinal] = true;
+
+            switch (entry.route)
+            {
+                case TranslucencyRoute::WeightedBlended:
+                    if (batch.blendMode !=
+                            ParticleRenderSnapshotBlendMode::AlphaBlend &&
+                        batch.blendMode !=
+                            ParticleRenderSnapshotBlendMode::Premultiplied)
+                    {
+                        return fail(
+                            ParticleFeatureRecordingCode::UnsupportedPlanRoute,
+                            "Particle WBOIT route accepts only alpha and premultiplied batches");
+                    }
+                    weightedBatchIndices.push_back(entry.sourceOrdinal);
+                    weightedItemCount += entry.itemCount;
+                    break;
+
+                case TranslucencyRoute::DirectAdditive:
+                    if (batch.blendMode !=
+                        ParticleRenderSnapshotBlendMode::Additive)
+                    {
+                        return fail(
+                            ParticleFeatureRecordingCode::UnsupportedPlanRoute,
+                            "Particle direct-additive route rejected a non-additive batch");
+                    }
+                    directBatchIndices.push_back(entry.sourceOrdinal);
+                    directItemCount += entry.itemCount;
+                    break;
+
+                case TranslucencyRoute::SortedRefraction:
+                    if (plan.GetWeightedBlendedResolution() !=
+                            WeightedBlendedOITCapabilityResolution::
+                                OptionalSortedFallback ||
+                        (batch.blendMode !=
+                             ParticleRenderSnapshotBlendMode::AlphaBlend &&
+                         batch.blendMode !=
+                             ParticleRenderSnapshotBlendMode::Premultiplied))
+                    {
+                        return fail(
+                            ParticleFeatureRecordingCode::UnsupportedPlanRoute,
+                            "Particle sorted direct fallback is legal only for optional WBOIT alpha fallback");
+                    }
+                    directBatchIndices.push_back(entry.sourceOrdinal);
+                    directItemCount += entry.itemCount;
+                    ++optionalFallbackBatchCount;
+                    optionalFallbackItemCount += entry.itemCount;
+                    break;
+
+                case TranslucencyRoute::Unsupported:
+                case TranslucencyRoute::Count:
+                default:
+                    return fail(
+                        ParticleFeatureRecordingCode::UnsupportedPlanRoute,
+                        "Particle translucency plan contains an unrecordable terminal route");
+            }
+        }
+        if (std::any_of(
+                routedBatches.begin(), routedBatches.end(),
+                [](bool routed) { return !routed; }) ||
+            static_cast<uint64>(weightedItemCount) + directItemCount !=
+                drawPlan->items.size())
+        {
+            return fail(
+                ParticleFeatureRecordingCode::PlanInventoryMismatch,
+                "Particle translucency stages do not cover the draw plan exactly once");
+        }
+
+        result.weightedBatchCount =
+            static_cast<uint32>(weightedBatchIndices.size());
+        result.weightedItemCount = weightedItemCount;
+        result.directBatchCount =
+            static_cast<uint32>(directBatchIndices.size());
+        result.directItemCount = directItemCount;
+        if (drawPlan->items.empty())
+        {
+            m_stats.supported = true;
+            m_stats.enabled = false;
+            result.code = ParticleFeatureRecordingCode::NoWork;
+            return result;
+        }
+
+        const RenderPassExecutionData execution =
+            MakeRenderPassExecutionData(context);
+        const bool contextValid = execution.MatchesTargetGraph(
+                *context.identity.graph) &&
+            execution.IsFrameIdentityValid();
+        if (!contextValid || !execution.view.depthTarget.IsValid())
+        {
+            return fail(
+                ParticleFeatureRecordingCode::InvalidRecordContext,
+                "Particle translucency preparation requires current graph-owned view resources");
+        }
+        const ParticleVfxRecordInput particleVfx = context.particleVfx;
+        if (!particleVfx.IsEmpty() &&
+            !particleVfx.IsCompatibleWith(context.identity))
+        {
+            return fail(
+                ParticleFeatureRecordingCode::InvalidRecordContext,
+                "Particle VFX inputs belong to another graph recording");
+        }
+        std::string graphTargetDiagnostic;
+        if (!ValidateParticleGraphTargets(
+                *context.identity.graph,
+                execution.view,
+                particleVfx,
+                graphTargetDiagnostic))
+        {
+            return fail(
+                ParticleFeatureRecordingCode::InvalidGraphTargets,
+                std::move(graphTargetDiagnostic));
+        }
+
+        const bool softDepthSnapshotReady =
+            particleVfx.softDepthSnapshot.IsValid();
+        Mat4 jitteredInverseProjection = Mat4Identity();
+        const bool softDepthLinearizationReady = softDepthSnapshotReady &&
+            TryGetFiniteJitteredInverseProjection(
+                execution.view, jitteredInverseProjection);
+        if (particleVfx.softDepthRequired &&
+            !softDepthLinearizationReady)
+        {
+            return fail(
+                ParticleFeatureRecordingCode::InvalidGraphTargets,
+                "Particle required soft depth needs a compatible D32 snapshot and finite inverse projection");
+        }
+
+        std::vector<ParticleTextureBinding> textureBindings;
+        std::string textureBindingDiagnostic;
+        if (!ResolveParticleTextureBindings(
+                *drawPlan,
+                m_resourceRegistry,
+                textureBindings,
+                m_stats,
+                textureBindingDiagnostic))
+        {
+            return fail(
+                ParticleFeatureRecordingCode::ResourcePreparationFailed,
+                std::move(textureBindingDiagnostic));
+        }
+        std::vector<bool> spriteTextureAvailableByBatch;
+        spriteTextureAvailableByBatch.reserve(textureBindings.size());
+        for (const ParticleTextureBinding& binding : textureBindings)
+        {
+            spriteTextureAvailableByBatch.push_back(
+                static_cast<bool>(binding.texture));
+        }
+
+        ParticleBillboardRenderer::Submission submission =
+            m_renderer->Prepare(
+                drawPlan,
+                execution.view,
+                softDepthLinearizationReady,
+                spriteTextureAvailableByBatch,
+                !weightedBatchIndices.empty());
+        if (!submission.IsReady() ||
+            (!weightedBatchIndices.empty() &&
+             !submission.weightedBlendedPipeline))
+        {
+            return fail(
+                ParticleFeatureRecordingCode::ResourcePreparationFailed,
+                submission.diagnostic.empty()
+                    ? "Particle billboard prepared submission is unavailable"
+                    : submission.diagnostic);
+        }
+
+        m_stats.supported = true;
+        m_stats.enabled = true;
+        m_stats.uploadPublished = true;
+        m_stats.instanceCount = drawPlan->GetInstanceCount();
+        m_stats.uploadBytes = submission.uploadBytes;
+        m_stats.frameSlot = submission.frameSlot;
+        m_stats.resourceCreationCount = submission.resourceCreationCount;
+        m_stats.pipelineCreationCount = submission.pipelineCreationCount;
+        m_stats.softDepthSnapshotReady = softDepthSnapshotReady;
+        m_stats.softDepthLinearizationReady =
+            softDepthLinearizationReady;
+        m_stats.softDepthEnabled = softDepthLinearizationReady;
+        m_stats.softDepthOptionalFallback =
+            m_stats.softDepthRequested && !m_stats.softDepthRequired &&
+            !m_stats.softDepthEnabled;
+        m_stats.reactiveMaskEnabled =
+            execution.view.reactiveMaskTarget.IsValid();
+        m_stats.reactiveMaskWriteEnabled = false;
+        m_stats.distortionEnabled = particleVfx.distortionRequested;
+        m_stats.distortionPassScheduled = false;
+        m_stats.translucencyPlanIdentity = plan.GetIdentityHash();
+        m_stats.translucencyParticleSourceIdentity = particleSourceIdentity;
+        m_stats.preparationCount = 1;
+        m_stats.uploadPublicationCount = 1;
+        m_stats.weightedBatchCount = result.weightedBatchCount;
+        m_stats.weightedItemCount = result.weightedItemCount;
+        m_stats.directBatchCount = result.directBatchCount;
+        m_stats.directItemCount = result.directItemCount;
+        m_stats.optionalSortedFallbackBatchCount =
+            optionalFallbackBatchCount;
+        m_stats.optionalSortedFallbackItemCount =
+            optionalFallbackItemCount;
+
+        m_recordFrameSequence = context.identity.frameSequence;
+        m_recordFrameIdentity = context.featureFrameIdentity;
+        m_recordGraphIdentity = context.identity.graphIdentity;
+        m_recordGraphGeneration =
+            context.identity.graphRecordingGeneration;
+        m_recordEpoch = context.identity.recordEpoch;
+        m_stats.recordFrameSequence = m_recordFrameSequence;
+        m_stats.recordFrameIdentity = m_recordFrameIdentity;
+        m_stats.recordGraphIdentity = m_recordGraphIdentity;
+        m_stats.recordGraphGeneration = m_recordGraphGeneration;
+        m_stats.recordEpoch = m_recordEpoch;
+
+        m_batchReceipts.clear();
+        m_batchReceiptsOverflow = drawPlan->batches.size() >
+            RVX_PARTICLE_BATCH_RECEIPT_CAPACITY;
+        const size_t receiptCount = std::min<size_t>(
+            drawPlan->batches.size(),
+            RVX_PARTICLE_BATCH_RECEIPT_CAPACITY);
+        m_batchReceipts.reserve(receiptCount);
+        for (size_t batchIndex = 0; batchIndex < receiptCount; ++batchIndex)
+        {
+            const ParticleBillboardDrawBatch& batch =
+                drawPlan->batches[batchIndex];
+            const ParticleBillboardDrawItem& firstItem =
+                drawPlan->items[batch.firstItem];
+            const ParticleTextureBinding* const binding =
+                batchIndex < textureBindings.size()
+                    ? &textureBindings[batchIndex]
+                    : nullptr;
+            const TranslucencyPlanEntry* const route = plan.FindEntry(
+                TranslucencySourceKind::Particle,
+                static_cast<uint32>(batchIndex));
+            m_batchReceipts.push_back(ParticleFeatureBatchReceipt{
+                .route = route != nullptr
+                    ? route->route : TranslucencyRoute::Unsupported,
+                .planSourceOrdinal = static_cast<uint32>(batchIndex),
+                .planSourceIdentity = route != nullptr
+                    ? route->sourceIdentityHash : 0,
+                .blendMode = batch.blendMode,
+                .effectDescriptorHash = batch.effectDescriptorHash,
+                .textureAssetId =
+                    firstItem.effectDescriptor.flipbook.textureAssetId,
+                .texture = batch.flipbookTexture,
+                .textureResourceGeneration =
+                    batch.flipbookTexture.generation,
+                .textureContentRevision =
+                    batch.flipbookContentRevision,
+                .instanceCount = batch.itemCount,
+                .textureResolved = binding != nullptr &&
+                    static_cast<bool>(binding->texture),
+            });
+        }
+        m_stats.batchReceipts = m_batchReceipts;
+        m_stats.batchReceiptsOverflow = m_batchReceiptsOverflow;
+
+        auto prepared =
+            std::make_shared<ParticleFeaturePreparedRecording>();
+        prepared->translucencyPlan =
+            std::make_shared<TranslucencyFramePlan>(plan);
+        prepared->submission = std::move(submission);
+        prepared->execution = execution;
+        prepared->initialStats = m_stats;
+        prepared->textureBindings = std::move(textureBindings);
+        prepared->particleVfx = particleVfx;
+        prepared->results = context.results.get();
+        prepared->owner = this;
+        prepared->snapshot = m_snapshot;
+        prepared->snapshotSequence = m_snapshot->metadata.sequence;
+        prepared->weightedBatchIndices =
+            std::move(weightedBatchIndices);
+        prepared->directBatchIndices = std::move(directBatchIndices);
+        prepared->graphResources =
+            std::make_shared<ParticleGraphPassData>();
+        prepared->contextValid = true;
+
+        result.code = ParticleFeatureRecordingCode::Ready;
+        result.recording = std::move(prepared);
+        return result;
+    }
+
+    ParticleFeatureStageRecordResult
+    ParticleFeaturePass::RecordWeightedBlended(
+        RenderGraph& graph,
+        const ParticleFeaturePreparedRecordingRef& prepared,
+        const ParticleWeightedBlendedRecordTargets& targets)
+    {
+        ParticleFeatureStageRecordResult result;
+        const auto fail = [this, &result](
+            ParticleFeatureRecordingCode code,
+            std::string diagnostic)
+        {
+            result.code = code;
+            result.diagnostic = std::move(diagnostic);
+            ++m_stats.fallbackCount;
+            m_stats.supported = false;
+            m_stats.enabled = false;
+            m_stats.unsupportedReason = result.diagnostic;
+            return result;
+        };
+        if (!prepared || prepared->owner != this ||
+            !prepared->contextValid || !prepared->translucencyPlan ||
+            prepared->translucencyPlan->GetIdentityHash() == 0 ||
+            prepared->snapshot != m_snapshot ||
+            prepared->snapshotSequence == 0 ||
+            m_snapshot == nullptr ||
+            prepared->snapshotSequence != m_snapshot->metadata.sequence ||
+            !prepared->graphResources ||
+            prepared->execution.identity.graph != &graph ||
+            !prepared->execution.identity.Matches(graph) ||
+            graph.GetGraphIdentity() !=
+                prepared->execution.identity.graphIdentity ||
+            graph.GetRecordingGeneration() !=
+                prepared->execution.identity.graphRecordingGeneration)
+        {
+            return fail(
+                ParticleFeatureRecordingCode::StalePreparedRecording,
+                "Particle weighted-blended stage rejected a stale prepared recording");
+        }
+        result.translucencyPlanIdentity =
+            prepared->translucencyPlan->GetIdentityHash();
+        result.batchCount = static_cast<uint32>(
+            prepared->weightedBatchIndices.size());
+        result.itemCount = prepared->initialStats.weightedItemCount;
+        if (prepared->weightedRecorded)
+        {
+            return fail(
+                ParticleFeatureRecordingCode::StageAlreadyRecorded,
+                "Particle weighted-blended stage was already recorded");
+        }
+        if (prepared->weightedBatchIndices.empty())
+        {
+            prepared->weightedRecorded = true;
+            result.code = ParticleFeatureRecordingCode::NoWork;
+            return result;
+        }
+        if (prepared->translucencyPlan->HasRequiredCapabilityFailure())
+        {
+            return fail(
+                ParticleFeatureRecordingCode::RequiredCapabilityUnavailable,
+                "Particle weighted-blended stage cannot fall back a required capability");
+        }
+
+        const RHITextureDesc* const accumulationDesc =
+            graph.GetTextureDesc(targets.accumulation);
+        const RHITextureDesc* const revealageDesc =
+            graph.GetTextureDesc(targets.revealage);
+        const ViewData& preparedView = prepared->execution.view;
+        if (!targets.accumulation.IsValid() ||
+            !targets.revealage.IsValid() ||
+            !HasCurrentGraphProvenance(
+                targets.accumulation, prepared->execution.identity) ||
+            !HasCurrentGraphProvenance(
+                targets.revealage, prepared->execution.identity) ||
+            targets.accumulation.index == targets.revealage.index ||
+            targets.accumulation.index == preparedView.colorTarget.index ||
+            targets.accumulation.index ==
+                preparedView.reactiveMaskTarget.index ||
+            targets.accumulation.index == preparedView.depthTarget.index ||
+            targets.revealage.index == preparedView.colorTarget.index ||
+            targets.revealage.index ==
+                preparedView.reactiveMaskTarget.index ||
+            targets.revealage.index == preparedView.depthTarget.index ||
+            accumulationDesc == nullptr || revealageDesc == nullptr ||
+            accumulationDesc->format !=
+                PipelineCache::GetWeightedBlendedOITAccumulationFormat() ||
+            revealageDesc->format !=
+                PipelineCache::GetWeightedBlendedOITRevealageFormat() ||
+            accumulationDesc->width != preparedView.viewportWidth ||
+            accumulationDesc->height != preparedView.viewportHeight ||
+            revealageDesc->width != accumulationDesc->width ||
+            revealageDesc->height != accumulationDesc->height ||
+            accumulationDesc->sampleCount != RHISampleCount::Count1 ||
+            revealageDesc->sampleCount != RHISampleCount::Count1)
+        {
+            return fail(
+                ParticleFeatureRecordingCode::InvalidGraphTargets,
+                "Particle weighted-blended stage requires distinct current-graph RGBA16F/R16F attachments");
+        }
+
+        const auto graphResources = prepared->graphResources;
+        graph.AddPass<ParticleGraphPassData>(
+            "ParticleWeightedBlendedOIT",
+            RenderGraphPassType::Graphics,
+            [prepared, targets, graphResources](
+                RenderGraphBuilder& builder,
+                ParticleGraphPassData& data)
+            {
+                data.submission = prepared->submission;
+                data.execution = prepared->execution;
+                data.initialStats = prepared->initialStats;
+                data.textureBindings = prepared->textureBindings;
+                data.batchIndices = prepared->weightedBatchIndices;
+                data.particleVfx = prepared->particleVfx;
+                data.results = prepared->results;
+                data.contextValid = prepared->contextValid;
+                data.stage = ParticleFeatureGraphStage::WeightedBlended;
+                data.owner = prepared->owner;
+                if (!PrepareGraphResources(data, builder, false) ||
+                    !PrepareWeightedBlendedGraphTargets(
+                        data, builder, targets))
+                {
+                    data.contextValid = false;
+                }
+                prepared->commonResourcesPrepared = data.contextValid;
+                *graphResources = data;
+            },
+            [](const ParticleGraphPassData& data,
+               RenderGraphPassContext& graphContext)
+            {
+                ExecuteWeightedBlendedGraphPass(data, graphContext);
+            });
+        prepared->weightedRecorded = true;
+        prepared->weightedAccumulation = targets.accumulation;
+        prepared->weightedRevealage = targets.revealage;
+        m_stats.graphPassScheduled = true;
+        m_stats.weightedGraphPassScheduled = true;
+        result.code = ParticleFeatureRecordingCode::Recorded;
+        return result;
+    }
+
+    ParticleFeatureStageRecordResult ParticleFeaturePass::RecordDirect(
+        RenderGraph& graph,
+        const ParticleFeaturePreparedRecordingRef& prepared,
+        const ParticleDirectRecordTargets& targets)
+    {
+        ParticleFeatureStageRecordResult result;
+        result.hdrSceneColor = targets.hdrSceneColor;
+        const auto fail = [this, &result](
+            ParticleFeatureRecordingCode code,
+            std::string diagnostic)
+        {
+            result.code = code;
+            result.diagnostic = std::move(diagnostic);
+            ++m_stats.fallbackCount;
+            m_stats.supported = false;
+            m_stats.enabled = false;
+            m_stats.unsupportedReason = result.diagnostic;
+            return result;
+        };
+        if (!prepared || prepared->owner != this ||
+            !prepared->contextValid || !prepared->translucencyPlan ||
+            prepared->snapshot != m_snapshot ||
+            prepared->snapshotSequence == 0 ||
+            m_snapshot == nullptr ||
+            prepared->snapshotSequence != m_snapshot->metadata.sequence ||
+            !prepared->graphResources ||
+            prepared->execution.identity.graph != &graph ||
+            !prepared->execution.identity.Matches(graph) ||
+            graph.GetGraphIdentity() !=
+                prepared->execution.identity.graphIdentity ||
+            graph.GetRecordingGeneration() !=
+                prepared->execution.identity.graphRecordingGeneration)
+        {
+            return fail(
+                ParticleFeatureRecordingCode::StalePreparedRecording,
+                "Particle direct stage rejected a stale prepared recording");
+        }
+        result.translucencyPlanIdentity =
+            prepared->translucencyPlan->GetIdentityHash();
+        result.batchCount =
+            static_cast<uint32>(prepared->directBatchIndices.size());
+        result.itemCount = prepared->initialStats.directItemCount;
+        if (prepared->directRecorded)
+        {
+            return fail(
+                ParticleFeatureRecordingCode::StageAlreadyRecorded,
+                "Particle direct stage was already recorded");
+        }
+        if (!prepared->weightedBatchIndices.empty() &&
+            !prepared->weightedRecorded)
+        {
+            return fail(
+                ParticleFeatureRecordingCode::StageOrderViolation,
+                "Particle direct stage must be recorded after weighted accumulation and feature composite");
+        }
+        const bool distortionRequested =
+            prepared->particleVfx.distortionRequested;
+        if (prepared->directBatchIndices.empty() && !distortionRequested)
+        {
+            prepared->directRecorded = true;
+            result.code = ParticleFeatureRecordingCode::NoWork;
+            return result;
+        }
+        if (!targets.hdrSceneColor.IsValid() ||
+            !targets.reactiveMask.IsValid() ||
+            !HasCurrentGraphProvenance(
+                targets.hdrSceneColor, prepared->execution.identity) ||
+            !HasCurrentGraphProvenance(
+                targets.reactiveMask, prepared->execution.identity) ||
+            (prepared->weightedAccumulation.IsValid() &&
+             (targets.hdrSceneColor.index ==
+                  prepared->weightedAccumulation.index ||
+              targets.reactiveMask.index ==
+                  prepared->weightedAccumulation.index)) ||
+            (prepared->weightedRevealage.IsValid() &&
+             (targets.hdrSceneColor.index ==
+                  prepared->weightedRevealage.index ||
+              targets.reactiveMask.index ==
+                  prepared->weightedRevealage.index)) ||
+            (distortionRequested &&
+             (!prepared->particleVfx.distortionVectors.IsValid() ||
+              !prepared->particleVfx.compositedSceneColor.IsValid() ||
+              prepared->particleVfx.compositedSceneColor.index ==
+                  targets.hdrSceneColor.index)))
+        {
+            return fail(
+                ParticleFeatureRecordingCode::InvalidGraphTargets,
+                "Particle direct stage requires distinct graph-owned HDR, reactive and distortion outputs");
+        }
+        const RHITextureDesc* const directColorDesc =
+            graph.GetTextureDesc(targets.hdrSceneColor);
+        const RHITextureDesc* const directReactiveDesc =
+            graph.GetTextureDesc(targets.reactiveMask);
+        if (directColorDesc == nullptr || directReactiveDesc == nullptr ||
+            directColorDesc->format != RHIFormat::RGBA16_FLOAT ||
+            directReactiveDesc->format != RHIFormat::R8_UNORM ||
+            directColorDesc->width !=
+                prepared->execution.view.viewportWidth ||
+            directColorDesc->height !=
+                prepared->execution.view.viewportHeight ||
+            directReactiveDesc->width != directColorDesc->width ||
+            directReactiveDesc->height != directColorDesc->height ||
+            directColorDesc->sampleCount != RHISampleCount::Count1 ||
+            directReactiveDesc->sampleCount != RHISampleCount::Count1)
+        {
+            return fail(
+                ParticleFeatureRecordingCode::InvalidGraphTargets,
+                "Particle direct stage requires matching single-sample RGBA16F and R8 targets");
+        }
+
+        const auto graphResources = prepared->graphResources;
+        if (!prepared->directBatchIndices.empty())
+        {
+            graph.AddPass<ParticleGraphPassData>(
+                "ParticleDirectTranslucency",
+                RenderGraphPassType::Graphics,
+                [prepared, targets, graphResources](
+                    RenderGraphBuilder& builder,
+                    ParticleGraphPassData& data)
+                {
+                    if (prepared->commonResourcesPrepared)
+                    {
+                        data = *graphResources;
+                        if (!PrepareReusedCommonGraphResources(data, builder))
+                        {
+                            data.contextValid = false;
+                        }
+                    }
+                    else
+                    {
+                        data.submission = prepared->submission;
+                        data.execution = prepared->execution;
+                        data.initialStats = prepared->initialStats;
+                        data.textureBindings = prepared->textureBindings;
+                        data.particleVfx = prepared->particleVfx;
+                        data.results = prepared->results;
+                        data.contextValid = prepared->contextValid;
+                        data.owner = prepared->owner;
+                        if (!PrepareGraphResources(data, builder, false))
+                        {
+                            data.contextValid = false;
+                        }
+                    }
+                    data.batchIndices = prepared->directBatchIndices;
+                    data.stage = ParticleFeatureGraphStage::Direct;
+                    data.execution.view.colorTarget = targets.hdrSceneColor;
+                    data.execution.view.reactiveMaskTarget =
+                        targets.reactiveMask;
+                    if (data.contextValid &&
+                        !PrepareDirectGraphTargets(data, builder, targets))
+                    {
+                        data.contextValid = false;
+                    }
+                    prepared->commonResourcesPrepared = data.contextValid;
+                    *graphResources = data;
+                },
+                [](const ParticleGraphPassData& data,
+                   RenderGraphPassContext& graphContext)
+                {
+                    ExecuteGraphPass(data, graphContext);
+                });
+            m_stats.graphPassScheduled = true;
+            m_stats.directGraphPassScheduled = true;
+            m_stats.reactiveMaskEnabled = true;
+            m_stats.reactiveMaskWriteEnabled = true;
+        }
+
+        if (distortionRequested)
+        {
+            graph.AddPass<ParticleGraphPassData>(
+                "ParticleDistortion",
+                RenderGraphPassType::Graphics,
+                [prepared, targets, graphResources](
+                    RenderGraphBuilder& builder,
+                    ParticleGraphPassData& data)
+                {
+                    if (prepared->commonResourcesPrepared)
+                    {
+                        data = *graphResources;
+                    }
+                    else
+                    {
+                        data.submission = prepared->submission;
+                        data.execution = prepared->execution;
+                        data.initialStats = prepared->initialStats;
+                        data.textureBindings = prepared->textureBindings;
+                        data.particleVfx = prepared->particleVfx;
+                        data.results = prepared->results;
+                        data.contextValid = prepared->contextValid;
+                        data.owner = prepared->owner;
+                        if (!PrepareGraphResources(data, builder, false))
+                        {
+                            data.contextValid = false;
+                        }
+                    }
+                    data.colorHandle = targets.hdrSceneColor;
+                    data.stage = ParticleFeatureGraphStage::Distortion;
+                    if (data.contextValid &&
+                        !PrepareDistortionGraphResources(data, builder))
+                    {
+                        data.contextValid = false;
+                    }
+                    prepared->commonResourcesPrepared = data.contextValid;
+                    *graphResources = data;
+                },
+                [](const ParticleGraphPassData& data,
+                   RenderGraphPassContext& graphContext)
+                {
+                    ExecuteDistortionGraphPass(data, graphContext);
+                });
+            graph.AddPass<ParticleGraphPassData>(
+                "ParticleDistortionComposite",
+                RenderGraphPassType::Graphics,
+                [graphResources](RenderGraphBuilder& builder,
+                                 ParticleGraphPassData& data)
+                {
+                    data = *graphResources;
+                    data.stage =
+                        ParticleFeatureGraphStage::DistortionComposite;
+                    if (!PrepareDistortionCompositeGraphResources(
+                            data, builder))
+                    {
+                        data.contextValid = false;
+                    }
+                    *graphResources = data;
+                },
+                [](const ParticleGraphPassData& data,
+                   RenderGraphPassContext& graphContext)
+                {
+                    ExecuteDistortionCompositeGraphPass(
+                        data, graphContext);
+                });
+            m_stats.distortionPassScheduled = true;
+            result.hdrSceneColor =
+                prepared->particleVfx.compositedSceneColor;
+        }
+
+        prepared->directRecorded = true;
+        result.code = ParticleFeatureRecordingCode::Recorded;
+        return result;
+    }
+
     void ParticleFeaturePass::OnAdd(IRHIDevice* device)
     {
         m_renderer->OnAdd(device);
@@ -2162,7 +3469,7 @@ namespace RVX
                 data.results = results;
                 data.contextValid = contextValid;
                 data.owner = this;
-                if (!PrepareGraphResources(data, builder))
+                if (!PrepareGraphResources(data, builder, true))
                 {
                     data.contextValid = false;
                 }
@@ -2175,15 +3482,6 @@ namespace RVX
 
         if (particleVfx.distortionRequested)
         {
-            if (!graphResources->contextValid)
-            {
-                ++m_stats.fallbackCount;
-                m_stats.supported = false;
-                m_stats.enabled = false;
-                m_stats.unsupportedReason =
-                    "Particle distortion could not reuse the color-pass graph resources";
-                return;
-            }
             graph.AddPass<ParticleGraphPassData>(
                 "ParticleDistortion",
                 RenderGraphPassType::Graphics,
@@ -2202,15 +3500,6 @@ namespace RVX
                 {
                     ExecuteDistortionGraphPass(data, graphContext);
                 });
-            if (!graphResources->contextValid)
-            {
-                ++m_stats.fallbackCount;
-                m_stats.supported = false;
-                m_stats.enabled = false;
-                m_stats.unsupportedReason =
-                    "Particle distortion pass graph registration failed";
-                return;
-            }
             graph.AddPass<ParticleGraphPassData>(
                 "ParticleDistortionComposite",
                 RenderGraphPassType::Graphics,
@@ -2229,15 +3518,6 @@ namespace RVX
                 {
                     ExecuteDistortionCompositeGraphPass(data, graphContext);
                 });
-            if (!graphResources->contextValid)
-            {
-                ++m_stats.fallbackCount;
-                m_stats.supported = false;
-                m_stats.enabled = false;
-                m_stats.unsupportedReason =
-                    "Particle distortion composite graph registration failed";
-                return;
-            }
             // All three passes have registered against the same immutable
             // graph resources. Only now may composition route subsequent HDR
             // consumers to the composite target.

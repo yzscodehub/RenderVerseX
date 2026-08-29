@@ -1667,6 +1667,60 @@
       "deviceLostRelease": "owner explicit device-lost teardown"
     },
     {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_weightedBlendedOITAccumulationPixelShader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_weightedBlendedOITCompositeVertexShader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_weightedBlendedOITCompositePixelShader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_weightedBlendedOITCompositeSetLayout",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_weightedBlendedOITCompositePipelineLayout",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_weightedBlendedOITCompositePipeline",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
       "path": "Source/Runtime/Render/Include/Render/PostProcess/Bloom.h",
       "owner": "BloomPass",
       "symbol": "m_sampler",
@@ -1742,105 +1796,6 @@
       "path": "Source/Runtime/Render/Include/Render/PostProcess/FXAA.h",
       "owner": "FXAAPass",
       "symbol": "m_sampler",
-      "policy": "OwnerSnapshot",
-      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
-      "normalRelease": "owner replacement retires after the captured snapshot completes",
-      "deviceLostRelease": "owner explicit device-lost teardown"
-    },
-    {
-      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
-      "owner": "SSR",
-      "symbol": "m_constantBuffer",
-      "policy": "OwnerSnapshot",
-      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
-      "normalRelease": "owner replacement retires after the captured snapshot completes",
-      "deviceLostRelease": "owner explicit device-lost teardown"
-    },
-    {
-      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
-      "owner": "SSR",
-      "symbol": "m_history",
-      "policy": "OwnerSnapshot",
-      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
-      "normalRelease": "owner replacement retires after the captured snapshot completes",
-      "deviceLostRelease": "owner explicit device-lost teardown"
-    },
-    {
-      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
-      "owner": "SSR",
-      "symbol": "m_hitMask",
-      "policy": "OwnerSnapshot",
-      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
-      "normalRelease": "owner replacement retires after the captured snapshot completes",
-      "deviceLostRelease": "owner explicit device-lost teardown"
-    },
-    {
-      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
-      "owner": "SSR",
-      "symbol": "m_hiZMips",
-      "policy": "OwnerSnapshot",
-      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
-      "normalRelease": "owner replacement retires after the captured snapshot completes",
-      "deviceLostRelease": "owner explicit device-lost teardown"
-    },
-    {
-      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
-      "owner": "SSR",
-      "symbol": "m_hiZPipeline",
-      "policy": "OwnerSnapshot",
-      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
-      "normalRelease": "owner replacement retires after the captured snapshot completes",
-      "deviceLostRelease": "owner explicit device-lost teardown"
-    },
-    {
-      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
-      "owner": "SSR",
-      "symbol": "m_hiZPyramid",
-      "policy": "OwnerSnapshot",
-      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
-      "normalRelease": "owner replacement retires after the captured snapshot completes",
-      "deviceLostRelease": "owner explicit device-lost teardown"
-    },
-    {
-      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
-      "owner": "SSR",
-      "symbol": "m_rayHitUV",
-      "policy": "OwnerSnapshot",
-      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
-      "normalRelease": "owner replacement retires after the captured snapshot completes",
-      "deviceLostRelease": "owner explicit device-lost teardown"
-    },
-    {
-      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
-      "owner": "SSR",
-      "symbol": "m_rayMarchPipeline",
-      "policy": "OwnerSnapshot",
-      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
-      "normalRelease": "owner replacement retires after the captured snapshot completes",
-      "deviceLostRelease": "owner explicit device-lost teardown"
-    },
-    {
-      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
-      "owner": "SSR",
-      "symbol": "m_reflectionResult",
-      "policy": "OwnerSnapshot",
-      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
-      "normalRelease": "owner replacement retires after the captured snapshot completes",
-      "deviceLostRelease": "owner explicit device-lost teardown"
-    },
-    {
-      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
-      "owner": "SSR",
-      "symbol": "m_resolvePipeline",
-      "policy": "OwnerSnapshot",
-      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
-      "normalRelease": "owner replacement retires after the captured snapshot completes",
-      "deviceLostRelease": "owner explicit device-lost teardown"
-    },
-    {
-      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
-      "owner": "SSR",
-      "symbol": "m_temporalPipeline",
       "policy": "OwnerSnapshot",
       "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
       "normalRelease": "owner replacement retires after the captured snapshot completes",
@@ -3548,6 +3503,15 @@
       "deviceLostRelease": "ordered explicit device-lost teardown"
     },
     {
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanCommandContext.h",
+      "owner": "PendingAccelerationStructureBuild",
+      "symbol": "accelerationStructure",
+      "policy": "SubmissionBatch",
+      "completionSource": "native vkQueueSubmit or vkQueueSubmit2 success for the owning command context",
+      "normalRelease": "queue acceptance publishes the build signature and releases the pending strong reference; Begin or Reset discards an unsubmitted recording",
+      "deviceLostRelease": "command-context teardown releases the pending strong reference"
+    },
+    {
       "path": "Source/Runtime/RHI_Vulkan/Private/VulkanDevice.h",
       "owner": "DeferredSemaphoreDestroy",
       "symbol": "fence",
@@ -3677,6 +3641,42 @@
       "path": "Source/Runtime/RHI_Vulkan/Private/VulkanPipeline.h",
       "owner": "VulkanPipeline",
       "symbol": "m_pipelineLayout",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanPipeline.h",
+      "owner": "VulkanShaderTable",
+      "symbol": "m_buffer",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanPipeline.h",
+      "owner": "VulkanShaderTable",
+      "symbol": "m_pipelineOwner",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanResources.h",
+      "owner": "VulkanAccelerationStructure",
+      "symbol": "m_accelerationStructure",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanResources.h",
+      "owner": "VulkanAccelerationStructure",
+      "symbol": "m_storageBuffer",
       "policy": "OwnerSnapshot",
       "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
       "normalRelease": "owner replacement retires after the captured snapshot completes",
@@ -6843,6 +6843,15 @@
     },
     {
       "path": "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
+      "owner": "Submission",
+      "symbol": "weightedBlendedPipeline",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "submission batch transfer to retirement after token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
       "owner": "FrameSlot",
       "symbol": "constantsBuffer",
       "policy": "OwnerSnapshot",
@@ -6890,6 +6899,24 @@
       "path": "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
       "owner": "ParticleBillboardRenderer",
       "symbol": "m_pixelShader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
+      "owner": "ParticleBillboardRenderer",
+      "symbol": "m_weightedBlendedPixelShader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
+      "owner": "ParticleBillboardRenderer",
+      "symbol": "m_weightedBlendedPipeline",
       "policy": "OwnerSnapshot",
       "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
       "normalRelease": "owner replacement retires after the captured snapshot completes",
@@ -7029,6 +7056,321 @@
       "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
       "normalRelease": "owner replacement retires after the captured snapshot completes",
       "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "FrameDescriptorBindingOwners",
+      "symbol": "localShadowAtlasView",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "LightingBindingSnapshot",
+      "symbol": "localShadowAtlasView",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "submission batch transfer to retirement after token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_ssrHiZBasePipeline",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_ssrHiZBasePixelShader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_ssrHiZReducePipeline",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_ssrHiZReducePixelShader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_ssrPipelineLayout",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_ssrResolvePipeline",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_ssrResolvePixelShader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_ssrSetLayout",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_ssrTracePipeline",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PipelineCache.h",
+      "owner": "PipelineCache",
+      "symbol": "m_ssrTracePixelShader",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
+      "owner": "SSR",
+      "symbol": "m_probeReadback",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/PostProcess/SSR.h",
+      "owner": "SSR",
+      "symbol": "m_sampler",
+      "policy": "OwnerSnapshot",
+      "completionSource": "Render Thread per-domain last-submitted snapshot after final recording",
+      "normalRelease": "owner replacement retires after the captured snapshot completes",
+      "deviceLostRelease": "owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/PostProcess/SSR.cpp",
+      "owner": "SSRPassData",
+      "symbol": "pipeline",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "submission batch transfer to retirement after token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/PostProcess/SSR.cpp",
+      "owner": "SSRPassData",
+      "symbol": "pipelineLayout",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "submission batch transfer to retirement after token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/PostProcess/SSR.cpp",
+      "owner": "SSRPassData",
+      "symbol": "sampler",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "submission batch transfer to retirement after token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/PostProcess/SSR.cpp",
+      "owner": "SSRPassData",
+      "symbol": "setLayout",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "submission batch transfer to retirement after token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/PostProcess/SSR.cpp",
+      "owner": "SSRQualificationCopyData",
+      "symbol": "readbackOwner",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "submission batch transfer to retirement after token completion",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/RHI_DX12/Private/DX12CommandContext.h",
+      "owner": "PendingAccelerationStructureCompactionQuery",
+      "symbol": "query",
+      "policy": "SubmissionBatch",
+      "completionSource": "native ExecuteCommandLists acceptance for the owning command context; later submit-path faults use device-lost teardown",
+      "normalRelease": "queue acceptance commits the query and releases the pending strong reference; Begin or Reset discards an unsubmitted recording",
+      "deviceLostRelease": "command-context teardown releases the pending strong reference"
+    },
+    {
+      "path": "Source/Runtime/RHI_DX12/Private/DX12CommandContext.h",
+      "owner": "PendingAccelerationStructureCompactionQuery",
+      "symbol": "source",
+      "policy": "SubmissionBatch",
+      "completionSource": "native ExecuteCommandLists acceptance for the owning command context; later submit-path faults use device-lost teardown",
+      "normalRelease": "queue acceptance releases the pending source reference after the compaction-size command is submitted; Begin or Reset discards an unsubmitted recording",
+      "deviceLostRelease": "command-context teardown releases the pending source reference"
+    },
+    {
+      "path": "Source/Runtime/RHI_DX12/Private/DX12CommandContext.h",
+      "owner": "PendingAccelerationStructureCompactionQuery",
+      "symbol": "readback",
+      "policy": "SubmissionBatch",
+      "completionSource": "native ExecuteCommandLists acceptance for the owning command context; later submit-path faults use device-lost teardown",
+      "normalRelease": "queue acceptance releases the pending readback reference after the resolve command is submitted; Begin or Reset discards an unsubmitted recording",
+      "deviceLostRelease": "command-context teardown releases the pending readback reference"
+    },
+    {
+      "path": "Source/Runtime/RHI_DX12/Private/DX12CommandContext.h",
+      "owner": "PendingAccelerationStructureBuild",
+      "symbol": "accelerationStructure",
+      "policy": "SubmissionBatch",
+      "completionSource": "native ExecuteCommandLists acceptance for the owning command context; later submit-path faults use device-lost teardown",
+      "normalRelease": "queue acceptance publishes the build signature and releases the pending strong reference; Begin or Reset discards an unsubmitted recording",
+      "deviceLostRelease": "command-context teardown releases the pending strong reference"
+    },
+    {
+      "path": "Source/Runtime/RHI_DX12/Private/DX12Resources.h",
+      "owner": "DX12AccelerationStructureCompactedSizeQuery",
+      "symbol": "m_resultBuffer",
+      "policy": "OwnerSnapshot",
+      "completionSource": "the exact queryCompletion token retained by the ray-tracing scene compaction owner",
+      "normalRelease": "the query owner retains its result buffer until the submitted size query completes or is explicitly discarded",
+      "deviceLostRelease": "query-owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanCommandContext.h",
+      "owner": "PendingAccelerationStructureCompactionQuery",
+      "symbol": "query",
+      "policy": "SubmissionBatch",
+      "completionSource": "native vkQueueSubmit or vkQueueSubmit2 success for the owning command context",
+      "normalRelease": "queue acceptance commits the query and releases the pending strong reference; Begin or Reset discards an unsubmitted recording",
+      "deviceLostRelease": "command-context teardown releases the pending strong reference"
+    },
+    {
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanCommandContext.h",
+      "owner": "PendingAccelerationStructureCompactionQuery",
+      "symbol": "source",
+      "policy": "SubmissionBatch",
+      "completionSource": "native vkQueueSubmit or vkQueueSubmit2 success for the owning command context",
+      "normalRelease": "queue acceptance releases the pending source reference after the compaction-size command is submitted; Begin or Reset discards an unsubmitted recording",
+      "deviceLostRelease": "command-context teardown releases the pending source reference"
+    },
+    {
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanCommandContext.h",
+      "owner": "PendingAccelerationStructureCompactionQuery",
+      "symbol": "readback",
+      "policy": "SubmissionBatch",
+      "completionSource": "native vkQueueSubmit or vkQueueSubmit2 success for the owning command context",
+      "normalRelease": "queue acceptance releases the pending readback reference after the copy command is submitted; Begin or Reset discards an unsubmitted recording",
+      "deviceLostRelease": "command-context teardown releases the pending readback reference"
+    },
+    {
+      "path": "Source/Runtime/RHI_Vulkan/Private/VulkanResources.h",
+      "owner": "VulkanAccelerationStructureCompactedSizeQuery",
+      "symbol": "m_queryPool",
+      "policy": "OwnerSnapshot",
+      "completionSource": "the exact queryCompletion token retained by the ray-tracing scene compaction owner",
+      "normalRelease": "the query owner retains its native query pool until the submitted size query completes or is explicitly discarded",
+      "deviceLostRelease": "query-owner explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/Passes/RayTracedReflectionPass.h",
+      "owner": "RayTracedReflectionPass",
+      "symbol": "m_activeTopLevelAS",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit for the graph frame state",
+      "normalRelease": "the active recording alias is cleared after setup and execution while graph frame ownership transfers to the submission batch",
+      "deviceLostRelease": "graph submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Include/Render/Passes/RenderPassRecordContext.h",
+      "owner": "RayTracingSceneRecordInput",
+      "symbol": "topLevelAS",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit for the frozen record identity",
+      "normalRelease": "the frozen TLAS reference transfers with the exact frame recording into submission retirement",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Passes/RayTracedReflectionPass.cpp",
+      "owner": "RayTracedReflectionFrameState",
+      "symbol": "topLevelAS",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "graph frame ownership transfers to retirement after the exact submission token completes",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/RayTracing/RayTracingSceneManager.cpp",
+      "owner": "RayTracingSceneManager",
+      "symbol": "query",
+      "policy": "OwnerSnapshot",
+      "completionSource": "the exact queryCompletion token captured after compaction-size submission",
+      "normalRelease": "the compaction state retains the query until its completion token is satisfied or the state is cancelled",
+      "deviceLostRelease": "ray-tracing scene explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/RayTracing/RayTracingSceneManager.cpp",
+      "owner": "RayTracingSceneManager",
+      "symbol": "readbackBuffer",
+      "policy": "OwnerSnapshot",
+      "completionSource": "the exact queryCompletion token captured after compaction-size submission",
+      "normalRelease": "the compaction state retains readback storage until the exact query result is consumed or cancelled",
+      "deviceLostRelease": "ray-tracing scene explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/RayTracing/RayTracingSceneManager.cpp",
+      "owner": "RayTracingSceneManager",
+      "symbol": "compactDestination",
+      "policy": "OwnerSnapshot",
+      "completionSource": "the exact copyCompletion token captured after acceleration-structure compaction submission",
+      "normalRelease": "the compact destination transfers into the BLAS cache only after copy completion; cancellation releases it",
+      "deviceLostRelease": "ray-tracing scene explicit device-lost teardown"
+    },
+    {
+      "path": "Source/Runtime/Render/Private/Renderer/SceneRenderer.cpp",
+      "owner": "RayTracingSceneBuildPassData",
+      "symbol": "topLevelAS",
+      "policy": "SubmissionBatch",
+      "completionSource": "actual queue token returned by RenderSubmissionTracker::Submit",
+      "normalRelease": "graph pass ownership transfers to retirement after the exact build submission token completes",
+      "deviceLostRelease": "submission batch explicit device-lost teardown"
     }
   ]
 }

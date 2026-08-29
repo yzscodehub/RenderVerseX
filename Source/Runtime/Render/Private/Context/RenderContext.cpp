@@ -381,12 +381,29 @@ bool RenderContext::AdoptQueueSubmission(
         m_frameIndex < RVX_MAX_FRAME_COUNT
             ? m_graphicsContexts[m_frameIndex].Get()
             : nullptr;
+    const bool graphicsPreludeValid = graphicsPrelude != nullptr &&
+        graphicsPrelude->GetQueueType() == RHICommandQueueType::Graphics;
+    const bool queueSubmissionSupported = m_device != nullptr &&
+        m_device->GetCapabilities().supportsQueueSubmissionPlan;
+    const RHIQueueSubmissionPlanValidationResult planValidation =
+        ValidateRHIQueueSubmissionPlan(plan);
+    const bool planValid = static_cast<bool>(planValidation);
     if (!m_frameActive || m_queueSubmissionPending || !m_device ||
-        !m_graphicsContextRecording || !graphicsPrelude ||
-        graphicsPrelude->GetQueueType() != RHICommandQueueType::Graphics ||
-        !m_device->GetCapabilities().supportsQueueSubmissionPlan ||
-        !ValidateRHIQueueSubmissionPlan(plan) || !ownsEveryContext)
+        !m_graphicsContextRecording || !graphicsPreludeValid ||
+        !queueSubmissionSupported || !planValid || !ownsEveryContext)
     {
+        RVX_CORE_ERROR(
+            "RenderContext: Queue submission adoption rejected "
+            "(frameActive={}, pending={}, device={}, recording={}, "
+            "graphicsPrelude={}, capability={}, plan={}, ownership={})",
+            m_frameActive,
+            m_queueSubmissionPending,
+            m_device != nullptr,
+            m_graphicsContextRecording,
+            graphicsPreludeValid,
+            queueSubmissionSupported,
+            planValid,
+            ownsEveryContext);
         return false;
     }
 

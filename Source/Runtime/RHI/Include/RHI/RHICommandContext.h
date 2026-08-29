@@ -340,6 +340,59 @@ namespace RVX
             (void)desc;
         }
 
+        /**
+         * @brief Write post-build compacted sizes for a submitted or locally
+         * pending AllowCompaction acceleration-structure build.
+         */
+        virtual void WriteAccelerationStructureCompactedSizes(
+            RHIAccelerationStructureCompactedSizeQuery* query,
+            uint32 firstQuery,
+            std::span<RHIAccelerationStructure* const> accelerationStructures)
+        {
+            (void)query;
+            (void)firstQuery;
+            (void)accelerationStructures;
+        }
+
+        /**
+         * @brief Resolve compacted-size values to a caller-owned Readback buffer.
+         * The caller must wait for its submission fence before mapping it.
+         */
+        virtual void ResolveAccelerationStructureCompactedSizes(
+            RHIAccelerationStructureCompactedSizeQuery* query,
+            uint32 firstQuery,
+            uint32 queryCount,
+            RHIBuffer* readbackBuffer,
+            uint64 readbackOffset = 0)
+        {
+            (void)query;
+            (void)firstQuery;
+            (void)queryCount;
+            (void)readbackBuffer;
+            (void)readbackOffset;
+        }
+
+        /**
+         * @brief Copy a completed AllowCompaction AS into a separately allocated
+         * compact destination. The source and destination must not alias.
+         * @param expectedCompactedSize Exact byte count returned by the
+         * compacted-size query. Backends reject zero, a destination smaller than
+         * this count, and a count larger than the source allocation.
+         *
+         * The source build must either be pending in this command context or
+         * have been submitted previously on the same queue type. Cross-queue
+         * synchronization is deliberately not inferred by this API.
+         */
+        virtual void CopyAccelerationStructureCompact(
+            RHIAccelerationStructure* dst,
+            RHIAccelerationStructure* src,
+            uint64 expectedCompactedSize)
+        {
+            (void)dst;
+            (void)src;
+            (void)expectedCompactedSize;
+        }
+
         // =========================================================================
         // Copy Commands
         // =========================================================================

@@ -210,6 +210,23 @@ namespace RVX
             }
         }
 
+        bool IsRayTracingStage(RHIShaderStage stage)
+        {
+            switch (stage)
+            {
+                case RHIShaderStage::RayGeneration:
+                case RHIShaderStage::AnyHit:
+                case RHIShaderStage::ClosestHit:
+                case RHIShaderStage::Miss:
+                case RHIShaderStage::Intersection:
+                case RHIShaderStage::Callable:
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+
         bool RestoreDX11SetBinding(ShaderReflection::ResourceBinding& resource,
                                    std::string& outError)
         {
@@ -880,6 +897,18 @@ namespace RVX
                 // are not required by the Vulkan 1.2 production baseline.
                 args.push_back(L"-fvk-use-dx-layout");
                 args.push_back(L"-fspv-target-env=vulkan1.2");
+                if (IsRayTracingStage(options.stage))
+                {
+                    // Constrain DXC's SPIR-V capability inference to the two
+                    // extensions used by the production Vulkan RT path. The
+                    // ray-tracing library uses TraceRay (not inline queries)
+                    // and bindless material resources indexed with
+                    // NonUniformResourceIndex. Do not enable RayQueryKHR:
+                    // the runtime intentionally neither enables nor
+                    // advertises inline ray-query support.
+                    args.push_back(L"-fspv-extension=SPV_KHR_ray_tracing");
+                    args.push_back(L"-fspv-extension=SPV_EXT_descriptor_indexing");
+                }
             }
             else
             {

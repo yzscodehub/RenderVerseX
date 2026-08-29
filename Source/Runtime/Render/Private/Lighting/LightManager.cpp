@@ -5,10 +5,14 @@
 
 #include "Render/Lighting/LightManager.h"
 #include "Render/Lighting/LightingFramePlan.h"
+#include "Render/Lighting/LocalShadowAtlas.h"
+#include "Render/Lighting/LocalShadowFramePlan.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Core/Log.h"
 
+#include <cmath>
 #include <cstring>
+#include <limits>
 
 namespace RVX
 {
@@ -19,6 +23,16 @@ namespace
     {
         constexpr uint64 alignment = 256;
         return (size + alignment - 1) & ~(alignment - 1);
+    }
+
+    bool IsFiniteNonNegative(float32 value)
+    {
+        return std::isfinite(value) && value >= 0.0f;
+    }
+
+    bool IsFinitePositive(float32 value)
+    {
+        return std::isfinite(value) && value > 0.0f;
     }
 } // namespace
 
@@ -52,6 +66,36 @@ const char* GetLightingGpuUploadCodeName(LightingGpuUploadCode code) noexcept
     }
 }
 
+const char* GetLocalShadowBindingCodeName(
+    LocalShadowBindingCode code) noexcept
+{
+    switch (code)
+    {
+        case LocalShadowBindingCode::NotApplied: return "NotApplied";
+        case LocalShadowBindingCode::Ready: return "Ready";
+        case LocalShadowBindingCode::PlanNotStaged: return "PlanNotStaged";
+        case LocalShadowBindingCode::InvalidLocalShadowPlan:
+            return "InvalidLocalShadowPlan";
+        case LocalShadowBindingCode::InvalidAtlasPlan:
+            return "InvalidAtlasPlan";
+        case LocalShadowBindingCode::LightingPlanIdentityMismatch:
+            return "LightingPlanIdentityMismatch";
+        case LocalShadowBindingCode::AtlasPlanIdentityMismatch:
+            return "AtlasPlanIdentityMismatch";
+        case LocalShadowBindingCode::AtlasGenerationMismatch:
+            return "AtlasGenerationMismatch";
+        case LocalShadowBindingCode::VisiblePageCapacityExceeded:
+            return "VisiblePageCapacityExceeded";
+        case LocalShadowBindingCode::InvalidReceiverSettings:
+            return "InvalidReceiverSettings";
+        case LocalShadowBindingCode::InvalidTextureContract:
+            return "InvalidTextureContract";
+        case LocalShadowBindingCode::AllocationMismatch:
+            return "AllocationMismatch";
+        default: return "Unknown";
+    }
+}
+
 LightManager::~LightManager()
 {
     Shutdown();
@@ -68,6 +112,9 @@ void LightManager::Initialize(IRHIDevice* device)
     m_device = device;
     m_pointLights.reserve(MaxPointLights);
     m_spotLights.reserve(MaxSpotLights);
+    m_pointLightIds.reserve(MaxPointLights);
+    m_spotLightIds.reserve(MaxSpotLights);
+    ClearLocalShadowState();
 
     EnsureBuffers();
 
@@ -291,6 +338,7 @@ bool LightManager::CollectLights(const LightingFramePlan& plan)
             gpuLight.intensity = light.normalizedIntensity;
             gpuLight.range = light.range;
             m_pointLights.push_back(gpuLight);
+            m_pointLightIds.push_back(light.lightId);
             if (light.castsShadows)
             {
                 ++m_pointShadowRequestCount;
@@ -307,6 +355,7 @@ bool LightManager::CollectLights(const LightingFramePlan& plan)
             gpuLight.innerConeAngle = std::cos(light.innerConeRadians);
             gpuLight.outerConeAngle = std::cos(light.outerConeRadians);
             m_spotLights.push_back(gpuLight);
+            m_spotLightIds.push_back(light.lightId);
             if (light.castsShadows)
             {
                 ++m_spotShadowRequestCount;
@@ -333,6 +382,220 @@ bool LightManager::CollectLights(const LightingFramePlan& plan)
     return true;
 }
 
+bool LightManager::ApplyLocalShadowPlan(
+    const LocalShadowFramePlan& localShadowPlan,
+    const LocalShadowAtlasPlan& atlasPlan,
+    LocalShadowReceiverSettings receiverSettings)
+{
+    if (m_lightingPlanCollectionCode != LightingPlanCollectionCode::Staged ||
+        m_stagedLightingPlanIdentity == 0)
+    {
+        return FailLocalShadowBinding(
+            LocalShadowBindingCode::PlanNotStaged,
+            "Local shadows require a staged LightingFramePlan");
+    }
+    if (!localShadowPlan.IsValid())
+    {
+        return FailLocalShadowBinding(
+            LocalShadowBindingCode::InvalidLocalShadowPlan,
+            "Local shadow frame plan is invalid");
+    }
+    if (!atlasPlan.IsValid())
+    {
+        return FailLocalShadowBinding(
+            LocalShadowBindingCode::InvalidAtlasPlan,
+            "Local shadow atlas plan is invalid");
+    }
+    if (localShadowPlan.GetLightingPlanIdentity() !=
+            m_stagedLightingPlanIdentity ||
+        atlasPlan.GetLightingPlanIdentity() != m_stagedLightingPlanIdentity)
+    {
+        return FailLocalShadowBinding(
+            LocalShadowBindingCode::LightingPlanIdentityMismatch,
+            "Local shadow plan does not belong to the staged LightingFramePlan");
+    }
+    if (atlasPlan.GetLocalShadowPlanIdentity() !=
+        localShadowPlan.GetIdentityHash())
+    {
+        return FailLocalShadowBinding(
+            LocalShadowBindingCode::AtlasPlanIdentityMismatch,
+            "Local shadow atlas plan does not belong to the supplied frame plan");
+    }
+    if (localShadowPlan.GetAtlasGeneration() == 0 ||
+        atlasPlan.GetAtlasGeneration() == 0 ||
+        localShadowPlan.GetAtlasGeneration() != atlasPlan.GetAtlasGeneration())
+    {
+        return FailLocalShadowBinding(
+            LocalShadowBindingCode::AtlasGenerationMismatch,
+            "Local shadow atlas generation is stale or inconsistent");
+    }
+    if (!IsFiniteNonNegative(receiverSettings.depthBias) ||
+        !IsFiniteNonNegative(receiverSettings.normalBias))
+    {
+        return FailLocalShadowBinding(
+            LocalShadowBindingCode::InvalidReceiverSettings,
+            "Local shadow receiver biases must be finite and non-negative");
+    }
+
+    const LocalShadowAtlasTextureContract& texture =
+        atlasPlan.GetTextureContract();
+    if (!texture.IsValid() || texture.pageResolution == 0 ||
+        !IsFinitePositive(static_cast<float32>(texture.pageResolution)))
+    {
+        return FailLocalShadowBinding(
+            LocalShadowBindingCode::InvalidTextureContract,
+            "Local shadow atlas texture contract is invalid");
+    }
+    if (texture.pageCapacity > RVX_MAX_LOCAL_SHADOW_PAGES)
+    {
+        return FailLocalShadowBinding(
+            LocalShadowBindingCode::VisiblePageCapacityExceeded,
+            "Local shadow atlas exceeds the shader-visible page budget");
+    }
+    if (m_pointLightIds.size() != m_pointLights.size() ||
+        m_spotLightIds.size() != m_spotLights.size())
+    {
+        return FailLocalShadowBinding(
+            LocalShadowBindingCode::AllocationMismatch,
+            "Staged local-light identity rows do not match their GPU rows");
+    }
+
+    std::vector<GPUPointLight> pointLights = m_pointLights;
+    std::vector<GPUSpotLight> spotLights = m_spotLights;
+    for (GPUPointLight& light : pointLights)
+    {
+        light.shadowMapIndex = -1;
+    }
+    for (GPUSpotLight& light : spotLights)
+    {
+        light.shadowMapIndex = -1;
+    }
+    std::array<Mat4, RVX_MAX_LOCAL_SHADOW_PAGES> viewProjections{};
+    for (Mat4& viewProjection : viewProjections)
+    {
+        viewProjection = Mat4Identity();
+    }
+
+    uint32 selectedPageCount = 0;
+    for (const LocalShadowAllocation& allocation :
+         localShadowPlan.GetAllocations())
+    {
+        const uint32 expectedPageCount = allocation.type == RenderLightType::Point
+            ? RVX_LOCAL_SHADOW_POINT_PAGE_COUNT
+            : allocation.type == RenderLightType::Spot
+                ? RVX_LOCAL_SHADOW_SPOT_PAGE_COUNT
+                : 0;
+        if (expectedPageCount == 0 || allocation.pageCount != expectedPageCount ||
+            allocation.firstPage > RVX_MAX_LOCAL_SHADOW_PAGES ||
+            allocation.pageCount >
+                RVX_MAX_LOCAL_SHADOW_PAGES - allocation.firstPage ||
+            allocation.firstPage > texture.pageCapacity ||
+            allocation.pageCount > texture.pageCapacity - allocation.firstPage ||
+            allocation.firstPage >
+                static_cast<uint32>(std::numeric_limits<int32>::max()))
+        {
+            return FailLocalShadowBinding(
+                LocalShadowBindingCode::AllocationMismatch,
+                "Local shadow allocation page range is invalid");
+        }
+
+        if (allocation.type == RenderLightType::Point)
+        {
+            if (allocation.lightBufferIndex >= pointLights.size() ||
+                m_pointLightIds[allocation.lightBufferIndex] != allocation.lightId)
+            {
+                return FailLocalShadowBinding(
+                    LocalShadowBindingCode::AllocationMismatch,
+                    "Local point-shadow allocation targets the wrong light row");
+            }
+        }
+        else if (allocation.type == RenderLightType::Spot)
+        {
+            if (allocation.lightBufferIndex >= spotLights.size() ||
+                m_spotLightIds[allocation.lightBufferIndex] != allocation.lightId)
+            {
+                return FailLocalShadowBinding(
+                    LocalShadowBindingCode::AllocationMismatch,
+                    "Local spot-shadow allocation targets the wrong light row");
+            }
+        }
+        else
+        {
+            return FailLocalShadowBinding(
+                LocalShadowBindingCode::AllocationMismatch,
+                "Local shadow allocation has an unsupported light type");
+        }
+
+        for (uint32 pageOffset = 0; pageOffset < allocation.pageCount;
+             ++pageOffset)
+        {
+            const LocalShadowAtlasPage* const page = atlasPlan.ResolvePage(
+                allocation.handle, pageOffset, atlasPlan.GetIdentityHash(),
+                atlasPlan.GetAtlasGeneration());
+            const uint32 pageIndex = allocation.firstPage + pageOffset;
+            if (page == nullptr || page->pageIndex != pageIndex ||
+                page->lightId != allocation.lightId ||
+                page->lightType != allocation.type ||
+                page->lightBufferIndex != allocation.lightBufferIndex ||
+                page->allocationHandle != allocation.handle)
+            {
+                return FailLocalShadowBinding(
+                    LocalShadowBindingCode::AllocationMismatch,
+                    "Local shadow atlas page no longer matches its allocation");
+            }
+            viewProjections[pageIndex] = page->viewProjection;
+        }
+
+        if (allocation.type == RenderLightType::Point)
+        {
+            pointLights[allocation.lightBufferIndex].shadowMapIndex =
+                static_cast<int32>(allocation.firstPage);
+        }
+        else
+        {
+            spotLights[allocation.lightBufferIndex].shadowMapIndex =
+                static_cast<int32>(allocation.firstPage);
+        }
+        selectedPageCount += allocation.pageCount;
+    }
+
+    if (selectedPageCount != atlasPlan.GetExecutionEvidence().pageCount ||
+        selectedPageCount != localShadowPlan.GetEvidence().selectedPageCount ||
+        selectedPageCount > texture.pageCapacity)
+    {
+        return FailLocalShadowBinding(
+            LocalShadowBindingCode::AllocationMismatch,
+            "Local shadow selected-page evidence does not match the atlas pages");
+    }
+
+    m_pointLights = std::move(pointLights);
+    m_spotLights = std::move(spotLights);
+    m_localShadowViewProjections = std::move(viewProjections);
+    m_localShadowPageCount = selectedPageCount;
+    // A valid zero-work plan still carries atlas configuration identity, but
+    // it must publish the disabled shader ABI.  Keeping a non-zero inverse
+    // resolution or receiver bias with zero pages would make the frozen
+    // LightConstants internally inconsistent and could resurrect stale local
+    // shadow sampling in a later consumer.
+    if (selectedPageCount == 0)
+    {
+        m_localShadowInvResolution = 0.0f;
+        m_localShadowDepthBias = 0.0f;
+        m_localShadowNormalBias = 0.0f;
+    }
+    else
+    {
+        m_localShadowInvResolution = 1.0f /
+            static_cast<float32>(texture.pageResolution);
+        m_localShadowDepthBias = receiverSettings.depthBias;
+        m_localShadowNormalBias = receiverSettings.normalBias;
+    }
+    m_localShadowAtlasPlanIdentity = atlasPlan.GetIdentityHash();
+    m_localShadowAtlasGeneration = atlasPlan.GetAtlasGeneration();
+    m_localShadowBindingCode = LocalShadowBindingCode::Ready;
+    return true;
+}
+
 void LightManager::SetMainLight(const Vec3& direction, const Vec3& color, float intensity)
 {
     m_mainLight.direction = direction;
@@ -356,6 +619,7 @@ void LightManager::AddPointLight(const Vec3& position, const Vec3& color, float 
     light.intensity = intensity;
     light.range = range;
     m_pointLights.push_back(light);
+    m_pointLightIds.push_back(0);
 }
 
 void LightManager::AddSpotLight(const Vec3& position, const Vec3& direction, const Vec3& color,
@@ -378,12 +642,15 @@ void LightManager::AddSpotLight(const Vec3& position, const Vec3& direction, con
     light.innerConeAngle = std::cos(innerAngle);
     light.outerConeAngle = std::cos(outerAngle);
     m_spotLights.push_back(light);
+    m_spotLightIds.push_back(0);
 }
 
 void LightManager::Clear()
 {
     m_pointLights.clear();
     m_spotLights.clear();
+    m_pointLightIds.clear();
+    m_spotLightIds.clear();
     m_pointLightRequestedCount = 0;
     m_spotLightRequestedCount = 0;
     m_pointLightOverflowCount = 0;
@@ -399,7 +666,48 @@ void LightManager::Clear()
     m_planLocalLightRequestedCount = 0;
     m_planLocalLightAdmittedCount = 0;
     m_planLocalLightOverflowCount = 0;
+    ClearLocalShadowState();
     m_mainLight = GPUDirectionalLight{};
+}
+
+bool LightManager::FailLocalShadowBinding(
+    LocalShadowBindingCode code,
+    const char* diagnostic)
+{
+    for (GPUPointLight& light : m_pointLights)
+    {
+        light.shadowMapIndex = -1;
+    }
+    for (GPUSpotLight& light : m_spotLights)
+    {
+        light.shadowMapIndex = -1;
+    }
+    ClearLocalShadowState();
+    m_localShadowBindingCode = code;
+    m_lightingPlanCollectionCode = LightingPlanCollectionCode::InvalidEvidence;
+    m_stagedLightingPlanIdentity = 0;
+    m_lightingPlanIdentity = 0;
+    m_gpuUploadResult = {};
+    if (Log::GetCoreLogger())
+    {
+        RVX_CORE_ERROR("LightManager: {}", diagnostic);
+    }
+    return false;
+}
+
+void LightManager::ClearLocalShadowState() noexcept
+{
+    for (Mat4& viewProjection : m_localShadowViewProjections)
+    {
+        viewProjection = Mat4Identity();
+    }
+    m_localShadowPageCount = 0;
+    m_localShadowInvResolution = 0.0f;
+    m_localShadowDepthBias = 0.0f;
+    m_localShadowNormalBias = 0.0f;
+    m_localShadowAtlasPlanIdentity = 0;
+    m_localShadowAtlasGeneration = 0;
+    m_localShadowBindingCode = LocalShadowBindingCode::NotApplied;
 }
 
 LightingGpuUploadResult LightManager::FailGpuUpload(LightingGpuUploadCode code)
@@ -486,6 +794,11 @@ LightingGpuUploadResult LightManager::UpdateGPUBuffers()
     constants.mainLight = m_mainLight;
     constants.numPointLights = static_cast<uint32>(m_pointLights.size());
     constants.numSpotLights = static_cast<uint32>(m_spotLights.size());
+    constants.localShadowViewProjections = m_localShadowViewProjections;
+    constants.localShadowPageCount = m_localShadowPageCount;
+    constants.localShadowInvResolution = m_localShadowInvResolution;
+    constants.localShadowDepthBias = m_localShadowDepthBias;
+    constants.localShadowNormalBias = m_localShadowNormalBias;
 
     // Every successful frame clears full buffer capacity before copying its
     // exact staged payload. A recovery frame therefore cannot bind old local

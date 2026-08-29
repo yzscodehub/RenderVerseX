@@ -259,16 +259,26 @@ namespace
                                            RVX::uint64 gpuVirtualAddress = 0x1000)
             : m_type(type)
             , m_gpuVirtualAddress(gpuVirtualAddress)
+            , m_storageBuffer(RVX::MakeRef<FakeBuffer>(
+                  RVX::RHIBufferUsage::AccelerationStructureStorage |
+                      RVX::RHIBufferUsage::UnorderedAccess |
+                      RVX::RHIBufferUsage::DeviceAddress,
+                  4096))
         {
         }
 
         RVX::RHIAccelerationStructureType GetType() const override { return m_type; }
         RVX::uint64 GetSize() const override { return 4096; }
         RVX::uint64 GetGPUVirtualAddress() const override { return m_gpuVirtualAddress; }
+        RVX::RHIBuffer* GetStorageBuffer() const override
+        {
+            return m_storageBuffer.Get();
+        }
 
     private:
         RVX::RHIAccelerationStructureType m_type = RVX::RHIAccelerationStructureType::BottomLevel;
         RVX::uint64 m_gpuVirtualAddress = 0x1000;
+        RVX::RHIBufferRef m_storageBuffer;
     };
 
     class FakeShader final : public RVX::RHIShader

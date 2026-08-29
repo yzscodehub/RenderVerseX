@@ -8,12 +8,54 @@
 #include "Core/Types.h"
 #include "Core/MathTypes.h"
 #include "RHI/RHI.h"
+
+#include <array>
+#include <cstddef>
+#include <type_traits>
 #include <vector>
 
 namespace RVX
 {
     class RenderScene;
     class LightingFramePlan;
+    class LocalShadowFramePlan;
+    class LocalShadowAtlasPlan;
+
+    /**
+     * @brief Fixed shader-visible local-shadow page budget.
+     *
+     * The CPU atlas may reserve a larger physical array, but the current
+     * lighting ABI deliberately exposes at most this many matrices/pages.
+     * Plans exceeding this visible budget are rejected before any GPU upload.
+     */
+    inline constexpr uint32 RVX_MAX_LOCAL_SHADOW_PAGES = 32;
+
+    /** @brief Receiver bias values copied into the immutable light constants. */
+    struct LocalShadowReceiverSettings
+    {
+        float32 depthBias = 0.001f;
+        float32 normalBias = 0.01f;
+    };
+
+    /** Exact terminal result of attaching one local-shadow atlas to staged lights. */
+    enum class LocalShadowBindingCode : uint8
+    {
+        NotApplied = 0,
+        Ready,
+        PlanNotStaged,
+        InvalidLocalShadowPlan,
+        InvalidAtlasPlan,
+        LightingPlanIdentityMismatch,
+        AtlasPlanIdentityMismatch,
+        AtlasGenerationMismatch,
+        VisiblePageCapacityExceeded,
+        InvalidReceiverSettings,
+        InvalidTextureContract,
+        AllocationMismatch,
+    };
+
+    [[nodiscard]] const char* GetLocalShadowBindingCodeName(
+        LocalShadowBindingCode code) noexcept;
 
     /** @brief Result of binding immutable lighting selection to GPU light buffers. */
     enum class LightingPlanCollectionCode : uint8
@@ -89,6 +131,13 @@ namespace RVX
         float range = 10.0f;
         Vec3 color{1.0f, 1.0f, 1.0f};
         float intensity = 1.0f;
+        /** First Texture2DArray page for this point light, or -1 if unshadowed. */
+        int32 shadowMapIndex = -1;
+        // Scalar tail mirrors the HLSL SSBO contract. A vec3 at byte 36 is
+        // not representable by GLSL std430 on the OpenGL compatibility path.
+        float32 padding0 = 0.0f;
+        float32 padding1 = 0.0f;
+        float32 padding2 = 0.0f;
     };
 
     /**
@@ -116,7 +165,32 @@ namespace RVX
         uint32 numPointLights = 0;
         uint32 numSpotLights = 0;
         Vec2 padding{0.0f, 0.0f};
+        /** Page-indexed right-handed local shadow view-projection table. */
+        std::array<Mat4, RVX_MAX_LOCAL_SHADOW_PAGES>
+            localShadowViewProjections{};
+        /** x/y/z/w = visible page count, inverse page resolution, depth bias, normal bias. */
+        uint32 localShadowPageCount = 0;
+        float32 localShadowInvResolution = 0.0f;
+        float32 localShadowDepthBias = 0.0f;
+        float32 localShadowNormalBias = 0.0f;
     };
+
+    static_assert(std::is_standard_layout_v<GPUDirectionalLight>);
+    static_assert(std::is_standard_layout_v<GPUPointLight>);
+    static_assert(std::is_standard_layout_v<GPUSpotLight>);
+    static_assert(std::is_standard_layout_v<LightConstants>);
+    static_assert(sizeof(GPUDirectionalLight) == 96);
+    static_assert(sizeof(GPUPointLight) == 48);
+    static_assert(offsetof(GPUPointLight, shadowMapIndex) == 32);
+    static_assert(offsetof(GPUPointLight, padding0) == 36);
+    static_assert(offsetof(GPUPointLight, padding1) == 40);
+    static_assert(offsetof(GPUPointLight, padding2) == 44);
+    static_assert(sizeof(GPUSpotLight) == 64);
+    static_assert(offsetof(GPUSpotLight, shadowMapIndex) == 52);
+    static_assert(sizeof(LightConstants) == 2176);
+    static_assert(offsetof(LightConstants, numPointLights) == 96);
+    static_assert(offsetof(LightConstants, localShadowViewProjections) == 112);
+    static_assert(offsetof(LightConstants, localShadowPageCount) == 2160);
 
     /**
      * @brief Manages scene lighting and GPU buffers
@@ -158,6 +232,21 @@ namespace RVX
          * @return True only when every selected plan light was accepted unchanged.
          */
         [[nodiscard]] bool CollectLights(const LightingFramePlan& plan);
+
+        /**
+         * @brief Attach the exact local-shadow atlas plan to the currently
+         * staged LightingFramePlan before GPU upload.
+         *
+         * This is deliberately a narrow one-way operation: it validates all
+         * frame, plan, allocation and atlas identities, writes only the
+         * selected point/spot page bases and page matrices, and invalidates
+         * the staged upload on any mismatch.  Unallocated lights retain -1
+         * and therefore remain explicitly lit.
+         */
+        [[nodiscard]] bool ApplyLocalShadowPlan(
+            const LocalShadowFramePlan& localShadowPlan,
+            const LocalShadowAtlasPlan& atlasPlan,
+            LocalShadowReceiverSettings receiverSettings = {});
 
         /**
          * @brief Set the main directional light
@@ -271,6 +360,15 @@ namespace RVX
         {
             return m_planLocalLightOverflowCount;
         }
+        [[nodiscard]] LocalShadowBindingCode
+            GetLocalShadowBindingCode() const noexcept
+        {
+            return m_localShadowBindingCode;
+        }
+        [[nodiscard]] bool HasLocalShadowPlan() const noexcept
+        {
+            return m_localShadowBindingCode == LocalShadowBindingCode::Ready;
+        }
 
         static constexpr uint32 MaxPointLights = 256;
         static constexpr uint32 MaxSpotLights = 128;
@@ -278,6 +376,10 @@ namespace RVX
     private:
         void EnsureBuffers();
         LightingGpuUploadResult FailGpuUpload(LightingGpuUploadCode code);
+        [[nodiscard]] bool FailLocalShadowBinding(
+            LocalShadowBindingCode code,
+            const char* diagnostic);
+        void ClearLocalShadowState() noexcept;
 
         IRHIDevice* m_device = nullptr;
 
@@ -285,6 +387,9 @@ namespace RVX
         GPUDirectionalLight m_mainLight;
         std::vector<GPUPointLight> m_pointLights;
         std::vector<GPUSpotLight> m_spotLights;
+        /** Exact LightingFramePlan identities for the corresponding GPU rows. */
+        std::vector<uint64> m_pointLightIds;
+        std::vector<uint64> m_spotLightIds;
         uint32 m_pointLightRequestedCount = 0;
         uint32 m_spotLightRequestedCount = 0;
         uint32 m_pointLightOverflowCount = 0;
@@ -303,6 +408,16 @@ namespace RVX
         uint32 m_planLocalLightRequestedCount = 0;
         uint32 m_planLocalLightAdmittedCount = 0;
         uint32 m_planLocalLightOverflowCount = 0;
+        LocalShadowBindingCode m_localShadowBindingCode =
+            LocalShadowBindingCode::NotApplied;
+        uint64 m_localShadowAtlasPlanIdentity = 0;
+        uint64 m_localShadowAtlasGeneration = 0;
+        std::array<Mat4, RVX_MAX_LOCAL_SHADOW_PAGES>
+            m_localShadowViewProjections{};
+        uint32 m_localShadowPageCount = 0;
+        float32 m_localShadowInvResolution = 0.0f;
+        float32 m_localShadowDepthBias = 0.0f;
+        float32 m_localShadowNormalBias = 0.0f;
 
         // GPU buffers
         RHIBufferRef m_lightConstantsBuffer;

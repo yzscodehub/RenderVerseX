@@ -728,6 +728,15 @@ namespace RVX
                 return "PushConstantRangeMismatch";
             case RHIPipelineValidationCode::InvalidVertexInputLayout:
                 return "InvalidVertexInputLayout";
+            case RHIPipelineValidationCode::UnsupportedColorAttachmentCount:
+                return "UnsupportedColorAttachmentCount";
+            case RHIPipelineValidationCode::
+                UnsupportedIndependentColorAttachmentBlend:
+                return "UnsupportedIndependentColorAttachmentBlend";
+            case RHIPipelineValidationCode::UnsupportedColorAttachmentFormat:
+                return "UnsupportedColorAttachmentFormat";
+            case RHIPipelineValidationCode::UnsupportedColorAttachmentBlend:
+                return "UnsupportedColorAttachmentBlend";
             default:
                 return "Unknown";
         }
@@ -1065,6 +1074,70 @@ namespace RVX
                 return result;
             }
         }
+        return {};
+    }
+
+    RHIPipelineValidationResult ValidateRHIGraphicsPipelineCapabilities(
+        const RHIGraphicsPipelineDesc& desc,
+        const RHICapabilities& capabilities)
+    {
+        if (desc.numRenderTargets > capabilities.maxColorAttachments)
+        {
+            RHIPipelineValidationResult result = MakeFailure(
+                desc,
+                RHIPipelineValidationCode::UnsupportedColorAttachmentCount,
+                "Graphics pipeline color-attachment count exceeds the selected device limit.");
+            result.expectedCount = capabilities.maxColorAttachments;
+            result.actualCount = desc.numRenderTargets;
+            return result;
+        }
+
+        if (desc.blendState.independentBlendEnable &&
+            !capabilities.supportsIndependentColorAttachmentBlend)
+        {
+            return MakeFailure(
+                desc,
+                RHIPipelineValidationCode::
+                    UnsupportedIndependentColorAttachmentBlend,
+                "Graphics pipeline requests independent color-attachment blending, but the selected device did not publish that capability.");
+        }
+
+        for (uint32 attachmentIndex = 0;
+             attachmentIndex < desc.numRenderTargets;
+             ++attachmentIndex)
+        {
+            const RHIFormat format =
+                desc.renderTargetFormats[attachmentIndex];
+            if (!capabilities.SupportsColorAttachment(format))
+            {
+                RHIPipelineValidationResult result = MakeFailure(
+                    desc,
+                    RHIPipelineValidationCode::
+                        UnsupportedColorAttachmentFormat,
+                    "Graphics pipeline render-target format is not supported as a color attachment by the selected device.");
+                result.location = attachmentIndex;
+                result.actualFormat = format;
+                return result;
+            }
+
+            const uint32 blendStateIndex =
+                desc.blendState.independentBlendEnable
+                ? attachmentIndex
+                : 0u;
+            if (desc.blendState.renderTargets[blendStateIndex].blendEnable &&
+                !capabilities.SupportsColorAttachmentBlend(format))
+            {
+                RHIPipelineValidationResult result = MakeFailure(
+                    desc,
+                    RHIPipelineValidationCode::
+                        UnsupportedColorAttachmentBlend,
+                    "Graphics pipeline enables blending on a render-target format that the selected device did not publish as blendable.");
+                result.location = attachmentIndex;
+                result.actualFormat = format;
+                return result;
+            }
+        }
+
         return {};
     }
 } // namespace RVX

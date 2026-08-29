@@ -43,6 +43,14 @@ namespace RVX
         RGBufferHandle clusterLightIndices{};
         bool directionalShadowEnabled = false;
         RGTextureHandle directionalShadowMap{};
+        bool localShadowEnabled = false;
+        RGTextureHandle localShadowAtlas{};
+        uint64 localShadowPlanIdentity = 0;
+        uint64 localShadowAtlasPlanIdentity = 0;
+        uint64 localShadowAtlasGeneration = 0;
+        uint32 localShadowPageCount = 0;
+        uint32 localShadowPageResolution = 0;
+        uint32 localShadowPageCapacity = 0;
         bool textureIBLEnabled = false;
         RGTextureHandle irradiance{};
         RGTextureHandle prefilteredEnvironment{};
@@ -60,6 +68,22 @@ namespace RVX
                 clusterLightIndices.IsValid();
             const bool csmReady = !directionalShadowEnabled ||
                 directionalShadowMap.IsValid();
+            const bool localShadowReady = localShadowEnabled
+                ? localShadowAtlas.IsValid() &&
+                    localShadowPlanIdentity != 0 &&
+                    localShadowAtlasPlanIdentity != 0 &&
+                    localShadowAtlasGeneration != 0 &&
+                    localShadowPageCount != 0 &&
+                    localShadowPageResolution != 0 &&
+                    localShadowPageCapacity != 0 &&
+                    localShadowPageCount <= localShadowPageCapacity
+                : !localShadowAtlas.IsValid() &&
+                    localShadowPlanIdentity == 0 &&
+                    localShadowAtlasPlanIdentity == 0 &&
+                    localShadowAtlasGeneration == 0 &&
+                    localShadowPageCount == 0 &&
+                    localShadowPageResolution == 0 &&
+                    localShadowPageCapacity == 0;
             const bool iblReady = !textureIBLEnabled ||
                 (irradiance.IsValid() && prefilteredEnvironment.IsValid() &&
                  brdfLUT.IsValid() && expectedIrradianceView &&
@@ -67,7 +91,7 @@ namespace RVX
             return lightingPlanIdentity != 0 &&
                    frozenLightResources.IsComplete() &&
                    localAndClusteredLights &&
-                   csmReady && iblReady;
+                   csmReady && localShadowReady && iblReady;
         }
     };
 
@@ -80,6 +104,10 @@ namespace RVX
         RGTextureHandle gBuffer3{};
         RGTextureHandle deviceDepth{};
         RGTextureHandle hdrSceneColor{};
+        /** Exact pre-exposed indirect-specular term already included in HDR. */
+        RGTextureHandle baseIndirectSpecular{};
+        /** Dimensionless material/visibility response for routed reflections. */
+        RGTextureHandle specularResponse{};
         RGBufferHandle materialTable{};
         PostProcessMaterialTableMetadata materialTableMetadata{};
         /** Same committed prior-presented state consumed by every HDR producer. */
@@ -98,6 +126,8 @@ namespace RVX
             return gBuffer0.IsValid() && gBuffer1.IsValid() &&
                    gBuffer2.IsValid() && gBuffer3.IsValid() &&
                    deviceDepth.IsValid() && hdrSceneColor.IsValid() &&
+                   baseIndirectSpecular.IsValid() &&
+                   specularResponse.IsValid() &&
                    materialTable.IsValid() &&
                    materialTableMetadata.IsValid() &&
                    exposureState.IsValid() &&

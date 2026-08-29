@@ -28,6 +28,27 @@ namespace RVX
             float intensityScale = 1.0f;
             float padding[3] = {0.0f, 0.0f, 0.0f};
         };
+
+        struct RayTracedReflectionCompositeFrameState
+        {
+            RenderPassExecutionData execution{};
+            bool contextValid = false;
+            bool legacyAdapter = false;
+        };
+
+        void PublishRayTracedReflectionCompositeRecordStats(
+            const RenderPassExecutionData& execution,
+            bool legacyAdapter,
+            const RayTracedReflectionCompositePassStats& stats)
+        {
+            // Legacy ViewData adapters are retained for test/compatibility
+            // execution only and cannot contribute qualification evidence.
+            if (!legacyAdapter && execution.results != nullptr &&
+                execution.results->identity == execution.identity)
+            {
+                execution.results->rayTracedReflectionCompositeStats = stats;
+            }
+        }
     } // namespace
 
     void RayTracedReflectionCompositePass::OnAdd(IRHIDevice* device)
@@ -108,6 +129,54 @@ namespace RVX
 
         m_unsupportedReason.clear();
         return true;
+    }
+
+    void RayTracedReflectionCompositePass::AddToGraph(
+        RenderGraph& graph,
+        const ViewData& view)
+    {
+        AddToGraph(graph, MakeRenderPassRecordContext(graph, view));
+    }
+
+    void RayTracedReflectionCompositePass::AddToGraph(
+        RenderGraph& graph,
+        const RenderPassRecordContext& context)
+    {
+        const RenderPassExecutionData execution =
+            MakeRenderPassExecutionData(context);
+        const bool contextValid = context.MatchesTargetGraph(graph) &&
+            execution.MatchesTargetGraph(graph);
+        const bool legacyAdapter = context.legacyAdapter;
+
+        graph.AddPass<RayTracedReflectionCompositeFrameState>(
+            GetName(),
+            GetPassType(),
+            [this, execution, contextValid, legacyAdapter](
+                RenderGraphBuilder& builder,
+                RayTracedReflectionCompositeFrameState& data)
+            {
+                data.execution = execution;
+                data.contextValid = contextValid;
+                data.legacyAdapter = legacyAdapter;
+                if (!data.contextValid)
+                {
+                    return;
+                }
+                Setup(builder, data.execution.view);
+                PublishRayTracedReflectionCompositeRecordStats(
+                    data.execution, data.legacyAdapter, m_stats);
+            },
+            [this](const RayTracedReflectionCompositeFrameState& data,
+                   RenderGraphPassContext& graphContext)
+            {
+                if (!data.contextValid)
+                {
+                    return;
+                }
+                Execute(graphContext, data.execution.view);
+                PublishRayTracedReflectionCompositeRecordStats(
+                    data.execution, data.legacyAdapter, m_stats);
+            });
     }
 
     void RayTracedReflectionCompositePass::Setup(RenderGraphBuilder& builder, const ViewData& view)

@@ -72,6 +72,120 @@ endif()
 file(COPY_FILE "${SOURCE_ROOT}/Assets/catalog.json"
      "${_rvx_staging}/catalog.json" ONLY_IF_DIFFERENT)
 
+# GFX19 publishes a package-only copy of the deterministic interior fixture.
+# The generated source remains available under its original catalog identity
+# for development Samples, while the reflection qualification selects only
+# this cooked Model V3 identity and cannot fall back to the glTF importer.
+set(_rvx_reflection_interior_id "post-processing-interior-v1")
+set(_rvx_reflection_interior_source_root
+    "${_rvx_staging}/cook-inputs/${_rvx_reflection_interior_id}")
+set(_rvx_reflection_interior_cooked_root
+    "${_rvx_staging}/cooked/${_rvx_reflection_interior_id}")
+set(_rvx_reflection_interior_manifest
+    "${_rvx_reflection_interior_cooked_root}/CookManifest.rvxmanifest")
+file(MAKE_DIRECTORY "${_rvx_reflection_interior_source_root}")
+file(COPY_FILE
+    "${_rvx_staging}/models/interior-rendering-p0a/scene.gltf"
+    "${_rvx_reflection_interior_source_root}/scene.gltf"
+    ONLY_IF_DIFFERENT)
+execute_process(
+    COMMAND "${COOK_EXECUTABLE}"
+        --source "${_rvx_reflection_interior_source_root}"
+        --output "${_rvx_reflection_interior_cooked_root}"
+        --manifest "${_rvx_reflection_interior_manifest}"
+        --model-only
+        --fail-on-errors
+    RESULT_VARIABLE _rvx_reflection_interior_cook_result)
+if(NOT _rvx_reflection_interior_cook_result EQUAL 0)
+    message(FATAL_ERROR "GFX19 reflection interior fixture cook failed")
+endif()
+execute_process(
+    COMMAND "${COOKED_CATALOG_WRITER}"
+        --input-catalog "${_rvx_staging}/catalog.json"
+        --output-catalog "${_rvx_staging}/catalog.json"
+        --asset-root "${_rvx_staging}"
+        --source-root "${_rvx_reflection_interior_source_root}"
+        --manifest "${_rvx_reflection_interior_manifest}"
+        --cooked-root "${_rvx_reflection_interior_cooked_root}"
+        --cooked-root-relative "cooked/${_rvx_reflection_interior_id}"
+        --asset-id "${_rvx_reflection_interior_id}"
+        --asset-kind model
+        --asset-path-relative "cooked/${_rvx_reflection_interior_id}/scene.rva"
+        --source-path "scene.gltf"
+        --source-name "RenderVerseX deterministic reflection interior fixture"
+        --source-uri "repo://Samples/Common/Tools/SampleInteriorFixtureWriter.cpp"
+        --source-version "gfx19-reflection-interior-model-v3-cook-v1"
+        --attribution "Generated from the RenderVerseX deterministic interior fixture."
+        --modification-notice "Cooked for the GFX19 reflection qualification; source bytes are not reachable through this package identity."
+        --derived-from "interior-rendering-p0a"
+        --generation-recipe "rvx-gfx19-reflection-interior-model-v3-cook-v1"
+    RESULT_VARIABLE _rvx_reflection_interior_catalog_result)
+if(NOT _rvx_reflection_interior_catalog_result EQUAL 0)
+    message(FATAL_ERROR
+        "GFX19 reflection interior cooked catalog publication failed")
+endif()
+file(REMOVE_RECURSE "${_rvx_reflection_interior_source_root}")
+if(EXISTS "${_rvx_reflection_interior_source_root}")
+    message(FATAL_ERROR
+        "GFX19 reflection interior source input remains after staging; cooked-only runtime admission is unsafe")
+endif()
+
+# The reflection probe and global IBL fallback must also use an admitted
+# cooked Environment artifact.  Keeping a separate identity prevents the
+# runtime-only composition from silently resolving the generated source HDR.
+set(_rvx_reflection_environment_id "pbr-reference-environment-cooked-v1")
+set(_rvx_reflection_environment_source_root
+    "${_rvx_staging}/cook-inputs/${_rvx_reflection_environment_id}")
+set(_rvx_reflection_environment_cooked_root
+    "${_rvx_staging}/cooked/${_rvx_reflection_environment_id}")
+set(_rvx_reflection_environment_manifest
+    "${_rvx_reflection_environment_cooked_root}/CookManifest.rvxmanifest")
+file(MAKE_DIRECTORY "${_rvx_reflection_environment_source_root}")
+file(COPY_FILE
+    "${_rvx_staging}/environments/pbr-reference/environment.hdr"
+    "${_rvx_reflection_environment_source_root}/environment.hdr"
+    ONLY_IF_DIFFERENT)
+execute_process(
+    COMMAND "${COOK_EXECUTABLE}"
+        --source "${_rvx_reflection_environment_source_root}"
+        --output "${_rvx_reflection_environment_cooked_root}"
+        --manifest "${_rvx_reflection_environment_manifest}"
+        --fail-on-errors
+    RESULT_VARIABLE _rvx_reflection_environment_cook_result)
+if(NOT _rvx_reflection_environment_cook_result EQUAL 0)
+    message(FATAL_ERROR "GFX19 reference environment cook failed")
+endif()
+execute_process(
+    COMMAND "${COOKED_CATALOG_WRITER}"
+        --input-catalog "${_rvx_staging}/catalog.json"
+        --output-catalog "${_rvx_staging}/catalog.json"
+        --asset-root "${_rvx_staging}"
+        --source-root "${_rvx_reflection_environment_source_root}"
+        --manifest "${_rvx_reflection_environment_manifest}"
+        --cooked-root "${_rvx_reflection_environment_cooked_root}"
+        --cooked-root-relative "cooked/${_rvx_reflection_environment_id}"
+        --asset-id "${_rvx_reflection_environment_id}"
+        --asset-kind environment
+        --asset-path-relative "cooked/${_rvx_reflection_environment_id}/environment.rva"
+        --source-path "environment.hdr"
+        --source-name "RenderVerseX cooked PBR reference environment"
+        --source-uri "repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp"
+        --source-version "gfx19-reference-environment-cook-v1"
+        --attribution "Generated from the RenderVerseX deterministic HDR fixture."
+        --modification-notice "Cooked for the GFX19 reflection qualification; the selected environment identity cannot fall back to source HDR loading."
+        --derived-from "pbr-reference-environment"
+        --generation-recipe "rvx-gfx19-reference-environment-cook-v1"
+    RESULT_VARIABLE _rvx_reflection_environment_catalog_result)
+if(NOT _rvx_reflection_environment_catalog_result EQUAL 0)
+    message(FATAL_ERROR
+        "GFX19 reference environment cooked catalog publication failed")
+endif()
+file(REMOVE_RECURSE "${_rvx_reflection_environment_source_root}")
+if(EXISTS "${_rvx_reflection_environment_source_root}")
+    message(FATAL_ERROR
+        "GFX19 reference environment source input remains after staging; cooked-only runtime admission is unsafe")
+endif()
+
 # GFX14 uses one real, hermetic cook.  The source copy lives only in the
 # transaction staging directory while RVXCook and the catalog writer verify
 # its source identity; it is removed before the package is published so Sample

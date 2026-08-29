@@ -8,6 +8,7 @@
 #include "../Include/Exposure.hlsli"
 
 RaytracingAccelerationStructure gScene : register(RVX_RT_REFLECTION_TLAS_REGISTER, space0);
+[[vk::image_format("rgba16f")]]
 RWTexture2D<float4> gReflectionOutput : register(RVX_RT_REFLECTION_OUTPUT_REGISTER, space0);
 Texture2D<float4> gSceneColor : register(RVX_RT_REFLECTION_SCENE_COLOR_REGISTER, space0);
 Texture2D<float> gSceneDepth : register(RVX_RT_REFLECTION_SCENE_DEPTH_REGISTER, space0);
@@ -21,6 +22,7 @@ Texture2D<float4> gPreviousReflectionHistory : register(RVX_RT_REFLECTION_PREVIO
 Texture2D<float> gPreviousDepthHistory : register(RVX_RT_REFLECTION_PREVIOUS_DEPTH_REGISTER, space0);
 RWTexture2D<float> gCurrentDepthHistory : register(RVX_RT_REFLECTION_OUTPUT_DEPTH_REGISTER, space0);
 Texture2D<float4> gPreviousNormalHistory : register(RVX_RT_REFLECTION_PREVIOUS_NORMAL_REGISTER, space0);
+[[vk::image_format("rgba16f")]]
 RWTexture2D<float4> gCurrentNormalHistory : register(RVX_RT_REFLECTION_OUTPUT_NORMAL_REGISTER, space0);
 StructuredBuffer<RayTracingInstanceAlphaMetadata> gInstanceGeometryMetadata : register(RVX_RT_REFLECTION_GEOMETRY_METADATA_REGISTER, space0);
 ByteAddressBuffer gReflectionIndexBuffers[RT_MAX_GEOMETRY_BUFFERS] : register(RVX_RT_REFLECTION_INDEX_BUFFERS_REGISTER, space0);

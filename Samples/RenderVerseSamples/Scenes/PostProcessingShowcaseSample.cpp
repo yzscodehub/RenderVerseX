@@ -7,6 +7,7 @@
 #include "Samples/SampleCLI.h"
 #include "Samples/SampleContext.h"
 #include "Samples/SampleRenderPathPolicy.h"
+#include "ResourceSceneAdapters/ECS/EcsEnvironmentLoadCoordinator.h"
 #include "Scene/ECS/RenderFragments.h"
 
 #include <algorithm>
@@ -17,17 +18,25 @@ namespace RVX
 {
     namespace
     {
-        const SampleInfo PostProcessingShowcaseInfo{
-            "post-processing",
-            "Post Processing",
-            "Demonstrates renderer-owned GTAO, Bloom, tone mapping, color grading, and FXAA in a deterministic interior",
-            "interior-rendering-p0a",
-            SampleAssetPolicy::Fixed,
-            "pbr-reference-environment",
-            SampleEnvironmentPolicy::Required,
-            true,
-            SampleRenderPath::Auto,
-        };
+        const SampleInfo PostProcessingShowcaseInfo = []
+        {
+            SampleInfo info;
+            info.id = "post-processing";
+            info.displayName = "Post Processing";
+            info.description =
+                "Demonstrates renderer-owned GTAO, Hi-Z reflections, Bloom, tone mapping, color grading, and FXAA in a deterministic interior";
+            info.defaultAssetId = "post-processing-interior-v1";
+            info.assetPolicy = SampleAssetPolicy::Fixed;
+            info.defaultEnvironmentId =
+                "pbr-reference-environment-cooked-v1";
+            info.environmentPolicy = SampleEnvironmentPolicy::Required;
+            info.supportsRenderPathSelection = true;
+            info.defaultRenderPath = SampleRenderPath::Auto;
+            info.requiredCookedAssetIds = {
+                "post-processing-interior-v1",
+                "pbr-reference-environment-cooked-v1"};
+            return info;
+        }();
 
         const AssessmentCapability BloomCapability{
             AssessmentCode("RENDER.CAPABILITY.POST_PROCESS_BLOOM"),
@@ -54,6 +63,11 @@ namespace RVX
             "GTAO is requested through the public ambient-occlusion policy.",
             true,
             "GTAO qualification requires bilateral, temporal, indirect-only, and probe evidence."};
+        const AssessmentCapability HiZReflectionCapability{
+            AssessmentCode("RENDER.CAPABILITY.HIZ_SCREEN_SPACE_REFLECTION"),
+            "Hi-Z screen-space reflection is requested through the public post-process policy.",
+            true,
+            "Qualification requires exact presented route-mask and fallback-radiance evidence, not graph scheduling."};
 
         void PublishRequestedPostProcessCapability(
             SampleAssessmentChannel& assessment,
@@ -104,6 +118,35 @@ namespace RVX
                 .intensityUnit = SceneECS::LightIntensityUnit::Lux,
                 .shadowBias = 0.0008f,
                 .castsShadows = true,
+            };
+        }
+
+        /**
+         * @brief Build the deterministic local fallback volume for the Hi-Z
+         * reflection qualification scene.
+         *
+         * The cubemap is deliberately supplied only after the environment
+         * coordinator has materialized its prefiltered runtime texture.  A
+         * sample must never derive an AssetId from its logical environment
+         * name: the renderer resolves actual Resource identities only.
+         */
+        [[nodiscard]] SceneECS::ReflectionProbe MakeReflectionProbe(
+            AssetId prefilteredEnvironmentAssetId)
+        {
+            return {
+                .shape = SceneECS::ReflectionProbeShape::Box,
+                .assetSource = SceneECS::ReflectionProbeAssetSource::Custom,
+                .customCubemapAssetId = prefilteredEnvironmentAssetId,
+                .influenceExtent = Vec3(8.0f, 4.0f, 8.0f),
+                .blendDistance = 1.5f,
+                .boxProjectionSize = Vec3(8.0f, 4.0f, 8.0f),
+                .boxProjectionOffset = Vec3(0.0f),
+                .priority = 100,
+                .nearClip = 0.1f,
+                .farClip = 100.0f,
+                .useBoxProjection = true,
+                .useHDR = true,
+                .hasValidData = true,
             };
         }
 
@@ -158,6 +201,11 @@ namespace RVX
                    << ", presentedFrame="
                    << diagnostics.postProcessActualExecution
                           .lastPresentedFrameSequence;
+            stream << ", hizReflectionReady="
+                   << diagnostics.hizReflectionActualExecution.IsExecutionReady()
+                   << ", hizReflectionFrame="
+                   << diagnostics.hizReflectionActualExecution
+                          .reflectionFrameSequence;
             return stream.str();
         }
     } // namespace
@@ -172,7 +220,7 @@ namespace RVX
     {
         SampleAssessmentContract contract = MakeDefaultSampleAssessmentContract();
         contract.code = AssessmentCode("SAMPLE.POST_PROCESSING");
-        contract.revision = "2";
+        contract.revision = "3";
         contract.capabilities = {
             BloomCapability,
             ToneMappingCapability,
@@ -253,7 +301,7 @@ namespace RVX
         postProcess.enableBloom = true;
         postProcess.enableColorGrading = true;
         postProcess.ambientOcclusion.enabled = true;
-        postProcess.enableSSR = false;
+        postProcess.enableSSR = true;
         postProcess.toneMappingOperator = RenderToneMappingOperator::ACES;
         postProcess.exposureSettings.mode = RenderExposureMode::ManualEV100;
         postProcess.exposureSettings.manualEV100 = 0.0f;
@@ -287,6 +335,41 @@ namespace RVX
         {
             m_modelFailure = DescribeEnvironmentFailure(environmentStatus);
         }
+        if (!m_reflectionProbeCreated && m_environment.IsValid() &&
+            m_modelFailure.empty())
+        {
+            const ResourceSceneAdapters::EnvironmentInstanceFragment* const
+                environmentInstance =
+                    context.scene.GetRegistry()
+                        .TryGet<ResourceSceneAdapters::EnvironmentInstanceFragment>(
+                            m_environment.status.skyboxEntity);
+            if (environmentInstance == nullptr ||
+                !environmentInstance->prefilteredEnvironmentAssetId.IsValid())
+            {
+                m_modelFailure =
+                    "The fully resident post-processing environment did not publish its prefiltered reflection cubemap.";
+                return;
+            }
+
+            SceneECS::RuntimeEntityDesc probeDesc;
+            probeDesc.localTransform.translation = Vec3(0.0f, 2.2f, -3.0f);
+            const SceneECS::SceneEntityRef probe =
+                context.sceneLifetime.CreateAndAdoptWithFragments(
+                    probeDesc,
+                    MakeReflectionProbe(
+                        environmentInstance->prefilteredEnvironmentAssetId),
+                    SceneECS::Visibility{
+                        .visible = true,
+                        .castsShadow = false,
+                    });
+            if (!probe.IsValid())
+            {
+                m_modelFailure =
+                    "Failed to create the post-processing local reflection probe.";
+                return;
+            }
+            m_reflectionProbeCreated = true;
+        }
     }
 
     void PostProcessingShowcaseSample::OnInput(SampleContext& context)
@@ -302,7 +385,7 @@ namespace RVX
             m_toneMappingCapabilityPublished &&
             m_colorGradingCapabilityPublished &&
             m_fxaaCapabilityPublished && m_postProcessExecutionQualified;
-        reporter.SetScenarioContractRevision(2);
+        reporter.SetScenarioContractRevision(3);
         reporter.SetScenarioPhase(stable ? "stable" :
                                   m_modelFailure.empty() ? "pending" : "failed");
         AppendSampleRenderPathPolicyReport(m_renderPath, reporter);
@@ -325,6 +408,7 @@ namespace RVX
         reporter.Enable("FXAARequested");
         reporter.Enable("TemporalAAExplicitlyDisabled");
         reporter.Enable("AmbientOcclusionRequested");
+        reporter.Enable("HiZScreenSpaceReflectionRequested");
         if (m_ambientOcclusionExecutionReady)
         {
             reporter.Enable("AmbientOcclusionExecutionReady");
@@ -342,6 +426,12 @@ namespace RVX
         {
             reporter.Enable("PostProcessActualExecutionQualified");
         }
+        if (m_hizReflectionExecutionReady &&
+            m_hizReflectionCapabilityPublished)
+        {
+            reporter.Enable("HiZScreenSpaceReflectionExecutionReady");
+            reporter.Enable("HiZReflectionRouteMaskReadbackQualified");
+        }
         reporter.ResourceDiagnostic(
             "post-process ownership=Render/PostProcess feature pipeline");
         reporter.ResourceDiagnostic(
@@ -353,6 +443,10 @@ namespace RVX
         if (m_lightCreated)
         {
             reporter.Enable("DirectionalLightScene");
+        }
+        if (m_reflectionProbeCreated)
+        {
+            reporter.Enable("LocalReflectionProbeScene");
         }
     }
 
@@ -366,6 +460,8 @@ namespace RVX
             diagnostics.ambientOcclusionActualExecution.IsExecutionReady();
         m_ambientOcclusionQualificationReady =
             diagnostics.ambientOcclusionActualExecution.IsQualificationReady();
+        m_hizReflectionExecutionReady =
+            diagnostics.hizReflectionActualExecution.IsExecutionReady();
         if (!m_postProcessExecutionQualified)
         {
             return;
@@ -396,6 +492,13 @@ namespace RVX
                 assessment, GTAOCapability,
                 "The presented GTAO receipt proves bilateral filtering, temporal history, indirect-only consumers, and a non-neutral probe.",
                 m_ambientOcclusionCapabilityPublished);
+        }
+        if (m_hizReflectionExecutionReady)
+        {
+            PublishRequestedPostProcessCapability(
+                assessment, HiZReflectionCapability,
+                "The presented Hi-Z reflection receipt proves nonzero route-mask hits, finite nonzero Probe/IBL HDR contributions, matching plan identities, and the SSR -> probe -> IBL fallback contract.",
+                m_hizReflectionCapabilityPublished);
         }
     }
 
@@ -479,13 +582,16 @@ namespace RVX
         m_renderPath = SampleRenderPath::Auto;
         m_skyboxCreated = false;
         m_lightCreated = false;
+        m_reflectionProbeCreated = false;
         m_bloomCapabilityPublished = false;
         m_toneMappingCapabilityPublished = false;
         m_colorGradingCapabilityPublished = false;
         m_fxaaCapabilityPublished = false;
         m_ambientOcclusionCapabilityPublished = false;
+        m_hizReflectionCapabilityPublished = false;
         m_postProcessExecutionQualified = false;
         m_ambientOcclusionExecutionReady = false;
         m_ambientOcclusionQualificationReady = false;
+        m_hizReflectionExecutionReady = false;
     }
 } // namespace RVX

@@ -24,6 +24,14 @@ namespace
         return identity;
     }
 
+    Resource::ResourceContentIdentity MakeCookedIdentity()
+    {
+        Resource::ResourceContentIdentity identity = MakeIdentity();
+        identity.domain =
+            Resource::ResourceContentIdentityDomain::CookedArtifact;
+        return identity;
+    }
+
     class RecordingRuntimeServices final : public IWorldEcsRuntimeServices
     {
     public:
@@ -221,6 +229,64 @@ TEST(EcsSampleEnvironmentLoaderValidation,
     EXPECT_EQ(smokeDesc.resourceOptions.expectedContentIdentity, identity);
     EXPECT_NE(lowState->sourceOptions.quality, highState->sourceOptions.quality);
     EXPECT_NE(smokeState->sourceOptions.quality, highState->sourceOptions.quality);
+}
+
+TEST(EcsSampleEnvironmentLoaderValidation,
+     PackageOnlyCookedEnvironmentUsesMountedRuntimePathWithoutSourcePreparation)
+{
+    RecordingRuntimeServices services;
+    const ECS::SceneRuntimeId sceneRuntimeId(108);
+    const Resource::ResourceContentIdentity identity = MakeCookedIdentity();
+    SampleAssetRegistryEntry entry;
+    entry.id = "studio-cooked";
+    entry.kind = SampleAssetKind::Environment;
+    entry.resolvedPath = "cooked/studio-cooked/environment.rva";
+    entry.resourcePath =
+        "cooked://cooked/studio-cooked/environment.rva";
+    entry.requiresCookedResourcePath = true;
+    entry.contentIdentity = identity;
+    entry.packageOnly = true;
+    SampleEnvironmentLoader loader(
+        services, sceneRuntimeId, SampleAssetRegistry({entry}));
+
+    LoadedSampleEnvironment environment;
+    std::string error;
+    ASSERT_TRUE(loader.RequestByAssetId(
+        "studio-cooked", {}, environment, error)) << error;
+
+    ASSERT_EQ(services.requests.size(), 1u);
+    const auto& request = services.requests.front();
+    EXPECT_EQ(request.path,
+              "cooked://cooked/studio-cooked/environment.rva");
+    EXPECT_EQ(request.expectedSceneRuntimeId, sceneRuntimeId);
+    EXPECT_EQ(request.resourceOptions.importOptionsHash, 0u);
+    EXPECT_EQ(request.resourceOptions.expectedContentIdentity, identity);
+    EXPECT_EQ(request.preparationState, nullptr);
+}
+
+TEST(EcsSampleEnvironmentLoaderValidation,
+     PackageOnlyEnvironmentRejectsNonCookedArtifactBeforeRuntimeServices)
+{
+    RecordingRuntimeServices services;
+    const ECS::SceneRuntimeId sceneRuntimeId(109);
+    SampleAssetRegistryEntry entry;
+    entry.id = "invalid-package";
+    entry.kind = SampleAssetKind::Environment;
+    entry.resolvedPath = "cooked/invalid-package/environment.hdr";
+    entry.resourcePath =
+        "cooked://cooked/invalid-package/environment.hdr";
+    entry.requiresCookedResourcePath = true;
+    entry.contentIdentity = MakeIdentity();
+    entry.packageOnly = true;
+    SampleEnvironmentLoader loader(
+        services, sceneRuntimeId, SampleAssetRegistry({entry}));
+
+    LoadedSampleEnvironment output;
+    std::string error;
+    EXPECT_FALSE(loader.RequestByAssetId(
+        "invalid-package", {}, output, error));
+    EXPECT_NE(error.find("CookedArtifact .rva"), std::string::npos);
+    EXPECT_TRUE(services.requests.empty());
 }
 
 TEST(EcsSampleEnvironmentLoaderValidation,

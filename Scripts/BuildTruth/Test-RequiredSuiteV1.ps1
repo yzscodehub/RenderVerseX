@@ -78,6 +78,20 @@ try
             -Inventory $wrongLabel `
             -RequiredLabel "suite.pr-smoke"
     }
+    Assert-RequiredSuiteFailure -Category "DuplicateTestName" -Action {
+        $duplicateNames = [pscustomobject]@{
+            tests = @(
+                (New-RequiredSuiteTest -Name "Duplicate" `
+                    -Labels @("lane.qualification", "suite.pr-smoke")),
+                (New-RequiredSuiteTest -Name "Duplicate" `
+                    -Labels @("lane.qualification", "suite.pr-smoke"))
+            )
+        }
+        Assert-BuildTruthRequiredSelection `
+            -Inventory $duplicateNames `
+            -RequiredLabel "suite.pr-smoke" `
+            -ExpectedTestCount 2
+    }
     Assert-RequiredSuiteFailure -Category "NotRun" -Action {
         Assert-BuildTruthRequiredSelection `
             -Inventory $validInventory `

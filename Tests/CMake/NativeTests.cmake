@@ -92,6 +92,452 @@ if(RVX_ENABLE_VULKAN)
         TIMEOUT 120
         RESOURCE_LOCK rvx_gpu
     )
+
+    if(NOT TARGET RVXCook)
+        message(FATAL_ERROR
+            "GFX20 Vulkan ray-tracing validation requires RVXCook")
+    endif()
+
+    set(RVX_GFX20_VULKAN_RT_FIXTURE_DIR
+        "${CMAKE_CURRENT_SOURCE_DIR}/VulkanRayTracingValidation/Fixtures")
+    set(RVX_GFX20_VULKAN_RT_SHADER_ROOT
+        "${CMAKE_CURRENT_BINARY_DIR}/VulkanRayTracingValidation/CookedShaders")
+    set(RVX_GFX20_VULKAN_RT_EVIDENCE
+        "${CMAKE_CURRENT_BINARY_DIR}/VulkanRayTracingValidation/vulkan-ray-tracing-evidence.json")
+
+    rvx_add_validation_test(
+        LANE native
+        NAME VulkanRayTracingCookedShaders
+        COMMAND pwsh -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/VulkanRayTracingValidation/CookVulkanRayTracingShaders.ps1"
+            -Cooker $<TARGET_FILE:RVXCook>
+            -Source "${RVX_GFX20_VULKAN_RT_FIXTURE_DIR}"
+            -Catalog "${RVX_GFX20_VULKAN_RT_FIXTURE_DIR}/Programs.rvxshadercatalog.json"
+            -Output "${RVX_GFX20_VULKAN_RT_SHADER_ROOT}"
+        BUILD_TARGETS RVXCook
+        REQUIRED_FILES
+            "${CMAKE_CURRENT_SOURCE_DIR}/VulkanRayTracingValidation/CookVulkanRayTracingShaders.ps1"
+            "${RVX_GFX20_VULKAN_RT_FIXTURE_DIR}/Programs.rvxshadercatalog.json"
+            "${RVX_GFX20_VULKAN_RT_FIXTURE_DIR}/VulkanRayTracingFixture.hlsl"
+        TAGS subsystem.rhi backend.vulkan trait.gpu trait.native
+            trait.ray-tracing suite.gfx20-vulkan-rt
+        SUITE gfx20-vulkan-ray-tracing
+        TIMEOUT 300
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_SETUP VulkanRayTracingCookedShaders
+    )
+
+    rvx_add_gtest(
+        NAME VulkanRayTracingValidation
+        LANE native
+        SOURCES VulkanRayTracingValidation/main.cpp
+        LIBS
+            RVX::Core
+            RVX::RHI
+            RVX::RHI_BackendFactory
+            RVX::ShaderCompiler
+            RVX::ShaderContracts
+            RVX::ShaderRuntime
+            RVX::RHI_Vulkan
+            glfw
+        INCLUDES
+            ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI_Vulkan/Private
+        TAGS subsystem.rhi backend.vulkan trait.gpu trait.native
+            trait.ray-tracing suite.gfx20-vulkan-rt
+        SUITE gfx20-vulkan-ray-tracing
+        TIMEOUT 180
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_REQUIRED VulkanRayTracingCookedShaders
+    )
+
+    string(CONCAT RVX_GFX20_VULKAN_RT_ENVIRONMENT_METADATA_CONTENT
+        "if(DEFINED VulkanRayTracingValidation_TESTS)\n"
+        "    set_tests_properties(\${VulkanRayTracingValidation_TESTS} PROPERTIES\n"
+        "        ENVIRONMENT \"RVX_GFX20_VULKAN_RT_SHADER_ROOT=${RVX_GFX20_VULKAN_RT_SHADER_ROOT};RVX_GFX20_VULKAN_RT_EVIDENCE=${RVX_GFX20_VULKAN_RT_EVIDENCE}\"\n"
+        "    )\n"
+        "endif()\n")
+    set(RVX_GFX20_VULKAN_RT_ENVIRONMENT_METADATA_FILE
+        "${CMAKE_CURRENT_BINARY_DIR}/VulkanRayTracingValidation_gfx20_environment.cmake")
+    file(GENERATE
+        OUTPUT "${RVX_GFX20_VULKAN_RT_ENVIRONMENT_METADATA_FILE}"
+        CONTENT "${RVX_GFX20_VULKAN_RT_ENVIRONMENT_METADATA_CONTENT}")
+    set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES
+        "${RVX_GFX20_VULKAN_RT_ENVIRONMENT_METADATA_FILE}")
+endif()
+
+# GFX21 owns cooked production shader fixtures independently for DX12 and
+# Vulkan. The fixture only proves deterministic artifact production; native
+# dispatch evidence remains the responsibility of the backend-native tests
+# registered by the hybrid RT implementation.
+if(RVX_ENABLE_DX12 OR RVX_ENABLE_VULKAN)
+    if(NOT TARGET RVXCook)
+        message(FATAL_ERROR
+            "GFX21 hybrid ray-tracing validation requires RVXCook to stage cooked shader artifacts")
+    endif()
+
+    set(RVX_GFX21_HYBRID_RT_SHADER_SOURCE
+        "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders")
+    set(RVX_GFX21_HYBRID_RT_SHADER_CATALOG
+        "${RVX_GFX21_HYBRID_RT_SHADER_SOURCE}/Programs.rvxshadercatalog.json")
+    set(RVX_GFX21_HYBRID_RT_SHADER_ROOT
+        "${CMAKE_CURRENT_BINARY_DIR}/HybridRayTracingValidation/CookedShaders")
+    set(RVX_GFX21_HYBRID_RT_COOK_SCRIPT
+        "${CMAKE_CURRENT_SOURCE_DIR}/HybridRayTracingValidation/CookHybridRayTracingShaders.ps1")
+
+    if(RVX_ENABLE_DX12)
+        rvx_add_validation_test(
+            LANE native
+            NAME HybridRayTracingCookedShadersDX12
+            COMMAND pwsh -NoProfile -ExecutionPolicy Bypass
+                -File "${RVX_GFX21_HYBRID_RT_COOK_SCRIPT}"
+                -Cooker $<TARGET_FILE:RVXCook>
+                -Source "${RVX_GFX21_HYBRID_RT_SHADER_SOURCE}"
+                -Catalog "${RVX_GFX21_HYBRID_RT_SHADER_CATALOG}"
+                -Output "${RVX_GFX21_HYBRID_RT_SHADER_ROOT}/DX12"
+                -Backend DX12
+            BUILD_TARGETS RVXCook
+            REQUIRED_FILES
+                "${RVX_GFX21_HYBRID_RT_COOK_SCRIPT}"
+                "${RVX_GFX21_HYBRID_RT_SHADER_CATALOG}"
+                "${RVX_GFX21_HYBRID_RT_SHADER_SOURCE}/RayTracing/RayTracedShadow.hlsl"
+                "${RVX_GFX21_HYBRID_RT_SHADER_SOURCE}/RayTracing/RayTracedReflection.hlsl"
+            TAGS subsystem.render subsystem.ray-tracing trait.gpu trait.cooked
+                backend.dx12 suite.gfx21-hybrid-rt
+            SUITE gfx21-hybrid-ray-tracing
+            TIMEOUT 300
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            FIXTURES_SETUP HybridRayTracingCookedShadersDX12
+        )
+
+        set(RVX_GFX21_DX12_EVIDENCE
+            "${CMAKE_CURRENT_BINARY_DIR}/HybridRayTracingValidation/dx12-hybrid-ray-tracing-evidence.json")
+        rvx_add_gtest(
+            NAME HybridRayTracingDX12NativeValidation
+            LANE native
+            SOURCES
+                HybridRayTracingValidation/DX12/main.cpp
+                Common/RenderRuntimeTestHarness.cpp
+            LIBS
+                RVX::Core
+                RVX::Render
+                RVX::RenderGraph
+                RVX::ResourceRuntime
+                RVX::RHI
+                RVX::RHI_BackendFactory
+                RVX::ShaderRuntime
+                RVX::Scene
+                ${RVX_ALL_BACKENDS}
+            INCLUDES
+                ${CMAKE_SOURCE_DIR}/Tests
+                ${CMAKE_SOURCE_DIR}/Source/Runtime/Geometry/Include
+                ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+                ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
+                ${CMAKE_SOURCE_DIR}/Source/Runtime/ResourceRuntime/Include
+                ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
+                ${CMAKE_SOURCE_DIR}/Source/Runtime/Scene/Include
+            DEFINES RVX_GFX21_NATIVE_BACKEND_DX12=1
+            TAGS subsystem.render subsystem.ray-tracing trait.gpu trait.native
+                backend.dx12 suite.gfx21-hybrid-rt
+            SUITE gfx21-hybrid-ray-tracing
+            TIMEOUT 300
+            RESOURCE_LOCK rvx_gpu
+            FIXTURES_REQUIRED HybridRayTracingCookedShadersDX12
+        )
+
+        string(CONCAT RVX_GFX21_DX12_ENVIRONMENT_METADATA_CONTENT
+            "if(DEFINED HybridRayTracingDX12NativeValidation_TESTS)\n"
+            "    set_tests_properties(\${HybridRayTracingDX12NativeValidation_TESTS} PROPERTIES\n"
+            "        ENVIRONMENT \"RVX_GFX21_HYBRID_RT_SHADER_ROOT_DX12=${RVX_GFX21_HYBRID_RT_SHADER_ROOT}/DX12;RVX_GFX21_HYBRID_RT_SOURCE_SHADER_ROOT=${RVX_GFX21_HYBRID_RT_SHADER_SOURCE};RVX_GFX21_HYBRID_RT_EVIDENCE_DX12=${RVX_GFX21_DX12_EVIDENCE}\"\n"
+            "    )\n"
+            "endif()\n")
+        set(RVX_GFX21_DX12_ENVIRONMENT_METADATA_FILE
+            "${CMAKE_CURRENT_BINARY_DIR}/HybridRayTracingDX12NativeValidation_gfx21_environment.cmake")
+        file(GENERATE
+            OUTPUT "${RVX_GFX21_DX12_ENVIRONMENT_METADATA_FILE}"
+            CONTENT "${RVX_GFX21_DX12_ENVIRONMENT_METADATA_CONTENT}")
+        set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES
+            "${RVX_GFX21_DX12_ENVIRONMENT_METADATA_FILE}")
+    endif()
+
+    if(RVX_ENABLE_VULKAN)
+        rvx_add_validation_test(
+            LANE native
+            NAME HybridRayTracingCookedShadersVulkan
+            COMMAND pwsh -NoProfile -ExecutionPolicy Bypass
+                -File "${RVX_GFX21_HYBRID_RT_COOK_SCRIPT}"
+                -Cooker $<TARGET_FILE:RVXCook>
+                -Source "${RVX_GFX21_HYBRID_RT_SHADER_SOURCE}"
+                -Catalog "${RVX_GFX21_HYBRID_RT_SHADER_CATALOG}"
+                -Output "${RVX_GFX21_HYBRID_RT_SHADER_ROOT}/Vulkan"
+                -Backend Vulkan
+            BUILD_TARGETS RVXCook
+            REQUIRED_FILES
+                "${RVX_GFX21_HYBRID_RT_COOK_SCRIPT}"
+                "${RVX_GFX21_HYBRID_RT_SHADER_CATALOG}"
+                "${RVX_GFX21_HYBRID_RT_SHADER_SOURCE}/RayTracing/RayTracedShadow.hlsl"
+                "${RVX_GFX21_HYBRID_RT_SHADER_SOURCE}/RayTracing/RayTracedReflection.hlsl"
+            TAGS subsystem.render subsystem.ray-tracing trait.gpu trait.cooked
+                backend.vulkan suite.gfx21-hybrid-rt
+            SUITE gfx21-hybrid-ray-tracing
+            TIMEOUT 300
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            FIXTURES_SETUP HybridRayTracingCookedShadersVulkan
+        )
+
+        set(RVX_GFX21_VULKAN_EVIDENCE
+            "${CMAKE_CURRENT_BINARY_DIR}/HybridRayTracingValidation/vulkan-hybrid-ray-tracing-evidence.json")
+        rvx_add_gtest(
+            NAME HybridRayTracingVulkanNativeValidation
+            LANE native
+            SOURCES
+                HybridRayTracingValidation/Vulkan/main.cpp
+                Common/RenderRuntimeTestHarness.cpp
+            LIBS
+                RVX::Core
+                RVX::Render
+                RVX::RenderGraph
+                RVX::ResourceRuntime
+                RVX::RHI
+                RVX::RHI_BackendFactory
+                RVX::ShaderRuntime
+                RVX::Scene
+                ${RVX_ALL_BACKENDS}
+            INCLUDES
+                ${CMAKE_SOURCE_DIR}/Tests
+                ${CMAKE_SOURCE_DIR}/Source/Runtime/Geometry/Include
+                ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+                ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Private
+                ${CMAKE_SOURCE_DIR}/Source/Runtime/ResourceRuntime/Include
+                ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
+                ${CMAKE_SOURCE_DIR}/Source/Runtime/Scene/Include
+            DEFINES RVX_GFX21_NATIVE_BACKEND_VULKAN=1
+            TAGS subsystem.render subsystem.ray-tracing trait.gpu trait.native
+                backend.vulkan suite.gfx21-hybrid-rt
+            SUITE gfx21-hybrid-ray-tracing
+            TIMEOUT 300
+            RESOURCE_LOCK rvx_gpu
+            FIXTURES_REQUIRED HybridRayTracingCookedShadersVulkan
+        )
+
+        string(CONCAT RVX_GFX21_VULKAN_ENVIRONMENT_METADATA_CONTENT
+            "if(DEFINED HybridRayTracingVulkanNativeValidation_TESTS)\n"
+            "    set_tests_properties(\${HybridRayTracingVulkanNativeValidation_TESTS} PROPERTIES\n"
+            "        ENVIRONMENT \"RVX_GFX21_HYBRID_RT_SHADER_ROOT_VULKAN=${RVX_GFX21_HYBRID_RT_SHADER_ROOT}/Vulkan;RVX_GFX21_HYBRID_RT_SOURCE_SHADER_ROOT=${RVX_GFX21_HYBRID_RT_SHADER_SOURCE};RVX_GFX21_HYBRID_RT_EVIDENCE_VULKAN=${RVX_GFX21_VULKAN_EVIDENCE}\"\n"
+            "    )\n"
+            "endif()\n")
+        set(RVX_GFX21_VULKAN_ENVIRONMENT_METADATA_FILE
+            "${CMAKE_CURRENT_BINARY_DIR}/HybridRayTracingVulkanNativeValidation_gfx21_environment.cmake")
+        file(GENERATE
+            OUTPUT "${RVX_GFX21_VULKAN_ENVIRONMENT_METADATA_FILE}"
+            CONTENT "${RVX_GFX21_VULKAN_ENVIRONMENT_METADATA_CONTENT}")
+        set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES
+            "${RVX_GFX21_VULKAN_ENVIRONMENT_METADATA_FILE}")
+    endif()
+endif()
+
+# This target remains deliberately RHI-free. It checks only public frozen-plan
+# and scene-lifecycle contracts, while the suite's later native cases own all
+# backend dispatch and evidence claims.
+rvx_add_gtest(
+    NAME HybridRayTracingContractValidation
+    LANE unit
+    SOURCES HybridRayTracingValidation/Contract/main.cpp
+    LIBS RVX::RenderRayTracing
+    TAGS subsystem.render subsystem.ray-tracing trait.contract
+        suite.gfx21-hybrid-rt
+    SUITE gfx21-hybrid-ray-tracing
+    TIMEOUT 30
+)
+
+# GFX22 validates the one shared weighted-blended translucency composition
+# against two production backends. The suite is intentionally all-or-nothing:
+# two cooked shader fixtures, two public Sample Host producers, two strict
+# report validators, and two RHI-free contract cases make exactly eight CTest
+# cases. Keep the source catalog and cooked roots backend-specific so neither
+# backend can accidentally consume the other's artifact payload.
+if(RVX_ENABLE_DX12 AND RVX_ENABLE_VULKAN)
+    if(NOT TARGET RVXCook)
+        message(FATAL_ERROR
+            "GFX22 weighted-blended OIT validation requires RVXCook to stage cooked shader artifacts")
+    endif()
+    if(NOT TARGET RenderVerseSamples OR NOT TARGET SampleReportContentValidation)
+        message(FATAL_ERROR
+            "GFX22 weighted-blended OIT validation requires the public Sample Host and report validator")
+    endif()
+
+    set(RVX_GFX22_WEIGHTED_OIT_SHADER_SOURCE
+        "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders")
+    set(RVX_GFX22_WEIGHTED_OIT_SHADER_CATALOG
+        "${RVX_GFX22_WEIGHTED_OIT_SHADER_SOURCE}/Programs.rvxshadercatalog.json")
+    set(RVX_GFX22_WEIGHTED_OIT_SHADER_ROOT
+        "${CMAKE_CURRENT_BINARY_DIR}/WeightedBlendedOITValidation/CookedShaders")
+    set(RVX_GFX22_WEIGHTED_OIT_COOK_SCRIPT
+        "${CMAKE_CURRENT_SOURCE_DIR}/WeightedBlendedOITValidation/CookWeightedBlendedOITShaders.ps1")
+
+    foreach(RVX_GFX22_BACKEND IN ITEMS DX12 Vulkan)
+        string(TOLOWER "${RVX_GFX22_BACKEND}" RVX_GFX22_BACKEND_LOWER)
+        set(RVX_GFX22_FIXTURE "WeightedBlendedOITCookedShaders${RVX_GFX22_BACKEND}")
+        set(RVX_GFX22_EVIDENCE
+            "${CMAKE_CURRENT_BINARY_DIR}/WeightedBlendedOITValidation/${RVX_GFX22_BACKEND_LOWER}-weighted-oit-evidence.json")
+
+        rvx_add_validation_test(
+            LANE native
+            NAME ${RVX_GFX22_FIXTURE}
+            COMMAND pwsh -NoProfile -ExecutionPolicy Bypass
+                -File "${RVX_GFX22_WEIGHTED_OIT_COOK_SCRIPT}"
+                -Cooker $<TARGET_FILE:RVXCook>
+                -Source "${RVX_GFX22_WEIGHTED_OIT_SHADER_SOURCE}"
+                -Catalog "${RVX_GFX22_WEIGHTED_OIT_SHADER_CATALOG}"
+                -Output "${RVX_GFX22_WEIGHTED_OIT_SHADER_ROOT}/${RVX_GFX22_BACKEND}"
+                -Backend ${RVX_GFX22_BACKEND}
+            BUILD_TARGETS RVXCook
+            REQUIRED_FILES
+                "${RVX_GFX22_WEIGHTED_OIT_COOK_SCRIPT}"
+                "${RVX_GFX22_WEIGHTED_OIT_SHADER_CATALOG}"
+                "${RVX_GFX22_WEIGHTED_OIT_SHADER_SOURCE}/DefaultLit.hlsl"
+                "${RVX_GFX22_WEIGHTED_OIT_SHADER_SOURCE}/Particle/ParticleBillboard.hlsl"
+                "${RVX_GFX22_WEIGHTED_OIT_SHADER_SOURCE}/Translucency/WeightedBlendedOITComposite.hlsl"
+            TAGS subsystem.render subsystem.translucency trait.gpu trait.cooked
+                backend.${RVX_GFX22_BACKEND_LOWER} suite.gfx22-oit
+            SUITE gfx22-oit
+            TIMEOUT 300
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            FIXTURES_SETUP ${RVX_GFX22_FIXTURE}
+        )
+    endforeach()
+
+    foreach(RVX_GFX22_BACKEND IN ITEMS DX12 Vulkan)
+        string(TOLOWER "${RVX_GFX22_BACKEND}" RVX_GFX22_BACKEND_LOWER)
+        set(RVX_GFX22_FIXTURE "WeightedBlendedOITCookedShaders${RVX_GFX22_BACKEND}")
+        set(RVX_GFX22_PRODUCER
+            "RenderVerseSamples${RVX_GFX22_BACKEND}GFX22WeightedBlendedOITProducer")
+        set(RVX_GFX22_VALIDATOR
+            "RenderVerseSamples${RVX_GFX22_BACKEND}GFX22WeightedBlendedOITReportValidation")
+        set(RVX_GFX22_EVIDENCE
+            "${CMAKE_CURRENT_BINARY_DIR}/WeightedBlendedOITValidation/${RVX_GFX22_BACKEND_LOWER}-weighted-oit-evidence.json")
+        set(RVX_GFX22_CAPTURE
+            "${CMAKE_CURRENT_BINARY_DIR}/WeightedBlendedOITValidation/${RVX_GFX22_BACKEND_LOWER}-weighted-oit.ppm")
+
+        # The producer is the only writer of the fixed evidence path. It runs
+        # the public host, which owns backend selection, cooked-only loading,
+        # frame presentation and the immutable execution receipt.
+        rvx_add_validation_test(
+            LANE native
+            NAME ${RVX_GFX22_PRODUCER}
+            COMMAND $<TARGET_FILE:RenderVerseSamples>
+                --sample transparent-materials
+                --backend ${RVX_GFX22_BACKEND}
+                --pipeline deferred
+                --render-path direct
+                --quality high
+                --smoke
+                --wait-ready
+                --ready-timeout-ms 120000
+                --ready-max-frames 2400
+                --view hero
+                --fixed-delta 0.0166666666666667
+                --capture-tick 120
+                --translucency-qualification-probe
+                --runtime-only-composition
+                --cooked-shader-root "${RVX_GFX22_WEIGHTED_OIT_SHADER_ROOT}/${RVX_GFX22_BACKEND}"
+                --width 640
+                --height 360
+                --screenshot "${RVX_GFX22_CAPTURE}"
+                --report "${RVX_GFX22_EVIDENCE}"
+                --diagnostics
+                --validation
+            BUILD_TARGETS RenderVerseSamples
+            TAGS product.samples subsystem.render subsystem.translucency trait.gpu trait.native
+                backend.${RVX_GFX22_BACKEND_LOWER} suite.gfx22-oit
+            SUITE gfx22-oit
+            TIMEOUT 300
+            WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+            RESOURCE_LOCK rvx_gpu
+            FIXTURES_REQUIRED ${RVX_GFX22_FIXTURE}
+            FIXTURES_SETUP ${RVX_GFX22_PRODUCER}
+        )
+
+        # Report validation is deliberately independent from the producer and
+        # cannot fabricate execution evidence. It checks the presented frame
+        # receipt emitted by the public host after the backend has drained.
+        rvx_add_validation_test(
+            LANE native
+            NAME ${RVX_GFX22_VALIDATOR}
+            COMMAND $<TARGET_FILE:SampleReportContentValidation>
+                --report "${RVX_GFX22_EVIDENCE}"
+                --sample-name transparent-materials
+                --category visual
+                --backend ${RVX_GFX22_BACKEND_LOWER}
+                --require-requested-backend ${RVX_GFX22_BACKEND_LOWER}
+                --require-actual-backend ${RVX_GFX22_BACKEND_LOWER}
+                --quality high
+                --min-frame-count 120
+                --require-ready
+                --require-readiness-wait
+                --render-path direct
+                --require-requested-render-path direct
+                --require-actual-render-path direct
+                --require-direct-execution
+                --require-render-pipeline deferred
+                --require-translucency-execution
+                --require-weighted-blended-oit-execution
+                --require-weighted-blended-oit-frame-contract
+                --require-cooked-shader-provider
+                --require-cooked-shader-root "${RVX_GFX22_WEIGHTED_OIT_SHADER_ROOT}/${RVX_GFX22_BACKEND}"
+                --require-particle-vfx-execution
+                --require-render-feature-executed 11
+                --require-native-validation-available
+                --require-native-validation-enabled
+                --require-native-validation-read-complete
+                --require-native-validation-error-count 0
+                --require-native-validation-corruption-count 0
+                --forbid-fallback-reasons
+                --forbid-render-feature-fallbacks
+            BUILD_TARGETS SampleReportContentValidation
+            TAGS product.samples subsystem.render subsystem.translucency trait.gpu trait.native
+                backend.${RVX_GFX22_BACKEND_LOWER} suite.gfx22-oit
+            SUITE gfx22-oit
+            TIMEOUT 30
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            FIXTURES_REQUIRED ${RVX_GFX22_PRODUCER}
+        )
+    endforeach()
+
+    set(RVX_GFX22_PUBLIC_VALIDATION_REGISTERED TRUE)
+endif()
+
+# These two tests deliberately link only RenderFoundation. They lock the
+# immutable routing/reference contract used by the native tests without
+# allowing this required suite to obtain RHI access through a convenience
+# target.
+rvx_add_gtest(
+    NAME WeightedBlendedOITContractValidation
+    LANE unit
+    SOURCES WeightedBlendedOITValidation/Contract/main.cpp
+    LIBS RVX::RenderFoundation
+    TAGS subsystem.render subsystem.translucency trait.contract
+        suite.gfx22-oit
+    SUITE gfx22-oit
+    TIMEOUT 30
+)
+
+# Retain the focused-build convenience target used by the active GFX22
+# checkpoint. It has no test-registration side effect; the suite aggregate is
+# still RVXValidationSuiteGfx22Oit, derived from the exact suite label above.
+if(RVX_GFX22_PUBLIC_VALIDATION_REGISTERED)
+    add_custom_target(WeightedBlendedOITValidation
+        DEPENDS
+            RVXCook
+            RenderVerseSamples
+            SampleReportContentValidation
+            WeightedBlendedOITContractValidation
+    )
+    rvx_register_module_target(
+        TARGET WeightedBlendedOITValidation
+        MODULE Tests
+        INFRASTRUCTURE
+    )
 endif()
 
 # GFX16 is a narrow native proof of the renderer-owned CPU billboard path.

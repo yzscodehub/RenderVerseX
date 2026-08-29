@@ -159,6 +159,37 @@ struct TestAssetResolver
     return snapshot;
 }
 
+void AddReflectionProbe(FrozenSceneSnapshot& snapshot,
+                        uint32 entityIndex = 51,
+                        uint64 cubemapAssetId = 701)
+{
+    const ECS::EntityHandle entity = ECS::EntityHandle::Create(entityIndex, 1);
+    FrozenSceneReflectionProbe probe;
+    probe.id = MakeId(snapshot.sceneRuntimeId,
+                      entity,
+                      FrozenSceneObjectType::Probe);
+    probe.sourceEntity = entity;
+    probe.source.shape = SceneECS::ReflectionProbeShape::Box;
+    probe.source.assetSource = SceneECS::ReflectionProbeAssetSource::Baked;
+    probe.source.bakedCubemapAssetId = {.value = cubemapAssetId};
+    probe.source.influenceExtent = {2.0f, 3.0f, 4.0f};
+    probe.source.blendDistance = 0.5f;
+    probe.source.boxProjectionSize = {4.0f, 5.0f, 6.0f};
+    probe.source.boxProjectionOffset = {0.5f, 1.0f, 1.5f};
+    probe.source.priority = 6;
+    probe.source.nearClip = 0.25f;
+    probe.source.farClip = 125.0f;
+    probe.source.useBoxProjection = true;
+    probe.source.useHDR = true;
+    probe.source.hasValidData = true;
+    probe.visibility.layerMask = 0x40u;
+    probe.visibility.visible = true;
+    probe.worldTransform = MakeTranslation(11.0f, 12.0f, 13.0f);
+    probe.transformSourceRevision = 9;
+    probe.visibilityWriteVersion = 10;
+    snapshot.reflectionProbes.push_back(std::move(probe));
+}
+
 void AddTypedFeatureSources(FrozenSceneSnapshot& snapshot)
 {
     const ECS::EntityHandle particleEntity = ECS::EntityHandle::Create(41, 0);
@@ -249,7 +280,7 @@ void AddTypedFeatureSources(FrozenSceneSnapshot& snapshot)
     resolver.handles = {
         {101, {1, 1}}, {102, {2, 1}},
         {201, {3, 1}}, {202, {4, 1}},
-        {203, {5, 1}}, {204, {6, 1}},
+        {203, {5, 1}}, {204, {6, 1}}, {701, {7, 1}},
     };
     return resolver;
 }
@@ -441,6 +472,62 @@ TEST(EcsFrameExtractionValidation,
     EXPECT_FALSE(incrementalAfterFrameOnly.sceneUpdate->fullReset);
     EXPECT_EQ(incrementalAfterFrameOnly.sceneUpdate->baseSceneRevision, 2U);
     EXPECT_EQ(incrementalAfterFrameOnly.sceneUpdate->targetSceneRevision, 3U);
+}
+
+TEST(EcsFrameExtractionValidation,
+     ReflectionProbeResolvesTextureAndProducesRemovalAndRetirementProof)
+{
+    TestAssetResolver resolver = MakeResolver();
+    const ECS::SceneRuntimeId runtime{212};
+    FrozenSceneSnapshot firstSnapshot = MakeSnapshot(runtime, 1);
+    AddReflectionProbe(firstSnapshot);
+    EcsFrozenSceneBridgeOutput first;
+    ASSERT_TRUE(EcsFrozenSceneBridge{}.Build(firstSnapshot, first));
+    ASSERT_EQ(first.reflectionProbes.size(), 1u);
+    const uint64 probeId = first.reflectionProbes.front().id;
+
+    EcsFrameExtractor extractor;
+    EcsFrameExtractionResult firstResult =
+        extractor.Extract(MakeInput(resolver, 1), first);
+    ASSERT_TRUE(firstResult.IsComplete());
+    ASSERT_NE(firstResult.sceneUpdate, nullptr);
+    ASSERT_EQ(firstResult.sceneUpdate->probes.size(), 1u);
+    const RenderProbeMutation& upsert = firstResult.sceneUpdate->probes.front();
+    EXPECT_EQ(upsert.operation, RenderSceneMutationOperation::Upsert);
+    EXPECT_EQ(upsert.probeId, probeId);
+    EXPECT_EQ(upsert.state.source,
+              first.reflectionProbes.front().source);
+    EXPECT_EQ(upsert.state.texture, (RenderResourceHandle{7, 1}));
+    EXPECT_EQ(upsert.state.cullingMask, 0x40u);
+    EXPECT_EQ(upsert.state.priority, 6);
+    EXPECT_TRUE(upsert.state.hasValidData);
+    EXPECT_TRUE(extractor.ResolveLastPublication(
+        EcsFramePublicationDisposition::Accepted).resolvedCandidate);
+
+    const EcsRenderSceneRetirementMember probeMember{
+        .entity = ECS::EntityHandle::Create(51, 1),
+        .type = EcsRenderSceneRetainedMemberType::Probe};
+    ASSERT_TRUE(extractor.SubmitRetirementBarrier(
+        MakeBarrier(runtime, 7001, {probeMember})).IsAccepted());
+
+    EcsFrozenSceneBridgeOutput removed;
+    ASSERT_TRUE(EcsFrozenSceneBridge{}.Build(
+        MakeSnapshot(runtime, 2), removed));
+    EcsFrameExtractionResult removedResult =
+        extractor.Extract(MakeInput(resolver, 2), removed);
+    ASSERT_TRUE(removedResult.IsComplete());
+    ASSERT_NE(removedResult.sceneUpdate, nullptr);
+    ASSERT_EQ(removedResult.sceneUpdate->probes.size(), 1u);
+    EXPECT_EQ(removedResult.sceneUpdate->probes.front().operation,
+              RenderSceneMutationOperation::Remove);
+    EXPECT_EQ(removedResult.sceneUpdate->probes.front().probeId, probeId);
+
+    const EcsRenderSceneRetirementResolution resolution =
+        extractor.ResolveLastPublication(EcsFramePublicationDisposition::Accepted);
+    ASSERT_EQ(resolution.bindingCount, 1u);
+    EXPECT_EQ(resolution.bindings[0].correlation.value, 7001u);
+    EXPECT_EQ(resolution.bindings[0].targetSceneRevision, 2u);
+    EXPECT_EQ(resolution.bindings[0].minimumFrameSequence, 2u);
 }
 
 TEST(EcsFrameExtractionValidation,

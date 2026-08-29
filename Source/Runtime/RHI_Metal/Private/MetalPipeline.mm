@@ -85,7 +85,10 @@ namespace RVX
             pipelineDesc.colorAttachments[i].pixelFormat = ToMTLPixelFormat(desc.renderTargetFormats[i]);
 
             // Apply blend state
-            const auto& blendRT = desc.blendState.renderTargets[i];
+            const uint32 blendStateIndex =
+                desc.blendState.independentBlendEnable ? i : 0u;
+            const auto& blendRT =
+                desc.blendState.renderTargets[blendStateIndex];
             if (blendRT.blendEnable)
             {
                 pipelineDesc.colorAttachments[i].blendingEnabled = YES;

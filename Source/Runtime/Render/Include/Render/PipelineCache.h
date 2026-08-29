@@ -108,7 +108,8 @@ namespace RVX
         Vec3 lightDirection;
         float directionalLightIntensity;
         Vec3 directionalLightColor;
-        float directionalLightColorPadding = 0.0f;
+        /** 1 for reverse-Z device depth, 0 for forward-Z. */
+        float reverseZ = 0.0f;
         Vec4 iblDiffuseAmbient;
         Vec4 iblSpecularAmbient;
         Vec4 iblTextureParams;
@@ -161,6 +162,33 @@ namespace RVX
     {
         bool shadowMaskSamplingEnabled = false;
         RayTracedShadowFallbackReason fallbackReason = RayTracedShadowFallbackReason::Disabled;
+    };
+
+    /** Exact graph-owned point/spot depth-array view for one lighting plan. */
+    struct LocalShadowFrameResources
+    {
+        bool enabled = false;
+        RHITextureView* depthAtlasView = nullptr;
+
+        uint64 localShadowPlanIdentity = 0;
+        uint64 atlasPlanIdentity = 0;
+        uint64 atlasGeneration = 0;
+        uint32 pageCount = 0;
+        uint32 pageResolution = 0;
+        uint32 pageCapacity = 0;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return enabled
+                ? depthAtlasView != nullptr && localShadowPlanIdentity != 0 &&
+                    atlasPlanIdentity != 0 && atlasGeneration != 0 &&
+                    pageCount != 0 && pageResolution != 0 &&
+                    pageCapacity != 0 && pageCount <= pageCapacity
+                : depthAtlasView == nullptr && localShadowPlanIdentity == 0 &&
+                    atlasPlanIdentity == 0 && atlasGeneration == 0 &&
+                    pageCount == 0 && pageResolution == 0 &&
+                    pageCapacity == 0;
+        }
     };
 
     enum class EnvironmentIBLFallbackReason : uint8
@@ -232,6 +260,8 @@ namespace RVX
         RHIBufferRef clusterConstantsBuffer;
         RHIBufferRef clusterBuffer;
         RHIBufferRef clusterLightIndexBuffer;
+        /** Value decoded while copying the exact LightConstants bytes. */
+        uint32 localShadowPageCount = 0;
 
         [[nodiscard]] bool IsComplete() const noexcept
         {
@@ -272,6 +302,7 @@ namespace RVX
         FrozenFrameLightResources frozenLightResources{};
         DirectionalShadowFrameResources directionalShadow{};
         RayTracedShadowFrameResources rayTracedShadow{};
+        LocalShadowFrameResources localShadow{};
         EnvironmentIBLFrameResources environmentIBL{};
         /** Exact committed state used by deferred HDR lighting, set 0 / b21. */
         RHIBufferRef exposureStateBuffer;
@@ -306,6 +337,8 @@ namespace RVX
         RHIBufferRef spotLightsBuffer;
         RHITextureViewRef rayTracedShadowMaskView;
         bool rayTracedShadowEnabled = false;
+        RHITextureViewRef localShadowAtlasView;
+        bool localShadowEnabled = false;
         RHIBufferRef clusterConstantsBuffer;
         RHIBufferRef clusterBuffer;
         RHIBufferRef clusterLightIndexBuffer;
@@ -327,6 +360,7 @@ namespace RVX
                    directionalShadowView && directionalShadowSampler &&
                    lightConstantsBuffer && pointLightsBuffer &&
                    spotLightsBuffer && rayTracedShadowMaskView &&
+                   localShadowAtlasView &&
                    clusterConstantsBuffer && clusterBuffer &&
                    clusterLightIndexBuffer && environmentIBLIrradianceView &&
                    environmentIBLPrefilteredView && environmentIBLBRDFLUTView &&
@@ -543,6 +577,8 @@ namespace RVX
         uint64 opaquePipelineHash = 0;
         uint64 maskedPipelineHash = 0;
         uint64 transparentPipelineHash = 0;
+        uint64 weightedBlendedOITAccumulationPipelineHash = 0;
+        uint64 weightedBlendedOITCompositePipelineHash = 0;
         uint64 skyboxPipelineHash = 0;
         uint64 toneMappingPipelineHash = 0;
         uint64 screenSpaceOutlinePipelineHash = 0;
@@ -553,6 +589,10 @@ namespace RVX
         uint64 gtaoBilateralHorizontalPipelineHash = 0;
         uint64 gtaoBilateralVerticalPipelineHash = 0;
         uint64 gtaoTemporalPipelineHash = 0;
+        uint64 ssrHiZBasePipelineHash = 0;
+        uint64 ssrHiZReducePipelineHash = 0;
+        uint64 ssrTracePipelineHash = 0;
+        uint64 ssrResolvePipelineHash = 0;
         uint64 colorGradingPipelineHash = 0;
         uint64 chromaticAberrationPipelineHash = 0;
         uint64 filmGrainPipelineHash = 0;
@@ -632,6 +672,20 @@ namespace RVX
         static constexpr RHIFormat GetDefaultDepthStencilFormat() { return RHIFormat::D32_FLOAT; }
         static constexpr float GetDepthClearValue(bool reverseZ) { return reverseZ ? 0.0f : 1.0f; }
         static RHIDepthStencilState BuildDepthStencilState(bool reverseZ, bool depthWrite);
+        static constexpr RHIFormat GetWeightedBlendedOITAccumulationFormat()
+        {
+            return RHIFormat::RGBA16_FLOAT;
+        }
+        static constexpr RHIFormat GetWeightedBlendedOITRevealageFormat()
+        {
+            return RHIFormat::R16_FLOAT;
+        }
+        static constexpr RHIFormat GetWeightedBlendedOITReactiveMaskFormat()
+        {
+            return RHIFormat::R8_UNORM;
+        }
+        /** Exact independent blend ABI shared by mesh and particle contributors. */
+        static RHIBlendState BuildWeightedBlendedOITAccumulationBlendState();
         float GetDepthClearValue() const { return GetDepthClearValue(m_config.reverseZ); }
 
         // =====================================================================
@@ -681,6 +735,21 @@ namespace RVX
             MaterialCullMode cullMode,
             bool reverseWinding,
             MaterialBlendMode blendMode);
+        /**
+         * Graph-owned weighted-blended accumulation for eligible mesh draws.
+         * The attachment ABI is fixed to RGBA16_FLOAT accumulation followed by
+         * R16_FLOAT revealage; routing is resolved before this API is called.
+         */
+        RHIPipeline* GetWeightedBlendedOITAccumulationPipeline(
+            DefaultLitDirectVertexInputMode inputMode,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
+        /**
+         * Fullscreen resolve into a distinct RGBA16_FLOAT scene-HDR target and
+         * an R8_UNORM reactive mask combined with the existing mask by max.
+         */
+        RHIPipeline* GetWeightedBlendedOITCompositePipeline(
+            RHIFormat sceneHDRFormat = RHIFormat::RGBA16_FLOAT);
         RHIPipeline* GetGPUDrivenPipelineForVariant(
             MaterialPipelineVariant variant,
             RHIFormat renderTargetFormat,
@@ -713,8 +782,10 @@ namespace RVX
          * @brief Forward HDR pipelines that also export canonical surface data.
          *
          * The attachment ABI is scene HDR, RGBA8 oct-normal/roughness/metallic,
-         * and R32_UINT material-table identity. These variants are selected
-         * only when a typed outline consumer is requested for the view.
+         * R32_UINT material-table identity, RGBA16F pre-exposed base indirect
+         * specular, and RGBA16F dimensionless specular response. These
+         * variants are selected only when a typed screen-space consumer needs
+         * exact surface data for the view.
          */
         RHIPipeline* GetForwardSurfaceDataPipelineForVariant(
             MaterialPipelineVariant variant,
@@ -812,8 +883,12 @@ namespace RVX
         static constexpr uint32 DefaultLitExposureStateBinding = 14u;
         static constexpr uint32 DefaultLitAmbientOcclusionBinding = 15u;
         static constexpr uint32 DefaultLitOpaqueSceneSnapshotBinding = 16u;
+        static constexpr uint32 DefaultLitLocalShadowAtlasBinding = 17u;
         static constexpr uint32 DeferredLightingExposureStateBinding = 21u;
         static constexpr uint32 DeferredLightingAmbientOcclusionBinding = 22u;
+        static constexpr uint32 DeferredLightingLocalShadowAtlasBinding = 23u;
+        static constexpr uint32 DeferredLightingBaseIndirectSpecularBinding = 24u;
+        static constexpr uint32 DeferredLightingSpecularResponseBinding = 25u;
         static constexpr uint32 SkyboxExposureStateBinding = 3u;
 
         RHIPipeline* GetExposureHistogramClearPipeline();
@@ -885,6 +960,29 @@ namespace RVX
             const ShadowDepthBiasState& biasState,
             MaterialCullMode cullMode = MaterialCullMode::Back,
             bool reverseWinding = false);
+
+        /**
+         * @brief Forward-Z depth-only pipelines dedicated to local-light atlases.
+         *
+         * These pipelines deliberately ignore the renderer's main-view
+         * reverse-Z setting. LocalShadowAtlas owns a fixed forward-Z [0,1]
+         * producer/receiver contract, so sharing the directional-shadow PSO
+         * would make the caster compare disagree with its clear and sampler.
+         */
+        RHIPipeline* GetLocalShadowDepthPipeline(
+            const ShadowDepthBiasState& biasState,
+            DefaultLitDirectVertexInputMode inputMode,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
+        RHIPipeline* GetMaskedLocalShadowDepthPipeline(
+            const ShadowDepthBiasState& biasState,
+            DefaultLitDirectVertexInputMode inputMode,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
+        RHIPipeline* GetInstancedLocalShadowDepthPipeline(
+            const ShadowDepthBiasState& biasState,
+            MaterialCullMode cullMode = MaterialCullMode::Back,
+            bool reverseWinding = false);
         static ShadowDepthBiasState SanitizeShadowDepthBiasState(const ShadowDepthBiasState& biasState);
 
         /**
@@ -944,6 +1042,24 @@ namespace RVX
             return m_gtaoBilateralVerticalPipeline.Get();
         }
         RHIPipeline* GetGTAOTemporalPipeline() const { return m_gtaoTemporalPipeline.Get(); }
+
+        /** @brief Fail-closed Hi-Z screen-space reflection pipeline family. */
+        RHIPipeline* GetSSRHiZBasePipeline() const
+        {
+            return m_ssrHiZBasePipeline.Get();
+        }
+        RHIPipeline* GetSSRHiZReducePipeline() const
+        {
+            return m_ssrHiZReducePipeline.Get();
+        }
+        RHIPipeline* GetSSRTracePipeline() const
+        {
+            return m_ssrTracePipeline.Get();
+        }
+        RHIPipeline* GetSSRResolvePipeline() const
+        {
+            return m_ssrResolvePipeline.Get();
+        }
 
         /**
          * @brief Get the camera/depth motion-vector pipeline
@@ -1074,6 +1190,12 @@ namespace RVX
          */
         RHIPipelineLayout* GetPostProcessLayout() const { return m_postProcessPipelineLayout.Get(); }
 
+        /** Descriptor ABI: t0 source HDR, t1 accumulation, t2 revealage. */
+        RHIPipelineLayout* GetWeightedBlendedOITCompositeLayout() const
+        {
+            return m_weightedBlendedOITCompositePipelineLayout.Get();
+        }
+
         /** Layout for fullscreen consumers that read the candidate exposure state. */
         RHIPipelineLayout* GetExposurePostProcessLayout() const
         {
@@ -1085,6 +1207,9 @@ namespace RVX
 
         /** @brief Layout for the five-pass GTAO reconstruction and filtering family. */
         RHIPipelineLayout* GetGTAOLayout() const { return m_gtaoPipelineLayout.Get(); }
+
+        /** @brief Layout for Hi-Z construction, trace, and reflection resolve. */
+        RHIPipelineLayout* GetSSRLayout() const { return m_ssrPipelineLayout.Get(); }
 
         /** @brief Layout for the typed screen-space outline HDR pass. */
         RHIPipelineLayout* GetScreenSpaceOutlineLayout() const
@@ -1132,6 +1257,11 @@ namespace RVX
          */
         RHIDescriptorSetLayout* GetPostProcessSetLayout() const { return m_postProcessSetLayout.Get(); }
 
+        RHIDescriptorSetLayout* GetWeightedBlendedOITCompositeSetLayout() const
+        {
+            return m_weightedBlendedOITCompositeSetLayout.Get();
+        }
+
         RHIDescriptorSetLayout* GetExposurePostProcessSetLayout() const
         {
             return m_exposurePostProcessSetLayout.Get();
@@ -1142,6 +1272,15 @@ namespace RVX
 
         /** @brief Descriptor layout for current surface, AO filtering, and temporal inputs. */
         RHIDescriptorSetLayout* GetGTAOSetLayout() const { return m_gtaoSetLayout.Get(); }
+
+        /** @brief Closed descriptor ABI shared by every screen-space reflection stage. */
+        RHIDescriptorSetLayout* GetSSRSetLayout() const { return m_ssrSetLayout.Get(); }
+
+        /** @brief Strong neutral cubemap used when no admitted reflection source exists. */
+        RHITextureRef GetFallbackEnvironmentIBLCubemapTexture() const
+        {
+            return m_fallbackEnvironmentIBLCubemapTexture;
+        }
 
         /** @brief Descriptor layout for screen HDR/depth/normal/material outline inputs. */
         RHIDescriptorSetLayout* GetScreenSpaceOutlineSetLayout() const
@@ -1525,6 +1664,12 @@ namespace RVX
         bool IsReverseZ() const { return m_config.reverseZ; }
 
     private:
+        enum class ShadowDepthPipelineUsage : uint8
+        {
+            Directional = 0,
+            LocalForwardZ,
+        };
+
         /**
          * @brief Strong owners for every source referenced by one frame descriptor set.
          *
@@ -1541,6 +1686,7 @@ namespace RVX
             RHIBufferRef pointLightsBuffer;
             RHIBufferRef spotLightsBuffer;
             RHITextureViewRef rayTracedShadowMaskView;
+            RHITextureViewRef localShadowAtlasView;
             RHIBufferRef clusterConstantsBuffer;
             RHIBufferRef clusterBuffer;
             RHIBufferRef clusterLightIndexBuffer;
@@ -1558,7 +1704,7 @@ namespace RVX
                 return viewConstantBuffer && directionalShadowView &&
                        directionalShadowSampler && lightConstantsBuffer &&
                        pointLightsBuffer && spotLightsBuffer &&
-                       rayTracedShadowMaskView && clusterConstantsBuffer &&
+                       rayTracedShadowMaskView && localShadowAtlasView &&
                        clusterBuffer && clusterLightIndexBuffer &&
                        environmentIBLIrradianceView &&
                        environmentIBLPrefilteredView &&
@@ -1587,8 +1733,10 @@ namespace RVX
         bool CreateGPUSceneRasterPipelineLayout();
         bool CreateDeferredLightingPipelineLayout();
         bool CreatePostProcessPipelineLayout();
+        bool CreateWeightedBlendedOITCompositePipelineLayout();
         bool CreateTAAPipelineLayout();
         bool CreateGTAOPipelineLayout();
+        bool CreateSSRPipelineLayout();
         bool CreateScreenSpaceOutlinePipelineLayout();
         bool CreateScreenSpaceOutlineVerifierPipelineLayout();
         bool CreateUIPipelineLayout();
@@ -1608,6 +1756,12 @@ namespace RVX
                                                       bool updatePrimaryStats,
                                                       RHIShader* pixelShaderOverride = nullptr,
                                                       bool reactiveMaskMrt = false);
+        RHIPipelineRef GetOrCreateWeightedBlendedOITAccumulationPipeline(
+            DefaultLitDirectVertexInputMode inputMode,
+            MaterialCullMode cullMode,
+            bool reverseWinding);
+        RHIPipelineRef GetOrCreateWeightedBlendedOITCompositePipeline(
+            RHIFormat sceneHDRFormat);
         RHIPipelineRef GetOrCreateGPUDrivenDefaultLitPipeline(MaterialPipelineVariant variant,
                                                               const char* debugName,
                                                               const RHIDepthStencilState& depthStencilState,
@@ -1670,16 +1824,19 @@ namespace RVX
             const ShadowDepthBiasState& biasState,
             DefaultLitDirectVertexInputMode inputMode,
             MaterialCullMode cullMode,
-            bool reverseWinding);
+            bool reverseWinding,
+            ShadowDepthPipelineUsage usage);
         RHIPipelineRef GetOrCreateMaskedShadowDepthPipeline(
             const ShadowDepthBiasState& biasState,
             DefaultLitDirectVertexInputMode inputMode,
             MaterialCullMode cullMode,
-            bool reverseWinding);
+            bool reverseWinding,
+            ShadowDepthPipelineUsage usage);
         RHIPipelineRef GetOrCreateInstancedShadowDepthPipeline(
             const ShadowDepthBiasState& biasState,
             MaterialCullMode cullMode,
-            bool reverseWinding);
+            bool reverseWinding,
+            ShadowDepthPipelineUsage usage);
         RHIPipelineRef GetOrCreateSkyboxPipeline(RHIFormat outputFormat,
                                                  bool depthTest = true,
                                                  bool updatePrimaryStats = true);
@@ -1699,6 +1856,17 @@ namespace RVX
             const char* debugName,
             const char* stageName,
             RHIFormat outputFormat,
+            uint64& outPipelineHash);
+        RHIPipelineRef GetOrCreateSSRHiZBasePipeline();
+        RHIPipelineRef GetOrCreateSSRHiZReducePipeline();
+        RHIPipelineRef GetOrCreateSSRTracePipeline();
+        RHIPipelineRef GetOrCreateSSRResolvePipeline();
+        RHIPipelineRef GetOrCreateSSRPipeline(
+            RHIShader* pixelShader,
+            const char* debugName,
+            const char* stageName,
+            const RHIFormat* outputFormats,
+            uint32 outputCount,
             uint64& outPipelineHash);
         RHIPipelineRef GetOrCreateCameraVelocityPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateObjectVelocityPipeline(
@@ -1775,18 +1943,23 @@ namespace RVX
             const ShadowDepthBiasState& biasState,
             DefaultLitDirectVertexInputMode inputMode,
             MaterialCullMode cullMode,
-            bool reverseWinding) const;
+            bool reverseWinding,
+            ShadowDepthPipelineUsage usage) const;
         RHIGraphicsPipelineDesc BuildMaskedShadowDepthPipelineDesc(
             const ShadowDepthBiasState& biasState,
             DefaultLitDirectVertexInputMode inputMode,
             MaterialCullMode cullMode,
-            bool reverseWinding) const;
+            bool reverseWinding,
+            ShadowDepthPipelineUsage usage) const;
         RHIGraphicsPipelineDesc BuildInstancedShadowDepthPipelineDesc(
             const ShadowDepthBiasState& biasState,
             MaterialCullMode cullMode,
-            bool reverseWinding) const;
+            bool reverseWinding,
+            ShadowDepthPipelineUsage usage) const;
         RHIGraphicsPipelineDesc BuildSkyboxPipelineDesc(RHIFormat outputFormat, bool depthTest = true) const;
         RHIGraphicsPipelineDesc BuildToneMappingPipelineDesc(RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildWeightedBlendedOITCompositePipelineDesc(
+            RHIFormat sceneHDRFormat) const;
         RHIGraphicsPipelineDesc BuildScreenSpaceOutlinePipelineDesc(
             RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildScreenSpaceOutlineVerifierPipelineDesc(
@@ -1797,6 +1970,11 @@ namespace RVX
             RHIShader* pixelShader,
             const char* debugName,
             RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildSSRPipelineDesc(
+            RHIShader* pixelShader,
+            const char* debugName,
+            const RHIFormat* outputFormats,
+            uint32 outputCount) const;
         RHIGraphicsPipelineDesc BuildCameraVelocityPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildObjectVelocityPipelineDesc(
             RHIFormat outputFormat,
@@ -1898,6 +2076,9 @@ namespace RVX
         RHIShaderRef m_gpuSceneInstancedMaterialVertexShader;
         RHIShaderRef m_pixelShader;
         RHIShaderRef m_translucencyPixelShader;
+        RHIShaderRef m_weightedBlendedOITAccumulationPixelShader;
+        RHIShaderRef m_weightedBlendedOITCompositeVertexShader;
+        RHIShaderRef m_weightedBlendedOITCompositePixelShader;
         RHIShaderRef m_forwardSurfaceDataPixelShader;
         RHIShaderRef m_gBufferPixelShader;
         RHIShaderRef m_deferredLightingComputeShader;
@@ -1924,6 +2105,10 @@ namespace RVX
         RHIShaderRef m_gtaoBilateralHorizontalPixelShader;
         RHIShaderRef m_gtaoBilateralVerticalPixelShader;
         RHIShaderRef m_gtaoTemporalPixelShader;
+        RHIShaderRef m_ssrHiZBasePixelShader;
+        RHIShaderRef m_ssrHiZReducePixelShader;
+        RHIShaderRef m_ssrTracePixelShader;
+        RHIShaderRef m_ssrResolvePixelShader;
         RHIShaderRef m_cameraVelocityPixelShader;
         RHIShaderRef m_objectVelocityVertexShader;
         RHIShaderRef m_rigidObjectVelocityVertexShader;
@@ -1967,6 +2152,12 @@ namespace RVX
         std::unique_ptr<ShaderProgramMetadata> m_psCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_translucencyPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata>
+            m_weightedBlendedOITAccumulationPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata>
+            m_weightedBlendedOITCompositeVsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata>
+            m_weightedBlendedOITCompositePsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata>
             m_forwardSurfaceDataPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_gBufferPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_deferredLightingCsCompileResult;
@@ -1994,6 +2185,10 @@ namespace RVX
         std::unique_ptr<ShaderProgramMetadata> m_gtaoBilateralHorizontalPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_gtaoBilateralVerticalPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_gtaoTemporalPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_ssrHiZBasePsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_ssrHiZReducePsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_ssrTracePsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata> m_ssrResolvePsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_cameraVelocityPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_objectVelocityVsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_rigidObjectVelocityVsCompileResult;
@@ -2040,12 +2235,16 @@ namespace RVX
         RHIPipelineLayoutRef m_exposureComputePipelineLayout;
         RHIDescriptorSetLayoutRef m_postProcessSetLayout;
         RHIPipelineLayoutRef m_postProcessPipelineLayout;
+        RHIDescriptorSetLayoutRef m_weightedBlendedOITCompositeSetLayout;
+        RHIPipelineLayoutRef m_weightedBlendedOITCompositePipelineLayout;
         RHIDescriptorSetLayoutRef m_exposurePostProcessSetLayout;
         RHIPipelineLayoutRef m_exposurePostProcessPipelineLayout;
         RHIDescriptorSetLayoutRef m_taaSetLayout;
         RHIPipelineLayoutRef m_taaPipelineLayout;
         RHIDescriptorSetLayoutRef m_gtaoSetLayout;
         RHIPipelineLayoutRef m_gtaoPipelineLayout;
+        RHIDescriptorSetLayoutRef m_ssrSetLayout;
+        RHIPipelineLayoutRef m_ssrPipelineLayout;
         RHIDescriptorSetLayoutRef m_screenSpaceOutlineSetLayout;
         RHIPipelineLayoutRef m_screenSpaceOutlinePipelineLayout;
         RHIDescriptorSetLayoutRef m_screenSpaceOutlineVerifierSetLayout;
@@ -2065,6 +2264,7 @@ namespace RVX
         RHIPipelineRef m_opaquePipeline;
         RHIPipelineRef m_maskedPipeline;
         RHIPipelineRef m_transparentPipeline;
+        RHIPipelineRef m_weightedBlendedOITCompositePipeline;
         RHIPipelineRef m_depthOnlyPipeline;
         RHIPipelineRef m_rigidDepthOnlyPipeline;
         RHIPipelineRef m_maskedDepthOnlyPipeline;
@@ -2092,6 +2292,10 @@ namespace RVX
         RHIPipelineRef m_gtaoBilateralHorizontalPipeline;
         RHIPipelineRef m_gtaoBilateralVerticalPipeline;
         RHIPipelineRef m_gtaoTemporalPipeline;
+        RHIPipelineRef m_ssrHiZBasePipeline;
+        RHIPipelineRef m_ssrHiZReducePipeline;
+        RHIPipelineRef m_ssrTracePipeline;
+        RHIPipelineRef m_ssrResolvePipeline;
         RHIPipelineRef m_screenSpaceOutlinePipeline;
         RHIPipelineRef m_screenSpaceOutlineVerifierPipeline;
         RHIPipelineRef m_cameraVelocityPipeline;

@@ -5,6 +5,7 @@
  * @brief Backend-neutral graphics-pipeline preflight contract.
  */
 
+#include "RHI/RHICapabilities.h"
 #include "RHI/RHIPipeline.h"
 
 #include <string>
@@ -40,6 +41,10 @@ namespace RVX
         ResourceBindingVisibilityMismatch = 23,
         PushConstantRangeMismatch = 24,
         InvalidVertexInputLayout = 25,
+        UnsupportedColorAttachmentCount = 26,
+        UnsupportedIndependentColorAttachmentBlend = 27,
+        UnsupportedColorAttachmentFormat = 28,
+        UnsupportedColorAttachmentBlend = 29,
     };
 
     struct RHIPipelineValidationResult
@@ -126,4 +131,15 @@ namespace RVX
      */
     RHIPipelineValidationResult ValidateRHIGraphicsPipelineDesc(
         const RHIGraphicsPipelineDesc& desc);
+
+    /**
+     * @brief Reject graphics state that the selected device cannot execute.
+     *
+     * Descriptor validity and device capability validity are deliberately
+     * separate so tooling can validate portable descriptors without inventing
+     * a device, while every backend can fail closed before native creation.
+     */
+    RHIPipelineValidationResult ValidateRHIGraphicsPipelineCapabilities(
+        const RHIGraphicsPipelineDesc& desc,
+        const RHICapabilities& capabilities);
 } // namespace RVX

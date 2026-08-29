@@ -97,10 +97,37 @@ namespace
     {
         switch (stage)
         {
-            case RHIShaderStage::Vertex:  return "Vertex";
-            case RHIShaderStage::Pixel:   return "Pixel";
-            case RHIShaderStage::Compute: return "Compute";
-            default:                      return "None";
+            case RHIShaderStage::Vertex:        return "Vertex";
+            case RHIShaderStage::Pixel:         return "Pixel";
+            case RHIShaderStage::Compute:       return "Compute";
+            case RHIShaderStage::Geometry:      return "Geometry";
+            case RHIShaderStage::Hull:          return "Hull";
+            case RHIShaderStage::Domain:        return "Domain";
+            case RHIShaderStage::Mesh:          return "Mesh";
+            case RHIShaderStage::Amplification: return "Amplification";
+            case RHIShaderStage::RayGeneration: return "RayGeneration";
+            case RHIShaderStage::Miss:          return "Miss";
+            case RHIShaderStage::ClosestHit:    return "ClosestHit";
+            case RHIShaderStage::AnyHit:        return "AnyHit";
+            case RHIShaderStage::Intersection:  return "Intersection";
+            case RHIShaderStage::Callable:      return "Callable";
+            default:                            return "None";
+        }
+    }
+
+    bool IsRayTracingShaderStage(RHIShaderStage stage)
+    {
+        switch (stage)
+        {
+            case RHIShaderStage::RayGeneration:
+            case RHIShaderStage::Miss:
+            case RHIShaderStage::ClosestHit:
+            case RHIShaderStage::AnyHit:
+            case RHIShaderStage::Intersection:
+            case RHIShaderStage::Callable:
+                return true;
+            default:
+                return false;
         }
     }
 
@@ -122,7 +149,11 @@ namespace
             case RHIShaderStage::ClosestHit:
             case RHIShaderStage::AnyHit:
             case RHIShaderStage::Intersection:
-                return legacy ? nullptr : "lib_6_3";
+            case RHIShaderStage::Callable:
+                return backend == RHIBackendType::DX12 ||
+                       backend == RHIBackendType::Vulkan
+                    ? "lib_6_3"
+                    : nullptr;
             default:
                 return nullptr;
         }
@@ -5310,15 +5341,23 @@ ImportResult ShaderImporter::Import(const fs::path& sourcePath,
     }
     const char* resolvedTargetProfile = ResolveShaderTargetProfile(
         importOptions.targetBackend, importOptions.stage);
+    if (resolvedTargetProfile == nullptr)
+    {
+        result.error =
+            "ShaderImporter does not support the requested backend/stage profile";
+        return result;
+    }
     if (importOptions.targetProfile.empty())
     {
-        if (resolvedTargetProfile == nullptr)
-        {
-            result.error =
-                "ShaderImporter does not support the requested backend/stage profile";
-            return result;
-        }
         importOptions.targetProfile = resolvedTargetProfile;
+    }
+    else if (IsRayTracingShaderStage(importOptions.stage) &&
+             importOptions.targetProfile != "lib_6_3" &&
+             importOptions.targetProfile != "lib_6_4")
+    {
+        result.error =
+            "Ray-tracing shaders require a lib_6_3 or lib_6_4 target profile";
+        return result;
     }
     if (importOptions.logicalAssetId.empty())
     {

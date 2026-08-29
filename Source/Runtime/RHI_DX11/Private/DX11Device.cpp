@@ -2,6 +2,7 @@
 #include "DX11Resources.h"
 #include "DX11Pipeline.h"
 #include "DX11CommandContext.h"
+#include "DX11Conversions.h"
 #include "DX11SwapChain.h"
 #include "DX11Upload.h"
 #include "RHI/RHIPipelineValidation.h"
@@ -348,6 +349,35 @@ namespace RVX
         m_capabilities.maxTextureLayers = 2048;
         m_capabilities.maxColorAttachments = 8;
         m_capabilities.maxPushConstantSize = 256;
+
+        // Feature level 11.0 is required during adapter selection, so native
+        // independent MRT blend state is part of this backend baseline.
+        m_capabilities.supportsIndependentColorAttachmentBlend = true;
+        for (uint32 value = 1;
+             value < static_cast<uint32>(RHIFormat::Count);
+             ++value)
+        {
+            const RHIFormat format = static_cast<RHIFormat>(value);
+            const DXGI_FORMAT nativeFormat = ToDXGIFormat(format);
+            if (nativeFormat == DXGI_FORMAT_UNKNOWN)
+            {
+                continue;
+            }
+
+            UINT support = 0;
+            if (FAILED(m_device->CheckFormatSupport(nativeFormat, &support)))
+            {
+                continue;
+            }
+
+            RHIFormatCapabilities& published =
+                m_capabilities.formatCapabilities[value];
+            published.colorAttachment =
+                (support & D3D11_FORMAT_SUPPORT_RENDER_TARGET) != 0;
+            published.colorAttachmentBlend =
+                published.colorAttachment &&
+                (support & D3D11_FORMAT_SUPPORT_BLENDABLE) != 0;
+        }
 
         // Compute shader limits (DX11.0)
         m_capabilities.maxComputeWorkGroupSize[0] = 1024;
@@ -718,7 +748,23 @@ namespace RVX
                 FormatRHIPipelineValidationResult(validation));
             return nullptr;
         }
-        return MakeRef<DX11GraphicsPipeline>(this, desc);
+        const RHIPipelineValidationResult capabilityValidation =
+            ValidateRHIGraphicsPipelineCapabilities(desc, m_capabilities);
+        if (!capabilityValidation)
+        {
+            RVX_RHI_ERROR(
+                "DX11 graphics pipeline capability preflight failed: {}",
+                FormatRHIPipelineValidationResult(capabilityValidation));
+            return nullptr;
+        }
+        auto pipeline = MakeRef<DX11GraphicsPipeline>(this, desc);
+        if (!pipeline->IsValid())
+        {
+            RVX_RHI_ERROR(
+                "DX11 graphics pipeline creation failed because one or more native state objects are unavailable");
+            return nullptr;
+        }
+        return pipeline;
     }
 
     RHIPipelineRef DX11Device::CreateComputePipeline(const RHIComputePipelineDesc& desc)

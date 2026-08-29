@@ -8,6 +8,7 @@
 #include <chrono>
 #include <exception>
 #include <future>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -373,12 +374,34 @@ namespace RVX
             {
                 const RHIAccessSnapshot before = ResolveTextureLeaseAccess(
                     resource, barrier.subresourceRange);
-                barrier = MakeRHITextureBarrier(
-                    texture,
-                    before,
-                    barrier.accessAfter,
-                    barrier.subresourceRange,
-                    barrier.discardIntent);
+                const bool plannedOwnership = HasDependencyKind(
+                    planned.barrier.dependencyKind,
+                    RHIDependencyKind::Ownership);
+                const bool discardImplicitAcquire =
+                    planned.barrier.discardIntent ==
+                        RHIDiscardIntent::Discard &&
+                    !plannedOwnership &&
+                    before.domain != planned.barrier.accessBefore.domain;
+                if (!discardImplicitAcquire)
+                {
+                    barrier = MakeRHITextureBarrier(
+                        texture,
+                        before,
+                        barrier.accessAfter,
+                        barrier.subresourceRange,
+                        barrier.discardIntent);
+                    if (barrier.accessBefore.domain !=
+                            planned.barrier.accessBefore.domain ||
+                        barrier.accessAfter.domain !=
+                            planned.barrier.accessAfter.domain ||
+                        HasDependencyKind(
+                            barrier.dependencyKind,
+                            RHIDependencyKind::Ownership) != plannedOwnership)
+                    {
+                        throw std::runtime_error(
+                            "RenderGraph transient texture lease changed the compiled queue-ownership topology");
+                    }
+                }
             }
             return barrier.dependencyKind != RHIDependencyKind::None;
         }
@@ -399,13 +422,35 @@ namespace RVX
             {
                 const RHIAccessSnapshot before = ResolveBufferLeaseAccess(
                     resource, barrier.offset, barrier.size);
-                barrier = MakeRHIBufferBarrier(
-                    buffer,
-                    before,
-                    barrier.accessAfter,
-                    barrier.offset,
-                    barrier.size,
-                    barrier.discardIntent);
+                const bool plannedOwnership = HasDependencyKind(
+                    planned.barrier.dependencyKind,
+                    RHIDependencyKind::Ownership);
+                const bool discardImplicitAcquire =
+                    planned.barrier.discardIntent ==
+                        RHIDiscardIntent::Discard &&
+                    !plannedOwnership &&
+                    before.domain != planned.barrier.accessBefore.domain;
+                if (!discardImplicitAcquire)
+                {
+                    barrier = MakeRHIBufferBarrier(
+                        buffer,
+                        before,
+                        barrier.accessAfter,
+                        barrier.offset,
+                        barrier.size,
+                        barrier.discardIntent);
+                    if (barrier.accessBefore.domain !=
+                            planned.barrier.accessBefore.domain ||
+                        barrier.accessAfter.domain !=
+                            planned.barrier.accessAfter.domain ||
+                        HasDependencyKind(
+                            barrier.dependencyKind,
+                            RHIDependencyKind::Ownership) != plannedOwnership)
+                    {
+                        throw std::runtime_error(
+                            "RenderGraph transient buffer lease changed the compiled queue-ownership topology");
+                    }
+                }
             }
             return barrier.dependencyKind != RHIDependencyKind::None;
         }

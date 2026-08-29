@@ -1,0 +1,2718 @@
+{
+  "$schema": "./feature_list.schema.json",
+  "schema": "RVX.AgentFeatureList",
+  "schemaVersion": 1,
+  "updatedAt": "2026-08-28T11:21:40.8374885Z",
+  "activeFeature": null,
+  "features": [
+    {
+      "id": "harness-001",
+      "name": "Principle-aligned repository harness",
+      "behavior": "A cold coding agent can discover one authoritative work state, distinguish preflight from verified readiness, stay inside a declared scope, and cannot record passing without command-bound evidence.",
+      "owner": "primary-coordinator",
+      "scope": {
+        "include": [
+          "AGENTS.md",
+          "CLAUDE.md",
+          "Docs/README.md",
+          "Docs/agent-harness.md",
+          "Docs/engine-capabilities.json",
+          "feature_list.json",
+          "feature_list.schema.json",
+          "progress.md",
+          "session-handoff.md",
+          "init.ps1",
+          "init.sh",
+          ".agent-harness/**"
+        ],
+        "exclude": [
+          "Source/**",
+          "Tests/**",
+          "Scripts/**",
+          "CMakeLists.txt",
+          "CMakePresets.json",
+          "build/**"
+        ]
+      },
+      "dependencies": [],
+      "acceptanceCriteria": [
+        "Root harness artifacts are discoverable in the reference-package shape while project detail is progressively disclosed.",
+        "Exactly one machine-readable work ledger exists and it is explicitly separate from product capability claims.",
+        "Every work item binds behavior, scope, acceptance criteria, verification commands, state, and evidence.",
+        "Preflight reports missing, failed, stale, or verified evidence without calling stale evidence current.",
+        "Bootstrap verification delegates to the existing fail-closed Architecture required suite and never hides Fresh, dependency installation, or network access.",
+        "The current-contract map, progress log, and handoff lifecycle agree with the canonical work state."
+      ],
+      "verification": [
+        {
+          "id": "preflight",
+          "layer": "static",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Inspect",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        },
+        {
+          "id": "bash-syntax",
+          "layer": "static",
+          "command": "bash -n ./init.sh",
+          "required": false,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        },
+        {
+          "id": "architecture-bootstrap",
+          "layer": "architecture",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/Architecture.{runId}.json",
+          "expectedReceipt": {
+            "kind": "Architecture",
+            "baseRef": "master",
+            "preset": "win_x64_debug",
+            "testPreset": "win_x64_debug_architecture",
+            "buildDir": "build/win_x64_debug",
+            "configuration": "Debug",
+            "buildTarget": "RVXValidationArchitecture",
+            "requiredLabel": "lane.architecture",
+            "allowConfigure": false
+          }
+        },
+        {
+          "id": "diff-hygiene",
+          "layer": "static",
+          "command": "git diff --check",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        }
+      ],
+      "coordination": [
+        {
+          "owner": "gfx12-exposure-contracts",
+          "scope": [
+            "Source/Runtime/RenderContracts/Include/RenderContracts/RenderFrameTypes.h",
+            "Source/Runtime/RenderContracts/Include/RenderContracts/RenderFrameValidation.h",
+            "Source/Runtime/RenderContracts/Include/RenderContracts/RenderExposure.h",
+            "Tests/RenderContractsValidation/main.cpp"
+          ],
+          "verificationResponsibility": "Implement the single RenderContracts exposure settings/state authority, physical calibration and deterministic CPU reference validation; preserve unrelated changes and do not edit control-plane files."
+        },
+        {
+          "owner": "gfx12-exposure-gpu",
+          "scope": [
+            "Source/Runtime/Render/Include/Render/PostProcess/Exposure.h",
+            "Source/Runtime/Render/Private/PostProcess/Exposure.cpp",
+            "Source/Runtime/Render/Shaders/PostProcess/Exposure.hlsl",
+            "Source/Runtime/Render/Shaders/Include/Exposure.hlsli",
+            "Source/Runtime/Render/Include/Render/PostProcess/ToneMapping.h",
+            "Source/Runtime/Render/Private/PostProcess/ToneMapping.cpp",
+            "Source/Runtime/Render/Shaders/PostProcess/ToneMapping.hlsl",
+            "Source/Runtime/Render/Include/Render/PostProcess/Bloom.h",
+            "Source/Runtime/Render/Private/PostProcess/Bloom.cpp",
+            "Source/Runtime/Render/Shaders/PostProcess/Bloom.hlsl",
+            "Source/Runtime/Render/Include/Render/PostProcess/TAA.h",
+            "Source/Runtime/Render/Private/PostProcess/TAA.cpp",
+            "Source/Runtime/Render/Shaders/PostProcess/TAA.hlsl",
+            "Source/Runtime/Render/Include/Render/PipelineCache.h",
+            "Source/Runtime/Render/Private/PipelineCache.cpp",
+            "Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json",
+            "Tests/PipelineCacheValidation/main.cpp"
+          ],
+          "verificationResponsibility": "Implement GPU histogram/adaptation, immutable exposure state, post-process consumers and cooked pipeline readiness without CPU runtime readback; preserve unrelated changes and do not edit control-plane files."
+        },
+        {
+          "owner": "gfx12-exposure-samples",
+          "scope": [
+            "Samples/Common/**",
+            "Samples/RenderVerseSamples/**",
+            "Tests/CMake/QualificationTests.cmake",
+            "Tests/SampleCLIValidation/main.cpp",
+            "Tests/SampleReportContentValidation/main.cpp",
+            "CMakePresets.json"
+          ],
+          "verificationResponsibility": "Implement deterministic Manual EV100 and Histogram Auto sample scenarios, report projection and the DX12/Vulkan qualification matrix; preserve unrelated changes and do not edit control-plane files."
+        },
+        {
+          "owner": "gfx12-hdr-producers",
+          "scope": [
+            "Source/Runtime/Render/Include/Render/Renderer/ViewData.h",
+            "Source/Runtime/Render/Private/Renderer/ViewData.cpp",
+            "Source/Runtime/Render/Private/Features/LegacyForwardFeatureAdapter.*",
+            "Source/Runtime/Render/Private/Features/DeferredRecipeFeatureAdapter.*",
+            "Source/Runtime/Render/Include/Render/Passes/OpaquePass.h",
+            "Source/Runtime/Render/Private/Passes/OpaquePass.cpp",
+            "Source/Runtime/Render/Include/Render/Passes/TransparentPass.h",
+            "Source/Runtime/Render/Private/Passes/TransparentPass.cpp",
+            "Source/Runtime/Render/Include/Render/Passes/DeferredLightingPass.h",
+            "Source/Runtime/Render/Private/Passes/DeferredLightingPass.cpp",
+            "Source/Runtime/Render/Include/Render/Passes/SkyboxPass.h",
+            "Source/Runtime/Render/Private/Passes/SkyboxPass.cpp",
+            "Source/Runtime/Render/Shaders/DefaultLit.hlsl",
+            "Source/Runtime/Render/Shaders/DeferredLighting.hlsl",
+            "Source/Runtime/Render/Shaders/Skybox.hlsl"
+          ],
+          "verificationResponsibility": "Bind the committed exposure state to every current HDR producer, declare exact RenderGraph reads, and propagate typed state through Forward+/Deferred outputs without touching PipelineCache or central composition."
+        },
+        {
+          "owner": "primary-coordinator",
+          "scope": [
+            "Source/Runtime/Render/Include/Render/Features/RenderGraphBlackboard.h",
+            "Source/Runtime/Render/Include/Render/Features/RenderFeatureTypes.h",
+            "Source/Runtime/Render/Include/Render/PostProcess/PostProcessStack.h",
+            "Source/Runtime/Render/Private/PostProcess/PostProcessStack.cpp",
+            "Source/Runtime/Render/Private/Features/PostProcessPipelineFeatureAdapter.*",
+            "Source/Runtime/Render/Include/Render/Renderer/SceneRenderer.h",
+            "Source/Runtime/Render/Private/Renderer/SceneRenderer.cpp",
+            "Source/Runtime/Render/CMakeLists.txt",
+            "Scripts/rhi_ownership_inventory_m1.json",
+            "Tests/RenderViewHistoryValidation/main.cpp",
+            "Tests/RenderPassValidation/main.cpp",
+            "Tests/RenderFeatureValidation/main.cpp",
+            "Tests/RenderHonestyValidation/main.cpp"
+          ],
+          "verificationResponsibility": "Own typed graph integration, HDR producer pre-exposure, atomic Present lifecycle, execution receipts, final review, integration and all checkpoint evidence."
+        }
+      ],
+      "status": "passing",
+      "evidence": [
+        {
+          "verificationId": "preflight",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Inspect",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T11:05:55.9537227Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "Inspect validated the JSON Schema, work-state invariants, preset binding, immutable v2 receipt identities, and active/handoff closure."
+        },
+        {
+          "verificationId": "bash-syntax",
+          "command": "bash -n ./init.sh",
+          "result": "skipped",
+          "exitCode": null,
+          "recordedAt": "2026-08-22T10:03:43.9225633Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": null,
+          "sourceDigest": null,
+          "notes": "Optional on this Windows host: the only bash executable is the WSL launcher and sandboxed WSL instance creation was denied. The wrapper contains only strict mode, path resolution, a pwsh availability check, and exec delegation."
+        },
+        {
+          "verificationId": "architecture-bootstrap",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T10:49:33.7595323Z",
+          "artifact": ".agent-harness/receipts/Architecture.654348beec1c4c308552aac852453cd2.json",
+          "artifactSha256": "454c7d4890dd436cb8f8c655df3f8e8a3397d1c548b7c1e951e87a86cf93526a",
+          "runId": "654348beec1c4c308552aac852453cd2",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "RVXValidationArchitecture passed 61/61; the immutable v2 receipt binds the exact request, report and JUnit hashes, commit, product digest, and matching runner digest."
+        },
+        {
+          "verificationId": "diff-hygiene",
+          "command": "git diff --check",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T11:06:54.3374841Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "Working-tree diff hygiene passed; Git emitted only expected line-ending conversion notices for protected user files."
+        }
+      ],
+      "blocker": null,
+      "nextStep": "For the next non-trivial or cross-session change, add one bounded feature with executable verification before editing.",
+      "updatedAt": "2026-08-27T10:57:26.9248351Z"
+    },
+    {
+      "id": "gfx-16",
+      "name": "Deterministic CPU particle billboard rendering",
+    "behavior": "A fixed-seed CPU particle simulation publishes one immutable generation-qualified owned-value packet that survives Scene extraction without mutation, and the renderer performs stable per-view sorting, rotating-buffer upload, cached billboard batching, and native instanced draws with exact execution evidence.",
+      "owner": "primary-coordinator",
+      "scope": {
+        "include": [
+          "Source/Runtime/Particle/**",
+          "Source/Runtime/RenderContracts/**",
+          "Source/Runtime/Render/**",
+          "Tests/EcsFeatureSnapshotValidation/**",
+          "Tests/EcsParticleFeatureBridgeValidation/**",
+          "Tests/EcsWorldRuntimeCompositionValidation/**",
+          "Tests/ParticleEcsRuntimeGatewayValidation/**",
+          "Tests/ParticleNativeValidation/**",
+          "Tests/ParticleRenderValidation/**",
+          "Tests/RenderContractsValidation/**",
+          "Tests/RenderFeatureValidation/**",
+          "Tests/RenderGraphValidation/**",
+          "Tests/RenderHonestyValidation/**",
+          "Tests/RenderPassValidation/**",
+          "Tests/PipelineCacheValidation/**",
+          "Tests/ShaderProgramCatalogValidation/**",
+          "Tests/DX12Validation/**",
+          "Tests/VulkanValidation/**",
+        "Tests/CMake/**",
+        "Scripts/rhi_ownership_inventory_m1.json",
+        "feature_list.json",
+          "progress.md",
+          "session-handoff.md",
+          "Source/Runtime/Scene/**",
+          "Source/Runtime/RenderExtraction/**"
+        ],
+        "exclude": [
+          "AGENTS.md",
+          "CLAUDE.md",
+          "Docs/README.md",
+          "Docs/engine-capabilities.json",
+          ".agent-harness/**",
+          "Source/Runtime/Render/Include/Render/Renderer/ViewData.h",
+          "Source/Runtime/Render/Shaders/GPUDriven/GPUSceneRaster.hlsli",
+          "assets/**",
+          "build/**"
+        ]
+      },
+      "dependencies": [
+        "harness-001"
+      ],
+      "acceptanceCriteria": [
+        "Two fresh particle instances advanced with the same fixed seed and ticks publish byte-identical immutable CPU packets, while later simulation cannot mutate an already published packet.",
+      "The owned-value packet crosses SceneFeatureSnapshotStore, FrozenSceneSnapshot, extraction, RenderSceneDatabase, and the Render feature boundary without mutation, content-hash rewriting, or producer-generation rewriting.",
+        "GFX16 supports CPU Billboard particles with AlphaBlend, Premultiplied, and Additive policies; unsupported modes, malformed payloads, and GPU-owned payloads fail closed.",
+        "Per-view depth sorting is stable, never mutates the source packet, and batches equal render policy into one Draw(6, instanceCount) call.",
+        "Render-owned frame resources rotate across safe frame slots; after warm-up pipeline, descriptor, and buffer counts stop growing and no WaitIdle call is used.",
+        "The particle billboard VS/PS is consumed through the cooked shader catalog, while raw particle shader copying and unimplemented simulation shader claims are removed.",
+        "DX12 and Vulkan native validation record executed graph pass, draw count, instance count, upload bytes, and zero fallback for the particle path.",
+        "Focused tests, full Windows Build Truth, DX12/Vulkan native coverage, Shipping closure, Architecture, and diff hygiene pass with current evidence."
+      ],
+      "verification": [
+        {
+          "id": "focused-build",
+          "layer": "focused",
+          "command": "cmake --build --preset win_x64_debug --target ParticleEcsRuntimeGatewayValidation ParticleRenderValidation EcsFeatureSnapshotValidation EcsParticleFeatureBridgeValidation EcsWorldRuntimeCompositionValidation RenderContractsValidation RenderFeatureValidation RenderGraphValidation RenderHonestyValidation RenderPassValidation PipelineCacheValidation ShaderProgramCatalogValidation DX12Validation VulkanValidation RVXValidationSuiteGfx16Particles",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        },
+        {
+          "id": "focused-tests",
+          "layer": "focused",
+          "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R \"^(ParticleEcsRuntimeGatewayValidation|ParticleRenderValidation|EcsFeatureSnapshotValidation|EcsParticleFeatureBridgeValidation|EcsWorldRuntimeCompositionValidation|RenderContractsValidation|RenderFeatureValidation|RenderGraphValidation|RenderHonestyValidation|RenderPassValidation|PipelineCacheValidation|ShaderProgramCatalogValidation)(\\\\.|$)\"",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        },
+        {
+          "id": "particle-native-tests",
+          "layer": "native",
+          "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -L suite.gfx16-particles",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        },
+        {
+          "id": "full-debug-build-truth",
+          "layer": "integration",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/BuildTruth.{runId}.json",
+          "expectedReceipt": {
+            "kind": "BuildTruth",
+            "baseRef": "master",
+            "configurePreset": "win_x64_debug",
+            "buildPreset": "win_x64_debug",
+            "laneTestPresets": [
+              "win_x64_debug_architecture",
+              "win_x64_debug_unit",
+              "win_x64_debug_integration",
+              "win_x64_debug_native"
+            ],
+            "buildDir": "build/win_x64_debug",
+            "configuration": "Debug",
+            "requiredNativeBackend": "DX12",
+            "softwareAdapterAllowed": false,
+            "fresh": false
+          }
+        },
+        {
+          "id": "shipping-required-suite",
+          "layer": "shipping",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationSuiteRequiredShipping -RequiredLabel suite.required-shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/RequiredSuite.{runId}.json",
+          "expectedReceipt": {
+            "kind": "RequiredSuite",
+            "baseRef": "master",
+            "configurePreset": "win_x64_shipping_release",
+            "buildPreset": "win_x64_shipping_release",
+            "testPreset": "win_x64_shipping_release_shipping",
+            "buildDir": "build/win_x64_shipping_release",
+            "configuration": "Release",
+            "buildTargets": ["RVXValidationSuiteRequiredShipping"],
+            "requiredLabel": "suite.required-shipping",
+            "expectedTestCount": 5,
+            "fresh": false,
+            "skipConfigure": true,
+            "requiredSemanticArtifacts": [
+              "build/win_x64_shipping_release/Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json",
+              "build/win_x64_shipping_release/Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json"
+            ]
+          }
+        },
+        {
+          "id": "architecture-required-suite",
+          "layer": "architecture",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/Architecture.{runId}.json",
+          "expectedReceipt": {
+            "kind": "Architecture",
+            "baseRef": "master",
+            "preset": "win_x64_debug",
+            "testPreset": "win_x64_debug_architecture",
+            "buildDir": "build/win_x64_debug",
+            "configuration": "Debug",
+            "buildTarget": "RVXValidationArchitecture",
+            "requiredLabel": "lane.architecture",
+            "allowConfigure": false
+          }
+        },
+        {
+          "id": "diff-hygiene",
+          "layer": "static",
+          "command": "git diff --check",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        }
+      ],
+      "coordination": [
+        {
+          "owner": "gfx16-particle-runtime-audit",
+          "scope": [
+            "Source/Runtime/Particle/**",
+            "Source/Runtime/RenderContracts/**",
+            "Source/Runtime/Scene/**",
+            "Source/Runtime/RenderExtraction/**"
+          ],
+          "verificationResponsibility": "Read-only trace of deterministic simulation, immutable packet ownership, typed channel generation semantics, and production Scene-to-Render data flow."
+        },
+        {
+          "owner": "gfx16-render-particles-audit",
+          "scope": [
+            "Source/Runtime/Render/Include/Render/Particles/**",
+            "Source/Runtime/Render/Private/Particles/**",
+            "Source/Runtime/Render/Include/Render/Passes/ParticleFeaturePass.h",
+            "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
+            "Source/Runtime/Render/Shaders/Particle/**",
+            "Tests/ParticleRenderValidation/**"
+          ],
+          "verificationResponsibility": "Read-only design of the narrow draw-plan, rotating resources, cooked shader, RenderGraph edges, native evidence, and focused rendering tests."
+        },
+        {
+          "owner": "gfx16-validation-sample-audit",
+          "scope": [
+            "Tests/ParticleRenderValidation/**",
+            "Tests/ParticleNativeValidation/**",
+            "Tests/DX12Validation/**",
+            "Tests/VulkanValidation/**",
+            "Tests/CMake/**",
+            "Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+          ],
+          "verificationResponsibility": "Read-only design of focused/native particle evidence and cooked shader coverage; particle Samples and cooked Effect assets are explicitly deferred to GFX17."
+        },
+        {
+          "owner": "gfx16-runtime-packet",
+          "scope": [
+            "Source/Runtime/Particle/**",
+            "Source/Runtime/RenderContracts/**",
+            "Source/Runtime/Scene/**",
+            "Source/Runtime/RenderExtraction/**",
+            "Source/Runtime/Render/Private/Features/RenderFeatureRegistry.cpp",
+            "Tests/ParticleEcsRuntimeGatewayValidation/**",
+            "Tests/EcsFeatureSnapshotValidation/**",
+            "Tests/EcsParticleFeatureBridgeValidation/**",
+            "Tests/EcsWorldRuntimeCompositionValidation/**",
+            "Tests/RenderContractsValidation/**",
+            "Tests/RenderFeatureValidation/**"
+          ],
+          "verificationResponsibility": "Implement deterministic immutable packet ownership, producer-generation semantics, and focused contract/runtime tests without touching renderer draw resources or global state."
+        },
+        {
+          "owner": "gfx16-render-billboards",
+          "scope": [
+            "Source/Runtime/Render/Include/Render/Particles/**",
+            "Source/Runtime/Render/Private/Particles/**",
+            "Source/Runtime/Render/Include/Render/Passes/ParticleFeaturePass.h",
+            "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
+            "Source/Runtime/Render/Shaders/Particle/**",
+            "Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json",
+            "Source/Runtime/Render/CMakeLists.txt",
+            "Source/Runtime/Render/Include/Render/RenderDiagnostics.h",
+            "Source/Runtime/Render/Include/Render/Renderer/SceneRenderer.h",
+            "Source/Runtime/Render/Private/Diagnostics/RenderToolArtifacts.cpp",
+            "Source/Runtime/Render/Private/Features/DefaultForwardComposition.cpp",
+            "Source/Runtime/Render/Private/RenderSubsystem.cpp",
+          "Source/Runtime/Render/Private/Renderer/SceneRenderer.cpp",
+          "Scripts/rhi_ownership_inventory_m1.json",
+          "Tests/ParticleRenderValidation/**"
+          ],
+          "verificationResponsibility": "Implement stable draw planning, rotating resources, cooked billboard pipelines, typed graph execution, diagnostics, and focused render tests without touching runtime simulation or native validation files."
+        },
+        {
+          "owner": "gfx16-validation-native",
+          "scope": [
+            "Tests/ParticleNativeValidation/**",
+            "Tests/DX12Validation/**",
+            "Tests/VulkanValidation/**",
+            "Tests/ParticleNativeValidation/**",
+            "Tests/RenderHonestyValidation/**",
+            "Tests/RenderPassValidation/**",
+            "Tests/PipelineCacheValidation/**",
+            "Tests/ShaderProgramCatalogValidation/**",
+            "Tests/CMake/**",
+            "Source/Runtime/Particle/CMakeLists.txt"
+          ],
+          "verificationResponsibility": "Wire focused and native particle evidence, shader-catalog honesty, and raw-shader exclusion without implementing runtime or Render pass internals."
+        }
+      ],
+      "status": "passing",
+      "evidence": [
+        {
+          "verificationId": "focused-build",
+          "command": "cmake --build --preset win_x64_debug --target ParticleEcsRuntimeGatewayValidation ParticleRenderValidation EcsFeatureSnapshotValidation EcsParticleFeatureBridgeValidation EcsWorldRuntimeCompositionValidation RenderContractsValidation RenderFeatureValidation RenderGraphValidation RenderHonestyValidation RenderPassValidation PipelineCacheValidation ShaderProgramCatalogValidation DX12Validation VulkanValidation RVXValidationSuiteGfx16Particles",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T10:52:31.8208887Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "All focused GFX16 runtime, contract, renderer, shader-catalog, DX12, Vulkan, and aggregate targets built successfully in the current GFX18 renderer superset."
+        },
+        {
+          "verificationId": "focused-tests",
+          "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R \"^(ParticleEcsRuntimeGatewayValidation|ParticleRenderValidation|EcsFeatureSnapshotValidation|EcsParticleFeatureBridgeValidation|EcsWorldRuntimeCompositionValidation|RenderContractsValidation|RenderFeatureValidation|RenderGraphValidation|RenderHonestyValidation|RenderPassValidation|PipelineCacheValidation|ShaderProgramCatalogValidation)(\\\\.|$)\"",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T10:53:26.6732008Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "The exact focused selector passed 243/243 current unit and integration cases with no failures."
+        },
+        {
+          "verificationId": "particle-native-tests",
+          "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -L suite.gfx16-particles",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T10:53:33.3020908Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "The strict native-only suite passed 4/4: separate DX12 and Vulkan cooked-shader producers plus real native RGBA16F pixel validation on both backends."
+        },
+        {
+          "verificationId": "full-debug-build-truth",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T10:47:54.7731734Z",
+          "artifact": ".agent-harness/receipts/BuildTruth.34fa1227c8744fbf8a54df0361c4cfe5.json",
+          "artifactSha256": "1de603ee017ecf74fcb24f65fba1faf9629034c6365383619ed3791d0c7982ba",
+          "runId": "34fa1227c8744fbf8a54df0361c4cfe5",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "GFX16 was revalidated unchanged in the current GFX18 renderer superset: Build Truth v3 passed Architecture 61/61, Unit 1815/1815, Integration 725/725, and DX12 Native 59/59 with real hardware and no software-adapter fallback."
+        },
+        {
+          "verificationId": "shipping-required-suite",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationSuiteRequiredShipping -RequiredLabel suite.required-shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T10:48:29.9318779Z",
+          "artifact": ".agent-harness/receipts/RequiredSuite.50a1e09b80b24b578ea3afc953d5ae7a.json",
+          "artifactSha256": "061be8c4e91dc8173f459e6b09d9805c6e915fc94b1238ff0fa9f14f9d19cd23",
+          "runId": "50a1e09b80b24b578ea3afc953d5ae7a",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "GFX16 Shipping closure was revalidated unchanged in the current renderer superset: Windows Shipping Release passed target closure, host cook, cooked-only smoke, evidence, and dynamic dependency validation 5/5."
+        },
+        {
+          "verificationId": "architecture-required-suite",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T10:49:33.7595323Z",
+          "artifact": ".agent-harness/receipts/Architecture.654348beec1c4c308552aac852453cd2.json",
+          "artifactSha256": "454c7d4890dd436cb8f8c655df3f8e8a3397d1c548b7c1e951e87a86cf93526a",
+          "runId": "654348beec1c4c308552aac852453cd2",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "The immutable Architecture v2 receipt binds 61/61 tests, the exact request, JUnit/report hashes, final commit, and identical runner/product fingerprints."
+        },
+        {
+          "verificationId": "diff-hygiene",
+          "command": "git diff --check",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T11:06:54.3374841Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "Working-tree diff hygiene passed; only expected line-ending conversion notices were emitted for protected user files."
+        }
+      ],
+      "blocker": null,
+      "nextStep": "Begin GFX17 as a new bounded feature for deterministic flipbook fire, premultiplied smoke, soft-depth fading, typed distortion composition, reactive-mask publication, and optional low-frequency dynamic lights.",
+      "updatedAt": "2026-08-27T10:57:26.9248351Z"
+    },
+    {
+      "id": "gfx-17",
+      "name": "Deterministic fire, smoke, soft particles, and distortion",
+      "behavior": "Fixed-tick particle effects travel through a strict CookedParticleEffectArtifact, CookManifest, runtime loader, and Sample catalog before rendering cooked flipbook fire and premultiplied smoke through the GFX16 immutable packet path; they consume canonical scene depth for soft intersections, publish typed RG16F distortion and reactive-mask outputs, and composite without hidden fallback or Sample access to renderer internals. Scope expanded after read-only discovery proved that the existing Source-only placeholder ParticleSystemLoader and model-only Sample catalog could not satisfy the requested cooked-only runtime contract.",
+      "owner": "primary-coordinator",
+      "scope": {
+        "include": [
+          "Source/Runtime/Particle/**",
+          "Source/Runtime/ResourceRuntime/**",
+          "Source/Runtime/RenderContracts/**",
+          "Source/Runtime/Scene/**",
+          "Source/Runtime/RenderExtraction/**",
+          "Source/Runtime/Render/**",
+          "Source/Runtime/Engine/**",
+          "Source/Developer/AssetPipeline/**",
+          "Source/Developer/EngineDevelopmentComposition/**",
+          "Source/Programs/RVXCook/**",
+          "Samples/Common/**",
+          "Samples/RenderVerseSamples/**",
+          "Tests/CookedParticleEffectArtifactValidation/**",
+          "Tests/ParticleEffectCookPipelineValidation/**",
+          "Tests/ParticleVfxSampleValidation/**",
+          "Tests/ParticleRenderValidation/**",
+          "Tests/ParticleNativeValidation/**",
+          "Tests/RenderContractsValidation/**",
+          "Tests/RenderFeatureValidation/**",
+          "Tests/RenderGraphValidation/**",
+          "Tests/RenderHonestyValidation/**",
+          "Tests/RenderPassValidation/**",
+          "Tests/PipelineCacheValidation/**",
+          "Tests/ShaderProgramCatalogValidation/**",
+          "Tests/SampleScenarioValidation/**",
+          "Tests/SampleManifestValidation/**",
+          "Tests/SampleAssetCatalogValidation/**",
+          "Tests/SampleReportContentValidation/**",
+          "Tests/CMake/**",
+          "Tests/CMakeLists.txt",
+          "Docs/module-boundaries.json",
+          "Scripts/rhi_ownership_inventory_m1.json",
+          "Scripts/test_ci_workflows.py",
+          "CMakePresets.json",
+          ".github/workflows/nightly.yml",
+          "feature_list.json",
+          "progress.md",
+          "session-handoff.md"
+        ],
+        "exclude": [
+          "AGENTS.md",
+          "CLAUDE.md",
+          "Docs/README.md",
+          "Docs/engine-capabilities.json",
+          ".agent-harness/**",
+          "Source/Runtime/Render/Include/Render/Renderer/ViewData.h",
+          "Source/Runtime/Render/Shaders/GPUDriven/GPUSceneRaster.hlsli",
+          "assets/**",
+          "build/**",
+          "Source/Runtime/Water/**",
+          "Source/Runtime/Render/Private/Passes/WaterPass.cpp"
+        ]
+      },
+      "dependencies": [
+        "harness-001",
+        "gfx-16"
+      ],
+      "acceptanceCriteria": [
+        "Fixed simulationTick, fixedDeltaSeconds, deterministic seed, and effect descriptor produce identical flipbook frame selection, particle attributes, content hashes, and optional light samples without reading wall clock.",
+        "Fire uses additive HDR-safe billboards and smoke uses premultiplied billboards; atlas layout, frame range, rate, UV transform, and texture identity are immutable cooked/runtime inputs rather than backend branches.",
+        "Soft particles consume a RenderGraph-owned frozen copy of the canonical D32 scene depth, reconstruct view-linear depth with the frame projection contract, and fade intersections monotonically; missing CopySrc support, incompatible extent/domain, or unsupported backend capability fails closed when required.",
+        "Distorting particles write a typed RG16F vector field and R8 reactive contribution, then a separate graph pass composites from an opaque/translucent snapshot without same-texture read/write hazards; zero distortion is an identity operation.",
+        "The optional low-frequency fire light is deterministic, bounded, explicitly reported, and never mutates World or renderer lighting state through an unowned pointer.",
+        "particle-fire and particle-smoke are backend-neutral cooked-only Sample scenarios with fixed cameras, ticks, manifests, readiness receipts, and no dependency on RHI, Render private headers, AssetImport, or ShaderCompiler.",
+        "DX12 and Vulkan execute fire and smoke on Forward+ and Deferred with cooked shaders, real image/report/startup evidence, zero renderer fallback, and exact particle/distortion/reactive-mask receipts.",
+        "Focused tests, the GFX17 qualification suite, full Windows Build Truth, Shipping closure, Architecture, and diff hygiene pass with evidence bound to the checkpoint commit."
+      ],
+      "verification": [
+        {
+          "id": "focused-build",
+          "layer": "focused",
+          "command": "cmake --build --preset win_x64_debug --target ParticleEcsRuntimeGatewayValidation ParticleRenderValidation ParticleNativeValidation RenderContractsValidation RenderFeatureValidation RenderGraphValidation RenderHonestyValidation RenderPassValidation PipelineCacheValidation ShaderProgramCatalogValidation ParticleVfxSampleValidation SampleManifestValidation SampleAssetCatalogValidation SampleReportContentValidation SampleCLIValidation SampleRegistryValidation SampleRenderPathPolicyValidation RenderVerseSamples RVXSampleAssets",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        },
+        {
+          "id": "focused-tests",
+          "layer": "focused",
+          "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R \"^(ParticleEcsRuntimeGatewayValidation|ParticleRenderValidation|RenderContractsValidation|RenderFeatureValidation|RenderGraphValidation|RenderHonestyValidation|RenderPassValidation|PipelineCacheValidation|ShaderProgramCatalogValidation|ParticleVfxSampleValidation|SampleManifestValidation|SampleAssetCatalogValidation|SampleReportContentValidation|SampleCLIValidation|SampleRegistryValidation|SampleRenderPathPolicyValidation)(\\\\.|$)\"",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        },
+        {
+          "id": "gfx17-qualification",
+          "layer": "native",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_qualification_debug -BuildPreset win_x64_qualification_debug -TestPreset win_x64_qualification_debug_gfx17_vfx -BuildDir build\\win_x64_qualification_debug -Configuration Debug -BuildTarget RVXValidationSuiteGfx17Vfx -RequiredLabel suite.gfx17-vfx -ExpectedTestCount 24 -BaseRef master -SkipConfigure",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/RequiredSuite.{runId}.json",
+          "expectedReceipt": {
+            "kind": "RequiredSuite",
+            "baseRef": "master",
+            "configurePreset": "win_x64_qualification_debug",
+            "buildPreset": "win_x64_qualification_debug",
+            "testPreset": "win_x64_qualification_debug_gfx17_vfx",
+            "buildDir": "build/win_x64_qualification_debug",
+            "configuration": "Debug",
+            "buildTargets": ["RVXValidationSuiteGfx17Vfx"],
+            "requiredLabel": "suite.gfx17-vfx",
+            "expectedTestCount": 24,
+            "fresh": false,
+            "skipConfigure": true,
+            "requiredSemanticArtifacts": []
+          }
+        },
+        {
+          "id": "full-debug-build-truth",
+          "layer": "integration",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/BuildTruth.{runId}.json",
+          "expectedReceipt": {
+            "kind": "BuildTruth",
+            "baseRef": "master",
+            "configurePreset": "win_x64_debug",
+            "buildPreset": "win_x64_debug",
+            "laneTestPresets": [
+              "win_x64_debug_architecture",
+              "win_x64_debug_unit",
+              "win_x64_debug_integration",
+              "win_x64_debug_native"
+            ],
+            "buildDir": "build/win_x64_debug",
+            "configuration": "Debug",
+            "requiredNativeBackend": "DX12",
+            "softwareAdapterAllowed": false,
+            "fresh": false
+          }
+        },
+        {
+          "id": "shipping-required-suite",
+          "layer": "shipping",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationSuiteRequiredShipping -RequiredLabel suite.required-shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/RequiredSuite.{runId}.json",
+          "expectedReceipt": {
+            "kind": "RequiredSuite",
+            "baseRef": "master",
+            "configurePreset": "win_x64_shipping_release",
+            "buildPreset": "win_x64_shipping_release",
+            "testPreset": "win_x64_shipping_release_shipping",
+            "buildDir": "build/win_x64_shipping_release",
+            "configuration": "Release",
+            "buildTargets": ["RVXValidationSuiteRequiredShipping"],
+            "requiredLabel": "suite.required-shipping",
+            "expectedTestCount": 5,
+            "fresh": false,
+            "skipConfigure": true,
+            "requiredSemanticArtifacts": [
+              "build/win_x64_shipping_release/Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json",
+              "build/win_x64_shipping_release/Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json"
+            ]
+          }
+        },
+        {
+          "id": "architecture-required-suite",
+          "layer": "architecture",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/Architecture.{runId}.json",
+          "expectedReceipt": {
+            "kind": "Architecture",
+            "baseRef": "master",
+            "preset": "win_x64_debug",
+            "testPreset": "win_x64_debug_architecture",
+            "buildDir": "build/win_x64_debug",
+            "configuration": "Debug",
+            "buildTarget": "RVXValidationArchitecture",
+            "requiredLabel": "lane.architecture",
+            "allowConfigure": false
+          }
+        },
+        {
+          "id": "diff-hygiene",
+          "layer": "static",
+          "command": "git diff --check",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        }
+      ],
+      "coordination": [
+        {
+          "owner": "gfx17-particle-contracts",
+          "scope": [
+            "Source/Runtime/Particle/**",
+            "Source/Runtime/RenderContracts/**",
+            "Source/Runtime/Scene/**",
+            "Source/Runtime/RenderExtraction/**",
+            "Tests/ParticleRenderValidation/**",
+            "Tests/RenderContractsValidation/**"
+          ],
+          "verificationResponsibility": "Read-only audit of deterministic effect parameters, flipbook identity, soft-particle inputs, and optional bounded light data across the immutable packet chain."
+        },
+        {
+          "owner": "gfx17-distortion-graph",
+          "scope": [
+            "Source/Runtime/Render/**",
+            "Tests/RenderFeatureValidation/**",
+            "Tests/RenderGraphValidation/**",
+            "Tests/RenderPassValidation/**",
+            "Scripts/rhi_ownership_inventory_m1.json"
+          ],
+          "verificationResponsibility": "Read-only audit of canonical depth, typed distortion/reactive outputs, graph ordering, composite hazards, and Render-owned resource lifetime."
+        },
+        {
+          "owner": "gfx17-samples-validation",
+          "scope": [
+            "Samples/**",
+            "Tests/SampleScenarioValidation/**",
+            "Tests/SampleManifestValidation/**",
+            "Tests/SampleReportContentValidation/**",
+            "Tests/CMake/**",
+            "CMakePresets.json",
+            ".github/workflows/nightly.yml"
+          ],
+          "verificationResponsibility": "Read-only audit of cooked-only fire/smoke scenarios, manifests, deterministic qualification, evidence naming, presets, and CI selection."
+        },
+        {
+          "owner": "gfx17-cooked-effect",
+          "scope": [
+            "Source/Runtime/ResourceRuntime/**",
+            "Source/Developer/AssetPipeline/**",
+            "Source/Programs/RVXCook/**",
+            "Source/Runtime/Particle/Include/Particle/ParticleSystemLoader.h",
+            "Source/Runtime/Particle/Private/ParticleSystemLoader.cpp",
+            "Source/Runtime/Engine/**",
+            "Source/Developer/EngineDevelopmentComposition/**",
+            "Tests/CookedParticleEffectArtifactValidation/**",
+            "Tests/ParticleEffectCookPipelineValidation/**"
+          ],
+          "verificationResponsibility": "Implement and narrowly verify the strict deterministic CookedParticleEffectArtifact, Effect cook pipeline, cooked-only Particle loader, and runtime/development composition registration without editing shared test registration."
+        },
+        {
+          "owner": "gfx17-packet-v2",
+          "scope": [
+            "Source/Runtime/RenderContracts/**",
+            "Source/Runtime/Particle/** except ParticleSystemLoader.h/.cpp",
+            "Source/Runtime/Scene/Private/ECS/SceneFeatureSnapshotStore.cpp",
+            "Tests/RenderContractsValidation/**",
+            "Tests/ParticleEcsRuntimeGatewayValidation/**",
+            "Tests/EcsFeatureSnapshotValidation/**"
+          ],
+          "verificationResponsibility": "Implement and narrowly verify immutable packet v2, channel schema v3, deterministic flipbook/light policy, validation, hashing, and gateway isolation."
+        },
+        {
+          "owner": "gfx17-render-graph",
+          "scope": [
+            "Source/Runtime/Render/** except protected ViewData.h and GPUSceneRaster.hlsli",
+            "Tests/ParticleRenderValidation/**",
+            "Tests/ParticleNativeValidation/**",
+            "Tests/RenderFeatureValidation/**",
+            "Tests/RenderGraphValidation/**",
+            "Tests/RenderPassValidation/**",
+            "Tests/PipelineCacheValidation/**",
+            "Tests/ShaderProgramCatalogValidation/**",
+            "Scripts/rhi_ownership_inventory_m1.json"
+          ],
+          "verificationResponsibility": "Implement and narrowly verify D32 soft-depth snapshotting, conditional RG16F distortion production, reactive-mask publication, non-in-place HDR composition before TAA, renderer diagnostics, and RHI ownership."
+        },
+        {
+          "owner": "gfx17-samples",
+          "scope": [
+            "Samples/Common/**",
+            "Samples/RenderVerseSamples/**",
+            "Tests/ParticleVfxSampleValidation/**",
+            "Tests/SampleScenarioValidation/**",
+            "Tests/SampleManifestValidation/**",
+            "Tests/SampleAssetCatalogValidation/**",
+            "Tests/SampleReportContentValidation/**",
+            "Tests/CMake/QualificationTests.cmake",
+            "CMakePresets.json",
+            ".github/workflows/nightly.yml"
+          ],
+          "verificationResponsibility": "Implement and narrowly verify Effect catalog admission, SampleParticleEffectLoader, cooked-only fire/smoke scenarios and staging, flat diagnostics/report projection, and the exact 24-test DX12/Vulkan Forward+/Deferred functional qualification matrix."
+        }
+      ],
+      "status": "passing",
+      "evidence": [
+        {
+          "verificationId": "focused-build",
+          "command": "cmake --build --preset win_x64_debug --target ParticleEcsRuntimeGatewayValidation ParticleRenderValidation ParticleNativeValidation RenderContractsValidation RenderFeatureValidation RenderGraphValidation RenderHonestyValidation RenderPassValidation PipelineCacheValidation ShaderProgramCatalogValidation ParticleVfxSampleValidation SampleManifestValidation SampleAssetCatalogValidation SampleReportContentValidation SampleCLIValidation SampleRegistryValidation SampleRenderPathPolicyValidation RenderVerseSamples RVXSampleAssets",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T10:54:41.0823093Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "All GFX17 runtime, renderer, shader-catalog, Sample contract, host, and cooked-asset aggregate targets built successfully in the current GFX18 renderer superset."
+        },
+        {
+          "verificationId": "focused-tests",
+          "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R \"^(ParticleEcsRuntimeGatewayValidation|ParticleRenderValidation|RenderContractsValidation|RenderFeatureValidation|RenderGraphValidation|RenderHonestyValidation|RenderPassValidation|PipelineCacheValidation|ShaderProgramCatalogValidation|ParticleVfxSampleValidation|SampleManifestValidation|SampleAssetCatalogValidation|SampleReportContentValidation|SampleCLIValidation|SampleRegistryValidation|SampleRenderPathPolicyValidation)(\\\\.|$)\"",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T10:55:22.0722471Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "The exact focused selector passed 353/353 current unit and integration cases with no failures."
+        },
+        {
+          "verificationId": "gfx17-qualification",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_qualification_debug -BuildPreset win_x64_qualification_debug -TestPreset win_x64_qualification_debug_gfx17_vfx -BuildDir build\\win_x64_qualification_debug -Configuration Debug -BuildTarget RVXValidationSuiteGfx17Vfx -RequiredLabel suite.gfx17-vfx -ExpectedTestCount 24 -BaseRef master -SkipConfigure",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T10:37:06.4821122Z",
+          "artifact": ".agent-harness/receipts/RequiredSuite.32165a7414ee4eeb8bd28b518e6f74d5.json",
+          "artifactSha256": "2f0af6f411db5f01aa5fb7a5ddf208d6d720fad24efa7044e7a54d3202d11a98",
+          "runId": "32165a7414ee4eeb8bd28b518e6f74d5",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "The fail-closed GFX17 suite passed 24/24 across DX12 and Vulkan, Forward+ and Deferred, fire and smoke, with capture, image, and execution-receipt validation for each path."
+        },
+        {
+          "verificationId": "full-debug-build-truth",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T10:47:54.7731734Z",
+          "artifact": ".agent-harness/receipts/BuildTruth.34fa1227c8744fbf8a54df0361c4cfe5.json",
+          "artifactSha256": "1de603ee017ecf74fcb24f65fba1faf9629034c6365383619ed3791d0c7982ba",
+          "runId": "34fa1227c8744fbf8a54df0361c4cfe5",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "GFX17 was revalidated unchanged in the current GFX18 renderer superset: Build Truth v3 passed Architecture 61/61, Unit 1815/1815, Integration 725/725, and DX12 Native 59/59 with real hardware and no software-adapter fallback."
+        },
+        {
+          "verificationId": "shipping-required-suite",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationSuiteRequiredShipping -RequiredLabel suite.required-shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T10:48:29.9318779Z",
+          "artifact": ".agent-harness/receipts/RequiredSuite.50a1e09b80b24b578ea3afc953d5ae7a.json",
+          "artifactSha256": "061be8c4e91dc8173f459e6b09d9805c6e915fc94b1238ff0fa9f14f9d19cd23",
+          "runId": "50a1e09b80b24b578ea3afc953d5ae7a",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "Windows Shipping Release revalidated GFX17 unchanged in the current renderer superset and passed all five required cooked-only and closure checks."
+        },
+        {
+          "verificationId": "architecture-required-suite",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T10:49:33.7595323Z",
+          "artifact": ".agent-harness/receipts/Architecture.654348beec1c4c308552aac852453cd2.json",
+          "artifactSha256": "454c7d4890dd436cb8f8c655df3f8e8a3397d1c548b7c1e951e87a86cf93526a",
+          "runId": "654348beec1c4c308552aac852453cd2",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "The immutable Architecture v2 receipt binds 61/61 tests, the exact request, JUnit/report hashes, final commit, and identical runner/product fingerprints."
+        },
+        {
+          "verificationId": "diff-hygiene",
+          "command": "git diff --check",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T11:06:54.3374841Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "Working-tree diff hygiene passed; only expected line-ending conversion notices were emitted for protected user files."
+        }
+      ],
+      "blocker": null,
+      "nextStep": "Retain GFX17 as the validated CPU-particle VFX baseline while GFX19 adds local shadows, probes, and Hi-Z reflection fallback.",
+      "updatedAt": "2026-08-27T10:57:26.9248351Z"
+    },
+    {
+      "id": "gfx-18",
+      "name": "Deterministic Gerstner water surfaces and gameplay queries",
+      "behavior": "A versioned immutable Water render packet carries bounded canonical Gerstner waves and material parameters from ECS extraction without owning a second clock. Runtime gameplay queries and renderer shader evaluation share the same pure reference contract and consume the same explicit frozen EffectFrameTime, while Render owns the grid, displacement, layered normals, Fresnel reflection, depth thickness, Beer-Lambert absorption, foam, reactive-mask output, and graph ordering. The cooked-only backend-neutral water-surface Sample proves the same path on Forward+ and Deferred without Sample access to RHI or renderer internals.",
+      "owner": "primary-coordinator",
+      "scope": {
+        "include": [
+          "Source/Runtime/Water/**",
+          "Source/Runtime/RenderContracts/**",
+          "Source/Runtime/Scene/**",
+          "Source/Runtime/RenderExtraction/**",
+          "Source/Runtime/Render/**",
+          "Source/Runtime/Engine/**",
+          "Samples/Common/**",
+          "Samples/RenderVerseSamples/**",
+          "Tests/WaterValidation/**",
+          "Tests/WaterEcsRuntimeGatewayValidation/**",
+          "Tests/EcsWaterFeatureBridgeValidation/**",
+          "Tests/WaterRenderValidation/**",
+          "Tests/WaterNativeValidation/**",
+          "Tests/WaterSurfaceSampleValidation/**",
+          "Tests/RenderContractsValidation/**",
+          "Tests/RenderFeatureValidation/**",
+          "Tests/RenderGraphValidation/**",
+          "Tests/RenderHonestyValidation/**",
+          "Tests/RenderPassValidation/**",
+          "Tests/PipelineCacheValidation/**",
+          "Tests/ShaderProgramCatalogValidation/**",
+          "Tests/SampleManifestValidation/**",
+          "Tests/SampleAssetCatalogValidation/**",
+          "Tests/SampleCLIValidation/**",
+          "Tests/SampleReportContentValidation/**",
+          "Tests/CMake/**",
+          "Tests/CMakeLists.txt",
+          "Docs/engine-capabilities.json",
+          "Docs/module-boundaries.json",
+          "Scripts/BuildTruth/BuildTruthV3.psm1",
+          "Scripts/BuildTruth/Test-BuildTruthV3.ps1",
+          "Scripts/BuildTruth/Test-RequiredSuiteV1.ps1",
+          "Scripts/rhi_ownership_inventory_m1.json",
+          "Scripts/check_ci_workflows.py",
+          "Scripts/run_build_truth.ps1",
+          "Scripts/run_required_suite.ps1",
+          "Scripts/test_ci_workflows.py",
+          "CMakePresets.json",
+          ".github/workflows/nightly.yml",
+          "feature_list.json",
+          "feature_list.schema.json",
+          "init.ps1",
+          "progress.md",
+          "session-handoff.md"
+        ],
+        "exclude": [
+          "AGENTS.md",
+          "CLAUDE.md",
+          "Docs/README.md",
+          ".agent-harness/**",
+          "Source/Runtime/Render/Include/Render/Renderer/ViewData.h",
+          "Source/Runtime/Render/Shaders/GPUDriven/GPUSceneRaster.hlsli",
+          "Source/Developer/**",
+          "Source/Programs/**",
+          "assets/**",
+          "build/**"
+        ]
+      },
+      "dependencies": [
+        "harness-001",
+        "gfx-17"
+      ],
+      "acceptanceCriteria": [
+        "A bounded canonical Gerstner wave set rejects zero directions and non-finite or out-of-policy amplitude, wavelength, steepness, speed, and count values, and produces a stable content hash without wall-clock or process-entropy input.",
+        "Runtime height, displacement, normal, tangent, horizontal velocity, and signed distance queries are pure functions of canonical parameters, world position, and explicit simulationSeconds; repeated fixed tick inputs are bit-stable within the documented floating-point contract.",
+        "The Water ECS gateway seals timeless immutable parameters and rejects stale generation, schema, sequence, source-version, or content-hash data; gameplay and rendering then consume the same explicit frozen EffectFrameTime so neither can observe a previous-frame or one-frame-ahead surface.",
+        "RenderWater depends only on RenderFoundation, RenderGraph, RenderContracts, RHI, and cooked shader contracts; it owns grid geometry and rotating GPU resources and never includes gameplay Water headers or performs WaitIdle, per-frame pipeline creation, or per-vertex CPU uploads.",
+        "Water executes after an opaque scene snapshot and before sorted translucency and particles, samples canonical depth for thickness, writes HDR scene color plus a reactive contribution without in-place read/write hazards, and reports its actual ordering and resource identities.",
+        "The shader implements Gerstner displacement, two deterministic normal layers, Schlick Fresnel, depth-derived thickness, Beer-Lambert absorption, bounded foam, and reflection fallback; zero waves and zero absorption have explicit identity behavior.",
+        "CPU reference points and shader/native probes agree within declared tolerances for displacement, normal, thickness, absorption, and foam, and Forward+ and Deferred use the same Water feature contract.",
+        "water-surface is a cooked-only backend-neutral Sample with a fixed camera, tick, manifest, readiness receipt, and no dependency on RHI, Render private headers, AssetImport, or ShaderCompiler.",
+        "DX12 and Vulkan execute water-surface on Forward+ and Deferred with cooked shaders, real image/report/startup evidence, zero renderer fallback, and exact water/reactive-mask receipts.",
+        "Focused tests, the GFX18 qualification suite, full Windows Build Truth, Shipping closure, Architecture, and diff hygiene pass with evidence bound to the checkpoint commit."
+      ],
+      "verification": [
+        {
+          "id": "focused-build",
+          "layer": "focused",
+          "command": "cmake --build --preset win_x64_debug --target WaterValidation WaterEcsRuntimeGatewayValidation EcsWaterFeatureBridgeValidation WaterRenderValidation WaterSurfaceSampleValidation RenderContractsValidation RenderFeatureValidation RenderGraphValidation RenderHonestyValidation RenderPassValidation PipelineCacheValidation ShaderProgramCatalogValidation SampleManifestValidation SampleAssetCatalogValidation SampleReportContentValidation RenderVerseSamples RVXSampleAssets",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        },
+        {
+          "id": "focused-tests",
+          "layer": "focused",
+          "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R \"^(WaterValidation|WaterEcsRuntimeGatewayValidation|EcsWaterFeatureBridgeValidation|WaterRenderValidation|WaterSurfaceSampleValidation|RenderContractsValidation|RenderFeatureValidation|RenderGraphValidation|RenderHonestyValidation|RenderPassValidation|PipelineCacheValidation|ShaderProgramCatalogValidation|SampleManifestValidation|SampleAssetCatalogValidation|SampleReportContentValidation)(\\\\.|$)\"",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        },
+        {
+          "id": "gfx18-qualification",
+          "layer": "native",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_qualification_debug -BuildPreset win_x64_qualification_debug -TestPreset win_x64_qualification_debug_gfx18_water -BuildDir build\\win_x64_qualification_debug -Configuration Debug -BuildTarget RVXValidationSuiteGfx18Water -RequiredLabel suite.gfx18-water -ExpectedTestCount 12 -BaseRef master -SkipConfigure",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/RequiredSuite.{runId}.json",
+          "expectedReceipt": {
+            "kind": "RequiredSuite",
+            "baseRef": "master",
+            "configurePreset": "win_x64_qualification_debug",
+            "buildPreset": "win_x64_qualification_debug",
+            "testPreset": "win_x64_qualification_debug_gfx18_water",
+            "buildDir": "build/win_x64_qualification_debug",
+            "configuration": "Debug",
+            "buildTargets": ["RVXValidationSuiteGfx18Water"],
+            "requiredLabel": "suite.gfx18-water",
+            "expectedTestCount": 12,
+            "fresh": false,
+            "skipConfigure": true,
+            "requiredSemanticArtifacts": []
+          }
+        },
+        {
+          "id": "full-debug-build-truth",
+          "layer": "integration",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/BuildTruth.{runId}.json",
+          "expectedReceipt": {
+            "kind": "BuildTruth",
+            "baseRef": "master",
+            "configurePreset": "win_x64_debug",
+            "buildPreset": "win_x64_debug",
+            "laneTestPresets": [
+              "win_x64_debug_architecture",
+              "win_x64_debug_unit",
+              "win_x64_debug_integration",
+              "win_x64_debug_native"
+            ],
+            "buildDir": "build/win_x64_debug",
+            "configuration": "Debug",
+            "requiredNativeBackend": "DX12",
+            "softwareAdapterAllowed": false,
+            "fresh": false
+          }
+        },
+        {
+          "id": "shipping-required-suite",
+          "layer": "shipping",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationSuiteRequiredShipping -RequiredLabel suite.required-shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/RequiredSuite.{runId}.json",
+          "expectedReceipt": {
+            "kind": "RequiredSuite",
+            "baseRef": "master",
+            "configurePreset": "win_x64_shipping_release",
+            "buildPreset": "win_x64_shipping_release",
+            "testPreset": "win_x64_shipping_release_shipping",
+            "buildDir": "build/win_x64_shipping_release",
+            "configuration": "Release",
+            "buildTargets": ["RVXValidationSuiteRequiredShipping"],
+            "requiredLabel": "suite.required-shipping",
+            "expectedTestCount": 5,
+            "fresh": false,
+            "skipConfigure": true,
+            "requiredSemanticArtifacts": [
+              "build/win_x64_shipping_release/Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json",
+              "build/win_x64_shipping_release/Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json"
+            ]
+          }
+        },
+        {
+          "id": "architecture-required-suite",
+          "layer": "architecture",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/Architecture.{runId}.json",
+          "expectedReceipt": {
+            "kind": "Architecture",
+            "baseRef": "master",
+            "preset": "win_x64_debug",
+            "testPreset": "win_x64_debug_architecture",
+            "buildDir": "build/win_x64_debug",
+            "configuration": "Debug",
+            "buildTarget": "RVXValidationArchitecture",
+            "requiredLabel": "lane.architecture",
+            "allowConfigure": false
+          }
+        },
+        {
+          "id": "diff-hygiene",
+          "layer": "static",
+          "command": "git diff --check",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        }
+      ],
+      "coordination": [
+        {
+          "owner": "gfx18-runtime-audit",
+          "scope": [
+            "Source/Runtime/Water/**",
+            "Source/Runtime/RenderContracts/**",
+            "Source/Runtime/Scene/**",
+            "Source/Runtime/RenderExtraction/**",
+            "Tests/WaterValidation/**",
+            "Tests/WaterEcsRuntimeGatewayValidation/**",
+            "Tests/EcsWaterFeatureBridgeValidation/**"
+          ],
+          "verificationResponsibility": "Read-only audit of existing water timing, wave contracts, ECS snapshot flow, gameplay queries, and the smallest deterministic pure-evaluator migration."
+        },
+        {
+          "owner": "gfx18-render-audit",
+          "scope": [
+            "Source/Runtime/Render/** except protected user files",
+            "Tests/WaterRenderValidation/**",
+            "Tests/RenderFeatureValidation/**",
+            "Tests/RenderGraphValidation/**",
+            "Tests/RenderPassValidation/**"
+          ],
+          "verificationResponsibility": "Read-only audit of the dormant WaterPass, graph ordering, SceneTextures inputs, shader catalog, resource ownership, and concrete RenderWater integration points."
+        },
+        {
+          "owner": "gfx18-sample-audit",
+          "scope": [
+            "Samples/**",
+            "Tests/WaterSurfaceSampleValidation/**",
+            "Tests/CMake/**",
+            "CMakePresets.json",
+            ".github/workflows/nightly.yml"
+          ],
+          "verificationResponsibility": "Read-only audit of the GFX17 scenario/manifest/qualification pattern and the exact cooked-only 12-case GFX18 evidence matrix."
+        }
+      ],
+      "status": "passing",
+      "evidence": [
+        {
+          "verificationId": "focused-build",
+          "command": "cmake --build --preset win_x64_debug --target WaterValidation WaterEcsRuntimeGatewayValidation EcsWaterFeatureBridgeValidation WaterRenderValidation WaterSurfaceSampleValidation RenderContractsValidation RenderFeatureValidation RenderGraphValidation RenderHonestyValidation RenderPassValidation PipelineCacheValidation ShaderProgramCatalogValidation SampleManifestValidation SampleAssetCatalogValidation SampleReportContentValidation RenderVerseSamples RVXSampleAssets",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T10:56:17.3490593Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "All focused GFX18 runtime, ECS gateway, renderer, shader-catalog, Sample contract, host, and cooked-asset targets built successfully on the final validation commit."
+        },
+        {
+          "verificationId": "focused-tests",
+          "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R \"^(WaterValidation|WaterEcsRuntimeGatewayValidation|EcsWaterFeatureBridgeValidation|WaterRenderValidation|WaterSurfaceSampleValidation|RenderContractsValidation|RenderFeatureValidation|RenderGraphValidation|RenderHonestyValidation|RenderPassValidation|PipelineCacheValidation|ShaderProgramCatalogValidation|SampleManifestValidation|SampleAssetCatalogValidation|SampleReportContentValidation)(\\\\.|$)\"",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T10:56:57.2163618Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "The exact focused selector passed 260/260 current unit and integration cases with no failures."
+        },
+        {
+          "verificationId": "gfx18-qualification",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_qualification_debug -BuildPreset win_x64_qualification_debug -TestPreset win_x64_qualification_debug_gfx18_water -BuildDir build\\win_x64_qualification_debug -Configuration Debug -BuildTarget RVXValidationSuiteGfx18Water -RequiredLabel suite.gfx18-water -ExpectedTestCount 12 -BaseRef master -SkipConfigure",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T10:40:16.6903734Z",
+          "artifact": ".agent-harness/receipts/RequiredSuite.1f5afd8392ce4cfbaac76b6a048334bd.json",
+          "artifactSha256": "4786b96e34970a895a260143bcb518e9d97837b73fcb29b2393ffcc3008a8581",
+          "runId": "1f5afd8392ce4cfbaac76b6a048334bd",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "The fail-closed GFX18 suite passed 12/12 across DX12 and Vulkan, Forward+ and Deferred, with capture, image, and execution-receipt validation for each path."
+        },
+        {
+          "verificationId": "full-debug-build-truth",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T10:47:54.7731734Z",
+          "artifact": ".agent-harness/receipts/BuildTruth.34fa1227c8744fbf8a54df0361c4cfe5.json",
+          "artifactSha256": "1de603ee017ecf74fcb24f65fba1faf9629034c6365383619ed3791d0c7982ba",
+          "runId": "34fa1227c8744fbf8a54df0361c4cfe5",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "Build Truth v3 passed Architecture 61/61, Unit 1815/1815, Integration 725/725, and DX12 Native 59/59 with real hardware execution and no software-adapter fallback."
+        },
+        {
+          "verificationId": "shipping-required-suite",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationSuiteRequiredShipping -RequiredLabel suite.required-shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T10:48:29.9318779Z",
+          "artifact": ".agent-harness/receipts/RequiredSuite.50a1e09b80b24b578ea3afc953d5ae7a.json",
+          "artifactSha256": "061be8c4e91dc8173f459e6b09d9805c6e915fc94b1238ff0fa9f14f9d19cd23",
+          "runId": "50a1e09b80b24b578ea3afc953d5ae7a",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "Windows Shipping Release passed target closure, host cook fixture, cooked-only smoke, smoke evidence, and dynamic dependency validation 5/5."
+        },
+        {
+          "verificationId": "architecture-required-suite",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T10:49:33.7595323Z",
+          "artifact": ".agent-harness/receipts/Architecture.654348beec1c4c308552aac852453cd2.json",
+          "artifactSha256": "454c7d4890dd436cb8f8c655df3f8e8a3397d1c548b7c1e951e87a86cf93526a",
+          "runId": "654348beec1c4c308552aac852453cd2",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "The immutable Architecture v2 receipt binds 61/61 tests, the exact request, JUnit/report hashes, final commit, and identical runner/product fingerprints."
+        },
+        {
+          "verificationId": "diff-hygiene",
+          "command": "git diff --check",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T11:06:54.3374841Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "15c1366c91435954dc37ccb05b640f4cda3d8591d1413f55b5b366e136e0b335",
+          "notes": "Working-tree diff hygiene passed; Git emitted only expected line-ending conversion notices for protected user-owned files."
+        }
+      ],
+      "blocker": null,
+      "nextStep": "Begin GFX19 as a separately claimed feature for local shadow atlases, reflection probe selection and blending, Hi-Z SSR confidence, and the explicit SSR-to-probe-to-IBL fallback chain.",
+      "updatedAt": "2026-08-27T10:57:26.9248351Z"
+    },
+    {
+      "id": "gfx-19",
+      "name": "Local shadows, reflection probes, and Hi-Z reflections",
+      "behavior": "Point and spot lights render through a deterministic local-shadow atlas, local reflection probes are selected and blended without global mutable state, and Hi-Z screen-space reflections expose confidence so every invalid or missed ray resolves explicitly through SSR to Probe to IBL instead of producing black output.",
+      "owner": "primary-coordinator",
+      "scope": {
+        "include": [
+          "Source/Runtime/RenderContracts/**",
+          "Source/Runtime/Render/**",
+          "Source/Runtime/Scene/**",
+          "Source/Runtime/RenderExtraction/**",
+          "Source/Runtime/ShaderContracts/Include/ShaderContracts/GLSLBindingABI.h",
+          "Source/Runtime/ShaderContracts/Include/ShaderContracts/MetalBindingABI.h",
+          "Source/Developer/ShaderCompiler/Include/ShaderCompiler/ShaderCacheFormat.h",
+          "Source/Developer/ShaderCompiler/Private/SPIRVCrossTranslator.cpp",
+          "Samples/Common/**",
+          "Samples/RenderVerseSamples/**",
+          "Tests/LocalShadowRenderValidation/**",
+          "Tests/ReflectionProbeValidation/**",
+          "Tests/HiZReflectionValidation/**",
+          "Tests/RenderContractsValidation/**",
+          "Tests/RenderFeatureValidation/**",
+          "Tests/RenderGraphValidation/**",
+          "Tests/RenderHonestyValidation/**",
+          "Tests/RenderPassValidation/**",
+          "Tests/PipelineCacheValidation/**",
+          "Tests/ShaderProgramCatalogValidation/**",
+          "Tests/SampleManifestValidation/**",
+          "Tests/SampleReportContentValidation/**",
+          "Tests/ShaderCompilerValidation/**",
+          "Tests/RHIArchitectureValidation/**",
+          "Tests/DX12Validation/**",
+          "Tests/EcsSceneSnapshotValidation/**",
+          "Tests/EcsFrozenSceneBridgeValidation/**",
+          "Tests/EcsFrameExtractionValidation/**",
+          "Tests/CMake/**",
+          "Source/Runtime/Render/CMakeLists.txt",
+          "Tests/CMakeLists.txt",
+          "CMakePresets.json",
+          "Scripts/rhi_ownership_inventory_m1.json",
+          "feature_list.json",
+          "progress.md",
+          "session-handoff.md"
+        ],
+        "exclude": [
+          "AGENTS.md",
+          "CLAUDE.md",
+          "Docs/README.md",
+          "Docs/engine-capabilities.json",
+          ".agent-harness/**",
+          "Source/Runtime/Render/Include/Render/Renderer/ViewData.h",
+          "Source/Runtime/Render/Shaders/GPUDriven/GPUSceneRaster.hlsli",
+          "Source/Programs/**",
+          "assets/**",
+          "build/**"
+        ]
+      },
+      "dependencies": [
+        "harness-001",
+        "gfx-18"
+      ],
+      "acceptanceCriteria": [
+        "Point and spot shadow requests use a deterministic Render-owned atlas allocator with stable light identity, bounded capacity, generation-safe handles, explicit overflow diagnostics, and no per-frame pipeline or atlas recreation.",
+        "Local shadows share the clustered LightingFramePlan identity, preserve masked-material shadow silhouettes, and are consumed identically by Forward+ and Deferred lighting.",
+        "Reflection probes declare bounded influence volumes and priority, are selected and blended by a deterministic top-N policy, and cannot rely on process-global mutable state or backend-specific Sample logic.",
+        "Hi-Z is built from canonical depth with validated mip extents and reduction policy; SSR records hit validity, confidence, and rejection reason rather than treating an invalid sample as a valid black reflection.",
+        "Reflection resolution follows one explicit SSR to Probe to IBL chain, with each fallback declared by feature readiness and the execution receipt recording the path that actually executed.",
+        "Forward+ and Deferred share the same local-shadow resources, probe selection, Hi-Z inputs, reflection result contract, and quality/capability resolver policy.",
+        "A cooked-only backend-neutral Sample and qualification matrix prove the feature on DX12 and Vulkan without linking Sample scenarios to RHI, Render private headers, AssetImport, or ShaderCompiler.",
+        "Focused tests, the GFX19 qualification suite, full Windows Build Truth, Shipping closure, Architecture, and diff hygiene pass with evidence bound to the checkpoint commit."
+      ],
+      "verification": [
+        {
+          "id": "focused-build",
+          "layer": "focused",
+          "command": "cmake --build --preset win_x64_debug --target LocalShadowRenderValidation ReflectionProbeValidation HiZReflectionValidation RenderContractsValidation RenderFeatureValidation RenderGraphValidation RenderHonestyValidation RenderPassValidation PipelineCacheValidation ShaderProgramCatalogValidation ShaderCompilerValidation RHIArchitectureValidation EcsSceneSnapshotValidation EcsFrozenSceneBridgeValidation EcsFrameExtractionValidation SampleManifestValidation SampleReportContentValidation RenderVerseSamples RVXSampleAssets",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        },
+        {
+          "id": "focused-tests",
+          "layer": "focused",
+          "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R \"^(LocalShadowRenderValidation|ReflectionProbeValidation|HiZReflectionValidation|RenderContractsValidation|RenderFeatureValidation|RenderGraphValidation|RenderHonestyValidation|RenderPassValidation|PipelineCacheValidation|ShaderProgramCatalogValidation|ShaderCompilerValidation|RHIArchitectureValidation|EcsSceneSnapshotValidation|EcsFrozenSceneBridgeValidation|EcsFrameExtractionValidation|SampleManifestValidation|SampleReportContentValidation)(\\\\.|$)\"",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        },
+        {
+          "id": "gfx19-local-lighting",
+          "layer": "native",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_qualification_debug -BuildPreset win_x64_qualification_debug -TestPreset win_x64_qualification_debug_gfx19_local_lighting -BuildDir build\\win_x64_qualification_debug -Configuration Debug -BuildTarget RVXValidationSuiteGfx19LocalLighting -RequiredLabel suite.gfx19-local-lighting -ExpectedTestCount 12 -BaseRef master -SkipConfigure",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/RequiredSuite.{runId}.json",
+          "expectedReceipt": {
+            "kind": "RequiredSuite",
+            "baseRef": "master",
+            "configurePreset": "win_x64_qualification_debug",
+            "buildPreset": "win_x64_qualification_debug",
+            "testPreset": "win_x64_qualification_debug_gfx19_local_lighting",
+            "buildDir": "build/win_x64_qualification_debug",
+            "configuration": "Debug",
+            "buildTargets": [
+              "RVXValidationSuiteGfx19LocalLighting"
+            ],
+            "requiredLabel": "suite.gfx19-local-lighting",
+            "expectedTestCount": 12,
+            "fresh": false,
+            "skipConfigure": true,
+            "requiredSemanticArtifacts": []
+          }
+        },
+        {
+          "id": "gfx19-qualification",
+          "layer": "native",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_qualification_debug -BuildPreset win_x64_qualification_debug -TestPreset win_x64_qualification_debug_gfx19_reflections -BuildDir build\\win_x64_qualification_debug -Configuration Debug -BuildTarget RVXValidationSuiteGfx19Reflections -RequiredLabel suite.gfx19-reflections -ExpectedTestCount 12 -BaseRef master -SkipConfigure",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/RequiredSuite.{runId}.json",
+          "expectedReceipt": {
+            "kind": "RequiredSuite",
+            "baseRef": "master",
+            "configurePreset": "win_x64_qualification_debug",
+            "buildPreset": "win_x64_qualification_debug",
+            "testPreset": "win_x64_qualification_debug_gfx19_reflections",
+            "buildDir": "build/win_x64_qualification_debug",
+            "configuration": "Debug",
+            "buildTargets": [
+              "RVXValidationSuiteGfx19Reflections"
+            ],
+            "requiredLabel": "suite.gfx19-reflections",
+            "expectedTestCount": 12,
+            "fresh": false,
+            "skipConfigure": true,
+            "requiredSemanticArtifacts": []
+          }
+        },
+        {
+          "id": "full-debug-build-truth",
+          "layer": "integration",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/BuildTruth.{runId}.json",
+          "expectedReceipt": {
+            "kind": "BuildTruth",
+            "baseRef": "master",
+            "configurePreset": "win_x64_debug",
+            "buildPreset": "win_x64_debug",
+            "laneTestPresets": [
+              "win_x64_debug_architecture",
+              "win_x64_debug_unit",
+              "win_x64_debug_integration",
+              "win_x64_debug_native"
+            ],
+            "buildDir": "build/win_x64_debug",
+            "configuration": "Debug",
+            "requiredNativeBackend": "DX12",
+            "softwareAdapterAllowed": false,
+            "fresh": false
+          }
+        },
+        {
+          "id": "shipping-required-suite",
+          "layer": "shipping",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationSuiteRequiredShipping -RequiredLabel suite.required-shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/RequiredSuite.{runId}.json",
+          "expectedReceipt": {
+            "kind": "RequiredSuite",
+            "baseRef": "master",
+            "configurePreset": "win_x64_shipping_release",
+            "buildPreset": "win_x64_shipping_release",
+            "testPreset": "win_x64_shipping_release_shipping",
+            "buildDir": "build/win_x64_shipping_release",
+            "configuration": "Release",
+            "buildTargets": [
+              "RVXValidationSuiteRequiredShipping"
+            ],
+            "requiredLabel": "suite.required-shipping",
+            "expectedTestCount": 5,
+            "fresh": false,
+            "skipConfigure": true,
+            "requiredSemanticArtifacts": [
+              "build/win_x64_shipping_release/Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json",
+              "build/win_x64_shipping_release/Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json"
+            ]
+          }
+        },
+        {
+          "id": "architecture-required-suite",
+          "layer": "architecture",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/Architecture.{runId}.json",
+          "expectedReceipt": {
+            "kind": "Architecture",
+            "baseRef": "master",
+            "preset": "win_x64_debug",
+            "testPreset": "win_x64_debug_architecture",
+            "buildDir": "build/win_x64_debug",
+            "configuration": "Debug",
+            "buildTarget": "RVXValidationArchitecture",
+            "requiredLabel": "lane.architecture",
+            "allowConfigure": false
+          }
+        },
+        {
+          "id": "diff-hygiene",
+          "layer": "static",
+          "command": "git diff --check",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        }
+      ],
+      "coordination": [
+        {
+          "owner": "gfx19-local-shadow-audit",
+          "scope": [
+            "Source/Runtime/RenderContracts/**",
+            "Source/Runtime/Scene/**",
+            "Source/Runtime/RenderExtraction/**",
+            "Source/Runtime/Render/** except protected user files",
+            "Tests/** shadow-related paths"
+          ],
+          "verificationResponsibility": "Read-only audit of point and spot light contracts, current shadow resources and passes, clustered-light identity, atlas ownership, masked silhouettes, and the smallest concrete implementation seams."
+        },
+        {
+          "owner": "gfx19-reflection-audit",
+          "scope": [
+            "Source/Runtime/RenderContracts/**",
+            "Source/Runtime/Render/** except protected user files",
+            "Tests/** reflection, SSR, Hi-Z, and environment paths"
+          ],
+          "verificationResponsibility": "Read-only audit of current SSR, Hi-Z, probe and IBL behavior, graph resources, readiness/fallback reporting, shader catalog, and exact implementation gaps."
+        },
+        {
+          "owner": "gfx19-sample-audit",
+          "scope": [
+            "Samples/**",
+            "Tests/CMake/**",
+            "Tests/SampleManifestValidation/**",
+            "Tests/SampleReportContentValidation/**",
+            "CMakePresets.json"
+          ],
+          "verificationResponsibility": "Read-only audit of the best existing Sample scenario and the exact cooked-only DX12/Vulkan Forward+/Deferred capture, image, and receipt qualification matrix."
+        },
+        {
+          "owner": "fix-dx12-surface-fixture",
+          "scope": [
+            "Tests/DX12Validation/main.cpp"
+          ],
+          "verificationResponsibility": "Update the focused native surface-material fixture to bind the GFX19 local-shadow atlas shader ABI, then build DX12Validation and run the two affected native tests."
+        }
+      ],
+      "status": "passing",
+      "evidence": [
+        {
+          "verificationId": "focused-build",
+          "command": "cmake --build --preset win_x64_debug --target LocalShadowRenderValidation ReflectionProbeValidation HiZReflectionValidation RenderContractsValidation RenderFeatureValidation RenderGraphValidation RenderHonestyValidation RenderPassValidation PipelineCacheValidation ShaderProgramCatalogValidation ShaderCompilerValidation RHIArchitectureValidation EcsSceneSnapshotValidation EcsFrozenSceneBridgeValidation EcsFrameExtractionValidation SampleManifestValidation SampleReportContentValidation RenderVerseSamples RVXSampleAssets",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T22:07:54.9476070Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "0d066784d70f78773a197112aaaa367324df7324b0a408868a08774666c9b5f6",
+          "notes": "All exact GFX19 renderer, shader-contract, extraction, Sample, and focused validation targets built successfully."
+        },
+        {
+          "verificationId": "focused-tests",
+          "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R \"^(LocalShadowRenderValidation|ReflectionProbeValidation|HiZReflectionValidation|RenderContractsValidation|RenderFeatureValidation|RenderGraphValidation|RenderHonestyValidation|RenderPassValidation|PipelineCacheValidation|ShaderProgramCatalogValidation|ShaderCompilerValidation|RHIArchitectureValidation|EcsSceneSnapshotValidation|EcsFrozenSceneBridgeValidation|EcsFrameExtractionValidation|SampleManifestValidation|SampleReportContentValidation)(\\\\.|$)\"",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T22:07:54.9476070Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "0d066784d70f78773a197112aaaa367324df7324b0a408868a08774666c9b5f6",
+          "notes": "Focused GFX19 and affected contract tests passed 303/303 with no failures."
+        },
+        {
+          "verificationId": "gfx19-local-lighting",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_qualification_debug -BuildPreset win_x64_qualification_debug -TestPreset win_x64_qualification_debug_gfx19_local_lighting -BuildDir build\\win_x64_qualification_debug -Configuration Debug -BuildTarget RVXValidationSuiteGfx19LocalLighting -RequiredLabel suite.gfx19-local-lighting -ExpectedTestCount 12 -BaseRef master -SkipConfigure",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T22:06:07.7790629Z",
+          "artifact": ".agent-harness/receipts/RequiredSuite.d1d1c1b758ab48e1a29dba58d22d06ec.json",
+          "artifactSha256": "f84d38a5e614a68be7d824a6f1ab18d31dee76089613d7779e787012f22bfe00",
+          "runId": "d1d1c1b758ab48e1a29dba58d22d06ec",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "0d066784d70f78773a197112aaaa367324df7324b0a408868a08774666c9b5f6",
+          "notes": "DX12 and Vulkan Forward+/Deferred local-lighting capture, image, and receipt matrix passed 12/12 without fallback."
+        },
+        {
+          "verificationId": "gfx19-qualification",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_qualification_debug -BuildPreset win_x64_qualification_debug -TestPreset win_x64_qualification_debug_gfx19_reflections -BuildDir build\\win_x64_qualification_debug -Configuration Debug -BuildTarget RVXValidationSuiteGfx19Reflections -RequiredLabel suite.gfx19-reflections -ExpectedTestCount 12 -BaseRef master -SkipConfigure",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T22:04:13.3443237Z",
+          "artifact": ".agent-harness/receipts/RequiredSuite.4ed41a54742647fb9a38d03a661532a9.json",
+          "artifactSha256": "4ef77f67ea0fd5bacbd6b95aac9ba9b23f3f71a575bbf3ff7005098982f737be",
+          "runId": "4ed41a54742647fb9a38d03a661532a9",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "0d066784d70f78773a197112aaaa367324df7324b0a408868a08774666c9b5f6",
+          "notes": "DX12 and Vulkan Forward+/Deferred Hi-Z reflection capture, image, and receipt matrix passed 12/12 without fallback."
+        },
+        {
+          "verificationId": "full-debug-build-truth",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T21:57:47.2442096Z",
+          "artifact": ".agent-harness/receipts/BuildTruth.42228f2dabf94f77a54b9635b16d0a4f.json",
+          "artifactSha256": "a41e4f4b72ca85c39b8bd1eff80df2fb8708076d5688e2b416e28ee1c5f6e195",
+          "runId": "42228f2dabf94f77a54b9635b16d0a4f",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "0d066784d70f78773a197112aaaa367324df7324b0a408868a08774666c9b5f6",
+          "notes": "Build Truth passed Architecture 61/61, Unit 1888/1888, Integration 737/737, and DX12 Native 59/59 on the requested hardware backend with no software or backend fallback."
+        },
+        {
+          "verificationId": "shipping-required-suite",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationSuiteRequiredShipping -RequiredLabel suite.required-shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T22:00:11.1384148Z",
+          "artifact": ".agent-harness/receipts/RequiredSuite.aafc2cc8b10e4719b6787f3049b5920c.json",
+          "artifactSha256": "3aab6515b6bc4b87aa2807e8d1bda30e802a5d40a7c48439b3aefe20aa917a36",
+          "runId": "aafc2cc8b10e4719b6787f3049b5920c",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "0d066784d70f78773a197112aaaa367324df7324b0a408868a08774666c9b5f6",
+          "notes": "Windows Shipping Release closure, host cook fixture, cooked-only smoke, evidence, and dynamic dependency checks passed 5/5."
+        },
+        {
+          "verificationId": "architecture-required-suite",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T22:00:58.7067103Z",
+          "artifact": ".agent-harness/receipts/Architecture.a6525347eb0d468babbfca94e9c0b701.json",
+          "artifactSha256": "32d9d53bdc4e8a99a3b81bc21d745cdb6703c1ec49c1ab1fece1cd41a3a1f250",
+          "runId": "a6525347eb0d468babbfca94e9c0b701",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "0d066784d70f78773a197112aaaa367324df7324b0a408868a08774666c9b5f6",
+          "notes": "Architecture required suite passed 61/61 and its immutable receipt matches the requested preset, configuration, commit, and product fingerprint."
+        },
+        {
+          "verificationId": "diff-hygiene",
+          "command": "git diff --check",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T22:07:54.9476070Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "0d066784d70f78773a197112aaaa367324df7324b0a408868a08774666c9b5f6",
+          "notes": "Working-tree diff hygiene passed; Git emitted only expected line-ending conversion notices for protected user-owned files."
+        }
+      ],
+      "blocker": null,
+      "nextStep": "Begin GFX20 as a separately claimed feature for production Vulkan ray tracing, including acceleration-structure sizing and builds, ray-tracing pipelines, SBT alignment, descriptors, barriers, dispatch, and native evidence.",
+      "updatedAt": "2026-08-27T22:07:54.9476070Z"
+    },
+    {
+      "id": "gfx-20",
+      "name": "Production Vulkan ray tracing RHI",
+      "behavior": "A Vulkan device advertises ray tracing only when the required extensions, feature chain, limits, function entry points, and RenderVerseX implementation are all ready; supported hardware can build BLAS/TLAS resources, create a ray-tracing pipeline and aligned shader table, bind acceleration structures, issue validated barriers, and execute vkCmdTraceRaysKHR through backend-neutral RHI contracts with immutable cooked SPIR-V artifacts.",
+      "owner": "primary-coordinator",
+      "scope": {
+        "include": [
+          "Source/Runtime/RHI/Include/RHI/**",
+          "Source/Runtime/RHI_Vulkan/**",
+          "Source/Runtime/ShaderContracts/**",
+          "Source/Developer/ShaderCompiler/**",
+          "Source/Developer/AssetPipeline/**",
+          "Source/Developer/EngineDevelopmentComposition/Private/EngineDevelopmentComposition.cpp",
+          "Source/Runtime/Render/Shaders/RayTracing/**",
+          "Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json",
+          "Tests/VulkanValidation/**",
+          "Tests/VulkanRayTracingValidation/**",
+          "Tests/RHIContractValidation/**",
+          "Tests/RHIPipelineValidation/**",
+          "Tests/RHIArchitectureValidation/**",
+          "Tests/PipelineCacheValidation/main.cpp",
+          "Tests/ShaderCompilerValidation/**",
+          "Tests/ShaderProgramCatalogValidation/**",
+          "Tests/CMake/**",
+          "CMakePresets.json",
+          "Scripts/BuildTruth/BuildTruthV3.psm1",
+          "Scripts/BuildTruth/Test-RequiredSuiteV1.ps1",
+          "Scripts/rhi_ownership_inventory_m1.json",
+          "feature_list.json",
+          "progress.md",
+          "session-handoff.md"
+        ],
+        "exclude": [
+          "AGENTS.md",
+          "CLAUDE.md",
+          "Docs/README.md",
+          "Docs/engine-capabilities.json",
+          ".agent-harness/**",
+          "Source/Runtime/Render/Include/Render/Renderer/ViewData.h",
+          "Source/Runtime/Render/Shaders/GPUDriven/GPUSceneRaster.hlsli",
+          "Source/Runtime/RHI_DX12/**",
+          "Source/Runtime/Render/Private/**",
+          "Samples/**",
+          "Source/Programs/**",
+          "assets/**",
+          "build/**"
+        ]
+      },
+      "dependencies": [
+        "harness-001",
+        "gfx-19"
+      ],
+      "acceptanceCriteria": [
+        "Vulkan capability discovery requires VK_KHR_acceleration_structure, VK_KHR_ray_tracing_pipeline, VK_KHR_deferred_host_operations, VK_KHR_buffer_device_address, their complete feature chain, required limits, and all required device entry points; any missing prerequisite keeps implementationSupported and pipelineReady false.",
+        "The Vulkan backend implements validated BLAS/TLAS size queries, storage and scratch allocation requirements, device-address inputs, CPU and GPU TLAS instance inputs, build/update commands, and explicit acceleration-structure lifetime ownership without backend objects escaping the RHI.",
+        "Ray-tracing pipelines translate backend-neutral shader groups to Vulkan stages/groups, validate recursion and payload limits, retrieve shader-group handles, and build SBT regions that satisfy handle-size, handle-alignment, and base-alignment requirements.",
+        "Acceleration-structure descriptors use the Vulkan pNext write contract, DispatchRays calls vkCmdTraceRaysKHR with validated non-zero aligned regions, and synchronization maps acceleration-structure build and ray-tracing shader scopes without generic all-commands fallbacks.",
+        "RayGeneration, Miss, ClosestHit, AnyHit, Intersection, and Callable stages can be compiled and serialized as strict Vulkan SPIR-V cooked shader artifacts with correct stage metadata and no DXIL or source-compilation fallback.",
+        "A real Vulkan native test records physical-device identity, extension and feature readiness, AS build completion, pipeline and SBT readiness, a non-zero vkCmdTraceRaysKHR dispatch, and a deterministic GPU result; supported hardware may not skip or silently downgrade.",
+        "Existing DX12 ray tracing contracts and all raster backends remain behaviorally intact, while unsupported Vulkan devices fail closed and do not advertise production ray tracing.",
+        "Focused tests, the GFX20 Vulkan RT required suite, full Windows Build Truth, Shipping closure, Architecture, and diff hygiene pass with evidence bound to one product-source digest."
+      ],
+      "verification": [
+        {
+          "id": "focused-build",
+          "layer": "focused",
+          "command": "cmake --build --preset win_x64_debug --target VulkanValidation RHIContractValidation RHIPipelineValidation RHIArchitectureValidation ShaderCompilerValidation ShaderProgramCatalogValidation",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        },
+        {
+          "id": "focused-tests",
+          "layer": "focused",
+          "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R \"^(VulkanValidation|RHIContractValidation|RHIPipelineValidation|RHIArchitectureValidation|ShaderCompilerValidation|ShaderProgramCatalogValidation)(\\\\.|$)\"",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        },
+        {
+          "id": "gfx20-vulkan-rt-native",
+          "layer": "native",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -TestPreset win_x64_debug_gfx20_vulkan_rt -BuildDir build\\win_x64_debug -Configuration Debug -BuildTarget RVXValidationSuiteGfx20VulkanRayTracing -RequiredLabel suite.gfx20-vulkan-rt -ExpectedTestCount 3 -RequiredEvidence 'Tests/VulkanRayTracingValidation/vulkan-ray-tracing-evidence.json' -BaseRef master -SkipConfigure",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/RequiredSuite.{runId}.json",
+          "expectedReceipt": {
+            "kind": "RequiredSuite",
+            "baseRef": "master",
+            "configurePreset": "win_x64_debug",
+            "buildPreset": "win_x64_debug",
+            "testPreset": "win_x64_debug_gfx20_vulkan_rt",
+            "buildDir": "build/win_x64_debug",
+            "configuration": "Debug",
+            "buildTargets": [
+              "RVXValidationSuiteGfx20VulkanRayTracing"
+            ],
+            "requiredLabel": "suite.gfx20-vulkan-rt",
+            "expectedTestCount": 3,
+            "fresh": false,
+            "skipConfigure": true,
+            "requiredSemanticArtifacts": [
+              "build/win_x64_debug/Tests/VulkanRayTracingValidation/vulkan-ray-tracing-evidence.json"
+            ]
+          }
+        },
+        {
+          "id": "full-debug-build-truth",
+          "layer": "integration",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/BuildTruth.{runId}.json",
+          "expectedReceipt": {
+            "kind": "BuildTruth",
+            "baseRef": "master",
+            "configurePreset": "win_x64_debug",
+            "buildPreset": "win_x64_debug",
+            "laneTestPresets": [
+              "win_x64_debug_architecture",
+              "win_x64_debug_unit",
+              "win_x64_debug_integration",
+              "win_x64_debug_native"
+            ],
+            "buildDir": "build/win_x64_debug",
+            "configuration": "Debug",
+            "requiredNativeBackend": "DX12",
+            "softwareAdapterAllowed": false,
+            "fresh": false
+          }
+        },
+        {
+          "id": "shipping-required-suite",
+          "layer": "shipping",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationSuiteRequiredShipping -RequiredLabel suite.required-shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/RequiredSuite.{runId}.json",
+          "expectedReceipt": {
+            "kind": "RequiredSuite",
+            "baseRef": "master",
+            "configurePreset": "win_x64_shipping_release",
+            "buildPreset": "win_x64_shipping_release",
+            "testPreset": "win_x64_shipping_release_shipping",
+            "buildDir": "build/win_x64_shipping_release",
+            "configuration": "Release",
+            "buildTargets": [
+              "RVXValidationSuiteRequiredShipping"
+            ],
+            "requiredLabel": "suite.required-shipping",
+            "expectedTestCount": 5,
+            "fresh": false,
+            "skipConfigure": true,
+            "requiredSemanticArtifacts": [
+              "build/win_x64_shipping_release/Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json",
+              "build/win_x64_shipping_release/Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json"
+            ]
+          }
+        },
+        {
+          "id": "architecture-required-suite",
+          "layer": "architecture",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/Architecture.{runId}.json",
+          "expectedReceipt": {
+            "kind": "Architecture",
+            "baseRef": "master",
+            "preset": "win_x64_debug",
+            "testPreset": "win_x64_debug_architecture",
+            "buildDir": "build/win_x64_debug",
+            "configuration": "Debug",
+            "buildTarget": "RVXValidationArchitecture",
+            "requiredLabel": "lane.architecture",
+            "allowConfigure": false
+          }
+        },
+        {
+          "id": "diff-hygiene",
+          "layer": "static",
+          "command": "git diff --check",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        }
+      ],
+      "coordination": [
+        {
+          "owner": "gfx20-vulkan-rt-audit",
+          "scope": [
+            "Source/Runtime/RHI/Include/RHI/**",
+            "Source/Runtime/RHI_Vulkan/**"
+          ],
+          "verificationResponsibility": "Read-only audit of Vulkan ray-tracing extension and feature discovery, AS resources and commands, RT pipelines, SBT, descriptors, barriers, dispatch, and the smallest production implementation seams."
+        },
+        {
+          "owner": "gfx20-cross-backend-audit",
+          "scope": [
+            "Source/Runtime/RHI/Include/RHI/**",
+            "Source/Runtime/RHI_DX12/**",
+            "Source/Runtime/Render/** ray-tracing paths"
+          ],
+          "verificationResponsibility": "Read-only comparison against the production DX12 path to preserve backend-neutral semantics, ownership, validation, and diagnostics."
+        },
+        {
+          "owner": "gfx20-shader-validation-audit",
+          "scope": [
+            "Source/Runtime/ShaderContracts/**",
+            "Source/Developer/ShaderCompiler/**",
+            "Source/Runtime/Render/Shaders/RayTracing/**",
+            "Tests/** shader and Vulkan native paths",
+            "Tests/CMake/**",
+            "CMakePresets.json"
+          ],
+          "verificationResponsibility": "Read-only audit of cooked Vulkan RT shader artifacts and the smallest fail-closed native qualification suite with real vkCmdTraceRaysKHR evidence."
+        },
+        {
+          "owner": "gfx20-device-as",
+          "scope": [
+            "Source/Runtime/RHI_Vulkan/Private/VulkanDevice.h",
+            "Source/Runtime/RHI_Vulkan/Private/VulkanDevice.cpp",
+            "Source/Runtime/RHI_Vulkan/Private/VulkanResources.h",
+            "Source/Runtime/RHI_Vulkan/Private/VulkanResources.cpp",
+            "Source/Runtime/RHI_Vulkan/Private/VulkanRayTracing.h",
+            "Source/Runtime/RHI_Vulkan/Private/VulkanRayTracing.cpp",
+            "Source/Runtime/RHI_Vulkan/CMakeLists.txt"
+          ],
+          "verificationResponsibility": "Implement fail-closed optional Vulkan RT device readiness, PFN/property ownership, AS resources, build-size queries, and exact native buffer usages."
+        },
+        {
+          "owner": "gfx20-pipeline-sbt",
+          "scope": [
+            "Source/Runtime/RHI_Vulkan/Private/VulkanPipeline.h",
+            "Source/Runtime/RHI_Vulkan/Private/VulkanPipeline.cpp",
+            "Source/Runtime/RHI_Vulkan/Private/VulkanDescriptorAllocator.cpp"
+          ],
+          "verificationResponsibility": "Implement RT pipeline/group translation, SBT construction and alignment, acceleration-structure descriptor writes, and descriptor-pool capacity."
+        },
+        {
+          "owner": "gfx20-command",
+          "scope": [
+            "Source/Runtime/RHI_Vulkan/Private/VulkanCommandContext.h",
+            "Source/Runtime/RHI_Vulkan/Private/VulkanCommandContext.cpp"
+          ],
+          "verificationResponsibility": "Implement validated Vulkan BLAS/TLAS recording, precise synchronization, RT binding, and vkCmdTraceRaysKHR dispatch while preserving existing edits."
+        }
+      ],
+      "status": "passing",
+      "evidence": [
+        {
+          "verificationId": "focused-build",
+          "command": "cmake --build --preset win_x64_debug --target VulkanValidation RHIContractValidation RHIPipelineValidation RHIArchitectureValidation ShaderCompilerValidation ShaderProgramCatalogValidation",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T23:57:08.9711201Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "40385914d728b1b3b5fd632272109cb6b39b2ce349656dd5f38560306ca9d17a",
+          "notes": "The exact Vulkan, RHI contract, pipeline, architecture, ShaderCompiler, and ShaderProgramCatalog targets built successfully for the final GFX20 source state."
+        },
+        {
+          "verificationId": "focused-tests",
+          "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R \"^(VulkanValidation|RHIContractValidation|RHIPipelineValidation|RHIArchitectureValidation|ShaderCompilerValidation|ShaderProgramCatalogValidation)(\\\\.|$)\"",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T23:57:08.9711201Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "40385914d728b1b3b5fd632272109cb6b39b2ce349656dd5f38560306ca9d17a",
+          "notes": "Focused Vulkan native and affected RHI/shader contract tests passed 139/139 with no failures."
+        },
+        {
+          "verificationId": "gfx20-vulkan-rt-native",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -TestPreset win_x64_debug_gfx20_vulkan_rt -BuildDir build\\win_x64_debug -Configuration Debug -BuildTarget RVXValidationSuiteGfx20VulkanRayTracing -RequiredLabel suite.gfx20-vulkan-rt -ExpectedTestCount 3 -RequiredEvidence 'Tests/VulkanRayTracingValidation/vulkan-ray-tracing-evidence.json' -BaseRef master -SkipConfigure",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T23:37:42.8118460Z",
+          "artifact": ".agent-harness/receipts/RequiredSuite.e7ac8422af7e457cbd8d48c29d506945.json",
+          "artifactSha256": "9e401ae1d4e8aa918e6b48b0064b497d016bdc86fca80a810475253077ef3b4b",
+          "runId": "e7ac8422af7e457cbd8d48c29d506945",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "40385914d728b1b3b5fd632272109cb6b39b2ce349656dd5f38560306ca9d17a",
+          "notes": "The fail-closed GFX20 suite passed 3/3; the RTX 4070 Ti executed vkCmdTraceRaysKHR, returned deterministic sentinel 202399319, and reported zero Vulkan validation errors or warnings."
+        },
+        {
+          "verificationId": "full-debug-build-truth",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T23:48:32.3698448Z",
+          "artifact": ".agent-harness/receipts/BuildTruth.3a1f41b238144aff95d5a3ceb2ca4ad3.json",
+          "artifactSha256": "6fc5403cc2547b0ddee4cecffaee51b7557b41d0645fb29db113cb3f96dad853",
+          "runId": "3a1f41b238144aff95d5a3ceb2ca4ad3",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "40385914d728b1b3b5fd632272109cb6b39b2ce349656dd5f38560306ca9d17a",
+          "notes": "Build Truth passed Architecture 61/61, Unit 1888/1888, Integration 737/737, and DX12 Native 59/59 on the requested hardware backend without software or backend fallback."
+        },
+        {
+          "verificationId": "shipping-required-suite",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationSuiteRequiredShipping -RequiredLabel suite.required-shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T23:54:05.8744407Z",
+          "artifact": ".agent-harness/receipts/RequiredSuite.96070d3fdb6543ad83e51714fa2f4527.json",
+          "artifactSha256": "7a4c77639ca6322612ef93cd0fcff808e89bf00549eb4b64ddca861ddf94f14b",
+          "runId": "96070d3fdb6543ad83e51714fa2f4527",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "40385914d728b1b3b5fd632272109cb6b39b2ce349656dd5f38560306ca9d17a",
+          "notes": "After the documented prerequisite build of win_x64_shipping_host_release/RVXCook, Windows Shipping Release target closure, host cook fixture, cooked-only smoke, semantic evidence, and dynamic dependency checks passed 5/5. The initial stale host-tool ABI failure was preserved as diagnostic evidence and required no product-source change."
+        },
+        {
+          "verificationId": "architecture-required-suite",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T23:38:36.7256092Z",
+          "artifact": ".agent-harness/receipts/Architecture.b30cce79e9d94585a820b7998e2c6d99.json",
+          "artifactSha256": "c88e3e76c60c63f15b30a11a4e6ac0c89a672655407b983bef0474ac62f3800c",
+          "runId": "b30cce79e9d94585a820b7998e2c6d99",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "40385914d728b1b3b5fd632272109cb6b39b2ce349656dd5f38560306ca9d17a",
+          "notes": "Architecture required suite passed 61/61 and the immutable receipt matches the requested preset, configuration, commit, and product fingerprint."
+        },
+        {
+          "verificationId": "diff-hygiene",
+          "command": "git diff --check",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-27T23:57:08.9711201Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "40385914d728b1b3b5fd632272109cb6b39b2ce349656dd5f38560306ca9d17a",
+          "notes": "Working-tree diff hygiene passed; Git emitted only line-ending conversion notices for existing protected or previously modified files."
+        }
+      ],
+      "blocker": null,
+      "nextStep": "Begin GFX21 as a separately claimed feature for shared DX12/Vulkan hybrid ray-traced shadows and reflections, including a backend-neutral RayTracingScene, BLAS cache/compaction, rigid TLAS updates, masked any-hit, half-resolution reflections, denoising, and exact required-versus-optional fallback evidence.",
+      "updatedAt": "2026-08-27T23:57:08.9711201Z"
+    },
+    {
+      "id": "gfx-21",
+      "name": "Production hybrid ray-traced shadows and reflections",
+      "behavior": "DX12 and Vulkan consume one backend-neutral, generation-qualified RayTracingScene to render primary directional ray-traced shadows and half-resolution ray-traced reflections for static and rigid geometry, including masked any-hit and spatial/temporal denoising; required HybridRayTracing requests fail closed while optional requests use only the declared raster-shadow and SSR-to-probe-to-IBL fallbacks.",
+      "owner": "primary-coordinator",
+      "scope": {
+        "include": [
+          "Source/Runtime/RHI/Include/RHI/RHICapabilities.h",
+          "Source/Runtime/RHI/Include/RHI/RHICommandContext.h",
+          "Source/Runtime/RHI/Include/RHI/RHIDevice.h",
+          "Source/Runtime/RHI/Include/RHI/RHIResources.h",
+          "Source/Runtime/RHI/Include/RHI/RHIRayTracing.h",
+          "Source/Runtime/RHI/Private/RHIValidation.cpp",
+          "Source/Runtime/RHI_DX12/Private/**",
+                                  "Source/Runtime/RHI_Vulkan/Private/**",
+                                  "Source/Developer/ShaderCompiler/**",
+                                  "Source/Runtime/Render/Include/Render/RayTracing/**",
+                                  "Source/Runtime/Render/Private/RayTracing/**",
+                                  "Source/Runtime/Render/Include/Render/Passes/RayTraced*.h",
+                                  "Source/Runtime/Render/Include/Render/Passes/RenderPassRecordContext.h",
+                                  "Source/Runtime/Render/Private/Passes/RayTraced*.cpp",
+          "Source/Runtime/Render/Include/Render/PipelineCache.h",
+          "Source/Runtime/Render/Private/PipelineCache.cpp",
+          "Source/Runtime/Render/Private/Context/RenderContext.cpp",
+          "Source/Runtime/Render/Include/Render/Features/**",
+          "Source/Runtime/Render/Private/Features/**",
+                                  "Source/Runtime/Render/Include/Render/RenderDiagnostics.h",
+                                  "Source/Runtime/Render/Include/Render/RenderSubsystem.h",
+                                  "Source/Runtime/Render/Include/Render/Renderer/SceneRenderer.h",
+                                  "Source/Runtime/Render/Private/RenderSubsystem.cpp",
+                                  "Source/Runtime/Render/Private/Renderer/SceneRenderer.cpp",
+                                  "Source/Runtime/RenderContracts/Include/RenderContracts/RenderPipelineProfile.h",
+          "Source/Runtime/Render/Shaders/RayTracing/**",
+          "Source/Runtime/Render/Shaders/PostProcess/RayTracedReflection*.hlsl",
+          "Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json",
+          "Source/Runtime/Render/CMakeLists.txt",
+          "Tests/DX12Validation/**",
+          "Tests/VulkanValidation/**",
+          "Tests/VulkanRayTracingValidation/**",
+          "Tests/PipelineCacheValidation/**",
+          "Tests/RenderPassValidation/**",
+          "Tests/RenderFeatureValidation/**",
+          "Tests/RenderGraphValidation/**",
+                                  "Tests/RenderHonestyValidation/**",
+                                  "Tests/HybridRayTracingPolicyValidation/**",
+                                  "Tests/HybridRayTracingValidation/**",
+                                  "Tests/RayTracingSceneLifecycleValidation/**",
+                                  "Tests/RenderSceneValidation/**",
+          "Tests/ShaderCompilerValidation/**",
+                                  "Tests/ShaderProgramCatalogValidation/**",
+                                  "Tests/RenderThreadRuntimeValidation/**",
+                                  "Samples/Common/Include/Samples/SampleParticleVfxDiagnostics.h",
+                                  "Samples/Common/Include/Samples/SampleWaterSurfaceDiagnostics.h",
+                                  "Samples/Common/Private/SampleCLI.cpp",
+                                  "Samples/Common/Private/SampleRunner.cpp",
+                                  "Tests/SampleCLIValidation/**",
+                                  "Tests/SampleReportContentValidation/**",
+                                  "Tests/CMake/**",
+          "CMakePresets.json",
+          "Scripts/BuildTruth/BuildTruthV3.psm1",
+          "Scripts/BuildTruth/Test-RequiredSuiteV1.ps1",
+          "Scripts/rhi_ownership_inventory_m1.json",
+          "feature_list.json",
+          "progress.md",
+          "session-handoff.md"
+        ],
+        "exclude": [
+          "AGENTS.md",
+          "CLAUDE.md",
+          "Docs/README.md",
+          "Docs/engine-capabilities.json",
+          ".agent-harness/**",
+          "Source/Runtime/Render/Include/Render/Renderer/ViewData.h",
+          "Source/Runtime/Render/Shaders/GPUDriven/GPUSceneRaster.hlsli",
+                                  "Source/Developer/AssetImport/**",
+                                  "Source/Programs/**",
+          "assets/**",
+          "build/**"
+        ]
+      },
+      "dependencies": [
+        "harness-001",
+        "gfx-20"
+      ],
+      "acceptanceCriteria": [
+        "One backend-neutral RayTracingScene build plan and manager own static/rigid BLAS identity, TLAS instance order, material/alpha metadata, generation, and execution receipts for both DX12 and Vulkan; Render code contains no backend branch.",
+        "Static BLAS entries are reused by exact geometry identity, retired by completed GPU evidence, and compacted only through an explicit backend-neutral post-build-size and compact-copy contract; unsupported compaction remains fail-closed and is never advertised or silently emulated.",
+        "Rigid transform changes reuse BLAS and update an AllowUpdate TLAS in place when the structural signature is compatible; geometry/material-layout changes rebuild the affected structures, and skinned geometry is explicitly excluded with a structured reason.",
+        "Masked geometry uses production any-hit shaders with the same alpha cutoff, UV set, texture transform, sampler, index, and geometry metadata semantics as raster visibility; missing metadata fails readiness rather than becoming opaque.",
+        "Primary directional RT shadows and half-resolution RT reflections execute on DX12 and Vulkan with non-zero native dispatch evidence, exact frame/view/scene identity, immutable cooked shaders, and no source compilation or backend fallback.",
+        "RT reflections consume depth, normal, material, velocity, exposure, and previous-history identity; spatial and temporal denoising reject disocclusion and reset on camera cut, resize, surface change, format change, and scene discontinuity.",
+        "Optional RT shadow failure selects raster CSM, and optional RT reflection failure selects SSR then Probe then IBL; required HybridRayTracing requests fail for missing hardware, shader, AS, pipeline, inputs, dispatch, or evidence and never downgrade.",
+        "Focused contracts, a DX12/Vulkan GFX21 native required suite, full Windows Build Truth, Shipping cooked-only closure, Architecture, and diff hygiene pass with evidence bound to one product-source digest; Linux Vulkan confirmation remains pending remote CI."
+      ],
+      "verification": [
+        {
+          "id": "focused-build",
+          "layer": "focused",
+          "command": "cmake --build --preset win_x64_debug --target HybridRayTracingPolicyValidation RayTracingSceneLifecycleValidation PipelineCacheValidation RenderPassValidation RenderFeatureValidation RenderGraphValidation RenderHonestyValidation DX12Validation VulkanValidation VulkanRayTracingValidation ShaderCompilerValidation ShaderProgramCatalogValidation RenderSceneValidation RenderThreadRuntimeValidation SampleCLIValidation SampleReportContentValidation",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        },
+        {
+          "id": "focused-tests",
+          "layer": "focused",
+          "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R \"^(HybridRayTracingPolicyValidation|RayTracingSceneLifecycleValidation|PipelineCacheValidationFixture|GroundTruthAmbientOcclusionValidation|RenderFrameTimingValidation|RenderPassStatusValidation|RenderPassValidation|RenderPassValidationFixture|RenderPostProcessStackValidation|SceneRendererDeferredPresentationValidation|SceneRendererDiagnosticsValidation|SceneRendererEnvironmentIBLDiagnostics|SceneRendererExternalTargetValidation|SceneRendererPassRecordingValidation|SceneRendererReflectionQualificationValidation|SceneRendererSubmissionValidation|SceneRendererTemporalHistoryValidation|RenderFeatureValidation|RenderGraphValidation|RenderHonestyValidationFixture|DX12Validation|VulkanValidation|VulkanRayTracingValidation|ShaderBindingABIValidation|ShaderCompilerPolicyValidation|ShaderCompilerValidationFixture|ShaderProgramCatalogValidation|RenderSceneValidation|RenderThreadRuntimeValidation|RenderThreadRuntimeValidationShared/RuntimeConformanceTest|SampleCLIValidation|SampleReportContentValidationSelfTest)(\\.|$)\"",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        },
+        {
+          "id": "gfx21-hybrid-rt-native",
+          "layer": "native",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -TestPreset win_x64_debug_gfx21_hybrid_rt -BuildDir build\\win_x64_debug -Configuration Debug -BuildTarget RVXValidationSuiteGfx21HybridRayTracing -RequiredLabel suite.gfx21-hybrid-rt -ExpectedTestCount 8 -RequiredEvidence 'Tests/HybridRayTracingValidation/dx12-hybrid-ray-tracing-evidence.json;Tests/HybridRayTracingValidation/vulkan-hybrid-ray-tracing-evidence.json' -BaseRef master -SkipConfigure",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/RequiredSuite.{runId}.json",
+          "expectedReceipt": {
+            "kind": "RequiredSuite",
+            "baseRef": "master",
+            "configurePreset": "win_x64_debug",
+            "buildPreset": "win_x64_debug",
+            "testPreset": "win_x64_debug_gfx21_hybrid_rt",
+            "buildDir": "build/win_x64_debug",
+            "configuration": "Debug",
+            "buildTargets": [
+              "RVXValidationSuiteGfx21HybridRayTracing"
+            ],
+            "requiredLabel": "suite.gfx21-hybrid-rt",
+            "expectedTestCount": 8,
+            "fresh": false,
+            "skipConfigure": true,
+            "requiredSemanticArtifacts": [
+              "build/win_x64_debug/Tests/HybridRayTracingValidation/dx12-hybrid-ray-tracing-evidence.json",
+              "build/win_x64_debug/Tests/HybridRayTracingValidation/vulkan-hybrid-ray-tracing-evidence.json"
+            ]
+          }
+        },
+        {
+          "id": "full-debug-build-truth",
+          "layer": "integration",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/BuildTruth.{runId}.json",
+          "expectedReceipt": {
+            "kind": "BuildTruth",
+            "baseRef": "master",
+            "configurePreset": "win_x64_debug",
+            "buildPreset": "win_x64_debug",
+            "laneTestPresets": [
+              "win_x64_debug_architecture",
+              "win_x64_debug_unit",
+              "win_x64_debug_integration",
+              "win_x64_debug_native"
+            ],
+            "buildDir": "build/win_x64_debug",
+            "configuration": "Debug",
+            "requiredNativeBackend": "DX12",
+            "softwareAdapterAllowed": false,
+            "fresh": false
+          }
+        },
+        {
+          "id": "shipping-required-suite",
+          "layer": "shipping",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationSuiteRequiredShipping -RequiredLabel suite.required-shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/RequiredSuite.{runId}.json",
+          "expectedReceipt": {
+            "kind": "RequiredSuite",
+            "baseRef": "master",
+            "configurePreset": "win_x64_shipping_release",
+            "buildPreset": "win_x64_shipping_release",
+            "testPreset": "win_x64_shipping_release_shipping",
+            "buildDir": "build/win_x64_shipping_release",
+            "configuration": "Release",
+            "buildTargets": [
+              "RVXValidationSuiteRequiredShipping"
+            ],
+            "requiredLabel": "suite.required-shipping",
+            "expectedTestCount": 5,
+            "fresh": false,
+            "skipConfigure": true,
+            "requiredSemanticArtifacts": [
+              "build/win_x64_shipping_release/Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json",
+              "build/win_x64_shipping_release/Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json"
+            ]
+          }
+        },
+        {
+          "id": "architecture-required-suite",
+          "layer": "architecture",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/Architecture.{runId}.json",
+          "expectedReceipt": {
+            "kind": "Architecture",
+            "baseRef": "master",
+            "preset": "win_x64_debug",
+            "testPreset": "win_x64_debug_architecture",
+            "buildDir": "build/win_x64_debug",
+            "configuration": "Debug",
+            "buildTarget": "RVXValidationArchitecture",
+            "requiredLabel": "lane.architecture",
+            "allowConfigure": false
+          }
+        },
+        {
+          "id": "diff-hygiene",
+          "layer": "static",
+          "command": "git diff --check",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        }
+      ],
+      "coordination": [
+        {
+          "owner": "gfx21-rhi-compaction-implementation",
+          "scope": [
+            "Source/Runtime/RHI/Include/RHI/RHIRayTracing.h",
+            "Source/Runtime/RHI/Include/RHI/RHICommandContext.h",
+            "Source/Runtime/RHI/Include/RHI/RHIDevice.h",
+            "Source/Runtime/RHI/Include/RHI/RHIResources.h",
+            "Source/Runtime/RHI/Include/RHI/RHICapabilities.h",
+            "Source/Runtime/RHI_DX12/Private/** acceleration-structure paths",
+            "Source/Runtime/RHI_Vulkan/Private/** acceleration-structure paths",
+            "Tests/DX12Validation/** compaction/update contracts",
+            "Tests/VulkanValidation/** compaction/update contracts"
+          ],
+          "verificationResponsibility": "Implement and verify the dedicated backend-neutral compacted-size query/resolve/compact-copy contract plus equivalent DX12/Vulkan capability, validation, submitted build provenance, and native contract tests; do not edit Render, CMake registration, presets, or global ledger files."
+        },
+        {
+          "owner": "gfx21-scene-manager-implementation",
+          "scope": [
+            "Source/Runtime/Render/Include/Render/RayTracing/RayTracingScene*.h",
+            "Source/Runtime/Render/Private/RayTracing/RayTracingScene*.cpp",
+            "Tests/RayTracingSceneLifecycleValidation/**"
+          ],
+          "verificationResponsibility": "Implement and verify submission-qualified BLAS/TLAS state, exact structural identity, rigid TLAS updates, static/rigid versus skinned classification, masked metadata readiness, and a focused standalone lifecycle test source; do not edit SceneRenderer, CMake registration, backend files, or global ledger files."
+        },
+        {
+          "owner": "gfx21-effects-contract-implementation",
+          "scope": [
+            "Source/Runtime/Render/Include/Render/Passes/RayTraced*.h",
+            "Source/Runtime/Render/Private/Passes/RayTraced*.cpp",
+            "Source/Runtime/Render/Include/Render/RayTracing/HybridRayTracingFramePlan.h",
+            "Source/Runtime/Render/Private/RayTracing/HybridRayTracingFramePlan.cpp",
+            "Source/Runtime/Render/Include/Render/Features/HybridRayTracing*.h",
+            "Source/Runtime/Render/Private/Features/HybridRayTracing*.cpp",
+            "Tests/HybridRayTracingPolicyValidation/**"
+          ],
+          "verificationResponsibility": "Implement and verify immutable HybridRayTracing required/optional policy and receipt contracts, exact fallback routing, half-resolution mapping, and submission-qualified reflection history using focused standalone tests; do not edit SceneRenderer, central composition, CMake registration, shaders, backend files, or global ledger files."
+        }
+      ],
+      "status": "passing",
+      "evidence": [
+        {
+          "verificationId": "focused-build",
+          "command": "cmake --build --preset win_x64_debug --target HybridRayTracingPolicyValidation RayTracingSceneLifecycleValidation PipelineCacheValidation RenderPassValidation RenderFeatureValidation RenderGraphValidation RenderHonestyValidation DX12Validation VulkanValidation VulkanRayTracingValidation ShaderCompilerValidation ShaderProgramCatalogValidation RenderSceneValidation RenderThreadRuntimeValidation SampleCLIValidation SampleReportContentValidation",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-28T05:55:56.1954156Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "fcd9f0590b5d8aa66960d943aca864dd6b0ff335a7886cc45bf64aece42edded",
+          "notes": "All exact GFX21 renderer, RHI, shader, Scene, runtime, and Sample validation targets built successfully for the final product-source state."
+        },
+        {
+          "verificationId": "focused-tests",
+          "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R \"^(HybridRayTracingPolicyValidation|RayTracingSceneLifecycleValidation|PipelineCacheValidationFixture|GroundTruthAmbientOcclusionValidation|RenderFrameTimingValidation|RenderPassStatusValidation|RenderPassValidation|RenderPassValidationFixture|RenderPostProcessStackValidation|SceneRendererDeferredPresentationValidation|SceneRendererDiagnosticsValidation|SceneRendererEnvironmentIBLDiagnostics|SceneRendererExternalTargetValidation|SceneRendererPassRecordingValidation|SceneRendererReflectionQualificationValidation|SceneRendererSubmissionValidation|SceneRendererTemporalHistoryValidation|RenderFeatureValidation|RenderGraphValidation|RenderHonestyValidationFixture|DX12Validation|VulkanValidation|VulkanRayTracingValidation|ShaderBindingABIValidation|ShaderCompilerPolicyValidation|ShaderCompilerValidationFixture|ShaderProgramCatalogValidation|RenderSceneValidation|RenderThreadRuntimeValidation|RenderThreadRuntimeValidationShared/RuntimeConformanceTest|SampleCLIValidation|SampleReportContentValidationSelfTest)(\\.|$)\"",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-28T05:55:56.1954156Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "fcd9f0590b5d8aa66960d943aca864dd6b0ff335a7886cc45bf64aece42edded",
+          "notes": "Focused GFX21 and affected renderer, RHI, shader, Scene, runtime, and Sample contracts passed 1128/1128 with no failures."
+        },
+        {
+          "verificationId": "gfx21-hybrid-rt-native",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -TestPreset win_x64_debug_gfx21_hybrid_rt -BuildDir build\\win_x64_debug -Configuration Debug -BuildTarget RVXValidationSuiteGfx21HybridRayTracing -RequiredLabel suite.gfx21-hybrid-rt -ExpectedTestCount 8 -RequiredEvidence 'Tests/HybridRayTracingValidation/dx12-hybrid-ray-tracing-evidence.json;Tests/HybridRayTracingValidation/vulkan-hybrid-ray-tracing-evidence.json' -BaseRef master -SkipConfigure",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-28T05:00:04.8288573Z",
+          "artifact": ".agent-harness/receipts/RequiredSuite.59afbd73011d47ac93f433358fe9250e.json",
+          "artifactSha256": "0b9f24493996cd6cea9c452950b2e88e5893536c1fd6723bd345ba34c5631e76",
+          "runId": "59afbd73011d47ac93f433358fe9250e",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "fcd9f0590b5d8aa66960d943aca864dd6b0ff335a7886cc45bf64aece42edded",
+          "notes": "The fail-closed GFX21 suite passed 8/8 with eight unique backend-qualified test identities, exact DX12 and Vulkan native dispatch evidence for masked ray-traced shadows and half-resolution spatial/temporal ray-traced reflections, and no backend fallback."
+        },
+        {
+          "verificationId": "full-debug-build-truth",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-28T05:47:45.7066245Z",
+          "artifact": ".agent-harness/receipts/BuildTruth.8f74bedf01cf4a7aa7f5127c0115cd41.json",
+          "artifactSha256": "c0875501e4974d44a2b010a1165e679a7448437a32b63927eda4bd54c4aa953e",
+          "runId": "8f74bedf01cf4a7aa7f5127c0115cd41",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "fcd9f0590b5d8aa66960d943aca864dd6b0ff335a7886cc45bf64aece42edded",
+          "notes": "Build Truth passed Architecture 61/61, Unit 1910/1910, Integration 741/741, and DX12 Native 60/60 on the requested hardware backend with no software or backend fallback."
+        },
+        {
+          "verificationId": "shipping-required-suite",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationSuiteRequiredShipping -RequiredLabel suite.required-shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-28T05:49:25.0373803Z",
+          "artifact": ".agent-harness/receipts/RequiredSuite.c986de0ca860461da1d2f90ccc18cd2f.json",
+          "artifactSha256": "b106bd94b669acf02b0bf3217fda1b17eff261a62071992a428800fe3683875b",
+          "runId": "c986de0ca860461da1d2f90ccc18cd2f",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "fcd9f0590b5d8aa66960d943aca864dd6b0ff335a7886cc45bf64aece42edded",
+          "notes": "Windows Shipping Release target closure, host cook fixture, cooked-only smoke, semantic evidence, and dynamic dependency checks passed 5/5."
+        },
+        {
+          "verificationId": "architecture-required-suite",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-28T05:50:40.0026310Z",
+          "artifact": ".agent-harness/receipts/Architecture.7c3ccd2ada1a4342ac5b207490e6a519.json",
+          "artifactSha256": "85cdf1587d7c4daa0cefc9dfa39b78156b8aee35f3d776d134fb051e9dbb29e3",
+          "runId": "7c3ccd2ada1a4342ac5b207490e6a519",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "fcd9f0590b5d8aa66960d943aca864dd6b0ff335a7886cc45bf64aece42edded",
+          "notes": "Architecture required suite passed 61/61 and its immutable receipt matches the requested preset, configuration, commit, and product fingerprint."
+        },
+        {
+          "verificationId": "diff-hygiene",
+          "command": "git diff --check",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-28T05:55:56.1954156Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "fcd9f0590b5d8aa66960d943aca864dd6b0ff335a7886cc45bf64aece42edded",
+          "notes": "Working-tree diff hygiene passed; Git emitted only expected line-ending conversion notices for protected user-owned and existing modified files."
+        }
+      ],
+      "blocker": null,
+      "nextStep": "Begin GFX22 as a separately claimed feature for weighted blended OIT on eligible non-refractive alpha and particle materials, while keeping refractive glass on the sorted path and failing closed when independent floating-point blending is unavailable.",
+      "updatedAt": "2026-08-28T05:55:56.1954156Z"
+    },
+    {
+      "id": "gfx-22",
+      "name": "Weighted blended order-independent translucency",
+      "behavior": "Forward+ and Deferred share one immutable translucency plan that routes eligible non-refractive alpha and premultiplied mesh and particle draws through weighted blended OIT, preserves ThinTransmission on the strictly sorted refraction path and additive content on the direct path, and fails closed whenever requested independent FP16 attachment blending is unavailable or execution evidence is incomplete.",
+      "owner": "primary-coordinator",
+      "scope": {
+        "include": [
+          "Source/Runtime/RHI/Include/RHI/RHICapabilities.h",
+          "Source/Runtime/RHI/Include/RHI/RHIPipelineValidation.h",
+          "Source/Runtime/RHI/Private/RHIValidation.cpp",
+          "Source/Runtime/RHI/Private/RHIPipelineValidation.cpp",
+          "Source/Runtime/RHI_DX11/Private/**",
+          "Source/Runtime/RHI_DX12/Private/**",
+          "Source/Runtime/RHI_Vulkan/Private/**",
+          "Source/Runtime/RHI_Metal/Private/**",
+          "Source/Runtime/RHI_OpenGL/Private/**",
+          "Source/Runtime/RenderContracts/Include/RenderContracts/RenderPipelineProfile.h",
+          "Source/Runtime/Render/Include/Render/Features/**",
+          "Source/Runtime/Render/Private/Features/**",
+          "Source/Runtime/Render/Include/Render/Translucency/**",
+          "Source/Runtime/Render/Private/Translucency/**",
+          "Source/Runtime/Render/Include/Render/Passes/TransparentPass.h",
+          "Source/Runtime/Render/Private/Passes/TransparentPass.cpp",
+          "Source/Runtime/Render/Include/Render/Passes/ParticleFeaturePass.h",
+          "Source/Runtime/Render/Private/Passes/ParticleFeaturePass.cpp",
+          "Source/Runtime/Render/Include/Render/Passes/WeightedBlendedOITPass.h",
+          "Source/Runtime/Render/Private/Passes/WeightedBlendedOITPass.cpp",
+          "Source/Runtime/Render/Include/Render/Passes/RenderPassRecordContext.h",
+          "Source/Runtime/Render/Include/Render/PipelineCache.h",
+          "Source/Runtime/Render/Private/PipelineCache.cpp",
+          "Source/Runtime/Render/Private/Material/MaterialSystem.cpp",
+          "Source/Runtime/Render/Include/Render/RenderDiagnostics.h",
+          "Source/Runtime/Render/Include/Render/Renderer/SceneRenderer.h",
+          "Source/Runtime/Render/Private/Renderer/SceneRenderer.cpp",
+          "Source/Runtime/Render/Shaders/DefaultLit.hlsl",
+          "Source/Runtime/Render/Shaders/Particle/ParticleBillboard.hlsl",
+          "Source/Runtime/Render/Shaders/Translucency/**",
+          "Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json",
+          "Source/Runtime/Render/CMakeLists.txt",
+          "Samples/Common/**",
+          "Samples/RenderVerseSamples/Manifests/renderverse-samples.json",
+          "Samples/RenderVerseSamples/Scenes/TransparentMaterialsSample.cpp",
+          "Samples/RenderVerseSamples/Scenes/TransparentMaterialsSample.h",
+          "Tests/RHIContractValidation/**",
+          "Tests/RHIPipelineValidation/**",
+          "Tests/DX11Validation/**",
+          "Tests/DX12Validation/**",
+          "Tests/VulkanValidation/**",
+          "Tests/MetalValidation/**",
+          "Tests/RenderFeatureValidation/**",
+          "Tests/RenderGraphValidation/**",
+          "Tests/RenderPassValidation/**",
+          "Tests/PipelineCacheValidation/**",
+          "Tests/ShaderCompilerValidation/**",
+          "Tests/ShaderProgramCatalogValidation/**",
+          "Tests/TranslucencyFramePlanValidation/**",
+          "Tests/WeightedBlendedOITValidation/**",
+          "Tests/SampleManifestValidation/**",
+          "Tests/SampleReportContentValidation/**",
+          "Tests/CMake/**",
+          "CMakePresets.json",
+          "Scripts/rhi_ownership_inventory_m1.json",
+          "feature_list.json",
+          "progress.md",
+          "session-handoff.md"
+        ],
+        "exclude": [
+          "AGENTS.md",
+          "CLAUDE.md",
+          "Docs/README.md",
+          "Docs/engine-capabilities.json",
+          ".agent-harness/**",
+          "Source/Runtime/Render/Include/Render/Renderer/ViewData.h",
+          "Source/Runtime/Render/Shaders/GPUDriven/GPUSceneRaster.hlsli",
+          "Source/Developer/AssetImport/**",
+          "Source/Programs/**",
+          "assets/**",
+          "build/**"
+        ]
+      },
+      "dependencies": [
+        "harness-001",
+        "gfx-21"
+      ],
+      "acceptanceCriteria": [
+        "The public RHI reports independent color-attachment blending and per-format ColorAttachment and ColorAttachmentBlend support from backend-native queries; pipeline preflight rejects unsupported active render-target formats and blend rows before native object creation.",
+        "One immutable TranslucencyFramePlan routes every eligible mesh and particle draw exactly once: StandardLit or Unlit AlphaBlend and Premultiplied use WeightedBlended, ThinTransmission uses SortedRefraction, Additive uses DirectAdditive, and every unsupported combination has a structured reason.",
+        "Weighted blended accumulation uses graph-owned RGBA16_FLOAT accumulation cleared to zero and R16_FLOAT revealage cleared to one, with independent blend state, deterministic bounded weighting, and a fullscreen composite that updates scene-linear HDR and the reactive mask without sampling and writing the same texture.",
+        "Forward+ and Deferred consume the same translucency policy and execution path; OIT is recipe-neutral, the temporary resources remain feature-private, and the final typed TranslucencyOutputs identify the exact frame, view, plan, and graph generation.",
+        "ThinTransmission remains strictly back-to-front after OIT composite and consumes the immutable opaque scene snapshot; additive mesh and particle content remains direct and does not enter accumulation; particle upload and distortion execute at most once.",
+        "A requested Required OIT mode fails before graph execution when independent FP16 blending, shaders, pipelines, inputs, clears, draws, composite, or receipts are unavailable; an explicitly Optional mode may use only the declared sorted-translucency fallback and records that fallback.",
+        "DX12 and Vulkan native evidence proves independent RGBA16_FLOAT plus R16_FLOAT blending, mixed mesh and particle accumulation, composite execution, no fallback, and exact frame/view identity; Metal native evidence remains required in remote CI.",
+        "Focused contracts, the GFX22 required suite, full Windows Build Truth, Shipping cooked-only closure, Architecture, and diff hygiene pass with evidence bound to one product-source digest."
+      ],
+      "verification": [
+        {
+          "id": "focused-build",
+          "layer": "focused",
+          "command": "cmake --build --preset win_x64_debug --target RHIContractValidation RHIPipelineValidation TranslucencyFramePlanValidation WeightedBlendedOITContractValidation PipelineCacheValidation RenderPassValidation RenderFeatureValidation RenderGraphValidation DX11Validation DX12Validation VulkanValidation ShaderCompilerValidation ShaderProgramCatalogValidation SampleManifestValidation SampleReportContentValidation",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        },
+        {
+          "id": "focused-tests",
+          "layer": "focused",
+          "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R \"^(RHIContractValidation|RHIPipelineValidation|TranslucencyFramePlanValidation|WeightedBlendedOITValidation|WeightedBlendedOITContractValidation|PipelineCacheValidationFixture|RenderPassValidation|RenderPassValidationFixture|RenderFeatureValidation|RenderGraphValidation|DX11Validation|DX12Validation|VulkanValidation|ShaderBindingABIValidation|ShaderCompilerPolicyValidation|ShaderCompilerValidationFixture|ShaderProgramCatalogValidation|SampleManifestValidation|SampleReportContentValidationSelfTest)(\\\\.|$)\"",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        },
+        {
+          "id": "gfx22-oit-native",
+          "layer": "native",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -TestPreset win_x64_debug_gfx22_oit -BuildDir build\\win_x64_debug -Configuration Debug -BuildTarget RVXValidationSuiteGfx22Oit -RequiredLabel suite.gfx22-oit -ExpectedTestCount 8 -RequiredEvidence 'Tests/WeightedBlendedOITValidation/dx12-weighted-oit-evidence.json;Tests/WeightedBlendedOITValidation/vulkan-weighted-oit-evidence.json' -BaseRef master -SkipConfigure",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/RequiredSuite.{runId}.json",
+          "expectedReceipt": {
+            "kind": "RequiredSuite",
+            "baseRef": "master",
+            "configurePreset": "win_x64_debug",
+            "buildPreset": "win_x64_debug",
+            "testPreset": "win_x64_debug_gfx22_oit",
+            "buildDir": "build/win_x64_debug",
+            "configuration": "Debug",
+            "buildTargets": [
+              "RVXValidationSuiteGfx22Oit"
+            ],
+            "requiredLabel": "suite.gfx22-oit",
+            "expectedTestCount": 8,
+            "fresh": false,
+            "skipConfigure": true,
+            "requiredSemanticArtifacts": [
+              "build/win_x64_debug/Tests/WeightedBlendedOITValidation/dx12-weighted-oit-evidence.json",
+              "build/win_x64_debug/Tests/WeightedBlendedOITValidation/vulkan-weighted-oit-evidence.json"
+            ]
+          }
+        },
+        {
+          "id": "full-debug-build-truth",
+          "layer": "integration",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/BuildTruth.{runId}.json",
+          "expectedReceipt": {
+            "kind": "BuildTruth",
+            "baseRef": "master",
+            "configurePreset": "win_x64_debug",
+            "buildPreset": "win_x64_debug",
+            "laneTestPresets": [
+              "win_x64_debug_architecture",
+              "win_x64_debug_unit",
+              "win_x64_debug_integration",
+              "win_x64_debug_native"
+            ],
+            "buildDir": "build/win_x64_debug",
+            "configuration": "Debug",
+            "requiredNativeBackend": "DX12",
+            "softwareAdapterAllowed": false,
+            "fresh": false
+          }
+        },
+        {
+          "id": "shipping-required-suite",
+          "layer": "shipping",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationSuiteRequiredShipping -RequiredLabel suite.required-shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/RequiredSuite.{runId}.json",
+          "expectedReceipt": {
+            "kind": "RequiredSuite",
+            "baseRef": "master",
+            "configurePreset": "win_x64_shipping_release",
+            "buildPreset": "win_x64_shipping_release",
+            "testPreset": "win_x64_shipping_release_shipping",
+            "buildDir": "build/win_x64_shipping_release",
+            "configuration": "Release",
+            "buildTargets": [
+              "RVXValidationSuiteRequiredShipping"
+            ],
+            "requiredLabel": "suite.required-shipping",
+            "expectedTestCount": 5,
+            "fresh": false,
+            "skipConfigure": true,
+            "requiredSemanticArtifacts": [
+              "build/win_x64_shipping_release/Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json",
+              "build/win_x64_shipping_release/Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json"
+            ]
+          }
+        },
+        {
+          "id": "architecture-required-suite",
+          "layer": "architecture",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+          "required": true,
+          "expectedArtifact": ".agent-harness/receipts/Architecture.{runId}.json",
+          "expectedReceipt": {
+            "kind": "Architecture",
+            "baseRef": "master",
+            "preset": "win_x64_debug",
+            "testPreset": "win_x64_debug_architecture",
+            "buildDir": "build/win_x64_debug",
+            "configuration": "Debug",
+            "buildTarget": "RVXValidationArchitecture",
+            "requiredLabel": "lane.architecture",
+            "allowConfigure": false
+          }
+        },
+        {
+          "id": "diff-hygiene",
+          "layer": "static",
+          "command": "git diff --check",
+          "required": true,
+          "expectedArtifact": null,
+          "expectedReceipt": null
+        }
+      ],
+      "coordination": [
+        {
+          "owner": "gfx22-rhi-blend-capability",
+          "scope": [
+            "Source/Runtime/RHI/Include/RHI/RHICapabilities.h",
+            "Source/Runtime/RHI/Include/RHI/RHIPipelineValidation.h",
+            "Source/Runtime/RHI/Private/RHIValidation.cpp",
+            "Source/Runtime/RHI/Private/RHIPipelineValidation.cpp",
+            "Source/Runtime/RHI_DX11/Private/** capability and pipeline validity paths",
+            "Source/Runtime/RHI_DX12/Private/** capability paths",
+            "Source/Runtime/RHI_Vulkan/Private/** capability paths",
+            "Source/Runtime/RHI_Metal/Private/** capability and pipeline validity paths",
+            "Source/Runtime/RHI_OpenGL/Private/** capability paths",
+            "Tests/RHIContractValidation/**",
+            "Tests/RHIPipelineValidation/**",
+            "Tests/DX11Validation/** independent float blend coverage",
+            "Tests/DX12Validation/** independent float blend coverage",
+            "Tests/VulkanValidation/** independent float blend coverage"
+          ],
+          "verificationResponsibility": "Implement and verify backend-native independent attachment and per-format blendability reporting plus capability-aware pipeline fail-closed validation; do not edit Render, shaders, CMake registration, presets, Samples, or global ledger files."
+        },
+        {
+          "owner": "gfx22-translucency-plan",
+          "scope": [
+            "Source/Runtime/Render/Include/Render/Translucency/TranslucencyFramePlan.h",
+            "Source/Runtime/Render/Private/Translucency/TranslucencyFramePlan.cpp",
+            "Tests/TranslucencyFramePlanValidation/**"
+          ],
+          "verificationResponsibility": "Implement and verify the immutable mesh and particle route policy, exact-once partitioning, stable identity/hash, required versus optional capability resolution, and numerical weighted-OIT CPU reference; do not edit composition, passes, shaders, CMake registration, backends, or global ledger files."
+        },
+        {
+          "owner": "gfx22-oit-shader-pipeline",
+          "scope": [
+            "Source/Runtime/Render/Shaders/DefaultLit.hlsl",
+            "Source/Runtime/Render/Shaders/Particle/ParticleBillboard.hlsl",
+            "Source/Runtime/Render/Shaders/Translucency/**",
+            "Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json",
+            "Source/Runtime/Render/Include/Render/PipelineCache.h",
+            "Source/Runtime/Render/Private/PipelineCache.cpp",
+            "Tests/PipelineCacheValidation/**",
+            "Tests/ShaderCompilerValidation/**",
+            "Tests/ShaderProgramCatalogValidation/**"
+          ],
+          "verificationResponsibility": "Implement and verify cooked mesh and particle WBOIT accumulation shaders, fullscreen composite shaders, exact independent blend pipeline state and shader catalog coverage; do not edit pass orchestration, CMake registration, backend files, Samples, or global ledger files."
+        }
+      ],
+      "status": "passing",
+      "evidence": [
+        {
+          "verificationId": "focused-build",
+          "command": "cmake --build --preset win_x64_debug --target RHIContractValidation RHIPipelineValidation TranslucencyFramePlanValidation WeightedBlendedOITContractValidation PipelineCacheValidation RenderPassValidation RenderFeatureValidation RenderGraphValidation DX11Validation DX12Validation VulkanValidation ShaderCompilerValidation ShaderProgramCatalogValidation SampleManifestValidation SampleReportContentValidation",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-28T11:21:40.8374885Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "06e9fa064d583782334b2efc214524a1a0868e469bd51c7399ca13e27faa574a",
+          "notes": "All exact GFX22 RHI, renderer, shader, backend, Sample manifest, and report validation targets built successfully for the final product-source state; the stale WeightedBlendedOITValidation target name was corrected to WeightedBlendedOITContractValidation."
+        },
+        {
+          "verificationId": "focused-tests",
+          "command": "ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R \"^(RHIContractValidation|RHIPipelineValidation|TranslucencyFramePlanValidation|WeightedBlendedOITValidation|WeightedBlendedOITContractValidation|PipelineCacheValidationFixture|RenderPassValidation|RenderPassValidationFixture|RenderFeatureValidation|RenderGraphValidation|DX11Validation|DX12Validation|VulkanValidation|ShaderBindingABIValidation|ShaderCompilerPolicyValidation|ShaderCompilerValidationFixture|ShaderProgramCatalogValidation|SampleManifestValidation|SampleReportContentValidationSelfTest)(\\\\.|$)\"",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-28T11:21:40.8374885Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "06e9fa064d583782334b2efc214524a1a0868e469bd51c7399ca13e27faa574a",
+          "notes": "Focused GFX22 and affected RHI, renderer, shader, DX11, DX12, Vulkan, and Sample report contracts passed 897/897 with no failures."
+        },
+        {
+          "verificationId": "gfx22-oit-native",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -TestPreset win_x64_debug_gfx22_oit -BuildDir build\\win_x64_debug -Configuration Debug -BuildTarget RVXValidationSuiteGfx22Oit -RequiredLabel suite.gfx22-oit -ExpectedTestCount 8 -RequiredEvidence 'Tests/WeightedBlendedOITValidation/dx12-weighted-oit-evidence.json;Tests/WeightedBlendedOITValidation/vulkan-weighted-oit-evidence.json' -BaseRef master -SkipConfigure",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-28T11:13:32.6145973Z",
+          "artifact": ".agent-harness/receipts/RequiredSuite.20958236d4824c5aa4477b4f67302d10.json",
+          "artifactSha256": "cbaac6445a3cb8b98b1495a4195bc8dff02e1c21198ebb8dcfb5833c94490bd8",
+          "runId": "20958236d4824c5aa4477b4f67302d10",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "06e9fa064d583782334b2efc214524a1a0868e469bd51c7399ca13e27faa574a",
+          "notes": "The fail-closed GFX22 suite passed 8/8. DX12 and Vulkan each used runtime-only composition with its exact backend-matched cooked shader root, accumulated mixed mesh and particle work, executed the composite, and reported no fallback."
+        },
+        {
+          "verificationId": "full-debug-build-truth",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-28T11:12:04.9837158Z",
+          "artifact": ".agent-harness/receipts/BuildTruth.bf2239de0f444958a83c19e52c245ff6.json",
+          "artifactSha256": "fd4e0cf98aba4c4d19f85c4cea7a6936636027bdd42d6e5e53bb5b374fce0cab",
+          "runId": "bf2239de0f444958a83c19e52c245ff6",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "06e9fa064d583782334b2efc214524a1a0868e469bd51c7399ca13e27faa574a",
+          "notes": "Build Truth passed Architecture 61/61, Unit 1944/1944, Integration 745/745, and DX12 Native 61/61 on the requested hardware backend with no software or backend fallback."
+        },
+        {
+          "verificationId": "shipping-required-suite",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationSuiteRequiredShipping -RequiredLabel suite.required-shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-28T11:15:19.8829886Z",
+          "artifact": ".agent-harness/receipts/RequiredSuite.183292484174440b9f4827351d1a2a34.json",
+          "artifactSha256": "c77aaf9fc697531fabd13504641fbb166dca93af26d684fe52caf9fda480d5e6",
+          "runId": "183292484174440b9f4827351d1a2a34",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "06e9fa064d583782334b2efc214524a1a0868e469bd51c7399ca13e27faa574a",
+          "notes": "Windows Shipping Release target closure, host cook fixture, cooked-only smoke, semantic evidence, and dynamic dependency checks passed 5/5; the final incremental Release build emitted neither GFX22 compiler warning."
+        },
+        {
+          "verificationId": "architecture-required-suite",
+          "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-28T11:14:33.6372766Z",
+          "artifact": ".agent-harness/receipts/Architecture.57db44b42b8d464399031924f7d25c85.json",
+          "artifactSha256": "07e5c18ab162d86f7e5715c52d54a64a4ffb38eb775a77a2df14c89aba227af5",
+          "runId": "57db44b42b8d464399031924f7d25c85",
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "06e9fa064d583782334b2efc214524a1a0868e469bd51c7399ca13e27faa574a",
+          "notes": "Architecture required suite passed 61/61 and its immutable receipt matches the requested preset, configuration, commit, and final product fingerprint."
+        },
+        {
+          "verificationId": "diff-hygiene",
+          "command": "git diff --check",
+          "result": "passed",
+          "exitCode": 0,
+          "recordedAt": "2026-08-28T11:21:40.8374885Z",
+          "artifact": null,
+          "artifactSha256": null,
+          "runId": null,
+          "sourceCommit": "325b7ed08192ba8d1197944d4c38d9e88658b897",
+          "sourceDigest": "06e9fa064d583782334b2efc214524a1a0868e469bd51c7399ca13e27faa574a",
+          "notes": "Working-tree diff hygiene passed; Git emitted only expected line-ending conversion notices for protected user-owned and existing modified files."
+        }
+      ],
+      "blocker": null,
+      "nextStep": "Begin GFX23 froxel volumetric lighting as a separately claimed feature; macOS Metal native OIT confirmation remains pending remote CI and must not be claimed locally.",
+      "updatedAt": "2026-08-28T11:21:40.8374885Z"
+    }
+  ]
+}

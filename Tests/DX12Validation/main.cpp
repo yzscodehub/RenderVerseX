@@ -1349,6 +1349,13 @@ namespace
             PipelineCache::DefaultLitOpaqueSceneSnapshotBinding,
             RHIBindingType::SampledTexture,
             RHIShaderStage::Pixel);
+        // DefaultLit always declares the local-shadow atlas in space0.  Keep
+        // the native fixture ABI-complete even when its frozen light data has
+        // zero local-shadow pages and the shader takes the fully-lit path.
+        frameLayoutDesc.AddBinding(
+            PipelineCache::DefaultLitLocalShadowAtlasBinding,
+            RHIBindingType::SampledTexture,
+            RHIShaderStage::Pixel);
         RHIDescriptorSetLayoutRef frameLayout = device->CreateDescriptorSetLayout(frameLayoutDesc);
         RHIDescriptorSetLayoutDesc emptyLayoutDesc;
         emptyLayoutDesc.debugName = "NativeSurfaceAlphaEmptySet";
@@ -1482,6 +1489,24 @@ namespace
         environmentCubeViewDesc.debugName = "NativeSurfaceAlphaEnvironmentCubeSRV";
         RHITextureViewRef environmentCubeView = device->CreateTextureView(
             environmentCube.Get(), environmentCubeViewDesc);
+        // Use a true D32 Texture2DArray SRV for DefaultLit t17 rather than
+        // binding an unrelated 2D fallback.  The zeroed frame constants set
+        // LocalShadowPageCount to zero, so this resource must be valid for
+        // binding but is intentionally not sampled by these surface tests.
+        RHITextureDesc localShadowAtlasDesc = RHITextureDesc::DepthStencil(
+            1u, 1u, RHIFormat::D32_FLOAT);
+        localShadowAtlasDesc.arraySize = 1u;
+        localShadowAtlasDesc.debugName = "NativeSurfaceAlphaLocalShadowAtlas";
+        RHITextureRef localShadowAtlas = device->CreateTexture(localShadowAtlasDesc);
+        RHITextureViewDesc localShadowAtlasViewDesc;
+        localShadowAtlasViewDesc.type = RHITextureViewType::ShaderResource;
+        localShadowAtlasViewDesc.format = RHIFormat::D32_FLOAT;
+        localShadowAtlasViewDesc.dimension = RHITextureDimension::Texture2D;
+        localShadowAtlasViewDesc.subresourceRange = RHISubresourceRange::All();
+        localShadowAtlasViewDesc.subresourceRange.aspect = RHITextureAspect::Depth;
+        localShadowAtlasViewDesc.debugName = "NativeSurfaceAlphaLocalShadowAtlasSRV";
+        RHITextureViewRef localShadowAtlasView = device->CreateTextureView(
+            localShadowAtlas.Get(), localShadowAtlasViewDesc);
         RHISamplerDesc samplerDesc = RHISamplerDesc::PointClamp();
         samplerDesc.debugName = "NativeSurfaceAlphaPointClamp";
         RHISamplerRef sampler = device->CreateSampler(samplerDesc);
@@ -1543,6 +1568,9 @@ namespace
         frameSetDesc.BindTexture(
             PipelineCache::DefaultLitOpaqueSceneSnapshotBinding,
             sourceTextureView.Get());
+        frameSetDesc.BindTexture(
+            PipelineCache::DefaultLitLocalShadowAtlasBinding,
+            localShadowAtlasView.Get());
         RHIDescriptorSetRef frameSet = device->CreateDescriptorSet(frameSetDesc);
 
         RHIDescriptorSetDesc materialSetDesc;
@@ -1599,7 +1627,8 @@ namespace
         readbackDesc.debugName = "NativeSurfaceAlphaReadback";
         RHIBufferRef readbackBuffer = device->CreateBuffer(readbackDesc);
         if (!vertexBuffer || !materialBuffer || !textureUpload || !sourceTexture ||
-            !sourceTextureView || !environmentCube || !environmentCubeView || !sampler ||
+            !sourceTextureView || !environmentCube || !environmentCubeView ||
+            !localShadowAtlas || !localShadowAtlasView || !sampler ||
             !frameConstantsBuffer ||
             !dummyStructuredBuffer || !exposureStateBuffer || !frameSet ||
             !materialSet || !readbackBuffer ||
@@ -1864,6 +1893,44 @@ TEST(DX12Validation, DriverIdentityMatchesSelectedAdapter)
         device->GetCapabilities().driverVersion;
     EXPECT_FALSE(reportedVersion.empty());
     EXPECT_EQ(reportedVersion, expectedVersion);
+}
+
+TEST(DX12Validation, IndependentFloatBlendCapabilitiesMatchNativeQueries)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = RVX::Test::CreateNativeValidationDevice(
+        RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+    auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+    ASSERT_NE(dx12Device, nullptr);
+
+    const RHICapabilities& capabilities = device->GetCapabilities();
+    EXPECT_TRUE(capabilities.supportsIndependentColorAttachmentBlend);
+
+    constexpr std::array<std::pair<RHIFormat, DXGI_FORMAT>, 2> formats = {{
+        {RHIFormat::R16_FLOAT, DXGI_FORMAT_R16_FLOAT},
+        {RHIFormat::RGBA16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT},
+    }};
+    for (const auto& [format, nativeFormat] : formats)
+    {
+        D3D12_FEATURE_DATA_FORMAT_SUPPORT nativeSupport{};
+        nativeSupport.Format = nativeFormat;
+        ASSERT_TRUE(SUCCEEDED(
+            dx12Device->GetD3DDevice()->CheckFeatureSupport(
+                D3D12_FEATURE_FORMAT_SUPPORT,
+                &nativeSupport,
+                sizeof(nativeSupport))));
+        EXPECT_EQ(
+            capabilities.SupportsColorAttachment(format),
+            (nativeSupport.Support1 &
+             D3D12_FORMAT_SUPPORT1_RENDER_TARGET) != 0);
+        EXPECT_EQ(
+            capabilities.SupportsColorAttachmentBlend(format),
+            (nativeSupport.Support1 &
+             D3D12_FORMAT_SUPPORT1_RENDER_TARGET) != 0 &&
+                (nativeSupport.Support1 &
+                 D3D12_FORMAT_SUPPORT1_BLENDABLE) != 0);
+    }
 }
 
 TEST(DX12Validation, CapabilitiesReflectNativeFeatureQueriesAndCreatePipelineLayout)
@@ -3067,6 +3134,26 @@ TEST(DX12Validation, RenderContextFramesQueueDagWithRecordingGraphicsGateway)
     std::vector<RHICommandContextRef> ownedContexts;
     ownedContexts.push_back(std::move(computeContext));
     ownedContexts.push_back(std::move(graphTerminalContext));
+    size_t plannedContextCount = 0;
+    for (const RHIQueueSubmissionBatch& batch : plan.batches)
+    {
+        plannedContextCount += batch.contexts.size();
+    }
+    ASSERT_EQ(ownedContexts.size(), plannedContextCount);
+    for (const RHIQueueSubmissionBatch& batch : plan.batches)
+    {
+        for (RHICommandContext* plannedContext : batch.contexts)
+        {
+            const bool owned = std::any_of(
+                ownedContexts.begin(),
+                ownedContexts.end(),
+                [plannedContext](const RHICommandContextRef& context)
+                {
+                    return context.Get() == plannedContext;
+                });
+            ASSERT_TRUE(owned);
+        }
+    }
     ASSERT_TRUE(context.AdoptQueueSubmission(std::move(plan),
                                              std::move(ownedContexts)));
 
@@ -4320,7 +4407,8 @@ TEST(DX12Validation, RayTracingCapabilitiesExposeOnlyImplementedDXRContracts)
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
 
     const RHICapabilities& caps = device->GetCapabilities();
-    EXPECT_FALSE(caps.supportsAccelerationStructureCompaction);
+    EXPECT_EQ(caps.supportsAccelerationStructureCompaction,
+              caps.supportsRaytracing);
 
     if (!caps.supportsRaytracing)
     {
@@ -4336,6 +4424,7 @@ TEST(DX12Validation, RayTracingCapabilitiesExposeOnlyImplementedDXRContracts)
 
     EXPECT_TRUE(caps.supportsRaytracingPipeline);
     EXPECT_TRUE(caps.supportsAccelerationStructureUpdate);
+    EXPECT_TRUE(caps.supportsAccelerationStructureCompaction);
     EXPECT_GT(caps.maxRayRecursionDepth, 0u);
     EXPECT_GT(caps.shaderGroupHandleSize, 0u);
     EXPECT_GT(caps.shaderGroupHandleAlignment, 0u);
@@ -4352,13 +4441,35 @@ TEST(DX12Validation, RayTracingCapabilitiesExposeOnlyImplementedDXRContracts)
     invalidTypeASDesc.debugName = "InvalidTypeAS";
     EXPECT_EQ(device->CreateAccelerationStructure(invalidTypeASDesc).Get(), nullptr);
 
+    RHIAccelerationStructureCompactedSizeQueryDesc invalidQueryDesc;
+    invalidQueryDesc.count = 0;
+    EXPECT_EQ(device->CreateAccelerationStructureCompactedSizeQuery(
+                  invalidQueryDesc).Get(),
+              nullptr);
+
+    invalidQueryDesc.count = 1;
+    invalidQueryDesc.queueType = RHICommandQueueType::Copy;
+    EXPECT_EQ(device->CreateAccelerationStructureCompactedSizeQuery(
+                  invalidQueryDesc).Get(),
+              nullptr);
+
+    RHIAccelerationStructureCompactedSizeQueryDesc queryDesc;
+    queryDesc.count = 2;
+    queryDesc.queueType = RHICommandQueueType::Graphics;
+    queryDesc.debugName = "DX12CompactedSizeQuery";
+    auto compactedSizeQuery =
+        device->CreateAccelerationStructureCompactedSizeQuery(queryDesc);
+    ASSERT_NE(compactedSizeQuery.Get(), nullptr);
+    EXPECT_EQ(compactedSizeQuery->GetCount(), queryDesc.count);
+    EXPECT_EQ(compactedSizeQuery->GetQueueType(), queryDesc.queueType);
+
     RHIBufferDesc vertexBufferDesc;
     vertexBufferDesc.size = sizeof(float) * 9;
     vertexBufferDesc.usage = RHIBufferUsage::Vertex |
                              RHIBufferUsage::AccelerationStructureInput |
                              RHIBufferUsage::DeviceAddress;
     vertexBufferDesc.memoryType = RHIMemoryType::Upload;
-    vertexBufferDesc.debugName = "CompactionUnsupportedBLASVertices";
+    vertexBufferDesc.debugName = "CompactionBLASVertices";
     auto vertexBuffer = device->CreateBuffer(vertexBufferDesc);
     ASSERT_NE(vertexBuffer.Get(), nullptr);
 
@@ -4373,7 +4484,7 @@ TEST(DX12Validation, RayTracingCapabilitiesExposeOnlyImplementedDXRContracts)
     blasDesc.geometries.push_back(geometryDesc);
     blasDesc.buildFlags = RHIAccelerationStructureBuildFlags::AllowCompaction |
                           RHIAccelerationStructureBuildFlags::PreferFastTrace;
-    EXPECT_FALSE(device->GetBottomLevelASBuildSizes(blasDesc).IsValid());
+    EXPECT_TRUE(device->GetBottomLevelASBuildSizes(blasDesc).IsValid());
 
     RHIBufferDesc instanceBufferDesc;
     instanceBufferDesc.size = sizeof(RHIRayTracingInstanceRecord);
@@ -4381,7 +4492,7 @@ TEST(DX12Validation, RayTracingCapabilitiesExposeOnlyImplementedDXRContracts)
                                RHIBufferUsage::AccelerationStructureInput |
                                RHIBufferUsage::DeviceAddress;
     instanceBufferDesc.memoryType = RHIMemoryType::Upload;
-    instanceBufferDesc.debugName = "CompactionUnsupportedTLASInstances";
+    instanceBufferDesc.debugName = "CompactionTLASInstances";
     auto instanceBuffer = device->CreateBuffer(instanceBufferDesc);
     ASSERT_NE(instanceBuffer.Get(), nullptr);
 
@@ -4390,7 +4501,215 @@ TEST(DX12Validation, RayTracingCapabilitiesExposeOnlyImplementedDXRContracts)
     tlasDesc.instanceCount = 1;
     tlasDesc.buildFlags = RHIAccelerationStructureBuildFlags::AllowCompaction |
                           RHIAccelerationStructureBuildFlags::PreferFastTrace;
-    EXPECT_FALSE(device->GetTopLevelASBuildSizes(tlasDesc).IsValid());
+    EXPECT_TRUE(device->GetTopLevelASBuildSizes(tlasDesc).IsValid());
+}
+
+TEST(DX12Validation, RayTracingCompactedSizeQueryAndCopySubmitNativeDXRWork)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = RVX::Test::CreateNativeValidationDevice(
+        RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+    auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+    ASSERT_NE(dx12Device, nullptr);
+
+    ASSERT_TRUE(device->GetCapabilities().supportsAccelerationStructureCompaction)
+        << "The required DX12 compaction validation needs the complete native path";
+    ASSERT_TRUE(ClearDX12InfoQueue(*dx12Device, "DX12 AS compaction"));
+
+    constexpr float kVertices[] = {
+        0.0f, 0.0f, 0.0f,
+        1.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f};
+    RHIBufferDesc vertexDesc;
+    vertexDesc.size = sizeof(kVertices);
+    vertexDesc.usage = RHIBufferUsage::Vertex |
+                       RHIBufferUsage::AccelerationStructureInput |
+                       RHIBufferUsage::DeviceAddress;
+    vertexDesc.memoryType = RHIMemoryType::Upload;
+    vertexDesc.stride = sizeof(float) * 3;
+    vertexDesc.debugName = "CompactionNativeVertices";
+    RHIBufferRef vertices = device->CreateBuffer(vertexDesc);
+    ASSERT_NE(vertices.Get(), nullptr);
+    void* mappedVertices = vertices->Map();
+    ASSERT_NE(mappedVertices, nullptr);
+    std::memcpy(mappedVertices, kVertices, sizeof(kVertices));
+    vertices->Unmap();
+
+    RHIRayTracingGeometryDesc geometry;
+    geometry.type = RHIRayTracingGeometryType::Triangles;
+    geometry.flags = RHIRayTracingGeometryFlags::Opaque;
+    geometry.triangles.vertexBuffer = vertices.Get();
+    geometry.triangles.vertexCount = 3;
+    geometry.triangles.vertexStride = sizeof(float) * 3;
+    geometry.triangles.vertexFormat = RHIFormat::RGB32_FLOAT;
+
+    RHIBottomLevelASDesc buildDesc;
+    buildDesc.geometries.push_back(geometry);
+    buildDesc.buildFlags =
+        RHIAccelerationStructureBuildFlags::AllowCompaction |
+        RHIAccelerationStructureBuildFlags::PreferFastTrace;
+    buildDesc.debugName = "CompactionNativeBLASBuild";
+    const RHIAccelerationStructureBuildSizes buildSizes =
+        device->GetBottomLevelASBuildSizes(buildDesc);
+    ASSERT_TRUE(buildSizes.IsValid());
+
+    RHIAccelerationStructureDesc sourceDesc;
+    sourceDesc.type = RHIAccelerationStructureType::BottomLevel;
+    sourceDesc.size = buildSizes.accelerationStructureSize;
+    sourceDesc.debugName = "CompactionNativeBLASSource";
+    RHIAccelerationStructureRef source =
+        device->CreateAccelerationStructure(sourceDesc);
+    ASSERT_NE(source.Get(), nullptr);
+
+    RHIBufferDesc scratchDesc;
+    scratchDesc.size = buildSizes.buildScratchSize;
+    scratchDesc.usage = RHIBufferUsage::UnorderedAccess |
+                        RHIBufferUsage::DeviceAddress;
+    scratchDesc.memoryType = RHIMemoryType::Default;
+    scratchDesc.debugName = "CompactionNativeBLASScratch";
+    RHIBufferRef scratch = device->CreateBuffer(scratchDesc);
+    ASSERT_NE(scratch.Get(), nullptr);
+
+    RHIAccelerationStructureCompactedSizeQueryDesc queryDesc;
+    queryDesc.count = 1;
+    queryDesc.queueType = RHICommandQueueType::Graphics;
+    queryDesc.debugName = "CompactionNativeQuery";
+    RHIAccelerationStructureCompactedSizeQueryRef query =
+        device->CreateAccelerationStructureCompactedSizeQuery(queryDesc);
+    ASSERT_NE(query.Get(), nullptr);
+
+    RHIBufferDesc readbackDesc;
+    readbackDesc.size = sizeof(uint64);
+    readbackDesc.usage = RHIBufferUsage::CopyDst;
+    readbackDesc.memoryType = RHIMemoryType::Readback;
+    readbackDesc.debugName = "CompactionNativeReadback";
+    RHIBufferRef readback = device->CreateBuffer(readbackDesc);
+    ASSERT_NE(readback.Get(), nullptr);
+
+    RHICommandContextRef buildContext =
+        device->CreateCommandContext(RHICommandQueueType::Graphics);
+    ASSERT_NE(buildContext.Get(), nullptr);
+    buildContext->Begin();
+    buildContext->BufferBarrier({
+        scratch.Get(), RHIResourceState::Common, RHIResourceState::UnorderedAccess});
+    buildContext->BuildBottomLevelAccelerationStructure(
+        source.Get(), buildDesc, scratch.Get());
+    RHIAccelerationStructure* sourceHandle = source.Get();
+    buildContext->WriteAccelerationStructureCompactedSizes(
+        query.Get(), 0, std::span<RHIAccelerationStructure* const>(
+                            &sourceHandle, 1));
+    buildContext->ResolveAccelerationStructureCompactedSizes(
+        query.Get(), 0, 1, readback.Get());
+    buildContext->End();
+
+    RHIFenceRef fence = device->CreateFence(0);
+    ASSERT_NE(fence.Get(), nullptr);
+    const uint64 buildSubmission =
+        device->SubmitCommandContext(buildContext.Get(), fence.Get());
+    ASSERT_NE(buildSubmission, 0u);
+    auto* dx12Source = dynamic_cast<DX12AccelerationStructure*>(source.Get());
+    ASSERT_NE(dx12Source, nullptr);
+    EXPECT_TRUE(dx12Source->SubmittedBuildWasOnQueue(
+        RHICommandQueueType::Graphics));
+    EXPECT_FALSE(dx12Source->SubmittedBuildWasOnQueue(
+        RHICommandQueueType::Compute));
+    device->WaitForFence(fence.Get(), buildSubmission);
+
+    const auto* compactedSizeData = static_cast<const uint64*>(readback->Map());
+    ASSERT_NE(compactedSizeData, nullptr);
+    const uint64 compactedSize = compactedSizeData[0];
+    readback->Unmap();
+    ASSERT_GT(compactedSize, 0u);
+    ASSERT_LE(compactedSize, buildSizes.accelerationStructureSize);
+
+    RHIAccelerationStructureDesc compactedDesc;
+    compactedDesc.type = RHIAccelerationStructureType::BottomLevel;
+    compactedDesc.size = AlignUp(
+        compactedSize,
+        RVX_RAY_TRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
+    compactedDesc.debugName = "CompactionNativeBLASDestination";
+    RHIAccelerationStructureRef compacted =
+        device->CreateAccelerationStructure(compactedDesc);
+    ASSERT_NE(compacted.Get(), nullptr);
+
+    RHIRayTracingInstanceDesc compactedInstance;
+    compactedInstance.bottomLevel = compacted.Get();
+    compactedInstance.instanceMask = 0xFFu;
+    const RHIRayTracingInstanceRecord compactedInstanceRecord =
+        PackRHIRayTracingInstanceRecord(
+            compactedInstance, compacted->GetGPUVirtualAddress());
+    RHIBufferDesc compactedInstanceBufferDesc;
+    compactedInstanceBufferDesc.size = sizeof(compactedInstanceRecord);
+    compactedInstanceBufferDesc.usage =
+        RHIBufferUsage::AccelerationStructureInput |
+        RHIBufferUsage::DeviceAddress;
+    compactedInstanceBufferDesc.memoryType = RHIMemoryType::Upload;
+    compactedInstanceBufferDesc.stride = sizeof(compactedInstanceRecord);
+    compactedInstanceBufferDesc.debugName = "CompactionNativeInstance";
+    RHIBufferRef compactedInstanceBuffer =
+        device->CreateBuffer(compactedInstanceBufferDesc);
+    ASSERT_NE(compactedInstanceBuffer.Get(), nullptr);
+    void* compactedInstanceData = compactedInstanceBuffer->Map();
+    ASSERT_NE(compactedInstanceData, nullptr);
+    std::memcpy(compactedInstanceData,
+                &compactedInstanceRecord,
+                sizeof(compactedInstanceRecord));
+    compactedInstanceBuffer->Unmap();
+
+    RHITopLevelASDesc compactedTlasBuildDesc;
+    compactedTlasBuildDesc.instanceBuffer = compactedInstanceBuffer.Get();
+    compactedTlasBuildDesc.instanceCount = 1;
+    compactedTlasBuildDesc.buildFlags =
+        RHIAccelerationStructureBuildFlags::PreferFastTrace;
+    compactedTlasBuildDesc.debugName = "CompactionNativeTLASBuild";
+    const RHIAccelerationStructureBuildSizes compactedTlasSizes =
+        device->GetTopLevelASBuildSizes(compactedTlasBuildDesc);
+    ASSERT_TRUE(compactedTlasSizes.IsValid());
+    RHIAccelerationStructureDesc compactedTlasDesc;
+    compactedTlasDesc.type = RHIAccelerationStructureType::TopLevel;
+    compactedTlasDesc.size = compactedTlasSizes.accelerationStructureSize;
+    compactedTlasDesc.debugName = "CompactionNativeTLAS";
+    RHIAccelerationStructureRef compactedTlas =
+        device->CreateAccelerationStructure(compactedTlasDesc);
+    ASSERT_NE(compactedTlas.Get(), nullptr);
+    RHIBufferDesc compactedTlasScratchDesc;
+    compactedTlasScratchDesc.size = compactedTlasSizes.buildScratchSize;
+    compactedTlasScratchDesc.usage = RHIBufferUsage::UnorderedAccess |
+                                     RHIBufferUsage::DeviceAddress;
+    compactedTlasScratchDesc.memoryType = RHIMemoryType::Default;
+    compactedTlasScratchDesc.debugName = "CompactionNativeTLASScratch";
+    RHIBufferRef compactedTlasScratch =
+        device->CreateBuffer(compactedTlasScratchDesc);
+    ASSERT_NE(compactedTlasScratch.Get(), nullptr);
+
+    RHICommandContextRef copyContext =
+        device->CreateCommandContext(RHICommandQueueType::Graphics);
+    ASSERT_NE(copyContext.Get(), nullptr);
+    copyContext->Begin();
+    copyContext->CopyAccelerationStructureCompact(
+        compacted.Get(), source.Get(), compactedSize);
+    copyContext->BufferBarrier({
+        compactedInstanceBuffer.Get(), RHIResourceState::Common,
+        RHIResourceState::AccelerationStructureBuildRead});
+    copyContext->BufferBarrier({
+        compactedTlasScratch.Get(), RHIResourceState::Common,
+        RHIResourceState::UnorderedAccess});
+    copyContext->BuildTopLevelAccelerationStructure(
+        compactedTlas.Get(),
+        compactedTlasBuildDesc,
+        compactedTlasScratch.Get());
+    copyContext->End();
+    const uint64 copySubmission =
+        device->SubmitCommandContext(copyContext.Get(), fence.Get());
+    ASSERT_NE(copySubmission, 0u);
+    device->WaitForFence(fence.Get(), copySubmission);
+    EXPECT_GE(fence->GetCompletedValue(), copySubmission);
+    auto* dx12CompactedTlas =
+        dynamic_cast<DX12AccelerationStructure*>(compactedTlas.Get());
+    ASSERT_NE(dx12CompactedTlas, nullptr);
+    EXPECT_TRUE(dx12CompactedTlas->HasSubmittedBuild());
+    EXPECT_TRUE(VerifyDX12InfoQueueClean(*dx12Device, "DX12 AS compaction"));
 }
 
 TEST(DX12Validation, RayTracedShadowPipelineCacheResources)

@@ -145,6 +145,8 @@
         "RVX_ENABLE_GFX15_TRANSLUCENCY_NATIVE": "ON",
         "RVX_ENABLE_GFX17_VFX_NATIVE": "ON",
         "RVX_ENABLE_GFX18_WATER_NATIVE": "ON",
+        "RVX_ENABLE_GFX19_LOCAL_LIGHTING_NATIVE": "ON",
+        "RVX_ENABLE_GFX19_REFLECTIONS_NATIVE": "ON",
         "RVX_ENABLE_PR_SMOKE": "OFF"
       }
     },
@@ -719,6 +721,39 @@
       "filter": { "include": { "label": "^suite\\.primary-native$" } }
     },
     {
+      "name": "win_x64_debug_gfx20_vulkan_rt",
+      "inherits": "win_x64_debug_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx20-vulkan-rt$" } }
+    },
+    {
+      "name": "win_x64_debug_gfx21_hybrid_rt",
+      "inherits": "win_x64_debug_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx21-hybrid-rt$" } }
+    },
+    {
+      "name": "win_x64_debug_gfx22_oit",
+      "inherits": "win_x64_debug_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx22-oit$" } }
+    },
+    {
       "name": "win_x64_qualification_lane_base",
       "hidden": true,
       "configurePreset": "win_x64_qualification_debug",
@@ -852,6 +887,28 @@
       },
       "output": { "outputOnFailure": true },
       "filter": { "include": { "label": "^suite\\.gfx18-water$" } }
+    },
+    {
+      "name": "win_x64_qualification_debug_gfx19_local_lighting",
+      "inherits": "win_x64_qualification_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx19-local-lighting$" } }
+    },
+    {
+      "name": "win_x64_qualification_debug_gfx19_reflections",
+      "inherits": "win_x64_qualification_lane_base",
+      "vendor": {
+        "renderversex.com/validation/1.0": {
+          "visibility": "internal"
+        }
+      },
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "^suite\\.gfx19-reflections$" } }
     },
     {
       "name": "linux_x64_debug_lane_base",

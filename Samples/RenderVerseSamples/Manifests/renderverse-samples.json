@@ -207,7 +207,7 @@
       "optionalCapabilities": [],
       "allowedFallbacks": [],
       "cookedAssetIds": [
-        "shadow-plane-caster"
+        "particle-vfx-ground-caster-v1"
       ],
       "fixedTime": {
         "numerator": 1,
@@ -430,8 +430,8 @@
       "optionalCapabilities": [],
       "allowedFallbacks": [],
       "cookedAssetIds": [
-        "interior-rendering-p0a",
-        "pbr-reference-environment"
+        "post-processing-interior-v1",
+        "pbr-reference-environment-cooked-v1"
       ],
       "fixedTime": {
         "numerator": 1,
@@ -665,12 +665,14 @@
       "defaultRecipe": "forward-plus",
       "defaultQualityProfile": "high",
       "requiredCapabilities": [
-        "RENDER.CAPABILITY.SORTED_TRANSLUCENCY"
+        "RENDER.CAPABILITY.SORTED_TRANSLUCENCY",
+        "RENDER.CAPABILITY.WEIGHTED_BLENDED_OIT"
       ],
       "optionalCapabilities": [],
       "allowedFallbacks": [],
       "cookedAssetIds": [
-        "transparent-materials-v1"
+        "transparent-materials-v1",
+        "particle-smoke-v1"
       ],
       "fixedTime": {
         "numerator": 1,
@@ -689,7 +691,7 @@
         }
       ],
       "captureTicks": [120],
-      "visualContractVersion": 1,
+      "visualContractVersion": 3,
       "roiMetricPolicy": {
         "regionsOfInterest": [
           {

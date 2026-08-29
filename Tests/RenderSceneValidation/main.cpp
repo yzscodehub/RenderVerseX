@@ -1,3 +1,4 @@
+#include "Core/Log.h"
 #include "GPUScene/GPUSceneUpdate.h"
 #include "Render/Lighting/LightManager.h"
 #include "Render/Lighting/LightingFramePlan.h"
@@ -153,6 +154,30 @@ using namespace RVX;
 
 namespace
 {
+    class ScopedRenderSceneTestLog final
+    {
+    public:
+        ScopedRenderSceneTestLog()
+        {
+            if (!Log::GetCoreLogger())
+            {
+                Log::Initialize();
+                m_owned = true;
+            }
+        }
+
+        ~ScopedRenderSceneTestLog()
+        {
+            if (m_owned)
+            {
+                Log::Shutdown();
+            }
+        }
+
+    private:
+        bool m_owned = false;
+    };
+
     class SkinningSemanticTestBuffer final : public RHIBuffer
     {
     public:
@@ -1533,6 +1558,50 @@ TEST(RenderSceneValidation,
         SceneRendererTestAccess::FindObjectMotionHistory(renderer, 42);
     ASSERT_NE(retryPresented, nullptr);
     EXPECT_FLOAT_EQ((*retryPresented)[3].x, 3.0F);
+}
+
+TEST(RenderSceneValidation,
+     ObjectMotionHistoryDoesNotAdvanceOnRejectedPhysicalPresentation)
+{
+    ScopedRenderSceneTestLog log;
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {906}, createInfo, {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    SceneRenderer renderer;
+
+    V5FrameInput first = MakeFrame(
+        701,
+        1,
+        1,
+        false,
+        {MakePrimitive(mesh, {}, {1.0F, 0.0F, 0.0F})});
+    ASSERT_NE(first.frame, nullptr);
+    ASSERT_TRUE(
+        renderer.ApplyFrameV5(*first.frame, first.database, resources.registry)
+            .IsApplied());
+    renderer.MarkAcceptedFramePresented();
+    const Mat4* firstPresented =
+        SceneRendererTestAccess::FindObjectMotionHistory(renderer, 42);
+    ASSERT_NE(firstPresented, nullptr);
+    EXPECT_FLOAT_EQ((*firstPresented)[3].x, 1.0F);
+
+    V5FrameInput rejected = MakeFrame(
+        702,
+        1,
+        1,
+        false,
+        {MakePrimitive(mesh, {}, {2.0F, 0.0F, 0.0F})});
+    ASSERT_NE(rejected.frame, nullptr);
+    ASSERT_TRUE(
+        renderer.ApplyFrameV5(*rejected.frame, rejected.database, resources.registry)
+            .IsApplied());
+    renderer.MarkAcceptedFramePresented(false);
+    const Mat4* afterRejected =
+        SceneRendererTestAccess::FindObjectMotionHistory(renderer, 42);
+    ASSERT_NE(afterRejected, nullptr);
+    EXPECT_FLOAT_EQ((*afterRejected)[3].x, 1.0F);
 }
 
 TEST(RenderSceneValidation,

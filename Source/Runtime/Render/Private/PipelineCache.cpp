@@ -156,7 +156,7 @@ namespace
     // descriptor ABI for HDR producers; never reuse a manifest built before it.
     // GTAO extends both the raster frame set and deferred compute set, so its
     // exact R8 visibility ABI must invalidate all previous manifests.
-    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 25;
+    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 27;
     constexpr uint64 RVX_NEUTRAL_AMBIENT_OCCLUSION_FIELD_HASH =
         0x4E45555452414F31ull; // "NEUTRAO1"
     constexpr uint32 RVX_PIPELINE_PURPOSE_DEFAULT = 0x50445354u; // PDST
@@ -175,6 +175,12 @@ namespace
     constexpr uint32 RVX_PIPELINE_PURPOSE_RIGID_SHADOW_DEPTH = 0x52534844u; // RSHD
     constexpr uint32 RVX_PIPELINE_PURPOSE_MASKED_SHADOW_DEPTH = 0x4D534844u; // MSHD
     constexpr uint32 RVX_PIPELINE_PURPOSE_INSTANCED_SHADOW_DEPTH = 0x49534844u; // ISHD
+    constexpr uint32 RVX_PIPELINE_PURPOSE_LOCAL_SHADOW_DEPTH = 0x4C534844u; // LSHD
+    constexpr uint32 RVX_PIPELINE_PURPOSE_RIGID_LOCAL_SHADOW_DEPTH = 0x4C525348u; // LRSH
+    constexpr uint32 RVX_PIPELINE_PURPOSE_MASKED_LOCAL_SHADOW_DEPTH = 0x4C4D5348u; // LMSH
+    constexpr uint32 RVX_PIPELINE_PURPOSE_INSTANCED_LOCAL_SHADOW_DEPTH = 0x4C495348u; // LISH
+    constexpr uint32 RVX_PIPELINE_PURPOSE_WEIGHTED_OIT_ACCUMULATION = 0x574F4143u; // WOAC
+    constexpr uint32 RVX_PIPELINE_PURPOSE_WEIGHTED_OIT_COMPOSITE = 0x574F434Du; // WOCM
     constexpr uint32 RVX_PIPELINE_PURPOSE_OBJECT_VELOCITY = 0x4F56454Cu; // OVEL
     constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_DRIVEN_DEPTH = 0x47444550u; // GDEP
     constexpr uint32 RVX_PIPELINE_PURPOSE_RIGID_DEPTH = 0x52444550u; // RDEP
@@ -264,6 +270,9 @@ namespace
         uint32 backend = 0;
         uint64 vertexShaderHash = 0;
         uint64 pixelShaderHash = 0;
+        uint64 weightedBlendedOITAccumulationPixelShaderHash = 0;
+        uint64 weightedBlendedOITCompositeVertexShaderHash = 0;
+        uint64 weightedBlendedOITCompositePixelShaderHash = 0;
         uint64 toneMappingVertexShaderHash = 0;
         uint64 toneMappingPixelShaderHash = 0;
         uint64 screenSpaceOutlinePixelShaderHash = 0;
@@ -275,6 +284,10 @@ namespace
         uint64 gtaoBilateralHorizontalPixelShaderHash = 0;
         uint64 gtaoBilateralVerticalPixelShaderHash = 0;
         uint64 gtaoTemporalPixelShaderHash = 0;
+        uint64 ssrHiZBasePixelShaderHash = 0;
+        uint64 ssrHiZReducePixelShaderHash = 0;
+        uint64 ssrTracePixelShaderHash = 0;
+        uint64 ssrResolvePixelShaderHash = 0;
         uint64 colorGradingVertexShaderHash = 0;
         uint64 colorGradingPixelShaderHash = 0;
         uint64 chromaticAberrationVertexShaderHash = 0;
@@ -310,6 +323,10 @@ namespace
         uint64 gtaoBilateralHorizontalPipelineHash = 0;
         uint64 gtaoBilateralVerticalPipelineHash = 0;
         uint64 gtaoTemporalPipelineHash = 0;
+        uint64 ssrHiZBasePipelineHash = 0;
+        uint64 ssrHiZReducePipelineHash = 0;
+        uint64 ssrTracePipelineHash = 0;
+        uint64 ssrResolvePipelineHash = 0;
         uint64 colorGradingPipelineHash = 0;
         uint64 chromaticAberrationPipelineHash = 0;
         uint64 filmGrainPipelineHash = 0;
@@ -403,7 +420,7 @@ namespace
 
     bool IsRequiredDefaultLitBinding(uint32 set, uint32 binding)
     {
-        if (set == 0 && binding <= PipelineCache::DefaultLitOpaqueSceneSnapshotBinding)
+        if (set == 0 && binding <= PipelineCache::DefaultLitLocalShadowAtlasBinding)
         {
             return true;
         }
@@ -457,6 +474,9 @@ namespace
         frameLayout.AddBinding(PipelineCache::DefaultLitOpaqueSceneSnapshotBinding,
                                RHIBindingType::SampledTexture,
                                RHIShaderStage::Pixel);
+        frameLayout.AddBinding(PipelineCache::DefaultLitLocalShadowAtlasBinding,
+                               RHIBindingType::SampledTexture,
+                               RHIShaderStage::Pixel);
 
         auto& objectLayout = outLayouts[1];
         objectLayout.debugName = "DefaultObjectSetLayout";
@@ -508,6 +528,7 @@ namespace
         const Vec3 cameraForward = NormalizeOr(view.cameraForward, Vec3(0.0f, 0.0f, -1.0f));
         constants.directionalLightIntensity = ClampFiniteNonNegative(view.directionalLightIntensity, 4.0f);
         constants.directionalLightColor = SanitizeLightColor(view.directionalLightColor);
+        constants.reverseZ = reverseZ ? 1.0f : 0.0f;
         const bool iblAmbientEnabled = view.iblAmbientEnabled != 0;
         constants.iblDiffuseAmbient = Vec4(view.iblDiffuseColor,
                                            iblAmbientEnabled ? view.iblDiffuseIntensity : 0.0f);
@@ -586,6 +607,9 @@ namespace
                key == "backend" ||
                key == "vertexShaderHash" ||
                key == "pixelShaderHash" ||
+               key == "weightedBlendedOITAccumulationPixelShaderHash" ||
+               key == "weightedBlendedOITCompositeVertexShaderHash" ||
+               key == "weightedBlendedOITCompositePixelShaderHash" ||
                key == "toneMappingVertexShaderHash" ||
                key == "toneMappingPixelShaderHash" ||
                key == "screenSpaceOutlinePixelShaderHash" ||
@@ -597,6 +621,10 @@ namespace
                key == "gtaoBilateralHorizontalPixelShaderHash" ||
                key == "gtaoBilateralVerticalPixelShaderHash" ||
                key == "gtaoTemporalPixelShaderHash" ||
+               key == "ssrHiZBasePixelShaderHash" ||
+               key == "ssrHiZReducePixelShaderHash" ||
+               key == "ssrTracePixelShaderHash" ||
+               key == "ssrResolvePixelShaderHash" ||
                key == "colorGradingVertexShaderHash" ||
                key == "colorGradingPixelShaderHash" ||
                key == "chromaticAberrationVertexShaderHash" ||
@@ -632,6 +660,10 @@ namespace
                key == "gtaoBilateralHorizontalPipelineHash" ||
                key == "gtaoBilateralVerticalPipelineHash" ||
                key == "gtaoTemporalPipelineHash" ||
+               key == "ssrHiZBasePipelineHash" ||
+               key == "ssrHiZReducePipelineHash" ||
+               key == "ssrTracePipelineHash" ||
+               key == "ssrResolvePipelineHash" ||
                key == "colorGradingPipelineHash" ||
                key == "chromaticAberrationPipelineHash" ||
                key == "filmGrainPipelineHash" ||
@@ -729,7 +761,7 @@ namespace
             fields.emplace(std::move(key), std::move(value));
         }
 
-        if (fields.size() != 58)
+        if (fields.size() != 69)
         {
             return false;
         }
@@ -738,6 +770,9 @@ namespace
             !ReadRequiredManifestUint32(fields, "backend", manifest.backend) ||
             !ReadRequiredManifestUint64(fields, "vertexShaderHash", manifest.vertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "pixelShaderHash", manifest.pixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "weightedBlendedOITAccumulationPixelShaderHash", manifest.weightedBlendedOITAccumulationPixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "weightedBlendedOITCompositeVertexShaderHash", manifest.weightedBlendedOITCompositeVertexShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "weightedBlendedOITCompositePixelShaderHash", manifest.weightedBlendedOITCompositePixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "toneMappingVertexShaderHash", manifest.toneMappingVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "toneMappingPixelShaderHash", manifest.toneMappingPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "screenSpaceOutlinePixelShaderHash", manifest.screenSpaceOutlinePixelShaderHash) ||
@@ -749,6 +784,10 @@ namespace
             !ReadRequiredManifestUint64(fields, "gtaoBilateralHorizontalPixelShaderHash", manifest.gtaoBilateralHorizontalPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "gtaoBilateralVerticalPixelShaderHash", manifest.gtaoBilateralVerticalPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "gtaoTemporalPixelShaderHash", manifest.gtaoTemporalPixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "ssrHiZBasePixelShaderHash", manifest.ssrHiZBasePixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "ssrHiZReducePixelShaderHash", manifest.ssrHiZReducePixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "ssrTracePixelShaderHash", manifest.ssrTracePixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "ssrResolvePixelShaderHash", manifest.ssrResolvePixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "colorGradingVertexShaderHash", manifest.colorGradingVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "colorGradingPixelShaderHash", manifest.colorGradingPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "chromaticAberrationVertexShaderHash", manifest.chromaticAberrationVertexShaderHash) ||
@@ -784,6 +823,10 @@ namespace
             !ReadRequiredManifestUint64(fields, "gtaoBilateralHorizontalPipelineHash", manifest.gtaoBilateralHorizontalPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "gtaoBilateralVerticalPipelineHash", manifest.gtaoBilateralVerticalPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "gtaoTemporalPipelineHash", manifest.gtaoTemporalPipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "ssrHiZBasePipelineHash", manifest.ssrHiZBasePipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "ssrHiZReducePipelineHash", manifest.ssrHiZReducePipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "ssrTracePipelineHash", manifest.ssrTracePipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "ssrResolvePipelineHash", manifest.ssrResolvePipelineHash) ||
             !ReadRequiredManifestUint64(fields, "colorGradingPipelineHash", manifest.colorGradingPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "chromaticAberrationPipelineHash", manifest.chromaticAberrationPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "filmGrainPipelineHash", manifest.filmGrainPipelineHash) ||
@@ -821,6 +864,12 @@ namespace
             file << "backend=" << manifest.backend << '\n';
             file << "vertexShaderHash=" << manifest.vertexShaderHash << '\n';
             file << "pixelShaderHash=" << manifest.pixelShaderHash << '\n';
+            file << "weightedBlendedOITAccumulationPixelShaderHash="
+                 << manifest.weightedBlendedOITAccumulationPixelShaderHash << '\n';
+            file << "weightedBlendedOITCompositeVertexShaderHash="
+                 << manifest.weightedBlendedOITCompositeVertexShaderHash << '\n';
+            file << "weightedBlendedOITCompositePixelShaderHash="
+                 << manifest.weightedBlendedOITCompositePixelShaderHash << '\n';
             file << "toneMappingVertexShaderHash=" << manifest.toneMappingVertexShaderHash << '\n';
             file << "toneMappingPixelShaderHash=" << manifest.toneMappingPixelShaderHash << '\n';
             file << "screenSpaceOutlinePixelShaderHash=" << manifest.screenSpaceOutlinePixelShaderHash << '\n';
@@ -832,6 +881,10 @@ namespace
             file << "gtaoBilateralHorizontalPixelShaderHash=" << manifest.gtaoBilateralHorizontalPixelShaderHash << '\n';
             file << "gtaoBilateralVerticalPixelShaderHash=" << manifest.gtaoBilateralVerticalPixelShaderHash << '\n';
             file << "gtaoTemporalPixelShaderHash=" << manifest.gtaoTemporalPixelShaderHash << '\n';
+            file << "ssrHiZBasePixelShaderHash=" << manifest.ssrHiZBasePixelShaderHash << '\n';
+            file << "ssrHiZReducePixelShaderHash=" << manifest.ssrHiZReducePixelShaderHash << '\n';
+            file << "ssrTracePixelShaderHash=" << manifest.ssrTracePixelShaderHash << '\n';
+            file << "ssrResolvePixelShaderHash=" << manifest.ssrResolvePixelShaderHash << '\n';
             file << "colorGradingVertexShaderHash=" << manifest.colorGradingVertexShaderHash << '\n';
             file << "colorGradingPixelShaderHash=" << manifest.colorGradingPixelShaderHash << '\n';
             file << "chromaticAberrationVertexShaderHash=" << manifest.chromaticAberrationVertexShaderHash << '\n';
@@ -867,6 +920,10 @@ namespace
             file << "gtaoBilateralHorizontalPipelineHash=" << manifest.gtaoBilateralHorizontalPipelineHash << '\n';
             file << "gtaoBilateralVerticalPipelineHash=" << manifest.gtaoBilateralVerticalPipelineHash << '\n';
             file << "gtaoTemporalPipelineHash=" << manifest.gtaoTemporalPipelineHash << '\n';
+            file << "ssrHiZBasePipelineHash=" << manifest.ssrHiZBasePipelineHash << '\n';
+            file << "ssrHiZReducePipelineHash=" << manifest.ssrHiZReducePipelineHash << '\n';
+            file << "ssrTracePipelineHash=" << manifest.ssrTracePipelineHash << '\n';
+            file << "ssrResolvePipelineHash=" << manifest.ssrResolvePipelineHash << '\n';
             file << "colorGradingPipelineHash=" << manifest.colorGradingPipelineHash << '\n';
             file << "chromaticAberrationPipelineHash=" << manifest.chromaticAberrationPipelineHash << '\n';
             file << "filmGrainPipelineHash=" << manifest.filmGrainPipelineHash << '\n';
@@ -933,6 +990,12 @@ namespace
                a.backend == b.backend &&
                a.vertexShaderHash == b.vertexShaderHash &&
                a.pixelShaderHash == b.pixelShaderHash &&
+               a.weightedBlendedOITAccumulationPixelShaderHash ==
+                   b.weightedBlendedOITAccumulationPixelShaderHash &&
+               a.weightedBlendedOITCompositeVertexShaderHash ==
+                   b.weightedBlendedOITCompositeVertexShaderHash &&
+               a.weightedBlendedOITCompositePixelShaderHash ==
+                   b.weightedBlendedOITCompositePixelShaderHash &&
                a.toneMappingVertexShaderHash == b.toneMappingVertexShaderHash &&
                a.toneMappingPixelShaderHash == b.toneMappingPixelShaderHash &&
                a.screenSpaceOutlinePixelShaderHash == b.screenSpaceOutlinePixelShaderHash &&
@@ -944,6 +1007,10 @@ namespace
                a.gtaoBilateralHorizontalPixelShaderHash == b.gtaoBilateralHorizontalPixelShaderHash &&
                a.gtaoBilateralVerticalPixelShaderHash == b.gtaoBilateralVerticalPixelShaderHash &&
                a.gtaoTemporalPixelShaderHash == b.gtaoTemporalPixelShaderHash &&
+               a.ssrHiZBasePixelShaderHash == b.ssrHiZBasePixelShaderHash &&
+               a.ssrHiZReducePixelShaderHash == b.ssrHiZReducePixelShaderHash &&
+               a.ssrTracePixelShaderHash == b.ssrTracePixelShaderHash &&
+               a.ssrResolvePixelShaderHash == b.ssrResolvePixelShaderHash &&
                a.colorGradingVertexShaderHash == b.colorGradingVertexShaderHash &&
                a.colorGradingPixelShaderHash == b.colorGradingPixelShaderHash &&
                a.chromaticAberrationVertexShaderHash == b.chromaticAberrationVertexShaderHash &&
@@ -979,6 +1046,10 @@ namespace
                a.gtaoBilateralHorizontalPipelineHash == b.gtaoBilateralHorizontalPipelineHash &&
                a.gtaoBilateralVerticalPipelineHash == b.gtaoBilateralVerticalPipelineHash &&
                a.gtaoTemporalPipelineHash == b.gtaoTemporalPipelineHash &&
+               a.ssrHiZBasePipelineHash == b.ssrHiZBasePipelineHash &&
+               a.ssrHiZReducePipelineHash == b.ssrHiZReducePipelineHash &&
+               a.ssrTracePipelineHash == b.ssrTracePipelineHash &&
+               a.ssrResolvePipelineHash == b.ssrResolvePipelineHash &&
                a.colorGradingPipelineHash == b.colorGradingPipelineHash &&
                a.chromaticAberrationPipelineHash == b.chromaticAberrationPipelineHash &&
                a.filmGrainPipelineHash == b.filmGrainPipelineHash &&
@@ -1081,6 +1152,33 @@ RHIDepthStencilState PipelineCache::BuildDepthStencilState(bool reverseZ, bool d
     state.depthWriteEnable = depthWrite;
     state.depthCompareOp = reverseZ ? RHICompareOp::GreaterEqual : RHICompareOp::Less;
     return state;
+}
+
+RHIBlendState PipelineCache::BuildWeightedBlendedOITAccumulationBlendState()
+{
+    RHIBlendState blend = RHIBlendState::Default();
+    blend.independentBlendEnable = true;
+
+    RHIRenderTargetBlendState& accumulation = blend.renderTargets[0];
+    accumulation.blendEnable = true;
+    accumulation.srcColorBlend = RHIBlendFactor::One;
+    accumulation.dstColorBlend = RHIBlendFactor::One;
+    accumulation.colorBlendOp = RHIBlendOp::Add;
+    accumulation.srcAlphaBlend = RHIBlendFactor::One;
+    accumulation.dstAlphaBlend = RHIBlendFactor::One;
+    accumulation.alphaBlendOp = RHIBlendOp::Add;
+    accumulation.colorWriteMask = 0xFu;
+
+    RHIRenderTargetBlendState& revealage = blend.renderTargets[1];
+    revealage.blendEnable = true;
+    revealage.srcColorBlend = RHIBlendFactor::Zero;
+    revealage.dstColorBlend = RHIBlendFactor::InvSrcColor;
+    revealage.colorBlendOp = RHIBlendOp::Add;
+    revealage.srcAlphaBlend = RHIBlendFactor::Zero;
+    revealage.dstAlphaBlend = RHIBlendFactor::One;
+    revealage.alphaBlendOp = RHIBlendOp::Add;
+    revealage.colorWriteMask = 0x1u;
+    return blend;
 }
 
 bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
@@ -1202,6 +1300,16 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
         return false;
     }
 
+    if (!CreateWeightedBlendedOITCompositePipelineLayout())
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError(
+                "Failed to create weighted-blended OIT composite pipeline layout");
+        }
+        return false;
+    }
+
     if (!CreateExposurePostProcessPipelineLayout())
     {
         if (m_lastError.empty())
@@ -1225,6 +1333,15 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
         if (m_lastError.empty())
         {
             SetLastError("Failed to create GTAO pipeline layout");
+        }
+        return false;
+    }
+
+    if (!CreateSSRPipelineLayout())
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create screen-space reflection pipeline layout");
         }
         return false;
     }
@@ -1296,6 +1413,7 @@ void PipelineCache::Shutdown()
     m_opaquePipeline.Reset();
     m_maskedPipeline.Reset();
     m_transparentPipeline.Reset();
+    m_weightedBlendedOITCompositePipeline.Reset();
     m_depthOnlyPipeline.Reset();
     m_rigidDepthOnlyPipeline.Reset();
     m_maskedDepthOnlyPipeline.Reset();
@@ -1323,6 +1441,10 @@ void PipelineCache::Shutdown()
     m_gtaoBilateralHorizontalPipeline.Reset();
     m_gtaoBilateralVerticalPipeline.Reset();
     m_gtaoTemporalPipeline.Reset();
+    m_ssrHiZBasePipeline.Reset();
+    m_ssrHiZReducePipeline.Reset();
+    m_ssrTracePipeline.Reset();
+    m_ssrResolvePipeline.Reset();
     m_screenSpaceOutlinePipeline.Reset();
     m_screenSpaceOutlineVerifierPipeline.Reset();
     m_colorGradingPipeline.Reset();
@@ -1388,6 +1510,8 @@ void PipelineCache::Shutdown()
     m_lastEnvironmentIBLFrameBindingResult = {};
     m_postProcessPipelineLayout.Reset();
     m_postProcessSetLayout.Reset();
+    m_weightedBlendedOITCompositePipelineLayout.Reset();
+    m_weightedBlendedOITCompositeSetLayout.Reset();
     m_exposurePostProcessPipelineLayout.Reset();
     m_exposurePostProcessSetLayout.Reset();
     m_exposureComputePipelineLayout.Reset();
@@ -1396,6 +1520,8 @@ void PipelineCache::Shutdown()
     m_taaSetLayout.Reset();
     m_gtaoPipelineLayout.Reset();
     m_gtaoSetLayout.Reset();
+    m_ssrPipelineLayout.Reset();
+    m_ssrSetLayout.Reset();
     m_screenSpaceOutlinePipelineLayout.Reset();
     m_screenSpaceOutlineSetLayout.Reset();
     m_screenSpaceOutlineVerifierPipelineLayout.Reset();
@@ -1424,6 +1550,9 @@ void PipelineCache::Shutdown()
     m_gpuSceneInstancedMaterialVertexShader.Reset();
     m_pixelShader.Reset();
     m_translucencyPixelShader.Reset();
+    m_weightedBlendedOITAccumulationPixelShader.Reset();
+    m_weightedBlendedOITCompositeVertexShader.Reset();
+    m_weightedBlendedOITCompositePixelShader.Reset();
     m_forwardSurfaceDataPixelShader.Reset();
     m_gBufferPixelShader.Reset();
     m_deferredLightingComputeShader.Reset();
@@ -1450,6 +1579,10 @@ void PipelineCache::Shutdown()
     m_gtaoBilateralHorizontalPixelShader.Reset();
     m_gtaoBilateralVerticalPixelShader.Reset();
     m_gtaoTemporalPixelShader.Reset();
+    m_ssrHiZBasePixelShader.Reset();
+    m_ssrHiZReducePixelShader.Reset();
+    m_ssrTracePixelShader.Reset();
+    m_ssrResolvePixelShader.Reset();
     m_cameraVelocityPixelShader.Reset();
     m_objectVelocityVertexShader.Reset();
     m_rigidObjectVelocityVertexShader.Reset();
@@ -1492,6 +1625,9 @@ void PipelineCache::Shutdown()
     m_gpuSceneInstancedMaterialVsCompileResult.reset();
     m_psCompileResult.reset();
     m_translucencyPsCompileResult.reset();
+    m_weightedBlendedOITAccumulationPsCompileResult.reset();
+    m_weightedBlendedOITCompositeVsCompileResult.reset();
+    m_weightedBlendedOITCompositePsCompileResult.reset();
     m_forwardSurfaceDataPsCompileResult.reset();
     m_gBufferPsCompileResult.reset();
     m_deferredLightingCsCompileResult.reset();
@@ -1518,6 +1654,10 @@ void PipelineCache::Shutdown()
     m_gtaoBilateralHorizontalPsCompileResult.reset();
     m_gtaoBilateralVerticalPsCompileResult.reset();
     m_gtaoTemporalPsCompileResult.reset();
+    m_ssrHiZBasePsCompileResult.reset();
+    m_ssrHiZReducePsCompileResult.reset();
+    m_ssrTracePsCompileResult.reset();
+    m_ssrResolvePsCompileResult.reset();
     m_cameraVelocityPsCompileResult.reset();
     m_objectVelocityVsCompileResult.reset();
     m_rigidObjectVelocityVsCompileResult.reset();
@@ -1582,6 +1722,8 @@ void PipelineCache::RetireOwnerSnapshots(
 bool PipelineCache::CompileShaders()
 {
     std::string shaderPath = m_shaderDir + "/DefaultLit.hlsl";
+    std::string weightedBlendedOITCompositeShaderPath =
+        m_shaderDir + "/Translucency/WeightedBlendedOITComposite.hlsl";
     std::string depthOnlyShaderPath = m_shaderDir + "/DepthOnly.hlsl";
     std::string deferredLightingShaderPath =
         m_shaderDir + "/DeferredLighting.hlsl";
@@ -1592,6 +1734,8 @@ bool PipelineCache::CompileShaders()
         m_shaderDir + "/PostProcess/ScreenSpaceOutlineVerifier.hlsl";
     std::string bloomShaderPath = m_shaderDir + "/PostProcess/Bloom.hlsl";
     std::string gtaoShaderPath = m_shaderDir + "/Lighting/GTAO.hlsl";
+    std::string ssrShaderPath =
+        m_shaderDir + "/Reflection/HiZScreenSpaceReflection.hlsl";
     std::string cameraVelocityShaderPath = m_shaderDir + "/PostProcess/CameraVelocity.hlsl";
     std::string objectVelocityShaderPath = m_shaderDir + "/ObjectVelocity.hlsl";
     std::string rayTracedReflectionCompositeShaderPath =
@@ -1621,7 +1765,9 @@ bool PipelineCache::CompileShaders()
             ? "1"
             : "0"};
     const bool compileRayTracingShaders =
-        backend == RHIBackendType::DX12 && m_device->GetCapabilities().supportsRaytracingPipeline;
+        (backend == RHIBackendType::DX12 ||
+         backend == RHIBackendType::Vulkan) &&
+        m_device->GetCapabilities().supportsRaytracingPipeline;
     RVX_CORE_INFO("  Backend type: {}", static_cast<int>(backend));
 
     RenderShaderLoadDesc vsDesc;
@@ -1741,6 +1887,23 @@ bool PipelineCache::CompileShaders()
     m_translucencyPixelShader = translucencyPsResult.shader;
     m_translucencyPsCompileResult = std::make_unique<ShaderProgramMetadata>(
         std::move(translucencyPsResult.compileResult));
+
+    RenderShaderLoadDesc weightedOITPsDesc = psDesc;
+    weightedOITPsDesc.entryPoint = "PSWeightedBlendedOIT";
+    auto weightedOITPsResult = m_shaderProgramLoader->LoadFromFile(
+        m_device, weightedOITPsDesc);
+    if (!weightedOITPsResult.compileResult.success ||
+        !weightedOITPsResult.shader)
+    {
+        SetLastError(
+            "Failed to compile weighted-blended OIT accumulation pixel shader: " +
+            weightedOITPsResult.compileResult.errorMessage);
+        return false;
+    }
+    m_weightedBlendedOITAccumulationPixelShader = weightedOITPsResult.shader;
+    m_weightedBlendedOITAccumulationPsCompileResult =
+        std::make_unique<ShaderProgramMetadata>(
+            std::move(weightedOITPsResult.compileResult));
 
     RenderShaderLoadDesc forwardSurfacePsDesc = psDesc;
     forwardSurfacePsDesc.entryPoint = "PSForwardSurfaceData";
@@ -2076,6 +2239,55 @@ bool PipelineCache::CompileShaders()
         }
     }
 
+    RenderShaderLoadDesc weightedOITCompositeVsDesc = vsDesc;
+    weightedOITCompositeVsDesc.path = weightedBlendedOITCompositeShaderPath;
+    weightedOITCompositeVsDesc.entryPoint = "VSMain";
+    weightedOITCompositeVsDesc.stage = RHIShaderStage::Vertex;
+    weightedOITCompositeVsDesc.defines.push_back(fullscreenUVYMappingDefine);
+    if (backend == RHIBackendType::DX11)
+    {
+        weightedOITCompositeVsDesc.targetProfile = "vs_5_0";
+    }
+    auto weightedOITCompositeVsResult = m_shaderProgramLoader->LoadFromFile(
+        m_device, weightedOITCompositeVsDesc);
+    if (!weightedOITCompositeVsResult.compileResult.success ||
+        !weightedOITCompositeVsResult.shader)
+    {
+        SetLastError(
+            "Failed to compile weighted-blended OIT composite vertex shader: " +
+            weightedOITCompositeVsResult.compileResult.errorMessage);
+        return false;
+    }
+    m_weightedBlendedOITCompositeVertexShader =
+        weightedOITCompositeVsResult.shader;
+    m_weightedBlendedOITCompositeVsCompileResult =
+        std::make_unique<ShaderProgramMetadata>(
+            std::move(weightedOITCompositeVsResult.compileResult));
+
+    RenderShaderLoadDesc weightedOITCompositePsDesc =
+        weightedOITCompositeVsDesc;
+    weightedOITCompositePsDesc.entryPoint = "PSMain";
+    weightedOITCompositePsDesc.stage = RHIShaderStage::Pixel;
+    if (backend == RHIBackendType::DX11)
+    {
+        weightedOITCompositePsDesc.targetProfile = "ps_5_0";
+    }
+    auto weightedOITCompositePsResult = m_shaderProgramLoader->LoadFromFile(
+        m_device, weightedOITCompositePsDesc);
+    if (!weightedOITCompositePsResult.compileResult.success ||
+        !weightedOITCompositePsResult.shader)
+    {
+        SetLastError(
+            "Failed to compile weighted-blended OIT composite pixel shader: " +
+            weightedOITCompositePsResult.compileResult.errorMessage);
+        return false;
+    }
+    m_weightedBlendedOITCompositePixelShader =
+        weightedOITCompositePsResult.shader;
+    m_weightedBlendedOITCompositePsCompileResult =
+        std::make_unique<ShaderProgramMetadata>(
+            std::move(weightedOITCompositePsResult.compileResult));
+
     RenderShaderLoadDesc toneMappingVsDesc = vsDesc;
     toneMappingVsDesc.path = toneMappingShaderPath;
     toneMappingVsDesc.entryPoint = "VSMain";
@@ -2277,6 +2489,60 @@ bool PipelineCache::CompileShaders()
         !loadGTAOPixelProgram("PSTemporal", "temporal resolve",
                               m_gtaoTemporalPixelShader,
                               m_gtaoTemporalPsCompileResult))
+    {
+        return false;
+    }
+
+    const auto loadSSRPixelProgram =
+        [this, &vsDesc, &ssrShaderPath, backend,
+         &fullscreenUVYMappingDefine](
+            const char* entryPoint,
+            const char* displayName,
+            RHIShaderRef& outShader,
+            std::unique_ptr<ShaderProgramMetadata>& outMetadata) -> bool
+        {
+            RenderShaderLoadDesc desc = vsDesc;
+            desc.path = ssrShaderPath;
+            desc.entryPoint = entryPoint;
+            desc.stage = RHIShaderStage::Pixel;
+            desc.defines.push_back(fullscreenUVYMappingDefine);
+            if (backend == RHIBackendType::DX11)
+            {
+                desc.targetProfile = "ps_5_0";
+            }
+
+            auto result = m_shaderProgramLoader->LoadFromFile(m_device, desc);
+            if (!result.compileResult.success)
+            {
+                SetLastError(std::string("Failed to compile SSR ") +
+                             displayName + " pixel shader: " +
+                             result.compileResult.errorMessage);
+                return false;
+            }
+            if (!result.shader)
+            {
+                SetLastError(std::string("Failed to create SSR ") +
+                             displayName + " pixel shader");
+                return false;
+            }
+            outShader = result.shader;
+            outMetadata = std::make_unique<ShaderProgramMetadata>(
+                std::move(result.compileResult));
+            return true;
+        };
+
+    if (!loadSSRPixelProgram("PSHiZBase", "Hi-Z base",
+                             m_ssrHiZBasePixelShader,
+                             m_ssrHiZBasePsCompileResult) ||
+        !loadSSRPixelProgram("PSHiZReduce", "Hi-Z reduction",
+                             m_ssrHiZReducePixelShader,
+                             m_ssrHiZReducePsCompileResult) ||
+        !loadSSRPixelProgram("PSTrace", "Hi-Z trace",
+                             m_ssrTracePixelShader,
+                             m_ssrTracePsCompileResult) ||
+        !loadSSRPixelProgram("PSResolve", "reflection resolve",
+                             m_ssrResolvePixelShader,
+                             m_ssrResolvePsCompileResult))
     {
         return false;
     }
@@ -3275,6 +3541,17 @@ bool PipelineCache::CreateDeferredLightingPipelineLayout()
     setLayoutDesc.AddBinding(PipelineCache::DeferredLightingAmbientOcclusionBinding,
                              RHIBindingType::SampledTexture,
                              RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(PipelineCache::DeferredLightingLocalShadowAtlasBinding,
+                             RHIBindingType::SampledTexture,
+                             RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(
+        PipelineCache::DeferredLightingBaseIndirectSpecularBinding,
+        RHIBindingType::StorageTexture,
+        RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(
+        PipelineCache::DeferredLightingSpecularResponseBinding,
+        RHIBindingType::StorageTexture,
+        RHIShaderStage::Compute);
 
     RHIDescriptorSetLayoutRef setLayout =
         m_device->CreateDescriptorSetLayout(setLayoutDesc);
@@ -3328,6 +3605,41 @@ bool PipelineCache::CreatePostProcessPipelineLayout()
     }
 
     RVX_CORE_DEBUG("PipelineCache: Created post-process pipeline layout");
+    return true;
+}
+
+bool PipelineCache::CreateWeightedBlendedOITCompositePipelineLayout()
+{
+    RHIDescriptorSetLayoutDesc setLayoutDesc;
+    setLayoutDesc.debugName = "WeightedBlendedOITCompositeSetLayout";
+    setLayoutDesc.AddBinding(
+        0, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(
+        1, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(
+        2, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+
+    m_weightedBlendedOITCompositeSetLayout =
+        m_device->CreateDescriptorSetLayout(setLayoutDesc);
+    if (!m_weightedBlendedOITCompositeSetLayout)
+    {
+        SetLastError(
+            "Failed to create weighted-blended OIT composite descriptor set layout");
+        return false;
+    }
+
+    RHIPipelineLayoutDesc layoutDesc;
+    layoutDesc.debugName = "WeightedBlendedOITCompositePipelineLayout";
+    layoutDesc.setLayouts.push_back(
+        m_weightedBlendedOITCompositeSetLayout.Get());
+    m_weightedBlendedOITCompositePipelineLayout =
+        m_device->CreatePipelineLayout(layoutDesc);
+    if (!m_weightedBlendedOITCompositePipelineLayout)
+    {
+        SetLastError(
+            "Failed to create weighted-blended OIT composite pipeline layout");
+        return false;
+    }
     return true;
 }
 
@@ -3432,6 +3744,56 @@ bool PipelineCache::CreateGTAOPipelineLayout()
     }
 
     RVX_CORE_DEBUG("PipelineCache: Created GTAO pipeline layout");
+    return true;
+}
+
+bool PipelineCache::CreateSSRPipelineLayout()
+{
+    RHIDescriptorSetLayoutDesc setLayoutDesc;
+    setLayoutDesc.debugName = "SSRSetLayout";
+    setLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer,
+                             RHIShaderStage::Pixel);
+    // t1 scene color, t2 stage source/depth, t3 normal/roughness,
+    // t4 complete Hi-Z pyramid, t5 raw reflection, t6 confidence,
+    // t7[8] fixed-capacity local probes, t15 exact pre-exposed base indirect
+    // specular, t16 committed exposure state, t17 dimensionless specular
+    // response, and s19 the shared linear-clamp sampler. The sparse bindings
+    // keep the descriptor ABI identical across DX12, Vulkan, and Metal.
+    for (uint32 binding = 1; binding <= 6; ++binding)
+    {
+        setLayoutDesc.AddBinding(binding, RHIBindingType::SampledTexture,
+                                 RHIShaderStage::Pixel);
+    }
+    setLayoutDesc.AddBinding(7, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Pixel,
+                             8U);
+    setLayoutDesc.AddBinding(15, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(16, RHIBindingType::ShaderResourceBuffer,
+                             RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(17, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(19, RHIBindingType::Sampler,
+                             RHIShaderStage::Pixel);
+
+    m_ssrSetLayout = m_device->CreateDescriptorSetLayout(setLayoutDesc);
+    if (!m_ssrSetLayout)
+    {
+        SetLastError("Failed to create SSR descriptor set layout");
+        return false;
+    }
+
+    RHIPipelineLayoutDesc layoutDesc;
+    layoutDesc.debugName = "SSRPipelineLayout";
+    layoutDesc.setLayouts.push_back(m_ssrSetLayout.Get());
+    m_ssrPipelineLayout = m_device->CreatePipelineLayout(layoutDesc);
+    if (!m_ssrPipelineLayout)
+    {
+        SetLastError("Failed to create SSR pipeline layout");
+        return false;
+    }
+
+    RVX_CORE_DEBUG("PipelineCache: Created SSR pipeline layout");
     return true;
 }
 
@@ -3800,6 +4162,8 @@ bool PipelineCache::BuildReflectedDefaultLitLayouts(std::vector<RHIDescriptorSet
                   RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
     ensureBinding(outLayouts[0], PipelineCache::DefaultLitOpaqueSceneSnapshotBinding,
                   RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+    ensureBinding(outLayouts[0], PipelineCache::DefaultLitLocalShadowAtlasBinding,
+                  RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
     ensureBinding(outLayouts[1], 1, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
     ensureBinding(outLayouts[1], 2, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
     ensureBinding(outLayouts[1], 3, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
@@ -3926,6 +4290,9 @@ bool PipelineCache::ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSet
     if (!requireBinding(0, PipelineCache::DefaultLitOpaqueSceneSnapshotBinding,
                         RHIBindingType::SampledTexture))
         return false;
+    if (!requireBinding(0, PipelineCache::DefaultLitLocalShadowAtlasBinding,
+                        RHIBindingType::SampledTexture))
+        return false;
     if (!requireBinding(1, 0, RHIBindingType::DynamicUniformBuffer))
         return false;
     if (!requireBinding(1, 1, RHIBindingType::ShaderResourceBuffer))
@@ -3967,6 +4334,12 @@ void PipelineCache::ProcessPipelineManifest()
     expected.backend = static_cast<uint32>(m_device ? m_device->GetBackendType() : RHIBackendType::None);
     expected.vertexShaderHash = ComputeShaderHash(m_vsCompileResult.get());
     expected.pixelShaderHash = ComputeShaderHash(m_psCompileResult.get());
+    expected.weightedBlendedOITAccumulationPixelShaderHash =
+        ComputeShaderHash(m_weightedBlendedOITAccumulationPsCompileResult.get());
+    expected.weightedBlendedOITCompositeVertexShaderHash =
+        ComputeShaderHash(m_weightedBlendedOITCompositeVsCompileResult.get());
+    expected.weightedBlendedOITCompositePixelShaderHash =
+        ComputeShaderHash(m_weightedBlendedOITCompositePsCompileResult.get());
     expected.toneMappingVertexShaderHash = ComputeShaderHash(m_toneMappingVsCompileResult.get());
     expected.toneMappingPixelShaderHash = ComputeShaderHash(m_toneMappingPsCompileResult.get());
     expected.screenSpaceOutlinePixelShaderHash =
@@ -3985,6 +4358,14 @@ void PipelineCache::ProcessPipelineManifest()
         ComputeShaderHash(m_gtaoBilateralVerticalPsCompileResult.get());
     expected.gtaoTemporalPixelShaderHash =
         ComputeShaderHash(m_gtaoTemporalPsCompileResult.get());
+    expected.ssrHiZBasePixelShaderHash =
+        ComputeShaderHash(m_ssrHiZBasePsCompileResult.get());
+    expected.ssrHiZReducePixelShaderHash =
+        ComputeShaderHash(m_ssrHiZReducePsCompileResult.get());
+    expected.ssrTracePixelShaderHash =
+        ComputeShaderHash(m_ssrTracePsCompileResult.get());
+    expected.ssrResolvePixelShaderHash =
+        ComputeShaderHash(m_ssrResolvePsCompileResult.get());
     expected.colorGradingVertexShaderHash = ComputeShaderHash(m_colorGradingVsCompileResult.get());
     expected.colorGradingPixelShaderHash = ComputeShaderHash(m_colorGradingPsCompileResult.get());
     expected.chromaticAberrationVertexShaderHash = ComputeShaderHash(m_chromaticAberrationVsCompileResult.get());
@@ -4025,6 +4406,10 @@ void PipelineCache::ProcessPipelineManifest()
     expected.gtaoBilateralVerticalPipelineHash =
         m_stats.gtaoBilateralVerticalPipelineHash;
     expected.gtaoTemporalPipelineHash = m_stats.gtaoTemporalPipelineHash;
+    expected.ssrHiZBasePipelineHash = m_stats.ssrHiZBasePipelineHash;
+    expected.ssrHiZReducePipelineHash = m_stats.ssrHiZReducePipelineHash;
+    expected.ssrTracePipelineHash = m_stats.ssrTracePipelineHash;
+    expected.ssrResolvePipelineHash = m_stats.ssrResolvePipelineHash;
     expected.colorGradingPipelineHash = m_stats.colorGradingPipelineHash;
     expected.chromaticAberrationPipelineHash = m_stats.chromaticAberrationPipelineHash;
     expected.filmGrainPipelineHash = m_stats.filmGrainPipelineHash;
@@ -4434,6 +4819,7 @@ bool PipelineCache::FreezeFrameLightResources(
         "FrozenFrameClusterLightIndices"};
 
     std::array<RHIBufferRef, 6> frozenBuffers;
+    uint32 frozenLocalShadowPageCount = 0;
     for (uint32 index = 0; index < frozenBuffers.size(); ++index)
     {
         RHIBuffer* const sourceBuffer = lightSources[index];
@@ -4471,6 +4857,34 @@ bool PipelineCache::FreezeFrameLightResources(
             SetLastError("Freezing frame light resources could not map a destination buffer");
             return false;
         }
+        if (index == 0)
+        {
+            if (sourceBuffer->GetSize() < sizeof(LightConstants))
+            {
+                copy->Unmap();
+                sourceBuffer->Unmap();
+                SetLastError(
+                    "Freezing frame light resources requires the complete LightConstants ABI");
+                return false;
+            }
+            LightConstants constants;
+            std::memcpy(&constants, sourceData, sizeof(constants));
+            if (constants.localShadowPageCount >
+                    RVX_MAX_LOCAL_SHADOW_PAGES ||
+                (constants.localShadowPageCount == 0 &&
+                 constants.localShadowInvResolution != 0.0f) ||
+                (constants.localShadowPageCount != 0 &&
+                 (!std::isfinite(constants.localShadowInvResolution) ||
+                  constants.localShadowInvResolution <= 0.0f)))
+            {
+                copy->Unmap();
+                sourceBuffer->Unmap();
+                SetLastError(
+                    "Freezing frame light resources rejected inconsistent local-shadow constants");
+                return false;
+            }
+            frozenLocalShadowPageCount = constants.localShadowPageCount;
+        }
         std::memcpy(copyData, sourceData, static_cast<size_t>(sourceBuffer->GetSize()));
         copy->Unmap();
         sourceBuffer->Unmap();
@@ -4484,6 +4898,7 @@ bool PipelineCache::FreezeFrameLightResources(
     frozen.clusterConstantsBuffer = std::move(frozenBuffers[3]);
     frozen.clusterBuffer = std::move(frozenBuffers[4]);
     frozen.clusterLightIndexBuffer = std::move(frozenBuffers[5]);
+    frozen.localShadowPageCount = frozenLocalShadowPageCount;
     if (!frozen.IsComplete())
     {
         SetLastError("Freezing frame light resources produced an incomplete result");
@@ -4557,6 +4972,49 @@ bool PipelineCache::CreateLightingBindingSnapshot(
     {
         SetLastError(
             "Lighting binding snapshot requires a ray-traced-shadow view when it is enabled");
+        return false;
+    }
+
+    if (!request.localShadow.IsValid())
+    {
+        SetLastError(
+            "Lighting binding snapshot received an incomplete local-shadow sampling contract");
+        return false;
+    }
+    if (request.localShadow.enabled)
+    {
+        RHITextureView* const atlasView = request.localShadow.depthAtlasView;
+        RHITexture* const atlas = atlasView->GetTexture();
+        const RHISubresourceRange& range = atlasView->GetSubresourceRange();
+        if (atlas == nullptr || atlasView->GetFormat() != RHIFormat::D32_FLOAT ||
+            atlas->GetFormat() != RHIFormat::D32_FLOAT ||
+            atlas->GetDimension() != RHITextureDimension::Texture2D ||
+            atlas->GetWidth() != request.localShadow.pageResolution ||
+            atlas->GetHeight() != request.localShadow.pageResolution ||
+            atlas->GetDepth() != 1 || atlas->GetMipLevels() != 1 ||
+            atlas->GetArraySize() != request.localShadow.pageCapacity ||
+            atlas->GetSampleCount() != RHISampleCount::Count1 ||
+            !HasFlag(atlas->GetUsage(), RHITextureUsage::DepthStencil) ||
+            !HasFlag(atlas->GetUsage(), RHITextureUsage::ShaderResource) ||
+            range.baseMipLevel != 0 ||
+            (range.mipLevelCount != 1 &&
+             range.mipLevelCount != RVX_ALL_MIPS) ||
+            range.baseArrayLayer != 0 ||
+            (range.arrayLayerCount != request.localShadow.pageCapacity &&
+             range.arrayLayerCount != RVX_ALL_LAYERS) ||
+            range.aspect != RHITextureAspect::Depth ||
+            frozenLightResources.localShadowPageCount !=
+                request.localShadow.pageCount)
+        {
+            SetLastError(
+                "Lighting binding snapshot requires the exact full-array D32 local-shadow view and frozen page count");
+            return false;
+        }
+    }
+    else if (frozenLightResources.localShadowPageCount != 0)
+    {
+        SetLastError(
+            "Lighting binding snapshot cannot bind a fallback atlas for non-zero frozen local-shadow pages");
         return false;
     }
 
@@ -4634,6 +5092,10 @@ bool PipelineCache::CreateLightingBindingSnapshot(
         ? RHITextureViewRef(request.rayTracedShadow.shadowMaskView)
         : m_fallbackRayTracedShadowMaskView;
     snapshot.rayTracedShadowEnabled = rayTracedShadowRequested;
+    snapshot.localShadowAtlasView = request.localShadow.enabled
+        ? RHITextureViewRef(request.localShadow.depthAtlasView)
+        : m_fallbackDirectionalShadowView;
+    snapshot.localShadowEnabled = request.localShadow.enabled;
     snapshot.clusterConstantsBuffer = frozenLightResources.clusterConstantsBuffer;
     snapshot.clusterBuffer = frozenLightResources.clusterBuffer;
     snapshot.clusterLightIndexBuffer = frozenLightResources.clusterLightIndexBuffer;
@@ -4685,6 +5147,7 @@ bool PipelineCache::CreateLightingBindingSnapshot(
         !snapshot.directionalShadowView || !snapshot.directionalShadowSampler ||
         !snapshot.lightConstantsBuffer || !snapshot.pointLightsBuffer ||
         !snapshot.spotLightsBuffer || !snapshot.rayTracedShadowMaskView ||
+        !snapshot.localShadowAtlasView ||
         !snapshot.clusterConstantsBuffer || !snapshot.clusterBuffer ||
         !snapshot.clusterLightIndexBuffer ||
         !snapshot.environmentIBLIrradianceView ||
@@ -4728,6 +5191,8 @@ bool PipelineCache::CreateLightingBindingSnapshot(
                                   snapshot.ambientOcclusionView.Get());
     descriptorSetDesc.BindTexture(DefaultLitOpaqueSceneSnapshotBinding,
                                   snapshot.opaqueSceneSnapshotView.Get());
+    descriptorSetDesc.BindTexture(DefaultLitLocalShadowAtlasBinding,
+                                  snapshot.localShadowAtlasView.Get());
 
     snapshot.frameDescriptorSet = m_device->CreateDescriptorSet(descriptorSetDesc);
     if (!snapshot.frameDescriptorSet ||
@@ -5689,6 +6154,9 @@ bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
         frameSetDesc.BindTexture(
             DefaultLitOpaqueSceneSnapshotBinding,
             m_fallbackEnvironmentIBLBRDFLUTView.Get());
+        frameSetDesc.BindTexture(
+            DefaultLitLocalShadowAtlasBinding,
+            m_fallbackDirectionalShadowView.Get());
     }
     RHIDescriptorSetRef frameSet = m_device->CreateDescriptorSet(frameSetDesc);
     if (!frameSet || !frameSet->IsReadyForBinding(m_setLayouts[0].Get()))
@@ -6216,6 +6684,22 @@ RHIPipeline* PipelineCache::GetTransparentMrtPipeline(
         true).Get();
 }
 
+RHIPipeline* PipelineCache::GetWeightedBlendedOITAccumulationPipeline(
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
+{
+    return GetOrCreateWeightedBlendedOITAccumulationPipeline(
+        inputMode, cullMode, reverseWinding).Get();
+}
+
+RHIPipeline* PipelineCache::GetWeightedBlendedOITCompositePipeline(
+    RHIFormat sceneHDRFormat)
+{
+    return GetOrCreateWeightedBlendedOITCompositePipeline(
+        sceneHDRFormat).Get();
+}
+
 RHIPipeline* PipelineCache::GetInstancedMaterialPipelineForVariant(
     MaterialPipelineVariant variant,
     RHIFormat renderTargetFormat,
@@ -6437,7 +6921,7 @@ RHIGraphicsPipelineDesc PipelineCache::MakeForwardSurfaceDataPipelineDesc(
     pipelineDesc.pixelShader = m_forwardSurfaceDataPixelShader.Get();
     pipelineDesc.debugName = debugName;
     pipelineDesc.blendState = RHIBlendState::Default();
-    pipelineDesc.numRenderTargets = 3;
+    pipelineDesc.numRenderTargets = 5;
     for (RHIFormat& format : pipelineDesc.renderTargetFormats)
     {
         format = RHIFormat::Unknown;
@@ -6446,6 +6930,8 @@ RHIGraphicsPipelineDesc PipelineCache::MakeForwardSurfaceDataPipelineDesc(
         ? sceneFormat : m_renderTargetFormat;
     pipelineDesc.renderTargetFormats[1] = RHIFormat::RGBA8_UNORM;
     pipelineDesc.renderTargetFormats[2] = RHIFormat::R32_UINT;
+    pipelineDesc.renderTargetFormats[3] = RHIFormat::RGBA16_FLOAT;
+    pipelineDesc.renderTargetFormats[4] = RHIFormat::RGBA16_FLOAT;
     return pipelineDesc;
 }
 
@@ -6467,10 +6953,12 @@ RHIPipelineRef PipelineCache::GetOrCreateForwardSurfaceDataPipeline(
     pipelineDesc = MakeForwardSurfaceDataPipelineDesc(
         std::move(pipelineDesc), debugName);
     if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
-        !pipelineDesc.pipelineLayout || pipelineDesc.numRenderTargets != 3 ||
+        !pipelineDesc.pipelineLayout || pipelineDesc.numRenderTargets != 5 ||
         pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown ||
         pipelineDesc.renderTargetFormats[1] != RHIFormat::RGBA8_UNORM ||
         pipelineDesc.renderTargetFormats[2] != RHIFormat::R32_UINT ||
+        pipelineDesc.renderTargetFormats[3] != RHIFormat::RGBA16_FLOAT ||
+        pipelineDesc.renderTargetFormats[4] != RHIFormat::RGBA16_FLOAT ||
         pipelineDesc.depthStencilFormat != RHIFormat::D32_FLOAT)
     {
         SetLastError(
@@ -7137,7 +7625,11 @@ RHIPipeline* PipelineCache::GetShadowDepthPipeline(
         return nullptr;
     }
     return GetOrCreateShadowDepthPipeline(
-        biasState, inputMode, cullMode, reverseWinding).Get();
+        biasState,
+        inputMode,
+        cullMode,
+        reverseWinding,
+        ShadowDepthPipelineUsage::Directional).Get();
 }
 
 RHIPipelineRef PipelineCache::TrackGPUSceneRasterPipeline(
@@ -7165,7 +7657,11 @@ RHIPipeline* PipelineCache::GetMaskedShadowDepthPipeline(
         return nullptr;
     }
     return GetOrCreateMaskedShadowDepthPipeline(
-        biasState, inputMode, cullMode, reverseWinding).Get();
+        biasState,
+        inputMode,
+        cullMode,
+        reverseWinding,
+        ShadowDepthPipelineUsage::Directional).Get();
 }
 
 RHIPipeline* PipelineCache::GetInstancedShadowDepthPipeline(
@@ -7179,7 +7675,65 @@ RHIPipeline* PipelineCache::GetInstancedShadowDepthPipeline(
         return nullptr;
     }
     return GetOrCreateInstancedShadowDepthPipeline(
-        biasState, cullMode, reverseWinding).Get();
+        biasState,
+        cullMode,
+        reverseWinding,
+        ShadowDepthPipelineUsage::Directional).Get();
+}
+
+RHIPipeline* PipelineCache::GetLocalShadowDepthPipeline(
+    const ShadowDepthBiasState& biasState,
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
+{
+    if (!IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError("Invalid local shadow cull mode");
+        return nullptr;
+    }
+    return GetOrCreateShadowDepthPipeline(
+        biasState,
+        inputMode,
+        cullMode,
+        reverseWinding,
+        ShadowDepthPipelineUsage::LocalForwardZ).Get();
+}
+
+RHIPipeline* PipelineCache::GetMaskedLocalShadowDepthPipeline(
+    const ShadowDepthBiasState& biasState,
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
+{
+    if (!IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError("Invalid masked local shadow cull mode");
+        return nullptr;
+    }
+    return GetOrCreateMaskedShadowDepthPipeline(
+        biasState,
+        inputMode,
+        cullMode,
+        reverseWinding,
+        ShadowDepthPipelineUsage::LocalForwardZ).Get();
+}
+
+RHIPipeline* PipelineCache::GetInstancedLocalShadowDepthPipeline(
+    const ShadowDepthBiasState& biasState,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
+{
+    if (!IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError("Invalid instanced local shadow cull mode");
+        return nullptr;
+    }
+    return GetOrCreateInstancedShadowDepthPipeline(
+        biasState,
+        cullMode,
+        reverseWinding,
+        ShadowDepthPipelineUsage::LocalForwardZ).Get();
 }
 
 RHIPipeline* PipelineCache::GetSkyboxPipeline(RHIFormat outputFormat)
@@ -8243,6 +8797,7 @@ PipelineCache::CreateFrameDescriptorBindingOwners() const
         ? m_currentSpotLightsBuffer : m_fallbackSpotLightsBuffer;
     owners->rayTracedShadowMaskView = m_currentRayTracedShadowMaskView
         ? m_currentRayTracedShadowMaskView : m_fallbackRayTracedShadowMaskView;
+    owners->localShadowAtlasView = m_fallbackDirectionalShadowView;
     owners->clusterConstantsBuffer = m_currentClusterConstantsBuffer
         ? m_currentClusterConstantsBuffer : m_fallbackClusterConstantsBuffer;
     owners->clusterBuffer = m_currentClusterBuffer
@@ -8271,7 +8826,7 @@ std::vector<RHIDescriptorBinding> PipelineCache::BuildFrameDescriptorBindings(
     RVX_ASSERT(owners.IsComplete());
 
     std::vector<RHIDescriptorBinding> bindings;
-    bindings.reserve(17);
+    bindings.reserve(18);
     bindings.push_back({0, owners.viewConstantBuffer.Get(), 0,
                         AlignConstantBufferSize(sizeof(ViewConstants)), nullptr, nullptr});
     bindings.push_back({1, nullptr, 0, 0, owners.directionalShadowView.Get(), nullptr});
@@ -8295,6 +8850,8 @@ std::vector<RHIDescriptorBinding> PipelineCache::BuildFrameDescriptorBindings(
                         owners.ambientOcclusionView.Get(), nullptr});
     bindings.push_back({DefaultLitOpaqueSceneSnapshotBinding, nullptr, 0, 0,
                         owners.opaqueSceneSnapshotView.Get(), nullptr});
+    bindings.push_back({DefaultLitLocalShadowAtlasBinding, nullptr, 0, 0,
+                        owners.localShadowAtlasView.Get(), nullptr});
     return bindings;
 }
 
@@ -8522,6 +9079,20 @@ bool PipelineCache::CreatePipeline()
         if (m_lastError.empty())
         {
             SetLastError("Failed to create GTAO pipeline family");
+        }
+        return false;
+    }
+
+    m_ssrHiZBasePipeline = GetOrCreateSSRHiZBasePipeline();
+    m_ssrHiZReducePipeline = GetOrCreateSSRHiZReducePipeline();
+    m_ssrTracePipeline = GetOrCreateSSRTracePipeline();
+    m_ssrResolvePipeline = GetOrCreateSSRResolvePipeline();
+    if (!m_ssrHiZBasePipeline || !m_ssrHiZReducePipeline ||
+        !m_ssrTracePipeline || !m_ssrResolvePipeline)
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create Hi-Z SSR pipeline family");
         }
         return false;
     }
@@ -8884,6 +9455,124 @@ RHIPipelineRef PipelineCache::GetOrCreateDefaultLitPipeline(MaterialPipelineVari
 
     ++m_stats.pipelineCreateCount;
     m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateWeightedBlendedOITAccumulationPipeline(
+    DefaultLitDirectVertexInputMode inputMode,
+    MaterialCullMode cullMode,
+    bool reverseWinding)
+{
+    if (!m_weightedBlendedOITAccumulationPixelShader ||
+        (inputMode != DefaultLitDirectVertexInputMode::Rigid &&
+         inputMode != DefaultLitDirectVertexInputMode::Skinned) ||
+        !IsValidSurfaceCullMode(cullMode))
+    {
+        SetLastError(
+            "Weighted-blended OIT accumulation received an invalid shader, vertex mode, or cull mode");
+        return {};
+    }
+
+    const char* debugName =
+        inputMode == DefaultLitDirectVertexInputMode::Rigid
+            ? "WeightedBlendedOITAccumulationRigidPipeline"
+            : "WeightedBlendedOITAccumulationPipeline";
+    RHIGraphicsPipelineDesc pipelineDesc = BuildDefaultLitPipelineDesc(
+        debugName,
+        BuildDepthStencilState(m_config.reverseZ, false),
+        BuildWeightedBlendedOITAccumulationBlendState(),
+        GetWeightedBlendedOITAccumulationFormat(),
+        inputMode,
+        cullMode,
+        reverseWinding);
+    pipelineDesc.pixelShader =
+        m_weightedBlendedOITAccumulationPixelShader.Get();
+    pipelineDesc.numRenderTargets = 2;
+    pipelineDesc.renderTargetFormats[0] =
+        GetWeightedBlendedOITAccumulationFormat();
+    pipelineDesc.renderTargetFormats[1] =
+        GetWeightedBlendedOITRevealageFormat();
+
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
+        !pipelineDesc.pipelineLayout ||
+        pipelineDesc.depthStencilFormat == RHIFormat::Unknown)
+    {
+        SetLastError(
+            "Cannot create an incomplete weighted-blended OIT accumulation pipeline");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc,
+        MaterialPipelineVariant::Transparent,
+        RVX_PIPELINE_PURPOSE_WEIGHTED_OIT_ACCUMULATION);
+    m_stats.weightedBlendedOITAccumulationPipelineHash = stateHash;
+    m_stats.lastPipelineStateHash = stateHash;
+    const auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError(
+            "Backend failed to create weighted-blended OIT accumulation pipeline");
+        return {};
+    }
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateWeightedBlendedOITCompositePipeline(
+    RHIFormat sceneHDRFormat)
+{
+    if (sceneHDRFormat != RHIFormat::RGBA16_FLOAT)
+    {
+        SetLastError(
+            "Weighted-blended OIT composite requires RGBA16_FLOAT scene HDR");
+        return {};
+    }
+
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildWeightedBlendedOITCompositePipelineDesc(sceneHDRFormat);
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
+        !pipelineDesc.pipelineLayout || pipelineDesc.numRenderTargets != 2 ||
+        pipelineDesc.depthStencilFormat != RHIFormat::Unknown)
+    {
+        SetLastError(
+            "Cannot create an incomplete weighted-blended OIT composite pipeline");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc,
+        MaterialPipelineVariant::Transparent,
+        RVX_PIPELINE_PURPOSE_WEIGHTED_OIT_COMPOSITE);
+    m_stats.weightedBlendedOITCompositePipelineHash = stateHash;
+    m_stats.lastPipelineStateHash = stateHash;
+    const auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError(
+            "Backend failed to create weighted-blended OIT composite pipeline");
+        return {};
+    }
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    m_weightedBlendedOITCompositePipeline = pipeline;
     return pipeline;
 }
 
@@ -9285,12 +9974,13 @@ RHIPipelineRef PipelineCache::GetOrCreateShadowDepthPipeline(
     const ShadowDepthBiasState& biasState,
     DefaultLitDirectVertexInputMode inputMode,
     MaterialCullMode cullMode,
-    bool reverseWinding)
+    bool reverseWinding,
+    ShadowDepthPipelineUsage usage)
 {
     const ShadowDepthBiasState sanitizedBias = SanitizeShadowDepthBiasState(biasState);
     RHIGraphicsPipelineDesc pipelineDesc =
         BuildShadowDepthPipelineDesc(
-            sanitizedBias, inputMode, cullMode, reverseWinding);
+            sanitizedBias, inputMode, cullMode, reverseWinding, usage);
     if (!pipelineDesc.vertexShader)
     {
         SetLastError("Cannot create shadow depth pipeline without vertex shader");
@@ -9307,10 +9997,15 @@ RHIPipelineRef PipelineCache::GetOrCreateShadowDepthPipeline(
         return {};
     }
 
-    const uint32 purposeSalt =
-        inputMode == DefaultLitDirectVertexInputMode::Rigid
-            ? RVX_PIPELINE_PURPOSE_RIGID_SHADOW_DEPTH
-            : RVX_PIPELINE_PURPOSE_SHADOW_DEPTH;
+    const bool localForwardZ =
+        usage == ShadowDepthPipelineUsage::LocalForwardZ;
+    const uint32 purposeSalt = localForwardZ
+        ? (inputMode == DefaultLitDirectVertexInputMode::Rigid
+               ? RVX_PIPELINE_PURPOSE_RIGID_LOCAL_SHADOW_DEPTH
+               : RVX_PIPELINE_PURPOSE_LOCAL_SHADOW_DEPTH)
+        : (inputMode == DefaultLitDirectVertexInputMode::Rigid
+               ? RVX_PIPELINE_PURPOSE_RIGID_SHADOW_DEPTH
+               : RVX_PIPELINE_PURPOSE_SHADOW_DEPTH);
     const uint64 stateHash = ComputePipelineStateHash(
         pipelineDesc, MaterialPipelineVariant::Opaque, purposeSalt);
     m_stats.lastPipelineStateHash = stateHash;
@@ -9339,13 +10034,14 @@ RHIPipelineRef PipelineCache::GetOrCreateMaskedShadowDepthPipeline(
     const ShadowDepthBiasState& biasState,
     DefaultLitDirectVertexInputMode inputMode,
     MaterialCullMode cullMode,
-    bool reverseWinding)
+    bool reverseWinding,
+    ShadowDepthPipelineUsage usage)
 {
     const ShadowDepthBiasState sanitizedBias =
         SanitizeShadowDepthBiasState(biasState);
     RHIGraphicsPipelineDesc pipelineDesc =
         BuildMaskedShadowDepthPipelineDesc(
-            sanitizedBias, inputMode, cullMode, reverseWinding);
+            sanitizedBias, inputMode, cullMode, reverseWinding, usage);
     if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
         !pipelineDesc.pipelineLayout ||
         pipelineDesc.depthStencilFormat == RHIFormat::Unknown)
@@ -9357,7 +10053,9 @@ RHIPipelineRef PipelineCache::GetOrCreateMaskedShadowDepthPipeline(
     const uint64 stateHash = ComputePipelineStateHash(
         pipelineDesc,
         MaterialPipelineVariant::Masked,
-        RVX_PIPELINE_PURPOSE_MASKED_SHADOW_DEPTH);
+        usage == ShadowDepthPipelineUsage::LocalForwardZ
+            ? RVX_PIPELINE_PURPOSE_MASKED_LOCAL_SHADOW_DEPTH
+            : RVX_PIPELINE_PURPOSE_MASKED_SHADOW_DEPTH);
     m_stats.lastPipelineStateHash = stateHash;
     const auto cached = m_pipelineCache.find(stateHash);
     if (cached != m_pipelineCache.end())
@@ -9381,13 +10079,14 @@ RHIPipelineRef PipelineCache::GetOrCreateMaskedShadowDepthPipeline(
 RHIPipelineRef PipelineCache::GetOrCreateInstancedShadowDepthPipeline(
     const ShadowDepthBiasState& biasState,
     MaterialCullMode cullMode,
-    bool reverseWinding)
+    bool reverseWinding,
+    ShadowDepthPipelineUsage usage)
 {
     const ShadowDepthBiasState sanitizedBias =
         SanitizeShadowDepthBiasState(biasState);
     RHIGraphicsPipelineDesc pipelineDesc =
         BuildInstancedShadowDepthPipelineDesc(
-            sanitizedBias, cullMode, reverseWinding);
+            sanitizedBias, cullMode, reverseWinding, usage);
     if (!pipelineDesc.vertexShader || !pipelineDesc.pipelineLayout ||
         pipelineDesc.depthStencilFormat == RHIFormat::Unknown)
     {
@@ -9397,7 +10096,9 @@ RHIPipelineRef PipelineCache::GetOrCreateInstancedShadowDepthPipeline(
     const uint64 stateHash = ComputePipelineStateHash(
         pipelineDesc,
         MaterialPipelineVariant::Opaque,
-        RVX_PIPELINE_PURPOSE_INSTANCED_SHADOW_DEPTH);
+        usage == ShadowDepthPipelineUsage::LocalForwardZ
+            ? RVX_PIPELINE_PURPOSE_INSTANCED_LOCAL_SHADOW_DEPTH
+            : RVX_PIPELINE_PURPOSE_INSTANCED_SHADOW_DEPTH);
     m_stats.lastPipelineStateHash = stateHash;
     auto cached = m_pipelineCache.find(stateHash);
     if (cached != m_pipelineCache.end())
@@ -9777,6 +10478,94 @@ RHIPipelineRef PipelineCache::GetOrCreateGTAOPipeline(
         return {};
     }
 
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateSSRHiZBasePipeline()
+{
+    constexpr RHIFormat outputs[] = {RHIFormat::R32_FLOAT};
+    return GetOrCreateSSRPipeline(
+        m_ssrHiZBasePixelShader.Get(), "SSRHiZBasePipeline", "Hi-Z base",
+        outputs, 1, m_stats.ssrHiZBasePipelineHash);
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateSSRHiZReducePipeline()
+{
+    constexpr RHIFormat outputs[] = {RHIFormat::R32_FLOAT};
+    return GetOrCreateSSRPipeline(
+        m_ssrHiZReducePixelShader.Get(), "SSRHiZReducePipeline",
+        "Hi-Z reduction", outputs, 1, m_stats.ssrHiZReducePipelineHash);
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateSSRTracePipeline()
+{
+    constexpr RHIFormat outputs[] = {
+        RHIFormat::RGBA16_FLOAT, RHIFormat::R8_UNORM};
+    return GetOrCreateSSRPipeline(
+        m_ssrTracePixelShader.Get(), "SSRTracePipeline", "Hi-Z trace",
+        outputs, 2, m_stats.ssrTracePipelineHash);
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateSSRResolvePipeline()
+{
+    constexpr RHIFormat outputs[] = {
+        RHIFormat::RGBA16_FLOAT, RHIFormat::R8_UNORM};
+    return GetOrCreateSSRPipeline(
+        m_ssrResolvePixelShader.Get(), "SSRResolvePipeline",
+        "reflection resolve", outputs, 2, m_stats.ssrResolvePipelineHash);
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateSSRPipeline(
+    RHIShader* pixelShader,
+    const char* debugName,
+    const char* stageName,
+    const RHIFormat* outputFormats,
+    uint32 outputCount,
+    uint64& outPipelineHash)
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildSSRPipelineDesc(
+        pixelShader, debugName, outputFormats, outputCount);
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
+        !pipelineDesc.pipelineLayout || outputFormats == nullptr ||
+        outputCount == 0 || outputCount > RVX_MAX_RENDER_TARGETS ||
+        pipelineDesc.numRenderTargets != outputCount)
+    {
+        SetLastError(std::string("Cannot create SSR ") + stageName +
+                     " pipeline from incomplete output state");
+        return {};
+    }
+
+    for (uint32 index = 0; index < outputCount; ++index)
+    {
+        if (pipelineDesc.renderTargetFormats[index] != outputFormats[index])
+        {
+            SetLastError(std::string("SSR ") + stageName +
+                         " pipeline output ABI mismatch");
+            return {};
+        }
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc, MaterialPipelineVariant::Transparent);
+    outPipelineHash = stateHash;
+    m_stats.lastPipelineStateHash = stateHash;
+    const auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError(std::string("Backend failed to create SSR ") +
+                     stageName + " pipeline");
+        return {};
+    }
     ++m_stats.pipelineCreateCount;
     m_pipelineCache[stateHash] = pipeline;
     return pipeline;
@@ -10632,14 +11421,26 @@ RHIGraphicsPipelineDesc PipelineCache::BuildShadowDepthPipelineDesc(
     const ShadowDepthBiasState& biasState,
     DefaultLitDirectVertexInputMode inputMode,
     MaterialCullMode cullMode,
-    bool reverseWinding) const
+    bool reverseWinding,
+    ShadowDepthPipelineUsage usage) const
 {
     RHIGraphicsPipelineDesc pipelineDesc =
         inputMode == DefaultLitDirectVertexInputMode::Rigid
             ? BuildRigidDepthOnlyPipelineDesc(cullMode, reverseWinding)
             : BuildDepthOnlyPipelineDesc(cullMode, reverseWinding);
     const ShadowDepthBiasState sanitizedBias = SanitizeShadowDepthBiasState(biasState);
-    pipelineDesc.debugName = "ShadowDepthPipeline";
+    if (usage == ShadowDepthPipelineUsage::LocalForwardZ)
+    {
+        pipelineDesc.depthStencilState = BuildDepthStencilState(false, true);
+        pipelineDesc.depthStencilState.depthCompareOp =
+            RHICompareOp::LessEqual;
+        pipelineDesc.depthStencilFormat = RHIFormat::D32_FLOAT;
+        pipelineDesc.debugName = "LocalShadowDepthPipeline";
+    }
+    else
+    {
+        pipelineDesc.debugName = "ShadowDepthPipeline";
+    }
     pipelineDesc.rasterizerState.depthBias = sanitizedBias.constantBias;
     pipelineDesc.rasterizerState.slopeScaledDepthBias = sanitizedBias.slopeScaledBias;
     pipelineDesc.rasterizerState.depthBiasClamp = sanitizedBias.biasClamp;
@@ -10650,14 +11451,26 @@ RHIGraphicsPipelineDesc PipelineCache::BuildMaskedShadowDepthPipelineDesc(
     const ShadowDepthBiasState& biasState,
     DefaultLitDirectVertexInputMode inputMode,
     MaterialCullMode cullMode,
-    bool reverseWinding) const
+    bool reverseWinding,
+    ShadowDepthPipelineUsage usage) const
 {
     RHIGraphicsPipelineDesc pipelineDesc =
         BuildMaskedDepthOnlyPipelineDesc(
             inputMode, cullMode, reverseWinding);
     const ShadowDepthBiasState sanitizedBias =
         SanitizeShadowDepthBiasState(biasState);
-    pipelineDesc.debugName = "MaskedShadowDepthPipeline";
+    if (usage == ShadowDepthPipelineUsage::LocalForwardZ)
+    {
+        pipelineDesc.depthStencilState = BuildDepthStencilState(false, true);
+        pipelineDesc.depthStencilState.depthCompareOp =
+            RHICompareOp::LessEqual;
+        pipelineDesc.depthStencilFormat = RHIFormat::D32_FLOAT;
+        pipelineDesc.debugName = "MaskedLocalShadowDepthPipeline";
+    }
+    else
+    {
+        pipelineDesc.debugName = "MaskedShadowDepthPipeline";
+    }
     pipelineDesc.rasterizerState.depthBias = sanitizedBias.constantBias;
     pipelineDesc.rasterizerState.slopeScaledDepthBias =
         sanitizedBias.slopeScaledBias;
@@ -10707,6 +11520,44 @@ RHIGraphicsPipelineDesc PipelineCache::BuildToneMappingPipelineDesc(RHIFormat ou
     pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
     pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
 
+    return pipelineDesc;
+}
+
+RHIGraphicsPipelineDesc
+PipelineCache::BuildWeightedBlendedOITCompositePipelineDesc(
+    RHIFormat sceneHDRFormat) const
+{
+    RHIGraphicsPipelineDesc pipelineDesc;
+    pipelineDesc.vertexShader =
+        m_weightedBlendedOITCompositeVertexShader.Get();
+    pipelineDesc.pixelShader =
+        m_weightedBlendedOITCompositePixelShader.Get();
+    pipelineDesc.pipelineLayout =
+        m_weightedBlendedOITCompositePipelineLayout.Get();
+    pipelineDesc.debugName = "WeightedBlendedOITCompositePipeline";
+    pipelineDesc.rasterizerState = RHIRasterizerState::Default();
+    pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
+    pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
+    pipelineDesc.blendState = RHIBlendState::Default();
+    pipelineDesc.blendState.independentBlendEnable = true;
+    pipelineDesc.blendState.renderTargets[0] =
+        RHIRenderTargetBlendState::Opaque();
+    RHIRenderTargetBlendState& reactiveBlend =
+        pipelineDesc.blendState.renderTargets[1];
+    reactiveBlend.blendEnable = true;
+    reactiveBlend.srcColorBlend = RHIBlendFactor::One;
+    reactiveBlend.dstColorBlend = RHIBlendFactor::One;
+    reactiveBlend.colorBlendOp = RHIBlendOp::Max;
+    reactiveBlend.srcAlphaBlend = RHIBlendFactor::One;
+    reactiveBlend.dstAlphaBlend = RHIBlendFactor::One;
+    reactiveBlend.alphaBlendOp = RHIBlendOp::Max;
+    reactiveBlend.colorWriteMask = 0x1;
+    pipelineDesc.numRenderTargets = 2;
+    pipelineDesc.renderTargetFormats[0] = sceneHDRFormat;
+    pipelineDesc.renderTargetFormats[1] =
+        GetWeightedBlendedOITReactiveMaskFormat();
+    pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
+    pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
     return pipelineDesc;
 }
 
@@ -10813,6 +11664,32 @@ RHIGraphicsPipelineDesc PipelineCache::BuildGTAOPipelineDesc(
     return pipelineDesc;
 }
 
+RHIGraphicsPipelineDesc PipelineCache::BuildSSRPipelineDesc(
+    RHIShader* pixelShader,
+    const char* debugName,
+    const RHIFormat* outputFormats,
+    uint32 outputCount) const
+{
+    RHIGraphicsPipelineDesc pipelineDesc;
+    pipelineDesc.vertexShader = m_toneMappingVertexShader.Get();
+    pipelineDesc.pixelShader = pixelShader;
+    pipelineDesc.pipelineLayout = m_ssrPipelineLayout.Get();
+    pipelineDesc.debugName = debugName;
+    pipelineDesc.rasterizerState = RHIRasterizerState::Default();
+    pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
+    pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
+    pipelineDesc.blendState = RHIBlendState::Default();
+    pipelineDesc.numRenderTargets =
+        std::min(outputCount, static_cast<uint32>(RVX_MAX_RENDER_TARGETS));
+    for (uint32 index = 0; index < pipelineDesc.numRenderTargets; ++index)
+    {
+        pipelineDesc.renderTargetFormats[index] = outputFormats[index];
+    }
+    pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
+    pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+    return pipelineDesc;
+}
+
 RHIGraphicsPipelineDesc PipelineCache::BuildCameraVelocityPipelineDesc(RHIFormat outputFormat) const
 {
     RHIGraphicsPipelineDesc pipelineDesc;
@@ -10913,13 +11790,25 @@ RHIGraphicsPipelineDesc PipelineCache::BuildMaskedObjectVelocityPipelineDesc(
 RHIGraphicsPipelineDesc PipelineCache::BuildInstancedShadowDepthPipelineDesc(
     const ShadowDepthBiasState& biasState,
     MaterialCullMode cullMode,
-    bool reverseWinding) const
+    bool reverseWinding,
+    ShadowDepthPipelineUsage usage) const
 {
     RHIGraphicsPipelineDesc pipelineDesc =
         BuildGPUDrivenDepthOnlyPipelineDesc(cullMode, reverseWinding);
     const ShadowDepthBiasState sanitizedBias =
         SanitizeShadowDepthBiasState(biasState);
-    pipelineDesc.debugName = "InstancedShadowDepthPipeline";
+    if (usage == ShadowDepthPipelineUsage::LocalForwardZ)
+    {
+        pipelineDesc.depthStencilState = BuildDepthStencilState(false, true);
+        pipelineDesc.depthStencilState.depthCompareOp =
+            RHICompareOp::LessEqual;
+        pipelineDesc.depthStencilFormat = RHIFormat::D32_FLOAT;
+        pipelineDesc.debugName = "InstancedLocalShadowDepthPipeline";
+    }
+    else
+    {
+        pipelineDesc.debugName = "InstancedShadowDepthPipeline";
+    }
     pipelineDesc.rasterizerState.depthBias = sanitizedBias.constantBias;
     pipelineDesc.rasterizerState.slopeScaledDepthBias =
         sanitizedBias.slopeScaledBias;
@@ -11232,6 +12121,15 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             return ComputeShaderHash(m_psCompileResult.get());
         if (shader == m_translucencyPixelShader.Get())
             return ComputeShaderHash(m_translucencyPsCompileResult.get());
+        if (shader == m_weightedBlendedOITAccumulationPixelShader.Get())
+            return ComputeShaderHash(
+                m_weightedBlendedOITAccumulationPsCompileResult.get());
+        if (shader == m_weightedBlendedOITCompositeVertexShader.Get())
+            return ComputeShaderHash(
+                m_weightedBlendedOITCompositeVsCompileResult.get());
+        if (shader == m_weightedBlendedOITCompositePixelShader.Get())
+            return ComputeShaderHash(
+                m_weightedBlendedOITCompositePsCompileResult.get());
         if (shader == m_depthOnlyVertexShader.Get())
             return ComputeShaderHash(m_depthOnlyVsCompileResult.get());
         if (shader == m_rigidDepthOnlyVertexShader.Get())
@@ -11265,6 +12163,14 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             return ComputeShaderHash(m_gtaoBilateralVerticalPsCompileResult.get());
         if (shader == m_gtaoTemporalPixelShader.Get())
             return ComputeShaderHash(m_gtaoTemporalPsCompileResult.get());
+        if (shader == m_ssrHiZBasePixelShader.Get())
+            return ComputeShaderHash(m_ssrHiZBasePsCompileResult.get());
+        if (shader == m_ssrHiZReducePixelShader.Get())
+            return ComputeShaderHash(m_ssrHiZReducePsCompileResult.get());
+        if (shader == m_ssrTracePixelShader.Get())
+            return ComputeShaderHash(m_ssrTracePsCompileResult.get());
+        if (shader == m_ssrResolvePixelShader.Get())
+            return ComputeShaderHash(m_ssrResolvePsCompileResult.get());
         if (shader == m_cameraVelocityPixelShader.Get())
             return ComputeShaderHash(m_cameraVelocityPsCompileResult.get());
         if (shader == m_objectVelocityVertexShader.Get())
@@ -11392,6 +12298,23 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
         HashValue(hash, pushConstantStages);
 
         const auto& entries = m_uiTextureSetLayout->GetEntries();
+        HashValue(hash, static_cast<uint32>(entries.size()));
+        for (const RHIBindingLayoutEntry& entry : entries)
+        {
+            HashValue(hash, entry.binding);
+            HashValue(hash, entry.type);
+            HashValue(hash, entry.visibility);
+            HashValue(hash, entry.count);
+            HashValue(hash, entry.isDynamic);
+        }
+    }
+
+    if (desc.pipelineLayout ==
+            m_weightedBlendedOITCompositePipelineLayout.Get() &&
+        m_weightedBlendedOITCompositeSetLayout)
+    {
+        const auto& entries =
+            m_weightedBlendedOITCompositeSetLayout->GetEntries();
         HashValue(hash, static_cast<uint32>(entries.size()));
         for (const RHIBindingLayoutEntry& entry : entries)
         {

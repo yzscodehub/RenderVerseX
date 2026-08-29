@@ -7,6 +7,7 @@
 
 #include "RenderContracts/RenderFrameTypes.h"
 #include "RenderContracts/RenderProxy.h"
+#include "RenderContracts/RenderSceneUpdate.h"
 #include "Scene/ECS/FrozenSceneSnapshot.h"
 
 #include <optional>
@@ -31,6 +32,7 @@ namespace RVX
         MultipleSkyboxes,
         SelectedCameraMissing,
         InvalidLightSource,
+        InvalidReflectionProbeSource,
     };
 
     /**
@@ -143,6 +145,37 @@ namespace RVX
         bool contributesToLighting = true;
     };
 
+    /**
+     * @brief Unresolved, provenance-bound local reflection-probe source.
+     *
+     * This type contains AssetId rather than a resource handle so the bridge
+     * remains independent from Resource and RHI ownership.
+     */
+    struct EcsFrozenSceneReflectionProbeValue
+    {
+        uint64 id = 0;
+        RenderSceneObjectSourceIdentity source;
+        ECS::EntityHandle sourceEntity = ECS::EntityHandle::Invalid();
+        RenderProbeKind kind = RenderProbeKind::Reflection;
+        RenderProbeShape shape = RenderProbeShape::Box;
+        RenderProbeMode mode = RenderProbeMode::Baked;
+        AssetId cubemapAssetId{};
+        Mat4 worldTransform{1.0f};
+        Vec3 influenceExtent{1.0f};
+        float32 blendDistance = 0.0f;
+        Vec3 boxProjectionSize{1.0f};
+        Vec3 boxProjectionOffset{0.0f};
+        uint32 layerMask = ~0u;
+        int32 priority = 0;
+        float32 nearClip = 0.1f;
+        float32 farClip = 100.0f;
+        bool useBoxProjection = false;
+        bool useHDR = false;
+        bool hasValidData = false;
+        uint64 transformSourceRevision = 0;
+        uint64 visibilityWriteVersion = 0;
+    };
+
     /** @brief Particle value with a stable ECS-derived RenderScene identity. */
     struct EcsFrozenSceneParticleValue
     {
@@ -185,6 +218,7 @@ namespace RVX
         std::vector<EcsFrozenSceneLightValue> lightValues;
         std::vector<EcsFrozenSceneCameraValue> cameras;
         std::vector<EcsFrozenSceneSkyboxValue> skyboxes;
+        std::vector<EcsFrozenSceneReflectionProbeValue> reflectionProbes;
         std::vector<EcsFrozenSceneParticleValue> particles;
         std::vector<EcsFrozenSceneWaterValue> water;
         std::vector<EcsFrozenSceneTerrainValue> terrain;
@@ -204,6 +238,7 @@ namespace RVX
         uint32 materialBindingCount = 0;
         uint32 cameraCount = 0;
         uint32 skyboxCount = 0;
+        uint32 reflectionProbeCount = 0;
         uint32 particleCount = 0;
         uint32 waterCount = 0;
         uint32 terrainCount = 0;

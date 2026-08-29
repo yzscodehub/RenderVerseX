@@ -133,7 +133,8 @@ namespace RVX
         DirectOpaqueRasterReadbackQualification = 9,
         ExposureQualificationProbe = 10,
         AmbientOcclusionQualificationProbe = 11,
-        ToonOutlineQualificationProbe = 12
+        ToonOutlineQualificationProbe = 12,
+        HiZReflectionQualificationProbe = 13
     };
 
     /** @brief Shared observations for the real runtime conformance fixtures. */
@@ -184,10 +185,11 @@ namespace RVX
         bool exposureQualificationProbeAccepted = false;
         bool ambientOcclusionQualificationProbeAccepted = false;
         bool toonOutlineQualificationProbeAccepted = false;
+        bool hiZReflectionQualificationProbeAccepted = false;
         bool throwOnFrame = false;
 
     private:
-        static constexpr size_t EVENT_COUNT = 13;
+        static constexpr size_t EVENT_COUNT = 14;
         mutable std::mutex m_mutex;
         mutable std::condition_variable m_cv;
         std::array<uint32, EVENT_COUNT> m_eventCounts{};

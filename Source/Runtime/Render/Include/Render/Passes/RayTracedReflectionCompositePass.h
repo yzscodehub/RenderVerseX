@@ -22,25 +22,6 @@ namespace RVX
         DenoisedReflection
     };
 
-    struct RayTracedReflectionCompositePassStats
-    {
-        bool requested = false;
-        bool supported = false;
-        bool sourcePassEnabled = false;
-        bool denoiseRequested = false;
-        bool denoisedSourceAvailable = false;
-        bool denoisedSourceUsed = false;
-        bool rawSourceUsed = false;
-        bool denoiseFallbackToRaw = false;
-        bool reflectionHandleAvailable = false;
-        bool outputDeclared = false;
-        bool constantsUploaded = false;
-        bool compositeRecorded = false;
-        RayTracedReflectionCompositeSource source = RayTracedReflectionCompositeSource::None;
-        uint32 width = 0;
-        uint32 height = 0;
-    };
-
     class RayTracedReflectionCompositePass : public IRenderPass
     {
     public:
@@ -52,6 +33,9 @@ namespace RVX
 
         void OnAdd(IRHIDevice* device) override;
         void OnRemove() override;
+        void AddToGraph(RenderGraph& graph, const ViewData& view) override;
+        void AddToGraph(RenderGraph& graph,
+                        const RenderPassRecordContext& context) override;
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
         void Execute(RenderGraphPassContext& context,

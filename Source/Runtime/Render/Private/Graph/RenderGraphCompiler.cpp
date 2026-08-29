@@ -2279,6 +2279,7 @@ namespace RVX
                                                uint32 resourceIndex,
                                                RHITextureBarrier barrier)
         {
+            PlannedTextureBarrier* initialReleaseBarrier = nullptr;
             if (HasDependencyKind(
                     barrier.dependencyKind,
                     RHIDependencyKind::Ownership) &&
@@ -2325,6 +2326,8 @@ namespace RVX
                     }
                     releaseBatch->textureBarriers.push_back(
                         PlannedTextureBarrier{resourceIndex, barrier});
+                    initialReleaseBarrier =
+                        &releaseBatch->textureBarriers.back();
                 }
             }
             bool resolveBeforeFromLease = false;
@@ -2380,8 +2383,9 @@ namespace RVX
                     return;
                 }
 
-                resolveBeforeFromLease = unresolvedCount != 0;
-                if (resolveBeforeFromLease)
+                const bool firstUseFromLease = unresolvedCount != 0;
+                resolveBeforeFromLease = firstUseFromLease;
+                if (firstUseFromLease)
                 {
                     for (uint32 layer = baseLayer;
                          layer < baseLayer + layerCount;
@@ -2399,6 +2403,17 @@ namespace RVX
                     }
                 }
             }
+            if (initialReleaseBarrier != nullptr)
+            {
+                // A transient lease can return from the pool with a physical
+                // access snapshot that differs from the logical Undefined /
+                // Graphics seed used during pure compilation.  Resolve both
+                // halves of the initial queue-family transfer from that same
+                // lease snapshot so Vulkan receives a matching release and
+                // acquire pair.
+                initialReleaseBarrier->resolveBeforeFromLease =
+                    resolveBeforeFromLease;
+            }
             graph.passes[targetPassIndex].textureBarriers.push_back(
                 PlannedTextureBarrier{
                     resourceIndex,
@@ -2413,6 +2428,7 @@ namespace RVX
                                              uint32 resourceIndex,
                                              RHIBufferBarrier barrier)
         {
+            PlannedBufferBarrier* initialReleaseBarrier = nullptr;
             if (HasDependencyKind(
                     barrier.dependencyKind,
                     RHIDependencyKind::Ownership) &&
@@ -2460,6 +2476,8 @@ namespace RVX
                     }
                     releaseBatch->bufferBarriers.push_back(
                         PlannedBufferBarrier{resourceIndex, barrier});
+                    initialReleaseBarrier =
+                        &releaseBatch->bufferBarriers.back();
                 }
             }
             bool resolveBeforeFromLease = false;
@@ -2496,8 +2514,10 @@ namespace RVX
                     return;
                 }
 
-                resolveBeforeFromLease = resolvedSize != 0 && coveredBytes == 0;
-                if (resolveBeforeFromLease)
+                const bool firstUseFromLease =
+                    resolvedSize != 0 && coveredBytes == 0;
+                resolveBeforeFromLease = firstUseFromLease;
+                if (firstUseFromLease)
                 {
                     resolvedRanges.push_back({rangeBegin, rangeEnd});
                     std::sort(
@@ -2524,6 +2544,11 @@ namespace RVX
                     }
                     resolvedRanges.swap(merged);
                 }
+            }
+            if (initialReleaseBarrier != nullptr)
+            {
+                initialReleaseBarrier->resolveBeforeFromLease =
+                    resolveBeforeFromLease;
             }
             graph.passes[targetPassIndex].bufferBarriers.push_back(
                 PlannedBufferBarrier{

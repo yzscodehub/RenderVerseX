@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <string_view>
 
 namespace RVX
 {
@@ -105,6 +106,44 @@ namespace RVX
         }
 
 #if HAS_SPIRV_REFLECT
+        SpvReflectShaderStageFlagBits ToSpirvReflectStage(
+            RHIShaderStage stage)
+        {
+            switch (stage)
+            {
+                case RHIShaderStage::Vertex:
+                    return SPV_REFLECT_SHADER_STAGE_VERTEX_BIT;
+                case RHIShaderStage::Pixel:
+                    return SPV_REFLECT_SHADER_STAGE_FRAGMENT_BIT;
+                case RHIShaderStage::Compute:
+                    return SPV_REFLECT_SHADER_STAGE_COMPUTE_BIT;
+                case RHIShaderStage::Geometry:
+                    return SPV_REFLECT_SHADER_STAGE_GEOMETRY_BIT;
+                case RHIShaderStage::Hull:
+                    return SPV_REFLECT_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+                case RHIShaderStage::Domain:
+                    return SPV_REFLECT_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+                case RHIShaderStage::Mesh:
+                    return SPV_REFLECT_SHADER_STAGE_MESH_BIT_EXT;
+                case RHIShaderStage::Amplification:
+                    return SPV_REFLECT_SHADER_STAGE_TASK_BIT_EXT;
+                case RHIShaderStage::RayGeneration:
+                    return SPV_REFLECT_SHADER_STAGE_RAYGEN_BIT_KHR;
+                case RHIShaderStage::AnyHit:
+                    return SPV_REFLECT_SHADER_STAGE_ANY_HIT_BIT_KHR;
+                case RHIShaderStage::ClosestHit:
+                    return SPV_REFLECT_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+                case RHIShaderStage::Miss:
+                    return SPV_REFLECT_SHADER_STAGE_MISS_BIT_KHR;
+                case RHIShaderStage::Intersection:
+                    return SPV_REFLECT_SHADER_STAGE_INTERSECTION_BIT_KHR;
+                case RHIShaderStage::Callable:
+                    return SPV_REFLECT_SHADER_STAGE_CALLABLE_BIT_KHR;
+                default:
+                    return static_cast<SpvReflectShaderStageFlagBits>(0);
+            }
+        }
+
         RHIBindingType ToBindingType(
             SpvReflectDescriptorType type,
             SpvReflectResourceType resourceType)
@@ -435,7 +474,10 @@ namespace RVX
     }
 
 #if HAS_SPIRV_REFLECT
-    static ShaderReflection ReflectSpirv(const std::vector<uint8>& bytecode)
+    static ShaderReflection ReflectSpirv(
+        const std::vector<uint8>& bytecode,
+        RHIShaderStage stage,
+        const char* entryPoint)
     {
         ShaderReflection reflection;
 
@@ -447,12 +489,48 @@ namespace RVX
             RVX_CORE_WARN("SPIRV reflection failed: {}", static_cast<int>(result));
             return reflection;
         }
+        const SpvReflectShaderStageFlagBits expectedStage =
+            ToSpirvReflectStage(stage);
+        const SpvReflectEntryPoint* selectedEntry = nullptr;
+        const std::string_view requestedEntry =
+            entryPoint ? std::string_view(entryPoint) : std::string_view{};
+        for (uint32 index = 0; index < module.entry_point_count; ++index)
+        {
+            const SpvReflectEntryPoint& candidate = module.entry_points[index];
+            if (requestedEntry.empty() ||
+                (candidate.name && requestedEntry == candidate.name))
+            {
+                selectedEntry = &candidate;
+                break;
+            }
+        }
+        if (selectedEntry == nullptr || expectedStage == 0 ||
+            selectedEntry->shader_stage != expectedStage)
+        {
+            RVX_CORE_WARN(
+                "SPIR-V reflection entry point '{}' is missing or has the wrong execution model",
+                requestedEntry.empty() ? "<unspecified>" : requestedEntry);
+            spvReflectDestroyShaderModule(&module);
+            return reflection;
+        }
+        const char* selectedEntryName = selectedEntry->name;
         reflection.valid = true;
 
         uint32 bindingCount = 0;
-        spvReflectEnumerateDescriptorBindings(&module, &bindingCount, nullptr);
+        if (spvReflectEnumerateEntryPointDescriptorBindings(
+                &module, selectedEntryName, &bindingCount, nullptr) !=
+            SPV_REFLECT_RESULT_SUCCESS)
+        {
+            reflection.valid = false;
+        }
         std::vector<SpvReflectDescriptorBinding*> bindings(bindingCount);
-        spvReflectEnumerateDescriptorBindings(&module, &bindingCount, bindings.data());
+        if (bindingCount != 0 &&
+            spvReflectEnumerateEntryPointDescriptorBindings(
+                &module, selectedEntryName, &bindingCount, bindings.data()) !=
+                SPV_REFLECT_RESULT_SUCCESS)
+        {
+            reflection.valid = false;
+        }
 
         for (auto* binding : bindings)
         {
@@ -468,9 +546,20 @@ namespace RVX
         }
 
         uint32 pushConstantCount = 0;
-        spvReflectEnumeratePushConstantBlocks(&module, &pushConstantCount, nullptr);
+        if (spvReflectEnumerateEntryPointPushConstantBlocks(
+                &module, selectedEntryName, &pushConstantCount, nullptr) !=
+            SPV_REFLECT_RESULT_SUCCESS)
+        {
+            reflection.valid = false;
+        }
         std::vector<SpvReflectBlockVariable*> blocks(pushConstantCount);
-        spvReflectEnumeratePushConstantBlocks(&module, &pushConstantCount, blocks.data());
+        if (pushConstantCount != 0 &&
+            spvReflectEnumerateEntryPointPushConstantBlocks(
+                &module, selectedEntryName, &pushConstantCount, blocks.data()) !=
+                SPV_REFLECT_RESULT_SUCCESS)
+        {
+            reflection.valid = false;
+        }
         for (auto* block : blocks)
         {
             ShaderReflection::PushConstantRange pc{};
@@ -480,9 +569,20 @@ namespace RVX
         }
 
         uint32 inputCount = 0;
-        spvReflectEnumerateInputVariables(&module, &inputCount, nullptr);
+        if (spvReflectEnumerateEntryPointInputVariables(
+                &module, selectedEntryName, &inputCount, nullptr) !=
+            SPV_REFLECT_RESULT_SUCCESS)
+        {
+            reflection.valid = false;
+        }
         std::vector<SpvReflectInterfaceVariable*> inputs(inputCount);
-        spvReflectEnumerateInputVariables(&module, &inputCount, inputs.data());
+        if (inputCount != 0 &&
+            spvReflectEnumerateEntryPointInputVariables(
+                &module, selectedEntryName, &inputCount, inputs.data()) !=
+                SPV_REFLECT_RESULT_SUCCESS)
+        {
+            reflection.valid = false;
+        }
 
         for (auto* input : inputs)
         {
@@ -504,15 +604,20 @@ namespace RVX
         }
 
         uint32 outputCount = 0;
-        spvReflectEnumerateOutputVariables(
-            &module,
-            &outputCount,
-            nullptr);
+        if (spvReflectEnumerateEntryPointOutputVariables(
+                &module, selectedEntryName, &outputCount, nullptr) !=
+            SPV_REFLECT_RESULT_SUCCESS)
+        {
+            reflection.valid = false;
+        }
         std::vector<SpvReflectInterfaceVariable*> outputs(outputCount);
-        spvReflectEnumerateOutputVariables(
-            &module,
-            &outputCount,
-            outputs.data());
+        if (outputCount != 0 &&
+            spvReflectEnumerateEntryPointOutputVariables(
+                &module, selectedEntryName, &outputCount, outputs.data()) !=
+                SPV_REFLECT_RESULT_SUCCESS)
+        {
+            reflection.valid = false;
+        }
         for (auto* output : outputs)
         {
             ShaderReflection::InputAttribute attr{};
@@ -537,7 +642,10 @@ namespace RVX
     }
 #else
     // macOS stub - SPIR-V reflection not available
-    static ShaderReflection ReflectSpirv(const std::vector<uint8>& /* bytecode */)
+    static ShaderReflection ReflectSpirv(
+        const std::vector<uint8>& /* bytecode */,
+        RHIShaderStage /* stage */,
+        const char* /* entryPoint */)
     {
         // On macOS, shader reflection happens at MSL compilation time via SPIRV-Cross
         return ShaderReflection{};
@@ -699,7 +807,7 @@ namespace RVX
         switch (backend)
         {
             case RHIBackendType::Vulkan:
-                return ReflectSpirv(bytecode);
+                return ReflectSpirv(bytecode, stage, entryPoint);
             case RHIBackendType::DX12:
 #if defined(_WIN32)
                 return ReflectDxil(bytecode, stage, entryPoint);

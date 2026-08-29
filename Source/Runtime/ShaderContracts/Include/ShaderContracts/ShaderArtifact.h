@@ -16,7 +16,7 @@ namespace RVX
     inline constexpr uint32 RVX_SHADER_ARTIFACT_VERSION = 2;
     inline constexpr uint32 RVX_SHADER_ARTIFACT_ENDIAN_MARKER =
         0x01020304u;
-    inline constexpr uint64 RVX_SHADER_COMPILER_ABI_VERSION = 14;
+    inline constexpr uint64 RVX_SHADER_COMPILER_ABI_VERSION = 15;
 
     struct ShaderArtifactSection
     {

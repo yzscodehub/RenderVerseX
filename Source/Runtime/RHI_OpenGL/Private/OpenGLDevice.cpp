@@ -4,6 +4,7 @@
 #include "OpenGLPipeline.h"
 #include "OpenGLDescriptor.h"
 #include "OpenGLCommandContext.h"
+#include "OpenGLConversions.h"
 #include "OpenGLSwapChain.h"
 #include "OpenGLSync.h"
 #include "OpenGLQuery.h"
@@ -269,6 +270,43 @@ namespace RVX
         glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, reinterpret_cast<GLint*>(&m_capabilities.maxTextureArrayLayers));
         m_capabilities.maxTextureLayers = m_capabilities.maxTextureArrayLayers;
         glGetIntegerv(GL_MAX_COLOR_ATTACHMENTS, reinterpret_cast<GLint*>(&m_capabilities.maxColorAttachments));
+        m_capabilities.supportsIndependentColorAttachmentBlend =
+            (major > 4) || (major == 4 && minor >= 0);
+        for (uint32 value = 1;
+             value < static_cast<uint32>(RHIFormat::Count);
+             ++value)
+        {
+            const RHIFormat format = static_cast<RHIFormat>(value);
+            const GLFormatInfo nativeFormat = ToGLFormat(format);
+            if (nativeFormat.internalFormat == 0 || nativeFormat.compressed ||
+                IsDepthFormat(format))
+            {
+                continue;
+            }
+
+            GLint framebufferRenderable = GL_NONE;
+            GLint framebufferBlend = GL_FALSE;
+            glGetInternalformativ(
+                GL_TEXTURE_2D,
+                nativeFormat.internalFormat,
+                GL_FRAMEBUFFER_RENDERABLE,
+                1,
+                &framebufferRenderable);
+            glGetInternalformativ(
+                GL_TEXTURE_2D,
+                nativeFormat.internalFormat,
+                GL_FRAMEBUFFER_BLEND,
+                1,
+                &framebufferBlend);
+
+            RHIFormatCapabilities& published =
+                m_capabilities.formatCapabilities[value];
+            published.colorAttachment =
+                framebufferRenderable == GL_FULL_SUPPORT ||
+                framebufferRenderable == GL_CAVEAT_SUPPORT;
+            published.colorAttachmentBlend =
+                published.colorAttachment && framebufferBlend == GL_TRUE;
+        }
 
         // Binding limits
         glGetIntegerv(GL_MAX_UNIFORM_BUFFER_BINDINGS, reinterpret_cast<GLint*>(&m_capabilities.opengl.maxUniformBufferBindings));
@@ -571,6 +609,15 @@ namespace RVX
             RVX_RHI_ERROR(
                 "OpenGL graphics pipeline preflight failed: {}",
                 FormatRHIPipelineValidationResult(validation));
+            return nullptr;
+        }
+        const RHIPipelineValidationResult capabilityValidation =
+            ValidateRHIGraphicsPipelineCapabilities(desc, m_capabilities);
+        if (!capabilityValidation)
+        {
+            RVX_RHI_ERROR(
+                "OpenGL graphics pipeline capability preflight failed: {}",
+                FormatRHIPipelineValidationResult(capabilityValidation));
             return nullptr;
         }
         auto pipeline = MakeRef<OpenGLGraphicsPipeline>(this, desc);

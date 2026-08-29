@@ -415,19 +415,23 @@ void MaterialSystem::BeginFrame()
     m_currentMaterialConstantOffset = 0;
     m_lastBindingResult = {};
 
-    // Recording-owned material tables are rebuilt from the current immutable
-    // frame plan. They must not remain in the persistent descriptor cache:
-    // after submission retirement the allocator may reuse the same C++ buffer
-    // address while the cached native descriptor still targets the old GPU
-    // resource. Retire those descriptor snapshots once per frame and retain
-    // their table owners until the next completion token.
+    // Recording-owned material pages are rebuilt from the current immutable
+    // frame plan. They must not remain in the persistent descriptor cache even
+    // when they reference the stable default parameter table: pageIdentity is
+    // part of the descriptor key and a later upload allocation may reuse the
+    // same C++ address for different GPU contents. Retire every page-scoped
+    // descriptor once per frame and keep only custom table owners alive until
+    // the next completion token.
     for (auto it = m_materialDescriptorCache.begin();
          it != m_materialDescriptorCache.end();)
     {
         MaterialDescriptorCacheEntry& entry = it->second;
-        if (!entry.materialParameterTable ||
-            entry.materialParameterTable.Get() ==
-                m_defaultMaterialParameterTable.Get())
+        const bool recordingOwnedPage = it->first.pageIdentity != 0;
+        const bool customParameterTable =
+            entry.materialParameterTable &&
+            entry.materialParameterTable.Get() !=
+                m_defaultMaterialParameterTable.Get();
+        if (!recordingOwnedPage && !customParameterTable)
         {
             ++it;
             continue;
@@ -439,8 +443,11 @@ void MaterialSystem::BeginFrame()
             QueueRenderOwnerRetirement(
                 sampler, m_pendingOwnerRetirements);
         }
-        QueueRenderOwnerRetirement(
-            entry.materialParameterTable, m_pendingOwnerRetirements);
+        if (customParameterTable)
+        {
+            QueueRenderOwnerRetirement(
+                entry.materialParameterTable, m_pendingOwnerRetirements);
+        }
         it = m_materialDescriptorCache.erase(it);
     }
     if (m_materialConstantUploadArena)
@@ -1086,7 +1093,7 @@ bool MaterialSystem::CreateMaterialBindingSnapshot(
 
     RHIDescriptorSetDesc descriptorDesc;
     descriptorDesc.layout = m_materialSetLayout;
-    descriptorDesc.debugName = "ObjectVelocityRecordMaterialDescriptorSet";
+    descriptorDesc.debugName = "MaterialBindingSnapshotDescriptorSet";
     descriptorDesc.BindBuffer(RVX_MATERIAL_DESCRIPTOR_CONSTANT_BUFFER_BINDING,
                               constantBuffer.Get(), 0, stride);
     descriptorDesc.BindTexture(GetMaterialTextureDescriptorBinding(

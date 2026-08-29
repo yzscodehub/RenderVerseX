@@ -4,6 +4,9 @@
 
 #include "Samples/Sample.h"
 #include "Samples/SampleModelLoader.h"
+#include "Samples/SampleParticleEffectLoader.h"
+
+#include "Scene/ECS/SceneEcsRuntime.h"
 
 #include <string>
 
@@ -20,6 +23,8 @@ namespace RVX
         [[nodiscard]] SampleAssessmentContract
             GetAssessmentContract() const override;
         bool Setup(SampleContext& context, std::string& outError) override;
+        bool BeginDeterministicEpoch(SampleContext& context,
+                                     std::string& outError) override;
         void Update(SampleContext& context, float deltaTime) override;
         void OnInput(SampleContext& context) override;
         void AppendReport(SampleFeatureReporter& reporter) const override;
@@ -32,12 +37,23 @@ namespace RVX
         void Shutdown(SampleContext& context) override;
 
     private:
+        bool TryCreateSmokeEmitter(SampleContext& context,
+                                   std::string& outError);
+
         LoadedSampleModel m_model;
+        LoadedSampleParticleEffect m_smokeEffect;
+        SceneECS::SceneEntityRef m_smokeEmitter{};
         SampleRenderPath m_renderPath = SampleRenderPath::Auto;
-        std::string m_modelFailure;
+        std::string m_failure;
         bool m_skyCreated = false;
         bool m_lightCreated = false;
+        bool m_weightedBlendedOITRequested = false;
+        bool m_deterministicEpochStarted = false;
+        bool m_epochResetQueued = false;
+        bool m_epochResetApplied = false;
         bool m_translucencyExecutionObserved = false;
         bool m_translucencyCapabilityPublished = false;
+        bool m_weightedBlendedOITExecutionObserved = false;
+        bool m_weightedBlendedOITCapabilityPublished = false;
     };
 } // namespace RVX

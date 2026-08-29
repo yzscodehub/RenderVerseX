@@ -16,6 +16,7 @@
 #include "VulkanCommon.h"
 #include "VulkanDevice.h"
 #include "VulkanPipeline.h"
+#include "VulkanRayTracing.h"
 #include "VulkanResources.h"
 
 #define GLFW_INCLUDE_VULKAN
@@ -801,6 +802,14 @@ namespace
             PipelineCache::DefaultLitAmbientOcclusionBinding,
             RHIBindingType::SampledTexture,
             RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(
+            PipelineCache::DefaultLitOpaqueSceneSnapshotBinding,
+            RHIBindingType::SampledTexture,
+            RHIShaderStage::Pixel);
+        frameLayoutDesc.AddBinding(
+            PipelineCache::DefaultLitLocalShadowAtlasBinding,
+            RHIBindingType::SampledTexture,
+            RHIShaderStage::Pixel);
         RHIDescriptorSetLayoutRef frameLayout = device.CreateDescriptorSetLayout(frameLayoutDesc);
         RHIDescriptorSetLayoutDesc emptyLayoutDesc;
         emptyLayoutDesc.debugName = "VulkanNativeSurfaceAlphaEmptySet";
@@ -852,6 +861,10 @@ namespace
         material.alphaMode = static_cast<uint32>(MaterialGPUAlphaMode::Mask);
         material.alphaCutoff = 0.5f;
         material.workflow = static_cast<uint32>(MaterialGPUWorkflow::Unlit);
+        material.shadingModel =
+            static_cast<uint32>(MaterialGPUShadingModel::Unlit);
+        material.blendMode =
+            static_cast<uint32>(MaterialGPUBlendMode::Masked);
         material.uvTransforms[0].scaleOffset = {1.37f, 0.71f, 0.18f, -0.22f};
         material.uvTransforms[0].rotationUVSet = {0.6f, 0.8f, useUV1 ? 1.0f : 0.0f, 0.0f};
         constexpr uint32 kConstantBufferAlignment = 256u;
@@ -955,7 +968,12 @@ namespace
         frameSetDesc.BindTexture(
             PipelineCache::DefaultLitAmbientOcclusionBinding,
             sourceTextureView.Get());
-        frameSetDesc.BindTexture(16, sourceTextureView.Get());
+        frameSetDesc.BindTexture(
+            PipelineCache::DefaultLitOpaqueSceneSnapshotBinding,
+            sourceTextureView.Get());
+        frameSetDesc.BindTexture(
+            PipelineCache::DefaultLitLocalShadowAtlasBinding,
+            directionalShadowArrayView.Get());
         RHIDescriptorSetRef frameSet = device.CreateDescriptorSet(frameSetDesc);
         RHIDescriptorSetDesc materialSetDesc;
         materialSetDesc.layout = materialLayout.Get();
@@ -1336,6 +1354,26 @@ TEST(VulkanValidation, RenderContextFramesQueueDagWithRecordingGraphicsGateway)
     std::vector<RHICommandContextRef> ownedContexts;
     ownedContexts.push_back(std::move(computeContext));
     ownedContexts.push_back(std::move(graphTerminalContext));
+    size_t plannedContextCount = 0;
+    for (const RHIQueueSubmissionBatch& batch : plan.batches)
+    {
+        plannedContextCount += batch.contexts.size();
+    }
+    ASSERT_EQ(ownedContexts.size(), plannedContextCount);
+    for (const RHIQueueSubmissionBatch& batch : plan.batches)
+    {
+        for (RHICommandContext* plannedContext : batch.contexts)
+        {
+            const bool owned = std::any_of(
+                ownedContexts.begin(),
+                ownedContexts.end(),
+                [plannedContext](const RHICommandContextRef& context)
+                {
+                    return context.Get() == plannedContext;
+                });
+            ASSERT_TRUE(owned);
+        }
+    }
     ASSERT_TRUE(context.AdoptQueueSubmission(std::move(plan),
                                              std::move(ownedContexts)));
 
@@ -1522,23 +1560,282 @@ TEST(VulkanValidation, DriverIdentityMatchesPhysicalDeviceDriverEvidence)
     EXPECT_EQ(reportedVersion, expectedVersion);
 }
 
-TEST(VulkanValidation, RayTracingCapabilitiesAreDisabledUntilBackendImplementation)
+TEST(VulkanValidation,
+     RayTracingCapabilitiesPublishCompleteOrDisabledLogicalDeviceState)
 {
     RHIDeviceDesc desc;
     auto device = RVX::Test::CreateNativeValidationDevice(RHIBackendType::Vulkan, desc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
+    auto* vulkanDevice = dynamic_cast<VulkanDevice*>(device.get());
+    ASSERT_NE(vulkanDevice, nullptr);
+
     const RHICapabilities& caps = device->GetCapabilities();
     EXPECT_FALSE(caps.supportsMeshShaders);
-    EXPECT_FALSE(caps.supportsRaytracing);
-    EXPECT_FALSE(caps.supportsRaytracingPipeline);
     EXPECT_FALSE(caps.supportsRayQuery);
-    EXPECT_FALSE(caps.supportsAccelerationStructureUpdate);
-    EXPECT_FALSE(caps.supportsAccelerationStructureCompaction);
-    EXPECT_EQ(caps.maxRayRecursionDepth, 0u);
-    EXPECT_EQ(caps.shaderGroupHandleSize, 0u);
-    EXPECT_EQ(caps.shaderGroupHandleAlignment, 0u);
-    EXPECT_EQ(caps.shaderTableBaseAlignment, 0u);
+    EXPECT_EQ(caps.supportsAccelerationStructureCompaction,
+              caps.supportsRaytracing);
+
+    // Ray tracing is an all-or-nothing logical-device capability. A raster-only
+    // adapter must remain usable, while an enabled RT path cannot publish a
+    // partial API surface with missing pipeline/update support or entry points.
+    EXPECT_EQ(caps.supportsRaytracing, caps.supportsRaytracingPipeline);
+    EXPECT_EQ(caps.supportsRaytracing,
+              caps.supportsAccelerationStructureUpdate);
+    EXPECT_EQ(caps.supportsRaytracing, vulkanDevice->IsRayTracingEnabled());
+
+    if (caps.supportsRaytracing)
+    {
+        EXPECT_TRUE(vulkanDevice->IsBufferDeviceAddressEnabled());
+        EXPECT_TRUE(vulkanDevice->GetRayTracingFunctions().IsComplete());
+        EXPECT_TRUE(caps.supportsAccelerationStructureCompaction);
+        EXPECT_GT(vulkanDevice->GetAccelerationStructureProperties()
+                      .minAccelerationStructureScratchOffsetAlignment,
+                  0u);
+        EXPECT_GT(caps.maxRayRecursionDepth, 0u);
+        EXPECT_GT(caps.shaderGroupHandleSize, 0u);
+        EXPECT_GT(caps.shaderGroupHandleAlignment, 0u);
+        EXPECT_GT(caps.shaderTableBaseAlignment, 0u);
+
+        RHIBufferDesc unsupportedVertexBufferDesc;
+        unsupportedVertexBufferDesc.size = 12u;
+        unsupportedVertexBufferDesc.usage =
+            RHIBufferUsage::AccelerationStructureInput |
+            RHIBufferUsage::DeviceAddress;
+        unsupportedVertexBufferDesc.memoryType = RHIMemoryType::Upload;
+        unsupportedVertexBufferDesc.stride = 4u;
+        unsupportedVertexBufferDesc.debugName =
+            "VulkanUnsupportedRayTracingVertexFormat";
+        RHIBufferRef unsupportedVertexBuffer =
+            device->CreateBuffer(unsupportedVertexBufferDesc);
+        ASSERT_NE(unsupportedVertexBuffer.Get(), nullptr);
+
+        RHIRayTracingGeometryDesc unsupportedGeometry;
+        unsupportedGeometry.type = RHIRayTracingGeometryType::Triangles;
+        unsupportedGeometry.triangles.vertexBuffer =
+            unsupportedVertexBuffer.Get();
+        unsupportedGeometry.triangles.vertexCount = 3u;
+        unsupportedGeometry.triangles.vertexStride = 4u;
+        unsupportedGeometry.triangles.vertexFormat = RHIFormat::RGBA8_UNORM;
+        RHIBottomLevelASDesc unsupportedBlasDesc;
+        unsupportedBlasDesc.geometries.push_back(unsupportedGeometry);
+        EXPECT_FALSE(
+            device->GetBottomLevelASBuildSizes(unsupportedBlasDesc).IsValid())
+            << "Vulkan must reject formats outside the declared RGB32_FLOAT "
+               "BLAS position contract before reaching a native build";
+
+        RHIAccelerationStructureCompactedSizeQueryDesc invalidQueryDesc;
+        invalidQueryDesc.count = 0;
+        EXPECT_EQ(device->CreateAccelerationStructureCompactedSizeQuery(
+                      invalidQueryDesc).Get(),
+                  nullptr);
+
+        invalidQueryDesc.count = 1;
+        invalidQueryDesc.queueType = RHICommandQueueType::Copy;
+        EXPECT_EQ(device->CreateAccelerationStructureCompactedSizeQuery(
+                      invalidQueryDesc).Get(),
+                  nullptr);
+
+        RHIAccelerationStructureCompactedSizeQueryDesc queryDesc;
+        queryDesc.count = 2;
+        queryDesc.queueType = RHICommandQueueType::Graphics;
+        queryDesc.debugName = "VulkanCompactedSizeQuery";
+        auto compactedSizeQuery =
+            device->CreateAccelerationStructureCompactedSizeQuery(queryDesc);
+        ASSERT_NE(compactedSizeQuery.Get(), nullptr);
+        EXPECT_EQ(compactedSizeQuery->GetCount(), queryDesc.count);
+        EXPECT_EQ(compactedSizeQuery->GetQueueType(), queryDesc.queueType);
+    }
+    else
+    {
+        EXPECT_FALSE(vulkanDevice->GetRayTracingFunctions().IsComplete());
+        EXPECT_EQ(caps.maxRayRecursionDepth, 0u);
+        EXPECT_EQ(caps.shaderGroupHandleSize, 0u);
+        EXPECT_EQ(caps.shaderGroupHandleAlignment, 0u);
+        EXPECT_EQ(caps.shaderTableBaseAlignment, 0u);
+    }
+}
+
+TEST(VulkanValidation,
+     RayTracingAccelerationStructureDeviceLimitsRejectExcessiveInputs)
+{
+    VkPhysicalDeviceAccelerationStructurePropertiesKHR properties = {
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
+    properties.maxGeometryCount = 2;
+    properties.maxPrimitiveCount = 4;
+    properties.maxInstanceCount = 2;
+
+    const auto MakeTriangleGeometry = [](uint32 vertexCount)
+    {
+        RHIRayTracingGeometryDesc geometry;
+        geometry.type = RHIRayTracingGeometryType::Triangles;
+        geometry.triangles.vertexCount = vertexCount;
+        return geometry;
+    };
+
+    RHIBottomLevelASDesc validBlas;
+    validBlas.geometries.push_back(MakeTriangleGeometry(6));
+    validBlas.geometries.push_back(MakeTriangleGeometry(6));
+    EXPECT_TRUE(ValidateVulkanBottomLevelASDeviceLimits(
+        properties, validBlas, "test BLAS limit"));
+
+    RHIBottomLevelASDesc tooManyGeometries = validBlas;
+    tooManyGeometries.geometries.push_back(MakeTriangleGeometry(3));
+    EXPECT_FALSE(ValidateVulkanBottomLevelASDeviceLimits(
+        properties, tooManyGeometries, "test BLAS limit"));
+
+    RHIBottomLevelASDesc tooManyPrimitives = validBlas;
+    tooManyPrimitives.geometries[1] = MakeTriangleGeometry(9);
+    EXPECT_FALSE(ValidateVulkanBottomLevelASDeviceLimits(
+        properties, tooManyPrimitives, "test BLAS limit"));
+
+    RHIBottomLevelASDesc tooManyAABBs;
+    RHIRayTracingGeometryDesc aabbs;
+    aabbs.type = RHIRayTracingGeometryType::AABBs;
+    aabbs.aabbs.count = 5;
+    tooManyAABBs.geometries.push_back(aabbs);
+    EXPECT_FALSE(ValidateVulkanBottomLevelASDeviceLimits(
+        properties, tooManyAABBs, "test BLAS limit"));
+
+    RHITopLevelASDesc validTlas;
+    validTlas.instances.resize(2);
+    EXPECT_TRUE(ValidateVulkanTopLevelASDeviceLimits(
+        properties, validTlas, "test TLAS limit"));
+
+    RHITopLevelASDesc tooManyInstances = validTlas;
+    tooManyInstances.instances.resize(3);
+    EXPECT_FALSE(ValidateVulkanTopLevelASDeviceLimits(
+        properties, tooManyInstances, "test TLAS limit"));
+}
+
+TEST(VulkanValidation,
+     RayTracingUpdateSignatureRejectsEveryVulkanInvariantDifference)
+{
+    using Compatibility =
+        VulkanAccelerationStructureUpdateCompatibility;
+
+    VulkanAccelerationStructureBuildSignature triangleSource;
+    triangleSource.type = RHIAccelerationStructureType::BottomLevel;
+    triangleSource.buildFlags =
+        RHIAccelerationStructureBuildFlags::AllowUpdate |
+        RHIAccelerationStructureBuildFlags::PreferFastTrace;
+    VulkanAccelerationStructureGeometryBuildSignature triangle;
+    triangle.type =
+        VulkanAccelerationStructureSignatureGeometryType::Triangles;
+    triangle.flags = RHIRayTracingGeometryFlags::Opaque;
+    triangle.primitiveCount = 1;
+    triangle.vertexFormat = RHIFormat::RGB32_FLOAT;
+    triangle.maxVertex = 2;
+    triangle.indexFormat = RHIFormat::Unknown;
+    triangle.hasTransform = false;
+    triangleSource.geometries.push_back(triangle);
+
+    EXPECT_EQ(GetVulkanAccelerationStructureUpdateCompatibility(
+                  triangleSource, triangleSource),
+              Compatibility::Compatible);
+
+    const auto ExpectTriangleMismatch =
+        [&triangleSource](auto&& mutate,
+                          Compatibility expected,
+                          const char* field)
+    {
+        SCOPED_TRACE(field);
+        VulkanAccelerationStructureBuildSignature update = triangleSource;
+        mutate(update);
+        EXPECT_EQ(GetVulkanAccelerationStructureUpdateCompatibility(
+                      triangleSource, update),
+                  expected);
+    };
+
+    ExpectTriangleMismatch(
+        [](auto& update)
+        {
+            update.type = RHIAccelerationStructureType::TopLevel;
+        },
+        Compatibility::AccelerationStructureTypeMismatch,
+        "acceleration-structure type");
+    ExpectTriangleMismatch(
+        [](auto& update)
+        {
+            update.buildFlags =
+                RHIAccelerationStructureBuildFlags::AllowUpdate |
+                RHIAccelerationStructureBuildFlags::PreferFastBuild;
+        },
+        Compatibility::BuildFlagsMismatch,
+        "build flags");
+    ExpectTriangleMismatch(
+        [](auto& update) { update.geometries.clear(); },
+        Compatibility::GeometryCountMismatch,
+        "geometry count");
+    ExpectTriangleMismatch(
+        [](auto& update)
+        {
+            update.geometries[0].type =
+                VulkanAccelerationStructureSignatureGeometryType::AABBs;
+        },
+        Compatibility::GeometryTypeMismatch,
+        "geometry type");
+    ExpectTriangleMismatch(
+        [](auto& update)
+        {
+            update.geometries[0].flags = RHIRayTracingGeometryFlags::None;
+        },
+        Compatibility::GeometryFlagsMismatch,
+        "geometry flags");
+    ExpectTriangleMismatch(
+        [](auto& update) { update.geometries[0].primitiveCount = 2; },
+        Compatibility::PrimitiveCountMismatch,
+        "primitive count");
+    ExpectTriangleMismatch(
+        [](auto& update)
+        {
+            update.geometries[0].vertexFormat = RHIFormat::RG32_FLOAT;
+        },
+        Compatibility::TriangleVertexFormatMismatch,
+        "triangle vertex format");
+    ExpectTriangleMismatch(
+        [](auto& update) { update.geometries[0].maxVertex = 5; },
+        Compatibility::TriangleMaxVertexMismatch,
+        "triangle max vertex");
+    ExpectTriangleMismatch(
+        [](auto& update)
+        {
+            update.geometries[0].indexFormat = RHIFormat::R16_UINT;
+        },
+        Compatibility::TriangleIndexFormatMismatch,
+        "triangle index type");
+    ExpectTriangleMismatch(
+        [](auto& update) { update.geometries[0].hasTransform = true; },
+        Compatibility::TriangleTransformPresenceMismatch,
+        "triangle transform presence");
+
+    VulkanAccelerationStructureBuildSignature aabbSource = triangleSource;
+    aabbSource.geometries[0] = {};
+    aabbSource.geometries[0].type =
+        VulkanAccelerationStructureSignatureGeometryType::AABBs;
+    aabbSource.geometries[0].flags = RHIRayTracingGeometryFlags::Opaque;
+    aabbSource.geometries[0].primitiveCount = 1;
+    aabbSource.geometries[0].aabbStride = 24;
+    VulkanAccelerationStructureBuildSignature aabbUpdate = aabbSource;
+    aabbUpdate.geometries[0].aabbStride = 32;
+    EXPECT_EQ(GetVulkanAccelerationStructureUpdateCompatibility(
+                  aabbSource, aabbUpdate),
+              Compatibility::AABBStrideMismatch);
+
+    VulkanAccelerationStructureBuildSignature instanceSource;
+    instanceSource.type = RHIAccelerationStructureType::TopLevel;
+    instanceSource.buildFlags = triangleSource.buildFlags;
+    VulkanAccelerationStructureGeometryBuildSignature instances;
+    instances.type =
+        VulkanAccelerationStructureSignatureGeometryType::Instances;
+    instances.primitiveCount = 1;
+    instances.instancesArrayOfPointers = false;
+    instanceSource.geometries.push_back(instances);
+    VulkanAccelerationStructureBuildSignature instanceUpdate = instanceSource;
+    instanceUpdate.geometries[0].instancesArrayOfPointers = true;
+    EXPECT_EQ(GetVulkanAccelerationStructureUpdateCompatibility(
+                  instanceSource, instanceUpdate),
+              Compatibility::InstancesArrayOfPointersMismatch);
 }
 
 TEST(VulkanValidation, OptionalShaderBarrierStagesRequireEnabledCapabilities)
@@ -1677,6 +1974,62 @@ TEST(VulkanValidation, RequiredDeviceConfigurationSelectionFailsClosed)
         IsVulkanRequiredDeviceConfigurationSupported(missingSynchronization2));
 }
 
+TEST(VulkanValidation,
+     ProductionRayTracingFeatureSelectionRequiresDescriptorIndexingContract)
+{
+    VulkanRayTracingFeatureSupport supported;
+    supported.extensionsAvailable = true;
+    supported.bufferDeviceAddress = true;
+    supported.descriptorIndexing = true;
+    supported.descriptorBindingPartiallyBound = true;
+    supported.runtimeDescriptorArray = true;
+    supported.shaderSampledImageArrayNonUniformIndexing = true;
+    supported.shaderStorageBufferArrayNonUniformIndexing = true;
+    supported.accelerationStructure = true;
+    supported.rayTracingPipeline = true;
+    EXPECT_TRUE(IsVulkanRayTracingFeatureSetSupported(supported));
+
+    const auto expectRejectedWhenMissing =
+        [&supported](bool VulkanRayTracingFeatureSupport::* feature,
+                     const char* featureName)
+    {
+        SCOPED_TRACE(featureName);
+        VulkanRayTracingFeatureSupport missing = supported;
+        missing.*feature = false;
+        EXPECT_FALSE(IsVulkanRayTracingFeatureSetSupported(missing));
+    };
+
+    expectRejectedWhenMissing(
+        &VulkanRayTracingFeatureSupport::extensionsAvailable,
+        "extensionsAvailable");
+    expectRejectedWhenMissing(
+        &VulkanRayTracingFeatureSupport::bufferDeviceAddress,
+        "bufferDeviceAddress");
+    expectRejectedWhenMissing(
+        &VulkanRayTracingFeatureSupport::descriptorIndexing,
+        "descriptorIndexing");
+    expectRejectedWhenMissing(
+        &VulkanRayTracingFeatureSupport::descriptorBindingPartiallyBound,
+        "descriptorBindingPartiallyBound");
+    expectRejectedWhenMissing(
+        &VulkanRayTracingFeatureSupport::runtimeDescriptorArray,
+        "runtimeDescriptorArray");
+    expectRejectedWhenMissing(
+        &VulkanRayTracingFeatureSupport::
+            shaderSampledImageArrayNonUniformIndexing,
+        "shaderSampledImageArrayNonUniformIndexing");
+    expectRejectedWhenMissing(
+        &VulkanRayTracingFeatureSupport::
+            shaderStorageBufferArrayNonUniformIndexing,
+        "shaderStorageBufferArrayNonUniformIndexing");
+    expectRejectedWhenMissing(
+        &VulkanRayTracingFeatureSupport::accelerationStructure,
+        "accelerationStructure");
+    expectRejectedWhenMissing(
+        &VulkanRayTracingFeatureSupport::rayTracingPipeline,
+        "rayTracingPipeline");
+}
+
 TEST(VulkanValidation, BlendAttachmentSelectionHonorsIndependentBlendContract)
 {
     EXPECT_EQ(SelectVulkanBlendAttachmentStateIndex(false, 0u), 0u);
@@ -1735,6 +2088,43 @@ TEST(VulkanValidation, IndexedIndirectCountCapabilityReflectsEnabledDispatch)
     if (dispatch == VulkanIndexedIndirectCountDispatch::KHR)
     {
         EXPECT_NE(vulkanDevice->GetCmdDrawIndexedIndirectCountKHR(), nullptr);
+    }
+}
+
+TEST(VulkanValidation, IndependentFloatBlendCapabilitiesMatchNativeQueries)
+{
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = RVX::Test::CreateNativeValidationDevice(
+        RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+    auto* vulkanDevice = dynamic_cast<VulkanDevice*>(device.get());
+    ASSERT_NE(vulkanDevice, nullptr);
+
+    const RHICapabilities& capabilities = device->GetCapabilities();
+    EXPECT_TRUE(capabilities.supportsIndependentColorAttachmentBlend);
+
+    constexpr std::array<std::pair<RHIFormat, VkFormat>, 2> formats = {{
+        {RHIFormat::R16_FLOAT, VK_FORMAT_R16_SFLOAT},
+        {RHIFormat::RGBA16_FLOAT, VK_FORMAT_R16G16B16A16_SFLOAT},
+    }};
+    for (const auto& [format, nativeFormat] : formats)
+    {
+        VkFormatProperties nativeProperties{};
+        vkGetPhysicalDeviceFormatProperties(
+            vulkanDevice->GetPhysicalDevice(),
+            nativeFormat,
+            &nativeProperties);
+        EXPECT_EQ(
+            capabilities.SupportsColorAttachment(format),
+            (nativeProperties.optimalTilingFeatures &
+             VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) != 0);
+        EXPECT_EQ(
+            capabilities.SupportsColorAttachmentBlend(format),
+            (nativeProperties.optimalTilingFeatures &
+             VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) != 0 &&
+                (nativeProperties.optimalTilingFeatures &
+                 VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT) != 0);
     }
 }
 

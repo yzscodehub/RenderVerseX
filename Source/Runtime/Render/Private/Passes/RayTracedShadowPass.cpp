@@ -157,11 +157,11 @@ namespace RVX
             RHITextureRef depth;
             RHITextureRef normal;
             RHITextureAccessSnapshot maskAccess =
-                MakeRHITextureAccessSnapshot(RHIResourceState::Common);
+                MakeRHITextureAccessSnapshot(RHIResourceState::Undefined);
             RHITextureAccessSnapshot depthAccess =
-                MakeRHITextureAccessSnapshot(RHIResourceState::Common);
+                MakeRHITextureAccessSnapshot(RHIResourceState::Undefined);
             RHITextureAccessSnapshot normalAccess =
-                MakeRHITextureAccessSnapshot(RHIResourceState::Common);
+                MakeRHITextureAccessSnapshot(RHIResourceState::Undefined);
         };
 
         struct PendingTimingSample
@@ -204,6 +204,7 @@ namespace RVX
         ShadowPassConfig config{};
         PrimaryDirectionalLightRecordInput primaryDirectionalLight{};
         bool contextValid = false;
+        bool legacyAdapter = false;
 
         RHIAccelerationStructureRef tlas;
         RHIBufferRef materialMetadata;
@@ -242,6 +243,7 @@ namespace RVX
         RGTextureHandle historyNormalReadHandle{};
         RGTextureHandle historyNormalWriteHandle{};
         RGTextureHandle shadowMaskHandle{};
+        RGBufferHandle tlasStorageHandle{};
         RGTextureViewHandle shadowMaskViewHandle{};
         RGTextureViewHandle depthViewHandle{};
         RGTextureViewHandle velocityViewHandle{};
@@ -568,6 +570,7 @@ namespace RVX
             ? execution.frameSnapshot->primaryDirectionalLight
             : PrimaryDirectionalLightRecordInput{};
         state->stats.requested = m_enabled;
+        state->legacyAdapter = context.legacyAdapter;
 
         // Every invocation first publishes a disabled value for this exact
         // recording. Feature and light eligibility are authoritative record
@@ -586,6 +589,8 @@ namespace RVX
         state->reverseZ = m_pipelineCache && m_pipelineCache->GetConfig().reverseZ;
         state->contextValid = context.MatchesTargetGraph(graph) &&
             execution.MatchesTargetGraph(graph) && execution.IsFrameIdentityValid() &&
+            (context.legacyAdapter ||
+             execution.rayTracingScene.IsCompatibleWith(execution.identity)) &&
             state->historyOwner != nullptr;
         state->stats.supported = state->contextValid && IsSupported();
 
@@ -643,7 +648,9 @@ namespace RVX
             return;
         }
 
-        state->stats.tlasAvailable = m_sceneManager->GetTopLevelAS() != nullptr;
+        state->stats.tlasAvailable = context.legacyAdapter
+            ? m_sceneManager->GetTopLevelAS() != nullptr
+            : execution.rayTracingScene.topLevelAS != nullptr;
         state->stats.materialMetadataAvailable = m_sceneManager->GetInstanceMaterialMetadataBuffer() != nullptr;
         state->stats.alphaMetadataAvailable = m_sceneManager->GetInstanceAlphaMetadataBuffer() != nullptr;
         state->stats.depthAvailable = true;
@@ -686,7 +693,9 @@ namespace RVX
             return;
         }
 
-        state->tlas = RHIAccelerationStructureRef(m_sceneManager->GetTopLevelAS());
+        state->tlas = context.legacyAdapter
+            ? RHIAccelerationStructureRef(m_sceneManager->GetTopLevelAS())
+            : execution.rayTracingScene.topLevelAS;
         state->materialMetadata = RHIBufferRef(m_sceneManager->GetInstanceMaterialMetadataBuffer());
         state->alphaMetadata = RHIBufferRef(m_sceneManager->GetInstanceAlphaMetadataBuffer());
         if (!state->tlas || !state->materialMetadata || !state->alphaMetadata)
@@ -810,6 +819,24 @@ namespace RVX
                     publishRejectedSetup();
                     return;
                 }
+                if (!data->legacyAdapter)
+                {
+                    if (!data->execution.rayTracingScene.IsCompatibleWith(
+                            data->execution.identity))
+                    {
+                        publishRejectedSetup();
+                        return;
+                    }
+                    data->tlasStorageHandle = builder.Read(
+                        data->execution.rayTracingScene.topLevelASStorage,
+                        RHIResourceState::AccelerationStructureRead,
+                        RHIShaderStage::AllRayTracing);
+                    if (!data->tlasStorageHandle.IsValid())
+                    {
+                        publishRejectedSetup();
+                        return;
+                    }
+                }
                 RayTracedShadowHistoryOwner& owner = *data->historyOwner;
                 const uint32 read = data->reservation->readSlot;
                 const uint32 write = data->reservation->writeSlot;
@@ -821,16 +848,16 @@ namespace RVX
                     ? view.velocityTarget
                     : builder.ImportTexture(
                         data->fallbackVelocityTexture,
-                        RHIResourceState::Common);
+                        RHIResourceState::Undefined);
                 const RGTextureHandle historyRead = read != RVX_INVALID_INDEX
                     ? builder.ImportTexture(owner.slots[read].mask, owner.slots[read].maskAccess)
-                    : builder.ImportTexture(data->fallbackHistoryMaskTexture, RHIResourceState::Common);
+                    : builder.ImportTexture(data->fallbackHistoryMaskTexture, RHIResourceState::Undefined);
                 const RGTextureHandle historyDepthRead = read != RVX_INVALID_INDEX
                     ? builder.ImportTexture(owner.slots[read].depth, owner.slots[read].depthAccess)
-                    : builder.ImportTexture(data->fallbackHistoryDepthTexture, RHIResourceState::Common);
+                    : builder.ImportTexture(data->fallbackHistoryDepthTexture, RHIResourceState::Undefined);
                 const RGTextureHandle historyNormalRead = read != RVX_INVALID_INDEX
                     ? builder.ImportTexture(owner.slots[read].normal, owner.slots[read].normalAccess)
-                    : builder.ImportTexture(data->fallbackHistoryNormalTexture, RHIResourceState::Common);
+                    : builder.ImportTexture(data->fallbackHistoryNormalTexture, RHIResourceState::Undefined);
                 const RGTextureHandle shadowMask = builder.ImportTexture(
                     owner.slots[write].mask, owner.slots[write].maskAccess);
                 const RGTextureHandle historyDepthWrite = builder.ImportTexture(
@@ -1024,6 +1051,18 @@ namespace RVX
                     !data->viewCache)
                 {
                     failClosed("recorded execution prerequisites are unavailable");
+                    return;
+                }
+                if (!data->legacyAdapter &&
+                    (!data->tlasStorageHandle.IsValid() || !data->tlas ||
+                     data->tlas->GetStorageBuffer() == nullptr ||
+                     context.GetBuffer(data->tlasStorageHandle) !=
+                         data->tlas->GetStorageBuffer() ||
+                     data->tlas->GetStorageBuffer()->GetResourceInstanceId() !=
+                         data->execution.rayTracingScene.storageResourceId))
+                {
+                    failClosed(
+                        "recorded TLAS storage dependency is stale or unavailable");
                     return;
                 }
 

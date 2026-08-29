@@ -656,6 +656,75 @@ namespace RVX
         uint32 spotShadowRequested = 0;
         bool spotShadowSupported = false;
         std::string spotShadowReason{};
+        /** Number of local-light shadow requests admitted to the frame plan. */
+        uint32 localShadowRequestCount = 0;
+        /** Caster draws recorded for the exact completed local-shadow atlas. */
+        uint32 localShadowCasterDrawCount = 0;
+        /** True only after the exact atlas caster and receiver work executed. */
+        bool localShadowAtlasReady = false;
+        /** Fail-closed planning or execution reason; empty after exact execution. */
+        std::string localShadowReason{};
+    };
+
+    /**
+     * @brief Presentation-frozen evidence for the optional Hi-Z reflection route.
+     *
+     * The values originate from SSR only after the Reflection feature has
+     * received exact RenderGraph completion evidence. `available` is then set
+     * only when that same frame reaches a successful presentation boundary.
+     * This prevents Samples from treating a scheduled SSR callback or an
+     * unpresented recording as a rendered reflection result.
+     */
+    struct RenderReflectionDiagnostics
+    {
+        bool available = false;
+        bool graphExecutionFinalized = false;
+        bool requested = false;
+        bool supported = false;
+        bool scheduled = false;
+        bool executed = false;
+        bool hiZBuilt = false;
+        bool globalIBLReady = false;
+        bool fallbackChainResolved = false;
+        bool screenSpaceApplied = false;
+        bool probesApplied = false;
+        /** True only after the qualification route-mask readback completed. */
+        bool reflectionRouteEvidenceReady = false;
+        /** Version of the GPU route-mask radiance qualification semantics. */
+        uint32 routeMaskRadianceSchemaVersion = 0;
+        /** Every encoded local-probe route carried finite, nonzero probe energy. */
+        bool localProbeRadianceQualified = false;
+        /** Every encoded global-IBL route carried finite, nonzero IBL energy. */
+        bool globalIBLRadianceQualified = false;
+        uint32 readyProbeCount = 0;
+        uint32 hiZMipCount = 0;
+        uint32 hiZGraphPassCount = 0;
+        uint32 traceGraphPassCount = 0;
+        uint32 resolveGraphPassCount = 0;
+        /** Frame that supplied the sealed reflection plan and SSR inputs. */
+        uint64 frameSequence = 0;
+        uint64 reflectionPlanIdentity = 0;
+        uint64 lightingPlanIdentity = 0;
+        uint64 depthPyramidIdentity = 0;
+        /** Exact v5 lighting-surface bundle selected for this route. */
+        uint64 reflectionSurfaceIdentity = 0;
+        /** Immutable exposure payload bound with that surface bundle. */
+        uint64 exposureStateContentHash = 0;
+        /** Exact reflected screen-space hits observed by the qualified route. */
+        uint64 screenSpaceHitPixelCount = 0;
+        /** Exact local-probe fallback pixels observed by the qualified route. */
+        uint64 localProbePixelCount = 0;
+        /** Exact global-IBL fallback pixels observed by the qualified route. */
+        uint64 globalIBLPixelCount = 0;
+        /** Exact physical route-mask samples copied from the qualified frame. */
+        uint64 reflectionReadbackSampleCount = 0;
+        /** Total valid route-mask samples observed by the qualified route. */
+        uint64 reflectionRouteSampleCount = 0;
+        /** Pixels classified as background and excluded from receiver routing. */
+        uint64 backgroundPixelCount = 0;
+        /** Pixels classified as visible but non-reflective by surface data. */
+        uint64 nonReflectivePixelCount = 0;
+        std::string fallbackReason{};
     };
 
     /** @brief Value-only transparent blending order and Direct-lane telemetry. */
@@ -1376,6 +1445,15 @@ namespace RVX
         RenderPassFeatureDiagnostics skybox{};
         RenderDirectionalShadowDiagnostics directionalShadow{};
         RenderLocalLightingDiagnostics localLighting{};
+        RenderReflectionDiagnostics reflection{};
+        /**
+         * @brief Delayed Hi-Z route-mask qualification frozen at its source frame.
+         *
+         * This is intentionally separate from `executionReceipt` and
+         * `reflection`, which continue to describe the newest presented frame.
+         */
+        RenderExecutionReceipt hiZReflectionQualificationReceipt{};
+        RenderReflectionDiagnostics hiZReflectionQualification{};
         RenderPassFeatureDiagnostics hzb{};
         RenderTransparentPassDiagnostics transparent{};
         RenderGPUDrivenCullingDiagnostics gpuDrivenCulling{};

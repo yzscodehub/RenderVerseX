@@ -35,6 +35,7 @@
 #include "Render/Passes/ShadowPass.h"
 #include "Render/PipelineCache.h"
 #include "Render/PostProcess/PostProcessStack.h"
+#include "Render/RayTracing/HybridRayTracingFramePlan.h"
 #include "Render/RayTracing/RayTracingSceneManager.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderDrawPlan.h"
@@ -43,6 +44,7 @@
 #include "Render/Visibility/RenderVisibility.h"
 #include "RenderContracts/FeatureRenderSnapshot.h"
 #include "RenderContracts/RenderProxy.h"
+#include "RenderContracts/RenderSceneUpdate.h"
 #include "RHI/RHICapabilities.h"
 
 #include <atomic>
@@ -78,6 +80,13 @@ namespace RVX
     class AmbientOcclusionFeatureAdapter;
     class LegacyForwardFeatureAdapter;
     class ForwardLightingFeatureAdapter;
+    class ForwardSpecialFeatureAdapter;
+    class TranslucencyFeatureAdapter;
+    class ReflectionFeatureAdapter;
+    class ReflectionFramePlan;
+    class LocalShadowFramePlan;
+    class LocalShadowAtlasPlan;
+    class LocalShadowPass;
     class PostProcessPipelineFeatureAdapter;
     class DeferredGeometryFeatureAdapter;
     class DeferredLightingFeatureAdapter;
@@ -314,7 +323,7 @@ namespace RVX
     };
 
     inline constexpr uint32 RVX_SCENE_RENDER_FEATURE_REPORT_SCHEMA_VERSION = 2;
-    inline constexpr uint32 RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION = 8;
+    inline constexpr uint32 RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION = 9;
     inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION = 29;
     inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_ARTIFACT_SUMMARY_SCHEMA_VERSION = 24;
     inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION = 25;
@@ -449,6 +458,7 @@ namespace RVX
         uint32 pointShadowRequestCount = 0;
         uint32 spotShadowRequestCount = 0;
         uint32 localShadowRequestCount = 0;
+        uint32 localShadowCasterDrawCount = 0;
         bool localShadowAtlasReady = false;
         std::string localShadowFallbackReason;
         bool localLightingAvailable = false;
@@ -476,6 +486,18 @@ namespace RVX
         uint32 directionalShadowCasterCount = 0;
         uint32 directionalShadowDrawCount = 0;
         std::string directionalShadowReason;
+        /** Exact-finalized and presentation-frozen optional reflection route. */
+        RenderReflectionDiagnostics reflection{};
+        /**
+         * @brief Immutable source-frame receipt for the completed Hi-Z route
+         *        qualification readback. It may predate @ref reflection.
+         */
+        RenderExecutionReceipt hiZReflectionQualificationReceipt{};
+        /**
+         * @brief Completion-owned Hi-Z route evidence paired with
+         *        @ref hiZReflectionQualificationReceipt.
+         */
+        RenderReflectionDiagnostics hiZReflectionQualification{};
         bool hzbRequested = false;
         bool hzbSupported = false;
         bool hzbEnabled = false;
@@ -765,6 +787,7 @@ namespace RVX
         uint32 pointShadowRequestCount = 0;
         uint32 spotShadowRequestCount = 0;
         uint32 localShadowRequestCount = 0;
+        uint32 localShadowCasterDrawCount = 0;
         bool localShadowAtlasReady = false;
         std::string localShadowFallbackReason;
         uint32 pointLightRequestedCount = 0;
@@ -1077,8 +1100,24 @@ namespace RVX
             uint64 frameSequence,
             RenderFramePixelProbeResult& outResult);
 
-        /** @brief Seal current recording ownership with the actual submission token. */
+        /**
+         * @brief Seal current recording ownership with the actual submission token.
+         * @return True once physical ownership has transferred. Qualification
+         * failures remain encoded in the execution receipt and do not undo an
+         * already submitted swapchain image.
+         */
         [[nodiscard]] bool NotifySubmission(const GPUCompletionToken& completion);
+
+        /**
+         * @brief Whether the transferred frame also satisfied its required
+         * semantic execution contract.
+         *
+         * Ownership transfer and semantic qualification are intentionally
+         * separate. A submitted swapchain image must still reach Present even
+         * when a Required render feature fails its exact evidence contract.
+         */
+        [[nodiscard]] bool IsPendingSubmissionSemanticallyQualified()
+            const noexcept;
 
         /** @brief Arm one post-fence GPU-scene culling qualification capture per lane. */
         [[nodiscard]] bool ArmGPUSceneCullingQualificationCapture();
@@ -1094,6 +1133,9 @@ namespace RVX
 
         /** @brief Arm one exact-view Toon lighting/outline qualification probe. */
         [[nodiscard]] bool ArmToonOutlineQualificationProbe();
+
+        /** @brief Arm one exact-view Hi-Z reflection route-mask probe. */
+        [[nodiscard]] bool ArmHiZReflectionQualificationProbe();
 
         /** @brief Poll accepted qualification fences without requiring a new frame. */
         void PollGPUSceneCullingQualificationCompletion(
@@ -1115,11 +1157,15 @@ namespace RVX
         [[nodiscard]] bool HasPendingToonOutlineQualificationCompletion()
             const noexcept;
 
+        [[nodiscard]] bool HasPendingHiZReflectionQualificationCompletion()
+            const noexcept;
+
         /** @brief Release current recording ownership when no GPU work was submitted. */
         void ReleaseUnsubmittedFrame();
 
         /** @brief Commit temporal history only after successful presentation. */
-        void MarkAcceptedFramePresented();
+        void MarkAcceptedFramePresented(
+            bool externalQualificationAccepted = true);
 
         /** @brief Sequence of the packet most recently presented. */
         uint64 GetLastPresentedFrameSequence() const
@@ -1496,6 +1542,18 @@ namespace RVX
 
         /// Get runtime ray-tracing scene acceleration-structure statistics.
         const RayTracingSceneManagerStats& GetRayTracingSceneStats() const;
+        const HybridRayTracingFramePlan* GetHybridRayTracingFramePlan() const
+            noexcept
+        {
+            return m_hybridRayTracingFramePlan.has_value()
+                ? &*m_hybridRayTracingFramePlan : nullptr;
+        }
+        const HybridRayTracingExecutionReceipt*
+        GetHybridRayTracingExecutionReceipt() const noexcept
+        {
+            return m_hybridRayTracingExecutionReceipt.has_value()
+                ? &*m_hybridRayTracingExecutionReceipt : nullptr;
+        }
 
         /// Get runtime camera velocity pass statistics.
         const CameraVelocityPassStats& GetCameraVelocityStats() const;
@@ -1617,7 +1675,7 @@ namespace RVX
         void SynchronizeGPUSceneUploader() noexcept;
         void ReclaimGPUSceneRetiredRows() noexcept;
         void PrepareRayTracingScene();
-        void AddRayTracingSceneBuildPass();
+        [[nodiscard]] RayTracingSceneRecordInput AddRayTracingSceneBuildPass();
         void AddGPUDrivenCullingPass(
             const RenderPassRecordIdentity& recordIdentity);
         void CommitGPUDrivenAccessSnapshots();
@@ -1640,6 +1698,12 @@ namespace RVX
         void PreparePassesForFrame();
         /** Build and seal the single lighting selection consumed by all paths. */
         [[nodiscard]] bool PrepareLightingFramePlan(
+            std::string& outDiagnostic);
+        /** Build the plan-bound SSR -> probe -> IBL selection for this view. */
+        [[nodiscard]] bool PrepareReflectionFramePlan(
+            std::string& outDiagnostic);
+        /** Build the generation-qualified point/spot atlas allocation and page plan. */
+        [[nodiscard]] bool PrepareLocalShadowPlans(
             std::string& outDiagnostic);
         void ApplyRayTracingBudget(ShadowPassConfig& shadowConfig,
                                    RayTracedReflectionPassConfig& reflectionConfig,
@@ -1691,6 +1755,14 @@ namespace RVX
             RenderFrameApplyResult& result) noexcept;
         /** @brief Drop a candidate that did not reach successful presentation. */
         void AbandonAcceptedFrameHistory() noexcept;
+        /**
+         * @brief Invalidate the independently published SSR route-mask result.
+         *
+         * A newly armed probe must not leave an older completion visible while
+         * its exact source frame is still pending. This deliberately does not
+         * affect the ordinary latest-presented reflection diagnostics.
+         */
+        void ClearHiZReflectionQualificationCompletion() noexcept;
         SceneRenderFeatureReport BuildRenderFeatureReport(const SceneRendererFrameDiagnostics& diagnostics) const;
 
         struct PreGraphPrepareCallbackEntry
@@ -1717,6 +1789,9 @@ namespace RVX
         LegacyForwardFeatureAdapter* m_legacyForwardFeature = nullptr;
         AmbientOcclusionFeatureAdapter* m_ambientOcclusionFeature = nullptr;
         ForwardLightingFeatureAdapter* m_forwardLightingFeature = nullptr;
+        ReflectionFeatureAdapter* m_reflectionFeature = nullptr;
+        ForwardSpecialFeatureAdapter* m_forwardSpecialFeature = nullptr;
+        TranslucencyFeatureAdapter* m_translucencyFeature = nullptr;
         PostProcessPipelineFeatureAdapter* m_postProcessFeature = nullptr;
         DeferredGeometryFeatureAdapter* m_deferredGeometryFeature = nullptr;
         DeferredLightingFeatureAdapter* m_deferredLightingFeature = nullptr;
@@ -1812,6 +1887,19 @@ namespace RVX
         /** Immutable per-frame/per-view lighting truth shared by every pass. */
         std::shared_ptr<const LightingFramePlan> m_lightingFramePlan;
         std::string m_lightingFramePlanFailureReason;
+        /** Immutable local-light atlas allocation and per-page view contract. */
+        std::shared_ptr<const LocalShadowFramePlan> m_localShadowFramePlan;
+        std::shared_ptr<const LocalShadowAtlasPlan> m_localShadowAtlasPlan;
+        std::shared_ptr<LocalShadowPass> m_activeLocalShadowPass;
+        std::string m_localShadowPlanFailureReason;
+        uint64 m_localShadowAtlasGeneration = 1;
+        uint64 m_localShadowAtlasConfigurationHash = 0;
+        /** Immutable per-frame/per-view reflection source and fallback truth. */
+        std::shared_ptr<const ReflectionFramePlan> m_reflectionFramePlan;
+        std::string m_reflectionFramePlanFailureReason;
+        /** Accepted database snapshots retained independently from RenderScene. */
+        std::vector<RenderProbeSnapshot> m_reflectionProbeSnapshots;
+        uint64 m_reflectionProbeStateHash = 1;
         RenderScene m_renderScene;
         /**
          * @brief Presentation-qualified compatibility state for the current
@@ -1855,6 +1943,44 @@ namespace RVX
         bool m_toonOutlineProbeSubmissionAccepted = false;
         bool m_toonOutlineProbePresented = false;
         bool m_toonOutlineProbeAbandoned = false;
+        /** Source evidence remains immutable until the SSR route-mask maps. */
+        std::optional<RenderExecutionReceipt>
+            m_reflectionProbeSourceExecutionReceipt;
+        std::optional<RenderReflectionDiagnostics>
+            m_reflectionProbeSourceDiagnostics;
+        /**
+         * @brief Generation and exact plan/view identity owned by the active
+         * SSR route-mask probe. The SSR primitive owns the GPU readback; this
+         * record prevents a late result from another arm from being published
+         * against the current source pair.
+         */
+        struct HiZReflectionProbeBinding
+        {
+            uint64 generation = 0;
+            RenderFrameIdentity frameIdentity{};
+            RenderViewIdentity viewIdentity{};
+            uint64 reflectionPlanIdentity = 0;
+            uint64 lightingPlanIdentity = 0;
+            uint64 depthPyramidIdentity = 0;
+            uint64 reflectionSurfaceIdentity = 0;
+            uint64 exposureStateContentHash = 0;
+
+            [[nodiscard]] bool IsBound() const noexcept
+            {
+                return generation != 0 && frameIdentity.IsValid() &&
+                       viewIdentity.IsValid() &&
+                       reflectionPlanIdentity != 0 &&
+                       lightingPlanIdentity != 0 &&
+                       depthPyramidIdentity != 0 &&
+                       reflectionSurfaceIdentity != 0 &&
+                       exposureStateContentHash != 0;
+            }
+        };
+        uint64 m_nextHiZReflectionProbeGeneration = 0;
+        HiZReflectionProbeBinding m_hiZReflectionProbeBinding{};
+        bool m_reflectionProbeSubmissionAccepted = false;
+        bool m_reflectionProbePresented = false;
+        bool m_reflectionProbeAbandoned = false;
         /** @brief One immutable feature snapshot shared by every view in the frame. */
         std::shared_ptr<const RenderFeatureSnapshot> m_featureSnapshot =
             std::make_shared<const RenderFeatureSnapshot>();
@@ -1872,6 +1998,15 @@ namespace RVX
         RenderExecutionReceipt m_lastAttemptedRenderExecutionReceipt{};
         RenderExecutionReceipt m_completedRenderExecutionReceipt{};
         std::optional<RenderExecutionReceipt> m_pendingRenderExecutionReceipt{};
+        /** Finalized SSR data waits here until the matching frame presents. */
+        std::optional<RenderReflectionDiagnostics>
+            m_pendingReflectionDiagnostics{};
+        /** Never overwritten by a later unpresented reflection recording. */
+        RenderReflectionDiagnostics m_completedReflectionDiagnostics{};
+        /** Immutable source-frame pair written only after route-mask completion. */
+        RenderExecutionReceipt m_completedHiZReflectionQualificationReceipt{};
+        RenderReflectionDiagnostics
+            m_completedHiZReflectionQualificationDiagnostics{};
         std::string m_featureCompositionFailureReason{};
         RenderMutationEvidenceDiagnostics m_liveMutationEvidence{};
         RenderMutationEvidenceDiagnostics m_lastObservedMutationEvidence{};
@@ -1914,6 +2049,13 @@ namespace RVX
         SceneGPUDrivenCullingStats m_gpuDrivenCullingStats;
         RenderInstancingDiagnostics m_instancingDiagnostics;
         RayTracingSceneManagerStats m_rayTracingSceneStats;
+        RayTracingSceneRecordingToken m_rayTracingSceneRecordingToken{};
+        std::optional<HybridRayTracingFramePlan>
+            m_hybridRayTracingFramePlan;
+        HybridRayTracingExecutionObservation
+            m_pendingHybridRayTracingObservation{};
+        std::optional<HybridRayTracingExecutionReceipt>
+            m_hybridRayTracingExecutionReceipt;
         SceneRayTracingBudgetSettings m_rayTracingBudgetSettings;
         SceneRayTracingFrameStats m_rayTracingFrameBudgetStats;
         float m_rayTracingGpuBudgetQualityScale = 1.0f;

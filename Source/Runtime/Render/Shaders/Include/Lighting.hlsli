@@ -29,6 +29,13 @@ struct PointLight
     float range;
     float3 color;
     float intensity;
+    int shadowMapIndex;
+    // Keep the 48-byte CPU ABI while avoiding a vec3 at byte offset 36.
+    // That offset is legal in HLSL structured buffers but cannot be emitted
+    // as std430/std140 by SPIRV-Cross for the OpenGL compatibility path.
+    float padding0;
+    float padding1;
+    float padding2;
 };
 
 struct SpotLight
@@ -109,7 +116,8 @@ float3 EvaluatePointLight(
     float3 worldPos,
     float3 albedo,
     float metallic,
-    float roughness)
+    float roughness,
+    float shadow)
 {
     float3 lightVec = light.position - worldPos;
     float distance = length(lightVec);
@@ -119,10 +127,26 @@ float3 EvaluatePointLight(
         return float3(0.0, 0.0, 0.0);
     
     float3 L = lightVec / distance;
-    float attenuation = AttenuatePoint(distance, light.range);
+    float attenuation = AttenuatePoint(distance, light.range) * saturate(shadow);
     float3 lightColor = light.color * light.intensity;
     
     return EvaluatePBR(N, V, L, albedo, metallic, roughness, lightColor, attenuation);
+}
+
+// Compatibility overload for shader families that deliberately do not bind a
+// local-shadow atlas.  Renderer paths that can receive local shadows must
+// call the explicit visibility overload above.
+float3 EvaluatePointLight(
+    PointLight light,
+    float3 N,
+    float3 V,
+    float3 worldPos,
+    float3 albedo,
+    float metallic,
+    float roughness)
+{
+    return EvaluatePointLight(
+        light, N, V, worldPos, albedo, metallic, roughness, 1.0);
 }
 
 // =============================================================================

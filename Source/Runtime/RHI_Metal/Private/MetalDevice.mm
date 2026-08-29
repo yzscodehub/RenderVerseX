@@ -11,6 +11,47 @@
 
 namespace RVX
 {
+    namespace
+    {
+        [[nodiscard]] bool IsConservativeMetalColorAttachmentFormat(
+            RHIFormat format) noexcept
+        {
+            return ToMTLPixelFormat(format) != MTLPixelFormatInvalid &&
+                   !IsDepthFormat(format) && !IsCompressedFormat(format) &&
+                   format != RHIFormat::RGB32_FLOAT &&
+                   format != RHIFormat::RGB32_UINT &&
+                   format != RHIFormat::RGB32_SINT;
+        }
+
+        [[nodiscard]] bool IsConservativeMetalBlendableFormat(
+            RHIFormat format) noexcept
+        {
+            switch (format)
+            {
+                case RHIFormat::R8_UNORM:
+                case RHIFormat::R8_SNORM:
+                case RHIFormat::R16_FLOAT:
+                case RHIFormat::R16_UNORM:
+                case RHIFormat::RG8_UNORM:
+                case RHIFormat::RG8_SNORM:
+                case RHIFormat::RG16_FLOAT:
+                case RHIFormat::RG16_UNORM:
+                case RHIFormat::RGBA8_UNORM:
+                case RHIFormat::RGBA8_UNORM_SRGB:
+                case RHIFormat::RGBA8_SNORM:
+                case RHIFormat::BGRA8_UNORM:
+                case RHIFormat::BGRA8_UNORM_SRGB:
+                case RHIFormat::RGB10A2_UNORM:
+                case RHIFormat::RG11B10_FLOAT:
+                case RHIFormat::RGBA16_FLOAT:
+                case RHIFormat::RGBA16_UNORM:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+    } // namespace
+
     // =============================================================================
     // Factory Function
     // =============================================================================
@@ -86,6 +127,20 @@ namespace RVX
         m_capabilities.maxTextureSizeCube = 16384;
         m_capabilities.maxTextureArrayLayers = 2048;
         m_capabilities.maxColorAttachments = 8;
+        m_capabilities.supportsIndependentColorAttachmentBlend = true;
+        for (uint32 value = 1;
+             value < static_cast<uint32>(RHIFormat::Count);
+             ++value)
+        {
+            const RHIFormat format = static_cast<RHIFormat>(value);
+            RHIFormatCapabilities& published =
+                m_capabilities.formatCapabilities[value];
+            published.colorAttachment =
+                IsConservativeMetalColorAttachmentFormat(format);
+            published.colorAttachmentBlend =
+                published.colorAttachment &&
+                IsConservativeMetalBlendableFormat(format);
+        }
 
         // Compute limits
         m_capabilities.maxComputeWorkGroupSize[0] = 1024;
@@ -422,7 +477,23 @@ namespace RVX
                 FormatRHIPipelineValidationResult(validation));
             return nullptr;
         }
-        return MakeRef<MetalGraphicsPipeline>(m_device, desc);
+        const RHIPipelineValidationResult capabilityValidation =
+            ValidateRHIGraphicsPipelineCapabilities(desc, m_capabilities);
+        if (!capabilityValidation)
+        {
+            RVX_RHI_ERROR(
+                "Metal graphics pipeline capability preflight failed: {}",
+                FormatRHIPipelineValidationResult(capabilityValidation));
+            return nullptr;
+        }
+        auto pipeline = MakeRef<MetalGraphicsPipeline>(m_device, desc);
+        if (!pipeline->IsValid())
+        {
+            RVX_RHI_ERROR(
+                "Metal graphics pipeline creation failed because the native pipeline state is unavailable");
+            return nullptr;
+        }
+        return pipeline;
     }
 
     RHIPipelineRef MetalDevice::CreateComputePipeline(const RHIComputePipelineDesc& desc)

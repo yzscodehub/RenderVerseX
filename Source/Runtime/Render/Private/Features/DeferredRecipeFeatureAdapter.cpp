@@ -9,6 +9,11 @@
 #include "Render/Passes/DeferredLightingPass.h"
 #include "Render/Passes/OpaquePass.h"
 #include "Render/Passes/ParticleFeaturePass.h"
+#include "Render/Passes/RayTracedReflectionCompositePass.h"
+#include "Render/Passes/RayTracedReflectionDenoisePass.h"
+#include "Render/Passes/RayTracedReflectionPass.h"
+#include "Render/Passes/RayTracedShadowPass.h"
+#include "Render/Passes/ShadowPass.h"
 #include "Render/Passes/WaterFeaturePass.h"
 #include "Render/PipelineCache.h"
 #include "Renderer/RenderPassRegistry.h"
@@ -21,6 +26,31 @@ namespace RVX
 {
 namespace
 {
+    [[nodiscard]] bool IsHybridRayTracingReflectionPass(
+        const IRenderPass& pass) noexcept
+    {
+        return dynamic_cast<const RayTracedReflectionPass*>(&pass) != nullptr ||
+               dynamic_cast<const RayTracedReflectionDenoisePass*>(&pass) !=
+                   nullptr ||
+               dynamic_cast<const RayTracedReflectionCompositePass*>(&pass) !=
+                   nullptr;
+    }
+
+    [[nodiscard]] bool IsSelectedDirectionalShadowPass(
+        const IRenderPass& pass,
+        RenderPipelineRecipe resolvedRecipe) noexcept
+    {
+        if (dynamic_cast<const RayTracedShadowPass*>(&pass) != nullptr)
+        {
+            return resolvedRecipe == RenderPipelineRecipe::HybridRayTracing;
+        }
+        if (dynamic_cast<const ShadowPass*>(&pass) != nullptr)
+        {
+            return resolvedRecipe != RenderPipelineRecipe::HybridRayTracing;
+        }
+        return true;
+    }
+
     struct OpaqueSceneSnapshotCopyData
     {
         RGTextureHandle source{};
@@ -51,6 +81,12 @@ namespace
             {
                 data.source = graphBuilder.Read(source, RHIResourceState::CopySource);
                 data.destination = graphBuilder.Write(destination, RHIResourceState::CopyDest);
+                // This snapshot is published through the typed blackboard.
+                // Blackboard handles do not create RenderGraph dependencies,
+                // so preserve the copy as the producer of the shader-readable
+                // frame contract even when no later special surface samples it.
+                graphBuilder.SetExportState(
+                    data.destination, RHIResourceState::ShaderResource);
                 data.receipt = receipt;
             },
             [](const OpaqueSceneSnapshotCopyData& data,
@@ -345,11 +381,11 @@ namespace
         return (capabilities & ToMask(RenderFeatureCapability::Graphics)) != 0;
     }
 
-    [[nodiscard]] bool IsDeferredQuality(
+    [[nodiscard]] bool UsesDeferredOpaqueComposition(
         const RenderFeatureContext& context) noexcept
     {
-        return context.pipeline.recipe == RenderPipelineRecipe::DeferredQuality &&
-               context.resolvedRecipe == RenderPipelineRecipe::DeferredQuality;
+        return context.pipeline.recipe == context.resolvedRecipe &&
+               UsesDeferredOpaquePath(context.resolvedRecipe);
     }
 
     [[nodiscard]] bool IsNativeDeferredBackend(RHIBackendType backend) noexcept
@@ -392,6 +428,72 @@ namespace
             view.exposureStateStride,
             view.exposureStateMode,
             view.exposureStateConfigurationHash};
+    }
+
+    [[nodiscard]] bool BuildLocalShadowOutputs(
+        const RenderPassRecordContext& context,
+        RenderGraphBlackboardProvenance provenance,
+        LocalShadowOutputs& outOutputs,
+        std::string& outDiagnostic)
+    {
+        outOutputs = {};
+        outDiagnostic.clear();
+        if (context.results == nullptr || context.lightingPlan == nullptr ||
+            context.localShadowAtlasPlan == nullptr)
+        {
+            outDiagnostic =
+                "Local-shadow publication requires plan-owned graph results";
+            return false;
+        }
+
+        const LocalShadowAtlasPlan& atlasPlan =
+            *context.localShadowAtlasPlan;
+        const uint64 lightingPlanIdentity =
+            context.lightingPlan->GetIdentityHash();
+        const LocalShadowRecordOutput& recorded =
+            context.results->localShadowOutput;
+        const bool requested = !atlasPlan.GetPages().empty();
+        if (!atlasPlan.IsValid() ||
+            atlasPlan.GetFrameIdentity() != context.featureFrameIdentity ||
+            atlasPlan.GetViewIdentity() != context.featureViewIdentity ||
+            atlasPlan.GetLightingPlanIdentity() != lightingPlanIdentity ||
+            !recorded.IsCompatibleWith(
+                context.identity, context.featureFrameIdentity,
+                context.featureViewIdentity, lightingPlanIdentity) ||
+            recorded.enabled != requested)
+        {
+            outDiagnostic =
+                "Local-shadow graph output is stale, incomplete, or plan-mismatched";
+            return false;
+        }
+        if (requested && !recorded.MatchesAtlasPlan(atlasPlan))
+        {
+            outDiagnostic =
+                "Local-shadow graph output does not match the sealed atlas pages";
+            return false;
+        }
+
+        outOutputs.provenance = provenance;
+        outOutputs.frameIdentity = atlasPlan.GetFrameIdentity();
+        outOutputs.viewIdentity = atlasPlan.GetViewIdentity();
+        outOutputs.lightingPlanIdentity = lightingPlanIdentity;
+        outOutputs.localShadowPlanIdentity =
+            atlasPlan.GetLocalShadowPlanIdentity();
+        outOutputs.atlasPlanIdentity = atlasPlan.GetIdentityHash();
+        outOutputs.atlasGeneration = atlasPlan.GetAtlasGeneration();
+        outOutputs.requested = requested;
+        if (requested)
+        {
+            outOutputs.depthAtlas = recorded.depthAtlas;
+            outOutputs.pageCount = recorded.pageCount;
+            outOutputs.pageResolution = recorded.pageResolution;
+        }
+        if (!outOutputs.IsValid())
+        {
+            outDiagnostic = "LocalShadowOutputs v1 validation failed";
+            return false;
+        }
+        return true;
     }
 
     [[nodiscard]] bool HasDeferredOpaqueRouteInputs(
@@ -652,11 +754,15 @@ RenderFeatureDescriptor DeferredGeometryFeatureAdapter::Describe() const
     descriptor.name = "DeferredGeometry";
     descriptor.phase = RenderFeaturePhase::Geometry;
     descriptor.producedResources = {
-        {RenderBlackboardResourceId::SceneTextures, SceneTextures::SchemaVersion}};
+        {RenderBlackboardResourceId::SceneTextures, SceneTextures::SchemaVersion},
+        {RenderBlackboardResourceId::LocalShadowOutputs,
+         LocalShadowOutputs::SchemaVersion}};
     descriptor.requiredCapabilities =
         ToMask(RenderFeatureCapability::Graphics) |
         ToMask(RenderFeatureCapability::MultipleRenderTargets);
-    descriptor.requiredRecipes = ToMask(RenderPipelineRecipe::DeferredQuality);
+    descriptor.requiredRecipes =
+        ToMask(RenderPipelineRecipe::DeferredQuality) |
+        ToMask(RenderPipelineRecipe::HybridRayTracing);
     descriptor.qualityTiers = RVX_ALL_RENDER_QUALITY_TIERS;
     descriptor.fallbackPolicy = RenderFeatureFallbackPolicy::None;
     descriptor.shaderPipelineFamily = "DeferredGBuffer";
@@ -670,7 +776,7 @@ void DeferredGeometryFeatureAdapter::Prepare(const RenderFeatureContext& context
     m_readiness.compiled = true;
     m_readiness.hardwareSupported = HasGraphicsCapability(
         context.hardwareCapabilities) && IsNativeDeferredBackend(context.backend);
-    m_readiness.implementationSupported = IsDeferredQuality(context);
+    m_readiness.implementationSupported = UsesDeferredOpaqueComposition(context);
     OpaqueRasterPipelinePreflightResult opaquePipelinePreflight;
     if (m_readiness.hardwareSupported &&
         m_readiness.implementationSupported && m_opaquePass != nullptr &&
@@ -699,7 +805,7 @@ void DeferredGeometryFeatureAdapter::Prepare(const RenderFeatureContext& context
     else if (!m_readiness.implementationSupported)
     {
         m_readiness.diagnostic =
-            "Deferred geometry only implements DeferredQuality";
+            "Deferred geometry requires a deferred-opaque recipe";
     }
     else if (m_opaquePass == nullptr || m_passRegistry == nullptr ||
              m_pipelineCache == nullptr)
@@ -762,9 +868,11 @@ void DeferredGeometryFeatureAdapter::AddPasses(
             m_recordContext,
             *m_passRegistry,
             m_opaquePass,
-            [](const IRenderPass& pass)
+            [resolvedRecipe = m_preparedContext.resolvedRecipe](
+                const IRenderPass& pass)
             {
-                return pass.GetPriority() < PassPriority::Opaque;
+                return pass.GetPriority() < PassPriority::Opaque &&
+                       IsSelectedDirectionalShadowPass(pass, resolvedRecipe);
             },
             m_lastPassChainStats,
             failure))
@@ -877,6 +985,25 @@ void DeferredGeometryFeatureAdapter::AddPasses(
         return;
     }
 
+    LocalShadowOutputs localShadows;
+    std::string localShadowFailure;
+    if (!BuildLocalShadowOutputs(
+            m_recordContext, builder.GetProvenance(), localShadows,
+            localShadowFailure))
+    {
+        SetCompositionFailure(std::move(localShadowFailure));
+        return;
+    }
+    if (blackboard.Publish(
+            BuiltinRenderFeatureIds::DeferredGeometry,
+            Describe(), std::move(localShadows)) !=
+        RenderGraphBlackboardCode::Success)
+    {
+        SetCompositionFailure(
+            "Deferred geometry could not publish LocalShadowOutputs v1");
+        return;
+    }
+
     if (blackboard.Publish(BuiltinRenderFeatureIds::DeferredGeometry,
                            Describe(), std::move(textures)) !=
         RenderGraphBlackboardCode::Success)
@@ -979,7 +1106,9 @@ RenderFeatureDescriptor DeferredLightingFeatureAdapter::Describe() const
         {RenderBlackboardResourceId::SceneTextures,
          SceneTextures::SchemaVersion},
         {RenderBlackboardResourceId::AmbientOcclusionOutputs,
-         AmbientOcclusionOutputs::SchemaVersion}};
+         AmbientOcclusionOutputs::SchemaVersion},
+        {RenderBlackboardResourceId::LocalShadowOutputs,
+         LocalShadowOutputs::SchemaVersion}};
     descriptor.producedResources = {
         {RenderBlackboardResourceId::LightingOutputs,
          LightingOutputs::SchemaVersion}};
@@ -988,7 +1117,9 @@ RenderFeatureDescriptor DeferredLightingFeatureAdapter::Describe() const
         ToMask(RenderFeatureCapability::Compute) |
         ToMask(RenderFeatureCapability::DescriptorBindings) |
         ToMask(RenderFeatureCapability::StorageTexture);
-    descriptor.requiredRecipes = ToMask(RenderPipelineRecipe::DeferredQuality);
+    descriptor.requiredRecipes =
+        ToMask(RenderPipelineRecipe::DeferredQuality) |
+        ToMask(RenderPipelineRecipe::HybridRayTracing);
     descriptor.qualityTiers = RVX_ALL_RENDER_QUALITY_TIERS;
     descriptor.fallbackPolicy = RenderFeatureFallbackPolicy::None;
     descriptor.shaderPipelineFamily = "DeferredLighting";
@@ -1002,7 +1133,7 @@ void DeferredLightingFeatureAdapter::Prepare(const RenderFeatureContext& context
     m_readiness.compiled = true;
     m_readiness.hardwareSupported = HasGraphicsCapability(
         context.hardwareCapabilities) && IsNativeDeferredBackend(context.backend);
-    m_readiness.implementationSupported = IsDeferredQuality(context);
+    m_readiness.implementationSupported = UsesDeferredOpaqueComposition(context);
     const bool hasValidLightingPlan = HasValidLightingPlan(context);
     const bool createdPipeline = hasValidLightingPlan && m_lightingPass != nullptr &&
         m_lightingPass->EnsurePipelineReady();
@@ -1019,7 +1150,7 @@ void DeferredLightingFeatureAdapter::Prepare(const RenderFeatureContext& context
     else if (!m_readiness.implementationSupported)
     {
         m_readiness.diagnostic =
-            "Deferred lighting only implements DeferredQuality";
+            "Deferred lighting requires a deferred-opaque recipe";
     }
     else if (!hasValidLightingPlan)
     {
@@ -1099,6 +1230,39 @@ void DeferredLightingFeatureAdapter::AddPasses(
     {
         SetCompositionFailure(
             "Deferred lighting requires the exact typed ambient-occlusion output");
+        return;
+    }
+    const LocalShadowOutputs* const localShadows =
+        blackboard.Require<LocalShadowOutputs>(
+            BuiltinRenderFeatureIds::DeferredLighting, Describe(), &code);
+    const LocalShadowAtlasPlan* const localShadowAtlasPlan =
+        m_recordContext.localShadowAtlasPlan.get();
+    if (localShadows == nullptr ||
+        code != RenderGraphBlackboardCode::Success ||
+        localShadowAtlasPlan == nullptr || !localShadows->IsValid() ||
+        localShadows->frameIdentity != m_preparedContext.frameIdentity ||
+        localShadows->viewIdentity != m_preparedContext.viewIdentity ||
+        localShadows->lightingPlanIdentity !=
+            m_recordContext.lightingPlan->GetIdentityHash() ||
+        localShadows->localShadowPlanIdentity !=
+            localShadowAtlasPlan->GetLocalShadowPlanIdentity() ||
+        localShadows->atlasPlanIdentity !=
+            localShadowAtlasPlan->GetIdentityHash() ||
+        localShadows->atlasGeneration !=
+            localShadowAtlasPlan->GetAtlasGeneration() ||
+        localShadows->requested !=
+            !localShadowAtlasPlan->GetPages().empty() ||
+        (localShadows->requested &&
+         (localShadows->pageCount !=
+              localShadowAtlasPlan->GetPages().size() ||
+          localShadows->pageResolution !=
+              localShadowAtlasPlan->GetTextureContract().pageResolution ||
+          localShadowAtlasPlan->GetTextureContract().pageCapacity == 0 ||
+          localShadows->pageCount >
+              localShadowAtlasPlan->GetTextureContract().pageCapacity)))
+    {
+        SetCompositionFailure(
+            "Deferred lighting requires the exact typed local-shadow output");
         return;
     }
     if (!builder.IsValid() || !m_recordContext.MatchesTargetGraph(builder.GetGraph()))
@@ -1193,6 +1357,29 @@ void DeferredLightingFeatureAdapter::AddPasses(
     inputs.gBuffer3 = sceneTextures->gBuffer3;
     inputs.deviceDepth = sceneTextures->deviceDepth;
     inputs.hdrSceneColor = sceneTextures->hdrSceneColor;
+    RHITextureDesc baseIndirectSpecularDesc = RHITextureDesc::RenderTarget(
+        m_preparedContext.outputExtent.width,
+        m_preparedContext.outputExtent.height,
+        SceneTextures::BaseIndirectSpecularContract.format);
+    baseIndirectSpecularDesc.sampleCount =
+        SceneTextures::BaseIndirectSpecularContract.sampleCount;
+    baseIndirectSpecularDesc.usage =
+        baseIndirectSpecularDesc.usage | RHITextureUsage::UnorderedAccess;
+    baseIndirectSpecularDesc.debugName =
+        "DeferredBaseIndirectSpecular";
+    inputs.baseIndirectSpecular = builder.CreateTexture(
+        baseIndirectSpecularDesc);
+
+    RHITextureDesc specularResponseDesc = RHITextureDesc::RenderTarget(
+        m_preparedContext.outputExtent.width,
+        m_preparedContext.outputExtent.height,
+        SceneTextures::SpecularResponseContract.format);
+    specularResponseDesc.sampleCount =
+        SceneTextures::SpecularResponseContract.sampleCount;
+    specularResponseDesc.usage =
+        specularResponseDesc.usage | RHITextureUsage::UnorderedAccess;
+    specularResponseDesc.debugName = "DeferredSpecularResponse";
+    inputs.specularResponse = builder.CreateTexture(specularResponseDesc);
     inputs.materialTable = sceneTextures->materialTable;
     inputs.materialTableMetadata = sceneTextures->materialTableMetadata;
     inputs.exposureState = sceneTextures->exposureState;
@@ -1224,6 +1411,22 @@ void DeferredLightingFeatureAdapter::AddPasses(
     {
         inputs.lighting.directionalShadowMap = directionalShadow.shadowMap;
     }
+    inputs.lighting.localShadowEnabled = localShadows->requested;
+    if (localShadows->requested)
+    {
+        inputs.lighting.localShadowAtlas = localShadows->depthAtlas;
+        inputs.lighting.localShadowPlanIdentity =
+            localShadows->localShadowPlanIdentity;
+        inputs.lighting.localShadowAtlasPlanIdentity =
+            localShadows->atlasPlanIdentity;
+        inputs.lighting.localShadowAtlasGeneration =
+            localShadows->atlasGeneration;
+        inputs.lighting.localShadowPageCount = localShadows->pageCount;
+        inputs.lighting.localShadowPageResolution =
+            localShadows->pageResolution;
+        inputs.lighting.localShadowPageCapacity =
+            localShadowAtlasPlan->GetTextureContract().pageCapacity;
+    }
     inputs.lighting.textureIBLEnabled = lightingResources->textureIBLEnabled;
     inputs.lighting.recordResults = m_recordContext.results;
     if (lightingResources->textureIBLEnabled)
@@ -1249,11 +1452,44 @@ void DeferredLightingFeatureAdapter::AddPasses(
 
     LightingOutputs lighting;
     lighting.provenance = builder.GetProvenance();
+    lighting.frameIdentity = m_preparedContext.frameIdentity;
+    lighting.viewIdentity = m_preparedContext.viewIdentity;
     lighting.lightingPlanIdentity =
         m_recordContext.lightingPlan->GetIdentityHash();
     lighting.hdrSceneColor = sceneTextures->hdrSceneColor;
+    lighting.hdrSceneColorMetadata = sceneTextures->hdrSceneColorMetadata;
     lighting.clusteredLights = inputs.lighting.clusterData;
+    lighting.baseIndirectSpecular = inputs.baseIndirectSpecular;
+    lighting.baseIndirectSpecularMetadata = MakeMetadata(
+        m_preparedContext.outputExtent,
+        SceneTextures::BaseIndirectSpecularContract);
+    lighting.specularResponse = inputs.specularResponse;
+    lighting.specularResponseMetadata = MakeMetadata(
+        m_preparedContext.outputExtent,
+        SceneTextures::SpecularResponseContract);
+    lighting.exposureState = sceneTextures->exposureState;
+    lighting.exposureStateMetadata = sceneTextures->exposureStateMetadata;
+    lighting.exposureStateContentHash =
+        m_recordContext.view.exposureStateContentHash;
+    lighting.worldNormal = sceneTextures->gBuffer1;
+    lighting.worldNormalMetadata = sceneTextures->gBuffer1Metadata;
+    lighting.materialIdentity = sceneTextures->gBuffer3;
+    lighting.materialIdentityMetadata = sceneTextures->gBuffer3Metadata;
+    lighting.materialParameterTable = sceneTextures->materialTable;
+    lighting.materialParameterTableMetadata =
+        sceneTextures->materialTableMetadata;
     if (!lighting.clusteredLights.IsValid() ||
+        !lighting.baseIndirectSpecular.IsValid() ||
+        !lighting.specularResponse.IsValid() ||
+        !lighting.exposureState.IsValid() ||
+        !lighting.exposureStateMetadata.IsValid() ||
+        lighting.exposureStateContentHash == 0 ||
+        !HasCurrentGraphProvenance(
+            lighting.baseIndirectSpecular, m_recordContext.identity) ||
+        !HasCurrentGraphProvenance(
+            lighting.specularResponse, m_recordContext.identity) ||
+        !HasCurrentGraphProvenance(
+            lighting.exposureState, m_recordContext.identity) ||
         !HasCurrentGraphProvenance(
             lighting.clusteredLights, m_recordContext.identity))
     {
@@ -1357,13 +1593,17 @@ RenderFeatureDescriptor DeferredForwardSpecialFeatureAdapter::Describe() const
     descriptor.consumedResources = {
         {RenderBlackboardResourceId::SceneTextures,
          SceneTextures::SchemaVersion},
-        {RenderBlackboardResourceId::LightingOutputs,
-         LightingOutputs::SchemaVersion}};
+        {RenderBlackboardResourceId::ReflectionOutputs,
+         ReflectionOutputs::SchemaVersion},
+        {RenderBlackboardResourceId::LocalShadowOutputs,
+         LocalShadowOutputs::SchemaVersion}};
     descriptor.producedResources = {
-        {RenderBlackboardResourceId::TranslucencyOutputs,
-         TranslucencyOutputs::SchemaVersion}};
+        {RenderBlackboardResourceId::PreTranslucencyOutputs,
+         PreTranslucencyOutputs::SchemaVersion}};
     descriptor.requiredCapabilities = ToMask(RenderFeatureCapability::Graphics);
-    descriptor.requiredRecipes = ToMask(RenderPipelineRecipe::DeferredQuality);
+    descriptor.requiredRecipes =
+        ToMask(RenderPipelineRecipe::DeferredQuality) |
+        ToMask(RenderPipelineRecipe::HybridRayTracing);
     descriptor.qualityTiers = RVX_ALL_RENDER_QUALITY_TIERS;
     descriptor.fallbackPolicy = RenderFeatureFallbackPolicy::None;
     descriptor.shaderPipelineFamily = "ForwardSpecialSurfaces";
@@ -1378,7 +1618,7 @@ void DeferredForwardSpecialFeatureAdapter::Prepare(
     m_readiness.compiled = true;
     m_readiness.hardwareSupported = HasGraphicsCapability(
         context.hardwareCapabilities) && IsNativeDeferredBackend(context.backend);
-    m_readiness.implementationSupported = IsDeferredQuality(context);
+    m_readiness.implementationSupported = UsesDeferredOpaqueComposition(context);
     const bool hasValidLightingPlan = HasValidLightingPlan(context);
     OpaqueRasterPipelinePreflightResult opaquePipelinePreflight;
     if (m_readiness.hardwareSupported &&
@@ -1405,7 +1645,7 @@ void DeferredForwardSpecialFeatureAdapter::Prepare(
     else if (!m_readiness.implementationSupported)
     {
         m_readiness.diagnostic =
-            "Deferred forward-special chain only implements DeferredQuality";
+            "Deferred forward-special chain requires a deferred-opaque recipe";
     }
     else if (!hasValidLightingPlan)
     {
@@ -1455,12 +1695,18 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
         return;
     }
     RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
-    const LightingOutputs* const lighting = blackboard.Require<LightingOutputs>(
-        BuiltinRenderFeatureIds::DeferredForwardSpecialChain, Describe(), &code);
-    if (lighting == nullptr || code != RenderGraphBlackboardCode::Success ||
-        !lighting->hdrSceneColor.IsValid())
+    const ReflectionOutputs* const reflection =
+        blackboard.Require<ReflectionOutputs>(
+            BuiltinRenderFeatureIds::DeferredForwardSpecialChain,
+            Describe(), &code);
+    if (reflection == nullptr ||
+        code != RenderGraphBlackboardCode::Success ||
+        !reflection->resolvedSceneColor.IsValid() ||
+        reflection->frameIdentity != m_preparedContext.frameIdentity ||
+        reflection->viewIdentity != m_preparedContext.viewIdentity)
     {
-        SetCompositionFailure("Deferred lighting output is unavailable");
+        SetCompositionFailure(
+            "Deferred reflection-resolved HDR output is unavailable");
         return;
     }
     code = RenderGraphBlackboardCode::Success;
@@ -1477,11 +1723,38 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
             "Deferred forward-special chain requires the exact typed GBuffer surface outputs");
         return;
     }
-    if (!lighting->IsCompatibleWithLightingPlan(
+    code = RenderGraphBlackboardCode::Success;
+    const LocalShadowOutputs* const localShadows =
+        blackboard.Require<LocalShadowOutputs>(
+            BuiltinRenderFeatureIds::DeferredForwardSpecialChain,
+            Describe(), &code);
+    const LocalShadowAtlasPlan* const localShadowAtlasPlan =
+        m_recordContext.localShadowAtlasPlan.get();
+    if (localShadows == nullptr ||
+        code != RenderGraphBlackboardCode::Success ||
+        localShadowAtlasPlan == nullptr || !localShadows->IsValid() ||
+        localShadows->frameIdentity != m_preparedContext.frameIdentity ||
+        localShadows->viewIdentity != m_preparedContext.viewIdentity ||
+        localShadows->lightingPlanIdentity !=
+            m_recordContext.lightingPlan->GetIdentityHash() ||
+        localShadows->localShadowPlanIdentity !=
+            localShadowAtlasPlan->GetLocalShadowPlanIdentity() ||
+        localShadows->atlasPlanIdentity !=
+            localShadowAtlasPlan->GetIdentityHash() ||
+        localShadows->atlasGeneration !=
+            localShadowAtlasPlan->GetAtlasGeneration() ||
+        localShadows->requested !=
+            !localShadowAtlasPlan->GetPages().empty())
+    {
+        SetCompositionFailure(
+            "Deferred forward-special chain requires the exact LocalShadowOutputs v1");
+        return;
+    }
+    if (!reflection->IsCompatibleWithLightingPlan(
             m_recordContext.lightingPlan->GetIdentityHash()))
     {
         SetCompositionFailure(
-            "Deferred lighting output LightingFramePlan identity mismatches the record context");
+            "Deferred ReflectionOutputs LightingFramePlan identity mismatches the record context");
         return;
     }
     if (!builder.IsValid() || !m_recordContext.MatchesTargetGraph(builder.GetGraph()))
@@ -1491,9 +1764,12 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
         return;
     }
 
+    RenderPassRecordContext reflectionResolvedContext = m_recordContext;
+    reflectionResolvedContext.view.colorTarget =
+        reflection->resolvedSceneColor;
     bool postLightingContextValid = false;
     const RenderPassRecordContext postLightingContext = MakeOpaqueRecordContext(
-        m_recordContext, postLightingContextValid);
+        reflectionResolvedContext, postLightingContextValid);
     if (!postLightingContextValid ||
         !builder.AddGraphCallback(
             "DeferredForwardSpecialOpaque",
@@ -1520,7 +1796,8 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
             {
                 return pass.GetPriority() > PassPriority::Opaque &&
                        pass.GetPriority() < PassPriority::Water &&
-                       !velocityPasses.Contains(&pass);
+                       !velocityPasses.Contains(&pass) &&
+                       !IsHybridRayTracingReflectionPass(pass);
             },
             m_lastPassChainStats,
             failure))
@@ -1567,18 +1844,6 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
         SetCompositionFailure(std::move(waterSurfaceFailure));
         return;
     }
-    std::string particleVfxFailure;
-    if (!BuildParticleVfxRecordInput(
-            builder,
-            translucencyContext,
-            *m_passRegistry,
-            m_preparedContext.outputExtent,
-            translucencyContext.particleVfx,
-            particleVfxFailure))
-    {
-        SetCompositionFailure(std::move(particleVfxFailure));
-        return;
-    }
     RGTextureHandle finalSceneColor = translucencyContext.view.colorTarget;
     if (!AddLegacyPassRange(
             builder,
@@ -1588,7 +1853,9 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
             [velocityPasses = m_velocityPasses](const IRenderPass& pass)
             {
                 return pass.GetPriority() >= PassPriority::Water &&
-                       !velocityPasses.Contains(&pass);
+                       pass.GetPriority() < PassPriority::Transparent &&
+                       !velocityPasses.Contains(&pass) &&
+                       !IsHybridRayTracingReflectionPass(pass);
             },
             m_lastPassChainStats,
             failure,
@@ -1605,10 +1872,12 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
         return;
     }
 
-    TranslucencyOutputs outputs;
+    PreTranslucencyOutputs outputs;
     outputs.provenance = builder.GetProvenance();
     outputs.frameIdentity = m_preparedContext.frameIdentity;
     outputs.viewIdentity = m_preparedContext.viewIdentity;
+    outputs.lightingPlanIdentity =
+        m_recordContext.lightingPlan->GetIdentityHash();
     outputs.hdrSceneColor = finalSceneColor;
     outputs.hdrSceneColorMetadata = MakeMetadata(
         m_preparedContext.outputExtent, SceneTextures::HDRSceneColorContract);
@@ -1628,17 +1897,10 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
     outputs.reactiveMask = m_recordContext.view.reactiveMaskTarget;
     outputs.reactiveMaskMetadata = MakeMetadata(
         m_preparedContext.outputExtent, SceneTextures::ReactiveMaskContract);
-    outputs.distortionVectors = translucencyContext.particleVfx.distortionVectors;
-    if (outputs.distortionVectors.IsValid())
-    {
-        outputs.distortionVectorsMetadata = MakeMetadata(
-            m_preparedContext.outputExtent,
-            SceneTextures::FormatContract{
-                RHIFormat::RG16_FLOAT, RHISampleCount::Count1});
-    }
     outputs.opaqueSceneSnapshot = opaqueSceneSnapshot;
     outputs.opaqueSceneSnapshotMetadata = MakeMetadata(
         m_preparedContext.outputExtent, SceneTextures::HDRSceneColorContract);
+    outputs.opaqueSceneSnapshotReceipt = opaqueSnapshotReceipt;
     outputs.exposureState = m_recordContext.view.exposureState;
     outputs.exposureStateMetadata = MakeExposureStateMetadata(
         m_recordContext.view);
@@ -1650,7 +1912,7 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
         RenderGraphBlackboardCode::Success)
     {
         SetCompositionFailure(
-            "DeferredQuality could not publish TranslucencyOutputs v5");
+            "DeferredQuality could not publish PreTranslucencyOutputs v1");
     }
 }
 

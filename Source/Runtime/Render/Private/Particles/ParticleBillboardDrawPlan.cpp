@@ -3,6 +3,7 @@
 #include "Core/MathTypes.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <limits>
 #include <set>
@@ -13,6 +14,62 @@ namespace RVX
 {
     namespace
     {
+        constexpr uint64 RVX_PARTICLE_PLAN_HASH_OFFSET =
+            14695981039346656037ULL;
+        constexpr uint64 RVX_PARTICLE_PLAN_HASH_PRIME =
+            1099511628211ULL;
+
+        void HashUnsigned(uint64& hash, uint64 value, uint32 byteCount) noexcept
+        {
+            for (uint32 byte = 0; byte < byteCount; ++byte)
+            {
+                hash ^= static_cast<uint8>(value & 0xffU);
+                hash *= RVX_PARTICLE_PLAN_HASH_PRIME;
+                value >>= 8U;
+            }
+        }
+
+        void HashFloat(uint64& hash, float32 value) noexcept
+        {
+            HashUnsigned(hash, std::bit_cast<uint32>(value), sizeof(uint32));
+        }
+
+        void HashDrawItem(uint64& hash,
+                          const ParticleBillboardDrawItem& item) noexcept
+        {
+            HashUnsigned(hash, item.particle.stableParticleId, sizeof(uint32));
+            HashFloat(hash, item.particle.position.x);
+            HashFloat(hash, item.particle.position.y);
+            HashFloat(hash, item.particle.position.z);
+            HashFloat(hash, item.particle.lifetime);
+            HashFloat(hash, item.particle.velocity.x);
+            HashFloat(hash, item.particle.velocity.y);
+            HashFloat(hash, item.particle.velocity.z);
+            HashFloat(hash, item.particle.age);
+            HashFloat(hash, item.particle.color.x);
+            HashFloat(hash, item.particle.color.y);
+            HashFloat(hash, item.particle.color.z);
+            HashFloat(hash, item.particle.color.w);
+            HashFloat(hash, item.particle.size.x);
+            HashFloat(hash, item.particle.size.y);
+            HashFloat(hash, item.particle.rotation);
+            HashUnsigned(hash, item.particle.flags, sizeof(uint32));
+            HashUnsigned(
+                hash, item.particle.flipbookFrameIndex, sizeof(uint32));
+            HashUnsigned(
+                hash, static_cast<uint8>(item.blendMode), sizeof(uint8));
+            HashUnsigned(
+                hash, item.effectDescriptorHash, sizeof(uint64));
+            HashUnsigned(hash, item.systemAssetId, sizeof(uint64));
+            HashUnsigned(hash, item.deterministicInstanceKey, sizeof(uint64));
+            HashUnsigned(hash, item.source.sceneRuntimeId, sizeof(uint64));
+            HashUnsigned(hash, item.source.entitySlot, sizeof(uint32));
+            HashUnsigned(hash, item.source.entityGeneration, sizeof(uint32));
+            HashUnsigned(hash, item.systemId, sizeof(uint64));
+            HashUnsigned(hash, item.instanceId, sizeof(uint64));
+            HashFloat(hash, item.viewDepth);
+        }
+
         [[nodiscard]] bool IsFinite(const Vec2& value) noexcept
         {
             return std::isfinite(value.x) && std::isfinite(value.y);
@@ -345,5 +402,66 @@ namespace RVX
 
         plan.valid = true;
         return plan;
+    }
+
+    uint64 BuildParticleBillboardBatchIdentityHash(
+        const ParticleBillboardDrawPlan& plan,
+        uint32 batchOrdinal) noexcept
+    {
+        if (!plan.valid || batchOrdinal >= plan.batches.size())
+        {
+            return 0;
+        }
+        const ParticleBillboardDrawBatch& batch = plan.batches[batchOrdinal];
+        const uint64 end = static_cast<uint64>(batch.firstItem) +
+            static_cast<uint64>(batch.itemCount);
+        if (batch.itemCount == 0 || end > plan.items.size())
+        {
+            return 0;
+        }
+
+        uint64 hash = RVX_PARTICLE_PLAN_HASH_OFFSET;
+        HashUnsigned(hash, batchOrdinal, sizeof(batchOrdinal));
+        HashUnsigned(
+            hash, static_cast<uint8>(batch.blendMode), sizeof(uint8));
+        HashUnsigned(hash, batch.effectDescriptorHash, sizeof(uint64));
+        HashUnsigned(hash, batch.flipbookTexture.slot, sizeof(uint32));
+        HashUnsigned(hash, batch.flipbookTexture.generation, sizeof(uint32));
+        HashUnsigned(hash, batch.flipbookContentRevision, sizeof(uint64));
+        HashUnsigned(hash, batch.firstItem, sizeof(uint32));
+        HashUnsigned(hash, batch.itemCount, sizeof(uint32));
+        for (uint32 itemIndex = batch.firstItem;
+             itemIndex < static_cast<uint32>(end);
+             ++itemIndex)
+        {
+            HashDrawItem(hash, plan.items[itemIndex]);
+        }
+        return hash == 0 ? RVX_PARTICLE_PLAN_HASH_OFFSET : hash;
+    }
+
+    uint64 BuildParticleBillboardSourceIdentityHash(
+        const ParticleBillboardDrawPlan& plan) noexcept
+    {
+        if (!plan.valid)
+        {
+            return 0;
+        }
+        uint64 hash = RVX_PARTICLE_PLAN_HASH_OFFSET;
+        HashUnsigned(hash, static_cast<uint64>(plan.items.size()), sizeof(uint64));
+        HashUnsigned(
+            hash, static_cast<uint64>(plan.batches.size()), sizeof(uint64));
+        for (uint32 batchOrdinal = 0;
+             batchOrdinal < static_cast<uint32>(plan.batches.size());
+             ++batchOrdinal)
+        {
+            const uint64 batchHash =
+                BuildParticleBillboardBatchIdentityHash(plan, batchOrdinal);
+            if (batchHash == 0)
+            {
+                return 0;
+            }
+            HashUnsigned(hash, batchHash, sizeof(batchHash));
+        }
+        return hash == 0 ? RVX_PARTICLE_PLAN_HASH_OFFSET : hash;
     }
 } // namespace RVX

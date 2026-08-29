@@ -66,7 +66,7 @@ namespace RVX
         [[nodiscard]] inline constexpr bool TryGetTextureIndex(
             uint32 set, uint32 binding, uint32 arrayElement, uint32& outIndex)
         {
-            if (set == 0 && binding <= 22 && arrayElement <= 22 - binding)
+            if (set == 0 && binding <= 23 && arrayElement <= 23 - binding)
             {
                 outIndex = RVX_METAL_FIRST_FRAME_TEXTURE_INDEX + binding + arrayElement;
                 return IsValidTextureIndex(outIndex);

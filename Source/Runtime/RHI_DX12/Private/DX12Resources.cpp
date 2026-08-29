@@ -2,6 +2,8 @@
 #include "DX12Device.h"
 #include "RHI/RHITexture.h"
 
+#include <limits>
+
 namespace RVX
 {
     namespace
@@ -507,6 +509,91 @@ namespace RVX
 
         Unmap();
         return true;
+    }
+
+    // =============================================================================
+    // DX12 Acceleration Structure Compacted-Size Query Implementation
+    // =============================================================================
+    DX12AccelerationStructureCompactedSizeQuery::
+    DX12AccelerationStructureCompactedSizeQuery(
+        DX12Device* device,
+        const RHIAccelerationStructureCompactedSizeQueryDesc& desc)
+        : m_device(device)
+        , m_desc(desc)
+    {
+        if (desc.debugName)
+        {
+            SetDebugName(desc.debugName);
+        }
+
+        if (!m_device || desc.count == 0 ||
+            desc.count > std::numeric_limits<uint64>::max() / sizeof(uint64))
+        {
+            RVX_RHI_ERROR("DX12 compacted-size query has invalid device or count");
+            return;
+        }
+
+        RHIBufferDesc resultDesc;
+        resultDesc.size = static_cast<uint64>(desc.count) * sizeof(uint64);
+        resultDesc.usage = RHIBufferUsage::UnorderedAccess |
+                           RHIBufferUsage::CopySrc |
+                           RHIBufferUsage::DeviceAddress;
+        resultDesc.memoryType = RHIMemoryType::Default;
+        resultDesc.debugName = desc.debugName
+            ? desc.debugName
+            : "DX12AccelerationStructureCompactedSizeQuery";
+        m_resultBuffer = m_device->CreateBuffer(resultDesc);
+        if (!m_resultBuffer)
+        {
+            RVX_RHI_ERROR("DX12 compacted-size query failed to allocate post-build result buffer");
+        }
+    }
+
+    bool DX12AccelerationStructureCompactedSizeQuery::Reserve(
+        uint32 firstQuery,
+        uint32 queryCount)
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_resultBuffer || m_state != State::Available || queryCount == 0 ||
+            firstQuery > m_desc.count || queryCount > m_desc.count - firstQuery)
+        {
+            return false;
+        }
+
+        m_firstQuery = firstQuery;
+        m_queryCount = queryCount;
+        m_state = State::Pending;
+        return true;
+    }
+
+    bool DX12AccelerationStructureCompactedSizeQuery::CanResolve(
+        uint32 firstQuery,
+        uint32 queryCount) const
+    {
+        std::lock_guard lock(m_mutex);
+        return m_state == State::Pending &&
+               m_firstQuery == firstQuery &&
+               m_queryCount == queryCount;
+    }
+
+    void DX12AccelerationStructureCompactedSizeQuery::Commit()
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_state == State::Pending)
+        {
+            m_state = State::Submitted;
+        }
+    }
+
+    void DX12AccelerationStructureCompactedSizeQuery::Discard()
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_state == State::Pending)
+        {
+            m_state = State::Available;
+            m_firstQuery = 0;
+            m_queryCount = 0;
+        }
     }
 
     // =============================================================================
@@ -1179,6 +1266,36 @@ namespace RVX
         }
 
         return Ref<DX12AccelerationStructure>(new DX12AccelerationStructure(device, desc));
+    }
+
+    RHIAccelerationStructureCompactedSizeQueryRef
+    CreateDX12AccelerationStructureCompactedSizeQuery(
+        DX12Device* device,
+        const RHIAccelerationStructureCompactedSizeQueryDesc& desc)
+    {
+        if (!device ||
+            !device->GetCapabilities().supportsAccelerationStructureCompaction)
+        {
+            RVX_RHI_ERROR("DX12: compacted-size queries require the complete DXR compaction path");
+            return nullptr;
+        }
+
+        const RHIRayTracingValidationResult validation =
+            ValidateRHIAccelerationStructureCompactedSizeQueryDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX12: compacted-size query creation rejected: {}",
+                          validation.message);
+            return nullptr;
+        }
+
+        auto query = Ref<DX12AccelerationStructureCompactedSizeQuery>(
+            new DX12AccelerationStructureCompactedSizeQuery(device, desc));
+        if (!query->GetResultBuffer())
+        {
+            return nullptr;
+        }
+        return query;
     }
 
     RHIFenceRef CreateDX12Fence(DX12Device* device, uint64 initialValue)

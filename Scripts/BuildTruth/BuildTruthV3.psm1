@@ -267,6 +267,23 @@ function Assert-BuildTruthRequiredSelection
 
     Assert-BuildTruthInventoryLanes -Inventory $Inventory -Context $Context
     $tests = @($Inventory.tests)
+    $seenTestNames = [System.Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal)
+    $duplicateTestNames = [System.Collections.Generic.List[string]]::new()
+    foreach ($test in $tests)
+    {
+        $testName = [string]$test.name
+        if (-not $seenTestNames.Add($testName))
+        {
+            $duplicateTestNames.Add($testName)
+        }
+    }
+    if ($duplicateTestNames.Count -ne 0)
+    {
+        Throw-BuildTruthFailure -Category "DuplicateTestName" -Message (
+            "$Context contains duplicate selected test names: " +
+            (($duplicateTestNames | Select-Object -Unique -First 10) -join ", "))
+    }
     if ($ExpectedTestCount -lt 0)
     {
         Throw-BuildTruthFailure -Category "ExpectedCount" -Message (

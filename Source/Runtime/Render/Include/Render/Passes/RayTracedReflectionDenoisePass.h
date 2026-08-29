@@ -14,30 +14,6 @@ namespace RVX
     class RayTracedReflectionPass;
     class ResourceViewCache;
 
-    struct RayTracedReflectionDenoisePassStats
-    {
-        bool requested = false;
-        bool supported = false;
-        bool sourcePassEnabled = false;
-        bool reflectionHandleAvailable = false;
-        bool depthAvailable = false;
-        bool normalGuideAvailable = false;
-        bool outputDeclared = false;
-        bool constantsUploaded = false;
-        bool denoiseRecorded = false;
-        uint32 radius = 0;
-        float depthSigma = 0.0f;
-        float normalThreshold = 0.0f;
-        float confidencePower = 0.0f;
-        float centerWeight = 0.0f;
-        float lowConfidenceDepthScale = 0.0f;
-        uint32 kernelTapCount = 0;
-        uint64 dispatchPixelCount = 0;
-        uint64 estimatedTapCount = 0;
-        uint32 width = 0;
-        uint32 height = 0;
-    };
-
     struct RayTracedReflectionDenoisePassConfig
     {
         uint32 radius = 1;
@@ -59,6 +35,9 @@ namespace RVX
 
         void OnAdd(IRHIDevice* device) override;
         void OnRemove() override;
+        void AddToGraph(RenderGraph& graph, const ViewData& view) override;
+        void AddToGraph(RenderGraph& graph,
+                        const RenderPassRecordContext& context) override;
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
         void Execute(RenderGraphPassContext& context,

@@ -377,6 +377,21 @@ namespace
         ShaderArtifact& artifact,
         std::string& outError)
     {
+        const auto isRayTracingStage = [](RHIShaderStage stage)
+        {
+            switch (stage)
+            {
+                case RHIShaderStage::RayGeneration:
+                case RHIShaderStage::Miss:
+                case RHIShaderStage::ClosestHit:
+                case RHIShaderStage::AnyHit:
+                case RHIShaderStage::Intersection:
+                case RHIShaderStage::Callable:
+                    return true;
+                default:
+                    return false;
+            }
+        };
         const auto stringFits = [](const std::string& value)
         {
             return value.size() <= MAX_STRING_SIZE;
@@ -453,6 +468,39 @@ namespace
             outError =
                 "Shader artifact lacks code, reflection, ABI, or content hash";
             return false;
+        }
+        if (artifact.request.backend == RHIBackendType::Vulkan)
+        {
+            constexpr uint32 SPIRV_MAGIC = 0x07230203u;
+            uint32 magic = 0;
+            if (artifact.code.size() < sizeof(magic))
+            {
+                outError = "Vulkan shader artifact does not contain SPIR-V";
+                return false;
+            }
+            std::memcpy(&magic, artifact.code.data(), sizeof(magic));
+            if (magic != SPIRV_MAGIC)
+            {
+                outError = "Vulkan shader artifact has invalid SPIR-V magic";
+                return false;
+            }
+        }
+        if (isRayTracingStage(artifact.request.stage))
+        {
+            if (artifact.request.backend != RHIBackendType::DX12 &&
+                artifact.request.backend != RHIBackendType::Vulkan)
+            {
+                outError =
+                    "Ray-tracing shader artifacts require DX12 or Vulkan";
+                return false;
+            }
+            if (artifact.targetProfile != "lib_6_3" &&
+                artifact.targetProfile != "lib_6_4")
+            {
+                outError =
+                    "Ray-tracing shader artifacts require lib_6_3 or lib_6_4";
+                return false;
+            }
         }
         const uint64 expectedPermutation =
             ComputeShaderPermutationHash(artifact.request);

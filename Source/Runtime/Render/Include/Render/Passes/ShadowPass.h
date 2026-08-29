@@ -10,6 +10,7 @@
  */
 
 #include "Core/MathTypes.h"
+#include "Render/Lighting/LocalShadowAtlas.h"
 #include "Render/Passes/IRenderPass.h"
 #include "Render/Passes/DirectDrawPacketBatch.h"
 #include "Render/Renderer/ShadowConstants.h"
@@ -155,7 +156,8 @@ namespace RVX
                                const PrimaryDirectionalLightRecordInput& primaryLight);
         void Setup(RenderGraphBuilder& builder,
                    const ViewData& view,
-                   const PrimaryDirectionalLightRecordInput& primaryLight);
+                   const PrimaryDirectionalLightRecordInput& primaryLight,
+                   const LocalShadowAtlasPlan* localShadowAtlasPlan = nullptr);
         void Execute(RenderGraphPassContext& context,
                      const ViewData& view,
                      const PrimaryDirectionalLightRecordInput& primaryLight);
@@ -164,15 +166,31 @@ namespace RVX
                            uint32_t cascadeIndex,
                            const PrimaryDirectionalLightRecordInput& primaryLight);
         bool BuildPlannedShadowDraws(RenderGraphBuilder& builder,
-                                     const ViewData& view);
+                                     const ViewData& view,
+                                     bool localShadowPipelinesRequired);
         bool BuildCascadeFrameBindings(
             RenderGraphBuilder& builder,
             const ViewData& view,
             const PrimaryDirectionalLightRecordInput& primaryLight);
+        bool BuildLocalShadowFrameBindings(
+            RenderGraphBuilder& builder,
+            const ViewData& view,
+            const LocalShadowAtlasPlan& localShadowAtlasPlan);
+        bool PrepareSharedCasterState(
+            RenderGraphBuilder& builder,
+            const ViewData& view,
+            bool localShadowPipelinesRequired);
+        bool RecordLocalShadowPage(
+            RHICommandContext& context,
+            const LocalShadowAtlasPage& page,
+            uint32& outDrawCount,
+            std::string& outDiagnostic) const;
+        [[nodiscard]] bool HasPreparedLocalShadowCasterState() const noexcept;
         bool PrepareDirectInstanceStream(RenderGraphBuilder& builder,
                                          const ViewData& view);
         void ApplyDirectInstancePlan(RenderGraphBuilder& builder,
-                                     const ViewData& view);
+                                     const ViewData& view,
+                                     bool localShadowPipelinesRequired);
 
         bool m_enabled = false;
         mutable std::string m_unsupportedReason = "ShadowPass has not been configured";
@@ -192,6 +210,12 @@ namespace RVX
         std::vector<PlannedShadowDraw> m_plannedShadowDraws;
         std::unique_ptr<DirectionalShadowCascadeBindingSnapshot>
             m_cascadeFrameBindings;
+        /** Immutable set-0 pages matching the sealed local atlas page order. */
+        std::unique_ptr<DirectionalShadowCascadeBindingSnapshot>
+            m_localShadowFrameBindings;
+        std::vector<uint32> m_localShadowPageIndices;
+        uint64 m_localShadowAtlasPlanIdentity = 0;
+        uint64 m_localShadowAtlasGeneration = 0;
         RGBufferHandle m_directInstanceHandle;
         RGBufferHandle m_directInstanceIndexHandle;
         RGBufferHandle m_currentPaletteReadHandle;
@@ -202,6 +226,7 @@ namespace RVX
         RasterInstanceStream m_directInstanceStream;
         bool m_directInstancingPreflightFailed = false;
         bool m_shadowDrawPreflightValid = false;
+        bool m_localShadowPipelinePreflightValid = false;
         RenderPassRecordIdentity m_recordIdentity{};
         std::shared_ptr<const RenderDeformationFrameResources>
             m_deformationResources;

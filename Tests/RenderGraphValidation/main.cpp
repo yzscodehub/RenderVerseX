@@ -19,6 +19,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace RVX;
@@ -1844,6 +1845,232 @@ TEST(RenderGraphValidation, PassChain)
 
     graph.SetExportState(final, RHIResourceState::Present);
     RenderGraphValidationAccess::Compile(graph);
+}
+
+TEST(RenderGraphValidation,
+     RayTracingSceneBuildWritesOneTLASStorageBeforeShadowAndReflectionReads)
+{
+    FakeDevice device;
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+
+    RHIBufferDesc storageDesc;
+    storageDesc.size = 4096;
+    storageDesc.usage = RHIBufferUsage::AccelerationStructureStorage |
+        RHIBufferUsage::UnorderedAccess |
+        RHIBufferUsage::DeviceAddress;
+    storageDesc.debugName = "RayTracingTLASStorage";
+    FakeBuffer topLevelASStorage(storageDesc);
+    const RGBufferHandle storage = RenderGraphValidationAccess::ImportBuffer(
+        graph,
+        &topLevelASStorage,
+        RHIResourceState::AccelerationStructureRead);
+    RHIBufferDesc dispatchOutputDesc;
+    dispatchOutputDesc.size = 16;
+    dispatchOutputDesc.usage = RHIBufferUsage::Structured |
+        RHIBufferUsage::UnorderedAccess;
+    dispatchOutputDesc.stride = 16;
+    dispatchOutputDesc.debugName = "RayTracingDispatchOutput";
+    const RGBufferHandle shadowOutput =
+        graph.CreateBuffer(dispatchOutputDesc);
+    const RGBufferHandle reflectionOutput =
+        graph.CreateBuffer(dispatchOutputDesc);
+
+    struct RayTracingSceneBuildData
+    {
+        RGBufferHandle storage;
+    };
+    struct RayTracingDispatchData
+    {
+        RGBufferHandle storage;
+        RGBufferHandle output;
+    };
+
+    std::vector<std::string> executedPasses;
+    RGBufferHandle buildStorage;
+    RGBufferHandle shadowStorage;
+    RGBufferHandle reflectionStorage;
+
+    graph.AddPass<RayTracingSceneBuildData>(
+        "RayTracingSceneBuild",
+        RenderGraphPassType::RayTracing,
+        [&executedPasses, storage, &buildStorage](
+            RenderGraphBuilder& builder,
+            RayTracingSceneBuildData& data)
+        {
+            data.storage = builder.Write(
+                storage,
+                RHIResourceState::AccelerationStructureBuildWrite);
+            buildStorage = data.storage;
+        },
+        [&executedPasses](const RayTracingSceneBuildData&,
+                           RHICommandContext&)
+        {
+            executedPasses.push_back("RayTracingSceneBuild");
+        });
+    graph.AddPass<RayTracingDispatchData>(
+        "RayTracedShadowDispatch",
+        RenderGraphPassType::RayTracing,
+        [&executedPasses, storage, shadowOutput, &shadowStorage](
+            RenderGraphBuilder& builder,
+            RayTracingDispatchData& data)
+        {
+            data.storage = builder.Read(
+                storage,
+                RHIResourceState::AccelerationStructureRead,
+                RHIShaderStage::AllRayTracing);
+            shadowStorage = data.storage;
+            data.output = builder.Write(
+                shadowOutput, RHIResourceState::UnorderedAccess);
+        },
+        [&executedPasses](const RayTracingDispatchData&,
+                           RHICommandContext&)
+        {
+            executedPasses.push_back("RayTracedShadowDispatch");
+        });
+    graph.AddPass<RayTracingDispatchData>(
+        "RayTracedReflectionDispatch",
+        RenderGraphPassType::RayTracing,
+        [&executedPasses, storage, reflectionOutput, &reflectionStorage](
+            RenderGraphBuilder& builder,
+            RayTracingDispatchData& data)
+        {
+            data.storage = builder.Read(
+                storage,
+                RHIResourceState::AccelerationStructureRead,
+                RHIShaderStage::AllRayTracing);
+            reflectionStorage = data.storage;
+            data.output = builder.Write(
+                reflectionOutput, RHIResourceState::UnorderedAccess);
+        },
+        [&executedPasses](const RayTracingDispatchData&,
+                           RHICommandContext&)
+        {
+            executedPasses.push_back("RayTracedReflectionDispatch");
+        });
+    graph.SetExportState(storage, RHIResourceState::AccelerationStructureRead);
+    graph.SetExportState(shadowOutput, RHIResourceState::Common);
+    graph.SetExportState(reflectionOutput, RHIResourceState::Common);
+
+    EXPECT_TRUE(buildStorage.IsValid());
+    EXPECT_TRUE(shadowStorage.IsValid());
+    EXPECT_TRUE(reflectionStorage.IsValid());
+    EXPECT_EQ(buildStorage.index, storage.index);
+    EXPECT_EQ(shadowStorage.index, storage.index);
+    EXPECT_EQ(reflectionStorage.index, storage.index);
+    EXPECT_EQ(buildStorage.graphIdentity, storage.graphIdentity);
+    EXPECT_EQ(shadowStorage.recordingGeneration, storage.recordingGeneration);
+    EXPECT_EQ(reflectionStorage.recordingGeneration,
+              storage.recordingGeneration);
+
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    const auto findPass = [&diagnostics](std::string_view name)
+        -> const RenderGraph::PassDiagnostic*
+    {
+        const auto it = std::find_if(
+            diagnostics.passes.begin(),
+            diagnostics.passes.end(),
+            [name](const RenderGraph::PassDiagnostic& pass)
+            {
+                return pass.name == name;
+            });
+        return it != diagnostics.passes.end() ? &*it : nullptr;
+    };
+    const RenderGraph::PassDiagnostic* const buildPass =
+        findPass("RayTracingSceneBuild");
+    const RenderGraph::PassDiagnostic* const shadowPass =
+        findPass("RayTracedShadowDispatch");
+    const RenderGraph::PassDiagnostic* const reflectionPass =
+        findPass("RayTracedReflectionDispatch");
+    ASSERT_NE(buildPass, nullptr);
+    ASSERT_NE(shadowPass, nullptr);
+    ASSERT_NE(reflectionPass, nullptr);
+    EXPECT_EQ(buildPass->type, RenderGraphPassType::RayTracing);
+    EXPECT_EQ(shadowPass->type, RenderGraphPassType::RayTracing);
+    EXPECT_EQ(reflectionPass->type, RenderGraphPassType::RayTracing);
+    ASSERT_EQ(buildPass->usages.size(), 1u);
+    ASSERT_EQ(shadowPass->usages.size(), 2u);
+    ASSERT_EQ(reflectionPass->usages.size(), 2u);
+    EXPECT_EQ(buildPass->usages[0].type,
+              RenderGraph::DiagnosticResourceType::Buffer);
+    EXPECT_EQ(buildPass->usages[0].access,
+              RenderGraph::DiagnosticAccessType::Write);
+    EXPECT_EQ(buildPass->usages[0].resourceIndex, storage.index);
+    EXPECT_EQ(buildPass->usages[0].desiredState,
+              RHIResourceState::AccelerationStructureBuildWrite);
+    for (const RenderGraph::PassDiagnostic* pass :
+         {shadowPass, reflectionPass})
+    {
+        const auto storageUsage = std::find_if(
+            pass->usages.begin(), pass->usages.end(),
+            [storage](const RenderGraph::ResourceUsageDiagnostic& usage)
+            {
+                return usage.resourceIndex == storage.index;
+            });
+        ASSERT_NE(storageUsage, pass->usages.end());
+        EXPECT_EQ(storageUsage->type,
+                  RenderGraph::DiagnosticResourceType::Buffer);
+        EXPECT_EQ(storageUsage->access,
+                  RenderGraph::DiagnosticAccessType::Read);
+        EXPECT_EQ(storageUsage->resourceIndex, storage.index);
+        EXPECT_EQ(storageUsage->desiredState,
+                  RHIResourceState::AccelerationStructureRead);
+        EXPECT_EQ(storageUsage->stages, RHIShaderStage::AllRayTracing);
+        EXPECT_NE(std::find(pass->dependencies.begin(),
+                            pass->dependencies.end(),
+                            buildPass->index),
+                  pass->dependencies.end());
+    }
+
+    const auto findExecutionPosition = [&diagnostics](uint32 passIndex)
+    {
+        return std::find(diagnostics.executionOrder.begin(),
+                         diagnostics.executionOrder.end(),
+                         passIndex);
+    };
+    const auto buildPosition = findExecutionPosition(buildPass->index);
+    const auto shadowPosition = findExecutionPosition(shadowPass->index);
+    const auto reflectionPosition =
+        findExecutionPosition(reflectionPass->index);
+    ASSERT_NE(buildPosition, diagnostics.executionOrder.end());
+    ASSERT_NE(shadowPosition, diagnostics.executionOrder.end());
+    ASSERT_NE(reflectionPosition, diagnostics.executionOrder.end());
+    EXPECT_LT(buildPosition, shadowPosition);
+    EXPECT_LT(buildPosition, reflectionPosition);
+
+    FakeCommandContext context;
+    RenderGraphValidationAccess::Execute(graph, context);
+    ASSERT_EQ(executedPasses.size(), 3u);
+    EXPECT_EQ(executedPasses[0], "RayTracingSceneBuild");
+    EXPECT_EQ(executedPasses[1], "RayTracedShadowDispatch");
+    EXPECT_EQ(executedPasses[2], "RayTracedReflectionDispatch");
+
+    const auto buildToTraceBarrier = std::find_if(
+        context.bufferBarriers.begin(),
+        context.bufferBarriers.end(),
+        [&topLevelASStorage](const RHIBufferBarrier& barrier)
+        {
+            return barrier.buffer == &topLevelASStorage &&
+                barrier.stateBefore ==
+                    RHIResourceState::AccelerationStructureBuildWrite &&
+                barrier.stateAfter ==
+                    RHIResourceState::AccelerationStructureRead;
+        });
+    ASSERT_NE(buildToTraceBarrier, context.bufferBarriers.end());
+    EXPECT_TRUE(buildToTraceBarrier->hasScopedAccess);
+    EXPECT_TRUE(HasDependencyKind(buildToTraceBarrier->dependencyKind,
+                                  RHIDependencyKind::Transition));
+    EXPECT_TRUE(HasDependencyKind(buildToTraceBarrier->dependencyKind,
+                                  RHIDependencyKind::Memory));
+    EXPECT_TRUE(HasAnyAccess(
+        buildToTraceBarrier->accessBefore.memoryAccess,
+        RHIMemoryAccess::AccelerationStructureWrite));
+    EXPECT_TRUE(HasAnyAccess(
+        buildToTraceBarrier->accessAfter.memoryAccess,
+        RHIMemoryAccess::AccelerationStructureRead));
 }
 
 TEST(RenderGraphValidation, DiagnosticsSnapshotReportsPassResourcesLifetimesAndMemory)
@@ -4712,6 +4939,237 @@ TEST(RenderGraphValidation, IncompatiblePassStateIsReported)
     EXPECT_EQ(stats.incompatibleStateUsageCount, 1u);
     EXPECT_EQ(stats.validationErrorCount, 2u);
     EXPECT_FALSE(stats.executionOrderFallbackUsed);
+}
+
+TEST(RenderGraphValidation,
+     PooledLeaseDiscardFirstUseDoesNotMaterializeUnplannedOwnership)
+{
+    FakeDevice device;
+    device.EnableTimelineRetirement();
+    auto& capabilities = device.MutableCapabilities();
+    capabilities.supportsQueueSubmissionPlan = true;
+
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+    pool.BeginFrame();
+
+    RHITextureDesc discardTextureDesc = RHITextureDesc::RenderTarget(
+        96, 64, RHIFormat::RGBA16_FLOAT);
+    discardTextureDesc.usage = RHITextureUsage::RenderTarget |
+        RHITextureUsage::ShaderResource |
+        RHITextureUsage::UnorderedAccess;
+
+    RHIBufferDesc discardBufferDesc;
+    discardBufferDesc.size = 1024;
+    discardBufferDesc.usage = RHIBufferUsage::Structured |
+        RHIBufferUsage::UnorderedAccess;
+
+    TransientTextureLease seededDiscardTexture =
+        pool.AcquireTextureLease(discardTextureDesc);
+    TransientBufferLease seededDiscardBuffer =
+        pool.AcquireBufferLease(discardBufferDesc);
+    ASSERT_TRUE(seededDiscardTexture);
+    ASSERT_TRUE(seededDiscardBuffer);
+
+    RHITexture* const seededDiscardTextureResource =
+        seededDiscardTexture.texture;
+    RHIBuffer* const seededDiscardBufferResource =
+        seededDiscardBuffer.buffer;
+    const RHITextureAccessSnapshot pooledTextureAccess =
+        MakeRHITextureAccessSnapshot(
+            RHIResourceState::Common,
+            RHIShaderStage::None,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Valid);
+    const RHIBufferAccessSnapshot pooledBufferAccess =
+        MakeRHIBufferAccessSnapshot(
+            RHIResourceState::Common,
+            RHIShaderStage::None,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Valid);
+    pool.ReleaseTexture(
+        seededDiscardTexture.texture, pooledTextureAccess);
+    pool.ReleaseBuffer(
+        seededDiscardBuffer.buffer, pooledBufferAccess);
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RenderGraphValidationAccess::SetTransientResourcePool(graph, &pool);
+
+    const RGTextureHandle discardTexture =
+        graph.CreateTexture(discardTextureDesc);
+    const RGBufferHandle discardBuffer =
+        graph.CreateBuffer(discardBufferDesc);
+
+    struct ComputeWriteData
+    {
+        RGTextureHandle discardTexture;
+        RGBufferHandle discardBuffer;
+    };
+    graph.AddPass<ComputeWriteData>(
+        "PooledLeaseFirstUseComputeWrites",
+        RenderGraphPassType::Compute,
+        [discardTexture, discardBuffer](
+            RenderGraphBuilder& builder,
+            ComputeWriteData& data)
+        {
+            data.discardTexture = builder.Write(
+                discardTexture,
+                MakeRGAccessDesc(
+                    RHIResourceState::UnorderedAccess,
+                    RHIShaderStage::Compute,
+                    RHIDiscardIntent::Discard));
+            data.discardBuffer = builder.Write(
+                discardBuffer,
+                MakeRGAccessDesc(
+                    RHIResourceState::UnorderedAccess,
+                    RHIShaderStage::Compute,
+                    RHIDiscardIntent::Discard));
+        },
+        [](const ComputeWriteData&, RHICommandContext&) {});
+
+    const RHIAccessSnapshot exportAccess = MakeRHIAccessSnapshot(
+        RHIResourceState::Common,
+        RHIShaderStage::None,
+        GPUQueueDomain::Graphics,
+        RHIContentValidity::Valid);
+    graph.SetExportAccess(discardTexture, exportAccess);
+    graph.SetExportAccess(discardBuffer, exportAccess);
+
+    RenderGraphCompileOptions options;
+    options.queuePolicy = RGQueuePolicy::PreferMultiQueue;
+    options.capabilities = capabilities;
+    options.hasCapabilitySnapshot = true;
+    options.canonicalizeTransientPoolAccess = true;
+    RenderGraphCompiler compiler;
+    ASSERT_TRUE(compiler.Compile(graph, options));
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    ASSERT_EQ(RenderGraph::QueueExecutionMode::MultiQueue,
+              graph.GetQueueExecutionMode());
+
+    const RenderGraph::SubmissionPlan planned = graph.GetSubmissionPlan();
+    const auto initialReleaseBatch = std::find_if(
+        planned.queueBatches.begin(),
+        planned.queueBatches.end(),
+        [](const RenderGraph::PlannedQueueBatchDiagnostic& batch)
+        {
+            return batch.syntheticInitialRelease &&
+                batch.queue ==
+                    RenderGraph::DiagnosticExecutionQueue::Graphics;
+        });
+    EXPECT_EQ(initialReleaseBatch, planned.queueBatches.end());
+
+    RenderGraph::RecordedQueueSubmission recorded;
+    ASSERT_TRUE(RenderGraphValidationAccess::RecordQueueSubmission(
+        graph, recorded));
+    ASSERT_TRUE(ValidateRHIQueueSubmissionPlan(recorded.plan));
+
+    RHITexture* const discardTextureResource =
+        RenderGraphValidationAccess::GetTexture(graph, discardTexture);
+    RHIBuffer* const discardBufferResource =
+        RenderGraphValidationAccess::GetBuffer(graph, discardBuffer);
+    ASSERT_EQ(seededDiscardTextureResource, discardTextureResource);
+    ASSERT_EQ(seededDiscardBufferResource, discardBufferResource);
+    EXPECT_EQ(1u, pool.GetStats().textureHits);
+    EXPECT_EQ(1u, pool.GetStats().bufferHits);
+
+    const auto computeBatch = std::find_if(
+        recorded.plan.batches.begin(),
+        recorded.plan.batches.end(),
+        [](const RHIQueueSubmissionBatch& batch)
+        {
+            return batch.queueType == RHICommandQueueType::Compute;
+        });
+    ASSERT_NE(computeBatch, recorded.plan.batches.end());
+    const uint32 computeBatchIndex = static_cast<uint32>(
+        std::distance(recorded.plan.batches.begin(), computeBatch));
+    ASSERT_LT(computeBatchIndex, recorded.ownedContexts.size());
+    const auto& computeContext = *static_cast<FakeCommandContext*>(
+        recorded.ownedContexts[computeBatchIndex].Get());
+
+    const auto findTextureFirstUse = [](
+        const FakeCommandContext& context,
+        RHITexture* target,
+        RHIDiscardIntent discardIntent)
+    {
+        return std::find_if(
+            context.textureBarriers.begin(),
+            context.textureBarriers.end(),
+            [target, discardIntent](const RHITextureBarrier& barrier)
+            {
+                return barrier.texture == target &&
+                    barrier.stateAfter ==
+                        RHIResourceState::UnorderedAccess &&
+                    barrier.accessAfter.domain ==
+                        GPUQueueDomain::Compute &&
+                    barrier.discardIntent == discardIntent;
+            });
+    };
+    const auto findBufferFirstUse = [](
+        const FakeCommandContext& context,
+        RHIBuffer* target,
+        RHIDiscardIntent discardIntent)
+    {
+        return std::find_if(
+            context.bufferBarriers.begin(),
+            context.bufferBarriers.end(),
+            [target, discardIntent](const RHIBufferBarrier& barrier)
+            {
+                return barrier.buffer == target &&
+                    barrier.stateAfter ==
+                        RHIResourceState::UnorderedAccess &&
+                    barrier.accessAfter.domain ==
+                        GPUQueueDomain::Compute &&
+                    barrier.discardIntent == discardIntent;
+            });
+    };
+
+    const auto discardTextureBarrier = findTextureFirstUse(
+        computeContext,
+        discardTextureResource,
+        RHIDiscardIntent::Discard);
+    ASSERT_NE(discardTextureBarrier,
+              computeContext.textureBarriers.end());
+    EXPECT_EQ(GPUQueueDomain::Compute,
+              discardTextureBarrier->accessBefore.domain);
+    EXPECT_EQ(RHIResourceLayout::Undefined,
+              discardTextureBarrier->accessBefore.layout);
+    EXPECT_EQ(RHIContentValidity::Invalid,
+              discardTextureBarrier->accessBefore.contentValidity);
+    EXPECT_TRUE(HasDependencyKind(
+        discardTextureBarrier->dependencyKind,
+        RHIDependencyKind::Discard));
+    EXPECT_FALSE(HasDependencyKind(
+        discardTextureBarrier->dependencyKind,
+        RHIDependencyKind::Ownership));
+
+    const auto discardBufferBarrier = findBufferFirstUse(
+        computeContext,
+        discardBufferResource,
+        RHIDiscardIntent::Discard);
+    ASSERT_NE(discardBufferBarrier,
+              computeContext.bufferBarriers.end());
+    EXPECT_EQ(GPUQueueDomain::Compute,
+              discardBufferBarrier->accessBefore.domain);
+    EXPECT_EQ(RHIResourceLayout::Undefined,
+              discardBufferBarrier->accessBefore.layout);
+    EXPECT_EQ(RHIContentValidity::Invalid,
+              discardBufferBarrier->accessBefore.contentValidity);
+    EXPECT_TRUE(HasDependencyKind(
+        discardBufferBarrier->dependencyKind,
+        RHIDependencyKind::Discard));
+    EXPECT_FALSE(HasDependencyKind(
+        discardBufferBarrier->dependencyKind,
+        RHIDependencyKind::Ownership));
+
+    RenderGraphExecution execution =
+        RenderGraphValidationAccess::TakeExecution(
+            graph, std::move(recorded));
+    ASSERT_TRUE(execution);
+    EXPECT_TRUE(execution.AbortUnsubmitted());
+    RenderGraphValidationAccess::Reset(graph);
+    pool.EndFrame();
+    pool.Shutdown();
 }
 
 TEST(RenderGraphValidation,

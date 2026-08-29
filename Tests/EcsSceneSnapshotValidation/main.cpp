@@ -260,3 +260,56 @@ TEST(EcsSceneSnapshotValidation, SelectsHighestPriorityCameraThenLowestHandle)
     EXPECT_EQ(snapshot.selectedCamera->entity, first);
     EXPECT_EQ(snapshot.selectedCamera->type, FrozenSceneObjectType::Camera);
 }
+
+TEST(EcsSceneSnapshotValidation,
+     CapturesReflectionProbePoseVisibilityAndAssetSelectionAsOwnedValues)
+{
+    ECS::Registry registry;
+    const ECS::EntityHandle entity = registry.CreateEntity();
+    AddLifecycle(registry, entity);
+    AddRenderTransform(registry, entity, 41, 17.0f);
+
+    Visibility visibility;
+    visibility.layerMask = 0x31u;
+    visibility.visible = true;
+    EXPECT_TRUE(registry.Add<Visibility>(entity, visibility));
+
+    ReflectionProbe probe;
+    probe.assetSource = SceneECS::ReflectionProbeAssetSource::Custom;
+    probe.bakedCubemapAssetId = {.value = 701};
+    probe.customCubemapAssetId = {.value = 702};
+    probe.influenceExtent = {3.0f, 4.0f, 5.0f};
+    probe.boxProjectionSize = {6.0f, 7.0f, 8.0f};
+    probe.boxProjectionOffset = {1.0f, 2.0f, 3.0f};
+    probe.blendDistance = 0.75f;
+    probe.priority = 9;
+    probe.nearClip = 0.2f;
+    probe.farClip = 80.0f;
+    probe.useBoxProjection = true;
+    probe.useHDR = true;
+    probe.hasValidData = true;
+    EXPECT_TRUE(registry.Add<ReflectionProbe>(entity, probe));
+
+    SceneSnapshotBuilder builder;
+    const FrozenSceneSnapshot snapshot = builder.Build(registry);
+    ASSERT_EQ(snapshot.reflectionProbes.size(), 1u);
+    const FrozenSceneReflectionProbe& frozen = snapshot.reflectionProbes.front();
+    EXPECT_EQ(frozen.id.type, FrozenSceneObjectType::Probe);
+    EXPECT_EQ(frozen.id.entity, entity);
+    EXPECT_EQ(frozen.sourceEntity, entity);
+    EXPECT_EQ(frozen.source.assetSource,
+              SceneECS::ReflectionProbeAssetSource::Custom);
+    EXPECT_EQ(frozen.source.customCubemapAssetId.value, 702u);
+    EXPECT_EQ(frozen.visibility.layerMask, 0x31u);
+    EXPECT_FLOAT_EQ(frozen.worldTransform[3].x, 17.0f);
+    EXPECT_EQ(frozen.transformSourceRevision, 41u);
+    EXPECT_EQ(frozen.visibilityWriteVersion,
+              registry.GetFragmentWriteVersion<Visibility>(entity));
+
+    ASSERT_TRUE(registry.Write<ReflectionProbe>(
+        entity, [](ReflectionProbe& mutableProbe)
+        {
+            mutableProbe.customCubemapAssetId = {.value = 999};
+        }));
+    EXPECT_EQ(frozen.source.customCubemapAssetId.value, 702u);
+}

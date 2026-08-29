@@ -4,6 +4,7 @@
 // DSV used for depth testing, which keeps DSV/SRV hazards out of the graph.
 
 #include "../Include/FullscreenTriangle.hlsli"
+#include "../Translucency/WeightedBlendedOIT.hlsli"
 
 cbuffer ParticleBillboardFrameConstants : register(b0, space0)
 {
@@ -34,7 +35,9 @@ Texture2D gParticleSprite : register(t2, space0);
 // the fullscreen composite. Keep the declaration untyped because both are
 // sampled through the same narrow descriptor layout.
 Texture2D gAuxiliaryTexture : register(t3, space0);
-SamplerState gLinearClamp : register(s4, space0);
+// s5 is the renderer's portable frame linear-clamp slot. Logical s4 is not
+// representable by the DX11/OpenGL public binding ABI.
+SamplerState gLinearClamp : register(s5, space0);
 
 struct VSOutput
 {
@@ -147,7 +150,7 @@ float2 GetParticleUV(VSOutput input)
         input.AtlasUVOffsetScale.xy;
 }
 
-float4 EvaluateParticleColor(VSOutput input, out float outRadialFade)
+float4 EvaluateParticleStraightColor(VSOutput input, out float outRadialFade)
 {
     const float2 centered = input.UV * 2.0f - 1.0f;
     outRadialFade = saturate(1.0f - dot(centered, centered));
@@ -156,19 +159,25 @@ float4 EvaluateParticleColor(VSOutput input, out float outRadialFade)
         ? gParticleSprite.Sample(gLinearClamp, GetParticleUV(input))
         : float4(1.0f, 1.0f, 1.0f, 1.0f);
     const float softFade = GetParticleSoftFade(input);
-    // Cooked sprite colors are regular (straight-alpha) samples. AlphaBlend
-    // lets the blend state apply finalAlpha; premultiplied smoke carries that
-    // alpha in RGB; additive fire uses it as HDR energy. Therefore a fully
-    // transparent atlas texel never contributes color to any blend mode.
+    // Cooked sprite colors are regular (straight-alpha) samples. Keep this
+    // representation available to the weighted-OIT encoder; direct blend
+    // modes are converted by EvaluateParticleColor below.
     const float attenuation = outRadialFade * softFade;
     const float finalAlpha = saturate(input.Color.a * sprite.a * attenuation);
     const float3 straightRgb = input.Color.rgb * sprite.rgb;
+    return float4(straightRgb, finalAlpha);
+}
+
+float4 EvaluateParticleColor(VSOutput input, out float outRadialFade)
+{
+    const float4 straightColor =
+        EvaluateParticleStraightColor(input, outRadialFade);
     const bool premultipliedOrAdditive = input.BlendMode == 1u ||
         input.BlendMode == 2u;
     const float3 color = premultipliedOrAdditive
-        ? straightRgb * finalAlpha
-        : straightRgb;
-    return float4(color, finalAlpha);
+        ? straightColor.rgb * straightColor.a
+        : straightColor.rgb;
+    return float4(color, straightColor.a);
 }
 
 struct ParticleColorTargets
@@ -185,6 +194,26 @@ ParticleColorTargets PSMain(VSOutput input)
     output.Reactive = saturate(
         input.SoftDepthDistortionReactive.w * output.Color.a);
     return output;
+}
+
+RVXWeightedBlendedOITTargets PSWeightedBlendedOIT(VSOutput input)
+{
+    // Particle blend mode 0 is straight alpha and 1 is premultiplied alpha.
+    // Additive fire (2) remains on the direct path and must never affect
+    // revealage, even if a caller accidentally binds this pipeline.
+    if (input.BlendMode > 1u)
+    {
+        discard;
+    }
+
+    float radialFade = 0.0f;
+    const float4 straightColor =
+        EvaluateParticleStraightColor(input, radialFade);
+    return RVXEncodeWeightedBlendedOIT(
+        straightColor.rgb,
+        straightColor.a,
+        RVXCanonicalizeWeightedBlendedOITDepth(
+            input.Position.z, InverseExtentAndReverseZ.z > 0.5f));
 }
 
 float2 PSDistortionMain(VSOutput input) : SV_Target0

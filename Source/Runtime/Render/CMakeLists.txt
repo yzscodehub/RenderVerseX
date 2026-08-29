@@ -159,6 +159,10 @@ target_sources(RVX_RenderFoundation PRIVATE
     Private/Lighting/LightManager.cpp
     Private/Lighting/ClusteredLighting.cpp
     Private/Lighting/LightingFramePlan.cpp
+    Private/Lighting/LocalShadowFramePlan.cpp
+    Private/Lighting/LocalShadowAtlas.cpp
+    Private/Reflection/ReflectionFramePlan.cpp
+    Private/Translucency/TranslucencyFramePlan.cpp
     Private/GPUDriven/GPUCulling.cpp
 )
 
@@ -210,6 +214,7 @@ add_library(RVX::RenderSurface ALIAS RVX_RenderSurface)
 add_library(RVX_RenderLighting STATIC)
 target_sources(RVX_RenderLighting PRIVATE
     Private/Passes/ShadowPass.cpp
+    Private/Passes/LocalShadowPass.cpp
     Private/Passes/DeferredLightingPass.cpp
     Private/Lighting/GroundTruthAmbientOcclusion.cpp
 )
@@ -282,6 +287,7 @@ add_library(RVX::RenderWater ALIAS RVX_RenderWater)
 
 add_library(RVX_RenderRayTracing STATIC)
 target_sources(RVX_RenderRayTracing PRIVATE
+    Private/RayTracing/HybridRayTracingFramePlan.cpp
     Private/RayTracing/RayTracingScene.cpp
     Private/RayTracing/RayTracingSceneManager.cpp
     Private/Passes/RayTracedShadowPass.cpp
@@ -307,6 +313,8 @@ target_sources(RVX_RenderComposition PRIVATE
     Private/Features/AmbientOcclusionFeatureAdapter.cpp
     Private/Features/DeferredRecipeFeatureAdapter.cpp
     Private/Features/LegacyForwardFeatureAdapter.cpp
+    Private/Features/ReflectionFeatureAdapter.cpp
+    Private/Features/TranslucencyFeatureAdapter.cpp
     Private/Features/PostProcessPipelineFeatureAdapter.cpp
     Private/Features/RenderFeatureRegistry.cpp
     Private/Diagnostics/RenderFeatureReport.cpp

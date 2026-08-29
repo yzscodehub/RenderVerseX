@@ -7,12 +7,14 @@
 #include "RayTracingSceneMetadata.hlsli"
 
 RaytracingAccelerationStructure gScene : register(RVX_RT_SHADOW_TLAS_REGISTER, space0);
+[[vk::image_format("r8")]]
 RWTexture2D<float> gShadowMask : register(RVX_RT_SHADOW_OUTPUT_MASK_REGISTER, space0);
 Texture2D<float> gSceneDepth : register(RVX_RT_SHADOW_SCENE_DEPTH_REGISTER, space0);
 Texture2D<float> gPreviousShadowMask : register(RVX_RT_SHADOW_PREVIOUS_MASK_REGISTER, space0);
 Texture2D<float> gPreviousDepthHistory : register(RVX_RT_SHADOW_PREVIOUS_DEPTH_REGISTER, space0);
 RWTexture2D<float> gCurrentDepthHistory : register(RVX_RT_SHADOW_OUTPUT_DEPTH_REGISTER, space0);
 Texture2D<float4> gPreviousNormalHistory : register(RVX_RT_SHADOW_PREVIOUS_NORMAL_REGISTER, space0);
+[[vk::image_format("rgba16f")]]
 RWTexture2D<float4> gCurrentNormalHistory : register(RVX_RT_SHADOW_OUTPUT_NORMAL_REGISTER, space0);
 
 static const uint RT_MAX_MATERIAL_TEXTURES = RVX_RT_SHADOW_MAX_MATERIAL_TEXTURES;

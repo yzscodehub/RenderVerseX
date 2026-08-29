@@ -256,6 +256,8 @@ namespace RVX
             case RHICapabilityFeature::QuerySupport: return "QuerySupport";
             case RHICapabilityFeature::MemoryBudget: return "MemoryBudget";
             case RHICapabilityFeature::ExplicitHeapManagement: return "ExplicitHeapManagement";
+            case RHICapabilityFeature::IndependentColorAttachmentBlend:
+                return "IndependentColorAttachmentBlend";
             default: return "Unknown";
         }
     }
@@ -336,6 +338,39 @@ namespace RVX
         if (capabilities.maxColorAttachments == 0)
         {
             fail("maxColorAttachments must be non-zero");
+        }
+
+        if (capabilities.supportsIndependentColorAttachmentBlend &&
+            capabilities.maxColorAttachments < 2)
+        {
+            fail("independent color-attachment blending requires at least two color attachments");
+        }
+
+        if (capabilities.SupportsColorAttachment(RHIFormat::Unknown) ||
+            capabilities.SupportsColorAttachmentBlend(RHIFormat::Unknown))
+        {
+            fail("the Unknown format cannot advertise color-attachment capabilities");
+        }
+
+        for (uint32 value = 1;
+             value < static_cast<uint32>(RHIFormat::Count);
+             ++value)
+        {
+            const RHIFormat format = static_cast<RHIFormat>(value);
+            const RHIFormatCapabilities& formatCapabilities =
+                capabilities.GetFormatCapabilities(format);
+            if (formatCapabilities.colorAttachmentBlend &&
+                !formatCapabilities.colorAttachment)
+            {
+                fail("color-attachment blend support requires color-attachment support for the same format");
+                break;
+            }
+            if (formatCapabilities.colorAttachment &&
+                (IsDepthFormat(format) || IsCompressedFormat(format)))
+            {
+                fail("depth and compressed formats cannot advertise color-attachment support");
+                break;
+            }
         }
 
         if (capabilities.maxComputeWorkGroupSize[0] == 0 ||
@@ -683,6 +718,20 @@ namespace RVX
         report.validationMessage = validation.message;
         report.queueTopology = capabilities.queueTopology;
         report.indexedIndirectExecution = capabilities.indexedIndirectExecution;
+        report.supportsIndependentColorAttachmentBlend =
+            capabilities.supportsIndependentColorAttachmentBlend;
+        for (uint32 value = 1;
+             value < static_cast<uint32>(RHIFormat::Count);
+             ++value)
+        {
+            const RHIFormat format = static_cast<RHIFormat>(value);
+            const RHIFormatCapabilities& source =
+                capabilities.GetFormatCapabilities(format);
+            report.formatCapabilities.push_back({
+                format,
+                source.colorAttachment,
+                source.colorAttachmentBlend});
+        }
         report.renderGraphBaselineMissingRequirements =
             BuildRenderGraphBaselineMissingRequirements(capabilities, validation);
         report.renderGraphBaselineSupported = report.renderGraphBaselineMissingRequirements.empty();
@@ -831,6 +880,13 @@ namespace RVX
                           "Explicit heap/placed-resource management is available.",
                           "Explicit heap/placed-resource management is unavailable.");
 
+        addBooleanFeature(
+            RHICapabilityFeature::IndependentColorAttachmentBlend,
+            capabilities.supportsIndependentColorAttachmentBlend,
+            "supportsIndependentColorAttachmentBlend",
+            "Independent per-color-attachment blend state is available.",
+            "Independent per-color-attachment blend state is unavailable.");
+
         return report;
     }
 
@@ -861,6 +917,22 @@ namespace RVX
            << ", CommandSize=" << report.indexedIndirectExecution.indexedCommandSize
            << ", MinStride=" << report.indexedIndirectExecution.minCommandStride
            << ", MaxDrawCount=" << report.indexedIndirectExecution.maxDrawCount << "\n";
+        ss << "IndependentColorAttachmentBlend: "
+           << (report.supportsIndependentColorAttachmentBlend
+                   ? "Supported"
+                   : "Unsupported")
+           << "\n";
+        ss << "FormatCapabilities:\n";
+        for (const RHIFormatCapabilityReportEntry& entry :
+             report.formatCapabilities)
+        {
+            ss << "- " << static_cast<uint32>(entry.format)
+               << ": ColorAttachment="
+               << (entry.colorAttachment ? "true" : "false")
+               << ", ColorAttachmentBlend="
+               << (entry.colorAttachmentBlend ? "true" : "false")
+               << "\n";
+        }
         if (!report.validationMessage.empty())
         {
             ss << "ValidationMessage: " << report.validationMessage << "\n";
@@ -940,6 +1012,26 @@ namespace RVX
         ss << "    \"requiredArgumentState\": " << static_cast<uint32>(report.indexedIndirectExecution.requiredArgumentState) << ",\n";
         ss << "    \"requiredCountState\": " << static_cast<uint32>(report.indexedIndirectExecution.requiredCountState) << "\n";
         ss << "  },\n";
+        ss << "  \"supportsIndependentColorAttachmentBlend\": "
+           << JsonBool(report.supportsIndependentColorAttachmentBlend)
+           << ",\n";
+        ss << "  \"formatCapabilities\": [\n";
+        for (size_t i = 0; i < report.formatCapabilities.size(); ++i)
+        {
+            const RHIFormatCapabilityReportEntry& entry =
+                report.formatCapabilities[i];
+            ss << "    {\n";
+            ss << "      \"format\": "
+               << static_cast<uint32>(entry.format) << ",\n";
+            ss << "      \"colorAttachment\": "
+               << JsonBool(entry.colorAttachment) << ",\n";
+            ss << "      \"colorAttachmentBlend\": "
+               << JsonBool(entry.colorAttachmentBlend) << "\n";
+            ss << "    }"
+               << (i + 1 < report.formatCapabilities.size() ? "," : "")
+               << "\n";
+        }
+        ss << "  ],\n";
         ss << "  \"summary\": {\n";
         ss << "    \"supportedCount\": " << report.supportedCount << ",\n";
         ss << "    \"emulatedCount\": " << report.emulatedCount << ",\n";

@@ -32,6 +32,7 @@ namespace RVX
         ~MetalGraphicsPipeline() override;
 
         bool IsCompute() const override { return false; }
+        bool IsValid() const { return m_pipelineState != nil; }
 
         id<MTLRenderPipelineState> GetMTLRenderPipelineState() const { return m_pipelineState; }
         id<MTLDepthStencilState> GetMTLDepthStencilState() const { return m_depthStencilState; }

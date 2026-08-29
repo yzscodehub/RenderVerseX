@@ -12,12 +12,16 @@
 #include "Features/DeferredRecipeFeatureAdapter.h"
 #include "Features/LegacyForwardFeatureAdapter.h"
 #include "Features/PostProcessPipelineFeatureAdapter.h"
+#include "Features/TranslucencyFeatureAdapter.h"
+#include "Features/ReflectionFeatureAdapter.h"
 #include "Render/Features/RenderFeatureGraphBuilder.h"
 #include "Render/Features/RenderFeatureRegistry.h"
 #include "Render/Features/RenderGraphBlackboard.h"
 #include "Render/Animation/RenderDeformationFrameResources.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
+#include "Render/Lighting/LocalShadowAtlas.h"
+#include "Render/Lighting/LocalShadowFramePlan.h"
 #include "Render/Graph/RenderGraphCompiler.h"
 #include "Render/Graph/RenderGraphExecutor.h"
 #include "Core/Assert.h"
@@ -29,6 +33,7 @@
 #include "Render/Passes/DirectDrawPacketBatch.h"
 #include "Render/Passes/ObjectVelocityPass.h"
 #include "Render/Passes/IRenderPass.h"
+#include "Render/Passes/LocalShadowPass.h"
 #include "Render/Passes/OpaquePass.h"
 #include "Render/Passes/RenderPassRecordContext.h"
 #include "Render/Passes/RenderPassClearValues.h"
@@ -45,10 +50,12 @@
 #include "Render/PostProcess/FilmGrain.h"
 #include "Render/PostProcess/FXAA.h"
 #include "Render/PostProcess/ScreenSpaceOutline.h"
+#include "Render/PostProcess/SSR.h"
 #include "Render/PostProcess/TAA.h"
 #include "Render/PostProcess/ToneMapping.h"
 #include "Render/PostProcess/Vignette.h"
 #include "Render/RayTracing/RayTracingScene.h"
+#include "Render/Reflection/ReflectionFramePlan.h"
 #include "Renderer/RenderPassRegistry.h"
 #include "Render/Renderer/RenderSceneDatabase.h"
 #include "Resources/RenderResourceRegistry.h"
@@ -98,6 +105,21 @@ namespace
             mask |= ToMask(
                 RenderFeatureCapability::AccelerationStructureUpdate);
         }
+        const bool independentFloatBlendReady =
+            capabilities.supportsIndependentColorAttachmentBlend &&
+            capabilities.maxColorAttachments >= 2 &&
+            capabilities.SupportsColorAttachment(
+                RHIFormat::RGBA16_FLOAT) &&
+            capabilities.SupportsColorAttachmentBlend(
+                RHIFormat::RGBA16_FLOAT) &&
+            capabilities.SupportsColorAttachment(
+                RHIFormat::R16_FLOAT) &&
+            capabilities.SupportsColorAttachmentBlend(
+                RHIFormat::R16_FLOAT);
+        if (independentFloatBlendReady)
+        {
+            mask |= ToMask(RenderFeatureCapability::IndependentFloatBlend);
+        }
         if (capabilities.maxColorAttachments >= 4)
         {
             mask |= ToMask(RenderFeatureCapability::MultipleRenderTargets);
@@ -128,6 +150,45 @@ namespace
         }
     }
 
+    [[nodiscard]] RenderHybridRayTracingShadowRoute
+    ToPublicHybridShadowRoute(HybridRayTracingShadowRoute route) noexcept
+    {
+        switch (route)
+        {
+            case HybridRayTracingShadowRoute::RayTraced:
+                return RenderHybridRayTracingShadowRoute::RayTraced;
+            case HybridRayTracingShadowRoute::RasterCSM:
+                return RenderHybridRayTracingShadowRoute::RasterCSM;
+            case HybridRayTracingShadowRoute::Failed:
+                return RenderHybridRayTracingShadowRoute::Failed;
+            case HybridRayTracingShadowRoute::Disabled:
+            default:
+                return RenderHybridRayTracingShadowRoute::None;
+        }
+    }
+
+    [[nodiscard]] RenderHybridRayTracingReflectionRoute
+    ToPublicHybridReflectionRoute(
+        HybridRayTracingReflectionRoute route) noexcept
+    {
+        switch (route)
+        {
+            case HybridRayTracingReflectionRoute::RayTraced:
+                return RenderHybridRayTracingReflectionRoute::RayTraced;
+            case HybridRayTracingReflectionRoute::ScreenSpaceReflection:
+                return RenderHybridRayTracingReflectionRoute::ScreenSpaceReflection;
+            case HybridRayTracingReflectionRoute::ReflectionProbe:
+                return RenderHybridRayTracingReflectionRoute::ReflectionProbe;
+            case HybridRayTracingReflectionRoute::ImageBasedLighting:
+                return RenderHybridRayTracingReflectionRoute::ImageBasedLighting;
+            case HybridRayTracingReflectionRoute::Failed:
+                return RenderHybridRayTracingReflectionRoute::Failed;
+            case HybridRayTracingReflectionRoute::Disabled:
+            default:
+                return RenderHybridRayTracingReflectionRoute::None;
+        }
+    }
+
     [[nodiscard]] const std::shared_ptr<const RenderFeatureChannelRegistry>&
     GetBuiltinRenderFeatureChannelRegistry()
     {
@@ -147,6 +208,54 @@ namespace
         seed ^= value + 0x9E3779B97F4A7C15ull + (seed << 6u) +
             (seed >> 2u);
         return seed;
+    }
+
+    [[nodiscard]] LocalShadowAtlasConfig ResolveLocalShadowAtlasConfig(
+        RenderQualityTier quality) noexcept
+    {
+        LocalShadowAtlasConfig config;
+        config.overflowPolicy =
+            LocalShadowOverflowPolicy::StableUnshadowedFallback;
+        switch (quality)
+        {
+            case RenderQualityTier::Low:
+                config.pageResolution = 512;
+                config.pageCapacity = 8;
+                config.pointLightCapacity = 1;
+                config.spotLightCapacity = 2;
+                break;
+            case RenderQualityTier::Medium:
+                config.pageResolution = 1024;
+                config.pageCapacity = 16;
+                config.pointLightCapacity = 2;
+                config.spotLightCapacity = 4;
+                break;
+            case RenderQualityTier::High:
+            case RenderQualityTier::Ultra:
+                config.pageResolution = 1024;
+                config.pageCapacity = 32;
+                config.pointLightCapacity = 4;
+                config.spotLightCapacity = 8;
+                break;
+            case RenderQualityTier::Count:
+            default:
+                break;
+        }
+        return config;
+    }
+
+    [[nodiscard]] uint64 HashLocalShadowAtlasConfig(
+        const LocalShadowAtlasConfig& config) noexcept
+    {
+        uint64 hash = 0xCBF29CE484222325ull;
+        hash = MixGPUCullingQualificationIdentity(hash, config.pageResolution);
+        hash = MixGPUCullingQualificationIdentity(hash, config.pageCapacity);
+        hash = MixGPUCullingQualificationIdentity(
+            hash, config.pointLightCapacity);
+        hash = MixGPUCullingQualificationIdentity(
+            hash, config.spotLightCapacity);
+        return MixGPUCullingQualificationIdentity(
+            hash, static_cast<uint64>(config.overflowPolicy));
     }
 
     [[nodiscard]] uint64 HashGPUCullingQualificationPacketReference(
@@ -1438,6 +1547,16 @@ void SceneRenderer::Shutdown()
     m_toonOutlineProbeSubmissionAccepted = false;
     m_toonOutlineProbePresented = false;
     m_toonOutlineProbeAbandoned = false;
+    if (m_reflectionFeature != nullptr)
+    {
+        m_reflectionFeature->AbandonSSRQualificationProbe();
+    }
+    m_reflectionProbeSourceExecutionReceipt.reset();
+    m_reflectionProbeSourceDiagnostics.reset();
+    m_hiZReflectionProbeBinding = {};
+    m_reflectionProbeSubmissionAccepted = false;
+    m_reflectionProbePresented = false;
+    m_reflectionProbeAbandoned = false;
     if (m_viewHistoryCoordinator)
     {
         m_viewHistoryCoordinator->Clear();
@@ -1480,10 +1599,14 @@ void SceneRenderer::Shutdown()
     m_legacyForwardFeature = nullptr;
     m_ambientOcclusionFeature = nullptr;
     m_forwardLightingFeature = nullptr;
+    m_reflectionFeature = nullptr;
+    m_forwardSpecialFeature = nullptr;
+    m_translucencyFeature = nullptr;
     m_postProcessFeature = nullptr;
     m_deferredGeometryFeature = nullptr;
     m_deferredLightingFeature = nullptr;
     m_deferredForwardSpecialFeature = nullptr;
+    m_activeLocalShadowPass.reset();
     m_deferredLightingPass.reset();
     ClearPasses();
     m_depthPrepass = nullptr;
@@ -1507,8 +1630,13 @@ void SceneRenderer::Shutdown()
     m_taaPostProcess = nullptr;
     m_screenSpaceOutlinePostProcess = nullptr;
     m_pendingRenderExecutionReceipt.reset();
+    m_pendingReflectionDiagnostics.reset();
     m_lastAttemptedRenderExecutionReceipt = {};
     m_completedRenderExecutionReceipt = {};
+    m_completedReflectionDiagnostics = {};
+    m_completedHiZReflectionQualificationReceipt = {};
+    m_completedHiZReflectionQualificationDiagnostics = {};
+    m_nextHiZReflectionProbeGeneration = 0;
     m_presentedTemporalPresentationState.reset();
     m_activeRenderDeformationResources.reset();
     m_featureCompositionFailureReason.clear();
@@ -1554,9 +1682,18 @@ void SceneRenderer::Shutdown()
 
     if (m_rayTracingSceneManager)
     {
+        if (m_rayTracingSceneRecordingToken.IsValid())
+        {
+            m_rayTracingSceneManager->ReleaseUnsubmitted(
+                m_rayTracingSceneRecordingToken);
+        }
         m_rayTracingSceneManager->Shutdown();
         m_rayTracingSceneManager.reset();
     }
+    m_rayTracingSceneRecordingToken = {};
+    m_hybridRayTracingFramePlan.reset();
+    m_pendingHybridRayTracingObservation = {};
+    m_hybridRayTracingExecutionReceipt.reset();
 
     if (m_depthGPUCulling)
     {
@@ -1570,6 +1707,21 @@ void SceneRenderer::Shutdown()
     }
 
     m_renderGraph.reset();
+    // The depth view owns the backend view allocation and the texture owns
+    // the backing image allocation.  Release them in that order while the
+    // RenderContext still retains its device; Vulkan's allocator must not see
+    // either allocation survive device teardown.
+    m_viewData.depthTarget = {};
+    m_depthGraphHandle = {};
+    m_depthAccessSnapshot = MakeRHITextureAccessSnapshot(
+        RHIResourceState::Undefined,
+        RHIShaderStage::None,
+        GPUQueueDomain::Graphics,
+        RHIContentValidity::Invalid);
+    m_depthTextureView.Reset();
+    m_depthTexture.Reset();
+    m_depthWidth = 0;
+    m_depthHeight = 0;
     m_passRegistry.reset();
     m_rayTracingSceneStats = {};
     m_rayTracingFrameBudgetStats = {};
@@ -1674,9 +1826,32 @@ void SceneRenderer::AbandonAcceptedFrameHistory() noexcept
             m_toonOutlineProbeAbandoned = true;
         }
     }
+    const bool reflectionProbeBoundToAcceptedFrame =
+        m_reflectionFeature != nullptr &&
+        m_reflectionFeature->GetPendingSSRQualificationProbeIdentity()
+            .has_value();
+    if (m_reflectionFeature != nullptr &&
+        !m_reflectionProbePresented &&
+        (m_reflectionProbeSubmissionAccepted ||
+         reflectionProbeBoundToAcceptedFrame))
+    {
+        m_reflectionFeature->AbandonSSRQualificationProbe();
+        m_reflectionProbeSourceExecutionReceipt.reset();
+        m_reflectionProbeSourceDiagnostics.reset();
+        m_hiZReflectionProbeBinding = {};
+        m_reflectionProbeSubmissionAccepted = false;
+        m_reflectionProbePresented = false;
+        m_reflectionProbeAbandoned = true;
+    }
     if (m_postProcessFeature)
     {
         m_postProcessFeature->AbandonTemporalHistoryCandidate();
+    }
+    if (m_rayTracedReflectionPass != nullptr &&
+        m_activeViewHistoryCandidate.has_value())
+    {
+        m_rayTracedReflectionPass->AbandonSubmittedHistory(
+            *m_activeViewHistoryCandidate);
     }
     if (m_activeViewHistoryCandidate.has_value() &&
         m_viewHistoryCoordinator)
@@ -1894,6 +2069,8 @@ void SceneRenderer::RefreshFrameDiagnostics(bool renderAttempted,
     diagnostics.pointShadowRequestCount = m_localLightingStats.pointShadowRequestCount;
     diagnostics.spotShadowRequestCount = m_localLightingStats.spotShadowRequestCount;
     diagnostics.localShadowRequestCount = m_localLightingStats.localShadowRequestCount;
+    diagnostics.localShadowCasterDrawCount =
+        m_localLightingStats.localShadowCasterDrawCount;
     diagnostics.localShadowAtlasReady = m_localLightingStats.localShadowAtlasReady;
     diagnostics.localShadowFallbackReason = m_localLightingStats.localShadowFallbackReason;
     diagnostics.localLightingAvailable = m_lightManager != nullptr;
@@ -1919,6 +2096,11 @@ void SceneRenderer::RefreshFrameDiagnostics(bool renderAttempted,
         m_localLightingStats.spotShadowSupported;
     diagnostics.spotShadowUnsupportedReason =
         m_localLightingStats.spotShadowUnsupportedReason;
+    diagnostics.reflection = m_completedReflectionDiagnostics;
+    diagnostics.hiZReflectionQualificationReceipt =
+        m_completedHiZReflectionQualificationReceipt;
+    diagnostics.hiZReflectionQualification =
+        m_completedHiZReflectionQualificationDiagnostics;
     diagnostics.clusteredLightingInitialized = m_clusteredLightingStats.initialized;
     diagnostics.clusteredLightingFrameBegun = m_clusteredLightingStats.frameBegun;
     diagnostics.clusteredLightingLightsAssigned = m_clusteredLightingStats.lightsAssigned;
@@ -2623,6 +2805,37 @@ RenderFrameApplyResult SceneRenderer::ApplyFrameV5(
         // reach RHI binding. Preserve the accepted scene's request separately
         // so diagnostics can still distinguish it from no IBL request.
         m_environmentIBLRequested = environmentIBLRequested;
+        m_reflectionProbeSnapshots.clear();
+        m_reflectionProbeSnapshots.reserve(scene.GetProbes().size());
+        for (const auto& [probeId, probe] : scene.GetProbes())
+        {
+            static_cast<void>(probeId);
+            m_reflectionProbeSnapshots.push_back(probe);
+        }
+        std::sort(
+            m_reflectionProbeSnapshots.begin(),
+            m_reflectionProbeSnapshots.end(),
+            [](const RenderProbeSnapshot& left,
+               const RenderProbeSnapshot& right)
+            {
+                return left.probeId < right.probeId;
+            });
+        uint64 probeStateHash = 0xCBF29CE484222325ULL;
+        probeStateHash = MixGPUCullingQualificationIdentity(
+            probeStateHash, scene.GetRevision());
+        probeStateHash = MixGPUCullingQualificationIdentity(
+            probeStateHash, m_reflectionProbeSnapshots.size());
+        for (const RenderProbeSnapshot& probe : m_reflectionProbeSnapshots)
+        {
+            probeStateHash = MixGPUCullingQualificationIdentity(
+                probeStateHash, probe.probeId);
+            probeStateHash = MixGPUCullingQualificationIdentity(
+                probeStateHash,
+                (static_cast<uint64>(probe.texture.slot) << 32U) |
+                    probe.texture.generation);
+        }
+        m_reflectionProbeStateHash = probeStateHash == 0
+            ? 1 : probeStateHash;
     }
     return FinalizeFrameApply(frame, std::move(result), registry);
 }
@@ -3166,6 +3379,48 @@ bool SceneRenderer::ArmToonOutlineQualificationProbe()
     return true;
 }
 
+void SceneRenderer::ClearHiZReflectionQualificationCompletion() noexcept
+{
+    // A completion-owned SSR result is deliberately independent of the
+    // latest ordinary presentation diagnostics. Clear every projection as
+    // one owner-thread operation before a new probe can bind a source frame.
+    m_completedHiZReflectionQualificationReceipt = {};
+    m_completedHiZReflectionQualificationDiagnostics = {};
+    m_frameDiagnostics.hiZReflectionQualificationReceipt = {};
+    m_frameDiagnostics.hiZReflectionQualification = {};
+    if (m_toolDiagnosticsSnapshot.frameDiagnosticsAvailable)
+    {
+        m_toolDiagnosticsSnapshot.frame.hiZReflectionQualificationReceipt =
+            {};
+        m_toolDiagnosticsSnapshot.frame.hiZReflectionQualification = {};
+    }
+}
+
+bool SceneRenderer::ArmHiZReflectionQualificationProbe()
+{
+    if (m_reflectionFeature == nullptr ||
+        m_reflectionProbeSubmissionAccepted ||
+        m_reflectionProbeSourceExecutionReceipt.has_value() ||
+        m_reflectionProbeSourceDiagnostics.has_value() ||
+        m_reflectionFeature->HasPendingSSRQualificationProbe() ||
+        !m_reflectionFeature->ArmSSRQualificationProbe())
+    {
+        return false;
+    }
+    ++m_nextHiZReflectionProbeGeneration;
+    if (m_nextHiZReflectionProbeGeneration == 0)
+    {
+        ++m_nextHiZReflectionProbeGeneration;
+    }
+    m_hiZReflectionProbeBinding = {};
+    m_hiZReflectionProbeBinding.generation =
+        m_nextHiZReflectionProbeGeneration;
+    ClearHiZReflectionQualificationCompletion();
+    m_reflectionProbePresented = false;
+    m_reflectionProbeAbandoned = false;
+    return true;
+}
+
 void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
     const RenderSubmissionTracker& tracker)
 {
@@ -3396,6 +3651,133 @@ void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
         }
     }
 
+    if (m_reflectionProbeSubmissionAccepted &&
+        m_reflectionFeature != nullptr &&
+        (m_reflectionProbePresented || m_reflectionProbeAbandoned))
+    {
+        SSRQualificationProbeStats probeStats;
+        const bool completed = m_reflectionFeature->PollSSRQualificationProbe(
+            tracker, probeStats);
+        const bool sourceMatches = completed && probeStats.IsValid() &&
+            m_reflectionProbePresented &&
+            m_hiZReflectionProbeBinding.IsBound() &&
+            m_reflectionProbeSourceExecutionReceipt.has_value() &&
+            m_reflectionProbeSourceDiagnostics.has_value() &&
+            m_reflectionProbeSourceExecutionReceipt->presented &&
+            m_reflectionProbeSourceExecutionReceipt->IsStructurallyValid() &&
+            m_reflectionProbeSourceExecutionReceipt->frameIdentity ==
+                probeStats.identity.frameIdentity &&
+            m_reflectionProbeSourceExecutionReceipt->viewIdentity ==
+                probeStats.identity.viewIdentity &&
+            m_hiZReflectionProbeBinding.frameIdentity ==
+                probeStats.identity.frameIdentity &&
+            m_hiZReflectionProbeBinding.viewIdentity ==
+                probeStats.identity.viewIdentity &&
+            m_hiZReflectionProbeBinding.reflectionPlanIdentity ==
+                probeStats.identity.reflectionPlanIdentity &&
+            m_hiZReflectionProbeBinding.lightingPlanIdentity ==
+                probeStats.identity.lightingPlanIdentity &&
+            m_hiZReflectionProbeBinding.depthPyramidIdentity ==
+                probeStats.identity.depthPyramidIdentity &&
+            m_hiZReflectionProbeBinding.reflectionSurfaceIdentity ==
+                probeStats.identity.reflectionSurfaceIdentity &&
+            m_hiZReflectionProbeBinding.exposureStateContentHash ==
+                probeStats.identity.exposureStateContentHash &&
+            m_reflectionProbeSourceDiagnostics->frameSequence ==
+                probeStats.identity.frameIdentity.frameSequence &&
+            m_reflectionProbeSourceDiagnostics->reflectionPlanIdentity ==
+                probeStats.identity.reflectionPlanIdentity &&
+            m_reflectionProbeSourceDiagnostics->lightingPlanIdentity ==
+                probeStats.identity.lightingPlanIdentity &&
+            m_reflectionProbeSourceDiagnostics->depthPyramidIdentity ==
+                probeStats.identity.depthPyramidIdentity &&
+            m_reflectionProbeSourceDiagnostics->reflectionSurfaceIdentity ==
+                probeStats.identity.reflectionSurfaceIdentity &&
+            m_reflectionProbeSourceDiagnostics->exposureStateContentHash ==
+                probeStats.identity.exposureStateContentHash &&
+            m_reflectionProbeSourceDiagnostics->requested &&
+            m_reflectionProbeSourceDiagnostics->supported &&
+            m_reflectionProbeSourceDiagnostics->scheduled &&
+            m_reflectionProbeSourceDiagnostics->executed &&
+            m_reflectionProbeSourceDiagnostics->hiZBuilt &&
+            m_reflectionProbeSourceDiagnostics->globalIBLReady &&
+            m_reflectionProbeSourceDiagnostics->fallbackChainResolved &&
+            probeStats.routeMaskRadianceSchemaVersion == 1 &&
+            probeStats.localProbeRadianceQualified &&
+            probeStats.globalIBLRadianceQualified &&
+            probeStats.sampleCount != 0 &&
+            probeStats.screenSpaceHitPixelCount != 0 &&
+            probeStats.localProbePixelCount != 0 &&
+            probeStats.globalIBLPixelCount != 0 &&
+            probeStats.receiverSampleCount ==
+                probeStats.screenSpaceHitPixelCount +
+                    probeStats.localProbePixelCount +
+                    probeStats.globalIBLPixelCount &&
+            probeStats.backgroundPixelCount +
+                    probeStats.nonReflectivePixelCount +
+                    probeStats.receiverSampleCount ==
+                probeStats.sampleCount &&
+            probeStats.screenSpaceHitPixelCount <=
+                probeStats.receiverSampleCount;
+        if (sourceMatches)
+        {
+            RenderReflectionDiagnostics qualified =
+                *m_reflectionProbeSourceDiagnostics;
+            qualified.available = true;
+            qualified.screenSpaceApplied = true;
+            qualified.probesApplied = probeStats.localProbePixelCount != 0;
+            qualified.reflectionRouteEvidenceReady = true;
+            qualified.routeMaskRadianceSchemaVersion =
+                probeStats.routeMaskRadianceSchemaVersion;
+            qualified.localProbeRadianceQualified =
+                probeStats.localProbeRadianceQualified;
+            qualified.globalIBLRadianceQualified =
+                probeStats.globalIBLRadianceQualified;
+            qualified.reflectionRouteSampleCount =
+                probeStats.receiverSampleCount;
+            qualified.reflectionReadbackSampleCount = probeStats.sampleCount;
+            qualified.backgroundPixelCount = probeStats.backgroundPixelCount;
+            qualified.nonReflectivePixelCount =
+                probeStats.nonReflectivePixelCount;
+            qualified.screenSpaceHitPixelCount =
+                probeStats.screenSpaceHitPixelCount;
+            qualified.localProbePixelCount = probeStats.localProbePixelCount;
+            qualified.globalIBLPixelCount = probeStats.globalIBLPixelCount;
+            qualified.fallbackReason.clear();
+
+            // Publish an independent source-frame pair. The newest presented
+            // receipt/diagnostics remain untouched while this delayed N-frame
+            // readback completes after N+1/N+2 have already presented.
+            m_completedHiZReflectionQualificationDiagnostics =
+                std::move(qualified);
+            m_completedHiZReflectionQualificationReceipt =
+                *m_reflectionProbeSourceExecutionReceipt;
+            m_reflectionProbeSubmissionAccepted = false;
+            m_reflectionProbeSourceExecutionReceipt.reset();
+            m_reflectionProbeSourceDiagnostics.reset();
+            m_hiZReflectionProbeBinding = {};
+            m_reflectionProbePresented = false;
+            m_reflectionProbeAbandoned = false;
+        }
+        else if (!m_reflectionFeature->HasPendingSSRQualificationProbe())
+        {
+            const std::string failure = probeStats.failure.empty()
+                ? "Hi-Z reflection qualification probe failed or lost its presented source"
+                : probeStats.failure;
+            m_lastAttemptedRenderExecutionReceipt =
+                m_reflectionProbeSourceExecutionReceipt.has_value()
+                    ? *m_reflectionProbeSourceExecutionReceipt
+                    : m_completedRenderExecutionReceipt;
+            m_lastAttemptedRenderExecutionReceipt.diagnostic = failure;
+            m_reflectionProbeSubmissionAccepted = false;
+            m_reflectionProbeSourceExecutionReceipt.reset();
+            m_reflectionProbeSourceDiagnostics.reset();
+            m_hiZReflectionProbeBinding = {};
+            m_reflectionProbePresented = false;
+            m_reflectionProbeAbandoned = false;
+        }
+    }
+
     // Completion can arrive while the runtime is deliberately progressing no
     // replacement frame.  Project only the post-fence evidence into the
     // already-published source-frame diagnostics; rebuilding the complete
@@ -3416,6 +3798,10 @@ void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
         m_lastAttemptedRenderExecutionReceipt;
     m_frameDiagnostics.presentedExecutionReceipt =
         m_completedRenderExecutionReceipt;
+    m_frameDiagnostics.hiZReflectionQualificationReceipt =
+        m_completedHiZReflectionQualificationReceipt;
+    m_frameDiagnostics.hiZReflectionQualification =
+        m_completedHiZReflectionQualificationDiagnostics;
     if (m_toolDiagnosticsSnapshot.frameDiagnosticsAvailable)
     {
         m_toolDiagnosticsSnapshot.frame.gpuDrivenCullingStats
@@ -3434,6 +3820,10 @@ void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
             m_lastAttemptedRenderExecutionReceipt;
         m_toolDiagnosticsSnapshot.frame.presentedExecutionReceipt =
             m_completedRenderExecutionReceipt;
+        m_toolDiagnosticsSnapshot.frame.hiZReflectionQualificationReceipt =
+            m_completedHiZReflectionQualificationReceipt;
+        m_toolDiagnosticsSnapshot.frame.hiZReflectionQualification =
+            m_completedHiZReflectionQualificationDiagnostics;
     }
 }
 
@@ -3469,6 +3859,12 @@ bool SceneRenderer::HasPendingToonOutlineQualificationCompletion()
     return m_toonOutlineProbeSubmissionAccepted;
 }
 
+bool SceneRenderer::HasPendingHiZReflectionQualificationCompletion()
+    const noexcept
+{
+    return m_reflectionProbeSubmissionAccepted;
+}
+
 bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
 {
     RenderSubmissionTracker* const tracker = m_recordingSubmissionTracker;
@@ -3482,9 +3878,59 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
         return false;
     }
 
+    bool submissionSemanticsAccepted = true;
+    if (m_rayTracingSceneStats.prepared &&
+        !m_rayTracingSceneRecordingToken.IsValid())
+    {
+        // The command stream is already submitted. Reject its qualification,
+        // but continue transferring every owner so the acquired presentation
+        // image can complete its physical lifecycle.
+        RVX_RENDER_ERROR(
+            "SceneRenderer: prepared ray-tracing scene has no exact graph recording token");
+        submissionSemanticsAccepted = false;
+    }
+
     if (m_gpuSceneUploader && !m_gpuSceneUploader->NotifySubmission(completion))
     {
-        return false;
+        RVX_RENDER_ERROR(
+            "SceneRenderer: GPU-scene upload ownership rejected exact submission evidence");
+        submissionSemanticsAccepted = false;
+    }
+    bool rayTracingSceneSubmissionAccepted =
+        !m_hybridRayTracingFramePlan.has_value();
+    if (m_rayTracingSceneManager != nullptr &&
+        m_rayTracingSceneRecordingToken.IsValid())
+    {
+        const bool sceneSubmissionAccepted =
+            m_rayTracingSceneManager->NotifySubmission(
+                m_rayTracingSceneRecordingToken, completion, *tracker);
+        if (!sceneSubmissionAccepted)
+        {
+            RVX_RENDER_ERROR(
+                "SceneRenderer: ray-tracing scene rejected exact submission evidence");
+            submissionSemanticsAccepted = false;
+        }
+        if (m_hybridRayTracingFramePlan.has_value())
+        {
+            const RayTracingSceneExecutionReceipt& sceneReceipt =
+                m_rayTracingSceneManager->GetExecutionReceipt();
+            rayTracingSceneSubmissionAccepted = sceneSubmissionAccepted &&
+                sceneReceipt.submitted &&
+                sceneReceipt.preparationGeneration ==
+                    m_hybridRayTracingFramePlan
+                        ->GetRayTracingScenePreparationGeneration() &&
+                sceneReceipt.structuralSignature.hash ==
+                    m_hybridRayTracingFramePlan
+                        ->GetRayTracingSceneStructuralHash();
+            if (!rayTracingSceneSubmissionAccepted)
+            {
+                RVX_RENDER_ERROR(
+                    "SceneRenderer: submitted ray-tracing scene did not match the frozen HybridRayTracing plan");
+                submissionSemanticsAccepted = false;
+            }
+        }
+        m_rayTracingSceneRecordingToken = {};
+        m_rayTracingSceneStats = m_rayTracingSceneManager->GetStats();
     }
     const auto notifyGPUSceneQualification =
         [&completion, tracker](GPUCulling* owner,
@@ -3627,6 +4073,67 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
             m_toonOutlineProbeAbandoned = false;
         }
     }
+    if (m_reflectionFeature != nullptr &&
+        m_reflectionFeature->HasPendingSSRQualificationProbe())
+    {
+        const auto pendingIdentity =
+            m_reflectionFeature->GetPendingSSRQualificationProbeIdentity();
+        const bool exactIdentityAvailable = pendingIdentity.has_value() &&
+            pendingIdentity->IsValid() &&
+            m_hiZReflectionProbeBinding.generation != 0 &&
+            m_pendingRenderExecutionReceipt.has_value() &&
+            m_pendingReflectionDiagnostics.has_value() &&
+            m_pendingRenderExecutionReceipt->frameIdentity ==
+                pendingIdentity->frameIdentity &&
+            m_pendingRenderExecutionReceipt->viewIdentity ==
+                pendingIdentity->viewIdentity &&
+            m_pendingReflectionDiagnostics->frameSequence ==
+                pendingIdentity->frameIdentity.frameSequence &&
+            m_pendingReflectionDiagnostics->reflectionPlanIdentity ==
+                pendingIdentity->reflectionPlanIdentity &&
+            m_pendingReflectionDiagnostics->lightingPlanIdentity ==
+                pendingIdentity->lightingPlanIdentity &&
+            m_pendingReflectionDiagnostics->depthPyramidIdentity ==
+                pendingIdentity->depthPyramidIdentity;
+        const bool accepted = exactIdentityAvailable &&
+            !m_reflectionProbeSubmissionAccepted &&
+            m_reflectionFeature->NotifySSRQualificationProbeSubmission(
+                *pendingIdentity, completion, *tracker);
+        if (!accepted)
+        {
+            m_reflectionFeature->AbandonSSRQualificationProbe();
+            m_hiZReflectionProbeBinding = {};
+            m_reflectionProbeSubmissionAccepted = false;
+            m_reflectionProbePresented = false;
+            m_reflectionProbeAbandoned = true;
+            RVX_RENDER_WARN(
+                "SceneRenderer: Hi-Z reflection qualification probe did not bind exact submission evidence");
+        }
+        else
+        {
+            m_reflectionProbeSourceExecutionReceipt =
+                *m_pendingRenderExecutionReceipt;
+            m_reflectionProbeSourceDiagnostics =
+                *m_pendingReflectionDiagnostics;
+            m_hiZReflectionProbeBinding.frameIdentity =
+                pendingIdentity->frameIdentity;
+            m_hiZReflectionProbeBinding.viewIdentity =
+                pendingIdentity->viewIdentity;
+            m_hiZReflectionProbeBinding.reflectionPlanIdentity =
+                pendingIdentity->reflectionPlanIdentity;
+            m_hiZReflectionProbeBinding.lightingPlanIdentity =
+                pendingIdentity->lightingPlanIdentity;
+            m_hiZReflectionProbeBinding.depthPyramidIdentity =
+                pendingIdentity->depthPyramidIdentity;
+            m_hiZReflectionProbeBinding.reflectionSurfaceIdentity =
+                pendingIdentity->reflectionSurfaceIdentity;
+            m_hiZReflectionProbeBinding.exposureStateContentHash =
+                pendingIdentity->exposureStateContentHash;
+            m_reflectionProbeSubmissionAccepted = true;
+            m_reflectionProbePresented = false;
+            m_reflectionProbeAbandoned = false;
+        }
+    }
     if (m_pipelineCache && !m_pipelineCache->NotifyObjectConstantSubmission(completion))
     {
         RVX_RENDER_ERROR("SceneRenderer: object constant pages rejected invalid completion evidence");
@@ -3643,6 +4150,113 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
     {
         m_rayTracedShadowPass->NotifySubmission(
             m_activeRenderPassIdentity, completion);
+    }
+    bool rayTracedReflectionHistorySubmissionAccepted =
+        !m_hybridRayTracingFramePlan.has_value();
+    if (m_rayTracedReflectionPass)
+    {
+        const bool hybridReflectionRecorded =
+            m_hybridRayTracingFramePlan.has_value() &&
+            m_hybridRayTracingFramePlan->GetReflectionRoute() ==
+                HybridRayTracingReflectionRoute::RayTraced;
+        if (hybridReflectionRecorded)
+        {
+            rayTracedReflectionHistorySubmissionAccepted =
+                m_activeViewHistoryCandidate.has_value() &&
+                m_rayTracedReflectionPass->NotifySubmission(
+                    m_activeRenderPassIdentity,
+                    *m_activeViewHistoryCandidate,
+                    completion);
+            if (!rayTracedReflectionHistorySubmissionAccepted)
+            {
+                RVX_RENDER_ERROR(
+                    "SceneRenderer: ray-traced reflection history did not bind the exact submitted view");
+                submissionSemanticsAccepted = false;
+            }
+        }
+        else
+        {
+            m_rayTracedReflectionPass->NotifySubmission(
+                m_activeRenderPassIdentity, completion);
+        }
+    }
+    if (m_hybridRayTracingFramePlan.has_value())
+    {
+        const RenderHybridRayTracingExecutionReceipt* frozenHybrid = nullptr;
+        if (m_pendingRenderExecutionReceipt.has_value())
+        {
+            const RenderExecutionReceipt& pending =
+                *m_pendingRenderExecutionReceipt;
+            const RenderHybridRayTracingExecutionReceipt& candidate =
+                pending.hybridRayTracing;
+            if (pending.executionSucceeded && candidate.available &&
+                candidate.planIdentityHash ==
+                    m_hybridRayTracingFramePlan->GetIdentityHash() &&
+                candidate.frameIdentity ==
+                    m_hybridRayTracingFramePlan->GetFrameIdentity() &&
+                candidate.viewIdentity ==
+                    m_hybridRayTracingFramePlan->GetViewIdentity())
+            {
+                frozenHybrid = &candidate;
+            }
+        }
+        const bool frozenGraphExecutionAccepted =
+            frozenHybrid != nullptr && frozenHybrid->IsGraphExecutionReady();
+        m_pendingHybridRayTracingObservation.graphExecutionSucceeded =
+            frozenGraphExecutionAccepted;
+        m_pendingHybridRayTracingObservation.sceneBuildAccepted =
+            rayTracingSceneSubmissionAccepted;
+        m_pendingHybridRayTracingObservation.shadowDispatchRecorded =
+            frozenHybrid != nullptr &&
+            frozenHybrid->shadowDispatchRecorded;
+        m_pendingHybridRayTracingObservation.reflectionDispatchRecorded =
+            frozenHybrid != nullptr &&
+            frozenHybrid->reflectionDispatchRecorded;
+        m_pendingHybridRayTracingObservation
+            .reflectionSpatialDenoiseRecorded =
+                frozenHybrid != nullptr &&
+                frozenHybrid->spatialDenoiseRecorded;
+        m_pendingHybridRayTracingObservation
+            .reflectionTemporalDenoiseRecorded =
+                frozenHybrid != nullptr &&
+                frozenHybrid->temporalResolveRecorded;
+        m_pendingHybridRayTracingObservation.reflectionCompositeRecorded =
+            frozenHybrid != nullptr && frozenHybrid->compositeRecorded;
+        m_pendingHybridRayTracingObservation
+            .reflectionCompositeUsedDenoisedSource =
+                frozenHybrid != nullptr &&
+                frozenHybrid->compositeUsedDenoisedSource;
+        m_pendingHybridRayTracingObservation.submissionAccepted =
+            submissionSemanticsAccepted &&
+            rayTracedReflectionHistorySubmissionAccepted;
+        m_hybridRayTracingExecutionReceipt =
+            HybridRayTracingExecutionReceipt::FromPlan(
+                *m_hybridRayTracingFramePlan,
+                m_pendingHybridRayTracingObservation);
+        const bool hybridSubmissionAccepted =
+            m_hybridRayTracingExecutionReceipt->IsExecutionSuccessfulFor(
+                *m_hybridRayTracingFramePlan);
+        if (!hybridSubmissionAccepted)
+        {
+            RVX_RENDER_ERROR(
+                "SceneRenderer: required HybridRayTracing execution evidence is incomplete");
+            submissionSemanticsAccepted = false;
+        }
+        if (m_pendingRenderExecutionReceipt.has_value())
+        {
+            RenderHybridRayTracingExecutionReceipt& hybrid =
+                m_pendingRenderExecutionReceipt->hybridRayTracing;
+            hybrid.sceneBuildAccepted = rayTracingSceneSubmissionAccepted;
+            hybrid.submissionAccepted = hybridSubmissionAccepted;
+            hybrid.presentationQualified = false;
+            hybrid.succeeded = false;
+            if (!hybrid.IsStructurallyValid())
+            {
+                RVX_RENDER_ERROR(
+                    "SceneRenderer: public HybridRayTracing submission receipt is structurally invalid");
+                submissionSemanticsAccepted = false;
+            }
+        }
     }
     RetireOwnerSnapshots(completion);
     if (m_resourceViewCache)
@@ -3666,6 +4280,44 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
     m_recordingSubmissionTracker = nullptr;
     m_directOpaqueRasterReadbackSourceFrameSlot = RVX_INVALID_INDEX;
     RefreshSubmissionQualifiedFrameDiagnostics();
+    if (!submissionSemanticsAccepted &&
+        m_pendingRenderExecutionReceipt.has_value())
+    {
+        RenderExecutionReceipt& rejected =
+            *m_pendingRenderExecutionReceipt;
+        rejected.executionSucceeded = false;
+        rejected.presented = false;
+        rejected.succeeded = false;
+        if (rejected.diagnostic.empty())
+        {
+            rejected.diagnostic =
+                "Submitted render work failed exact semantic qualification";
+        }
+        m_lastAttemptedRenderExecutionReceipt = rejected;
+    }
+    // The exact outer boundary was accepted and all ordinary submission
+    // owners have now transferred. Semantic qualification is deliberately
+    // separate: a submitted swapchain image must still reach Present.
+    return true;
+}
+
+bool SceneRenderer::IsPendingSubmissionSemanticallyQualified() const noexcept
+{
+    if (!m_pendingRenderExecutionReceipt.has_value())
+    {
+        return false;
+    }
+
+    const RenderExecutionReceipt& receipt =
+        *m_pendingRenderExecutionReceipt;
+    if (!receipt.executionSucceeded || !receipt.IsStructurallyValid())
+    {
+        return false;
+    }
+    if (receipt.resolvedRecipe == RenderPipelineRecipe::HybridRayTracing)
+    {
+        return receipt.hybridRayTracing.IsSubmissionReady();
+    }
     return true;
 }
 
@@ -3700,6 +4352,21 @@ void SceneRenderer::ReleaseUnsubmittedFrame()
         m_toonOutlineProbeSourceExecutionReceipt.reset();
         m_toonOutlineProbePresented = false;
         m_toonOutlineProbeAbandoned = false;
+    }
+    if (m_reflectionFeature != nullptr &&
+        !m_reflectionProbeSubmissionAccepted &&
+        m_reflectionFeature->HasPendingSSRQualificationProbe())
+    {
+        // A render-owner request is armed before ApplyFrameV5 so it can bind
+        // the exact admitted frame.  Accepting that frame must preserve the
+        // still-unbound request, while a frame that never reaches submission
+        // must cancel it rather than allowing it to attach to a later frame.
+        m_reflectionFeature->AbandonSSRQualificationProbe();
+        m_reflectionProbeSourceExecutionReceipt.reset();
+        m_reflectionProbeSourceDiagnostics.reset();
+        m_hiZReflectionProbeBinding = {};
+        m_reflectionProbePresented = false;
+        m_reflectionProbeAbandoned = true;
     }
     const bool preservePresentedExposureProbe =
         m_exposureProbeCompletion && m_exposureProbePresented &&
@@ -3794,6 +4461,28 @@ void SceneRenderer::ReleaseUnsubmittedFrame()
     {
         m_rayTracedShadowPass->ReleaseUnsubmittedFrame(
             m_activeRenderPassIdentity);
+    }
+    if (m_rayTracedReflectionPass)
+    {
+        m_rayTracedReflectionPass->ReleaseUnsubmittedFrame(
+            m_activeRenderPassIdentity);
+    }
+    if (m_rayTracingSceneManager != nullptr &&
+        m_rayTracingSceneRecordingToken.IsValid())
+    {
+        m_rayTracingSceneManager->ReleaseUnsubmitted(
+            m_rayTracingSceneRecordingToken);
+        m_rayTracingSceneRecordingToken = {};
+        m_rayTracingSceneStats = m_rayTracingSceneManager->GetStats();
+    }
+    if (m_hybridRayTracingFramePlan.has_value())
+    {
+        HybridRayTracingExecutionObservation abandoned;
+        abandoned.diagnostic =
+            "HybridRayTracing recording was abandoned before submission";
+        m_hybridRayTracingExecutionReceipt =
+            HybridRayTracingExecutionReceipt::FromPlan(
+                *m_hybridRayTracingFramePlan, std::move(abandoned));
     }
     if (m_renderContext)
     {
@@ -4005,24 +4694,38 @@ void SceneRenderer::RetireOwnerSnapshots(
     }
 }
 
-void SceneRenderer::MarkAcceptedFramePresented()
+void SceneRenderer::MarkAcceptedFramePresented(
+    bool externalQualificationAccepted)
 {
     const uint64 presentedFrameSequence =
         m_renderScene.GetAcceptedHeader().sequence;
     const RenderViewIdentity presentedViewIdentity =
         m_renderScene.GetView().identity;
     m_renderScene.MarkAcceptedFrameRendered();
-    // Motion history is presentation-qualified. Recording, submission, or
-    // Present failure must leave the prior presented transforms intact.
-    UpdateObjectMotionHistory();
+    // Motion history is committed only after the full receipt and temporal
+    // transaction below qualify. A physical Present with rejected evidence
+    // must leave the prior qualified transforms intact.
 
-    const bool receiptMatches =
+    const bool hybridRayTracingReceiptMatches =
+        !m_hybridRayTracingFramePlan.has_value() ||
+        (m_hybridRayTracingExecutionReceipt.has_value() &&
+         m_hybridRayTracingExecutionReceipt->IsExecutionSuccessfulFor(
+             *m_hybridRayTracingFramePlan) &&
+         m_pendingRenderExecutionReceipt.has_value() &&
+         m_pendingRenderExecutionReceipt->hybridRayTracing.available &&
+         m_pendingRenderExecutionReceipt->hybridRayTracing
+                 .planIdentityHash ==
+             m_hybridRayTracingFramePlan->GetIdentityHash() &&
+         m_pendingRenderExecutionReceipt->hybridRayTracing
+             .submissionAccepted);
+    const bool receiptMatches = externalQualificationAccepted &&
         m_pendingRenderExecutionReceipt.has_value() &&
         m_pendingRenderExecutionReceipt->executionSucceeded &&
         m_pendingRenderExecutionReceipt->frameIdentity.frameSequence ==
             presentedFrameSequence &&
         m_pendingRenderExecutionReceipt->viewIdentity ==
-            presentedViewIdentity;
+            presentedViewIdentity &&
+        hybridRayTracingReceiptMatches;
     const bool temporalPresentationStateMatches =
         m_activeViewHistoryCandidate.has_value() &&
         m_pendingTemporalPresentationState.has_value() &&
@@ -4039,11 +4742,16 @@ void SceneRenderer::MarkAcceptedFramePresented()
     const bool ambientOcclusionRequiresHistoryCommit =
         m_ambientOcclusionFeature != nullptr &&
         m_ambientOcclusionFeature->RequiresHistoryCommit();
+    const bool rayTracedReflectionHistoryRequired =
+        m_hybridRayTracingFramePlan.has_value() &&
+        m_hybridRayTracingFramePlan->GetReflectionRoute() ==
+            HybridRayTracingReflectionRoute::RayTraced;
     const bool coordinatorCanCommit =
-        temporalPresentationStateMatches &&
+        externalQualificationAccepted && temporalPresentationStateMatches &&
         m_viewHistoryCoordinator && m_activeViewHistoryCandidate.has_value() &&
         (!(postProcessRequiresHistoryCommit ||
-           ambientOcclusionRequiresHistoryCommit) || receiptMatches) &&
+           ambientOcclusionRequiresHistoryCommit ||
+           rayTracedReflectionHistoryRequired) || receiptMatches) &&
         m_viewHistoryCoordinator->CanCommitPresented(
             *m_activeViewHistoryCandidate);
     // A presentation is a dual temporal transaction when TAA produced a
@@ -4062,13 +4770,22 @@ void SceneRenderer::MarkAcceptedFramePresented()
          m_activeViewHistoryCandidate.has_value() &&
          m_ambientOcclusionFeature->CanCommitHistoryAfterPresent(
              *m_activeViewHistoryCandidate));
+    const bool rayTracedReflectionCanCommit =
+        !rayTracedReflectionHistoryRequired ||
+        (coordinatorCanCommit && m_rayTracedReflectionPass != nullptr &&
+         m_rayTracedReflectionPass->RequiresHistoryCommit() &&
+         m_activeViewHistoryCandidate.has_value() &&
+         m_rayTracedReflectionPass->CanCommitHistoryAfterPresent(
+             *m_activeViewHistoryCandidate));
 
     bool historyCommitted = false;
     bool postProcessHistoryCommitted = !postProcessRequiresHistoryCommit;
     bool ambientOcclusionHistoryCommitted =
         !ambientOcclusionRequiresHistoryCommit;
+    bool rayTracedReflectionHistoryCommitted =
+        !rayTracedReflectionHistoryRequired;
     if (coordinatorCanCommit && postProcessCanCommit &&
-        ambientOcclusionCanCommit)
+        ambientOcclusionCanCommit && rayTracedReflectionCanCommit)
     {
         // These commits cannot fail after their side-effect-free exact
         // candidate preflights while this renderer owns the frame lifecycle.
@@ -4087,6 +4804,14 @@ void SceneRenderer::MarkAcceptedFramePresented()
                 m_ambientOcclusionFeature->CommitHistoryAfterPresent(
                     *m_activeViewHistoryCandidate);
         }
+        if (historyCommitted && postProcessHistoryCommitted &&
+            ambientOcclusionHistoryCommitted &&
+            rayTracedReflectionHistoryRequired)
+        {
+            rayTracedReflectionHistoryCommitted =
+                m_rayTracedReflectionPass->CommitHistoryAfterPresent(
+                    *m_activeViewHistoryCandidate);
+        }
     }
 
     if (!historyCommitted && m_viewHistoryCoordinator &&
@@ -4103,8 +4828,16 @@ void SceneRenderer::MarkAcceptedFramePresented()
     {
         m_ambientOcclusionFeature->AbandonHistoryCandidate();
     }
+    if (!rayTracedReflectionHistoryCommitted &&
+        m_rayTracedReflectionPass != nullptr &&
+        m_activeViewHistoryCandidate.has_value())
+    {
+        m_rayTracedReflectionPass->AbandonSubmittedHistory(
+            *m_activeViewHistoryCandidate);
+    }
     if (!historyCommitted || !postProcessHistoryCommitted ||
-        !ambientOcclusionHistoryCommitted)
+        !ambientOcclusionHistoryCommitted ||
+        !rayTracedReflectionHistoryCommitted)
     {
         // Preserve correctness if a lifecycle caller violates the accepted /
         // presented pairing or either exact-candidate preflight fails. The
@@ -4147,13 +4880,62 @@ void SceneRenderer::MarkAcceptedFramePresented()
             std::move(ambientOcclusion);
     }
 
+    bool hybridRayTracingPresentationQualified =
+        !m_hybridRayTracingFramePlan.has_value();
+    if (m_hybridRayTracingFramePlan.has_value())
+    {
+        m_pendingHybridRayTracingObservation.presentationQualified =
+            receiptMatches && historyCommitted &&
+            postProcessHistoryCommitted &&
+            ambientOcclusionHistoryCommitted &&
+            rayTracedReflectionHistoryCommitted;
+        m_hybridRayTracingExecutionReceipt =
+            HybridRayTracingExecutionReceipt::FromPlan(
+                *m_hybridRayTracingFramePlan,
+                m_pendingHybridRayTracingObservation);
+        hybridRayTracingPresentationQualified =
+            m_hybridRayTracingExecutionReceipt->IsPresentationQualifiedFor(
+                *m_hybridRayTracingFramePlan);
+        if (m_pendingRenderExecutionReceipt.has_value())
+        {
+            RenderHybridRayTracingExecutionReceipt& hybrid =
+                m_pendingRenderExecutionReceipt->hybridRayTracing;
+            hybrid.presentationQualified =
+                hybridRayTracingPresentationQualified;
+            hybrid.succeeded = hybridRayTracingPresentationQualified;
+            if (!hybrid.IsStructurallyValid())
+            {
+                hybridRayTracingPresentationQualified = false;
+                hybrid.presentationQualified = false;
+                hybrid.succeeded = false;
+            }
+        }
+    }
+
     m_activeViewHistoryCandidate.reset();
     m_activeViewHistoryAvailability.reset();
     m_pendingTemporalPresentationState.reset();
 
     const bool presentationQualified =
         receiptMatches && historyCommitted && postProcessHistoryCommitted &&
-        ambientOcclusionHistoryCommitted;
+        ambientOcclusionHistoryCommitted &&
+        rayTracedReflectionHistoryCommitted &&
+        hybridRayTracingPresentationQualified;
+    // Apply-only callers do not have a render execution receipt, but still
+    // use this boundary to commit scene motion history. Once a render receipt
+    // exists, the history must follow the fully qualified presentation rather
+    // than the physical Present alone.
+    const bool objectMotionHistoryQualified =
+        externalQualificationAccepted &&
+        (!m_pendingRenderExecutionReceipt.has_value() ||
+         presentationQualified);
+    const bool reflectionMatchesPresentation = presentationQualified &&
+        m_pendingReflectionDiagnostics.has_value() &&
+        m_pendingReflectionDiagnostics->graphExecutionFinalized &&
+        m_pendingReflectionDiagnostics->frameSequence ==
+            presentedFrameSequence &&
+        m_pendingReflectionDiagnostics->reflectionPlanIdentity != 0 &&
+        m_pendingReflectionDiagnostics->lightingPlanIdentity != 0;
     if (m_ambientOcclusionProbeSubmissionAccepted &&
         m_ambientOcclusionFeature != nullptr)
     {
@@ -4227,6 +5009,61 @@ void SceneRenderer::MarkAcceptedFramePresented()
             m_toonOutlineProbeAbandoned = true;
         }
     }
+    if (m_reflectionProbeSubmissionAccepted &&
+        m_reflectionFeature != nullptr)
+    {
+        const auto pendingIdentity =
+            m_reflectionFeature->GetPendingSSRQualificationProbeIdentity();
+        const bool probeMatchesPresentation = presentationQualified &&
+            pendingIdentity.has_value() && pendingIdentity->IsValid() &&
+            m_hiZReflectionProbeBinding.IsBound() &&
+            m_reflectionProbeSourceExecutionReceipt.has_value() &&
+            m_reflectionProbeSourceDiagnostics.has_value() &&
+            pendingIdentity->frameIdentity.frameSequence ==
+                presentedFrameSequence &&
+            pendingIdentity->viewIdentity == presentedViewIdentity &&
+            pendingIdentity->frameIdentity ==
+                m_hiZReflectionProbeBinding.frameIdentity &&
+            pendingIdentity->viewIdentity ==
+                m_hiZReflectionProbeBinding.viewIdentity &&
+            pendingIdentity->reflectionPlanIdentity ==
+                m_hiZReflectionProbeBinding.reflectionPlanIdentity &&
+            pendingIdentity->lightingPlanIdentity ==
+                m_hiZReflectionProbeBinding.lightingPlanIdentity &&
+            pendingIdentity->depthPyramidIdentity ==
+                m_hiZReflectionProbeBinding.depthPyramidIdentity &&
+            pendingIdentity->reflectionSurfaceIdentity ==
+                m_hiZReflectionProbeBinding.reflectionSurfaceIdentity &&
+            pendingIdentity->exposureStateContentHash ==
+                m_hiZReflectionProbeBinding.exposureStateContentHash &&
+            m_reflectionProbeSourceExecutionReceipt->frameIdentity ==
+                pendingIdentity->frameIdentity &&
+            m_reflectionProbeSourceExecutionReceipt->viewIdentity ==
+                pendingIdentity->viewIdentity &&
+            m_reflectionProbeSourceDiagnostics->reflectionPlanIdentity ==
+                pendingIdentity->reflectionPlanIdentity &&
+            m_reflectionProbeSourceDiagnostics->lightingPlanIdentity ==
+                pendingIdentity->lightingPlanIdentity &&
+            m_reflectionProbeSourceDiagnostics->depthPyramidIdentity ==
+                pendingIdentity->depthPyramidIdentity;
+        if (probeMatchesPresentation &&
+            m_reflectionFeature->MarkSSRQualificationProbePresented(
+                *pendingIdentity))
+        {
+            m_reflectionProbePresented = true;
+            m_reflectionProbeAbandoned = false;
+        }
+        else
+        {
+            m_reflectionFeature->AbandonSSRQualificationProbe();
+            m_reflectionProbePresented = false;
+            m_reflectionProbeAbandoned = true;
+        }
+    }
+    if (objectMotionHistoryQualified)
+    {
+        UpdateObjectMotionHistory();
+    }
     if (presentationQualified)
     {
         RenderExecutionReceipt presented =
@@ -4242,6 +5079,35 @@ void SceneRenderer::MarkAcceptedFramePresented()
                     *presentedTemporalCandidate;
             }
             m_completedRenderExecutionReceipt = presented;
+            if (reflectionMatchesPresentation)
+            {
+                RenderReflectionDiagnostics reflection =
+                    *m_pendingReflectionDiagnostics;
+                reflection.available = true;
+                m_completedReflectionDiagnostics = std::move(reflection);
+            }
+            if (m_reflectionProbeSubmissionAccepted &&
+                m_reflectionProbePresented &&
+                m_reflectionProbeSourceDiagnostics.has_value() &&
+                m_reflectionProbeSourceDiagnostics->frameSequence ==
+                    m_completedRenderExecutionReceipt.frameIdentity.frameSequence &&
+                m_completedReflectionDiagnostics.frameSequence ==
+                    m_completedRenderExecutionReceipt.frameIdentity.frameSequence)
+            {
+                // Freeze the completed source pair before later frames can
+                // replace the ordinary presentation diagnostics.
+                m_reflectionProbeSourceExecutionReceipt =
+                    m_completedRenderExecutionReceipt;
+                m_reflectionProbeSourceDiagnostics =
+                    m_completedReflectionDiagnostics;
+            }
+            else if (m_reflectionProbeSubmissionAccepted &&
+                     m_reflectionFeature != nullptr)
+            {
+                m_reflectionFeature->AbandonSSRQualificationProbe();
+                m_reflectionProbePresented = false;
+                m_reflectionProbeAbandoned = true;
+            }
             if (m_exposureProbeCompletion && m_exposureProbePresented &&
                 m_exposureProbeHistoryIdentity.has_value() &&
                 presentedTemporalCandidate.has_value() &&
@@ -4295,6 +5161,20 @@ void SceneRenderer::MarkAcceptedFramePresented()
             // execution-complete / presentation-unqualified state.
             presented.presented = false;
             presented.succeeded = false;
+            if (presented.hybridRayTracing.available)
+            {
+                presented.hybridRayTracing.presentationQualified = false;
+                presented.hybridRayTracing.succeeded = false;
+                m_pendingHybridRayTracingObservation
+                    .presentationQualified = false;
+                if (m_hybridRayTracingFramePlan.has_value())
+                {
+                    m_hybridRayTracingExecutionReceipt =
+                        HybridRayTracingExecutionReceipt::FromPlan(
+                            *m_hybridRayTracingFramePlan,
+                            m_pendingHybridRayTracingObservation);
+                }
+            }
             presented.diagnostic =
                 "Presented render execution receipt failed structural validation";
             if (m_ambientOcclusionProbeSubmissionAccepted &&
@@ -4312,6 +5192,13 @@ void SceneRenderer::MarkAcceptedFramePresented()
                 m_toonOutlineProbePresented = false;
                 m_toonOutlineProbeAbandoned = true;
             }
+            if (m_reflectionProbeSubmissionAccepted &&
+                m_reflectionFeature != nullptr)
+            {
+                m_reflectionFeature->AbandonSSRQualificationProbe();
+                m_reflectionProbePresented = false;
+                m_reflectionProbeAbandoned = true;
+            }
             m_lastAttemptedRenderExecutionReceipt = std::move(presented);
         }
     }
@@ -4326,14 +5213,27 @@ void SceneRenderer::MarkAcceptedFramePresented()
         // preserves the receipt invariant for a failed qualification.
         rejected.presented = false;
         rejected.succeeded = false;
+        if (rejected.hybridRayTracing.available)
+        {
+            rejected.hybridRayTracing.presentationQualified = false;
+            rejected.hybridRayTracing.succeeded = false;
+        }
         rejected.diagnostic = !receiptMatches
             ? "Presented frame did not qualify for a completed render execution receipt"
             : !historyCommitted
                 ? "Presented frame failed temporal history qualification"
                 : "Presented frame failed TAA temporal history qualification";
+        if (m_reflectionProbeSubmissionAccepted &&
+            m_reflectionFeature != nullptr)
+        {
+            m_reflectionFeature->AbandonSSRQualificationProbe();
+            m_reflectionProbePresented = false;
+            m_reflectionProbeAbandoned = true;
+        }
         m_lastAttemptedRenderExecutionReceipt = std::move(rejected);
     }
     m_pendingRenderExecutionReceipt.reset();
+    m_pendingReflectionDiagnostics.reset();
     m_frameDiagnostics.attemptedExecutionReceipt =
         m_lastAttemptedRenderExecutionReceipt;
     m_frameDiagnostics.presentedExecutionReceipt =
@@ -4840,6 +5740,7 @@ void SceneRenderer::PrepareMeshPassPackets()
 
     const auto validateStream = [](const MeshPassPacketStream& stream)
     {
+        (void)stream;
         RVX_DEBUG_ASSERT(stream.stats.HasCompleteRelevantOutcome());
         RVX_DEBUG_ASSERT(
             stream.stats.HasExactlyOneReasonPerRejectedPacket());
@@ -4952,9 +5853,8 @@ void SceneRenderer::CompileRenderFramePlan()
             backBufferFormat =
                 m_renderContext->GetCurrentBackBuffer()->GetFormat();
         }
-        const bool deferredRecipeRequested =
-            m_renderScene.GetSettings().pipelineRequest.recipe ==
-            RenderPipelineRecipe::DeferredQuality;
+        const bool deferredRecipeRequested = UsesDeferredOpaquePath(
+            m_renderScene.GetSettings().pipelineRequest.recipe);
         PostProcessStackExecuteStats stackStats;
         if (m_postProcessStack)
         {
@@ -6200,9 +7100,20 @@ SceneRayTracingFrameStats SceneRenderer::GetRayTracingFrameStats() const
         m_activeRenderPassResults->identity == m_activeRenderPassIdentity
             ? m_activeRenderPassResults->rayTracedShadowStats
             : GetRayTracedShadowStats();
-    const RayTracedReflectionPassStats& reflectionStats = GetRayTracedReflectionStats();
-    const RayTracedReflectionDenoisePassStats& denoiseStats = GetRayTracedReflectionDenoiseStats();
-    const RayTracedReflectionCompositePassStats& compositeStats = GetRayTracedReflectionCompositeStats();
+    const bool hasExactGraphResults = m_activeRenderPassResults &&
+        m_activeRenderPassResults->identity == m_activeRenderPassIdentity;
+    const RayTracedReflectionPassStats& reflectionStats =
+        hasExactGraphResults
+            ? m_activeRenderPassResults->rayTracedReflectionStats
+            : GetRayTracedReflectionStats();
+    const RayTracedReflectionDenoisePassStats& denoiseStats =
+        hasExactGraphResults
+            ? m_activeRenderPassResults->rayTracedReflectionDenoiseStats
+            : GetRayTracedReflectionDenoiseStats();
+    const RayTracedReflectionCompositePassStats& compositeStats =
+        hasExactGraphResults
+            ? m_activeRenderPassResults->rayTracedReflectionCompositeStats
+            : GetRayTracedReflectionCompositeStats();
 
     SceneRayTracingFrameStats stats = m_rayTracingFrameBudgetStats;
     stats.sceneSupported = m_rayTracingSceneStats.supported;
@@ -6604,6 +7515,9 @@ void SceneRenderer::Render()
             std::clamp(m_postProcessSettings.rayTracedReflectionHistoryConfidenceThreshold, 0.0f, 1.0f);
         reflectionConfig.historyVelocityRejectionScale =
             std::max(0.0f, m_postProcessSettings.rayTracedReflectionHistoryVelocityRejectionScale);
+        reflectionConfig.fixedHalfResolution =
+            m_renderScene.GetSettings().pipelineRequest.recipe ==
+            RenderPipelineRecipe::HybridRayTracing;
 
         denoiseConfig.radius = std::min<uint32>(
             std::max<uint32>(m_postProcessSettings.rayTracedReflectionDenoiseRadius, 0u),
@@ -6961,8 +7875,8 @@ void SceneRenderer::Render()
     }
 
     if (graphExecuted && graphCompileValid &&
-        m_renderScene.GetSettings().pipelineRequest.recipe ==
-            RenderPipelineRecipe::DeferredQuality &&
+        UsesDeferredOpaquePath(
+            m_renderScene.GetSettings().pipelineRequest.recipe) &&
         !ValidateDeferredToneMappingSemanticEvidence(
             *m_renderGraph,
             m_postProcessStats.stackStats,
@@ -6980,6 +7894,112 @@ void SceneRenderer::Render()
             std::chrono::steady_clock::now() - graphRealizeRecordStart)
                                  .count());
 
+    if (m_activeLocalShadowPass)
+    {
+        m_activeLocalShadowPass->FinalizeGraphExecution(
+            graphExecuted && graphCompileValid);
+        const LocalShadowPassExecutionEvidence localShadowEvidence =
+            m_activeLocalShadowPass->GetLastExecutionEvidence();
+        const bool localShadowWorkRequested =
+            m_localShadowAtlasPlan != nullptr &&
+            !m_localShadowAtlasPlan->GetPages().empty();
+        const bool localShadowEvidenceMatchesPlan =
+            localShadowWorkRequested &&
+            localShadowEvidence.atlasPlanIdentity ==
+                m_localShadowAtlasPlan->GetIdentityHash() &&
+            localShadowEvidence.atlasGeneration ==
+                m_localShadowAtlasPlan->GetAtlasGeneration();
+        m_localLightingStats.localShadowCasterDrawCount =
+            localShadowEvidenceMatchesPlan
+                ? localShadowEvidence.casterDrawCount
+                : 0;
+        const bool exactLocalShadowCasterExecution =
+            localShadowEvidenceMatchesPlan &&
+            localShadowEvidence.HasExactGpuExecution() &&
+            localShadowEvidence.realizedPageCount != 0;
+        bool hasLocalShadowReceiverExecution = false;
+        bool hasPrimaryLocalShadowReceiverExecution = false;
+        bool allLocalShadowReceiversExact = true;
+        if (localShadowWorkRequested && m_activeRenderPassResults != nullptr &&
+            m_activeRenderPassResults->identity == m_activeRenderPassIdentity)
+        {
+            for (const RenderLightingSurfaceExecutionEvidence& evidence :
+                 m_activeRenderPassResults->lightingSurfaceEvidence)
+            {
+                if (!evidence.IsValid())
+                {
+                    continue;
+                }
+                hasLocalShadowReceiverExecution = true;
+                hasPrimaryLocalShadowReceiverExecution =
+                    hasPrimaryLocalShadowReceiverExecution ||
+                    evidence.route ==
+                        RenderLightingSurfaceRoute::ForwardOpaque ||
+                    evidence.route ==
+                        RenderLightingSurfaceRoute::DeferredOpaque;
+                allLocalShadowReceiversExact =
+                    allLocalShadowReceiversExact &&
+                    evidence.localShadowBound &&
+                    evidence.lightingPlanIdentity ==
+                        m_localShadowAtlasPlan->GetLightingPlanIdentity() &&
+                    evidence.localShadowPlanIdentity ==
+                        m_localShadowAtlasPlan->GetLocalShadowPlanIdentity() &&
+                    evidence.localShadowAtlasPlanIdentity ==
+                        m_localShadowAtlasPlan->GetIdentityHash() &&
+                    evidence.localShadowAtlasGeneration ==
+                        m_localShadowAtlasPlan->GetAtlasGeneration() &&
+                    evidence.localShadowPageCount ==
+                        m_localShadowAtlasPlan->GetPages().size();
+            }
+        }
+        const bool exactLocalShadowReceiverExecution =
+            hasLocalShadowReceiverExecution &&
+            hasPrimaryLocalShadowReceiverExecution &&
+            allLocalShadowReceiversExact;
+        const bool exactLocalShadowExecution =
+            exactLocalShadowCasterExecution &&
+            exactLocalShadowReceiverExecution;
+        m_localLightingStats.localShadowAtlasReady =
+            exactLocalShadowExecution;
+        if (m_localLightingStats.localShadowRequestCount != 0)
+        {
+            m_localLightingStats.pointShadowSupported =
+                m_localLightingStats.pointShadowRequestCount == 0 ||
+                exactLocalShadowExecution;
+            m_localLightingStats.spotShadowSupported =
+                m_localLightingStats.spotShadowRequestCount == 0 ||
+                exactLocalShadowExecution;
+            if (!exactLocalShadowExecution)
+            {
+                const std::string executionFailure =
+                    exactLocalShadowCasterExecution &&
+                            !exactLocalShadowReceiverExecution
+                        ? "local-shadow atlas was rendered but no exact lighting receiver consumed it"
+                        : (localShadowEvidence.diagnostic.empty()
+                               ? "local-shadow graph execution was not accepted"
+                               : localShadowEvidence.diagnostic);
+                m_localLightingStats.localShadowFallbackReason =
+                    executionFailure;
+                if (m_localLightingStats.pointShadowRequestCount != 0)
+                {
+                    m_localLightingStats.pointShadowUnsupportedReason =
+                        executionFailure;
+                }
+                if (m_localLightingStats.spotShadowRequestCount != 0)
+                {
+                    m_localLightingStats.spotShadowUnsupportedReason =
+                        executionFailure;
+                }
+            }
+            else
+            {
+                m_localLightingStats.localShadowFallbackReason.clear();
+                m_localLightingStats.pointShadowUnsupportedReason.clear();
+                m_localLightingStats.spotShadowUnsupportedReason.clear();
+            }
+        }
+    }
+
     if (m_renderFeatureRegistry && graphExecuted && graphCompileValid)
     {
         const RenderFeatureRegistryCode evidenceCode =
@@ -6992,6 +8012,75 @@ void SceneRenderer::Render()
         }
     }
 
+    // The adapter only exposes this snapshot after it received exact graph
+    // completion evidence. Keep it pending until the matching render receipt
+    // passes the separate presentation transaction below.
+    m_pendingReflectionDiagnostics.reset();
+    if (m_reflectionFeature != nullptr &&
+        m_reflectionFramePlan != nullptr &&
+        m_reflectionFeature->HasFinalizedSSRComputeStats())
+    {
+        const SSRComputeStats& stats =
+            m_reflectionFeature->GetFinalizedSSRComputeStats();
+        const ReflectionSSRIdentity& ssrIdentity =
+            m_reflectionFramePlan->GetSSRIdentity();
+        const bool identitiesMatch = m_lightingFramePlan != nullptr &&
+            stats.reflectionPlanIdentity ==
+                m_reflectionFramePlan->GetIdentityHash() &&
+            stats.lightingPlanIdentity ==
+                m_lightingFramePlan->GetIdentityHash() &&
+            stats.reflectionSurfaceIdentity != 0 &&
+            stats.exposureStateContentHash != 0 &&
+            (!stats.screenSpaceRequested ||
+             (stats.depthPyramidIdentity != 0 &&
+              stats.depthPyramidIdentity ==
+                  ssrIdentity.depthPyramidIdentityHash));
+        if (identitiesMatch)
+        {
+            RenderReflectionDiagnostics reflection;
+            reflection.graphExecutionFinalized = true;
+            reflection.requested = stats.requested;
+            reflection.supported = stats.supported;
+            reflection.scheduled = stats.scheduled;
+            reflection.executed = stats.executed;
+            reflection.hiZBuilt = stats.hiZBuilt;
+            reflection.globalIBLReady = stats.globalIBLReady;
+            reflection.fallbackChainResolved = stats.fallbackChainResolved;
+            // Route-mask pixels become trustworthy only when the separately
+            // armed post-present readback maps. Graph finalization is not
+            // permitted to claim either route was visually applied.
+            reflection.screenSpaceApplied = false;
+            reflection.probesApplied = false;
+            reflection.reflectionRouteEvidenceReady = false;
+            reflection.routeMaskRadianceSchemaVersion = 0;
+            reflection.localProbeRadianceQualified = false;
+            reflection.globalIBLRadianceQualified = false;
+            reflection.readyProbeCount = stats.readyProbeCount;
+            reflection.hiZMipCount = stats.hiZMipCount;
+            reflection.hiZGraphPassCount = stats.hiZGraphPassCount;
+            reflection.traceGraphPassCount = stats.traceGraphPassCount;
+            reflection.resolveGraphPassCount = stats.resolveGraphPassCount;
+            reflection.frameSequence =
+                m_reflectionFramePlan->GetFrameIdentity().frameSequence;
+            reflection.reflectionPlanIdentity = stats.reflectionPlanIdentity;
+            reflection.lightingPlanIdentity = stats.lightingPlanIdentity;
+            reflection.depthPyramidIdentity = stats.depthPyramidIdentity;
+            reflection.reflectionSurfaceIdentity =
+                stats.reflectionSurfaceIdentity;
+            reflection.exposureStateContentHash =
+                stats.exposureStateContentHash;
+            reflection.screenSpaceHitPixelCount = 0;
+            reflection.localProbePixelCount = 0;
+            reflection.globalIBLPixelCount = 0;
+            reflection.reflectionReadbackSampleCount = 0;
+            reflection.reflectionRouteSampleCount = 0;
+            reflection.backgroundPixelCount = 0;
+            reflection.nonReflectivePixelCount = 0;
+            reflection.fallbackReason = stats.fallbackReason;
+            m_pendingReflectionDiagnostics = std::move(reflection);
+        }
+    }
+
     FinalizeRenderExecutionReportStatus(graphExecuted);
 
     if (m_renderFeatureRegistry)
@@ -6999,7 +8088,7 @@ void SceneRenderer::Render()
         RenderExecutionReceipt receipt =
             m_renderFeatureRegistry->CollectExecutionReceipt(
                 m_executionBuildIdentity);
-        receipt.schemaVersion = 11;
+        receipt.schemaVersion = RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION;
         if (m_activeRenderPassResults != nullptr &&
             m_activeRenderPassResults->identity == m_activeRenderPassIdentity &&
             m_activeRenderPassIdentity.frameSequence ==
@@ -7033,8 +8122,7 @@ void SceneRenderer::Render()
         if (activeRenderPassResultsMatchReceipt)
         {
             const OpaquePassDrawStats& toonStats =
-                receipt.resolvedRecipe ==
-                        RenderPipelineRecipe::DeferredQuality
+                UsesDeferredOpaquePath(receipt.resolvedRecipe)
                     ? m_activeRenderPassResults->deferredOpaqueRoute.drawStats
                     : m_activeRenderPassResults->opaqueStats;
             const bool observedToonWork =
@@ -7064,8 +8152,7 @@ void SceneRenderer::Render()
                         ? toonStats.toonDrawCount
                         : 0;
                 toon.deferredShadedDrawCount =
-                    receipt.resolvedRecipe ==
-                            RenderPipelineRecipe::DeferredQuality
+                    UsesDeferredOpaquePath(receipt.resolvedRecipe)
                         ? toonStats.toonDrawCount
                         : 0;
                 // The shared Toon program has no StandardLit compatibility
@@ -7121,7 +8208,7 @@ void SceneRenderer::Render()
                 resources.GetPreviousPaletteHandle().IsValid();
 
             const OpaquePassDrawStats& opaqueDeformationStats =
-                receipt.resolvedRecipe == RenderPipelineRecipe::DeferredQuality
+                UsesDeferredOpaquePath(receipt.resolvedRecipe)
                     ? m_activeRenderPassResults->deferredOpaqueRoute.drawStats
                     : m_activeRenderPassResults->opaqueStats;
             const ShadowPassStats& shadowDeformationStats =
@@ -7275,8 +8362,7 @@ void SceneRenderer::Render()
             activeRenderPassResultsMatchReceipt)
         {
             const RenderLightingSurfaceRoute route =
-                receipt.resolvedRecipe ==
-                        RenderPipelineRecipe::DeferredQuality
+                UsesDeferredOpaquePath(receipt.resolvedRecipe)
                     ? RenderLightingSurfaceRoute::DeferredOpaque
                     : RenderLightingSurfaceRoute::ForwardOpaque;
             const RenderLightingSurfaceExecutionEvidence& evidence =
@@ -7314,6 +8400,80 @@ void SceneRenderer::Render()
                 m_postProcessFeature
                     ->GetLastToonOutlineExecutionReceipt();
         }
+        bool hybridRayTracingExecutionEvidenceValid = true;
+        if (m_hybridRayTracingFramePlan.has_value())
+        {
+            const HybridRayTracingFramePlan& plan =
+                *m_hybridRayTracingFramePlan;
+            const bool hybridResultsMatchReceipt =
+                activeRenderPassResultsMatchReceipt &&
+                plan.GetFrameIdentity() == receipt.frameIdentity &&
+                plan.GetViewIdentity() == receipt.viewIdentity;
+            RayTracedShadowPassStats shadowStats{};
+            RayTracedReflectionPassStats reflectionStats{};
+            RayTracedReflectionDenoisePassStats denoiseStats{};
+            RayTracedReflectionCompositePassStats compositeStats{};
+            if (hybridResultsMatchReceipt)
+            {
+                shadowStats =
+                    m_activeRenderPassResults->rayTracedShadowStats;
+                reflectionStats =
+                    m_activeRenderPassResults->rayTracedReflectionStats;
+                denoiseStats =
+                    m_activeRenderPassResults
+                        ->rayTracedReflectionDenoiseStats;
+                compositeStats =
+                    m_activeRenderPassResults
+                        ->rayTracedReflectionCompositeStats;
+            }
+            RenderHybridRayTracingExecutionReceipt& hybrid =
+                receipt.hybridRayTracing;
+            hybrid.available = true;
+            hybrid.planIdentityHash = plan.GetIdentityHash();
+            hybrid.scenePreparationGeneration =
+                plan.GetRayTracingScenePreparationGeneration();
+            hybrid.sceneStructuralHash =
+                plan.GetRayTracingSceneStructuralHash();
+            hybrid.frameIdentity = plan.GetFrameIdentity();
+            hybrid.viewIdentity = plan.GetViewIdentity();
+            hybrid.fullResolution = plan.GetReflectionExtent().fullResolution;
+            hybrid.halfResolution = plan.GetReflectionExtent().halfResolution;
+            hybrid.historyResetReasons = plan.GetReflectionHistoryReset();
+            hybrid.recipe = plan.GetRecipe();
+            hybrid.quality = plan.GetQuality();
+            hybrid.profileHash = plan.GetProfileHash();
+            hybrid.shadowRoute =
+                ToPublicHybridShadowRoute(plan.GetShadowRoute());
+            hybrid.reflectionRoute =
+                ToPublicHybridReflectionRoute(plan.GetReflectionRoute());
+            hybrid.graphExecutionSucceeded =
+                exactGraphExecutionSucceeded && hybridResultsMatchReceipt;
+            hybrid.shadowDispatchRecorded = shadowStats.dispatchRecorded;
+            hybrid.reflectionDispatchRecorded =
+                reflectionStats.dispatchRecorded;
+            hybrid.spatialDenoiseRecorded = denoiseStats.denoiseRecorded;
+            hybrid.temporalResolveRecorded =
+                reflectionStats.temporalResolveRecorded;
+            hybrid.compositeRecorded = compositeStats.compositeRecorded;
+            hybrid.compositeUsedDenoisedSource =
+                compositeStats.source ==
+                    RayTracedReflectionCompositeSource::DenoisedReflection &&
+                compositeStats.denoisedSourceUsed;
+            hybridRayTracingExecutionEvidenceValid =
+                hybrid.IsStructurallyValid() &&
+                hybrid.graphExecutionSucceeded &&
+                hybrid.shadowDispatchRecorded &&
+                hybrid.reflectionDispatchRecorded &&
+                hybrid.spatialDenoiseRecorded &&
+                hybrid.temporalResolveRecorded &&
+                hybrid.compositeRecorded &&
+                hybrid.compositeUsedDenoisedSource;
+        }
+        else if (receipt.resolvedRecipe ==
+                 RenderPipelineRecipe::HybridRayTracing)
+        {
+            hybridRayTracingExecutionEvidenceValid = false;
+        }
         const bool postProcessExecutionEvidenceValid =
             exactGraphExecutionSucceeded && postProcessFeatureExecuted &&
             receipt.postProcess.IsStructurallyValid();
@@ -7335,7 +8495,8 @@ void SceneRenderer::Render()
             ambientOcclusionExecutionEvidenceValid &&
             postProcessExecutionEvidenceValid &&
             toonLightingExecutionEvidenceValid &&
-            toonOutlineExecutionEvidenceValid;
+            toonOutlineExecutionEvidenceValid &&
+            hybridRayTracingExecutionEvidenceValid;
         receipt.presented = false;
         receipt.succeeded = false;
         if (!receipt.executionSucceeded && receipt.diagnostic.empty())
@@ -7350,6 +8511,8 @@ void SceneRenderer::Render()
                     ? "Toon lighting execution evidence did not match the active opaque recording"
                 : !toonOutlineExecutionEvidenceValid
                     ? "Toon outline execution evidence did not match its material table or post-process recording"
+                : !hybridRayTracingExecutionEvidenceValid
+                    ? "Hybrid ray-tracing execution evidence did not match its frozen plan"
                 : executionSkippedReason != nullptr
                     ? executionSkippedReason
                     : "Render feature execution did not complete";
@@ -7357,11 +8520,20 @@ void SceneRenderer::Render()
         m_lastAttemptedRenderExecutionReceipt = receipt;
         if (receipt.executionSucceeded && receipt.IsStructurallyValid())
         {
+            if (m_pendingReflectionDiagnostics.has_value() &&
+                m_pendingReflectionDiagnostics->frameSequence !=
+                    receipt.frameIdentity.frameSequence)
+            {
+                // A finalization result from another accepted frame is never
+                // allowed to cross the receipt/presentation boundary.
+                m_pendingReflectionDiagnostics.reset();
+            }
             m_pendingRenderExecutionReceipt = receipt;
         }
         else
         {
             m_pendingRenderExecutionReceipt.reset();
+            m_pendingReflectionDiagnostics.reset();
         }
     }
 
@@ -8151,8 +9323,211 @@ bool SceneRenderer::PrepareLightingFramePlan(std::string& outDiagnostic)
     return true;
 }
 
+bool SceneRenderer::PrepareLocalShadowPlans(std::string& outDiagnostic)
+{
+    outDiagnostic.clear();
+    m_localShadowFramePlan.reset();
+    m_localShadowAtlasPlan.reset();
+    if (!m_lightingFramePlan || !m_lightingFramePlan->IsValid())
+    {
+        outDiagnostic =
+            "Local-shadow planning requires the current sealed LightingFramePlan";
+        return false;
+    }
+
+    const LocalShadowAtlasConfig atlasConfig =
+        ResolveLocalShadowAtlasConfig(m_lightingFramePlan->GetQuality());
+    if (atlasConfig.pageResolution == 0 || atlasConfig.pageCapacity == 0 ||
+        atlasConfig.pointLightCapacity == 0 ||
+        atlasConfig.spotLightCapacity == 0)
+    {
+        outDiagnostic = "The selected quality tier has no local-shadow atlas contract";
+        return false;
+    }
+
+    const uint64 configurationHash = HashLocalShadowAtlasConfig(atlasConfig);
+    if (m_localShadowAtlasConfigurationHash != 0 &&
+        m_localShadowAtlasConfigurationHash != configurationHash)
+    {
+        ++m_localShadowAtlasGeneration;
+        if (m_localShadowAtlasGeneration == 0)
+        {
+            m_localShadowAtlasGeneration = 1;
+        }
+    }
+    m_localShadowAtlasConfigurationHash = configurationHash;
+
+    LocalShadowFramePlanRequest frameRequest;
+    frameRequest.atlas = atlasConfig;
+    frameRequest.atlasGeneration = m_localShadowAtlasGeneration;
+    frameRequest.expectedLightingPlanIdentity =
+        m_lightingFramePlan->GetIdentityHash();
+    LocalShadowFramePlanBuilder frameBuilder;
+    LocalShadowFramePlanBuildResult frameResult =
+        frameBuilder.Build(*m_lightingFramePlan, frameRequest);
+    if (!frameResult.Succeeded() || !frameResult.plan.IsValid())
+    {
+        outDiagnostic = frameResult.diagnostic.empty()
+            ? GetLocalShadowFramePlanCodeName(frameResult.code)
+            : std::move(frameResult.diagnostic);
+        return false;
+    }
+
+    auto framePlan = std::make_shared<const LocalShadowFramePlan>(
+        std::move(frameResult.plan));
+    LocalShadowAtlasPlanRequest atlasRequest;
+    atlasRequest.atlasGeneration = m_localShadowAtlasGeneration;
+    atlasRequest.expectedLocalShadowPlanIdentity = framePlan->GetIdentityHash();
+    LocalShadowAtlasPlanBuilder atlasBuilder;
+    LocalShadowAtlasPlanBuildResult atlasResult = atlasBuilder.Build(
+        *m_lightingFramePlan, *framePlan, atlasRequest);
+    if (!atlasResult.Succeeded() || !atlasResult.plan.IsValid())
+    {
+        outDiagnostic = atlasResult.diagnostic.empty()
+            ? GetLocalShadowAtlasPlanCodeName(atlasResult.code)
+            : std::move(atlasResult.diagnostic);
+        return false;
+    }
+
+    m_localShadowFramePlan = std::move(framePlan);
+    m_localShadowAtlasPlan = std::make_shared<const LocalShadowAtlasPlan>(
+        std::move(atlasResult.plan));
+    return true;
+}
+
+bool SceneRenderer::PrepareReflectionFramePlan(std::string& outDiagnostic)
+{
+    outDiagnostic.clear();
+    m_reflectionFramePlan.reset();
+    if (!m_lightingFramePlan || !m_lightingFramePlan->IsValid())
+    {
+        outDiagnostic =
+            "Reflection planning requires the current sealed LightingFramePlan";
+        return false;
+    }
+
+    const RenderFrameHeaderV5& header = m_renderScene.GetAcceptedHeader();
+    const RenderViewSnapshot& view = m_renderScene.GetView();
+    const RenderFrameSettings& settings = m_renderScene.GetSettings();
+    const RenderFrameIdentity frameIdentity{
+        header.sequence,
+        header.requiredSceneRevision,
+        header.surfaceGeneration,
+        header.configurationRevision};
+    const RenderOutputExtent extent{
+        m_viewData.viewportWidth, m_viewData.viewportHeight};
+
+    ReflectionFramePlanRequest request;
+    request.frameIdentity = frameIdentity;
+    request.viewIdentity = view.identity;
+    request.sceneProbeStateHash = m_reflectionProbeStateHash;
+    request.viewPosition = view.cameraPosition;
+    // Probe admission must use the sealed non-jittered camera frustum, not
+    // ReflectionFramePlanRequest's identity default.
+    request.viewProjection = view.viewProjectionMatrix;
+    request.viewCullingMask = m_viewData.cullingMask;
+    request.probeCandidates = m_reflectionProbeSnapshots;
+
+    const SSRConfig ssrConfig{};
+    const uint64 ssrConfigurationIdentity =
+        ComputeSSRConfigurationIdentity(ssrConfig);
+    uint64 ssrPipelineIdentity = 0xCBF29CE484222325ULL;
+    bool ssrPipelinesReady = false;
+    if (m_pipelineCache != nullptr)
+    {
+        const PipelineCacheStats& stats = m_pipelineCache->GetStats();
+        for (const uint64 hash : std::array{
+                 stats.ssrHiZBasePipelineHash,
+                 stats.ssrHiZReducePipelineHash,
+                 stats.ssrTracePipelineHash,
+                 stats.ssrResolvePipelineHash})
+        {
+            ssrPipelineIdentity = MixGPUCullingQualificationIdentity(
+                ssrPipelineIdentity, hash);
+        }
+        ssrPipelinesReady =
+            stats.ssrHiZBasePipelineHash != 0 &&
+            stats.ssrHiZReducePipelineHash != 0 &&
+            stats.ssrTracePipelineHash != 0 &&
+            stats.ssrResolvePipelineHash != 0 &&
+            m_pipelineCache->GetSSRHiZBasePipeline() != nullptr &&
+            m_pipelineCache->GetSSRHiZReducePipeline() != nullptr &&
+            m_pipelineCache->GetSSRTracePipeline() != nullptr &&
+            m_pipelineCache->GetSSRResolvePipeline() != nullptr;
+    }
+    ssrPipelineIdentity = ssrPipelineIdentity == 0
+        ? 1 : ssrPipelineIdentity;
+
+    request.ssr.requested = settings.postProcess.enabled &&
+        settings.postProcess.enableSSR;
+    if (request.ssr.requested)
+    {
+        request.ssr.configurationIdentityHash = ssrConfigurationIdentity;
+        request.ssr.inputsReady = ssrPipelinesReady && extent.IsValid();
+        if (request.ssr.inputsReady)
+        {
+            request.ssr.pipelineIdentityHash = ssrPipelineIdentity;
+            request.ssr.depthPyramidIdentityHash =
+                ComputeSSRDepthPyramidIdentity(
+                    frameIdentity, view.identity, extent,
+                    ssrConfigurationIdentity, ssrPipelineIdentity);
+        }
+    }
+
+    request.ibl.lightingPlanIdentityHash =
+        m_lightingFramePlan->GetIdentityHash();
+    const LightingIBLRequest& lightingIBL =
+        m_lightingFramePlan->GetIBLRequest();
+    if (lightingIBL.requested && lightingIBL.inputsReady)
+    {
+        request.ibl.source = ReflectionIBLSource::Texture;
+        request.ibl.resourceRevision = lightingIBL.resourceRevision;
+        request.ibl.prefilteredMipLevels =
+            lightingIBL.prefilteredMipLevels;
+    }
+    else
+    {
+        request.ibl.source = ReflectionIBLSource::Analytic;
+        uint64 analyticIdentity = 0xCBF29CE484222325ULL;
+        analyticIdentity = MixGPUCullingQualificationIdentity(
+            analyticIdentity, request.ibl.lightingPlanIdentityHash);
+        analyticIdentity = MixGPUCullingQualificationIdentity(
+            analyticIdentity, settings.pipelineRequest.quality ==
+                RenderQualityTier::Low ? 1U : 2U);
+        request.ibl.analyticFallbackIdentityHash = analyticIdentity == 0
+            ? 1 : analyticIdentity;
+    }
+
+    uint64 fallbackIdentity = 0xCBF29CE484222325ULL;
+    fallbackIdentity = MixGPUCullingQualificationIdentity(
+        fallbackIdentity, header.configurationRevision);
+    fallbackIdentity = MixGPUCullingQualificationIdentity(
+        fallbackIdentity, ssrConfigurationIdentity);
+    request.fallback.configurationIdentityHash = fallbackIdentity == 0
+        ? 1 : fallbackIdentity;
+    uint64 reflectionRevision = MixGPUCullingQualificationIdentity(
+        request.fallback.configurationIdentityHash,
+        m_reflectionProbeStateHash);
+    request.reflectionConfigurationRevision = reflectionRevision == 0
+        ? 1 : reflectionRevision;
+
+    ReflectionFramePlanBuilder builder;
+    ReflectionFramePlanBuildResult result = builder.Build(request);
+    if (!result.Succeeded() || !result.plan.IsValid())
+    {
+        outDiagnostic = result.diagnostic.empty()
+            ? GetReflectionFramePlanCodeName(result.code)
+            : std::move(result.diagnostic);
+        return false;
+    }
+    m_reflectionFramePlan =
+        std::make_shared<const ReflectionFramePlan>(std::move(result.plan));
+    return true;
+}
+
 void SceneRenderer::PreparePassesForFrame()
 {
+    m_activeLocalShadowPass.reset();
     m_lightingFramePlanFailureReason.clear();
     if (!PrepareLightingFramePlan(m_lightingFramePlanFailureReason))
     {
@@ -8160,6 +9535,25 @@ void SceneRenderer::PreparePassesForFrame()
             "SceneRenderer: LightingFramePlan preparation failed: {}",
             m_lightingFramePlanFailureReason);
         m_lightingFramePlan.reset();
+    }
+
+    m_localShadowPlanFailureReason.clear();
+    if (!PrepareLocalShadowPlans(m_localShadowPlanFailureReason))
+    {
+        RVX_CORE_ERROR(
+            "SceneRenderer: local-shadow planning failed: {}",
+            m_localShadowPlanFailureReason);
+        m_localShadowFramePlan.reset();
+        m_localShadowAtlasPlan.reset();
+    }
+
+    m_reflectionFramePlanFailureReason.clear();
+    if (!PrepareReflectionFramePlan(m_reflectionFramePlanFailureReason))
+    {
+        RVX_CORE_ERROR(
+            "SceneRenderer: ReflectionFramePlan preparation failed: {}",
+            m_reflectionFramePlanFailureReason);
+        m_reflectionFramePlan.reset();
     }
 
     m_primaryDirectionalLight = {};
@@ -8225,11 +9619,21 @@ void SceneRenderer::PreparePassesForFrame()
 
     if (m_lightManager)
     {
-        if (!m_lightingFramePlan ||
+        if (!m_lightingFramePlan || !m_localShadowFramePlan ||
+            !m_localShadowAtlasPlan ||
             !m_lightManager->CollectLights(*m_lightingFramePlan))
         {
             m_lightingFramePlanFailureReason =
-                "LightManager rejected the immutable LightingFramePlan";
+                "LightManager requires matching lighting and local-shadow plans";
+        }
+        else if (!m_lightManager->ApplyLocalShadowPlan(
+                     *m_localShadowFramePlan, *m_localShadowAtlasPlan))
+        {
+            m_lightingFramePlanFailureReason =
+                std::string("LightManager rejected the immutable local-shadow plan: ") +
+                GetLocalShadowBindingCodeName(
+                    m_lightManager->GetLocalShadowBindingCode());
+            m_lightingFramePlan.reset();
         }
         else
         {
@@ -8271,20 +9675,30 @@ void SceneRenderer::PreparePassesForFrame()
         m_localLightingStats.pointShadowRequestCount = m_lightManager->GetPointShadowRequestCount();
         m_localLightingStats.spotShadowRequestCount = m_lightManager->GetSpotShadowRequestCount();
         m_localLightingStats.localShadowRequestCount = m_lightManager->GetLocalShadowRequestCount();
+        m_localLightingStats.localShadowCasterDrawCount = 0;
+        const bool localShadowPlanReady =
+            m_lightManager->HasLocalShadowPlan() &&
+            m_localShadowFramePlan != nullptr &&
+            m_localShadowAtlasPlan != nullptr;
         m_localLightingStats.localShadowAtlasReady = false;
         m_localLightingStats.localShadowFallbackReason =
-            m_localLightingStats.localShadowRequestCount > 0
-                ? "local point/spot shadow atlas is not implemented"
+            m_localLightingStats.localShadowRequestCount > 0 &&
+                    !localShadowPlanReady
+                ? std::string("local shadow planning failed: ") +
+                    GetLocalShadowBindingCodeName(
+                        m_lightManager->GetLocalShadowBindingCode())
                 : "";
-        m_localLightingStats.pointShadowSupported = false;
+        m_localLightingStats.pointShadowSupported =
+            m_localLightingStats.pointShadowRequestCount == 0;
         m_localLightingStats.pointShadowUnsupportedReason =
             m_localLightingStats.pointShadowRequestCount > 0
-                ? "point-light shadow maps are not implemented"
+                ? "point-light shadow atlas execution is pending"
                 : "";
-        m_localLightingStats.spotShadowSupported = false;
+        m_localLightingStats.spotShadowSupported =
+            m_localLightingStats.spotShadowRequestCount == 0;
         m_localLightingStats.spotShadowUnsupportedReason =
             m_localLightingStats.spotShadowRequestCount > 0
-                ? "spot-light shadow maps are not implemented"
+                ? "spot-light shadow atlas execution is pending"
                 : "";
     }
 
@@ -8458,6 +9872,7 @@ void SceneRenderer::EnsureDepthBuffer(uint32_t width, uint32_t height)
 void SceneRenderer::PrepareRayTracingScene()
 {
     m_rayTracingSceneStats = {};
+    m_rayTracingSceneRecordingToken = {};
 
     if (!m_rayTracingSceneManager || !m_renderResourceRegistry)
     {
@@ -8472,6 +9887,17 @@ void SceneRenderer::PrepareRayTracingScene()
         return;
     }
 
+    if (m_renderContext != nullptr)
+    {
+        if (RenderSubmissionTracker* const tracker =
+                RenderContextInternalAccess::GetSubmissionTracker(
+                    *m_renderContext))
+        {
+            (void)m_rayTracingSceneManager->PollCompletedBLASCompaction(
+                *tracker);
+        }
+    }
+
     m_rayTracingSceneManager->SetBLASCacheEvictionFrameThreshold(
         m_rayTracingBudgetSettings.blasCacheEvictionFrameThreshold);
     m_rayTracingSceneManager->SetTrackedResourceBudget(
@@ -8480,7 +9906,7 @@ void SceneRenderer::PrepareRayTracingScene()
     RayTracingSceneOptions options;
     RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan(
         m_renderScene,
-        m_visibleObjectIndices,
+        m_coarseCandidateObjectIndices,
         *m_renderResourceRegistry,
         options);
 
@@ -8488,15 +9914,38 @@ void SceneRenderer::PrepareRayTracingScene()
     m_rayTracingSceneStats = m_rayTracingSceneManager->GetStats();
 }
 
-void SceneRenderer::AddRayTracingSceneBuildPass()
+RayTracingSceneRecordInput SceneRenderer::AddRayTracingSceneBuildPass()
 {
-    if (!m_rayTracingSceneManager || !m_rayTracingSceneStats.prepared)
-        return;
+    RayTracingSceneRecordInput result;
+    result.required = m_hybridRayTracingFramePlan.has_value() &&
+        (m_hybridRayTracingFramePlan->GetShadowRoute() ==
+             HybridRayTracingShadowRoute::RayTraced ||
+         m_hybridRayTracingFramePlan->GetReflectionRoute() ==
+             HybridRayTracingReflectionRoute::RayTraced);
+    if (!m_renderGraph || !m_rayTracingSceneManager ||
+        !m_rayTracingSceneStats.prepared)
+    {
+        return result;
+    }
 
     RHIBuffer* instanceBuffer = m_rayTracingSceneManager->GetInstanceBuffer();
     RHIBuffer* tlasScratch = m_rayTracingSceneManager->GetTopLevelScratchBuffer();
-    if (!instanceBuffer || !tlasScratch)
-        return;
+    RHIAccelerationStructureRef topLevelAS(
+        m_rayTracingSceneManager->GetTopLevelAS());
+    RHIBuffer* const topLevelASStorage =
+        topLevelAS ? topLevelAS->GetStorageBuffer() : nullptr;
+    const RayTracingTLASStructuralSignature& structuralSignature =
+        m_rayTracingSceneManager->GetPreparedTLASStructuralSignature();
+    if (!instanceBuffer || !tlasScratch || !topLevelAS ||
+        !topLevelASStorage ||
+        !HasFlag(topLevelASStorage->GetUsage(),
+                 RHIBufferUsage::AccelerationStructureStorage) ||
+        !topLevelASStorage->GetResourceInstanceId().IsValid() ||
+        m_rayTracingSceneStats.preparationGeneration == 0 ||
+        structuralSignature.hash == 0)
+    {
+        return result;
+    }
 
     std::vector<RHIBuffer*> blasScratchBuffers;
     m_rayTracingSceneManager->GatherPendingBuildScratchBuffers(blasScratchBuffers);
@@ -8517,26 +9966,54 @@ void SceneRenderer::AddRayTracingSceneBuildPass()
     struct RayTracingSceneBuildPassData
     {
         RayTracingSceneManager* manager = nullptr;
+        RayTracingSceneRecordingToken* recordingToken = nullptr;
         RGBufferHandle instanceBuffer;
         std::vector<RGBufferHandle> blasScratchBuffers;
         RGBufferHandle tlasScratch;
+        RHIAccelerationStructureRef topLevelAS;
+        RHIResourceInstanceId topLevelASStorageId{};
+        RGBufferHandle topLevelASStorage;
     };
 
     RGBufferHandle instanceHandle =
         m_renderGraph->ImportBuffer(RHIBufferRef(instanceBuffer), RHIResourceState::ShaderResource);
     RGBufferHandle scratchHandle =
         m_renderGraph->ImportBuffer(RHIBufferRef(tlasScratch), RHIResourceState::Common);
+    const RHIBufferAccessSnapshot topLevelASStorageAccess =
+        MakeRHIBufferAccessSnapshot(
+            RHIResourceState::AccelerationStructureRead,
+            RHIShaderStage::AllRayTracing);
+    RGBufferHandle topLevelASStorageHandle = m_renderGraph->ImportBuffer(
+        RHIBufferRef(topLevelASStorage),
+        topLevelASStorageAccess);
     m_renderGraph->SetExportState(instanceHandle, RHIResourceState::ShaderResource);
     m_renderGraph->SetExportState(scratchHandle, RHIResourceState::Common);
+    m_renderGraph->SetExportAccess(
+        topLevelASStorageHandle,
+        topLevelASStorageAccess.uniformAccess);
+
+    result.topLevelAS = topLevelAS;
+    result.storageResourceId = topLevelASStorage->GetResourceInstanceId();
+    result.topLevelASStorage = topLevelASStorageHandle;
+    result.preparationGeneration =
+        m_rayTracingSceneStats.preparationGeneration;
+    result.structuralHash = structuralSignature.hash;
 
     m_renderGraph->AddPass<RayTracingSceneBuildPassData>(
         "RayTracingSceneBuild",
         RenderGraphPassType::RayTracing,
-        [this, instanceHandle, blasScratchHandles, scratchHandle](
+        [this,
+         instanceHandle,
+         blasScratchHandles,
+         scratchHandle,
+         topLevelAS,
+         topLevelASStorageHandle,
+         topLevelASStorageId = result.storageResourceId](
             RenderGraphBuilder& builder,
             RayTracingSceneBuildPassData& data)
         {
             data.manager = m_rayTracingSceneManager.get();
+            data.recordingToken = &m_rayTracingSceneRecordingToken;
             data.instanceBuffer = builder.Read(instanceHandle, RHIShaderStage::AllRayTracing);
             data.blasScratchBuffers.clear();
             data.blasScratchBuffers.reserve(blasScratchHandles.size());
@@ -8545,14 +10022,33 @@ void SceneRenderer::AddRayTracingSceneBuildPass()
                 data.blasScratchBuffers.push_back(builder.Write(handle, RHIResourceState::UnorderedAccess));
             }
             data.tlasScratch = builder.Write(scratchHandle, RHIResourceState::UnorderedAccess);
+            data.topLevelAS = topLevelAS;
+            data.topLevelASStorageId = topLevelASStorageId;
+            data.topLevelASStorage = builder.Write(
+                topLevelASStorageHandle,
+                RHIResourceState::AccelerationStructureBuildWrite);
         },
-        [](const RayTracingSceneBuildPassData& data, RHICommandContext& ctx)
+        [](const RayTracingSceneBuildPassData& data,
+           RenderGraphPassContext& context)
         {
-            if (data.manager)
+            if (data.manager == nullptr || data.recordingToken == nullptr ||
+                !data.topLevelAS || !data.topLevelASStorage.IsValid() ||
+                data.manager->GetTopLevelAS() != data.topLevelAS.Get() ||
+                data.topLevelAS->GetStorageBuffer() == nullptr ||
+                data.topLevelAS->GetStorageBuffer()->GetResourceInstanceId() !=
+                    data.topLevelASStorageId ||
+                context.GetBuffer(data.topLevelASStorage) !=
+                    data.topLevelAS->GetStorageBuffer() ||
+                !data.manager->RecordBuildCommands(
+                    context.Commands(),
+                    *data.recordingToken,
+                    RayTracingSceneRecordingFlags::EnableBLASCompaction))
             {
-                data.manager->RecordBuildCommands(ctx);
+                context.MarkExecutionFailed(
+                    "RayTracingSceneBuild did not produce a submission-bound recording token");
             }
         });
+    return result;
 }
 
 void SceneRenderer::AddGPUDrivenCullingPass(
@@ -9690,9 +11186,8 @@ void SceneRenderer::BuildRenderGraph()
                                                ? m_renderGraph->GetTextureDesc(backBufferTarget)
                                                : nullptr;
     const RHIFormat backBufferFormat = backBufferDesc ? backBufferDesc->format : RHIFormat::Unknown;
-    const bool deferredRecipeRequested =
-        m_renderScene.GetSettings().pipelineRequest.recipe ==
-        RenderPipelineRecipe::DeferredQuality;
+    const bool deferredRecipeRequested = UsesDeferredOpaquePath(
+        m_renderScene.GetSettings().pipelineRequest.recipe);
 
     // Deferred lighting always writes linear RGBA16F. Tone mapping is the
     // required presentation transform for that color domain, not an optional
@@ -9921,7 +11416,147 @@ void SceneRenderer::BuildRenderGraph()
         }
     }
 
-    AddRayTracingSceneBuildPass();
+    m_hybridRayTracingFramePlan.reset();
+    m_pendingHybridRayTracingObservation = {};
+    m_hybridRayTracingExecutionReceipt.reset();
+    const bool hybridRayTracingRequested =
+        m_renderScene.GetSettings().pipelineRequest.recipe ==
+        RenderPipelineRecipe::HybridRayTracing;
+    if (hybridRayTracingRequested)
+    {
+        IRHIDevice* const hybridDevice = m_renderContext != nullptr
+            ? m_renderContext->GetDevice() : m_featureReportDeviceForTesting;
+        const RHICapabilities hybridCapabilities = hybridDevice != nullptr
+            ? hybridDevice->GetCapabilities() : RHICapabilities{};
+        const RHIBackendType hybridBackend = hybridDevice != nullptr
+            ? hybridDevice->GetBackendType() : RHIBackendType::None;
+        const bool productionHybridBackend =
+            hybridBackend == RHIBackendType::DX12 ||
+            hybridBackend == RHIBackendType::Vulkan;
+        const bool sceneInputsReady =
+            m_rayTracingSceneManager != nullptr &&
+            m_rayTracingSceneStats.prepared &&
+            m_rayTracingSceneManager->GetTopLevelAS() != nullptr &&
+            m_rayTracingSceneManager->GetInstanceBuffer() != nullptr;
+        const bool shadowPipelineReady = m_pipelineCache != nullptr &&
+            m_pipelineCache->GetRayTracedShadowPipeline() != nullptr &&
+            m_pipelineCache->GetRayTracedShadowShaderTable() != nullptr &&
+            m_rayTracedShadowPass != nullptr &&
+            m_rayTracedShadowPass->IsSupported();
+        const bool reflectionPipelineReady = m_pipelineCache != nullptr &&
+            m_pipelineCache->GetRayTracedReflectionPipeline() != nullptr &&
+            m_pipelineCache->GetRayTracedReflectionShaderTable() != nullptr &&
+            m_rayTracedReflectionPass != nullptr &&
+            m_rayTracedReflectionPass->IsSupported() &&
+            m_rayTracedReflectionDenoisePass != nullptr &&
+            m_rayTracedReflectionDenoisePass->IsEnabled() &&
+            m_rayTracedReflectionCompositePass != nullptr &&
+            m_rayTracedReflectionCompositePass->IsEnabled();
+
+        HybridRayTracingFramePlanRequest request;
+        const RenderFrameHeaderV5& hybridHeader =
+            m_renderScene.GetAcceptedHeader();
+        request.frameIdentity = {
+            hybridHeader.sequence,
+            hybridHeader.requiredSceneRevision,
+            hybridHeader.surfaceGeneration,
+            hybridHeader.configurationRevision};
+        request.viewIdentity = m_renderScene.GetView().identity;
+        request.outputExtent = m_renderScene.GetViewFamily().extent;
+        request.recipe = RenderPipelineRecipe::HybridRayTracing;
+        request.quality =
+            m_renderScene.GetSettings().pipelineRequest.quality;
+        request.profileHash = ComputeRenderPipelineProfileHash(
+            request.recipe, request.quality);
+        request.rayTracingScenePreparationGeneration =
+            m_rayTracingSceneStats.preparationGeneration;
+        request.rayTracingSceneStructuralHash =
+            m_rayTracingSceneManager != nullptr
+                ? m_rayTracingSceneManager
+                      ->GetPreparedTLASStructuralSignature().hash
+                : 0;
+        request.reflectionHistoryReset =
+            effectiveTemporalHistory.resetReasons;
+        if (!effectiveTemporalHistory.reset && m_viewHistoryCoordinator != nullptr)
+        {
+            const std::optional<RenderViewHistoryIdentity>& presentedHistory =
+                m_viewHistoryCoordinator->GetLastPresentedIdentity();
+            if (presentedHistory.has_value())
+            {
+                request.reflectionHistoryIdentity = *presentedHistory;
+                request.reflectionHistoryIdentity.extent =
+                    ResolveHybridRayTracingHalfResolution(
+                        request.outputExtent).halfResolution;
+            }
+        }
+        if (!request.reflectionHistoryIdentity.IsValid() &&
+            request.reflectionHistoryReset == RenderHistoryResetReason::None)
+        {
+            request.reflectionHistoryReset =
+                RenderHistoryResetReason::HistoryUnavailable;
+        }
+
+        request.shadowRequirement = HybridRayTracingRequirement::Required;
+        request.reflectionRequirement = HybridRayTracingRequirement::Required;
+        request.shadow.requested = m_rayTracedShadowPass != nullptr &&
+            m_rayTracedShadowPass->IsRequestedEnabled();
+        request.shadow.compiled = m_rayTracedShadowPass != nullptr;
+        request.shadow.hardwareSupported =
+            hybridCapabilities.supportsRaytracing;
+        request.shadow.implementationSupported = productionHybridBackend;
+        request.shadow.pipelineReady = shadowPipelineReady;
+        request.shadow.inputsReady = sceneInputsReady &&
+            m_lightingFramePlan->GetPrimaryDirectionalLight() != nullptr;
+        request.shadow.dispatchReady = request.shadow.requested &&
+            request.shadow.pipelineReady && request.shadow.inputsReady;
+        request.reflection.requested =
+            m_rayTracedReflectionPass != nullptr &&
+            m_rayTracedReflectionPass->IsRequestedEnabled() &&
+            m_rayTracedReflectionDenoisePass != nullptr &&
+            m_rayTracedReflectionDenoisePass->IsRequestedEnabled() &&
+            m_rayTracedReflectionCompositePass != nullptr &&
+            m_rayTracedReflectionCompositePass->IsRequestedEnabled();
+        request.reflection.compiled =
+            m_rayTracedReflectionPass != nullptr &&
+            m_rayTracedReflectionDenoisePass != nullptr &&
+            m_rayTracedReflectionCompositePass != nullptr;
+        request.reflection.hardwareSupported =
+            hybridCapabilities.supportsRaytracing;
+        request.reflection.implementationSupported = productionHybridBackend;
+        request.reflection.pipelineReady = reflectionPipelineReady;
+        request.reflection.inputsReady = sceneInputsReady &&
+            m_viewData.colorTarget.IsValid() &&
+            m_viewData.depthTarget.IsValid() &&
+            m_viewData.exposureState.IsValid();
+        request.reflection.dispatchReady = request.reflection.requested &&
+            request.reflection.pipelineReady && request.reflection.inputsReady;
+        request.rasterCSMReady = m_shadowPass != nullptr &&
+            m_shadowPass->IsEnabled() &&
+            m_lightingFramePlan->GetCSMRequest().inputsReady;
+        request.screenSpaceReflectionReady =
+            m_reflectionFramePlan != nullptr &&
+            m_reflectionFramePlan->GetSSRIdentity().inputsReady;
+        request.reflectionProbeReady =
+            m_reflectionFramePlan != nullptr &&
+            !m_reflectionFramePlan->GetSelectedProbes().empty();
+        request.imageBasedLightingReady =
+            m_reflectionFramePlan != nullptr &&
+            m_reflectionFramePlan->GetIBLIdentity()
+                    .lightingPlanIdentityHash != 0;
+
+        HybridRayTracingFramePlan hybridPlan =
+            HybridRayTracingFramePlan::Build(request);
+        if (!hybridPlan.IsValid())
+        {
+            m_featureCompositionFailureReason =
+                "HybridRayTracing requires ready DX12/Vulkan RT shadow and half-resolution reflection paths";
+            return;
+        }
+        m_hybridRayTracingFramePlan = std::move(hybridPlan);
+    }
+
+    RayTracingSceneRecordInput rayTracingSceneRecordInput =
+        AddRayTracingSceneBuildPass();
 
     auto lightingResources =
         std::make_shared<RenderLightingFrameResourceSnapshot>();
@@ -10028,6 +11663,19 @@ void SceneRenderer::BuildRenderGraph()
         ++m_renderPassRecordEpoch;
     }
     passRecordContext.identity.recordEpoch = m_renderPassRecordEpoch;
+    if (!rayTracingSceneRecordInput.IsEmpty())
+    {
+        rayTracingSceneRecordInput.identity = passRecordContext.identity;
+        if (!rayTracingSceneRecordInput.IsCompatibleWith(
+                passRecordContext.identity))
+        {
+            m_featureCompositionFailureReason =
+                "Ray tracing scene graph dependency is unavailable or stale";
+            return;
+        }
+        passRecordContext.rayTracingScene =
+            std::move(rayTracingSceneRecordInput);
+    }
     const RenderFrameHeaderV5& recordHeader =
         m_renderScene.GetAcceptedHeader();
     passRecordContext.featureFrameIdentity = RenderFrameIdentity{
@@ -10061,6 +11709,17 @@ void SceneRenderer::BuildRenderGraph()
         std::move(deformationResources);
     passRecordContext.lightingPlan = m_lightingFramePlan;
     passRecordContext.lightingResources = std::move(lightingResources);
+    // Surface MRT allocation is a sealed-plan decision.  It is required when
+    // either the optional SSR route was requested or the selected local probe
+    // route needs a materialized receiver, never inferred from mutable pass
+    // registration state later in composition.
+    passRecordContext.requiresReflectionSurfaceData =
+        m_reflectionFramePlan != nullptr &&
+        (m_reflectionFramePlan->GetSSRIdentity().requested ||
+         !m_reflectionFramePlan->GetSelectedProbes().empty());
+    passRecordContext.localShadowAtlasPlan = m_localShadowAtlasPlan;
+    m_activeLocalShadowPass = std::make_shared<LocalShadowPass>();
+    passRecordContext.localShadowPass = m_activeLocalShadowPass;
     AddGPUDrivenCullingPass(passRecordContext.identity);
     passRecordContext.executionPlan = m_viewData.renderFrameExecutionPlan;
     passRecordContext.drawPlan = m_viewData.renderDrawPlan;
@@ -10082,6 +11741,15 @@ void SceneRenderer::BuildRenderGraph()
     passRecordContext.results->directionalShadowOutput.identity =
         passRecordContext.identity;
     passRecordContext.results->directionalShadowOutput.lightingPlanIdentity =
+        m_lightingFramePlan->GetIdentityHash();
+    passRecordContext.results->localShadowOutput = {};
+    passRecordContext.results->localShadowOutput.identity =
+        passRecordContext.identity;
+    passRecordContext.results->localShadowOutput.frameIdentity =
+        passRecordContext.featureFrameIdentity;
+    passRecordContext.results->localShadowOutput.viewIdentity =
+        passRecordContext.featureViewIdentity;
+    passRecordContext.results->localShadowOutput.lightingPlanIdentity =
         m_lightingFramePlan->GetIdentityHash();
     passRecordContext.results->shadowStats = {};
     passRecordContext.frameSnapshot = MakeRenderPassFrameSnapshot(
@@ -10131,6 +11799,9 @@ void SceneRenderer::BuildRenderGraph()
         m_legacyForwardFeature == nullptr ||
         m_ambientOcclusionFeature == nullptr ||
         m_forwardLightingFeature == nullptr ||
+        m_reflectionFeature == nullptr ||
+        m_forwardSpecialFeature == nullptr ||
+        m_translucencyFeature == nullptr ||
         m_postProcessFeature == nullptr ||
         (deferredRecipeRequested &&
          (m_deferredGeometryFeature == nullptr ||
@@ -10145,7 +11816,9 @@ void SceneRenderer::BuildRenderGraph()
     }
     if (!m_passRegistry || !m_renderFeatureRegistry ||
         !m_legacyForwardFeature || !m_ambientOcclusionFeature ||
-        !m_forwardLightingFeature || !m_postProcessFeature ||
+        !m_forwardLightingFeature || !m_reflectionFeature ||
+        !m_forwardSpecialFeature || !m_translucencyFeature ||
+        !m_postProcessFeature ||
         (deferredRecipeRequested &&
          (!m_deferredGeometryFeature || !m_deferredLightingFeature ||
           !m_deferredForwardSpecialFeature)))
@@ -10157,6 +11830,59 @@ void SceneRenderer::BuildRenderGraph()
 
     m_legacyForwardFeature->SetRecordContext(passRecordContext);
     m_forwardLightingFeature->SetRecordContext(passRecordContext);
+    ReflectionFeatureRecordContext reflectionRecordContext;
+    reflectionRecordContext.pass = passRecordContext;
+    reflectionRecordContext.plan = m_reflectionFramePlan;
+    if (m_hybridRayTracingFramePlan.has_value())
+    {
+        reflectionRecordContext.hybridRayTracingPlan =
+            *m_hybridRayTracingFramePlan;
+    }
+    reflectionRecordContext.rayTracedReflectionPass =
+        m_rayTracedReflectionPass;
+    reflectionRecordContext.rayTracedReflectionDenoisePass =
+        m_rayTracedReflectionDenoisePass;
+    reflectionRecordContext.rayTracedReflectionCompositePass =
+        m_rayTracedReflectionCompositePass;
+    if (m_reflectionFramePlan != nullptr)
+    {
+        const std::vector<ReflectionProbeSelection>& probes =
+            m_reflectionFramePlan->GetSelectedProbes();
+        const size_t realizedProbeCount = std::min(
+            probes.size(), reflectionRecordContext.probeTextures.size());
+        for (size_t probeIndex = 0; probeIndex < realizedProbeCount;
+             ++probeIndex)
+        {
+            const RenderResourceHandle handle =
+                probes[probeIndex].snapshot.texture;
+            const RenderTextureResourceData* const texture =
+                m_renderResourceRegistry != nullptr
+                    ? m_renderResourceRegistry->ResolveTexture(handle)
+                    : nullptr;
+            if (texture == nullptr || !texture->texture ||
+                texture->texture->GetDimension() !=
+                    RHITextureDimension::TextureCube ||
+                !RetainRenderSubmissionResource(
+                    m_submissionBatch.get(),
+                    Ref<RefCounted>(texture->texture)))
+            {
+                continue;
+            }
+            const RGTextureHandle graphTexture = m_renderGraph->ImportTexture(
+                texture->texture, texture->accessSnapshot);
+            if (!graphTexture.IsValid())
+            {
+                continue;
+            }
+            reflectionRecordContext.probeTextures[probeIndex] = graphTexture;
+            reflectionRecordContext.probeReady[probeIndex] = true;
+            m_frameExternalTextureAccesses.push_back({handle, graphTexture});
+        }
+    }
+    m_reflectionFeature->SetRecordContext(
+        std::move(reflectionRecordContext));
+    m_forwardSpecialFeature->SetRecordContext(passRecordContext);
+    m_translucencyFeature->SetRecordContext(passRecordContext);
     AmbientOcclusionFeatureRecordContext ambientOcclusionRecordContext;
     ambientOcclusionRecordContext.passRecordContext = passRecordContext;
     ambientOcclusionRecordContext.settings = ResolveAmbientOcclusionSettings(
@@ -10313,24 +12039,31 @@ void SceneRenderer::BuildRenderGraph()
         m_renderFeatureRegistry->AddPasses(featureGraphBuilder, blackboard);
 
     LegacyForwardFeaturePassChainStats passChain;
-    if (featurePrepare.pipeline.resolvedRecipe ==
-        RenderPipelineRecipe::DeferredQuality)
+    const TranslucencyFeaturePassChainStats translucencyChain =
+        m_translucencyFeature->GetPassChainStats();
+    if (UsesDeferredOpaquePath(featurePrepare.pipeline.resolvedRecipe))
     {
         const DeferredRecipeFeaturePassChainStats geometryChain =
             m_deferredGeometryFeature->GetPassChainStatsSnapshot();
         const DeferredRecipeFeaturePassChainStats postLightingChain =
             m_deferredForwardSpecialFeature->GetPassChainStatsSnapshot();
         passChain.frameSequence = geometryChain.frameSequence != 0
-            ? geometryChain.frameSequence : postLightingChain.frameSequence;
+            ? geometryChain.frameSequence
+            : (postLightingChain.frameSequence != 0
+                ? postLightingChain.frameSequence
+                : translucencyChain.frameSequence);
         passChain.registeredPassCount = geometryChain.registeredPassCount;
         passChain.graphPassCount = geometryChain.graphPassCount +
-            postLightingChain.graphPassCount + 1U;
+            postLightingChain.graphPassCount +
+            translucencyChain.graphPassCount + 1U;
         passChain.skippedDisabledPassCount =
             geometryChain.skippedDisabledPassCount +
-            postLightingChain.skippedDisabledPassCount;
+            postLightingChain.skippedDisabledPassCount +
+            translucencyChain.skippedDisabledPassCount;
         passChain.skippedUnsupportedPassCount =
             geometryChain.skippedUnsupportedPassCount +
-            postLightingChain.skippedUnsupportedPassCount;
+            postLightingChain.skippedUnsupportedPassCount +
+            translucencyChain.skippedUnsupportedPassCount;
         passChain.passStatuses = geometryChain.passStatuses;
         passChain.graphPassNames = geometryChain.graphPassNames;
         passChain.graphPassNames.emplace_back("DeferredLightingPass");
@@ -10338,11 +12071,19 @@ void SceneRenderer::BuildRenderGraph()
             passChain.graphPassNames.end(),
             postLightingChain.graphPassNames.begin(),
             postLightingChain.graphPassNames.end());
+        passChain.graphPassNames.insert(
+            passChain.graphPassNames.end(),
+            translucencyChain.graphPassNames.begin(),
+            translucencyChain.graphPassNames.end());
         passChain.unsupportedPassNames = geometryChain.unsupportedPassNames;
         passChain.unsupportedPassNames.insert(
             passChain.unsupportedPassNames.end(),
             postLightingChain.unsupportedPassNames.begin(),
             postLightingChain.unsupportedPassNames.end());
+        passChain.unsupportedPassNames.insert(
+            passChain.unsupportedPassNames.end(),
+            translucencyChain.unsupportedPassNames.begin(),
+            translucencyChain.unsupportedPassNames.end());
     }
     else
     {
@@ -10350,19 +12091,30 @@ void SceneRenderer::BuildRenderGraph()
             m_legacyForwardFeature->GetPassChainStatsSnapshot();
         const LegacyForwardFeaturePassChainStats lightingChain =
             m_forwardLightingFeature->GetPassChainStatsSnapshot();
+        const LegacyForwardFeaturePassChainStats specialChain =
+            m_forwardSpecialFeature->GetPassChainStatsSnapshot();
         passChain.frameSequence = surfaceChain.frameSequence != 0
-            ? surfaceChain.frameSequence : lightingChain.frameSequence;
+            ? surfaceChain.frameSequence
+            : (lightingChain.frameSequence != 0
+                ? lightingChain.frameSequence : specialChain.frameSequence);
         passChain.registeredPassCount = surfaceChain.registeredPassCount != 0
             ? surfaceChain.registeredPassCount
-            : lightingChain.registeredPassCount;
+            : (lightingChain.registeredPassCount != 0
+                ? lightingChain.registeredPassCount
+                : specialChain.registeredPassCount);
         passChain.graphPassCount = surfaceChain.graphPassCount +
-            lightingChain.graphPassCount;
+            lightingChain.graphPassCount + specialChain.graphPassCount +
+            translucencyChain.graphPassCount;
         passChain.skippedDisabledPassCount =
             surfaceChain.skippedDisabledPassCount +
-            lightingChain.skippedDisabledPassCount;
+            lightingChain.skippedDisabledPassCount +
+            specialChain.skippedDisabledPassCount +
+            translucencyChain.skippedDisabledPassCount;
         passChain.skippedUnsupportedPassCount =
             surfaceChain.skippedUnsupportedPassCount +
-            lightingChain.skippedUnsupportedPassCount;
+            lightingChain.skippedUnsupportedPassCount +
+            specialChain.skippedUnsupportedPassCount +
+            translucencyChain.skippedUnsupportedPassCount;
         passChain.passStatuses = surfaceChain.passStatuses.empty()
             ? lightingChain.passStatuses : surfaceChain.passStatuses;
         passChain.graphPassNames = surfaceChain.graphPassNames;
@@ -10370,11 +12122,27 @@ void SceneRenderer::BuildRenderGraph()
             passChain.graphPassNames.end(),
             lightingChain.graphPassNames.begin(),
             lightingChain.graphPassNames.end());
+        passChain.graphPassNames.insert(
+            passChain.graphPassNames.end(),
+            specialChain.graphPassNames.begin(),
+            specialChain.graphPassNames.end());
+        passChain.graphPassNames.insert(
+            passChain.graphPassNames.end(),
+            translucencyChain.graphPassNames.begin(),
+            translucencyChain.graphPassNames.end());
         passChain.unsupportedPassNames = surfaceChain.unsupportedPassNames;
         passChain.unsupportedPassNames.insert(
             passChain.unsupportedPassNames.end(),
             lightingChain.unsupportedPassNames.begin(),
             lightingChain.unsupportedPassNames.end());
+        passChain.unsupportedPassNames.insert(
+            passChain.unsupportedPassNames.end(),
+            specialChain.unsupportedPassNames.begin(),
+            specialChain.unsupportedPassNames.end());
+        passChain.unsupportedPassNames.insert(
+            passChain.unsupportedPassNames.end(),
+            translucencyChain.unsupportedPassNames.begin(),
+            translucencyChain.unsupportedPassNames.end());
     }
     ++m_passChainStats.frameCount;
     m_passChainStats.passStatuses = passChain.passStatuses;
@@ -10419,14 +12187,15 @@ void SceneRenderer::BuildRenderGraph()
         m_featureCompositionFailureReason =
             GetRenderFeatureRegistryCodeName(compositionCode);
         std::vector<RenderFeatureReadiness> readinessCandidates;
-        if (featurePrepare.pipeline.resolvedRecipe ==
-            RenderPipelineRecipe::DeferredQuality)
+        if (UsesDeferredOpaquePath(featurePrepare.pipeline.resolvedRecipe))
         {
             readinessCandidates = {
                 m_deferredGeometryFeature->ResolveReadiness(),
                 m_ambientOcclusionFeature->ResolveReadiness(),
                 m_deferredLightingFeature->ResolveReadiness(),
+                m_reflectionFeature->ResolveReadiness(),
                 m_deferredForwardSpecialFeature->ResolveReadiness(),
+                m_translucencyFeature->ResolveReadiness(),
                 m_postProcessFeature->ResolveReadiness()};
         }
         else
@@ -10437,6 +12206,12 @@ void SceneRenderer::BuildRenderGraph()
                 m_ambientOcclusionFeature->ResolveReadiness());
             readinessCandidates.push_back(
                 m_forwardLightingFeature->ResolveReadiness());
+            readinessCandidates.push_back(
+                m_reflectionFeature->ResolveReadiness());
+            readinessCandidates.push_back(
+                m_forwardSpecialFeature->ResolveReadiness());
+            readinessCandidates.push_back(
+                m_translucencyFeature->ResolveReadiness());
             readinessCandidates.push_back(
                 m_postProcessFeature->ResolveReadiness());
         }
@@ -10567,6 +12342,10 @@ bool SceneRenderer::RemovePass(const char* name)
         {
             m_forwardLightingFeature->SetOpaquePass(nullptr);
         }
+        if (m_forwardSpecialFeature)
+        {
+            m_forwardSpecialFeature->SetOpaquePass(nullptr);
+        }
         if (m_deferredGeometryFeature)
         {
             m_deferredGeometryFeature->SetOpaquePass(nullptr);
@@ -10589,8 +12368,8 @@ bool SceneRenderer::RemovePass(const char* name)
             m_cameraVelocityPass, m_objectVelocityPass};
         if (m_legacyForwardFeature)
             m_legacyForwardFeature->SetVelocityPasses(velocityPasses);
-        if (m_forwardLightingFeature)
-            m_forwardLightingFeature->SetVelocityPasses(velocityPasses);
+        if (m_forwardSpecialFeature)
+            m_forwardSpecialFeature->SetVelocityPasses(velocityPasses);
         if (m_deferredGeometryFeature)
             m_deferredGeometryFeature->SetVelocityPasses(velocityPasses);
         if (m_deferredForwardSpecialFeature)
@@ -10615,6 +12394,10 @@ void SceneRenderer::ClearPasses()
     {
         m_forwardLightingFeature->SetOpaquePass(nullptr);
     }
+    if (m_forwardSpecialFeature)
+    {
+        m_forwardSpecialFeature->SetOpaquePass(nullptr);
+    }
     if (m_deferredGeometryFeature)
     {
         m_deferredGeometryFeature->SetOpaquePass(nullptr);
@@ -10625,8 +12408,8 @@ void SceneRenderer::ClearPasses()
     }
     if (m_legacyForwardFeature)
         m_legacyForwardFeature->SetVelocityPasses({});
-    if (m_forwardLightingFeature)
-        m_forwardLightingFeature->SetVelocityPasses({});
+    if (m_forwardSpecialFeature)
+        m_forwardSpecialFeature->SetVelocityPasses({});
     if (m_deferredGeometryFeature)
         m_deferredGeometryFeature->SetVelocityPasses({});
     if (m_deferredForwardSpecialFeature)

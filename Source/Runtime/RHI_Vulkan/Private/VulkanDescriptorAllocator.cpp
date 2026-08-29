@@ -39,6 +39,17 @@ namespace RVX
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, s_combinedSamplersPerPool},
         };
 
+        // Acceleration-structure descriptors are only valid when the selected
+        // logical device enabled the complete KHR ray-tracing path.  Keeping
+        // this pool row capability-gated lets raster-only Vulkan devices retain
+        // their existing descriptor requirements.
+        if (m_device->GetCapabilities().supportsRaytracingPipeline)
+        {
+            poolSizes.push_back(
+                {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+                 s_storageBuffersPerPool});
+        }
+
         VkDescriptorPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
         poolInfo.maxSets = s_setsPerPool;

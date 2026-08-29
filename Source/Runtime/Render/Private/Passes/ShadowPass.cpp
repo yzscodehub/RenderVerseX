@@ -9,6 +9,7 @@
 #include "Core/Log.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Material/MaterialSystem.h"
+#include "Render/Passes/LocalShadowPass.h"
 #include "Render/PipelineCache.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
@@ -20,6 +21,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <mutex>
 
 namespace RVX
 {
@@ -328,6 +330,56 @@ namespace
         return output;
     }
 
+    LocalShadowRecordOutput MakeLocalShadowRecordOutput(
+        const RenderPassRecordIdentity& identity,
+        const std::shared_ptr<const LightingFramePlan>& lightingPlan,
+        const std::shared_ptr<const LocalShadowAtlasPlan>& atlasPlan,
+        const LocalShadowPassOutput& passOutput)
+    {
+        LocalShadowRecordOutput output;
+        output.identity = identity;
+        if (lightingPlan == nullptr || atlasPlan == nullptr)
+        {
+            return output;
+        }
+
+        output.frameIdentity = atlasPlan->GetFrameIdentity();
+        output.viewIdentity = atlasPlan->GetViewIdentity();
+        output.lightingPlanIdentity = lightingPlan->GetIdentityHash();
+        if (!passOutput.IsValid() ||
+            passOutput.frameIdentity != output.frameIdentity ||
+            passOutput.viewIdentity != output.viewIdentity ||
+            passOutput.lightingPlanIdentity != output.lightingPlanIdentity ||
+            passOutput.localShadowPlanIdentity !=
+                atlasPlan->GetLocalShadowPlanIdentity() ||
+            passOutput.atlasPlanIdentity != atlasPlan->GetIdentityHash() ||
+            passOutput.atlasGeneration != atlasPlan->GetAtlasGeneration())
+        {
+            return output;
+        }
+
+        output.enabled = true;
+        output.localShadowPlanIdentity = passOutput.localShadowPlanIdentity;
+        output.atlasPlanIdentity = passOutput.atlasPlanIdentity;
+        output.atlasGeneration = passOutput.atlasGeneration;
+        output.depthAtlas = passOutput.depthAtlas;
+        output.pageDepthLayers = passOutput.pageDepthLayers;
+        output.pageResolution = passOutput.pageResolution;
+        output.pageCount = passOutput.pageCount;
+        if (!output.IsCompatibleWith(identity,
+                                     output.frameIdentity,
+                                     output.viewIdentity,
+                                     output.lightingPlanIdentity))
+        {
+            output = {};
+            output.identity = identity;
+            output.frameIdentity = atlasPlan->GetFrameIdentity();
+            output.viewIdentity = atlasPlan->GetViewIdentity();
+            output.lightingPlanIdentity = lightingPlan->GetIdentityHash();
+        }
+        return output;
+    }
+
 } // namespace
 
 struct ShadowPass::PlannedShadowDraw
@@ -336,6 +388,7 @@ struct ShadowPass::PlannedShadowDraw
     MeshGPUBuffers buffers;
     SubmeshGPUInfo submesh;
     RHIPipeline* pipeline = nullptr;
+    RHIPipeline* localShadowPipeline = nullptr;
     ObjectConstantBinding objectBinding;
     MaterialBindingResult materialBinding;
     RHIBufferRef instanceIndexBuffer;
@@ -398,6 +451,9 @@ void ShadowPass::AddToGraph(
         RenderPassExecutionData execution{};
         std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache;
         std::unique_ptr<ShadowPass> recorder;
+        std::shared_ptr<const LocalShadowAtlasPlan> localShadowAtlasPlan;
+        std::shared_ptr<LocalShadowPass> localShadowPass;
+        std::mutex recordingMutex;
         bool contextValid = false;
     };
 
@@ -469,26 +525,47 @@ void ShadowPass::AddToGraph(
         m_directInstanceStreamCache;
     const std::shared_ptr<RenderPassRecordResults> results =
         resultOwnershipValid ? execution.results : nullptr;
+    const bool localShadowRequested = contextValid &&
+        execution.localShadowAtlasPlan != nullptr &&
+        execution.localShadowPass != nullptr &&
+        execution.lightingPlan != nullptr;
+    const bool localShadowWorkRequested = localShadowRequested &&
+        !execution.localShadowAtlasPlan->GetPages().empty();
 
-    if (results != nullptr && !primaryLight.IsShadowEligible())
+    if (results != nullptr && !primaryLight.IsShadowEligible() &&
+        !localShadowWorkRequested)
     {
         // There is no shadow workload to schedule. Publish the current-frame
         // disabled output directly instead of registering an empty graph node;
         // a culled node must never be confused with a completed feature.
-        results->directionalShadowOutput = {};
-        results->directionalShadowOutput.identity = results->identity;
-        results->directionalShadowOutput.lightingPlanIdentity =
-            execution.lightingPlan != nullptr
-                ? execution.lightingPlan->GetIdentityHash()
-                : 0;
-        results->shadowStats = {};
+        if (results != nullptr)
+        {
+            results->directionalShadowOutput = {};
+            results->directionalShadowOutput.identity = results->identity;
+            results->directionalShadowOutput.lightingPlanIdentity =
+                execution.lightingPlan != nullptr
+                    ? execution.lightingPlan->GetIdentityHash()
+                    : 0;
+            results->localShadowOutput = {};
+            results->localShadowOutput.identity = results->identity;
+            results->localShadowOutput.frameIdentity = context.featureFrameIdentity;
+            results->localShadowOutput.viewIdentity = context.featureViewIdentity;
+            results->localShadowOutput.lightingPlanIdentity =
+                execution.lightingPlan != nullptr
+                    ? execution.lightingPlan->GetIdentityHash()
+                    : 0;
+            results->shadowStats = {};
+        }
         return;
     }
 
-    graph.AddPass<GraphPassData>(
-        GetName(),
+    const std::shared_ptr<GraphPassData> sharedState =
+        std::make_shared<GraphPassData>();
+    graph.AddPass<std::shared_ptr<GraphPassData>>(
+        primaryLight.IsShadowEligible() ? GetName() : "LocalShadowCasterPreflight",
         GetPassType(),
-        [execution,
+        [sharedState,
+         execution,
          contextValid,
          config,
          primaryLight,
@@ -498,35 +575,61 @@ void ShadowPass::AddToGraph(
          resourceRegistry,
          renderScene,
          directInstanceStreamCache,
-         results](RenderGraphBuilder& builder, GraphPassData& data)
+         results](RenderGraphBuilder& builder,
+                  std::shared_ptr<GraphPassData>& data)
         {
-            data.execution = execution;
-            data.directInstanceStreamCache = directInstanceStreamCache;
-            data.contextValid = contextValid;
-            if (!data.contextValid || !results)
+            data = sharedState;
+            if (data == nullptr)
+            {
+                return;
+            }
+            data->execution = execution;
+            data->directInstanceStreamCache = directInstanceStreamCache;
+            data->localShadowAtlasPlan = execution.localShadowAtlasPlan;
+            data->localShadowPass = execution.localShadowPass;
+            data->contextValid = contextValid;
+            if (!data->contextValid || !results)
             {
                 return;
             }
             results->directionalShadowOutput = {};
             results->directionalShadowOutput.identity = results->identity;
             results->directionalShadowOutput.lightingPlanIdentity =
-                data.execution.lightingPlan
-                    ? data.execution.lightingPlan->GetIdentityHash()
+                data->execution.lightingPlan
+                    ? data->execution.lightingPlan->GetIdentityHash()
+                    : 0;
+            results->localShadowOutput = {};
+            results->localShadowOutput.identity = results->identity;
+            results->localShadowOutput.frameIdentity =
+                data->execution.localShadowAtlasPlan != nullptr
+                    ? data->execution.localShadowAtlasPlan->GetFrameIdentity()
+                    : (data->execution.lightingPlan != nullptr
+                           ? data->execution.lightingPlan->GetFrameIdentity()
+                           : RenderFrameIdentity{});
+            results->localShadowOutput.viewIdentity =
+                data->execution.localShadowAtlasPlan != nullptr
+                    ? data->execution.localShadowAtlasPlan->GetViewIdentity()
+                    : (data->execution.lightingPlan != nullptr
+                           ? data->execution.lightingPlan->GetViewIdentity()
+                           : RenderViewIdentity{});
+            results->localShadowOutput.lightingPlanIdentity =
+                data->execution.lightingPlan != nullptr
+                    ? data->execution.lightingPlan->GetIdentityHash()
                     : 0;
             results->shadowStats = {};
 
-            data.recorder = std::make_unique<ShadowPass>();
-            data.recorder->SetResources(pipelineCache, materialSystem);
-            data.recorder->SetResourceRegistry(resourceRegistry);
-            data.recorder->InitializeGraphRecorder(
-                renderScene, data.directInstanceStreamCache,
-                data.execution.deformationResources, data.execution.identity);
-            data.recorder->SetConfig(config);
-            data.recorder->SetEnabled(requestedEnabled);
-            if (data.execution.frameSnapshot != nullptr)
+            data->recorder = std::make_unique<ShadowPass>();
+            data->recorder->SetResources(pipelineCache, materialSystem);
+            data->recorder->SetResourceRegistry(resourceRegistry);
+            data->recorder->InitializeGraphRecorder(
+                renderScene, data->directInstanceStreamCache,
+                data->execution.deformationResources, data->execution.identity);
+            data->recorder->SetConfig(config);
+            data->recorder->SetEnabled(requestedEnabled);
+            if (data->execution.frameSnapshot != nullptr)
             {
                 for (const RenderDrawItem& item :
-                     data.execution.frameSnapshot->maskedDrawItems)
+                     data->execution.frameSnapshot->maskedDrawItems)
                 {
                     if (!DeclareMaterialTextureGraphReads(
                             builder,
@@ -538,29 +641,39 @@ void ShadowPass::AddToGraph(
                     }
                 }
             }
-            data.recorder->Setup(builder, data.execution.view, primaryLight);
+            data->recorder->Setup(
+                builder,
+                data->execution.view,
+                primaryLight,
+                data->localShadowAtlasPlan.get());
 
-            results->shadowStats = data.recorder->GetStats();
+            results->shadowStats = data->recorder->GetStats();
             results->directionalShadowOutput =
                 MakeDirectionalShadowRecordOutput(
-                    data.execution.identity,
-                    data.execution.lightingPlan
-                        ? data.execution.lightingPlan->GetIdentityHash()
+                    data->execution.identity,
+                    data->execution.lightingPlan
+                        ? data->execution.lightingPlan->GetIdentityHash()
                         : 0,
-                    *data.recorder);
+                    *data->recorder);
         },
-        [results, primaryLight](const GraphPassData& data,
+        [results, primaryLight](const std::shared_ptr<GraphPassData>& data,
                                 RenderGraphPassContext& context)
         {
-            if (!data.contextValid || !data.recorder || !results)
+            if (data == nullptr || !data->contextValid || !data->recorder ||
+                !results)
             {
                 context.MarkExecutionFailed(
                     "ShadowPass graph recording prerequisites are unavailable");
                 return;
             }
-            data.recorder->Execute(
-                context, data.execution.view, primaryLight);
-            results->shadowStats = data.recorder->GetStats();
+            if (!primaryLight.IsShadowEligible())
+            {
+                return;
+            }
+            std::lock_guard<std::mutex> lock(data->recordingMutex);
+            data->recorder->Execute(
+                context, data->execution.view, primaryLight);
+            results->shadowStats = data->recorder->GetStats();
             if (results->shadowStats.shadowCasterCount != 0 &&
                 results->shadowStats.drawCount == 0)
             {
@@ -568,6 +681,56 @@ void ShadowPass::AddToGraph(
                     "ShadowPass had shadow casters but recorded no shadow draw");
             }
         });
+
+    if (!localShadowWorkRequested || results == nullptr)
+    {
+        return;
+    }
+
+    if (sharedState->recorder == nullptr ||
+        !sharedState->recorder->HasPreparedLocalShadowCasterState())
+    {
+        results->localShadowOutput = {};
+        results->localShadowOutput.identity = execution.identity;
+        results->localShadowOutput.frameIdentity =
+            execution.localShadowAtlasPlan->GetFrameIdentity();
+        results->localShadowOutput.viewIdentity =
+            execution.localShadowAtlasPlan->GetViewIdentity();
+        results->localShadowOutput.lightingPlanIdentity =
+            execution.lightingPlan->GetIdentityHash();
+        return;
+    }
+
+    LocalShadowPassRequest localRequest;
+    localRequest.atlasPlan = execution.localShadowAtlasPlan;
+    localRequest.expectedAtlasPlanIdentity =
+        execution.localShadowAtlasPlan->GetIdentityHash();
+    localRequest.expectedAtlasGeneration =
+        execution.localShadowAtlasPlan->GetAtlasGeneration();
+    localRequest.recordCasters = [sharedState](
+        RHICommandContext& commands,
+        const LocalShadowAtlasPage& page,
+        uint32& outDrawCount,
+        std::string& outDiagnostic)
+    {
+        if (sharedState == nullptr || sharedState->recorder == nullptr)
+        {
+            outDrawCount = 0;
+            outDiagnostic =
+                "Local shadow caster recorder lifetime ended before page execution";
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(sharedState->recordingMutex);
+        return sharedState->recorder->RecordLocalShadowPage(
+            commands, page, outDrawCount, outDiagnostic);
+    };
+    const LocalShadowPassOutput localOutput =
+        execution.localShadowPass->AddToGraph(graph, localRequest);
+    results->localShadowOutput = MakeLocalShadowRecordOutput(
+        execution.identity,
+        execution.lightingPlan,
+        execution.localShadowAtlasPlan,
+        localOutput);
 }
 
 bool ShadowPass::IsSupported() const
@@ -716,30 +879,19 @@ void ShadowPass::CalculateCascades(
 void ShadowPass::Setup(
     RenderGraphBuilder& builder,
     const ViewData& view,
-    const PrimaryDirectionalLightRecordInput& primaryLight)
+    const PrimaryDirectionalLightRecordInput& primaryLight,
+    const LocalShadowAtlasPlan* localShadowAtlasPlan)
 {
-    if (!primaryLight.IsShadowEligible() || !IsEnabled())
-    {
-        // The frame-level Direct-stream report must not retain a completed
-        // prior frame when this pass has no work in the current graph.
-        m_stats = {};
-        m_directInstanceStream.instanceUploadBytes = 0;
-        m_directInstanceStream.indexUploadBytes = 0;
-        m_directInstanceStream.instancePatchedRowCount = 0;
-        m_directInstanceStream.indexPatchedRowCount = 0;
-        m_directInstanceStream.activeInstanceCount = 0;
-        m_directInstanceStream.activeInstanceCapacity = 0;
-        m_directInstanceStream.instanceFullMaterialization = false;
-        m_directInstanceStream.indexFullMaterialization = false;
-        return;
-    }
-
     m_stats = {};
     m_shadowMapTextureHandle = {};
     m_cascadeTextureHandles.clear();
     m_cascadeViewHandles.clear();
     m_plannedShadowDraws.clear();
     m_cascadeFrameBindings.reset();
+    m_localShadowFrameBindings.reset();
+    m_localShadowPageIndices.clear();
+    m_localShadowAtlasPlanIdentity = 0;
+    m_localShadowAtlasGeneration = 0;
     m_directInstanceHandle = {};
     m_directInstanceIndexHandle = {};
     m_currentPaletteReadHandle = {};
@@ -755,53 +907,36 @@ void ShadowPass::Setup(
     m_directInstanceStream.indexFullMaterialization = false;
     m_directInstancingPreflightFailed = false;
     m_shadowDrawPreflightValid = false;
+    m_localShadowPipelinePreflightValid = false;
     m_cascades.resize(std::max(1u, m_config.numCascades));
 
-    const bool sceneHasSkinning = m_renderScene != nullptr &&
-        std::any_of(m_renderScene->GetObjects().begin(),
-                    m_renderScene->GetObjects().end(),
-                    [](const RenderObject& object)
-                    {
-                        return object.HasSkinningData();
-                    });
-    if (sceneHasSkinning)
+    const bool directionalShadowRequested = primaryLight.IsShadowEligible();
+    const bool localShadowRequested = localShadowAtlasPlan != nullptr &&
+        localShadowAtlasPlan->IsValid() &&
+        !localShadowAtlasPlan->GetPages().empty();
+    if ((!directionalShadowRequested && !localShadowRequested) || !IsEnabled())
     {
-        const RenderDeformationFrameIdentity deformationIdentity =
-            MakeRenderDeformationFrameIdentity(m_recordIdentity);
-        if (m_deformationResources == nullptr ||
-            !m_deformationResources->MatchesIdentity(deformationIdentity) ||
-            !m_deformationResources->MatchesGraphProvenance(*m_recordIdentity.graph) ||
-            m_deformationResources->GetMatrixCount() == 0 ||
-            builder.GetBufferDesc(
-                m_deformationResources->GetCurrentPaletteHandle()) == nullptr ||
-            builder.GetBufferDesc(
-                m_deformationResources->GetPreviousPaletteHandle()) == nullptr)
-        {
-            return;
-        }
-        m_currentPaletteReadHandle = builder.Read(
-            m_deformationResources->GetCurrentPaletteHandle(),
-            RHIResourceState::ShaderResource,
-            RHIShaderStage::Vertex);
-        m_previousPaletteReadHandle = builder.Read(
-            m_deformationResources->GetPreviousPaletteHandle(),
-            RHIResourceState::ShaderResource,
-            RHIShaderStage::Vertex);
-        if (!m_currentPaletteReadHandle.IsValid() ||
-            !m_previousPaletteReadHandle.IsValid())
-        {
-            return;
-        }
-    }
-
-    const float nearClip = std::max(0.001f, view.nearPlane);
-    if (!std::isfinite(m_config.maxDistance) ||
-        m_config.maxDistance <= nearClip)
-    {
-        RVX_RENDER_ERROR(
-            "ShadowPass: maximum shadow distance must be finite and greater than the near clip plane");
         return;
     }
+
+    if (!PrepareSharedCasterState(
+            builder, view, localShadowRequested))
+    {
+        RVX_RENDER_ERROR(
+            "ShadowPass: shared caster preflight failed; no local or directional shadow attachment will be recorded");
+        return;
+    }
+
+    if (directionalShadowRequested)
+    {
+        const float nearClip = std::max(0.001f, view.nearPlane);
+        if (!std::isfinite(m_config.maxDistance) ||
+            m_config.maxDistance <= nearClip)
+        {
+            RVX_RENDER_ERROR(
+                "ShadowPass: maximum shadow distance must be finite and greater than the near clip plane");
+            return;
+        }
 
     CalculateCascades(view, primaryLight);
     m_stats.configuredCascadeCount = static_cast<uint32_t>(m_cascades.size());
@@ -852,23 +987,82 @@ void ShadowPass::Setup(
 
     m_stats.declaredCascadeResourceCount = static_cast<uint32_t>(m_cascadeTextureHandles.size());
 
+        if (!m_shadowDrawPreflightValid)
+        {
+            m_shadowMapTextureHandle = {};
+            m_cascadeTextureHandles.clear();
+            m_cascadeViewHandles.clear();
+            m_stats.declaredCascadeResourceCount = 0;
+        }
+    }
+
+    if (localShadowRequested &&
+        (!m_localShadowPipelinePreflightValid ||
+         !BuildLocalShadowFrameBindings(
+             builder, view, *localShadowAtlasPlan)))
+    {
+        RVX_RENDER_ERROR(
+            "ShadowPass: forward-Z caster pipelines or immutable local-shadow page bindings failed preflight");
+        m_localShadowFrameBindings.reset();
+        m_localShadowPageIndices.clear();
+        m_localShadowAtlasPlanIdentity = 0;
+        m_localShadowAtlasGeneration = 0;
+    }
+}
+
+bool ShadowPass::PrepareSharedCasterState(
+    RenderGraphBuilder& builder,
+    const ViewData& view,
+    bool localShadowPipelinesRequired)
+{
+    const bool sceneHasSkinning = m_renderScene != nullptr &&
+        std::any_of(m_renderScene->GetObjects().begin(),
+                    m_renderScene->GetObjects().end(),
+                    [](const RenderObject& object)
+                    {
+                        return object.HasSkinningData();
+                    });
+    if (sceneHasSkinning)
+    {
+        const RenderDeformationFrameIdentity deformationIdentity =
+            MakeRenderDeformationFrameIdentity(m_recordIdentity);
+        if (m_deformationResources == nullptr ||
+            !m_deformationResources->MatchesIdentity(deformationIdentity) ||
+            !m_deformationResources->MatchesGraphProvenance(*m_recordIdentity.graph) ||
+            m_deformationResources->GetMatrixCount() == 0 ||
+            builder.GetBufferDesc(
+                m_deformationResources->GetCurrentPaletteHandle()) == nullptr ||
+            builder.GetBufferDesc(
+                m_deformationResources->GetPreviousPaletteHandle()) == nullptr)
+        {
+            return false;
+        }
+        m_currentPaletteReadHandle = builder.Read(
+            m_deformationResources->GetCurrentPaletteHandle(),
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Vertex);
+        m_previousPaletteReadHandle = builder.Read(
+            m_deformationResources->GetPreviousPaletteHandle(),
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Vertex);
+        if (!m_currentPaletteReadHandle.IsValid() ||
+            !m_previousPaletteReadHandle.IsValid())
+        {
+            return false;
+        }
+    }
+
     if (!PrepareDirectInstanceStream(builder, view))
     {
         m_directInstancingPreflightFailed = true;
     }
 
-    // All caster constant pages and set-1 descriptors are fixed while the
-    // graph is built. Execute() therefore has no allocation path after an
-    // attachment is bound.
-    m_shadowDrawPreflightValid = BuildPlannedShadowDraws(builder, view);
-    if (!m_shadowDrawPreflightValid)
-    {
-        RVX_RENDER_ERROR("ShadowPass: caster/page preflight failed; no shadow attachment will be recorded");
-        m_shadowMapTextureHandle = {};
-        m_cascadeTextureHandles.clear();
-        m_cascadeViewHandles.clear();
-        m_stats.declaredCascadeResourceCount = 0;
-    }
+    // This is the sole caster preflight for both directional and local pages.
+    // All pipelines, object constants, material descriptors, and mesh bindings
+    // are fixed before either graph pass can execute.
+    m_shadowDrawPreflightValid = BuildPlannedShadowDraws(
+        builder, view, localShadowPipelinesRequired);
+    return m_shadowDrawPreflightValid;
 }
 
 bool ShadowPass::BuildCascadeFrameBindings(
@@ -932,10 +1126,97 @@ bool ShadowPass::BuildCascadeFrameBindings(
     return true;
 }
 
-bool ShadowPass::BuildPlannedShadowDraws(RenderGraphBuilder& builder,
-                                         const ViewData& view)
+bool ShadowPass::BuildLocalShadowFrameBindings(
+    RenderGraphBuilder& builder,
+    const ViewData& view,
+    const LocalShadowAtlasPlan& localShadowAtlasPlan)
+{
+    if (m_pipelineCache == nullptr || !localShadowAtlasPlan.IsValid() ||
+        localShadowAtlasPlan.GetPages().empty())
+    {
+        return false;
+    }
+
+    const LocalShadowAtlasTextureContract& textureContract =
+        localShadowAtlasPlan.GetTextureContract();
+    if (!textureContract.IsValid() || textureContract.pageResolution == 0 ||
+        textureContract.pageCapacity == 0)
+    {
+        return false;
+    }
+
+    std::vector<ViewData> pageViews;
+    pageViews.reserve(localShadowAtlasPlan.GetPages().size());
+    std::vector<uint32> pageIndices;
+    pageIndices.reserve(localShadowAtlasPlan.GetPages().size());
+    for (const LocalShadowAtlasPage& page : localShadowAtlasPlan.GetPages())
+    {
+        if (page.pageIndex >= textureContract.pageCapacity ||
+            std::find(pageIndices.begin(), pageIndices.end(), page.pageIndex) !=
+                pageIndices.end())
+        {
+            return false;
+        }
+
+        // Use the same immutable set-0 convention as CSM: every page owns a
+        // complete ViewData constant page with temporal state disabled.  The
+        // local projection is already canonical right-handed Y-up, forward-Z.
+        ViewData shadowView = view;
+        shadowView.viewMatrix = Mat4Identity();
+        shadowView.projectionMatrix = page.viewProjection;
+        shadowView.viewProjectionMatrix = page.viewProjection;
+        shadowView.jitteredProjectionMatrix = page.viewProjection;
+        shadowView.jitteredViewProjectionMatrix = page.viewProjection;
+        shadowView.inverseViewMatrix = Mat4Identity();
+        shadowView.inverseProjectionMatrix = inverse(page.viewProjection);
+        shadowView.inverseJitteredViewProjectionMatrix =
+            shadowView.inverseProjectionMatrix;
+        shadowView.previousViewProjectionMatrix = page.viewProjection;
+        shadowView.previousJitteredViewProjectionMatrix = page.viewProjection;
+        shadowView.previousViewProjectionValid = 0;
+        shadowView.currentTemporalJitter = {};
+        shadowView.previousTemporalJitter = {};
+        shadowView.resetTemporalHistory = true;
+        shadowView.cameraPosition = page.lightPosition;
+        shadowView.cameraForward = NormalizeOr(
+            page.forward, Vec3(0.0f, 0.0f, -1.0f));
+        shadowView.viewportWidth = textureContract.pageResolution;
+        shadowView.viewportHeight = textureContract.pageResolution;
+        pageViews.push_back(std::move(shadowView));
+        pageIndices.push_back(page.pageIndex);
+    }
+
+    auto bindings =
+        std::make_unique<DirectionalShadowCascadeBindingSnapshot>();
+    if (!m_pipelineCache->CreateDirectionalShadowCascadeBindingSnapshot(
+            pageViews, *bindings) ||
+        !bindings->IsValid() ||
+        bindings->frameDescriptorSets.size() != pageViews.size())
+    {
+        return false;
+    }
+    for (const Ref<RefCounted>& resource : bindings->retainedResources)
+    {
+        if (!builder.RetainSubmissionResource(resource))
+        {
+            return false;
+        }
+    }
+
+    m_localShadowFrameBindings = std::move(bindings);
+    m_localShadowPageIndices = std::move(pageIndices);
+    m_localShadowAtlasPlanIdentity = localShadowAtlasPlan.GetIdentityHash();
+    m_localShadowAtlasGeneration = localShadowAtlasPlan.GetAtlasGeneration();
+    return true;
+}
+
+bool ShadowPass::BuildPlannedShadowDraws(
+    RenderGraphBuilder& builder,
+    const ViewData& view,
+    bool localShadowPipelinesRequired)
 {
     m_plannedShadowDraws.clear();
+    m_localShadowPipelinePreflightValid = false;
     const ShadowDepthBiasState biasState = MakeShadowDepthBiasState(m_config);
     if (!m_pipelineCache || !m_renderScene || m_resourceRegistry == nullptr)
     {
@@ -1073,7 +1354,8 @@ bool ShadowPass::BuildPlannedShadowDraws(RenderGraphBuilder& builder,
         planned.skinned = IsSkinnedPacket(packet);
         m_plannedShadowDraws.emplace_back(std::move(planned));
     }
-    ApplyDirectInstancePlan(builder, view);
+    ApplyDirectInstancePlan(
+        builder, view, localShadowPipelinesRequired);
 
     // Materialize the copying mesh view only after the transactional instance
     // plan has either compacted the stream or retained every source packet.
@@ -1155,6 +1437,26 @@ bool ShadowPass::BuildPlannedShadowDraws(RenderGraphBuilder& builder,
             m_plannedShadowDraws.clear();
             return false;
         }
+        if (localShadowPipelinesRequired)
+        {
+            planned.localShadowPipeline = planned.masked
+                ? m_pipelineCache->GetMaskedLocalShadowDepthPipeline(
+                      biasState,
+                      inputMode,
+                      packet.pipelineKey.cullMode,
+                      packet.pipelineKey.reverseWinding)
+                : m_pipelineCache->GetLocalShadowDepthPipeline(
+                      biasState,
+                      inputMode,
+                      packet.pipelineKey.cullMode,
+                      packet.pipelineKey.reverseWinding);
+            if (planned.localShadowPipeline != nullptr &&
+                !builder.RetainSubmissionResource(
+                    Ref<RefCounted>(planned.localShadowPipeline)))
+            {
+                planned.localShadowPipeline = nullptr;
+            }
+        }
     }
 
     for (PlannedShadowDraw& planned : m_plannedShadowDraws)
@@ -1222,6 +1524,21 @@ bool ShadowPass::BuildPlannedShadowDraws(RenderGraphBuilder& builder,
             RVX_RENDER_ERROR("ShadowPass: direct shadow object constants or retained bindings failed preflight");
             m_plannedShadowDraws.clear();
             return false;
+        }
+    }
+    if (localShadowPipelinesRequired)
+    {
+        m_localShadowPipelinePreflightValid = std::all_of(
+            m_plannedShadowDraws.begin(),
+            m_plannedShadowDraws.end(),
+            [](const PlannedShadowDraw& planned)
+            {
+                return planned.localShadowPipeline != nullptr;
+            });
+        if (!m_localShadowPipelinePreflightValid)
+        {
+            RVX_RENDER_ERROR(
+                "ShadowPass: local-shadow caster preflight could not retain the dedicated forward-Z pipeline family");
         }
     }
     return true;
@@ -1322,8 +1639,10 @@ bool ShadowPass::PrepareDirectInstanceStream(RenderGraphBuilder& builder,
     return true;
 }
 
-void ShadowPass::ApplyDirectInstancePlan(RenderGraphBuilder& builder,
-                                         const ViewData& view)
+void ShadowPass::ApplyDirectInstancePlan(
+    RenderGraphBuilder& builder,
+    const ViewData& view,
+    bool localShadowPipelinesRequired)
 {
     if (view.instancingMode == RenderInstancingMode::Disabled ||
         m_directInstancePlan.instancedBatchCount == 0)
@@ -1422,6 +1741,7 @@ void ShadowPass::ApplyDirectInstancePlan(RenderGraphBuilder& builder,
     {
         uint32 leaderIndex = 0;
         RHIPipeline* pipeline = nullptr;
+        RHIPipeline* localShadowPipeline = nullptr;
         ObjectConstantBinding objectBinding;
     };
     std::vector<InstancedBinding> bindings;
@@ -1440,6 +1760,12 @@ void ShadowPass::ApplyDirectInstancePlan(RenderGraphBuilder& builder,
                 MakeShadowDepthBiasState(m_config),
                 leader.packet.packet.pipelineKey.cullMode,
                 leader.packet.packet.pipelineKey.reverseWinding);
+        RHIPipeline* localShadowPipeline = localShadowPipelinesRequired
+            ? m_pipelineCache->GetInstancedLocalShadowDepthPipeline(
+                  MakeShadowDepthBiasState(m_config),
+                  leader.packet.packet.pipelineKey.cullMode,
+                  leader.packet.packet.pipelineKey.reverseWinding)
+            : nullptr;
         ObjectConstantBinding binding;
         if (instancedPipeline == nullptr ||
             leader.masked ||
@@ -1471,8 +1797,17 @@ void ShadowPass::ApplyDirectInstancePlan(RenderGraphBuilder& builder,
             fallback();
             return;
         }
+        if (localShadowPipeline != nullptr &&
+            !builder.RetainSubmissionResource(
+                Ref<RefCounted>(localShadowPipeline)))
+        {
+            localShadowPipeline = nullptr;
+        }
         bindings.push_back(
-            {leaderIndex, instancedPipeline, std::move(binding)});
+            {leaderIndex,
+             instancedPipeline,
+             localShadowPipeline,
+             std::move(binding)});
     }
 
     std::vector<PlannedShadowDraw> batched;
@@ -1493,6 +1828,8 @@ void ShadowPass::ApplyDirectInstancePlan(RenderGraphBuilder& builder,
         const RasterInstanceStreamBatchBinding& streamBinding =
             m_directInstanceStream.batchBindings[committedBatchBindingIndex++];
         leader.pipeline = bindings[bindingIndex].pipeline;
+        leader.localShadowPipeline =
+            bindings[bindingIndex].localShadowPipeline;
         leader.objectBinding = std::move(bindings[bindingIndex].objectBinding);
         leader.instanceIndexBuffer = m_directInstanceStream.instanceIndices;
         leader.packet.packet.arguments.instanceCount =
@@ -1707,6 +2044,118 @@ void ShadowPass::RenderCascade(
     }
 
     ctx.EndRenderPass();
+}
+
+bool ShadowPass::HasPreparedLocalShadowCasterState() const noexcept
+{
+    return m_shadowDrawPreflightValid &&
+        m_localShadowPipelinePreflightValid &&
+        m_localShadowFrameBindings != nullptr &&
+        m_localShadowFrameBindings->IsValid() &&
+        !m_localShadowPageIndices.empty() &&
+        m_localShadowFrameBindings->frameDescriptorSets.size() ==
+            m_localShadowPageIndices.size() &&
+        m_localShadowAtlasPlanIdentity != 0 &&
+        m_localShadowAtlasGeneration != 0;
+}
+
+bool ShadowPass::RecordLocalShadowPage(
+    RHICommandContext& ctx,
+    const LocalShadowAtlasPage& page,
+    uint32& outDrawCount,
+    std::string& outDiagnostic) const
+{
+    outDrawCount = 0;
+    outDiagnostic.clear();
+    if (!HasPreparedLocalShadowCasterState())
+    {
+        outDiagnostic =
+            "Local shadow caster state was not prepared for this graph generation";
+        return false;
+    }
+    const auto pageIt = std::find(
+        m_localShadowPageIndices.begin(), m_localShadowPageIndices.end(),
+        page.pageIndex);
+    if (pageIt == m_localShadowPageIndices.end())
+    {
+        outDiagnostic = "Local shadow page is not part of the sealed atlas plan";
+        return false;
+    }
+    const size_t bindingIndex = static_cast<size_t>(
+        std::distance(m_localShadowPageIndices.begin(), pageIt));
+    if (bindingIndex >= m_localShadowFrameBindings->frameDescriptorSets.size() ||
+        !m_localShadowFrameBindings->frameDescriptorSets[bindingIndex])
+    {
+        outDiagnostic = "Local shadow page has no immutable frame descriptor set";
+        return false;
+    }
+
+    RHIDescriptorSet* const frameSet =
+        m_localShadowFrameBindings->frameDescriptorSets[bindingIndex].Get();
+    for (const PlannedShadowDraw& planned : m_plannedShadowDraws)
+    {
+        if (planned.localShadowPipeline == nullptr ||
+            planned.buffers.positionBuffer == nullptr ||
+            planned.buffers.indexBuffer == nullptr ||
+            planned.objectBinding.descriptorSet == nullptr ||
+            (planned.masked &&
+             (planned.buffers.uvBuffer == nullptr ||
+              planned.materialBinding.descriptorSet == nullptr)))
+        {
+            outDiagnostic =
+                "Local shadow page observed an incomplete preflighted caster binding";
+            return false;
+        }
+
+        ctx.SetPipeline(planned.localShadowPipeline);
+        ctx.SetDescriptorSet(0, frameSet);
+        ctx.SetDescriptorSet(1,
+                             planned.objectBinding.descriptorSet.Get(),
+                             planned.objectBinding.dynamicOffsets);
+        if (planned.masked)
+        {
+            ctx.SetDescriptorSet(2,
+                                 planned.materialBinding.descriptorSet,
+                                 planned.materialBinding.dynamicOffsets);
+        }
+        ctx.SetVertexBuffer(0, planned.buffers.positionBuffer);
+        if (planned.masked)
+        {
+            ctx.SetVertexBuffer(2, planned.buffers.uvBuffer);
+            ctx.SetVertexBuffer(
+                7,
+                planned.packet.packet.pipelineKey.requiresUV1
+                    ? planned.buffers.uv1Buffer
+                    : planned.buffers.uvBuffer);
+        }
+        if (planned.buffers.boneIndicesBuffer)
+        {
+            ctx.SetVertexBuffer(4, planned.buffers.boneIndicesBuffer);
+        }
+        if (planned.buffers.boneWeightsBuffer)
+        {
+            ctx.SetVertexBuffer(5, planned.buffers.boneWeightsBuffer);
+        }
+        if (planned.instanced)
+        {
+            if (!planned.instanceIndexBuffer)
+            {
+                outDiagnostic =
+                    "Local shadow page has no immutable instancing index stream";
+                return false;
+            }
+            ctx.SetVertexBuffer(6, planned.instanceIndexBuffer.Get());
+        }
+        ctx.SetIndexBuffer(planned.buffers.indexBuffer, RHIFormat::R32_UINT);
+        const RenderDrawArguments& arguments = planned.packet.packet.arguments;
+        ctx.DrawIndexed(arguments.indexCount,
+                        arguments.instanceCount,
+                        arguments.firstIndex,
+                        arguments.vertexOffset,
+                        arguments.firstInstance);
+        ++outDrawCount;
+    }
+    return true;
 }
 
 } // namespace RVX

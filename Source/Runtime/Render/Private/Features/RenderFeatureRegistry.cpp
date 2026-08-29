@@ -43,10 +43,14 @@ namespace
                 return VisibilityOutputs::SchemaVersion;
             case RenderBlackboardResourceId::ShadowOutputs:
                 return ShadowOutputs::SchemaVersion;
+            case RenderBlackboardResourceId::LocalShadowOutputs:
+                return LocalShadowOutputs::SchemaVersion;
             case RenderBlackboardResourceId::LightingOutputs:
                 return LightingOutputs::SchemaVersion;
             case RenderBlackboardResourceId::ReflectionOutputs:
                 return ReflectionOutputs::SchemaVersion;
+            case RenderBlackboardResourceId::PreTranslucencyOutputs:
+                return PreTranslucencyOutputs::SchemaVersion;
             case RenderBlackboardResourceId::TranslucencyOutputs:
                 return TranslucencyOutputs::SchemaVersion;
             case RenderBlackboardResourceId::PostProcessOutputs:

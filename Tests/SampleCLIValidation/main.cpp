@@ -108,6 +108,17 @@ namespace RVX
                 manifest, contract, outError);
         }
 
+        [[nodiscard]] static bool ApplyHiZReflectionQualificationProfile(
+            std::string_view sampleId,
+            bool probeEnabled,
+            SampleScenarioManifest& manifest,
+            SampleAssessmentContract& contract,
+            std::string& outError)
+        {
+            return SampleRunner::ApplyHiZReflectionQualificationProfile(
+                sampleId, probeEnabled, manifest, contract, outError);
+        }
+
         [[nodiscard]] static uint64 ResolveSceneRemovalPublicationSequence(
             uint64 removalSceneRevision,
             const EngineRenderRuntimeDiagnostics& diagnostics) noexcept
@@ -343,6 +354,61 @@ namespace
         return receipt;
     }
 
+    RVX::RenderExecutionReceipt MakeSuccessfulCurrentToonRenderExecutionReceipt(
+        RVX::uint64 frameSequence = 91)
+    {
+        RVX::RenderExecutionReceipt receipt =
+            MakeSuccessfulToonRenderExecutionReceipt(frameSequence);
+        receipt.schemaVersion =
+            RVX::RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION;
+        return receipt;
+    }
+
+    RVX::RenderExecutionReceipt MakeSuccessfulHybridRayTracingReceipt(
+        RVX::uint64 frameSequence = 91)
+    {
+        RVX::RenderExecutionReceipt receipt =
+            MakeSuccessfulRenderExecutionReceipt(frameSequence);
+        receipt.schemaVersion =
+            RVX::RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION;
+        receipt.requestedRecipe = RVX::RenderPipelineRecipe::HybridRayTracing;
+        receipt.resolvedRecipe = RVX::RenderPipelineRecipe::HybridRayTracing;
+        receipt.quality = RVX::RenderQualityTier::High;
+        receipt.profileHash = RVX::ComputeRenderPipelineProfileHash(
+            receipt.resolvedRecipe, receipt.quality);
+
+        RVX::RenderHybridRayTracingExecutionReceipt& hybrid =
+            receipt.hybridRayTracing;
+        hybrid.available = true;
+        hybrid.planIdentityHash = 0x484252544C4153ULL;
+        hybrid.scenePreparationGeneration = 7;
+        hybrid.sceneStructuralHash = 0x5343454E455254ULL;
+        hybrid.frameIdentity = receipt.frameIdentity;
+        hybrid.viewIdentity = receipt.viewIdentity;
+        hybrid.fullResolution = {1280, 720};
+        hybrid.halfResolution = {640, 360};
+        hybrid.historyResetReasons = RVX::RenderHistoryResetReason::None;
+        hybrid.recipe = receipt.resolvedRecipe;
+        hybrid.quality = receipt.quality;
+        hybrid.profileHash = receipt.profileHash;
+        hybrid.shadowRoute =
+            RVX::RenderHybridRayTracingShadowRoute::RayTraced;
+        hybrid.reflectionRoute =
+            RVX::RenderHybridRayTracingReflectionRoute::RayTraced;
+        hybrid.graphExecutionSucceeded = true;
+        hybrid.sceneBuildAccepted = true;
+        hybrid.shadowDispatchRecorded = true;
+        hybrid.reflectionDispatchRecorded = true;
+        hybrid.spatialDenoiseRecorded = true;
+        hybrid.temporalResolveRecorded = true;
+        hybrid.compositeRecorded = true;
+        hybrid.compositeUsedDenoisedSource = true;
+        hybrid.submissionAccepted = true;
+        hybrid.presentationQualified = true;
+        hybrid.succeeded = true;
+        return receipt;
+    }
+
     RVX::RenderDiagnosticsSnapshot MakeSuccessfulToonDiagnosticsSnapshot(
         RVX::uint64 frameSequence = 91)
     {
@@ -350,7 +416,7 @@ namespace
         snapshot.frameFeatures.available = true;
         snapshot.frameFeatures.frameSequence = frameSequence;
         snapshot.frameFeatures.executionReceipt =
-            MakeSuccessfulToonRenderExecutionReceipt(frameSequence);
+            MakeSuccessfulCurrentToonRenderExecutionReceipt(frameSequence);
         snapshot.lastPresentedFrameSequence = frameSequence;
         return snapshot;
     }
@@ -361,7 +427,8 @@ namespace
     {
         RVX::SamplePostProcessExecutionDiagnostics diagnostics;
         diagnostics.available = true;
-        diagnostics.executionReceiptSchemaVersion = 8;
+        diagnostics.executionReceiptSchemaVersion =
+            RVX::RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION;
         diagnostics.executionReceiptStructurallyValid = true;
         diagnostics.executionReceiptAvailable = true;
         diagnostics.executionReceiptGraphComposed = true;
@@ -523,10 +590,14 @@ namespace
             MakeQualifiedPostProcessActualExecution();
         EXPECT_TRUE(diagnostics.IsQualificationReady());
 
-        // Schema ten extends the renderer receipt with GTAO velocity evidence
-        // while preserving
-        // the complete schema-eight post-process projection.
+        // The public post-process contract admits only the current receipt
+        // ABI. This prevents an old producer from being relabelled as a
+        // complete current-frame qualification.
         diagnostics.executionReceiptSchemaVersion = 10;
+        EXPECT_FALSE(diagnostics.IsQualificationReady());
+
+        diagnostics.executionReceiptSchemaVersion =
+            RVX::RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION;
         EXPECT_TRUE(diagnostics.IsQualificationReady());
 
         diagnostics.executionReceiptSchemaVersion = 7;
@@ -570,7 +641,7 @@ namespace
     }
 
     TEST(SampleCLIValidation,
-         ToonExecutionProjectionRequiresPresentedSchemaElevenEvidence)
+         ToonExecutionProjectionRequiresPresentedCurrentSchemaEvidence)
     {
         RVX::RenderDiagnosticsSnapshot snapshot =
             MakeSuccessfulToonDiagnosticsSnapshot(113);
@@ -596,13 +667,47 @@ namespace
                 .IsQualificationReady());
 
         snapshot = MakeSuccessfulToonDiagnosticsSnapshot(113);
-        snapshot.frameFeatures.executionReceipt.schemaVersion = 10;
+        snapshot.frameFeatures.executionReceipt.schemaVersion = 11;
         EXPECT_FALSE(
             RVX::ProjectSampleToonLightingExecutionDiagnostics(snapshot)
                 .IsExecutionReady());
         EXPECT_FALSE(
             RVX::ProjectSampleToonOutlineExecutionDiagnostics(snapshot)
                 .IsExecutionReady());
+    }
+
+    TEST(SampleCLIValidation,
+         SchemaElevenReceiptRejectsExecutedFeatureWithoutRecordedWork)
+    {
+        RVX::RenderExecutionReceipt receipt =
+            MakeSuccessfulToonRenderExecutionReceipt(114u);
+        ASSERT_TRUE(receipt.deferredOpaque.IsStructurallyValid());
+        ASSERT_TRUE(receipt.lighting.IsStructurallyValid());
+        ASSERT_TRUE(receipt.deformation.IsStructurallyValid());
+        ASSERT_TRUE(receipt.postProcess.IsStructurallyValid());
+        ASSERT_TRUE(receipt.ambientOcclusion.IsEmpty());
+        ASSERT_TRUE(receipt.toonLighting.IsStructurallyValid());
+        ASSERT_TRUE(receipt.toonLighting.IsExecutionReady());
+        ASSERT_TRUE(receipt.toonOutline.IsStructurallyValid());
+        ASSERT_TRUE(receipt.toonOutline.IsExecutionReady());
+        ASSERT_TRUE(receipt.build.IsStructurallyValid());
+        ASSERT_TRUE(receipt.frameIdentity.IsValid());
+        ASSERT_TRUE(receipt.viewIdentity.IsValid());
+        ASSERT_TRUE(receipt.features.front().readiness.IsReadyToExecute());
+        ASSERT_EQ(receipt.features.front().graphPassNames.size(),
+                  receipt.features.front().graphPassCount);
+        ASSERT_TRUE(receipt.IsStructurallyValid());
+        ASSERT_FALSE(receipt.features.empty());
+
+        RVX::RenderFeatureExecutionReceipt& feature = receipt.features.front();
+        feature.graphPassCount = 0;
+        feature.executedGraphPassCount = 0;
+        feature.graphPassNames.clear();
+        feature.contractCompletedWithoutGraphWork = false;
+        EXPECT_FALSE(receipt.IsStructurallyValid());
+
+        feature.contractCompletedWithoutGraphWork = true;
+        EXPECT_TRUE(receipt.IsStructurallyValid());
     }
 
     TEST(SampleCLIValidation,
@@ -940,11 +1045,49 @@ namespace
     }
 
     TEST(SampleCLIValidation,
+         HiZReflectionQualificationProbeIsExplicitAndIndependentOfPixelProbe)
+    {
+        const char* qualificationArgv[] = {
+            "BasicRHI",
+            "--frames",
+            "1",
+            "--hiz-reflection-qualification-probe",
+        };
+        RVX::SampleCLIOptions qualificationOptions;
+        std::string error;
+        ASSERT_TRUE(RVX::ParseSampleCLI(
+            static_cast<int>(std::size(qualificationArgv)),
+            qualificationArgv,
+            qualificationOptions,
+            &error))
+            << error;
+        EXPECT_TRUE(
+            qualificationOptions.hiZReflectionQualificationProbeEnabled);
+        EXPECT_FALSE(qualificationOptions.pixelProbeEnabled);
+    }
+
+    TEST(SampleCLIValidation,
          RunnerRejectsCombinedExposureAndAmbientOcclusionQualificationProbes)
     {
         const char* argv[] = {
             "RenderVerseSamples",
             "--exposure-qualification-probe",
+            "--ambient-occlusion-qualification-probe",
+        };
+
+        RVX::SampleRunnerCLIOptions options;
+        std::string error;
+        EXPECT_FALSE(RVX::ParseSampleRunnerCLI(
+            static_cast<int>(std::size(argv)), argv, options, &error));
+        EXPECT_NE(error.find("mutually exclusive"), std::string::npos);
+    }
+
+    TEST(SampleCLIValidation,
+         RunnerRejectsCombinedHiZReflectionAndAmbientOcclusionQualificationProbes)
+    {
+        const char* argv[] = {
+            "RenderVerseSamples",
+            "--hiz-reflection-qualification-probe",
             "--ambient-occlusion-qualification-probe",
         };
 
@@ -1142,13 +1285,15 @@ namespace
         receipt.deterministicQualification = true;
         receipt.renderExecutionReceipt =
             MakeSuccessfulRenderExecutionReceipt(91);
+        receipt.renderExecutionReceipt->schemaVersion =
+            RVX::RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION;
         receipt.satisfied = true;
         report.visualContractReceipt = receipt;
 
         std::ostringstream stream;
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
-        EXPECT_NE(json.find("\"schemaVersion\": 32"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 33"), std::string::npos);
         EXPECT_NE(json.find("\"waterSurfaceActualExecution\": {"),
                   std::string::npos);
         EXPECT_NE(json.find("\"qualifiedWater\": false"),
@@ -1201,7 +1346,7 @@ namespace
                   std::string::npos);
         EXPECT_NE(json.find("\"renderExecutionReceipt\": {"),
                   std::string::npos);
-        EXPECT_NE(json.find("\"schemaVersion\": 8"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 12"), std::string::npos);
         EXPECT_NE(json.find("\"sourceCommit\": \"" + std::string(40, 'a') +
                             "\""),
                   std::string::npos);
@@ -1323,10 +1468,11 @@ namespace
                   std::string::npos);
         EXPECT_NE(json.find("\"satisfied\": true"), std::string::npos);
 
-        // Schema eight deliberately predates the raw GTAO receipt. Keep this
-        // assertion explicit so future receipt additions cannot mutate its
-        // published compatibility shape.
-        EXPECT_EQ(json.find("\"ambientOcclusion\": {"),
+        EXPECT_NE(json.find("\"ambientOcclusion\": {"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"hybridRayTracing\": {"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"shadowRoute\": \"none\""),
                   std::string::npos);
 
         RVX::RenderExecutionReceipt legacyV2Receipt =
@@ -1487,6 +1633,43 @@ namespace
                   std::string::npos);
         EXPECT_NE(json.find("\"renderWidth\": 640"), std::string::npos);
         EXPECT_NE(json.find("\"renderHeight\": 360"), std::string::npos);
+    }
+
+    TEST(SampleCLIValidation,
+         SchemaTwelveRenderReceiptSerializesHybridRayTracingExecutionPayload)
+    {
+        RVX::SampleReport report;
+        report.schemaVersion = RVX::RVX_SAMPLE_REPORT_SCHEMA_VERSION;
+        report.visualContractReceipt.emplace();
+        report.visualContractReceipt->renderExecutionReceipt =
+            MakeSuccessfulHybridRayTracingReceipt(91);
+
+        std::ostringstream stream;
+        RVX::WriteSampleReportJson(stream, report);
+        const std::string json = stream.str();
+        EXPECT_NE(json.find("\"schemaVersion\": 12"), std::string::npos);
+        EXPECT_NE(json.find("\"hybridRayTracing\": {"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"planIdentityHash\": "),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"scenePreparationGeneration\": 7"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"sceneStructuralHash\": "),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"shadowRoute\": \"ray-traced\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"reflectionRoute\": \"ray-traced\""),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"spatialDenoiseRecorded\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"temporalResolveRecorded\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"compositeUsedDenoisedSource\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"submissionAccepted\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"presentationQualified\": true"),
+                  std::string::npos);
     }
 
     TEST(SampleCLIValidation,
@@ -2362,7 +2545,7 @@ namespace
         const std::string json = stream.str();
 
         EXPECT_NE(json.find("\"schemaId\": \"RVX.SampleReport\""), std::string::npos);
-        EXPECT_NE(json.find("\"schemaVersion\": 32"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 33"), std::string::npos);
         EXPECT_NE(json.find("\"sampleName\": \"BasicRHI\""), std::string::npos);
         EXPECT_NE(json.find("\"category\": \"sample\""), std::string::npos);
         EXPECT_NE(json.find("\"requestedBackend\": \"dx12\""), std::string::npos);
@@ -2471,7 +2654,7 @@ namespace
         EXPECT_NE(json.find("\"renderGraphTotalPasses\": 3"), std::string::npos);
         EXPECT_NE(json.find("\"postProcessActualExecution\": {"),
                   std::string::npos);
-        EXPECT_NE(json.find("\"executionReceiptSchemaVersion\": 8"),
+        EXPECT_NE(json.find("\"executionReceiptSchemaVersion\": 12"),
                   std::string::npos);
         EXPECT_NE(json.find("\"presentedFrameAligned\": true"),
                   std::string::npos);
@@ -2658,7 +2841,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 32"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 33"), std::string::npos);
         EXPECT_NE(json.find("\"contractRevision\": 7"), std::string::npos);
         EXPECT_NE(json.find("\"phase\": \"complete\""),
                   std::string::npos);
@@ -3149,7 +3332,7 @@ namespace
         RVX::WriteSampleReportJson(stream, report);
         const std::string json = stream.str();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 32"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 33"), std::string::npos);
         EXPECT_NE(json.find("\"packageContentId\""), std::string::npos);
         EXPECT_NE(json.find(asset.packageContentId.digest), std::string::npos);
         EXPECT_NE(json.find("\"cook\": {\"required\": true, \"accepted\": true, \"packageOnly\": true, \"actualLoadDomain\": \"CookedArtifact\", \"code\": \"accepted\""),
@@ -3531,6 +3714,77 @@ namespace
                 manifest, contract, error));
         EXPECT_NE(error.find("not a gating capability"),
                   std::string::npos);
+    }
+
+    TEST(SampleCLIValidation,
+         Gfx19HiZReflectionProfileReplacesTheMutuallyExclusiveGtaoGate)
+    {
+        RVX::SampleScenarioManifest manifest;
+        manifest.requiredCapabilities = {
+            RVX::AssessmentCode("RENDER.CAPABILITY.POST_PROCESS_BLOOM"),
+            RVX::AssessmentCode("RENDER.CAPABILITY.POST_PROCESS_TONE_MAPPING"),
+            RVX::AssessmentCode("RENDER.CAPABILITY.POST_PROCESS_COLOR_GRADING"),
+            RVX::AssessmentCode("RENDER.CAPABILITY.POST_PROCESS_FXAA"),
+            RVX::AssessmentCode("RENDER.CAPABILITY.GTAO")};
+        RVX::SampleAssessmentContract contract =
+            RVX::MakeDefaultSampleAssessmentContract();
+        contract.revision = "post-processing-v3";
+        contract.capabilities = {
+            {RVX::AssessmentCode("RENDER.CAPABILITY.POST_PROCESS_BLOOM"),
+             "Bloom base qualification", true, "Base scenario contract"},
+            {RVX::AssessmentCode("RENDER.CAPABILITY.POST_PROCESS_TONE_MAPPING"),
+             "Tone mapping base qualification", true, "Base scenario contract"},
+            {RVX::AssessmentCode("RENDER.CAPABILITY.POST_PROCESS_COLOR_GRADING"),
+             "Color grading base qualification", true, "Base scenario contract"},
+            {RVX::AssessmentCode("RENDER.CAPABILITY.POST_PROCESS_FXAA"),
+             "FXAA base qualification", true, "Base scenario contract"},
+            {RVX::AssessmentCode("RENDER.CAPABILITY.GTAO"),
+             "GTAO base qualification", true, "Base scenario contract"}};
+
+        std::string error;
+        EXPECT_TRUE(
+            RVX::SampleRunnerTestAccess::ApplyHiZReflectionQualificationProfile(
+                "post-processing", false, manifest, contract, error))
+            << error;
+        EXPECT_EQ(manifest.requiredCapabilities.size(), 5u);
+        EXPECT_EQ(contract.capabilities.size(), 5u);
+
+        EXPECT_TRUE(
+            RVX::SampleRunnerTestAccess::ApplyHiZReflectionQualificationProfile(
+                "post-processing", true, manifest, contract, error))
+            << error;
+        ASSERT_EQ(manifest.requiredCapabilities.size(), 5u);
+        ASSERT_EQ(contract.capabilities.size(), 5u);
+        const auto hasRequired = [&manifest](std::string_view code)
+        {
+            return std::any_of(
+                manifest.requiredCapabilities.begin(),
+                manifest.requiredCapabilities.end(),
+                [code](const RVX::AssessmentCode& value)
+                {
+                    return value.GetValue() == code;
+                });
+        };
+        EXPECT_TRUE(hasRequired("RENDER.CAPABILITY.POST_PROCESS_BLOOM"));
+        EXPECT_TRUE(hasRequired("RENDER.CAPABILITY.POST_PROCESS_TONE_MAPPING"));
+        EXPECT_TRUE(hasRequired("RENDER.CAPABILITY.POST_PROCESS_COLOR_GRADING"));
+        EXPECT_TRUE(hasRequired("RENDER.CAPABILITY.POST_PROCESS_FXAA"));
+        EXPECT_TRUE(hasRequired("RENDER.CAPABILITY.HIZ_SCREEN_SPACE_REFLECTION"));
+        EXPECT_FALSE(hasRequired("RENDER.CAPABILITY.GTAO"));
+        EXPECT_TRUE(contract.capabilities.back().gating);
+        EXPECT_TRUE(
+            RVX::SampleRunnerTestAccess::ValidateManifestAssessmentContract(
+                manifest, contract, error))
+            << error;
+
+        RVX::SampleScenarioManifest wrongSampleManifest = manifest;
+        RVX::SampleAssessmentContract wrongSampleContract = contract;
+        error.clear();
+        EXPECT_FALSE(
+            RVX::SampleRunnerTestAccess::ApplyHiZReflectionQualificationProfile(
+                "model-viewer", true, wrongSampleManifest,
+                wrongSampleContract, error));
+        EXPECT_NE(error.find("post-processing"), std::string::npos);
     }
 
     TEST(SampleCLIValidation,

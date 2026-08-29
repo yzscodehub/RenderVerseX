@@ -3,6 +3,11 @@
 #include "Render/Material/MaterialSystem.h"
 #include "Render/Passes/OpaquePass.h"
 #include "Render/Passes/ParticleFeaturePass.h"
+#include "Render/Passes/RayTracedReflectionCompositePass.h"
+#include "Render/Passes/RayTracedReflectionDenoisePass.h"
+#include "Render/Passes/RayTracedReflectionPass.h"
+#include "Render/Passes/RayTracedShadowPass.h"
+#include "Render/Passes/ShadowPass.h"
 #include "Render/Passes/WaterFeaturePass.h"
 #include "Renderer/RenderPassRegistry.h"
 
@@ -14,6 +19,23 @@ namespace RVX
 {
 namespace
 {
+    [[nodiscard]] bool IsHybridRayTracingReflectionPass(
+        const IRenderPass& pass) noexcept
+    {
+        return dynamic_cast<const RayTracedReflectionPass*>(&pass) != nullptr ||
+               dynamic_cast<const RayTracedReflectionDenoisePass*>(&pass) !=
+                   nullptr ||
+               dynamic_cast<const RayTracedReflectionCompositePass*>(&pass) !=
+                   nullptr;
+    }
+
+    [[nodiscard]] bool IsRasterDirectionalShadowPass(
+        const IRenderPass& pass) noexcept
+    {
+        return dynamic_cast<const RayTracedShadowPass*>(&pass) == nullptr ||
+               dynamic_cast<const ShadowPass*>(&pass) != nullptr;
+    }
+
     struct OpaqueSceneSnapshotCopyData
     {
         RGTextureHandle source{};
@@ -46,6 +68,12 @@ namespace
                     source, RHIResourceState::CopySource);
                 data.destination = graphBuilder.Write(
                     destination, RHIResourceState::CopyDest);
+                // This snapshot is published through the typed blackboard.
+                // Blackboard handles do not create RenderGraph dependencies,
+                // so preserve the copy as the producer of the shader-readable
+                // frame contract even when no later special surface samples it.
+                graphBuilder.SetExportState(
+                    data.destination, RHIResourceState::ShaderResource);
                 data.receipt = receipt;
             },
             [](const OpaqueSceneSnapshotCopyData& data,
@@ -377,6 +405,72 @@ namespace
             view.exposureStateConfigurationHash};
     }
 
+    [[nodiscard]] bool BuildLocalShadowOutputs(
+        const RenderPassRecordContext& context,
+        RenderGraphBlackboardProvenance provenance,
+        LocalShadowOutputs& outOutputs,
+        std::string& outDiagnostic)
+    {
+        outOutputs = {};
+        outDiagnostic.clear();
+        if (context.results == nullptr || context.lightingPlan == nullptr ||
+            context.localShadowAtlasPlan == nullptr)
+        {
+            outDiagnostic =
+                "Local-shadow publication requires plan-owned graph results";
+            return false;
+        }
+
+        const LocalShadowAtlasPlan& atlasPlan =
+            *context.localShadowAtlasPlan;
+        const uint64 lightingPlanIdentity =
+            context.lightingPlan->GetIdentityHash();
+        const LocalShadowRecordOutput& recorded =
+            context.results->localShadowOutput;
+        const bool requested = !atlasPlan.GetPages().empty();
+        if (!atlasPlan.IsValid() ||
+            atlasPlan.GetFrameIdentity() != context.featureFrameIdentity ||
+            atlasPlan.GetViewIdentity() != context.featureViewIdentity ||
+            atlasPlan.GetLightingPlanIdentity() != lightingPlanIdentity ||
+            !recorded.IsCompatibleWith(
+                context.identity, context.featureFrameIdentity,
+                context.featureViewIdentity, lightingPlanIdentity) ||
+            recorded.enabled != requested)
+        {
+            outDiagnostic =
+                "Local-shadow graph output is stale, incomplete, or plan-mismatched";
+            return false;
+        }
+        if (requested && !recorded.MatchesAtlasPlan(atlasPlan))
+        {
+            outDiagnostic =
+                "Local-shadow graph output does not match the sealed atlas pages";
+            return false;
+        }
+
+        outOutputs.provenance = provenance;
+        outOutputs.frameIdentity = atlasPlan.GetFrameIdentity();
+        outOutputs.viewIdentity = atlasPlan.GetViewIdentity();
+        outOutputs.lightingPlanIdentity = lightingPlanIdentity;
+        outOutputs.localShadowPlanIdentity =
+            atlasPlan.GetLocalShadowPlanIdentity();
+        outOutputs.atlasPlanIdentity = atlasPlan.GetIdentityHash();
+        outOutputs.atlasGeneration = atlasPlan.GetAtlasGeneration();
+        outOutputs.requested = requested;
+        if (requested)
+        {
+            outOutputs.depthAtlas = recorded.depthAtlas;
+            outOutputs.pageCount = recorded.pageCount;
+            outOutputs.pageResolution = recorded.pageResolution;
+        }
+        if (!outOutputs.IsValid())
+        {
+            outDiagnostic = "LocalShadowOutputs v1 validation failed";
+            return false;
+        }
+        return true;
+    }
+
     [[nodiscard]] bool HasCanonicalVelocityTarget(
         const RenderGraph& graph,
         RGTextureHandle handle,
@@ -508,7 +602,9 @@ RenderFeatureDescriptor LegacyForwardFeatureAdapter::Describe() const
     descriptor.phase = RenderFeaturePhase::Geometry;
     descriptor.producedResources = {
         {RenderBlackboardResourceId::SceneTextures,
-         SceneTextures::SchemaVersion}};
+         SceneTextures::SchemaVersion},
+        {RenderBlackboardResourceId::LocalShadowOutputs,
+         LocalShadowOutputs::SchemaVersion}};
     descriptor.requiredCapabilities = ToMask(RenderFeatureCapability::Graphics);
     descriptor.requiredRecipes = ToMask(RenderPipelineRecipe::ForwardStandard);
     descriptor.qualityTiers = RVX_ALL_RENDER_QUALITY_TIERS;
@@ -602,7 +698,8 @@ void LegacyForwardFeatureAdapter::AddPasses(
     {
         if (!pass || pass.get() == m_opaquePass ||
             m_velocityPasses.Contains(pass.get()) ||
-            pass->GetPriority() >= firstLightingConsumerPriority)
+            pass->GetPriority() >= firstLightingConsumerPriority ||
+            !IsRasterDirectionalShadowPass(*pass))
         {
             continue;
         }
@@ -670,6 +767,24 @@ void LegacyForwardFeatureAdapter::AddPasses(
     textures.exposureState = m_recordContext.view.exposureState;
     textures.exposureStateMetadata = MakeExposureStateMetadata(
         m_recordContext.view);
+    LocalShadowOutputs localShadows;
+    std::string localShadowFailure;
+    if (!BuildLocalShadowOutputs(
+            m_recordContext, builder.GetProvenance(), localShadows,
+            localShadowFailure))
+    {
+        SetCompositionFailure(std::move(localShadowFailure));
+        return;
+    }
+    if (blackboard.Publish(
+            BuiltinRenderFeatureIds::LegacyForwardMainChain,
+            Describe(), std::move(localShadows)) !=
+        RenderGraphBlackboardCode::Success)
+    {
+        SetCompositionFailure(
+            "ForwardStandard could not publish LocalShadowOutputs v1");
+        return;
+    }
     if (blackboard.Publish(BuiltinRenderFeatureIds::LegacyForwardMainChain,
                            Describe(), std::move(textures)) !=
         RenderGraphBlackboardCode::Success)
@@ -725,11 +840,9 @@ void LegacyForwardFeatureAdapter::SetCompositionFailure(std::string diagnostic)
 
 ForwardLightingFeatureAdapter::ForwardLightingFeatureAdapter(
     RenderPassRegistry* passRegistry,
-    OpaquePass* opaquePass,
-    VelocityPassBindings velocityPasses) noexcept
+    OpaquePass* opaquePass) noexcept
     : m_passRegistry(passRegistry)
     , m_opaquePass(opaquePass)
-    , m_velocityPasses(velocityPasses)
 {
 }
 
@@ -753,10 +866,12 @@ RenderFeatureDescriptor ForwardLightingFeatureAdapter::Describe() const
     descriptor.phase = RenderFeaturePhase::Lighting;
     descriptor.consumedResources = {
         {RenderBlackboardResourceId::AmbientOcclusionOutputs,
-         AmbientOcclusionOutputs::SchemaVersion}};
+         AmbientOcclusionOutputs::SchemaVersion},
+        {RenderBlackboardResourceId::LocalShadowOutputs,
+         LocalShadowOutputs::SchemaVersion}};
     descriptor.producedResources = {
-        {RenderBlackboardResourceId::TranslucencyOutputs,
-         TranslucencyOutputs::SchemaVersion}};
+        {RenderBlackboardResourceId::LightingOutputs,
+         LightingOutputs::SchemaVersion}};
     descriptor.requiredCapabilities =
         ToMask(RenderFeatureCapability::Graphics) |
         ToMask(RenderFeatureCapability::DescriptorBindings);
@@ -776,12 +891,15 @@ void ForwardLightingFeatureAdapter::Prepare(
     m_readiness.hardwareSupported = HasGraphicsCapability(
         context.hardwareCapabilities);
     m_readiness.implementationSupported = IsForwardStandard(context);
+    const bool hasValidLightingPlan = HasValidLightingPlan(context);
     OpaqueRasterPipelinePreflightResult opaquePipelinePreflight;
     if (m_readiness.hardwareSupported &&
-        m_readiness.implementationSupported && m_opaquePass != nullptr)
+        m_readiness.implementationSupported && hasValidLightingPlan &&
+        m_opaquePass != nullptr)
     {
         const OpaqueRasterOutputFamily outputFamily =
-            m_recordContext.view.toonOutlineRequested != 0
+            (m_recordContext.view.toonOutlineRequested != 0 ||
+             m_recordContext.requiresReflectionSurfaceData)
                 ? OpaqueRasterOutputFamily::ForwardSceneHDRWithSurfaceData
                 : OpaqueRasterOutputFamily::ForwardSceneHDR;
         opaquePipelinePreflight = m_opaquePass->PreflightRasterPipelines(
@@ -791,7 +909,14 @@ void ForwardLightingFeatureAdapter::Prepare(
     m_readiness.pipelineReady = m_opaquePass != nullptr &&
         m_opaquePass->IsSupported() && opaquePipelinePreflight.Succeeded();
     m_readiness.inputsReady = HasMatchingRecordContext(context) &&
-        m_passRegistry != nullptr && m_opaquePass != nullptr;
+        hasValidLightingPlan && m_passRegistry != nullptr &&
+        m_opaquePass != nullptr && m_recordContext.lightingResources != nullptr &&
+        m_recordContext.lightingResources->IsComplete() &&
+        m_recordContext.lightingResources->HasCurrentGraphResources(
+            m_recordContext.identity) &&
+        (!(m_recordContext.requiresReflectionSurfaceData ||
+           m_recordContext.view.toonOutlineRequested != 0) ||
+         m_recordContext.view.exposureStateContentHash != 0);
 
     if (!m_readiness.hardwareSupported)
     {
@@ -801,6 +926,11 @@ void ForwardLightingFeatureAdapter::Prepare(
     {
         m_readiness.diagnostic =
             "Forward lighting feature only implements ForwardStandard";
+    }
+    else if (!hasValidLightingPlan)
+    {
+        m_readiness.diagnostic =
+            "Forward lighting requires the current frame/view LightingFramePlan";
     }
     else if (!m_readiness.pipelineReady)
     {
@@ -866,6 +996,32 @@ void ForwardLightingFeatureAdapter::AddPasses(
         return;
     }
 
+    const LocalShadowOutputs* const localShadows =
+        blackboard.Require<LocalShadowOutputs>(
+            BuiltinRenderFeatureIds::ForwardLighting, Describe(), &code);
+    const LocalShadowAtlasPlan* const localShadowAtlasPlan =
+        m_recordContext.localShadowAtlasPlan.get();
+    if (localShadows == nullptr ||
+        code != RenderGraphBlackboardCode::Success ||
+        localShadowAtlasPlan == nullptr || !localShadows->IsValid() ||
+        localShadows->frameIdentity != m_preparedContext.frameIdentity ||
+        localShadows->viewIdentity != m_preparedContext.viewIdentity ||
+        localShadows->lightingPlanIdentity !=
+            m_recordContext.lightingPlan->GetIdentityHash() ||
+        localShadows->localShadowPlanIdentity !=
+            localShadowAtlasPlan->GetLocalShadowPlanIdentity() ||
+        localShadows->atlasPlanIdentity !=
+            localShadowAtlasPlan->GetIdentityHash() ||
+        localShadows->atlasGeneration !=
+            localShadowAtlasPlan->GetAtlasGeneration() ||
+        localShadows->requested !=
+            !localShadowAtlasPlan->GetPages().empty())
+    {
+        SetCompositionFailure(
+            "Forward lighting requires the exact typed local-shadow output");
+        return;
+    }
+
     RenderPassRecordContext opaqueContext = m_recordContext;
     if (opaqueContext.results == nullptr)
     {
@@ -916,12 +1072,16 @@ void ForwardLightingFeatureAdapter::AddPasses(
 
     RGTextureHandle outlineNormal{};
     RGTextureHandle outlineMaterialIdentity{};
+    RGTextureHandle baseIndirectSpecular{};
+    RGTextureHandle specularResponse{};
     RGBufferHandle outlineMaterialTable{};
     PostProcessMaterialTableMetadata outlineMaterialTableMetadata{};
     const bool toonOutlineRequested =
         opaqueContext.view.toonOutlineRequested != 0;
+    const bool needsSurfaceData = toonOutlineRequested ||
+        opaqueContext.requiresReflectionSurfaceData;
     bool opaqueRegistered = false;
-    if (toonOutlineRequested)
+    if (needsSurfaceData)
     {
         const RenderOutputExtent extent = m_preparedContext.outputExtent;
         RHITextureDesc normalDesc = RHITextureDesc::RenderTarget(
@@ -951,7 +1111,7 @@ void ForwardLightingFeatureAdapter::AddPasses(
                 materialTable, materialTableError))
         {
             SetCompositionFailure(materialTableError.empty()
-                ? "Forward Toon outline could not create its typed surface inputs"
+                ? "Forward surface-data could not create its typed inputs"
                 : std::move(materialTableError));
             return;
         }
@@ -978,7 +1138,29 @@ void ForwardLightingFeatureAdapter::AddPasses(
             !outlineMaterialTableMetadata.IsValid())
         {
             SetCompositionFailure(
-                "Forward Toon outline could not import its immutable material table");
+                "Forward surface-data could not import its immutable material table");
+            return;
+        }
+
+        RHITextureDesc baseIndirectSpecularDesc = RHITextureDesc::RenderTarget(
+            extent.width, extent.height,
+            SceneTextures::BaseIndirectSpecularContract.format);
+        baseIndirectSpecularDesc.sampleCount =
+            SceneTextures::BaseIndirectSpecularContract.sampleCount;
+        baseIndirectSpecularDesc.debugName = "ForwardBaseIndirectSpecular";
+        baseIndirectSpecular = builder.CreateTexture(baseIndirectSpecularDesc);
+
+        RHITextureDesc specularResponseDesc = RHITextureDesc::RenderTarget(
+            extent.width, extent.height,
+            SceneTextures::SpecularResponseContract.format);
+        specularResponseDesc.sampleCount =
+            SceneTextures::SpecularResponseContract.sampleCount;
+        specularResponseDesc.debugName = "ForwardSpecularResponse";
+        specularResponse = builder.CreateTexture(specularResponseDesc);
+        if (!baseIndirectSpecular.IsValid() || !specularResponse.IsValid())
+        {
+            SetCompositionFailure(
+                "Forward surface-data could not create its reflection-replacement targets");
             return;
         }
 
@@ -986,6 +1168,8 @@ void ForwardLightingFeatureAdapter::AddPasses(
             opaqueContext.view.colorTarget,
             outlineNormal,
             outlineMaterialIdentity,
+            baseIndirectSpecular,
+            specularResponse,
             opaqueContext.view.depthTarget};
         opaqueRegistered = builder.AddGraphCallback(
             "ForwardSurfaceData",
@@ -1008,156 +1192,29 @@ void ForwardLightingFeatureAdapter::AddPasses(
     }
     ++m_lastPassChainStats.graphPassCount;
     m_lastPassChainStats.graphPassNames.push_back(
-        toonOutlineRequested ? "ForwardSurfaceData" : m_opaquePass->GetName());
+        needsSurfaceData ? "ForwardSurfaceData" : m_opaquePass->GetName());
 
-    RHITextureDesc opaqueSnapshotDesc = RHITextureDesc::Texture2D(
-        m_preparedContext.outputExtent.width,
-        m_preparedContext.outputExtent.height,
-        RHIFormat::RGBA16_FLOAT,
-        RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst);
-    opaqueSnapshotDesc.debugName = "ForwardOpaqueSceneSnapshot";
-    const RGTextureHandle opaqueSceneSnapshot = builder.CreateTexture(
-        opaqueSnapshotDesc);
-    if (!opaqueSceneSnapshot.IsValid() ||
-        opaqueSceneSnapshot.index == opaqueContext.view.colorTarget.index)
+    const RenderLightingFrameResourceSnapshot* const lightingResources =
+        m_recordContext.lightingResources.get();
+    if (lightingResources == nullptr || !lightingResources->IsComplete() ||
+        !lightingResources->HasCurrentGraphResources(m_recordContext.identity))
     {
-        SetCompositionFailure("Forward lighting could not allocate a distinct HDR opaque snapshot");
+        SetCompositionFailure(
+            "Forward lighting lost the current LightingFramePlan resources");
         return;
     }
-    const std::shared_ptr<OpaqueSceneSnapshotCopyReceipt> opaqueSnapshotReceipt =
-        std::make_shared<OpaqueSceneSnapshotCopyReceipt>();
-    bool opaqueSnapshotRegistered = false;
 
-    ParticleVfxRecordInput particleVfx;
-    std::string particleVfxFailure;
-    if (!BuildParticleVfxRecordInput(
-            builder,
-            opaqueContext,
-            *m_passRegistry,
-            m_preparedContext.outputExtent,
-            particleVfx,
-            particleVfxFailure))
-    {
-        SetCompositionFailure(std::move(particleVfxFailure));
-        return;
-    }
-    RGTextureHandle activeSceneColor = opaqueContext.view.colorTarget;
-    WaterSurfaceRecordInput waterSurface;
-
-    const int32 firstLightingConsumerPriority = m_opaquePass->GetPriority();
-    for (const std::unique_ptr<IRenderPass>& pass : m_passRegistry->GetPasses())
-    {
-        if (!pass || pass.get() == m_opaquePass ||
-            m_velocityPasses.Contains(pass.get()) ||
-            pass->GetPriority() <= firstLightingConsumerPriority)
-        {
-            continue;
-        }
-        const RenderPassStatus status = pass->GetStatus();
-        if (!status.requestedEnabled)
-        {
-            ++m_lastPassChainStats.skippedDisabledPassCount;
-            continue;
-        }
-        if (!status.supported)
-        {
-            ++m_lastPassChainStats.skippedUnsupportedPassCount;
-            m_lastPassChainStats.unsupportedPassNames.push_back(status.name);
-            continue;
-        }
-        if (!status.enabled)
-        {
-            ++m_lastPassChainStats.skippedDisabledPassCount;
-            continue;
-        }
-
-        // Later surfaces intentionally receive no screen AO. They retain the
-        // exact graph-owned shadow state, but not the opaque-only AO field.
-        RenderPassRecordContext passContext = opaqueContext;
-        passContext.view.colorTarget = activeSceneColor;
-        passContext.particleVfx = particleVfx;
-        passContext.ambientOcclusion = {};
-        if (!opaqueSnapshotRegistered &&
-            pass->GetPriority() >= PassPriority::Water)
-        {
-            if (!AddOpaqueSceneSnapshotCopy(
-                    builder,
-                    activeSceneColor,
-                    opaqueSceneSnapshot,
-                    opaqueSnapshotReceipt))
-            {
-                SetCompositionFailure("Forward lighting could not register the HDR opaque snapshot copy");
-                return;
-            }
-            ++m_lastPassChainStats.graphPassCount;
-            m_lastPassChainStats.graphPassNames.push_back("OpaqueSceneSnapshotCopy");
-            opaqueSnapshotRegistered = true;
-            passContext.opaqueSceneSnapshot = OpaqueSceneSnapshotRecordInput{
-                opaqueContext.identity,
-                opaqueSceneSnapshot,
-                opaqueSnapshotReceipt};
-            std::string waterSurfaceFailure;
-            if (!BuildWaterSurfaceRecordInput(
-                    builder, passContext, *m_passRegistry,
-                    m_preparedContext.outputExtent, waterSurface,
-                    waterSurfaceFailure))
-            {
-                SetCompositionFailure(std::move(waterSurfaceFailure));
-                return;
-            }
-        }
-        if (opaqueSnapshotRegistered)
-        {
-            passContext.opaqueSceneSnapshot = OpaqueSceneSnapshotRecordInput{
-                opaqueContext.identity,
-                opaqueSceneSnapshot,
-                opaqueSnapshotReceipt};
-        }
-        passContext.waterSurface = waterSurface;
-        if (!builder.AddLegacyPass(*pass, passContext))
-        {
-            SetCompositionFailure(
-                "Forward post-lighting pass registration failed for '" +
-                status.name + "'");
-            return;
-        }
-        if (const auto* const particle =
-                dynamic_cast<const ParticleFeaturePass*>(pass.get());
-            particle != nullptr && particleVfx.compositedSceneColor.IsValid() &&
-            particle->HasRegisteredDistortionComposite())
-        {
-            activeSceneColor = particleVfx.compositedSceneColor;
-        }
-        ++m_lastPassChainStats.graphPassCount;
-        m_lastPassChainStats.graphPassNames.push_back(status.name);
-    }
-
-    if (!opaqueSnapshotRegistered)
-    {
-        if (!AddOpaqueSceneSnapshotCopy(
-                builder,
-                activeSceneColor,
-                opaqueSceneSnapshot,
-                opaqueSnapshotReceipt))
-        {
-            SetCompositionFailure("Forward lighting could not register the HDR opaque snapshot copy");
-            return;
-        }
-        ++m_lastPassChainStats.graphPassCount;
-        m_lastPassChainStats.graphPassNames.push_back("OpaqueSceneSnapshotCopy");
-    }
-
-    TranslucencyOutputs outputs;
+    LightingOutputs outputs;
     outputs.provenance = builder.GetProvenance();
     outputs.frameIdentity = m_preparedContext.frameIdentity;
     outputs.viewIdentity = m_preparedContext.viewIdentity;
-    outputs.hdrSceneColor = activeSceneColor;
+    outputs.lightingPlanIdentity =
+        m_recordContext.lightingPlan->GetIdentityHash();
+    outputs.hdrSceneColor = opaqueContext.view.colorTarget;
     outputs.hdrSceneColorMetadata = MakeMetadata(
         m_preparedContext.outputExtent, SceneTextures::HDRSceneColorContract);
-    outputs.deviceDepth = m_recordContext.view.depthTarget;
-    outputs.deviceDepthMetadata = MakeMetadata(
-        m_preparedContext.outputExtent, SceneTextures::DeviceDepthContract);
-    if (toonOutlineRequested)
+    outputs.clusteredLights = lightingResources->clusterData;
+    if (needsSurfaceData)
     {
         outputs.worldNormal = outlineNormal;
         outputs.worldNormalMetadata = MakeMetadata(
@@ -1170,35 +1227,26 @@ void ForwardLightingFeatureAdapter::AddPasses(
         outputs.materialParameterTable = outlineMaterialTable;
         outputs.materialParameterTableMetadata =
             outlineMaterialTableMetadata;
-    }
-    outputs.velocity = m_recordContext.view.velocityTarget;
-    outputs.velocityMetadata = MakeMetadata(
-        m_preparedContext.outputExtent, SceneTextures::VelocityContract);
-    outputs.reactiveMask = m_recordContext.view.reactiveMaskTarget;
-    outputs.reactiveMaskMetadata = MakeMetadata(
-        m_preparedContext.outputExtent, SceneTextures::ReactiveMaskContract);
-    outputs.distortionVectors = particleVfx.distortionVectors;
-    if (outputs.distortionVectors.IsValid())
-    {
-        outputs.distortionVectorsMetadata = MakeMetadata(
+        outputs.baseIndirectSpecular = baseIndirectSpecular;
+        outputs.baseIndirectSpecularMetadata = MakeMetadata(
             m_preparedContext.outputExtent,
-            SceneTextures::FormatContract{
-                RHIFormat::RG16_FLOAT, RHISampleCount::Count1});
+            SceneTextures::BaseIndirectSpecularContract);
+        outputs.specularResponse = specularResponse;
+        outputs.specularResponseMetadata = MakeMetadata(
+            m_preparedContext.outputExtent,
+            SceneTextures::SpecularResponseContract);
+        outputs.exposureState = opaqueContext.view.exposureState;
+        outputs.exposureStateMetadata = MakeExposureStateMetadata(
+            opaqueContext.view);
+        outputs.exposureStateContentHash =
+            opaqueContext.view.exposureStateContentHash;
     }
-    outputs.opaqueSceneSnapshot = opaqueSceneSnapshot;
-    outputs.opaqueSceneSnapshotMetadata = MakeMetadata(
-        m_preparedContext.outputExtent, SceneTextures::HDRSceneColorContract);
-    outputs.exposureState = m_recordContext.view.exposureState;
-    outputs.exposureStateMetadata = MakeExposureStateMetadata(
-        m_recordContext.view);
-    outputs.colorDomain = PostProcessColorDomain::SceneLinearHDR;
-    outputs.transfer = PostProcessTransfer::None;
     if (blackboard.Publish(BuiltinRenderFeatureIds::ForwardLighting,
                            Describe(), std::move(outputs)) !=
         RenderGraphBlackboardCode::Success)
     {
         SetCompositionFailure(
-            "Forward lighting could not publish TranslucencyOutputs");
+            "Forward lighting could not publish LightingOutputs v5");
     }
 }
 
@@ -1232,7 +1280,435 @@ bool ForwardLightingFeatureAdapter::HasMatchingRecordContext(
            m_recordContext.identity.recordEpoch == context.recordEpoch;
 }
 
+bool ForwardLightingFeatureAdapter::HasValidLightingPlan(
+    const RenderFeatureContext& context) const noexcept
+{
+    return m_hasRecordContext && m_recordContext.lightingPlan != nullptr &&
+           m_recordContext.lightingPlan->IsValid() &&
+           m_recordContext.lightingPlan->GetIdentityHash() != 0 &&
+           m_recordContext.lightingPlan->GetFrameIdentity() ==
+               context.frameIdentity &&
+           m_recordContext.lightingPlan->GetViewIdentity() ==
+               context.viewIdentity;
+}
+
 void ForwardLightingFeatureAdapter::SetCompositionFailure(
+    std::string diagnostic)
+{
+    m_readiness.inputsReady = false;
+    m_readiness.executed = false;
+    m_readiness.diagnostic = std::move(diagnostic);
+}
+
+ForwardSpecialFeatureAdapter::ForwardSpecialFeatureAdapter(
+    RenderPassRegistry* passRegistry,
+    OpaquePass* opaquePass,
+    VelocityPassBindings velocityPasses) noexcept
+    : m_passRegistry(passRegistry)
+    , m_opaquePass(opaquePass)
+    , m_velocityPasses(velocityPasses)
+{
+}
+
+void ForwardSpecialFeatureAdapter::SetRecordContext(
+    RenderPassRecordContext context)
+{
+    m_recordContext = std::move(context);
+    m_hasRecordContext = true;
+    m_preparedContext = {};
+    m_readiness = {};
+    m_lastPassChainStats = {};
+    m_lastReceipt = {};
+}
+
+RenderFeatureDescriptor ForwardSpecialFeatureAdapter::Describe() const
+{
+    RenderFeatureDescriptor descriptor;
+    descriptor.featureId = BuiltinRenderFeatureIds::ForwardSpecialChain;
+    descriptor.schemaVersion = 1;
+    descriptor.name = "ForwardSpecialChain";
+    descriptor.phase = RenderFeaturePhase::Sky;
+    descriptor.consumedResources = {
+        {RenderBlackboardResourceId::ReflectionOutputs,
+         ReflectionOutputs::SchemaVersion},
+        {RenderBlackboardResourceId::LocalShadowOutputs,
+         LocalShadowOutputs::SchemaVersion}};
+    descriptor.producedResources = {
+        {RenderBlackboardResourceId::PreTranslucencyOutputs,
+         PreTranslucencyOutputs::SchemaVersion}};
+    descriptor.requiredCapabilities = ToMask(RenderFeatureCapability::Graphics);
+    descriptor.requiredRecipes = ToMask(RenderPipelineRecipe::ForwardStandard);
+    descriptor.qualityTiers = RVX_ALL_RENDER_QUALITY_TIERS;
+    descriptor.fallbackPolicy = RenderFeatureFallbackPolicy::None;
+    descriptor.shaderPipelineFamily = "ForwardSpecialSurfaces";
+    return descriptor;
+}
+
+void ForwardSpecialFeatureAdapter::Prepare(
+    const RenderFeatureContext& context)
+{
+    m_preparedContext = context;
+    m_readiness = {};
+    m_readiness.compiled = true;
+    m_readiness.hardwareSupported = HasGraphicsCapability(
+        context.hardwareCapabilities);
+    m_readiness.implementationSupported = IsForwardStandard(context);
+    const bool hasValidLightingPlan = HasValidLightingPlan(context);
+    m_readiness.pipelineReady = m_passRegistry != nullptr &&
+        m_opaquePass != nullptr;
+    m_readiness.inputsReady = HasMatchingRecordContext(context) &&
+        hasValidLightingPlan && m_readiness.pipelineReady;
+
+    if (!m_readiness.hardwareSupported)
+    {
+        m_readiness.diagnostic = "Graphics capability is unavailable";
+    }
+    else if (!m_readiness.implementationSupported)
+    {
+        m_readiness.diagnostic =
+            "Forward special-surface feature only implements ForwardStandard";
+    }
+    else if (!hasValidLightingPlan)
+    {
+        m_readiness.diagnostic =
+            "Forward special-surface feature requires the current LightingFramePlan";
+    }
+    else if (!m_readiness.pipelineReady)
+    {
+        m_readiness.diagnostic =
+            "Forward special-surface composition dependencies are unavailable";
+    }
+    else if (!HasMatchingRecordContext(context))
+    {
+        m_readiness.diagnostic =
+            "Forward special-surface record context is absent, stale, or mismatched";
+    }
+    m_readiness.executed = false;
+}
+
+RenderFeatureReadiness
+ForwardSpecialFeatureAdapter::ResolveReadiness() const
+{
+    return m_readiness;
+}
+
+void ForwardSpecialFeatureAdapter::AddPasses(
+    RenderFeatureGraphBuilder& builder,
+    RenderGraphBlackboard& blackboard)
+{
+    m_lastPassChainStats = {};
+    m_lastReceipt = {};
+    m_readiness.executed = false;
+    if (!m_readiness.IsReadyToExecute())
+    {
+        return;
+    }
+    if (!builder.IsValid() ||
+        !m_recordContext.MatchesTargetGraph(builder.GetGraph()))
+    {
+        SetCompositionFailure(
+            "Forward special-surface record context does not match the target graph");
+        return;
+    }
+
+    RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
+    const ReflectionOutputs* const reflection =
+        blackboard.Require<ReflectionOutputs>(
+            BuiltinRenderFeatureIds::ForwardSpecialChain,
+            Describe(), &code);
+    const uint64 expectedLightingPlanIdentity =
+        m_recordContext.lightingPlan != nullptr
+            ? m_recordContext.lightingPlan->GetIdentityHash()
+            : 0;
+    if (reflection == nullptr ||
+        code != RenderGraphBlackboardCode::Success ||
+        reflection->frameIdentity != m_preparedContext.frameIdentity ||
+        reflection->viewIdentity != m_preparedContext.viewIdentity ||
+        !reflection->IsCompatibleWithLightingPlan(
+            expectedLightingPlanIdentity) ||
+        !reflection->resolvedSceneColor.IsValid() ||
+        reflection->resolvedSceneColorMetadata.extent !=
+            m_preparedContext.outputExtent)
+    {
+        SetCompositionFailure(
+            "Forward special-surface chain requires the exact ReflectionOutputs v3");
+        return;
+    }
+    code = RenderGraphBlackboardCode::Success;
+    const LocalShadowOutputs* const localShadows =
+        blackboard.Require<LocalShadowOutputs>(
+            BuiltinRenderFeatureIds::ForwardSpecialChain,
+            Describe(), &code);
+    const LocalShadowAtlasPlan* const localShadowAtlasPlan =
+        m_recordContext.localShadowAtlasPlan.get();
+    if (localShadows == nullptr ||
+        code != RenderGraphBlackboardCode::Success ||
+        localShadowAtlasPlan == nullptr || !localShadows->IsValid() ||
+        localShadows->frameIdentity != m_preparedContext.frameIdentity ||
+        localShadows->viewIdentity != m_preparedContext.viewIdentity ||
+        localShadows->lightingPlanIdentity != expectedLightingPlanIdentity ||
+        localShadows->localShadowPlanIdentity !=
+            localShadowAtlasPlan->GetLocalShadowPlanIdentity() ||
+        localShadows->atlasPlanIdentity !=
+            localShadowAtlasPlan->GetIdentityHash() ||
+        localShadows->atlasGeneration !=
+            localShadowAtlasPlan->GetAtlasGeneration() ||
+        localShadows->requested !=
+            !localShadowAtlasPlan->GetPages().empty())
+    {
+        SetCompositionFailure(
+            "Forward special-surface chain requires the exact LocalShadowOutputs v1");
+        return;
+    }
+    if (m_recordContext.results == nullptr)
+    {
+        SetCompositionFailure(
+            "Forward special-surface chain requires graph-owned recording results");
+        return;
+    }
+
+    RenderPassRecordContext postLightingContext = m_recordContext;
+    postLightingContext.view.colorTarget = reflection->resolvedSceneColor;
+    postLightingContext.directionalShadow =
+        postLightingContext.results->directionalShadowOutput;
+    if (postLightingContext.directionalShadow.identity !=
+        postLightingContext.identity)
+    {
+        postLightingContext.directionalShadow = {};
+        postLightingContext.directionalShadow.identity =
+            postLightingContext.identity;
+    }
+    postLightingContext.rayTracedShadow =
+        postLightingContext.results->rayTracedShadowOutput;
+    if (postLightingContext.rayTracedShadow.identity !=
+        postLightingContext.identity)
+    {
+        postLightingContext.rayTracedShadow = {};
+        postLightingContext.rayTracedShadow.identity =
+            postLightingContext.identity;
+    }
+    // AO is an opaque-lighting input only. Later surfaces retain shadows and
+    // the resolved HDR scene, but never inherit the opaque AO field.
+    postLightingContext.ambientOcclusion = {};
+
+    m_lastPassChainStats.frameSequence =
+        m_recordContext.identity.frameSequence;
+    m_lastPassChainStats.passStatuses = m_passRegistry->GetPassStatuses();
+    m_lastPassChainStats.registeredPassCount =
+        m_lastPassChainStats.passStatuses.size();
+
+    RHITextureDesc opaqueSnapshotDesc = RHITextureDesc::Texture2D(
+        m_preparedContext.outputExtent.width,
+        m_preparedContext.outputExtent.height,
+        RHIFormat::RGBA16_FLOAT,
+        RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst);
+    opaqueSnapshotDesc.debugName = "ForwardOpaqueSceneSnapshot";
+    const RGTextureHandle opaqueSceneSnapshot =
+        builder.CreateTexture(opaqueSnapshotDesc);
+    if (!opaqueSceneSnapshot.IsValid() ||
+        opaqueSceneSnapshot.index ==
+            postLightingContext.view.colorTarget.index)
+    {
+        SetCompositionFailure(
+            "Forward special-surface chain could not allocate a distinct HDR opaque snapshot");
+        return;
+    }
+    const std::shared_ptr<OpaqueSceneSnapshotCopyReceipt>
+        opaqueSnapshotReceipt =
+            std::make_shared<OpaqueSceneSnapshotCopyReceipt>();
+    bool opaqueSnapshotRegistered = false;
+
+    RGTextureHandle activeSceneColor = reflection->resolvedSceneColor;
+    WaterSurfaceRecordInput waterSurface;
+
+    const int32 firstLightingConsumerPriority = m_opaquePass->GetPriority();
+    for (const std::unique_ptr<IRenderPass>& pass :
+         m_passRegistry->GetPasses())
+    {
+        if (!pass || pass.get() == m_opaquePass ||
+            m_velocityPasses.Contains(pass.get()) ||
+            pass->GetPriority() <= firstLightingConsumerPriority ||
+            pass->GetPriority() >= PassPriority::Transparent ||
+            IsHybridRayTracingReflectionPass(*pass))
+        {
+            continue;
+        }
+        const RenderPassStatus status = pass->GetStatus();
+        if (!status.requestedEnabled)
+        {
+            ++m_lastPassChainStats.skippedDisabledPassCount;
+            continue;
+        }
+        if (!status.supported)
+        {
+            ++m_lastPassChainStats.skippedUnsupportedPassCount;
+            m_lastPassChainStats.unsupportedPassNames.push_back(status.name);
+            continue;
+        }
+        if (!status.enabled)
+        {
+            ++m_lastPassChainStats.skippedDisabledPassCount;
+            continue;
+        }
+
+        RenderPassRecordContext passContext = postLightingContext;
+        passContext.view.colorTarget = activeSceneColor;
+        if (!opaqueSnapshotRegistered &&
+            pass->GetPriority() >= PassPriority::Water)
+        {
+            if (!AddOpaqueSceneSnapshotCopy(
+                    builder,
+                    activeSceneColor,
+                    opaqueSceneSnapshot,
+                    opaqueSnapshotReceipt))
+            {
+                SetCompositionFailure(
+                    "Forward special-surface chain could not register the HDR opaque snapshot copy");
+                return;
+            }
+            ++m_lastPassChainStats.graphPassCount;
+            m_lastPassChainStats.graphPassNames.push_back(
+                "OpaqueSceneSnapshotCopy");
+            opaqueSnapshotRegistered = true;
+            passContext.opaqueSceneSnapshot = OpaqueSceneSnapshotRecordInput{
+                postLightingContext.identity,
+                opaqueSceneSnapshot,
+                opaqueSnapshotReceipt};
+            std::string waterSurfaceFailure;
+            if (!BuildWaterSurfaceRecordInput(
+                    builder,
+                    passContext,
+                    *m_passRegistry,
+                    m_preparedContext.outputExtent,
+                    waterSurface,
+                    waterSurfaceFailure))
+            {
+                SetCompositionFailure(std::move(waterSurfaceFailure));
+                return;
+            }
+        }
+        if (opaqueSnapshotRegistered)
+        {
+            passContext.opaqueSceneSnapshot = OpaqueSceneSnapshotRecordInput{
+                postLightingContext.identity,
+                opaqueSceneSnapshot,
+                opaqueSnapshotReceipt};
+        }
+        passContext.waterSurface = waterSurface;
+        if (!builder.AddLegacyPass(*pass, passContext))
+        {
+            SetCompositionFailure(
+                "Forward special-surface pass registration failed for '" +
+                status.name + "'");
+            return;
+        }
+        ++m_lastPassChainStats.graphPassCount;
+        m_lastPassChainStats.graphPassNames.push_back(status.name);
+    }
+
+    if (!opaqueSnapshotRegistered)
+    {
+        if (!AddOpaqueSceneSnapshotCopy(
+                builder,
+                activeSceneColor,
+                opaqueSceneSnapshot,
+                opaqueSnapshotReceipt))
+        {
+            SetCompositionFailure(
+                "Forward special-surface chain could not register the HDR opaque snapshot copy");
+            return;
+        }
+        ++m_lastPassChainStats.graphPassCount;
+        m_lastPassChainStats.graphPassNames.push_back(
+            "OpaqueSceneSnapshotCopy");
+    }
+
+    PreTranslucencyOutputs outputs;
+    outputs.provenance = builder.GetProvenance();
+    outputs.frameIdentity = m_preparedContext.frameIdentity;
+    outputs.viewIdentity = m_preparedContext.viewIdentity;
+    outputs.lightingPlanIdentity = expectedLightingPlanIdentity;
+    outputs.hdrSceneColor = activeSceneColor;
+    outputs.hdrSceneColorMetadata = reflection->resolvedSceneColorMetadata;
+    outputs.deviceDepth = m_recordContext.view.depthTarget;
+    outputs.deviceDepthMetadata = MakeMetadata(
+        m_preparedContext.outputExtent,
+        SceneTextures::DeviceDepthContract);
+    outputs.worldNormal = reflection->worldNormal;
+    outputs.worldNormalMetadata = reflection->worldNormalMetadata;
+    outputs.materialIdentity = reflection->materialIdentity;
+    outputs.materialIdentityMetadata = reflection->materialIdentityMetadata;
+    outputs.materialParameterTable = reflection->materialParameterTable;
+    outputs.materialParameterTableMetadata =
+        reflection->materialParameterTableMetadata;
+    outputs.velocity = m_recordContext.view.velocityTarget;
+    outputs.velocityMetadata = MakeMetadata(
+        m_preparedContext.outputExtent, SceneTextures::VelocityContract);
+    outputs.reactiveMask = m_recordContext.view.reactiveMaskTarget;
+    outputs.reactiveMaskMetadata = MakeMetadata(
+        m_preparedContext.outputExtent, SceneTextures::ReactiveMaskContract);
+    outputs.opaqueSceneSnapshot = opaqueSceneSnapshot;
+    outputs.opaqueSceneSnapshotMetadata = MakeMetadata(
+        m_preparedContext.outputExtent, SceneTextures::HDRSceneColorContract);
+    outputs.opaqueSceneSnapshotReceipt = opaqueSnapshotReceipt;
+    outputs.exposureState = m_recordContext.view.exposureState;
+    outputs.exposureStateMetadata = MakeExposureStateMetadata(
+        m_recordContext.view);
+    outputs.colorDomain = PostProcessColorDomain::SceneLinearHDR;
+    outputs.transfer = PostProcessTransfer::None;
+    if (blackboard.Publish(BuiltinRenderFeatureIds::ForwardSpecialChain,
+                           Describe(), std::move(outputs)) !=
+        RenderGraphBlackboardCode::Success)
+    {
+        SetCompositionFailure(
+            "Forward special-surface chain could not publish PreTranslucencyOutputs v1");
+    }
+}
+
+RenderFeatureExecutionReceipt
+ForwardSpecialFeatureAdapter::CollectReceipt() const
+{
+    RenderFeatureExecutionReceipt receipt;
+    receipt.featureId = BuiltinRenderFeatureIds::ForwardSpecialChain;
+    receipt.featureSchemaVersion = 1;
+    receipt.phase = RenderFeaturePhase::Sky;
+    receipt.requirement = RenderFeatureRequirement::Required;
+    receipt.selected = true;
+    receipt.readiness = m_readiness;
+    receipt.diagnostic = m_readiness.diagnostic;
+    receipt.readiness.executed = false;
+    m_lastReceipt = receipt;
+    return receipt;
+}
+
+bool ForwardSpecialFeatureAdapter::HasMatchingRecordContext(
+    const RenderFeatureContext& context) const noexcept
+{
+    return m_hasRecordContext && context.frameIdentity.IsValid() &&
+           context.viewIdentity.IsValid() &&
+           m_recordContext.featureFrameIdentity == context.frameIdentity &&
+           m_recordContext.featureViewIdentity == context.viewIdentity &&
+           m_recordContext.IsFrameIdentityValid() &&
+           m_recordContext.identity.frameSequence ==
+               context.frameIdentity.frameSequence &&
+           m_recordContext.identity.viewOrdinal ==
+               context.recordingViewOrdinal &&
+           m_recordContext.identity.recordEpoch == context.recordEpoch;
+}
+
+bool ForwardSpecialFeatureAdapter::HasValidLightingPlan(
+    const RenderFeatureContext& context) const noexcept
+{
+    return m_hasRecordContext && m_recordContext.lightingPlan != nullptr &&
+           m_recordContext.lightingPlan->IsValid() &&
+           m_recordContext.lightingPlan->GetIdentityHash() != 0 &&
+           m_recordContext.lightingPlan->GetFrameIdentity() ==
+               context.frameIdentity &&
+           m_recordContext.lightingPlan->GetViewIdentity() ==
+               context.viewIdentity;
+}
+
+void ForwardSpecialFeatureAdapter::SetCompositionFailure(
     std::string diagnostic)
 {
     m_readiness.inputsReady = false;

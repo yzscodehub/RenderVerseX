@@ -4,13 +4,15 @@
 #include "DX12DescriptorHeap.h"
 #include "RHI/RHICommandContext.h"
 #include <array>
+#include <vector>
 
 namespace RVX
 {
+    class DX12AccelerationStructure;
+    class DX12Buffer;
     class DX12DescriptorSetLayout;
     class DX12Device;
     class DX12Pipeline;
-    class DX12AccelerationStructure;
     struct RHIQueueSubmissionPlan;
 
     // =============================================================================
@@ -121,6 +123,20 @@ namespace RVX
             uint64 scratchOffset,
             RHIAccelerationStructure* src) override;
         void DispatchRays(const RHIDispatchRaysDesc& desc) override;
+        void WriteAccelerationStructureCompactedSizes(
+            RHIAccelerationStructureCompactedSizeQuery* query,
+            uint32 firstQuery,
+            std::span<RHIAccelerationStructure* const> accelerationStructures) override;
+        void ResolveAccelerationStructureCompactedSizes(
+            RHIAccelerationStructureCompactedSizeQuery* query,
+            uint32 firstQuery,
+            uint32 queryCount,
+            RHIBuffer* readbackBuffer,
+            uint64 readbackOffset) override;
+        void CopyAccelerationStructureCompact(
+            RHIAccelerationStructure* dst,
+            RHIAccelerationStructure* src,
+            uint64 expectedCompactedSize) override;
 
         // =========================================================================
         // Copy Commands
@@ -164,14 +180,31 @@ namespace RVX
         D3D12_COMMAND_LIST_TYPE GetD3DListType() const { return m_listType; }
         ComPtr<ID3D12CommandAllocator> DetachCommandAllocator();
 
+        // Backend submission hooks. Pending build/query state becomes globally
+        // visible only after the queue accepted this command list.
+        void CommitPendingAccelerationStructureBuilds();
+        void DiscardPendingAccelerationStructureBuilds();
+        void CommitPendingAccelerationStructureCompactionQueries();
+        void DiscardPendingAccelerationStructureCompactionQueries();
+
     private:
         bool UsesEnhancedBarriers() const;
         void InsertAccelerationStructureBarrier(
-            DX12AccelerationStructure* accelerationStructure);
+            DX12AccelerationStructure* accelerationStructure,
+            D3D12_BARRIER_SYNC producerSync =
+                D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE);
+        void PrepareCompactedSizeResultForPostBuildInfo(DX12Buffer* resultBuffer);
+        void TransitionCompactedSizeResultToCopySource(DX12Buffer* resultBuffer);
         void QueueEnhancedBarrier(const D3D12_BUFFER_BARRIER& barrier);
         void QueueEnhancedBarrier(const D3D12_TEXTURE_BARRIER& barrier);
         void QueueEnhancedBarrier(const D3D12_GLOBAL_BARRIER& barrier);
         void FlushBarriers();
+        bool HasPendingAccelerationStructureBuild(
+            const DX12AccelerationStructure* accelerationStructure,
+            bool requireCompaction) const noexcept;
+        void RecordPendingAccelerationStructureBuild(
+            DX12AccelerationStructure* accelerationStructure,
+            RHIAccelerationStructureBuildFlags flags);
 
         DX12Device* m_device = nullptr;
         RHICommandQueueType m_queueType = RHICommandQueueType::Graphics;
@@ -198,6 +231,24 @@ namespace RVX
         std::vector<D3D12_BUFFER_BARRIER> m_pendingBufferBarriers;
         std::vector<D3D12_TEXTURE_BARRIER> m_pendingTextureBarriers;
         std::vector<D3D12_GLOBAL_BARRIER> m_pendingGlobalBarriers;
+
+        struct PendingAccelerationStructureCompactionQuery
+        {
+            RHIAccelerationStructureCompactedSizeQueryRef query;
+            RHIAccelerationStructureRef source;
+            RHIBufferRef readback;
+        };
+        std::vector<PendingAccelerationStructureCompactionQuery>
+            m_pendingAccelerationStructureCompactionQueries;
+
+        struct PendingAccelerationStructureBuild
+        {
+            RHIAccelerationStructureRef accelerationStructure;
+            RHIAccelerationStructureBuildFlags flags =
+                RHIAccelerationStructureBuildFlags::None;
+        };
+        std::vector<PendingAccelerationStructureBuild>
+            m_pendingAccelerationStructureBuilds;
     };
 
     // Factory functions

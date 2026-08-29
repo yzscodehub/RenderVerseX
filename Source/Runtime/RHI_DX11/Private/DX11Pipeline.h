@@ -76,6 +76,11 @@ namespace RVX
         ~DX11GraphicsPipeline() override;
 
         bool IsCompute() const override { return false; }
+        bool IsValid() const
+        {
+            return m_vertexShader && m_rasterizerState &&
+                   m_depthStencilState && m_blendState;
+        }
 
         // Apply pipeline state to context
         void Apply(ID3D11DeviceContext* context) const;

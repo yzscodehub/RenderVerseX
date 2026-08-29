@@ -237,6 +237,35 @@ using namespace RVX::SceneECS;
     return snapshot;
 }
 
+[[nodiscard]] FrozenSceneReflectionProbe MakeReflectionProbe(
+    ECS::SceneRuntimeId runtimeId,
+    ECS::EntityHandle entity)
+{
+    FrozenSceneReflectionProbe probe;
+    probe.id = MakeId(runtimeId, entity, FrozenSceneObjectType::Probe);
+    probe.sourceEntity = entity;
+    probe.source.shape = SceneECS::ReflectionProbeShape::Box;
+    probe.source.assetSource = SceneECS::ReflectionProbeAssetSource::Custom;
+    probe.source.bakedCubemapAssetId = {.value = 701};
+    probe.source.customCubemapAssetId = {.value = 702};
+    probe.source.influenceExtent = {2.0f, 3.0f, 4.0f};
+    probe.source.blendDistance = 0.25f;
+    probe.source.boxProjectionSize = {5.0f, 6.0f, 7.0f};
+    probe.source.boxProjectionOffset = {0.5f, 1.0f, 1.5f};
+    probe.source.priority = 42;
+    probe.source.nearClip = 0.2f;
+    probe.source.farClip = 60.0f;
+    probe.source.useBoxProjection = true;
+    probe.source.useHDR = true;
+    probe.source.hasValidData = true;
+    probe.visibility.layerMask = 0x44u;
+    probe.visibility.visible = true;
+    probe.worldTransform = MakeTranslation(8.0f, 9.0f, 10.0f);
+    probe.transformSourceRevision = 77;
+    probe.visibilityWriteVersion = 78;
+    return probe;
+}
+
 void AddMeshSource(ECS::Registry& registry, ECS::EntityHandle entity, uint64 assetId)
 {
     Mesh mesh;
@@ -427,6 +456,52 @@ TEST(EcsFrozenSceneBridgeValidation, MapsFrozenValuesToOneCommonRenderPayload)
               MakeObjectSource(snapshot.sceneRuntimeId, terrain.sourceEntity));
     EXPECT_EQ(terrain.state.header.source,
               MakeFeatureSource(snapshot.sceneRuntimeId, terrain.sourceEntity));
+}
+
+TEST(EcsFrozenSceneBridgeValidation,
+     MapsVisibleReflectionProbeToAnUnresolvedProvenanceBoundValue)
+{
+    FrozenSceneSnapshot snapshot;
+    snapshot.sceneRuntimeId = ECS::SceneRuntimeId{203};
+    snapshot.revision = 1;
+    const ECS::EntityHandle entity = ECS::EntityHandle::Create(19, 4);
+    snapshot.reflectionProbes.push_back(MakeReflectionProbe(
+        snapshot.sceneRuntimeId, entity));
+
+    EcsFrozenSceneBridgeOutput output;
+    EcsFrozenSceneBridgeResult result;
+    ASSERT_TRUE(EcsFrozenSceneBridge{}.Build(snapshot, output, &result));
+    ASSERT_EQ(result.reflectionProbeCount, 1u);
+    ASSERT_EQ(output.reflectionProbes.size(), 1u);
+    const EcsFrozenSceneReflectionProbeValue& probe =
+        output.reflectionProbes.front();
+    EXPECT_EQ(probe.id, EcsFrozenSceneBridge::DeriveRenderId(
+                            snapshot.reflectionProbes.front().id));
+    EXPECT_EQ(probe.source, MakeObjectSource(snapshot.sceneRuntimeId, entity));
+    EXPECT_EQ(probe.sourceEntity, entity);
+    EXPECT_EQ(probe.kind, RenderProbeKind::Reflection);
+    EXPECT_EQ(probe.shape, RVX::RenderProbeShape::Box);
+    EXPECT_EQ(probe.mode, RVX::RenderProbeMode::Custom);
+    EXPECT_EQ(probe.cubemapAssetId.value, 702u);
+    EXPECT_EQ(probe.layerMask, 0x44u);
+    EXPECT_EQ(probe.priority, 42);
+    EXPECT_TRUE(probe.useBoxProjection);
+    EXPECT_TRUE(probe.useHDR);
+    EXPECT_TRUE(probe.hasValidData);
+    EXPECT_FLOAT_EQ(probe.worldTransform[3].z, 10.0f);
+
+    snapshot.reflectionProbes.front().visibility.visible = false;
+    ASSERT_TRUE(EcsFrozenSceneBridge{}.Build(snapshot, output, &result));
+    EXPECT_EQ(result.reflectionProbeCount, 0u);
+    EXPECT_TRUE(output.reflectionProbes.empty());
+
+    snapshot.reflectionProbes.front().visibility.visible = true;
+    snapshot.reflectionProbes.front().source.farClip =
+        snapshot.reflectionProbes.front().source.nearClip;
+    EXPECT_FALSE(EcsFrozenSceneBridge{}.Build(snapshot, output, &result));
+    EXPECT_EQ(result.code, EcsFrozenSceneBridgeCode::InvalidReflectionProbeSource);
+    EXPECT_FALSE(output.renderProxies.metadata.complete);
+    EXPECT_TRUE(output.reflectionProbes.empty());
 }
 
 TEST(EcsFrozenSceneBridgeValidation,

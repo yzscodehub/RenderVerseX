@@ -2266,6 +2266,13 @@ namespace
                     "--translucency-qualification-probe requires the transparent-materials sample";
                 return false;
             }
+            if (options.common.hiZReflectionQualificationProbeEnabled &&
+                info.id != "post-processing")
+            {
+                outError =
+                    "--hiz-reflection-qualification-probe requires the post-processing sample";
+                return false;
+            }
 
             if (options.renderPathExplicit &&
                 !info.supportsRenderPathSelection)
@@ -2959,6 +2966,209 @@ namespace
             return result;
         }
 
+        [[nodiscard]] SampleHiZReflectionExecutionDiagnostics
+            MakeSampleHiZReflectionExecutionDiagnostics(
+                const RenderDiagnosticsSnapshot& renderDiagnostics)
+        {
+            SampleHiZReflectionExecutionDiagnostics result;
+            const RenderFrameFeatureDiagnostics& frameFeatures =
+                renderDiagnostics.frameFeatures;
+            const RenderExecutionReceipt& receipt =
+                frameFeatures.hiZReflectionQualificationReceipt;
+            const RenderReflectionDiagnostics& reflection =
+                frameFeatures.hiZReflectionQualification;
+
+            result.available = reflection.available && receipt.available;
+            result.executionReceiptSchemaVersion = receipt.schemaVersion;
+            result.executionReceiptStructurallyValid =
+                receipt.IsStructurallyValid();
+            result.executionReceiptAvailable = receipt.available;
+            result.executionReceiptGraphComposed = receipt.graphComposed;
+            result.executionReceiptExecutionSucceeded =
+                receipt.executionSucceeded;
+            result.executionReceiptPresented = receipt.presented;
+            result.executionReceiptSucceeded = receipt.succeeded;
+            result.frameFeatureSequence = receipt.frameIdentity.frameSequence;
+            result.receiptFrameSequence = receipt.frameIdentity.frameSequence;
+            result.lastPresentedFrameSequence = receipt.presented
+                ? receipt.frameIdentity.frameSequence
+                : 0;
+            result.presentedFrameAligned =
+                result.frameFeatureSequence != 0 &&
+                result.frameFeatureSequence == result.receiptFrameSequence &&
+                result.receiptFrameSequence ==
+                    result.lastPresentedFrameSequence &&
+                reflection.frameSequence == result.receiptFrameSequence;
+            result.mainView = receipt.viewIdentity.role == ViewRole::Main &&
+                receipt.viewIdentity.subViewIndex == 0;
+
+            // This is a one-to-one projection of the presentation-frozen
+            // renderer receipt. No sample setting or graph registration is
+            // allowed to synthesize SSR execution evidence.
+            result.graphExecutionFinalized = reflection.graphExecutionFinalized;
+            result.requested = reflection.requested;
+            result.supported = reflection.supported;
+            result.scheduled = reflection.scheduled;
+            result.executed = reflection.executed;
+            result.hiZBuilt = reflection.hiZBuilt;
+            result.globalIBLReady = reflection.globalIBLReady;
+            result.fallbackChainResolved = reflection.fallbackChainResolved;
+            result.screenSpaceApplied = reflection.screenSpaceApplied;
+            result.probesApplied = reflection.probesApplied;
+            result.reflectionRouteEvidenceReady =
+                reflection.reflectionRouteEvidenceReady;
+            result.routeMaskRadianceSchemaVersion =
+                reflection.routeMaskRadianceSchemaVersion;
+            result.localProbeRadianceQualified =
+                reflection.localProbeRadianceQualified;
+            result.globalIBLRadianceQualified =
+                reflection.globalIBLRadianceQualified;
+            result.readyProbeCount = reflection.readyProbeCount;
+            result.hiZMipCount = reflection.hiZMipCount;
+            result.hiZGraphPassCount = reflection.hiZGraphPassCount;
+            result.traceGraphPassCount = reflection.traceGraphPassCount;
+            result.resolveGraphPassCount = reflection.resolveGraphPassCount;
+            result.reflectionFrameSequence = reflection.frameSequence;
+            result.reflectionPlanIdentity = reflection.reflectionPlanIdentity;
+            result.lightingPlanIdentity = reflection.lightingPlanIdentity;
+            result.depthPyramidIdentity = reflection.depthPyramidIdentity;
+            result.reflectionSurfaceIdentity =
+                reflection.reflectionSurfaceIdentity;
+            result.exposureStateContentHash =
+                reflection.exposureStateContentHash;
+            result.screenSpaceHitPixelCount =
+                reflection.screenSpaceHitPixelCount;
+            result.localProbePixelCount = reflection.localProbePixelCount;
+            result.globalIBLPixelCount = reflection.globalIBLPixelCount;
+            result.reflectionReadbackSampleCount =
+                reflection.reflectionReadbackSampleCount;
+            result.reflectionRouteSampleCount =
+                reflection.reflectionRouteSampleCount;
+            result.backgroundPixelCount = reflection.backgroundPixelCount;
+            result.nonReflectivePixelCount = reflection.nonReflectivePixelCount;
+            result.fallbackReason = reflection.fallbackReason;
+            return result;
+        }
+
+        [[nodiscard]] SampleWeightedBlendedOITExecutionDiagnostics
+            MakeSampleWeightedBlendedOITExecutionDiagnostics(
+                const RenderDiagnosticsSnapshot& renderDiagnostics)
+        {
+            constexpr std::string_view ClearPassName =
+                "WeightedBlendedOITClear";
+            constexpr std::string_view MeshWeightedPassName =
+                "TransparentWeightedBlendedOIT";
+            constexpr std::string_view ParticleWeightedPassName =
+                "ParticleWeightedBlendedOIT";
+            constexpr std::string_view CompositePassName =
+                "WeightedBlendedOITComposite";
+
+            SampleWeightedBlendedOITExecutionDiagnostics result;
+            const RenderFrameFeatureDiagnostics& frameFeatures =
+                renderDiagnostics.frameFeatures;
+            const RenderExecutionReceipt& receipt =
+                frameFeatures.executionReceipt;
+
+            result.available = frameFeatures.available && receipt.available;
+            result.executionReceiptSchemaVersion = receipt.schemaVersion;
+            result.executionReceiptStructurallyValid =
+                receipt.IsStructurallyValid();
+            result.executionReceiptAvailable = receipt.available;
+            result.executionReceiptGraphComposed = receipt.graphComposed;
+            result.executionReceiptExecutionSucceeded =
+                receipt.executionSucceeded;
+            result.executionReceiptPresented = receipt.presented;
+            result.executionReceiptSucceeded = receipt.succeeded;
+            result.frameFeatureSequence = frameFeatures.frameSequence;
+            result.receiptFrameSequence = receipt.frameIdentity.frameSequence;
+            result.lastPresentedFrameSequence =
+                renderDiagnostics.lastPresentedFrameSequence;
+            result.presentedFrameAligned =
+                result.frameFeatureSequence != 0 &&
+                result.frameFeatureSequence == result.receiptFrameSequence &&
+                result.receiptFrameSequence ==
+                    result.lastPresentedFrameSequence;
+            result.mainView = receipt.viewIdentity.role == ViewRole::Main &&
+                receipt.viewIdentity.subViewIndex == 0;
+
+            const auto feature = std::find_if(
+                receipt.features.begin(), receipt.features.end(),
+                [](const RenderFeatureExecutionReceipt& candidate)
+                {
+                    return candidate.featureId ==
+                        BuiltinRenderFeatureIds::Translucency;
+                });
+            if (feature == receipt.features.end())
+            {
+                result.diagnostic = receipt.diagnostic.empty()
+                    ? "Presented render receipt does not contain the translucent feature"
+                    : receipt.diagnostic;
+                return result;
+            }
+
+            result.featureFound = true;
+            result.featureSelected = feature->selected;
+            result.featureRequired =
+                feature->requirement == RenderFeatureRequirement::Required;
+            result.featureExecuted = feature->readiness.executed;
+            result.featureFallbackUsed = feature->fallbackUsed;
+            result.featureGraphPassCount = feature->graphPassCount;
+            result.featureExecutedGraphPassCount =
+                feature->executedGraphPassCount;
+            result.allFeatureGraphPassesExecuted =
+                result.featureGraphPassCount != 0 &&
+                result.featureExecutedGraphPassCount ==
+                    result.featureGraphPassCount;
+            result.diagnostic = feature->diagnostic;
+
+            uint32 clearIndex = std::numeric_limits<uint32>::max();
+            uint32 firstWeightedIndex = std::numeric_limits<uint32>::max();
+            uint32 lastWeightedIndex = 0;
+            uint32 compositeIndex = std::numeric_limits<uint32>::max();
+            for (uint32 index = 0;
+                 index < static_cast<uint32>(feature->graphPassNames.size());
+                 ++index)
+            {
+                const std::string& passName = feature->graphPassNames[index];
+                if (passName == ClearPassName)
+                {
+                    ++result.clearGraphPassCount;
+                    clearIndex = index;
+                }
+                else if (passName == MeshWeightedPassName)
+                {
+                    ++result.meshWeightedGraphPassCount;
+                    firstWeightedIndex = std::min(firstWeightedIndex, index);
+                    lastWeightedIndex = std::max(lastWeightedIndex, index);
+                }
+                else if (passName == ParticleWeightedPassName)
+                {
+                    ++result.particleWeightedGraphPassCount;
+                    firstWeightedIndex = std::min(firstWeightedIndex, index);
+                    lastWeightedIndex = std::max(lastWeightedIndex, index);
+                }
+                else if (passName == CompositePassName)
+                {
+                    ++result.compositeGraphPassCount;
+                    compositeIndex = index;
+                }
+            }
+
+            result.passOrderValid = result.clearGraphPassCount == 1 &&
+                result.meshWeightedGraphPassCount +
+                        result.particleWeightedGraphPassCount !=
+                    0 &&
+                result.compositeGraphPassCount == 1 &&
+                clearIndex < firstWeightedIndex &&
+                lastWeightedIndex < compositeIndex;
+            if (result.diagnostic.empty() && !result.passOrderValid)
+            {
+                result.diagnostic =
+                    "Translucent feature did not record clear, weighted accumulation, and composite in the required order";
+            }
+            return result;
+        }
+
         SampleRenderDiagnostics MakeSampleRenderDiagnostics(
             const RenderDiagnosticsSnapshot& renderDiagnostics,
             const Engine& engine)
@@ -3176,6 +3386,8 @@ namespace
                 MakeSamplePostProcessExecutionDiagnostics(renderDiagnostics);
             result.ambientOcclusionActualExecution =
                 MakeSampleAmbientOcclusionExecutionDiagnostics(renderDiagnostics);
+            result.hizReflectionActualExecution =
+                MakeSampleHiZReflectionExecutionDiagnostics(renderDiagnostics);
             result.toonLightingActualExecution =
                 ProjectSampleToonLightingExecutionDiagnostics(
                     renderDiagnostics);
@@ -3187,6 +3399,9 @@ namespace
                     renderDiagnostics);
             result.waterSurfaceActualExecution =
                 ProjectSampleWaterSurfaceExecutionDiagnostics(
+                    renderDiagnostics);
+            result.weightedBlendedOITActualExecution =
+                MakeSampleWeightedBlendedOITExecutionDiagnostics(
                     renderDiagnostics);
             result.transparentAlphaBlendDrawCount =
                 diagnostics.transparent.alphaBlendDrawCount;
@@ -3218,7 +3433,9 @@ namespace
             result.transparentLastPresentedFrameSequence =
                 renderDiagnostics.lastPresentedFrameSequence;
             result.transparentPresentedFrameAligned =
-                frameFeatures.available && executionReceipt.schemaVersion == 11 &&
+                frameFeatures.available &&
+                executionReceipt.schemaVersion ==
+                    RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION &&
                 executionReceipt.IsStructurallyValid() &&
                 executionReceipt.available && executionReceipt.graphComposed &&
                 executionReceipt.executionSucceeded && executionReceipt.presented &&
@@ -3285,6 +3502,14 @@ namespace
                 localLighting.spotShadowRequested;
             result.spotShadowSupported = localLighting.spotShadowSupported;
             result.spotShadowReason = localLighting.spotShadowReason;
+            result.localShadowRequestCount =
+                localLighting.localShadowRequestCount;
+            result.localShadowCasterDrawCount =
+                localLighting.localShadowCasterDrawCount;
+            result.localShadowAtlasReady =
+                localLighting.localShadowAtlasReady;
+            result.localShadowFallbackReason =
+                localLighting.localShadowReason;
             result.hzbRequested = diagnostics.hzb.requested;
             result.hzbSupported = diagnostics.hzb.supported;
             result.hzbEnabled = diagnostics.hzb.enabled;
@@ -4341,6 +4566,7 @@ namespace
         const uint32 executionReceiptProbeCount =
             (options.common.exposureQualificationProbeEnabled ? 1u : 0u) +
             (options.common.ambientOcclusionQualificationProbeEnabled ? 1u : 0u) +
+            (options.common.hiZReflectionQualificationProbeEnabled ? 1u : 0u) +
             (options.common.toonOutlineQualificationProbeEnabled ? 1u : 0u);
         if (executionReceiptProbeCount > 1u)
         {
@@ -4348,13 +4574,14 @@ namespace
             // receipt. Do not accept a configuration that would let one
             // completion replace the other before both can be reported.
             SetError(outError,
-                     "Exposure, ambient-occlusion, and Toon-outline qualification probes are mutually exclusive");
+                     "Exposure, ambient-occlusion, Hi-Z reflection, and Toon-outline qualification probes are mutually exclusive");
             return false;
         }
         if (options.common.gpuSceneCullingQualificationEnabled ||
             options.common.directOpaqueRasterReadbackQualificationEnabled ||
             options.common.exposureQualificationProbeEnabled ||
             options.common.ambientOcclusionQualificationProbeEnabled ||
+            options.common.hiZReflectionQualificationProbeEnabled ||
             options.common.toonOutlineQualificationProbeEnabled)
         {
             // One-shot readbacks are consumed by the target frame and observed
@@ -4670,12 +4897,96 @@ namespace
                 return false;
             }
         }
+        for (const AssessmentCapability& capability : contract.capabilities)
+        {
+            if (!capability.gating)
+            {
+                continue;
+            }
+
+            const bool declaredRequired = std::find(
+                manifest.requiredCapabilities.begin(),
+                manifest.requiredCapabilities.end(),
+                capability.code) != manifest.requiredCapabilities.end();
+            if (!declaredRequired)
+            {
+                outError = "Gating assessment capability '" +
+                           capability.code.GetValue() +
+                           "' is absent from the active Sample manifest profile";
+                return false;
+            }
+        }
         if (!manifest.allowedFallbacks.empty())
         {
             outError =
                 "Sample fallback declarations require the GFX02 feature resolver and cannot be advertised yet";
             return false;
         }
+        return true;
+    }
+
+    bool SampleRunner::ApplyHiZReflectionQualificationProfile(
+        const std::string_view sampleId,
+        const bool probeEnabled,
+        SampleScenarioManifest& manifest,
+        SampleAssessmentContract& contract,
+        std::string& outError)
+    {
+        if (!probeEnabled)
+        {
+            return true;
+        }
+        if (sampleId != "post-processing")
+        {
+            outError =
+                "--hiz-reflection-qualification-probe requires the post-processing sample";
+            return false;
+        }
+
+        const AssessmentCode capabilityCode(
+            "RENDER.CAPABILITY.HIZ_SCREEN_SPACE_REFLECTION");
+        const AssessmentCode gtaoCapabilityCode("RENDER.CAPABILITY.GTAO");
+        const auto hasCode = [&capabilityCode](const auto& values)
+        {
+            return std::find(values.begin(), values.end(), capabilityCode) !=
+                values.end();
+        };
+        const auto hasCapability = [&capabilityCode](
+                                       const std::vector<AssessmentCapability>& values)
+        {
+            return std::find_if(
+                       values.begin(), values.end(),
+                       [&capabilityCode](const AssessmentCapability& value)
+                       {
+                           return value.code == capabilityCode;
+                       }) != values.end();
+        };
+        if (hasCode(manifest.requiredCapabilities) ||
+            hasCode(manifest.optionalCapabilities) ||
+            hasCapability(contract.capabilities))
+        {
+            outError =
+                "The GFX19 Hi-Z reflection qualification profile was activated more than once";
+            return false;
+        }
+
+        // GFX19 owns the immutable capture-frame receipt for its Hi-Z probe.
+        // A GTAO probe owns that same slot, so the active profile replaces
+        // GTAO gating instead of asking one frame to prove both readbacks.
+        std::erase(manifest.requiredCapabilities, gtaoCapabilityCode);
+        std::erase(manifest.optionalCapabilities, gtaoCapabilityCode);
+        std::erase_if(contract.capabilities,
+                      [&gtaoCapabilityCode](const AssessmentCapability& value)
+                      {
+                          return value.code == gtaoCapabilityCode;
+                      });
+        manifest.requiredCapabilities.push_back(capabilityCode);
+        contract.capabilities.push_back(
+            {capabilityCode,
+             "Hi-Z screen-space reflection is requested through the public post-process policy.",
+             true,
+             "Qualification requires exact presented route-mask and fallback-radiance evidence, not graph scheduling."});
+        contract.revision += "-gfx19-hiz";
         return true;
     }
 
@@ -4900,6 +5211,7 @@ namespace
             if (!primaryModel.selected || !primaryModel.cookAdmission.has_value() ||
                 !primaryModel.cookAdmission->IsAccepted() ||
                 !primaryModel.entry.cook.declared ||
+                !primaryModel.entry.cook.packageOnly ||
                 primaryModel.entry.cook.cookedRoot.empty())
             {
                 std::cerr << "Runtime-only Sample execution requires an admitted "
@@ -5101,10 +5413,34 @@ namespace
             SampleReadiness::Pending("Sample setup has not completed");
         std::string readinessReason;
         RenderDiagnosticsSnapshot diagnostics = render->GetDiagnosticsSnapshot();
+        SampleScenarioManifest assessmentManifest = *manifest;
         SampleAssessmentContract assessmentContract =
             sample->GetAssessmentContract();
+        if (!ApplyHiZReflectionQualificationProfile(
+                registeredInfo->id,
+                options.common.hiZReflectionQualificationProbeEnabled,
+                assessmentManifest,
+                assessmentContract,
+                error))
+        {
+            std::cerr << error << "\n";
+            engine.Shutdown();
+            static_cast<void>(WriteEarlyFailureAssessment(
+                options.assessmentReportPath,
+                sample.get(),
+                registeredInfo->id,
+                options.common.backend,
+                "SAMPLE.HIZ_REFLECTION.PROFILE_INVALID",
+                "SAMPLE",
+                AssessmentCheckpoints::ScenarioSetup,
+                "The GFX19 Hi-Z reflection qualification profile is invalid.",
+                error));
+            static_cast<void>(startupTimeline.Finalize());
+            Log::Shutdown();
+            return 1;
+        }
         if (!ValidateManifestAssessmentContract(
-                *manifest, assessmentContract, error))
+                assessmentManifest, assessmentContract, error))
         {
             std::cerr << error << "\n";
             engine.Shutdown();
@@ -5175,6 +5511,13 @@ namespace
         assessmentMetadata.fingerprint.renderConfiguration +=
             std::string("|assessment-profile=") +
             GetSampleAssessmentProfileName(options.assessmentProfile);
+        if (options.common.hiZReflectionQualificationProbeEnabled)
+        {
+            assessmentMetadata.fingerprint.renderConfiguration +=
+                "|feature-qualification-profile=gfx19-reflections";
+            assessmentMetadata.values.emplace(
+                "featureQualificationProfile", "gfx19-reflections");
+        }
         if (effectiveReadyWait)
         {
             assessmentMetadata.fingerprint.renderConfiguration +=
@@ -5438,6 +5781,8 @@ namespace
                 options.common.exposureQualificationProbeEnabled;
             const bool ambientOcclusionQualificationProbeEnabled =
                 options.common.ambientOcclusionQualificationProbeEnabled;
+            const bool hiZReflectionQualificationProbeEnabled =
+                options.common.hiZReflectionQualificationProbeEnabled;
             const bool toonOutlineQualificationProbeEnabled =
                 options.common.toonOutlineQualificationProbeEnabled;
             const auto hasQualificationComparison =
@@ -5542,12 +5887,85 @@ namespace
                            value, target)
                     .IsReady();
             };
+            const auto hasHiZReflectionProbeForTarget =
+                [](const RenderDiagnosticsSnapshot& value, uint64 target)
+            {
+                const RenderExecutionReceipt& receipt =
+                    value.frameFeatures.hiZReflectionQualificationReceipt;
+                const RenderReflectionDiagnostics& reflection =
+                    value.frameFeatures.hiZReflectionQualification;
+                return receipt.IsStructurallyValid() && receipt.available &&
+                       receipt.presented && receipt.succeeded &&
+                       receipt.frameIdentity.frameSequence == target &&
+                       reflection.available && reflection.graphExecutionFinalized &&
+                       reflection.frameSequence == target &&
+                       reflection.requested && reflection.supported &&
+                       reflection.scheduled && reflection.executed &&
+                       reflection.hiZBuilt && reflection.globalIBLReady &&
+                       reflection.fallbackChainResolved &&
+                       reflection.screenSpaceApplied &&
+                       reflection.probesApplied &&
+                       reflection.readyProbeCount != 0 &&
+                       reflection.reflectionRouteEvidenceReady &&
+                       reflection.routeMaskRadianceSchemaVersion == 1 &&
+                       reflection.localProbeRadianceQualified &&
+                       reflection.globalIBLRadianceQualified &&
+                       reflection.hiZMipCount != 0 &&
+                       reflection.hiZGraphPassCount == reflection.hiZMipCount &&
+                       reflection.traceGraphPassCount == 1 &&
+                       reflection.resolveGraphPassCount == 1 &&
+                       reflection.reflectionPlanIdentity != 0 &&
+                       reflection.lightingPlanIdentity != 0 &&
+                       reflection.depthPyramidIdentity != 0 &&
+                       reflection.reflectionSurfaceIdentity != 0 &&
+                       reflection.exposureStateContentHash != 0 &&
+                       reflection.screenSpaceHitPixelCount != 0 &&
+                       reflection.localProbePixelCount != 0 &&
+                       reflection.globalIBLPixelCount != 0 &&
+                       reflection.reflectionReadbackSampleCount != 0 &&
+                       reflection.reflectionRouteSampleCount != 0 &&
+                       reflection.screenSpaceHitPixelCount +
+                               reflection.localProbePixelCount +
+                               reflection.globalIBLPixelCount ==
+                           reflection.reflectionRouteSampleCount &&
+                       reflection.backgroundPixelCount +
+                               reflection.nonReflectivePixelCount +
+                               reflection.reflectionRouteSampleCount ==
+                           reflection.reflectionReadbackSampleCount &&
+                       reflection.fallbackReason.empty();
+            };
+            const auto hasHiZReflectionCopyPassForTarget =
+                [](const RenderDiagnosticsSnapshot& value, uint64 target)
+            {
+                const RenderExecutionReceipt& receipt =
+                    value.frameFeatures.executionReceipt;
+                if (!receipt.IsStructurallyValid() || !receipt.available ||
+                    receipt.frameIdentity.frameSequence != target)
+                {
+                    return false;
+                }
+                const auto reflectionFeature = std::find_if(
+                    receipt.features.begin(),
+                    receipt.features.end(),
+                    [](const RenderFeatureExecutionReceipt& feature)
+                    {
+                        return feature.featureId ==
+                            BuiltinRenderFeatureIds::ReflectionResolve;
+                    });
+                return reflectionFeature != receipt.features.end() &&
+                       std::find(reflectionFeature->graphPassNames.begin(),
+                                 reflectionFeature->graphPassNames.end(),
+                                 "SSRQualificationRouteMaskCopy") !=
+                           reflectionFeature->graphPassNames.end();
+            };
             bool gpuSceneCullingQualificationRequestAccepted =
                 !qualificationEnabled;
             bool exposureQualificationProbeRequestAccepted =
                 !exposureQualificationProbeEnabled;
             bool ambientOcclusionQualificationProbeRequestAccepted =
                 !ambientOcclusionQualificationProbeEnabled;
+            bool hiZReflectionQualificationProbeRequestAccepted =
+                !hiZReflectionQualificationProbeEnabled;
             bool toonOutlineQualificationProbeRequestAccepted =
                 !toonOutlineQualificationProbeEnabled;
             uint64 gpuSceneCullingQualificationTargetFrameSequence = 0;
@@ -5556,6 +5974,7 @@ namespace
             uint64 gpuSceneCullingQualificationTargetPresentedSequence = 0;
             uint64 exposureQualificationProbeTargetFrameSequence = 0;
             uint64 ambientOcclusionQualificationProbeTargetFrameSequence = 0;
+            uint64 hiZReflectionQualificationProbeTargetFrameSequence = 0;
             uint64 toonOutlineQualificationProbeTargetFrameSequence = 0;
 
             if (setupSucceeded)
@@ -5602,6 +6021,25 @@ namespace
                                     admission.diagnostic[0] != '\0'
                                 ? admission.diagnostic
                                 : "Render owner rejected the Toon-outline qualification probe";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                    }
+
+                    if (hiZReflectionQualificationProbeEnabled &&
+                        hiZReflectionQualificationProbeRequestAccepted)
+                    {
+                        const RenderHiZReflectionQualificationRequestResult
+                            admission = render
+                                ->GetHiZReflectionQualificationProbeRequestResult();
+                        if (admission.IsRejected())
+                        {
+                            hiZReflectionQualificationProbeRequestAccepted =
+                                false;
+                            error = admission.diagnostic != nullptr &&
+                                    admission.diagnostic[0] != '\0'
+                                ? admission.diagnostic
+                                : "Render owner rejected the Hi-Z reflection qualification probe";
                             engine.RequestShutdown();
                             break;
                         }
@@ -5665,6 +6103,38 @@ namespace
                         {
                             captureExecutionReceipt =
                                 diagnostics.frameFeatures.executionReceipt;
+                            engine.RequestShutdown();
+                        }
+                        continue;
+                    }
+
+                    if (hiZReflectionQualificationProbeEnabled &&
+                        hiZReflectionQualificationProbeTargetFrameSequence != 0 &&
+                        !finalRenderDrainRequested)
+                    {
+                        // Route-mask completion belongs to the already
+                        // presented source frame. Progress only the Render
+                        // owner while the physical copy fence resolves.
+                        if (std::chrono::steady_clock::now() >= readinessDeadline)
+                        {
+                            readinessTimedOut = true;
+                            error =
+                                "Hi-Z reflection qualification probe did not complete for the final target frame";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                        diagnostics = frameDriver.PumpRenderProgressOnce();
+                        const SampleRenderDiagnostics completionDiagnostics =
+                            MakeSampleRenderDiagnostics(diagnostics, engine);
+                        sample->ObserveDiagnostics(completionDiagnostics,
+                                                   context.assessment);
+                        if (hasHiZReflectionProbeForTarget(
+                                diagnostics,
+                                hiZReflectionQualificationProbeTargetFrameSequence))
+                        {
+                            captureExecutionReceipt =
+                                diagnostics.frameFeatures
+                                    .hiZReflectionQualificationReceipt;
                             engine.RequestShutdown();
                         }
                         continue;
@@ -6147,6 +6617,10 @@ namespace
                         ambientOcclusionQualificationProbeEnabled &&
                         ambientOcclusionQualificationProbeTargetFrameSequence == 0 &&
                         (fixedCaptureFrame || readyCaptureFrame);
+                    const bool hiZReflectionProbeTargetFrame =
+                        hiZReflectionQualificationProbeEnabled &&
+                        hiZReflectionQualificationProbeTargetFrameSequence == 0 &&
+                        (fixedCaptureFrame || readyCaptureFrame);
                     const bool toonOutlineProbeTargetFrame =
                         toonOutlineQualificationProbeEnabled &&
                         toonOutlineQualificationProbeTargetFrameSequence == 0 &&
@@ -6214,6 +6688,18 @@ namespace
                         {
                             error =
                                 "Render runtime rejected the explicit ambient-occlusion qualification probe";
+                            engine.RequestShutdown();
+                            break;
+                        }
+                    }
+                    if (hiZReflectionProbeTargetFrame)
+                    {
+                        hiZReflectionQualificationProbeRequestAccepted =
+                            render->RequestHiZReflectionQualificationProbe();
+                        if (!hiZReflectionQualificationProbeRequestAccepted)
+                        {
+                            error =
+                                "Render runtime rejected the explicit Hi-Z reflection qualification probe";
                             engine.RequestShutdown();
                             break;
                         }
@@ -6369,6 +6855,54 @@ namespace
                                 error =
                                     "Ambient-occlusion qualification target did not retain exact presentation provenance";
                                 engine.RequestShutdown();
+                            }
+                        }
+                        if (hiZReflectionProbeTargetFrame && waitResult.Reached())
+                        {
+                            const RenderHiZReflectionQualificationRequestResult
+                                admission = render
+                                    ->GetHiZReflectionQualificationProbeRequestResult();
+                            if (!admission.IsAccepted())
+                            {
+                                hiZReflectionQualificationProbeRequestAccepted =
+                                    false;
+                                error = admission.diagnostic != nullptr &&
+                                        admission.diagnostic[0] != '\0'
+                                    ? admission.diagnostic
+                                    : "Hi-Z reflection qualification probe did not reach Render-owner admission";
+                                engine.RequestShutdown();
+                            }
+                            else if (admission.targetFrameSequence !=
+                                     targetSequence)
+                            {
+                                hiZReflectionQualificationProbeRequestAccepted =
+                                    false;
+                                error =
+                                    "Hi-Z reflection qualification probe bound a different target frame";
+                                engine.RequestShutdown();
+                            }
+                            else if (diagnostics.lastPublishedFrameSequence !=
+                                    targetSequence ||
+                                diagnostics.lastSubmittedFrameSequence !=
+                                    targetSequence ||
+                                diagnostics.lastPresentedFrameSequence !=
+                                    targetSequence)
+                            {
+                                error =
+                                    "Hi-Z reflection qualification target did not retain exact presentation provenance";
+                                engine.RequestShutdown();
+                            }
+                            else if (!hasHiZReflectionCopyPassForTarget(
+                                         diagnostics, targetSequence))
+                            {
+                                error =
+                                    "Hi-Z reflection qualification target did not register SSRQualificationRouteMaskCopy";
+                                engine.RequestShutdown();
+                            }
+                            else
+                            {
+                                hiZReflectionQualificationProbeTargetFrameSequence =
+                                    targetSequence;
                             }
                         }
                         if (toonOutlineProbeTargetFrame && waitResult.Reached())
@@ -6687,6 +7221,11 @@ namespace
                               hasAmbientOcclusionProbeForTarget(
                                   diagnostics,
                                   ambientOcclusionQualificationProbeTargetFrameSequence))) &&
+                            (!hiZReflectionQualificationProbeEnabled ||
+                             (hiZReflectionQualificationProbeTargetFrameSequence != 0 &&
+                              hasHiZReflectionProbeForTarget(
+                                  diagnostics,
+                                  hiZReflectionQualificationProbeTargetFrameSequence))) &&
                             (!toonOutlineQualificationProbeEnabled ||
                              (toonOutlineQualificationProbeTargetFrameSequence != 0 &&
                               hasToonOutlineProbeForTarget(
@@ -6923,6 +7462,30 @@ namespace
                 {
                     error =
                         "Ambient-occlusion qualification probe did not complete for the capture frame";
+                }
+            }
+            if (hiZReflectionQualificationProbeEnabled)
+            {
+                const bool hiZReflectionProbeCompleted =
+                    hiZReflectionQualificationProbeTargetFrameSequence != 0 &&
+                    hasHiZReflectionProbeForTarget(
+                        diagnostics,
+                        hiZReflectionQualificationProbeTargetFrameSequence) &&
+                    captureExecutionReceipt.has_value() &&
+                    captureExecutionReceipt->frameIdentity.frameSequence ==
+                        hiZReflectionQualificationProbeTargetFrameSequence;
+                succeeded &= hiZReflectionQualificationProbeRequestAccepted &&
+                             hiZReflectionProbeCompleted;
+                if (!hiZReflectionQualificationProbeRequestAccepted &&
+                    error.empty())
+                {
+                    error =
+                        "Render runtime rejected the explicit Hi-Z reflection qualification probe";
+                }
+                else if (!hiZReflectionProbeCompleted && error.empty())
+                {
+                    error =
+                        "Hi-Z reflection qualification probe did not complete for the capture frame";
                 }
             }
             if (toonOutlineQualificationProbeEnabled)

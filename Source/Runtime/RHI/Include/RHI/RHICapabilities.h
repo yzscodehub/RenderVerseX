@@ -3,13 +3,15 @@
 #include "RHI/RHIDefinitions.h"
 #include "RHI/RHIIndirectExecution.h"
 #include "RHI/RHIQueueTopology.h"
+#include <array>
+#include <cstddef>
 #include <string>
 #include <vector>
 
 namespace RVX
 {
     inline constexpr const char* RVX_RHI_CAPABILITY_REPORT_SCHEMA_ID = "RVX.RHI.CapabilityReport";
-    inline constexpr uint32 RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION = 6;
+    inline constexpr uint32 RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION = 7;
 
     // =============================================================================
     // DX11 Threading Mode
@@ -29,6 +31,17 @@ namespace RVX
     };
 
     const char* GetDX12BarrierDialectName(DX12BarrierDialect dialect);
+
+    /** @brief Per-format color-output capabilities published by one device. */
+    struct RHIFormatCapabilities
+    {
+        bool colorAttachment = false;
+        bool colorAttachmentBlend = false;
+
+        friend constexpr bool operator==(
+            const RHIFormatCapabilities&,
+            const RHIFormatCapabilities&) = default;
+    };
 
     // =============================================================================
     // Device Capabilities
@@ -54,6 +67,39 @@ namespace RVX
         uint32 maxComputeWorkGroupSize[3] = {1024, 1024, 64};
         uint32 maxComputeWorkGroupCount = 65535;
         uint32 maxPushConstantSize = 128;
+
+        /**
+         * @brief Native per-attachment blend-state selection is enabled.
+         *
+         * This does not imply that every render-target format is blendable;
+         * callers must also inspect formatCapabilities.
+         */
+        bool supportsIndependentColorAttachmentBlend = false;
+        std::array<RHIFormatCapabilities,
+                   static_cast<size_t>(RHIFormat::Count)>
+            formatCapabilities{};
+
+        [[nodiscard]] const RHIFormatCapabilities& GetFormatCapabilities(
+            RHIFormat format) const noexcept
+        {
+            static constexpr RHIFormatCapabilities unsupported{};
+            const size_t index = static_cast<size_t>(format);
+            return index < formatCapabilities.size()
+                ? formatCapabilities[index]
+                : unsupported;
+        }
+
+        [[nodiscard]] bool SupportsColorAttachment(
+            RHIFormat format) const noexcept
+        {
+            return GetFormatCapabilities(format).colorAttachment;
+        }
+
+        [[nodiscard]] bool SupportsColorAttachmentBlend(
+            RHIFormat format) const noexcept
+        {
+            return GetFormatCapabilities(format).colorAttachmentBlend;
+        }
 
         // Bindless support
         bool supportsBindless = false;
@@ -205,6 +251,7 @@ namespace RVX
         MemoryBudget = 9,
         ExplicitHeapManagement = 10,
         IndexedIndirectExecution = 11,
+        IndependentColorAttachmentBlend = 12,
     };
 
     enum class RHICapabilityStatus : uint8
@@ -227,6 +274,13 @@ namespace RVX
         std::string diagnosticMessage;
     };
 
+    struct RHIFormatCapabilityReportEntry
+    {
+        RHIFormat format = RHIFormat::Unknown;
+        bool colorAttachment = false;
+        bool colorAttachmentBlend = false;
+    };
+
     struct RHICapabilityReport
     {
         uint32 schemaVersion = RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION;
@@ -237,6 +291,8 @@ namespace RVX
         std::string validationMessage;
         RHIQueueTopology queueTopology;
         RHIIndexedIndirectExecutionCapabilities indexedIndirectExecution;
+        bool supportsIndependentColorAttachmentBlend = false;
+        std::vector<RHIFormatCapabilityReportEntry> formatCapabilities;
         std::vector<RHICapabilityReportEntry> entries;
         uint32 supportedCount = 0;
         uint32 emulatedCount = 0;

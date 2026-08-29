@@ -30,6 +30,27 @@ namespace RVX
             float denoiseParams[4] = {1.0f, 0.01f, 0.85f, 1.0f};
             float denoiseQualityParams[4] = {1.0f, 4.0f, 0.0f, 0.0f};
         };
+
+        struct RayTracedReflectionDenoiseFrameState
+        {
+            RenderPassExecutionData execution{};
+            bool contextValid = false;
+            bool legacyAdapter = false;
+        };
+
+        void PublishRayTracedReflectionDenoiseRecordStats(
+            const RenderPassExecutionData& execution,
+            bool legacyAdapter,
+            const RayTracedReflectionDenoisePassStats& stats)
+        {
+            // Legacy ViewData adapters are retained for test/compatibility
+            // execution only and cannot contribute qualification evidence.
+            if (!legacyAdapter && execution.results != nullptr &&
+                execution.results->identity == execution.identity)
+            {
+                execution.results->rayTracedReflectionDenoiseStats = stats;
+            }
+        }
     } // namespace
 
     void RayTracedReflectionDenoisePass::OnAdd(IRHIDevice* device)
@@ -111,6 +132,54 @@ namespace RVX
 
         m_unsupportedReason.clear();
         return true;
+    }
+
+    void RayTracedReflectionDenoisePass::AddToGraph(
+        RenderGraph& graph,
+        const ViewData& view)
+    {
+        AddToGraph(graph, MakeRenderPassRecordContext(graph, view));
+    }
+
+    void RayTracedReflectionDenoisePass::AddToGraph(
+        RenderGraph& graph,
+        const RenderPassRecordContext& context)
+    {
+        const RenderPassExecutionData execution =
+            MakeRenderPassExecutionData(context);
+        const bool contextValid = context.MatchesTargetGraph(graph) &&
+            execution.MatchesTargetGraph(graph);
+        const bool legacyAdapter = context.legacyAdapter;
+
+        graph.AddPass<RayTracedReflectionDenoiseFrameState>(
+            GetName(),
+            GetPassType(),
+            [this, execution, contextValid, legacyAdapter](
+                RenderGraphBuilder& builder,
+                RayTracedReflectionDenoiseFrameState& data)
+            {
+                data.execution = execution;
+                data.contextValid = contextValid;
+                data.legacyAdapter = legacyAdapter;
+                if (!data.contextValid)
+                {
+                    return;
+                }
+                Setup(builder, data.execution.view);
+                PublishRayTracedReflectionDenoiseRecordStats(
+                    data.execution, data.legacyAdapter, m_stats);
+            },
+            [this](const RayTracedReflectionDenoiseFrameState& data,
+                   RenderGraphPassContext& graphContext)
+            {
+                if (!data.contextValid)
+                {
+                    return;
+                }
+                Execute(graphContext, data.execution.view);
+                PublishRayTracedReflectionDenoiseRecordStats(
+                    data.execution, data.legacyAdapter, m_stats);
+            });
     }
 
     void RayTracedReflectionDenoisePass::Setup(RenderGraphBuilder& builder, const ViewData& view)

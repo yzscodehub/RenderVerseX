@@ -30,6 +30,7 @@ namespace RVX
     class ClusteredLighting;
     class GPUCulling;
     class LightingFramePlan;
+    class LocalShadowAtlasPlan;
     class LightManager;
     class MaterialSystem;
     class PipelineCache;
@@ -105,19 +106,29 @@ namespace RVX
         }
     };
 
-    /** @brief Optional Forward attachments required by stylized outlines. */
+    /**
+     * @brief Forward opaque HDR and exact reflection-replacement MRT bundle.
+     *
+     * The final two targets are always produced together with the surface
+     * guides.  They contain the pre-exposed indirect-specular term already
+     * present in HDR and its dimensionless material response respectively.
+     */
     struct OpaqueForwardSurfaceTargets
     {
         RGTextureHandle hdrSceneColor{};
         RGTextureHandle normalRoughnessMetallic{};
         RGTextureHandle materialIdentity{};
+        RGTextureHandle baseIndirectSpecular{};
+        RGTextureHandle specularResponse{};
         RGTextureHandle depth{};
 
         [[nodiscard]] bool IsValid() const noexcept
         {
             return hdrSceneColor.IsValid() &&
                    normalRoughnessMetallic.IsValid() &&
-                   materialIdentity.IsValid() && depth.IsValid();
+                   materialIdentity.IsValid() &&
+                   baseIndirectSpecular.IsValid() &&
+                   specularResponse.IsValid() && depth.IsValid();
         }
     };
 
@@ -244,10 +255,12 @@ namespace RVX
             std::shared_ptr<const LightingFramePlan> lightingPlan,
             std::shared_ptr<const RenderLightingFrameResourceSnapshot>
                 lightingResources,
+            std::shared_ptr<const LocalShadowAtlasPlan> localShadowAtlasPlan,
             std::shared_ptr<const RenderDeformationFrameResources>
                 deformationResources,
             const DirectionalShadowRecordOutput& directionalShadow,
             const RayTracedShadowRecordOutput& rayTracedShadow,
+            const LocalShadowRecordOutput& localShadow,
             const AmbientOcclusionRecordInput& ambientOcclusion,
             std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache,
             DirectRasterReadbackQualification* directReadbackQualification,
@@ -269,6 +282,8 @@ namespace RVX
         RGTextureHandle m_depthTargetHandle;
         RGTextureHandle m_directionalShadowReadHandle;
         RGTextureHandle m_rayTracedShadowMaskReadHandle;
+        /** Exact graph-owned D32 point/spot atlas for Forward lighting. */
+        RGTextureHandle m_localShadowAtlasReadHandle;
         /** Exact renderer-produced R8 visibility field for Forward opaque IBL. */
         RGTextureHandle m_ambientOcclusionReadHandle;
         RGBufferHandle m_lightConstantsReadHandle;
@@ -285,14 +300,15 @@ namespace RVX
         RGTextureViewHandle m_depthTargetViewHandle;
         RGTextureViewHandle m_directionalShadowViewHandle;
         RGTextureViewHandle m_rayTracedShadowMaskViewHandle;
+        RGTextureViewHandle m_localShadowAtlasViewHandle;
         RGTextureViewHandle m_ambientOcclusionViewHandle;
         RGTextureViewHandle m_environmentIBLIrradianceViewHandle;
         RGTextureViewHandle m_environmentIBLPrefilteredViewHandle;
         RGTextureViewHandle m_environmentIBLBRDFLUTViewHandle;
         std::array<RGTextureHandle, 4> m_gBufferTargetHandles{};
         std::array<RGTextureViewHandle, 4> m_gBufferTargetViewHandles{};
-        std::array<RGTextureHandle, 3> m_forwardSurfaceTargetHandles{};
-        std::array<RGTextureViewHandle, 3>
+        std::array<RGTextureHandle, 5> m_forwardSurfaceTargetHandles{};
+        std::array<RGTextureViewHandle, 5>
             m_forwardSurfaceTargetViewHandles{};
         RHIFormat m_colorTargetFormat = RHIFormat::Unknown;
         RGBufferHandle m_gpuDrivenInstanceHandle;
@@ -327,8 +343,11 @@ namespace RVX
         std::shared_ptr<const LightingFramePlan> m_lightingPlan;
         std::shared_ptr<const RenderLightingFrameResourceSnapshot>
             m_lightingResources;
+        std::shared_ptr<const LocalShadowAtlasPlan> m_localShadowAtlasPlan;
         std::shared_ptr<const RenderDeformationFrameResources>
             m_deformationResources;
+        /** Immutable local point/spot atlas result for this graph recording. */
+        LocalShadowRecordOutput m_localShadowInputs{};
         std::shared_ptr<LightingBindingSnapshot> m_lightingBindingSnapshot;
         DirectionalShadowRecordOutput m_directionalShadowInputs;
         RayTracedShadowRecordOutput m_rayTracedShadowInputs;

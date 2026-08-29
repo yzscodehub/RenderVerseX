@@ -281,6 +281,14 @@ namespace
     {
         TemporaryCatalog catalog;
         std::filesystem::path manifestPath;
+        std::string sourcePath;
+        std::string outputPath;
+        std::string sourceContents;
+        std::string artifactContents;
+        std::string assetId;
+        std::string assetKind;
+        RVX::Resource::CookAssetType assetType =
+            RVX::Resource::CookAssetType::Model;
         RVX::Resource::ResourceContentIdentity sourceIdentity;
         RVX::Resource::ResourceContentIdentity cookedIdentity;
         RVX::Resource::ResourceContentIdentity manifestIdentity;
@@ -288,19 +296,30 @@ namespace
         std::string cookSettingsHash;
         std::string recipeHash;
 
-        CookAdmissionFixture()
+        CookAdmissionFixture(
+            const RVX::Resource::CookAssetType inAssetType =
+                RVX::Resource::CookAssetType::Model,
+            std::string inSourcePath = "models/model.gltf",
+            std::string inOutputPath = "models/model.rva",
+            std::string inArtifactContents = "cooked-model-v1",
+            std::string inAssetId = "model",
+            std::string inAssetKind = "model")
+            : sourcePath(std::move(inSourcePath))
+            , outputPath(std::move(inOutputPath))
+            , sourceContents("{\"asset\":{\"version\":\"2.0\"}}")
+            , artifactContents(std::move(inArtifactContents))
+            , assetId(std::move(inAssetId))
+            , assetKind(std::move(inAssetKind))
+            , assetType(inAssetType)
         {
-            constexpr std::string_view SourceContents =
-                "{\"asset\":{\"version\":\"2.0\"}}";
-            constexpr std::string_view ArtifactContents = "cooked-model-v1";
-            catalog.Write("models/model.gltf", std::string(SourceContents));
+            catalog.Write(sourcePath, sourceContents);
             catalog.Write("license.txt", "test license");
-            catalog.Write("cooked/models/model.rva", std::string(ArtifactContents));
+            catalog.Write("cooked/" + outputPath, artifactContents);
             artifactIdentity = MakeContentIdentity(
                 RVX::Resource::ResourceContentIdentityDomain::CookedArtifact,
                 RVX::Resource::ResourceContentIdentityScope::SelfContainedArtifact,
-                HashContents(std::string(ArtifactContents)),
-                ArtifactContents.size(),
+                HashContents(artifactContents),
+                artifactContents.size(),
                 1);
 
             RVX::Resource::CookManifest manifest;
@@ -313,18 +332,20 @@ namespace
             manifest.recursive = true;
 
             RVX::Resource::CookManifestEntry entry;
-            entry.sourcePath = "models/model.gltf";
-            entry.outputPath = "models/model.rva";
-            entry.type = RVX::Resource::CookAssetType::Model;
+            entry.sourcePath = sourcePath;
+            entry.outputPath = outputPath;
+            entry.type = assetType;
             entry.success = true;
             entry.importerName = "FixtureImporter";
             entry.sourceContent = MakeCookFileIdentity(entry.sourcePath,
-                                                        std::string(SourceContents));
+                                                        sourceContents);
             entry.canonicalCookSettings =
-                "settingsSchema=RVX_COOK_SETTINGS_V1\nassetType=Model\noptions=fixture\n";
+                "settingsSchema=RVX_COOK_SETTINGS_V1\nassetType=" +
+                std::string(RVX::Resource::GetCookAssetTypeName(assetType)) +
+                "\noptions=fixture\n";
             entry.cookSettingsHash = HashContents(entry.canonicalCookSettings);
             entry.artifacts.push_back(MakeCookFileIdentity(entry.outputPath,
-                                                            std::string(ArtifactContents)));
+                                                            artifactContents));
             entry.recipeHash = BuildCookRecipeHash(entry);
             cookSettingsHash = entry.cookSettingsHash;
             recipeHash = entry.recipeHash;
@@ -364,9 +385,10 @@ namespace
                    "\"cookedRoot\":\"" + cookedRootText + "\","
                    "\"packageOnly\":" + (packageOnly ? "true," : "false,") +
                    "\"selector\":{"
-                   "\"sourcePath\":\"models/model.gltf\","
-                   "\"outputPath\":\"models/model.rva\","
-                   "\"type\":\"Model\"},"
+                   "\"sourcePath\":\"" + sourcePath + "\","
+                   "\"outputPath\":\"" + outputPath + "\","
+                   "\"type\":\"" +
+                   std::string(RVX::Resource::GetCookAssetTypeName(assetType)) + "\"},"
                    "\"sourceContentIdentity\":" + MakeIdentityJson(sourceIdentity) + ","
                    "\"cookedContentIdentity\":" + MakeIdentityJson(cookedIdentity) + ","
                    "\"manifestContentIdentity\":" + MakeIdentityJson(manifestIdentity) + ","
@@ -379,9 +401,9 @@ namespace
         void WriteCatalog(const std::string& cookDeclaration)
         {
             const std::vector<ManifestFile> files{
-                {"models/model.gltf",
+                {sourcePath,
                  "runtime-root",
-                 "{\"asset\":{\"version\":\"2.0\"}}"}};
+                 sourceContents}};
             const std::string entryFields =
                 cookDeclaration.find("\"packageOnly\":true") != std::string::npos
                     ? "\"contentIdentity\":" +
@@ -389,31 +411,50 @@ namespace
                           cookDeclaration
                     : cookDeclaration;
             catalog.Write("catalog.json",
-                          MakeCatalog(MakeV3Entry("model",
-                                                  "models/model.gltf",
+                          MakeCatalog(MakeV3Entry(assetId,
+                                                  sourcePath,
                                                   files,
-                                                  entryFields),
+                                                  entryFields,
+                                                  {},
+                                                  assetKind),
                                       3));
         }
 
-        void WritePackageOnlyCatalog()
+        void WritePackageOnlyCatalog(const std::string& runtimeOutputPath = {},
+                                     const std::string& selectorOutputPath = {})
         {
+            const std::string declaredRuntimeOutputPath =
+                runtimeOutputPath.empty() ? outputPath : runtimeOutputPath;
+            const std::string declaredSelectorOutputPath =
+                selectorOutputPath.empty() ? outputPath : selectorOutputPath;
+            catalog.Write("cooked/" + declaredRuntimeOutputPath, artifactContents);
             const std::vector<ManifestFile> files{
                 {"cooked/CookManifest.rvxmanifest",
                  "cook-manifest",
                  ReadFileContents(manifestPath)},
-                {"cooked/models/model.rva",
+                {"cooked/" + declaredRuntimeOutputPath,
                  "runtime-root",
-                 "cooked-model-v1"}};
+                 artifactContents}};
+            const std::string declaration = MakeCookDeclaration(
+                "cooked/CookManifest.rvxmanifest", "cooked", true);
+            const std::string selectorField = "\"outputPath\":\"" + outputPath + "\"";
+            const size_t selectorPosition = declaration.find(selectorField);
+            EXPECT_NE(selectorPosition, std::string::npos);
+            std::string adjustedDeclaration = declaration;
+            adjustedDeclaration.replace(selectorPosition,
+                                        selectorField.size(),
+                                        "\"outputPath\":\"" +
+                                            declaredSelectorOutputPath + "\"");
             const std::string entryFields =
                 "\"contentIdentity\":" + MakeIdentityJson(artifactIdentity) +
-                "," + MakeCookDeclaration(
-                           "cooked/CookManifest.rvxmanifest", "cooked", true);
+                "," + adjustedDeclaration;
             catalog.Write("catalog.json",
-                          MakeCatalog(MakeV3Entry("model",
-                                                  "cooked/models/model.rva",
+                          MakeCatalog(MakeV3Entry(assetId,
+                                                  "cooked/" + declaredRuntimeOutputPath,
                                                   files,
-                                                  entryFields),
+                                                  entryFields,
+                                                  {},
+                                                  assetKind),
                                       3));
         }
     };
@@ -1063,6 +1104,60 @@ namespace
         const RVX::SampleCookedAssetAdmissionReceipt receipt =
             catalog.RequireCookedAdmission("model");
         EXPECT_TRUE(receipt.IsAccepted()) << receipt.detail;
+    }
+
+    TEST(SampleAssetCatalogValidation,
+         QualificationCookAdmissionAllowsExplicitPackageOnlyEnvironmentArtifact)
+    {
+        CookAdmissionFixture fixture(
+            RVX::Resource::CookAssetType::Environment,
+            "environments/studio.hdr",
+            "environments/studio.rva",
+            "cooked-environment-v1",
+            "studio",
+            "environment");
+        fixture.WritePackageOnlyCatalog();
+
+        RVX::SampleAssetCatalog catalog;
+        std::string error;
+        ASSERT_TRUE(catalog.Load(fixture.catalog.CatalogPath(),
+                                 fixture.catalog.Root(),
+                                 &error))
+            << error;
+        const RVX::SampleAssetEntry* entry = catalog.Find("studio");
+        ASSERT_NE(entry, nullptr);
+        EXPECT_EQ(entry->kind, RVX::SampleAssetKind::Environment);
+        EXPECT_EQ(entry->path.generic_string(),
+                  "cooked/environments/studio.rva");
+        EXPECT_TRUE(entry->cook.packageOnly);
+        EXPECT_EQ(entry->cook.selector.type,
+                  RVX::Resource::CookAssetType::Environment);
+
+        const RVX::SampleCookedAssetAdmissionReceipt receipt =
+            catalog.RequireCookedAdmission("studio");
+        EXPECT_TRUE(receipt.IsAccepted()) << receipt.detail;
+    }
+
+    TEST(SampleAssetCatalogValidation,
+         CatalogLoadRejectsPackageOnlyEnvironmentWithNonRvaArtifact)
+    {
+        CookAdmissionFixture fixture(
+            RVX::Resource::CookAssetType::Environment,
+            "environments/studio.hdr",
+            "environments/studio.rva",
+            "cooked-environment-v1",
+            "studio",
+            "environment");
+        fixture.WritePackageOnlyCatalog("environments/studio.rvxvfx",
+                                        "environments/studio.rvxvfx");
+
+        RVX::SampleAssetCatalog catalog;
+        std::string error;
+        EXPECT_FALSE(catalog.Load(fixture.catalog.CatalogPath(),
+                                  fixture.catalog.Root(),
+                                  &error));
+        EXPECT_NE(error.find("Package-only sample asset"), std::string::npos)
+            << error;
     }
 
     TEST(SampleAssetCatalogValidation,

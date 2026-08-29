@@ -9,7 +9,8 @@ namespace
     {
         RVX::SampleParticleVfxExecutionDiagnostics diagnostics;
         diagnostics.available = true;
-        diagnostics.executionReceiptSchemaVersion = 11;
+        diagnostics.executionReceiptSchemaVersion =
+            RVX::RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION;
         diagnostics.executionReceiptStructurallyValid = true;
         diagnostics.executionReceiptPresented = true;
         diagnostics.executionReceiptSucceeded = true;

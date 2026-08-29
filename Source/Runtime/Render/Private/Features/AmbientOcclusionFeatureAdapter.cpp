@@ -23,8 +23,7 @@ namespace
 
     [[nodiscard]] bool IsRasterRecipe(RenderPipelineRecipe recipe) noexcept
     {
-        return recipe == RenderPipelineRecipe::ForwardStandard ||
-               recipe == RenderPipelineRecipe::DeferredQuality;
+        return IsPresentableRasterRecipe(recipe);
     }
 
     [[nodiscard]] bool HandleMatchesBuilder(
@@ -114,7 +113,8 @@ RenderFeatureDescriptor AmbientOcclusionFeatureAdapter::Describe() const
         ToMask(RenderFeatureCapability::DescriptorBindings);
     descriptor.requiredRecipes =
         ToMask(RenderPipelineRecipe::ForwardStandard) |
-        ToMask(RenderPipelineRecipe::DeferredQuality);
+        ToMask(RenderPipelineRecipe::DeferredQuality) |
+        ToMask(RenderPipelineRecipe::HybridRayTracing);
     descriptor.qualityTiers = RVX_ALL_RENDER_QUALITY_TIERS;
     descriptor.fallbackPolicy = RenderFeatureFallbackPolicy::None;
     descriptor.shaderPipelineFamily = "GroundTruthAmbientOcclusion";
@@ -213,8 +213,8 @@ void AmbientOcclusionFeatureAdapter::AddPasses(
         return;
     }
 
-    const bool deferred = m_preparedContext.resolvedRecipe ==
-        RenderPipelineRecipe::DeferredQuality;
+    const bool deferred = UsesDeferredOpaquePath(
+        m_preparedContext.resolvedRecipe);
     if (deferred &&
         (!HandleMatchesBuilder(textures->gBuffer1, builder) ||
          textures->gBuffer1Metadata.extent !=

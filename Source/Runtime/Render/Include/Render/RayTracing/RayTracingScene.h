@@ -33,7 +33,36 @@ namespace RVX
         UnsupportedPrimitive,
         UnsupportedIndexFormat,
         UnsupportedBaseVertex,
-        InvalidGeometry
+        InvalidGeometry,
+        SkinnedGeometryUnsupported,
+        InvalidMaterialPolicy,
+        IncompleteMaskedMetadata
+    };
+
+    /**
+     * @brief Ray tracing only accepts stable rigid geometry in this milestone.
+     *
+     * Static is deliberately a separate value even though the current retained
+     * scene does not yet expose static-mobility metadata.  That prevents a
+     * future mobility bit from silently changing the BLAS/TLAS policy.
+     */
+    enum class RayTracingGeometryClassification : uint8
+    {
+        Static = 0,
+        Rigid,
+        SkinnedUnsupported
+    };
+
+    enum class RayTracingMaskedMetadataStatus : uint8
+    {
+        NotMasked = 0,
+        Complete,
+        MissingMaterial,
+        InvalidMaterial,
+        TextureNotReady,
+        UnsupportedUVSet,
+        MissingUVSet,
+        MissingIndexBuffer
     };
 
     struct RayTracingSceneOptions
@@ -53,6 +82,8 @@ namespace RVX
     {
         RenderResourceHandle mesh;
         uint64 meshId = 0;
+        /** Exact registry revision for the mesh generation used by this BLAS. */
+        uint64 meshContentRevision = 0;
         uint32 submeshIndex = 0;
         MaterialRenderMode renderMode = MaterialRenderMode::Opaque;
 
@@ -60,6 +91,7 @@ namespace RVX
         {
             return mesh == other.mesh &&
                    meshId == other.meshId &&
+                   meshContentRevision == other.meshContentRevision &&
                    submeshIndex == other.submeshIndex &&
                    renderMode == other.renderMode;
         }
@@ -156,6 +188,7 @@ namespace RVX
     struct RayTracingAlphaTestMetadata
     {
         bool enabled = false;
+        RayTracingMaskedMetadataStatus status = RayTracingMaskedMetadataStatus::NotMasked;
         bool hasBaseColorTexture = false;
         bool hasResolvedBaseColorTexture = false;
         bool hasIndexBuffer = false;
@@ -186,7 +219,10 @@ namespace RVX
         uint32 submeshIndex = 0;
         uint64 entityId = 0;
         uint64 materialId = 0;
+        uint64 materialContentRevision = 0;
         MaterialRenderMode renderMode = MaterialRenderMode::Opaque;
+        RayTracingGeometryClassification geometryClassification =
+            RayTracingGeometryClassification::Rigid;
         RayTracingMaterialMetadata material;
         RayTracingAlphaTestMetadata alphaTest;
         RHIRayTracingInstanceDesc desc;
@@ -203,7 +239,7 @@ namespace RVX
 
     struct RayTracingSceneBuildStats
     {
-        size_t visibleObjectCount = 0;
+        size_t candidateObjectCount = 0;
         size_t drawItemCount = 0;
         size_t blasBuildCount = 0;
         size_t instanceCount = 0;
@@ -217,17 +253,65 @@ namespace RVX
         std::vector<RayTracingTLASInstance> instances;
         std::vector<RayTracingSceneSkip> skips;
         RayTracingSceneBuildStats stats;
+        /** False makes required/optional RT paths fail closed instead of treating masked input as opaque. */
+        bool maskedMetadataComplete = true;
         RHIAccelerationStructureBuildFlags tlasBuildFlags =
             RHIAccelerationStructureBuildFlags::PreferFastTrace;
 
         bool HasWork() const { return !blasBuilds.empty() && !instances.empty(); }
     };
 
+    /**
+     * @brief Exact topology identity used to decide whether a TLAS may update.
+     *
+     * Transform values are intentionally excluded: a transform-only change can
+     * use an in-place TLAS update when the RHI reports that capability.
+     */
+    struct RayTracingTLASStructuralRecord
+    {
+        RenderResourceHandle mesh;
+        uint64 meshContentRevision = 0;
+        uint32 submeshIndex = 0;
+        uint64 entityId = 0;
+        uint64 materialId = 0;
+        uint64 materialContentRevision = 0;
+        MaterialRenderMode renderMode = MaterialRenderMode::Opaque;
+        uint32 materialFlags = 0;
+        uint32 materialWorkflow = 0;
+        uint32 instanceMask = 0;
+        uint32 instanceFlags = 0;
+        uint32 hitGroupIndex = 0;
+        RayTracingGeometryClassification geometryClassification =
+            RayTracingGeometryClassification::Rigid;
+        RayTracingMaskedMetadataStatus maskedMetadataStatus =
+            RayTracingMaskedMetadataStatus::NotMasked;
+        uint32 baseColorUVSet = 0;
+        uint64 baseColorTextureId = 0;
+
+        [[nodiscard]] bool operator==(const RayTracingTLASStructuralRecord& other) const noexcept = default;
+    };
+
+    struct RayTracingTLASStructuralSignature
+    {
+        uint32 instanceCount = 0;
+        /** Canonical ordered records are the update safety decision; hash is diagnostics only. */
+        std::vector<RayTracingTLASStructuralRecord> records;
+        uint64 hash = 0;
+
+        [[nodiscard]] bool operator==(const RayTracingTLASStructuralSignature& other) const
+        {
+            return instanceCount == other.instanceCount && records == other.records;
+        }
+    };
+
     RayTracingSceneBuildPlan BuildRayTracingSceneBuildPlan(
         const RenderScene& scene,
-        std::span<const uint32_t> visibleObjectIndices,
+        std::span<const uint32_t> candidateObjectIndices,
         const RenderResourceRegistry& registry,
         const RayTracingSceneOptions& options = {});
+
+    [[nodiscard]] RayTracingTLASStructuralSignature BuildRayTracingTLASStructuralSignature(
+        const RayTracingSceneBuildPlan& plan);
 
     RHITopLevelASDesc BuildRayTracingTopLevelDesc(
         const RayTracingSceneBuildPlan& plan,

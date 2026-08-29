@@ -187,6 +187,7 @@ namespace RVX
         {
             std::unordered_map<uint64, RenderPrimitiveSnapshot> primitives;
             std::unordered_map<uint64, RenderLightSnapshot> lights;
+            std::unordered_map<uint64, RenderProbeSnapshot> probes;
             std::unordered_map<uint64, ParticleRenderSnapshotItem> particles;
             std::unordered_map<uint64, WaterRenderSnapshotItem> water;
             std::unordered_map<uint64, TerrainRenderSnapshotItem> terrain;

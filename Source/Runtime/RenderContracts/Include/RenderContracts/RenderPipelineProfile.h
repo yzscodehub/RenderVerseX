@@ -139,6 +139,22 @@ namespace RVX
         return tier >= RenderQualityTier::Low && tier < RenderQualityTier::Count;
     }
 
+    /** @brief Recipes that share the deferred opaque/GBuffer foundation. */
+    [[nodiscard]] constexpr bool UsesDeferredOpaquePath(
+        RenderPipelineRecipe recipe) noexcept
+    {
+        return recipe == RenderPipelineRecipe::DeferredQuality ||
+               recipe == RenderPipelineRecipe::HybridRayTracing;
+    }
+
+    /** @brief Recipes that produce a presentable raster scene. */
+    [[nodiscard]] constexpr bool IsPresentableRasterRecipe(
+        RenderPipelineRecipe recipe) noexcept
+    {
+        return recipe == RenderPipelineRecipe::ForwardStandard ||
+               UsesDeferredOpaquePath(recipe);
+    }
+
     /** @brief Value-only recipe/profile input copied into immutable frame state. */
     struct RenderPipelineRequest
     {

@@ -1,6 +1,6 @@
 #pragma once
 
-/** @file LightingShadowShowcaseSample.h @brief Directional shadow scene. */
+/** @file LightingShadowShowcaseSample.h @brief Directional and local shadow scene. */
 
 #include "Samples/Sample.h"
 #include "Samples/SampleModelLoader.h"
@@ -16,6 +16,8 @@ namespace RVX
         void Update(SampleContext& context, float deltaTime) override;
         void OnInput(SampleContext& context) override;
         void AppendReport(SampleFeatureReporter& reporter) const override;
+        void ObserveDiagnostics(const SampleRenderDiagnostics& diagnostics,
+                                SampleAssessmentChannel& assessment) override;
         SampleReadiness GetReadiness(
             const SampleRenderDiagnostics& diagnostics) const override;
         bool ValidateResult(const SampleRenderDiagnostics& diagnostics,
@@ -30,5 +32,8 @@ namespace RVX
         uint32 m_shadowCascadeCount = 0;
         bool m_skyboxCreated = false;
         bool m_shadowLightCreated = false;
+        bool m_pointShadowLightCreated = false;
+        bool m_spotShadowLightCreated = false;
+        bool m_executionQualified = false;
     };
 } // namespace RVX

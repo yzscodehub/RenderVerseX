@@ -42,7 +42,8 @@ namespace RVX
             return true;
         }
 
-        [[nodiscard]] bool IsSupportedEnvironmentPath(const std::filesystem::path& path)
+        [[nodiscard]] std::string GetLowercaseExtension(
+            const std::filesystem::path& path)
         {
             std::string extension = path.extension().string();
             std::transform(extension.begin(),
@@ -52,7 +53,20 @@ namespace RVX
                            {
                                return static_cast<char>(std::tolower(value));
                            });
+            return extension;
+        }
+
+        [[nodiscard]] bool IsSupportedSourceEnvironmentPath(
+            const std::filesystem::path& path)
+        {
+            const std::string extension = GetLowercaseExtension(path);
             return extension == ".hdr" || extension == ".exr";
+        }
+
+        [[nodiscard]] bool IsCookedEnvironmentPath(
+            const std::filesystem::path& path)
+        {
+            return GetLowercaseExtension(path) == ".rva";
         }
 
         [[nodiscard]] bool IsCpuReadyState(
@@ -145,6 +159,19 @@ namespace RVX
                        std::string(assetId);
             return false;
         }
+        if (lookup.entry->packageOnly &&
+            (!IsCookedEnvironmentPath(lookup.entry->resolvedPath) ||
+             lookup.entry->contentIdentity.domain !=
+                 Resource::ResourceContentIdentityDomain::CookedArtifact ||
+             lookup.entry->contentIdentity.scope !=
+                 Resource::ResourceContentIdentityScope::SelfContainedArtifact))
+        {
+            outError =
+                "Package-only sample environment entry must resolve to a verified "
+                "self-contained CookedArtifact .rva file: " +
+                std::string(assetId);
+            return false;
+        }
         std::string resourcePath;
         if (!TryGetSampleAssetResourcePath(*lookup.entry, resourcePath, outError))
         {
@@ -153,6 +180,7 @@ namespace RVX
         return RequestResolved(resourcePath,
                                lookup.entry->resolvedPath,
                                lookup.entry->contentIdentity,
+                               lookup.entry->packageOnly,
                                options,
                                output,
                                outError);
@@ -171,6 +199,7 @@ namespace RVX
             return false;
         }
         return RequestResolved(path.generic_string(), path, contentIdentity,
+                               false,
                                options, output, outError);
     }
 
@@ -178,6 +207,7 @@ namespace RVX
         const std::string& resourcePath,
         const std::filesystem::path& sourcePath,
         const Resource::ResourceContentIdentity& expectedContentIdentity,
+        const bool packageOnly,
         const SampleEnvironmentLoadOptions& options,
         LoadedSampleEnvironment& output,
         std::string& outError) const
@@ -202,7 +232,14 @@ namespace RVX
             outError = "Environment exposure must be finite and positive";
             return false;
         }
-        if (!IsSupportedEnvironmentPath(std::filesystem::path(resourcePath)))
+        if (packageOnly && !IsCookedEnvironmentPath(sourcePath))
+        {
+            outError = "Cooked environment must use an .rva file: " +
+                       sourcePath.generic_string();
+            return false;
+        }
+        if (!packageOnly &&
+            !IsSupportedSourceEnvironmentPath(std::filesystem::path(resourcePath)))
         {
             outError = "Environment must use an .hdr or .exr file: " + resourcePath;
             return false;
@@ -217,21 +254,25 @@ namespace RVX
 
         ResourceSceneAdapters::EcsEnvironmentLoadDesc desc;
         desc.path = resourcePath;
-        Resource::EnvironmentLoadOptions environmentOptions;
-        environmentOptions.quality = quality;
-        environmentOptions.exposure = options.exposure;
-        environmentOptions.applyGamma = false;
-        Resource::ResourceLoadError preparationError;
-        desc.preparationState = Resource::EnvironmentLoader::CreatePreparationState(
-            environmentOptions,
-            desc.resourceOptions.importOptionsHash,
-            preparationError);
-        if (!desc.preparationState)
+        if (!packageOnly)
         {
-            outError = preparationError.message.empty()
-                           ? "Environment preparation state creation failed."
-                           : preparationError.message;
-            return false;
+            Resource::EnvironmentLoadOptions environmentOptions;
+            environmentOptions.quality = quality;
+            environmentOptions.exposure = options.exposure;
+            environmentOptions.applyGamma = false;
+            Resource::ResourceLoadError preparationError;
+            desc.preparationState =
+                Resource::EnvironmentLoader::CreatePreparationState(
+                    environmentOptions,
+                    desc.resourceOptions.importOptionsHash,
+                    preparationError);
+            if (!desc.preparationState)
+            {
+                outError = preparationError.message.empty()
+                               ? "Environment preparation state creation failed."
+                               : preparationError.message;
+                return false;
+            }
         }
         desc.expectedSceneRuntimeId = m_sceneRuntimeId;
         desc.resourceOptions.expectedContentIdentity = expectedContentIdentity;

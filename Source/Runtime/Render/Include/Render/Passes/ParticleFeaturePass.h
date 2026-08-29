@@ -6,6 +6,7 @@
  */
 
 #include "Render/Passes/IRenderPass.h"
+#include "Render/Translucency/TranslucencyFramePlan.h"
 #include "RenderContracts/ParticleRenderSnapshot.h"
 
 #include <cstdint>
@@ -15,9 +16,85 @@
 
 namespace RVX
 {
+    /** Result of preparing or recording one typed particle translucency stage. */
+    enum class ParticleFeatureRecordingCode : uint8
+    {
+        Ready = 0,
+        Recorded,
+        NoWork,
+        InvalidFramePlan,
+        InvalidRecordContext,
+        PlanInventoryMismatch,
+        UnsupportedPlanRoute,
+        RequiredCapabilityUnavailable,
+        StalePreparedRecording,
+        InvalidGraphTargets,
+        StageAlreadyRecorded,
+        StageOrderViolation,
+        ResourcePreparationFailed,
+    };
+
+    class ParticleFeaturePreparedRecording;
+    using ParticleFeaturePreparedRecordingRef =
+        std::shared_ptr<ParticleFeaturePreparedRecording>;
+
+    /** Shared WBOIT attachments owned and cleared by translucency composition. */
+    struct ParticleWeightedBlendedRecordTargets
+    {
+        RGTextureHandle accumulation{};
+        RGTextureHandle revealage{};
+    };
+
+    /** Post-OIT direct outputs. Both handles must belong to the prepared graph. */
+    struct ParticleDirectRecordTargets
+    {
+        RGTextureHandle hdrSceneColor{};
+        RGTextureHandle reactiveMask{};
+    };
+
+    struct ParticleFeaturePreparedRecordingResult
+    {
+        ParticleFeatureRecordingCode code =
+            ParticleFeatureRecordingCode::InvalidRecordContext;
+        ParticleFeaturePreparedRecordingRef recording;
+        uint64 translucencyPlanIdentity = 0;
+        uint32 weightedBatchCount = 0;
+        uint32 weightedItemCount = 0;
+        uint32 directBatchCount = 0;
+        uint32 directItemCount = 0;
+        std::string diagnostic;
+
+        [[nodiscard]] bool Succeeded() const noexcept
+        {
+            return code == ParticleFeatureRecordingCode::Ready ||
+                   code == ParticleFeatureRecordingCode::NoWork;
+        }
+    };
+
+    struct ParticleFeatureStageRecordResult
+    {
+        ParticleFeatureRecordingCode code =
+            ParticleFeatureRecordingCode::StalePreparedRecording;
+        uint64 translucencyPlanIdentity = 0;
+        uint32 batchCount = 0;
+        uint32 itemCount = 0;
+        /** Direct stage output after its optional distortion composite. */
+        RGTextureHandle hdrSceneColor{};
+        std::string diagnostic;
+
+        [[nodiscard]] bool Succeeded() const noexcept
+        {
+            return code == ParticleFeatureRecordingCode::Recorded ||
+                   code == ParticleFeatureRecordingCode::NoWork;
+        }
+    };
+
     /** Bounded value receipt for one contiguous particle billboard batch. */
     struct ParticleFeatureBatchReceipt
     {
+        TranslucencyRoute route = TranslucencyRoute::Unsupported;
+        uint32 planSourceOrdinal = RVX_INVALID_INDEX;
+        uint64 planSourceIdentity = 0;
         ParticleRenderSnapshotBlendMode blendMode =
             ParticleRenderSnapshotBlendMode::AlphaBlend;
         uint64 effectDescriptorHash = 0;
@@ -75,6 +152,20 @@ namespace RVX
         uint64 recordGraphIdentity = 0;
         uint64 recordGraphGeneration = 0;
         uint64 recordEpoch = 0;
+        uint64 translucencyPlanIdentity = 0;
+        uint64 translucencyParticleSourceIdentity = 0;
+        uint32 preparationCount = 0;
+        uint32 uploadPublicationCount = 0;
+        bool weightedGraphPassScheduled = false;
+        bool directGraphPassScheduled = false;
+        uint32 weightedBatchCount = 0;
+        uint32 weightedItemCount = 0;
+        uint32 weightedDrawCallCount = 0;
+        uint32 directBatchCount = 0;
+        uint32 directItemCount = 0;
+        uint32 directDrawCallCount = 0;
+        uint32 optionalSortedFallbackBatchCount = 0;
+        uint32 optionalSortedFallbackItemCount = 0;
         std::vector<ParticleFeatureBatchReceipt> batchReceipts;
         bool batchReceiptsOverflow = false;
         std::string unsupportedReason;
@@ -93,6 +184,7 @@ namespace RVX
     class IShaderProgramProvider;
     class ParticleBillboardRenderer;
     class RenderResourceRegistry;
+    struct ParticleBillboardDrawPlan;
 
     /**
      * @brief Render-owned entry point for particle snapshots.
@@ -143,6 +235,47 @@ namespace RVX
                                            uint32 dropped) noexcept;
         /** @brief Publish the completed graph record's immutable diagnostic receipt. */
         void PublishExecutionStats(const ParticleFeaturePassStats& stats);
+
+        /**
+         * @brief Materialize and validate the cooked particle WBOIT pipeline
+         * before a translucency frame plan commits to the weighted route.
+         *
+         * This is deliberately a non-graph operation. It uses the same
+         * persistent renderer cache as normal particle preparation, so a
+         * succeeding preflight neither records graph work nor creates the
+         * shader or pipeline again when the later draw submission is prepared.
+         */
+        [[nodiscard]] bool PreflightWeightedBlendedPipeline(
+            std::string& outDiagnostic);
+
+        /**
+         * Validate, resolve and upload the particle submission exactly once for
+         * an immutable translucency plan and graph recording.
+         *
+         * The returned object is intentionally opaque. It binds the plan,
+         * frame/view identities, graph identity/generation and all resolved
+         * resource generations needed by both recording stages.
+         */
+        [[nodiscard]] ParticleFeaturePreparedRecordingResult
+        PrepareTranslucencyRecording(
+            const TranslucencyFramePlan& plan,
+            std::shared_ptr<const ParticleBillboardDrawPlan> drawPlan,
+            const RenderPassRecordContext& context);
+
+        /** Record only Particle + WeightedBlended entries into shared OIT MRTs. */
+        [[nodiscard]] ParticleFeatureStageRecordResult RecordWeightedBlended(
+            RenderGraph& graph,
+            const ParticleFeaturePreparedRecordingRef& prepared,
+            const ParticleWeightedBlendedRecordTargets& targets);
+
+        /**
+         * Record direct additive and declared optional sorted fallback after
+         * the feature-level OIT composite. The method never composites OIT.
+         */
+        [[nodiscard]] ParticleFeatureStageRecordResult RecordDirect(
+            RenderGraph& graph,
+            const ParticleFeaturePreparedRecordingRef& prepared,
+            const ParticleDirectRecordTargets& targets);
 
         bool IsRequestedEnabled() const override { return m_stats.requested; }
         bool IsSupported() const override { return !m_stats.requested || m_stats.supported; }

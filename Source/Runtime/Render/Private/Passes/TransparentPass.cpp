@@ -13,6 +13,7 @@
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightingFramePlan.h"
 #include "Render/Lighting/LightManager.h"
+#include "Render/Lighting/LocalShadowAtlas.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/PipelineCache.h"
 #include "Render/Renderer/RenderScene.h"
@@ -26,6 +27,7 @@
 #include <atomic>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 namespace RVX
@@ -119,9 +121,14 @@ namespace RVX
             std::array<uint32, 1> objectDynamicOffsets{0};
             MaterialBindingSnapshot material{};
             RHIPipelineRef pipeline;
+            RenderResourceHandle materialHandle{};
             MaterialBlendMode blendMode = MaterialBlendMode::Opaque;
             MaterialShadingModel shadingModel =
                 MaterialShadingModel::StandardLit;
+            MaterialCullMode cullMode = MaterialCullMode::Back;
+            TranslucencyRoute translucencyRoute =
+                TranslucencyRoute::Unsupported;
+            uint32 sourceOrdinal = RVX_INVALID_INDEX;
             bool skinned = false;
             bool requiresUV1 = false;
         };
@@ -143,6 +150,7 @@ namespace RVX
             RGTextureHandle reactiveMaskHandle{};
             RGTextureHandle directionalShadowReadHandle{};
             RGTextureHandle rayTracedShadowMaskReadHandle{};
+            RGTextureHandle localShadowAtlasReadHandle{};
             RGBufferHandle lightConstantsReadHandle{};
             RGBufferHandle pointLightsReadHandle{};
             RGBufferHandle spotLightsReadHandle{};
@@ -158,6 +166,7 @@ namespace RVX
             RGTextureViewHandle reactiveMaskViewHandle{};
             RGTextureViewHandle directionalShadowViewHandle{};
             RGTextureViewHandle rayTracedShadowMaskViewHandle{};
+            RGTextureViewHandle localShadowAtlasViewHandle{};
             RGTextureViewHandle environmentIBLIrradianceViewHandle{};
             RGTextureViewHandle environmentIBLPrefilteredViewHandle{};
             RGTextureViewHandle environmentIBLBRDFLUTViewHandle{};
@@ -166,6 +175,14 @@ namespace RVX
             bool requestedEnabled = false;
             bool contextValid = false;
             bool recordingPrepared = false;
+            bool weightedBlendedStage = false;
+            bool stagedRecording = false;
+            bool publishLightingEvidence = true;
+            uint64 translucencyPlanIdentityHash = 0;
+            // The staged state owns this prepared payload. Keep the reverse
+            // execution lookup non-owning so the prepared recording cannot
+            // form a self-cycle that retains per-frame material descriptors.
+            std::weak_ptr<TransparentStagedRecordingState> stagedState;
         };
 
         enum class DrawPreparationResult : uint8
@@ -302,6 +319,8 @@ namespace RVX
                 context.RetainSubmissionResource(
                     Ref<RefCounted>(bindings.rayTracedShadowMaskView.Get())) &&
                 context.RetainSubmissionResource(
+                    Ref<RefCounted>(bindings.localShadowAtlasView.Get())) &&
+                context.RetainSubmissionResource(
                     Ref<RefCounted>(bindings.clusterConstantsBuffer.Get())) &&
                 context.RetainSubmissionResource(
                     Ref<RefCounted>(bindings.clusterBuffer.Get())) &&
@@ -324,6 +343,14 @@ namespace RVX
                 context.RetainSubmissionResource(
                     Ref<RefCounted>(bindings.frameDescriptorSet.Get()));
         }
+
+        [[nodiscard]] bool ResolveStagedLightingBindings(
+            const GraphPassData& data,
+            RenderGraphPassContext& context,
+            const ViewData& view,
+            const LightingBindingSnapshotRequest& request,
+            uint64 lightingPlanIdentity,
+            LightingBindingSnapshot& outBindings);
 
         [[nodiscard]] RGTextureViewHandle DeclareExactIBLRead(
             RenderGraphBuilder& builder,
@@ -409,7 +436,10 @@ namespace RVX
 
         [[nodiscard]] DrawPreparationResult PrepareDrawRecord(
             GraphPassData& data,
-            const RenderDrawItem& item)
+            const RenderDrawItem& item,
+            TranslucencyRoute translucencyRoute =
+                TranslucencyRoute::Unsupported,
+            uint32 sourceOrdinal = RVX_INVALID_INDEX)
         {
             const RenderScene& scene = data.frameSnapshot->scene;
             if (item.objectIndex >= scene.GetObjectCount())
@@ -442,14 +472,30 @@ namespace RVX
             record.requiresUV1 = item.packet.pipelineKey.requiresUV1;
             record.blendMode = item.packet.pipelineKey.blendMode;
             record.shadingModel = item.packet.pipelineKey.shadingModel;
-            record.pipeline = RHIPipelineRef(
-                data.pipelineCache->GetTransparentMrtPipeline(
-                    data.colorFormat,
-                    skinned ? DefaultLitDirectVertexInputMode::Skinned
-                            : DefaultLitDirectVertexInputMode::Rigid,
-                    item.packet.pipelineKey.cullMode,
-                    item.packet.pipelineKey.reverseWinding,
-                    item.packet.pipelineKey.blendMode));
+            record.cullMode = item.packet.pipelineKey.cullMode;
+            record.translucencyRoute = translucencyRoute;
+            record.sourceOrdinal = sourceOrdinal;
+            record.materialHandle = item.material;
+            if (translucencyRoute == TranslucencyRoute::WeightedBlended)
+            {
+                record.pipeline = RHIPipelineRef(
+                    data.pipelineCache->GetWeightedBlendedOITAccumulationPipeline(
+                        skinned ? DefaultLitDirectVertexInputMode::Skinned
+                                : DefaultLitDirectVertexInputMode::Rigid,
+                        item.packet.pipelineKey.cullMode,
+                        item.packet.pipelineKey.reverseWinding));
+            }
+            else
+            {
+                record.pipeline = RHIPipelineRef(
+                    data.pipelineCache->GetTransparentMrtPipeline(
+                        data.colorFormat,
+                        skinned ? DefaultLitDirectVertexInputMode::Skinned
+                                : DefaultLitDirectVertexInputMode::Rigid,
+                        item.packet.pipelineKey.cullMode,
+                        item.packet.pipelineKey.reverseWinding,
+                        item.packet.pipelineKey.blendMode));
+            }
             if (!record.pipeline)
             {
                 return DrawPreparationResult::SkippedResource;
@@ -508,7 +554,7 @@ namespace RVX
         [[nodiscard]] bool PrepareRecording(GraphPassData& data,
                                             RenderGraphBuilder& builder)
         {
-            if (data.results != nullptr)
+            if (!data.stagedRecording && data.results != nullptr)
             {
                 data.results->transparentStats = {};
                 data.results->transparentStats.requested = data.requestedEnabled;
@@ -550,7 +596,8 @@ namespace RVX
             const ViewData& view = data.execution.view;
             const OpaqueSceneSnapshotRecordInput& opaqueSnapshot =
                 data.execution.opaqueSceneSnapshot;
-            if (data.frameSnapshot->transparentDrawItems.empty())
+            if (!data.stagedRecording &&
+                data.frameSnapshot->transparentDrawItems.empty())
             {
                 TransparentPassDrawStats& stats = data.results->transparentStats;
                 stats.noWork = true;
@@ -562,6 +609,7 @@ namespace RVX
                     GetTransparentSuccessReason(data.execution));
                 return false;
             }
+            const bool directStage = !data.weightedBlendedStage;
             if (!IsTransparentDrawListStrictlyOrdered(
                     data.frameSnapshot->transparentDrawItems) ||
                 !view.colorTarget.IsValid() ||
@@ -599,24 +647,49 @@ namespace RVX
                 builder.GetTextureDesc(opaqueSnapshot.texture);
             const RHITextureDesc* const reactiveMaskDesc =
                 builder.GetTextureDesc(view.reactiveMaskTarget);
-            if (data.colorFormat != RHIFormat::RGBA16_FLOAT ||
-                !HasFlag(colorDesc->usage, RHITextureUsage::CopySrc) ||
-                opaqueSnapshot.texture.index == view.colorTarget.index ||
-                opaqueSnapshotDesc == nullptr ||
-                opaqueSnapshotDesc->format != RHIFormat::RGBA16_FLOAT ||
-                opaqueSnapshotDesc->width != colorDesc->width ||
-                opaqueSnapshotDesc->height != colorDesc->height ||
-                opaqueSnapshotDesc->sampleCount != colorDesc->sampleCount ||
-                !HasFlag(opaqueSnapshotDesc->usage,
-                         RHITextureUsage::ShaderResource) ||
-                !HasFlag(opaqueSnapshotDesc->usage, RHITextureUsage::CopyDst) ||
-                reactiveMaskDesc == nullptr ||
-                reactiveMaskDesc->format != RHIFormat::R8_UNORM ||
-                reactiveMaskDesc->width != colorDesc->width ||
-                reactiveMaskDesc->height != colorDesc->height ||
-                reactiveMaskDesc->sampleCount != colorDesc->sampleCount ||
-                !HasFlag(reactiveMaskDesc->usage,
-                         RHITextureUsage::RenderTarget))
+            const bool directTargetsValid = directStage &&
+                data.colorFormat == RHIFormat::RGBA16_FLOAT &&
+                HasFlag(colorDesc->usage, RHITextureUsage::CopySrc) &&
+                opaqueSnapshot.texture.index != view.colorTarget.index &&
+                opaqueSnapshotDesc != nullptr &&
+                opaqueSnapshotDesc->format == RHIFormat::RGBA16_FLOAT &&
+                opaqueSnapshotDesc->width == colorDesc->width &&
+                opaqueSnapshotDesc->height == colorDesc->height &&
+                opaqueSnapshotDesc->sampleCount == colorDesc->sampleCount &&
+                HasFlag(opaqueSnapshotDesc->usage,
+                        RHITextureUsage::ShaderResource) &&
+                HasFlag(opaqueSnapshotDesc->usage, RHITextureUsage::CopyDst) &&
+                reactiveMaskDesc != nullptr &&
+                reactiveMaskDesc->format == RHIFormat::R8_UNORM &&
+                reactiveMaskDesc->width == colorDesc->width &&
+                reactiveMaskDesc->height == colorDesc->height &&
+                reactiveMaskDesc->sampleCount == colorDesc->sampleCount &&
+                HasFlag(reactiveMaskDesc->usage,
+                        RHITextureUsage::RenderTarget);
+            const bool weightedTargetsValid = !directStage &&
+                data.colorFormat ==
+                    PipelineCache::GetWeightedBlendedOITAccumulationFormat() &&
+                reactiveMaskDesc != nullptr &&
+                reactiveMaskDesc->format ==
+                    PipelineCache::GetWeightedBlendedOITRevealageFormat() &&
+                reactiveMaskDesc->width == colorDesc->width &&
+                reactiveMaskDesc->height == colorDesc->height &&
+                reactiveMaskDesc->sampleCount == colorDesc->sampleCount &&
+                HasFlag(colorDesc->usage, RHITextureUsage::RenderTarget) &&
+                HasFlag(reactiveMaskDesc->usage,
+                        RHITextureUsage::RenderTarget);
+            const bool opaqueInputsValid = opaqueSnapshot.texture.index !=
+                    view.colorTarget.index &&
+                opaqueSnapshotDesc != nullptr &&
+                opaqueSnapshotDesc->format == RHIFormat::RGBA16_FLOAT &&
+                opaqueSnapshotDesc->width == colorDesc->width &&
+                opaqueSnapshotDesc->height == colorDesc->height &&
+                opaqueSnapshotDesc->sampleCount == colorDesc->sampleCount &&
+                HasFlag(opaqueSnapshotDesc->usage,
+                        RHITextureUsage::ShaderResource) &&
+                HasFlag(opaqueSnapshotDesc->usage, RHITextureUsage::CopyDst);
+            if ((!directTargetsValid && !weightedTargetsValid) ||
+                !opaqueInputsValid)
             {
                 MarkTransparentPreflightFailure(
                     data, RenderPolicyReason::ResourcesUnavailable);
@@ -696,6 +769,116 @@ namespace RVX
                     data, RenderPolicyReason::ResourcesUnavailable);
                 return false;
             }
+
+            const LocalShadowRecordOutput& localShadow =
+                data.execution.localShadowOutput;
+            if (!localShadow.IsCompatibleWith(
+                    data.identity,
+                    data.execution.lightingPlan->GetFrameIdentity(),
+                    data.execution.lightingPlan->GetViewIdentity(),
+                    lightingPlanIdentity))
+            {
+                MarkTransparentPreflightFailure(
+                    data, RenderPolicyReason::InconsistentFacts);
+                return false;
+            }
+            if (data.execution.localShadowAtlasPlan != nullptr &&
+                localShadow.enabled !=
+                    !data.execution.localShadowAtlasPlan->GetPages().empty())
+            {
+                MarkTransparentPreflightFailure(
+                    data, RenderPolicyReason::InconsistentFacts);
+                return false;
+            }
+            if (localShadow.enabled)
+            {
+                const std::shared_ptr<const LocalShadowAtlasPlan>& atlasPlan =
+                    data.execution.localShadowAtlasPlan;
+                if (atlasPlan == nullptr || !atlasPlan->IsValid() ||
+                    localShadow.localShadowPlanIdentity !=
+                        atlasPlan->GetLocalShadowPlanIdentity() ||
+                    localShadow.atlasPlanIdentity != atlasPlan->GetIdentityHash() ||
+                    localShadow.atlasGeneration != atlasPlan->GetAtlasGeneration() ||
+                    localShadow.pageCount != atlasPlan->GetPages().size() ||
+                    localShadow.pageResolution !=
+                        atlasPlan->GetTextureContract().pageResolution)
+                {
+                    MarkTransparentPreflightFailure(
+                        data, RenderPolicyReason::InconsistentFacts);
+                    return false;
+                }
+
+                RGTextureHandle depthAtlas = localShadow.depthAtlas;
+                depthAtlas.hasSubresourceRange = true;
+                depthAtlas.subresourceRange = RHISubresourceRange{
+                    0, RVX_ALL_MIPS, 0, RVX_ALL_LAYERS,
+                    RHITextureAspect::Depth};
+                const RHITextureDesc* const atlasDesc =
+                    builder.GetTextureDesc(depthAtlas);
+                const LocalShadowAtlasTextureContract& atlasContract =
+                    atlasPlan->GetTextureContract();
+                const std::vector<LocalShadowAtlasPage>& pages =
+                    atlasPlan->GetPages();
+                const bool pageRangesMatch =
+                    localShadow.pageDepthLayers.size() == pages.size() &&
+                    std::equal(
+                        localShadow.pageDepthLayers.begin(),
+                        localShadow.pageDepthLayers.end(),
+                        pages.begin(),
+                        [](const RGTextureHandle& layer,
+                           const LocalShadowAtlasPage& page)
+                        {
+                            return layer.IsValid() && layer.hasSubresourceRange &&
+                                layer.subresourceRange.baseMipLevel == 0 &&
+                                layer.subresourceRange.mipLevelCount == 1 &&
+                                layer.subresourceRange.baseArrayLayer ==
+                                    page.pageIndex &&
+                                layer.subresourceRange.arrayLayerCount == 1 &&
+                                layer.subresourceRange.aspect ==
+                                    RHITextureAspect::Depth;
+                        });
+                if (atlasDesc == nullptr ||
+                    atlasDesc->format != RHIFormat::D32_FLOAT ||
+                    atlasDesc->dimension != RHITextureDimension::Texture2D ||
+                    atlasDesc->width != localShadow.pageResolution ||
+                    atlasDesc->height != localShadow.pageResolution ||
+                    atlasDesc->arraySize != atlasContract.pageCapacity ||
+                    !HasFlag(atlasDesc->usage, RHITextureUsage::DepthStencil) ||
+                    !HasFlag(atlasDesc->usage, RHITextureUsage::ShaderResource) ||
+                    !pageRangesMatch)
+                {
+                    MarkTransparentPreflightFailure(
+                        data, RenderPolicyReason::ResourcesUnavailable);
+                    return false;
+                }
+
+                data.localShadowAtlasReadHandle = builder.Read(
+                    depthAtlas,
+                    MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                                     RHIShaderStage::Pixel));
+                RHITextureViewDesc localShadowViewDesc;
+                localShadowViewDesc.format = RHIFormat::D32_FLOAT;
+                localShadowViewDesc.dimension = RHITextureDimension::Texture2D;
+                localShadowViewDesc.subresourceRange =
+                    depthAtlas.subresourceRange;
+                localShadowViewDesc.type = RHITextureViewType::ShaderResource;
+                localShadowViewDesc.debugName =
+                    "TransparentLocalShadowAtlasSRV";
+                data.localShadowAtlasViewHandle = builder.CreateTextureView(
+                    data.localShadowAtlasReadHandle, localShadowViewDesc);
+                data.localShadowAtlasViewHandle = builder.Read(
+                    data.localShadowAtlasViewHandle,
+                    MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                                     RHIShaderStage::Pixel));
+                if (!data.localShadowAtlasReadHandle.IsValid() ||
+                    !data.localShadowAtlasViewHandle.IsValid())
+                {
+                    MarkTransparentPreflightFailure(
+                        data, RenderPolicyReason::ResourcesUnavailable);
+                    return false;
+                }
+            }
+
             const DirectionalShadowRecordOutput& directionalShadow =
                 data.execution.directionalShadow;
             if (!directionalShadow.IsCompatibleWith(
@@ -819,46 +1002,66 @@ namespace RVX
                 skinningPalettes.previousPaletteBuffer =
                     deformationResources->GetPreviousPaletteBuffer();
             }
-            if (!data.pipelineCache->CreateRasterObjectBindingSnapshot(
-                    candidateCount, skinningPalettes, data.bindings))
+            if (!data.stagedRecording)
             {
-                MarkTransparentPreflightFailure(
-                    data, RenderPolicyReason::ResourcesUnavailable);
-                return false;
-            }
-            for (const RenderDrawItem& item :
-                 data.frameSnapshot->transparentDrawItems)
-            {
-                if (!DeclareMaterialTextureGraphReads(
-                        builder,
-                        data.resourceRegistry,
-                        item.material,
-                        *data.results))
+                if (!data.pipelineCache->CreateRasterObjectBindingSnapshot(
+                        candidateCount, skinningPalettes, data.bindings))
                 {
                     MarkTransparentPreflightFailure(
                         data, RenderPolicyReason::ResourcesUnavailable);
                     return false;
                 }
-            }
+                for (const RenderDrawItem& item :
+                     data.frameSnapshot->transparentDrawItems)
+                {
+                    if (!DeclareMaterialTextureGraphReads(
+                            builder,
+                            data.resourceRegistry,
+                            item.material,
+                            *data.results))
+                    {
+                        MarkTransparentPreflightFailure(
+                            data, RenderPolicyReason::ResourcesUnavailable);
+                        return false;
+                    }
+                }
 
-            data.draws.reserve(candidateCount);
-            // The frame snapshot is already sorted back-to-front by scene
-            // extraction. Do not regroup or sort here: valid entries retain
-            // their relative blend order while invalid entries are skipped.
-            for (const RenderDrawItem& item : data.frameSnapshot->transparentDrawItems)
-            {
-                const DrawPreparationResult result = PrepareDrawRecord(data, item);
-                if (result == DrawPreparationResult::SkippedMaterial)
+                data.draws.reserve(candidateCount);
+                // The frame snapshot is already sorted back-to-front by scene
+                // extraction. Do not regroup or sort here: valid entries retain
+                // their relative blend order while invalid entries are skipped.
+                for (const RenderDrawItem& item :
+                     data.frameSnapshot->transparentDrawItems)
                 {
-                    ++data.results->transparentStats.skippedMaterialBindingCount;
+                    const DrawPreparationResult result = PrepareDrawRecord(data, item);
+                    if (result == DrawPreparationResult::SkippedMaterial)
+                    {
+                        ++data.results->transparentStats.skippedMaterialBindingCount;
+                    }
+                    else if (result == DrawPreparationResult::SkippedResource)
+                    {
+                        ++data.results->transparentStats.skippedResourceCount;
+                    }
                 }
-                else if (result == DrawPreparationResult::SkippedResource)
+                data.results->transparentStats.preparedDrawItemCount =
+                    static_cast<uint32>(data.draws.size());
+            }
+            else
+            {
+                for (const DrawRecord& draw : data.draws)
                 {
-                    ++data.results->transparentStats.skippedResourceCount;
+                    if (!DeclareMaterialTextureGraphReads(
+                            builder,
+                            data.resourceRegistry,
+                            draw.materialHandle,
+                            *data.results))
+                    {
+                        MarkTransparentPreflightFailure(
+                            data, RenderPolicyReason::ResourcesUnavailable);
+                        return false;
+                    }
                 }
             }
-            data.results->transparentStats.preparedDrawItemCount =
-                static_cast<uint32>(data.draws.size());
             if (data.draws.empty())
             {
                 MarkTransparentPreflightFailure(
@@ -878,22 +1081,22 @@ namespace RVX
 
             if (view.textureIBLEnabled != 0)
             {
-                const RenderLightingFrameResourceSnapshot& lightingResources =
+                const RenderLightingFrameResourceSnapshot& iblLightingResources =
                     *data.execution.lightingResources;
                 data.environmentIBLIrradianceViewHandle = DeclareExactIBLRead(
                     builder,
-                    lightingResources.environmentIBLIrradiance,
-                    lightingResources.environmentIBLIrradianceView,
+                    iblLightingResources.environmentIBLIrradiance,
+                    iblLightingResources.environmentIBLIrradianceView,
                     "TransparentEnvironmentIrradianceSRV");
                 data.environmentIBLPrefilteredViewHandle = DeclareExactIBLRead(
                     builder,
-                    lightingResources.environmentIBLPrefiltered,
-                    lightingResources.environmentIBLPrefilteredView,
+                    iblLightingResources.environmentIBLPrefiltered,
+                    iblLightingResources.environmentIBLPrefilteredView,
                     "TransparentEnvironmentPrefilteredSRV");
                 data.environmentIBLBRDFLUTViewHandle = DeclareExactIBLRead(
                     builder,
-                    lightingResources.environmentIBLBRDFLUT,
-                    lightingResources.environmentIBLBRDFLUTView,
+                    iblLightingResources.environmentIBLBRDFLUT,
+                    iblLightingResources.environmentIBLBRDFLUTView,
                     "TransparentEnvironmentBRDFLUTSRV");
                 const bool iblReadsDeclared =
                     data.environmentIBLIrradianceViewHandle.IsValid() &&
@@ -963,6 +1166,22 @@ namespace RVX
                     return false;
                 }
             }
+            data.reactiveMaskHandle = view.reactiveMaskTarget;
+            RHITextureViewDesc reactiveViewDesc;
+            reactiveViewDesc.format = data.weightedBlendedStage
+                ? PipelineCache::GetWeightedBlendedOITRevealageFormat()
+                : RHIFormat::R8_UNORM;
+            reactiveViewDesc.dimension = colorDesc->dimension;
+            reactiveViewDesc.type = RHITextureViewType::RenderTarget;
+            reactiveViewDesc.debugName = data.weightedBlendedStage
+                ? "WeightedBlendedOITRevealageRTV"
+                : "TransparentReactiveMaskRTV";
+            data.reactiveMaskViewHandle = builder.CreateTextureView(
+                data.reactiveMaskHandle, reactiveViewDesc);
+            data.reactiveMaskViewHandle = builder.ReadWrite(
+                data.reactiveMaskViewHandle,
+                MakeRGAccessDesc(RHIResourceState::RenderTarget,
+                                 RHIShaderStage::Pixel));
             data.opaqueSceneSnapshotReadHandle = builder.Read(
                 opaqueSnapshot.texture,
                 RHIResourceState::ShaderResource,
@@ -978,18 +1197,6 @@ namespace RVX
                 data.opaqueSceneSnapshotViewHandle,
                 MakeRGAccessDesc(RHIResourceState::ShaderResource,
                                  RHIShaderStage::Pixel));
-            data.reactiveMaskHandle = view.reactiveMaskTarget;
-            RHITextureViewDesc reactiveViewDesc;
-            reactiveViewDesc.format = RHIFormat::R8_UNORM;
-            reactiveViewDesc.dimension = RHITextureDimension::Texture2D;
-            reactiveViewDesc.type = RHITextureViewType::RenderTarget;
-            reactiveViewDesc.debugName = "TransparentReactiveMaskRTV";
-            data.reactiveMaskViewHandle = builder.CreateTextureView(
-                data.reactiveMaskHandle, reactiveViewDesc);
-            data.reactiveMaskViewHandle = builder.ReadWrite(
-                data.reactiveMaskViewHandle,
-                MakeRGAccessDesc(RHIResourceState::RenderTarget,
-                                 RHIShaderStage::Pixel));
             if (!data.opaqueSceneSnapshotReadHandle.IsValid() ||
                 !data.opaqueSceneSnapshotViewHandle.IsValid() ||
                 !data.reactiveMaskViewHandle.IsValid())
@@ -998,7 +1205,10 @@ namespace RVX
                     data, RenderPolicyReason::ResourcesUnavailable);
                 return false;
             }
-            data.results->transparentStats.reactiveMaskAttachmentBound = true;
+            if (directStage)
+            {
+                data.results->transparentStats.reactiveMaskAttachmentBound = true;
+            }
             data.recordingPrepared = true;
             return true;
         }
@@ -1031,23 +1241,29 @@ namespace RVX
                     data.identity,
                     data.execution.lightingPlan->GetIdentityHash()) ||
                 !data.execution.rayTracedShadow.IsCompatibleWith(data.identity) ||
+                !data.execution.localShadowOutput.IsCompatibleWith(
+                    data.identity,
+                    data.execution.lightingPlan->GetFrameIdentity(),
+                    data.execution.lightingPlan->GetViewIdentity(),
+                    data.execution.lightingPlan->GetIdentityHash()) ||
                 !data.identity.IsValid() || data.identity.graph == nullptr ||
                 !data.identity.Matches(*data.identity.graph) ||
                 !data.colorHandle.IsValid() ||
                 data.colorHandle.graphIdentity != data.identity.graphIdentity ||
                 data.colorHandle.recordingGeneration !=
                     data.identity.graphRecordingGeneration ||
-                !data.opaqueSceneSnapshotReadHandle.IsValid() ||
-                !data.opaqueSceneSnapshotViewHandle.IsValid() ||
                 !data.reactiveMaskHandle.IsValid() ||
                 !data.reactiveMaskViewHandle.IsValid() ||
-                data.opaqueSceneSnapshotReadHandle.graphIdentity !=
-                    data.identity.graphIdentity ||
-                data.opaqueSceneSnapshotReadHandle.recordingGeneration !=
-                    data.identity.graphRecordingGeneration ||
                 data.reactiveMaskHandle.graphIdentity != data.identity.graphIdentity ||
                 data.reactiveMaskHandle.recordingGeneration !=
                     data.identity.graphRecordingGeneration ||
+                (!data.weightedBlendedStage &&
+                 (!data.opaqueSceneSnapshotReadHandle.IsValid() ||
+                  !data.opaqueSceneSnapshotViewHandle.IsValid() ||
+                  data.opaqueSceneSnapshotReadHandle.graphIdentity !=
+                      data.identity.graphIdentity ||
+                  data.opaqueSceneSnapshotReadHandle.recordingGeneration !=
+                      data.identity.graphRecordingGeneration)) ||
                 (data.depthAvailable &&
                  (!data.depthHandle.IsValid() ||
                   data.depthHandle.graphIdentity != data.identity.graphIdentity ||
@@ -1116,6 +1332,62 @@ namespace RVX
                     return false;
                 }
                 directionalShadowResources.enabled = true;
+            }
+
+            LocalShadowFrameResources localShadowResources;
+            const LocalShadowRecordOutput& localShadow =
+                data.execution.localShadowOutput;
+            if (localShadow.enabled)
+            {
+                const std::shared_ptr<const LocalShadowAtlasPlan>& atlasPlan =
+                    data.execution.localShadowAtlasPlan;
+                if (atlasPlan == nullptr || !atlasPlan->IsValid() ||
+                    localShadow.localShadowPlanIdentity !=
+                        atlasPlan->GetLocalShadowPlanIdentity() ||
+                    localShadow.atlasPlanIdentity != atlasPlan->GetIdentityHash() ||
+                    localShadow.atlasGeneration != atlasPlan->GetAtlasGeneration() ||
+                    !data.localShadowAtlasReadHandle.IsValid() ||
+                    !data.localShadowAtlasViewHandle.IsValid())
+                {
+                    RVX_CORE_WARN(
+                        "TransparentPass: local-shadow output has no exact graph atlas read");
+                    return false;
+                }
+
+                RHITexture* const atlasTexture =
+                    context.GetTexture(data.localShadowAtlasReadHandle);
+                RHITextureView* const atlasView =
+                    context.GetTextureView(data.localShadowAtlasViewHandle);
+                const LocalShadowAtlasTextureContract& atlasContract =
+                    atlasPlan->GetTextureContract();
+                if (atlasTexture == nullptr || atlasView == nullptr ||
+                    atlasView->GetTexture() != atlasTexture ||
+                    atlasView->GetFormat() != RHIFormat::D32_FLOAT ||
+                    atlasTexture->GetFormat() != RHIFormat::D32_FLOAT ||
+                    atlasTexture->GetWidth() != localShadow.pageResolution ||
+                    atlasTexture->GetHeight() != localShadow.pageResolution ||
+                    atlasTexture->GetArraySize() != atlasContract.pageCapacity ||
+                    atlasView->GetSubresourceRange().arrayLayerCount !=
+                        RVX_ALL_LAYERS ||
+                    atlasView->GetSubresourceRange().aspect !=
+                        RHITextureAspect::Depth)
+                {
+                    RVX_CORE_WARN(
+                        "TransparentPass: local-shadow atlas does not match its sealed D32 array contract");
+                    return false;
+                }
+                localShadowResources.depthAtlasView = atlasView;
+                localShadowResources.enabled = true;
+                localShadowResources.localShadowPlanIdentity =
+                    localShadow.localShadowPlanIdentity;
+                localShadowResources.atlasPlanIdentity =
+                    localShadow.atlasPlanIdentity;
+                localShadowResources.atlasGeneration =
+                    localShadow.atlasGeneration;
+                localShadowResources.pageCount = localShadow.pageCount;
+                localShadowResources.pageResolution =
+                    localShadow.pageResolution;
+                localShadowResources.pageCapacity = atlasContract.pageCapacity;
             }
 
             RayTracedShadowFrameResources rayTracedShadowResources;
@@ -1207,6 +1479,7 @@ namespace RVX
                 data.execution.lightingResources->frozenLightResources;
             lightingRequest.directionalShadow = directionalShadowResources;
             lightingRequest.rayTracedShadow = rayTracedShadowResources;
+            lightingRequest.localShadow = localShadowResources;
             EnvironmentIBLFrameResources environmentIBLResources;
             const bool exactIBLViews =
                 data.execution.lightingResources->ResolveEnvironmentResources(
@@ -1256,20 +1529,42 @@ namespace RVX
             lightingRequest.opaqueSceneSnapshotSampler =
                 data.pipelineCache->GetEnvironmentIBLSamplerRef();
             LightingBindingSnapshot lightingBindings;
-            if (!data.pipelineCache->CreateLightingBindingSnapshot(
-                    drawView, lightingRequest, lightingBindings) ||
-                !lightingBindings.MatchesLightingPlan(lightingPlanIdentity) ||
-                !RetainLightingBindingSnapshot(context, lightingBindings))
+            const bool lightingBindingsReady = data.stagedRecording
+                ? ResolveStagedLightingBindings(
+                      data,
+                      context,
+                      drawView,
+                      lightingRequest,
+                      lightingPlanIdentity,
+                      lightingBindings)
+                : (data.pipelineCache->CreateLightingBindingSnapshot(
+                       drawView, lightingRequest, lightingBindings) &&
+                   lightingBindings.MatchesLightingPlan(lightingPlanIdentity) &&
+                   RetainLightingBindingSnapshot(context, lightingBindings));
+            if (!lightingBindingsReady)
             {
                 RVX_CORE_WARN("TransparentPass: could not create record-owned lighting bindings");
                 return false;
             }
 
             RHIRenderPassDesc renderPassDesc;
-            renderPassDesc.AddColorAttachment(
-                colorView, RHILoadOp::Load, RHIStoreOp::Store);
-            renderPassDesc.AddColorAttachment(
-                reactiveMaskView, RHILoadOp::Load, RHIStoreOp::Store);
+            if (data.weightedBlendedStage)
+            {
+                // The composition owns the sole shared Accum/Reveal clear.
+                // Mesh and particle contributors both load these targets so
+                // either contributor may be absent without erasing the other.
+                renderPassDesc.AddColorAttachment(
+                    colorView, RHILoadOp::Load, RHIStoreOp::Store);
+                renderPassDesc.AddColorAttachment(
+                    reactiveMaskView, RHILoadOp::Load, RHIStoreOp::Store);
+            }
+            else
+            {
+                renderPassDesc.AddColorAttachment(
+                    colorView, RHILoadOp::Load, RHIStoreOp::Store);
+                renderPassDesc.AddColorAttachment(
+                    reactiveMaskView, RHILoadOp::Load, RHIStoreOp::Store);
+            }
             if (depthView)
             {
                 renderPassDesc.SetDepthStencil(
@@ -1294,6 +1589,7 @@ namespace RVX
             RHIPipeline* currentPipeline = nullptr;
             TransparentPassDrawStats& stats = data.results->transparentStats;
             bool executionFailed = false;
+            uint32 executedStageDrawCount = 0;
             for (const DrawRecord& draw : data.draws)
             {
                 if (!draw.buffers.IsValid() || !draw.buffers.positionBuffer ||
@@ -1347,7 +1643,11 @@ namespace RVX
                     draw.material.binding));
                 ++stats.executedPacketCount;
                 ++stats.executedDrawCount;
-                ++stats.reactiveMaskWriteDrawCount;
+                ++executedStageDrawCount;
+                if (!data.weightedBlendedStage)
+                {
+                    ++stats.reactiveMaskWriteDrawCount;
+                }
                 if (draw.shadingModel == MaterialShadingModel::ThinTransmission)
                 {
                     ++stats.thinTransmissionDrawCount;
@@ -1367,8 +1667,11 @@ namespace RVX
             }
             ctx.EndRenderPass();
             const bool succeeded = !executionFailed &&
-                stats.executedDrawCount == stats.preparedDrawItemCount;
-            if (succeeded && stats.executedDrawCount != 0)
+                (data.stagedRecording
+                     ? executedStageDrawCount == data.draws.size()
+                     : stats.executedDrawCount == stats.preparedDrawItemCount);
+            if (succeeded && executedStageDrawCount != 0 &&
+                data.publishLightingEvidence)
             {
                 RenderLightingSurfaceExecutionEvidence evidence;
                 evidence.lightingPlanIdentity = lightingPlanIdentity;
@@ -1376,16 +1679,520 @@ namespace RVX
                 evidence.frozenBufferMask = 0x3fu;
                 evidence.directionalShadowBound =
                     directionalShadowResources.enabled;
+                evidence.localShadowBound = localShadowResources.enabled;
+                if (localShadowResources.enabled)
+                {
+                    evidence.localShadowPlanIdentity =
+                        localShadow.localShadowPlanIdentity;
+                    evidence.localShadowAtlasPlanIdentity =
+                        localShadow.atlasPlanIdentity;
+                    evidence.localShadowAtlasGeneration =
+                        localShadow.atlasGeneration;
+                    evidence.localShadowPageCount = localShadow.pageCount;
+                }
                 evidence.textureIBLBound =
                     data.execution.lightingResources->textureIBLEnabled;
                 evidence.exactIBLViews = exactIBLViews;
-                evidence.workCount = stats.executedDrawCount;
+                evidence.workCount = executedStageDrawCount;
                 evidence.executed = true;
                 return data.results->RecordLightingSurfaceExecution(evidence);
             }
             return succeeded;
         }
     } // namespace
+
+    struct TransparentStagedRecordingState
+    {
+        mutable std::mutex mutex;
+        GraphPassData prepared{};
+        TransparentStagedRecordingStats stats{};
+        LightingBindingSnapshot lightingBindings{};
+        bool lightingBindingsPrepared = false;
+        bool weightedBlendedEnabled = false;
+        bool weightedBlendedRecorded = false;
+        bool directRecorded = false;
+    };
+
+    TransparentPass::PreparedTranslucencyRecording::
+        PreparedTranslucencyRecording(
+            std::shared_ptr<TransparentStagedRecordingState> state) noexcept
+        : m_state(std::move(state))
+    {
+    }
+
+    bool TransparentPass::PreparedTranslucencyRecording::IsPrepared() const noexcept
+    {
+        if (m_state == nullptr)
+        {
+            return false;
+        }
+        std::lock_guard lock(m_state->mutex);
+        return m_state->stats.prepared && !m_state->stats.preparationFailed;
+    }
+
+    uint64 TransparentPass::PreparedTranslucencyRecording::GetPlanIdentityHash() const noexcept
+    {
+        if (m_state == nullptr)
+        {
+            return 0;
+        }
+        std::lock_guard lock(m_state->mutex);
+        return m_state->stats.planIdentityHash;
+    }
+
+    TransparentStagedRecordingStats
+    TransparentPass::PreparedTranslucencyRecording::GetStats() const
+    {
+        if (m_state == nullptr)
+        {
+            return {};
+        }
+        std::lock_guard lock(m_state->mutex);
+        return m_state->stats;
+    }
+
+    namespace
+    {
+        bool ResolveStagedLightingBindings(
+            const GraphPassData& data,
+            RenderGraphPassContext& context,
+            const ViewData& view,
+            const LightingBindingSnapshotRequest& request,
+            uint64 lightingPlanIdentity,
+            LightingBindingSnapshot& outBindings)
+        {
+            const std::shared_ptr<TransparentStagedRecordingState> state =
+                data.stagedState.lock();
+            if (state == nullptr)
+            {
+                return false;
+            }
+
+            std::lock_guard lock(state->mutex);
+            if (!state->lightingBindingsPrepared)
+            {
+                if (!data.pipelineCache->CreateLightingBindingSnapshot(
+                        view,
+                        request,
+                        state->lightingBindings) ||
+                    !state->lightingBindings.MatchesLightingPlan(
+                        lightingPlanIdentity))
+                {
+                    return false;
+                }
+                state->lightingBindingsPrepared = true;
+            }
+            if (!state->lightingBindings.MatchesLightingPlan(
+                    lightingPlanIdentity) ||
+                !RetainLightingBindingSnapshot(context, state->lightingBindings))
+            {
+                return false;
+            }
+            outBindings = state->lightingBindings;
+            return true;
+        }
+
+        void FailStagedPreparation(
+            const std::shared_ptr<TransparentStagedRecordingState>& state) noexcept
+        {
+            if (state == nullptr)
+            {
+                return;
+            }
+            std::lock_guard lock(state->mutex);
+            state->stats.prepared = false;
+            state->stats.preparationFailed = true;
+        }
+
+        [[nodiscard]] bool HasExactStagedPlanInventory(
+            const TranslucencyFramePlan& plan,
+            const RenderPassRecordContext& context,
+            const std::vector<RenderDrawItem>& drawItems) noexcept
+        {
+            if (!plan.IsExecutable() || plan.HasRequiredCapabilityFailure() ||
+                plan.GetIdentityHash() == 0 ||
+                plan.GetFrameIdentity() != context.featureFrameIdentity ||
+                plan.GetViewIdentity() != context.featureViewIdentity ||
+                context.identity.frameSequence !=
+                    plan.GetFrameIdentity().frameSequence ||
+                !IsTransparentDrawListStrictlyOrdered(drawItems) ||
+                plan.GetMeshSourceIdentityHash() == 0 ||
+                plan.GetMeshSourceIdentityHash() !=
+                    BuildTransparentDrawSourceIdentityHash(drawItems) ||
+                plan.GetSummary().meshCandidateCount != drawItems.size())
+            {
+                return false;
+            }
+
+            for (uint32 sourceOrdinal = 0;
+                 sourceOrdinal < static_cast<uint32>(drawItems.size());
+                 ++sourceOrdinal)
+            {
+                const TranslucencyPlanEntry* const entry = plan.FindEntry(
+                    TranslucencySourceKind::Mesh, sourceOrdinal);
+                if (entry == nullptr || entry->sourceOrdinal != sourceOrdinal ||
+                    entry->sourceIdentityHash == 0 ||
+                    entry->sourceIdentityHash !=
+                        BuildTransparentDrawItemIdentityHash(
+                            drawItems[sourceOrdinal]) ||
+                    entry->firstItem != 0 || entry->itemCount != 1 ||
+                    entry->route == TranslucencyRoute::Unsupported ||
+                    (entry->route != TranslucencyRoute::WeightedBlended &&
+                     entry->route != TranslucencyRoute::SortedRefraction &&
+                     entry->route != TranslucencyRoute::DirectAdditive))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        [[nodiscard]] bool PrepareStagedSkinningPalettes(
+            const RenderPassExecutionData& execution,
+            SkinningPaletteBufferBinding& outPalettes) noexcept
+        {
+            outPalettes = {};
+            const std::shared_ptr<const RenderDeformationFrameResources>& resources =
+                execution.deformationResources;
+            if (resources == nullptr || resources->GetMatrixCount() == 0)
+            {
+                return true;
+            }
+            if (!resources->IsComplete() ||
+                !resources->MatchesIdentity(
+                    MakeRenderDeformationFrameIdentity(execution.identity)))
+            {
+                return false;
+            }
+            outPalettes.currentPaletteBuffer = resources->GetCurrentPaletteBuffer();
+            outPalettes.previousPaletteBuffer = resources->GetPreviousPaletteBuffer();
+            return outPalettes.HasPalettes();
+        }
+
+        void MarkStagedExecution(
+            const std::shared_ptr<TransparentStagedRecordingState>& state,
+            bool weightedBlended,
+            bool succeeded,
+            uint32 drawCount) noexcept
+        {
+            if (state == nullptr)
+            {
+                return;
+            }
+            std::lock_guard lock(state->mutex);
+            if (!succeeded)
+            {
+                state->stats.executionFailed = true;
+                return;
+            }
+            if (weightedBlended)
+            {
+                state->stats.weightedBlendedExecuted = true;
+                state->stats.weightedBlendedExecutedDrawCount = drawCount;
+            }
+            else
+            {
+                state->stats.directExecuted = true;
+                for (const DrawRecord& draw : state->prepared.draws)
+                {
+                    if (draw.translucencyRoute ==
+                        TranslucencyRoute::SortedRefraction)
+                    {
+                        ++state->stats.sortedRefractionExecutedDrawCount;
+                    }
+                    else if (draw.translucencyRoute ==
+                             TranslucencyRoute::DirectAdditive)
+                    {
+                        ++state->stats.directAdditiveExecutedDrawCount;
+                    }
+                }
+            }
+        }
+
+        [[nodiscard]] std::vector<DrawRecord> SelectStagedDraws(
+            const GraphPassData& prepared,
+            bool weightedBlended)
+        {
+            std::vector<DrawRecord> selected;
+            selected.reserve(prepared.draws.size());
+            for (const DrawRecord& draw : prepared.draws)
+            {
+                const bool select = weightedBlended
+                    ? draw.translucencyRoute ==
+                        TranslucencyRoute::WeightedBlended
+                    : (draw.translucencyRoute ==
+                           TranslucencyRoute::SortedRefraction ||
+                       draw.translucencyRoute ==
+                           TranslucencyRoute::DirectAdditive);
+                if (select)
+                {
+                    selected.push_back(draw);
+                }
+            }
+            return selected;
+        }
+    } // namespace
+
+    TransparentPass::PreparedTranslucencyRecording
+    TransparentPass::PrepareTranslucencyRecording(
+        const TranslucencyFramePlan& plan,
+        const RenderPassRecordContext& context)
+    {
+        auto state = std::make_shared<TransparentStagedRecordingState>();
+        state->stats.planIdentityHash = plan.GetIdentityHash();
+        state->stats.preparationCount = 1;
+
+        const bool sourceContextValid = !context.legacyAdapter &&
+            context.identity.IsValid() && context.identity.graph != nullptr &&
+            context.MatchesTargetGraph(*context.identity.graph) &&
+            context.IsFrameIdentityValid() && context.frameSnapshot != nullptr &&
+            context.results != nullptr;
+        const bool suppliedResultsCompatible = context.results == nullptr ||
+            context.results->identity == RenderPassRecordIdentity{} ||
+            context.results->identity == context.identity;
+        const bool suppliedSnapshotCompatible = context.frameSnapshot == nullptr ||
+            context.frameSnapshot->identity == context.identity;
+        if (!sourceContextValid || !suppliedResultsCompatible ||
+            !suppliedSnapshotCompatible || !m_enabled ||
+            m_pipelineCache == nullptr || m_materialSystem == nullptr ||
+            m_resourceRegistry == nullptr ||
+            !HasExactStagedPlanInventory(
+                plan, context, context.frameSnapshot->transparentDrawItems))
+        {
+            FailStagedPreparation(state);
+            return PreparedTranslucencyRecording(std::move(state));
+        }
+
+        RenderPassExecutionData execution = MakeRenderPassExecutionData(context);
+        if (!execution.MatchesTargetGraph(*context.identity.graph) ||
+            !execution.IsFrameIdentityValid() ||
+            execution.frameSnapshot == nullptr || execution.results == nullptr ||
+            execution.lightingPlan == nullptr ||
+            !execution.lightingPlan->IsValid() ||
+            execution.lightingResources == nullptr ||
+            !execution.lightingResources->IsComplete())
+        {
+            FailStagedPreparation(state);
+            return PreparedTranslucencyRecording(std::move(state));
+        }
+
+        GraphPassData& prepared = state->prepared;
+        prepared.execution = execution;
+        prepared.identity = execution.identity;
+        prepared.frameSnapshot = execution.frameSnapshot;
+        prepared.results = execution.results;
+        prepared.resourceRegistry = m_resourceRegistry;
+        prepared.pipelineCache = m_pipelineCache;
+        prepared.materialSystem = m_materialSystem;
+        prepared.colorFormat = RHIFormat::RGBA16_FLOAT;
+        prepared.requestedEnabled = true;
+        prepared.contextValid = true;
+        prepared.stagedRecording = true;
+        prepared.translucencyPlanIdentityHash = plan.GetIdentityHash();
+        prepared.stagedState = state;
+        state->weightedBlendedEnabled =
+            plan.GetWeightedBlendedResolution() ==
+            WeightedBlendedOITCapabilityResolution::Enabled;
+
+        if (context.frameSnapshot->transparentDrawItems.empty())
+        {
+            state->stats.noWork = true;
+            state->stats.prepared = true;
+            return PreparedTranslucencyRecording(std::move(state));
+        }
+
+        SkinningPaletteBufferBinding skinningPalettes;
+        if (!PrepareStagedSkinningPalettes(execution, skinningPalettes) ||
+            !m_pipelineCache->CreateRasterObjectBindingSnapshot(
+                static_cast<uint32>(
+                    context.frameSnapshot->transparentDrawItems.size()),
+                skinningPalettes,
+                prepared.bindings))
+        {
+            FailStagedPreparation(state);
+            return PreparedTranslucencyRecording(std::move(state));
+        }
+
+        prepared.draws.reserve(
+            context.frameSnapshot->transparentDrawItems.size());
+        for (uint32 sourceOrdinal = 0;
+             sourceOrdinal < static_cast<uint32>(
+                 context.frameSnapshot->transparentDrawItems.size());
+             ++sourceOrdinal)
+        {
+            const RenderDrawItem& item =
+                context.frameSnapshot->transparentDrawItems[sourceOrdinal];
+            const TranslucencyPlanEntry* const entry = plan.FindEntry(
+                TranslucencySourceKind::Mesh, sourceOrdinal);
+            if (entry == nullptr ||
+                PrepareDrawRecord(
+                    prepared, item, entry->route, sourceOrdinal) !=
+                    DrawPreparationResult::Prepared)
+            {
+                FailStagedPreparation(state);
+                return PreparedTranslucencyRecording(std::move(state));
+            }
+
+            ++state->stats.plannedMeshDrawCount;
+            switch (entry->route)
+            {
+                case TranslucencyRoute::WeightedBlended:
+                    ++state->stats.weightedBlendedDrawCount;
+                    break;
+                case TranslucencyRoute::SortedRefraction:
+                    ++state->stats.sortedRefractionDrawCount;
+                    break;
+                case TranslucencyRoute::DirectAdditive:
+                    ++state->stats.directAdditiveDrawCount;
+                    break;
+                default:
+                    FailStagedPreparation(state);
+                    return PreparedTranslucencyRecording(std::move(state));
+            }
+        }
+
+        state->stats.noWork = prepared.draws.empty();
+        state->stats.prepared = true;
+        return PreparedTranslucencyRecording(std::move(state));
+    }
+
+    bool TransparentPass::RecordWeightedBlended(
+        RenderGraph& graph,
+        PreparedTranslucencyRecording& prepared,
+        RGTextureHandle accumulation,
+        RGTextureHandle revealage)
+    {
+        const std::shared_ptr<TransparentStagedRecordingState>& state =
+            prepared.m_state;
+        if (state == nullptr || !accumulation.IsValid() || !revealage.IsValid() ||
+            accumulation.index == revealage.index)
+        {
+            return false;
+        }
+
+        GraphPassData passData;
+        uint32 drawCount = 0;
+        {
+            std::lock_guard lock(state->mutex);
+            if (!state->stats.prepared || state->stats.preparationFailed ||
+                state->weightedBlendedRecorded ||
+                !state->prepared.identity.Matches(graph))
+            {
+                return false;
+            }
+            state->weightedBlendedRecorded = true;
+            state->stats.weightedBlendedPassRecorded = true;
+            passData = state->prepared;
+            passData.draws = SelectStagedDraws(state->prepared, true);
+            passData.publishLightingEvidence =
+                state->stats.sortedRefractionDrawCount == 0 &&
+                state->stats.directAdditiveDrawCount == 0;
+            drawCount = static_cast<uint32>(passData.draws.size());
+        }
+        if (drawCount == 0)
+        {
+            return true;
+        }
+
+        graph.AddPass<GraphPassData>(
+            "TransparentWeightedBlendedOIT",
+            RenderGraphPassType::Graphics,
+            [passData, accumulation, revealage](RenderGraphBuilder& builder,
+                                                 GraphPassData& data) mutable
+            {
+                data = passData;
+                data.weightedBlendedStage = true;
+                data.execution.view.colorTarget = accumulation;
+                data.execution.view.reactiveMaskTarget = revealage;
+                if (!PrepareRecording(data, builder))
+                {
+                    data.draws.clear();
+                }
+            },
+            [state, drawCount](const GraphPassData& data,
+                               RenderGraphPassContext& context)
+            {
+                const bool succeeded = data.recordingPrepared &&
+                    ExecuteRecording(data, context);
+                MarkStagedExecution(state, true, succeeded, drawCount);
+                if (!succeeded)
+                {
+                    context.MarkExecutionFailed(
+                        "Transparent weighted-blended OIT recording failed");
+                }
+            });
+        return true;
+    }
+
+    bool TransparentPass::RecordDirect(
+        RenderGraph& graph,
+        PreparedTranslucencyRecording& prepared,
+        RGTextureHandle sceneHDR,
+        RGTextureHandle reactiveMask)
+    {
+        const std::shared_ptr<TransparentStagedRecordingState>& state =
+            prepared.m_state;
+        if (state == nullptr || !sceneHDR.IsValid() || !reactiveMask.IsValid() ||
+            sceneHDR.index == reactiveMask.index)
+        {
+            return false;
+        }
+
+        GraphPassData passData;
+        uint32 drawCount = 0;
+        {
+            std::lock_guard lock(state->mutex);
+            if (!state->stats.prepared || state->stats.preparationFailed ||
+                state->directRecorded || !state->prepared.identity.Matches(graph) ||
+                (state->stats.weightedBlendedDrawCount != 0 &&
+                 !state->weightedBlendedRecorded) ||
+                (state->weightedBlendedEnabled &&
+                 sceneHDR.index ==
+                     state->prepared.execution.view.colorTarget.index))
+            {
+                return false;
+            }
+            state->directRecorded = true;
+            state->stats.directPassRecorded = true;
+            passData = state->prepared;
+            passData.draws = SelectStagedDraws(state->prepared, false);
+            passData.publishLightingEvidence = true;
+            drawCount = static_cast<uint32>(passData.draws.size());
+        }
+        if (drawCount == 0)
+        {
+            return true;
+        }
+
+        graph.AddPass<GraphPassData>(
+            "TransparentSortedAndAdditive",
+            RenderGraphPassType::Graphics,
+            [passData, sceneHDR, reactiveMask](RenderGraphBuilder& builder,
+                                                GraphPassData& data) mutable
+            {
+                data = passData;
+                data.weightedBlendedStage = false;
+                data.execution.view.colorTarget = sceneHDR;
+                data.execution.view.reactiveMaskTarget = reactiveMask;
+                if (!PrepareRecording(data, builder))
+                {
+                    data.draws.clear();
+                }
+            },
+            [state, drawCount](const GraphPassData& data,
+                               RenderGraphPassContext& context)
+            {
+                const bool succeeded = data.recordingPrepared &&
+                    ExecuteRecording(data, context);
+                MarkStagedExecution(state, false, succeeded, drawCount);
+                if (!succeeded)
+                {
+                    context.MarkExecutionFailed(
+                        "Transparent sorted/additive recording failed");
+                }
+            });
+        return true;
+    }
 
     TransparentPass::TransparentPass() = default;
 
@@ -1473,7 +2280,12 @@ namespace RVX
             execution.directionalShadow.IsCompatibleWith(
                 execution.identity,
                 execution.lightingPlan->GetIdentityHash()) &&
-            execution.rayTracedShadow.IsCompatibleWith(execution.identity);
+            execution.rayTracedShadow.IsCompatibleWith(execution.identity) &&
+            execution.localShadowOutput.IsCompatibleWith(
+                execution.identity,
+                execution.lightingPlan->GetFrameIdentity(),
+                execution.lightingPlan->GetViewIdentity(),
+                execution.lightingPlan->GetIdentityHash());
         const bool contextValid = !context.legacyAdapter &&
             context.MatchesTargetGraph(graph) && context.IsFrameIdentityValid() &&
             execution.MatchesTargetGraph(graph) && execution.IsFrameIdentityValid() &&

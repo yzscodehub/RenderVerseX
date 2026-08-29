@@ -1290,6 +1290,42 @@ namespace RVX
         m_capabilities.maxComputeWorkGroupSize[2] = 64;
         m_capabilities.maxPushConstantSize = 256;  // 64 DWORDs
 
+        // D3D12 exposes independent render-target blend state as a core
+        // graphics-pipeline contract. Format blendability is queried
+        // independently because not every color-renderable format is
+        // blendable on every adapter.
+        m_capabilities.supportsIndependentColorAttachmentBlend = true;
+        for (uint32 value = 1;
+             value < static_cast<uint32>(RHIFormat::Count);
+             ++value)
+        {
+            const RHIFormat format = static_cast<RHIFormat>(value);
+            const DXGI_FORMAT nativeFormat = ToDXGIFormat(format);
+            if (nativeFormat == DXGI_FORMAT_UNKNOWN)
+            {
+                continue;
+            }
+
+            D3D12_FEATURE_DATA_FORMAT_SUPPORT support{};
+            support.Format = nativeFormat;
+            if (FAILED(m_device->CheckFeatureSupport(
+                    D3D12_FEATURE_FORMAT_SUPPORT,
+                    &support,
+                    sizeof(support))))
+            {
+                continue;
+            }
+
+            RHIFormatCapabilities& published =
+                m_capabilities.formatCapabilities[value];
+            published.colorAttachment =
+                (support.Support1 &
+                 D3D12_FORMAT_SUPPORT1_RENDER_TARGET) != 0;
+            published.colorAttachmentBlend =
+                published.colorAttachment &&
+                (support.Support1 & D3D12_FORMAT_SUPPORT1_BLENDABLE) != 0;
+        }
+
         // Bindless support
         m_capabilities.supportsBindless = (options.ResourceBindingTier >= D3D12_RESOURCE_BINDING_TIER_2);
         if (m_capabilities.supportsBindless)
@@ -1310,8 +1346,10 @@ namespace RVX
             m_capabilities.supportsRaytracingPipeline = m_capabilities.supportsRaytracing;
             m_capabilities.supportsRayQuery = (options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1);
             m_capabilities.supportsAccelerationStructureUpdate = m_capabilities.supportsRaytracing;
-            // Compaction needs a public postbuild-info/compact command contract before upper layers can rely on it.
-            m_capabilities.supportsAccelerationStructureCompaction = false;
+            // The complete public compacted-size query/resolve/compact-copy
+            // path is available whenever the DXR 1.0 command interface is.
+            m_capabilities.supportsAccelerationStructureCompaction =
+                m_capabilities.supportsRaytracing;
             if (m_capabilities.supportsRaytracing)
             {
                 m_capabilities.maxRayRecursionDepth = D3D12_RAYTRACING_MAX_DECLARABLE_TRACE_RECURSION_DEPTH;
@@ -1670,6 +1708,15 @@ namespace RVX
                 FormatRHIPipelineValidationResult(validation));
             return nullptr;
         }
+        const RHIPipelineValidationResult capabilityValidation =
+            ValidateRHIGraphicsPipelineCapabilities(desc, m_capabilities);
+        if (!capabilityValidation)
+        {
+            RVX_RHI_ERROR(
+                "DX12 graphics pipeline capability preflight failed: {}",
+                FormatRHIPipelineValidationResult(capabilityValidation));
+            return nullptr;
+        }
         return CreateDX12GraphicsPipeline(this, desc);
     }
 
@@ -1779,6 +1826,13 @@ namespace RVX
     RHIAccelerationStructureRef DX12Device::CreateAccelerationStructure(const RHIAccelerationStructureDesc& desc)
     {
         return CreateDX12AccelerationStructure(this, desc);
+    }
+
+    RHIAccelerationStructureCompactedSizeQueryRef
+    DX12Device::CreateAccelerationStructureCompactedSizeQuery(
+        const RHIAccelerationStructureCompactedSizeQueryDesc& desc)
+    {
+        return CreateDX12AccelerationStructureCompactedSizeQuery(this, desc);
     }
 
     RHIDescriptorSetRef DX12Device::CreateDescriptorSet(const RHIDescriptorSetDesc& desc)

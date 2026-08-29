@@ -30,6 +30,7 @@
 #include "Common/RenderGraphValidationAccess.h"
 #include "Common/RenderRuntimeTestHarness.h"
 #include "Render/Features/RenderFeatureRegistry.h"
+#include "Features/ReflectionFeatureAdapter.h"
 #include "Render/Debug/DebugRenderer.h"
 #include "Render/Decal/DecalRenderer.h"
 #include "Features/PostProcessPipelineFeatureAdapter.h"
@@ -39,11 +40,14 @@
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/GroundTruthAmbientOcclusion.h"
 #include "Render/Lighting/LightingFramePlan.h"
+#include "Render/Lighting/LocalShadowAtlas.h"
+#include "Render/Lighting/LocalShadowFramePlan.h"
 #include "Render/Lighting/LightManager.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/Passes/CameraVelocityPass.h"
 #include "Render/Passes/DepthPrepass.h"
 #include "Render/Passes/IRenderPass.h"
+#include "Render/Passes/LocalShadowPass.h"
 #include "Render/Passes/MeshPassProcessor.h"
 #include "Render/Passes/ObjectVelocityPass.h"
 #include "Render/Passes/OpaquePass.h"
@@ -320,6 +324,48 @@ namespace RVX
             ScreenSpaceOutlinePass* pass) noexcept
         {
             renderer.m_screenSpaceOutlinePostProcess = pass;
+        }
+
+        static void BindReflectionFeatureForQualificationTesting(
+            SceneRenderer& renderer,
+            ReflectionFeatureAdapter* feature) noexcept
+        {
+            renderer.m_reflectionFeature = feature;
+        }
+
+        static void SeedCompletedHiZReflectionQualificationForTesting(
+            SceneRenderer& renderer)
+        {
+            renderer.m_completedHiZReflectionQualificationReceipt = {};
+            renderer.m_completedHiZReflectionQualificationReceipt.available =
+                true;
+            renderer.m_completedHiZReflectionQualificationReceipt.presented =
+                true;
+            renderer.m_completedHiZReflectionQualificationDiagnostics = {};
+            renderer.m_completedHiZReflectionQualificationDiagnostics.available =
+                true;
+            renderer.m_completedHiZReflectionQualificationDiagnostics
+                .frameSequence = 41;
+            renderer.m_completedHiZReflectionQualificationDiagnostics
+                .reflectionPlanIdentity = 43;
+            renderer.m_completedHiZReflectionQualificationDiagnostics
+                .lightingPlanIdentity = 47;
+            renderer.m_completedHiZReflectionQualificationDiagnostics
+                .depthPyramidIdentity = 53;
+            // The public diagnostics are a projection of the independently
+            // retained completion pair. Seed both layers so the consecutive
+            // arm test verifies that a new request removes externally visible
+            // evidence as well as the retained source record.
+            renderer.m_frameDiagnostics.hiZReflectionQualificationReceipt =
+                renderer.m_completedHiZReflectionQualificationReceipt;
+            renderer.m_frameDiagnostics.hiZReflectionQualification =
+                renderer.m_completedHiZReflectionQualificationDiagnostics;
+        }
+
+        static uint64 HiZReflectionProbeGenerationForTesting(
+            const SceneRenderer& renderer) noexcept
+        {
+            return renderer.m_hiZReflectionProbeBinding.generation;
         }
 
         // BuildRenderGraph is intentionally fail-closed unless an accepted
@@ -1342,14 +1388,27 @@ namespace
             , m_address(s_nextAddress)
         {
             s_nextAddress += 0x1000;
+            RHIBufferDesc storageDesc;
+            storageDesc.size = desc.size;
+            storageDesc.usage = RHIBufferUsage::AccelerationStructureStorage |
+                                RHIBufferUsage::UnorderedAccess |
+                                RHIBufferUsage::DeviceAddress;
+            storageDesc.memoryType = RHIMemoryType::Default;
+            storageDesc.debugName = "FakeAccelerationStructureStorage";
+            m_storageBuffer = MakeRef<FakeBuffer>(storageDesc);
         }
 
         RHIAccelerationStructureType GetType() const override { return m_desc.type; }
         uint64 GetSize() const override { return m_desc.size; }
         uint64 GetGPUVirtualAddress() const override { return m_address; }
+        RHIBuffer* GetStorageBuffer() const override
+        {
+            return m_storageBuffer.Get();
+        }
 
     private:
         RHIAccelerationStructureDesc m_desc;
+        RHIBufferRef m_storageBuffer;
         uint64 m_address = 0;
         inline static uint64 s_nextAddress = 0x1000;
     };
@@ -1733,7 +1792,40 @@ namespace
         {
             ++copyBufferToTextureCount;
         }
-        void CopyTextureToBuffer(RHITexture*, RHIBuffer*, const RHIBufferTextureCopyDesc&) override {}
+        void CopyTextureToBuffer(
+            RHITexture*,
+            RHIBuffer* destination,
+            const RHIBufferTextureCopyDesc& desc) override
+        {
+            ++copyTextureToBufferCount;
+            if (textureToBufferPattern.empty() || destination == nullptr ||
+                desc.bufferRowPitch == 0 ||
+                desc.textureRegion.width == 0 ||
+                desc.textureRegion.height == 0)
+            {
+                return;
+            }
+            auto* const bytes = static_cast<uint8*>(destination->Map());
+            if (bytes == nullptr)
+            {
+                return;
+            }
+            for (uint32 y = 0; y < desc.textureRegion.height; ++y)
+            {
+                uint8* const row = bytes + static_cast<uint64>(y) *
+                    static_cast<uint64>(desc.bufferRowPitch);
+                for (uint32 x = 0; x < desc.textureRegion.width; ++x)
+                {
+                    const uint64 sampleIndex =
+                        static_cast<uint64>(y) *
+                            static_cast<uint64>(desc.textureRegion.width) + x;
+                    row[x] = textureToBufferPattern[
+                        static_cast<size_t>(sampleIndex %
+                            textureToBufferPattern.size())];
+                }
+            }
+            destination->Unmap();
+        }
         void BeginQuery(RHIQueryPool*, uint32) override {}
         void EndQuery(RHIQueryPool*, uint32) override {}
         void WriteTimestamp(RHIQueryPool* pool, uint32 index) override
@@ -1784,6 +1876,7 @@ namespace
         uint32 copyBufferCount = 0;
         uint32 copyTextureCount = 0;
         uint32 copyBufferToTextureCount = 0;
+        uint32 copyTextureToBufferCount = 0;
         uint32 depthBiasSetCount = 0;
         uint32 drawCount = 0;
         uint32 drawIndexedCount = 0;
@@ -1820,6 +1913,7 @@ namespace
         std::vector<RHIViewport> viewports;
         std::vector<RHIRect> scissors;
         std::vector<std::string> callSequence;
+        std::vector<uint8> textureToBufferPattern;
         std::vector<RHIQueryPool*> writtenTimestampPools;
         std::vector<uint32> writtenTimestampIndices;
         std::vector<RHIQueryPool*> resetQueryPools;
@@ -2266,6 +2360,7 @@ namespace
     {
         bool requestCSM = false;
         bool requestTextureIBL = false;
+        std::vector<LightingLightCandidate> localLightCandidates{};
     };
 
     void RebuildTestRecordFrameSnapshot(RenderPassRecordContext& context)
@@ -2337,6 +2432,10 @@ namespace
             primary.castsShadows = context.primaryDirectionalLight.castsShadow;
             request.lightCandidates.push_back(primary);
         }
+        request.lightCandidates.insert(
+            request.lightCandidates.end(),
+            options.localLightCandidates.begin(),
+            options.localLightCandidates.end());
 
         LightingFramePlanBuilder builder;
         LightingFramePlanBuildResult result = builder.Build(request);
@@ -2362,7 +2461,8 @@ namespace
         auto resources = std::make_shared<RenderLightingFrameResourceSnapshot>();
         resources->lightingPlanIdentity = result.plan.GetIdentityHash();
         resources->frozenLightResources.lightConstantsBuffer = makeBuffer(
-            256u, RHIBufferUsage::Constant, 0u,
+            (sizeof(LightConstants) + 255u) & ~static_cast<uint64>(255u),
+            RHIBufferUsage::Constant, 0u,
             "RenderPassValidation.LightConstants");
         resources->frozenLightResources.pointLightsBuffer = makeBuffer(
             sizeof(GPUPointLight) * LightManager::MaxPointLights,
@@ -2373,7 +2473,9 @@ namespace
             RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource,
             sizeof(GPUSpotLight), "RenderPassValidation.SpotLights");
         resources->frozenLightResources.clusterConstantsBuffer = makeBuffer(
-            256u, RHIBufferUsage::Constant, 0u,
+            (sizeof(GPUClusterConstants) + 255u) &
+                ~static_cast<uint64>(255u),
+            RHIBufferUsage::Constant, 0u,
             "RenderPassValidation.ClusterConstants");
         resources->frozenLightResources.clusterBuffer = makeBuffer(
             sizeof(GPUCluster),
@@ -3242,6 +3344,130 @@ namespace
         pass.SetResourceRegistry(&gpuResources.GetRegistry());
     }
 
+    /**
+     * @brief Model the renderer-owned TLAS build-to-trace dependency.
+     *
+     * Non-legacy ray tracing pass tests must not obtain their TLAS directly
+     * from the scene manager.  Import the real acceleration-structure backing
+     * buffer once, then make the graph carry the build-write to trace-read
+     * dependency over that exact resource.
+     */
+    struct TestRayTracingSceneBuildPassData
+    {
+        RGBufferHandle topLevelASStorage{};
+        RHIResourceInstanceId storageResourceId{};
+    };
+
+    [[nodiscard]] bool AttachTestRayTracingSceneBuildDependency(
+        RenderPassRecordContext& context,
+        RayTracingSceneManager& sceneManager)
+    {
+        if (!context.identity.IsValid() || context.identity.graph == nullptr)
+        {
+            return false;
+        }
+
+        RHIAccelerationStructureRef topLevelAS(sceneManager.GetTopLevelAS());
+        RHIBuffer* const storage =
+            topLevelAS ? topLevelAS->GetStorageBuffer() : nullptr;
+        const RayTracingSceneManagerStats& sceneStats =
+            sceneManager.GetStats();
+        const uint64 structuralHash =
+            sceneManager.GetPreparedTLASStructuralSignature().hash;
+        if (!topLevelAS || !storage ||
+            !HasFlag(storage->GetUsage(),
+                     RHIBufferUsage::AccelerationStructureStorage) ||
+            !storage->GetResourceInstanceId().IsValid() ||
+            sceneStats.preparationGeneration == 0 || structuralHash == 0)
+        {
+            return false;
+        }
+
+        RenderGraph& graph = *context.identity.graph;
+        const RGBufferHandle storageHandle = graph.ImportBuffer(
+            RHIBufferRef(storage),
+            RHIResourceState::AccelerationStructureRead);
+        if (!storageHandle.IsValid())
+        {
+            return false;
+        }
+        graph.SetExportState(storageHandle,
+                             RHIResourceState::AccelerationStructureRead);
+
+        graph.AddPass<TestRayTracingSceneBuildPassData>(
+            "TestRayTracingSceneBuild",
+            RenderGraphPassType::RayTracing,
+            [storageHandle, storageResourceId = storage->GetResourceInstanceId()](
+                RenderGraphBuilder& builder,
+                TestRayTracingSceneBuildPassData& data)
+            {
+                data.storageResourceId = storageResourceId;
+                data.topLevelASStorage = builder.Write(
+                    storageHandle,
+                    RHIResourceState::AccelerationStructureBuildWrite);
+            },
+            [](const TestRayTracingSceneBuildPassData& data,
+               RenderGraphPassContext& passContext)
+            {
+                RHIBuffer* const storage =
+                    passContext.GetBuffer(data.topLevelASStorage);
+                if (!data.topLevelASStorage.IsValid() || storage == nullptr ||
+                    storage->GetResourceInstanceId() != data.storageResourceId)
+                {
+                    passContext.MarkExecutionFailed(
+                        "TestRayTracingSceneBuild lost its TLAS storage");
+                }
+            });
+
+        context.rayTracingScene = {
+            .identity = context.identity,
+            .topLevelAS = std::move(topLevelAS),
+            .storageResourceId = storage->GetResourceInstanceId(),
+            .topLevelASStorage = storageHandle,
+            .preparationGeneration = sceneStats.preparationGeneration,
+            .structuralHash = structuralHash,
+            .required = true,
+        };
+        return context.rayTracingScene.IsCompatibleWith(context.identity);
+    }
+
+    [[nodiscard]] GPUCompletionToken MakeCanonicalTestCompletion(
+        uint64 value)
+    {
+        GPUCompletionToken completion;
+        completion.count = 1;
+        completion.points[0] = {GPUQueueDomain::Graphics, value};
+        return completion;
+    }
+
+    [[nodiscard]] RenderViewHistoryIdentity
+    MakeRayTracedReflectionHistoryIdentity(uint64 frameSequence,
+                                           uint32 width = 64,
+                                           uint32 height = 64)
+    {
+        return {
+            .previousFrame = {
+                .frameSequence = frameSequence,
+                .sceneRevision = 1,
+                .surfaceGeneration = 1,
+                .configurationRevision = 1,
+            },
+            .view = {
+                .sceneRuntimeId = 1,
+                .cameraEntityPacked = 1,
+                .subViewIndex = 0,
+                .role = ViewRole::Main,
+            },
+            .extent = {.width = width, .height = height},
+            .familyId = 1,
+            .worldRevision = 1,
+            .temporalEpoch = 1,
+            .formatRevision = 1,
+            .surfaceGeneration = 1,
+            .cameraCutRevision = 1,
+        };
+    }
+
     void ConfigureResources(ObjectVelocityPass& pass,
                             RenderRuntimeTestHarness& gpuResources,
                             PipelineCache& pipelineCache,
@@ -3485,6 +3711,49 @@ namespace
         context.results = std::make_shared<RenderPassRecordResults>();
         context.frameSnapshot = MakeRenderPassFrameSnapshot(context, *context.results);
         return context;
+    }
+
+    [[nodiscard]] TranslucencyFramePlanBuildResult
+    BuildTestMeshTranslucencyPlan(
+        const RenderPassRecordContext& context,
+        const std::vector<RenderDrawItem>& transparentDrawItems,
+        const WeightedBlendedOITCapabilityReadiness& weightedBlendedReadiness,
+        TranslucencyCapabilityRequirement requirement =
+            TranslucencyCapabilityRequirement::Optional)
+    {
+        TranslucencyFramePlanRequest request;
+        request.frameIdentity = context.featureFrameIdentity;
+        request.viewIdentity = context.featureViewIdentity;
+        request.profileHash =
+            0x4d45534854524e53ULL ^ context.identity.frameSequence;
+        request.meshSourceIdentityHash =
+            BuildTransparentDrawSourceIdentityHash(transparentDrawItems);
+        // This focused mesh fixture intentionally has no particle batches, but
+        // the immutable frame-plan contract still requires an identity for its
+        // empty particle inventory.
+        request.particleSourceIdentityHash =
+            0x5041525449434c45ULL ^ context.identity.recordEpoch;
+        request.weightedBlendedRequirement = requirement;
+        request.weightedBlendedReadiness = weightedBlendedReadiness;
+        request.meshCandidates.reserve(transparentDrawItems.size());
+        for (uint32 sourceOrdinal = 0;
+             sourceOrdinal < static_cast<uint32>(transparentDrawItems.size());
+             ++sourceOrdinal)
+        {
+            const RenderDrawItem& item = transparentDrawItems[sourceOrdinal];
+            request.meshCandidates.push_back({
+                .sourceOrdinal = sourceOrdinal,
+                .sourceIdentityHash = BuildTransparentDrawItemIdentityHash(item),
+                .shadingModel = item.packet.pipelineKey.shadingModel,
+                .blendMode = item.packet.pipelineKey.blendMode,
+                .surfacePathEligibility =
+                    item.packet.pipelineKey.surfacePathEligibility,
+                .materialPolicyValid =
+                    item.packet.pipelineKey.materialPolicyValid,
+            });
+        }
+
+        return TranslucencyFramePlanBuilder{}.Build(request);
     }
 
     RenderPassRecordContext MakeSkyboxRecordContext(
@@ -3913,6 +4182,60 @@ namespace
         state.handle = RenderGraphValidationAccess::ImportBuffer(
             graph, state.buffer.Get(), RHIResourceState::ShaderResource);
         state.contentHash = contentHash;
+        return state;
+    }
+
+    /** Exact materialized reflection-energy inputs consumed by SSR resolve. */
+    struct TestSSRReflectionSurfaceGraphState
+    {
+        RHITextureRef baseIndirectSpecularTexture{};
+        RHITextureRef specularResponseTexture{};
+        RGTextureHandle baseIndirectSpecular{};
+        RGTextureHandle specularResponse{};
+        TestExposureGraphState exposure{};
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return baseIndirectSpecularTexture && specularResponseTexture &&
+                   baseIndirectSpecular.IsValid() &&
+                   specularResponse.IsValid() && exposure.IsValid();
+        }
+
+        void Apply(SSRFrameInputs& inputs) const noexcept
+        {
+            inputs.baseIndirectSpecular = baseIndirectSpecular;
+            inputs.specularResponse = specularResponse;
+            inputs.exposureState = exposure.handle;
+            inputs.exposureStateContentHash = exposure.contentHash;
+        }
+    };
+
+    [[nodiscard]] TestSSRReflectionSurfaceGraphState
+    CreateTestSSRReflectionSurfaceGraphState(
+        FakeDevice& device,
+        RenderGraph& graph,
+        uint32 width,
+        uint32 height,
+        uint64 exposureStateContentHash)
+    {
+        TestSSRReflectionSurfaceGraphState state;
+        const RHITextureDesc surfaceDesc = RHITextureDesc::RenderTarget(
+            width, height, RHIFormat::RGBA16_FLOAT);
+        state.baseIndirectSpecularTexture = device.CreateTexture(surfaceDesc);
+        state.specularResponseTexture = device.CreateTexture(surfaceDesc);
+        if (!state.baseIndirectSpecularTexture ||
+            !state.specularResponseTexture)
+        {
+            return {};
+        }
+        state.baseIndirectSpecular = RenderGraphValidationAccess::ImportTexture(
+            graph, state.baseIndirectSpecularTexture.Get(),
+            RHIResourceState::ShaderResource);
+        state.specularResponse = RenderGraphValidationAccess::ImportTexture(
+            graph, state.specularResponseTexture.Get(),
+            RHIResourceState::ShaderResource);
+        state.exposure = CreateTestExposureGraphState(
+            device, graph, exposureStateContentHash);
         return state;
     }
 
@@ -5705,7 +6028,8 @@ TEST(RenderFrameTimingValidation,
     device.EnableTimestampQueries();
 
     RenderFrameTimingOwner timing;
-    ASSERT_TRUE(timing.Initialize(&device, 2u));
+    ASSERT_TRUE(timing.Initialize(&device, 2u))
+        << timing.GetDiagnostics().terminalCriticalPathMilliseconds.GetReason();
     ASSERT_EQ(1u, device.createdQueryPoolDescs.size());
     EXPECT_EQ(RHIQueryType::Timestamp, device.createdQueryPoolDescs[0].type);
     EXPECT_EQ(RHICommandQueueType::Graphics,
@@ -5777,7 +6101,8 @@ TEST(RenderFrameTimingValidation,
     FakeDevice device;
     device.EnableTimestampQueries();
     RenderFrameTimingOwner timing;
-    ASSERT_TRUE(timing.Initialize(&device, 1u));
+    ASSERT_TRUE(timing.Initialize(&device, 1u))
+        << timing.GetDiagnostics().terminalCriticalPathMilliseconds.GetReason();
 
     RecordingCommandContext graphics(RHICommandQueueType::Graphics);
     graphics.nextResolvedStartTimestamp = 41u;
@@ -5819,7 +6144,8 @@ TEST(RenderFrameTimingValidation,
     FakeDevice device;
     device.EnableTimestampQueries();
     RenderFrameTimingOwner timing;
-    ASSERT_TRUE(timing.Initialize(&device, 2u));
+    ASSERT_TRUE(timing.Initialize(&device, 2u))
+        << timing.GetDiagnostics().terminalCriticalPathMilliseconds.GetReason();
 
     RecordingCommandContext graphics(RHICommandQueueType::Graphics);
     timing.BeginFrame(0u, graphics);
@@ -5862,7 +6188,9 @@ TEST(RenderFrameTimingValidation,
     FakeDevice mapFailureDevice;
     mapFailureDevice.EnableTimestampQueries();
     RenderFrameTimingOwner mapFailureTiming;
-    ASSERT_TRUE(mapFailureTiming.Initialize(&mapFailureDevice, 1u));
+    ASSERT_TRUE(mapFailureTiming.Initialize(&mapFailureDevice, 1u))
+        << mapFailureTiming.GetDiagnostics()
+               .terminalCriticalPathMilliseconds.GetReason();
     RecordingCommandContext graphics(RHICommandQueueType::Graphics);
     graphics.nextResolvedStartTimestamp = 10u;
     graphics.nextResolvedEndTimestamp = 15u;
@@ -5910,7 +6238,8 @@ TEST(RenderFrameTimingValidation,
     FakeDevice device;
     device.EnableTimestampQueries();
     RenderFrameTimingOwner timing;
-    ASSERT_TRUE(timing.Initialize(&device, 1u));
+    ASSERT_TRUE(timing.Initialize(&device, 1u))
+        << timing.GetDiagnostics().terminalCriticalPathMilliseconds.GetReason();
 
     FakeBuffer* const firstReadback = FindMutableCreatedBuffer(
         device, "RenderContextWholeFrameGraphicsTimingReadback");
@@ -5921,7 +6250,8 @@ TEST(RenderFrameTimingValidation,
     timing.Shutdown(false);
     EXPECT_EQ(1u, firstReadbackProbe->GetRefCount());
 
-    ASSERT_TRUE(timing.Initialize(&device, 1u));
+    ASSERT_TRUE(timing.Initialize(&device, 1u))
+        << timing.GetDiagnostics().terminalCriticalPathMilliseconds.GetReason();
     ASSERT_EQ(2u, device.createdQueryPoolDescs.size());
     ASSERT_EQ(2u, device.createdBuffers.size());
     EXPECT_NE(firstReadback, device.createdBuffers.back());
@@ -7982,12 +8312,20 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedAlphaGeom
     constexpr uint32 kAlphaGeometryBufferLimit = RTShadowBindings::RVX_RT_SHADOW_MAX_ALPHA_GEOMETRY_BUFFERS;
     constexpr uint32 kMeshCount = kAlphaGeometryBufferLimit + 1;
 
+    Resource::TextureHandle albedo = CreateTextureResource(16999);
+    albedo->SetName("RayTracedShadowAlphaGeometryOverflowTexture");
+    gpuResources.UploadImmediate(albedo.Get());
+    ASSERT_TRUE(gpuResources.IsGPUReady(albedo.GetId()));
+
     auto material = std::make_unique<Resource::MaterialResource>();
     material->SetId(17000);
     material->SetName("RayTracedShadowAlphaGeometryOverflowMaterial");
     auto materialData = std::make_shared<Material>("RayTracedShadowAlphaGeometryOverflowMaterial");
     materialData->SetAlphaMode(Material::AlphaMode::Mask);
+    materialData->SetBaseColorTexture(
+        TextureInfo("shadow_alpha_geometry_overflow_albedo.png", 0));
     material->SetMaterialData(materialData);
+    material->SetTexture("albedo", albedo);
     ASSERT_TRUE(gpuResources.UploadImmediate(material.get()));
 
     RenderScene oversizedScene;
@@ -8005,6 +8343,7 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedAlphaGeom
         RenderObject object = MakeRenderObject(*mesh, gpuResources);
         object.entityId = 19000 + i;
         object.material = gpuResources.GetHandle(material->GetId());
+        object.materialModes = {RenderMaterialMode::Masked};
         oversizedScene.AddObject(object);
         visibleObjectIndices.push_back(i);
 
@@ -8104,6 +8443,7 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRuntimeCreatesDescrip
     view.inverseProjectionMatrix = Mat4Identity();
     view.previousViewProjectionMatrix = Mat4Identity();
     view.resetTemporalHistory = false;
+    view.frameNumber = 801;
     ASSERT_TRUE(AttachCommittedTestExposureState(graph, view, 801u));
 
     RayTracedReflectionPass pass;
@@ -8114,10 +8454,16 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRuntimeCreatesDescrip
 
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
 
-    pass.AddToGraph(graph, view);
+    RenderPassRecordContext context = MakeRenderPassRecordContext(graph, view);
+    context.legacyAdapter = false;
+    context.results = std::make_shared<RenderPassRecordResults>();
+    context.frameSnapshot = MakeRenderPassFrameSnapshot(context, *context.results);
+    ASSERT_TRUE(AttachTestRayTracingSceneBuildDependency(
+        context, rayTracingScene));
+    pass.AddToGraph(graph, context);
     RenderGraphValidationAccess::Compile(graph);
     EXPECT_TRUE(graph.GetCompileStats().compileValid);
-    EXPECT_EQ(graph.GetCompileStats().totalPasses, 1u);
+    EXPECT_EQ(graph.GetCompileStats().totalPasses, 2u);
 
     RecordingCommandContext ctx;
     RenderGraphValidationAccess::Execute(graph, ctx);
@@ -8144,7 +8490,24 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRuntimeCreatesDescrip
     EXPECT_TRUE(stats.descriptorSetAvailable);
     EXPECT_TRUE(stats.constantsUploaded);
     EXPECT_TRUE(stats.dispatchRecorded);
-    EXPECT_TRUE(stats.historyAvailable);
+    EXPECT_TRUE(stats.temporalResolveRecorded);
+    EXPECT_FALSE(stats.historySubmitted);
+    EXPECT_FALSE(stats.historyAvailable);
+    const RenderViewHistoryIdentity historyIdentity =
+        MakeRayTracedReflectionHistoryIdentity(context.identity.frameSequence);
+    EXPECT_FALSE(pass.NotifySubmission(
+        context.identity, historyIdentity, GPUCompletionToken{}));
+    EXPECT_FALSE(pass.GetStats().historySubmitted);
+    EXPECT_FALSE(pass.GetStats().historyAvailable);
+    EXPECT_TRUE(pass.NotifySubmission(
+        context.identity, historyIdentity, MakeCanonicalTestCompletion(801u)));
+    EXPECT_TRUE(pass.GetStats().historySubmitted);
+    EXPECT_FALSE(pass.GetStats().historyAvailable);
+    EXPECT_TRUE(pass.RequiresHistoryCommit());
+    EXPECT_TRUE(pass.CanCommitHistoryAfterPresent(historyIdentity));
+    EXPECT_TRUE(pass.CommitHistoryAfterPresent(historyIdentity));
+    EXPECT_FALSE(pass.RequiresHistoryCommit());
+    EXPECT_TRUE(pass.GetStats().historyAvailable);
     EXPECT_EQ(stats.dispatchPixelCount, 64u * 64u);
 }
 
@@ -8298,6 +8661,14 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRejectsOversizedGeome
     constexpr uint32 kGeometryBufferLimit = RTReflectionBindings::RVX_RT_REFLECTION_MAX_GEOMETRY_BUFFERS;
     constexpr uint32 kMeshCount = kGeometryBufferLimit + 1;
 
+    auto material = std::make_unique<Resource::MaterialResource>();
+    material->SetId(8800);
+    material->SetName("RayTracedReflectionGeometryOverflowMaterial");
+    auto materialData = std::make_shared<Material>("RayTracedReflectionGeometryOverflowMaterial");
+    materialData->SetAlphaMode(Material::AlphaMode::Mask);
+    material->SetMaterialData(materialData);
+    ASSERT_TRUE(gpuResources.UploadImmediate(material.get()));
+
     RenderScene oversizedScene;
     std::vector<std::unique_ptr<Resource::MeshResource>> meshes;
     std::vector<uint32_t> visibleObjectIndices;
@@ -8312,6 +8683,8 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRejectsOversizedGeome
 
         RenderObject object = MakeRenderObject(*mesh, gpuResources);
         object.entityId = 10000 + i;
+        object.material = gpuResources.GetHandle(material->GetId());
+        object.materialModes = {RenderMaterialMode::Masked};
         oversizedScene.AddObject(object);
         visibleObjectIndices.push_back(i);
 
@@ -8396,6 +8769,14 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionRenderGraphChainDenoisesB
     view.resetTemporalHistory = false;
     ASSERT_TRUE(AttachCommittedTestExposureState(graph, view, 803u));
 
+    RenderPassRecordContext context = MakeRenderPassRecordContext(graph, view);
+    context.legacyAdapter = false;
+    context.results = std::make_shared<RenderPassRecordResults>();
+    context.frameSnapshot = MakeRenderPassFrameSnapshot(
+        context, *context.results);
+    ASSERT_TRUE(AttachTestRayTracingSceneBuildDependency(
+        context, rayTracingScene));
+
     RayTracedReflectionPass reflectionPass;
     reflectionPass.SetEnabled(true);
     reflectionPass.OnAdd(&device);
@@ -8421,9 +8802,9 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionRenderGraphChainDenoisesB
     ASSERT_TRUE(denoisePass.IsSupported()) << denoisePass.GetUnsupportedReason();
     ASSERT_TRUE(compositePass.IsSupported()) << compositePass.GetUnsupportedReason();
 
-    reflectionPass.AddToGraph(graph, view);
-    denoisePass.AddToGraph(graph, view);
-    compositePass.AddToGraph(graph, view);
+    reflectionPass.AddToGraph(graph, context);
+    denoisePass.AddToGraph(graph, context);
+    compositePass.AddToGraph(graph, context);
 
     const RayTracedReflectionPassStats& reflectionSetupStats = reflectionPass.GetStats();
     const RayTracedReflectionDenoisePassStats& denoiseSetupStats = denoisePass.GetStats();
@@ -8441,10 +8822,15 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionRenderGraphChainDenoisesB
     EXPECT_FALSE(compositeSetupStats.rawSourceUsed);
     EXPECT_FALSE(compositeSetupStats.denoiseFallbackToRaw);
     EXPECT_EQ(compositeSetupStats.source, RayTracedReflectionCompositeSource::DenoisedReflection);
+    EXPECT_TRUE(context.results->rayTracedReflectionStats.outputDeclared);
+    EXPECT_TRUE(
+        context.results->rayTracedReflectionDenoiseStats.outputDeclared);
+    EXPECT_TRUE(
+        context.results->rayTracedReflectionCompositeStats.outputDeclared);
 
     RenderGraphValidationAccess::Compile(graph);
     EXPECT_TRUE(graph.GetCompileStats().compileValid);
-    EXPECT_EQ(graph.GetCompileStats().totalPasses, 3u);
+    EXPECT_EQ(graph.GetCompileStats().totalPasses, 4u);
     EXPECT_EQ(graph.GetCompileStats().culledPasses, 0u);
 
     RecordingCommandContext ctx;
@@ -8471,7 +8857,117 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionRenderGraphChainDenoisesB
     EXPECT_TRUE(compositeStats.compositeRecorded);
     EXPECT_TRUE(compositeStats.denoisedSourceUsed);
     EXPECT_EQ(compositeStats.source, RayTracedReflectionCompositeSource::DenoisedReflection);
+    EXPECT_TRUE(context.results->rayTracedReflectionStats.dispatchRecorded);
+    EXPECT_TRUE(context.results->rayTracedReflectionStats.temporalResolveRecorded);
+    EXPECT_TRUE(
+        context.results->rayTracedReflectionDenoiseStats.denoiseRecorded);
+    EXPECT_TRUE(
+        context.results->rayTracedReflectionCompositeStats.compositeRecorded);
+    EXPECT_TRUE(context.results->rayTracedReflectionCompositeStats
+                    .denoisedSourceUsed);
 }
+
+TEST_F(RenderPassValidationFixture,
+       RayTracedReflectionChainRejectsMismatchedRecordResults)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(true, true);
+
+    RayTracingSceneManager rayTracingScene;
+    ASSERT_NO_FATAL_FAILURE(PrepareRayTracingSceneForSingleObject(
+        device, gpuResources, scene, rayTracingScene));
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(
+        64, 64, RHIFormat::RGBA16_FLOAT);
+    colorDesc.debugName = "RayTracedReflectionMismatchedResultsColor";
+    RHITextureRef sceneColorTexture = device.CreateTexture(colorDesc);
+    ASSERT_TRUE(sceneColorTexture);
+    view.colorTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, sceneColorTexture.Get(), RHIResourceState::RenderTarget);
+    graph.SetExportState(view.colorTarget, RHIResourceState::RenderTarget);
+
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(
+        64, 64, PipelineCache::GetDefaultDepthStencilFormat());
+    depthDesc.debugName = "RayTracedReflectionMismatchedResultsDepth";
+    RHITextureRef depthTexture = device.CreateTexture(depthDesc);
+    ASSERT_TRUE(depthTexture);
+    view.depthTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, depthTexture.Get(), RHIResourceState::DepthRead);
+    graph.SetExportState(view.depthTarget, RHIResourceState::DepthRead);
+
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+    view.aspectRatio = 1.0f;
+    view.fieldOfView = 1.0472f;
+    view.nearPlane = 0.1f;
+    view.farPlane = 100.0f;
+    view.cameraPosition = Vec3(0.0f, 0.0f, 5.0f);
+    view.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
+    view.viewMatrix = Mat4Identity();
+    view.projectionMatrix = Mat4Identity();
+    view.viewProjectionMatrix = Mat4Identity();
+    view.inverseViewMatrix = Mat4Identity();
+    view.inverseProjectionMatrix = Mat4Identity();
+    view.previousViewProjectionMatrix = Mat4Identity();
+    view.resetTemporalHistory = false;
+    ASSERT_TRUE(AttachCommittedTestExposureState(graph, view, 804u));
+
+    RenderPassRecordContext context = MakeRenderPassRecordContext(graph, view);
+    context.legacyAdapter = false;
+    context.results = std::make_shared<RenderPassRecordResults>();
+    context.frameSnapshot = MakeRenderPassFrameSnapshot(
+        context, *context.results);
+    ASSERT_TRUE(AttachTestRayTracingSceneBuildDependency(
+        context, rayTracingScene));
+
+    RayTracedReflectionPass reflectionPass;
+    reflectionPass.SetEnabled(true);
+    reflectionPass.OnAdd(&device);
+    ConfigureResources(reflectionPass, gpuResources, pipelineCache, viewCache);
+    reflectionPass.SetRayTracingScene(&rayTracingScene);
+
+    RayTracedReflectionDenoisePass denoisePass;
+    denoisePass.SetEnabled(true);
+    denoisePass.OnAdd(&device);
+    denoisePass.SetResources(&pipelineCache, &viewCache);
+    denoisePass.SetReflectionSource(&reflectionPass);
+
+    RayTracedReflectionCompositePass compositePass;
+    compositePass.SetEnabled(true);
+    compositePass.OnAdd(&device);
+    compositePass.SetResources(&pipelineCache, &viewCache);
+    compositePass.SetReflectionSource(&reflectionPass);
+    compositePass.SetDenoisedReflectionSource(&denoisePass);
+
+    reflectionPass.AddToGraph(graph, context);
+    denoisePass.AddToGraph(graph, context);
+    compositePass.AddToGraph(graph, context);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    RenderPassRecordIdentity foreignIdentity = context.identity;
+    ++foreignIdentity.recordEpoch;
+    ASSERT_NE(foreignIdentity, context.identity);
+    context.results->identity = foreignIdentity;
+    context.results->rayTracedReflectionStats.width = 701;
+    context.results->rayTracedReflectionDenoiseStats.radius = 702;
+    context.results->rayTracedReflectionCompositeStats.width = 703;
+
+    RecordingCommandContext commands;
+    RenderGraphValidationAccess::Execute(graph, commands);
+
+    EXPECT_EQ(commands.dispatchRaysCount, 1u);
+    EXPECT_EQ(commands.drawCount, 2u);
+    EXPECT_TRUE(reflectionPass.GetStats().dispatchRecorded);
+    EXPECT_TRUE(denoisePass.GetStats().denoiseRecorded);
+    EXPECT_TRUE(compositePass.GetStats().compositeRecorded);
+    EXPECT_EQ(context.results->rayTracedReflectionStats.width, 701u);
+    EXPECT_EQ(context.results->rayTracedReflectionDenoiseStats.radius, 702u);
+    EXPECT_EQ(context.results->rayTracedReflectionCompositeStats.width, 703u);
+}
+
 TEST_F(RenderPassValidationFixture, RayTracedShadowPassReusesHistoryAcrossStableFrames)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(true, true);
@@ -8633,11 +9129,17 @@ TEST_F(RenderPassValidationFixture,
         {
             return {};
         }
+        if (!AttachTestRayTracingSceneBuildDependency(
+                context, rayTracingScene))
+        {
+            ADD_FAILURE() << "failed to attach the TLAS build-to-trace dependency";
+            return {};
+        }
 
         pass.AddToGraph(graph, context);
         RenderGraphValidationAccess::Compile(graph);
         EXPECT_TRUE(graph.GetCompileStats().compileValid);
-        EXPECT_EQ(graph.GetCompileStats().totalPasses, 1u);
+        EXPECT_EQ(graph.GetCompileStats().totalPasses, 2u);
 
         RecordingCommandContext commands;
         RenderGraphValidationAccess::Execute(graph, commands);
@@ -8745,6 +9247,8 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassScopesSubmissionAndReleas
         context.legacyAdapter = false;
         context.results = std::make_shared<RenderPassRecordResults>();
         context.frameSnapshot = MakeRenderPassFrameSnapshot(context, *context.results);
+        EXPECT_TRUE(AttachTestRayTracingSceneBuildDependency(
+            context, rayTracingScene));
         return context;
     };
     const auto countConstants = [this]()
@@ -9344,12 +9848,28 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassReusesHistoryAcrossSt
         EXPECT_TRUE(AttachCommittedTestExposureState(
             graph, frameView, 810u + frameNumber));
 
-        pass.AddToGraph(graph, frameView);
+        RenderPassRecordContext context = MakeRenderPassRecordContext(
+            graph, frameView);
+        context.legacyAdapter = false;
+        context.results = std::make_shared<RenderPassRecordResults>();
+        context.frameSnapshot = MakeRenderPassFrameSnapshot(
+            context, *context.results);
+        ASSERT_TRUE(AttachTestRayTracingSceneBuildDependency(
+            context, rayTracingScene));
+        pass.AddToGraph(graph, context);
         RenderGraphValidationAccess::Compile(graph);
         EXPECT_TRUE(graph.GetCompileStats().compileValid);
-        EXPECT_EQ(graph.GetCompileStats().totalPasses, 1u);
+        EXPECT_EQ(graph.GetCompileStats().totalPasses, 2u);
 
         RenderGraphValidationAccess::Execute(graph, ctx);
+        const RenderViewHistoryIdentity historyIdentity =
+            MakeRayTracedReflectionHistoryIdentity(
+                context.identity.frameSequence);
+        EXPECT_TRUE(pass.NotifySubmission(
+            context.identity, historyIdentity,
+            MakeCanonicalTestCompletion(frameNumber)));
+        EXPECT_TRUE(pass.CanCommitHistoryAfterPresent(historyIdentity));
+        EXPECT_TRUE(pass.CommitHistoryAfterPresent(historyIdentity));
     };
 
     RecordingCommandContext firstCtx;
@@ -9364,6 +9884,8 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassReusesHistoryAcrossSt
     EXPECT_NE(firstStats.exposureStateContentHash, 0u);
     EXPECT_TRUE(firstStats.historyRecreated);
     EXPECT_TRUE(firstStats.historyAvailable);
+    EXPECT_TRUE(firstStats.historySubmitted);
+    EXPECT_TRUE(firstStats.temporalResolveRecorded);
     EXPECT_FALSE(firstStats.temporalAccumulated);
     const size_t textureCountAfterFirstFrame = device.createdTextureDescs.size();
 
@@ -9382,12 +9904,227 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassReusesHistoryAcrossSt
     EXPECT_TRUE(secondStats.historyAvailable);
     EXPECT_TRUE(secondStats.depthHistoryAvailable);
     EXPECT_TRUE(secondStats.normalHistoryAvailable);
+    EXPECT_TRUE(secondStats.historySubmitted);
+    EXPECT_TRUE(secondStats.temporalResolveRecorded);
     EXPECT_TRUE(secondStats.temporalAccumulated);
     EXPECT_FALSE(secondStats.historyRecreated);
     EXPECT_FALSE(secondStats.historyResolutionChanged);
     EXPECT_FALSE(secondStats.historyConfigChanged);
     EXPECT_FALSE(secondStats.historyReset);
     EXPECT_EQ(device.createdTextureDescs.size(), textureCountAfterFirstFrame);
+}
+
+TEST_F(RenderPassValidationFixture,
+       RayTracedReflectionPassPublishesHistoryOnlyAfterExactPresentation)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(true, true);
+
+    RayTracingSceneManager rayTracingScene;
+    ASSERT_NO_FATAL_FAILURE(PrepareRayTracingSceneForSingleObject(
+        device, gpuResources, scene, rayTracingScene));
+
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(
+        64, 64, RHIFormat::RGBA16_FLOAT);
+    colorDesc.debugName = "RayTracedReflectionPresentationQualifiedColor";
+    RHITextureRef sceneColorTexture = device.CreateTexture(colorDesc);
+    ASSERT_TRUE(sceneColorTexture);
+
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(
+        64, 64, PipelineCache::GetDefaultDepthStencilFormat());
+    depthDesc.debugName = "RayTracedReflectionPresentationQualifiedDepth";
+    RHITextureRef depthTexture = device.CreateTexture(depthDesc);
+    ASSERT_TRUE(depthTexture);
+
+    RayTracedReflectionPass pass;
+    pass.SetEnabled(true);
+    pass.OnAdd(&device);
+    ConfigureResources(pass, gpuResources, pipelineCache, viewCache);
+    pass.SetRayTracingScene(&rayTracingScene);
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    struct SubmittedReflectionFrame
+    {
+        RenderPassRecordIdentity recordIdentity{};
+        RenderViewHistoryIdentity historyIdentity{};
+        RayTracedReflectionPassStats stats{};
+    };
+    const auto recordAndSubmit = [&](uint64 frameNumber)
+    {
+        RenderGraph graph;
+        RenderGraphValidationAccess::SetDevice(graph, &device);
+
+        ViewData frameView;
+        frameView.colorTarget = RenderGraphValidationAccess::ImportTexture(
+            graph, sceneColorTexture.Get(), RHIResourceState::ShaderResource);
+        frameView.depthTarget = RenderGraphValidationAccess::ImportTexture(
+            graph, depthTexture.Get(), RHIResourceState::DepthRead);
+        frameView.viewportWidth = 64;
+        frameView.viewportHeight = 64;
+        frameView.aspectRatio = 1.0f;
+        frameView.fieldOfView = 1.0472f;
+        frameView.nearPlane = 0.1f;
+        frameView.farPlane = 100.0f;
+        frameView.viewMatrix = Mat4Identity();
+        frameView.projectionMatrix = Mat4Identity();
+        frameView.viewProjectionMatrix = Mat4Identity();
+        frameView.inverseViewMatrix = Mat4Identity();
+        frameView.inverseProjectionMatrix = Mat4Identity();
+        frameView.previousViewProjectionMatrix = Mat4Identity();
+        frameView.frameNumber = frameNumber;
+        EXPECT_TRUE(AttachCommittedTestExposureState(
+            graph, frameView, 0x9100u + frameNumber));
+
+        RenderPassRecordContext context = MakeRenderPassRecordContext(
+            graph, frameView);
+        context.legacyAdapter = false;
+        context.results = std::make_shared<RenderPassRecordResults>();
+        context.frameSnapshot = MakeRenderPassFrameSnapshot(
+            context, *context.results);
+        if (!AttachTestRayTracingSceneBuildDependency(
+                context, rayTracingScene))
+        {
+            ADD_FAILURE() << "failed to attach the TLAS build-to-trace dependency";
+            return SubmittedReflectionFrame{};
+        }
+        pass.AddToGraph(graph, context);
+        RenderGraphValidationAccess::Compile(graph);
+        EXPECT_TRUE(graph.GetCompileStats().compileValid);
+        EXPECT_EQ(graph.GetCompileStats().totalPasses, 2u);
+
+        RecordingCommandContext commands;
+        RenderGraphValidationAccess::Execute(graph, commands);
+        EXPECT_EQ(commands.dispatchRaysCount, 1u);
+        EXPECT_TRUE(commands.lastDispatchRaysValidation.valid)
+            << commands.lastDispatchRaysValidation.message;
+
+        const RenderViewHistoryIdentity historyIdentity =
+            MakeRayTracedReflectionHistoryIdentity(
+                context.identity.frameSequence);
+        EXPECT_TRUE(pass.NotifySubmission(
+            context.identity, historyIdentity,
+            MakeCanonicalTestCompletion(frameNumber)));
+        return SubmittedReflectionFrame{
+            .recordIdentity = context.identity,
+            .historyIdentity = historyIdentity,
+            .stats = pass.GetStats(),
+        };
+    };
+
+    const SubmittedReflectionFrame first = recordAndSubmit(901);
+    EXPECT_TRUE(first.stats.dispatchRecorded);
+    EXPECT_TRUE(first.stats.historySubmitted);
+    EXPECT_TRUE(first.stats.temporalResolveRecorded);
+    EXPECT_FALSE(first.stats.historyAvailable);
+    EXPECT_FALSE(first.stats.temporalAccumulated);
+    EXPECT_TRUE(pass.RequiresHistoryCommit());
+
+    RenderViewHistoryIdentity wrongSurface = first.historyIdentity;
+    wrongSurface.surfaceGeneration = 2;
+    wrongSurface.previousFrame.surfaceGeneration = 2;
+    ASSERT_TRUE(wrongSurface.IsValid());
+    RenderViewHistoryIdentity wrongCameraCut = first.historyIdentity;
+    ++wrongCameraCut.cameraCutRevision;
+    ASSERT_TRUE(wrongCameraCut.IsValid());
+    EXPECT_FALSE(pass.CanCommitHistoryAfterPresent(wrongSurface));
+    EXPECT_FALSE(pass.CanCommitHistoryAfterPresent(wrongCameraCut));
+    EXPECT_FALSE(pass.CommitHistoryAfterPresent(wrongSurface));
+    pass.AbandonSubmittedHistory(wrongCameraCut);
+    EXPECT_TRUE(pass.RequiresHistoryCommit());
+
+    // A submitted frame which never presents must not advance the logical
+    // write ring or make the next recording sample it.
+    pass.AbandonSubmittedHistory(first.historyIdentity);
+    EXPECT_FALSE(pass.RequiresHistoryCommit());
+
+    const SubmittedReflectionFrame second = recordAndSubmit(902);
+    EXPECT_FALSE(second.stats.historyAvailable);
+    EXPECT_FALSE(second.stats.temporalAccumulated);
+    EXPECT_TRUE(pass.CanCommitHistoryAfterPresent(second.historyIdentity));
+    EXPECT_TRUE(pass.CommitHistoryAfterPresent(second.historyIdentity));
+    EXPECT_FALSE(pass.RequiresHistoryCommit());
+    EXPECT_TRUE(pass.GetStats().historyAvailable);
+    EXPECT_FALSE(pass.CommitHistoryAfterPresent(second.historyIdentity));
+
+    const SubmittedReflectionFrame third = recordAndSubmit(903);
+    EXPECT_TRUE(third.stats.historyAvailable);
+    EXPECT_TRUE(third.stats.temporalAccumulated);
+    EXPECT_TRUE(pass.CommitHistoryAfterPresent(third.historyIdentity));
+}
+
+TEST_F(RenderPassValidationFixture,
+       RayTracedReflectionPassAbortCancelsLateGraphCallbackBeforeDispatch)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(true, true);
+
+    RayTracingSceneManager rayTracingScene;
+    ASSERT_NO_FATAL_FAILURE(PrepareRayTracingSceneForSingleObject(
+        device, gpuResources, scene, rayTracingScene));
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(
+        64, 64, RHIFormat::RGBA16_FLOAT);
+    colorDesc.debugName = "RayTracedReflectionLateAbortColor";
+    RHITextureRef sceneColorTexture = device.CreateTexture(colorDesc);
+    ASSERT_TRUE(sceneColorTexture);
+
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(
+        64, 64, PipelineCache::GetDefaultDepthStencilFormat());
+    depthDesc.debugName = "RayTracedReflectionLateAbortDepth";
+    RHITextureRef depthTexture = device.CreateTexture(depthDesc);
+    ASSERT_TRUE(depthTexture);
+
+    ViewData frameView;
+    frameView.colorTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, sceneColorTexture.Get(), RHIResourceState::ShaderResource);
+    frameView.depthTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, depthTexture.Get(), RHIResourceState::DepthRead);
+    frameView.viewportWidth = 64;
+    frameView.viewportHeight = 64;
+    frameView.aspectRatio = 1.0f;
+    frameView.fieldOfView = 1.0472f;
+    frameView.nearPlane = 0.1f;
+    frameView.farPlane = 100.0f;
+    frameView.viewMatrix = Mat4Identity();
+    frameView.projectionMatrix = Mat4Identity();
+    frameView.viewProjectionMatrix = Mat4Identity();
+    frameView.inverseViewMatrix = Mat4Identity();
+    frameView.inverseProjectionMatrix = Mat4Identity();
+    frameView.previousViewProjectionMatrix = Mat4Identity();
+    frameView.frameNumber = 803;
+    ASSERT_TRUE(AttachCommittedTestExposureState(graph, frameView, 803u));
+
+    RenderPassRecordContext context = MakeRenderPassRecordContext(graph, frameView);
+    context.legacyAdapter = false;
+    context.results = std::make_shared<RenderPassRecordResults>();
+    context.frameSnapshot = MakeRenderPassFrameSnapshot(context, *context.results);
+    ASSERT_TRUE(AttachTestRayTracingSceneBuildDependency(
+        context, rayTracingScene));
+
+    RayTracedReflectionPass pass;
+    pass.SetEnabled(true);
+    pass.OnAdd(&device);
+    ConfigureResources(pass, gpuResources, pipelineCache, viewCache);
+    pass.SetRayTracingScene(&rayTracingScene);
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    pass.AddToGraph(graph, context);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    ASSERT_EQ(graph.GetCompileStats().totalPasses, 2u);
+
+    // The callback's shared reservation remains captured by the compiled
+    // graph. Releasing it after compile must mark that retained value
+    // cancelled, rather than merely erasing the owner's index.
+    pass.ReleaseUnsubmittedFrame(context.identity);
+
+    RecordingCommandContext ctx;
+    RenderGraphValidationAccess::Execute(graph, ctx);
+    EXPECT_EQ(ctx.dispatchRaysCount, 0u);
+    EXPECT_FALSE(pass.GetStats().dispatchRecorded);
+    EXPECT_FALSE(pass.GetStats().historySubmitted);
+    EXPECT_FALSE(pass.GetStats().historyAvailable);
 }
 
 TEST_F(RenderPassValidationFixture, ShadowPassConfigDefaultsToComplementaryRayTracedShadows)
@@ -15241,6 +15978,78 @@ TEST(RenderPassValidation,
     EXPECT_FALSE(outline.HasPendingQualificationProbe());
 
     SceneRendererTestAccess::BindScreenSpaceOutlineForTesting(
+        renderer, nullptr);
+}
+
+TEST(SceneRendererReflectionQualificationValidation,
+     ConsecutiveArmsClearPriorCompletionUntilTheNewestProbeCompletes)
+{
+    ReflectionFeatureAdapter reflectionFeature;
+    SceneRenderer renderer;
+    SceneRendererTestAccess::BindReflectionFeatureForQualificationTesting(
+        renderer, &reflectionFeature);
+    SceneRendererTestAccess::SeedCompletedHiZReflectionQualificationForTesting(
+        renderer);
+
+    ASSERT_TRUE(renderer.GetFrameDiagnostics()
+                    .hiZReflectionQualification.available);
+    ASSERT_TRUE(renderer.GetFrameDiagnostics()
+                    .hiZReflectionQualificationReceipt.available);
+
+    ASSERT_TRUE(renderer.ArmHiZReflectionQualificationProbe());
+    EXPECT_TRUE(reflectionFeature.HasPendingSSRQualificationProbe());
+    EXPECT_EQ(SceneRendererTestAccess::HiZReflectionProbeGenerationForTesting(
+                  renderer),
+              1u);
+    EXPECT_FALSE(renderer.GetFrameDiagnostics()
+                     .hiZReflectionQualification.available);
+    EXPECT_FALSE(renderer.GetFrameDiagnostics()
+                     .hiZReflectionQualificationReceipt.available);
+
+    // The first request cannot produce a source frame, so its abandon is a
+    // failure path. A following arm must remain unavailable rather than
+    // surfacing the completion seeded before either request.
+    reflectionFeature.AbandonSSRQualificationProbe();
+    ASSERT_FALSE(reflectionFeature.HasPendingSSRQualificationProbe());
+    ASSERT_TRUE(renderer.ArmHiZReflectionQualificationProbe());
+    EXPECT_TRUE(reflectionFeature.HasPendingSSRQualificationProbe());
+    EXPECT_EQ(SceneRendererTestAccess::HiZReflectionProbeGenerationForTesting(
+                  renderer),
+              2u);
+    EXPECT_FALSE(renderer.GetFrameDiagnostics()
+                     .hiZReflectionQualification.available);
+    EXPECT_FALSE(renderer.GetFrameDiagnostics()
+                     .hiZReflectionQualificationReceipt.available);
+
+    reflectionFeature.AbandonSSRQualificationProbe();
+    SceneRendererTestAccess::BindReflectionFeatureForQualificationTesting(
+        renderer, nullptr);
+}
+
+TEST(SceneRendererReflectionQualificationValidation,
+     PreservesUnboundProbeUntilExactAcceptedFrameDisposition)
+{
+    ReflectionFeatureAdapter reflectionFeature;
+    SceneRenderer renderer;
+    SceneRendererTestAccess::BindReflectionFeatureForQualificationTesting(
+        renderer, &reflectionFeature);
+
+    ASSERT_TRUE(renderer.ArmHiZReflectionQualificationProbe());
+    ASSERT_TRUE(reflectionFeature.HasPendingSSRQualificationProbe());
+
+    // RenderThreadRuntime arms immediately before ConsumeFrameV5.  Frame
+    // acceptance clears prior temporal candidates, but must not discard this
+    // still-unbound request before the exact frame can build its SSR graph.
+    ASSERT_TRUE(SceneRendererTestAccess::AcceptEmptyFrameForTesting(
+        renderer, 4114u));
+    EXPECT_TRUE(reflectionFeature.HasPendingSSRQualificationProbe());
+
+    // If that accepted frame never reaches a submission boundary, the
+    // one-shot request is cancelled and cannot leak into a later frame.
+    renderer.ReleaseUnsubmittedFrame();
+    EXPECT_FALSE(reflectionFeature.HasPendingSSRQualificationProbe());
+
+    SceneRendererTestAccess::BindReflectionFeatureForQualificationTesting(
         renderer, nullptr);
 }
 
@@ -25188,6 +25997,604 @@ TEST_F(RenderPassValidationFixture,
     tracker.Shutdown();
 }
 
+TEST_F(RenderPassValidationFixture,
+       TransparentPassStagedRecordingPreparesOnceAndPreservesSharedOITAttachments)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    RenderDrawItem weighted = MakeDrawItem(MaterialRenderMode::Transparent);
+    weighted.classificationIndex = 41u;
+    weighted.viewSpaceDepth = 8.0f;
+    weighted.sortKey = BuildTransparentDrawSortKey(weighted);
+
+    RenderDrawItem refraction = MakeDrawItem(MaterialRenderMode::Transparent);
+    refraction.classificationIndex = 42u;
+    refraction.viewSpaceDepth = 2.0f;
+    refraction.packet.pipelineKey.shadingModel =
+        MaterialShadingModel::ThinTransmission;
+    refraction.sortKey = BuildTransparentDrawSortKey(refraction);
+
+    std::vector<RenderDrawItem> transparentItems = {weighted, refraction};
+    ASSERT_TRUE(IsTransparentDrawListStrictlyOrdered(transparentItems));
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RHITextureRef sceneHDR = device.CreateTexture(
+        RHITextureDesc::Texture2D(
+            64u,
+            64u,
+            RHIFormat::RGBA16_FLOAT,
+            RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource |
+                RHITextureUsage::CopySrc));
+    RHITextureRef depth = device.CreateTexture(
+        RHITextureDesc::DepthStencil(64u, 64u, RHIFormat::D32_FLOAT));
+    ASSERT_TRUE(sceneHDR);
+    ASSERT_TRUE(depth);
+
+    ViewData graphView = view;
+    graphView.viewportWidth = 64u;
+    graphView.viewportHeight = 64u;
+    graphView.colorTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, sceneHDR.Get(), RHIResourceState::RenderTarget);
+    graphView.depthTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, depth.Get(), RHIResourceState::DepthRead);
+
+    RenderPassRecordContext context = MakeTransparentRecordContext(
+        graph, graphView, scene, transparentItems, 2201u, 2201u);
+    AttachDefaultTestLighting(context);
+
+    const WeightedBlendedOITCapabilityReadiness enabledReadiness{
+        .requested = true,
+        .compiled = true,
+        .hardwareSupported = true,
+        .independentBlendSupported = true,
+        .accumulationFormatBlendSupported = true,
+        .revealageFormatBlendSupported = true,
+        .implementationSupported = true,
+        .pipelineReady = true,
+        .inputsReady = true,
+    };
+    const TranslucencyFramePlanBuildResult planResult =
+        BuildTestMeshTranslucencyPlan(
+            context, transparentItems, enabledReadiness,
+            TranslucencyCapabilityRequirement::Required);
+    ASSERT_TRUE(planResult.Succeeded()) << planResult.diagnostic;
+    ASSERT_EQ(WeightedBlendedOITCapabilityResolution::Enabled,
+              planResult.plan.GetWeightedBlendedResolution());
+
+    RHITextureDesc accumulationDesc = RHITextureDesc::Texture2D(
+        64u,
+        64u,
+        PipelineCache::GetWeightedBlendedOITAccumulationFormat(),
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource);
+    accumulationDesc.debugName =
+        "RenderPassValidation.SharedWeightedBlendedOITAccumulation";
+    RHITextureDesc revealageDesc = RHITextureDesc::Texture2D(
+        64u,
+        64u,
+        PipelineCache::GetWeightedBlendedOITRevealageFormat(),
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource);
+    revealageDesc.debugName =
+        "RenderPassValidation.SharedWeightedBlendedOITRevealage";
+    RHITextureDesc compositeDesc = RHITextureDesc::Texture2D(
+        64u,
+        64u,
+        RHIFormat::RGBA16_FLOAT,
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource |
+            RHITextureUsage::CopySrc);
+    compositeDesc.debugName =
+        "RenderPassValidation.WeightedBlendedOITCompositeHDR";
+    const RGTextureHandle accumulation = graph.CreateTexture(accumulationDesc);
+    const RGTextureHandle revealage = graph.CreateTexture(revealageDesc);
+    // The production composite HDR is consumed by later post-processing. Keep
+    // the focused graph live by importing an external destination; otherwise
+    // graph culling can correctly remove the entire transient-only test chain.
+    RHITextureRef postCompositeTexture = device.CreateTexture(compositeDesc);
+    ASSERT_TRUE(postCompositeTexture);
+    const RGTextureHandle postCompositeHDR =
+        RenderGraphValidationAccess::ImportTexture(
+            graph,
+            postCompositeTexture.Get(),
+            RHIResourceState::RenderTarget);
+    ASSERT_TRUE(accumulation.IsValid());
+    ASSERT_TRUE(revealage.IsValid());
+    ASSERT_TRUE(postCompositeHDR.IsValid());
+
+    struct SharedOITClearPassData
+    {
+        RGTextureHandle accumulation{};
+        RGTextureHandle revealage{};
+        RGTextureViewHandle accumulationView{};
+        RGTextureViewHandle revealageView{};
+    };
+    graph.AddPass<SharedOITClearPassData>(
+        "RenderPassValidationSharedOITClear",
+        RenderGraphPassType::Graphics,
+        [accumulation, revealage](RenderGraphBuilder& builder,
+                                  SharedOITClearPassData& data)
+        {
+            data.accumulation = accumulation;
+            data.revealage = revealage;
+            RHITextureViewDesc accumulationViewDesc;
+            accumulationViewDesc.format = RHIFormat::RGBA16_FLOAT;
+            accumulationViewDesc.dimension = RHITextureDimension::Texture2D;
+            accumulationViewDesc.subresourceRange = RHISubresourceRange::All();
+            accumulationViewDesc.type = RHITextureViewType::RenderTarget;
+            accumulationViewDesc.debugName =
+                "RenderPassValidationSharedOITAccumulationClearRTV";
+            data.accumulationView = builder.CreateTextureView(
+                accumulation, accumulationViewDesc);
+            data.accumulationView = builder.Write(
+                data.accumulationView,
+                MakeRGAccessDesc(RHIResourceState::RenderTarget,
+                                 RHIShaderStage::Pixel));
+
+            RHITextureViewDesc revealageViewDesc;
+            revealageViewDesc.format = RHIFormat::R16_FLOAT;
+            revealageViewDesc.dimension = RHITextureDimension::Texture2D;
+            revealageViewDesc.subresourceRange = RHISubresourceRange::All();
+            revealageViewDesc.type = RHITextureViewType::RenderTarget;
+            revealageViewDesc.debugName =
+                "RenderPassValidationSharedOITRevealageClearRTV";
+            data.revealageView = builder.CreateTextureView(
+                revealage, revealageViewDesc);
+            data.revealageView = builder.Write(
+                data.revealageView,
+                MakeRGAccessDesc(RHIResourceState::RenderTarget,
+                                 RHIShaderStage::Pixel));
+        },
+        [](const SharedOITClearPassData& data, RenderGraphPassContext& context)
+        {
+            RHITexture* const accumulationTexture =
+                context.GetTexture(data.accumulation);
+            RHITextureView* const accumulationView =
+                context.GetTextureView(data.accumulationView);
+            RHITextureView* const revealageView =
+                context.GetTextureView(data.revealageView);
+            if (accumulationTexture == nullptr || accumulationView == nullptr ||
+                revealageView == nullptr)
+            {
+                context.MarkExecutionFailed(
+                    "RenderPassValidation shared OIT clear could not resolve attachments");
+                return;
+            }
+
+            RHIRenderPassDesc clearPass;
+            clearPass.AddColorAttachment(
+                accumulationView,
+                RHILoadOp::Clear,
+                RHIStoreOp::Store,
+                RHIClearColor{0.0f, 0.0f, 0.0f, 0.0f});
+            clearPass.AddColorAttachment(
+                revealageView,
+                RHILoadOp::Clear,
+                RHIStoreOp::Store,
+                RHIClearColor{1.0f, 1.0f, 1.0f, 1.0f});
+            clearPass.SetRenderArea(
+                0, 0, accumulationTexture->GetWidth(),
+                accumulationTexture->GetHeight());
+            context.Commands().BeginRenderPass(clearPass);
+            context.Commands().EndRenderPass();
+        });
+
+    TransparentPass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    auto prepared = pass.PrepareTranslucencyRecording(planResult.plan, context);
+    ASSERT_TRUE(prepared.IsPrepared());
+    const TransparentStagedRecordingStats preparedStats = prepared.GetStats();
+    EXPECT_EQ(planResult.plan.GetIdentityHash(), prepared.GetPlanIdentityHash());
+    EXPECT_EQ(1u, preparedStats.preparationCount);
+    EXPECT_EQ(2u, preparedStats.plannedMeshDrawCount);
+    EXPECT_EQ(1u, preparedStats.weightedBlendedDrawCount);
+    EXPECT_EQ(1u, preparedStats.sortedRefractionDrawCount);
+    EXPECT_EQ(0u, preparedStats.directAdditiveDrawCount);
+
+    // Neither an attachment alias nor a direct stage before the weighted
+    // contribution may consume the one-shot token.
+    EXPECT_FALSE(pass.RecordWeightedBlended(
+        graph, prepared, accumulation, accumulation));
+    EXPECT_FALSE(pass.RecordDirect(
+        graph, prepared, postCompositeHDR, context.view.reactiveMaskTarget));
+    EXPECT_TRUE(pass.RecordWeightedBlended(
+        graph, prepared, accumulation, revealage));
+    EXPECT_FALSE(pass.RecordWeightedBlended(
+        graph, prepared, accumulation, revealage));
+
+    struct OITCompositeDependencyPassData
+    {
+        RGTextureHandle accumulation{};
+        RGTextureHandle revealage{};
+        RGTextureHandle output{};
+    };
+    graph.AddPass<OITCompositeDependencyPassData>(
+        "RenderPassValidationWeightedOITCompositeDependency",
+        RenderGraphPassType::Graphics,
+        [accumulation, revealage, postCompositeHDR](
+            RenderGraphBuilder& builder,
+            OITCompositeDependencyPassData& data)
+        {
+            data.accumulation = builder.Read(
+                accumulation,
+                MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                                 RHIShaderStage::Pixel));
+            data.revealage = builder.Read(
+                revealage,
+                MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                                 RHIShaderStage::Pixel));
+            data.output = builder.Write(
+                postCompositeHDR,
+                MakeRGAccessDesc(RHIResourceState::RenderTarget,
+                                 RHIShaderStage::Pixel));
+        },
+        [](const OITCompositeDependencyPassData&, RenderGraphPassContext&) {});
+
+    // Enabled WBOIT cannot resume direct rendering into the pre-composite HDR.
+    EXPECT_FALSE(pass.RecordDirect(
+        graph, prepared, context.view.colorTarget, context.view.reactiveMaskTarget));
+    EXPECT_TRUE(pass.RecordDirect(
+        graph, prepared, postCompositeHDR, context.view.reactiveMaskTarget));
+    EXPECT_FALSE(pass.RecordDirect(
+        graph, prepared, postCompositeHDR, context.view.reactiveMaskTarget));
+
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    const auto findPassIndex = [&diagnostics](const char* name)
+    {
+        const auto it = std::find_if(
+            diagnostics.passes.begin(), diagnostics.passes.end(),
+            [name](const RenderGraph::PassDiagnostic& diagnostic)
+            {
+                return diagnostic.name == name;
+            });
+        return it == diagnostics.passes.end()
+            ? diagnostics.passes.size()
+            : static_cast<size_t>(
+                std::distance(diagnostics.passes.begin(), it));
+    };
+    const size_t weightedPassIndex =
+        findPassIndex("TransparentWeightedBlendedOIT");
+    const size_t compositePassIndex =
+        findPassIndex("RenderPassValidationWeightedOITCompositeDependency");
+    const size_t directPassIndex =
+        findPassIndex("TransparentSortedAndAdditive");
+    ASSERT_LT(weightedPassIndex, diagnostics.passes.size());
+    ASSERT_LT(compositePassIndex, diagnostics.passes.size());
+    ASSERT_LT(directPassIndex, diagnostics.passes.size());
+    EXPECT_LT(weightedPassIndex, compositePassIndex);
+    EXPECT_LT(compositePassIndex, directPassIndex);
+
+    RecordingCommandContext commands;
+    RenderGraphValidationAccess::Execute(graph, commands);
+
+    std::vector<const RHIRenderPassDesc*> sharedOITPasses;
+    const RHIRenderPassDesc* directPass = nullptr;
+    for (const RHIRenderPassDesc& renderPass : commands.renderPasses)
+    {
+        if (renderPass.colorAttachmentCount != 2u ||
+            renderPass.colorAttachments[0].view == nullptr ||
+            renderPass.colorAttachments[1].view == nullptr)
+        {
+            continue;
+        }
+        if (renderPass.colorAttachments[0].view->GetFormat() ==
+                RHIFormat::RGBA16_FLOAT &&
+            renderPass.colorAttachments[1].view->GetFormat() ==
+                RHIFormat::R16_FLOAT)
+        {
+            sharedOITPasses.push_back(&renderPass);
+        }
+        else if (renderPass.colorAttachments[0].view->GetFormat() ==
+                     RHIFormat::RGBA16_FLOAT &&
+                 renderPass.colorAttachments[1].view->GetFormat() ==
+                     RHIFormat::R8_UNORM)
+        {
+            directPass = &renderPass;
+        }
+    }
+    ASSERT_EQ(2u, sharedOITPasses.size());
+    EXPECT_EQ(RHILoadOp::Clear,
+              sharedOITPasses[0]->colorAttachments[0].loadOp);
+    EXPECT_EQ(RHILoadOp::Clear,
+              sharedOITPasses[0]->colorAttachments[1].loadOp);
+    EXPECT_EQ(RHILoadOp::Load,
+              sharedOITPasses[1]->colorAttachments[0].loadOp);
+    EXPECT_EQ(RHILoadOp::Load,
+              sharedOITPasses[1]->colorAttachments[1].loadOp);
+    ASSERT_TRUE(sharedOITPasses[1]->hasDepthStencil);
+    EXPECT_TRUE(sharedOITPasses[1]->depthStencilAttachment.readOnly);
+    EXPECT_EQ(RHILoadOp::Load,
+              sharedOITPasses[1]->depthStencilAttachment.depthLoadOp);
+    ASSERT_NE(nullptr, directPass);
+
+    ASSERT_GE(commands.pipelineSequence.size(), 2u);
+    ExpectPipelineDebugName(
+        commands.pipelineSequence[0],
+        "WeightedBlendedOITAccumulationRigidPipeline");
+    ExpectPipelineDebugName(
+        commands.pipelineSequence[1], "DefaultTransparentAlphaMrtPipeline");
+    EXPECT_EQ(2u, commands.drawIndexedCount);
+
+    const TransparentStagedRecordingStats executedStats = prepared.GetStats();
+    EXPECT_EQ(1u, executedStats.preparationCount);
+    EXPECT_TRUE(executedStats.weightedBlendedPassRecorded);
+    EXPECT_TRUE(executedStats.directPassRecorded);
+    EXPECT_TRUE(executedStats.weightedBlendedExecuted);
+    EXPECT_TRUE(executedStats.directExecuted);
+    EXPECT_FALSE(executedStats.executionFailed);
+    EXPECT_EQ(1u, executedStats.weightedBlendedExecutedDrawCount);
+    EXPECT_EQ(1u, executedStats.sortedRefractionExecutedDrawCount);
+    EXPECT_EQ(0u, executedStats.directAdditiveExecutedDrawCount);
+}
+
+TEST_F(RenderPassValidationFixture,
+       TransparentPassPreparedTokenReleasesRecordingOwnedMaterialSnapshot)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    RenderDrawItem weighted = MakeDrawItem(MaterialRenderMode::Transparent);
+    weighted.classificationIndex = 49u;
+    weighted.viewSpaceDepth = 6.0f;
+    weighted.sortKey = BuildTransparentDrawSortKey(weighted);
+    const std::vector<RenderDrawItem> transparentItems = {weighted};
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RHITextureRef sceneHDR = device.CreateTexture(
+        RHITextureDesc::Texture2D(
+            64u,
+            64u,
+            RHIFormat::RGBA16_FLOAT,
+            RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource |
+                RHITextureUsage::CopySrc));
+    RHITextureRef depth = device.CreateTexture(
+        RHITextureDesc::DepthStencil(64u, 64u, RHIFormat::D32_FLOAT));
+    ASSERT_TRUE(sceneHDR);
+    ASSERT_TRUE(depth);
+
+    ViewData graphView = view;
+    graphView.viewportWidth = 64u;
+    graphView.viewportHeight = 64u;
+    graphView.colorTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, sceneHDR.Get(), RHIResourceState::RenderTarget);
+    graphView.depthTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, depth.Get(), RHIResourceState::DepthRead);
+    RenderPassRecordContext context = MakeTransparentRecordContext(
+        graph, graphView, scene, transparentItems, 2204u, 2204u);
+    AttachDefaultTestLighting(context);
+
+    const WeightedBlendedOITCapabilityReadiness enabledReadiness{
+        .requested = true,
+        .compiled = true,
+        .hardwareSupported = true,
+        .independentBlendSupported = true,
+        .accumulationFormatBlendSupported = true,
+        .revealageFormatBlendSupported = true,
+        .implementationSupported = true,
+        .pipelineReady = true,
+        .inputsReady = true,
+    };
+    const TranslucencyFramePlanBuildResult planResult =
+        BuildTestMeshTranslucencyPlan(
+            context,
+            transparentItems,
+            enabledReadiness,
+            TranslucencyCapabilityRequirement::Required);
+    ASSERT_TRUE(planResult.Succeeded()) << planResult.diagnostic;
+
+    TransparentPass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    const size_t descriptorCountBefore = device.createdDescriptorSetDescs.size();
+    std::shared_ptr<FakeDescriptorSetLifetimeState> snapshotLifetime;
+    {
+        auto prepared =
+            pass.PrepareTranslucencyRecording(planResult.plan, context);
+        ASSERT_TRUE(prepared.IsPrepared());
+
+        ASSERT_EQ(device.createdDescriptorSetDescs.size(),
+                  device.createdDescriptorSets.size());
+        for (size_t index = descriptorCountBefore;
+             index < device.createdDescriptorSetDescs.size();
+             ++index)
+        {
+            const char* const debugName =
+                device.createdDescriptorSetDescs[index].debugName;
+            if (debugName != nullptr &&
+                std::string(debugName) ==
+                    "MaterialBindingSnapshotDescriptorSet")
+            {
+                snapshotLifetime =
+                    device.createdDescriptorSets[index]->lifetime;
+                break;
+            }
+        }
+        ASSERT_NE(nullptr, snapshotLifetime);
+        EXPECT_TRUE(snapshotLifetime->alive);
+    }
+
+    // The prepared state owns the material snapshot. Dropping the opaque token
+    // must destroy that state; a strong back-reference from its GraphPassData
+    // would keep the descriptor alive forever and exhaust native heaps.
+    EXPECT_FALSE(snapshotLifetime->alive);
+}
+
+TEST_F(RenderPassValidationFixture,
+       TransparentPassStagedRecordingAllowsOnlyDeclaredOptionalSortedFallback)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    RenderDrawItem sorted = MakeDrawItem(MaterialRenderMode::Transparent);
+    sorted.classificationIndex = 51u;
+    sorted.viewSpaceDepth = 4.0f;
+    sorted.sortKey = BuildTransparentDrawSortKey(sorted);
+    std::vector<RenderDrawItem> transparentItems = {sorted};
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RHITextureRef sceneHDR = device.CreateTexture(
+        RHITextureDesc::Texture2D(
+            64u,
+            64u,
+            RHIFormat::RGBA16_FLOAT,
+            RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource |
+                RHITextureUsage::CopySrc));
+    ASSERT_TRUE(sceneHDR);
+    ViewData graphView = view;
+    graphView.colorTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, sceneHDR.Get(), RHIResourceState::RenderTarget);
+    RenderPassRecordContext context = MakeTransparentRecordContext(
+        graph, graphView, scene, transparentItems, 2202u, 2202u);
+    AttachDefaultTestLighting(context);
+
+    const WeightedBlendedOITCapabilityReadiness unavailableReadiness{
+        .requested = true,
+        .compiled = true,
+        .hardwareSupported = false,
+        .independentBlendSupported = false,
+        .accumulationFormatBlendSupported = false,
+        .revealageFormatBlendSupported = false,
+        .implementationSupported = true,
+        .pipelineReady = false,
+        .inputsReady = true,
+    };
+    const TranslucencyFramePlanBuildResult planResult =
+        BuildTestMeshTranslucencyPlan(context, transparentItems,
+                                      unavailableReadiness);
+    ASSERT_TRUE(planResult.Succeeded()) << planResult.diagnostic;
+    ASSERT_EQ(WeightedBlendedOITCapabilityResolution::OptionalSortedFallback,
+              planResult.plan.GetWeightedBlendedResolution());
+    ASSERT_EQ(TranslucencyRoute::SortedRefraction,
+              planResult.plan.GetEntries().front().route);
+
+    RHITextureDesc accumulationDesc = RHITextureDesc::Texture2D(
+        64u,
+        64u,
+        PipelineCache::GetWeightedBlendedOITAccumulationFormat(),
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource);
+    RHITextureDesc revealageDesc = RHITextureDesc::Texture2D(
+        64u,
+        64u,
+        PipelineCache::GetWeightedBlendedOITRevealageFormat(),
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource);
+    const RGTextureHandle accumulation = graph.CreateTexture(accumulationDesc);
+    const RGTextureHandle revealage = graph.CreateTexture(revealageDesc);
+
+    TransparentPass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    auto prepared = pass.PrepareTranslucencyRecording(planResult.plan, context);
+    ASSERT_TRUE(prepared.IsPrepared());
+    EXPECT_TRUE(pass.RecordWeightedBlended(
+        graph, prepared, accumulation, revealage));
+    EXPECT_TRUE(pass.RecordDirect(
+        graph, prepared, context.view.colorTarget, context.view.reactiveMaskTarget));
+
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    EXPECT_EQ(diagnostics.passes.end(), std::find_if(
+        diagnostics.passes.begin(), diagnostics.passes.end(),
+        [](const RenderGraph::PassDiagnostic& diagnostic)
+        {
+            return diagnostic.name == "TransparentWeightedBlendedOIT";
+        }));
+    EXPECT_NE(diagnostics.passes.end(), std::find_if(
+        diagnostics.passes.begin(), diagnostics.passes.end(),
+        [](const RenderGraph::PassDiagnostic& diagnostic)
+        {
+            return diagnostic.name == "TransparentSortedAndAdditive";
+        }));
+
+    RecordingCommandContext commands;
+    RenderGraphValidationAccess::Execute(graph, commands);
+    EXPECT_EQ(1u, commands.drawIndexedCount);
+    const TransparentStagedRecordingStats stats = prepared.GetStats();
+    EXPECT_EQ(1u, stats.preparationCount);
+    EXPECT_TRUE(stats.weightedBlendedPassRecorded);
+    EXPECT_FALSE(stats.weightedBlendedExecuted);
+    EXPECT_TRUE(stats.directPassRecorded);
+    EXPECT_TRUE(stats.directExecuted);
+    EXPECT_EQ(0u, stats.weightedBlendedExecutedDrawCount);
+    EXPECT_EQ(1u, stats.sortedRefractionExecutedDrawCount);
+    EXPECT_FALSE(stats.executionFailed);
+}
+
+TEST_F(RenderPassValidationFixture,
+       TransparentPassStagedRecordingRejectsStalePlansAndRequiredUnavailableOIT)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Transparent);
+    item.classificationIndex = 61u;
+    item.viewSpaceDepth = 3.0f;
+    item.sortKey = BuildTransparentDrawSortKey(item);
+    std::vector<RenderDrawItem> transparentItems = {item};
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RHITextureRef sceneHDR = device.CreateTexture(
+        RHITextureDesc::Texture2D(
+            64u,
+            64u,
+            RHIFormat::RGBA16_FLOAT,
+            RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource |
+                RHITextureUsage::CopySrc));
+    ASSERT_TRUE(sceneHDR);
+    ViewData graphView = view;
+    graphView.colorTarget = RenderGraphValidationAccess::ImportTexture(
+        graph, sceneHDR.Get(), RHIResourceState::RenderTarget);
+    RenderPassRecordContext context = MakeTransparentRecordContext(
+        graph, graphView, scene, transparentItems, 2203u, 2203u);
+    AttachDefaultTestLighting(context);
+
+    const WeightedBlendedOITCapabilityReadiness enabledReadiness{
+        .requested = true,
+        .compiled = true,
+        .hardwareSupported = true,
+        .independentBlendSupported = true,
+        .accumulationFormatBlendSupported = true,
+        .revealageFormatBlendSupported = true,
+        .implementationSupported = true,
+        .pipelineReady = true,
+        .inputsReady = true,
+    };
+    const TranslucencyFramePlanBuildResult planResult =
+        BuildTestMeshTranslucencyPlan(context, transparentItems, enabledReadiness);
+    ASSERT_TRUE(planResult.Succeeded()) << planResult.diagnostic;
+
+    TransparentPass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    RenderPassRecordContext staleContext = context;
+    ++staleContext.featureFrameIdentity.configurationRevision;
+    auto stalePrepared = pass.PrepareTranslucencyRecording(
+        planResult.plan, staleContext);
+    EXPECT_FALSE(stalePrepared.IsPrepared());
+    const TransparentStagedRecordingStats staleStats = stalePrepared.GetStats();
+    EXPECT_EQ(planResult.plan.GetIdentityHash(), staleStats.planIdentityHash);
+    EXPECT_EQ(1u, staleStats.preparationCount);
+    EXPECT_TRUE(staleStats.preparationFailed);
+
+    const WeightedBlendedOITCapabilityReadiness unavailableReadiness{
+        .requested = true,
+        .compiled = true,
+        .hardwareSupported = false,
+        .independentBlendSupported = false,
+        .accumulationFormatBlendSupported = false,
+        .revealageFormatBlendSupported = false,
+        .implementationSupported = true,
+        .pipelineReady = false,
+        .inputsReady = true,
+    };
+    const TranslucencyFramePlanBuildResult requiredUnavailable =
+        BuildTestMeshTranslucencyPlan(
+            context,
+            transparentItems,
+            unavailableReadiness,
+            TranslucencyCapabilityRequirement::Required);
+    EXPECT_FALSE(requiredUnavailable.Succeeded());
+    EXPECT_EQ(TranslucencyFramePlanCode::RequiredCapabilityUnavailable,
+              requiredUnavailable.code);
+}
+
 TEST(RenderPassStatusValidation, ParticleFeaturePassStaysDisabledWithoutSnapshotItems)
 {
     ParticleRenderSnapshot snapshot;
@@ -25304,7 +26711,7 @@ TEST_F(RenderPassValidationFixture,
     const RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan(
         scene, visibleObjectIndices, gpuResources.GetRegistry());
     EXPECT_FALSE(plan.HasWork());
-    EXPECT_EQ(1U, plan.stats.visibleObjectCount);
+    EXPECT_EQ(1U, plan.stats.candidateObjectCount);
     EXPECT_EQ(0U, plan.stats.drawItemCount);
     EXPECT_TRUE(plan.instances.empty());
     EXPECT_TRUE(plan.blasBuilds.empty());
@@ -25407,13 +26814,13 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotCarriesRHICapabi
         << toolSnapshot.rhiCapabilityReport.validationMessage;
     EXPECT_TRUE(toolSnapshot.rhiCapabilityReport.renderGraphBaselineSupported);
     EXPECT_TRUE(toolSnapshot.rhiCapabilityReport.renderGraphBaselineMissingRequirements.empty());
-    EXPECT_EQ(toolSnapshot.rhiCapabilityReport.entries.size(), static_cast<size_t>(12));
+    EXPECT_EQ(toolSnapshot.rhiCapabilityReport.entries.size(), static_cast<size_t>(13));
 
     const std::string diagnosticsText = renderer.ExportToolDiagnosticsText();
     EXPECT_NE(diagnosticsText.find("rhiCapabilities=true"), std::string::npos);
     EXPECT_NE(
         diagnosticsText.find(
-            "RHICapabilities: schema=6, backend=" + expectedBackendName),
+            "RHICapabilities: schema=7, backend=" + expectedBackendName),
         std::string::npos);
     EXPECT_NE(diagnosticsText.find("adapter=RenderPassValidation Test Adapter"), std::string::npos);
     EXPECT_NE(diagnosticsText.find("driver=RenderPassValidation.Driver.1"), std::string::npos);
@@ -25424,7 +26831,7 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotCarriesRHICapabi
 
     const std::string manifestJson = renderer.ExportToolDiagnosticsManifestJson();
     EXPECT_NE(manifestJson.find("\"rhiCapabilityReportAvailable\": true"), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"rhiCapabilities\": {\n    \"schemaVersion\": 6"), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"rhiCapabilities\": {\n    \"schemaVersion\": 7"), std::string::npos);
     EXPECT_NE(
         manifestJson.find(
             "\"backend\": \"" + expectedBackendName + "\""),
@@ -25438,7 +26845,7 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotCarriesRHICapabi
     EXPECT_NE(manifestJson.find("\"status\": \"Supported\""), std::string::npos);
 
     const std::string rhiCapabilityJson = renderer.ExportToolRHICapabilityReportJson();
-    EXPECT_NE(rhiCapabilityJson.find("\"schemaVersion\": 6"), std::string::npos);
+    EXPECT_NE(rhiCapabilityJson.find("\"schemaVersion\": 7"), std::string::npos);
     EXPECT_NE(rhiCapabilityJson.find("\"schemaId\": \"RVX.RHI.CapabilityReport\""), std::string::npos);
     EXPECT_NE(rhiCapabilityJson.find("\"id\": \"rhiCapabilityReportJson\""), std::string::npos);
     EXPECT_NE(rhiCapabilityJson.find("\"kind\": \"RHICapabilityReportJson\""), std::string::npos);
@@ -27858,17 +29265,14 @@ TEST_F(RenderPassValidationFixture, DecalRendererReportsUnsupportedWithoutSchedu
     EXPECT_EQ(decalSource.find("TODO"), std::string::npos);
 }
 
-TEST_F(RenderPassValidationFixture, SSRReportsUnsupportedDiagnosticsWithoutScheduling)
+TEST_F(RenderPassValidationFixture,
+       SSRWithoutRendererResourcesFailsBeforeGraphScheduling)
 {
-    RecordingCommandContext ctx;
     FakeDevice localDevice;
     localDevice.EnableBasicCapabilities();
 
     SSR ssr;
     ssr.SetEnabled(true);
-    ssr.Initialize(&localDevice, 64, 48);
-
-    ASSERT_TRUE(ssr.IsInitialized());
     EXPECT_FALSE(ssr.IsSupported());
     EXPECT_FALSE(ssr.IsEnabled());
     EXPECT_FALSE(ssr.GetUnsupportedReason().empty());
@@ -27886,13 +29290,26 @@ TEST_F(RenderPassValidationFixture, SSRReportsUnsupportedDiagnosticsWithoutSched
     ASSERT_TRUE(ssrNormalTexture);
     ASSERT_TRUE(ssrRoughnessTexture);
 
-    ssr.Compute(ctx,
-                ssrColorTexture.Get(),
-                ssrDepthTexture.Get(),
-                ssrNormalTexture.Get(),
-                ssrRoughnessTexture.Get(),
-                Mat4Identity(),
-                Mat4Identity());
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &localDevice);
+    SSRFrameInputs inputs;
+    inputs.frameIdentity = {1, 1, 1, 1};
+    inputs.viewIdentity = {1, 1, 0, ViewRole::Main};
+    inputs.reflectionPlanIdentity = 1;
+    inputs.lightingPlanIdentity = 1;
+    inputs.depthPyramidIdentity = 1;
+    inputs.sceneColor = RenderGraphValidationAccess::ImportTexture(
+        graph, ssrColorTexture.Get(), RHIResourceState::ShaderResource);
+    inputs.deviceDepth = RenderGraphValidationAccess::ImportTexture(
+        graph, ssrDepthTexture.Get(), RHIResourceState::ShaderResource);
+    inputs.normalRoughness = RenderGraphValidationAccess::ImportTexture(
+        graph, ssrNormalTexture.Get(), RHIResourceState::ShaderResource);
+    ViewData view;
+    view.viewportWidth = 64;
+    view.viewportHeight = 48;
+
+    const SSROutput output = ssr.AddToGraph(graph, view, inputs);
+    EXPECT_FALSE(output.IsValid());
 
     const SSRComputeStats& diagnostics = ssr.GetLastComputeStats();
     EXPECT_TRUE(diagnostics.requested);
@@ -27903,17 +29320,579 @@ TEST_F(RenderPassValidationFixture, SSRReportsUnsupportedDiagnosticsWithoutSched
     EXPECT_TRUE(diagnostics.depthAvailable);
     EXPECT_TRUE(diagnostics.normalAvailable);
     EXPECT_TRUE(diagnostics.roughnessAvailable);
-    EXPECT_TRUE(diagnostics.temporalHistoryRequired);
+    EXPECT_FALSE(diagnostics.temporalHistoryRequired);
     EXPECT_EQ(diagnostics.implementationTier, SSRImplementationTier::Unsupported);
     EXPECT_STREQ(GetSSRImplementationTierName(diagnostics.implementationTier), "Unsupported");
     EXPECT_TRUE(diagnostics.missingInputReason.empty());
-    EXPECT_NE(diagnostics.fallbackReason.find("not implemented"), std::string::npos);
+    EXPECT_NE(diagnostics.fallbackReason.find("pipeline"), std::string::npos);
+    EXPECT_EQ(graph.GetRecordedPassCount(), static_cast<size_t>(0));
 
     const fs::path ssrSourcePath =
         FindShaderDirectory().parent_path() / "Private" / "PostProcess" / "SSR.cpp";
     const std::string ssrSource = ReadTextFile(ssrSourcePath);
-    EXPECT_EQ(ssrSource.find("graph.AddPass"), std::string::npos);
+    EXPECT_NE(ssrSource.find("graph.AddPass"), std::string::npos);
     EXPECT_EQ(ssrSource.find("TODO"), std::string::npos);
+}
+
+TEST_F(RenderPassValidationFixture,
+       SSRHiZTraceAndProbeResolveExecuteWithBoundDescriptorABI)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    constexpr uint32 width = 64u;
+    constexpr uint32 height = 48u;
+    RHITextureRef sceneColor = device.CreateTexture(
+        RHITextureDesc::RenderTarget(width, height, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef depth = device.CreateTexture(
+        RHITextureDesc::DepthStencil(width, height, RHIFormat::D32_FLOAT));
+    RHITextureRef normalRoughness = device.CreateTexture(
+        RHITextureDesc::RenderTarget(width, height, RHIFormat::RGBA8_UNORM));
+    RHITextureDesc cubeDesc = RHITextureDesc::Texture2D(
+        16u, 16u, RHIFormat::RGBA16_FLOAT, RHITextureUsage::ShaderResource);
+    cubeDesc.dimension = RHITextureDimension::TextureCube;
+    cubeDesc.mipLevels = 5u;
+    RHITextureRef localProbe = device.CreateTexture(cubeDesc);
+    ASSERT_TRUE(sceneColor);
+    ASSERT_TRUE(depth);
+    ASSERT_TRUE(normalRoughness);
+    ASSERT_TRUE(localProbe);
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    const TestSSRReflectionSurfaceGraphState reflectionSurface =
+        CreateTestSSRReflectionSurfaceGraphState(
+            device, graph, width, height, 0x9bc88bcaac135f0dULL);
+    ASSERT_TRUE(reflectionSurface.IsValid());
+    SSRFrameInputs inputs;
+    inputs.frameIdentity = {71u, 72u, 73u, 74u};
+    inputs.viewIdentity = {75u, 76u, 0u, ViewRole::Main};
+    inputs.reflectionPlanIdentity = 77u;
+    inputs.lightingPlanIdentity = 78u;
+    inputs.depthPyramidIdentity = 79u;
+    inputs.screenSpaceRequested = true;
+    inputs.sceneColor = RenderGraphValidationAccess::ImportTexture(
+        graph, sceneColor.Get(), RHIResourceState::ShaderResource);
+    inputs.deviceDepth = RenderGraphValidationAccess::ImportTexture(
+        graph, depth.Get(), RHIResourceState::ShaderResource);
+    inputs.normalRoughness = RenderGraphValidationAccess::ImportTexture(
+        graph, normalRoughness.Get(), RHIResourceState::ShaderResource);
+    inputs.probeTextures[0] = RenderGraphValidationAccess::ImportTexture(
+        graph, localProbe.Get(), RHIResourceState::ShaderResource);
+    inputs.probePositions[0] = {0.0f, 0.0f, 0.0f};
+    inputs.probeExtents[0] = {5.0f, 5.0f, 5.0f};
+    inputs.probeWorldTransforms[0] = Mat4Identity();
+    inputs.probeInverseWorldTransforms[0] = Mat4Identity();
+    inputs.probeWeights[0] = 1.0f;
+    inputs.probeReady[0] = true;
+    reflectionSurface.Apply(inputs);
+
+    ViewData ssrView;
+    ssrView.viewportWidth = width;
+    ssrView.viewportHeight = height;
+    SSR ssr;
+    ssr.SetResources(&pipelineCache);
+    ssr.SetEnabled(true);
+    ASSERT_TRUE(ssr.IsSupported()) << ssr.GetUnsupportedReason();
+
+    const size_t descriptorCountBefore = device.createdDescriptorSetDescs.size();
+    const SSROutput output = ssr.AddToGraph(graph, ssrView, inputs);
+    ASSERT_TRUE(output.IsValid());
+    EXPECT_TRUE(output.screenSpaceScheduled);
+    EXPECT_TRUE(output.probeResolveScheduled);
+    EXPECT_EQ(output.hiZMipCount, 7u);
+    EXPECT_EQ(output.depthPyramidIdentity, inputs.depthPyramidIdentity);
+
+    const SSRComputeStats& scheduled = ssr.GetLastComputeStats();
+    EXPECT_TRUE(scheduled.requested);
+    EXPECT_TRUE(scheduled.supported);
+    EXPECT_TRUE(scheduled.scheduled);
+    EXPECT_FALSE(scheduled.executed);
+    EXPECT_TRUE(scheduled.screenSpaceRequested);
+    EXPECT_EQ(scheduled.readyProbeCount, 1u);
+    EXPECT_EQ(scheduled.hiZMipCount, 7u);
+    EXPECT_EQ(scheduled.hiZGraphPassCount, 7u);
+    EXPECT_EQ(scheduled.traceGraphPassCount, 1u);
+    EXPECT_EQ(scheduled.resolveGraphPassCount, 1u);
+    EXPECT_EQ(scheduled.minimumFallbackRoute, ReflectionResolveRoute::LocalProbe);
+
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    EXPECT_EQ(graph.GetCompileStats().totalPasses, 9u);
+
+    RecordingCommandContext commands;
+    RenderGraphValidationAccess::Execute(graph, commands);
+    EXPECT_EQ(commands.beginRenderPassCount, 9u);
+    EXPECT_EQ(commands.endRenderPassCount, 9u);
+    EXPECT_EQ(commands.drawCount, 9u);
+    ASSERT_EQ(commands.pipelineSequence.size(), static_cast<size_t>(9));
+    EXPECT_EQ(commands.pipelineSequence.front(),
+              pipelineCache.GetSSRHiZBasePipeline());
+    EXPECT_EQ(commands.pipelineSequence[7],
+              pipelineCache.GetSSRTracePipeline());
+    EXPECT_EQ(commands.pipelineSequence.back(),
+              pipelineCache.GetSSRResolvePipeline());
+    EXPECT_EQ(device.createdDescriptorSetDescs.size(), descriptorCountBefore + 9u);
+
+    const auto resolveDescriptorIt = std::find_if(
+        device.createdDescriptorSetDescs.begin() +
+            static_cast<std::ptrdiff_t>(descriptorCountBefore),
+        device.createdDescriptorSetDescs.end(),
+        [](const RHIDescriptorSetDesc& desc)
+        {
+            return desc.debugName != nullptr &&
+                   std::string(desc.debugName) == "SSRResolveDescriptorSet";
+        });
+    ASSERT_NE(resolveDescriptorIt, device.createdDescriptorSetDescs.end());
+    const RHIDescriptorSetDesc& resolveDescriptor = *resolveDescriptorIt;
+    EXPECT_EQ(resolveDescriptor.layout, pipelineCache.GetSSRSetLayout());
+    EXPECT_EQ(resolveDescriptor.bindings.size(), static_cast<size_t>(19));
+    const auto findBinding = [&resolveDescriptor](
+                                 uint32 binding,
+                                 uint32 arrayElement)
+        -> const RHIDescriptorBinding*
+    {
+        const auto it = std::find_if(
+            resolveDescriptor.bindings.begin(), resolveDescriptor.bindings.end(),
+            [binding, arrayElement](const RHIDescriptorBinding& candidate)
+            {
+                return candidate.binding == binding &&
+                       candidate.arrayElement == arrayElement;
+            });
+        return it == resolveDescriptor.bindings.end() ? nullptr : &*it;
+    };
+    const RHIDescriptorBinding* const constants = findBinding(0u, 0u);
+    ASSERT_NE(constants, nullptr);
+    EXPECT_NE(constants->buffer, nullptr);
+    const auto* const resolveConstants =
+        static_cast<const FakeBuffer*>(constants->buffer);
+    ASSERT_NE(resolveConstants, nullptr);
+    constexpr size_t SSR_TRACE_CONTROL_FLAGS_OFFSET =
+        sizeof(float) * 12u + sizeof(uint32) * 3u;
+    ASSERT_GE(resolveConstants->GetStorage().size(),
+              SSR_TRACE_CONTROL_FLAGS_OFFSET + sizeof(uint32));
+    uint32 normalRouteMaskFlags = 0;
+    std::memcpy(&normalRouteMaskFlags,
+                resolveConstants->GetStorage().data() +
+                    SSR_TRACE_CONTROL_FLAGS_OFFSET,
+                sizeof(normalRouteMaskFlags));
+    // Bit 11 is qualification-only. A normal SSR frame retains the prior
+    // route-mask behavior even when its local or global lighting is black.
+    EXPECT_EQ(normalRouteMaskFlags & (1u << 11u), 0u);
+    for (uint32 probeIndex = 0;
+         probeIndex < RVX_SSR_LOCAL_PROBE_CAPACITY;
+         ++probeIndex)
+    {
+        const RHIDescriptorBinding* const probe = findBinding(7u, probeIndex);
+        ASSERT_NE(probe, nullptr);
+        EXPECT_NE(probe->textureView, nullptr);
+    }
+    const RHIDescriptorBinding* const baseIndirectSpecular =
+        findBinding(15u, 0u);
+    ASSERT_NE(baseIndirectSpecular, nullptr);
+    EXPECT_NE(baseIndirectSpecular->textureView, nullptr);
+    const RHIDescriptorBinding* const exposureState = findBinding(16u, 0u);
+    ASSERT_NE(exposureState, nullptr);
+    EXPECT_NE(exposureState->buffer, nullptr);
+    const RHIDescriptorBinding* const specularResponse =
+        findBinding(17u, 0u);
+    ASSERT_NE(specularResponse, nullptr);
+    EXPECT_NE(specularResponse->textureView, nullptr);
+    const RHIDescriptorBinding* const sampler = findBinding(19u, 0u);
+    ASSERT_NE(sampler, nullptr);
+    EXPECT_NE(sampler->sampler, nullptr);
+
+    ssr.FinalizeGraphExecution(true);
+    const SSRComputeStats& executed = ssr.GetLastComputeStats();
+    EXPECT_TRUE(executed.executed);
+    EXPECT_TRUE(executed.hiZBuilt);
+    EXPECT_FALSE(executed.screenSpaceApplied);
+    EXPECT_FALSE(executed.probesApplied);
+    EXPECT_FALSE(executed.reflectionRouteEvidenceReady);
+    EXPECT_TRUE(executed.fallbackChainResolved);
+}
+
+TEST_F(RenderPassValidationFixture,
+       SSRQualificationReadbackRemainsBoundToPresentedSourceFrame)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    constexpr uint32 width = 64u;
+    constexpr uint32 height = 48u;
+    RHITextureRef sceneColor = device.CreateTexture(
+        RHITextureDesc::RenderTarget(
+            width, height, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef depth = device.CreateTexture(
+        RHITextureDesc::DepthStencil(
+            width, height, RHIFormat::D32_FLOAT));
+    RHITextureRef normalRoughness = device.CreateTexture(
+        RHITextureDesc::RenderTarget(
+            width, height, RHIFormat::RGBA8_UNORM));
+    RHITextureDesc cubeDesc = RHITextureDesc::Texture2D(
+        16u, 16u, RHIFormat::RGBA16_FLOAT,
+        RHITextureUsage::ShaderResource);
+    cubeDesc.dimension = RHITextureDimension::TextureCube;
+    cubeDesc.mipLevels = 5u;
+    RHITextureRef localProbe = device.CreateTexture(cubeDesc);
+    ASSERT_TRUE(sceneColor);
+    ASSERT_TRUE(depth);
+    ASSERT_TRUE(normalRoughness);
+    ASSERT_TRUE(localProbe);
+
+    const auto makeInputs = [&](RenderGraph& graph,
+                                uint64 frameSequence,
+                                uint64 reflectionPlanIdentity,
+                                TestSSRReflectionSurfaceGraphState&
+                                    reflectionSurfaceOwner)
+    {
+        SSRFrameInputs inputs;
+        inputs.frameIdentity = {frameSequence, 72u, 73u, 74u};
+        inputs.viewIdentity = {75u, 76u, 0u, ViewRole::Main};
+        inputs.reflectionPlanIdentity = reflectionPlanIdentity;
+        inputs.lightingPlanIdentity = 78u;
+        inputs.depthPyramidIdentity = 79u + frameSequence;
+        inputs.screenSpaceRequested = true;
+        inputs.sceneColor = RenderGraphValidationAccess::ImportTexture(
+            graph, sceneColor.Get(), RHIResourceState::ShaderResource);
+        inputs.deviceDepth = RenderGraphValidationAccess::ImportTexture(
+            graph, depth.Get(), RHIResourceState::ShaderResource);
+        inputs.normalRoughness = RenderGraphValidationAccess::ImportTexture(
+            graph, normalRoughness.Get(),
+            RHIResourceState::ShaderResource);
+        inputs.probeTextures[0] =
+            RenderGraphValidationAccess::ImportTexture(
+                graph, localProbe.Get(),
+                RHIResourceState::ShaderResource);
+        inputs.probePositions[0] = Vec3(0.0f);
+        inputs.probeExtents[0] = Vec3(5.0f);
+        inputs.probeWorldTransforms[0] = Mat4Identity();
+        inputs.probeInverseWorldTransforms[0] = Mat4Identity();
+        inputs.probePriorities[0] = 1;
+        inputs.probeWeights[0] = 1.0f;
+        inputs.probeReady[0] = true;
+        reflectionSurfaceOwner = CreateTestSSRReflectionSurfaceGraphState(
+            device, graph, width, height,
+            0xca85249944fe6719ULL ^ frameSequence);
+        if (!reflectionSurfaceOwner.IsValid())
+        {
+            ADD_FAILURE() <<
+                "failed to create SSR reflection-surface graph inputs";
+            return SSRFrameInputs{};
+        }
+        reflectionSurfaceOwner.Apply(inputs);
+        return inputs;
+    };
+
+    ViewData ssrView;
+    ssrView.viewportWidth = width;
+    ssrView.viewportHeight = height;
+    SSR ssr;
+    ssr.SetResources(&pipelineCache);
+    ASSERT_TRUE(ssr.ArmQualificationProbe());
+
+    RenderGraph probeGraph;
+    RenderGraphValidationAccess::SetDevice(probeGraph, &device);
+    TestSSRReflectionSurfaceGraphState probeReflectionSurface;
+    const SSRFrameInputs probeInputs =
+        makeInputs(probeGraph, 101u, 177u, probeReflectionSurface);
+    const SSROutput probeOutput =
+        ssr.AddToGraph(probeGraph, ssrView, probeInputs);
+    ASSERT_TRUE(probeOutput.IsValid());
+    RenderGraphValidationAccess::Compile(probeGraph);
+    ASSERT_TRUE(probeGraph.GetCompileStats().compileValid);
+    EXPECT_EQ(probeGraph.GetCompileStats().totalPasses, 10u);
+    RecordingCommandContext probeCommands;
+    probeCommands.textureToBufferPattern =
+        {0u, 17u, 85u, 170u, 255u, 17u};
+    RenderGraphValidationAccess::Execute(probeGraph, probeCommands);
+    EXPECT_EQ(probeCommands.copyTextureToBufferCount, 1u);
+    const auto qualificationResolveDescriptor = std::find_if(
+        device.createdDescriptorSetDescs.begin(),
+        device.createdDescriptorSetDescs.end(),
+        [](const RHIDescriptorSetDesc& desc)
+        {
+            return desc.debugName != nullptr &&
+                std::string(desc.debugName) == "SSRResolveDescriptorSet";
+        });
+    ASSERT_NE(qualificationResolveDescriptor,
+              device.createdDescriptorSetDescs.end());
+    const auto qualificationConstantBinding = std::find_if(
+        qualificationResolveDescriptor->bindings.begin(),
+        qualificationResolveDescriptor->bindings.end(),
+        [](const RHIDescriptorBinding& binding)
+        {
+            return binding.binding == 0u && binding.arrayElement == 0u;
+        });
+    ASSERT_NE(qualificationConstantBinding,
+              qualificationResolveDescriptor->bindings.end());
+    const auto* const qualificationConstants =
+        static_cast<const FakeBuffer*>(qualificationConstantBinding->buffer);
+    ASSERT_NE(qualificationConstants, nullptr);
+    constexpr size_t SSR_QUALIFICATION_TRACE_CONTROL_FLAGS_OFFSET =
+        sizeof(float) * 12u + sizeof(uint32) * 3u;
+    ASSERT_GE(qualificationConstants->GetStorage().size(),
+              SSR_QUALIFICATION_TRACE_CONTROL_FLAGS_OFFSET + sizeof(uint32));
+    uint32 qualificationRouteMaskFlags = 0;
+    std::memcpy(&qualificationRouteMaskFlags,
+                qualificationConstants->GetStorage().data() +
+                    SSR_QUALIFICATION_TRACE_CONTROL_FLAGS_OFFSET,
+                sizeof(qualificationRouteMaskFlags));
+    EXPECT_NE(qualificationRouteMaskFlags & (1u << 11u), 0u);
+    ssr.FinalizeGraphExecution(true);
+
+    const auto probeIdentity =
+        ssr.GetPendingQualificationProbeIdentity();
+    ASSERT_TRUE(probeIdentity.has_value());
+    EXPECT_EQ(probeIdentity->frameIdentity, probeInputs.frameIdentity);
+
+    device.SetFenceAutoComplete(false);
+    RenderSubmissionTracker tracker;
+    ASSERT_TRUE(tracker.Initialize(&device));
+    GPUCompletionToken probeToken;
+    const GPUCompletionPoint probeCompletion = tracker.Submit(&probeCommands);
+    ASSERT_TRUE(InsertGPUCompletionPoint(probeToken, probeCompletion));
+    ASSERT_TRUE(ssr.NotifyQualificationProbeSubmission(
+        *probeIdentity, probeToken, tracker));
+    ASSERT_TRUE(ssr.MarkQualificationProbePresented(*probeIdentity));
+    FakeFence* const graphicsFence =
+        device.FindFenceWithSignal(probeCompletion.value);
+    ASSERT_NE(graphicsFence, nullptr);
+
+    SSRQualificationProbeStats stats;
+    EXPECT_FALSE(ssr.PollQualificationProbe(tracker, stats));
+
+    // Record and submit a later frame before the source probe completes. The
+    // asynchronous result must remain keyed to frame 101 rather than leaking
+    // into the latest frame snapshot.
+    RenderGraph laterGraph;
+    RenderGraphValidationAccess::SetDevice(laterGraph, &device);
+    TestSSRReflectionSurfaceGraphState laterReflectionSurface;
+    const SSRFrameInputs laterInputs =
+        makeInputs(laterGraph, 102u, 277u, laterReflectionSurface);
+    ASSERT_TRUE(ssr.AddToGraph(laterGraph, ssrView, laterInputs).IsValid());
+    RenderGraphValidationAccess::Compile(laterGraph);
+    ASSERT_TRUE(laterGraph.GetCompileStats().compileValid);
+    RecordingCommandContext laterCommands;
+    RenderGraphValidationAccess::Execute(laterGraph, laterCommands);
+    ssr.FinalizeGraphExecution(true);
+    const GPUCompletionPoint laterCompletion = tracker.Submit(&laterCommands);
+    EXPECT_GT(laterCompletion.value, probeCompletion.value);
+    EXPECT_EQ(ssr.GetLastComputeStats().reflectionPlanIdentity,
+              laterInputs.reflectionPlanIdentity);
+    EXPECT_FALSE(ssr.GetLastComputeStats().reflectionRouteEvidenceReady);
+
+    graphicsFence->Complete(probeCompletion.value);
+    ASSERT_TRUE(ssr.PollQualificationProbe(tracker, stats))
+        << stats.failure;
+    EXPECT_TRUE(stats.IsValid());
+    EXPECT_EQ(stats.identity, *probeIdentity);
+    EXPECT_EQ(stats.sampleCount,
+              static_cast<uint64>(width) * height);
+    EXPECT_EQ(stats.backgroundPixelCount, 512u);
+    EXPECT_EQ(stats.nonReflectivePixelCount, 1024u);
+    EXPECT_EQ(stats.receiverSampleCount, 1536u);
+    EXPECT_EQ(stats.screenSpaceHitPixelCount, 512u);
+    EXPECT_EQ(stats.localProbePixelCount, 512u);
+    EXPECT_EQ(stats.globalIBLPixelCount, 512u);
+    EXPECT_EQ(stats.routeMaskRadianceSchemaVersion,
+              RVX_SSR_QUALIFICATION_ROUTE_MASK_RADIANCE_SCHEMA_VERSION);
+    EXPECT_TRUE(stats.localProbeRadianceQualified);
+    EXPECT_TRUE(stats.globalIBLRadianceQualified);
+    EXPECT_EQ(ssr.GetLastComputeStats().reflectionPlanIdentity,
+              laterInputs.reflectionPlanIdentity);
+    EXPECT_FALSE(ssr.GetLastComputeStats().reflectionRouteEvidenceReady);
+    EXPECT_FALSE(ssr.HasPendingQualificationProbe());
+
+    // A captured frame containing only background or zero-response materials
+    // is not proof that any reflection receiver exercised the fallback chain.
+    // The next arm must fail closed even though every byte is a valid tag.
+    ASSERT_TRUE(ssr.ArmQualificationProbe());
+    RenderGraph backgroundGraph;
+    RenderGraphValidationAccess::SetDevice(backgroundGraph, &device);
+    TestSSRReflectionSurfaceGraphState backgroundReflectionSurface;
+    const SSRFrameInputs backgroundInputs =
+        makeInputs(backgroundGraph, 103u, 377u,
+                   backgroundReflectionSurface);
+    ASSERT_TRUE(ssr.AddToGraph(
+        backgroundGraph, ssrView, backgroundInputs).IsValid());
+    RenderGraphValidationAccess::Compile(backgroundGraph);
+    ASSERT_TRUE(backgroundGraph.GetCompileStats().compileValid);
+    RecordingCommandContext backgroundCommands;
+    backgroundCommands.textureToBufferPattern = {0u, 17u};
+    RenderGraphValidationAccess::Execute(backgroundGraph, backgroundCommands);
+    ssr.FinalizeGraphExecution(true);
+    const auto backgroundIdentity =
+        ssr.GetPendingQualificationProbeIdentity();
+    ASSERT_TRUE(backgroundIdentity.has_value());
+    const GPUCompletionPoint backgroundCompletion =
+        tracker.Submit(&backgroundCommands);
+    GPUCompletionToken backgroundToken;
+    ASSERT_TRUE(InsertGPUCompletionPoint(
+        backgroundToken, backgroundCompletion));
+    ASSERT_TRUE(ssr.NotifyQualificationProbeSubmission(
+        *backgroundIdentity, backgroundToken, tracker));
+    ASSERT_TRUE(ssr.MarkQualificationProbePresented(*backgroundIdentity));
+    FakeFence* const backgroundFence =
+        device.FindFenceWithSignal(backgroundCompletion.value);
+    ASSERT_NE(backgroundFence, nullptr);
+    backgroundFence->Complete(backgroundCompletion.value);
+    SSRQualificationProbeStats backgroundStats;
+    EXPECT_FALSE(ssr.PollQualificationProbe(tracker, backgroundStats));
+    EXPECT_EQ(backgroundStats.backgroundPixelCount,
+              static_cast<uint64>(width) * height / 2u);
+    EXPECT_EQ(backgroundStats.nonReflectivePixelCount,
+              static_cast<uint64>(width) * height / 2u);
+    EXPECT_EQ(backgroundStats.receiverSampleCount, 0u);
+    EXPECT_NE(backgroundStats.failure.find("no reflection receivers"),
+              std::string::npos);
+    EXPECT_FALSE(ssr.HasPendingQualificationProbe());
+
+    // 0.125 is the shader's explicit invalid-radiance code. It must never be
+    // normalized into an apparent LocalProbe or GlobalIBL success by the CPU
+    // reader; native qualification relies on this fail-closed boundary.
+    ASSERT_TRUE(ssr.ArmQualificationProbe());
+    RenderGraph invalidRadianceGraph;
+    RenderGraphValidationAccess::SetDevice(invalidRadianceGraph, &device);
+    TestSSRReflectionSurfaceGraphState invalidRadianceReflectionSurface;
+    const SSRFrameInputs invalidRadianceInputs =
+        makeInputs(invalidRadianceGraph, 104u, 477u,
+                   invalidRadianceReflectionSurface);
+    ASSERT_TRUE(ssr.AddToGraph(
+        invalidRadianceGraph, ssrView, invalidRadianceInputs).IsValid());
+    RenderGraphValidationAccess::Compile(invalidRadianceGraph);
+    ASSERT_TRUE(invalidRadianceGraph.GetCompileStats().compileValid);
+    RecordingCommandContext invalidRadianceCommands;
+    invalidRadianceCommands.textureToBufferPattern = {125u};
+    RenderGraphValidationAccess::Execute(
+        invalidRadianceGraph, invalidRadianceCommands);
+    ssr.FinalizeGraphExecution(true);
+    const auto invalidRadianceIdentity =
+        ssr.GetPendingQualificationProbeIdentity();
+    ASSERT_TRUE(invalidRadianceIdentity.has_value());
+    const GPUCompletionPoint invalidRadianceCompletion =
+        tracker.Submit(&invalidRadianceCommands);
+    GPUCompletionToken invalidRadianceToken;
+    ASSERT_TRUE(InsertGPUCompletionPoint(
+        invalidRadianceToken, invalidRadianceCompletion));
+    ASSERT_TRUE(ssr.NotifyQualificationProbeSubmission(
+        *invalidRadianceIdentity, invalidRadianceToken, tracker));
+    ASSERT_TRUE(ssr.MarkQualificationProbePresented(*invalidRadianceIdentity));
+    FakeFence* const invalidRadianceFence =
+        device.FindFenceWithSignal(invalidRadianceCompletion.value);
+    ASSERT_NE(invalidRadianceFence, nullptr);
+    invalidRadianceFence->Complete(invalidRadianceCompletion.value);
+    SSRQualificationProbeStats invalidRadianceStats;
+    EXPECT_FALSE(ssr.PollQualificationProbe(tracker, invalidRadianceStats));
+    EXPECT_NE(invalidRadianceStats.failure.find("invalid classification"),
+              std::string::npos);
+    EXPECT_FALSE(ssr.HasPendingQualificationProbe());
+    tracker.Shutdown();
+}
+
+TEST_F(RenderPassValidationFixture,
+       SSRProbeOnlyResolveAvoidsHiZTraceAndReportsLocalProbeFallback)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    constexpr uint32 width = 64u;
+    constexpr uint32 height = 48u;
+    RHITextureRef sceneColor = device.CreateTexture(
+        RHITextureDesc::RenderTarget(width, height, RHIFormat::RGBA16_FLOAT));
+    RHITextureRef depth = device.CreateTexture(
+        RHITextureDesc::DepthStencil(width, height, RHIFormat::D32_FLOAT));
+    RHITextureDesc cubeDesc = RHITextureDesc::Texture2D(
+        16u, 16u, RHIFormat::RGBA16_FLOAT, RHITextureUsage::ShaderResource);
+    cubeDesc.dimension = RHITextureDimension::TextureCube;
+    cubeDesc.mipLevels = 5u;
+    RHITextureRef localProbe = device.CreateTexture(cubeDesc);
+    ASSERT_TRUE(sceneColor);
+    ASSERT_TRUE(depth);
+    ASSERT_TRUE(localProbe);
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    const TestSSRReflectionSurfaceGraphState reflectionSurface =
+        CreateTestSSRReflectionSurfaceGraphState(
+            device, graph, width, height, 0x89ce68b1187378a3ULL);
+    ASSERT_TRUE(reflectionSurface.IsValid());
+    SSRFrameInputs inputs;
+    inputs.frameIdentity = {81u, 82u, 83u, 84u};
+    inputs.viewIdentity = {85u, 86u, 0u, ViewRole::Main};
+    inputs.reflectionPlanIdentity = 87u;
+    inputs.lightingPlanIdentity = 88u;
+    inputs.screenSpaceRequested = false;
+    inputs.sceneColor = RenderGraphValidationAccess::ImportTexture(
+        graph, sceneColor.Get(), RHIResourceState::ShaderResource);
+    inputs.deviceDepth = RenderGraphValidationAccess::ImportTexture(
+        graph, depth.Get(), RHIResourceState::ShaderResource);
+    inputs.probeTextures[0] = RenderGraphValidationAccess::ImportTexture(
+        graph, localProbe.Get(), RHIResourceState::ShaderResource);
+    inputs.probePositions[0] = {0.0f, 0.0f, 0.0f};
+    inputs.probeExtents[0] = {5.0f, 5.0f, 5.0f};
+    inputs.probeWorldTransforms[0] = Mat4Identity();
+    inputs.probeInverseWorldTransforms[0] = Mat4Identity();
+    inputs.probeWeights[0] = 1.0f;
+    inputs.probeReady[0] = true;
+    reflectionSurface.Apply(inputs);
+
+    ViewData ssrView;
+    ssrView.viewportWidth = width;
+    ssrView.viewportHeight = height;
+    SSR ssr;
+    ssr.SetResources(&pipelineCache);
+    ASSERT_TRUE(ssr.IsSupported()) << ssr.GetUnsupportedReason();
+
+    const size_t descriptorCountBefore = device.createdDescriptorSetDescs.size();
+    const SSROutput output = ssr.AddToGraph(graph, ssrView, inputs);
+    ASSERT_TRUE(output.IsValid());
+    EXPECT_FALSE(output.screenSpaceScheduled);
+    EXPECT_TRUE(output.probeResolveScheduled);
+    EXPECT_FALSE(output.hiZPyramid.IsValid());
+    EXPECT_EQ(output.hiZMipCount, 0u);
+    EXPECT_EQ(output.depthPyramidIdentity, 0u);
+
+    const SSRComputeStats& scheduled = ssr.GetLastComputeStats();
+    EXPECT_TRUE(scheduled.requested);
+    EXPECT_TRUE(scheduled.scheduled);
+    EXPECT_FALSE(scheduled.screenSpaceRequested);
+    EXPECT_EQ(scheduled.hiZGraphPassCount, 0u);
+    EXPECT_EQ(scheduled.traceGraphPassCount, 0u);
+    EXPECT_EQ(scheduled.resolveGraphPassCount, 1u);
+    EXPECT_EQ(scheduled.readyProbeCount, 1u);
+    EXPECT_EQ(scheduled.minimumFallbackRoute, ReflectionResolveRoute::LocalProbe);
+
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    EXPECT_EQ(graph.GetCompileStats().totalPasses, 2u);
+
+    RecordingCommandContext commands;
+    RenderGraphValidationAccess::Execute(graph, commands);
+    EXPECT_EQ(commands.beginRenderPassCount, 2u);
+    EXPECT_EQ(commands.endRenderPassCount, 2u);
+    EXPECT_EQ(commands.drawCount, 1u);
+    ASSERT_EQ(commands.pipelineSequence.size(), static_cast<size_t>(1));
+    EXPECT_EQ(commands.pipelineSequence.front(),
+              pipelineCache.GetSSRResolvePipeline());
+    EXPECT_EQ(device.createdDescriptorSetDescs.size(), descriptorCountBefore + 1u);
+    const bool hiZDescriptorCreated = std::any_of(
+        device.createdDescriptorSetDescs.begin() +
+            static_cast<std::ptrdiff_t>(descriptorCountBefore),
+        device.createdDescriptorSetDescs.end(),
+        [](const RHIDescriptorSetDesc& desc)
+        {
+            return desc.debugName != nullptr &&
+                   std::string(desc.debugName).find("SSRHiZ") !=
+                       std::string::npos;
+        });
+    EXPECT_FALSE(hiZDescriptorCreated);
+
+    ssr.FinalizeGraphExecution(true);
+    const SSRComputeStats& executed = ssr.GetLastComputeStats();
+    EXPECT_TRUE(executed.executed);
+    EXPECT_FALSE(executed.hiZBuilt);
+    EXPECT_FALSE(executed.screenSpaceApplied);
+    EXPECT_FALSE(executed.probesApplied);
+    EXPECT_FALSE(executed.reflectionRouteEvidenceReady);
+    EXPECT_TRUE(executed.fallbackChainResolved);
 }
 
 TEST_F(RenderPassValidationFixture,
@@ -28893,13 +30872,16 @@ TEST_F(RenderPassValidationFixture,
         "TAA requires shader-readable inputs and a shader-readable render-target output");
 }
 
-TEST_F(RenderPassValidationFixture, StandaloneSSRReportsMissingFrameInputs)
+TEST_F(RenderPassValidationFixture,
+       StandaloneSSRReportsUnavailableRendererResources)
 {
-    RecordingCommandContext ctx;
-
     SSR ssr;
     ssr.SetEnabled(true);
-    ssr.Compute(ctx, nullptr, nullptr, nullptr, nullptr, Mat4Identity(), Mat4Identity());
+    RenderGraph graph;
+    ViewData view;
+    SSRFrameInputs inputs;
+    const SSROutput output = ssr.AddToGraph(graph, view, inputs);
+    EXPECT_FALSE(output.IsValid());
     const SSRComputeStats& ssrStats = ssr.GetLastComputeStats();
     EXPECT_TRUE(ssrStats.requested);
     EXPECT_FALSE(ssrStats.supported);
@@ -28910,9 +30892,8 @@ TEST_F(RenderPassValidationFixture, StandaloneSSRReportsMissingFrameInputs)
     EXPECT_FALSE(ssrStats.normalAvailable);
     EXPECT_FALSE(ssrStats.roughnessAvailable);
     EXPECT_EQ(ssrStats.implementationTier, SSRImplementationTier::Unsupported);
-    EXPECT_NE(ssrStats.missingInputReason.find("color, depth, normal, or roughness"),
-              std::string::npos);
-    EXPECT_EQ(ssrStats.fallbackReason, ssrStats.missingInputReason);
+    EXPECT_TRUE(ssrStats.missingInputReason.empty());
+    EXPECT_NE(ssrStats.fallbackReason.find("pipeline"), std::string::npos);
 }
 
 TEST_F(RenderPassValidationFixture,
@@ -29695,6 +31676,532 @@ TEST(GroundTruthAmbientOcclusionValidation,
         resetReasons, RenderHistoryResetReason::ExplicitDiscontinuity));
     EXPECT_FALSE(GroundTruthAmbientOcclusionTestAccess::CanSampleHistory(
         inputs, view, true, settingsHash, settingsHash, resetReasons));
+}
+
+TEST_F(RenderPassValidationFixture,
+       ShadowPassDoesNotRegisterLocalPreflightForAValidZeroPageAtlas)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    const std::vector<RenderDrawItem> noDrawItems;
+    const SceneMeshPassPreparation preparation =
+        PrepareRigidRasterPackets(noDrawItems);
+    const RenderFramePlanCompileResult compiled =
+        CompileForcedDirectPlan(preparation, 0x199Eu);
+    ASSERT_TRUE(compiled.succeeded);
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    ViewData recordView;
+    recordView.viewportWidth = 96u;
+    recordView.viewportHeight = 64u;
+    recordView.aspectRatio = 1.5f;
+    recordView.fieldOfView = 1.0472f;
+    recordView.nearPlane = 0.1f;
+    recordView.farPlane = 100.0f;
+    recordView.cameraPosition = Vec3(0.0f, 0.0f, 5.0f);
+    recordView.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
+    recordView.inverseViewMatrix = Mat4Identity();
+    recordView.colorTarget = graph.CreateTexture(RHITextureDesc::Texture2D(
+        96u,
+        64u,
+        RHIFormat::RGBA16_FLOAT,
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource |
+            RHITextureUsage::CopySrc));
+    recordView.depthTarget = graph.CreateTexture(RHITextureDesc::DepthStencil(
+        96u, 64u, RHIFormat::D32_FLOAT));
+    ASSERT_TRUE(recordView.colorTarget.IsValid());
+    ASSERT_TRUE(recordView.depthTarget.IsValid());
+
+    RenderPassRecordContext context = MakeMainSceneRecordContext(
+        graph, recordView, scene, noDrawItems, noDrawItems, compiled.plan,
+        preparation, report, 0x199Eu);
+    AttachDefaultTestLighting(context);
+    ASSERT_TRUE(context.lightingPlan);
+    ASSERT_TRUE(context.lightingPlan->IsValid());
+    EXPECT_EQ(nullptr, context.lightingPlan->GetPrimaryDirectionalLight());
+
+    LocalShadowFramePlanRequest localRequest;
+    localRequest.atlas = {
+        .pageResolution = 64u,
+        .pageCapacity = RVX_LOCAL_SHADOW_POINT_PAGE_COUNT,
+        .pointLightCapacity = 1u,
+        .spotLightCapacity = 0u,
+        .overflowPolicy = LocalShadowOverflowPolicy::Fail};
+    localRequest.atlasGeneration = 0x199Fu;
+    const LocalShadowFramePlanBuildResult localFrame =
+        LocalShadowFramePlanBuilder{}.Build(*context.lightingPlan, localRequest);
+    ASSERT_TRUE(localFrame.Succeeded()) << localFrame.diagnostic;
+    EXPECT_TRUE(localFrame.plan.GetAllocations().empty());
+
+    LocalShadowAtlasPlanRequest atlasRequest;
+    atlasRequest.atlasGeneration = localRequest.atlasGeneration;
+    atlasRequest.nearPlane = 0.1f;
+    const LocalShadowAtlasPlanBuildResult atlas =
+        LocalShadowAtlasPlanBuilder{}.Build(
+            *context.lightingPlan, localFrame.plan, atlasRequest);
+    ASSERT_TRUE(atlas.Succeeded()) << atlas.diagnostic;
+    ASSERT_TRUE(atlas.plan.IsValid());
+    EXPECT_TRUE(atlas.plan.GetPages().empty());
+    context.localShadowAtlasPlan =
+        std::make_shared<const LocalShadowAtlasPlan>(atlas.plan);
+    context.localShadowPass = std::make_shared<LocalShadowPass>();
+    RebuildTestRecordFrameSnapshot(context);
+    ASSERT_TRUE(context.IsFrameIdentityValid());
+
+    ShadowPass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache);
+    pass.SetEnabled(true);
+    const size_t passCountBefore = graph.GetDiagnostics().passes.size();
+    pass.AddToGraph(graph, context);
+
+    EXPECT_EQ(passCountBefore, graph.GetDiagnostics().passes.size());
+    ASSERT_TRUE(context.results);
+    EXPECT_FALSE(context.results->directionalShadowOutput.enabled);
+    const LocalShadowRecordOutput& localOutput =
+        context.results->localShadowOutput;
+    EXPECT_FALSE(localOutput.enabled);
+    EXPECT_TRUE(localOutput.IsCompatibleWith(
+        context.identity,
+        context.featureFrameIdentity,
+        context.featureViewIdentity,
+        context.lightingPlan->GetIdentityHash()));
+    EXPECT_FALSE(localOutput.depthAtlas.IsValid());
+    EXPECT_EQ(0u, localOutput.pageCount);
+    EXPECT_TRUE(localOutput.pageDepthLayers.empty());
+}
+
+TEST_F(RenderPassValidationFixture,
+       ShadowPassRecordsLocalAtlasCastersWithoutADirectionalPrimaryLight)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    const MeshGPUBuffers buffers =
+        gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    ASSERT_FALSE(buffers.submeshes.empty());
+
+    RenderDrawItem caster = MakeDrawItem(MaterialRenderMode::Opaque);
+    caster.packet = MakeOpaquePacket(
+        scene, 0u, 0u, buffers, caster.material,
+        RenderMaterialMode::Opaque, RenderDrawFlags::None);
+    const std::vector<RenderDrawItem> casterItems{caster};
+    const std::vector<RenderDrawItem> noMaskedItems;
+    const SceneMeshPassPreparation preparation =
+        PrepareRigidRasterPackets(casterItems);
+    const RenderFramePlanCompileResult compiled =
+        CompileForcedDirectPlan(preparation, 0x19A1u);
+    ASSERT_TRUE(compiled.succeeded);
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    ViewData recordView;
+    recordView.viewportWidth = 96u;
+    recordView.viewportHeight = 64u;
+    recordView.aspectRatio = 1.5f;
+    recordView.fieldOfView = 1.0472f;
+    recordView.nearPlane = 0.1f;
+    recordView.farPlane = 100.0f;
+    recordView.cameraPosition = Vec3(0.0f, 0.0f, 5.0f);
+    recordView.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
+    recordView.inverseViewMatrix = Mat4Identity();
+    recordView.colorTarget = graph.CreateTexture(RHITextureDesc::Texture2D(
+        96u,
+        64u,
+        RHIFormat::RGBA16_FLOAT,
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource |
+            RHITextureUsage::CopySrc));
+    recordView.depthTarget = graph.CreateTexture(RHITextureDesc::DepthStencil(
+        96u, 64u, RHIFormat::D32_FLOAT));
+    ASSERT_TRUE(recordView.colorTarget.IsValid());
+    ASSERT_TRUE(recordView.depthTarget.IsValid());
+    graph.SetExportState(recordView.colorTarget, RHIResourceState::RenderTarget);
+    RenderPassRecordContext context = MakeMainSceneRecordContext(
+        graph, recordView, scene, casterItems, noMaskedItems, compiled.plan,
+        preparation, report, 0x19A1u);
+
+    LightingLightCandidate localPoint;
+    localPoint.lightId = 0x19A2u;
+    localPoint.type = RenderLightType::Point;
+    localPoint.priority = 1u;
+    localPoint.position = Vec3(0.0f, 2.0f, 1.0f);
+    localPoint.color = Vec3(1.0f, 0.9f, 0.8f);
+    localPoint.normalizedIntensity = 12.0f;
+    localPoint.range = 15.0f;
+    localPoint.castsShadows = true;
+    AttachDefaultTestLighting(context, {
+        .localLightCandidates = {localPoint}});
+    ASSERT_TRUE(context.lightingPlan);
+    ASSERT_TRUE(context.lightingPlan->IsValid());
+    EXPECT_EQ(nullptr, context.lightingPlan->GetPrimaryDirectionalLight());
+
+    LocalShadowFramePlanRequest localRequest;
+    localRequest.atlas = {
+        .pageResolution = 64u,
+        .pageCapacity = RVX_LOCAL_SHADOW_POINT_PAGE_COUNT,
+        .pointLightCapacity = 1u,
+        .spotLightCapacity = 0u,
+        .overflowPolicy = LocalShadowOverflowPolicy::Fail};
+    localRequest.atlasGeneration = 0x19A3u;
+    const LocalShadowFramePlanBuildResult localFrame =
+        LocalShadowFramePlanBuilder{}.Build(*context.lightingPlan, localRequest);
+    ASSERT_TRUE(localFrame.Succeeded()) << localFrame.diagnostic;
+
+    LocalShadowAtlasPlanRequest atlasRequest;
+    atlasRequest.atlasGeneration = localRequest.atlasGeneration;
+    atlasRequest.nearPlane = 0.1f;
+    const LocalShadowAtlasPlanBuildResult atlas =
+        LocalShadowAtlasPlanBuilder{}.Build(
+            *context.lightingPlan, localFrame.plan, atlasRequest);
+    ASSERT_TRUE(atlas.Succeeded()) << atlas.diagnostic;
+    context.localShadowAtlasPlan =
+        std::make_shared<const LocalShadowAtlasPlan>(atlas.plan);
+    context.localShadowPass = std::make_shared<LocalShadowPass>();
+    auto localLightingResources =
+        std::make_shared<RenderLightingFrameResourceSnapshot>(
+            *context.lightingResources);
+    LightConstants localShadowConstants;
+    RHIBuffer* const frozenLightConstants =
+        localLightingResources->frozenLightResources.lightConstantsBuffer.Get();
+    ASSERT_NE(nullptr, frozenLightConstants);
+    void* const mappedLightConstants = frozenLightConstants->Map();
+    ASSERT_NE(nullptr, mappedLightConstants);
+    std::memcpy(
+        &localShadowConstants, mappedLightConstants,
+        sizeof(localShadowConstants));
+    for (const LocalShadowAtlasPage& page : atlas.plan.GetPages())
+    {
+        ASSERT_LT(page.pageIndex, RVX_MAX_LOCAL_SHADOW_PAGES);
+        localShadowConstants.localShadowViewProjections[page.pageIndex] =
+            page.viewProjection;
+    }
+    localShadowConstants.localShadowPageCount =
+        static_cast<uint32>(atlas.plan.GetPages().size());
+    localShadowConstants.localShadowInvResolution =
+        1.0f / static_cast<float32>(
+            atlas.plan.GetTextureContract().pageResolution);
+    std::memcpy(
+        mappedLightConstants, &localShadowConstants,
+        sizeof(localShadowConstants));
+    frozenLightConstants->Unmap();
+    localLightingResources->frozenLightResources.localShadowPageCount =
+        localShadowConstants.localShadowPageCount;
+    context.lightingResources = std::move(localLightingResources);
+    RebuildTestRecordFrameSnapshot(context);
+    ASSERT_TRUE(context.IsFrameIdentityValid());
+
+    ShadowPass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache);
+    pass.SetEnabled(true);
+    pass.AddToGraph(graph, context);
+
+    // This consumer must register a true graph dependency on the exact atlas
+    // the page writers produced. It cannot bind a mutable PipelineCache
+    // fallback once the immutable local plan selected pages.
+    OpaquePass forwardOpaquePass;
+    ConfigureResources(
+        forwardOpaquePass, gpuResources, pipelineCache, materialSystem);
+    forwardOpaquePass.AddToGraph(graph, context);
+
+    const LocalShadowRecordOutput scheduled =
+        context.results->localShadowOutput;
+    ASSERT_TRUE(scheduled.enabled);
+    EXPECT_TRUE(scheduled.IsCompatibleWith(
+        context.identity,
+        context.featureFrameIdentity,
+        context.featureViewIdentity,
+        context.lightingPlan->GetIdentityHash()));
+    EXPECT_EQ(RVX_LOCAL_SHADOW_POINT_PAGE_COUNT, scheduled.pageCount);
+    EXPECT_EQ(RVX_LOCAL_SHADOW_POINT_PAGE_COUNT,
+              scheduled.pageDepthLayers.size());
+
+    // Later surface passes receive a value copy of the graph-owned atlas
+    // output.  It must remain pinned to this exact frame/view/lighting plan.
+    const RenderPassExecutionData forwardExecution =
+        MakeRenderPassExecutionData(context);
+    ASSERT_TRUE(forwardExecution.IsFrameIdentityValid());
+    EXPECT_TRUE(forwardExecution.localShadowOutput.IsCompatibleWith(
+        context.identity,
+        context.featureFrameIdentity,
+        context.featureViewIdentity,
+        context.lightingPlan->GetIdentityHash()));
+
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    const auto opaquePassDiagnostic = std::find_if(
+        diagnostics.passes.begin(), diagnostics.passes.end(),
+        [](const RenderGraph::PassDiagnostic& diagnostic)
+        {
+            return diagnostic.name == "OpaquePass";
+        });
+    ASSERT_NE(diagnostics.passes.end(), opaquePassDiagnostic);
+    EXPECT_TRUE(std::any_of(
+        opaquePassDiagnostic->usages.begin(), opaquePassDiagnostic->usages.end(),
+        [&scheduled](const RenderGraph::ResourceUsageDiagnostic& usage)
+        {
+            return usage.type == RenderGraph::DiagnosticResourceType::Texture &&
+                usage.resourceIndex == scheduled.depthAtlas.index &&
+                usage.access == RenderGraph::DiagnosticAccessType::Read &&
+                usage.desiredState == RHIResourceState::ShaderResource;
+        }));
+    RecordingCommandContext commands;
+    RenderGraphValidationAccess::Execute(graph, commands);
+    EXPECT_EQ(RVX_LOCAL_SHADOW_POINT_PAGE_COUNT + 1u,
+              commands.beginRenderPassCount);
+    EXPECT_EQ(RVX_LOCAL_SHADOW_POINT_PAGE_COUNT + 1u,
+              commands.drawIndexedCount);
+    ASSERT_TRUE(context.results);
+    const RenderLightingSurfaceExecutionEvidence& receiverEvidence =
+        context.results->lightingSurfaceEvidence[
+            static_cast<size_t>(RenderLightingSurfaceRoute::ForwardOpaque)];
+    EXPECT_TRUE(receiverEvidence.IsValid());
+    EXPECT_TRUE(receiverEvidence.localShadowBound);
+    EXPECT_EQ(scheduled.localShadowPlanIdentity,
+              receiverEvidence.localShadowPlanIdentity);
+    EXPECT_EQ(scheduled.atlasPlanIdentity,
+              receiverEvidence.localShadowAtlasPlanIdentity);
+    EXPECT_EQ(scheduled.atlasGeneration,
+              receiverEvidence.localShadowAtlasGeneration);
+    EXPECT_EQ(scheduled.pageCount, receiverEvidence.localShadowPageCount);
+
+    context.localShadowPass->FinalizeGraphExecution(true);
+    const LocalShadowPassExecutionEvidence evidence =
+        context.localShadowPass->GetLastExecutionEvidence();
+    EXPECT_TRUE(evidence.HasExactGpuExecution()) << evidence.diagnostic;
+    EXPECT_EQ(RVX_LOCAL_SHADOW_POINT_PAGE_COUNT,
+              evidence.recordedPageCount);
+    EXPECT_EQ(RVX_LOCAL_SHADOW_POINT_PAGE_COUNT,
+              evidence.casterDrawCount);
+}
+
+TEST_F(RenderPassValidationFixture,
+       DeferredGBufferBindsExactLocalShadowAtlasForNonZeroFrozenPages)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    const MeshGPUBuffers buffers =
+        gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    ASSERT_FALSE(buffers.submeshes.empty());
+
+    RenderDrawItem caster = MakeDrawItem(MaterialRenderMode::Opaque);
+    caster.packet = MakeOpaquePacket(
+        scene, 0u, 0u, buffers, caster.material,
+        RenderMaterialMode::Opaque, RenderDrawFlags::None);
+    const std::vector<RenderDrawItem> casterItems{caster};
+    const std::vector<RenderDrawItem> noMaskedItems;
+    const SceneMeshPassPreparation preparation =
+        PrepareRigidRasterPackets(casterItems);
+    const RenderFramePlanCompileResult compiled =
+        CompileForcedDirectPlan(preparation, 0x19A4u);
+    ASSERT_TRUE(compiled.succeeded);
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    ViewData recordView;
+    recordView.viewportWidth = 96u;
+    recordView.viewportHeight = 64u;
+    recordView.aspectRatio = 1.5f;
+    recordView.fieldOfView = 1.0472f;
+    recordView.nearPlane = 0.1f;
+    recordView.farPlane = 100.0f;
+    recordView.cameraPosition = Vec3(0.0f, 0.0f, 5.0f);
+    recordView.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
+    recordView.inverseViewMatrix = Mat4Identity();
+    recordView.colorTarget = graph.CreateTexture(RHITextureDesc::Texture2D(
+        96u,
+        64u,
+        RHIFormat::RGBA16_FLOAT,
+        RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource |
+            RHITextureUsage::CopySrc));
+    recordView.depthTarget = graph.CreateTexture(RHITextureDesc::DepthStencil(
+        96u, 64u, RHIFormat::D32_FLOAT));
+    ASSERT_TRUE(recordView.colorTarget.IsValid());
+    ASSERT_TRUE(recordView.depthTarget.IsValid());
+    RenderPassRecordContext context = MakeMainSceneRecordContext(
+        graph, recordView, scene, casterItems, noMaskedItems, compiled.plan,
+        preparation, report, 0x19A4u);
+
+    LightingLightCandidate localPoint;
+    localPoint.lightId = 0x19A5u;
+    localPoint.type = RenderLightType::Point;
+    localPoint.priority = 1u;
+    localPoint.position = Vec3(0.0f, 2.0f, 1.0f);
+    localPoint.color = Vec3(1.0f, 0.9f, 0.8f);
+    localPoint.normalizedIntensity = 12.0f;
+    localPoint.range = 15.0f;
+    localPoint.castsShadows = true;
+    AttachDefaultTestLighting(context, {
+        .localLightCandidates = {localPoint}});
+    ASSERT_TRUE(context.lightingPlan);
+    ASSERT_TRUE(context.lightingPlan->IsValid());
+    EXPECT_EQ(nullptr, context.lightingPlan->GetPrimaryDirectionalLight());
+
+    LocalShadowFramePlanRequest localRequest;
+    localRequest.atlas = {
+        .pageResolution = 64u,
+        .pageCapacity = RVX_LOCAL_SHADOW_POINT_PAGE_COUNT,
+        .pointLightCapacity = 1u,
+        .spotLightCapacity = 0u,
+        .overflowPolicy = LocalShadowOverflowPolicy::Fail};
+    localRequest.atlasGeneration = 0x19A6u;
+    const LocalShadowFramePlanBuildResult localFrame =
+        LocalShadowFramePlanBuilder{}.Build(*context.lightingPlan, localRequest);
+    ASSERT_TRUE(localFrame.Succeeded()) << localFrame.diagnostic;
+
+    LocalShadowAtlasPlanRequest atlasRequest;
+    atlasRequest.atlasGeneration = localRequest.atlasGeneration;
+    atlasRequest.nearPlane = 0.1f;
+    const LocalShadowAtlasPlanBuildResult atlas =
+        LocalShadowAtlasPlanBuilder{}.Build(
+            *context.lightingPlan, localFrame.plan, atlasRequest);
+    ASSERT_TRUE(atlas.Succeeded()) << atlas.diagnostic;
+    context.localShadowAtlasPlan =
+        std::make_shared<const LocalShadowAtlasPlan>(atlas.plan);
+    context.localShadowPass = std::make_shared<LocalShadowPass>();
+
+    // Match the runtime upload: the frozen LightConstants advertise the
+    // exact page count and page transforms selected by this immutable plan.
+    auto localLightingResources =
+        std::make_shared<RenderLightingFrameResourceSnapshot>(
+            *context.lightingResources);
+    LightConstants localShadowConstants;
+    RHIBuffer* const frozenLightConstants =
+        localLightingResources->frozenLightResources.lightConstantsBuffer.Get();
+    ASSERT_NE(nullptr, frozenLightConstants);
+    void* const mappedLightConstants = frozenLightConstants->Map();
+    ASSERT_NE(nullptr, mappedLightConstants);
+    std::memcpy(
+        &localShadowConstants, mappedLightConstants,
+        sizeof(localShadowConstants));
+    for (const LocalShadowAtlasPage& page : atlas.plan.GetPages())
+    {
+        ASSERT_LT(page.pageIndex, RVX_MAX_LOCAL_SHADOW_PAGES);
+        localShadowConstants.localShadowViewProjections[page.pageIndex] =
+            page.viewProjection;
+    }
+    localShadowConstants.localShadowPageCount =
+        static_cast<uint32>(atlas.plan.GetPages().size());
+    localShadowConstants.localShadowInvResolution =
+        1.0f / static_cast<float32>(
+            atlas.plan.GetTextureContract().pageResolution);
+    std::memcpy(
+        mappedLightConstants, &localShadowConstants,
+        sizeof(localShadowConstants));
+    frozenLightConstants->Unmap();
+    localLightingResources->frozenLightResources.localShadowPageCount =
+        localShadowConstants.localShadowPageCount;
+    context.lightingResources = std::move(localLightingResources);
+    RebuildTestRecordFrameSnapshot(context);
+    ASSERT_TRUE(context.IsFrameIdentityValid());
+
+    ShadowPass shadowPass;
+    ConfigureResources(shadowPass, gpuResources, pipelineCache);
+    shadowPass.SetEnabled(true);
+    shadowPass.AddToGraph(graph, context);
+
+    constexpr std::array<RHIFormat, 4> kGBufferFormats = {
+        RHIFormat::RGBA8_UNORM_SRGB,
+        RHIFormat::RGBA8_UNORM,
+        RHIFormat::RGBA16_FLOAT,
+        RHIFormat::R32_UINT};
+    OpaqueDeferredGBufferTargets targets;
+    for (uint32 index = 0; index < kGBufferFormats.size(); ++index)
+    {
+        targets.color[index] = graph.CreateTexture(RHITextureDesc::RenderTarget(
+            recordView.viewportWidth, recordView.viewportHeight,
+            kGBufferFormats[index]));
+        ASSERT_TRUE(targets.color[index].IsValid());
+        graph.SetExportState(targets.color[index], RHIResourceState::RenderTarget);
+    }
+    targets.depth = graph.CreateTexture(RHITextureDesc::DepthStencil(
+        recordView.viewportWidth, recordView.viewportHeight,
+        RHIFormat::D32_FLOAT));
+    ASSERT_TRUE(targets.depth.IsValid());
+    graph.SetExportState(targets.depth, RHIResourceState::DepthWrite);
+
+    OpaquePass deferredGBufferPass;
+    ConfigureResources(
+        deferredGBufferPass, gpuResources, pipelineCache, materialSystem);
+    deferredGBufferPass.AddDeferredToGraph(graph, context, targets);
+
+    const LocalShadowRecordOutput scheduled =
+        context.results->localShadowOutput;
+    ASSERT_TRUE(scheduled.enabled);
+    ASSERT_EQ(RVX_LOCAL_SHADOW_POINT_PAGE_COUNT, scheduled.pageCount);
+    ASSERT_EQ(RVX_LOCAL_SHADOW_POINT_PAGE_COUNT,
+              scheduled.pageDepthLayers.size());
+
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    const auto gBufferPassDiagnostic = std::find_if(
+        diagnostics.passes.begin(), diagnostics.passes.end(),
+        [](const RenderGraph::PassDiagnostic& diagnostic)
+        {
+            return diagnostic.name == "GBufferPass";
+        });
+    ASSERT_NE(diagnostics.passes.end(), gBufferPassDiagnostic);
+    EXPECT_TRUE(std::any_of(
+        gBufferPassDiagnostic->usages.begin(),
+        gBufferPassDiagnostic->usages.end(),
+        [&scheduled](const RenderGraph::ResourceUsageDiagnostic& usage)
+        {
+            return usage.type == RenderGraph::DiagnosticResourceType::Texture &&
+                usage.resourceIndex == scheduled.depthAtlas.index &&
+                usage.access == RenderGraph::DiagnosticAccessType::Read &&
+                usage.desiredState == RHIResourceState::ShaderResource;
+        }));
+
+    RecordingCommandContext commands;
+    RenderGraphValidationAccess::Execute(graph, commands);
+    EXPECT_EQ(RVX_LOCAL_SHADOW_POINT_PAGE_COUNT + 1u,
+              commands.beginRenderPassCount);
+    EXPECT_EQ(RVX_LOCAL_SHADOW_POINT_PAGE_COUNT + 1u,
+              commands.drawIndexedCount);
+    ASSERT_TRUE(context.results->deferredOpaqueRoute.available);
+    EXPECT_EQ(RenderExecutionStatus::Completed,
+              context.results->deferredOpaqueRoute.status);
+
+    RHITexture* const atlasTexture =
+        RenderGraphValidationAccess::GetTexture(graph, scheduled.depthAtlas);
+    ASSERT_NE(nullptr, atlasTexture);
+    const auto descriptorIt = std::find_if(
+        device.createdDescriptorSetDescs.rbegin(),
+        device.createdDescriptorSetDescs.rend(),
+        [](const RHIDescriptorSetDesc& descriptor)
+        {
+            return descriptor.debugName != nullptr &&
+                std::string(descriptor.debugName) ==
+                    "LightingBindingSnapshotFrameDescriptorSet";
+        });
+    ASSERT_NE(device.createdDescriptorSetDescs.rend(), descriptorIt);
+    const auto atlasBinding = std::find_if(
+        descriptorIt->bindings.begin(), descriptorIt->bindings.end(),
+        [](const RHIDescriptorBinding& binding)
+        {
+            return binding.binding ==
+                PipelineCache::DefaultLitLocalShadowAtlasBinding;
+        });
+    ASSERT_NE(descriptorIt->bindings.end(), atlasBinding);
+    ASSERT_NE(nullptr, atlasBinding->textureView);
+    EXPECT_EQ(atlasTexture, atlasBinding->textureView->GetTexture());
+    EXPECT_EQ(RHIFormat::D32_FLOAT, atlasBinding->textureView->GetFormat());
+    EXPECT_EQ(RVX_ALL_LAYERS,
+              atlasBinding->textureView->GetSubresourceRange().arrayLayerCount);
+
+    context.localShadowPass->FinalizeGraphExecution(true);
+    const LocalShadowPassExecutionEvidence evidence =
+        context.localShadowPass->GetLastExecutionEvidence();
+    EXPECT_TRUE(evidence.HasExactGpuExecution()) << evidence.diagnostic;
+    EXPECT_EQ(RVX_LOCAL_SHADOW_POINT_PAGE_COUNT,
+              evidence.recordedPageCount);
+    EXPECT_EQ(RVX_LOCAL_SHADOW_POINT_PAGE_COUNT,
+              evidence.casterDrawCount);
 }
 
 #undef RVX_REQUIRE_RENDER_RUNTIME_PIPELINE

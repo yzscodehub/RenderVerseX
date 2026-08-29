@@ -2,10 +2,13 @@
 #include "VulkanDevice.h"
 #include "VulkanResources.h"
 #include "VulkanPipeline.h"
+#include "VulkanRayTracing.h"
 #include "VulkanSwapChain.h"
+#include "RHI/RHIDescriptor.h"
 #include "RHI/RHIIndirectExecution.h"
 #include "RHI/RHITexture.h"
 
+#include <limits>
 #include <utility>
 
 namespace RVX
@@ -141,6 +144,496 @@ namespace RVX
             }
             return QueueFamilyTransferRole::Invalid;
         }
+
+        bool ValidateVulkanRayTracingCommandState(bool isRecording,
+                                                  bool inRenderPass,
+                                                  const char* operation)
+        {
+            if (!isRecording)
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: {} requires active command recording",
+                    operation);
+                return false;
+            }
+
+            if (inRenderPass)
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: {} cannot run inside a render pass",
+                    operation);
+                return false;
+            }
+
+            return true;
+        }
+
+        bool ValidateVulkanBufferAddressRange(const char* operation,
+                                              VulkanBuffer* buffer,
+                                              uint64 offset,
+                                              uint64 requiredBytes,
+                                              const char* label)
+        {
+            if (!buffer || buffer->GetBuffer() == VK_NULL_HANDLE ||
+                buffer->GetDeviceAddress() == 0)
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: {} requires a GPU-addressable {}",
+                    operation,
+                    label);
+                return false;
+            }
+
+            if (!IsRHIRayTracingBufferRangeValid(*buffer, offset, requiredBytes))
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: {} {} range exceeds buffer size",
+                    operation,
+                    label);
+                return false;
+            }
+
+            if (offset > std::numeric_limits<VkDeviceAddress>::max() -
+                             buffer->GetDeviceAddress())
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: {} {} device address overflowed",
+                    operation,
+                    label);
+                return false;
+            }
+
+            return true;
+        }
+
+        bool ValidateVulkanBufferEffectiveAddressAlignment(
+            const char* operation,
+            VulkanBuffer* buffer,
+            uint64 offset,
+            VkDeviceSize requiredAlignment,
+            const char* label)
+        {
+            if (!buffer || buffer->GetDeviceAddress() == 0 ||
+                requiredAlignment == 0 ||
+                offset > std::numeric_limits<VkDeviceAddress>::max() -
+                             buffer->GetDeviceAddress())
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: {} {} has no valid effective device address",
+                    operation,
+                    label);
+                return false;
+            }
+
+            const VkDeviceAddress effectiveAddress =
+                buffer->GetDeviceAddress() + offset;
+            if (effectiveAddress % requiredAlignment != 0)
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: {} {} effective device address does not satisfy Vulkan's {}-byte alignment",
+                    operation,
+                    label,
+                    requiredAlignment);
+                return false;
+            }
+
+            return true;
+        }
+
+        bool ValidateVulkanBLASGeometryInputAddresses(
+            const RHIBottomLevelASDesc& desc)
+        {
+            for (uint32 geometryIndex = 0;
+                 geometryIndex < desc.geometries.size();
+                 ++geometryIndex)
+            {
+                const RHIRayTracingGeometryDesc& geometry =
+                    desc.geometries[geometryIndex];
+                if (geometry.type == RHIRayTracingGeometryType::Triangles)
+                {
+                    const RHIRayTracingTrianglesDesc& triangles =
+                        geometry.triangles;
+                    const uint32 vertexFormatSize =
+                        GetFormatBytesPerPixel(triangles.vertexFormat);
+                    uint64 vertexRangeBytes = 0;
+                    if (!TryGetRHIRayTracingStridedRangeSize(
+                            triangles.vertexCount,
+                            triangles.vertexStride,
+                            vertexFormatSize,
+                            vertexRangeBytes))
+                    {
+                        RVX_RHI_ERROR(
+                            "VulkanCommandContext: BLAS geometry {} vertex range size overflowed",
+                            geometryIndex);
+                        return false;
+                    }
+
+                    if (!ValidateVulkanBufferAddressRange(
+                            "BLAS geometry input",
+                            dynamic_cast<VulkanBuffer*>(triangles.vertexBuffer),
+                            triangles.vertexOffset,
+                            vertexRangeBytes,
+                            "vertex buffer") ||
+                        !ValidateVulkanBufferEffectiveAddressAlignment(
+                            "BLAS geometry input",
+                            dynamic_cast<VulkanBuffer*>(triangles.vertexBuffer),
+                            triangles.vertexOffset,
+                            sizeof(float),
+                            "vertex buffer"))
+                    {
+                        return false;
+                    }
+
+                    if (triangles.indexBuffer)
+                    {
+                        const uint64 indexElementSize =
+                            triangles.indexFormat == RHIFormat::R16_UINT
+                            ? 2ull
+                            : 4ull;
+                        uint64 indexRangeBytes = 0;
+                        if (!TryMultiplyRHIRayTracingCount(
+                                triangles.indexCount,
+                                indexElementSize,
+                                indexRangeBytes) ||
+                            !ValidateVulkanBufferAddressRange(
+                                "BLAS geometry input",
+                                dynamic_cast<VulkanBuffer*>(
+                                    triangles.indexBuffer),
+                                triangles.indexOffset,
+                                indexRangeBytes,
+                                "index buffer"))
+                        {
+                            RVX_RHI_ERROR(
+                                "VulkanCommandContext: BLAS geometry {} index range is invalid",
+                                geometryIndex);
+                            return false;
+                        }
+
+                        if (!ValidateVulkanBufferEffectiveAddressAlignment(
+                                "BLAS geometry input",
+                                dynamic_cast<VulkanBuffer*>(
+                                    triangles.indexBuffer),
+                                triangles.indexOffset,
+                                indexElementSize,
+                                "index buffer"))
+                        {
+                            return false;
+                        }
+                    }
+
+                    if (triangles.transformBuffer)
+                    {
+                        auto* transformBuffer = dynamic_cast<VulkanBuffer*>(
+                            triangles.transformBuffer);
+                        if (!ValidateVulkanBufferAddressRange(
+                                "BLAS geometry input",
+                                transformBuffer,
+                                triangles.transformOffset,
+                                sizeof(float) * 12,
+                                "transform buffer") ||
+                            !ValidateVulkanBufferEffectiveAddressAlignment(
+                                "BLAS geometry input",
+                                transformBuffer,
+                                triangles.transformOffset,
+                                16,
+                                "transform buffer"))
+                        {
+                            return false;
+                        }
+                    }
+                }
+                else
+                {
+                    const RHIRayTracingAABBDesc& aabbs = geometry.aabbs;
+                    auto* aabbBuffer =
+                        dynamic_cast<VulkanBuffer*>(aabbs.aabbBuffer);
+                    uint64 aabbRangeBytes = 0;
+                    if (!TryGetRHIRayTracingStridedRangeSize(
+                            aabbs.count,
+                            aabbs.stride,
+                            24,
+                            aabbRangeBytes) ||
+                        !ValidateVulkanBufferAddressRange(
+                            "BLAS geometry input",
+                            aabbBuffer,
+                            aabbs.offset,
+                            aabbRangeBytes,
+                            "AABB buffer") ||
+                        aabbs.stride % 8u != 0u ||
+                        !ValidateVulkanBufferEffectiveAddressAlignment(
+                            "BLAS geometry input",
+                            aabbBuffer,
+                            aabbs.offset,
+                            8,
+                            "AABB buffer"))
+                    {
+                        RVX_RHI_ERROR(
+                            "VulkanCommandContext: BLAS geometry {} AABB range or native alignment is invalid",
+                            geometryIndex);
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        uint32 GetVulkanAccelerationStructurePrimitiveCount(
+            const RHIRayTracingGeometryDesc& geometry)
+        {
+            if (geometry.type == RHIRayTracingGeometryType::AABBs)
+            {
+                return geometry.aabbs.count;
+            }
+
+            return geometry.triangles.indexBuffer
+                ? geometry.triangles.indexCount / 3u
+                : geometry.triangles.vertexCount / 3u;
+        }
+
+        VulkanAccelerationStructureBuildSignature
+        MakeVulkanBottomLevelASBuildSignature(
+            const RHIBottomLevelASDesc& desc)
+        {
+            VulkanAccelerationStructureBuildSignature signature;
+            signature.type = RHIAccelerationStructureType::BottomLevel;
+            signature.buildFlags = desc.buildFlags;
+            signature.geometries.reserve(desc.geometries.size());
+
+            for (const RHIRayTracingGeometryDesc& geometry : desc.geometries)
+            {
+                VulkanAccelerationStructureGeometryBuildSignature
+                    geometrySignature;
+                geometrySignature.flags = geometry.flags;
+                geometrySignature.primitiveCount =
+                    GetVulkanAccelerationStructurePrimitiveCount(geometry);
+
+                if (geometry.type == RHIRayTracingGeometryType::Triangles)
+                {
+                    const RHIRayTracingTrianglesDesc& triangles =
+                        geometry.triangles;
+                    geometrySignature.type =
+                        VulkanAccelerationStructureSignatureGeometryType::
+                            Triangles;
+                    geometrySignature.vertexFormat = triangles.vertexFormat;
+                    geometrySignature.maxVertex = triangles.vertexCount - 1u;
+                    geometrySignature.indexFormat = triangles.indexBuffer
+                        ? triangles.indexFormat
+                        : RHIFormat::Unknown;
+                    geometrySignature.hasTransform =
+                        triangles.transformBuffer != nullptr;
+                }
+                else
+                {
+                    geometrySignature.type =
+                        VulkanAccelerationStructureSignatureGeometryType::
+                            AABBs;
+                    geometrySignature.aabbStride = geometry.aabbs.stride;
+                }
+
+                signature.geometries.push_back(geometrySignature);
+            }
+
+            return signature;
+        }
+
+        VulkanAccelerationStructureBuildSignature
+        MakeVulkanTopLevelASBuildSignature(
+            const RHITopLevelASDesc& desc)
+        {
+            VulkanAccelerationStructureBuildSignature signature;
+            signature.type = RHIAccelerationStructureType::TopLevel;
+            signature.buildFlags = desc.buildFlags;
+
+            VulkanAccelerationStructureGeometryBuildSignature
+                geometrySignature;
+            geometrySignature.type =
+                VulkanAccelerationStructureSignatureGeometryType::Instances;
+            geometrySignature.primitiveCount = desc.GetInstanceCount();
+            // The RHI's GPU-instance-buffer contract is a contiguous array of
+            // VkAccelerationStructureInstanceKHR records. The Vulkan build
+            // translation uses arrayOfPointers = VK_FALSE.
+            geometrySignature.instancesArrayOfPointers = false;
+            signature.geometries.push_back(geometrySignature);
+            return signature;
+        }
+
+        bool ValidateVulkanASBuildResources(
+            const char* operation,
+            RHIAccelerationStructureType expectedType,
+            const RHIAccelerationStructureBuildSizes& sizes,
+            bool update,
+            VulkanAccelerationStructure* dstAS,
+            VulkanAccelerationStructure* srcAS,
+            VulkanBuffer* scratch,
+            uint64 scratchOffset,
+            VkDeviceSize scratchAlignment)
+        {
+            if (!sizes.IsValid())
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: {} requires valid acceleration structure build sizes",
+                    operation);
+                return false;
+            }
+
+            if (update && !sizes.HasValidUpdateScratchSize())
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: {} update requires valid update scratch size",
+                    operation);
+                return false;
+            }
+
+            if (!dstAS || dstAS->GetAccelerationStructure() == VK_NULL_HANDLE ||
+                dstAS->GetDeviceAddress() == 0 ||
+                dstAS->GetType() != expectedType)
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: {} requires a live destination AS of the expected type",
+                    operation);
+                return false;
+            }
+
+            const auto isValidStorage = [](VulkanAccelerationStructure* as)
+            {
+                auto* storage = as
+                    ? dynamic_cast<VulkanBuffer*>(as->GetStorageBuffer())
+                    : nullptr;
+                return storage && storage->GetBuffer() != VK_NULL_HANDLE &&
+                       storage->GetDeviceAddress() != 0 &&
+                       storage->GetSize() >= as->GetSize() &&
+                       HasFlag(storage->GetUsage(),
+                               RHIBufferUsage::AccelerationStructureStorage) &&
+                       HasFlag(storage->GetUsage(),
+                               RHIBufferUsage::DeviceAddress);
+            };
+            if (!isValidStorage(dstAS))
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: {} destination AS storage lacks Vulkan acceleration-structure usage or an address",
+                    operation);
+                return false;
+            }
+
+            if (update &&
+                (!srcAS ||
+                 srcAS->GetAccelerationStructure() == VK_NULL_HANDLE ||
+                 srcAS->GetDeviceAddress() == 0 ||
+                 srcAS->GetType() != expectedType))
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: {} update requires a live source AS of the expected type",
+                    operation);
+                return false;
+            }
+
+            if (update && !isValidStorage(srcAS))
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: {} source AS storage lacks Vulkan acceleration-structure usage or an address",
+                    operation);
+                return false;
+            }
+
+            if (dstAS->GetSize() < sizes.accelerationStructureSize ||
+                (update && srcAS->GetSize() < sizes.accelerationStructureSize))
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: {} acceleration structure storage is too small",
+                    operation);
+                return false;
+            }
+
+            if (!scratch || scratch->GetBuffer() == VK_NULL_HANDLE ||
+                scratch->GetDeviceAddress() == 0 ||
+                scratch->GetMemoryType() != RHIMemoryType::Default ||
+                !HasFlag(scratch->GetUsage(), RHIBufferUsage::UnorderedAccess) ||
+                !HasFlag(scratch->GetUsage(), RHIBufferUsage::DeviceAddress))
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: {} requires a default-memory GPU-addressable unordered-access scratch buffer",
+                    operation);
+                return false;
+            }
+
+            if (scratchAlignment == 0 ||
+                !ValidateVulkanBufferEffectiveAddressAlignment(
+                    operation,
+                    scratch,
+                    scratchOffset,
+                    scratchAlignment,
+                    "scratch buffer"))
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: {} scratch effective address must satisfy Vulkan's scratch alignment",
+                    operation);
+                return false;
+            }
+
+            const uint64 requiredScratchSize = update
+                ? sizes.updateScratchSize
+                : sizes.buildScratchSize;
+            if (requiredScratchSize == 0 ||
+                !IsRHIRayTracingBufferRangeValid(
+                    *scratch, scratchOffset, requiredScratchSize) ||
+                scratchOffset > std::numeric_limits<VkDeviceAddress>::max() -
+                                    scratch->GetDeviceAddress())
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: {} scratch range is invalid",
+                    operation);
+                return false;
+            }
+
+            return true;
+        }
+
+        bool ValidateVulkanShaderTableRegion(
+            const VkStridedDeviceAddressRegionKHR& region,
+            const VkPhysicalDeviceRayTracingPipelinePropertiesKHR& properties,
+            bool required,
+            const char* label)
+        {
+            if (region.deviceAddress == 0 && region.stride == 0 &&
+                region.size == 0)
+            {
+                if (!required)
+                {
+                    return true;
+                }
+
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: DispatchRays requires a non-empty {} shader table region",
+                    label);
+                return false;
+            }
+
+            if (region.deviceAddress == 0 || region.stride == 0 ||
+                region.size == 0 ||
+                properties.shaderGroupHandleAlignment == 0 ||
+                properties.shaderGroupBaseAlignment == 0 ||
+                region.deviceAddress % properties.shaderGroupBaseAlignment != 0 ||
+                region.stride % properties.shaderGroupHandleAlignment != 0 ||
+                region.stride > properties.maxShaderGroupStride ||
+                region.size < region.stride ||
+                region.size % region.stride != 0)
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: DispatchRays {} shader table region is invalid",
+                    label);
+                return false;
+            }
+
+            if (required && region.size != region.stride)
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: DispatchRays ray-generation shader table region must contain exactly one record");
+                return false;
+            }
+
+            return true;
+        }
     } // namespace
 
     VulkanCommandContext::VulkanCommandContext(VulkanDevice* device, RHICommandQueueType type)
@@ -159,6 +652,8 @@ namespace RVX
 
     VulkanCommandContext::~VulkanCommandContext()
     {
+        DiscardPendingAccelerationStructureCompactionQueries();
+        DiscardPendingAccelerationStructureBuilds();
         if (m_commandBuffer)
         {
             vkFreeCommandBuffers(m_device->GetDevice(), m_commandPool, 1, &m_commandBuffer);
@@ -170,6 +665,12 @@ namespace RVX
         if (m_isRecording)
             return;
 
+        // vkResetCommandBuffer discards any previous recording. Its pending AS
+        // builds must not become globally visible before queue submission.
+        DiscardPendingAccelerationStructureCompactionQueries();
+        DiscardPendingAccelerationStructureBuilds();
+        m_pendingImageBarriers.clear();
+        m_pendingBufferBarriers.clear();
         VK_CHECK(vkResetCommandBuffer(m_commandBuffer, 0));
 
         VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -178,6 +679,7 @@ namespace RVX
         VK_CHECK(vkBeginCommandBuffer(m_commandBuffer, &beginInfo));
         m_isRecording = true;
         m_currentPipeline = nullptr;
+        m_boundRayTracingDescriptorSetLayouts.clear();
     }
 
     void VulkanCommandContext::End()
@@ -198,10 +700,201 @@ namespace RVX
 
     void VulkanCommandContext::Reset()
     {
+        DiscardPendingAccelerationStructureCompactionQueries();
+        DiscardPendingAccelerationStructureBuilds();
+        m_pendingImageBarriers.clear();
+        m_pendingBufferBarriers.clear();
         VK_CHECK(vkResetCommandBuffer(m_commandBuffer, 0));
         m_isRecording = false;
         m_inRenderPass = false;
         m_currentPipeline = nullptr;
+        m_boundRayTracingDescriptorSetLayouts.clear();
+    }
+
+    bool VulkanCommandContext::HasCompatiblePendingAccelerationStructureBuild(
+        const RHIAccelerationStructure* accelerationStructure) const noexcept
+    {
+        if (!accelerationStructure)
+        {
+            return false;
+        }
+
+        for (const PendingAccelerationStructureBuild& pending :
+             m_pendingAccelerationStructureBuilds)
+        {
+            if (pending.accelerationStructure.Get() == accelerationStructure)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool VulkanCommandContext::HasPendingAccelerationStructureBuild(
+        const VulkanAccelerationStructure* accelerationStructure,
+        bool requireCompaction) const noexcept
+    {
+        if (!accelerationStructure)
+        {
+            return false;
+        }
+
+        for (const PendingAccelerationStructureBuild& pending :
+             m_pendingAccelerationStructureBuilds)
+        {
+            if (pending.accelerationStructure.Get() != accelerationStructure)
+            {
+                continue;
+            }
+
+            return !requireCompaction || HasFlag(
+                pending.signature.buildFlags,
+                RHIAccelerationStructureBuildFlags::AllowCompaction);
+        }
+        return false;
+    }
+
+    bool VulkanCommandContext::ValidateAccelerationStructureUpdateSignature(
+        const char* operation,
+        VulkanAccelerationStructure* source,
+        const VulkanAccelerationStructureBuildSignature& update) const
+    {
+        if (!source)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: {} update requires a Vulkan source AS",
+                operation);
+            return false;
+        }
+
+        VulkanAccelerationStructureUpdateCompatibility compatibility =
+            VulkanAccelerationStructureUpdateCompatibility::
+                SourceHasNoSubmittedBuild;
+        for (auto it = m_pendingAccelerationStructureBuilds.rbegin();
+             it != m_pendingAccelerationStructureBuilds.rend();
+             ++it)
+        {
+            if (it->accelerationStructure.Get() != source)
+            {
+                continue;
+            }
+
+            if (!HasFlag(it->signature.buildFlags,
+                         RHIAccelerationStructureBuildFlags::AllowUpdate))
+            {
+                compatibility =
+                    VulkanAccelerationStructureUpdateCompatibility::
+                        SourceBuildDisallowsUpdate;
+            }
+            else
+            {
+                compatibility =
+                    GetVulkanAccelerationStructureUpdateCompatibility(
+                        it->signature,
+                        update);
+            }
+            break;
+        }
+
+        if (compatibility ==
+            VulkanAccelerationStructureUpdateCompatibility::
+                SourceHasNoSubmittedBuild)
+        {
+            compatibility = source->GetSubmittedBuildUpdateCompatibility(update);
+        }
+
+        if (compatibility ==
+            VulkanAccelerationStructureUpdateCompatibility::Compatible)
+        {
+            return true;
+        }
+
+        RVX_RHI_ERROR(
+            "VulkanCommandContext: {} update rejected because its source build is incompatible: {}",
+            operation,
+            GetVulkanAccelerationStructureUpdateCompatibilityName(
+                compatibility));
+        return false;
+    }
+
+    void VulkanCommandContext::RecordPendingAccelerationStructureBuild(
+        VulkanAccelerationStructure* accelerationStructure,
+        VulkanAccelerationStructureBuildSignature signature)
+    {
+        if (!accelerationStructure)
+        {
+            return;
+        }
+
+        for (PendingAccelerationStructureBuild& pending :
+             m_pendingAccelerationStructureBuilds)
+        {
+            if (pending.accelerationStructure.Get() == accelerationStructure)
+            {
+                pending.signature = std::move(signature);
+                return;
+            }
+        }
+
+        PendingAccelerationStructureBuild pending;
+        pending.accelerationStructure =
+            RHIAccelerationStructureRef(accelerationStructure);
+        pending.signature = std::move(signature);
+        m_pendingAccelerationStructureBuilds.push_back(std::move(pending));
+    }
+
+    void VulkanCommandContext::CommitPendingAccelerationStructureBuilds()
+    {
+        for (PendingAccelerationStructureBuild& pending :
+             m_pendingAccelerationStructureBuilds)
+        {
+            auto* accelerationStructure =
+                dynamic_cast<VulkanAccelerationStructure*>(
+                    pending.accelerationStructure.Get());
+            if (accelerationStructure)
+            {
+                accelerationStructure->CommitSubmittedBuild(
+                    std::move(pending.signature), m_queueType);
+            }
+        }
+        m_pendingAccelerationStructureBuilds.clear();
+    }
+
+    void VulkanCommandContext::DiscardPendingAccelerationStructureBuilds()
+    {
+        m_pendingAccelerationStructureBuilds.clear();
+    }
+
+    void VulkanCommandContext::CommitPendingAccelerationStructureCompactionQueries()
+    {
+        for (PendingAccelerationStructureCompactionQuery& pending :
+             m_pendingAccelerationStructureCompactionQueries)
+        {
+            auto* query = dynamic_cast<
+                VulkanAccelerationStructureCompactedSizeQuery*>(
+                pending.query.Get());
+            if (query)
+            {
+                query->Commit();
+            }
+        }
+        m_pendingAccelerationStructureCompactionQueries.clear();
+    }
+
+    void VulkanCommandContext::DiscardPendingAccelerationStructureCompactionQueries()
+    {
+        for (PendingAccelerationStructureCompactionQuery& pending :
+             m_pendingAccelerationStructureCompactionQueries)
+        {
+            auto* query = dynamic_cast<
+                VulkanAccelerationStructureCompactedSizeQuery*>(
+                pending.query.Get());
+            if (query)
+            {
+                query->Discard();
+            }
+        }
+        m_pendingAccelerationStructureCompactionQueries.clear();
     }
 
     void VulkanCommandContext::BeginEvent(const char* name, uint32 color)
@@ -651,12 +1344,77 @@ namespace RVX
 
     void VulkanCommandContext::SetPipeline(RHIPipeline* pipeline)
     {
-        m_currentPipeline = static_cast<VulkanPipeline*>(pipeline);
+        m_currentPipeline = nullptr;
+        m_boundRayTracingDescriptorSetLayouts.clear();
 
-        VkPipelineBindPoint bindPoint = m_currentPipeline->IsCompute() ?
-            VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
+        if (!pipeline)
+        {
+            RVX_RHI_ERROR("VulkanCommandContext: SetPipeline requires a pipeline");
+            return;
+        }
 
-        vkCmdBindPipeline(m_commandBuffer, bindPoint, m_currentPipeline->GetPipeline());
+        auto* vkPipeline = static_cast<VulkanPipeline*>(pipeline);
+        if (vkPipeline->GetPipeline() == VK_NULL_HANDLE)
+        {
+            RVX_RHI_ERROR("VulkanCommandContext: SetPipeline requires a valid native pipeline");
+            return;
+        }
+
+        if (vkPipeline->IsRayTracing())
+        {
+            if (!m_device->GetCapabilities().supportsRaytracingPipeline ||
+                !m_device->GetRayTracingFunctions().IsComplete())
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: ray tracing pipeline binding requires a complete enabled Vulkan ray tracing implementation");
+                return;
+            }
+
+            if (m_queueType == RHICommandQueueType::Copy)
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: ray tracing pipeline binding cannot run on the copy queue");
+                return;
+            }
+
+            if (!m_isRecording)
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: ray tracing pipeline binding requires active command recording");
+                return;
+            }
+
+            if (m_inRenderPass)
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: ray tracing pipeline binding cannot run inside a render pass");
+                return;
+            }
+
+            auto* pipelineLayout = vkPipeline->GetDescriptorPipelineLayout();
+            if (!pipelineLayout ||
+                vkPipeline->GetPipelineLayout() == VK_NULL_HANDLE)
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: ray tracing pipeline binding requires a pipeline layout");
+                return;
+            }
+
+            vkCmdBindPipeline(
+                m_commandBuffer,
+                VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
+                vkPipeline->GetPipeline());
+            m_boundRayTracingDescriptorSetLayouts.resize(
+                pipelineLayout->GetDescriptorSetLayouts().size(), nullptr);
+            m_currentPipeline = vkPipeline;
+            return;
+        }
+
+        const VkPipelineBindPoint bindPoint = vkPipeline->IsCompute()
+            ? VK_PIPELINE_BIND_POINT_COMPUTE
+            : VK_PIPELINE_BIND_POINT_GRAPHICS;
+        vkCmdBindPipeline(m_commandBuffer, bindPoint, vkPipeline->GetPipeline());
+        m_currentPipeline = vkPipeline;
     }
 
     void VulkanCommandContext::SetVertexBuffer(uint32 slot, RHIBuffer* buffer, uint64 offset)
@@ -695,6 +1453,41 @@ namespace RVX
     {
         if (!m_currentPipeline || !set)
             return;
+
+        const bool bindingRayTracingPipeline = m_currentPipeline->IsRayTracing();
+        if (bindingRayTracingPipeline &&
+            (!m_isRecording || m_inRenderPass))
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: ray tracing descriptor set binding requires active command recording outside a render pass");
+            return;
+        }
+
+        if (bindingRayTracingPipeline)
+        {
+            for (const RHIDescriptorBinding& binding :
+                 set->GetDescriptorSnapshot())
+            {
+                if (!binding.accelerationStructure)
+                {
+                    continue;
+                }
+
+                auto* accelerationStructure =
+                    dynamic_cast<VulkanAccelerationStructure*>(
+                        binding.accelerationStructure);
+                if (!accelerationStructure ||
+                    (!accelerationStructure->HasSubmittedBuild() &&
+                     !HasCompatiblePendingAccelerationStructureBuild(
+                         accelerationStructure)))
+                {
+                    RVX_RHI_ERROR(
+                        "VulkanCommandContext: ray tracing descriptor set {} references an acceleration structure that is neither submitted nor built by this command context",
+                        slot);
+                    return;
+                }
+            }
+        }
 
         auto* vkSet = static_cast<VulkanDescriptorSet*>(set);
         VulkanPipelineLayout* pipelineLayout = m_currentPipeline->GetDescriptorPipelineLayout();
@@ -737,12 +1530,23 @@ namespace RVX
         }
         VkDescriptorSet descriptorSet = vkSet->GetDescriptorSet();
 
-        VkPipelineBindPoint bindPoint = m_currentPipeline->IsCompute() ?
-            VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
+        const VkPipelineBindPoint bindPoint = bindingRayTracingPipeline
+            ? VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR
+            : (m_currentPipeline->IsCompute()
+                   ? VK_PIPELINE_BIND_POINT_COMPUTE
+                   : VK_PIPELINE_BIND_POINT_GRAPHICS);
 
         vkCmdBindDescriptorSets(m_commandBuffer, bindPoint, m_currentPipeline->GetPipelineLayout(),
             slot, 1, &descriptorSet,
             static_cast<uint32>(dynamicOffsets.size()), dynamicOffsets.data());
+        if (bindingRayTracingPipeline)
+        {
+            if (slot >= m_boundRayTracingDescriptorSetLayouts.size())
+            {
+                m_boundRayTracingDescriptorSetLayouts.resize(slot + 1, nullptr);
+            }
+            m_boundRayTracingDescriptorSetLayouts[slot] = actualLayout;
+        }
         vkSet->MarkBound();
     }
 
@@ -980,6 +1784,658 @@ namespace RVX
         FlushBarriers();
         auto* vkBuffer = static_cast<VulkanBuffer*>(buffer);
         vkCmdDispatchIndirect(m_commandBuffer, vkBuffer->GetBuffer(), offset);
+    }
+
+    // =============================================================================
+    // Ray Tracing Commands
+    // =============================================================================
+    void VulkanCommandContext::BuildBottomLevelAccelerationStructure(
+        RHIAccelerationStructure* dst,
+        const RHIBottomLevelASDesc& desc,
+        RHIBuffer* scratchBuffer,
+        uint64 scratchOffset,
+        RHIAccelerationStructure* src)
+    {
+        if (!m_device->GetCapabilities().supportsRaytracing)
+        {
+            RVX_RHI_WARN(
+                "VulkanCommandContext: BLAS build skipped because ray tracing is unsupported");
+            return;
+        }
+
+        if (m_queueType == RHICommandQueueType::Copy)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: BLAS build cannot run on the copy queue");
+            return;
+        }
+
+        if (!ValidateVulkanRayTracingCommandState(
+                m_isRecording, m_inRenderPass, "BLAS build"))
+        {
+            return;
+        }
+
+        const RHIRayTracingValidationResult descValidation =
+            ValidateRHIBottomLevelASDesc(desc);
+        if (!descValidation)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: invalid BLAS build desc: {}",
+                descValidation.message);
+            return;
+        }
+
+        if (!ValidateVulkanRayTracingBuildFlags(
+                m_device->GetCapabilities(), desc.buildFlags, "BLAS build"))
+        {
+            return;
+        }
+
+        const VulkanRayTracingFunctions& functions =
+            m_device->GetRayTracingFunctions();
+        if (!functions.IsComplete())
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: BLAS build requires complete Vulkan ray tracing entry points");
+            return;
+        }
+
+        auto* dstAS = dynamic_cast<VulkanAccelerationStructure*>(dst);
+        auto* srcAS = dynamic_cast<VulkanAccelerationStructure*>(src);
+        auto* scratch = dynamic_cast<VulkanBuffer*>(scratchBuffer);
+        const bool update = src != nullptr;
+        if (update &&
+            !HasFlag(desc.buildFlags,
+                     RHIAccelerationStructureBuildFlags::AllowUpdate))
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: BLAS update requires AllowUpdate build flag");
+            return;
+        }
+        VulkanAccelerationStructureBuildSignature buildSignature =
+            MakeVulkanBottomLevelASBuildSignature(desc);
+        const RHIAccelerationStructureBuildSizes sizes =
+            m_device->GetBottomLevelASBuildSizes(desc);
+        if (!ValidateVulkanASBuildResources(
+                "BLAS build",
+                RHIAccelerationStructureType::BottomLevel,
+                sizes,
+                update,
+                dstAS,
+                srcAS,
+                scratch,
+                scratchOffset,
+                m_device->GetAccelerationStructureProperties()
+                    .minAccelerationStructureScratchOffsetAlignment) ||
+            !ValidateVulkanBLASGeometryInputAddresses(desc))
+        {
+            return;
+        }
+        if (update &&
+            !ValidateAccelerationStructureUpdateSignature(
+                "BLAS build", srcAS, buildSignature))
+        {
+            return;
+        }
+
+        const VkBuildAccelerationStructureFlagsKHR buildFlags =
+            ToVkAccelerationStructureBuildFlags(desc.buildFlags, update);
+        std::vector<VkAccelerationStructureGeometryKHR> geometries;
+        std::vector<VkAccelerationStructureBuildRangeInfoKHR> ranges;
+        VkAccelerationStructureBuildGeometryInfoKHR buildInfo = {
+            VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+        if (!BuildVulkanBottomLevelASBuildInputs(
+                m_device->GetPhysicalDevice(),
+                desc,
+                buildFlags,
+                geometries,
+                ranges,
+                buildInfo))
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: BLAS build could not translate validated geometry inputs");
+            return;
+        }
+        buildInfo.mode = update
+            ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR
+            : VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+
+        buildInfo.dstAccelerationStructure = dstAS->GetAccelerationStructure();
+        buildInfo.srcAccelerationStructure = update
+            ? srcAS->GetAccelerationStructure()
+            : VK_NULL_HANDLE;
+        buildInfo.scratchData.deviceAddress =
+            scratch->GetDeviceAddress() + scratchOffset;
+
+        const VkAccelerationStructureBuildRangeInfoKHR* rangePointer =
+            ranges.data();
+        FlushBarriers();
+        functions.cmdBuildAccelerationStructures(
+            m_commandBuffer, 1, &buildInfo, &rangePointer);
+        RecordPendingAccelerationStructureBuild(
+            dstAS, std::move(buildSignature));
+        InsertAccelerationStructureBarrier(dstAS);
+    }
+
+    void VulkanCommandContext::BuildTopLevelAccelerationStructure(
+        RHIAccelerationStructure* dst,
+        const RHITopLevelASDesc& desc,
+        RHIBuffer* scratchBuffer,
+        uint64 scratchOffset,
+        RHIAccelerationStructure* src)
+    {
+        if (!m_device->GetCapabilities().supportsRaytracing)
+        {
+            RVX_RHI_WARN(
+                "VulkanCommandContext: TLAS build skipped because ray tracing is unsupported");
+            return;
+        }
+
+        if (m_queueType == RHICommandQueueType::Copy)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: TLAS build cannot run on the copy queue");
+            return;
+        }
+
+        if (!ValidateVulkanRayTracingCommandState(
+                m_isRecording, m_inRenderPass, "TLAS build"))
+        {
+            return;
+        }
+
+        const RHIRayTracingValidationResult descValidation =
+            ValidateRHITopLevelASDesc(desc);
+        if (!descValidation)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: invalid TLAS build desc: {}",
+                descValidation.message);
+            return;
+        }
+
+        if (!ValidateVulkanRayTracingBuildFlags(
+                m_device->GetCapabilities(), desc.buildFlags, "TLAS build"))
+        {
+            return;
+        }
+
+        if (!desc.instanceBuffer)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: TLAS build requires a GPU instance buffer");
+            return;
+        }
+
+        const VulkanRayTracingFunctions& functions =
+            m_device->GetRayTracingFunctions();
+        if (!functions.IsComplete())
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: TLAS build requires complete Vulkan ray tracing entry points");
+            return;
+        }
+
+        auto* dstAS = dynamic_cast<VulkanAccelerationStructure*>(dst);
+        auto* srcAS = dynamic_cast<VulkanAccelerationStructure*>(src);
+        auto* scratch = dynamic_cast<VulkanBuffer*>(scratchBuffer);
+        auto* instances = dynamic_cast<VulkanBuffer*>(desc.instanceBuffer);
+        const bool update = src != nullptr;
+        if (update &&
+            !HasFlag(desc.buildFlags,
+                     RHIAccelerationStructureBuildFlags::AllowUpdate))
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: TLAS update requires AllowUpdate build flag");
+            return;
+        }
+        VulkanAccelerationStructureBuildSignature buildSignature =
+            MakeVulkanTopLevelASBuildSignature(desc);
+        const RHIAccelerationStructureBuildSizes sizes =
+            m_device->GetTopLevelASBuildSizes(desc);
+        if (!ValidateVulkanASBuildResources(
+                "TLAS build",
+                RHIAccelerationStructureType::TopLevel,
+                sizes,
+                update,
+                dstAS,
+                srcAS,
+                scratch,
+                scratchOffset,
+                m_device->GetAccelerationStructureProperties()
+                    .minAccelerationStructureScratchOffsetAlignment) ||
+            !ValidateVulkanBufferAddressRange(
+                "TLAS build",
+                instances,
+                desc.instanceOffset,
+                static_cast<uint64>(desc.instanceCount) *
+                    sizeof(RHIRayTracingInstanceRecord),
+                "instance buffer") ||
+            !ValidateVulkanBufferEffectiveAddressAlignment(
+                "TLAS build",
+                instances,
+                desc.instanceOffset,
+                16,
+                "instance buffer"))
+        {
+            return;
+        }
+        if (update &&
+            !ValidateAccelerationStructureUpdateSignature(
+                "TLAS build", srcAS, buildSignature))
+        {
+            return;
+        }
+
+        const VkBuildAccelerationStructureFlagsKHR buildFlags =
+            ToVkAccelerationStructureBuildFlags(desc.buildFlags, update);
+        VkAccelerationStructureGeometryKHR geometry = {
+            VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+        VkAccelerationStructureBuildRangeInfoKHR range = {};
+        VkAccelerationStructureBuildGeometryInfoKHR buildInfo = {
+            VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+        if (!BuildVulkanTopLevelASBuildInputs(
+                desc, buildFlags, geometry, range, buildInfo))
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: TLAS build could not translate validated instance input");
+            return;
+        }
+        buildInfo.mode = update
+            ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR
+            : VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+
+        buildInfo.dstAccelerationStructure = dstAS->GetAccelerationStructure();
+        buildInfo.srcAccelerationStructure = update
+            ? srcAS->GetAccelerationStructure()
+            : VK_NULL_HANDLE;
+        buildInfo.scratchData.deviceAddress =
+            scratch->GetDeviceAddress() + scratchOffset;
+
+        const VkAccelerationStructureBuildRangeInfoKHR* rangePointer = &range;
+        FlushBarriers();
+        functions.cmdBuildAccelerationStructures(
+            m_commandBuffer, 1, &buildInfo, &rangePointer);
+        RecordPendingAccelerationStructureBuild(
+            dstAS, std::move(buildSignature));
+        InsertAccelerationStructureBarrier(dstAS);
+    }
+
+    void VulkanCommandContext::DispatchRays(const RHIDispatchRaysDesc& desc)
+    {
+        if (!m_device->GetCapabilities().supportsRaytracingPipeline)
+        {
+            RVX_RHI_WARN(
+                "VulkanCommandContext: DispatchRays skipped because ray tracing pipelines are unsupported");
+            return;
+        }
+
+        if (m_queueType == RHICommandQueueType::Copy)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: DispatchRays cannot run on the copy queue");
+            return;
+        }
+
+        if (!ValidateVulkanRayTracingCommandState(
+                m_isRecording, m_inRenderPass, "DispatchRays"))
+        {
+            return;
+        }
+
+        if (!m_currentPipeline || !m_currentPipeline->IsRayTracing())
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: DispatchRays requires a bound ray tracing pipeline");
+            return;
+        }
+
+        const RHIRayTracingValidationResult descValidation =
+            ValidateRHIDispatchRaysDesc(desc, m_currentPipeline);
+        if (!descValidation)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: invalid DispatchRays desc: {}",
+                descValidation.message);
+            return;
+        }
+
+        const VulkanRayTracingFunctions& functions =
+            m_device->GetRayTracingFunctions();
+        if (!functions.IsComplete() || !functions.cmdTraceRays)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: DispatchRays requires a complete Vulkan ray tracing entry point table");
+            return;
+        }
+
+        auto* shaderTable = dynamic_cast<VulkanShaderTable*>(desc.shaderTable);
+        if (!shaderTable || !shaderTable->IsValid())
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: DispatchRays requires a valid Vulkan shader table");
+            return;
+        }
+
+        if (shaderTable->GetPipeline() != m_currentPipeline)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: DispatchRays shader table does not match the bound ray tracing pipeline");
+            return;
+        }
+
+        auto* pipelineLayout = m_currentPipeline->GetDescriptorPipelineLayout();
+        if (!pipelineLayout)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: DispatchRays requires a ray tracing pipeline layout");
+            return;
+        }
+
+        const auto& expectedLayouts =
+            pipelineLayout->GetDescriptorSetLayouts();
+        for (uint32 setIndex = 0;
+             setIndex < static_cast<uint32>(expectedLayouts.size());
+             ++setIndex)
+        {
+            const auto* expectedLayout = expectedLayouts[setIndex];
+            if (!expectedLayout || expectedLayout->GetEntries().empty())
+            {
+                continue;
+            }
+
+            const bool descriptorSetBound =
+                setIndex < m_boundRayTracingDescriptorSetLayouts.size() &&
+                m_boundRayTracingDescriptorSetLayouts[setIndex] == expectedLayout;
+            if (!descriptorSetBound)
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: DispatchRays requires descriptor set {} to be bound with the ray tracing pipeline layout",
+                    setIndex);
+                return;
+            }
+        }
+
+        const VulkanRayTracingDispatchRegions regions =
+            shaderTable->BuildDispatchRaysRegions(
+                desc.width, desc.height, desc.depth);
+        const VkPhysicalDeviceRayTracingPipelinePropertiesKHR& properties =
+            m_device->GetRayTracingPipelineProperties();
+        if (!ValidateVulkanShaderTableRegion(
+                regions.rayGeneration,
+                properties,
+                true,
+                "ray-generation") ||
+            !ValidateVulkanShaderTableRegion(
+                regions.miss, properties, false, "miss") ||
+            !ValidateVulkanShaderTableRegion(
+                regions.hitGroup, properties, false, "hit-group") ||
+            !ValidateVulkanShaderTableRegion(
+                regions.callable, properties, false, "callable"))
+        {
+            return;
+        }
+
+        FlushBarriers();
+        functions.cmdTraceRays(
+            m_commandBuffer,
+            &regions.rayGeneration,
+            &regions.miss,
+            &regions.hitGroup,
+            &regions.callable,
+            desc.width,
+            desc.height,
+            desc.depth);
+    }
+
+    void VulkanCommandContext::WriteAccelerationStructureCompactedSizes(
+        RHIAccelerationStructureCompactedSizeQuery* query,
+        uint32 firstQuery,
+        std::span<RHIAccelerationStructure* const> accelerationStructures)
+    {
+        if (!m_device->GetCapabilities().supportsAccelerationStructureCompaction ||
+            m_queueType == RHICommandQueueType::Copy ||
+            !ValidateVulkanRayTracingCommandState(
+                m_isRecording, m_inRenderPass, "compacted-size query"))
+        {
+            return;
+        }
+
+        auto* vkQuery = dynamic_cast<
+            VulkanAccelerationStructureCompactedSizeQuery*>(query);
+        if (!vkQuery || vkQuery->GetQueueType() != m_queueType ||
+            accelerationStructures.empty() ||
+            accelerationStructures.size() > vkQuery->GetCount() ||
+            firstQuery > vkQuery->GetCount() ||
+            accelerationStructures.size() > vkQuery->GetCount() - firstQuery ||
+            vkQuery->GetQueryPool() == VK_NULL_HANDLE)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: compacted-size query arguments are invalid");
+            return;
+        }
+
+        const VulkanRayTracingFunctions& functions =
+            m_device->GetRayTracingFunctions();
+        if (!functions.IsComplete() ||
+            !functions.cmdWriteAccelerationStructuresProperties)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: compacted-size query requires complete Vulkan ray tracing entry points");
+            return;
+        }
+
+        std::vector<VkAccelerationStructureKHR> nativeStructures;
+        nativeStructures.reserve(accelerationStructures.size());
+        for (RHIAccelerationStructure* source : accelerationStructures)
+        {
+            auto* sourceAS = dynamic_cast<VulkanAccelerationStructure*>(source);
+            const bool pendingInThisContext =
+                sourceAS && HasPendingAccelerationStructureBuild(sourceAS, true);
+            const bool submittedOnThisQueue =
+                sourceAS && sourceAS->SubmittedBuildAllowsCompaction() &&
+                sourceAS->SubmittedBuildWasOnQueue(m_queueType);
+            if (!sourceAS || !sourceAS->IsValid() ||
+                (!pendingInThisContext && !submittedOnThisQueue))
+            {
+                RVX_RHI_ERROR(
+                    "VulkanCommandContext: compacted-size query requires an AllowCompaction source build recorded in this context or submitted previously on the same queue type");
+                return;
+            }
+            nativeStructures.push_back(sourceAS->GetAccelerationStructure());
+        }
+
+        if (!vkQuery->Reserve(
+                firstQuery,
+                static_cast<uint32>(accelerationStructures.size())))
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: compacted-size query slots are not available");
+            return;
+        }
+
+        vkCmdResetQueryPool(
+            m_commandBuffer,
+            vkQuery->GetQueryPool(),
+            firstQuery,
+            static_cast<uint32>(nativeStructures.size()));
+        FlushBarriers();
+        functions.cmdWriteAccelerationStructuresProperties(
+            m_commandBuffer,
+            static_cast<uint32>(nativeStructures.size()),
+            nativeStructures.data(),
+            VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+            vkQuery->GetQueryPool(),
+            firstQuery);
+
+        for (RHIAccelerationStructure* source : accelerationStructures)
+        {
+            PendingAccelerationStructureCompactionQuery pending;
+            pending.query = RHIAccelerationStructureCompactedSizeQueryRef(query);
+            pending.source = RHIAccelerationStructureRef(source);
+            m_pendingAccelerationStructureCompactionQueries.push_back(
+                std::move(pending));
+        }
+    }
+
+    void VulkanCommandContext::ResolveAccelerationStructureCompactedSizes(
+        RHIAccelerationStructureCompactedSizeQuery* query,
+        uint32 firstQuery,
+        uint32 queryCount,
+        RHIBuffer* readbackBuffer,
+        uint64 readbackOffset)
+    {
+        auto* vkQuery = dynamic_cast<
+            VulkanAccelerationStructureCompactedSizeQuery*>(query);
+        auto* vkReadback = dynamic_cast<VulkanBuffer*>(readbackBuffer);
+        if (!m_device->GetCapabilities().supportsAccelerationStructureCompaction ||
+            m_queueType == RHICommandQueueType::Copy ||
+            !ValidateVulkanRayTracingCommandState(
+                m_isRecording, m_inRenderPass, "compacted-size resolve") ||
+            !vkQuery || vkQuery->GetQueueType() != m_queueType ||
+            vkQuery->GetQueryPool() == VK_NULL_HANDLE ||
+            !vkReadback || vkReadback->GetBuffer() == VK_NULL_HANDLE ||
+            vkReadback->GetMemoryType() != RHIMemoryType::Readback ||
+            (readbackOffset % alignof(uint64)) != 0 || queryCount == 0 ||
+            !vkQuery->CanResolve(firstQuery, queryCount))
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: compacted-size resolve arguments are invalid");
+            return;
+        }
+
+        bool queryOwnedByContext = false;
+        for (const PendingAccelerationStructureCompactionQuery& pending :
+             m_pendingAccelerationStructureCompactionQueries)
+        {
+            if (pending.query.Get() == query)
+            {
+                queryOwnedByContext = true;
+                break;
+            }
+        }
+        const uint64 bytes = static_cast<uint64>(queryCount) * sizeof(uint64);
+        if (!queryOwnedByContext ||
+            !IsRHIRayTracingBufferRangeValid(
+                *vkReadback, readbackOffset, bytes))
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: compacted-size resolve requires context-owned query slots and a sufficiently large readback range");
+            return;
+        }
+
+        FlushBarriers();
+        // The compacted-size write has no independent availability command.
+        // WAIT_BIT makes it part of this copy's synchronization scope while
+        // remaining an entirely GPU-side dependency (no CPU fence wait).
+        vkCmdCopyQueryPoolResults(
+            m_commandBuffer,
+            vkQuery->GetQueryPool(),
+            firstQuery,
+            queryCount,
+            vkReadback->GetBuffer(),
+            readbackOffset,
+            sizeof(uint64),
+            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+
+        PendingAccelerationStructureCompactionQuery pending;
+        pending.query = RHIAccelerationStructureCompactedSizeQueryRef(query);
+        pending.readback = RHIBufferRef(readbackBuffer);
+        m_pendingAccelerationStructureCompactionQueries.push_back(
+            std::move(pending));
+    }
+
+    void VulkanCommandContext::CopyAccelerationStructureCompact(
+        RHIAccelerationStructure* dst,
+        RHIAccelerationStructure* src,
+        uint64 expectedCompactedSize)
+    {
+        if (!m_device->GetCapabilities().supportsAccelerationStructureCompaction ||
+            m_queueType == RHICommandQueueType::Copy ||
+            !ValidateVulkanRayTracingCommandState(
+                m_isRecording, m_inRenderPass, "acceleration structure compact copy"))
+        {
+            return;
+        }
+
+        auto* dstAS = dynamic_cast<VulkanAccelerationStructure*>(dst);
+        auto* srcAS = dynamic_cast<VulkanAccelerationStructure*>(src);
+        const bool pendingInThisContext =
+            srcAS && HasPendingAccelerationStructureBuild(srcAS, true);
+        const bool submittedOnThisQueue =
+            srcAS && srcAS->SubmittedBuildAllowsCompaction() &&
+            srcAS->SubmittedBuildWasOnQueue(m_queueType);
+        if (!dstAS || !srcAS || dstAS == srcAS ||
+            !dstAS->IsValid() || !srcAS->IsValid() ||
+            dstAS->GetType() != srcAS->GetType() ||
+            expectedCompactedSize == 0 ||
+            expectedCompactedSize > srcAS->GetSize() ||
+            dstAS->GetSize() < expectedCompactedSize ||
+            !IsRHIRayTracingAccelerationStructureSizeAligned(dstAS->GetSize()) ||
+            !IsRHIRayTracingAccelerationStructureSizeAligned(srcAS->GetSize()) ||
+            (!pendingInThisContext && !submittedOnThisQueue))
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: compact copy requires aligned distinct same-type acceleration structures, an in-range queried size, and an AllowCompaction source build from this context or the same submitted queue type");
+            return;
+        }
+
+        const VulkanRayTracingFunctions& functions =
+            m_device->GetRayTracingFunctions();
+        if (!functions.IsComplete() || !functions.cmdCopyAccelerationStructure)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: compact copy requires complete Vulkan ray tracing entry points");
+            return;
+        }
+
+        VkCopyAccelerationStructureInfoKHR copyInfo = {
+            VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR};
+        copyInfo.src = srcAS->GetAccelerationStructure();
+        copyInfo.dst = dstAS->GetAccelerationStructure();
+        copyInfo.mode = VK_COPY_ACCELERATION_STRUCTURE_MODE_COMPACT_KHR;
+
+        FlushBarriers();
+        functions.cmdCopyAccelerationStructure(m_commandBuffer, &copyInfo);
+        InsertAccelerationStructureBarrier(dstAS);
+    }
+
+    void VulkanCommandContext::InsertAccelerationStructureBarrier(
+        RHIAccelerationStructure* accelerationStructure)
+    {
+        auto* vkAS = dynamic_cast<VulkanAccelerationStructure*>(
+            accelerationStructure);
+        if (!vkAS ||
+            vkAS->GetAccelerationStructure() == VK_NULL_HANDLE ||
+            !m_device->GetCapabilities().supportsRaytracing)
+        {
+            return;
+        }
+
+        FlushBarriers();
+        VkMemoryBarrier2 memoryBarrier = {
+            VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        // Without VK_KHR_ray_tracing_maintenance1, AS copy commands execute in
+        // the acceleration-structure build stage.  Advertising the dedicated
+        // COPY stage bit would itself be invalid on the production base-KHR
+        // path, even though vkCmdCopyAccelerationStructureKHR is available.
+        memoryBarrier.srcStageMask =
+            VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        memoryBarrier.srcAccessMask =
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        memoryBarrier.dstStageMask =
+            VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+        memoryBarrier.dstAccessMask =
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+
+        VkDependencyInfo dependencyInfo = {
+            VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dependencyInfo.memoryBarrierCount = 1;
+        dependencyInfo.pMemoryBarriers = &memoryBarrier;
+        vkCmdPipelineBarrier2(m_commandBuffer, &dependencyInfo);
     }
 
     void VulkanCommandContext::CopyBuffer(RHIBuffer* src, RHIBuffer* dst,
@@ -1260,8 +2716,12 @@ namespace RVX
                 submitResult,
                 RHIDeviceFaultOperation::CommandSubmission,
                 "Vulkan command submission failed");
+            vkContext->DiscardPendingAccelerationStructureCompactionQueries();
+            vkContext->DiscardPendingAccelerationStructureBuilds();
             return 0;
         }
+        vkContext->CommitPendingAccelerationStructureBuilds();
+        vkContext->CommitPendingAccelerationStructureCompactionQueries();
         if (fence != VK_NULL_HANDLE)
         {
             device->MarkArmedFrameFenceSubmitted(fence);
@@ -1281,6 +2741,9 @@ namespace RVX
         std::vector<VkCommandBuffer> graphicsCmdBuffers;
         std::vector<VkCommandBuffer> computeCmdBuffers;
         std::vector<VkCommandBuffer> copyCmdBuffers;
+        std::vector<VulkanCommandContext*> graphicsContexts;
+        std::vector<VulkanCommandContext*> computeContexts;
+        std::vector<VulkanCommandContext*> copyContexts;
 
         for (auto* context : contexts)
         {
@@ -1297,15 +2760,32 @@ namespace RVX
             {
                 case RHICommandQueueType::Graphics:
                     graphicsCmdBuffers.push_back(cmdBuffer);
+                    graphicsContexts.push_back(vkContext);
                     break;
                 case RHICommandQueueType::Compute:
                     computeCmdBuffers.push_back(cmdBuffer);
+                    computeContexts.push_back(vkContext);
                     break;
                 case RHICommandQueueType::Copy:
                     copyCmdBuffers.push_back(cmdBuffer);
+                    copyContexts.push_back(vkContext);
                     break;
             }
         }
+
+        const auto discardPendingAccelerationStructureState = [&]()
+        {
+            for (RHICommandContext* context : contexts)
+            {
+                auto* vkContext = dynamic_cast<VulkanCommandContext*>(context);
+                if (!vkContext)
+                {
+                    continue;
+                }
+                vkContext->DiscardPendingAccelerationStructureCompactionQueries();
+                vkContext->DiscardPendingAccelerationStructureBuilds();
+            }
+        };
 
         // Cross-queue synchronization semaphores (created on-demand)
         VkSemaphore copyToComputeSemaphore = VK_NULL_HANDLE;
@@ -1400,13 +2880,17 @@ namespace RVX
         if (needCopyToComputeSync)
         {
             if (!createSemaphore(copyToComputeSemaphore))
+            {
+                discardPendingAccelerationStructureState();
                 return 0;
+            }
         }
         if (needCopyToGraphicsSync)
         {
             if (!createSemaphore(copyToGraphicsSemaphore))
             {
                 retireCrossQueueSemaphores();
+                discardPendingAccelerationStructureState();
                 return 0;
             }
         }
@@ -1415,6 +2899,7 @@ namespace RVX
             if (!createSemaphore(computeToGraphicsSemaphore))
             {
                 retireCrossQueueSemaphores();
+                discardPendingAccelerationStructureState();
                 return 0;
             }
         }
@@ -1455,10 +2940,16 @@ namespace RVX
                         "Vulkan copy batch submission failed"))
             {
                 retireCrossQueueSemaphores();
+                discardPendingAccelerationStructureState();
                 return 0;
             }
             submittedAnyBatch = true;
             lastSubmittedQueue = device->GetTransferQueue();
+            for (VulkanCommandContext* context : copyContexts)
+            {
+                context->CommitPendingAccelerationStructureBuilds();
+                context->CommitPendingAccelerationStructureCompactionQueries();
+            }
         }
 
         // Submit compute commands (wait for copy if needed)
@@ -1507,10 +2998,16 @@ namespace RVX
                         "Vulkan compute batch submission failed"))
             {
                 retireCrossQueueSemaphores();
+                discardPendingAccelerationStructureState();
                 return 0;
             }
             submittedAnyBatch = true;
             lastSubmittedQueue = device->GetComputeQueue();
+            for (VulkanCommandContext* context : computeContexts)
+            {
+                context->CommitPendingAccelerationStructureBuilds();
+                context->CommitPendingAccelerationStructureCompactionQueries();
+            }
         }
 
         // Submit graphics commands. Swapchain synchronization is attached only
@@ -1584,6 +3081,7 @@ namespace RVX
                         "Vulkan graphics batch submission failed"))
             {
                 retireCrossQueueSemaphores();
+                discardPendingAccelerationStructureState();
                 return 0;
             }
             if (frameFence != VK_NULL_HANDLE)
@@ -1592,6 +3090,11 @@ namespace RVX
             }
             submittedAnyBatch = true;
             lastSubmittedQueue = device->GetGraphicsQueue();
+            for (VulkanCommandContext* context : graphicsContexts)
+            {
+                context->CommitPendingAccelerationStructureBuilds();
+                context->CommitPendingAccelerationStructureCompactionQueries();
+            }
         }
         else if (vkSignalFence && copyCmdBuffers.empty() && computeCmdBuffers.empty())
         {
@@ -1613,6 +3116,7 @@ namespace RVX
                         "Vulkan empty timeline submission failed"))
             {
                 retireCrossQueueSemaphores();
+                discardPendingAccelerationStructureState();
                 return 0;
             }
             submittedAnyBatch = true;
@@ -1666,6 +3170,7 @@ namespace RVX
         {
             VkQueue queue = VK_NULL_HANDLE;
             std::vector<VkCommandBufferSubmitInfo> commandBuffers;
+            std::vector<VulkanCommandContext*> contexts;
             VkSemaphore completionSemaphore = VK_NULL_HANDLE;
         };
 
@@ -1683,6 +3188,7 @@ namespace RVX
                 return 0;
             }
             batch.commandBuffers.reserve(source.contexts.size());
+            batch.contexts.reserve(source.contexts.size());
             for (RHICommandContext* context : source.contexts)
             {
                 auto* vkContext = static_cast<VulkanCommandContext*>(context);
@@ -1691,6 +3197,7 @@ namespace RVX
                 commandInfo.commandBuffer = vkContext->GetCommandBuffer();
                 commandInfo.deviceMask = 0;
                 batch.commandBuffers.push_back(commandInfo);
+                batch.contexts.push_back(vkContext);
             }
         }
 
@@ -1719,6 +3226,18 @@ namespace RVX
                                        batch.completionSemaphore,
                                        nullptr);
                     batch.completionSemaphore = VK_NULL_HANDLE;
+                }
+            }
+        };
+
+        const auto discardPendingAccelerationStructureState = [&batches]()
+        {
+            for (BatchState& batch : batches)
+            {
+                for (VulkanCommandContext* context : batch.contexts)
+                {
+                    context->DiscardPendingAccelerationStructureCompactionQueries();
+                    context->DiscardPendingAccelerationStructureBuilds();
                 }
             }
         };
@@ -1752,6 +3271,7 @@ namespace RVX
                     RHIDeviceFaultOperation::CommandSubmission,
                     "Vulkan queue-plan timeline semaphore creation failed");
                 destroySemaphores();
+                discardPendingAccelerationStructureState();
                 return 0;
             }
         }
@@ -1806,6 +3326,7 @@ namespace RVX
                         static_cast<void>(vkDeviceWaitIdle(device->GetDevice()));
                     }
                     destroySemaphores();
+                    discardPendingAccelerationStructureState();
                     return 0;
                 }
 
@@ -1892,9 +3413,15 @@ namespace RVX
                     static_cast<void>(vkDeviceWaitIdle(device->GetDevice()));
                 }
                 destroySemaphores();
+                discardPendingAccelerationStructureState();
                 return 0;
             }
             submittedAnyBatch = true;
+            for (VulkanCommandContext* context : batch.contexts)
+            {
+                context->CommitPendingAccelerationStructureBuilds();
+                context->CommitPendingAccelerationStructureCompactionQueries();
+            }
             if (frameFence != VK_NULL_HANDLE)
             {
                 device->MarkArmedFrameFenceSubmitted(frameFence);

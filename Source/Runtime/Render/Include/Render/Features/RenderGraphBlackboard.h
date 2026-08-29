@@ -7,11 +7,13 @@
 
 #include "Render/Features/RenderFeatureTypes.h"
 #include "Render/Graph/RenderGraph.h"
+#include "Render/Graph/RenderGraphExecutionReceipt.h"
 #include "Render/PostProcess/PostProcessTypes.h"
 
 #include <algorithm>
 #include <array>
 #include <optional>
+#include <memory>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -110,6 +112,20 @@ namespace RVX
             RHIFormat::R8_UNORM, RHISampleCount::Count1};
         inline static constexpr FormatContract DeviceDepthContract{
             RHIFormat::D32_FLOAT, RHISampleCount::Count1};
+        /**
+         * Exact pre-exposed indirect-specular baseline.  Reflection routing
+         * replaces this contribution instead of adding a second environment
+         * term to already-lit HDR scene color.
+         */
+        inline static constexpr FormatContract BaseIndirectSpecularContract{
+            RHIFormat::RGBA16_FLOAT, RHISampleCount::Count1};
+        /**
+         * Dimensionless material/visibility response for a routed indirect
+         * specular source.  It is kept in RGBA16F so Forward and Deferred
+         * expose one lossless, backend-neutral replacement ABI.
+         */
+        inline static constexpr FormatContract SpecularResponseContract{
+            RHIFormat::RGBA16_FLOAT, RHISampleCount::Count1};
 
         RenderGraphBlackboardProvenance provenance{};
         RGTextureHandle hdrSceneColor{};
@@ -317,17 +333,78 @@ namespace RVX
         RGTextureHandle rayTracedMask{};
     };
 
+    /** Exact point/spot shadow-atlas registration for one frame/view. */
+    struct LocalShadowOutputs
+    {
+        static constexpr RenderBlackboardResourceId ResourceId =
+            RenderBlackboardResourceId::LocalShadowOutputs;
+        static constexpr uint32 SchemaVersion = 1;
+
+        RenderGraphBlackboardProvenance provenance{};
+        RenderFrameIdentity frameIdentity{};
+        RenderViewIdentity viewIdentity{};
+        uint64 lightingPlanIdentity = 0;
+        uint64 localShadowPlanIdentity = 0;
+        uint64 atlasPlanIdentity = 0;
+        uint64 atlasGeneration = 0;
+        RGTextureHandle depthAtlas{};
+        uint32 pageCount = 0;
+        uint32 pageResolution = 0;
+        bool requested = false;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            const bool validIdentity = frameIdentity.IsValid() &&
+                viewIdentity.IsValid() && lightingPlanIdentity != 0 &&
+                localShadowPlanIdentity != 0 && atlasPlanIdentity != 0 &&
+                atlasGeneration != 0;
+            return validIdentity &&
+                ((!requested && pageCount == 0 && !depthAtlas.IsValid()) ||
+                 (requested && pageCount != 0 && pageResolution != 0 &&
+                  depthAtlas.IsValid()));
+        }
+    };
+
     struct LightingOutputs
     {
         static constexpr RenderBlackboardResourceId ResourceId =
             RenderBlackboardResourceId::LightingOutputs;
-        static constexpr uint32 SchemaVersion = 3;
+        static constexpr uint32 SchemaVersion = 5;
 
         RenderGraphBlackboardProvenance provenance{};
+        /** Exact frozen frame/view that produced the lit HDR surface. */
+        RenderFrameIdentity frameIdentity{};
+        RenderViewIdentity viewIdentity{};
         /** Immutable LightingFramePlan identity shared by every lighting consumer. */
         uint64 lightingPlanIdentity = 0;
         RGTextureHandle hdrSceneColor{};
+        SceneTextures::Metadata hdrSceneColorMetadata{};
         RGBufferHandle clusteredLights{};
+        /**
+         * Exact pre-exposed baseline already contained in hdrSceneColor.
+         * Reflection resolve must subtract this value before adding a routed
+         * screen-space/probe source materialized with specularResponse.
+         */
+        RGTextureHandle baseIndirectSpecular{};
+        SceneTextures::Metadata baseIndirectSpecularMetadata{};
+        /**
+         * Dimensionless Fresnel/BRDF/material-AO/specular-AO response.  This
+         * is intentionally separate from baseIndirectSpecular so a new
+         * radiance source cannot double-apply the material response.
+         */
+        RGTextureHandle specularResponse{};
+        SceneTextures::Metadata specularResponseMetadata{};
+        /** Exact committed exposure identity shared by all three surfaces. */
+        RGBufferHandle exposureState{};
+        SceneTextures::ExposureStateMetadata exposureStateMetadata{};
+        uint64 exposureStateContentHash = 0;
+        /** Optional surface guides preserved for HDR stylized post processing. */
+        RGTextureHandle worldNormal{};
+        SceneTextures::Metadata worldNormalMetadata{};
+        RGTextureHandle materialIdentity{};
+        SceneTextures::Metadata materialIdentityMetadata{};
+        RGBufferHandle materialParameterTable{};
+        PostProcessMaterialTableMetadata materialParameterTableMetadata{};
 
         [[nodiscard]] bool IsCompatibleWithLightingPlan(
             uint64 expectedLightingPlanIdentity) const noexcept
@@ -341,12 +418,91 @@ namespace RVX
     {
         static constexpr RenderBlackboardResourceId ResourceId =
             RenderBlackboardResourceId::ReflectionOutputs;
-        static constexpr uint32 SchemaVersion = 1;
+        static constexpr uint32 SchemaVersion = 3;
 
         RenderGraphBlackboardProvenance provenance{};
+        /** Exact frozen frame/view and lighting plan resolved by this feature. */
+        RenderFrameIdentity frameIdentity{};
+        RenderViewIdentity viewIdentity{};
+        uint64 lightingPlanIdentity = 0;
+        /** Canonical scene-linear HDR surface after reflection resolution. */
+        RGTextureHandle resolvedSceneColor{};
+        SceneTextures::Metadata resolvedSceneColorMetadata{};
+        /** Optional surface guides forwarded without mutation. */
+        RGTextureHandle worldNormal{};
+        SceneTextures::Metadata worldNormalMetadata{};
+        RGTextureHandle materialIdentity{};
+        SceneTextures::Metadata materialIdentityMetadata{};
+        RGBufferHandle materialParameterTable{};
+        PostProcessMaterialTableMetadata materialParameterTableMetadata{};
+        /** Future reflection implementations may publish these typed fields. */
         RGTextureHandle rawReflection{};
         RGTextureHandle denoisedReflection{};
         RGTextureHandle confidence{};
+        /** Capability-honest execution state for the current identity resolve. */
+        bool screenSpaceReflectionsApplied = false;
+        bool reflectionProbesApplied = false;
+        /**
+         * @brief True only when the frozen hybrid policy selected the RT
+         * reflection route for this graph. Exact execution is reported by the
+         * frame receipt after submission rather than mutating this immutable
+         * blackboard payload.
+         */
+        bool rayTracedReflectionsScheduled = false;
+        bool rayTracedReflectionsApplied = false;
+        /** Nonzero only when this boundary consumed an immutable hybrid plan. */
+        uint64 hybridRayTracingPlanIdentity = 0;
+        bool imageBasedLightingPreserved = false;
+
+        [[nodiscard]] bool IsCompatibleWithLightingPlan(
+            uint64 expectedLightingPlanIdentity) const noexcept
+        {
+            return expectedLightingPlanIdentity != 0 &&
+                   lightingPlanIdentity == expectedLightingPlanIdentity;
+        }
+    };
+
+    /**
+     * @brief Scene-linear surface after Sky/Water but before mesh or particle
+     *        translucency consumes it.
+     *
+     * This boundary deliberately excludes OIT accumulation resources. Those
+     * resources are private to the recipe-neutral Translucency feature and
+     * cannot escape into post processing or a later frame.
+     */
+    struct PreTranslucencyOutputs
+    {
+        static constexpr RenderBlackboardResourceId ResourceId =
+            RenderBlackboardResourceId::PreTranslucencyOutputs;
+        static constexpr uint32 SchemaVersion = 1;
+
+        RenderGraphBlackboardProvenance provenance{};
+        RenderFrameIdentity frameIdentity{};
+        RenderViewIdentity viewIdentity{};
+        uint64 lightingPlanIdentity = 0;
+        RGTextureHandle hdrSceneColor{};
+        SceneTextures::Metadata hdrSceneColorMetadata{};
+        RGTextureHandle deviceDepth{};
+        SceneTextures::Metadata deviceDepthMetadata{};
+        RGTextureHandle worldNormal{};
+        SceneTextures::Metadata worldNormalMetadata{};
+        RGTextureHandle materialIdentity{};
+        SceneTextures::Metadata materialIdentityMetadata{};
+        RGBufferHandle materialParameterTable{};
+        PostProcessMaterialTableMetadata materialParameterTableMetadata{};
+        RGTextureHandle velocity{};
+        SceneTextures::Metadata velocityMetadata{};
+        RGTextureHandle reactiveMask{};
+        SceneTextures::Metadata reactiveMaskMetadata{};
+        RGTextureHandle opaqueSceneSnapshot{};
+        SceneTextures::Metadata opaqueSceneSnapshotMetadata{};
+        std::shared_ptr<OpaqueSceneSnapshotCopyReceipt>
+            opaqueSceneSnapshotReceipt{};
+        RGBufferHandle exposureState{};
+        SceneTextures::ExposureStateMetadata exposureStateMetadata{};
+        PostProcessColorDomain colorDomain =
+            PostProcessColorDomain::SceneLinearHDR;
+        PostProcessTransfer transfer = PostProcessTransfer::None;
     };
 
     struct TranslucencyOutputs
@@ -628,8 +784,10 @@ namespace RVX
             std::optional<SceneTextures>,
             std::optional<VisibilityOutputs>,
             std::optional<ShadowOutputs>,
+            std::optional<LocalShadowOutputs>,
             std::optional<LightingOutputs>,
             std::optional<ReflectionOutputs>,
+            std::optional<PreTranslucencyOutputs>,
             std::optional<TranslucencyOutputs>,
             std::optional<PostProcessOutputs>,
             std::optional<AmbientOcclusionOutputs>>;
@@ -640,8 +798,10 @@ namespace RVX
             return std::is_same_v<Entry, SceneTextures> ||
                    std::is_same_v<Entry, VisibilityOutputs> ||
                    std::is_same_v<Entry, ShadowOutputs> ||
+                   std::is_same_v<Entry, LocalShadowOutputs> ||
                    std::is_same_v<Entry, LightingOutputs> ||
                    std::is_same_v<Entry, ReflectionOutputs> ||
+                   std::is_same_v<Entry, PreTranslucencyOutputs> ||
                    std::is_same_v<Entry, TranslucencyOutputs> ||
                    std::is_same_v<Entry, PostProcessOutputs> ||
                    std::is_same_v<Entry, AmbientOcclusionOutputs>;
@@ -664,10 +824,14 @@ namespace RVX
                     return VisibilityOutputs::SchemaVersion;
                 case RenderBlackboardResourceId::ShadowOutputs:
                     return ShadowOutputs::SchemaVersion;
+                case RenderBlackboardResourceId::LocalShadowOutputs:
+                    return LocalShadowOutputs::SchemaVersion;
                 case RenderBlackboardResourceId::LightingOutputs:
                     return LightingOutputs::SchemaVersion;
                 case RenderBlackboardResourceId::ReflectionOutputs:
                     return ReflectionOutputs::SchemaVersion;
+                case RenderBlackboardResourceId::PreTranslucencyOutputs:
+                    return PreTranslucencyOutputs::SchemaVersion;
                 case RenderBlackboardResourceId::TranslucencyOutputs:
                     return TranslucencyOutputs::SchemaVersion;
                 case RenderBlackboardResourceId::PostProcessOutputs:
@@ -741,17 +905,48 @@ namespace RVX
                 return HandleMatchesGraph(entry.directionalDepth, provenance) &&
                        HandleMatchesGraph(entry.rayTracedMask, provenance);
             }
+            else if constexpr (std::is_same_v<Entry, LocalShadowOutputs>)
+            {
+                return entry.IsValid() &&
+                       HandleMatchesGraph(entry.depthAtlas, provenance);
+            }
             else if constexpr (std::is_same_v<Entry, LightingOutputs>)
             {
-                return entry.lightingPlanIdentity != 0 &&
-                       HandleMatchesGraph(entry.hdrSceneColor, provenance) &&
-                       HandleMatchesGraph(entry.clusteredLights, provenance);
+                return HandleMatchesGraph(entry.hdrSceneColor, provenance) &&
+                       HandleMatchesGraph(entry.clusteredLights, provenance) &&
+                       HandleMatchesGraph(
+                           entry.baseIndirectSpecular, provenance) &&
+                       HandleMatchesGraph(entry.specularResponse, provenance) &&
+                       HandleMatchesGraph(entry.exposureState, provenance) &&
+                       HandleMatchesGraph(entry.worldNormal, provenance) &&
+                       HandleMatchesGraph(entry.materialIdentity, provenance) &&
+                       HandleMatchesGraph(
+                           entry.materialParameterTable, provenance);
             }
             else if constexpr (std::is_same_v<Entry, ReflectionOutputs>)
             {
-                return HandleMatchesGraph(entry.rawReflection, provenance) &&
+                return HandleMatchesGraph(
+                           entry.resolvedSceneColor, provenance) &&
+                       HandleMatchesGraph(entry.worldNormal, provenance) &&
+                       HandleMatchesGraph(entry.materialIdentity, provenance) &&
+                       HandleMatchesGraph(
+                           entry.materialParameterTable, provenance) &&
+                       HandleMatchesGraph(entry.rawReflection, provenance) &&
                        HandleMatchesGraph(entry.denoisedReflection, provenance) &&
                        HandleMatchesGraph(entry.confidence, provenance);
+            }
+            else if constexpr (std::is_same_v<Entry, PreTranslucencyOutputs>)
+            {
+                return HandleMatchesGraph(entry.hdrSceneColor, provenance) &&
+                       HandleMatchesGraph(entry.deviceDepth, provenance) &&
+                       HandleMatchesGraph(entry.worldNormal, provenance) &&
+                       HandleMatchesGraph(entry.materialIdentity, provenance) &&
+                       HandleMatchesGraph(
+                           entry.materialParameterTable, provenance) &&
+                       HandleMatchesGraph(entry.velocity, provenance) &&
+                       HandleMatchesGraph(entry.reactiveMask, provenance) &&
+                       HandleMatchesGraph(entry.opaqueSceneSnapshot, provenance) &&
+                       HandleMatchesGraph(entry.exposureState, provenance);
             }
             else if constexpr (std::is_same_v<Entry, TranslucencyOutputs>)
             {
@@ -803,6 +998,47 @@ namespace RVX
                    frameIdentity.frameSequence == provenance.frameSequence;
         }
 
+        [[nodiscard]] static bool HasValidPreTranslucencyOutputs(
+            const PreTranslucencyOutputs& outputs,
+            const RenderGraphBlackboardProvenance& provenance) noexcept
+        {
+            return HasMatchingFrameViewProvenance(
+                       outputs.frameIdentity, outputs.viewIdentity,
+                       provenance) &&
+                   outputs.lightingPlanIdentity != 0 &&
+                   outputs.hdrSceneColor.IsValid() &&
+                   MetadataMatches(outputs.hdrSceneColorMetadata,
+                                   SceneTextures::HDRSceneColorContract) &&
+                   outputs.opaqueSceneSnapshot.IsValid() &&
+                   MetadataMatches(outputs.opaqueSceneSnapshotMetadata,
+                                   SceneTextures::HDRSceneColorContract) &&
+                   outputs.opaqueSceneSnapshotMetadata.extent ==
+                       outputs.hdrSceneColorMetadata.extent &&
+                   outputs.opaqueSceneSnapshot.index !=
+                       outputs.hdrSceneColor.index &&
+                   outputs.opaqueSceneSnapshotReceipt != nullptr &&
+                   outputs.colorDomain ==
+                       PostProcessColorDomain::SceneLinearHDR &&
+                   outputs.transfer == PostProcessTransfer::None &&
+                   outputs.exposureState.IsValid() &&
+                   outputs.exposureStateMetadata.IsValid() &&
+                   OptionalMetadataMatches(
+                       outputs.deviceDepth, outputs.deviceDepthMetadata,
+                       SceneTextures::DeviceDepthContract) &&
+                   OptionalMetadataMatches(
+                       outputs.worldNormal, outputs.worldNormalMetadata,
+                       SceneTextures::FormatContract{
+                           RHIFormat::RGBA8_UNORM,
+                           RHISampleCount::Count1}) &&
+                   HasValidTranslucencyOutlineInputs(outputs) &&
+                   OptionalMetadataMatches(
+                       outputs.velocity, outputs.velocityMetadata,
+                       SceneTextures::VelocityContract) &&
+                   OptionalMetadataMatches(
+                       outputs.reactiveMask, outputs.reactiveMaskMetadata,
+                       SceneTextures::ReactiveMaskContract);
+        }
+
         [[nodiscard]] static bool HasValidTranslucencyOutputs(
             const TranslucencyOutputs& outputs,
             const RenderGraphBlackboardProvenance& provenance) noexcept
@@ -840,16 +1076,127 @@ namespace RVX
                    OptionalMetadataMatches(
                        outputs.reactiveMask, outputs.reactiveMaskMetadata,
                        SceneTextures::ReactiveMaskContract) &&
-                   OptionalMetadataMatches(
-                       outputs.distortionVectors,
-                       outputs.distortionVectorsMetadata,
-                       SceneTextures::FormatContract{
-                           RHIFormat::RG16_FLOAT,
-                           RHISampleCount::Count1});
+                    OptionalMetadataMatches(
+                        outputs.distortionVectors,
+                        outputs.distortionVectorsMetadata,
+                        SceneTextures::FormatContract{
+                            RHIFormat::RG16_FLOAT,
+                            RHISampleCount::Count1});
         }
 
+        [[nodiscard]] static bool HasValidLocalShadowOutputs(
+            const LocalShadowOutputs& outputs,
+            const RenderGraphBlackboardProvenance& provenance) noexcept
+        {
+            return outputs.IsValid() &&
+                   HasMatchingFrameViewProvenance(
+                       outputs.frameIdentity, outputs.viewIdentity,
+                       provenance);
+        }
+
+        template<typename Outputs>
+        [[nodiscard]] static bool HasValidOptionalSurfaceGuides(
+            const Outputs& outputs,
+            RenderOutputExtent hdrExtent) noexcept
+        {
+            const bool hasNormal = outputs.worldNormal.IsValid();
+            const bool hasMaterialIdentity = outputs.materialIdentity.IsValid();
+            const bool hasMaterialTable =
+                outputs.materialParameterTable.IsValid();
+            if (!hasNormal && !hasMaterialIdentity && !hasMaterialTable)
+            {
+                return !outputs.worldNormalMetadata.extent.IsValid() &&
+                       !outputs.materialIdentityMetadata.extent.IsValid() &&
+                       !outputs.materialParameterTableMetadata.IsValid();
+            }
+            return hasNormal && hasMaterialIdentity && hasMaterialTable &&
+                   MetadataMatches(
+                       outputs.worldNormalMetadata,
+                       SceneTextures::GBuffer1Contract) &&
+                   MetadataMatches(
+                       outputs.materialIdentityMetadata,
+                       SceneTextures::GBuffer3Contract) &&
+                   outputs.materialParameterTableMetadata.IsValid() &&
+                   outputs.worldNormalMetadata.extent == hdrExtent &&
+                   outputs.materialIdentityMetadata.extent == hdrExtent &&
+                   outputs.materialParameterTableMetadata.sourceExtent ==
+                       hdrExtent &&
+                   outputs.materialParameterTableMetadata.sourceSampleCount ==
+                       RHISampleCount::Count1;
+        }
+
+        [[nodiscard]] static bool HasValidLightingOutputs(
+            const LightingOutputs& outputs,
+            const RenderGraphBlackboardProvenance& provenance) noexcept
+        {
+            const bool hasReplacementBundle =
+                outputs.baseIndirectSpecular.IsValid() ||
+                outputs.specularResponse.IsValid() ||
+                outputs.exposureState.IsValid() ||
+                outputs.baseIndirectSpecularMetadata.extent.IsValid() ||
+                outputs.specularResponseMetadata.extent.IsValid() ||
+                outputs.exposureStateMetadata.IsValid() ||
+                outputs.exposureStateContentHash != 0;
+            const bool hasCompleteReplacementBundle =
+                outputs.baseIndirectSpecular.IsValid() &&
+                outputs.specularResponse.IsValid() &&
+                outputs.exposureState.IsValid() &&
+                outputs.exposureStateMetadata.IsValid() &&
+                outputs.exposureStateContentHash != 0 &&
+                MetadataMatches(
+                    outputs.baseIndirectSpecularMetadata,
+                    SceneTextures::BaseIndirectSpecularContract) &&
+                MetadataMatches(outputs.specularResponseMetadata,
+                                SceneTextures::SpecularResponseContract) &&
+                outputs.baseIndirectSpecularMetadata.extent ==
+                    outputs.hdrSceneColorMetadata.extent &&
+                outputs.specularResponseMetadata.extent ==
+                    outputs.hdrSceneColorMetadata.extent;
+            const bool hasNoReplacementBundle =
+                !outputs.baseIndirectSpecular.IsValid() &&
+                !outputs.specularResponse.IsValid() &&
+                !outputs.exposureState.IsValid() &&
+                !outputs.baseIndirectSpecularMetadata.extent.IsValid() &&
+                !outputs.specularResponseMetadata.extent.IsValid() &&
+                !outputs.exposureStateMetadata.IsValid() &&
+                outputs.exposureStateContentHash == 0;
+            return HasMatchingFrameViewProvenance(
+                       outputs.frameIdentity, outputs.viewIdentity,
+                       provenance) &&
+                   outputs.lightingPlanIdentity != 0 &&
+                   outputs.hdrSceneColor.IsValid() &&
+                   outputs.clusteredLights.IsValid() &&
+                   MetadataMatches(outputs.hdrSceneColorMetadata,
+                                   SceneTextures::HDRSceneColorContract) &&
+                   (!hasReplacementBundle || hasCompleteReplacementBundle) &&
+                   (hasCompleteReplacementBundle || hasNoReplacementBundle) &&
+                   HasValidOptionalSurfaceGuides(
+                       outputs, outputs.hdrSceneColorMetadata.extent);
+        }
+
+        [[nodiscard]] static bool HasValidReflectionOutputs(
+            const ReflectionOutputs& outputs,
+            const RenderGraphBlackboardProvenance& provenance) noexcept
+        {
+            return HasMatchingFrameViewProvenance(
+                       outputs.frameIdentity, outputs.viewIdentity,
+                       provenance) &&
+                   outputs.lightingPlanIdentity != 0 &&
+                   outputs.resolvedSceneColor.IsValid() &&
+                   MetadataMatches(outputs.resolvedSceneColorMetadata,
+                                   SceneTextures::HDRSceneColorContract) &&
+                   outputs.imageBasedLightingPreserved &&
+                   (!outputs.rayTracedReflectionsApplied ||
+                    outputs.rayTracedReflectionsScheduled) &&
+                   (!outputs.rayTracedReflectionsScheduled ||
+                    outputs.hybridRayTracingPlanIdentity != 0) &&
+                   HasValidOptionalSurfaceGuides(
+                       outputs, outputs.resolvedSceneColorMetadata.extent);
+        }
+
+        template<typename Outputs>
         [[nodiscard]] static bool HasValidTranslucencyOutlineInputs(
-            const TranslucencyOutputs& outputs) noexcept
+            const Outputs& outputs) noexcept
         {
             const bool hasMaterialIdentity =
                 outputs.materialIdentity.IsValid();
@@ -937,9 +1284,25 @@ namespace RVX
             const Entry& entry,
             const RenderGraphBlackboardProvenance& provenance) noexcept
         {
-            if constexpr (std::is_same_v<Entry, TranslucencyOutputs>)
+            if constexpr (std::is_same_v<Entry, PreTranslucencyOutputs>)
+            {
+                return HasValidPreTranslucencyOutputs(entry, provenance);
+            }
+            else if constexpr (std::is_same_v<Entry, TranslucencyOutputs>)
             {
                 return HasValidTranslucencyOutputs(entry, provenance);
+            }
+            else if constexpr (std::is_same_v<Entry, LightingOutputs>)
+            {
+                return HasValidLightingOutputs(entry, provenance);
+            }
+            else if constexpr (std::is_same_v<Entry, LocalShadowOutputs>)
+            {
+                return HasValidLocalShadowOutputs(entry, provenance);
+            }
+            else if constexpr (std::is_same_v<Entry, ReflectionOutputs>)
+            {
+                return HasValidReflectionOutputs(entry, provenance);
             }
             else if constexpr (std::is_same_v<Entry, PostProcessOutputs>)
             {

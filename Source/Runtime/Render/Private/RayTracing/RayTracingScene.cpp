@@ -74,11 +74,37 @@ namespace
                    : RHIRayTracingGeometryFlags::None;
     }
 
-    RHIRayTracingInstanceFlags ToInstanceFlags(MaterialRenderMode mode)
+    RHIRayTracingInstanceFlags ToInstanceFlags(const RenderDrawItem& item)
     {
-        return mode == MaterialRenderMode::Opaque
+        RHIRayTracingInstanceFlags flags = item.renderMode == MaterialRenderMode::Opaque
                    ? RHIRayTracingInstanceFlags::ForceOpaque
                    : RHIRayTracingInstanceFlags::ForceNoOpaque;
+        if (item.packet.pipelineKey.cullMode == MaterialCullMode::NoCull)
+        {
+            flags = flags | RHIRayTracingInstanceFlags::TriangleCullDisable;
+        }
+        else if (item.packet.pipelineKey.reverseWinding)
+        {
+            flags = flags | RHIRayTracingInstanceFlags::TriangleFrontCounterClockwise;
+        }
+        return flags;
+    }
+
+    bool IsSkinnedDrawItem(const RenderObject& object, const RenderDrawItem& item)
+    {
+        return object.HasSkinningData() || item.packet.pipelineKey.skinned ||
+               (static_cast<uint32>(item.packet.flags) &
+                static_cast<uint32>(RenderDrawFlags::Skinned)) != 0u;
+    }
+
+    RHIBuffer* SelectTextureCoordinateBuffer(const MeshGPUBuffers& buffers, uint32 uvSet)
+    {
+        switch (uvSet)
+        {
+            case 0: return buffers.uvBuffer;
+            case 1: return buffers.uv1Buffer;
+            default: return nullptr;
+        }
     }
 
     uint32 EncodeRayTracingSamplerFlags(
@@ -295,32 +321,6 @@ namespace
         return metadata;
     }
 
-    RayTracingAlphaTestMetadata BuildAlphaTestMetadata(const RenderDrawItem& item,
-                                                       const MeshGPUBuffers& buffers,
-                                                       const SubmeshGPUInfo& submesh,
-                                                       RHIFormat indexFormat)
-    {
-        RayTracingAlphaTestMetadata metadata;
-        metadata.enabled = item.renderMode == MaterialRenderMode::Masked;
-        metadata.hasIndexBuffer = buffers.indexBuffer != nullptr;
-        metadata.hasUVBuffer = buffers.hasUVs && buffers.uvBuffer != nullptr;
-        metadata.hasNormalBuffer = buffers.hasNormals && buffers.normalBuffer != nullptr;
-        metadata.hasTangentBuffer = buffers.hasTangents && buffers.tangentBuffer != nullptr;
-        metadata.indexBuffer = metadata.hasIndexBuffer ? buffers.indexBuffer : nullptr;
-        metadata.uvBuffer = metadata.hasUVBuffer ? buffers.uvBuffer : nullptr;
-        metadata.normalBuffer = metadata.hasNormalBuffer ? buffers.normalBuffer : nullptr;
-        metadata.tangentBuffer = metadata.hasTangentBuffer ? buffers.tangentBuffer : nullptr;
-        metadata.indexElementOffset = submesh.indexOffset;
-        metadata.baseVertex = static_cast<uint32>(submesh.baseVertex);
-        metadata.indexFormat = indexFormat;
-        if (!metadata.enabled)
-        {
-            return metadata;
-        }
-
-        return metadata;
-    }
-
     RayTracingAlphaTestMetadata BuildAlphaTestMetadata(
         const RenderDrawItem& item,
         const MeshGPUBuffers& buffers,
@@ -328,8 +328,30 @@ namespace
         RHIFormat indexFormat,
         const RenderResourceRegistry& registry)
     {
-        RayTracingAlphaTestMetadata metadata =
-            BuildAlphaTestMetadata(item, buffers, submesh, indexFormat);
+        RayTracingAlphaTestMetadata metadata;
+        metadata.enabled = item.renderMode == MaterialRenderMode::Masked;
+        if (!metadata.enabled)
+        {
+            return metadata;
+        }
+
+        metadata.status = RayTracingMaskedMetadataStatus::MissingMaterial;
+        metadata.hasIndexBuffer = buffers.indexBuffer != nullptr;
+        metadata.indexBuffer = metadata.hasIndexBuffer ? buffers.indexBuffer : nullptr;
+        metadata.hasNormalBuffer = buffers.hasNormals && buffers.normalBuffer != nullptr;
+        metadata.normalBuffer = metadata.hasNormalBuffer ? buffers.normalBuffer : nullptr;
+        metadata.hasTangentBuffer = buffers.hasTangents && buffers.tangentBuffer != nullptr;
+        metadata.tangentBuffer = metadata.hasTangentBuffer ? buffers.tangentBuffer : nullptr;
+        metadata.indexElementOffset = submesh.indexOffset;
+        metadata.baseVertex = static_cast<uint32>(submesh.baseVertex);
+        metadata.indexFormat = indexFormat;
+
+        if (!metadata.hasIndexBuffer)
+        {
+            metadata.status = RayTracingMaskedMetadataStatus::MissingIndexBuffer;
+            return metadata;
+        }
+
         const RenderMaterialResourceData* material =
             registry.ResolveMaterial(item.material);
         if (material == nullptr || !material->metadataValid)
@@ -338,25 +360,55 @@ namespace
         }
 
         const MaterialSourceData& source = material->sourceData;
+        if (source.alphaMode != MaterialSourceAlphaMode::Mask)
+        {
+            metadata.status = RayTracingMaskedMetadataStatus::InvalidMaterial;
+            return metadata;
+        }
         metadata.alphaCutoff = source.alphaCutoff;
         metadata.baseColorAlpha = source.baseColorFactor.a;
         const MaterialUploadTextureBinding* binding = FindMaterialBinding(
             *material, MaterialUploadTextureSlot::BaseColor);
         if (binding == nullptr)
         {
+            metadata.status = RayTracingMaskedMetadataStatus::Complete;
             return metadata;
         }
         metadata.hasBaseColorTexture = true;
         metadata.hasResolvedBaseColorTexture =
             registry.IsGPUReadyExact(binding->texture);
+        if (!metadata.hasResolvedBaseColorTexture)
+        {
+            metadata.status = RayTracingMaskedMetadataStatus::TextureNotReady;
+            return metadata;
+        }
         metadata.baseColorTextureId = PackHandle(binding->texture);
         metadata.baseColorUVSet = static_cast<uint32>(
             std::max(binding->uvSet, 0));
+        if (metadata.baseColorUVSet > 1u)
+        {
+            metadata.status = RayTracingMaskedMetadataStatus::UnsupportedUVSet;
+            return metadata;
+        }
+        if (!buffers.HasTextureCoordinateSet(metadata.baseColorUVSet))
+        {
+            metadata.status = RayTracingMaskedMetadataStatus::MissingUVSet;
+            return metadata;
+        }
+        metadata.uvBuffer = SelectTextureCoordinateBuffer(
+            buffers, metadata.baseColorUVSet);
+        metadata.hasUVBuffer = metadata.uvBuffer != nullptr;
+        if (!metadata.hasUVBuffer)
+        {
+            metadata.status = RayTracingMaskedMetadataStatus::MissingUVSet;
+            return metadata;
+        }
         metadata.baseColorSamplerFlags =
             EncodeRayTracingSamplerFlags(*binding);
         metadata.baseColorUVOffset = binding->offset;
         metadata.baseColorUVScale = binding->scale;
         metadata.baseColorUVRotation = binding->rotation;
+        metadata.status = RayTracingMaskedMetadataStatus::Complete;
         return metadata;
     }
 
@@ -390,21 +442,21 @@ namespace
 
 RayTracingSceneBuildPlan BuildRayTracingSceneBuildPlan(
     const RenderScene& scene,
-    std::span<const uint32_t> visibleObjectIndices,
+    std::span<const uint32_t> candidateObjectIndices,
     const RenderResourceRegistry& registry,
     const RayTracingSceneOptions& options)
 {
     RayTracingSceneBuildPlan plan;
     plan.tlasBuildFlags = options.tlasBuildFlags;
-    plan.stats.visibleObjectCount = visibleObjectIndices.size();
+    plan.stats.candidateObjectCount = candidateObjectIndices.size();
 
     std::vector<RenderDrawItem> opaqueDrawItems;
     std::vector<RenderDrawItem> maskedDrawItems;
     std::vector<RenderDrawItem> transparentDrawItems;
-    const std::vector<uint32_t> visibleIndices(
-        visibleObjectIndices.begin(), visibleObjectIndices.end());
+    const std::vector<uint32_t> candidateIndices(
+        candidateObjectIndices.begin(), candidateObjectIndices.end());
     BuildMaterialDrawLists(scene,
-                           visibleIndices,
+                           candidateIndices,
                            Vec3(0.0f),
                            opaqueDrawItems,
                            maskedDrawItems,
@@ -445,6 +497,24 @@ RayTracingSceneBuildPlan BuildRayTracingSceneBuildPlan(
         }
     }
 
+    // TLAS instance IDs must remain deterministic across the opaque/masked
+    // classification lists.  Rendering order is irrelevant for AS contents.
+    std::stable_sort(drawItems.begin(), drawItems.end(), [](const RenderDrawItem& lhs,
+                                                            const RenderDrawItem& rhs)
+    {
+        if (lhs.objectIndex != rhs.objectIndex)
+            return lhs.objectIndex < rhs.objectIndex;
+        if (lhs.submeshIndex != rhs.submeshIndex)
+            return lhs.submeshIndex < rhs.submeshIndex;
+        if (lhs.mesh != rhs.mesh)
+            return PackHandle(lhs.mesh) < PackHandle(rhs.mesh);
+        if (lhs.material != rhs.material)
+            return PackHandle(lhs.material) < PackHandle(rhs.material);
+        if (lhs.renderMode != rhs.renderMode)
+            return static_cast<uint32>(lhs.renderMode) < static_cast<uint32>(rhs.renderMode);
+        return lhs.sortKey < rhs.sortKey;
+    });
+
     plan.stats.drawItemCount = drawItems.size();
     for (const RenderDrawItem& item : drawItems)
     {
@@ -455,6 +525,24 @@ RayTracingSceneBuildPlan BuildRayTracingSceneBuildPlan(
         }
 
         const RenderObject& object = scene.GetObject(item.objectIndex);
+        if (!item.packet.pipelineKey.materialPolicyValid)
+        {
+            AddSkip(plan,
+                    RayTracingSceneSkipReason::InvalidMaterialPolicy,
+                    item,
+                    &object,
+                    "ray tracing requires a resolved material policy");
+            continue;
+        }
+        if (IsSkinnedDrawItem(object, item))
+        {
+            AddSkip(plan,
+                    RayTracingSceneSkipReason::SkinnedGeometryUnsupported,
+                    item,
+                    &object,
+                    "skinned ray tracing geometry is unsupported");
+            continue;
+        }
         if (options.requireShadowCasting && !object.castsShadow)
         {
             AddSkip(plan,
@@ -603,9 +691,33 @@ RayTracingSceneBuildPlan BuildRayTracingSceneBuildPlan(
             continue;
         }
 
+        RayTracingAlphaTestMetadata alphaTest = BuildAlphaTestMetadata(
+            item, buffers, submesh, indexFormat, registry);
+        if (alphaTest.enabled &&
+            alphaTest.status != RayTracingMaskedMetadataStatus::Complete)
+        {
+            plan.maskedMetadataComplete = false;
+            AddSkip(plan,
+                    RayTracingSceneSkipReason::IncompleteMaskedMetadata,
+                    item,
+                    &object,
+                    "masked ray tracing metadata is incomplete");
+            continue;
+        }
+
         RayTracingBLASKey key;
         key.mesh = item.mesh;
         key.meshId = PackHandle(item.mesh);
+        key.meshContentRevision = registry.GetContentRevision(item.mesh);
+        if (key.meshContentRevision == 0)
+        {
+            AddSkip(plan,
+                    RayTracingSceneSkipReason::MissingMeshResource,
+                    item,
+                    &object,
+                    "exact mesh content revision is unavailable");
+            continue;
+        }
         key.submeshIndex = item.submeshIndex;
         key.renderMode = item.renderMode;
         const uint32 blasIndex =
@@ -618,20 +730,21 @@ RayTracingSceneBuildPlan BuildRayTracingSceneBuildPlan(
         instance.submeshIndex = item.submeshIndex;
         instance.entityId = object.entityId;
         instance.materialId = PackHandle(item.material);
+        instance.materialContentRevision = registry.GetContentRevision(item.material);
         instance.renderMode = item.renderMode;
         instance.material = BuildMaterialMetadata(item, registry);
+        instance.geometryClassification = RayTracingGeometryClassification::Rigid;
         if (object.castsShadow)
         {
             instance.material.flags |= static_cast<uint32>(
                 RayTracingMaterialMetadataFlags::ShadowCaster);
         }
-        instance.alphaTest = BuildAlphaTestMetadata(
-            item, buffers, submesh, indexFormat, registry);
+        instance.alphaTest = std::move(alphaTest);
         WriteRowMajor3x4(instance.desc.transform, object.worldMatrix);
         instance.desc.instanceId = static_cast<uint32>(plan.instances.size());
         instance.desc.instanceMask = instanceMask;
         instance.desc.instanceContributionToHitGroupIndex = 0;
-        instance.desc.flags = ToInstanceFlags(item.renderMode);
+        instance.desc.flags = ToInstanceFlags(item);
         if (instance.alphaTest.enabled)
         {
             ++plan.stats.alphaTestedInstanceCount;
@@ -643,6 +756,75 @@ RayTracingSceneBuildPlan BuildRayTracingSceneBuildPlan(
     plan.stats.instanceCount = plan.instances.size();
     plan.stats.skippedCount = plan.skips.size();
     return plan;
+}
+
+RayTracingTLASStructuralSignature BuildRayTracingTLASStructuralSignature(
+    const RayTracingSceneBuildPlan& plan)
+{
+    constexpr uint64 RVX_FNV_OFFSET = 14695981039346656037ull;
+    constexpr uint64 RVX_FNV_PRIME = 1099511628211ull;
+    auto append = [&](uint64& hash, uint64 value) noexcept
+    {
+        for (uint32 byte = 0; byte < sizeof(value); ++byte)
+        {
+            hash ^= (value >> (byte * 8u)) & 0xFFu;
+            hash *= RVX_FNV_PRIME;
+        }
+    };
+
+    RayTracingTLASStructuralSignature signature;
+    signature.instanceCount = static_cast<uint32>(plan.instances.size());
+    signature.records.reserve(plan.instances.size());
+    uint64 hash = RVX_FNV_OFFSET;
+    append(hash, signature.instanceCount);
+    for (const RayTracingTLASInstance& instance : plan.instances)
+    {
+        if (instance.blasIndex >= plan.blasBuilds.size())
+        {
+            append(hash, ~0ull);
+            signature.records.push_back({});
+            continue;
+        }
+
+        const RayTracingBLASKey& key = plan.blasBuilds[instance.blasIndex].key;
+        RayTracingTLASStructuralRecord record;
+        record.mesh = key.mesh;
+        record.meshContentRevision = key.meshContentRevision;
+        record.submeshIndex = key.submeshIndex;
+        record.entityId = instance.entityId;
+        record.materialId = instance.materialId;
+        record.materialContentRevision = instance.materialContentRevision;
+        record.renderMode = instance.renderMode;
+        record.materialFlags = instance.material.flags;
+        record.materialWorkflow = instance.material.workflow;
+        record.instanceMask = instance.desc.instanceMask;
+        record.instanceFlags = static_cast<uint32>(instance.desc.flags);
+        record.hitGroupIndex = instance.desc.instanceContributionToHitGroupIndex;
+        record.geometryClassification = instance.geometryClassification;
+        record.maskedMetadataStatus = instance.alphaTest.status;
+        record.baseColorUVSet = instance.alphaTest.baseColorUVSet;
+        record.baseColorTextureId = instance.alphaTest.baseColorTextureId;
+        signature.records.push_back(record);
+        append(hash, PackHandle(key.mesh));
+        append(hash, key.meshContentRevision);
+        append(hash, key.submeshIndex);
+        append(hash, static_cast<uint32>(key.renderMode));
+        append(hash, instance.entityId);
+        append(hash, instance.materialId);
+        append(hash, instance.materialContentRevision);
+        append(hash, static_cast<uint32>(instance.renderMode));
+        append(hash, instance.material.flags);
+        append(hash, instance.material.workflow);
+        append(hash, static_cast<uint32>(instance.geometryClassification));
+        append(hash, instance.desc.instanceMask);
+        append(hash, static_cast<uint32>(instance.desc.flags));
+        append(hash, instance.alphaTest.enabled ? 1u : 0u);
+        append(hash, static_cast<uint32>(instance.alphaTest.status));
+        append(hash, instance.alphaTest.baseColorUVSet);
+        append(hash, instance.alphaTest.baseColorTextureId);
+    }
+    signature.hash = hash;
+    return signature;
 }
 
 RHITopLevelASDesc BuildRayTracingTopLevelDesc(

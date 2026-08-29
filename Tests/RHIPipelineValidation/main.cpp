@@ -13,7 +13,7 @@ namespace RVX::Tests
 {
     static_assert(
         static_cast<uint8>(
-            RHIPipelineValidationCode::InvalidVertexInputLayout) == 25);
+            RHIPipelineValidationCode::UnsupportedColorAttachmentBlend) == 29);
 
     namespace
     {
@@ -170,6 +170,21 @@ namespace RVX::Tests
                     RHIFormat::RGBA8_UNORM;
             }
         };
+
+        RHICapabilities MakeColorAttachmentCapabilities()
+        {
+            RHICapabilities capabilities;
+            capabilities.backendType = RHIBackendType::DX12;
+            capabilities.maxColorAttachments = 8;
+            capabilities.supportsIndependentColorAttachmentBlend = true;
+            capabilities.formatCapabilities[
+                static_cast<size_t>(RHIFormat::RGBA8_UNORM)] = {true, true};
+            capabilities.formatCapabilities[
+                static_cast<size_t>(RHIFormat::R16_FLOAT)] = {true, true};
+            capabilities.formatCapabilities[
+                static_cast<size_t>(RHIFormat::RGBA16_FLOAT)] = {true, true};
+            return capabilities;
+        }
     } // namespace
 
     TEST(RHIPipelineValidation,
@@ -572,5 +587,97 @@ namespace RVX::Tests
         desc.pipelineLayout = &completeLayout;
         result = ValidateRHIGraphicsPipelineDesc(desc);
         EXPECT_TRUE(result);
+    }
+
+    TEST(RHIPipelineValidation,
+         CapabilityPreflightAcceptsIndependentFp16Attachments)
+    {
+        ValidPipelineFixture fixture;
+        fixture.pipelineDesc.numRenderTargets = 2;
+        fixture.pipelineDesc.renderTargetFormats[0] =
+            RHIFormat::RGBA16_FLOAT;
+        fixture.pipelineDesc.renderTargetFormats[1] =
+            RHIFormat::R16_FLOAT;
+        fixture.pipelineDesc.blendState.independentBlendEnable = true;
+        fixture.pipelineDesc.blendState.renderTargets[0] =
+            RHIRenderTargetBlendState::Additive();
+        fixture.pipelineDesc.blendState.renderTargets[1].blendEnable = true;
+        fixture.pipelineDesc.blendState.renderTargets[1].srcColorBlend =
+            RHIBlendFactor::Zero;
+        fixture.pipelineDesc.blendState.renderTargets[1].dstColorBlend =
+            RHIBlendFactor::InvSrcColor;
+
+        const RHIPipelineValidationResult result =
+            ValidateRHIGraphicsPipelineCapabilities(
+                fixture.pipelineDesc,
+                MakeColorAttachmentCapabilities());
+        EXPECT_TRUE(result) << FormatRHIPipelineValidationResult(result);
+    }
+
+    TEST(RHIPipelineValidation,
+         CapabilityPreflightRejectsUnsupportedIndependentBlend)
+    {
+        ValidPipelineFixture fixture;
+        fixture.pipelineDesc.blendState.independentBlendEnable = true;
+        RHICapabilities capabilities = MakeColorAttachmentCapabilities();
+        capabilities.supportsIndependentColorAttachmentBlend = false;
+
+        const RHIPipelineValidationResult result =
+            ValidateRHIGraphicsPipelineCapabilities(
+                fixture.pipelineDesc, capabilities);
+        EXPECT_FALSE(result);
+        EXPECT_EQ(
+            result.code,
+            RHIPipelineValidationCode::
+                UnsupportedIndependentColorAttachmentBlend);
+    }
+
+    TEST(RHIPipelineValidation,
+         CapabilityPreflightRejectsUnsupportedAttachmentAndBlendFormats)
+    {
+        ValidPipelineFixture fixture;
+        RHICapabilities capabilities = MakeColorAttachmentCapabilities();
+
+        capabilities.formatCapabilities[
+            static_cast<size_t>(RHIFormat::RGBA8_UNORM)] = {};
+        RHIPipelineValidationResult result =
+            ValidateRHIGraphicsPipelineCapabilities(
+                fixture.pipelineDesc, capabilities);
+        EXPECT_FALSE(result);
+        EXPECT_EQ(result.code,
+                  RHIPipelineValidationCode::
+                      UnsupportedColorAttachmentFormat);
+        EXPECT_EQ(result.location, 0u);
+
+        capabilities = MakeColorAttachmentCapabilities();
+        capabilities.formatCapabilities[
+            static_cast<size_t>(RHIFormat::RGBA8_UNORM)] = {true, false};
+        fixture.pipelineDesc.blendState.renderTargets[0].blendEnable = true;
+        result = ValidateRHIGraphicsPipelineCapabilities(
+            fixture.pipelineDesc, capabilities);
+        EXPECT_FALSE(result);
+        EXPECT_EQ(result.code,
+                  RHIPipelineValidationCode::
+                      UnsupportedColorAttachmentBlend);
+        EXPECT_EQ(result.location, 0u);
+    }
+
+    TEST(RHIPipelineValidation,
+         CapabilityPreflightUsesAttachmentZeroStateWhenIndependentBlendIsOff)
+    {
+        ValidPipelineFixture fixture;
+        fixture.pipelineDesc.numRenderTargets = 2;
+        fixture.pipelineDesc.renderTargetFormats[1] = RHIFormat::R16_FLOAT;
+        fixture.pipelineDesc.blendState.independentBlendEnable = false;
+        fixture.pipelineDesc.blendState.renderTargets[0].blendEnable = false;
+        fixture.pipelineDesc.blendState.renderTargets[1].blendEnable = true;
+
+        RHICapabilities capabilities = MakeColorAttachmentCapabilities();
+        capabilities.formatCapabilities[
+            static_cast<size_t>(RHIFormat::R16_FLOAT)] = {true, false};
+        const RHIPipelineValidationResult result =
+            ValidateRHIGraphicsPipelineCapabilities(
+                fixture.pipelineDesc, capabilities);
+        EXPECT_TRUE(result) << FormatRHIPipelineValidationResult(result);
     }
 } // namespace RVX::Tests

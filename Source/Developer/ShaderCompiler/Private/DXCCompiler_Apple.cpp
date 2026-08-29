@@ -1,4 +1,5 @@
 #include "ShaderCompiler/ShaderCompiler.h"
+#include "ShaderCompiler/ShaderReflection.h"
 #include "SPIRVCrossTranslator.h"
 #include "Core/Log.h"
 
@@ -27,6 +28,12 @@ namespace RVX
                 case RHIShaderStage::Geometry: return EShLangGeometry;
                 case RHIShaderStage::Hull:     return EShLangTessControl;
                 case RHIShaderStage::Domain:   return EShLangTessEvaluation;
+                case RHIShaderStage::RayGeneration: return EShLangRayGen;
+                case RHIShaderStage::Intersection:  return EShLangIntersect;
+                case RHIShaderStage::AnyHit:        return EShLangAnyHit;
+                case RHIShaderStage::ClosestHit:    return EShLangClosestHit;
+                case RHIShaderStage::Miss:          return EShLangMiss;
+                case RHIShaderStage::Callable:      return EShLangCallable;
                 default: return EShLangVertex;
             }
         }
@@ -420,10 +427,11 @@ namespace RVX
             // For Vulkan backend, return SPIR-V directly
             if (options.targetBackend == RHIBackendType::Vulkan)
             {
-                SPIRVCrossTranslator translator;
-                result.reflection = translator.ReflectSPIRV(
+                result.reflection = ReflectShader(
+                    RHIBackendType::Vulkan,
+                    options.stage,
                     spirvBytecode,
-                    options.stage);
+                    options.entryPoint);
                 if (!result.reflection.valid)
                 {
                     result.errorMessage = "SPIR-V reflection failed";

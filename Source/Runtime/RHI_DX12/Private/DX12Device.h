@@ -106,6 +106,9 @@ namespace RVX
         RHIAccelerationStructureBuildSizes GetBottomLevelASBuildSizes(const RHIBottomLevelASDesc& desc) override;
         RHIAccelerationStructureBuildSizes GetTopLevelASBuildSizes(const RHITopLevelASDesc& desc) override;
         RHIAccelerationStructureRef CreateAccelerationStructure(const RHIAccelerationStructureDesc& desc) override;
+        RHIAccelerationStructureCompactedSizeQueryRef
+        CreateAccelerationStructureCompactedSizeQuery(
+            const RHIAccelerationStructureCompactedSizeQueryDesc& desc) override;
 
         // Descriptor Set
         RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc& desc) override;

@@ -1,10 +1,151 @@
 #include "VulkanResources.h"
 #include "VulkanDevice.h"
+#include "VulkanRayTracing.h"
 #include <cmath>
 #include <mutex>
+#include <utility>
 
 namespace RVX
 {
+    VulkanAccelerationStructureUpdateCompatibility
+    GetVulkanAccelerationStructureUpdateCompatibility(
+        const VulkanAccelerationStructureBuildSignature& source,
+        const VulkanAccelerationStructureBuildSignature& update) noexcept
+    {
+        if (source.type != update.type)
+        {
+            return VulkanAccelerationStructureUpdateCompatibility::
+                AccelerationStructureTypeMismatch;
+        }
+
+        // VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03759 requires the
+        // complete build flag set to match the initial build, not merely the
+        // AllowUpdate bit.
+        if (source.buildFlags != update.buildFlags)
+        {
+            return VulkanAccelerationStructureUpdateCompatibility::
+                BuildFlagsMismatch;
+        }
+
+        if (source.geometries.size() != update.geometries.size())
+        {
+            return VulkanAccelerationStructureUpdateCompatibility::
+                GeometryCountMismatch;
+        }
+
+        for (size_t geometryIndex = 0;
+             geometryIndex < source.geometries.size();
+             ++geometryIndex)
+        {
+            const VulkanAccelerationStructureGeometryBuildSignature&
+                sourceGeometry = source.geometries[geometryIndex];
+            const VulkanAccelerationStructureGeometryBuildSignature&
+                updateGeometry = update.geometries[geometryIndex];
+            if (sourceGeometry.type != updateGeometry.type)
+            {
+                return VulkanAccelerationStructureUpdateCompatibility::
+                    GeometryTypeMismatch;
+            }
+            if (sourceGeometry.flags != updateGeometry.flags)
+            {
+                return VulkanAccelerationStructureUpdateCompatibility::
+                    GeometryFlagsMismatch;
+            }
+            if (sourceGeometry.primitiveCount != updateGeometry.primitiveCount)
+            {
+                return VulkanAccelerationStructureUpdateCompatibility::
+                    PrimitiveCountMismatch;
+            }
+
+            switch (sourceGeometry.type)
+            {
+                case VulkanAccelerationStructureSignatureGeometryType::Triangles:
+                    if (sourceGeometry.vertexFormat !=
+                        updateGeometry.vertexFormat)
+                    {
+                        return VulkanAccelerationStructureUpdateCompatibility::
+                            TriangleVertexFormatMismatch;
+                    }
+                    if (sourceGeometry.maxVertex != updateGeometry.maxVertex)
+                    {
+                        return VulkanAccelerationStructureUpdateCompatibility::
+                            TriangleMaxVertexMismatch;
+                    }
+                    if (sourceGeometry.indexFormat != updateGeometry.indexFormat)
+                    {
+                        return VulkanAccelerationStructureUpdateCompatibility::
+                            TriangleIndexFormatMismatch;
+                    }
+                    if (sourceGeometry.hasTransform !=
+                        updateGeometry.hasTransform)
+                    {
+                        return VulkanAccelerationStructureUpdateCompatibility::
+                            TriangleTransformPresenceMismatch;
+                    }
+                    break;
+
+                case VulkanAccelerationStructureSignatureGeometryType::AABBs:
+                    if (sourceGeometry.aabbStride != updateGeometry.aabbStride)
+                    {
+                        return VulkanAccelerationStructureUpdateCompatibility::
+                            AABBStrideMismatch;
+                    }
+                    break;
+
+                case VulkanAccelerationStructureSignatureGeometryType::Instances:
+                    if (sourceGeometry.instancesArrayOfPointers !=
+                        updateGeometry.instancesArrayOfPointers)
+                    {
+                        return VulkanAccelerationStructureUpdateCompatibility::
+                            InstancesArrayOfPointersMismatch;
+                    }
+                    break;
+            }
+        }
+
+        return VulkanAccelerationStructureUpdateCompatibility::Compatible;
+    }
+
+    const char* GetVulkanAccelerationStructureUpdateCompatibilityName(
+        VulkanAccelerationStructureUpdateCompatibility compatibility) noexcept
+    {
+        switch (compatibility)
+        {
+            case VulkanAccelerationStructureUpdateCompatibility::Compatible:
+                return "compatible";
+            case VulkanAccelerationStructureUpdateCompatibility::SourceHasNoSubmittedBuild:
+                return "source has no submitted build";
+            case VulkanAccelerationStructureUpdateCompatibility::SourceBuildDisallowsUpdate:
+                return "source build did not enable AllowUpdate";
+            case VulkanAccelerationStructureUpdateCompatibility::AccelerationStructureTypeMismatch:
+                return "acceleration-structure type differs";
+            case VulkanAccelerationStructureUpdateCompatibility::BuildFlagsMismatch:
+                return "build flags differ";
+            case VulkanAccelerationStructureUpdateCompatibility::GeometryCountMismatch:
+                return "geometry count differs";
+            case VulkanAccelerationStructureUpdateCompatibility::GeometryTypeMismatch:
+                return "geometry type differs";
+            case VulkanAccelerationStructureUpdateCompatibility::GeometryFlagsMismatch:
+                return "geometry flags differ";
+            case VulkanAccelerationStructureUpdateCompatibility::PrimitiveCountMismatch:
+                return "geometry primitive count differs";
+            case VulkanAccelerationStructureUpdateCompatibility::TriangleVertexFormatMismatch:
+                return "triangle vertex format differs";
+            case VulkanAccelerationStructureUpdateCompatibility::TriangleMaxVertexMismatch:
+                return "triangle max vertex differs";
+            case VulkanAccelerationStructureUpdateCompatibility::TriangleIndexFormatMismatch:
+                return "triangle index type differs";
+            case VulkanAccelerationStructureUpdateCompatibility::TriangleTransformPresenceMismatch:
+                return "triangle transform presence differs";
+            case VulkanAccelerationStructureUpdateCompatibility::AABBStrideMismatch:
+                return "AABB stride differs";
+            case VulkanAccelerationStructureUpdateCompatibility::InstancesArrayOfPointersMismatch:
+                return "instances array-of-pointers differs";
+            default:
+                return "unknown compatibility result";
+        }
+    }
+
     namespace
     {
         const char* GetVulkanHeapTypeName(RHIHeapType type)
@@ -56,6 +197,270 @@ namespace RVX
     } // namespace
 
     // =============================================================================
+    // Vulkan Acceleration Structure
+    // =============================================================================
+    VulkanAccelerationStructure::VulkanAccelerationStructure(
+        VulkanDevice* device,
+        const RHIAccelerationStructureDesc& desc)
+        : m_device(device)
+        , m_desc(desc)
+    {
+        if (desc.debugName)
+        {
+            SetDebugName(desc.debugName);
+        }
+
+        if (!m_device ||
+            !m_device->GetCapabilities().supportsRaytracing ||
+            !m_device->GetRayTracingFunctions().IsComplete())
+        {
+            RVX_RHI_ERROR(
+                "Vulkan acceleration structure creation requires an enabled ray tracing implementation");
+            return;
+        }
+
+        RHIBufferDesc storageDesc;
+        storageDesc.size = desc.size;
+        storageDesc.usage = RHIBufferUsage::AccelerationStructureStorage |
+                            RHIBufferUsage::UnorderedAccess |
+                            RHIBufferUsage::DeviceAddress;
+        storageDesc.memoryType = RHIMemoryType::Default;
+        storageDesc.debugName = desc.debugName
+            ? desc.debugName
+            : "VulkanAccelerationStructureStorage";
+        m_storageBuffer = m_device->CreateBuffer(storageDesc);
+        auto* storageBuffer =
+            dynamic_cast<VulkanBuffer*>(m_storageBuffer.Get());
+        if (!storageBuffer || storageBuffer->GetBuffer() == VK_NULL_HANDLE)
+        {
+            RVX_RHI_ERROR(
+                "Vulkan acceleration structure creation failed to allocate native storage");
+            m_storageBuffer.Reset();
+            return;
+        }
+
+        VkAccelerationStructureCreateInfoKHR createInfo = {
+            VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
+        createInfo.type = desc.type == RHIAccelerationStructureType::TopLevel
+            ? VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR
+            : VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+        createInfo.buffer = storageBuffer->GetBuffer();
+        createInfo.offset = 0;
+        createInfo.size = desc.size;
+
+        const VulkanRayTracingFunctions& functions =
+            m_device->GetRayTracingFunctions();
+        const VkResult createResult = functions.createAccelerationStructure(
+            m_device->GetDevice(), &createInfo, nullptr, &m_accelerationStructure);
+        if (createResult != VK_SUCCESS)
+        {
+            RVX_RHI_ERROR(
+                "Vulkan failed to create {} acceleration structure: {}",
+                desc.type == RHIAccelerationStructureType::TopLevel
+                    ? "top-level"
+                    : "bottom-level",
+                VkResultToString(createResult));
+            m_accelerationStructure = VK_NULL_HANDLE;
+            m_storageBuffer.Reset();
+            return;
+        }
+
+        VkAccelerationStructureDeviceAddressInfoKHR addressInfo = {
+            VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR};
+        addressInfo.accelerationStructure = m_accelerationStructure;
+        m_deviceAddress = functions.getAccelerationStructureDeviceAddress(
+            m_device->GetDevice(), &addressInfo);
+        if (m_deviceAddress == 0)
+        {
+            RVX_RHI_ERROR(
+                "Vulkan created an acceleration structure without a device address");
+            functions.destroyAccelerationStructure(
+                m_device->GetDevice(), m_accelerationStructure, nullptr);
+            m_accelerationStructure = VK_NULL_HANDLE;
+            m_storageBuffer.Reset();
+            return;
+        }
+
+        if (desc.debugName)
+        {
+            m_device->SetObjectName(
+                VK_OBJECT_TYPE_ACCELERATION_STRUCTURE_KHR,
+                reinterpret_cast<uint64>(m_accelerationStructure),
+                desc.debugName);
+        }
+    }
+
+    VulkanAccelerationStructure::~VulkanAccelerationStructure()
+    {
+        if (m_accelerationStructure != VK_NULL_HANDLE && m_device &&
+            m_device->GetDevice() != VK_NULL_HANDLE)
+        {
+            const VulkanRayTracingFunctions& functions =
+                m_device->GetRayTracingFunctions();
+            if (functions.destroyAccelerationStructure)
+            {
+                functions.destroyAccelerationStructure(
+                    m_device->GetDevice(), m_accelerationStructure, nullptr);
+            }
+        }
+        m_accelerationStructure = VK_NULL_HANDLE;
+        m_deviceAddress = 0;
+    }
+
+    VulkanAccelerationStructureUpdateCompatibility
+    VulkanAccelerationStructure::GetSubmittedBuildUpdateCompatibility(
+        const VulkanAccelerationStructureBuildSignature& update) const
+    {
+        std::lock_guard<std::mutex> lock(m_submittedBuildMutex);
+        const uint8 state = m_submittedBuildState.load(std::memory_order_acquire);
+        if ((state & kBuildSubmitted) == 0)
+        {
+            return VulkanAccelerationStructureUpdateCompatibility::
+                SourceHasNoSubmittedBuild;
+        }
+        if ((state & kBuildAllowsUpdate) == 0)
+        {
+            return VulkanAccelerationStructureUpdateCompatibility::
+                SourceBuildDisallowsUpdate;
+        }
+
+        return GetVulkanAccelerationStructureUpdateCompatibility(
+            m_submittedBuildSignature,
+            update);
+    }
+
+    void VulkanAccelerationStructure::CommitSubmittedBuild(
+        VulkanAccelerationStructureBuildSignature signature,
+        RHICommandQueueType queueType)
+    {
+        const bool allowsUpdate = HasFlag(
+            signature.buildFlags,
+            RHIAccelerationStructureBuildFlags::AllowUpdate);
+        {
+            std::lock_guard<std::mutex> lock(m_submittedBuildMutex);
+            m_submittedBuildSignature = std::move(signature);
+            m_submittedBuildQueueType = queueType;
+            m_submittedBuildState.store(
+                static_cast<uint8>(
+                    kBuildSubmitted |
+                    (allowsUpdate ? kBuildAllowsUpdate : 0u)),
+                std::memory_order_release);
+        }
+    }
+
+    bool VulkanAccelerationStructure::SubmittedBuildAllowsCompaction() const noexcept
+    {
+        std::lock_guard<std::mutex> lock(m_submittedBuildMutex);
+        const uint8 state = m_submittedBuildState.load(std::memory_order_acquire);
+        return (state & kBuildSubmitted) != 0 &&
+               HasFlag(m_submittedBuildSignature.buildFlags,
+                       RHIAccelerationStructureBuildFlags::AllowCompaction);
+    }
+
+    bool VulkanAccelerationStructure::SubmittedBuildWasOnQueue(
+        RHICommandQueueType queueType) const noexcept
+    {
+        std::lock_guard<std::mutex> lock(m_submittedBuildMutex);
+        const uint8 state = m_submittedBuildState.load(std::memory_order_acquire);
+        return (state & kBuildSubmitted) != 0 &&
+               m_submittedBuildQueueType == queueType;
+    }
+
+    // =============================================================================
+    // Vulkan Acceleration Structure Compacted-Size Query Implementation
+    // =============================================================================
+    VulkanAccelerationStructureCompactedSizeQuery::
+    VulkanAccelerationStructureCompactedSizeQuery(
+        VulkanDevice* device,
+        const RHIAccelerationStructureCompactedSizeQueryDesc& desc)
+        : m_device(device)
+        , m_desc(desc)
+    {
+        if (desc.debugName)
+        {
+            SetDebugName(desc.debugName);
+        }
+
+        if (!m_device || desc.count == 0)
+        {
+            RVX_RHI_ERROR("Vulkan compacted-size query has invalid device or count");
+            return;
+        }
+
+        VkQueryPoolCreateInfo createInfo = {
+            VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        createInfo.queryType =
+            VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR;
+        createInfo.queryCount = desc.count;
+        const VkResult result = vkCreateQueryPool(
+            m_device->GetDevice(), &createInfo, nullptr, &m_queryPool);
+        if (result != VK_SUCCESS)
+        {
+            RVX_RHI_ERROR("Vulkan compacted-size query pool creation failed: {}",
+                          VkResultToString(result));
+            m_queryPool = VK_NULL_HANDLE;
+        }
+    }
+
+    VulkanAccelerationStructureCompactedSizeQuery::
+    ~VulkanAccelerationStructureCompactedSizeQuery()
+    {
+        if (m_queryPool != VK_NULL_HANDLE && m_device &&
+            m_device->GetDevice() != VK_NULL_HANDLE)
+        {
+            vkDestroyQueryPool(m_device->GetDevice(), m_queryPool, nullptr);
+        }
+        m_queryPool = VK_NULL_HANDLE;
+    }
+
+    bool VulkanAccelerationStructureCompactedSizeQuery::Reserve(
+        uint32 firstQuery,
+        uint32 queryCount)
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_queryPool == VK_NULL_HANDLE || m_state != State::Available ||
+            queryCount == 0 || firstQuery > m_desc.count ||
+            queryCount > m_desc.count - firstQuery)
+        {
+            return false;
+        }
+
+        m_firstQuery = firstQuery;
+        m_queryCount = queryCount;
+        m_state = State::Pending;
+        return true;
+    }
+
+    bool VulkanAccelerationStructureCompactedSizeQuery::CanResolve(
+        uint32 firstQuery,
+        uint32 queryCount) const
+    {
+        std::lock_guard lock(m_mutex);
+        return m_state == State::Pending &&
+               m_firstQuery == firstQuery && m_queryCount == queryCount;
+    }
+
+    void VulkanAccelerationStructureCompactedSizeQuery::Commit()
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_state == State::Pending)
+        {
+            m_state = State::Submitted;
+        }
+    }
+
+    void VulkanAccelerationStructureCompactedSizeQuery::Discard()
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_state == State::Pending)
+        {
+            m_state = State::Available;
+            m_firstQuery = 0;
+            m_queryCount = 0;
+        }
+    }
+
+    // =============================================================================
     // Vulkan Buffer
     // =============================================================================
     VulkanBuffer::VulkanBuffer(VulkanDevice* device, const RHIBufferDesc& desc)
@@ -95,7 +500,6 @@ namespace RVX
                 allocInfo.usage = VMA_MEMORY_USAGE_GPU_TO_CPU;
                 break;
         }
-
         VmaAllocationInfo allocationInfo = {};
         VK_CHECK(vmaCreateBuffer(device->GetAllocator(), &bufferInfo, &allocInfo,
             &m_buffer, &m_allocation, &allocationInfo));
@@ -1165,6 +1569,66 @@ namespace RVX
     RHIShaderRef CreateVulkanShader(VulkanDevice* device, const RHIShaderDesc& desc)
     {
         return Ref<VulkanShader>(new VulkanShader(device, desc));
+    }
+
+    RHIAccelerationStructureRef CreateVulkanAccelerationStructure(
+        VulkanDevice* device,
+        const RHIAccelerationStructureDesc& desc)
+    {
+        if (!device || !device->GetCapabilities().supportsRaytracing)
+        {
+            RVX_RHI_ERROR(
+                "Vulkan cannot create an acceleration structure without enabled ray tracing support");
+            return nullptr;
+        }
+
+        const RHIRayTracingValidationResult validation =
+            ValidateRHIAccelerationStructureDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR(
+                "Vulkan acceleration structure creation rejected: {}",
+                validation.message);
+            return nullptr;
+        }
+
+        auto accelerationStructure = Ref<VulkanAccelerationStructure>(
+            new VulkanAccelerationStructure(device, desc));
+        if (!accelerationStructure->IsValid())
+        {
+            return nullptr;
+        }
+        return accelerationStructure;
+    }
+
+    RHIAccelerationStructureCompactedSizeQueryRef
+    CreateVulkanAccelerationStructureCompactedSizeQuery(
+        VulkanDevice* device,
+        const RHIAccelerationStructureCompactedSizeQueryDesc& desc)
+    {
+        if (!device ||
+            !device->GetCapabilities().supportsAccelerationStructureCompaction)
+        {
+            RVX_RHI_ERROR("Vulkan compacted-size queries require the complete ray tracing compaction path");
+            return nullptr;
+        }
+
+        const RHIRayTracingValidationResult validation =
+            ValidateRHIAccelerationStructureCompactedSizeQueryDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("Vulkan compacted-size query creation rejected: {}",
+                          validation.message);
+            return nullptr;
+        }
+
+        auto query = Ref<VulkanAccelerationStructureCompactedSizeQuery>(
+            new VulkanAccelerationStructureCompactedSizeQuery(device, desc));
+        if (query->GetQueryPool() == VK_NULL_HANDLE)
+        {
+            return nullptr;
+        }
+        return query;
     }
 
     RHIFenceRef CreateVulkanFence(VulkanDevice* device, uint64 initialValue)

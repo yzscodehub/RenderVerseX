@@ -141,6 +141,18 @@ namespace RVX::SceneECS
         uint64 skyboxWriteVersion = 0;
     };
 
+    /** @brief Snapshot value for one local reflection-probe source. */
+    struct FrozenSceneReflectionProbe
+    {
+        FrozenSceneObjectId id;
+        ECS::EntityHandle sourceEntity = ECS::EntityHandle::Invalid();
+        ReflectionProbe source;
+        Visibility visibility;
+        Mat4 worldTransform{1.0f};
+        uint64 transformSourceRevision = 0;
+        uint64 visibilityWriteVersion = 0;
+    };
+
     /** @brief Immutable value contribution from one particle feature source. */
     struct FrozenSceneParticle
     {
@@ -205,6 +217,7 @@ namespace RVX::SceneECS
         std::vector<FrozenSceneMesh> meshes;
         std::vector<FrozenSceneLight> lights;
         std::vector<FrozenSceneSkybox> skyboxes;
+        std::vector<FrozenSceneReflectionProbe> reflectionProbes;
         std::vector<FrozenSceneParticle> particles;
         std::vector<FrozenSceneWater> water;
         std::vector<FrozenSceneTerrain> terrain;

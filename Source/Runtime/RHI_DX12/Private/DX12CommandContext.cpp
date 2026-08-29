@@ -774,6 +774,8 @@ namespace RVX
 
     DX12CommandContext::~DX12CommandContext()
     {
+        DiscardPendingAccelerationStructureCompactionQueries();
+        DiscardPendingAccelerationStructureBuilds();
     }
 
     // =============================================================================
@@ -786,6 +788,9 @@ namespace RVX
             RVX_RHI_WARN("CommandContext::Begin called while already recording");
             return;
         }
+
+        DiscardPendingAccelerationStructureCompactionQueries();
+        DiscardPendingAccelerationStructureBuilds();
 
         if (!m_commandAllocator)
         {
@@ -860,10 +865,115 @@ namespace RVX
 
     void DX12CommandContext::Reset()
     {
+        DiscardPendingAccelerationStructureCompactionQueries();
+        DiscardPendingAccelerationStructureBuilds();
         if (m_isRecording)
         {
             End();
         }
+    }
+
+    bool DX12CommandContext::HasPendingAccelerationStructureBuild(
+        const DX12AccelerationStructure* accelerationStructure,
+        bool requireCompaction) const noexcept
+    {
+        if (!accelerationStructure)
+        {
+            return false;
+        }
+
+        for (const PendingAccelerationStructureBuild& pending :
+             m_pendingAccelerationStructureBuilds)
+        {
+            if (pending.accelerationStructure.Get() != accelerationStructure)
+            {
+                continue;
+            }
+
+            return !requireCompaction || HasFlag(
+                pending.flags,
+                RHIAccelerationStructureBuildFlags::AllowCompaction);
+        }
+        return false;
+    }
+
+    void DX12CommandContext::RecordPendingAccelerationStructureBuild(
+        DX12AccelerationStructure* accelerationStructure,
+        RHIAccelerationStructureBuildFlags flags)
+    {
+        if (!accelerationStructure)
+        {
+            return;
+        }
+
+        for (PendingAccelerationStructureBuild& pending :
+             m_pendingAccelerationStructureBuilds)
+        {
+            if (pending.accelerationStructure.Get() == accelerationStructure)
+            {
+                pending.flags = flags;
+                return;
+            }
+        }
+
+        PendingAccelerationStructureBuild pending;
+        pending.accelerationStructure = RHIAccelerationStructureRef(
+            accelerationStructure);
+        pending.flags = flags;
+        m_pendingAccelerationStructureBuilds.push_back(std::move(pending));
+    }
+
+    void DX12CommandContext::CommitPendingAccelerationStructureBuilds()
+    {
+        for (const PendingAccelerationStructureBuild& pending :
+             m_pendingAccelerationStructureBuilds)
+        {
+            auto* accelerationStructure = dynamic_cast<DX12AccelerationStructure*>(
+                pending.accelerationStructure.Get());
+            if (accelerationStructure)
+            {
+                accelerationStructure->CommitSubmittedBuildFlags(
+                    pending.flags, m_queueType);
+            }
+        }
+        m_pendingAccelerationStructureBuilds.clear();
+    }
+
+    void DX12CommandContext::DiscardPendingAccelerationStructureBuilds()
+    {
+        m_pendingAccelerationStructureBuilds.clear();
+    }
+
+    void DX12CommandContext::CommitPendingAccelerationStructureCompactionQueries()
+    {
+        for (const PendingAccelerationStructureCompactionQuery& pending :
+             m_pendingAccelerationStructureCompactionQueries)
+        {
+            auto* query = dynamic_cast<
+                DX12AccelerationStructureCompactedSizeQuery*>(
+                pending.query.Get());
+            if (query)
+            {
+                query->Commit();
+            }
+        }
+        m_pendingAccelerationStructureCompactionQueries.clear();
+    }
+
+    void DX12CommandContext::DiscardPendingAccelerationStructureCompactionQueries()
+    {
+        for (const PendingAccelerationStructureCompactionQuery& pending :
+             m_pendingAccelerationStructureCompactionQueries)
+        {
+            auto* query = dynamic_cast<
+                DX12AccelerationStructureCompactedSizeQuery*>(
+                pending.query.Get());
+            if (query)
+            {
+                query->Discard();
+            }
+        }
+        m_pendingAccelerationStructureCompactionQueries.clear();
     }
 
     ComPtr<ID3D12CommandAllocator> DX12CommandContext::DetachCommandAllocator()
@@ -1369,7 +1479,8 @@ namespace RVX
     }
 
     void DX12CommandContext::InsertAccelerationStructureBarrier(
-        DX12AccelerationStructure* accelerationStructure)
+        DX12AccelerationStructure* accelerationStructure,
+        D3D12_BARRIER_SYNC producerSync)
     {
         if (!accelerationStructure || !accelerationStructure->GetResource())
             return;
@@ -1378,8 +1489,7 @@ namespace RVX
         if (UsesEnhancedBarriers())
         {
             D3D12_BUFFER_BARRIER barrier = {};
-            barrier.SyncBefore =
-                D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE;
+            barrier.SyncBefore = producerSync;
             barrier.SyncAfter =
                 D3D12_BARRIER_SYNC_ALL_SHADING |
                 D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE |
@@ -1403,6 +1513,66 @@ namespace RVX
             barrier.UAV.pResource = accelerationStructure->GetResource();
             m_pendingLegacyBarriers.push_back(barrier);
         }
+        FlushBarriers();
+    }
+
+    void DX12CommandContext::PrepareCompactedSizeResultForPostBuildInfo(
+        DX12Buffer* resultBuffer)
+    {
+        if (!resultBuffer || !resultBuffer->GetResource())
+        {
+            return;
+        }
+
+        if (!UsesEnhancedBarriers())
+        {
+            BufferBarrier({resultBuffer, RHIResourceState::Common,
+                           RHIResourceState::UnorderedAccess});
+            FlushBarriers();
+            return;
+        }
+
+        FlushBarriers();
+        D3D12_BUFFER_BARRIER barrier = {};
+        barrier.SyncBefore = D3D12_BARRIER_SYNC_NONE;
+        barrier.SyncAfter =
+            D3D12_BARRIER_SYNC_EMIT_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO;
+        barrier.AccessBefore = D3D12_BARRIER_ACCESS_NO_ACCESS;
+        barrier.AccessAfter = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
+        barrier.pResource = resultBuffer->GetResource();
+        barrier.Offset = 0;
+        barrier.Size = UINT64_MAX;
+        QueueEnhancedBarrier(barrier);
+        FlushBarriers();
+    }
+
+    void DX12CommandContext::TransitionCompactedSizeResultToCopySource(
+        DX12Buffer* resultBuffer)
+    {
+        if (!resultBuffer || !resultBuffer->GetResource())
+        {
+            return;
+        }
+
+        if (!UsesEnhancedBarriers())
+        {
+            BufferBarrier({resultBuffer, RHIResourceState::UnorderedAccess,
+                           RHIResourceState::CopySource});
+            FlushBarriers();
+            return;
+        }
+
+        FlushBarriers();
+        D3D12_BUFFER_BARRIER barrier = {};
+        barrier.SyncBefore =
+            D3D12_BARRIER_SYNC_EMIT_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO;
+        barrier.SyncAfter = D3D12_BARRIER_SYNC_COPY;
+        barrier.AccessBefore = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
+        barrier.AccessAfter = D3D12_BARRIER_ACCESS_COPY_SOURCE;
+        barrier.pResource = resultBuffer->GetResource();
+        barrier.Offset = 0;
+        barrier.Size = UINT64_MAX;
+        QueueEnhancedBarrier(barrier);
         FlushBarriers();
     }
 
@@ -2322,6 +2492,7 @@ namespace RVX
 
         commandList4->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
         InsertAccelerationStructureBarrier(dstAS);
+        RecordPendingAccelerationStructureBuild(dstAS, desc.buildFlags);
     }
 
     void DX12CommandContext::BuildTopLevelAccelerationStructure(
@@ -2438,6 +2609,7 @@ namespace RVX
 
         commandList4->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
         InsertAccelerationStructureBarrier(dstAS);
+        RecordPendingAccelerationStructureBuild(dstAS, desc.buildFlags);
     }
 
     void DX12CommandContext::DispatchRays(const RHIDispatchRaysDesc& desc)
@@ -2523,6 +2695,221 @@ namespace RVX
         const D3D12_DISPATCH_RAYS_DESC d3dDesc =
             shaderTable->BuildDispatchRaysDesc(desc.width, desc.height, desc.depth);
         commandList4->DispatchRays(&d3dDesc);
+    }
+
+    void DX12CommandContext::WriteAccelerationStructureCompactedSizes(
+        RHIAccelerationStructureCompactedSizeQuery* query,
+        uint32 firstQuery,
+        std::span<RHIAccelerationStructure* const> accelerationStructures)
+    {
+        if (!m_device->GetCapabilities().supportsAccelerationStructureCompaction ||
+            !ValidateDX12RayTracingCommandState(
+                m_isRecording, m_inRenderPass, "compacted-size query"))
+        {
+            return;
+        }
+
+        auto* dx12Query = dynamic_cast<
+            DX12AccelerationStructureCompactedSizeQuery*>(query);
+        if (!dx12Query || dx12Query->GetQueueType() != m_queueType ||
+            accelerationStructures.empty() ||
+            accelerationStructures.size() > dx12Query->GetCount() ||
+            firstQuery > dx12Query->GetCount() ||
+            accelerationStructures.size() >
+                dx12Query->GetCount() - firstQuery)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: compacted-size query arguments are invalid");
+            return;
+        }
+
+        auto* resultBuffer = dx12Query->GetResultBuffer();
+        if (!resultBuffer || !resultBuffer->GetResource() ||
+            resultBuffer->GetGPUVirtualAddress() == 0)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: compacted-size query has no valid post-build result buffer");
+            return;
+        }
+
+        std::vector<D3D12_GPU_VIRTUAL_ADDRESS> sourceAddresses;
+        sourceAddresses.reserve(accelerationStructures.size());
+        for (RHIAccelerationStructure* source : accelerationStructures)
+        {
+            auto* sourceAS = dynamic_cast<DX12AccelerationStructure*>(source);
+            const bool pendingInThisContext =
+                sourceAS && HasPendingAccelerationStructureBuild(sourceAS, true);
+            const bool submittedOnThisQueue =
+                sourceAS && sourceAS->SubmittedBuildAllowsCompaction() &&
+                sourceAS->SubmittedBuildWasOnQueue(m_queueType);
+            if (!sourceAS || sourceAS->GetGPUVirtualAddress() == 0 ||
+                (!pendingInThisContext && !submittedOnThisQueue))
+            {
+                RVX_RHI_ERROR("DX12CommandContext: compacted-size query requires an AllowCompaction source build recorded in this context or submitted previously on the same queue type");
+                return;
+            }
+            sourceAddresses.push_back(sourceAS->GetGPUVirtualAddress());
+        }
+
+        if (!dx12Query->Reserve(
+                firstQuery,
+                static_cast<uint32>(accelerationStructures.size())))
+        {
+            RVX_RHI_ERROR("DX12CommandContext: compacted-size query slots are not available");
+            return;
+        }
+
+        D3D12_GPU_VIRTUAL_ADDRESS destination = 0;
+        if (!TryAddDX12GPUVirtualAddress(
+                resultBuffer->GetGPUVirtualAddress(),
+                static_cast<uint64>(firstQuery) * sizeof(uint64),
+                destination) ||
+            (destination % alignof(uint64)) != 0)
+        {
+            dx12Query->Discard();
+            RVX_RHI_ERROR("DX12CommandContext: compacted-size query output address is invalid");
+            return;
+        }
+
+        ComPtr<ID3D12GraphicsCommandList4> commandList4;
+        if (FAILED(m_commandList.As(&commandList4)) || !commandList4)
+        {
+            dx12Query->Discard();
+            RVX_RHI_ERROR("DX12CommandContext: compacted-size query requires ID3D12GraphicsCommandList4");
+            return;
+        }
+
+        PrepareCompactedSizeResultForPostBuildInfo(resultBuffer);
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC postBuild = {};
+        postBuild.DestBuffer = destination;
+        postBuild.InfoType =
+            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE;
+        commandList4->EmitRaytracingAccelerationStructurePostbuildInfo(
+            &postBuild,
+            static_cast<UINT>(sourceAddresses.size()),
+            sourceAddresses.data());
+
+        for (RHIAccelerationStructure* source : accelerationStructures)
+        {
+            PendingAccelerationStructureCompactionQuery pending;
+            pending.query = RHIAccelerationStructureCompactedSizeQueryRef(query);
+            pending.source = RHIAccelerationStructureRef(source);
+            m_pendingAccelerationStructureCompactionQueries.push_back(
+                std::move(pending));
+        }
+    }
+
+    void DX12CommandContext::ResolveAccelerationStructureCompactedSizes(
+        RHIAccelerationStructureCompactedSizeQuery* query,
+        uint32 firstQuery,
+        uint32 queryCount,
+        RHIBuffer* readbackBuffer,
+        uint64 readbackOffset)
+    {
+        auto* dx12Query = dynamic_cast<
+            DX12AccelerationStructureCompactedSizeQuery*>(query);
+        auto* dx12Readback = dynamic_cast<DX12Buffer*>(readbackBuffer);
+        if (!m_device->GetCapabilities().supportsAccelerationStructureCompaction ||
+            !ValidateDX12RayTracingCommandState(
+                m_isRecording, m_inRenderPass, "compacted-size resolve") ||
+            !dx12Query || dx12Query->GetQueueType() != m_queueType ||
+            !dx12Readback || !dx12Readback->GetResource() ||
+            dx12Readback->GetMemoryType() != RHIMemoryType::Readback ||
+            (readbackOffset % alignof(uint64)) != 0 ||
+            queryCount == 0 ||
+            !dx12Query->CanResolve(firstQuery, queryCount))
+        {
+            RVX_RHI_ERROR("DX12CommandContext: compacted-size resolve arguments are invalid");
+            return;
+        }
+
+        bool queryOwnedByContext = false;
+        for (const PendingAccelerationStructureCompactionQuery& pending :
+             m_pendingAccelerationStructureCompactionQueries)
+        {
+            if (pending.query.Get() == query)
+            {
+                queryOwnedByContext = true;
+                break;
+            }
+        }
+        const uint64 bytes = static_cast<uint64>(queryCount) * sizeof(uint64);
+        if (!queryOwnedByContext ||
+            !IsRHIRayTracingBufferRangeValid(*dx12Readback, readbackOffset, bytes))
+        {
+            RVX_RHI_ERROR("DX12CommandContext: compacted-size resolve requires context-owned query slots and a sufficiently large readback range");
+            return;
+        }
+
+        auto* resultBuffer = dx12Query->GetResultBuffer();
+        if (!resultBuffer || !resultBuffer->GetResource())
+        {
+            RVX_RHI_ERROR("DX12CommandContext: compacted-size resolve has no valid post-build result buffer");
+            return;
+        }
+
+        TransitionCompactedSizeResultToCopySource(resultBuffer);
+        m_commandList->CopyBufferRegion(
+            dx12Readback->GetResource(),
+            readbackOffset,
+            resultBuffer->GetResource(),
+            static_cast<uint64>(firstQuery) * sizeof(uint64),
+            bytes);
+
+        PendingAccelerationStructureCompactionQuery pending;
+        pending.query = RHIAccelerationStructureCompactedSizeQueryRef(query);
+        pending.readback = RHIBufferRef(readbackBuffer);
+        m_pendingAccelerationStructureCompactionQueries.push_back(
+            std::move(pending));
+    }
+
+    void DX12CommandContext::CopyAccelerationStructureCompact(
+        RHIAccelerationStructure* dst,
+        RHIAccelerationStructure* src,
+        uint64 expectedCompactedSize)
+    {
+        if (!m_device->GetCapabilities().supportsAccelerationStructureCompaction ||
+            !ValidateDX12RayTracingCommandState(
+                m_isRecording, m_inRenderPass, "acceleration structure compact copy"))
+        {
+            return;
+        }
+
+        auto* dstAS = dynamic_cast<DX12AccelerationStructure*>(dst);
+        auto* srcAS = dynamic_cast<DX12AccelerationStructure*>(src);
+        const bool pendingInThisContext =
+            srcAS && HasPendingAccelerationStructureBuild(srcAS, true);
+        const bool submittedOnThisQueue =
+            srcAS && srcAS->SubmittedBuildAllowsCompaction() &&
+            srcAS->SubmittedBuildWasOnQueue(m_queueType);
+        if (!dstAS || !srcAS || dstAS == srcAS ||
+            dstAS->GetType() != srcAS->GetType() ||
+            dstAS->GetGPUVirtualAddress() == 0 ||
+            srcAS->GetGPUVirtualAddress() == 0 ||
+            expectedCompactedSize == 0 ||
+            expectedCompactedSize > srcAS->GetSize() ||
+            dstAS->GetSize() < expectedCompactedSize ||
+            !IsRHIRayTracingAccelerationStructureSizeAligned(dstAS->GetSize()) ||
+            !IsRHIRayTracingAccelerationStructureSizeAligned(srcAS->GetSize()) ||
+            (!pendingInThisContext && !submittedOnThisQueue))
+        {
+            RVX_RHI_ERROR("DX12CommandContext: compact copy requires aligned distinct same-type acceleration structures, an in-range queried size, and an AllowCompaction source build from this context or the same submitted queue type");
+            return;
+        }
+
+        ComPtr<ID3D12GraphicsCommandList4> commandList4;
+        if (FAILED(m_commandList.As(&commandList4)) || !commandList4)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: compact copy requires ID3D12GraphicsCommandList4");
+            return;
+        }
+
+        FlushBarriers();
+        commandList4->CopyRaytracingAccelerationStructure(
+            dstAS->GetGPUVirtualAddress(),
+            srcAS->GetGPUVirtualAddress(),
+            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT);
+        InsertAccelerationStructureBarrier(
+            dstAS,
+            D3D12_BARRIER_SYNC_COPY_RAYTRACING_ACCELERATION_STRUCTURE);
     }
 
     // =============================================================================
@@ -2726,9 +3113,14 @@ namespace RVX
         }
         if (submissionFailed)
         {
+            dx12Context->DiscardPendingAccelerationStructureCompactionQueries();
+            dx12Context->DiscardPendingAccelerationStructureBuilds();
             static_cast<void>(dx12Context->DetachCommandAllocator());
             return 0;
         }
+
+        dx12Context->CommitPendingAccelerationStructureBuilds();
+        dx12Context->CommitPendingAccelerationStructureCompactionQueries();
 
         device->GetAllocatorPool().Release(dx12Context->DetachCommandAllocator(),
                                            dx12Context->GetD3DListType(),
@@ -2856,6 +3248,8 @@ namespace RVX
         {
             for (SubmissionEntry& entry : entries)
             {
+                entry.context->DiscardPendingAccelerationStructureCompactionQueries();
+                entry.context->DiscardPendingAccelerationStructureBuilds();
                 static_cast<void>(
                     entry.context->DetachCommandAllocator());
             }
@@ -2864,6 +3258,8 @@ namespace RVX
 
         for (SubmissionEntry& entry : entries)
         {
+            entry.context->CommitPendingAccelerationStructureBuilds();
+            entry.context->CommitPendingAccelerationStructureCompactionQueries();
             device->GetAllocatorPool().Release(
                 entry.context->DetachCommandAllocator(),
                 entry.context->GetD3DListType(),
@@ -2953,6 +3349,8 @@ namespace RVX
             {
                 for (DX12CommandContext* context : batch.contexts)
                 {
+                    context->DiscardPendingAccelerationStructureCompactionQueries();
+                    context->DiscardPendingAccelerationStructureBuilds();
                     static_cast<void>(context->DetachCommandAllocator());
                 }
             }
@@ -2996,6 +3394,12 @@ namespace RVX
             batch.queue->ExecuteCommandLists(
                 static_cast<UINT>(batch.commandLists.size()),
                 batch.commandLists.data());
+
+            for (DX12CommandContext* context : batch.contexts)
+            {
+                context->CommitPendingAccelerationStructureBuilds();
+                context->CommitPendingAccelerationStructureCompactionQueries();
+            }
 
             if (batch.completionFence && batch.completionValue != 0)
             {

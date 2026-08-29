@@ -60,6 +60,28 @@ namespace
         return "toon outline qualification probe has an invalid admission state";
     }
 
+    [[nodiscard]] const char* GetHiZReflectionQualificationRequestDiagnostic(
+        RenderHiZReflectionQualificationRequestState state) noexcept
+    {
+        switch (state)
+        {
+            case RenderHiZReflectionQualificationRequestState::NotRequested:
+                return "Hi-Z reflection qualification probe was not requested";
+            case RenderHiZReflectionQualificationRequestState::
+                PendingRenderOwnerAdmission:
+                return "Hi-Z reflection qualification probe is awaiting render-owner admission";
+            case RenderHiZReflectionQualificationRequestState::Accepted:
+                return "Hi-Z reflection qualification probe was accepted by the render owner";
+            case RenderHiZReflectionQualificationRequestState::
+                RejectedByRenderOwner:
+                return "Hi-Z reflection qualification probe was rejected by the render owner";
+            case RenderHiZReflectionQualificationRequestState::
+                RejectedByRuntimeShutdown:
+                return "Hi-Z reflection qualification probe was rejected because the render runtime sealed before admission";
+        }
+        return "Hi-Z reflection qualification probe has an invalid admission state";
+    }
+
     class TerminatingRenderFatalPolicy final : public IRenderFatalPolicy
     {
     public:
@@ -1199,6 +1221,50 @@ namespace
         return true;
     }
 
+    bool RenderThreadRuntime::RequestHiZReflectionQualificationProbe() noexcept
+    {
+        {
+            std::lock_guard lock(m_publicationMutex);
+            if (m_publicationSealed.load(std::memory_order_acquire) ||
+                m_completionOnlyDrainActive.load(std::memory_order_acquire) ||
+                m_lifecycle.load(std::memory_order_acquire) !=
+                    RenderLifecycleState::Running)
+            {
+                return false;
+            }
+            const RenderRuntimeResult result = GetLastRuntimeResult();
+            if (result.lifecycle != RenderLifecycleState::Running ||
+                result.terminalCause != RenderTerminalCause::None ||
+                result.teardownMode != RenderTeardownMode::None)
+            {
+                return false;
+            }
+
+            bool expected = false;
+            if (!m_hiZReflectionQualificationProbeRequestIssued
+                     .compare_exchange_strong(expected,
+                                              true,
+                                              std::memory_order_acq_rel,
+                                              std::memory_order_acquire))
+            {
+                return false;
+            }
+            m_hiZReflectionQualificationProbePublishedBaseline =
+                m_lastPublishedFrameSequence.load(std::memory_order_acquire);
+            m_hiZReflectionQualificationProbeTargetFrameSequence.store(
+                0, std::memory_order_release);
+            m_hiZReflectionQualificationProbeRequestPending.store(
+                true, std::memory_order_release);
+            m_hiZReflectionQualificationProbeRequestState.store(
+                RenderHiZReflectionQualificationRequestState::
+                    PendingRenderOwnerAdmission,
+                std::memory_order_release);
+        }
+
+        Wake();
+        return true;
+    }
+
     RenderToonOutlineQualificationRequestResult
     RenderThreadRuntime::GetToonOutlineQualificationProbeRequestResult() const
         noexcept
@@ -1209,6 +1275,23 @@ namespace
         return {
             .state = state,
             .diagnostic = GetToonOutlineQualificationRequestDiagnostic(state)
+        };
+    }
+
+    RenderHiZReflectionQualificationRequestResult
+    RenderThreadRuntime::GetHiZReflectionQualificationProbeRequestResult() const
+        noexcept
+    {
+        const RenderHiZReflectionQualificationRequestState state =
+            m_hiZReflectionQualificationProbeRequestState.load(
+                std::memory_order_acquire);
+        return {
+            .state = state,
+            .targetFrameSequence =
+                m_hiZReflectionQualificationProbeTargetFrameSequence.load(
+                    std::memory_order_acquire),
+            .diagnostic =
+                GetHiZReflectionQualificationRequestDiagnostic(state)
         };
     }
 
@@ -1723,6 +1806,26 @@ namespace
                         ResolveToonOutlineQualificationProbeRequestOnRenderThread();
                         progressed = true;
                     }
+                    bool hiZReflectionProbeRequestForFrame = false;
+                    {
+                        std::lock_guard lock(m_publicationMutex);
+                        if (sequence >
+                                m_hiZReflectionQualificationProbePublishedBaseline &&
+                            m_hiZReflectionQualificationProbeRequestPending.load(
+                                std::memory_order_acquire))
+                        {
+                            hiZReflectionProbeRequestForFrame =
+                                m_hiZReflectionQualificationProbeRequestPending
+                                    .exchange(false,
+                                              std::memory_order_acq_rel);
+                        }
+                    }
+                    if (hiZReflectionProbeRequestForFrame)
+                    {
+                        ResolveHiZReflectionQualificationProbeRequestOnRenderThread(
+                            sequence);
+                        progressed = true;
+                    }
                     const auto consumeStart = std::chrono::steady_clock::now();
                     RenderRuntimeResult frameResult =
                         m_consumer->ConsumeFrameV5(
@@ -2150,6 +2253,7 @@ namespace
     {
         m_publicationSealed.store(true, std::memory_order_release);
         RejectPendingToonOutlineQualificationProbeForShutdown();
+        RejectPendingHiZReflectionQualificationProbeForShutdown();
         if (m_resourceGateway != nullptr)
         {
             m_resourceGateway->BeginShutdown();
@@ -2193,6 +2297,59 @@ namespace
                               .compare_exchange_strong(
                                   expected,
                                   RenderToonOutlineQualificationRequestState::RejectedByRuntimeShutdown,
+                                  std::memory_order_acq_rel,
+                                  std::memory_order_acquire));
+    }
+
+    void RenderThreadRuntime::
+        ResolveHiZReflectionQualificationProbeRequestOnRenderThread(
+            uint64 targetFrameSequence)
+    {
+        // Admission and shutdown are serialized with the same publication
+        // lock. The target sequence is published before Accepted so readers
+        // cannot observe a terminal success without its exact-frame identity.
+        std::lock_guard lock(m_publicationMutex);
+        if (m_publicationSealed.load(std::memory_order_acquire))
+        {
+            RejectPendingHiZReflectionQualificationProbeForShutdown();
+            return;
+        }
+        const bool accepted =
+            targetFrameSequence != 0 && m_consumer != nullptr &&
+            m_consumer->RequestHiZReflectionQualificationProbe();
+        if (accepted)
+        {
+            m_hiZReflectionQualificationProbeTargetFrameSequence.store(
+                targetFrameSequence, std::memory_order_release);
+        }
+        RenderHiZReflectionQualificationRequestState expected =
+            RenderHiZReflectionQualificationRequestState::
+                PendingRenderOwnerAdmission;
+        const RenderHiZReflectionQualificationRequestState resolved =
+            accepted
+                ? RenderHiZReflectionQualificationRequestState::Accepted
+                : RenderHiZReflectionQualificationRequestState::
+                      RejectedByRenderOwner;
+        static_cast<void>(m_hiZReflectionQualificationProbeRequestState
+                              .compare_exchange_strong(expected,
+                                                       resolved,
+                                                       std::memory_order_acq_rel,
+                                                       std::memory_order_acquire));
+    }
+
+    void RenderThreadRuntime::
+        RejectPendingHiZReflectionQualificationProbeForShutdown() noexcept
+    {
+        m_hiZReflectionQualificationProbeRequestPending.store(
+            false, std::memory_order_release);
+        RenderHiZReflectionQualificationRequestState expected =
+            RenderHiZReflectionQualificationRequestState::
+                PendingRenderOwnerAdmission;
+        static_cast<void>(m_hiZReflectionQualificationProbeRequestState
+                              .compare_exchange_strong(
+                                  expected,
+                                  RenderHiZReflectionQualificationRequestState::
+                                      RejectedByRuntimeShutdown,
                                   std::memory_order_acq_rel,
                                   std::memory_order_acquire));
     }

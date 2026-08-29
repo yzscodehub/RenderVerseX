@@ -448,6 +448,43 @@ namespace RVX
             }
         }
 
+        [[nodiscard]] const char* GetHybridRayTracingShadowRouteName(
+            RenderHybridRayTracingShadowRoute route) noexcept
+        {
+            switch (route)
+            {
+                case RenderHybridRayTracingShadowRoute::None: return "none";
+                case RenderHybridRayTracingShadowRoute::RayTraced:
+                    return "ray-traced";
+                case RenderHybridRayTracingShadowRoute::RasterCSM:
+                    return "raster-csm";
+                case RenderHybridRayTracingShadowRoute::Failed:
+                    return "failed";
+                default: return "invalid";
+            }
+        }
+
+        [[nodiscard]] const char* GetHybridRayTracingReflectionRouteName(
+            RenderHybridRayTracingReflectionRoute route) noexcept
+        {
+            switch (route)
+            {
+                case RenderHybridRayTracingReflectionRoute::None:
+                    return "none";
+                case RenderHybridRayTracingReflectionRoute::RayTraced:
+                    return "ray-traced";
+                case RenderHybridRayTracingReflectionRoute::ScreenSpaceReflection:
+                    return "screen-space-reflection";
+                case RenderHybridRayTracingReflectionRoute::ReflectionProbe:
+                    return "reflection-probe";
+                case RenderHybridRayTracingReflectionRoute::ImageBasedLighting:
+                    return "image-based-lighting";
+                case RenderHybridRayTracingReflectionRoute::Failed:
+                    return "failed";
+                default: return "invalid";
+            }
+        }
+
         void WriteOptionalFiniteNumber(std::ostream& stream, float32 value)
         {
             if (std::isfinite(value))
@@ -522,7 +559,8 @@ namespace RVX
             if (receipt.schemaVersion == 2 || receipt.schemaVersion == 4 ||
                 receipt.schemaVersion == 5 || receipt.schemaVersion == 6 ||
                 receipt.schemaVersion == 7 || receipt.schemaVersion == 8 ||
-                receipt.schemaVersion == 10 || receipt.schemaVersion == 11)
+                receipt.schemaVersion == 10 || receipt.schemaVersion == 11 ||
+                receipt.schemaVersion == 12)
             {
                 stream << "      \"deferredOpaque\": {\"available\": "
                        << Diagnostics::JsonBool(receipt.deferredOpaque.available)
@@ -539,7 +577,7 @@ namespace RVX
             if (receipt.schemaVersion == 4 || receipt.schemaVersion == 5 ||
                 receipt.schemaVersion == 6 || receipt.schemaVersion == 7 ||
                 receipt.schemaVersion == 8 || receipt.schemaVersion == 10 ||
-                receipt.schemaVersion == 11)
+                receipt.schemaVersion == 11 || receipt.schemaVersion == 12)
             {
                 stream << "      \"lighting\": {\"lightingPlanIdentity\": "
                        << receipt.lighting.lightingPlanIdentity
@@ -583,7 +621,8 @@ namespace RVX
             }
             if (receipt.schemaVersion == 5 || receipt.schemaVersion == 6 ||
                 receipt.schemaVersion == 7 || receipt.schemaVersion == 8 ||
-                receipt.schemaVersion == 10 || receipt.schemaVersion == 11)
+                receipt.schemaVersion == 10 || receipt.schemaVersion == 11 ||
+                receipt.schemaVersion == 12)
             {
                 stream << "      \"deformation\": {\"deformationContentHash\": "
                        << receipt.deformation.deformationContentHash
@@ -611,7 +650,7 @@ namespace RVX
             }
             if (receipt.schemaVersion == 6 || receipt.schemaVersion == 7 ||
                 receipt.schemaVersion == 8 || receipt.schemaVersion == 10 ||
-                receipt.schemaVersion == 11)
+                receipt.schemaVersion == 11 || receipt.schemaVersion == 12)
             {
                 stream << "      \"postProcess\": {\"planContentHash\": "
                        << receipt.postProcess.postProcessContentHash
@@ -626,7 +665,8 @@ namespace RVX
                        << ", \"taaPassCount\": "
                        << receipt.postProcess.taaPassCount;
                 if (receipt.schemaVersion == 7 || receipt.schemaVersion == 8 ||
-                    receipt.schemaVersion == 10 || receipt.schemaVersion == 11)
+                    receipt.schemaVersion == 10 || receipt.schemaVersion == 11 ||
+                    receipt.schemaVersion == 12)
                 {
                     stream << ", \"antiAliasingMode\": "
                            << Diagnostics::JsonString(
@@ -674,7 +714,7 @@ namespace RVX
                            << receipt.postProcess.taaHistoryStoreGraphPassCount;
                 }
                 if (receipt.schemaVersion == 8 || receipt.schemaVersion == 10 ||
-                    receipt.schemaVersion == 11)
+                    receipt.schemaVersion == 11 || receipt.schemaVersion == 12)
                 {
                     stream << ", \"exposureStateContentHash\": "
                            << receipt.postProcess.exposureStateContentHash
@@ -781,7 +821,8 @@ namespace RVX
                               receipt.postProcess.fallbackUsed)
                        << "},\n";
             }
-            if (receipt.schemaVersion == 10 || receipt.schemaVersion == 11)
+            if (receipt.schemaVersion == 10 || receipt.schemaVersion == 11 ||
+                receipt.schemaVersion == 12)
             {
                 const RenderAmbientOcclusionExecutionReceipt& ambientOcclusion =
                     receipt.ambientOcclusion;
@@ -892,7 +933,7 @@ namespace RVX
                        << Diagnostics::JsonBool(ambientOcclusion.fallbackUsed)
                        << "},\n";
             }
-            if (receipt.schemaVersion == 11)
+            if (receipt.schemaVersion == 11 || receipt.schemaVersion == 12)
             {
                 const RenderToonLightingExecutionReceipt& toonLighting =
                     receipt.toonLighting;
@@ -985,6 +1026,86 @@ namespace RVX
                        << Diagnostics::JsonString(toonOutline.diagnostic)
                        << "},\n";
             }
+            if (receipt.schemaVersion == 12)
+            {
+                const RenderHybridRayTracingExecutionReceipt& hybrid =
+                    receipt.hybridRayTracing;
+                stream << "      \"hybridRayTracing\": {\"available\": "
+                       << Diagnostics::JsonBool(hybrid.available)
+                       << ", \"planIdentityHash\": "
+                       << hybrid.planIdentityHash
+                       << ", \"scenePreparationGeneration\": "
+                       << hybrid.scenePreparationGeneration
+                       << ", \"sceneStructuralHash\": "
+                       << hybrid.sceneStructuralHash
+                       << ", \"frameIdentity\": {\"frameSequence\": "
+                       << hybrid.frameIdentity.frameSequence
+                       << ", \"sceneRevision\": "
+                       << hybrid.frameIdentity.sceneRevision
+                       << ", \"surfaceGeneration\": "
+                       << hybrid.frameIdentity.surfaceGeneration
+                       << ", \"configurationRevision\": "
+                       << hybrid.frameIdentity.configurationRevision
+                       << "}, \"viewIdentity\": {\"sceneRuntimeId\": "
+                       << hybrid.viewIdentity.sceneRuntimeId
+                       << ", \"cameraEntityPacked\": "
+                       << hybrid.viewIdentity.cameraEntityPacked
+                       << ", \"subViewIndex\": "
+                       << hybrid.viewIdentity.subViewIndex
+                       << ", \"role\": "
+                       << Diagnostics::JsonString(
+                              GetRenderViewRoleName(hybrid.viewIdentity.role))
+                       << "}, \"fullResolution\": {\"width\": "
+                       << hybrid.fullResolution.width << ", \"height\": "
+                       << hybrid.fullResolution.height
+                       << "}, \"halfResolution\": {\"width\": "
+                       << hybrid.halfResolution.width << ", \"height\": "
+                       << hybrid.halfResolution.height
+                       << "}, \"historyResetReasons\": "
+                       << static_cast<uint32>(hybrid.historyResetReasons)
+                       << ", \"recipe\": "
+                       << Diagnostics::JsonString(
+                              GetRenderPipelineRecipeName(hybrid.recipe))
+                       << ", \"quality\": "
+                       << Diagnostics::JsonString(
+                              GetRenderQualityTierName(hybrid.quality))
+                       << ", \"profileHash\": " << hybrid.profileHash
+                       << ", \"shadowRoute\": "
+                       << Diagnostics::JsonString(
+                              GetHybridRayTracingShadowRouteName(
+                                  hybrid.shadowRoute))
+                       << ", \"reflectionRoute\": "
+                       << Diagnostics::JsonString(
+                              GetHybridRayTracingReflectionRouteName(
+                                  hybrid.reflectionRoute))
+                       << ", \"graphExecutionSucceeded\": "
+                       << Diagnostics::JsonBool(hybrid.graphExecutionSucceeded)
+                       << ", \"sceneBuildAccepted\": "
+                       << Diagnostics::JsonBool(hybrid.sceneBuildAccepted)
+                       << ", \"shadowDispatchRecorded\": "
+                       << Diagnostics::JsonBool(hybrid.shadowDispatchRecorded)
+                       << ", \"reflectionDispatchRecorded\": "
+                       << Diagnostics::JsonBool(
+                              hybrid.reflectionDispatchRecorded)
+                       << ", \"spatialDenoiseRecorded\": "
+                       << Diagnostics::JsonBool(hybrid.spatialDenoiseRecorded)
+                       << ", \"temporalResolveRecorded\": "
+                       << Diagnostics::JsonBool(
+                              hybrid.temporalResolveRecorded)
+                       << ", \"compositeRecorded\": "
+                       << Diagnostics::JsonBool(hybrid.compositeRecorded)
+                       << ", \"compositeUsedDenoisedSource\": "
+                       << Diagnostics::JsonBool(
+                              hybrid.compositeUsedDenoisedSource)
+                       << ", \"submissionAccepted\": "
+                       << Diagnostics::JsonBool(hybrid.submissionAccepted)
+                       << ", \"presentationQualified\": "
+                       << Diagnostics::JsonBool(
+                              hybrid.presentationQualified)
+                       << ", \"succeeded\": "
+                       << Diagnostics::JsonBool(hybrid.succeeded)
+                       << "},\n";
+            }
             stream << "      \"diagnostic\": "
                    << Diagnostics::JsonString(receipt.diagnostic) << ",\n";
             stream << "      \"features\": [\n";
@@ -1041,7 +1162,8 @@ namespace RVX
                 // completed its typed contract without registering GPU graph
                 // work.  Keep this out of older receipt schemas so their
                 // compatibility shape remains unchanged.
-                if (receipt.schemaVersion == 10 || receipt.schemaVersion == 11)
+                if (receipt.schemaVersion == 10 || receipt.schemaVersion == 11 ||
+                    receipt.schemaVersion == 12)
                 {
                     stream << "          \"contractCompletedWithoutGraphWork\": "
                            << Diagnostics::JsonBool(
@@ -1085,10 +1207,11 @@ namespace RVX
         const RenderExecutionReceipt& receipt = frameFeatures.executionReceipt;
 
         // GFX14 only exposes a value projection after the exact main-view
-        // schema-v11 receipt was structurally accepted and presented.  This
+        // current-schema receipt was structurally accepted and presented. This
         // prevents sample policy, a pending graph, or a stale candidate frame
         // from being mistaken for executed Toon shading.
-        if (!frameFeatures.available || receipt.schemaVersion != 11 ||
+        if (!frameFeatures.available ||
+            receipt.schemaVersion != RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION ||
             !receipt.IsStructurallyValid() || !receipt.presented)
         {
             return result;
@@ -1151,7 +1274,8 @@ namespace RVX
         // See the paired ToonLit projection above.  Qualification metadata is
         // copied only from the presented renderer receipt, never inferred from
         // pixels observed by the sample host or from its public settings.
-        if (!frameFeatures.available || receipt.schemaVersion != 11 ||
+        if (!frameFeatures.available ||
+            receipt.schemaVersion != RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION ||
             !receipt.IsStructurallyValid() || !receipt.presented)
         {
             return result;
@@ -1216,7 +1340,8 @@ namespace RVX
         // from one structurally valid, presented main-view receipt.  Requested
         // settings, source authoring, and an arbitrary rendered frame never
         // satisfy this public execution contract.
-        if (!frameFeatures.available || receipt.schemaVersion != 11 ||
+        if (!frameFeatures.available ||
+            receipt.schemaVersion != RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION ||
             !receipt.IsStructurallyValid() || !receipt.presented ||
             !receipt.succeeded || receipt.viewIdentity.role != ViewRole::Main ||
             receipt.viewIdentity.subViewIndex != 0)
@@ -1334,7 +1459,8 @@ namespace RVX
         const RenderFrameFeatureDiagnostics& frameFeatures =
             renderDiagnostics.frameFeatures;
         const RenderExecutionReceipt& receipt = frameFeatures.executionReceipt;
-        if (!frameFeatures.available || receipt.schemaVersion != 11 ||
+        if (!frameFeatures.available ||
+            receipt.schemaVersion != RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION ||
             !receipt.IsStructurallyValid() || !receipt.presented ||
             !receipt.succeeded || receipt.viewIdentity.role != ViewRole::Main ||
             receipt.viewIdentity.subViewIndex != 0)
@@ -1515,10 +1641,10 @@ namespace RVX
                 SampleToonOutlineQualificationTargetState::Failed;
             result.diagnostic = std::move(diagnostic);
         };
-        if (receipt.schemaVersion != 11 ||
+        if (receipt.schemaVersion != RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION ||
             !receipt.IsStructurallyValid())
         {
-            fail("Toon-outline target produced an invalid schema-v11 execution receipt");
+            fail("Toon-outline target produced an invalid current-schema execution receipt");
             return result;
         }
         if (!receipt.available || !receipt.graphComposed ||
@@ -1911,6 +2037,11 @@ namespace RVX
             {
                 options.ambientOcclusionQualificationProbeEnabled = true;
             }
+            else if (arg == "--require-hiz-reflection-execution" ||
+                     arg == "--hiz-reflection-qualification-probe")
+            {
+                options.hiZReflectionQualificationProbeEnabled = true;
+            }
             else if (arg == "--toon-outline-qualification-probe")
             {
                 options.toonOutlineQualificationProbeEnabled = true;
@@ -2003,6 +2134,7 @@ namespace RVX
             << "  --direct-opaque-raster-readback-qualification\n"
             << "  --exposure-qualification-probe\n"
             << "  --ambient-occlusion-qualification-probe\n"
+            << "  --require-hiz-reflection-execution\n"
             << "  --toon-outline-qualification-probe\n"
             << "  --translucency-qualification-probe\n"
             << "  --report <path.json>\n"
@@ -3296,6 +3428,133 @@ namespace RVX
             stream << "    },\n";
         }
         if (report.schemaVersion >
+            RVX_SAMPLE_REPORT_PRE_HIZ_REFLECTION_EXECUTION_SCHEMA_VERSION)
+        {
+            const SampleHiZReflectionExecutionDiagnostics& reflection =
+                renderDiagnostics.hizReflectionActualExecution;
+            stream << "    \"hizReflectionActualExecution\": {\n";
+            stream << "      \"available\": "
+                   << Diagnostics::JsonBool(reflection.available) << ",\n";
+            stream << "      \"executionReceiptSchemaVersion\": "
+                   << reflection.executionReceiptSchemaVersion << ",\n";
+            stream << "      \"executionReceiptStructurallyValid\": "
+                   << Diagnostics::JsonBool(
+                          reflection.executionReceiptStructurallyValid)
+                   << ",\n";
+            stream << "      \"executionReceiptAvailable\": "
+                   << Diagnostics::JsonBool(
+                          reflection.executionReceiptAvailable)
+                   << ",\n";
+            stream << "      \"executionReceiptGraphComposed\": "
+                   << Diagnostics::JsonBool(
+                          reflection.executionReceiptGraphComposed)
+                   << ",\n";
+            stream << "      \"executionReceiptExecutionSucceeded\": "
+                   << Diagnostics::JsonBool(
+                          reflection.executionReceiptExecutionSucceeded)
+                   << ",\n";
+            stream << "      \"executionReceiptPresented\": "
+                   << Diagnostics::JsonBool(
+                          reflection.executionReceiptPresented)
+                   << ",\n";
+            stream << "      \"executionReceiptSucceeded\": "
+                   << Diagnostics::JsonBool(
+                          reflection.executionReceiptSucceeded)
+                   << ",\n";
+            stream << "      \"frameFeatureSequence\": "
+                   << reflection.frameFeatureSequence << ",\n";
+            stream << "      \"receiptFrameSequence\": "
+                   << reflection.receiptFrameSequence << ",\n";
+            stream << "      \"lastPresentedFrameSequence\": "
+                   << reflection.lastPresentedFrameSequence << ",\n";
+            stream << "      \"presentedFrameAligned\": "
+                   << Diagnostics::JsonBool(reflection.presentedFrameAligned)
+                   << ",\n";
+            stream << "      \"mainView\": "
+                   << Diagnostics::JsonBool(reflection.mainView) << ",\n";
+            stream << "      \"graphExecutionFinalized\": "
+                   << Diagnostics::JsonBool(reflection.graphExecutionFinalized)
+                   << ",\n";
+            stream << "      \"requested\": "
+                   << Diagnostics::JsonBool(reflection.requested) << ",\n";
+            stream << "      \"supported\": "
+                   << Diagnostics::JsonBool(reflection.supported) << ",\n";
+            stream << "      \"scheduled\": "
+                   << Diagnostics::JsonBool(reflection.scheduled) << ",\n";
+            stream << "      \"executed\": "
+                   << Diagnostics::JsonBool(reflection.executed) << ",\n";
+            stream << "      \"hiZBuilt\": "
+                   << Diagnostics::JsonBool(reflection.hiZBuilt) << ",\n";
+            stream << "      \"globalIBLReady\": "
+                   << Diagnostics::JsonBool(reflection.globalIBLReady)
+                   << ",\n";
+            stream << "      \"fallbackChainResolved\": "
+                   << Diagnostics::JsonBool(reflection.fallbackChainResolved)
+                   << ",\n";
+            stream << "      \"screenSpaceApplied\": "
+                   << Diagnostics::JsonBool(reflection.screenSpaceApplied)
+                   << ",\n";
+            stream << "      \"probesApplied\": "
+                   << Diagnostics::JsonBool(reflection.probesApplied)
+                   << ",\n";
+            stream << "      \"reflectionRouteEvidenceReady\": "
+                   << Diagnostics::JsonBool(
+                          reflection.reflectionRouteEvidenceReady)
+                   << ",\n";
+            stream << "      \"routeMaskRadianceSchemaVersion\": "
+                   << reflection.routeMaskRadianceSchemaVersion << ",\n";
+            stream << "      \"localProbeRadianceQualified\": "
+                   << Diagnostics::JsonBool(
+                          reflection.localProbeRadianceQualified)
+                   << ",\n";
+            stream << "      \"globalIBLRadianceQualified\": "
+                   << Diagnostics::JsonBool(
+                          reflection.globalIBLRadianceQualified)
+                   << ",\n";
+            stream << "      \"readyProbeCount\": "
+                   << reflection.readyProbeCount << ",\n";
+            stream << "      \"hiZMipCount\": " << reflection.hiZMipCount
+                   << ",\n";
+            stream << "      \"hiZGraphPassCount\": "
+                   << reflection.hiZGraphPassCount << ",\n";
+            stream << "      \"traceGraphPassCount\": "
+                   << reflection.traceGraphPassCount << ",\n";
+            stream << "      \"resolveGraphPassCount\": "
+                   << reflection.resolveGraphPassCount << ",\n";
+            stream << "      \"reflectionFrameSequence\": "
+                   << reflection.reflectionFrameSequence << ",\n";
+            stream << "      \"reflectionPlanIdentity\": "
+                   << reflection.reflectionPlanIdentity << ",\n";
+            stream << "      \"lightingPlanIdentity\": "
+                   << reflection.lightingPlanIdentity << ",\n";
+            stream << "      \"depthPyramidIdentity\": "
+                   << reflection.depthPyramidIdentity << ",\n";
+            stream << "      \"reflectionSurfaceIdentity\": "
+                   << reflection.reflectionSurfaceIdentity << ",\n";
+            stream << "      \"exposureStateContentHash\": "
+                   << reflection.exposureStateContentHash << ",\n";
+            stream << "      \"screenSpaceHitPixelCount\": "
+                   << reflection.screenSpaceHitPixelCount << ",\n";
+            stream << "      \"localProbePixelCount\": "
+                   << reflection.localProbePixelCount << ",\n";
+            stream << "      \"globalIBLPixelCount\": "
+                   << reflection.globalIBLPixelCount << ",\n";
+            stream << "      \"reflectionReadbackSampleCount\": "
+                   << reflection.reflectionReadbackSampleCount << ",\n";
+            stream << "      \"reflectionRouteSampleCount\": "
+                   << reflection.reflectionRouteSampleCount << ",\n";
+            stream << "      \"backgroundPixelCount\": "
+                   << reflection.backgroundPixelCount << ",\n";
+            stream << "      \"nonReflectivePixelCount\": "
+                   << reflection.nonReflectivePixelCount << ",\n";
+            stream << "      \"fallbackReason\": "
+                   << Diagnostics::JsonString(reflection.fallbackReason) << ",\n";
+            stream << "      \"executionReady\": "
+                   << Diagnostics::JsonBool(reflection.IsExecutionReady())
+                   << "\n";
+            stream << "    },\n";
+        }
+        if (report.schemaVersion >
             RVX_SAMPLE_REPORT_PRE_TOON_EXECUTION_SCHEMA_VERSION)
         {
             const SampleToonLightingExecutionDiagnostics& toonLighting =
@@ -3784,6 +4043,18 @@ namespace RVX
             stream << "    \"spotShadowReason\": "
                    << Diagnostics::JsonString(
                           renderDiagnostics.spotShadowReason)
+                   << ",\n";
+            stream << "    \"localShadowRequestCount\": "
+                   << renderDiagnostics.localShadowRequestCount << ",\n";
+            stream << "    \"localShadowCasterDrawCount\": "
+                   << renderDiagnostics.localShadowCasterDrawCount << ",\n";
+            stream << "    \"localShadowAtlasReady\": "
+                   << Diagnostics::JsonBool(
+                          renderDiagnostics.localShadowAtlasReady)
+                   << ",\n";
+            stream << "    \"localShadowFallbackReason\": "
+                   << Diagnostics::JsonString(
+                          renderDiagnostics.localShadowFallbackReason)
                    << ",\n";
             stream << "    \"hzbRequested\": "
                    << Diagnostics::JsonBool(renderDiagnostics.hzbRequested)

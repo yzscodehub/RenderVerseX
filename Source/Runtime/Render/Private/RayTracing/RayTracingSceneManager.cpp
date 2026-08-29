@@ -2,6 +2,7 @@
 
 #include "RHI/RHICommandContext.h"
 #include "Resources/RenderOwnerSnapshotRetirement.h"
+#include "Resources/RenderSubmissionTracker.h"
 
 #include <algorithm>
 #include <cstring>
@@ -14,6 +15,38 @@ namespace RVX
 namespace
 {
     constexpr uint64 RVX_RAY_TRACING_INSTANCE_BUFFER_ALIGNMENT = 256;
+    constexpr uint64 RVX_RAY_TRACING_COMPACTION_READBACK_SIZE = sizeof(uint64);
+
+    [[nodiscard]] bool IsExactCurrentGraphicsSubmissionToken(
+        const RenderSubmissionTracker& tracker,
+        const GPUCompletionToken& token) noexcept
+    {
+        GPUCompletionToken normalized;
+        if (!MergeGPUCompletionToken(normalized, token) || normalized.count == 0 ||
+            tracker.Query(normalized) == GPUCompletionStatus::Lost)
+        {
+            return false;
+        }
+
+        bool hasGraphics = false;
+        for (uint8 index = 0; index < normalized.count; ++index)
+        {
+            const GPUCompletionPoint point = normalized.points[index];
+            if (!IsDeclaredGPUQueueDomain(point.domain) || point.value == 0 ||
+                point.value != tracker.GetLastSubmittedValue(point.domain))
+            {
+                return false;
+            }
+            hasGraphics = hasGraphics || point.domain == GPUQueueDomain::Graphics;
+        }
+        return hasGraphics;
+    }
+
+    [[nodiscard]] bool IsCompletionSatisfied(GPUCompletionStatus status) noexcept
+    {
+        return status == GPUCompletionStatus::Completed ||
+               status == GPUCompletionStatus::CompatibilityWaitIdle;
+    }
 
     bool TryMultiplyUint64(uint64 lhs, uint64 rhs, uint64& result)
     {
@@ -272,6 +305,19 @@ namespace
     }
 } // namespace
 
+struct RayTracingSceneManager::BLASCacheEntry::BLASCompactionState
+{
+    RayTracingBLASCompactionStatus status = RayTracingBLASCompactionStatus::Disabled;
+    RHIAccelerationStructureCompactedSizeQueryRef query;
+    RHIBufferRef readbackBuffer;
+    RHIAccelerationStructureRef compactDestination;
+    GPUCompletionToken queryCompletion;
+    GPUCompletionToken copyCompletion;
+    uint64 compactedSize = 0;
+};
+
+RayTracingSceneManager::RayTracingSceneManager() = default;
+
 RayTracingSceneManager::~RayTracingSceneManager()
 {
     Shutdown();
@@ -289,6 +335,8 @@ void RayTracingSceneManager::Shutdown()
     m_blasCache.clear();
     m_frameBLAS.clear();
     m_pendingBLASBuilds.clear();
+    m_recordedCompactionQueries.clear();
+    m_recordedCompactionCopies.clear();
     m_instanceRecords.clear();
     m_instanceMaterialMetadataRecords.clear();
     m_instanceMaterialTextureIds.clear();
@@ -308,9 +356,18 @@ void RayTracingSceneManager::Shutdown()
     m_topLevelSizes = {};
     m_topLevelScratchBuffer.Reset();
     m_topLevelBuildDesc = {};
+    m_preparedTLASStructuralSignature = {};
+    m_submittedTLASStructuralSignature = {};
+    m_preparedTLASUpdate = false;
+    m_activeRecording = {};
+    m_recordedBLASBuilds.clear();
+    m_executionReceipt = {};
     m_pendingOwnerRetirements.clear();
     m_stats = {};
     m_frameCounter = 0;
+    m_preparationGeneration = 0;
+    m_recordingGeneration = 0;
+    m_tlasGeneration = 0;
     m_trackedResourceBudget = 0;
     m_device = nullptr;
 }
@@ -330,8 +387,19 @@ bool RayTracingSceneManager::IsSupported() const
 
 bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
 {
+    // Recording does not imply queue submission.  A new frame abandons any
+    // unsubmitted recording and deliberately leaves its BLAS entries dirty.
+    if (m_activeRecording.IsValid())
+    {
+        ReleaseUnsubmitted(m_activeRecording);
+    }
     ResetFrameState();
     ++m_frameCounter;
+    ++m_preparationGeneration;
+    if (m_preparationGeneration == 0)
+    {
+        ++m_preparationGeneration;
+    }
     ReleaseRetiredBLASScratchBuffers();
 
     m_stats.supported = IsSupported();
@@ -351,6 +419,13 @@ bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
     {
         SetFallback(RayTracingSceneFallbackCode::RayTracingUnsupported,
                     "RHI device does not support ray tracing");
+        return false;
+    }
+
+    if (!plan.maskedMetadataComplete)
+    {
+        SetFallback(RayTracingSceneFallbackCode::IncompleteMaskedMetadata,
+                    "masked ray tracing metadata is incomplete");
         return false;
     }
 
@@ -580,12 +655,27 @@ bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
     m_topLevelBuildDesc.instanceOffset = 0;
     m_topLevelBuildDesc.instanceCount = static_cast<uint32>(m_instanceRecords.size());
 
-    if (!EnsureTopLevelAS(m_topLevelBuildDesc))
+    if (m_device->GetCapabilities().supportsAccelerationStructureUpdate)
+    {
+        m_topLevelBuildDesc.buildFlags = m_topLevelBuildDesc.buildFlags |
+            RHIAccelerationStructureBuildFlags::AllowUpdate;
+    }
+
+    bool topLevelReplaced = false;
+    if (!EnsureTopLevelAS(m_topLevelBuildDesc, topLevelReplaced))
     {
         SetFallback(RayTracingSceneFallbackCode::TopLevelASCreationFailed,
                     "failed to create top-level acceleration structure");
         return false;
     }
+
+    m_preparedTLASStructuralSignature = BuildRayTracingTLASStructuralSignature(plan);
+    m_preparedTLASUpdate =
+        !topLevelReplaced &&
+        m_executionReceipt.submitted &&
+        m_preparedTLASStructuralSignature == m_submittedTLASStructuralSignature &&
+        m_device->GetCapabilities().supportsAccelerationStructureUpdate &&
+        m_topLevelSizes.updateScratchSize != 0;
 
     m_stats.cachedBLASCount = m_blasCache.size();
     m_stats.pendingBLASBuildCount = m_pendingBLASBuilds.size();
@@ -603,7 +693,9 @@ bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
                        m_stats.hasInstanceBuffer &&
                        m_stats.hasMaterialMetadataBuffer &&
                        m_stats.hasAlphaMetadataBuffer;
+    m_stats.preparationGeneration = m_preparationGeneration;
     UpdateResourceStats();
+    UpdateCompactionStats();
     EvictUnusedBLASForResourceBudget(plan.blasBuilds);
     if (!collectFrameBLAS(nullptr))
     {
@@ -612,42 +704,419 @@ bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
         return false;
     }
     m_stats.pendingBLASBuildCount = m_pendingBLASBuilds.size();
+    UpdateCompactionStats();
     m_stats.fallbackCode = RayTracingSceneFallbackCode::None;
     m_stats.fallbackReason = "";
     return m_stats.prepared;
 }
 
-void RayTracingSceneManager::RecordBuildCommands(RHICommandContext& ctx)
+bool RayTracingSceneManager::RecordBuildCommands(
+    RHICommandContext& ctx,
+    RayTracingSceneRecordingToken& outToken)
 {
+    return RecordBuildCommands(
+        ctx, outToken, RayTracingSceneRecordingFlags::None);
+}
+
+bool RayTracingSceneManager::RecordBuildCommands(
+    RHICommandContext& ctx,
+    RayTracingSceneRecordingToken& outToken,
+    RayTracingSceneRecordingFlags flags)
+{
+    outToken = {};
     m_stats.recordedBLASBuildCount = 0;
     m_stats.recordedTLASBuild = false;
+    m_stats.recordedTLASUpdate = false;
 
-    if (!m_stats.prepared || !m_topLevelAS || !m_topLevelScratchBuffer)
-        return;
+    if (!m_stats.prepared || !m_topLevelAS || !m_topLevelScratchBuffer ||
+        m_activeRecording.IsValid())
+        return false;
+
+    for (const BLASCacheEntry* entry : m_pendingBLASBuilds)
+    {
+        if (!entry || !entry->accelerationStructure || !entry->scratchBuffer)
+        {
+            return false;
+        }
+    }
+
+    m_recordedBLASBuilds.clear();
+    m_recordedCompactionQueries.clear();
+    m_recordedCompactionCopies.clear();
 
     for (BLASCacheEntry* entry : m_pendingBLASBuilds)
     {
-        if (!entry || !entry->accelerationStructure || !entry->scratchBuffer)
-            continue;
-
         ctx.BuildBottomLevelAccelerationStructure(
             entry->accelerationStructure.Get(),
             entry->desc,
             entry->scratchBuffer.Get());
-        entry->needsBuild = false;
-        entry->scratchReleasePending = true;
-        entry->scratchLastUsedFrame = m_frameCounter;
+        // This entry remains dirty until the queue accepts this recording.
+        m_recordedBLASBuilds.push_back(entry);
         ++m_stats.recordedBLASBuildCount;
+    }
+
+    if (HasFlag(flags, RayTracingSceneRecordingFlags::EnableBLASCompaction))
+    {
+        for (BLASCacheEntry& cachedEntry : m_blasCache)
+        {
+            BLASCacheEntry* entry = &cachedEntry;
+            const bool buildRecorded = std::find(
+                m_recordedBLASBuilds.begin(), m_recordedBLASBuilds.end(), entry) !=
+                m_recordedBLASBuilds.end();
+            if (!entry->compaction ||
+                entry->compaction->status != RayTracingBLASCompactionStatus::AwaitingQueryRecord ||
+                !entry->compaction->query || !entry->compaction->readbackBuffer ||
+                (entry->needsBuild && !buildRecorded))
+            {
+                continue;
+            }
+
+            RHIAccelerationStructure* accelerationStructure =
+                entry->accelerationStructure.Get();
+            ctx.WriteAccelerationStructureCompactedSizes(
+                entry->compaction->query.Get(),
+                0,
+                std::span<RHIAccelerationStructure* const>(
+                    &accelerationStructure, 1));
+            ctx.ResolveAccelerationStructureCompactedSizes(
+                entry->compaction->query.Get(),
+                0,
+                1,
+                entry->compaction->readbackBuffer.Get());
+            entry->compaction->status = RayTracingBLASCompactionStatus::QueryRecorded;
+            m_recordedCompactionQueries.push_back(entry);
+            ++m_stats.compactionQueryRecordedCount;
+        }
+
+        for (BLASCacheEntry& entry : m_blasCache)
+        {
+            if (!entry.compaction ||
+                entry.compaction->status != RayTracingBLASCompactionStatus::ReadyToRecordCopy ||
+                !entry.accelerationStructure || !entry.compaction->compactDestination)
+            {
+                continue;
+            }
+
+            ctx.CopyAccelerationStructureCompact(
+                entry.compaction->compactDestination.Get(),
+                entry.accelerationStructure.Get(),
+                entry.compaction->compactedSize);
+            entry.compaction->status = RayTracingBLASCompactionStatus::CopyRecorded;
+            m_recordedCompactionCopies.push_back(&entry);
+            ++m_stats.compactionCopyRecordedCount;
+        }
     }
 
     ctx.BuildTopLevelAccelerationStructure(
         m_topLevelAS.Get(),
         m_topLevelBuildDesc,
-        m_topLevelScratchBuffer.Get());
+        m_topLevelScratchBuffer.Get(),
+        0,
+        m_preparedTLASUpdate ? m_topLevelAS.Get() : nullptr);
     m_stats.recordedTLASBuild = true;
-    m_pendingBLASBuilds.clear();
-    m_stats.pendingBLASBuildCount = 0;
+    m_stats.recordedTLASUpdate = m_preparedTLASUpdate;
+    ++m_recordingGeneration;
+    if (m_recordingGeneration == 0)
+    {
+        ++m_recordingGeneration;
+    }
+    m_activeRecording = {m_preparationGeneration, m_recordingGeneration};
+    outToken = m_activeRecording;
     UpdateResourceStats();
+    return true;
+}
+
+void RayTracingSceneManager::RecordBuildCommands(RHICommandContext& ctx)
+{
+    RayTracingSceneRecordingToken ignored;
+    if (RecordBuildCommands(ctx, ignored))
+    {
+        // This compatibility path has no queue-acceptance callback.  Release
+        // immediately so it cannot block the next recording or claim success.
+        ReleaseUnsubmitted(ignored);
+    }
+}
+
+bool RayTracingSceneManager::NotifySubmission(const RayTracingSceneRecordingToken& token)
+{
+    if (!token.IsValid() ||
+        token.preparationGeneration != m_activeRecording.preparationGeneration ||
+        token.recordingGeneration != m_activeRecording.recordingGeneration)
+    {
+        m_stats.fallbackCode = RayTracingSceneFallbackCode::InvalidRecordingToken;
+        m_stats.fallbackReason = "ray tracing submission token does not match active recording";
+        return false;
+    }
+
+    if (!m_recordedCompactionQueries.empty() ||
+        !m_recordedCompactionCopies.empty())
+    {
+        m_stats.fallbackCode = RayTracingSceneFallbackCode::InvalidRecordingToken;
+        m_stats.fallbackReason =
+            "BLAS compaction recording requires completion-aware submission";
+        return false;
+    }
+
+    return AcceptRecordingSubmission(token);
+}
+
+bool RayTracingSceneManager::NotifySubmission(
+    const RayTracingSceneRecordingToken& token,
+    const GPUCompletionToken& completion,
+    const RenderSubmissionTracker& tracker)
+{
+    if (!token.IsValid() ||
+        token.preparationGeneration != m_activeRecording.preparationGeneration ||
+        token.recordingGeneration != m_activeRecording.recordingGeneration ||
+        !IsExactCurrentGraphicsSubmissionToken(tracker, completion))
+    {
+        m_stats.fallbackCode = RayTracingSceneFallbackCode::InvalidRecordingToken;
+        m_stats.fallbackReason =
+            "ray tracing compaction submission lacks exact accepted provenance";
+        return false;
+    }
+
+    if (!AcceptRecordingSubmission(token))
+    {
+        return false;
+    }
+
+    for (BLASCacheEntry* entry : m_recordedCompactionQueries)
+    {
+        if (!entry || !entry->compaction ||
+            entry->compaction->status != RayTracingBLASCompactionStatus::QueryRecorded)
+        {
+            continue;
+        }
+        entry->compaction->queryCompletion = completion;
+        entry->compaction->status = RayTracingBLASCompactionStatus::AwaitingQueryCompletion;
+    }
+    for (BLASCacheEntry* entry : m_recordedCompactionCopies)
+    {
+        if (!entry || !entry->compaction ||
+            entry->compaction->status != RayTracingBLASCompactionStatus::CopyRecorded)
+        {
+            continue;
+        }
+        entry->compaction->copyCompletion = completion;
+        entry->compaction->status = RayTracingBLASCompactionStatus::AwaitingCopyCompletion;
+    }
+    m_recordedCompactionQueries.clear();
+    m_recordedCompactionCopies.clear();
+    UpdateCompactionStats();
+    return true;
+}
+
+bool RayTracingSceneManager::AcceptRecordingSubmission(
+    const RayTracingSceneRecordingToken& token)
+{
+
+    for (BLASCacheEntry* entry : m_recordedBLASBuilds)
+    {
+        if (!entry)
+            continue;
+
+        entry->needsBuild = false;
+        entry->scratchReleasePending = true;
+        entry->scratchLastUsedFrame = m_frameCounter;
+    }
+    m_pendingBLASBuilds.clear();
+    m_recordedBLASBuilds.clear();
+    m_submittedTLASStructuralSignature = m_preparedTLASStructuralSignature;
+    ++m_tlasGeneration;
+    if (m_tlasGeneration == 0)
+    {
+        ++m_tlasGeneration;
+    }
+    m_executionReceipt = {
+        token.preparationGeneration,
+        m_tlasGeneration,
+        m_submittedTLASStructuralSignature,
+        m_preparedTLASUpdate,
+        true};
+    m_stats.submittedTLASBuild = true;
+    m_stats.submittedTLASUpdate = m_preparedTLASUpdate;
+    m_stats.submittedGeneration = token.preparationGeneration;
+    m_stats.tlasGeneration = m_tlasGeneration;
+    m_stats.pendingBLASBuildCount = 0;
+    m_activeRecording = {};
+    UpdateResourceStats();
+    return true;
+}
+
+void RayTracingSceneManager::ReleaseUnsubmitted(const RayTracingSceneRecordingToken& token)
+{
+    if (!token.IsValid() ||
+        token.preparationGeneration != m_activeRecording.preparationGeneration ||
+        token.recordingGeneration != m_activeRecording.recordingGeneration)
+    {
+        return;
+    }
+
+    // Do not release scratch or clear needsBuild: this work was never known to
+    // have reached the queue and must be recorded again by the next frame.
+    for (BLASCacheEntry* entry : m_recordedCompactionQueries)
+    {
+        if (entry && entry->compaction)
+        {
+            entry->compaction->status = ReleaseUnsubmittedRayTracingBLASCompaction(
+                entry->compaction->status);
+        }
+    }
+    for (BLASCacheEntry* entry : m_recordedCompactionCopies)
+    {
+        if (entry && entry->compaction)
+        {
+            entry->compaction->status = ReleaseUnsubmittedRayTracingBLASCompaction(
+                entry->compaction->status);
+        }
+    }
+    m_recordedBLASBuilds.clear();
+    m_recordedCompactionQueries.clear();
+    m_recordedCompactionCopies.clear();
+    m_activeRecording = {};
+    m_stats.recordedBLASBuildCount = 0;
+    m_stats.recordedTLASBuild = false;
+    m_stats.recordedTLASUpdate = false;
+    UpdateCompactionStats();
+}
+
+bool RayTracingSceneManager::PollCompletedBLASCompaction(
+    const RenderSubmissionTracker& tracker)
+{
+    bool progressed = false;
+    for (BLASCacheEntry& entry : m_blasCache)
+    {
+        if (!entry.compaction)
+        {
+            continue;
+        }
+
+        BLASCacheEntry::BLASCompactionState& state = *entry.compaction;
+        if (state.status == RayTracingBLASCompactionStatus::AwaitingQueryCompletion)
+        {
+            const GPUCompletionStatus completion = tracker.Query(state.queryCompletion);
+            if (completion == GPUCompletionStatus::Pending)
+            {
+                continue;
+            }
+            if (!IsCompletionSatisfied(completion) || !state.readbackBuffer ||
+                !entry.accelerationStructure)
+            {
+                state.status = RayTracingBLASCompactionStatus::Failed;
+                continue;
+            }
+
+            const void* mapped = state.readbackBuffer->Map();
+            if (!mapped)
+            {
+                state.status = RayTracingBLASCompactionStatus::Failed;
+                continue;
+            }
+            uint64 compactedSize = 0;
+            std::memcpy(&compactedSize, mapped, sizeof(compactedSize));
+            state.readbackBuffer->Unmap();
+
+            const uint64 sourceSize = entry.accelerationStructure->GetSize();
+            const RayTracingBLASCompactedSizeDisposition sizeDisposition =
+                ClassifyRayTracingBLASCompactedSize(sourceSize, compactedSize);
+            if (sizeDisposition == RayTracingBLASCompactedSizeDisposition::Invalid)
+            {
+                state.status = RayTracingBLASCompactionStatus::Failed;
+                state.query.Reset();
+                state.readbackBuffer.Reset();
+                continue;
+            }
+            if (sizeDisposition == RayTracingBLASCompactedSizeDisposition::Unchanged)
+            {
+                state.status = RayTracingBLASCompactionStatus::Skipped;
+                state.query.Reset();
+                state.readbackBuffer.Reset();
+                progressed = true;
+                continue;
+            }
+
+            RHIAccelerationStructureDesc compactDesc;
+            compactDesc.type = RHIAccelerationStructureType::BottomLevel;
+            compactDesc.size = compactedSize;
+            compactDesc.debugName = "RayTracingSceneBLASCompacted";
+            RHIAccelerationStructureRef destination =
+                m_device->CreateAccelerationStructure(compactDesc);
+            if (!destination)
+            {
+                state.status = RayTracingBLASCompactionStatus::Failed;
+                state.query.Reset();
+                state.readbackBuffer.Reset();
+                continue;
+            }
+
+            state.compactedSize = compactedSize;
+            state.compactDestination = std::move(destination);
+            state.query.Reset();
+            state.readbackBuffer.Reset();
+            state.status = RayTracingBLASCompactionStatus::ReadyToRecordCopy;
+            progressed = true;
+            continue;
+        }
+
+        if (state.status == RayTracingBLASCompactionStatus::AwaitingCopyCompletion)
+        {
+            const GPUCompletionStatus completion = tracker.Query(state.copyCompletion);
+            if (completion == GPUCompletionStatus::Pending)
+            {
+                continue;
+            }
+            if (!IsCompletionSatisfied(completion) || !state.compactDestination ||
+                !entry.accelerationStructure ||
+                state.compactDestination.Get() == entry.accelerationStructure.Get())
+            {
+                state.status = RayTracingBLASCompactionStatus::Failed;
+                if (IsCompletionSatisfied(completion))
+                {
+                    state.compactDestination.Reset();
+                }
+                continue;
+            }
+
+            // The exact copy submission is complete; old owner can no longer
+            // be accessed by that copy.  Retirement keeps an additional
+            // conservative queue-safe lifetime until the caller flushes it.
+            QueueRenderOwnerRetirement(
+                entry.accelerationStructure, m_pendingOwnerRetirements);
+            entry.accelerationStructure = std::move(state.compactDestination);
+            state.copyCompletion = {};
+            state.status = RayTracingBLASCompactionStatus::Compacted;
+            progressed = true;
+        }
+    }
+
+    UpdateCompactionStats();
+    UpdateResourceStats();
+    return progressed;
+}
+
+bool RayTracingSceneManager::HasPendingBLASCompaction() const
+{
+    for (const BLASCacheEntry& entry : m_blasCache)
+    {
+        if (!entry.compaction)
+        {
+            continue;
+        }
+        switch (entry.compaction->status)
+        {
+            case RayTracingBLASCompactionStatus::AwaitingQueryRecord:
+            case RayTracingBLASCompactionStatus::QueryRecorded:
+            case RayTracingBLASCompactionStatus::AwaitingQueryCompletion:
+            case RayTracingBLASCompactionStatus::ReadyToRecordCopy:
+            case RayTracingBLASCompactionStatus::CopyRecorded:
+            case RayTracingBLASCompactionStatus::AwaitingCopyCompletion:
+                return true;
+            default:
+                break;
+        }
+    }
+    return false;
 }
 
 void RayTracingSceneManager::GatherPendingBuildScratchBuffers(std::vector<RHIBuffer*>& outScratchBuffers) const
@@ -682,6 +1151,18 @@ RayTracingSceneManager::BLASCacheEntry* RayTracingSceneManager::FindBLAS(const R
 RayTracingSceneManager::BLASCacheEntry* RayTracingSceneManager::GetOrCreateBLAS(
     const RayTracingBLASBuild& build)
 {
+    RHIBottomLevelASDesc requestedDesc = build.desc;
+    const bool compactionEligible =
+        m_blasCompactionEnabled &&
+        m_device->GetCapabilities().supportsAccelerationStructureCompaction;
+    if (compactionEligible)
+    {
+        // The current planner excludes skinned geometry, so every cached BLAS
+        // here is immutable mesh content with only rigid instance transforms.
+        requestedDesc.buildFlags = requestedDesc.buildFlags |
+            RHIAccelerationStructureBuildFlags::AllowCompaction;
+    }
+
     BLASCacheEntry* entry = FindBLAS(build.key);
     const bool existing = entry != nullptr;
     if (!entry)
@@ -693,15 +1174,19 @@ RayTracingSceneManager::BLASCacheEntry* RayTracingSceneManager::GetOrCreateBLAS(
 
     entry->lastUsedFrame = m_frameCounter;
 
-    const bool descChanged = existing && !AreBLASDescriptionsEquivalent(entry->desc, build.desc);
+    const bool descChanged = existing && !AreBLASDescriptionsEquivalent(entry->desc, requestedDesc);
     const bool sizesMissing = !entry->sizes.IsValid();
+    const bool hasCompactedOwner = entry->compaction &&
+        entry->compaction->status == RayTracingBLASCompactionStatus::Compacted;
     const bool accelerationStructureMissing =
         !entry->accelerationStructure ||
-        (!sizesMissing && entry->accelerationStructure->GetSize() < entry->sizes.accelerationStructureSize);
+        (!hasCompactedOwner && !sizesMissing &&
+         entry->accelerationStructure->GetSize() < entry->sizes.accelerationStructureSize);
     const bool buildRequired = !existing || descChanged || sizesMissing || accelerationStructureMissing || entry->needsBuild;
     if (buildRequired)
     {
-        const RHIAccelerationStructureBuildSizes sizes = m_device->GetBottomLevelASBuildSizes(build.desc);
+        const RHIAccelerationStructureBuildSizes sizes =
+            m_device->GetBottomLevelASBuildSizes(requestedDesc);
         if (!sizes.IsValid())
             return nullptr;
 
@@ -709,10 +1194,28 @@ RayTracingSceneManager::BLASCacheEntry* RayTracingSceneManager::GetOrCreateBLAS(
             !entry->accelerationStructure ||
             entry->accelerationStructure->GetSize() < sizes.accelerationStructureSize;
 
-        entry->desc = build.desc;
+        entry->desc = requestedDesc;
         entry->sizes = sizes;
         entry->scratchReleasePending = false;
         entry->needsBuild = true;
+        if (entry->compaction)
+        {
+            const RayTracingBLASCompactionStatus status = entry->compaction->status;
+            if (status == RayTracingBLASCompactionStatus::QueryRecorded ||
+                status == RayTracingBLASCompactionStatus::AwaitingQueryCompletion ||
+                status == RayTracingBLASCompactionStatus::CopyRecorded ||
+                status == RayTracingBLASCompactionStatus::AwaitingCopyCompletion)
+            {
+                // A submitted query/copy may still reference this exact
+                // source owner. Fail the new build request rather than mutate
+                // or retire an in-flight compaction resource.
+                return nullptr;
+            }
+            else
+            {
+                ResetBLASCompaction(*entry);
+            }
+        }
         if (needsAS)
         {
             RHIAccelerationStructureDesc asDesc;
@@ -733,6 +1236,16 @@ RayTracingSceneManager::BLASCacheEntry* RayTracingSceneManager::GetOrCreateBLAS(
 
         if (!EnsureScratchBuffer(entry->scratchBuffer, sizes.buildScratchSize, "RayTracingBLASScratch"))
             return nullptr;
+
+        if (compactionEligible && !EnsureBLASCompactionResources(*entry))
+        {
+            // Compaction is opportunistic.  Preserve the valid build path and
+            // make the missing async resources explicit through diagnostics.
+            if (entry->compaction)
+            {
+                entry->compaction->status = RayTracingBLASCompactionStatus::Failed;
+            }
+        }
     }
     else
     {
@@ -761,6 +1274,119 @@ void RayTracingSceneManager::ReleaseRetiredBLASScratchBuffers()
     }
 }
 
+bool RayTracingSceneManager::EnsureBLASCompactionResources(BLASCacheEntry& entry)
+{
+    if (!m_device || !m_device->GetCapabilities().supportsAccelerationStructureCompaction ||
+        !HasFlag(entry.desc.buildFlags, RHIAccelerationStructureBuildFlags::AllowCompaction))
+    {
+        return false;
+    }
+
+    if (!entry.compaction)
+    {
+        entry.compaction = std::make_unique<BLASCacheEntry::BLASCompactionState>();
+    }
+    BLASCacheEntry::BLASCompactionState& state = *entry.compaction;
+    if (state.status == RayTracingBLASCompactionStatus::AwaitingQueryRecord)
+    {
+        return state.query && state.readbackBuffer;
+    }
+    if (state.status != RayTracingBLASCompactionStatus::Disabled)
+    {
+        return false;
+    }
+
+    RHIAccelerationStructureCompactedSizeQueryDesc queryDesc;
+    queryDesc.count = 1;
+    queryDesc.queueType = RHICommandQueueType::Graphics;
+    queryDesc.debugName = "RayTracingSceneBLASCompactSize";
+    state.query = m_device->CreateAccelerationStructureCompactedSizeQuery(queryDesc);
+    if (!state.query)
+    {
+        state.status = RayTracingBLASCompactionStatus::Failed;
+        return false;
+    }
+
+    RHIBufferDesc readbackDesc;
+    readbackDesc.size = RVX_RAY_TRACING_COMPACTION_READBACK_SIZE;
+    readbackDesc.usage = RHIBufferUsage::CopyDst;
+    readbackDesc.memoryType = RHIMemoryType::Readback;
+    readbackDesc.stride = sizeof(uint64);
+    readbackDesc.debugName = "RayTracingSceneBLASCompactReadback";
+    state.readbackBuffer = m_device->CreateBuffer(readbackDesc);
+    if (!state.readbackBuffer)
+    {
+        state.query.Reset();
+        state.status = RayTracingBLASCompactionStatus::Failed;
+        return false;
+    }
+
+    state.status = RayTracingBLASCompactionStatus::AwaitingQueryRecord;
+    return true;
+}
+
+void RayTracingSceneManager::ResetBLASCompaction(BLASCacheEntry& entry)
+{
+    if (!entry.compaction)
+    {
+        return;
+    }
+
+    BLASCacheEntry::BLASCompactionState& state = *entry.compaction;
+    state.query.Reset();
+    state.readbackBuffer.Reset();
+    state.compactDestination.Reset();
+    state.queryCompletion = {};
+    state.copyCompletion = {};
+    state.compactedSize = 0;
+    state.status = RayTracingBLASCompactionStatus::Disabled;
+}
+
+void RayTracingSceneManager::UpdateCompactionStats()
+{
+    m_stats.compactionQueryRecordedCount = 0;
+    m_stats.compactionQueryPendingCount = 0;
+    m_stats.compactionCopyRecordedCount = 0;
+    m_stats.compactionCopyPendingCount = 0;
+    m_stats.compactedBLASCount = 0;
+    m_stats.skippedBLASCompactionCount = 0;
+    m_stats.failedBLASCompactionCount = 0;
+
+    for (const BLASCacheEntry& entry : m_blasCache)
+    {
+        if (!entry.compaction)
+        {
+            continue;
+        }
+        switch (entry.compaction->status)
+        {
+            case RayTracingBLASCompactionStatus::QueryRecorded:
+                ++m_stats.compactionQueryRecordedCount;
+                break;
+            case RayTracingBLASCompactionStatus::AwaitingQueryCompletion:
+                ++m_stats.compactionQueryPendingCount;
+                break;
+            case RayTracingBLASCompactionStatus::CopyRecorded:
+                ++m_stats.compactionCopyRecordedCount;
+                break;
+            case RayTracingBLASCompactionStatus::AwaitingCopyCompletion:
+                ++m_stats.compactionCopyPendingCount;
+                break;
+            case RayTracingBLASCompactionStatus::Compacted:
+                ++m_stats.compactedBLASCount;
+                break;
+            case RayTracingBLASCompactionStatus::Skipped:
+                ++m_stats.skippedBLASCompactionCount;
+                break;
+            case RayTracingBLASCompactionStatus::Failed:
+                ++m_stats.failedBLASCompactionCount;
+                break;
+            default:
+                break;
+        }
+    }
+}
+
 void RayTracingSceneManager::EvictUnusedBLAS(const std::vector<RayTracingBLASBuild>& requestedBuilds)
 {
     if (m_blasCache.empty())
@@ -782,8 +1408,10 @@ void RayTracingSceneManager::EvictUnusedBLAS(const std::vector<RayTracingBLASBui
             usedInPast &&
             m_frameCounter > it->lastUsedFrame &&
             (m_frameCounter - it->lastUsedFrame) > m_blasCacheEvictionFrameThreshold;
+        const bool compactionInFlight = it->compaction &&
+            IsRayTracingBLASCompactionInFlight(it->compaction->status);
 
-        if (!requestedThisFrame && unusedLongEnough)
+        if (!requestedThisFrame && unusedLongEnough && !compactionInFlight)
         {
             QueueRenderOwnerRetirement(
                 it->accelerationStructure, m_pendingOwnerRetirements);
@@ -836,7 +1464,9 @@ void RayTracingSceneManager::EvictUnusedBLASForResourceBudget(
         auto evictionCandidate = m_blasCache.end();
         for (auto it = m_blasCache.begin(); it != m_blasCache.end(); ++it)
         {
-            if (isRequestedThisFrame(it->key))
+            const bool compactionInFlight = it->compaction &&
+                IsRayTracingBLASCompactionInFlight(it->compaction->status);
+            if (isRequestedThisFrame(it->key) || compactionInFlight)
                 continue;
 
             if (evictionCandidate == m_blasCache.end() ||
@@ -1003,8 +1633,9 @@ bool RayTracingSceneManager::EnsureInstanceAlphaMetadataBuffer(
     return m_instanceAlphaMetadataBuffer->CommitMappedWrite();
 }
 
-bool RayTracingSceneManager::EnsureTopLevelAS(const RHITopLevelASDesc& desc)
+bool RayTracingSceneManager::EnsureTopLevelAS(const RHITopLevelASDesc& desc, bool& outReplaced)
 {
+    outReplaced = false;
     const RHIAccelerationStructureBuildSizes sizes = m_device->GetTopLevelASBuildSizes(desc);
     if (!sizes.IsValid())
         return false;
@@ -1025,10 +1656,14 @@ bool RayTracingSceneManager::EnsureTopLevelAS(const RHITopLevelASDesc& desc)
         QueueRenderOwnerRetirement(
             m_topLevelAS, m_pendingOwnerRetirements);
         m_topLevelAS = std::move(replacement);
+        outReplaced = true;
     }
 
     m_topLevelSizes = sizes;
-    return EnsureScratchBuffer(m_topLevelScratchBuffer, sizes.buildScratchSize, "RayTracingTLASScratch");
+    return EnsureScratchBuffer(
+        m_topLevelScratchBuffer,
+        std::max(sizes.buildScratchSize, sizes.updateScratchSize),
+        "RayTracingTLASScratch");
 }
 
 bool RayTracingSceneManager::AreBLASDescriptionsEquivalent(const RHIBottomLevelASDesc& lhs,
@@ -1130,6 +1765,8 @@ void RayTracingSceneManager::ResetFrameState()
 {
     m_frameBLAS.clear();
     m_pendingBLASBuilds.clear();
+    m_recordedCompactionQueries.clear();
+    m_recordedCompactionCopies.clear();
     m_instanceRecords.clear();
     m_instanceMaterialMetadataRecords.clear();
     m_instanceMaterialTextureIds.clear();
@@ -1140,6 +1777,9 @@ void RayTracingSceneManager::ResetFrameState()
     m_instanceAlphaNormalBuffers.clear();
     m_instanceAlphaTangentBuffers.clear();
     m_topLevelBuildDesc = {};
+    m_preparedTLASStructuralSignature = {};
+    m_preparedTLASUpdate = false;
+    m_recordedBLASBuilds.clear();
     m_stats = {};
 }
 
@@ -1147,6 +1787,8 @@ void RayTracingSceneManager::InvalidateFrameOutputs()
 {
     m_frameBLAS.clear();
     m_pendingBLASBuilds.clear();
+    m_recordedCompactionQueries.clear();
+    m_recordedCompactionCopies.clear();
     m_instanceRecords.clear();
     m_instanceMaterialMetadataRecords.clear();
     m_instanceMaterialTextureIds.clear();
@@ -1171,6 +1813,12 @@ void RayTracingSceneManager::InvalidateFrameOutputs()
     QueueRenderOwnerRetirement(
         m_topLevelScratchBuffer, m_pendingOwnerRetirements);
     m_topLevelBuildDesc = {};
+    m_preparedTLASStructuralSignature = {};
+    m_submittedTLASStructuralSignature = {};
+    m_preparedTLASUpdate = false;
+    m_activeRecording = {};
+    m_recordedBLASBuilds.clear();
+    m_executionReceipt = {};
 }
 
 void RayTracingSceneManager::SetFallback(RayTracingSceneFallbackCode code, const char* reason)

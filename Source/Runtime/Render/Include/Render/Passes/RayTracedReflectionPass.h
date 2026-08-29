@@ -7,8 +7,10 @@
 
 #include "Core/MathTypes.h"
 #include "Render/Passes/IRenderPass.h"
+#include "RenderContracts/RenderFrameTypes.h"
 
 #include <array>
+#include <memory>
 #include <vector>
 
 namespace RVX
@@ -19,83 +21,19 @@ namespace RVX
     class ResourceViewCache;
     class RenderResourceRegistry;
     struct GPUCompletionToken;
-
-    struct RayTracedReflectionPassStats
-    {
-        bool requested = false;
-        bool supported = false;
-        bool tlasAvailable = false;
-        bool materialMetadataAvailable = false;
-        bool materialTextureTableAvailable = false;
-        bool geometryMetadataAvailable = false;
-        bool geometryTableAvailable = false;
-        bool sceneColorAvailable = false;
-        bool depthAvailable = false;
-        bool velocityAvailable = false;
-        bool exposureStateAvailable = false;
-        bool exposureStateReadDeclared = false;
-        bool exposureStateDescriptorBound = false;
-        uint64 exposureStateContentHash = 0;
-        bool historyAvailable = false;
-        bool depthHistoryAvailable = false;
-        bool normalHistoryAvailable = false;
-        bool historyReset = false;
-        bool historyRecreated = false;
-        bool historyResolutionChanged = false;
-        bool historyConfigChanged = false;
-        bool temporalAccumulated = false;
-        bool outputDeclared = false;
-        bool resourceViewsAvailable = false;
-        bool descriptorSetAvailable = false;
-        bool constantsUploaded = false;
-        bool dispatchRecorded = false;
-        bool gpuTimingSupported = false;
-        bool gpuTimingQueriesRecorded = false;
-        bool gpuTimingResolveRecorded = false;
-        bool gpuTimingReadbackBufferAvailable = false;
-        bool gpuTimingResultAvailable = false;
-        uint32 gpuTimingStartQueryIndex = 0;
-        uint32 gpuTimingEndQueryIndex = 1;
-        uint64 gpuTimestampFrequency = 0;
-        uint64 gpuTimingReadbackBytes = 0;
-        uint64 gpuTimingStartTimestamp = 0;
-        uint64 gpuTimingEndTimestamp = 0;
-        uint64 gpuTimingElapsedTicks = 0;
-        float gpuTimingElapsedMs = 0.0f;
-        uint32 gpuTimingReadbackBufferCount = 0;
-        uint32 gpuTimingReadbackFrameIndex = RVX_INVALID_INDEX;
-        float resolutionScale = 1.0f;
-        uint32 samplesPerPixel = 1;
-        float intensity = 1.0f;
-        float maxTraceDistance = 0.0f;
-        float maxRoughness = 1.0f;
-        float distanceFadeStart = 0.8f;
-        float roughnessConeSpread = 1.0f;
-        float normalBias = 0.02f;
-        float rayMinT = 0.001f;
-        float fireflyClamp = 64.0f;
-        float temporalBlendFactor = 0.0f;
-        float historyDepthThreshold = 0.01f;
-        float historyNormalThreshold = 0.85f;
-        float historyLuminanceTolerance = 4.0f;
-        float historyConfidenceThreshold = 0.05f;
-        float historyVelocityRejectionScale = 0.0f;
-        uint32 materialTextureCount = 0;
-        uint32 materialTexturesBound = 0;
-        uint32 geometryIndexBufferCount = 0;
-        uint32 geometryUVBufferCount = 0;
-        uint32 geometryNormalBufferCount = 0;
-        uint32 geometryTangentBufferCount = 0;
-        uint64 dispatchPixelCount = 0;
-        uint64 estimatedRayCount = 0;
-        uint32 width = 0;
-        uint32 height = 0;
-    };
+    struct RayTracedReflectionHistoryOwner;
+    struct RayTracedReflectionHistoryReservation;
 
     struct RayTracedReflectionPassConfig
     {
         float intensity = 1.0f;
         float resolutionScale = 1.0f;
+        /**
+         * Hybrid RT uses a fixed ceil(full / 2) reflection extent.  Legacy
+         * recipes retain the configurable scale until their composition opts
+         * into the HybridRayTracingFramePlan contract.
+         */
+        bool fixedHalfResolution = false;
         float maxRoughness = 1.0f;
         float maxTraceDistance = 50.0f;
         float distanceFadeStart = 0.8f;
@@ -126,12 +64,52 @@ namespace RVX
 
         void OnAdd(IRHIDevice* device) override;
         void OnRemove() override;
+        void AddToGraph(RenderGraph& graph, const ViewData& view) override;
+        void AddToGraph(RenderGraph& graph,
+                        const RenderPassRecordContext& context) override;
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
         void Execute(RenderGraphPassContext& context,
                      const ViewData& view) override;
         void RetireOwnerSnapshots(const GPUCompletionToken& completion,
                                   RenderRetirementQueue& retirement);
+        /**
+         * @brief Bind one executed RT history candidate to exact submission.
+         *
+         * This advances only physical resource-access provenance. Logical
+         * history remains unavailable until CommitHistoryAfterPresent() is
+         * called with this same view identity after Present succeeds.
+         */
+        [[nodiscard]] bool NotifySubmission(
+            const RenderPassRecordIdentity& identity,
+            const RenderViewHistoryIdentity& historyIdentity,
+            const GPUCompletionToken& completion);
+        /**
+         * @brief Compatibility submission path that never publishes history.
+         *
+         * A legacy ViewData recording does not carry a canonical
+         * RenderViewHistoryIdentity, so it cannot become temporal input for a
+         * later frame.
+         */
+        void NotifySubmission(const RenderPassRecordIdentity& identity,
+                              const GPUCompletionToken& completion);
+        /** @brief Discard an identity-addressable recording that was not submitted. */
+        void ReleaseUnsubmittedFrame(const RenderPassRecordIdentity& identity);
+        /** Bounded compatibility adapters for legacy ViewData recordings. */
+        void NotifySubmission(const GPUCompletionToken& completion);
+        void ReleaseUnsubmittedFrame();
+
+        /** @brief True when this pass owns an executed candidate awaiting Present. */
+        [[nodiscard]] bool RequiresHistoryCommit() const noexcept;
+        /** @brief Preflight an exact submitted candidate without mutating it. */
+        [[nodiscard]] bool CanCommitHistoryAfterPresent(
+            const RenderViewHistoryIdentity& identity) const noexcept;
+        /** @brief Promote only an exact submitted and successfully presented candidate. */
+        [[nodiscard]] bool CommitHistoryAfterPresent(
+            const RenderViewHistoryIdentity& identity) noexcept;
+        /** @brief Discard only an exact submitted candidate that did not present. */
+        void AbandonSubmittedHistory(
+            const RenderViewHistoryIdentity& identity) noexcept;
 
         void SetEnabled(bool enabled) { m_enabled = enabled; }
         bool IsRequestedEnabled() const override { return m_enabled; }
@@ -194,19 +172,26 @@ namespace RVX
         std::array<RHITextureRef, 2> m_historyDepthTextures;
         std::array<RHITextureRef, 2> m_historyNormalTextures;
         std::array<RHIResourceState, 2> m_historyTextureStates{
-            RHIResourceState::Common,
-            RHIResourceState::Common
+            RHIResourceState::Undefined,
+            RHIResourceState::Undefined
         };
         std::array<RHIResourceState, 2> m_historyDepthTextureStates{
-            RHIResourceState::Common,
-            RHIResourceState::Common
+            RHIResourceState::Undefined,
+            RHIResourceState::Undefined
         };
         std::array<RHIResourceState, 2> m_historyNormalTextureStates{
-            RHIResourceState::Common,
-            RHIResourceState::Common
+            RHIResourceState::Undefined,
+            RHIResourceState::Undefined
         };
         RHIBufferRef m_constantBuffer;
         std::vector<Ref<RefCounted>> m_pendingOwnerRetirements;
+        std::shared_ptr<RayTracedReflectionHistoryOwner> m_historyOwner;
+        std::shared_ptr<RayTracedReflectionHistoryReservation>
+            m_activeHistoryReservation;
+        RHIAccelerationStructureRef m_activeTopLevelAS;
+        RGBufferHandle m_activeTopLevelASStorageHandle{};
+        RHIResourceInstanceId m_activeTopLevelASStorageId{};
+        bool m_activeTopLevelASDependencyRequired = false;
         RayTracedReflectionPassStats m_stats;
         uint32 m_outputWidth = 0;
         uint32 m_outputHeight = 0;
@@ -219,6 +204,7 @@ namespace RVX
         bool m_temporalAccumulatedThisFrame = false;
         Mat4 m_lastHistoryViewProjection = Mat4Identity();
         Mat4 m_pendingHistoryViewProjection = Mat4Identity();
+        uint64 m_historyAllocationGeneration = 1;
 
         uint32 GetTimingFrameIndex() const;
         RHIBuffer* GetTimingReadbackBuffer(uint32 frameIndex) const;

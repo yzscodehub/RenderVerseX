@@ -60,5 +60,16 @@ namespace RVX
         const std::vector<RenderDrawItem>& drawItems) noexcept;
     [[nodiscard]] uint64 BuildTransparentDrawOrderHash(
         const std::vector<RenderDrawItem>& drawItems) noexcept;
+    /**
+     * @brief Generation-qualified identity for one frozen transparency source.
+     *
+     * Unlike the sort key, this binds the material/raster policy and complete
+     * draw arguments used by staged translucency recording.
+     */
+    [[nodiscard]] uint64 BuildTransparentDrawItemIdentityHash(
+        const RenderDrawItem& item) noexcept;
+    /** @brief Ordered inventory identity for an entire frozen transparent list. */
+    [[nodiscard]] uint64 BuildTransparentDrawSourceIdentityHash(
+        const std::vector<RenderDrawItem>& drawItems) noexcept;
 
 } // namespace RVX

@@ -31,7 +31,7 @@
 namespace RVX
 {
     /** @brief Current JSON schema version written by sample report producers. */
-    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 32;
+    inline constexpr uint32 RVX_SAMPLE_REPORT_SCHEMA_VERSION = 33;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION = 20;
     inline constexpr uint32
@@ -57,10 +57,26 @@ namespace RVX
         RVX_SAMPLE_REPORT_PRE_WATER_SURFACE_EXECUTION_SCHEMA_VERSION = 30;
     inline constexpr uint32
         RVX_SAMPLE_REPORT_PRE_RUNTIME_ONLY_COMPOSITION_SCHEMA_VERSION = 31;
+    inline constexpr uint32
+        RVX_SAMPLE_REPORT_PRE_HIZ_REFLECTION_EXECUTION_SCHEMA_VERSION = 32;
     inline constexpr uint32 RVX_SAMPLE_REPORT_PRE_VISUAL_CONTRACT_SCHEMA_VERSION = 19;
     inline constexpr uint32 RVX_SAMPLE_REPORT_SCENARIO_SCHEMA_VERSION = 12;
     inline constexpr uint32 RVX_SAMPLE_REPORT_ECS_DIAGNOSTICS_SCHEMA_VERSION = 13;
     inline constexpr uint32 RVX_SAMPLE_REPORT_PIXEL_PROBE_SCHEMA_VERSION = 16;
+
+    /**
+     * @brief Compatibility boundary for presentation-qualified renderer
+     *        receipts consumed by Samples.
+     *
+     * Samples deliberately accept only the current RenderExecutionReceipt ABI:
+     * an older receipt may be structurally meaningful for its own producer,
+     * but cannot prove fields introduced by a current qualification contract.
+     */
+    [[nodiscard]] constexpr bool IsCurrentRenderExecutionReceiptSchema(
+        const uint32 schemaVersion) noexcept
+    {
+        return schemaVersion == RVX_RENDER_EXECUTION_RECEIPT_SCHEMA_VERSION;
+    }
 
     /** @brief Serialized value-only receipt evidence for one render upload stream. */
     struct SampleRenderUploadWorkDiagnostics
@@ -315,6 +331,8 @@ namespace RVX
         bool exposureQualificationProbeEnabled = false;
         /** @brief Explicit one-shot post-Present GTAO readback. */
         bool ambientOcclusionQualificationProbeEnabled = false;
+        /** Explicit one-shot post-Present Hi-Z SSR route-mask readback. */
+        bool hiZReflectionQualificationProbeEnabled = false;
         /**
          * @brief Explicit one-shot Toon/outline presentation probe.
          *
@@ -466,8 +484,8 @@ namespace RVX
                 !displayLinearOutputReady;
 
             const bool supportedExecutionReceipt =
-                executionReceiptSchemaVersion == 8 ||
-                executionReceiptSchemaVersion == 10;
+                IsCurrentRenderExecutionReceiptSchema(
+                    executionReceiptSchemaVersion);
             return available && supportedExecutionReceipt &&
                    executionReceiptStructurallyValid &&
                    executionReceiptAvailable && executionReceiptGraphComposed &&
@@ -680,7 +698,8 @@ namespace RVX
                 presentedFrameAligned && frameFeatureSequence != 0 &&
                 frameFeatureSequence == receiptFrameSequence &&
                 receiptFrameSequence == lastPresentedFrameSequence && mainView;
-            return available && executionReceiptSchemaVersion == 10 &&
+            return available && IsCurrentRenderExecutionReceiptSchema(
+                   executionReceiptSchemaVersion) &&
                    executionReceiptStructurallyValid &&
                    executionReceiptAvailable && executionReceiptGraphComposed &&
                    executionReceiptExecutionSucceeded &&
@@ -721,6 +740,104 @@ namespace RVX
                    probeMeanVisibility < 1.0f &&
                    probeMaxVisibility >= probeMeanVisibility &&
                    probeMaxVisibility <= 1.0f;
+        }
+    };
+
+    /**
+     * @brief Presentation-bound evidence for the exact Hi-Z screen-space route.
+     *
+     * Reflection scheduling alone is deliberately insufficient.  The sample
+     * sees this projection only after the renderer's route-mask readback has
+     * completed for the same frame that crossed the presentation boundary.
+     */
+    struct SampleHiZReflectionExecutionDiagnostics
+    {
+        bool available = false;
+        uint32 executionReceiptSchemaVersion = 0;
+        bool executionReceiptStructurallyValid = false;
+        bool executionReceiptAvailable = false;
+        bool executionReceiptGraphComposed = false;
+        bool executionReceiptExecutionSucceeded = false;
+        bool executionReceiptPresented = false;
+        bool executionReceiptSucceeded = false;
+        uint64 frameFeatureSequence = 0;
+        uint64 receiptFrameSequence = 0;
+        uint64 lastPresentedFrameSequence = 0;
+        bool presentedFrameAligned = false;
+        bool mainView = false;
+
+        bool graphExecutionFinalized = false;
+        bool requested = false;
+        bool supported = false;
+        bool scheduled = false;
+        bool executed = false;
+        bool hiZBuilt = false;
+        bool globalIBLReady = false;
+        bool fallbackChainResolved = false;
+        bool screenSpaceApplied = false;
+        bool probesApplied = false;
+        bool reflectionRouteEvidenceReady = false;
+        uint32 routeMaskRadianceSchemaVersion = 0;
+        bool localProbeRadianceQualified = false;
+        bool globalIBLRadianceQualified = false;
+        uint32 readyProbeCount = 0;
+        uint32 hiZMipCount = 0;
+        uint32 hiZGraphPassCount = 0;
+        uint32 traceGraphPassCount = 0;
+        uint32 resolveGraphPassCount = 0;
+        uint64 reflectionFrameSequence = 0;
+        uint64 reflectionPlanIdentity = 0;
+        uint64 lightingPlanIdentity = 0;
+        uint64 depthPyramidIdentity = 0;
+        uint64 reflectionSurfaceIdentity = 0;
+        uint64 exposureStateContentHash = 0;
+        uint64 screenSpaceHitPixelCount = 0;
+        uint64 localProbePixelCount = 0;
+        uint64 globalIBLPixelCount = 0;
+        uint64 reflectionReadbackSampleCount = 0;
+        uint64 reflectionRouteSampleCount = 0;
+        uint64 backgroundPixelCount = 0;
+        uint64 nonReflectivePixelCount = 0;
+        std::string fallbackReason;
+
+        [[nodiscard]] bool IsExecutionReady() const noexcept
+        {
+            const bool presentedMainView =
+                presentedFrameAligned && frameFeatureSequence != 0 &&
+                frameFeatureSequence == receiptFrameSequence &&
+                receiptFrameSequence == lastPresentedFrameSequence && mainView;
+            return available && IsCurrentRenderExecutionReceiptSchema(
+                   executionReceiptSchemaVersion) &&
+                   executionReceiptStructurallyValid &&
+                   executionReceiptAvailable && executionReceiptGraphComposed &&
+                   executionReceiptExecutionSucceeded &&
+                   executionReceiptPresented && executionReceiptSucceeded &&
+                   presentedMainView && graphExecutionFinalized && requested &&
+                   supported && scheduled && executed && hiZBuilt &&
+                   globalIBLReady && fallbackChainResolved &&
+                   screenSpaceApplied && probesApplied &&
+                   reflectionRouteEvidenceReady &&
+                   routeMaskRadianceSchemaVersion == 1 &&
+                   localProbeRadianceQualified &&
+                   globalIBLRadianceQualified && readyProbeCount != 0 &&
+                   hiZMipCount != 0 && hiZGraphPassCount == hiZMipCount &&
+                   traceGraphPassCount == 1 && resolveGraphPassCount == 1 &&
+                   reflectionFrameSequence == receiptFrameSequence &&
+                   reflectionPlanIdentity != 0 && lightingPlanIdentity != 0 &&
+                   depthPyramidIdentity != 0 && reflectionSurfaceIdentity != 0 &&
+                   exposureStateContentHash != 0 &&
+                   screenSpaceHitPixelCount != 0 &&
+                   localProbePixelCount != 0 &&
+                   globalIBLPixelCount != 0 &&
+                   reflectionReadbackSampleCount != 0 &&
+                   reflectionRouteSampleCount != 0 &&
+                   screenSpaceHitPixelCount + localProbePixelCount +
+                           globalIBLPixelCount ==
+                       reflectionRouteSampleCount &&
+                   backgroundPixelCount + nonReflectivePixelCount +
+                           reflectionRouteSampleCount ==
+                       reflectionReadbackSampleCount &&
+                   fallbackReason.empty();
         }
     };
 
@@ -775,7 +892,8 @@ namespace RVX
             const bool oneRasterPathExecuted =
                 (forwardShadedDrawCount != 0) !=
                 (deferredShadedDrawCount != 0);
-            return available && executionReceiptSchemaVersion == 11 &&
+            return available && IsCurrentRenderExecutionReceiptSchema(
+                   executionReceiptSchemaVersion) &&
                    executionReceiptStructurallyValid &&
                    executionReceiptAvailable && executionReceiptGraphComposed &&
                    executionReceiptExecutionSucceeded &&
@@ -847,7 +965,8 @@ namespace RVX
                 presentedFrameAligned && frameFeatureSequence != 0 &&
                 frameFeatureSequence == receiptFrameSequence &&
                 receiptFrameSequence == lastPresentedFrameSequence && mainView;
-            return available && executionReceiptSchemaVersion == 11 &&
+            return available && IsCurrentRenderExecutionReceiptSchema(
+                   executionReceiptSchemaVersion) &&
                    executionReceiptStructurallyValid &&
                    executionReceiptAvailable && executionReceiptGraphComposed &&
                    executionReceiptExecutionSucceeded &&
@@ -872,6 +991,72 @@ namespace RVX
                    outlinedPixelCount != 0 && nonToonAffectedPixelCount == 0 &&
                    resolutionAware && renderWidth != 0 && renderHeight != 0 &&
                    diagnostic.empty();
+        }
+    };
+
+    /**
+     * @brief Presentation-bound proof that the translucent feature completed
+     *        one weighted-blended OIT transaction.
+     *
+     * The projection deliberately contains only stable receipt facts. Sample
+     * scenarios cannot infer it from quality policy, material authoring, or
+     * graph scheduling: a presented, current renderer receipt must prove the
+     * clear, at least one mesh/particle accumulation contributor, and the
+     * composite in that exact order.
+     */
+    struct SampleWeightedBlendedOITExecutionDiagnostics
+    {
+        bool available = false;
+        uint32 executionReceiptSchemaVersion = 0;
+        bool executionReceiptStructurallyValid = false;
+        bool executionReceiptAvailable = false;
+        bool executionReceiptGraphComposed = false;
+        bool executionReceiptExecutionSucceeded = false;
+        bool executionReceiptPresented = false;
+        bool executionReceiptSucceeded = false;
+        uint64 frameFeatureSequence = 0;
+        uint64 receiptFrameSequence = 0;
+        uint64 lastPresentedFrameSequence = 0;
+        bool presentedFrameAligned = false;
+        bool mainView = false;
+
+        bool featureFound = false;
+        bool featureSelected = false;
+        bool featureRequired = false;
+        bool featureExecuted = false;
+        bool featureFallbackUsed = false;
+        bool allFeatureGraphPassesExecuted = false;
+        uint32 featureGraphPassCount = 0;
+        uint32 featureExecutedGraphPassCount = 0;
+        uint32 clearGraphPassCount = 0;
+        uint32 meshWeightedGraphPassCount = 0;
+        uint32 particleWeightedGraphPassCount = 0;
+        uint32 compositeGraphPassCount = 0;
+        bool passOrderValid = false;
+        std::string diagnostic;
+
+        [[nodiscard]] bool HasQualifiedExecution() const noexcept
+        {
+            const bool presentedMainView =
+                presentedFrameAligned && frameFeatureSequence != 0 &&
+                frameFeatureSequence == receiptFrameSequence &&
+                receiptFrameSequence == lastPresentedFrameSequence && mainView;
+            const uint32 weightedContributorCount =
+                meshWeightedGraphPassCount + particleWeightedGraphPassCount;
+            return available &&
+                   IsCurrentRenderExecutionReceiptSchema(
+                       executionReceiptSchemaVersion) &&
+                   executionReceiptStructurallyValid &&
+                   executionReceiptAvailable && executionReceiptGraphComposed &&
+                   executionReceiptExecutionSucceeded &&
+                   executionReceiptPresented && executionReceiptSucceeded &&
+                   presentedMainView && featureFound && featureSelected &&
+                   featureRequired && featureExecuted && !featureFallbackUsed &&
+                   featureGraphPassCount != 0 &&
+                   featureExecutedGraphPassCount == featureGraphPassCount &&
+                   allFeatureGraphPassesExecuted && clearGraphPassCount == 1 &&
+                   weightedContributorCount != 0 && compositeGraphPassCount == 1 &&
+                   passOrderValid && diagnostic.empty();
         }
     };
 
@@ -934,6 +1119,9 @@ namespace RVX
         /** @brief Exact, main-view execution projection for GTAO only. */
         SampleAmbientOcclusionExecutionDiagnostics
             ambientOcclusionActualExecution{};
+        /** Exact, presentation-bound Hi-Z SSR route evidence. */
+        SampleHiZReflectionExecutionDiagnostics
+            hizReflectionActualExecution{};
         /** Exact, main-view execution projection for ToonLit raster work. */
         SampleToonLightingExecutionDiagnostics toonLightingActualExecution{};
         /** Exact, main-view execution projection for HDR Toon outlines. */
@@ -942,6 +1130,9 @@ namespace RVX
         SampleParticleVfxExecutionDiagnostics particleVfxActualExecution{};
         /** Exact, main-view execution projection for GFX18 Gerstner water. */
         SampleWaterSurfaceExecutionDiagnostics waterSurfaceActualExecution{};
+        /** Exact main-view receipt projection for GFX22 weighted-blended OIT. */
+        SampleWeightedBlendedOITExecutionDiagnostics
+            weightedBlendedOITActualExecution{};
         /** Renderer-owned GFX15 sorted-translucency receipt facts. */
         uint32 transparentAlphaBlendDrawCount = 0;
         uint32 transparentPremultipliedDrawCount = 0;
@@ -988,6 +1179,10 @@ namespace RVX
         uint32 spotShadowRequestedCount = 0;
         bool spotShadowSupported = false;
         std::string spotShadowReason;
+        uint32 localShadowRequestCount = 0;
+        uint32 localShadowCasterDrawCount = 0;
+        bool localShadowAtlasReady = false;
+        std::string localShadowFallbackReason;
         bool hzbRequested = false;
         bool hzbSupported = false;
         bool hzbEnabled = false;

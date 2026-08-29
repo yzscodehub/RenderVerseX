@@ -147,6 +147,14 @@ namespace RVX
             return {};
         }
 
+        virtual RHIAccelerationStructureCompactedSizeQueryRef
+        CreateAccelerationStructureCompactedSizeQuery(
+            const RHIAccelerationStructureCompactedSizeQueryDesc& desc)
+        {
+            (void)desc;
+            return {};
+        }
+
         virtual RHIPipelineRef CreateRayTracingPipeline(const RHIRayTracingPipelineDesc& desc)
         {
             (void)desc;

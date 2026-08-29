@@ -117,6 +117,24 @@ if(RVX_ENABLE_GFX18_WATER_NATIVE)
 elseif(NOT WIN32)
     message(STATUS "GFX18 water qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
 endif()
+option(RVX_ENABLE_GFX19_LOCAL_LIGHTING_NATIVE
+    "Register the fail-closed DX12/Vulkan GFX19 Forward+/Deferred local-lighting gate" OFF)
+if(RVX_ENABLE_GFX19_LOCAL_LIGHTING_NATIVE)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_GFX19_LOCAL_LIGHTING_NATIVE requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "GFX19 local-lighting qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
+option(RVX_ENABLE_GFX19_REFLECTIONS_NATIVE
+    "Register the fail-closed DX12/Vulkan GFX19 Forward+/Deferred Hi-Z reflection gate" OFF)
+if(RVX_ENABLE_GFX19_REFLECTIONS_NATIVE)
+    if(NOT WIN32 OR NOT RVX_ENABLE_DX12 OR NOT RVX_ENABLE_VULKAN OR NOT TARGET RenderVerseSamples)
+        message(FATAL_ERROR "RVX_ENABLE_GFX19_REFLECTIONS_NATIVE requires Windows DX12, Vulkan, and RenderVerseSamples")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "GFX19 reflection qualification: Unavailable (requires Windows DX12 and Vulkan backends)")
+endif()
 option(RVX_ENABLE_PR_SMOKE
     "Register only the fixed primary-backend SceneLifecycle PR smoke" OFF)
 option(RVX_ENABLE_COMPATIBILITY_SMOKE
@@ -146,7 +164,8 @@ if((RVX_ENABLE_P0_QUALIFICATION_MATRIX OR RVX_ENABLE_P1_QUALIFICATION_MATRIX
     OR RVX_ENABLE_GFX11_TAA_NATIVE OR RVX_ENABLE_GFX12_EXPOSURE_NATIVE
     OR RVX_ENABLE_GFX13_GTAO_NATIVE OR RVX_ENABLE_GFX14_TOON_NATIVE
     OR RVX_ENABLE_GFX15_TRANSLUCENCY_NATIVE OR RVX_ENABLE_GFX17_VFX_NATIVE
-    OR RVX_ENABLE_GFX18_WATER_NATIVE)
+    OR RVX_ENABLE_GFX18_WATER_NATIVE OR RVX_ENABLE_GFX19_LOCAL_LIGHTING_NATIVE
+    OR RVX_ENABLE_GFX19_REFLECTIONS_NATIVE)
    AND (NOT TARGET VisualGoldenValidation OR NOT TARGET ImageContentValidation OR NOT TARGET SampleReportContentValidation))
     message(FATAL_ERROR "Enabled qualification matrices require visual and SampleReport validators")
 endif()
@@ -420,6 +439,7 @@ function(rvx_add_renderverse_gfx08_lighting_native
             --require-lighting-plan
             --require-csm-requested
             --require-csm-execution-ready
+            --require-local-shadow-execution
             --forbid-fallback-reasons
             --forbid-render-feature-fallbacks
         BUILD_TARGETS SampleReportContentValidation
@@ -680,8 +700,8 @@ function(rvx_add_renderverse_gfx10_post_process_native
             --require-direct-execution
             --require-render-pipeline ${PIPELINE_NAME}
             ${pipeline_receipt_args}
-            --asset-id interior-rendering-p0a
-            --environment-asset-id pbr-reference-environment
+            --asset-id post-processing-interior-v1
+            --environment-asset-id pbr-reference-environment-cooked-v1
             --require-post-process-execution
             --require-exactly-one-tone-map
             --require-post-process-bloom-execution
@@ -1133,8 +1153,8 @@ function(rvx_add_renderverse_gfx13_gtao_native
             --require-direct-execution
             --require-render-pipeline ${PIPELINE_NAME}
             ${pipeline_receipt_args}
-            --asset-id interior-rendering-p0a
-            --environment-asset-id pbr-reference-environment
+            --asset-id post-processing-interior-v1
+            --environment-asset-id pbr-reference-environment-cooked-v1
             --require-environment-redistributable
             --require-texture-ibl
             --require-post-process-execution
@@ -1448,6 +1468,8 @@ function(rvx_add_renderverse_gfx15_translucency_native
             --require-transparent-reactive-mask
             --require-transparent-sorting
             --forbid-transparent-fallbacks
+            --require-weighted-blended-oit-execution
+            --require-render-feature-executed 11
             --require-native-validation-available
             --require-native-validation-enabled
             --require-native-validation-read-complete
@@ -1460,7 +1482,9 @@ function(rvx_add_renderverse_gfx15_translucency_native
             --require-enabled-feature AdditiveBlendRequested
             --require-enabled-feature ThinTransmissionRequested
             --require-enabled-feature SortedTranslucencyRequested
+            --require-enabled-feature WeightedBlendedOITRequested
             --require-enabled-feature TransparentMaterialsActualExecutionQualified
+            --require-enabled-feature WeightedBlendedOITActualExecutionQualified
             --forbid-fallback-reasons
             --forbid-render-feature-fallbacks
         BUILD_TARGETS SampleReportContentValidation
@@ -1836,6 +1860,363 @@ function(rvx_add_renderverse_gfx18_water_native
         TAGS product.samples trait.visual trait.gpu trait.native trait.water
             backend.${BACKEND_NAME} suite.gfx18-water
         SUITE gfx18-water
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+# GFX19 local-lighting qualification proves point/spot admission plus exact
+# caster -> atlas -> receiver execution. Hi-Z reflections are covered by the
+# separate suite below because they require delayed route/radiance readback.
+# This suite is exactly DX12/Vulkan x Forward+/Deferred x
+# Capture/Image/Receipt = 12.
+file(GLOB_RECURSE RVX_GFX19_LOCAL_LIGHTING_SHADER_SOURCE_DEPENDENCIES
+    CONFIGURE_DEPENDS
+    LIST_DIRECTORIES FALSE
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/*.hlsl"
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/*.hlsli")
+
+function(rvx_add_renderverse_gfx19_local_lighting_native
+         BACKEND_NAME BACKEND_LABEL PIPELINE_NAME PIPELINE_LABEL)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation OR
+       NOT TARGET RVXCook)
+        message(FATAL_ERROR "GFX19 local-lighting qualification requires RenderVerseSamples, RVXCook, and report/image validators")
+    endif()
+
+    set(cooked_shader_root
+        "${CMAKE_CURRENT_BINARY_DIR}/Fixtures/Gfx19LocalLightingShaders/${BACKEND_LABEL}")
+    set(cooked_shader_stamp
+        "${cooked_shader_root}/.rvx-gfx19-local-lighting-shaders")
+    set(cooked_shader_target
+        "RVXGfx19LocalLightingCookedShaders${BACKEND_LABEL}")
+    if(NOT TARGET ${cooked_shader_target})
+        add_custom_command(
+            OUTPUT "${cooked_shader_stamp}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${cooked_shader_root}"
+            COMMAND $<TARGET_FILE:RVXCook>
+                --source "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders"
+                --output "${cooked_shader_root}"
+                --shader-catalog "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                --shader-backend ${BACKEND_LABEL}
+                --fail-on-errors
+            COMMAND ${CMAKE_COMMAND} -E touch "${cooked_shader_stamp}"
+            DEPENDS
+                RVXCook
+                "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                ${RVX_GFX19_LOCAL_LIGHTING_SHADER_SOURCE_DEPENDENCIES}
+            VERBATIM)
+        add_custom_target(${cooked_shader_target}
+            DEPENDS "${cooked_shader_stamp}")
+        rvx_register_module_target(
+            TARGET ${cooked_shader_target}
+            MODULE Tests)
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}GFX19${PIPELINE_LABEL}LocalLighting")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(startup_report
+        "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(pipeline_receipt_args)
+    if(PIPELINE_NAME STREQUAL "deferred")
+        list(APPEND pipeline_receipt_args --require-deferred-opaque-execution)
+    endif()
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}Capture
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample lighting-shadows
+            --backend ${BACKEND_NAME}
+            --runtime-only-composition
+            --cooked-shader-root "${cooked_shader_root}"
+            --pipeline ${PIPELINE_NAME}
+            --render-path direct
+            --quality high
+            --smoke
+            --frames 8
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 2400
+            --width 640
+            --height 360
+            --screenshot "${capture}"
+            --report "${report}"
+            --startup-report "${startup_report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS
+            RenderVerseSamples
+            ImageContentValidation
+            SampleReportContentValidation
+            ${cooked_shader_target}
+        TAGS product.samples trait.visual trait.gpu trait.native
+            trait.local-lighting backend.${BACKEND_NAME}
+            suite.gfx19-local-lighting
+        SUITE gfx19-local-lighting
+        TIMEOUT 300
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            trait.local-lighting backend.${BACKEND_NAME}
+            suite.gfx19-local-lighting
+        SUITE gfx19-local-lighting
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ReceiptValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name lighting-shadows
+            --category visual
+            --backend ${BACKEND_NAME}
+            --require-requested-backend ${BACKEND_NAME}
+            --require-actual-backend ${BACKEND_NAME}
+            --quality high
+            --min-frame-count 8
+            --min-visible-objects 1
+            --require-ready
+            --require-readiness-wait
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-direct-execution
+            --require-render-pipeline ${PIPELINE_NAME}
+            ${pipeline_receipt_args}
+            --require-lighting-plan
+            --require-csm-requested
+            --require-csm-execution-ready
+            --require-local-shadow-execution
+            --require-cooked-shader-provider
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-phase stable
+            --require-enabled-feature PointShadowRequested
+            --require-enabled-feature SpotShadowRequested
+            --require-enabled-feature LocalShadowAtlasExecutionRequired
+            --forbid-fallback-reasons
+            --forbid-render-feature-fallbacks
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            trait.local-lighting backend.${BACKEND_NAME}
+            suite.gfx19-local-lighting
+        SUITE gfx19-local-lighting
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+endfunction()
+
+# GFX19 reflections are qualified separately from local lighting. The
+# post-processing scenario requests Hi-Z SSR through public Sample contracts,
+# while the receipt validator requires completed Hi-Z execution rather than
+# treating requested or scheduled work as evidence. The matrix is exactly
+# DX12/Vulkan x Forward+/Deferred x Capture/Image/Receipt = 12.
+file(GLOB_RECURSE RVX_GFX19_REFLECTION_SHADER_SOURCE_DEPENDENCIES
+    CONFIGURE_DEPENDS
+    LIST_DIRECTORIES FALSE
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/*.hlsl"
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/*.hlsli")
+
+function(rvx_add_renderverse_gfx19_reflections_native
+         BACKEND_NAME BACKEND_LABEL PIPELINE_NAME PIPELINE_LABEL)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation OR
+       NOT TARGET RVXCook)
+        message(FATAL_ERROR "GFX19 reflection qualification requires RenderVerseSamples, RVXCook, and report/image validators")
+    endif()
+
+    set(cooked_shader_root
+        "${CMAKE_CURRENT_BINARY_DIR}/Fixtures/Gfx19ReflectionShaders/${BACKEND_LABEL}")
+    set(cooked_shader_stamp
+        "${cooked_shader_root}/.rvx-gfx19-reflection-shaders")
+    set(cooked_shader_target
+        "RVXGfx19ReflectionCookedShaders${BACKEND_LABEL}")
+    if(NOT TARGET ${cooked_shader_target})
+        add_custom_command(
+            OUTPUT "${cooked_shader_stamp}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${cooked_shader_root}"
+            COMMAND $<TARGET_FILE:RVXCook>
+                --source "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders"
+                --output "${cooked_shader_root}"
+                --shader-catalog "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                --shader-backend ${BACKEND_LABEL}
+                --fail-on-errors
+            COMMAND ${CMAKE_COMMAND} -E touch "${cooked_shader_stamp}"
+            DEPENDS
+                RVXCook
+                "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Shaders/Programs.rvxshadercatalog.json"
+                ${RVX_GFX19_REFLECTION_SHADER_SOURCE_DEPENDENCIES}
+            VERBATIM)
+        add_custom_target(${cooked_shader_target}
+            DEPENDS "${cooked_shader_stamp}")
+        rvx_register_module_target(
+            TARGET ${cooked_shader_target}
+            MODULE Tests)
+    endif()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}GFX19${PIPELINE_LABEL}Reflections")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(startup_report
+        "${CMAKE_CURRENT_BINARY_DIR}/StartupTimelines/$<CONFIG>/RenderVerseSamples/${test_prefix}_640x360.json")
+    set(pipeline_receipt_args)
+    if(PIPELINE_NAME STREQUAL "deferred")
+        list(APPEND pipeline_receipt_args --require-deferred-opaque-execution)
+    endif()
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}Capture
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample post-processing
+            --backend ${BACKEND_NAME}
+            --runtime-only-composition
+            --cooked-shader-root "${cooked_shader_root}"
+            --pipeline ${PIPELINE_NAME}
+            --render-path direct
+            --quality high
+            --smoke
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 2400
+            --view hero
+            --fixed-delta 0.0166666666666667
+            --capture-tick 120
+            --hiz-reflection-qualification-probe
+            --width 640
+            --height 360
+            --screenshot "${capture}"
+            --report "${report}"
+            --startup-report "${startup_report}"
+            --diagnostics
+            --validation
+        BUILD_TARGETS
+            RenderVerseSamples
+            ImageContentValidation
+            SampleReportContentValidation
+            ${cooked_shader_target}
+        TAGS product.samples trait.visual trait.gpu trait.native
+            trait.reflection backend.${BACKEND_NAME} suite.gfx19-reflections
+        SUITE gfx19-reflections
+        TIMEOUT 300
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ImageValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 640
+            --min-height 360
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+        BUILD_TARGETS ImageContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            trait.reflection backend.${BACKEND_NAME} suite.gfx19-reflections
+        SUITE gfx19-reflections
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
+    )
+
+    rvx_add_validation_test(
+        LANE native
+        NAME ${test_prefix}ReceiptValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name post-processing
+            --category visual
+            --backend ${BACKEND_NAME}
+            --require-requested-backend ${BACKEND_NAME}
+            --require-actual-backend ${BACKEND_NAME}
+            --quality high
+            --min-frame-count 120
+            --min-visible-objects 1
+            --require-ready
+            --require-readiness-wait
+            --render-path direct
+            --require-requested-render-path direct
+            --require-actual-render-path direct
+            --require-direct-execution
+            --require-render-pipeline ${PIPELINE_NAME}
+            ${pipeline_receipt_args}
+            --asset-id post-processing-interior-v1
+            --environment-asset-id pbr-reference-environment-cooked-v1
+            --require-package-only-cooked-asset post-processing-interior-v1
+            --require-package-only-cooked-asset pbr-reference-environment-cooked-v1
+            --require-hiz-reflection-execution
+            --require-enabled-feature LocalReflectionProbeScene
+            --require-cooked-shader-provider
+            --require-native-validation-available
+            --require-native-validation-enabled
+            --require-native-validation-read-complete
+            --require-native-validation-error-count 0
+            --require-native-validation-corruption-count 0
+            --require-phase stable
+            --forbid-fallback-reasons
+            --forbid-render-feature-fallbacks
+        BUILD_TARGETS SampleReportContentValidation
+        TAGS product.samples trait.visual trait.gpu trait.native
+            trait.reflection backend.${BACKEND_NAME} suite.gfx19-reflections
+        SUITE gfx19-reflections
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         FIXTURES_REQUIRED "${test_prefix}FreshCapture"
@@ -4209,6 +4590,34 @@ if(RVX_ENABLE_GFX18_WATER_NATIVE)
     rvx_add_renderverse_gfx18_water_native(dx12 DX12 deferred Deferred)
     rvx_add_renderverse_gfx18_water_native(vulkan Vulkan forward-plus ForwardPlus)
     rvx_add_renderverse_gfx18_water_native(vulkan Vulkan deferred Deferred)
+endif()
+
+if(RVX_ENABLE_GFX19_LOCAL_LIGHTING_NATIVE)
+    # Exactly 12 strict native tests: DX12/Vulkan x Forward+/Deferred x
+    # Capture/Image/Receipt. Hi-Z SSR is intentionally not claimed here while
+    # the lighting-shadows Sample keeps screen-space reflections disabled.
+    rvx_add_renderverse_gfx19_local_lighting_native(
+        dx12 DX12 forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx19_local_lighting_native(
+        dx12 DX12 deferred Deferred)
+    rvx_add_renderverse_gfx19_local_lighting_native(
+        vulkan Vulkan forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx19_local_lighting_native(
+        vulkan Vulkan deferred Deferred)
+endif()
+
+if(RVX_ENABLE_GFX19_REFLECTIONS_NATIVE)
+    # Exactly 12 strict native tests: DX12/Vulkan x Forward+/Deferred x
+    # Capture/Image/Receipt. The producer requests Hi-Z SSR and the receipt
+    # validator rejects requested-only, scheduled-only, or fallback evidence.
+    rvx_add_renderverse_gfx19_reflections_native(
+        dx12 DX12 forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx19_reflections_native(
+        dx12 DX12 deferred Deferred)
+    rvx_add_renderverse_gfx19_reflections_native(
+        vulkan Vulkan forward-plus ForwardPlus)
+    rvx_add_renderverse_gfx19_reflections_native(
+        vulkan Vulkan deferred Deferred)
 endif()
 
 if(WIN32

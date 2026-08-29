@@ -166,6 +166,53 @@ namespace RVX::SceneECS
         bool contributesToLighting = true;
     };
 
+    /** @brief Source shape for a local reflection probe volume. */
+    enum class ReflectionProbeShape : uint8
+    {
+        Box = 0,
+        Sphere,
+    };
+
+    /**
+     * @brief Source asset selection for a local reflection probe.
+     *
+     * This deliberately remains a Scene-side enum. Extraction is the sole
+     * owner of the explicit mapping to RenderProbeMode.
+     */
+    enum class ReflectionProbeAssetSource : uint8
+    {
+        Baked = 0,
+        Custom,
+    };
+
+    /**
+     * @brief Backend-neutral local reflection-probe authoring data.
+     *
+     * The transform is intentionally not stored here: RenderWorldTransform
+     * supplies the pose, while Visibility supplies layer and activation.
+     * Both asset references are retained so changing source mode does not
+     * mutate an otherwise immutable authored fragment shape.
+     */
+    struct ReflectionProbe
+    {
+        ReflectionProbeShape shape = ReflectionProbeShape::Box;
+        ReflectionProbeAssetSource assetSource =
+            ReflectionProbeAssetSource::Baked;
+        AssetId bakedCubemapAssetId{};
+        AssetId customCubemapAssetId{};
+        Vec3 influenceExtent{1.0f};
+        float32 blendDistance = 0.0f;
+        Vec3 boxProjectionSize{1.0f};
+        Vec3 boxProjectionOffset{0.0f};
+        int32 priority = 0;
+        float32 nearClip = 0.1f;
+        float32 farClip = 100.0f;
+        bool useBoxProjection = false;
+        bool useHDR = false;
+        /** @brief False denotes intentionally unavailable probe contents. */
+        bool hasValidData = false;
+    };
+
     static_assert(ECS::Fragment<Camera>);
     static_assert(ECS::Fragment<Mesh>);
     static_assert(ECS::Fragment<MaterialSlot>);
@@ -173,4 +220,5 @@ namespace RVX::SceneECS
     static_assert(ECS::Fragment<Visibility>);
     static_assert(ECS::Fragment<Light>);
     static_assert(ECS::Fragment<Skybox>);
+    static_assert(ECS::Fragment<ReflectionProbe>);
 } // namespace RVX::SceneECS

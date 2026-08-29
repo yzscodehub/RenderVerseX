@@ -24,6 +24,7 @@ namespace RVX
     class RHICommandContext;
     class RHIHeap;
     class RHIAccelerationStructure;
+    class RHIAccelerationStructureCompactedSizeQuery;
     class RHIShaderTable;
 
     // =============================================================================
@@ -43,6 +44,8 @@ namespace RVX
     using RHICommandContextRef      = Ref<RHICommandContext>;
     using RHIHeapRef                = Ref<RHIHeap>;
     using RHIAccelerationStructureRef = Ref<RHIAccelerationStructure>;
+    using RHIAccelerationStructureCompactedSizeQueryRef =
+        Ref<RHIAccelerationStructureCompactedSizeQuery>;
     using RHIShaderTableRef         = Ref<RHIShaderTable>;
 
     // =============================================================================

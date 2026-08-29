@@ -1,11 +1,13 @@
 #pragma once
 
 #include "VulkanCommon.h"
+#include "VulkanResources.h"
 #include "RHI/RHICommandContext.h"
 
 namespace RVX
 {
     class VulkanDevice;
+    class VulkanDescriptorSetLayout;
     class VulkanPipeline;
     struct RHIQueueSubmissionPlan;
 
@@ -94,6 +96,37 @@ namespace RVX
         void Dispatch(uint32 groupCountX, uint32 groupCountY, uint32 groupCountZ) override;
         void DispatchIndirect(RHIBuffer* buffer, uint64 offset) override;
 
+        // =========================================================================
+        // Ray Tracing Commands
+        // =========================================================================
+        void BuildBottomLevelAccelerationStructure(
+            RHIAccelerationStructure* dst,
+            const RHIBottomLevelASDesc& desc,
+            RHIBuffer* scratchBuffer,
+            uint64 scratchOffset,
+            RHIAccelerationStructure* src) override;
+        void BuildTopLevelAccelerationStructure(
+            RHIAccelerationStructure* dst,
+            const RHITopLevelASDesc& desc,
+            RHIBuffer* scratchBuffer,
+            uint64 scratchOffset,
+            RHIAccelerationStructure* src) override;
+        void DispatchRays(const RHIDispatchRaysDesc& desc) override;
+        void WriteAccelerationStructureCompactedSizes(
+            RHIAccelerationStructureCompactedSizeQuery* query,
+            uint32 firstQuery,
+            std::span<RHIAccelerationStructure* const> accelerationStructures) override;
+        void ResolveAccelerationStructureCompactedSizes(
+            RHIAccelerationStructureCompactedSizeQuery* query,
+            uint32 firstQuery,
+            uint32 queryCount,
+            RHIBuffer* readbackBuffer,
+            uint64 readbackOffset) override;
+        void CopyAccelerationStructureCompact(
+            RHIAccelerationStructure* dst,
+            RHIAccelerationStructure* src,
+            uint64 expectedCompactedSize) override;
+
         void CopyBuffer(RHIBuffer* src, RHIBuffer* dst, uint64 srcOffset, uint64 dstOffset, uint64 size) override;
         void CopyTexture(RHITexture* src, RHITexture* dst, const RHITextureCopyDesc& desc) override;
         void CopyBufferToTexture(RHIBuffer* src, RHITexture* dst, const RHIBufferTextureCopyDesc& desc) override;
@@ -124,13 +157,68 @@ namespace RVX
         // Flush pending barriers before draw/dispatch/copy operations
         void FlushBarriers();
 
+        /**
+         * @brief Whether this recording owns a valid, not-yet-submitted build
+         * for the acceleration structure.
+         *
+         * This is intentionally context-local. Other contexts must use the
+         * submitted state instead.
+         */
+        bool HasCompatiblePendingAccelerationStructureBuild(
+            const RHIAccelerationStructure* accelerationStructure) const
+            noexcept;
+
+        /**
+         * @brief Promote only builds accepted by a Vulkan queue submission.
+         *
+         * These are backend submission hooks rather than RHI commands. Until a
+         * submission succeeds, a pending build is intentionally invisible to
+         * other command contexts.
+         */
+        void CommitPendingAccelerationStructureBuilds();
+        void DiscardPendingAccelerationStructureBuilds();
+        void CommitPendingAccelerationStructureCompactionQueries();
+        void DiscardPendingAccelerationStructureCompactionQueries();
+
     private:
+        struct PendingAccelerationStructureBuild
+        {
+            RHIAccelerationStructureRef accelerationStructure;
+            VulkanAccelerationStructureBuildSignature signature;
+        };
+
+        bool ValidateAccelerationStructureUpdateSignature(
+            const char* operation,
+            VulkanAccelerationStructure* source,
+            const VulkanAccelerationStructureBuildSignature& update) const;
+        bool HasPendingAccelerationStructureBuild(
+            const VulkanAccelerationStructure* accelerationStructure,
+            bool requireCompaction) const noexcept;
+        void RecordPendingAccelerationStructureBuild(
+            VulkanAccelerationStructure* accelerationStructure,
+            VulkanAccelerationStructureBuildSignature signature);
+
+        void InsertAccelerationStructureBarrier(
+            RHIAccelerationStructure* accelerationStructure);
+
         VulkanDevice* m_device;
         RHICommandQueueType m_queueType;
         VkCommandPool m_commandPool = VK_NULL_HANDLE;
         VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
 
         VulkanPipeline* m_currentPipeline = nullptr;
+        std::vector<VulkanDescriptorSetLayout*>
+            m_boundRayTracingDescriptorSetLayouts;
+        std::vector<PendingAccelerationStructureBuild>
+            m_pendingAccelerationStructureBuilds;
+        struct PendingAccelerationStructureCompactionQuery
+        {
+            RHIAccelerationStructureCompactedSizeQueryRef query;
+            RHIAccelerationStructureRef source;
+            RHIBufferRef readback;
+        };
+        std::vector<PendingAccelerationStructureCompactionQuery>
+            m_pendingAccelerationStructureCompactionQueries;
         bool m_isRecording = false;
         bool m_inRenderPass = false;
 

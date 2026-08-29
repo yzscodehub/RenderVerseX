@@ -162,7 +162,8 @@ namespace
             case EcsRenderSceneRetainedMemberType::Skybox:
             case EcsRenderSceneRetainedMemberType::Particle:
             case EcsRenderSceneRetainedMemberType::Water:
-            case EcsRenderSceneRetainedMemberType::Terrain: return true;
+            case EcsRenderSceneRetainedMemberType::Terrain:
+            case EcsRenderSceneRetainedMemberType::Probe: return true;
             case EcsRenderSceneRetainedMemberType::Invalid:
             default: return false;
         }
@@ -193,6 +194,9 @@ namespace
                 break;
             case EcsRenderSceneRetainedMemberType::Terrain:
                 sourceType = SceneECS::FrozenSceneObjectType::Terrain;
+                break;
+            case EcsRenderSceneRetainedMemberType::Probe:
+                sourceType = SceneECS::FrozenSceneObjectType::Probe;
                 break;
             case EcsRenderSceneRetainedMemberType::Invalid:
             default: return 0;
@@ -244,6 +248,48 @@ namespace
             case RenderLightProxy::Type::Spot: return true;
             default: return false;
         }
+    }
+
+    [[nodiscard]] bool IsValidProbeKind(RenderProbeKind kind) noexcept
+    {
+        return kind == RenderProbeKind::Reflection;
+    }
+
+    [[nodiscard]] bool IsValidProbeShape(RenderProbeShape shape) noexcept
+    {
+        return shape == RenderProbeShape::Box || shape == RenderProbeShape::Sphere;
+    }
+
+    [[nodiscard]] bool IsValidProbeMode(RenderProbeMode mode) noexcept
+    {
+        return mode == RenderProbeMode::Baked || mode == RenderProbeMode::Custom;
+    }
+
+    [[nodiscard]] bool IsValidReflectionProbeValue(
+        const EcsFrozenSceneReflectionProbeValue& probe) noexcept
+    {
+        if (!IsValidProbeKind(probe.kind) || !IsValidProbeShape(probe.shape) ||
+            !IsValidProbeMode(probe.mode) || !IsFinite(probe.worldTransform) ||
+            !IsFinite(probe.influenceExtent) ||
+            !IsFinite(probe.boxProjectionSize) ||
+            !IsFinite(probe.boxProjectionOffset) ||
+            !IsFinite(probe.blendDistance) || !IsFinite(probe.nearClip) ||
+            !IsFinite(probe.farClip) || probe.influenceExtent.x <= 0.0f ||
+            probe.influenceExtent.y <= 0.0f || probe.influenceExtent.z <= 0.0f ||
+            probe.blendDistance < 0.0f || probe.nearClip <= 0.0f ||
+            probe.farClip <= probe.nearClip)
+        {
+            return false;
+        }
+        if (probe.useBoxProjection &&
+            (probe.shape != RenderProbeShape::Box ||
+             probe.boxProjectionSize.x <= 0.0f ||
+             probe.boxProjectionSize.y <= 0.0f ||
+             probe.boxProjectionSize.z <= 0.0f))
+        {
+            return false;
+        }
+        return !probe.hasValidData || probe.cubemapAssetId.IsValid();
     }
 
     [[nodiscard]] bool IsValidSkyMode(RenderSkyMode mode) noexcept
@@ -876,6 +922,61 @@ EcsFrameExtractionResult EcsFrameExtractor::Extract(
         }
     }
 
+    currentScene.probes.reserve(source.reflectionProbes.size());
+    std::unordered_set<uint64> reflectionProbeIds;
+    reflectionProbeIds.reserve(source.reflectionProbes.size());
+    for (const EcsFrozenSceneReflectionProbeValue& value :
+         source.reflectionProbes)
+    {
+        const EcsRenderSceneRetirementMember member{
+            .entity = value.sourceEntity,
+            .type = EcsRenderSceneRetainedMemberType::Probe};
+        const RenderSceneObjectSourceIdentity expectedSource =
+            MakeObjectSourceIdentity(source.sceneRuntimeId, value.sourceEntity);
+        if (value.id == 0 || !value.sourceEntity.IsValid() ||
+            value.source != expectedSource ||
+            value.id != DeriveRetainedRenderId(source.sceneRuntimeId, member) ||
+            !IsValidReflectionProbeValue(value) ||
+            !reflectionProbeIds.insert(value.id).second)
+        {
+            return fail(EcsFrameExtractionResultCode::InvalidBridgeOutput,
+                        RenderExtractionCode::CountMismatch);
+        }
+
+        RenderProbeSnapshot probe;
+        probe.probeId = value.id;
+        probe.source = value.source;
+        probe.kind = value.kind;
+        probe.shape = value.shape;
+        probe.mode = value.mode;
+        probe.worldTransform = value.worldTransform;
+        probe.influenceExtent = value.influenceExtent;
+        probe.blendDistance = value.blendDistance;
+        probe.boxProjectionSize = value.boxProjectionSize;
+        probe.boxProjectionOffset = value.boxProjectionOffset;
+        probe.cullingMask = value.layerMask;
+        probe.priority = value.priority;
+        probe.nearClip = value.nearClip;
+        probe.farClip = value.farClip;
+        probe.useBoxProjection = value.useBoxProjection;
+        probe.useHDR = value.useHDR;
+        probe.hasValidData = value.hasValidData;
+        if (value.hasValidData &&
+            !ResolveRequiredAsset(input.assetResolver,
+                                  value.cubemapAssetId,
+                                  RenderResourceKind::Texture,
+                                  probe.texture))
+        {
+            return fail(EcsFrameExtractionResultCode::RequiredAssetUnresolved,
+                        RenderExtractionCode::InvalidResourceReference);
+        }
+        if (!currentScene.probes.emplace(value.id, std::move(probe)).second)
+        {
+            return fail(EcsFrameExtractionResultCode::InvalidBridgeOutput,
+                        RenderExtractionCode::CountMismatch);
+        }
+    }
+
     if (source.skyboxes.size() > 1)
     {
         return fail(EcsFrameExtractionResultCode::InvalidBridgeOutput,
@@ -973,6 +1074,15 @@ EcsFrameExtractionResult EcsFrameExtractor::Extract(
                             RenderExtractionCode::CountMismatch);
             }
         }
+        for (const auto& [id, probe] : currentScene.probes)
+        {
+            (void)id;
+            if (!accumulator.UpsertProbe(probe, true))
+            {
+                return fail(EcsFrameExtractionResultCode::SealFailed,
+                            RenderExtractionCode::CountMismatch);
+            }
+        }
         for (const auto& [id, particle] : currentScene.particles)
         {
             (void)id;
@@ -1049,6 +1159,29 @@ EcsFrameExtractionResult EcsFrameExtractor::Extract(
             {
                 if (!accumulator.UpsertLight(
                         light, previous == acceptedScene.lights.end()))
+                {
+                    return fail(EcsFrameExtractionResultCode::SealFailed,
+                                RenderExtractionCode::CountMismatch);
+                }
+            }
+        }
+        for (const auto& [id, ignored] : acceptedScene.probes)
+        {
+            (void)ignored;
+            if (!currentScene.probes.contains(id) && !accumulator.RemoveProbe(id))
+            {
+                return fail(EcsFrameExtractionResultCode::SealFailed,
+                            RenderExtractionCode::CountMismatch);
+            }
+        }
+        for (const auto& [id, probe] : currentScene.probes)
+        {
+            const auto previous = acceptedScene.probes.find(id);
+            if (previous == acceptedScene.probes.end() ||
+                !AreRenderProbeSnapshotsEqual(previous->second, probe))
+            {
+                if (!accumulator.UpsertProbe(
+                        probe, previous == acceptedScene.probes.end()))
                 {
                     return fail(EcsFrameExtractionResultCode::SealFailed,
                                 RenderExtractionCode::CountMismatch);
@@ -1188,6 +1321,12 @@ EcsFrameExtractionResult EcsFrameExtractor::Extract(
             addExplicitRemoval(EcsRenderSceneRetainedMemberType::Light,
                                mutation.lightId);
     }
+    for (const RenderProbeMutation& mutation : sceneUpdate.probes)
+    {
+        if (mutation.operation == RenderSceneMutationOperation::Remove)
+            addExplicitRemoval(EcsRenderSceneRetainedMemberType::Probe,
+                               mutation.probeId);
+    }
     if (sceneUpdate.sky.has_value() &&
         sceneUpdate.sky->operation == RenderSceneMutationOperation::Remove &&
         m_acceptedScene.has_value() && m_acceptedScene->skySourceId != 0)
@@ -1219,7 +1358,8 @@ EcsFrameExtractionResult EcsFrameExtractor::Extract(
     result.diagnostics.fullScanCount = 1;
     result.diagnostics.proxyVisitCount = static_cast<uint32>(
         source.renderProxies.primitives.size() + source.lightValues.size() +
-        source.particles.size() + source.water.size() + source.terrain.size());
+        source.reflectionProbes.size() + source.particles.size() +
+        source.water.size() + source.terrain.size());
     RenderFrameHeaderV5 header;
     header.sequence = input.sequence;
     header.requiredSceneRevision = targetSceneRevision;
@@ -1329,6 +1469,9 @@ EcsFrameExtractor::SubmitRetirementBarrier(EcsRenderSceneRetirementBarrier barri
             case EcsRenderSceneRetainedMemberType::Terrain:
                 retained = acceptedScene.terrain.contains(renderId);
                 break;
+            case EcsRenderSceneRetainedMemberType::Probe:
+                retained = acceptedScene.probes.contains(renderId);
+                break;
             case EcsRenderSceneRetainedMemberType::Invalid:
             default: break;
         }
@@ -1399,6 +1542,8 @@ EcsRenderSceneRetirementResolution EcsFrameExtractor::ResolveLastPublication(
                     return candidateScene.water.contains(identity.renderId);
                 case EcsRenderSceneRetainedMemberType::Terrain:
                     return candidateScene.terrain.contains(identity.renderId);
+                case EcsRenderSceneRetainedMemberType::Probe:
+                    return candidateScene.probes.contains(identity.renderId);
                 case EcsRenderSceneRetainedMemberType::Invalid:
                 default: return true;
             }

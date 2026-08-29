@@ -71,7 +71,7 @@ namespace
             << "  --cooked-root <path>\n"
             << "  --cooked-root-relative <path>\n"
             << "  --asset-id <id>\n"
-            << "  --asset-kind <model|effect>\n"
+            << "  --asset-kind <model|environment|effect>\n"
             << "  --asset-path-relative <path>\n"
             << "  --source-path <path>\n"
             << "  --source-name <name>\n"
@@ -81,6 +81,33 @@ namespace
             << "  --modification-notice <text>\n"
             << "  --derived-from <id>\n"
             << "  --generation-recipe <id>\n";
+    }
+
+    bool IsSupportedAssetKind(const std::string_view assetKind) noexcept
+    {
+        return assetKind == "model" || assetKind == "environment" ||
+               assetKind == "effect";
+    }
+
+    bool ResolveCookAssetType(const std::string_view assetKind,
+                              RVX::Resource::CookAssetType& outType) noexcept
+    {
+        if (assetKind == "model")
+        {
+            outType = RVX::Resource::CookAssetType::Model;
+            return true;
+        }
+        if (assetKind == "environment")
+        {
+            outType = RVX::Resource::CookAssetType::Environment;
+            return true;
+        }
+        if (assetKind == "effect")
+        {
+            outType = RVX::Resource::CookAssetType::Effect;
+            return true;
+        }
+        return false;
     }
 
     bool ParseOptions(int argc, char** argv, Options& outOptions)
@@ -136,7 +163,7 @@ namespace
                !outOptions.sourceVersion.empty() && !outOptions.attribution.empty() &&
                !outOptions.modificationNotice.empty() && !outOptions.derivedFrom.empty() &&
                !outOptions.generationRecipe.empty() &&
-               (outOptions.assetKind == "model" || outOptions.assetKind == "effect");
+               IsSupportedAssetKind(outOptions.assetKind);
     }
 
     bool IsStrictRelativePath(const std::string& path)
@@ -294,9 +321,11 @@ namespace
         expectation.selector.sourcePath = options.sourcePath;
         expectation.selector.outputPath = fs::path(options.assetPathRelative)
             .lexically_relative(options.cookedRootRelative).generic_string();
-        expectation.selector.type = options.assetKind == "effect"
-            ? RVX::Resource::CookAssetType::Effect
-            : RVX::Resource::CookAssetType::Model;
+        if (!ResolveCookAssetType(options.assetKind, expectation.selector.type))
+        {
+            outError = "Catalog writer received an unsupported cooked asset kind";
+            return false;
+        }
         const RVX::Resource::CookManifestAdmissionReceipt cookReceipt =
             RVX::Resource::VerifyCookedAssetAdmission(
                 manifest, options.sourceRoot, options.cookedRoot, expectation);

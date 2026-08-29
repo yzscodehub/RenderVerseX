@@ -110,4 +110,12 @@ namespace RVX
     [[nodiscard]] ParticleBillboardDrawPlan BuildParticleBillboardDrawPlan(
         const ParticleRenderSnapshot& snapshot,
         const ViewData& view);
+
+    /** @brief Stable identity for one contiguous, generation-qualified batch. */
+    [[nodiscard]] uint64 BuildParticleBillboardBatchIdentityHash(
+        const ParticleBillboardDrawPlan& plan,
+        uint32 batchOrdinal) noexcept;
+    /** @brief Stable ordered inventory identity for one immutable draw plan. */
+    [[nodiscard]] uint64 BuildParticleBillboardSourceIdentityHash(
+        const ParticleBillboardDrawPlan& plan) noexcept;
 } // namespace RVX

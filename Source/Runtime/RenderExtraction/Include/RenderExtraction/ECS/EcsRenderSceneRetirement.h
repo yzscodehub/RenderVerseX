@@ -77,6 +77,7 @@ namespace RVX
         Particle,
         Water,
         Terrain,
+        Probe,
     };
 
     /** @brief Generation-safe ECS identity which may own a retained render identity. */

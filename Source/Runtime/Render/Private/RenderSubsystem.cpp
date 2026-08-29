@@ -322,6 +322,12 @@ namespace
                    m_sceneRenderer->ArmToonOutlineQualificationProbe();
         }
 
+        bool RequestHiZReflectionQualificationProbe() override
+        {
+            return m_sceneRenderer != nullptr &&
+                   m_sceneRenderer->ArmHiZReflectionQualificationProbe();
+        }
+
         void PollCompletion() override
         {
             static_cast<void>(m_uploadProcessor.PollCompletion());
@@ -364,7 +370,10 @@ namespace
                         ->HasPendingAmbientOcclusionQualificationCompletion()) ||
                    (m_sceneRenderer != nullptr &&
                     m_sceneRenderer
-                        ->HasPendingToonOutlineQualificationCompletion());
+                        ->HasPendingToonOutlineQualificationCompletion()) ||
+                   (m_sceneRenderer != nullptr &&
+                    m_sceneRenderer
+                        ->HasPendingHiZReflectionQualificationCompletion());
         }
 
         void PopulateDiagnostics(
@@ -654,6 +663,20 @@ namespace
                 frame.spotShadowSupported;
             features.localLighting.spotShadowReason =
                 frame.spotShadowUnsupportedReason;
+            features.localLighting.localShadowRequestCount =
+                frame.localShadowRequestCount;
+            features.localLighting.localShadowCasterDrawCount =
+                frame.localShadowCasterDrawCount;
+            features.localLighting.localShadowAtlasReady =
+                frame.localShadowAtlasReady;
+            features.localLighting.localShadowReason =
+                frame.localShadowFallbackReason;
+
+            features.reflection = frame.reflection;
+            features.hiZReflectionQualificationReceipt =
+                frame.hiZReflectionQualificationReceipt;
+            features.hiZReflectionQualification =
+                frame.hiZReflectionQualification;
 
             features.hzb.requested = frame.hzbRequested;
             features.hzb.supported = frame.hzbSupported;
@@ -1120,6 +1143,10 @@ namespace
             {
                 appendReason(features.localLighting.spotShadowReason);
             }
+            if (features.reflection.requested)
+            {
+                appendReason(features.reflection.fallbackReason);
+            }
             if (features.hzb.requested)
             {
                 appendReason(features.hzb.reason);
@@ -1169,6 +1196,42 @@ namespace
                 {
                     outDiagnostics.frameFeatures.executionReceipt =
                         completedReceipt;
+                }
+                // The SSR route mask resolves asynchronously.  Its source
+                // frame may be older than the ordinary latest-presented
+                // diagnostics, so project the frozen qualification pair into
+                // its own fields atomically rather than relabelling the
+                // normal frame/reflection snapshot.
+                const RenderExecutionReceipt& hiZQualificationReceipt =
+                    frame.hiZReflectionQualificationReceipt;
+                const RenderReflectionDiagnostics& hiZQualification =
+                    frame.hiZReflectionQualification;
+                if (hiZQualificationReceipt.IsStructurallyValid() &&
+                    hiZQualificationReceipt.available &&
+                    hiZQualificationReceipt.presented &&
+                    hiZQualification.frameSequence ==
+                        hiZQualificationReceipt.frameIdentity.frameSequence &&
+                    hiZQualification.reflectionPlanIdentity != 0 &&
+                    hiZQualification.lightingPlanIdentity != 0 &&
+                    hiZQualification.depthPyramidIdentity != 0 &&
+                    hiZQualification.reflectionSurfaceIdentity != 0 &&
+                    hiZQualification.exposureStateContentHash != 0)
+                {
+                    outDiagnostics.frameFeatures.hiZReflectionQualificationReceipt =
+                        hiZQualificationReceipt;
+                    outDiagnostics.frameFeatures.hiZReflectionQualification =
+                        hiZQualification;
+                }
+                else
+                {
+                    // A newly armed probe explicitly invalidates the previous
+                    // completion-owned pair. Completion-only pumping must
+                    // carry that clear through instead of retaining stale
+                    // source-frame evidence from an earlier arm.
+                    outDiagnostics.frameFeatures
+                        .hiZReflectionQualificationReceipt = {};
+                    outDiagnostics.frameFeatures.hiZReflectionQualification =
+                        {};
                 }
                 outDiagnostics.frameFeatures.gpuDrivenCulling
                     .gpuSceneDepthQualification =
@@ -1476,30 +1539,52 @@ namespace
             RecordFirstSubmitted(frameSequence, submittedPoint.value);
 
             GPUCompletionToken completion;
-            if (!InsertGPUCompletionPoint(completion, submittedPoint))
+            const bool completionTokenRepresented =
+                InsertGPUCompletionPoint(completion, submittedPoint);
+            if (!completionTokenRepresented)
             {
                 result.code = RenderRuntimeCode::OwnershipViolation;
                 result.message =
                     "Graphics submission point could not be represented by an exact token";
-                return result;
             }
 
             // Submission ownership must be transferred as soon as exact completion
-            // evidence exists, even if later registry stamping rejects the frame.
-            if (!m_sceneRenderer->NotifySubmission(completion))
+            // evidence exists. Once EndFrame succeeds, the acquired image must
+            // still be presented even when later qualification fails.
+            const bool submissionOwnershipTransferred =
+                completionTokenRepresented &&
+                m_sceneRenderer->NotifySubmission(completion);
+            const bool submissionSemanticallyQualified =
+                submissionOwnershipTransferred &&
+                m_sceneRenderer
+                    ->IsPendingSubmissionSemanticallyQualified();
+            const bool referencedResourcesStamped =
+                submissionOwnershipTransferred &&
+                StampReferencedResources(
+                    executionResult.referencedResources, completion);
+            const bool frameQualificationAccepted =
+                submissionOwnershipTransferred && referencedResourcesStamped &&
+                submissionSemanticallyQualified;
+            if (completionTokenRepresented &&
+                !submissionOwnershipTransferred)
             {
                 result.code = RenderRuntimeCode::OwnershipViolation;
                 result.message =
                     "Submitted frame completion did not match its recorded ownership boundary";
-                return result;
             }
-            if (!StampReferencedResources(executionResult.referencedResources,
-                                          completion))
+            else if (completionTokenRepresented &&
+                     !referencedResourcesStamped)
             {
                 result.code = RenderRuntimeCode::OwnershipViolation;
                 result.message =
                     "Submitted frame resources could not be stamped by exact generation";
-                return result;
+            }
+            else if (completionTokenRepresented &&
+                     !submissionSemanticallyQualified)
+            {
+                result.code = RenderRuntimeCode::RenderGraphValidationFailed;
+                result.message =
+                    "Submitted frame failed exact semantic qualification";
             }
             const auto presentStart = std::chrono::steady_clock::now();
             m_context->Present();
@@ -1518,7 +1603,8 @@ namespace
                 m_context->BindSubmittedFrameTiming(submittedPoint,
                                                     frameSequence));
             CompleteCapture(capture);
-            m_sceneRenderer->MarkAcceptedFramePresented();
+            m_sceneRenderer->MarkAcceptedFramePresented(
+                frameQualificationAccepted);
             RecordFirstPresent(frameSequence);
             return result;
         }
@@ -2142,6 +2228,12 @@ bool RenderSubsystem::RequestCompletionPump() noexcept
                m_runtime->RequestToonOutlineQualificationProbe();
     }
 
+    bool RenderSubsystem::RequestHiZReflectionQualificationProbe() noexcept
+    {
+        return m_runtime != nullptr &&
+               m_runtime->RequestHiZReflectionQualificationProbe();
+    }
+
     RenderToonOutlineQualificationRequestResult
     RenderSubsystem::GetToonOutlineQualificationProbeRequestResult() const noexcept
     {
@@ -2152,6 +2244,23 @@ bool RenderSubsystem::RequestCompletionPump() noexcept
 
         return {
             .state = RenderToonOutlineQualificationRequestState::RejectedByRuntimeShutdown,
+            .diagnostic = "render runtime is not initialized"
+        };
+    }
+
+    RenderHiZReflectionQualificationRequestResult
+    RenderSubsystem::GetHiZReflectionQualificationProbeRequestResult() const noexcept
+    {
+        if (m_runtime != nullptr)
+        {
+            return m_runtime
+                ->GetHiZReflectionQualificationProbeRequestResult();
+        }
+
+        return {
+            .state = RenderHiZReflectionQualificationRequestState::
+                RejectedByRuntimeShutdown,
+            .targetFrameSequence = 0,
             .diagnostic = "render runtime is not initialized"
         };
     }

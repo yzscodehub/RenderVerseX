@@ -6,9 +6,11 @@
  */
 
 #include "Render/Graph/RenderGraph.h"
+#include "Render/Graph/RenderGraphExecutionReceipt.h"
 #include "Render/Animation/RenderDeformationFrameResources.h"
 #include "Render/GPUDriven/GPUDrivenDiagnostics.h"
 #include "Render/Lighting/LightingFramePlan.h"
+#include "Render/Lighting/LocalShadowAtlas.h"
 #include "Render/Passes/MeshPassProcessor.h"
 #include "Render/PipelineCache.h"
 #include "Render/Policy/RenderFrameExecutionPlan.h"
@@ -34,8 +36,10 @@ namespace RVX
     class GPUCulling;
     class GPUCullingRecordedState;
     class DirectRasterReadbackQualification;
+    class LocalShadowPass;
     class RenderGraph;
     struct RenderPassRecordIdentity;
+    enum class RayTracedReflectionCompositeSource : uint8;
 
     struct DepthPrepassDrawStats
     {
@@ -212,6 +216,128 @@ namespace RVX
         uint32 height = 0;
     };
 
+    /** @brief Per-recording ray-traced-reflection diagnostics. */
+    struct RayTracedReflectionPassStats
+    {
+        bool requested = false;
+        bool supported = false;
+        bool tlasAvailable = false;
+        bool materialMetadataAvailable = false;
+        bool materialTextureTableAvailable = false;
+        bool geometryMetadataAvailable = false;
+        bool geometryTableAvailable = false;
+        bool sceneColorAvailable = false;
+        bool depthAvailable = false;
+        bool velocityAvailable = false;
+        bool exposureStateAvailable = false;
+        bool exposureStateReadDeclared = false;
+        bool exposureStateDescriptorBound = false;
+        uint64 exposureStateContentHash = 0;
+        bool historyAvailable = false;
+        bool depthHistoryAvailable = false;
+        bool normalHistoryAvailable = false;
+        bool historyReset = false;
+        bool historyRecreated = false;
+        bool historyResolutionChanged = false;
+        bool historyConfigChanged = false;
+        bool historyReservationRecorded = false;
+        bool historySubmitted = false;
+        /** Recorded temporal resolve/history-store work, independent of history sampling. */
+        bool temporalResolveRecorded = false;
+        bool temporalAccumulated = false;
+        bool outputDeclared = false;
+        bool resourceViewsAvailable = false;
+        bool descriptorSetAvailable = false;
+        bool constantsUploaded = false;
+        bool dispatchRecorded = false;
+        bool gpuTimingSupported = false;
+        bool gpuTimingQueriesRecorded = false;
+        bool gpuTimingResolveRecorded = false;
+        bool gpuTimingReadbackBufferAvailable = false;
+        bool gpuTimingResultAvailable = false;
+        uint32 gpuTimingStartQueryIndex = 0;
+        uint32 gpuTimingEndQueryIndex = 1;
+        uint64 gpuTimestampFrequency = 0;
+        uint64 gpuTimingReadbackBytes = 0;
+        uint64 gpuTimingStartTimestamp = 0;
+        uint64 gpuTimingEndTimestamp = 0;
+        uint64 gpuTimingElapsedTicks = 0;
+        float gpuTimingElapsedMs = 0.0f;
+        uint32 gpuTimingReadbackBufferCount = 0;
+        uint32 gpuTimingReadbackFrameIndex = RVX_INVALID_INDEX;
+        float resolutionScale = 1.0f;
+        uint32 samplesPerPixel = 1;
+        float intensity = 1.0f;
+        float maxTraceDistance = 0.0f;
+        float maxRoughness = 1.0f;
+        float distanceFadeStart = 0.8f;
+        float roughnessConeSpread = 1.0f;
+        float normalBias = 0.02f;
+        float rayMinT = 0.001f;
+        float fireflyClamp = 64.0f;
+        float temporalBlendFactor = 0.0f;
+        float historyDepthThreshold = 0.01f;
+        float historyNormalThreshold = 0.85f;
+        float historyLuminanceTolerance = 4.0f;
+        float historyConfidenceThreshold = 0.05f;
+        float historyVelocityRejectionScale = 0.0f;
+        uint32 materialTextureCount = 0;
+        uint32 materialTexturesBound = 0;
+        uint32 geometryIndexBufferCount = 0;
+        uint32 geometryUVBufferCount = 0;
+        uint32 geometryNormalBufferCount = 0;
+        uint32 geometryTangentBufferCount = 0;
+        uint64 dispatchPixelCount = 0;
+        uint64 estimatedRayCount = 0;
+        uint32 width = 0;
+        uint32 height = 0;
+    };
+
+    /** @brief Per-recording spatial-denoise diagnostics for RT reflections. */
+    struct RayTracedReflectionDenoisePassStats
+    {
+        bool requested = false;
+        bool supported = false;
+        bool sourcePassEnabled = false;
+        bool reflectionHandleAvailable = false;
+        bool depthAvailable = false;
+        bool normalGuideAvailable = false;
+        bool outputDeclared = false;
+        bool constantsUploaded = false;
+        bool denoiseRecorded = false;
+        uint32 radius = 0;
+        float depthSigma = 0.0f;
+        float normalThreshold = 0.0f;
+        float confidencePower = 0.0f;
+        float centerWeight = 0.0f;
+        float lowConfidenceDepthScale = 0.0f;
+        uint32 kernelTapCount = 0;
+        uint64 dispatchPixelCount = 0;
+        uint64 estimatedTapCount = 0;
+        uint32 width = 0;
+        uint32 height = 0;
+    };
+
+    /** @brief Per-recording composite diagnostics for RT reflections. */
+    struct RayTracedReflectionCompositePassStats
+    {
+        bool requested = false;
+        bool supported = false;
+        bool sourcePassEnabled = false;
+        bool denoiseRequested = false;
+        bool denoisedSourceAvailable = false;
+        bool denoisedSourceUsed = false;
+        bool rawSourceUsed = false;
+        bool denoiseFallbackToRaw = false;
+        bool reflectionHandleAvailable = false;
+        bool outputDeclared = false;
+        bool constantsUploaded = false;
+        bool compositeRecorded = false;
+        RayTracedReflectionCompositeSource source{};
+        uint32 width = 0;
+        uint32 height = 0;
+    };
+
     struct OpaquePassDrawStats
     {
         RenderInstancingMode instancingMode = RenderInstancingMode::Disabled;
@@ -378,11 +504,6 @@ namespace RVX
      * paired with the typed record input rather than ViewData so late-bound
      * graph work cannot mutate a frozen frame snapshot.
      */
-    struct OpaqueSceneSnapshotCopyReceipt
-    {
-        std::atomic_bool copied{false};
-    };
-
     /** @brief Immutable execution proof for the copied D32 surface consumed by water. */
     struct WaterDepthSnapshotCopyReceipt
     {
@@ -398,6 +519,53 @@ namespace RVX
                     handle.recordingGeneration ==
                     identity.graphRecordingGeneration);
     }
+
+    /**
+     * @brief Frozen TLAS storage identity shared by build and trace passes.
+     *
+     * RenderGraph tracks the real acceleration-structure backing buffer so a
+     * build write creates an explicit dependency for every DispatchRays read.
+     */
+    struct RayTracingSceneRecordInput
+    {
+        RenderPassRecordIdentity identity{};
+        RHIAccelerationStructureRef topLevelAS{};
+        RHIResourceInstanceId storageResourceId{};
+        RGBufferHandle topLevelASStorage{};
+        uint64 preparationGeneration = 0;
+        uint64 structuralHash = 0;
+        bool required = false;
+
+        [[nodiscard]] bool IsEmpty() const noexcept
+        {
+            return !identity.IsValid() && !topLevelAS &&
+                   !storageResourceId.IsValid() &&
+                   !topLevelASStorage.IsValid() &&
+                   preparationGeneration == 0 && structuralHash == 0 &&
+                   !required;
+        }
+
+        [[nodiscard]] bool IsCompatibleWith(
+            const RenderPassRecordIdentity& expected) const noexcept
+        {
+            if (identity != expected || !topLevelAS ||
+                topLevelAS->GetType() !=
+                    RHIAccelerationStructureType::TopLevel ||
+                !storageResourceId.IsValid() ||
+                !topLevelASStorage.IsValid() ||
+                preparationGeneration == 0 || structuralHash == 0 ||
+                !HasCurrentGraphProvenance(topLevelASStorage, expected))
+            {
+                return false;
+            }
+
+            RHIBuffer* const storage = topLevelAS->GetStorageBuffer();
+            return storage != nullptr &&
+                   storage->GetResourceInstanceId() == storageResourceId &&
+                   HasFlag(storage->GetUsage(),
+                           RHIBufferUsage::AccelerationStructureStorage);
+        }
+    };
 
     /**
      * @brief Identity-bound HDR scene input consumed by TransparentPass.
@@ -947,6 +1115,114 @@ namespace RVX
     };
 
     /**
+     * @brief Graph-owned point/spot depth-atlas output produced before lighting.
+     *
+     * The atlas plan identity and generation are deliberately retained beside
+     * the RenderGraph provenance.  A local-light consumer therefore cannot
+     * accidentally sample a page selected for another frame, view, or atlas
+     * generation.
+     */
+    struct LocalShadowRecordOutput
+    {
+        RenderPassRecordIdentity identity{};
+        RenderFrameIdentity frameIdentity{};
+        RenderViewIdentity viewIdentity{};
+        uint64 lightingPlanIdentity = 0;
+        uint64 localShadowPlanIdentity = 0;
+        uint64 atlasPlanIdentity = 0;
+        uint64 atlasGeneration = 0;
+        RGTextureHandle depthAtlas{};
+        std::vector<RGTextureHandle> pageDepthLayers{};
+        uint32 pageResolution = 0;
+        uint32 pageCount = 0;
+        bool enabled = false;
+
+        [[nodiscard]] bool IsCompatibleWith(
+            const RenderPassRecordIdentity& expected,
+            const RenderFrameIdentity& expectedFrame,
+            const RenderViewIdentity& expectedView,
+            uint64 expectedLightingPlanIdentity) const noexcept
+        {
+            if (identity != expected || frameIdentity != expectedFrame ||
+                viewIdentity != expectedView ||
+                expectedLightingPlanIdentity == 0 ||
+                lightingPlanIdentity != expectedLightingPlanIdentity ||
+                !HasCurrentGraphProvenance(depthAtlas, expected))
+            {
+                return false;
+            }
+            if (!enabled)
+            {
+                return !depthAtlas.IsValid() && pageDepthLayers.empty() &&
+                       pageResolution == 0 && pageCount == 0 &&
+                       localShadowPlanIdentity == 0 && atlasPlanIdentity == 0 &&
+                       atlasGeneration == 0;
+            }
+            if (!frameIdentity.IsValid() || !viewIdentity.IsValid() ||
+                localShadowPlanIdentity == 0 || atlasPlanIdentity == 0 ||
+                atlasGeneration == 0 || !depthAtlas.IsValid() ||
+                pageResolution == 0 || pageCount == 0 ||
+                pageDepthLayers.size() != pageCount)
+            {
+                return false;
+            }
+            return std::all_of(
+                pageDepthLayers.begin(), pageDepthLayers.end(),
+                [this, &expected](const RGTextureHandle& page)
+                {
+                    return page.IsValid() &&
+                        page.index == depthAtlas.index &&
+                        HasCurrentGraphProvenance(page, expected) &&
+                        page.hasSubresourceRange &&
+                        page.subresourceRange.baseMipLevel == 0 &&
+                        page.subresourceRange.mipLevelCount == 1 &&
+                        page.subresourceRange.arrayLayerCount == 1 &&
+                        page.subresourceRange.aspect == RHITextureAspect::Depth;
+                });
+        }
+
+        /**
+         * @brief Proves that every graph layer is the exact page sealed by the
+         * immutable atlas plan, rather than merely another view of the atlas.
+         */
+        [[nodiscard]] bool MatchesAtlasPlan(
+            const LocalShadowAtlasPlan& plan) const noexcept
+        {
+            const auto& pages = plan.GetPages();
+            if (!plan.IsValid() || !enabled ||
+                frameIdentity != plan.GetFrameIdentity() ||
+                viewIdentity != plan.GetViewIdentity() ||
+                lightingPlanIdentity != plan.GetLightingPlanIdentity() ||
+                localShadowPlanIdentity != plan.GetLocalShadowPlanIdentity() ||
+                atlasPlanIdentity != plan.GetIdentityHash() ||
+                atlasGeneration != plan.GetAtlasGeneration() ||
+                pageCount != pages.size() ||
+                pageDepthLayers.size() != pages.size() ||
+                pageResolution != plan.GetTextureContract().pageResolution)
+            {
+                return false;
+            }
+
+            for (size_t index = 0; index < pages.size(); ++index)
+            {
+                const RGTextureHandle& layer = pageDepthLayers[index];
+                if (!layer.IsValid() || layer.index != depthAtlas.index ||
+                    !layer.hasSubresourceRange ||
+                    layer.subresourceRange.baseMipLevel != 0 ||
+                    layer.subresourceRange.mipLevelCount != 1 ||
+                    layer.subresourceRange.baseArrayLayer !=
+                        pages[index].pageIndex ||
+                    layer.subresourceRange.arrayLayerCount != 1 ||
+                    layer.subresourceRange.aspect != RHITextureAspect::Depth)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+    };
+
+    /**
      * @brief Project one plan-bound CSM output into shader-visible ViewData.
      *
      * Opaque, transparent, and deferred lighting use this single conversion so
@@ -1129,6 +1405,11 @@ namespace RVX
         /** Bits 0..5 correspond to the six frozen light/cluster buffers. */
         uint8 frozenBufferMask = 0;
         bool directionalShadowBound = false;
+        bool localShadowBound = false;
+        uint64 localShadowPlanIdentity = 0;
+        uint64 localShadowAtlasPlanIdentity = 0;
+        uint64 localShadowAtlasGeneration = 0;
+        uint32 localShadowPageCount = 0;
         bool textureIBLBound = false;
         bool exactIBLViews = false;
         /** Exact R8 visibility field consumed by opaque indirect lighting. */
@@ -1141,9 +1422,19 @@ namespace RVX
             const bool requiresAmbientOcclusion =
                 route == RenderLightingSurfaceRoute::ForwardOpaque ||
                 route == RenderLightingSurfaceRoute::DeferredOpaque;
+            const bool localShadowEvidenceValid = localShadowBound
+                ? localShadowPlanIdentity != 0 &&
+                    localShadowAtlasPlanIdentity != 0 &&
+                    localShadowAtlasGeneration != 0 &&
+                    localShadowPageCount != 0
+                : localShadowPlanIdentity == 0 &&
+                    localShadowAtlasPlanIdentity == 0 &&
+                    localShadowAtlasGeneration == 0 &&
+                    localShadowPageCount == 0;
             return lightingPlanIdentity != 0 &&
                 route < RenderLightingSurfaceRoute::Count &&
                 frozenBufferMask == 0x3fu && workCount != 0 && executed &&
+                localShadowEvidenceValid &&
                 (!textureIBLBound || exactIBLViews) &&
                 (requiresAmbientOcclusion
                      ? ambientOcclusionFieldContentHash != 0
@@ -1156,11 +1447,15 @@ namespace RVX
     {
         RenderPassRecordIdentity identity{};
         DirectionalShadowRecordOutput directionalShadowOutput{};
+        LocalShadowRecordOutput localShadowOutput{};
         RayTracedShadowRecordOutput rayTracedShadowOutput{};
         RenderFrameExecutionReport executionReport{};
         DepthPrepassDrawStats depthStats{};
         ShadowPassStats shadowStats{};
         RayTracedShadowPassStats rayTracedShadowStats{};
+        RayTracedReflectionPassStats rayTracedReflectionStats{};
+        RayTracedReflectionDenoisePassStats rayTracedReflectionDenoiseStats{};
+        RayTracedReflectionCompositePassStats rayTracedReflectionCompositeStats{};
         OpaquePassDrawStats opaqueStats{};
         OpaquePassShadowStats opaqueShadowStats{};
         OpaqueSurfaceRouteExecutionEvidence deferredOpaqueRoute{};
@@ -1369,8 +1664,14 @@ namespace RVX
             lightingResources;
         std::shared_ptr<const RenderDeformationFrameResources>
             deformationResources;
+        /** Immutable local point/spot atlas selected for this exact view. */
+        std::shared_ptr<const LocalShadowAtlasPlan> localShadowAtlasPlan;
+        /** Renderer-owned recorder retained through the accepted graph frame. */
+        std::shared_ptr<LocalShadowPass> localShadowPass;
         DirectionalShadowRecordOutput directionalShadow{};
         RayTracedShadowRecordOutput rayTracedShadow{};
+        /** Frozen TLAS build-to-dispatch dependency for Hybrid RT. */
+        RayTracingSceneRecordInput rayTracingScene{};
         /** Screen-space AO selected by the typed lighting dependency edge. */
         AmbientOcclusionRecordInput ambientOcclusion{};
         /** Opaque HDR snapshot late-bound after the immutable frame snapshot. */
@@ -1381,6 +1682,8 @@ namespace RVX
         ParticleVfxRecordInput particleVfx{};
         /** Explicit value identity for the route's immutable material table. */
         OpaqueMaterialTableExecutionIdentity opaqueMaterialTable{};
+        /** Sealed reflection plan requires materialized receiver MRT outputs. */
+        bool requiresReflectionSurfaceData = false;
         std::shared_ptr<const RenderPassFrameSnapshot> frameSnapshot;
         std::shared_ptr<RenderPassRecordResults> results;
         /// True only for the legacy ViewData adapter.  Migrated scene passes
@@ -1443,6 +1746,23 @@ namespace RVX
                     return false;
                 }
             }
+            if ((localShadowAtlasPlan == nullptr) !=
+                (localShadowPass == nullptr))
+            {
+                return false;
+            }
+            if (localShadowAtlasPlan &&
+                (!localShadowAtlasPlan->IsValid() ||
+                 localShadowAtlasPlan->GetFrameIdentity() !=
+                     featureFrameIdentity ||
+                 localShadowAtlasPlan->GetViewIdentity() !=
+                     featureViewIdentity ||
+                 lightingPlan == nullptr ||
+                 localShadowAtlasPlan->GetLightingPlanIdentity() !=
+                     lightingPlan->GetIdentityHash()))
+            {
+                return false;
+            }
             const bool sceneRequiresDeformation = renderScene != nullptr &&
                 std::any_of(renderScene->GetObjects().begin(),
                             renderScene->GetObjects().end(),
@@ -1469,6 +1789,11 @@ namespace RVX
             {
                 return false;
             }
+            if (!rayTracingScene.IsEmpty() &&
+                !rayTracingScene.IsCompatibleWith(identity))
+            {
+                return false;
+            }
             return true;
         }
     };
@@ -1485,8 +1810,13 @@ namespace RVX
             lightingResources;
         std::shared_ptr<const RenderDeformationFrameResources>
             deformationResources;
+        std::shared_ptr<const LocalShadowAtlasPlan> localShadowAtlasPlan;
+        std::shared_ptr<LocalShadowPass> localShadowPass;
+        /** Immutable local-atlas result copied from the producer record. */
+        LocalShadowRecordOutput localShadowOutput{};
         DirectionalShadowRecordOutput directionalShadow{};
         RayTracedShadowRecordOutput rayTracedShadow{};
+        RayTracingSceneRecordInput rayTracingScene{};
         AmbientOcclusionRecordInput ambientOcclusion{};
         OpaqueSceneSnapshotRecordInput opaqueSceneSnapshot{};
         OpaqueMaterialTableExecutionIdentity opaqueMaterialTable{};
@@ -1526,6 +1856,11 @@ namespace RVX
             {
                 return false;
             }
+            if (!rayTracingScene.IsEmpty() &&
+                !rayTracingScene.IsCompatibleWith(identity))
+            {
+                return false;
+            }
             if (!frameSnapshot || !results ||
                 frameSnapshot->identity != identity ||
                 results->identity != identity ||
@@ -1538,6 +1873,34 @@ namespace RVX
                 view.instanceBatchPlans != &frameSnapshot->instanceBatchPlans ||
                 view.renderVisibility != &frameSnapshot->visibility ||
                 view.renderFrameExecutionReport != &results->executionReport)
+            {
+                return false;
+            }
+            if ((localShadowAtlasPlan == nullptr) !=
+                (localShadowPass == nullptr) ||
+                (localShadowAtlasPlan &&
+                 (lightingPlan == nullptr || frameSnapshot->lightingPlan == nullptr ||
+                  !localShadowAtlasPlan->IsValid() ||
+                  localShadowAtlasPlan->GetFrameIdentity() !=
+                      frameSnapshot->lightingPlan->GetFrameIdentity() ||
+                  localShadowAtlasPlan->GetViewIdentity() !=
+                      frameSnapshot->lightingPlan->GetViewIdentity() ||
+                  localShadowAtlasPlan->GetLightingPlanIdentity() !=
+                      lightingPlan->GetIdentityHash())))
+            {
+                return false;
+            }
+            if (lightingPlan != nullptr &&
+                !localShadowOutput.IsCompatibleWith(
+                    identity,
+                    lightingPlan->GetFrameIdentity(),
+                    lightingPlan->GetViewIdentity(),
+                    lightingPlan->GetIdentityHash()))
+            {
+                return false;
+            }
+            if (lightingPlan == nullptr &&
+                (localShadowOutput.enabled || localShadowAtlasPlan != nullptr))
             {
                 return false;
             }
@@ -1641,9 +2004,18 @@ namespace RVX
         results.directionalShadowOutput.identity = context.identity;
         results.directionalShadowOutput.lightingPlanIdentity =
             context.lightingPlan ? context.lightingPlan->GetIdentityHash() : 0;
+        results.localShadowOutput = {};
+        results.localShadowOutput.identity = context.identity;
+        results.localShadowOutput.frameIdentity = context.featureFrameIdentity;
+        results.localShadowOutput.viewIdentity = context.featureViewIdentity;
+        results.localShadowOutput.lightingPlanIdentity =
+            context.lightingPlan ? context.lightingPlan->GetIdentityHash() : 0;
         results.rayTracedShadowOutput = {};
         results.rayTracedShadowOutput.identity = context.identity;
         results.rayTracedShadowStats = {};
+        results.rayTracedReflectionStats = {};
+        results.rayTracedReflectionDenoiseStats = {};
+        results.rayTracedReflectionCompositeStats = {};
         results.lightingSurfaceEvidence = {};
         results.externalTextureAccesses.clear();
         results.executionReport = context.executionReport != nullptr
@@ -1686,12 +2058,23 @@ namespace RVX
             : (result.frameSnapshot
                    ? result.frameSnapshot->deformationResources
                    : nullptr);
+        result.localShadowAtlasPlan = context.localShadowAtlasPlan;
+        result.localShadowPass = context.localShadowPass;
+        if (context.results)
+        {
+            result.localShadowOutput = context.results->localShadowOutput;
+        }
+        else
+        {
+            result.localShadowOutput.identity = context.identity;
+        }
         if (result.frameSnapshot)
         {
             result.view = result.frameSnapshot->view;
         }
         result.directionalShadow = context.directionalShadow;
         result.rayTracedShadow = context.rayTracedShadow;
+        result.rayTracingScene = context.rayTracingScene;
         result.ambientOcclusion = context.ambientOcclusion;
         result.opaqueSceneSnapshot = context.opaqueSceneSnapshot;
         result.opaqueMaterialTable = context.opaqueMaterialTable;

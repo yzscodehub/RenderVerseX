@@ -4,13 +4,23 @@
 #include "Render/Features/RenderGraphBlackboard.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Lighting/LightingFramePlan.h"
+#include "Render/Lighting/LocalShadowAtlas.h"
+#include "Render/Lighting/LocalShadowFramePlan.h"
 #include "Render/Material/MaterialGPUData.h"
+#include "Render/Passes/LocalShadowPass.h"
 #include "Render/Passes/OpaquePass.h"
+#include "Render/Passes/RayTracedReflectionCompositePass.h"
+#include "Render/Passes/RayTracedReflectionDenoisePass.h"
+#include "Render/Passes/RayTracedReflectionPass.h"
+#include "Render/RayTracing/HybridRayTracingFramePlan.h"
+#include "Render/Reflection/ReflectionFramePlan.h"
 #include "RHI/RHICommandContext.h"
 
 #include "Features/DeferredRecipeFeatureAdapter.h"
 #include "Features/LegacyForwardFeatureAdapter.h"
 #include "Features/PostProcessPipelineFeatureAdapter.h"
+#include "Features/ReflectionFeatureAdapter.h"
+#include "Features/TranslucencyFeatureAdapter.h"
 #include "Renderer/RenderPassRegistry.h"
 #include "../Common/RenderGraphValidationAccess.h"
 
@@ -18,6 +28,7 @@
 #include <cstdint>
 #include <gtest/gtest.h>
 
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <span>
@@ -38,6 +49,15 @@ namespace
     constexpr RenderFeatureResourceContract LightingOutputsContract{
         RenderBlackboardResourceId::LightingOutputs,
         LightingOutputs::SchemaVersion};
+    constexpr RenderFeatureResourceContract LocalShadowOutputsContract{
+        RenderBlackboardResourceId::LocalShadowOutputs,
+        LocalShadowOutputs::SchemaVersion};
+    constexpr RenderFeatureResourceContract ReflectionOutputsContract{
+        RenderBlackboardResourceId::ReflectionOutputs,
+        ReflectionOutputs::SchemaVersion};
+    constexpr RenderFeatureResourceContract PreTranslucencyOutputsContract{
+        RenderBlackboardResourceId::PreTranslucencyOutputs,
+        PreTranslucencyOutputs::SchemaVersion};
     constexpr RenderFeatureResourceContract TranslucencyOutputsContract{
         RenderBlackboardResourceId::TranslucencyOutputs,
         TranslucencyOutputs::SchemaVersion};
@@ -256,6 +276,82 @@ namespace
         RHIBufferRef m_buffer{};
         uint32 m_executeCount = 0;
         bool m_receivedMatchingContext = false;
+    };
+
+    void AddTestHybridRayTracingPass(RenderGraph& graph,
+                                     const RenderPassRecordContext& context,
+                                     const char* name)
+    {
+        struct PassData
+        {
+            bool contextMatches = false;
+        };
+        graph.AddPass<PassData>(
+            name, RenderGraphPassType::Graphics,
+            [&graph, context](RenderGraphBuilder&, PassData& data)
+            {
+                data.contextMatches = context.MatchesTargetGraph(graph);
+            },
+            [](const PassData&, RHICommandContext&) {});
+    }
+
+    class TestRayTracedReflectionPass final : public RayTracedReflectionPass
+    {
+    public:
+        const char* GetName() const override
+        {
+            return "RayTracedReflectionPass";
+        }
+
+        bool IsRequestedEnabled() const override { return true; }
+        bool IsSupported() const override { return true; }
+        bool IsEnabled() const override { return true; }
+
+        void AddToGraph(RenderGraph& graph,
+                        const RenderPassRecordContext& context) override
+        {
+            AddTestHybridRayTracingPass(graph, context, GetName());
+        }
+    };
+
+    class TestRayTracedReflectionDenoisePass final
+        : public RayTracedReflectionDenoisePass
+    {
+    public:
+        const char* GetName() const override
+        {
+            return "RayTracedReflectionDenoisePass";
+        }
+
+        bool IsRequestedEnabled() const override { return true; }
+        bool IsSupported() const override { return true; }
+        bool IsEnabled() const override { return true; }
+
+        void AddToGraph(RenderGraph& graph,
+                        const RenderPassRecordContext& context) override
+        {
+            AddTestHybridRayTracingPass(graph, context, GetName());
+        }
+    };
+
+    class TestRayTracedReflectionCompositePass final
+        : public RayTracedReflectionCompositePass
+    {
+    public:
+        const char* GetName() const override
+        {
+            return "RayTracedReflectionCompositePass";
+        }
+
+        bool IsRequestedEnabled() const override { return true; }
+        bool IsSupported() const override { return true; }
+        bool IsEnabled() const override { return true; }
+
+        void AddToGraph(RenderGraph& graph,
+                        const RenderPassRecordContext& context) override
+        {
+            AddTestHybridRayTracingPass(graph, context, GetName());
+        }
     };
 
     /**
@@ -622,6 +718,9 @@ namespace
             consumer);
     }
 
+    [[nodiscard]] std::shared_ptr<const LightingFramePlan>
+    MakeValidLightingPlan();
+
     [[nodiscard]] RenderPassRecordContext MakeValidRecordContext(
         RenderGraph& graph)
     {
@@ -652,6 +751,49 @@ namespace
         context.featureFrameIdentity = RenderFrameIdentity{1, 2, 3, 4};
         context.featureViewIdentity =
             RenderViewIdentity{5, 6, 0, ViewRole::Main};
+        context.lightingPlan = MakeValidLightingPlan();
+        if (context.lightingPlan)
+        {
+            LocalShadowFramePlanRequest localRequest;
+            localRequest.atlas = LocalShadowAtlasConfig{
+                64, 8, 1, 2,
+                LocalShadowOverflowPolicy::StableUnshadowedFallback};
+            localRequest.atlasGeneration = 1;
+            localRequest.expectedLightingPlanIdentity =
+                context.lightingPlan->GetIdentityHash();
+            const LocalShadowFramePlanBuildResult localResult =
+                LocalShadowFramePlanBuilder{}.Build(
+                    *context.lightingPlan, localRequest);
+            if (localResult.Succeeded())
+            {
+                LocalShadowAtlasPlanRequest atlasRequest;
+                atlasRequest.atlasGeneration = 1;
+                atlasRequest.expectedLocalShadowPlanIdentity =
+                    localResult.plan.GetIdentityHash();
+                const LocalShadowAtlasPlanBuildResult atlasResult =
+                    LocalShadowAtlasPlanBuilder{}.Build(
+                        *context.lightingPlan, localResult.plan,
+                        atlasRequest);
+                if (atlasResult.Succeeded())
+                {
+                    context.localShadowAtlasPlan =
+                        std::make_shared<const LocalShadowAtlasPlan>(
+                            atlasResult.plan);
+                    context.localShadowPass =
+                        std::make_shared<LocalShadowPass>();
+                }
+            }
+        }
+        context.results = std::make_shared<RenderPassRecordResults>();
+        context.results->identity = context.identity;
+        context.results->localShadowOutput.identity = context.identity;
+        context.results->localShadowOutput.frameIdentity =
+            context.featureFrameIdentity;
+        context.results->localShadowOutput.viewIdentity =
+            context.featureViewIdentity;
+        context.results->localShadowOutput.lightingPlanIdentity =
+            context.lightingPlan
+                ? context.lightingPlan->GetIdentityHash() : 0;
         return context;
     }
 
@@ -684,6 +826,67 @@ namespace
         return result.Succeeded()
             ? std::make_shared<const LightingFramePlan>(result.plan)
             : nullptr;
+    }
+
+    [[nodiscard]] std::shared_ptr<const ReflectionFramePlan>
+    MakeValidReflectionPlan(const RenderFeatureContext& context,
+                            uint64 lightingPlanIdentity,
+                            bool requestSSR = false)
+    {
+        ReflectionFramePlanRequest request;
+        request.frameIdentity = context.frameIdentity;
+        request.viewIdentity = context.viewIdentity;
+        request.sceneProbeStateHash = 0x5245464C45435431ULL;
+        request.reflectionConfigurationRevision = 0x5245464C45435432ULL;
+        request.viewPosition = Vec3(0.0f);
+        request.viewProjection = Mat4Identity();
+        request.viewCullingMask = 1U;
+        request.ssr.requested = requestSSR;
+        if (requestSSR)
+        {
+            request.ssr.inputsReady = true;
+            request.ssr.configurationIdentityHash =
+                0x5245464C45435433ULL;
+            request.ssr.pipelineIdentityHash =
+                0x5245464C45435434ULL;
+            request.ssr.depthPyramidIdentityHash =
+                0x5245464C45435435ULL;
+        }
+        request.ibl.source = ReflectionIBLSource::Analytic;
+        request.ibl.lightingPlanIdentityHash = lightingPlanIdentity;
+        request.ibl.analyticFallbackIdentityHash =
+            0x5245464C45435436ULL;
+        request.fallback.configurationIdentityHash =
+            0x5245464C45435437ULL;
+
+        ReflectionFramePlanBuildResult result =
+            ReflectionFramePlanBuilder{}.Build(request);
+        return result.Succeeded() && result.plan.IsValid()
+            ? std::make_shared<const ReflectionFramePlan>(std::move(result.plan))
+            : nullptr;
+    }
+
+    [[nodiscard]] HybridRayTracingFramePlan MakeValidHybridRayTracingPlan(
+        const RenderFeatureContext& context)
+    {
+        HybridRayTracingFramePlanRequest request;
+        request.frameIdentity = context.frameIdentity;
+        request.viewIdentity = context.viewIdentity;
+        request.reflectionHistoryReset = RenderHistoryResetReason::FirstFrame;
+        request.outputExtent = context.outputExtent;
+        request.recipe = RenderPipelineRecipe::HybridRayTracing;
+        request.quality = context.pipeline.quality;
+        request.profileHash = ComputeRenderPipelineProfileHash(
+            request.recipe, request.quality);
+        request.rayTracingScenePreparationGeneration = 1;
+        request.rayTracingSceneStructuralHash = 2;
+        request.shadowRequirement = HybridRayTracingRequirement::Required;
+        request.reflectionRequirement = HybridRayTracingRequirement::Required;
+        request.shadow = {
+            true, true, true, true, true, true, true, {}};
+        request.reflection = {
+            true, true, true, true, true, true, true, {}};
+        return HybridRayTracingFramePlan::Build(request);
     }
 
     [[nodiscard]] std::unique_ptr<FakeRenderFeature> MakeFeature(
@@ -786,11 +989,124 @@ namespace
     {
         LightingOutputs outputs;
         outputs.provenance = provenance;
+        outputs.frameIdentity = RenderFrameIdentity{
+            provenance.frameSequence, 2, 3, 4};
+        outputs.viewIdentity = RenderViewIdentity{
+            5, 6, provenance.viewOrdinal, ViewRole::Main};
         outputs.lightingPlanIdentity = lightingPlanIdentity;
         outputs.hdrSceneColor = MakeTextureHandle(provenance, 1);
+        outputs.hdrSceneColorMetadata = MakeSceneTextureMetadata(
+            SceneTextures::HDRSceneColorContract);
         outputs.clusteredLights = MakeBufferHandle(provenance, 2);
+        outputs.baseIndirectSpecular = MakeTextureHandle(provenance, 3);
+        outputs.baseIndirectSpecularMetadata = MakeSceneTextureMetadata(
+            SceneTextures::BaseIndirectSpecularContract);
+        outputs.specularResponse = MakeTextureHandle(provenance, 4);
+        outputs.specularResponseMetadata = MakeSceneTextureMetadata(
+            SceneTextures::SpecularResponseContract);
+        outputs.exposureState = MakeBufferHandle(provenance, 5);
+        outputs.exposureStateMetadata = {
+            SceneTextures::ExposureStateSchemaVersion,
+            SceneTextures::ExposureStateStride,
+            RenderExposureMode::ManualEV100,
+            0xE1205EULL};
+        outputs.exposureStateContentHash = 0xE1205F00ULL;
         return outputs;
     }
+
+    [[nodiscard]] ReflectionOutputs MakeReflectionOutputs(
+        const RenderGraphBlackboardProvenance& provenance,
+        uint64 lightingPlanIdentity)
+    {
+        ReflectionOutputs outputs;
+        outputs.provenance = provenance;
+        outputs.frameIdentity = RenderFrameIdentity{
+            provenance.frameSequence, 2, 3, 4};
+        outputs.viewIdentity = RenderViewIdentity{
+            5, 6, provenance.viewOrdinal, ViewRole::Main};
+        outputs.lightingPlanIdentity = lightingPlanIdentity;
+        outputs.resolvedSceneColor = MakeTextureHandle(provenance, 1);
+        outputs.resolvedSceneColorMetadata = MakeSceneTextureMetadata(
+            SceneTextures::HDRSceneColorContract);
+        outputs.imageBasedLightingPreserved = true;
+        return outputs;
+    }
+
+    class DataOnlyLightingOutputsFeature final : public IRenderFeature
+    {
+    public:
+        explicit DataOnlyLightingOutputsFeature(
+            uint64 lightingPlanIdentity) noexcept
+            : m_lightingPlanIdentity(lightingPlanIdentity)
+        {
+        }
+
+        [[nodiscard]] RenderFeatureDescriptor Describe() const override
+        {
+            RenderFeatureDescriptor descriptor;
+            descriptor.featureId = BuiltinRenderFeatureIds::ForwardLighting;
+            descriptor.name = "DataOnlyLightingOutputs";
+            descriptor.phase = RenderFeaturePhase::Lighting;
+            descriptor.producedResources = {LightingOutputsContract};
+            descriptor.requiredCapabilities =
+                ToMask(RenderFeatureCapability::Graphics);
+            descriptor.requiredRecipes =
+                ToMask(RenderPipelineRecipe::ForwardStandard);
+            descriptor.qualityTiers = RVX_ALL_RENDER_QUALITY_TIERS;
+            descriptor.fallbackPolicy = RenderFeatureFallbackPolicy::None;
+            descriptor.allowsDataOnlyCompletion = true;
+            return descriptor;
+        }
+
+        void Prepare(const RenderFeatureContext& context) override
+        {
+            m_context = context;
+            m_readiness = MakeReadyReadiness();
+        }
+
+        [[nodiscard]] RenderFeatureReadiness ResolveReadiness() const override
+        {
+            return m_readiness;
+        }
+
+        void AddPasses(RenderFeatureGraphBuilder&,
+                       RenderGraphBlackboard& blackboard) override
+        {
+            LightingOutputs outputs = MakeLightingOutputs(
+                blackboard.GetProvenance(), m_lightingPlanIdentity);
+            outputs.frameIdentity = m_context.frameIdentity;
+            outputs.viewIdentity = m_context.viewIdentity;
+            m_publishCode = blackboard.Publish(
+                BuiltinRenderFeatureIds::ForwardLighting,
+                Describe(), std::move(outputs));
+        }
+
+        [[nodiscard]] RenderFeatureExecutionReceipt CollectReceipt()
+            const override
+        {
+            RenderFeatureExecutionReceipt receipt;
+            receipt.featureId = BuiltinRenderFeatureIds::ForwardLighting;
+            receipt.featureSchemaVersion = 1;
+            receipt.phase = RenderFeaturePhase::Lighting;
+            receipt.requirement = RenderFeatureRequirement::Required;
+            receipt.selected = true;
+            receipt.readiness = m_readiness;
+            receipt.readiness.executed = false;
+            return receipt;
+        }
+
+        [[nodiscard]] RenderGraphBlackboardCode GetPublishCode() const noexcept
+        {
+            return m_publishCode;
+        }
+
+    private:
+        uint64 m_lightingPlanIdentity = 0;
+        RenderFeatureContext m_context{};
+        RenderFeatureReadiness m_readiness{};
+        RenderGraphBlackboardCode m_publishCode =
+            RenderGraphBlackboardCode::Success;
+    };
 
     [[nodiscard]] AmbientOcclusionOutputs MakeAmbientOcclusionOutputs(
         const RenderGraphBlackboardProvenance& provenance)
@@ -843,6 +1159,35 @@ namespace
         outputs.velocity = MakeTextureHandle(provenance, 3);
         outputs.velocityMetadata = MakeSceneTextureMetadata(
             SceneTextures::VelocityContract);
+        outputs.exposureState = MakeBufferHandle(provenance, 4);
+        outputs.exposureStateMetadata = {
+            SceneTextures::ExposureStateSchemaVersion,
+            SceneTextures::ExposureStateStride,
+            RenderExposureMode::ManualEV100,
+            0xE1205EULL};
+        outputs.colorDomain = PostProcessColorDomain::SceneLinearHDR;
+        outputs.transfer = PostProcessTransfer::None;
+        return outputs;
+    }
+
+    [[nodiscard]] PreTranslucencyOutputs MakePreTranslucencyOutputs(
+        const RenderGraphBlackboardProvenance& provenance)
+    {
+        PreTranslucencyOutputs outputs;
+        outputs.provenance = provenance;
+        outputs.frameIdentity = RenderFrameIdentity{
+            provenance.frameSequence, 2, 3, 4};
+        outputs.viewIdentity = RenderViewIdentity{
+            5, 6, provenance.viewOrdinal, ViewRole::Main};
+        outputs.lightingPlanIdentity = 0x4C49474854504C4EULL;
+        outputs.hdrSceneColor = MakeTextureHandle(provenance, 1);
+        outputs.hdrSceneColorMetadata = MakeSceneTextureMetadata(
+            SceneTextures::HDRSceneColorContract);
+        outputs.opaqueSceneSnapshot = MakeTextureHandle(provenance, 5);
+        outputs.opaqueSceneSnapshotMetadata = MakeSceneTextureMetadata(
+            SceneTextures::HDRSceneColorContract);
+        outputs.opaqueSceneSnapshotReceipt =
+            std::make_shared<OpaqueSceneSnapshotCopyReceipt>();
         outputs.exposureState = MakeBufferHandle(provenance, 4);
         outputs.exposureStateMetadata = {
             SceneTextures::ExposureStateSchemaVersion,
@@ -1074,7 +1419,11 @@ namespace
     {
         RenderGraph graph;
         DeferredLightingFeatureAdapter adapter(nullptr, nullptr);
-        adapter.SetRecordContext(MakeValidRecordContext(graph));
+        RenderPassRecordContext missingPlan = MakeValidRecordContext(graph);
+        missingPlan.lightingPlan.reset();
+        missingPlan.localShadowAtlasPlan.reset();
+        missingPlan.localShadowPass.reset();
+        adapter.SetRecordContext(std::move(missingPlan));
 
         RenderFeatureContext context = MakeValidContext(
             RenderPipelineRecipe::DeferredQuality);
@@ -1096,16 +1445,16 @@ namespace
     }
 
     TEST(RenderFeatureValidation,
-         LightingOutputsV3RejectsZeroAndValidatesDeferredPlanIdentity)
+         LightingOutputsV5RejectsPartialReplacementBundleAndPreservesFrameViewPlanIdentity)
     {
         const std::shared_ptr<const LightingFramePlan> plan =
             MakeValidLightingPlan();
         ASSERT_NE(nullptr, plan);
         ASSERT_NE(0U, plan->GetIdentityHash());
-        EXPECT_EQ(3U, LightingOutputs::SchemaVersion);
+        EXPECT_EQ(5U, LightingOutputs::SchemaVersion);
 
         DeferredLightingFeatureAdapter producer(nullptr, nullptr);
-        DeferredForwardSpecialFeatureAdapter consumer(nullptr, nullptr);
+        ReflectionFeatureAdapter consumer;
         const RenderGraphBlackboardProvenance provenance = MakeProvenance();
 
         RenderGraphBlackboard zeroIdentityBlackboard(provenance);
@@ -1113,7 +1462,15 @@ namespace
                       BuiltinRenderFeatureIds::DeferredLighting,
                       producer.Describe(),
                       MakeLightingOutputs(provenance, 0)),
-                  RenderGraphBlackboardCode::StaleGraphResource);
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+
+        LightingOutputs partial = MakeLightingOutputs(
+            provenance, plan->GetIdentityHash());
+        partial.specularResponse = {};
+        EXPECT_EQ(zeroIdentityBlackboard.Publish(
+                      BuiltinRenderFeatureIds::DeferredLighting,
+                      producer.Describe(), std::move(partial)),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
 
         RenderGraphBlackboard blackboard(provenance);
         ASSERT_EQ(blackboard.Publish(
@@ -1124,7 +1481,7 @@ namespace
 
         RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
         const LightingOutputs* const outputs = blackboard.Require<LightingOutputs>(
-            BuiltinRenderFeatureIds::DeferredForwardSpecialChain,
+            BuiltinRenderFeatureIds::ReflectionResolve,
             consumer.Describe(),
             &code);
         ASSERT_EQ(RenderGraphBlackboardCode::Success, code);
@@ -1132,6 +1489,350 @@ namespace
         EXPECT_TRUE(outputs->IsCompatibleWithLightingPlan(plan->GetIdentityHash()));
         EXPECT_FALSE(outputs->IsCompatibleWithLightingPlan(
             plan->GetIdentityHash() + 1U));
+        EXPECT_EQ(outputs->frameIdentity.frameSequence,
+                  provenance.frameSequence);
+        EXPECT_EQ(outputs->viewIdentity.subViewIndex,
+                  provenance.viewOrdinal);
+        EXPECT_EQ(outputs->hdrSceneColorMetadata,
+                  MakeSceneTextureMetadata(
+                      SceneTextures::HDRSceneColorContract));
+    }
+
+    TEST(RenderFeatureValidation,
+         ReflectionIdentityResolvePublishesV3AsDataOnlyCompletion)
+    {
+        RenderGraph graph;
+        const std::shared_ptr<const LightingFramePlan> plan =
+            MakeValidLightingPlan();
+        ASSERT_NE(nullptr, plan);
+
+        auto lighting = std::make_unique<DataOnlyLightingOutputsFeature>(
+            plan->GetIdentityHash());
+        DataOnlyLightingOutputsFeature* const lightingRaw = lighting.get();
+        auto reflection = std::make_unique<ReflectionFeatureAdapter>();
+        RenderPassRecordContext recordContext = MakeValidRecordContext(graph);
+        recordContext.lightingPlan = plan;
+        reflection->SetRecordContext(std::move(recordContext));
+
+        RenderFeatureRegistry registry;
+        ASSERT_EQ(registry.Register(std::move(lighting)),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(registry.Register(std::move(reflection)),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(registry.DeclareImplementedRecipe(
+                      RenderPipelineRecipe::ForwardStandard),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(registry.Seal(), RenderFeatureRegistryCode::Success);
+        ASSERT_TRUE(registry.PrepareFrame(MakeValidContext()).Succeeded());
+
+        const RenderGraphBlackboardProvenance provenance{
+            graph.GetGraphIdentity(), graph.GetRecordingGeneration(), 1, 0, 1};
+        RenderFeatureGraphBuilder builder(graph, provenance);
+        RenderGraphBlackboard blackboard(provenance);
+        ASSERT_EQ(registry.AddPasses(builder, blackboard),
+                  RenderFeatureRegistryCode::Success);
+        EXPECT_EQ(lightingRaw->GetPublishCode(),
+                  RenderGraphBlackboardCode::Success);
+        EXPECT_EQ(graph.GetRecordedPassCount(), 0U);
+
+        ForwardSpecialFeatureAdapter forwardSpecial(nullptr, nullptr);
+        RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
+        const ReflectionOutputs* const outputs =
+            blackboard.Require<ReflectionOutputs>(
+                BuiltinRenderFeatureIds::ForwardSpecialChain,
+                forwardSpecial.Describe(), &code);
+        ASSERT_EQ(code, RenderGraphBlackboardCode::Success);
+        ASSERT_NE(outputs, nullptr);
+        EXPECT_EQ(ReflectionOutputs::SchemaVersion, 3U);
+        EXPECT_EQ(outputs->frameIdentity, MakeValidContext().frameIdentity);
+        EXPECT_EQ(outputs->viewIdentity, MakeValidContext().viewIdentity);
+        EXPECT_EQ(outputs->lightingPlanIdentity, plan->GetIdentityHash());
+        EXPECT_TRUE(outputs->resolvedSceneColor.IsValid());
+        EXPECT_TRUE(outputs->imageBasedLightingPreserved);
+        EXPECT_FALSE(outputs->screenSpaceReflectionsApplied);
+        EXPECT_FALSE(outputs->reflectionProbesApplied);
+        EXPECT_FALSE(outputs->rayTracedReflectionsScheduled);
+        EXPECT_FALSE(outputs->rayTracedReflectionsApplied);
+        EXPECT_EQ(outputs->hybridRayTracingPlanIdentity, 0U);
+
+        RenderGraphValidationAccess::Compile(graph);
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+        NoOpCommandContext commands;
+        RenderGraphValidationAccess::Execute(graph, commands);
+        ASSERT_EQ(registry.FinalizeGraphExecution(graph),
+                  RenderFeatureRegistryCode::Success);
+
+        const RenderExecutionReceipt receipt =
+            registry.CollectExecutionReceipt();
+        const auto reflectionReceipt = std::find_if(
+            receipt.features.begin(), receipt.features.end(),
+            [](const RenderFeatureExecutionReceipt& feature)
+            {
+                return feature.featureId ==
+                    BuiltinRenderFeatureIds::ReflectionResolve;
+            });
+        ASSERT_NE(reflectionReceipt, receipt.features.end());
+        EXPECT_EQ(reflectionReceipt->graphPassCount, 0U);
+        EXPECT_EQ(reflectionReceipt->executedGraphPassCount, 0U);
+        EXPECT_TRUE(reflectionReceipt->contractCompletedWithoutGraphWork);
+        EXPECT_TRUE(reflectionReceipt->readiness.executed);
+        EXPECT_TRUE(receipt.executionSucceeded);
+    }
+
+    TEST(RenderFeatureValidation,
+         ReflectionIdentityResolveRejectsStaleLightingFrameIdentity)
+    {
+        RenderGraph graph;
+        const std::shared_ptr<const LightingFramePlan> plan =
+            MakeValidLightingPlan();
+        ASSERT_NE(nullptr, plan);
+
+        ReflectionFeatureAdapter adapter;
+        RenderPassRecordContext recordContext = MakeValidRecordContext(graph);
+        recordContext.lightingPlan = plan;
+        adapter.SetRecordContext(std::move(recordContext));
+        adapter.Prepare(MakeValidContext());
+        ASSERT_TRUE(adapter.ResolveReadiness().IsReadyToExecute());
+
+        const RenderGraphBlackboardProvenance provenance{
+            graph.GetGraphIdentity(), graph.GetRecordingGeneration(), 1, 0, 1};
+        LightingOutputs stale = MakeLightingOutputs(
+            provenance, plan->GetIdentityHash());
+        ++stale.frameIdentity.sceneRevision;
+        DeferredLightingFeatureAdapter producer(nullptr, nullptr);
+        RenderGraphBlackboard blackboard(provenance);
+        ASSERT_EQ(blackboard.Publish(
+                      BuiltinRenderFeatureIds::DeferredLighting,
+                      producer.Describe(), std::move(stale)),
+                  RenderGraphBlackboardCode::Success);
+
+        RenderFeatureGraphBuilder builder(graph, provenance);
+        adapter.AddPasses(builder, blackboard);
+        EXPECT_FALSE(adapter.ResolveReadiness().inputsReady);
+        EXPECT_EQ(adapter.ResolveReadiness().diagnostic,
+                  "Reflection identity resolve requires the exact typed LightingOutputs v5");
+        EXPECT_FALSE(blackboard.WasPublishedBy(
+            ReflectionOutputsContract,
+            BuiltinRenderFeatureIds::ReflectionResolve));
+    }
+
+    TEST(RenderFeatureValidation,
+         HybridReflectionRegistersOnlyRayTracingChainBeforeSpecialSurfaces)
+    {
+        RenderGraph graph;
+        RenderFeatureContext context = MakeValidContext(
+            RenderPipelineRecipe::HybridRayTracing);
+        context.resolvedRecipe = RenderPipelineRecipe::HybridRayTracing;
+        context.pipeline.quality = RenderQualityTier::Medium;
+
+        RenderPassRecordContext passContext = MakeValidRecordContext(graph);
+        const std::shared_ptr<const LightingFramePlan> lightingPlan =
+            MakeValidLightingPlan();
+        ASSERT_NE(nullptr, lightingPlan);
+        passContext.lightingPlan = lightingPlan;
+
+        const std::shared_ptr<const ReflectionFramePlan> reflectionPlan =
+            MakeValidReflectionPlan(context, lightingPlan->GetIdentityHash());
+        ASSERT_NE(nullptr, reflectionPlan);
+        const HybridRayTracingFramePlan hybridPlan =
+            MakeValidHybridRayTracingPlan(context);
+        ASSERT_TRUE(hybridPlan.IsValid());
+        ASSERT_EQ(hybridPlan.GetReflectionRoute(),
+                  HybridRayTracingReflectionRoute::RayTraced);
+
+        TestRayTracedReflectionPass reflectionPass;
+        TestRayTracedReflectionDenoisePass denoisePass;
+        TestRayTracedReflectionCompositePass compositePass;
+        ReflectionFeatureRecordContext recordContext;
+        recordContext.pass = std::move(passContext);
+        recordContext.plan = reflectionPlan;
+        recordContext.hybridRayTracingPlan = hybridPlan;
+        recordContext.rayTracedReflectionPass = &reflectionPass;
+        recordContext.rayTracedReflectionDenoisePass = &denoisePass;
+        recordContext.rayTracedReflectionCompositePass = &compositePass;
+
+        ReflectionFeatureAdapter adapter;
+        adapter.SetRecordContext(std::move(recordContext));
+        adapter.Prepare(context);
+        ASSERT_TRUE(adapter.ResolveReadiness().IsReadyToExecute());
+
+        const RenderGraphBlackboardProvenance provenance{
+            graph.GetGraphIdentity(), graph.GetRecordingGeneration(), 1, 0, 1};
+        DeferredLightingFeatureAdapter lightingProducer(nullptr, nullptr);
+        RenderGraphBlackboard blackboard(provenance);
+        ASSERT_EQ(blackboard.Publish(
+                      BuiltinRenderFeatureIds::DeferredLighting,
+                      lightingProducer.Describe(),
+                      MakeLightingOutputs(provenance,
+                                          lightingPlan->GetIdentityHash())),
+                  RenderGraphBlackboardCode::Success);
+
+        RenderFeatureGraphBuilder builder(graph, provenance);
+        adapter.AddPasses(builder, blackboard);
+        ASSERT_TRUE(adapter.ResolveReadiness().inputsReady);
+        const auto addPostReflectionSentinel =
+            [&builder](const char* name)
+            {
+                static_cast<void>(builder.AddPass<uint8>(
+                    name,
+                    RenderGraphPassType::Graphics,
+                    [](RenderGraphBuilder&, uint8&) {},
+                    [](const uint8&, RHICommandContext&) {}));
+            };
+        addPostReflectionSentinel("OpaqueSceneSnapshotCopy");
+        addPostReflectionSentinel("WaterFeaturePass");
+        // Translucency is now a later, recipe-neutral feature rather than
+        // part of either special-surface adapter.
+        addPostReflectionSentinel("TransparentPass");
+
+        const std::vector<std::string>& names = builder.GetRegisteredPassNames();
+        const auto findName = [&names](const char* name)
+        {
+            return std::find(names.begin(), names.end(), name);
+        };
+        const auto rayTracedReflection =
+            findName("RayTracedReflectionPass");
+        const auto spatialDenoise =
+            findName("RayTracedReflectionDenoisePass");
+        const auto composite =
+            findName("RayTracedReflectionCompositePass");
+        const auto opaqueSnapshot = findName("OpaqueSceneSnapshotCopy");
+        const auto water = findName("WaterFeaturePass");
+        const auto transparent = findName("TransparentPass");
+        ASSERT_NE(rayTracedReflection, names.end());
+        ASSERT_NE(spatialDenoise, names.end());
+        ASSERT_NE(composite, names.end());
+        ASSERT_NE(opaqueSnapshot, names.end());
+        ASSERT_NE(water, names.end());
+        ASSERT_NE(transparent, names.end());
+        EXPECT_EQ(findName("HiZScreenSpaceReflection"), names.end());
+        const auto indexOf = [&names](const auto& iterator)
+        {
+            return std::distance(names.cbegin(), iterator);
+        };
+        EXPECT_LT(indexOf(rayTracedReflection), indexOf(spatialDenoise));
+        EXPECT_LT(indexOf(spatialDenoise), indexOf(composite));
+        EXPECT_LT(indexOf(composite), indexOf(opaqueSnapshot));
+        EXPECT_LT(indexOf(composite), indexOf(water));
+        EXPECT_LT(indexOf(composite), indexOf(transparent));
+
+        ForwardSpecialFeatureAdapter consumer(nullptr, nullptr);
+        RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
+        const ReflectionOutputs* const outputs =
+            blackboard.Require<ReflectionOutputs>(
+                BuiltinRenderFeatureIds::ForwardSpecialChain,
+                consumer.Describe(), &code);
+        ASSERT_EQ(code, RenderGraphBlackboardCode::Success);
+        ASSERT_NE(outputs, nullptr);
+        EXPECT_TRUE(outputs->rayTracedReflectionsScheduled);
+        EXPECT_FALSE(outputs->rayTracedReflectionsApplied);
+        EXPECT_EQ(outputs->hybridRayTracingPlanIdentity,
+                  hybridPlan.GetIdentityHash());
+    }
+
+    TEST(RenderFeatureValidation,
+         HybridReflectionRejectsMissingPassesAndMismatchedFrozenPlan)
+    {
+        RenderGraph graph;
+        RenderFeatureContext context = MakeValidContext(
+            RenderPipelineRecipe::HybridRayTracing);
+        context.resolvedRecipe = RenderPipelineRecipe::HybridRayTracing;
+        RenderPassRecordContext passContext = MakeValidRecordContext(graph);
+        const std::shared_ptr<const LightingFramePlan> lightingPlan =
+            MakeValidLightingPlan();
+        ASSERT_NE(nullptr, lightingPlan);
+        passContext.lightingPlan = lightingPlan;
+        const std::shared_ptr<const ReflectionFramePlan> reflectionPlan =
+            MakeValidReflectionPlan(context, lightingPlan->GetIdentityHash());
+        ASSERT_NE(nullptr, reflectionPlan);
+
+        ReflectionFeatureRecordContext missingPasses;
+        missingPasses.pass = passContext;
+        missingPasses.plan = reflectionPlan;
+        missingPasses.hybridRayTracingPlan =
+            MakeValidHybridRayTracingPlan(context);
+        ReflectionFeatureAdapter adapter;
+        adapter.SetRecordContext(std::move(missingPasses));
+        adapter.Prepare(context);
+        EXPECT_FALSE(adapter.ResolveReadiness().inputsReady);
+        EXPECT_FALSE(adapter.ResolveReadiness().IsReadyToExecute());
+
+        TestRayTracedReflectionPass reflectionPass;
+        TestRayTracedReflectionDenoisePass denoisePass;
+        TestRayTracedReflectionCompositePass compositePass;
+        RenderFeatureContext mismatchedContext = context;
+        ++mismatchedContext.frameIdentity.sceneRevision;
+        ReflectionFeatureRecordContext mismatchedPlan;
+        mismatchedPlan.pass = passContext;
+        mismatchedPlan.plan = reflectionPlan;
+        mismatchedPlan.hybridRayTracingPlan =
+            MakeValidHybridRayTracingPlan(mismatchedContext);
+        mismatchedPlan.rayTracedReflectionPass = &reflectionPass;
+        mismatchedPlan.rayTracedReflectionDenoisePass = &denoisePass;
+        mismatchedPlan.rayTracedReflectionCompositePass = &compositePass;
+        adapter.SetRecordContext(std::move(mismatchedPlan));
+        adapter.Prepare(context);
+        EXPECT_FALSE(adapter.ResolveReadiness().inputsReady);
+        EXPECT_FALSE(adapter.ResolveReadiness().IsReadyToExecute());
+    }
+
+    TEST(RenderFeatureValidation,
+         NonHybridReflectionNeverRegistersRayTracingReflectionPasses)
+    {
+        RenderGraph graph;
+        RenderFeatureContext context = MakeValidContext(
+            RenderPipelineRecipe::DeferredQuality);
+        context.resolvedRecipe = RenderPipelineRecipe::DeferredQuality;
+        RenderPassRecordContext passContext = MakeValidRecordContext(graph);
+        const std::shared_ptr<const LightingFramePlan> lightingPlan =
+            MakeValidLightingPlan();
+        ASSERT_NE(nullptr, lightingPlan);
+        passContext.lightingPlan = lightingPlan;
+        const std::shared_ptr<const ReflectionFramePlan> reflectionPlan =
+            MakeValidReflectionPlan(context, lightingPlan->GetIdentityHash());
+        ASSERT_NE(nullptr, reflectionPlan);
+
+        TestRayTracedReflectionPass reflectionPass;
+        TestRayTracedReflectionDenoisePass denoisePass;
+        TestRayTracedReflectionCompositePass compositePass;
+        ReflectionFeatureRecordContext recordContext;
+        recordContext.pass = std::move(passContext);
+        recordContext.plan = reflectionPlan;
+        // These pointers deliberately model an enabled global pass inventory.
+        // A non-Hybrid resolved recipe must still select neither RT route.
+        recordContext.rayTracedReflectionPass = &reflectionPass;
+        recordContext.rayTracedReflectionDenoisePass = &denoisePass;
+        recordContext.rayTracedReflectionCompositePass = &compositePass;
+
+        ReflectionFeatureAdapter adapter;
+        adapter.SetRecordContext(std::move(recordContext));
+        adapter.Prepare(context);
+        ASSERT_TRUE(adapter.ResolveReadiness().IsReadyToExecute());
+
+        const RenderGraphBlackboardProvenance provenance{
+            graph.GetGraphIdentity(), graph.GetRecordingGeneration(), 1, 0, 1};
+        DeferredLightingFeatureAdapter lightingProducer(nullptr, nullptr);
+        RenderGraphBlackboard blackboard(provenance);
+        ASSERT_EQ(blackboard.Publish(
+                      BuiltinRenderFeatureIds::DeferredLighting,
+                      lightingProducer.Describe(),
+                      MakeLightingOutputs(provenance,
+                                          lightingPlan->GetIdentityHash())),
+                  RenderGraphBlackboardCode::Success);
+
+        RenderFeatureGraphBuilder builder(graph, provenance);
+        adapter.AddPasses(builder, blackboard);
+        ASSERT_TRUE(adapter.ResolveReadiness().inputsReady);
+        const std::vector<std::string>& names = builder.GetRegisteredPassNames();
+        EXPECT_EQ(std::find(names.begin(), names.end(),
+                            "RayTracedReflectionPass"),
+                  names.end());
+        EXPECT_EQ(std::find(names.begin(), names.end(),
+                            "RayTracedReflectionDenoisePass"),
+                  names.end());
+        EXPECT_EQ(std::find(names.begin(), names.end(),
+                            "RayTracedReflectionCompositePass"),
+                  names.end());
     }
 
     TEST(RenderFeatureValidation,
@@ -1615,51 +2316,162 @@ namespace
     }
 
     TEST(RenderFeatureValidation,
-         DeferredRecipeAdaptersDeclareOneWayGBufferLightingAndSpecialSurfaceFlow)
+         RasterRecipeAdaptersDeclareAUniqueRecipeNeutralTranslucencyBoundary)
     {
+        LegacyForwardFeatureAdapter forwardGeometry(nullptr, nullptr);
+        ForwardLightingFeatureAdapter forwardLighting(nullptr, nullptr);
         DeferredGeometryFeatureAdapter geometry(nullptr, nullptr, nullptr);
         DeferredLightingFeatureAdapter lighting(nullptr, nullptr);
-        DeferredForwardSpecialFeatureAdapter special(nullptr, nullptr);
+        ReflectionFeatureAdapter reflection;
+        ForwardSpecialFeatureAdapter forwardSpecial(nullptr, nullptr);
+        DeferredForwardSpecialFeatureAdapter deferredSpecial(nullptr, nullptr);
+        TranslucencyFeatureAdapter translucency(nullptr);
 
+        const RenderFeatureDescriptor forwardGeometryDescriptor =
+            forwardGeometry.Describe();
+        const RenderFeatureDescriptor forwardLightingDescriptor =
+            forwardLighting.Describe();
         const RenderFeatureDescriptor geometryDescriptor = geometry.Describe();
         const RenderFeatureDescriptor lightingDescriptor = lighting.Describe();
-        const RenderFeatureDescriptor specialDescriptor = special.Describe();
+        const RenderFeatureDescriptor reflectionDescriptor =
+            reflection.Describe();
+        const RenderFeatureDescriptor forwardSpecialDescriptor =
+            forwardSpecial.Describe();
+        const RenderFeatureDescriptor deferredSpecialDescriptor =
+            deferredSpecial.Describe();
+        const RenderFeatureDescriptor translucencyDescriptor =
+            translucency.Describe();
 
         EXPECT_EQ(geometryDescriptor.featureId,
                   BuiltinRenderFeatureIds::DeferredGeometry);
         EXPECT_EQ(lightingDescriptor.featureId,
                   BuiltinRenderFeatureIds::DeferredLighting);
-        EXPECT_EQ(specialDescriptor.featureId,
+        EXPECT_EQ(reflectionDescriptor.featureId,
+                  BuiltinRenderFeatureIds::ReflectionResolve);
+        EXPECT_EQ(forwardSpecialDescriptor.featureId,
+                  BuiltinRenderFeatureIds::ForwardSpecialChain);
+        EXPECT_EQ(deferredSpecialDescriptor.featureId,
                   BuiltinRenderFeatureIds::DeferredForwardSpecialChain);
+        EXPECT_EQ(translucencyDescriptor.featureId,
+                  BuiltinRenderFeatureIds::Translucency);
+        EXPECT_EQ(BuiltinRenderFeatureIds::Translucency.value, 11U);
+        EXPECT_EQ(forwardSpecialDescriptor.phase, RenderFeaturePhase::Sky);
+        EXPECT_EQ(deferredSpecialDescriptor.phase, RenderFeaturePhase::Sky);
+        EXPECT_EQ(translucencyDescriptor.phase,
+                  RenderFeaturePhase::Translucency);
         EXPECT_EQ(geometryDescriptor.requiredRecipes,
-                  ToMask(RenderPipelineRecipe::DeferredQuality));
+                  ToMask(RenderPipelineRecipe::DeferredQuality) |
+                      ToMask(RenderPipelineRecipe::HybridRayTracing));
         EXPECT_EQ(lightingDescriptor.requiredRecipes,
-                  ToMask(RenderPipelineRecipe::DeferredQuality));
-        EXPECT_EQ(specialDescriptor.requiredRecipes,
-                  ToMask(RenderPipelineRecipe::DeferredQuality));
+                  ToMask(RenderPipelineRecipe::DeferredQuality) |
+                      ToMask(RenderPipelineRecipe::HybridRayTracing));
+        EXPECT_EQ(reflectionDescriptor.requiredRecipes,
+                  ToMask(RenderPipelineRecipe::ForwardStandard) |
+                      ToMask(RenderPipelineRecipe::DeferredQuality) |
+                      ToMask(RenderPipelineRecipe::HybridRayTracing));
+        EXPECT_EQ(forwardSpecialDescriptor.requiredRecipes,
+                  ToMask(RenderPipelineRecipe::ForwardStandard));
+        EXPECT_EQ(deferredSpecialDescriptor.requiredRecipes,
+                  ToMask(RenderPipelineRecipe::DeferredQuality) |
+                      ToMask(RenderPipelineRecipe::HybridRayTracing));
+        EXPECT_EQ(translucencyDescriptor.requiredRecipes,
+                  ToMask(RenderPipelineRecipe::ForwardStandard) |
+                      ToMask(RenderPipelineRecipe::DeferredQuality) |
+                      ToMask(RenderPipelineRecipe::HybridRayTracing));
         EXPECT_EQ(geometryDescriptor.optionalRecipes, 0U);
         EXPECT_EQ(lightingDescriptor.optionalRecipes, 0U);
-        EXPECT_EQ(specialDescriptor.optionalRecipes, 0U);
+        EXPECT_EQ(reflectionDescriptor.optionalRecipes, 0U);
+        EXPECT_EQ(forwardSpecialDescriptor.optionalRecipes, 0U);
+        EXPECT_EQ(deferredSpecialDescriptor.optionalRecipes, 0U);
+        EXPECT_EQ(translucencyDescriptor.optionalRecipes, 0U);
         EXPECT_TRUE(std::find(geometryDescriptor.producedResources.begin(),
                               geometryDescriptor.producedResources.end(),
                               SceneTexturesContract) !=
+                    geometryDescriptor.producedResources.end());
+        EXPECT_TRUE(std::find(
+                        forwardGeometryDescriptor.producedResources.begin(),
+                        forwardGeometryDescriptor.producedResources.end(),
+                        LocalShadowOutputsContract) !=
+                    forwardGeometryDescriptor.producedResources.end());
+        EXPECT_TRUE(std::find(
+                        forwardLightingDescriptor.consumedResources.begin(),
+                        forwardLightingDescriptor.consumedResources.end(),
+                        LocalShadowOutputsContract) !=
+                    forwardLightingDescriptor.consumedResources.end());
+        EXPECT_TRUE(std::find(geometryDescriptor.producedResources.begin(),
+                              geometryDescriptor.producedResources.end(),
+                              LocalShadowOutputsContract) !=
                     geometryDescriptor.producedResources.end());
         EXPECT_TRUE(std::find(lightingDescriptor.consumedResources.begin(),
                               lightingDescriptor.consumedResources.end(),
                               SceneTexturesContract) !=
                     lightingDescriptor.consumedResources.end());
+        EXPECT_TRUE(std::find(lightingDescriptor.consumedResources.begin(),
+                              lightingDescriptor.consumedResources.end(),
+                              LocalShadowOutputsContract) !=
+                    lightingDescriptor.consumedResources.end());
         EXPECT_TRUE(std::find(lightingDescriptor.producedResources.begin(),
                               lightingDescriptor.producedResources.end(),
                               LightingOutputsContract) !=
                     lightingDescriptor.producedResources.end());
-        EXPECT_TRUE(std::find(specialDescriptor.consumedResources.begin(),
-                              specialDescriptor.consumedResources.end(),
+        EXPECT_TRUE(std::find(reflectionDescriptor.consumedResources.begin(),
+                              reflectionDescriptor.consumedResources.end(),
                               LightingOutputsContract) !=
-                    specialDescriptor.consumedResources.end());
-        EXPECT_TRUE(std::find(specialDescriptor.producedResources.begin(),
-                              specialDescriptor.producedResources.end(),
-                              TranslucencyOutputsContract) !=
-                    specialDescriptor.producedResources.end());
+                    reflectionDescriptor.consumedResources.end());
+        EXPECT_TRUE(std::find(reflectionDescriptor.producedResources.begin(),
+                              reflectionDescriptor.producedResources.end(),
+                              ReflectionOutputsContract) !=
+                    reflectionDescriptor.producedResources.end());
+        EXPECT_TRUE(std::find(
+                        forwardSpecialDescriptor.consumedResources.begin(),
+                        forwardSpecialDescriptor.consumedResources.end(),
+                        ReflectionOutputsContract) !=
+                    forwardSpecialDescriptor.consumedResources.end());
+        EXPECT_TRUE(std::find(
+                        deferredSpecialDescriptor.consumedResources.begin(),
+                        deferredSpecialDescriptor.consumedResources.end(),
+                        ReflectionOutputsContract) !=
+                    deferredSpecialDescriptor.consumedResources.end());
+        EXPECT_TRUE(std::find(
+                        forwardSpecialDescriptor.consumedResources.begin(),
+                        forwardSpecialDescriptor.consumedResources.end(),
+                        LightingOutputsContract) ==
+                    forwardSpecialDescriptor.consumedResources.end());
+        EXPECT_TRUE(std::find(
+                        deferredSpecialDescriptor.consumedResources.begin(),
+                        deferredSpecialDescriptor.consumedResources.end(),
+                        LightingOutputsContract) ==
+                    deferredSpecialDescriptor.consumedResources.end());
+        EXPECT_TRUE(std::find(
+                        forwardSpecialDescriptor.producedResources.begin(),
+                        forwardSpecialDescriptor.producedResources.end(),
+                        PreTranslucencyOutputsContract) !=
+                    forwardSpecialDescriptor.producedResources.end());
+        EXPECT_TRUE(std::find(
+                        deferredSpecialDescriptor.producedResources.begin(),
+                        deferredSpecialDescriptor.producedResources.end(),
+                        PreTranslucencyOutputsContract) !=
+                    deferredSpecialDescriptor.producedResources.end());
+        EXPECT_TRUE(std::find(
+                        forwardSpecialDescriptor.producedResources.begin(),
+                        forwardSpecialDescriptor.producedResources.end(),
+                        TranslucencyOutputsContract) ==
+                    forwardSpecialDescriptor.producedResources.end());
+        EXPECT_TRUE(std::find(
+                        deferredSpecialDescriptor.producedResources.begin(),
+                        deferredSpecialDescriptor.producedResources.end(),
+                        TranslucencyOutputsContract) ==
+                    deferredSpecialDescriptor.producedResources.end());
+        EXPECT_TRUE(std::find(
+                        translucencyDescriptor.consumedResources.begin(),
+                        translucencyDescriptor.consumedResources.end(),
+                        PreTranslucencyOutputsContract) !=
+                    translucencyDescriptor.consumedResources.end());
+        EXPECT_TRUE(std::find(
+                        translucencyDescriptor.producedResources.begin(),
+                        translucencyDescriptor.producedResources.end(),
+                        TranslucencyOutputsContract) !=
+                    translucencyDescriptor.producedResources.end());
 
         EXPECT_NE(geometryDescriptor.requiredCapabilities &
                       ToMask(RenderFeatureCapability::MultipleRenderTargets),
@@ -1670,6 +2482,185 @@ namespace
         EXPECT_NE(lightingDescriptor.requiredCapabilities &
                       ToMask(RenderFeatureCapability::StorageTexture),
                   0U);
+
+        const RenderGraphBlackboardProvenance provenance = MakeProvenance();
+        RenderGraphBlackboard missingBlackboard(provenance);
+        RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
+        EXPECT_EQ(missingBlackboard.Require<ReflectionOutputs>(
+                      BuiltinRenderFeatureIds::ForwardSpecialChain,
+                      forwardSpecialDescriptor, &code),
+                  nullptr);
+        EXPECT_EQ(code, RenderGraphBlackboardCode::MissingResource);
+
+        RenderGraphBlackboard blackboard(provenance);
+        ASSERT_EQ(blackboard.Publish(
+                      BuiltinRenderFeatureIds::ReflectionResolve,
+                      reflectionDescriptor,
+                      MakeReflectionOutputs(provenance, 0x5245464C454354ULL)),
+                  RenderGraphBlackboardCode::Success);
+        EXPECT_NE(blackboard.Require<ReflectionOutputs>(
+                      BuiltinRenderFeatureIds::ForwardSpecialChain,
+                      forwardSpecialDescriptor, &code),
+                  nullptr);
+        EXPECT_EQ(code, RenderGraphBlackboardCode::Success);
+        EXPECT_NE(blackboard.Require<ReflectionOutputs>(
+                      BuiltinRenderFeatureIds::DeferredForwardSpecialChain,
+                      deferredSpecialDescriptor, &code),
+                  nullptr);
+        EXPECT_EQ(code, RenderGraphBlackboardCode::Success);
+    }
+
+    TEST(RenderFeatureValidation,
+         PreTranslucencyOutputsEnforcesSchemaAndExactGraphProvenance)
+    {
+        ForwardSpecialFeatureAdapter producer(nullptr, nullptr);
+        TranslucencyFeatureAdapter consumer(nullptr);
+        const RenderFeatureDescriptor producerDescriptor =
+            producer.Describe();
+        const RenderFeatureDescriptor consumerDescriptor =
+            consumer.Describe();
+        const RenderGraphBlackboardProvenance provenance = MakeProvenance();
+
+        RenderGraphBlackboard valid(provenance);
+        ASSERT_EQ(valid.Publish(
+                      BuiltinRenderFeatureIds::ForwardSpecialChain,
+                      producerDescriptor,
+                      MakePreTranslucencyOutputs(provenance)),
+                  RenderGraphBlackboardCode::Success);
+        RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
+        EXPECT_NE(valid.Require<PreTranslucencyOutputs>(
+                      BuiltinRenderFeatureIds::Translucency,
+                      consumerDescriptor,
+                      &code),
+                  nullptr);
+        EXPECT_EQ(code, RenderGraphBlackboardCode::Success);
+
+        RenderFeatureDescriptor invalidSchema = producerDescriptor;
+        ASSERT_EQ(invalidSchema.producedResources.size(), 1U);
+        ++invalidSchema.producedResources[0].schemaVersion;
+        RenderFeatureRegistry invalidSchemaRegistry;
+        EXPECT_EQ(invalidSchemaRegistry.Register(
+                      MakeFeature(std::move(invalidSchema))),
+                  RenderFeatureRegistryCode::InvalidResourceContract);
+
+        RenderGraphBlackboard wrongProvenanceBlackboard(provenance);
+        PreTranslucencyOutputs wrongProvenance =
+            MakePreTranslucencyOutputs(provenance);
+        ++wrongProvenance.provenance.recordEpoch;
+        EXPECT_EQ(wrongProvenanceBlackboard.Publish(
+                      BuiltinRenderFeatureIds::ForwardSpecialChain,
+                      producerDescriptor,
+                      std::move(wrongProvenance)),
+                  RenderGraphBlackboardCode::InvalidProvenance);
+
+        RenderGraphBlackboard staleHandleBlackboard(provenance);
+        PreTranslucencyOutputs staleHandle =
+            MakePreTranslucencyOutputs(provenance);
+        ++staleHandle.opaqueSceneSnapshot.recordingGeneration;
+        EXPECT_EQ(staleHandleBlackboard.Publish(
+                      BuiltinRenderFeatureIds::ForwardSpecialChain,
+                      producerDescriptor,
+                      std::move(staleHandle)),
+                  RenderGraphBlackboardCode::StaleGraphResource);
+
+        RenderGraphBlackboard staleFrameBlackboard(provenance);
+        PreTranslucencyOutputs staleFrame =
+            MakePreTranslucencyOutputs(provenance);
+        ++staleFrame.frameIdentity.frameSequence;
+        EXPECT_EQ(staleFrameBlackboard.Publish(
+                      BuiltinRenderFeatureIds::ForwardSpecialChain,
+                      producerDescriptor,
+                      std::move(staleFrame)),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+
+        RenderGraphBlackboard missingReceiptBlackboard(provenance);
+        PreTranslucencyOutputs missingReceipt =
+            MakePreTranslucencyOutputs(provenance);
+        missingReceipt.opaqueSceneSnapshotReceipt.reset();
+        EXPECT_EQ(missingReceiptBlackboard.Publish(
+                      BuiltinRenderFeatureIds::ForwardSpecialChain,
+                      producerDescriptor,
+                      std::move(missingReceipt)),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+    }
+
+    TEST(RenderFeatureValidation,
+         TranslucencyFeatureTransformsTheExactPreBoundaryIntoPostOutputs)
+    {
+        RenderGraph graph;
+        RenderPassRegistry passes;
+        RenderPassRecordContext recordContext =
+            MakeValidRecordContext(graph);
+        auto frozenFrame = std::make_shared<RenderPassFrameSnapshot>();
+        frozenFrame->identity = recordContext.identity;
+        recordContext.frameSnapshot = std::move(frozenFrame);
+        ASSERT_NE(recordContext.lightingPlan, nullptr);
+        const uint64 lightingPlanIdentity =
+            recordContext.lightingPlan->GetIdentityHash();
+
+        TranslucencyFeatureAdapter adapter(&passes);
+        adapter.SetRecordContext(std::move(recordContext));
+        RenderFeatureContext context = MakeValidContext();
+        context.resolvedRecipe = context.pipeline.recipe;
+        context.resolvedQuality = context.pipeline.quality;
+        context.profileHash = ComputeRenderPipelineProfileHash(
+            context.resolvedRecipe, context.resolvedQuality);
+        adapter.Prepare(context);
+        ASSERT_TRUE(adapter.ResolveReadiness().IsReadyToExecute())
+            << adapter.ResolveReadiness().diagnostic;
+
+        const RenderGraphBlackboardProvenance provenance{
+            graph.GetGraphIdentity(),
+            graph.GetRecordingGeneration(),
+            context.frameIdentity.frameSequence,
+            context.recordingViewOrdinal,
+            context.recordEpoch};
+        RenderGraphBlackboard blackboard(provenance);
+        ForwardSpecialFeatureAdapter producer(nullptr, nullptr);
+        PreTranslucencyOutputs inputs =
+            MakePreTranslucencyOutputs(provenance);
+        inputs.frameIdentity = context.frameIdentity;
+        inputs.viewIdentity = context.viewIdentity;
+        inputs.lightingPlanIdentity = lightingPlanIdentity;
+        ASSERT_EQ(blackboard.Publish(
+                      BuiltinRenderFeatureIds::ForwardSpecialChain,
+                      producer.Describe(),
+                      inputs),
+                  RenderGraphBlackboardCode::Success);
+
+        RenderFeatureGraphBuilder builder(graph, provenance);
+        adapter.AddPasses(builder, blackboard);
+        ASSERT_TRUE(adapter.ResolveReadiness().inputsReady)
+            << adapter.ResolveReadiness().diagnostic;
+        EXPECT_TRUE(blackboard.WasPublishedBy(
+            TranslucencyOutputsContract,
+            BuiltinRenderFeatureIds::Translucency));
+
+        const RenderFeatureDescriptor postProcessConsumer =
+            PostProcessPipelineFeatureAdapter(nullptr).Describe();
+        RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
+        const TranslucencyOutputs* const outputs =
+            blackboard.Require<TranslucencyOutputs>(
+                BuiltinRenderFeatureIds::PostProcessPipeline,
+                postProcessConsumer,
+                &code);
+        ASSERT_EQ(code, RenderGraphBlackboardCode::Success);
+        ASSERT_NE(outputs, nullptr);
+        EXPECT_EQ(outputs->frameIdentity, inputs.frameIdentity);
+        EXPECT_EQ(outputs->viewIdentity, inputs.viewIdentity);
+        EXPECT_EQ(outputs->hdrSceneColor.index,
+                  inputs.hdrSceneColor.index);
+        EXPECT_EQ(outputs->hdrSceneColor.graphIdentity,
+                  inputs.hdrSceneColor.graphIdentity);
+        EXPECT_EQ(outputs->opaqueSceneSnapshot.index,
+                  inputs.opaqueSceneSnapshot.index);
+        EXPECT_EQ(outputs->opaqueSceneSnapshot.graphIdentity,
+                  inputs.opaqueSceneSnapshot.graphIdentity);
+        EXPECT_EQ(outputs->exposureState.index,
+                  inputs.exposureState.index);
+        EXPECT_EQ(outputs->exposureState.graphIdentity,
+                  inputs.exposureState.graphIdentity);
+        EXPECT_FALSE(outputs->distortionVectors.IsValid());
     }
 
     TEST(RenderFeatureValidation,
@@ -2196,7 +3187,7 @@ namespace
     }
 
     TEST(RenderFeatureValidation,
-         AmbientOcclusionBlackboardRequiresTheExactForwardAndDeferredChains)
+         AmbientOcclusionAndTranslucencyRequireTheExactRasterRecipeOrder)
     {
         EXPECT_EQ(BuiltinRenderFeatureIds::AmbientOcclusion.value, 7U);
         EXPECT_EQ(BuiltinRenderFeatureIds::ForwardLighting.value, 8U);
@@ -2206,28 +3197,39 @@ namespace
                   RHISampleCount::Count1);
 
         RenderFeatureRegistry forwardRegistry;
-        RenderFeatureDescriptor forwardGeometry = MakeDescriptor(
-            BuiltinRenderFeatureIds::LegacyForwardMainChain.value,
-            "forward-geometry", RenderFeaturePhase::Geometry);
-        forwardGeometry.producedResources.push_back(SceneTexturesContract);
+        RenderFeatureDescriptor forwardGeometry =
+            LegacyForwardFeatureAdapter(nullptr, nullptr).Describe();
         RenderFeatureDescriptor ambientOcclusion = MakeDescriptor(
             BuiltinRenderFeatureIds::AmbientOcclusion.value, "gtao",
             RenderFeaturePhase::Lighting);
         ambientOcclusion.consumedResources.push_back(SceneTexturesContract);
         ambientOcclusion.producedResources.push_back(
             AmbientOcclusionOutputsContract);
-        RenderFeatureDescriptor forwardLighting = MakeDescriptor(
-            BuiltinRenderFeatureIds::ForwardLighting.value, "forward-lighting",
-            RenderFeaturePhase::Lighting);
-        forwardLighting.consumedResources.push_back(
-            AmbientOcclusionOutputsContract);
-        forwardLighting.producedResources.push_back(TranslucencyOutputsContract);
+        RenderFeatureDescriptor forwardLighting =
+            ForwardLightingFeatureAdapter(nullptr, nullptr).Describe();
+        RenderFeatureDescriptor forwardReflection =
+            ReflectionFeatureAdapter{}.Describe();
+        RenderFeatureDescriptor forwardSpecial =
+            ForwardSpecialFeatureAdapter(nullptr, nullptr).Describe();
+        RenderFeatureDescriptor forwardTranslucency =
+            TranslucencyFeatureAdapter(nullptr).Describe();
 
-        ASSERT_EQ(forwardRegistry.Register(MakeFeature(std::move(forwardLighting))),
+        ASSERT_EQ(forwardRegistry.Register(
+                      MakeFeature(std::move(forwardTranslucency))),
                   RenderFeatureRegistryCode::Success);
-        ASSERT_EQ(forwardRegistry.Register(MakeFeature(std::move(ambientOcclusion))),
+        ASSERT_EQ(forwardRegistry.Register(MakeFeature(std::move(forwardSpecial))),
                   RenderFeatureRegistryCode::Success);
-        ASSERT_EQ(forwardRegistry.Register(MakeFeature(std::move(forwardGeometry))),
+        ASSERT_EQ(forwardRegistry.Register(
+                      MakeFeature(std::move(forwardReflection))),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(forwardRegistry.Register(
+                      MakeFeature(std::move(forwardLighting))),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(forwardRegistry.Register(
+                      MakeFeature(std::move(ambientOcclusion))),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(forwardRegistry.Register(
+                      MakeFeature(std::move(forwardGeometry))),
                   RenderFeatureRegistryCode::Success);
         ASSERT_EQ(forwardRegistry.DeclareImplementedRecipe(
                       RenderPipelineRecipe::ForwardStandard),
@@ -2235,35 +3237,52 @@ namespace
         ASSERT_EQ(forwardRegistry.Seal(), RenderFeatureRegistryCode::Success);
         const std::vector<RenderFeatureId>& forwardOrder =
             forwardRegistry.GetExecutionOrder();
-        ASSERT_EQ(forwardOrder.size(), 3U);
+        ASSERT_EQ(forwardOrder.size(), 6U);
         EXPECT_EQ(forwardOrder[0], BuiltinRenderFeatureIds::LegacyForwardMainChain);
         EXPECT_EQ(forwardOrder[1], BuiltinRenderFeatureIds::AmbientOcclusion);
         EXPECT_EQ(forwardOrder[2], BuiltinRenderFeatureIds::ForwardLighting);
+        EXPECT_EQ(forwardOrder[3], BuiltinRenderFeatureIds::ReflectionResolve);
+        EXPECT_EQ(forwardOrder[4], BuiltinRenderFeatureIds::ForwardSpecialChain);
+        EXPECT_EQ(forwardOrder[5], BuiltinRenderFeatureIds::Translucency);
+        EXPECT_EQ(std::count(forwardOrder.begin(), forwardOrder.end(),
+                             BuiltinRenderFeatureIds::Translucency),
+                  1);
 
         RenderFeatureRegistry deferredRegistry;
-        RenderFeatureDescriptor deferredGeometry = MakeDescriptor(
-            BuiltinRenderFeatureIds::DeferredGeometry.value, "deferred-geometry",
-            RenderFeaturePhase::Geometry);
-        deferredGeometry.requiredRecipes = ToMask(RenderPipelineRecipe::DeferredQuality);
-        deferredGeometry.producedResources.push_back(SceneTexturesContract);
+        RenderFeatureDescriptor deferredGeometry =
+            DeferredGeometryFeatureAdapter(nullptr, nullptr, nullptr).Describe();
         RenderFeatureDescriptor deferredAO = MakeDescriptor(
             BuiltinRenderFeatureIds::AmbientOcclusion.value, "deferred-gtao",
             RenderFeaturePhase::Lighting);
-        deferredAO.requiredRecipes = ToMask(RenderPipelineRecipe::DeferredQuality);
+        deferredAO.requiredRecipes =
+            ToMask(RenderPipelineRecipe::DeferredQuality);
         deferredAO.consumedResources.push_back(SceneTexturesContract);
         deferredAO.producedResources.push_back(AmbientOcclusionOutputsContract);
-        RenderFeatureDescriptor deferredLighting = MakeDescriptor(
-            BuiltinRenderFeatureIds::DeferredLighting.value, "deferred-lighting",
-            RenderFeaturePhase::Lighting);
-        deferredLighting.requiredRecipes = ToMask(RenderPipelineRecipe::DeferredQuality);
-        deferredLighting.consumedResources = {
-            SceneTexturesContract, AmbientOcclusionOutputsContract};
-        deferredLighting.producedResources.push_back(LightingOutputsContract);
-        ASSERT_EQ(deferredRegistry.Register(MakeFeature(std::move(deferredLighting))),
+        RenderFeatureDescriptor deferredLighting =
+            DeferredLightingFeatureAdapter(nullptr, nullptr).Describe();
+        RenderFeatureDescriptor deferredReflection =
+            ReflectionFeatureAdapter{}.Describe();
+        RenderFeatureDescriptor deferredSpecial =
+            DeferredForwardSpecialFeatureAdapter(nullptr, nullptr).Describe();
+        RenderFeatureDescriptor deferredTranslucency =
+            TranslucencyFeatureAdapter(nullptr).Describe();
+        ASSERT_EQ(deferredRegistry.Register(
+                      MakeFeature(std::move(deferredTranslucency))),
                   RenderFeatureRegistryCode::Success);
-        ASSERT_EQ(deferredRegistry.Register(MakeFeature(std::move(deferredAO))),
+        ASSERT_EQ(deferredRegistry.Register(
+                      MakeFeature(std::move(deferredSpecial))),
                   RenderFeatureRegistryCode::Success);
-        ASSERT_EQ(deferredRegistry.Register(MakeFeature(std::move(deferredGeometry))),
+        ASSERT_EQ(deferredRegistry.Register(
+                      MakeFeature(std::move(deferredReflection))),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(deferredRegistry.Register(
+                      MakeFeature(std::move(deferredLighting))),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(deferredRegistry.Register(
+                      MakeFeature(std::move(deferredAO))),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(deferredRegistry.Register(
+                      MakeFeature(std::move(deferredGeometry))),
                   RenderFeatureRegistryCode::Success);
         ASSERT_EQ(deferredRegistry.DeclareImplementedRecipe(
                       RenderPipelineRecipe::DeferredQuality),
@@ -2271,10 +3290,17 @@ namespace
         ASSERT_EQ(deferredRegistry.Seal(), RenderFeatureRegistryCode::Success);
         const std::vector<RenderFeatureId>& deferredOrder =
             deferredRegistry.GetExecutionOrder();
-        ASSERT_EQ(deferredOrder.size(), 3U);
+        ASSERT_EQ(deferredOrder.size(), 6U);
         EXPECT_EQ(deferredOrder[0], BuiltinRenderFeatureIds::DeferredGeometry);
         EXPECT_EQ(deferredOrder[1], BuiltinRenderFeatureIds::AmbientOcclusion);
         EXPECT_EQ(deferredOrder[2], BuiltinRenderFeatureIds::DeferredLighting);
+        EXPECT_EQ(deferredOrder[3], BuiltinRenderFeatureIds::ReflectionResolve);
+        EXPECT_EQ(deferredOrder[4],
+                  BuiltinRenderFeatureIds::DeferredForwardSpecialChain);
+        EXPECT_EQ(deferredOrder[5], BuiltinRenderFeatureIds::Translucency);
+        EXPECT_EQ(std::count(deferredOrder.begin(), deferredOrder.end(),
+                             BuiltinRenderFeatureIds::Translucency),
+                  1);
 
         const RenderGraphBlackboardProvenance provenance = MakeProvenance();
         RenderFeatureDescriptor producer = MakeDescriptor(
@@ -2450,10 +3476,8 @@ namespace
                     descriptor.producedResources.end());
         EXPECT_EQ(descriptor.requiredRecipes,
                   ToMask(RenderPipelineRecipe::ForwardStandard) |
-                      ToMask(RenderPipelineRecipe::DeferredQuality));
-        EXPECT_EQ(descriptor.requiredRecipes &
-                      ToMask(RenderPipelineRecipe::HybridRayTracing),
-                  0U);
+                      ToMask(RenderPipelineRecipe::DeferredQuality) |
+                      ToMask(RenderPipelineRecipe::HybridRayTracing));
 
         RenderPostProcessExecutionReceipt directEncoded;
         directEncoded.postProcessContentHash = 0x10U;
@@ -3538,6 +4562,74 @@ namespace
         invalidPassCounts.features[0].graphPassCount = 1;
         invalidPassCounts.features[0].executedGraphPassCount = 2;
         EXPECT_FALSE(invalidPassCounts.IsStructurallyValid());
+
+        RenderExecutionReceipt legacyV11MissingDataOnlyEvidence = candidate;
+        legacyV11MissingDataOnlyEvidence.schemaVersion = 11;
+        legacyV11MissingDataOnlyEvidence.features[0]
+            .contractCompletedWithoutGraphWork = false;
+        EXPECT_FALSE(legacyV11MissingDataOnlyEvidence.IsStructurallyValid());
+
+        RenderExecutionReceipt hybridWithoutGraphEvidence = candidate;
+        hybridWithoutGraphEvidence.requestedRecipe =
+            RenderPipelineRecipe::HybridRayTracing;
+        hybridWithoutGraphEvidence.resolvedRecipe =
+            RenderPipelineRecipe::HybridRayTracing;
+        hybridWithoutGraphEvidence.profileHash = ComputeRenderPipelineProfileHash(
+            hybridWithoutGraphEvidence.resolvedRecipe,
+            hybridWithoutGraphEvidence.quality);
+        RenderHybridRayTracingExecutionReceipt& hybrid =
+            hybridWithoutGraphEvidence.hybridRayTracing;
+        hybrid.available = true;
+        hybrid.planIdentityHash = 0xB001ULL;
+        hybrid.scenePreparationGeneration = 3;
+        hybrid.sceneStructuralHash = 0xB002ULL;
+        hybrid.frameIdentity = hybridWithoutGraphEvidence.frameIdentity;
+        hybrid.viewIdentity = hybridWithoutGraphEvidence.viewIdentity;
+        hybrid.fullResolution = {1920, 1080};
+        hybrid.halfResolution = {960, 540};
+        hybrid.recipe = hybridWithoutGraphEvidence.resolvedRecipe;
+        hybrid.quality = hybridWithoutGraphEvidence.quality;
+        hybrid.profileHash = hybridWithoutGraphEvidence.profileHash;
+        hybrid.shadowRoute = RenderHybridRayTracingShadowRoute::RayTraced;
+        hybrid.reflectionRoute =
+            RenderHybridRayTracingReflectionRoute::RayTraced;
+        EXPECT_FALSE(hybridWithoutGraphEvidence.IsStructurallyValid());
+
+        hybridWithoutGraphEvidence.executionSucceeded = false;
+        EXPECT_TRUE(hybridWithoutGraphEvidence.IsStructurallyValid());
+        ++hybridWithoutGraphEvidence.hybridRayTracing.frameIdentity.sceneRevision;
+        EXPECT_FALSE(hybridWithoutGraphEvidence.IsStructurallyValid());
+
+        RenderExecutionReceipt nestedPresentationWithoutOuter = candidate;
+        nestedPresentationWithoutOuter.requestedRecipe =
+            RenderPipelineRecipe::HybridRayTracing;
+        nestedPresentationWithoutOuter.resolvedRecipe =
+            RenderPipelineRecipe::HybridRayTracing;
+        nestedPresentationWithoutOuter.profileHash =
+            ComputeRenderPipelineProfileHash(
+                nestedPresentationWithoutOuter.resolvedRecipe,
+                nestedPresentationWithoutOuter.quality);
+        RenderHybridRayTracingExecutionReceipt& nestedHybrid =
+            nestedPresentationWithoutOuter.hybridRayTracing;
+        nestedHybrid = hybrid;
+        nestedHybrid.frameIdentity =
+            nestedPresentationWithoutOuter.frameIdentity;
+        nestedHybrid.viewIdentity =
+            nestedPresentationWithoutOuter.viewIdentity;
+        nestedHybrid.profileHash = nestedPresentationWithoutOuter.profileHash;
+        nestedHybrid.graphExecutionSucceeded = true;
+        nestedHybrid.sceneBuildAccepted = true;
+        nestedHybrid.shadowDispatchRecorded = true;
+        nestedHybrid.reflectionDispatchRecorded = true;
+        nestedHybrid.spatialDenoiseRecorded = true;
+        nestedHybrid.temporalResolveRecorded = true;
+        nestedHybrid.compositeRecorded = true;
+        nestedHybrid.compositeUsedDenoisedSource = true;
+        nestedHybrid.submissionAccepted = true;
+        nestedHybrid.presentationQualified = true;
+        nestedHybrid.succeeded = true;
+        EXPECT_TRUE(nestedHybrid.IsStructurallyValid());
+        EXPECT_FALSE(nestedPresentationWithoutOuter.IsStructurallyValid());
 
         RenderExecutionReceipt missingLightingIdentity = candidate;
         missingLightingIdentity.lighting.lightingPlanIdentity = 0;

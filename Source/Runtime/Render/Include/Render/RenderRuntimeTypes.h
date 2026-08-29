@@ -79,6 +79,58 @@ namespace RVX
         }
     };
 
+    /**
+     * @brief Immutable state of the one-shot Hi-Z reflection qualification admission.
+     *
+     * Publishing the request is distinct from Render-owner admission.  The
+     * owner resolves the request immediately before consuming the first frame
+     * published after the request's linearization point, which prevents an
+     * already-published frame from stealing an exact-frame qualification.
+     */
+    enum class RenderHiZReflectionQualificationRequestState : uint8
+    {
+        NotRequested = 0,
+        PendingRenderOwnerAdmission = 1,
+        Accepted = 2,
+        RejectedByRenderOwner = 3,
+        RejectedByRuntimeShutdown = 4
+    };
+
+    /** @brief Value-only Render-owner admission result for the Hi-Z probe. */
+    struct RenderHiZReflectionQualificationRequestResult
+    {
+        RenderHiZReflectionQualificationRequestState state =
+            RenderHiZReflectionQualificationRequestState::NotRequested;
+        uint64 targetFrameSequence = 0;
+        const char* diagnostic =
+            "Hi-Z reflection qualification probe was not requested";
+
+        [[nodiscard]] constexpr bool IsTerminal() const noexcept
+        {
+            return state ==
+                       RenderHiZReflectionQualificationRequestState::Accepted ||
+                   state == RenderHiZReflectionQualificationRequestState::
+                                RejectedByRenderOwner ||
+                   state == RenderHiZReflectionQualificationRequestState::
+                                RejectedByRuntimeShutdown;
+        }
+
+        [[nodiscard]] constexpr bool IsAccepted() const noexcept
+        {
+            return state ==
+                       RenderHiZReflectionQualificationRequestState::Accepted &&
+                   targetFrameSequence != 0;
+        }
+
+        [[nodiscard]] constexpr bool IsRejected() const noexcept
+        {
+            return state == RenderHiZReflectionQualificationRequestState::
+                                RejectedByRenderOwner ||
+                   state == RenderHiZReflectionQualificationRequestState::
+                                RejectedByRuntimeShutdown;
+        }
+    };
+
     enum class RenderResultClass : uint8
     {
         Success = 0,

@@ -75,6 +75,8 @@ namespace RVX
         [[nodiscard]] bool RequestAmbientOcclusionQualificationProbe() noexcept;
         /** @brief Arm one Toon lighting and screen-space outline qualification probe. */
         [[nodiscard]] bool RequestToonOutlineQualificationProbe() noexcept;
+        /** @brief Arm one exact Hi-Z reflection route-mask qualification probe. */
+        [[nodiscard]] bool RequestHiZReflectionQualificationProbe() noexcept;
         /**
          * @brief Read the one-shot Render-owner admission result for the Toon probe.
          *
@@ -83,6 +85,9 @@ namespace RVX
          */
         [[nodiscard]] RenderToonOutlineQualificationRequestResult
         GetToonOutlineQualificationProbeRequestResult() const noexcept;
+        /** @brief Read exact-frame Render-owner admission for the Hi-Z probe. */
+        [[nodiscard]] RenderHiZReflectionQualificationRequestResult
+        GetHiZReflectionQualificationProbeRequestResult() const noexcept;
 
         RenderResourceReserveResult ReserveResource(
             AssetId assetId,

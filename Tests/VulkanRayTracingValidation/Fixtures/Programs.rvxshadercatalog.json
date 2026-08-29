@@ -1,0 +1,12 @@
+{
+  "schema": "RVX_SHADER_PROGRAM_CATALOG",
+  "version": 2,
+  "programs": [
+    {"asset":"VulkanRayTracingFixture.hlsl","stage":"RayGeneration","entry":"RayGenerationMain","backends":["Vulkan"]},
+    {"asset":"VulkanRayTracingFixture.hlsl","stage":"Miss","entry":"MissMain","backends":["Vulkan"]},
+    {"asset":"VulkanRayTracingFixture.hlsl","stage":"ClosestHit","entry":"ClosestHitMain","backends":["Vulkan"]},
+    {"asset":"VulkanRayTracingFixture.hlsl","stage":"AnyHit","entry":"AnyHitMain","backends":["Vulkan"]},
+    {"asset":"VulkanRayTracingFixture.hlsl","stage":"Intersection","entry":"IntersectionMain","backends":["Vulkan"]},
+    {"asset":"VulkanRayTracingFixture.hlsl","stage":"Callable","entry":"CallableMain","backends":["Vulkan"]}
+  ]
+}

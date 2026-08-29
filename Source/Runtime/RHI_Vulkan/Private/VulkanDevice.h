@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VulkanCommon.h"
+#include "VulkanRayTracing.h"
 #include "RHI/RHIDevice.h"
 #include <atomic>
 #include <mutex>
@@ -77,6 +78,41 @@ namespace RVX
                support.timelineSemaphore &&
                support.dynamicRendering &&
                support.synchronization2;
+    }
+
+    /** @brief Physical feature set required by the production Vulkan RT shaders. */
+    struct VulkanRayTracingFeatureSupport
+    {
+        bool extensionsAvailable = false;
+        bool bufferDeviceAddress = false;
+        bool descriptorIndexing = false;
+        bool descriptorBindingPartiallyBound = false;
+        bool runtimeDescriptorArray = false;
+        bool shaderSampledImageArrayNonUniformIndexing = false;
+        bool shaderStorageBufferArrayNonUniformIndexing = false;
+        bool accelerationStructure = false;
+        bool rayTracingPipeline = false;
+    };
+
+    /**
+     * @brief Require every logical-device feature consumed by the RT shader ABI.
+     *
+     * Ray-traced shadow and reflection shaders index both sampled-image and
+     * storage-buffer descriptor arrays with NonUniformResourceIndex.  Vulkan's
+     * aggregate descriptorIndexing bit does not enable those per-resource bits.
+     */
+    inline bool IsVulkanRayTracingFeatureSetSupported(
+        const VulkanRayTracingFeatureSupport& support)
+    {
+        return support.extensionsAvailable &&
+               support.bufferDeviceAddress &&
+               support.descriptorIndexing &&
+               support.descriptorBindingPartiallyBound &&
+               support.runtimeDescriptorArray &&
+               support.shaderSampledImageArrayNonUniformIndexing &&
+               support.shaderStorageBufferArrayNonUniformIndexing &&
+               support.accelerationStructure &&
+               support.rayTracingPipeline;
     }
 
     /** @brief Select the optional memory-budget extension from enumerated device availability. */
@@ -159,6 +195,19 @@ namespace RVX
         RHIPipelineLayoutRef CreatePipelineLayout(const RHIPipelineLayoutDesc& desc) override;
         RHIPipelineRef CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc) override;
         RHIPipelineRef CreateComputePipeline(const RHIComputePipelineDesc& desc) override;
+        RHIPipelineRef CreateRayTracingPipeline(
+            const RHIRayTracingPipelineDesc& desc) override;
+        RHIShaderTableRef CreateShaderTable(
+            const RHIShaderTableDesc& desc) override;
+        RHIAccelerationStructureBuildSizes GetBottomLevelASBuildSizes(
+            const RHIBottomLevelASDesc& desc) override;
+        RHIAccelerationStructureBuildSizes GetTopLevelASBuildSizes(
+            const RHITopLevelASDesc& desc) override;
+        RHIAccelerationStructureRef CreateAccelerationStructure(
+            const RHIAccelerationStructureDesc& desc) override;
+        RHIAccelerationStructureCompactedSizeQueryRef
+        CreateAccelerationStructureCompactedSizeQuery(
+            const RHIAccelerationStructureCompactedSizeQueryDesc& desc) override;
 
         RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc& desc) override;
 
@@ -253,6 +302,24 @@ namespace RVX
         {
             return m_enabledMultiDrawIndirect;
         }
+        bool IsRayTracingEnabled() const
+        {
+            return m_enabledRayTracing;
+        }
+        const VulkanRayTracingFunctions& GetRayTracingFunctions() const
+        {
+            return m_rayTracingFunctions;
+        }
+        const VkPhysicalDeviceAccelerationStructurePropertiesKHR&
+        GetAccelerationStructureProperties() const
+        {
+            return m_accelerationStructureProperties;
+        }
+        const VkPhysicalDeviceRayTracingPipelinePropertiesKHR&
+        GetRayTracingPipelineProperties() const
+        {
+            return m_rayTracingPipelineProperties;
+        }
         VulkanPipelineStageSupport GetEnabledPipelineStageSupport() const
         {
             return {
@@ -332,6 +399,7 @@ namespace RVX
         bool CreateCommandPools();
         bool CreateDescriptorPool();
         bool CreatePipelineCache();
+        bool LoadRayTracingFunctions();
         void SavePipelineCache();
         void ProcessDeferredSemaphoreDestroys(bool force);
 
@@ -386,6 +454,14 @@ namespace RVX
         bool m_enabledSynchronization2 = false;
         bool m_enabledDynamicRendering = false;
         bool m_enabledMemoryBudget = false;
+        bool m_enabledRayTracing = false;
+        VulkanRayTracingFunctions m_rayTracingFunctions;
+        VkPhysicalDeviceAccelerationStructurePropertiesKHR
+            m_accelerationStructureProperties = {
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
+        VkPhysicalDeviceRayTracingPipelinePropertiesKHR
+            m_rayTracingPipelineProperties = {
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
         VulkanIndexedIndirectCountDispatch m_indexedIndirectCountDispatch =
             VulkanIndexedIndirectCountDispatch::None;
         PFN_vkCmdDrawIndexedIndirectCount m_vkCmdDrawIndexedIndirectCount = nullptr;

@@ -33,7 +33,11 @@ namespace
             case RHIShaderStage::ClosestHit:
             case RHIShaderStage::AnyHit:
             case RHIShaderStage::Intersection:
-                return legacy ? nullptr : "lib_6_3";
+            case RHIShaderStage::Callable:
+                return backend == RHIBackendType::DX12 ||
+                       backend == RHIBackendType::Vulkan
+                    ? "lib_6_3"
+                    : nullptr;
             default:
                 return nullptr;
         }

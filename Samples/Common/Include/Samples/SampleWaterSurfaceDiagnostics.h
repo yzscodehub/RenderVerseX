@@ -76,7 +76,9 @@ namespace RVX
 
         [[nodiscard]] bool HasWaterExecution() const noexcept
         {
-            return available && executionReceiptSchemaVersion == 11 &&
+            // Schema 11 remains decodable in historical reports, but only the
+            // current renderer receipt can qualify a live Sample execution.
+            return available && executionReceiptSchemaVersion == 12 &&
                    executionReceiptStructurallyValid &&
                    executionReceiptPresented && executionReceiptSucceeded &&
                    mainView && requested && supported && enabled &&

@@ -15,6 +15,7 @@
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightingFramePlan.h"
 #include "Render/Lighting/LightManager.h"
+#include "Render/Lighting/LocalShadowAtlas.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/PipelineCache.h"
 #include "Render/Passes/DirectDrawPacketBatch.h"
@@ -164,6 +165,8 @@ namespace
                 Ref<RefCounted>(bindings.spotLightsBuffer.Get())) &&
             context.RetainSubmissionResource(
                 Ref<RefCounted>(bindings.rayTracedShadowMaskView.Get())) &&
+            context.RetainSubmissionResource(
+                Ref<RefCounted>(bindings.localShadowAtlasView.Get())) &&
             context.RetainSubmissionResource(
                 Ref<RefCounted>(bindings.clusterConstantsBuffer.Get())) &&
             context.RetainSubmissionResource(
@@ -1442,9 +1445,11 @@ void OpaquePass::InitializeGraphRecorder(
     bool gpuDrivenPlanned,
     std::shared_ptr<const LightingFramePlan> lightingPlan,
     std::shared_ptr<const RenderLightingFrameResourceSnapshot> lightingResources,
+    std::shared_ptr<const LocalShadowAtlasPlan> localShadowAtlasPlan,
     std::shared_ptr<const RenderDeformationFrameResources> deformationResources,
     const DirectionalShadowRecordOutput& directionalShadow,
     const RayTracedShadowRecordOutput& rayTracedShadow,
+    const LocalShadowRecordOutput& localShadow,
     const AmbientOcclusionRecordInput& ambientOcclusion,
     std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache,
     DirectRasterReadbackQualification* directReadbackQualification,
@@ -1473,10 +1478,12 @@ void OpaquePass::InitializeGraphRecorder(
     m_gpuSceneRasterEnabled = gpuInputs.gpuSceneRasterEnabled;
     m_lightingPlan = std::move(lightingPlan);
     m_lightingResources = std::move(lightingResources);
+    m_localShadowAtlasPlan = std::move(localShadowAtlasPlan);
     m_deformationResources = std::move(deformationResources);
     m_lightingBindingSnapshot.reset();
     m_directionalShadowInputs = directionalShadow;
     m_rayTracedShadowInputs = rayTracedShadow;
+    m_localShadowInputs = localShadow;
     m_ambientOcclusionInput = ambientOcclusion;
     m_directInstanceStreamCache = std::move(directInstanceStreamCache);
     m_directReadbackQualification = directReadbackQualification;
@@ -1593,10 +1600,12 @@ void OpaquePass::AddToGraphInternal(
             {
                 return false;
             }
-            const std::array<RGTextureHandle, 4> targets = {
+            const std::array<RGTextureHandle, 6> targets = {
                 forwardSurfaceTargets.hdrSceneColor,
                 forwardSurfaceTargets.normalRoughnessMetallic,
                 forwardSurfaceTargets.materialIdentity,
+                forwardSurfaceTargets.baseIndirectSpecular,
+                forwardSurfaceTargets.specularResponse,
                 forwardSurfaceTargets.depth};
             return std::all_of(
                 targets.begin(), targets.end(),
@@ -1823,8 +1832,10 @@ void OpaquePass::AddToGraphInternal(
             data.recorder->InitializeGraphRecorder(
                 renderScene, opaqueDrawItems, maskedDrawItems, gpuCulling,
                 data.gpuInputs, gpuPlanned, lightingPlan, lightingResources,
+                data.execution.localShadowAtlasPlan,
                 data.execution.deformationResources,
                 directionalShadow, rayTracedShadow,
+                data.execution.localShadowOutput,
                 data.execution.ambientOcclusion,
                 data.directInstanceStreamCache,
                 data.directReadbackQualification,
@@ -1970,6 +1981,7 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 {
     m_directionalShadowReadHandle = {};
     m_rayTracedShadowMaskReadHandle = {};
+    m_localShadowAtlasReadHandle = {};
     m_ambientOcclusionReadHandle = {};
     m_lightConstantsReadHandle = {};
     m_pointLightsReadHandle = {};
@@ -1984,6 +1996,7 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     m_depthTargetViewHandle = {};
     m_directionalShadowViewHandle = {};
     m_rayTracedShadowMaskViewHandle = {};
+    m_localShadowAtlasViewHandle = {};
     m_ambientOcclusionViewHandle = {};
     m_environmentIBLIrradianceViewHandle = {};
     m_environmentIBLPrefilteredViewHandle = {};
@@ -2030,9 +2043,43 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
         !m_directionalShadowInputs.IsCompatibleWith(
             m_recordIdentity,
             m_lightingPlan->GetIdentityHash()) ||
-        !m_rayTracedShadowInputs.IsCompatibleWith(m_recordIdentity))
+        !m_rayTracedShadowInputs.IsCompatibleWith(m_recordIdentity) ||
+        !m_localShadowInputs.IsCompatibleWith(
+            m_recordIdentity,
+            m_lightingPlan->GetFrameIdentity(),
+            m_lightingPlan->GetViewIdentity(),
+            m_lightingPlan->GetIdentityHash()))
     {
         return;
+    }
+
+    // The local atlas result is deliberately validated independently from the
+    // immutable lighting plan. A plan can validly select no local pages, in
+    // which case the descriptor binds PipelineCache's D32 fallback; once a
+    // page is selected every plan/generation/provenance fact must agree.
+    if (m_localShadowAtlasPlan != nullptr &&
+        m_localShadowInputs.enabled !=
+            !m_localShadowAtlasPlan->GetPages().empty())
+    {
+        return;
+    }
+    if (m_localShadowInputs.enabled)
+    {
+        if (m_localShadowAtlasPlan == nullptr ||
+            !m_localShadowAtlasPlan->IsValid() ||
+            m_localShadowInputs.localShadowPlanIdentity !=
+                m_localShadowAtlasPlan->GetLocalShadowPlanIdentity() ||
+            m_localShadowInputs.atlasPlanIdentity !=
+                m_localShadowAtlasPlan->GetIdentityHash() ||
+            m_localShadowInputs.atlasGeneration !=
+                m_localShadowAtlasPlan->GetAtlasGeneration() ||
+            m_localShadowInputs.pageCount !=
+                m_localShadowAtlasPlan->GetPages().size() ||
+            m_localShadowInputs.pageResolution !=
+                m_localShadowAtlasPlan->GetTextureContract().pageResolution)
+        {
+            return;
+        }
     }
 
     const bool sceneHasSkinning = m_renderScene != nullptr &&
@@ -2350,22 +2397,28 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     else if (m_outputFamily ==
              OpaqueRasterOutputFamily::ForwardSceneHDRWithSurfaceData)
     {
-        const std::array<RGTextureHandle, 3> targets = {
+        const std::array<RGTextureHandle, 5> targets = {
             m_forwardSurfaceTargets.hdrSceneColor,
             m_forwardSurfaceTargets.normalRoughnessMetallic,
-            m_forwardSurfaceTargets.materialIdentity};
-        const std::array<RHIFormat, 3> expectedFormats = {
+            m_forwardSurfaceTargets.materialIdentity,
+            m_forwardSurfaceTargets.baseIndirectSpecular,
+            m_forwardSurfaceTargets.specularResponse};
+        const std::array<RHIFormat, 5> expectedFormats = {
             m_pipelineCache != nullptr
                 ? m_pipelineCache->GetSceneRenderTargetFormat()
                 : RHIFormat::Unknown,
             RHIFormat::RGBA8_UNORM,
-            RHIFormat::R32_UINT};
-        constexpr std::array<const char*, 3> viewNames = {
+            RHIFormat::R32_UINT,
+            RHIFormat::RGBA16_FLOAT,
+            RHIFormat::RGBA16_FLOAT};
+        constexpr std::array<const char*, 5> viewNames = {
             "ForwardSceneHDRRTV",
             "ForwardSurfaceNormalRTV",
-            "ForwardSurfaceMaterialIdentityRTV"};
+            "ForwardSurfaceMaterialIdentityRTV",
+            "ForwardBaseIndirectSpecularRTV",
+            "ForwardSpecularResponseRTV"};
 
-        std::array<const RHITextureDesc*, 3> colorDescs{};
+        std::array<const RHITextureDesc*, 5> colorDescs{};
         bool validTargets = m_forwardSurfaceTargets.IsValid();
         uint32 width = 0;
         uint32 height = 0;
@@ -2531,6 +2584,73 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
             m_shadowStats.requested = true;
             m_shadowStats.renderGraphReadDeclared =
                 m_directionalShadowViewHandle.IsValid();
+        }
+    }
+
+    // Deferred GBuffer shading does not sample local shadows, but its shared
+    // frame descriptor still carries the frozen LightConstants ABI.  Bind the
+    // exact graph-owned atlas whenever those constants advertise local-shadow
+    // pages so the descriptor can never pair non-zero pages with a fallback
+    // texture.  CSM, RT, and IBL remain DeferredLighting-only dependencies.
+    if (m_localShadowInputs.enabled)
+    {
+        RGTextureHandle depthAtlas = m_localShadowInputs.depthAtlas;
+        depthAtlas.hasSubresourceRange = true;
+        depthAtlas.subresourceRange = RHISubresourceRange{
+            0, RVX_ALL_MIPS, 0, RVX_ALL_LAYERS, RHITextureAspect::Depth};
+        const RHITextureDesc* const atlasDesc = builder.GetTextureDesc(depthAtlas);
+        const LocalShadowAtlasTextureContract& atlasContract =
+            m_localShadowAtlasPlan->GetTextureContract();
+        const std::vector<LocalShadowAtlasPage>& pages =
+            m_localShadowAtlasPlan->GetPages();
+        const bool pageRangesMatch =
+            m_localShadowInputs.pageDepthLayers.size() == pages.size() &&
+            std::equal(
+                m_localShadowInputs.pageDepthLayers.begin(),
+                m_localShadowInputs.pageDepthLayers.end(),
+                pages.begin(),
+                [](const RGTextureHandle& layer,
+                   const LocalShadowAtlasPage& page)
+                {
+                    return layer.IsValid() && layer.hasSubresourceRange &&
+                        layer.subresourceRange.baseMipLevel == 0 &&
+                        layer.subresourceRange.mipLevelCount == 1 &&
+                        layer.subresourceRange.baseArrayLayer == page.pageIndex &&
+                        layer.subresourceRange.arrayLayerCount == 1 &&
+                        layer.subresourceRange.aspect == RHITextureAspect::Depth;
+                });
+        if (atlasDesc == nullptr || atlasDesc->format != RHIFormat::D32_FLOAT ||
+            atlasDesc->dimension != RHITextureDimension::Texture2D ||
+            atlasDesc->width != m_localShadowInputs.pageResolution ||
+            atlasDesc->height != m_localShadowInputs.pageResolution ||
+            atlasDesc->arraySize != atlasContract.pageCapacity ||
+            !HasFlag(atlasDesc->usage, RHITextureUsage::DepthStencil) ||
+            !HasFlag(atlasDesc->usage, RHITextureUsage::ShaderResource) ||
+            !pageRangesMatch)
+        {
+            return;
+        }
+
+        m_localShadowAtlasReadHandle = builder.Read(
+            depthAtlas,
+            MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                             RHIShaderStage::Pixel));
+        RHITextureViewDesc atlasViewDesc;
+        atlasViewDesc.format = RHIFormat::D32_FLOAT;
+        atlasViewDesc.dimension = RHITextureDimension::Texture2D;
+        atlasViewDesc.subresourceRange = depthAtlas.subresourceRange;
+        atlasViewDesc.type = RHITextureViewType::ShaderResource;
+        atlasViewDesc.debugName = "OpaqueLocalShadowAtlasSRV";
+        m_localShadowAtlasViewHandle = builder.CreateTextureView(
+            m_localShadowAtlasReadHandle, atlasViewDesc);
+        m_localShadowAtlasViewHandle = builder.Read(
+            m_localShadowAtlasViewHandle,
+            MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                             RHIShaderStage::Pixel));
+        if (!m_localShadowAtlasReadHandle.IsValid() ||
+            !m_localShadowAtlasViewHandle.IsValid())
+        {
+            return;
         }
     }
 
@@ -4303,7 +4423,7 @@ void OpaquePass::Execute(
         }
     }
 
-    std::array<RHITextureView*, 3> forwardSurfaceTargetViews{};
+    std::array<RHITextureView*, 5> forwardSurfaceTargetViews{};
     if (m_outputFamily ==
         OpaqueRasterOutputFamily::ForwardSceneHDRWithSurfaceData)
     {
@@ -4378,6 +4498,11 @@ void OpaquePass::Execute(
         m_lightingResources == nullptr || !m_lightingResources->IsComplete() ||
         m_lightingResources->lightingPlanIdentity !=
             m_lightingPlan->GetIdentityHash() ||
+        !m_localShadowInputs.IsCompatibleWith(
+            m_recordIdentity,
+            m_lightingPlan->GetFrameIdentity(),
+            m_lightingPlan->GetViewIdentity(),
+            m_lightingPlan->GetIdentityHash()) ||
         !ResolveDirectionalShadowViewData(
             drawView,
             resolvedDirectionalShadow,
@@ -4410,6 +4535,61 @@ void OpaquePass::Execute(
         shadowResources.enabled = true;
     }
     m_shadowStats.frameShadowReady = shadowResources.enabled;
+
+    LocalShadowFrameResources localShadowResources;
+    if (m_localShadowInputs.enabled)
+    {
+        if (m_localShadowAtlasPlan == nullptr ||
+            !m_localShadowAtlasPlan->IsValid() ||
+            m_localShadowInputs.localShadowPlanIdentity !=
+                m_localShadowAtlasPlan->GetLocalShadowPlanIdentity() ||
+            m_localShadowInputs.atlasPlanIdentity !=
+                m_localShadowAtlasPlan->GetIdentityHash() ||
+            m_localShadowInputs.atlasGeneration !=
+                m_localShadowAtlasPlan->GetAtlasGeneration() ||
+            !m_localShadowAtlasReadHandle.IsValid() ||
+            !m_localShadowAtlasViewHandle.IsValid())
+        {
+            RVX_RENDER_WARN(
+                "OpaquePass: local-shadow output was selected without an exact graph atlas read");
+            reportPlannedFailure(routePlan.gpuPacketCount != 0);
+            return;
+        }
+
+        RHITexture* const atlasTexture =
+            context.GetTexture(m_localShadowAtlasReadHandle);
+        RHITextureView* const atlasView =
+            context.GetTextureView(m_localShadowAtlasViewHandle);
+        const LocalShadowAtlasTextureContract& atlasContract =
+            m_localShadowAtlasPlan->GetTextureContract();
+        if (atlasTexture == nullptr || atlasView == nullptr ||
+            atlasView->GetTexture() != atlasTexture ||
+            atlasView->GetFormat() != RHIFormat::D32_FLOAT ||
+            atlasTexture->GetFormat() != RHIFormat::D32_FLOAT ||
+            atlasTexture->GetWidth() != m_localShadowInputs.pageResolution ||
+            atlasTexture->GetHeight() != m_localShadowInputs.pageResolution ||
+            atlasTexture->GetArraySize() != atlasContract.pageCapacity ||
+            atlasView->GetSubresourceRange().arrayLayerCount != RVX_ALL_LAYERS ||
+            atlasView->GetSubresourceRange().aspect != RHITextureAspect::Depth)
+        {
+            RVX_RENDER_WARN(
+                "OpaquePass: resolved local-shadow atlas view does not match the sealed D32 array contract");
+            reportPlannedFailure(routePlan.gpuPacketCount != 0);
+            return;
+        }
+        localShadowResources.depthAtlasView = atlasView;
+        localShadowResources.enabled = true;
+        localShadowResources.localShadowPlanIdentity =
+            m_localShadowInputs.localShadowPlanIdentity;
+        localShadowResources.atlasPlanIdentity =
+            m_localShadowInputs.atlasPlanIdentity;
+        localShadowResources.atlasGeneration =
+            m_localShadowInputs.atlasGeneration;
+        localShadowResources.pageCount = m_localShadowInputs.pageCount;
+        localShadowResources.pageResolution =
+            m_localShadowInputs.pageResolution;
+        localShadowResources.pageCapacity = atlasContract.pageCapacity;
+    }
 
     RayTracedShadowFrameResources rayTracedShadowResources;
     RHITextureView* rayTracedShadowMaskView = nullptr;
@@ -4556,6 +4736,7 @@ void OpaquePass::Execute(
         m_lightingResources->frozenLightResources;
     lightingRequest.directionalShadow = shadowResources;
     lightingRequest.rayTracedShadow = rayTracedShadowResources;
+    lightingRequest.localShadow = localShadowResources;
     lightingRequest.environmentIBL = consumesSurfaceLighting
         ? environmentIBLResources
         : EnvironmentIBLFrameResources{};
@@ -4913,6 +5094,16 @@ void OpaquePass::Execute(
                 RHILoadOp::Clear,
                 RHIStoreOp::Store,
                 {0.0f, 0.0f, 0.0f, 0.0f});
+            rpDesc.AddColorAttachment(
+                forwardSurfaceTargetViews[3],
+                RHILoadOp::Clear,
+                RHIStoreOp::Store,
+                {0.0f, 0.0f, 0.0f, 0.0f});
+            rpDesc.AddColorAttachment(
+                forwardSurfaceTargetViews[4],
+                RHILoadOp::Clear,
+                RHIStoreOp::Store,
+                {0.0f, 0.0f, 0.0f, 0.0f});
         }
         else
         {
@@ -5032,6 +5223,18 @@ void OpaquePass::Execute(
                     : RenderLightingSurfaceRoute::ForwardOpaque;
                 evidence.frozenBufferMask = 0x3fu;
                 evidence.directionalShadowBound = shadowResources.enabled;
+                evidence.localShadowBound = localShadowResources.enabled;
+                if (localShadowResources.enabled)
+                {
+                    evidence.localShadowPlanIdentity =
+                        m_localShadowInputs.localShadowPlanIdentity;
+                    evidence.localShadowAtlasPlanIdentity =
+                        m_localShadowInputs.atlasPlanIdentity;
+                    evidence.localShadowAtlasGeneration =
+                        m_localShadowInputs.atlasGeneration;
+                    evidence.localShadowPageCount =
+                        m_localShadowInputs.pageCount;
+                }
                 evidence.textureIBLBound =
                     m_lightingResources->textureIBLEnabled;
                 evidence.exactIBLViews = exactIBLViews;

@@ -555,19 +555,23 @@ namespace RVX
                 entry.kind == SampleAssetKind::Model &&
                 entry.cook.selector.type == Resource::CookAssetType::Model &&
                 IsRvaPath(entry.path);
+            const bool environmentArtifact =
+                entry.kind == SampleAssetKind::Environment &&
+                entry.cook.selector.type == Resource::CookAssetType::Environment &&
+                IsRvaPath(entry.path);
             const bool effectArtifact =
                 entry.kind == SampleAssetKind::Effect &&
                 entry.cook.selector.type == Resource::CookAssetType::Effect &&
                 IsRvxVfxPath(entry.path);
-            if ((!modelArtifact && !effectArtifact) ||
+            if ((!modelArtifact && !environmentArtifact && !effectArtifact) ||
                 !entry.contentIdentity.IsValid() ||
                 entry.contentIdentity.domain !=
                     Resource::ResourceContentIdentityDomain::CookedArtifact ||
                 entry.contentIdentity.scope !=
                     Resource::ResourceContentIdentityScope::SelfContainedArtifact)
             {
-                outError = "Package-only sample asset must be either a Model "
-                           "(.rva) or Effect (.rvxvfx) with a matching selector "
+                outError = "Package-only sample asset must be a Model or Environment "
+                           "(.rva), or an Effect (.rvxvfx), with a matching selector "
                            "and self-contained CookedArtifact identity";
                 return false;
             }

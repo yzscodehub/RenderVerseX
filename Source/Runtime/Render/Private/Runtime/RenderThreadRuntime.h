@@ -100,6 +100,11 @@ namespace RenderRuntimeDetail
         {
             return false;
         }
+        /** @brief Arm one owner-side Hi-Z reflection route-mask probe. */
+        [[nodiscard]] virtual bool RequestHiZReflectionQualificationProbe()
+        {
+            return false;
+        }
         virtual void PollCompletion() = 0;
         virtual void RetireCompleted() = 0;
         /**
@@ -319,9 +324,14 @@ namespace RenderRuntimeDetail
         [[nodiscard]] bool RequestAmbientOcclusionQualificationProbe() noexcept;
         /** @brief Publish one explicit Toon lighting/outline probe request. */
         [[nodiscard]] bool RequestToonOutlineQualificationProbe() noexcept;
+        /** @brief Publish one explicit Hi-Z reflection route-mask probe request. */
+        [[nodiscard]] bool RequestHiZReflectionQualificationProbe() noexcept;
         /** @brief Read the immutable one-shot Render-owner admission result. */
         [[nodiscard]] RenderToonOutlineQualificationRequestResult
         GetToonOutlineQualificationProbeRequestResult() const noexcept;
+        /** @brief Read the exact-frame Render-owner admission result for Hi-Z. */
+        [[nodiscard]] RenderHiZReflectionQualificationRequestResult
+        GetHiZReflectionQualificationProbeRequestResult() const noexcept;
 
         RenderResourceReserveResult ReserveResource(
             AssetId assetId,
@@ -392,6 +402,9 @@ namespace RenderRuntimeDetail
             RenderTeardownMode mode) noexcept;
         void ResolveToonOutlineQualificationProbeRequestOnRenderThread();
         void RejectPendingToonOutlineQualificationProbeForShutdown() noexcept;
+        void ResolveHiZReflectionQualificationProbeRequestOnRenderThread(
+            uint64 targetFrameSequence);
+        void RejectPendingHiZReflectionQualificationProbeForShutdown() noexcept;
 
         RenderRuntimeConfig m_config;
         HAL::NativeSurfaceDesc m_initialSurface;
@@ -442,9 +455,16 @@ namespace RenderRuntimeDetail
             false;
         std::atomic<bool> m_toonOutlineQualificationProbeRequestIssued = false;
         std::atomic<bool> m_toonOutlineQualificationProbeRequestPending = false;
+        std::atomic<bool> m_hiZReflectionQualificationProbeRequestIssued = false;
+        std::atomic<bool> m_hiZReflectionQualificationProbeRequestPending = false;
         std::atomic<RenderToonOutlineQualificationRequestState>
             m_toonOutlineQualificationProbeRequestState =
                 RenderToonOutlineQualificationRequestState::NotRequested;
+        std::atomic<RenderHiZReflectionQualificationRequestState>
+            m_hiZReflectionQualificationProbeRequestState =
+                RenderHiZReflectionQualificationRequestState::NotRequested;
+        std::atomic<uint64>
+            m_hiZReflectionQualificationProbeTargetFrameSequence = 0;
 
         mutable std::mutex m_stateMutex;
         std::timed_mutex m_startupArbitrationMutex;
@@ -472,6 +492,9 @@ namespace RenderRuntimeDetail
         // to the first frame published strictly after this linearization
         // point; an older published or carried packet must not consume it.
         uint64 m_toonOutlineQualificationProbePublishedBaseline = 0;
+        // Protected by m_publicationMutex. The Hi-Z request belongs to the
+        // first consumable frame published strictly after this sequence.
+        uint64 m_hiZReflectionQualificationProbePublishedBaseline = 0;
 
         std::mutex m_waitMutex;
         std::condition_variable m_waitCv;

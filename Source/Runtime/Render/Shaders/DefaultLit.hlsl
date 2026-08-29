@@ -29,6 +29,7 @@
 #include "Include/SurfaceMaterial.hlsli"
 #include "Include/ToonLighting.hlsli"
 #include "GPUDriven/GPUSceneRaster.hlsli"
+#include "Translucency/WeightedBlendedOIT.hlsli"
 
 // =============================================================================
 // Constant Buffers
@@ -39,7 +40,7 @@ cbuffer ViewConstants : register(b0, space0)
     float4x4 ViewProjection;
     float4 CameraPosition_Time;
     float4 LightDirection_Intensity;
-    float4 DirectionalLightColor_Padding;
+    float4 DirectionalLightColor_ReverseZ;
     float4 IBLDiffuseAmbient;   // rgb: color, a: diffuse intensity
     float4 IBLSpecularAmbient;  // rgb: color, a: specular intensity
     float4 IBLTextureParams;    // x: enabled, y: prefiltered mip count, z: intensity, w: ambient floor intensity
@@ -71,6 +72,11 @@ cbuffer LightConstants : register(b3, space0)
     uint NumPointLights;
     uint NumSpotLights;
     float2 LightPadding;
+    float4x4 LocalShadowViewProjections[32];
+    uint LocalShadowPageCount;
+    float LocalShadowInvResolution;
+    float LocalShadowDepthBias;
+    float LocalShadowNormalBias;
 };
 
 cbuffer ClusterConstants : register(b7, space0)
@@ -98,8 +104,8 @@ cbuffer MaterialConstants : register(b0, space2)
 #define ReceivesShadow ObjectVelocityParams.y
 #define LightDirection LightDirection_Intensity.xyz
 #define DirectionalLightIntensity LightDirection_Intensity.w
-#define DirectionalLightColor DirectionalLightColor_Padding.xyz
-#define DirectionalLightColorPadding DirectionalLightColor_Padding.w
+#define ReverseZ DirectionalLightColor_ReverseZ.w
+#define DirectionalLightColor DirectionalLightColor_ReverseZ.xyz
 #define EmissiveColor EmissiveColor_Strength.xyz
 #define EmissiveStrength EmissiveColor_Strength.w
 
@@ -154,6 +160,10 @@ Texture2D<float> AmbientOcclusionTexture : register(t15, space0);
 // Immutable graph copy of HDR scene color after Sky. Transparent geometry is
 // the RT writer, so ThinTransmission must only sample this separate resource.
 Texture2D OpaqueSceneSnapshotTexture : register(t16, space0);
+// Renderer-owned full-capacity D32 Texture2DArray. It shares the existing
+// point-clamp depth sampler at s2 with directional CSM sampling.
+Texture2DArray<float> LocalShadowAtlasTexture : register(t17, space0);
+#define LocalShadowAtlasSampler DirectionalShadowSampler
 #if !defined(RVX_GPU_SCENE_RASTER)
 StructuredBuffer<GPUInstanceData> GPUDrivenInstances : register(t1, space1);
 #endif
@@ -387,6 +397,7 @@ float3 SafeNormalize(float3 value, float3 fallback)
 }
 
 #include "Include/DirectionalShadow.hlsli"
+#include "Include/LocalShadow.hlsli"
 
 static const uint RVX_INVALID_CLUSTER_INDEX = 0xffffffffu;
 static const uint RVX_MAX_CLUSTERED_LIGHTS_PER_PIXEL = 100u;
@@ -443,7 +454,8 @@ float3 EvaluateLinearLocalLights(
     float3 worldPos,
     float3 baseColor,
     float metallic,
-    float roughness)
+    float roughness,
+    bool receivesShadow)
 {
     float3 localLight = float3(0.0, 0.0, 0.0);
 
@@ -458,7 +470,11 @@ float3 EvaluateLinearLocalLights(
             worldPos,
             baseColor,
             metallic,
-            roughness);
+            roughness,
+            receivesShadow
+                ? RVX_SamplePointLocalShadow(
+                    PointLights[pointLightIndex], worldPos, normal)
+                : 1.0);
     }
 
     const uint spotLightCount = min(NumSpotLights, 128u);
@@ -473,7 +489,10 @@ float3 EvaluateLinearLocalLights(
             baseColor,
             metallic,
             roughness,
-            1.0);
+            receivesShadow
+                ? RVX_SampleSpotLocalShadow(
+                    SpotLights[spotLightIndex], worldPos, normal)
+                : 1.0);
     }
 
     return localLight;
@@ -486,12 +505,15 @@ float3 EvaluateClusteredLocalLights(
     float3 worldPos,
     float3 baseColor,
     float metallic,
-    float roughness)
+    float roughness,
+    bool receivesShadow)
 {
     const uint clusterIndex = ResolveClusterIndex(svPosition, worldPos);
     if (clusterIndex == RVX_INVALID_CLUSTER_INDEX)
     {
-        return EvaluateLinearLocalLights(normal, viewDir, worldPos, baseColor, metallic, roughness);
+        return EvaluateLinearLocalLights(
+            normal, viewDir, worldPos, baseColor, metallic, roughness,
+            receivesShadow);
     }
 
     const GPUCluster cluster = ClusterData[clusterIndex];
@@ -514,7 +536,11 @@ float3 EvaluateClusteredLocalLights(
                 worldPos,
                 baseColor,
                 metallic,
-                roughness);
+                roughness,
+                receivesShadow
+                    ? RVX_SamplePointLocalShadow(
+                        PointLights[lightIndex], worldPos, normal)
+                    : 1.0);
         }
         else if (lightType == 1u && lightIndex < NumSpotLights)
         {
@@ -526,7 +552,10 @@ float3 EvaluateClusteredLocalLights(
                 baseColor,
                 metallic,
                 roughness,
-                1.0);
+                receivesShadow
+                    ? RVX_SampleSpotLocalShadow(
+                        SpotLights[lightIndex], worldPos, normal)
+                    : 1.0);
         }
     }
 
@@ -539,7 +568,8 @@ float3 EvaluateToonPointLight(
     float3 viewDir,
     float3 worldPos,
     float3 baseColor,
-    MaterialParameterData material)
+    MaterialParameterData material,
+    bool receivesShadow)
 {
     const float3 lightVector = light.position - worldPos;
     const float distanceToLight = length(lightVector);
@@ -554,7 +584,9 @@ float3 EvaluateToonPointLight(
         lightVector / distanceToLight,
         baseColor,
         light.color * light.intensity * AttenuatePoint(distanceToLight, light.range),
-        1.0f,
+        receivesShadow
+            ? RVX_SamplePointLocalShadow(light, worldPos, normal)
+            : 1.0f,
         material.ToonBands,
         material.ToonSpecularThreshold,
         material.ToonRimStrength,
@@ -567,7 +599,8 @@ float3 EvaluateToonSpotLight(
     float3 viewDir,
     float3 worldPos,
     float3 baseColor,
-    MaterialParameterData material)
+    MaterialParameterData material,
+    bool receivesShadow)
 {
     const float3 lightVector = light.position - worldPos;
     const float distanceToLight = length(lightVector);
@@ -593,7 +626,9 @@ float3 EvaluateToonSpotLight(
         baseColor,
         light.color * light.intensity *
             AttenuatePoint(distanceToLight, light.range) * cone,
-        1.0f,
+        receivesShadow
+            ? RVX_SampleSpotLocalShadow(light, worldPos, normal)
+            : 1.0f,
         material.ToonBands,
         material.ToonSpecularThreshold,
         material.ToonRimStrength,
@@ -605,20 +640,23 @@ float3 EvaluateToonLinearLocalLights(
     float3 viewDir,
     float3 worldPos,
     float3 baseColor,
-    MaterialParameterData material)
+    MaterialParameterData material,
+    bool receivesShadow)
 {
     float3 localLight = float3(0.0f, 0.0f, 0.0f);
     [loop]
     for (uint index = 0; index < min(NumPointLights, 256u); ++index)
     {
         localLight += EvaluateToonPointLight(
-            PointLights[index], normal, viewDir, worldPos, baseColor, material);
+            PointLights[index], normal, viewDir, worldPos, baseColor, material,
+            receivesShadow);
     }
     [loop]
     for (uint index = 0; index < min(NumSpotLights, 128u); ++index)
     {
         localLight += EvaluateToonSpotLight(
-            SpotLights[index], normal, viewDir, worldPos, baseColor, material);
+            SpotLights[index], normal, viewDir, worldPos, baseColor, material,
+            receivesShadow);
     }
     return localLight;
 }
@@ -629,13 +667,14 @@ float3 EvaluateToonClusteredLocalLights(
     float3 viewDir,
     float3 worldPos,
     float3 baseColor,
-    MaterialParameterData material)
+    MaterialParameterData material,
+    bool receivesShadow)
 {
     const uint clusterIndex = ResolveClusterIndex(svPosition, worldPos);
     if (clusterIndex == RVX_INVALID_CLUSTER_INDEX)
     {
         return EvaluateToonLinearLocalLights(
-            normal, viewDir, worldPos, baseColor, material);
+            normal, viewDir, worldPos, baseColor, material, receivesShadow);
     }
 
     const GPUCluster cluster = ClusterData[clusterIndex];
@@ -650,12 +689,14 @@ float3 EvaluateToonClusteredLocalLights(
         if (lightType == 0u && lightIndex < NumPointLights)
         {
             localLight += EvaluateToonPointLight(
-                PointLights[lightIndex], normal, viewDir, worldPos, baseColor, material);
+                PointLights[lightIndex], normal, viewDir, worldPos, baseColor,
+                material, receivesShadow);
         }
         else if (lightType == 1u && lightIndex < NumSpotLights)
         {
             localLight += EvaluateToonSpotLight(
-                SpotLights[lightIndex], normal, viewDir, worldPos, baseColor, material);
+                SpotLights[lightIndex], normal, viewDir, worldPos, baseColor,
+                material, receivesShadow);
         }
     }
     return localLight;
@@ -1020,7 +1061,8 @@ float4 ShadeForwardSurface(
             viewDir,
             input.WorldPos,
             baseColor.rgb,
-            material);
+            material,
+            receivesShadow);
     }
     else
     {
@@ -1040,7 +1082,8 @@ float4 ShadeForwardSurface(
             input.WorldPos,
             baseColor.rgb,
             metallic,
-            clampedRoughness);
+            clampedRoughness,
+            receivesShadow);
     }
 
     float nDotV = max(dot(normal, viewDir), 0.001);
@@ -1191,17 +1234,121 @@ ForwardTranslucencyOutput PSForwardTranslucency(
     return output;
 }
 
+RVXWeightedBlendedOITTargets PSWeightedBlendedOIT(
+    PSInput input,
+    bool isFrontFace : SV_IsFrontFace)
+{
+    const ResolvedForwardSurfaceData surface =
+        ResolveForwardSurfaceData(input, isFrontFace);
+    const bool eligibleShadingModel =
+        surface.material.ShadingModel == MATERIAL_SHADING_MODEL_STANDARD_LIT ||
+        surface.material.ShadingModel == MATERIAL_SHADING_MODEL_UNLIT;
+    const bool eligibleBlendMode =
+        surface.material.BlendMode == MATERIAL_BLEND_ALPHA ||
+        surface.material.BlendMode == MATERIAL_BLEND_PREMULTIPLIED;
+
+    // The immutable CPU plan owns routing. This guard is a fail-safe against
+    // accidentally sending refractive, additive, masked, or Toon content into
+    // the order-independent accumulation targets.
+    if (!eligibleShadingModel || !eligibleBlendMode)
+    {
+        discard;
+    }
+
+    const float3 straightColor = ShadeForwardSurface(input, surface).rgb;
+    return RVXEncodeWeightedBlendedOIT(
+        straightColor,
+        surface.baseColor.a,
+        RVXCanonicalizeWeightedBlendedOITDepth(
+            input.Position.z, ReverseZ > 0.5f));
+}
+
 /**
- * Forward+ opaque/masked export for the screen-space outline consumer. The
- * HDR result comes from the exact same PBR/Toon function as PSMain, while the
- * remaining attachments publish the canonical normal and stable material
- * table identity without changing the material's raster route.
+ * Exact materialization data for reflection replacement. The first term is
+ * the pre-exposed indirect-specular contribution already present in scene
+ * HDR. The second is dimensionless and can materialize a screen-space or
+ * local-probe radiance source without reapplying Fresnel, BRDF, material AO,
+ * or specular AO.
+ */
+struct IndirectSpecularSurfaceData
+{
+    float3 baseIndirectSpecular;
+    float3 specularResponse;
+};
+
+IndirectSpecularSurfaceData EvaluateForwardIndirectSpecular(
+    PSInput input,
+    ResolvedForwardSurfaceData surface)
+{
+    IndirectSpecularSurfaceData output;
+    output.baseIndirectSpecular = 0.0f;
+    output.specularResponse = 0.0f;
+
+    const MaterialParameterData material = surface.material;
+    if ((material.ShadingModel != MATERIAL_SHADING_MODEL_STANDARD_LIT &&
+         material.ShadingModel != MATERIAL_SHADING_MODEL_TOON_LIT) ||
+        material.Workflow != MATERIAL_WORKFLOW_METALLIC_ROUGHNESS)
+    {
+        return output;
+    }
+
+    const RVXExposureState exposureState = ExposureStateBuffer[0];
+    if (!RVXExposureStateIsValid(exposureState))
+    {
+        return output;
+    }
+
+    const float3 viewDir = SafeNormalize(
+        CameraPosition - input.WorldPos, float3(0.0f, 0.0f, 1.0f));
+    const float3 normal = surface.normal;
+    const float roughness = clamp(surface.roughness, 0.04f, 1.0f);
+    const float3 f0 = ComputeF0(surface.baseColor.rgb, surface.metallic);
+    const float nDotV = max(dot(normal, viewDir), 0.001f);
+    const float screenAmbientOcclusion =
+        SampleScreenSpaceAmbientOcclusion(input.Position);
+    const float specularAO = RVX_IndirectSpecularOcclusion(
+        screenAmbientOcclusion, roughness, nDotV);
+
+    float3 sourceRadiance;
+    if (IBLTextureParams.x > 0.5f)
+    {
+        const float3 reflectionDir = reflect(-viewDir, normal);
+        const float prefilteredMip = roughness *
+            max(IBLTextureParams.y - 1.0f, 0.0f);
+        sourceRadiance = PrefilteredEnvironmentTexture.SampleLevel(
+            IBLLinearClampSampler, reflectionDir, prefilteredMip).rgb *
+            IBLTextureParams.z;
+        const float2 brdf = BRDFLUTTexture.Sample(
+            IBLLinearClampSampler, float2(nDotV, roughness)).rg;
+        output.specularResponse =
+            (F_SchlickRoughness(nDotV, f0, roughness) * brdf.x + brdf.y) *
+            surface.occlusion * specularAO;
+    }
+    else
+    {
+        sourceRadiance = IBLSpecularAmbient.rgb * IBLSpecularAmbient.a;
+        output.specularResponse = f0 * surface.occlusion *
+            (1.0f - roughness) * specularAO;
+    }
+
+    output.baseIndirectSpecular = sourceRadiance *
+        output.specularResponse * RVXExposureProducerScale(exposureState);
+    return output;
+}
+
+/**
+ * Forward+ opaque/masked export for exact reflection replacement. The HDR
+ * result comes from the exact same PBR/Toon function as PSMain; the remaining
+ * MRTs publish the canonical surface guides, baseline, and response without
+ * changing the material's raster route.
  */
 struct ForwardSurfaceDataOutput
 {
     float4 hdrSceneColor : SV_Target0;
     float4 normalRoughnessMetallic : SV_Target1;
     uint materialTableIndex : SV_Target2;
+    float4 baseIndirectSpecular : SV_Target3;
+    float4 specularResponse : SV_Target4;
 };
 
 ForwardSurfaceDataOutput PSForwardSurfaceData(
@@ -1218,5 +1365,11 @@ ForwardSurfaceDataOutput PSForwardSurfaceData(
         clamp(surface.roughness, 0.04f, 1.0f),
         saturate(surface.metallic));
     output.materialTableIndex = surface.material.MaterialTableIndex;
+    const IndirectSpecularSurfaceData indirectSpecular =
+        EvaluateForwardIndirectSpecular(input, surface);
+    output.baseIndirectSpecular = float4(
+        indirectSpecular.baseIndirectSpecular, 1.0f);
+    output.specularResponse = float4(
+        indirectSpecular.specularResponse, 1.0f);
     return output;
 }

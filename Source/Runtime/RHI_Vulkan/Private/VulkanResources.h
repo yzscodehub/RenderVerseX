@@ -5,10 +5,12 @@
 #include "RHI/RHITexture.h"
 #include "RHI/RHISampler.h"
 #include "RHI/RHIShader.h"
+#include "RHI/RHIRayTracing.h"
 #include "RHI/RHISynchronization.h"
 #include "RHI/RHIHeap.h"
 #include <atomic>
 #include <limits>
+#include <mutex>
 #include <numeric>
 
 namespace RVX
@@ -40,6 +42,12 @@ namespace RVX
         }
         if (HasFlag(usage, RHIBufferUsage::IndirectArgs))
             flags |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+        if (HasFlag(usage, RHIBufferUsage::AccelerationStructureStorage))
+            flags |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR;
+        if (HasFlag(usage, RHIBufferUsage::AccelerationStructureInput))
+            flags |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+        if (HasFlag(usage, RHIBufferUsage::ShaderBindingTable))
+            flags |= VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR;
 
         // The RHI permits generic copies for every buffer; keep the actual
         // creation and placed-resource requirement queries byte-for-byte
@@ -232,6 +240,195 @@ namespace RVX
 
     class VulkanDevice;
     class VulkanHeap;
+
+    /**
+     * @brief Vulkan-native geometry identity which must remain stable for an
+     * acceleration-structure update.
+     *
+     * Device addresses are deliberately absent. Vulkan allows the input
+     * addresses to change for UPDATE builds, while the structural fields below
+     * must match the source build.
+     */
+    enum class VulkanAccelerationStructureSignatureGeometryType : uint8
+    {
+        Triangles,
+        AABBs,
+        Instances,
+    };
+
+    struct VulkanAccelerationStructureGeometryBuildSignature
+    {
+        VulkanAccelerationStructureSignatureGeometryType type =
+            VulkanAccelerationStructureSignatureGeometryType::Triangles;
+        RHIRayTracingGeometryFlags flags = RHIRayTracingGeometryFlags::None;
+        uint32 primitiveCount = 0;
+
+        // Triangle-only structure. maxVertex is the native Vulkan value, not
+        // the RHI vertex count. RHIFormat::Unknown encodes VK_INDEX_TYPE_NONE.
+        RHIFormat vertexFormat = RHIFormat::Unknown;
+        uint32 maxVertex = 0;
+        RHIFormat indexFormat = RHIFormat::Unknown;
+        bool hasTransform = false;
+
+        // AABB-only structure.
+        uint32 aabbStride = 0;
+
+        // Instance-only structure. The current RHI always uploads a contiguous
+        // VkAccelerationStructureInstanceKHR array rather than pointers.
+        bool instancesArrayOfPointers = false;
+    };
+
+    struct VulkanAccelerationStructureBuildSignature
+    {
+        RHIAccelerationStructureType type =
+            RHIAccelerationStructureType::BottomLevel;
+        RHIAccelerationStructureBuildFlags buildFlags =
+            RHIAccelerationStructureBuildFlags::None;
+        std::vector<VulkanAccelerationStructureGeometryBuildSignature>
+            geometries;
+    };
+
+    enum class VulkanAccelerationStructureUpdateCompatibility : uint8
+    {
+        Compatible,
+        SourceHasNoSubmittedBuild,
+        SourceBuildDisallowsUpdate,
+        AccelerationStructureTypeMismatch,
+        BuildFlagsMismatch,
+        GeometryCountMismatch,
+        GeometryTypeMismatch,
+        GeometryFlagsMismatch,
+        PrimitiveCountMismatch,
+        TriangleVertexFormatMismatch,
+        TriangleMaxVertexMismatch,
+        TriangleIndexFormatMismatch,
+        TriangleTransformPresenceMismatch,
+        AABBStrideMismatch,
+        InstancesArrayOfPointersMismatch,
+    };
+
+    /**
+     * @brief Compare only Vulkan UPDATE-invariant AS build fields.
+     *
+     * The helper is intentionally pure so call sites can validate an UPDATE
+     * before emitting native commands. Input buffer/device addresses are not
+     * part of the signature and may change between builds.
+     */
+    VulkanAccelerationStructureUpdateCompatibility
+    GetVulkanAccelerationStructureUpdateCompatibility(
+        const VulkanAccelerationStructureBuildSignature& source,
+        const VulkanAccelerationStructureBuildSignature& update) noexcept;
+
+    const char* GetVulkanAccelerationStructureUpdateCompatibilityName(
+        VulkanAccelerationStructureUpdateCompatibility compatibility) noexcept;
+
+    // =============================================================================
+    // Vulkan Acceleration Structure
+    // =============================================================================
+    class VulkanAccelerationStructure : public RHIAccelerationStructure
+    {
+    public:
+        VulkanAccelerationStructure(VulkanDevice* device,
+                                    const RHIAccelerationStructureDesc& desc);
+        ~VulkanAccelerationStructure() override;
+
+        RHIAccelerationStructureType GetType() const override
+        {
+            return m_desc.type;
+        }
+        uint64 GetSize() const override { return m_desc.size; }
+        uint64 GetGPUVirtualAddress() const override
+        {
+            return static_cast<uint64>(m_deviceAddress);
+        }
+
+        VkAccelerationStructureKHR GetAccelerationStructure() const
+        {
+            return m_accelerationStructure;
+        }
+        VkDeviceAddress GetDeviceAddress() const { return m_deviceAddress; }
+        RHIBuffer* GetStorageBuffer() const override
+        {
+            return m_storageBuffer.Get();
+        }
+        bool IsValid() const
+        {
+            return m_accelerationStructure != VK_NULL_HANDLE &&
+                   m_deviceAddress != 0 && m_storageBuffer != nullptr;
+        }
+        bool HasSubmittedBuild() const noexcept
+        {
+            return (m_submittedBuildState.load(std::memory_order_acquire) &
+                    kBuildSubmitted) != 0;
+        }
+        bool SubmittedBuildAllowsUpdate() const noexcept
+        {
+            return (m_submittedBuildState.load(std::memory_order_acquire) &
+                    kBuildAllowsUpdate) != 0;
+        }
+        bool SubmittedBuildAllowsCompaction() const noexcept;
+        bool SubmittedBuildWasOnQueue(
+            RHICommandQueueType queueType) const noexcept;
+        VulkanAccelerationStructureUpdateCompatibility
+        GetSubmittedBuildUpdateCompatibility(
+            const VulkanAccelerationStructureBuildSignature& update) const;
+        void CommitSubmittedBuild(
+            VulkanAccelerationStructureBuildSignature signature,
+            RHICommandQueueType queueType);
+
+    private:
+        static constexpr uint8 kBuildSubmitted = 1u << 0;
+        static constexpr uint8 kBuildAllowsUpdate = 1u << 1;
+
+        VulkanDevice* m_device = nullptr;
+        RHIAccelerationStructureDesc m_desc;
+        RHIBufferRef m_storageBuffer;
+        VkAccelerationStructureKHR m_accelerationStructure = VK_NULL_HANDLE;
+        VkDeviceAddress m_deviceAddress = 0;
+        std::atomic<uint8> m_submittedBuildState{0};
+        mutable std::mutex m_submittedBuildMutex;
+        VulkanAccelerationStructureBuildSignature m_submittedBuildSignature;
+        RHICommandQueueType m_submittedBuildQueueType =
+            RHICommandQueueType::Graphics;
+    };
+
+    /** @brief Vulkan KHR compacted-size query pool with one-shot state. */
+    class VulkanAccelerationStructureCompactedSizeQuery final
+        : public RHIAccelerationStructureCompactedSizeQuery
+    {
+    public:
+        VulkanAccelerationStructureCompactedSizeQuery(
+            VulkanDevice* device,
+            const RHIAccelerationStructureCompactedSizeQueryDesc& desc);
+        ~VulkanAccelerationStructureCompactedSizeQuery() override;
+
+        uint32 GetCount() const override { return m_desc.count; }
+        RHICommandQueueType GetQueueType() const override
+        {
+            return m_desc.queueType;
+        }
+        VkQueryPool GetQueryPool() const { return m_queryPool; }
+        bool Reserve(uint32 firstQuery, uint32 queryCount);
+        bool CanResolve(uint32 firstQuery, uint32 queryCount) const;
+        void Commit();
+        void Discard();
+
+    private:
+        enum class State : uint8
+        {
+            Available,
+            Pending,
+            Submitted,
+        };
+
+        VulkanDevice* m_device = nullptr;
+        RHIAccelerationStructureCompactedSizeQueryDesc m_desc;
+        VkQueryPool m_queryPool = VK_NULL_HANDLE;
+        mutable std::mutex m_mutex;
+        State m_state = State::Available;
+        uint32 m_firstQuery = 0;
+        uint32 m_queryCount = 0;
+    };
 
     // =============================================================================
     // Vulkan Buffer
@@ -461,6 +658,13 @@ namespace RVX
     RHITextureViewRef CreateVulkanTextureView(VulkanDevice* device, RHITexture* texture, const RHITextureViewDesc& desc);
     RHISamplerRef CreateVulkanSampler(VulkanDevice* device, const RHISamplerDesc& desc);
     RHIShaderRef CreateVulkanShader(VulkanDevice* device, const RHIShaderDesc& desc);
+    RHIAccelerationStructureRef CreateVulkanAccelerationStructure(
+        VulkanDevice* device,
+        const RHIAccelerationStructureDesc& desc);
+    RHIAccelerationStructureCompactedSizeQueryRef
+    CreateVulkanAccelerationStructureCompactedSizeQuery(
+        VulkanDevice* device,
+        const RHIAccelerationStructureCompactedSizeQueryDesc& desc);
     RHIFenceRef CreateVulkanFence(VulkanDevice* device, uint64 initialValue);
     void WaitForVulkanFence(VulkanDevice* device, RHIFence* fence, uint64 value);
 

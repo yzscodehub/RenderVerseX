@@ -10,6 +10,8 @@
 #include <spirv_cross/spirv_cross.hpp>
 #include <algorithm>
 #include <cctype>
+#include <limits>
+#include <stdexcept>
 #include <unordered_set>
 
 namespace RVX
@@ -104,6 +106,48 @@ namespace RVX
             return RHIFormat::Unknown;
         }
 
+        uint32_t GetStaticDescriptorArrayCount(
+            spirv_cross::Compiler& compiler,
+            const spirv_cross::Resource& resource)
+        {
+            // Resource::type_id retains descriptor-array information whereas
+            // base_type_id deliberately strips it. Reflection must preserve a
+            // finite descriptor count because descriptor layout construction
+            // cannot safely bind an unknown or overflowing range.
+            const spirv_cross::SPIRType& type = compiler.get_type(resource.type_id);
+            if (type.array.empty())
+            {
+                return 1u;
+            }
+            if (type.array.size() != type.array_size_literal.size())
+            {
+                throw std::runtime_error(
+                    "SPIR-V resource array has incomplete size metadata");
+            }
+
+            uint64_t count = 1u;
+            for (size_t dimension = 0;
+                 dimension < type.array.size();
+                 ++dimension)
+            {
+                if (!type.array_size_literal[dimension])
+                {
+                    throw std::runtime_error(
+                        "SPIR-V resource array has a non-literal descriptor count");
+                }
+
+                const uint32_t extent = type.array[dimension];
+                if (extent == 0u ||
+                    count > std::numeric_limits<uint32_t>::max() / extent)
+                {
+                    throw std::runtime_error(
+                        "SPIR-V resource array descriptor count is not representable");
+                }
+                count *= extent;
+            }
+            return static_cast<uint32_t>(count);
+        }
+
         void PopulateInterfaceAttribute(
             spirv_cross::Compiler& compiler,
             const spirv_cross::Resource& resource,
@@ -191,7 +235,7 @@ namespace RVX
                 binding.set = compiler.get_decoration(ub.id, spv::DecorationDescriptorSet);
                 binding.binding = compiler.get_decoration(ub.id, spv::DecorationBinding);
                 binding.type = RHIBindingType::UniformBuffer;
-                binding.count = 1;
+                binding.count = GetStaticDescriptorArrayCount(compiler, ub);
                 reflection.resources.push_back(binding);
             }
 
@@ -212,7 +256,7 @@ namespace RVX
                         spv::DecorationNonWritable)
                         ? RHIBindingType::ShaderResourceBuffer
                         : RHIBindingType::StorageBuffer;
-                binding.count = 1;
+                binding.count = GetStaticDescriptorArrayCount(compiler, sb);
                 reflection.resources.push_back(binding);
             }
 
@@ -229,7 +273,7 @@ namespace RVX
                 binding.set = compiler.get_decoration(si.id, spv::DecorationDescriptorSet);
                 binding.binding = compiler.get_decoration(si.id, spv::DecorationBinding);
                 binding.type = RHIBindingType::CombinedTextureSampler;
-                binding.count = 1;
+                binding.count = GetStaticDescriptorArrayCount(compiler, si);
                 reflection.resources.push_back(binding);
             }
 
@@ -246,7 +290,7 @@ namespace RVX
                 binding.set = compiler.get_decoration(img.id, spv::DecorationDescriptorSet);
                 binding.binding = compiler.get_decoration(img.id, spv::DecorationBinding);
                 binding.type = RHIBindingType::SampledTexture;
-                binding.count = 1;
+                binding.count = GetStaticDescriptorArrayCount(compiler, img);
                 reflection.resources.push_back(binding);
             }
 
@@ -263,7 +307,7 @@ namespace RVX
                 binding.set = compiler.get_decoration(smp.id, spv::DecorationDescriptorSet);
                 binding.binding = compiler.get_decoration(smp.id, spv::DecorationBinding);
                 binding.type = RHIBindingType::Sampler;
-                binding.count = 1;
+                binding.count = GetStaticDescriptorArrayCount(compiler, smp);
                 reflection.resources.push_back(binding);
             }
 
@@ -280,7 +324,7 @@ namespace RVX
                 binding.set = compiler.get_decoration(si.id, spv::DecorationDescriptorSet);
                 binding.binding = compiler.get_decoration(si.id, spv::DecorationBinding);
                 binding.type = RHIBindingType::StorageTexture;
-                binding.count = 1;
+                binding.count = GetStaticDescriptorArrayCount(compiler, si);
                 reflection.resources.push_back(binding);
             }
 

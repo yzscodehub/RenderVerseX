@@ -53,6 +53,13 @@ namespace RVX
             {
                 return 10;
             }
+            // The SSR program only uses this frame-set SSBO for the exact
+            // exposure producer state, so it may reuse physical binding 0
+            // without colliding with DefaultLit's simultaneously bound set.
+            if (set == 0 && binding == 16)
+            {
+                return 0;
+            }
             if (set == 1 && binding >= 1 && binding <= 3)
             {
                 return 11 + binding;
@@ -67,8 +74,11 @@ namespace RVX
         inline constexpr uint32 FlattenTextureBinding(
             uint32 set, uint32 binding)
         {
-            // Frame textures retain their logical units except t16, which
-            // occupies an otherwise unused unit in the Forward+ material ABI.
+            // Frame textures retain their logical units except the two late
+            // Forward+ surface inputs.  The opaque snapshot uses unit 14 and
+            // the local-shadow atlas uses the last free unit 0 so the complete
+            // frame + material surface ABI remains valid on the OpenGL 4.5
+            // minimum of sixteen texture units.
             if (set == 0 && binding <= 15)
             {
                 return binding;
@@ -76,6 +86,10 @@ namespace RVX
             if (set == 0 && binding == 16)
             {
                 return 14;
+            }
+            if (set == 0 && binding == 17)
+            {
+                return 0;
             }
 
             // The eight material textures must coexist with DefaultLit frame
@@ -197,6 +211,24 @@ namespace RVX
             // clamp sampler. Its texture occupies unit 14, while t10..t12
             // continue to use that sampler at their own physical units.
             if (set == 0 && textureBinding == 16 && samplerBinding == 13)
+            {
+                outTextureUnit = FlattenTextureBinding(set, textureBinding);
+                return true;
+            }
+            // Local point/spot shadow depth reuses the directional point-clamp
+            // sampler while occupying the sole remaining physical unit.
+            if (set == 0 && textureBinding == 17 && samplerBinding == 2)
+            {
+                outTextureUnit = FlattenTextureBinding(set, textureBinding);
+                return true;
+            }
+            // Hi-Z reflection uses one linear-clamp sampler for scene color
+            // and the fixed-capacity local cubemap array. Base indirect
+            // specular (t15) and receiver response (t17) use integer Load and
+            // therefore do not consume a sampler pair.
+            if (set == 0 && samplerBinding == 19 &&
+                (textureBinding == 1 ||
+                 (textureBinding >= 7 && textureBinding <= 14)))
             {
                 outTextureUnit = FlattenTextureBinding(set, textureBinding);
                 return true;

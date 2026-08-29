@@ -145,6 +145,8 @@ namespace RVX
             RGTextureHandle gBuffer3{};
             RGTextureHandle deviceDepth{};
             RGTextureHandle hdrSceneColor{};
+            RGTextureHandle baseIndirectSpecular{};
+            RGTextureHandle specularResponse{};
             RGBufferHandle materialTable{};
             PostProcessMaterialTableMetadata materialTableMetadata{};
             RGBufferHandle exposureState{};
@@ -156,8 +158,11 @@ namespace RVX
             RGTextureViewHandle gBuffer3View{};
             RGTextureViewHandle deviceDepthView{};
             RGTextureViewHandle hdrSceneColorView{};
+            RGTextureViewHandle baseIndirectSpecularView{};
+            RGTextureViewHandle specularResponseView{};
             RGTextureViewHandle ambientOcclusionView{};
             RGTextureViewHandle directionalShadowView{};
+            RGTextureViewHandle localShadowAtlasView{};
             RGTextureViewHandle irradianceView{};
             RGTextureViewHandle prefilteredEnvironmentView{};
             RGTextureViewHandle brdfLUTView{};
@@ -454,6 +459,8 @@ namespace RVX
                 data.gBuffer3 = inputs.gBuffer3;
                 data.deviceDepth = inputs.deviceDepth;
                 data.hdrSceneColor = inputs.hdrSceneColor;
+                data.baseIndirectSpecular = inputs.baseIndirectSpecular;
+                data.specularResponse = inputs.specularResponse;
                 data.materialTable = inputs.materialTable;
                 data.materialTableMetadata = inputs.materialTableMetadata;
                 data.exposureState = inputs.exposureState;
@@ -473,6 +480,10 @@ namespace RVX
                     builder.GetTextureDesc(data.deviceDepth);
                 const RHITextureDesc* hdrDesc =
                     builder.GetTextureDesc(data.hdrSceneColor);
+                const RHITextureDesc* baseIndirectSpecularDesc =
+                    builder.GetTextureDesc(data.baseIndirectSpecular);
+                const RHITextureDesc* specularResponseDesc =
+                    builder.GetTextureDesc(data.specularResponse);
                 const RHIBufferDesc* materialTableDesc =
                     builder.GetBufferDesc(data.materialTable);
                 const RHIBufferDesc* exposureStateDesc =
@@ -480,9 +491,15 @@ namespace RVX
                 const RHITextureDesc* ambientOcclusionDesc =
                     builder.GetTextureDesc(
                         data.ambientOcclusion.filteredOcclusion);
+                const RHITextureDesc* localShadowAtlasDesc =
+                    data.lighting.localShadowEnabled
+                        ? builder.GetTextureDesc(data.lighting.localShadowAtlas)
+                        : nullptr;
                 if (gBuffer0Desc == nullptr || gBuffer1Desc == nullptr ||
                     gBuffer2Desc == nullptr || gBuffer3Desc == nullptr ||
                     depthDesc == nullptr || hdrDesc == nullptr ||
+                    baseIndirectSpecularDesc == nullptr ||
+                    specularResponseDesc == nullptr ||
                     ambientOcclusionDesc == nullptr ||
                     exposureStateDesc == nullptr ||
                     gBuffer0Desc->format != RHIFormat::RGBA8_UNORM_SRGB ||
@@ -491,8 +508,14 @@ namespace RVX
                     gBuffer3Desc->format != RHIFormat::R32_UINT ||
                     depthDesc->format != RHIFormat::D32_FLOAT ||
                     hdrDesc->format != RHIFormat::RGBA16_FLOAT ||
+                    baseIndirectSpecularDesc->format != RHIFormat::RGBA16_FLOAT ||
+                    specularResponseDesc->format != RHIFormat::RGBA16_FLOAT ||
                     ambientOcclusionDesc->format != RHIFormat::R8_UNORM ||
                     !HasFlag(hdrDesc->usage, RHITextureUsage::UnorderedAccess) ||
+                    !HasFlag(baseIndirectSpecularDesc->usage,
+                             RHITextureUsage::UnorderedAccess) ||
+                    !HasFlag(specularResponseDesc->usage,
+                             RHITextureUsage::UnorderedAccess) ||
                     !HasFlag(ambientOcclusionDesc->usage,
                              RHITextureUsage::ShaderResource) ||
                     !MatchesExtentAndSamples(*gBuffer1Desc, *gBuffer0Desc) ||
@@ -501,12 +524,38 @@ namespace RVX
                     !MatchesExtentAndSamples(*depthDesc, *gBuffer0Desc) ||
                     !MatchesExtentAndSamples(*hdrDesc, *gBuffer0Desc) ||
                     !MatchesExtentAndSamples(
+                        *baseIndirectSpecularDesc, *gBuffer0Desc) ||
+                    !MatchesExtentAndSamples(
+                        *specularResponseDesc, *gBuffer0Desc) ||
+                    !MatchesExtentAndSamples(
                         *ambientOcclusionDesc, *gBuffer0Desc) ||
                     ambientOcclusionDesc->dimension !=
                         RHITextureDimension::Texture2D ||
                     ambientOcclusionDesc->depth != 1 ||
                     ambientOcclusionDesc->mipLevels != 1 ||
                     ambientOcclusionDesc->arraySize != 1 ||
+                    (data.lighting.localShadowEnabled &&
+                     (localShadowAtlasDesc == nullptr ||
+                      localShadowAtlasDesc->format != RHIFormat::D32_FLOAT ||
+                      localShadowAtlasDesc->dimension !=
+                          RHITextureDimension::Texture2D ||
+                      localShadowAtlasDesc->width !=
+                          data.lighting.localShadowPageResolution ||
+                      localShadowAtlasDesc->height !=
+                          data.lighting.localShadowPageResolution ||
+                      localShadowAtlasDesc->depth != 1 ||
+                      localShadowAtlasDesc->mipLevels != 1 ||
+                      localShadowAtlasDesc->arraySize !=
+                          data.lighting.localShadowPageCapacity ||
+                      localShadowAtlasDesc->sampleCount !=
+                          RHISampleCount::Count1 ||
+                      data.lighting.localShadowPageCount == 0 ||
+                      data.lighting.localShadowPageCount >
+                          localShadowAtlasDesc->arraySize ||
+                      !HasFlag(localShadowAtlasDesc->usage,
+                               RHITextureUsage::DepthStencil) ||
+                      !HasFlag(localShadowAtlasDesc->usage,
+                               RHITextureUsage::ShaderResource))) ||
                     data.ambientOcclusion.extent != RenderOutputExtent{
                         gBuffer0Desc->width, gBuffer0Desc->height} ||
                     gBuffer0Desc->sampleCount != RHISampleCount::Count1)
@@ -532,6 +581,12 @@ namespace RVX
                 data.hdrSceneColorView = DeclareComputeUAV(
                     builder, data.hdrSceneColor,
                     "DeferredLightingHDRSceneColorUAV");
+                data.baseIndirectSpecularView = DeclareComputeUAV(
+                    builder, data.baseIndirectSpecular,
+                    "DeferredLightingBaseIndirectSpecularUAV");
+                data.specularResponseView = DeclareComputeUAV(
+                    builder, data.specularResponse,
+                    "DeferredLightingSpecularResponseUAV");
                 data.ambientOcclusionView = DeclareComputeSRV(
                     builder, data.ambientOcclusion.filteredOcclusion,
                     RHITextureAspect::Color,
@@ -578,6 +633,13 @@ namespace RVX
                         RHITextureAspect::Depth,
                         "DeferredLightingDirectionalShadowSRV");
                 }
+                if (data.lighting.localShadowEnabled)
+                {
+                    data.localShadowAtlasView = DeclareComputeSRV(
+                        builder, data.lighting.localShadowAtlas,
+                        RHITextureAspect::Depth,
+                        "DeferredLightingLocalShadowAtlasSRV");
+                }
                 if (data.lighting.textureIBLEnabled)
                 {
                     data.irradianceView = DeclareExactComputeIBLSRV(
@@ -607,6 +669,8 @@ namespace RVX
                     data.gBuffer1View.IsValid() && data.gBuffer2View.IsValid() &&
                     data.gBuffer3View.IsValid() && data.deviceDepthView.IsValid() &&
                     data.hdrSceneColorView.IsValid() &&
+                    data.baseIndirectSpecularView.IsValid() &&
+                    data.specularResponseView.IsValid() &&
                     data.ambientOcclusionView.IsValid() &&
                     data.materialTable.IsValid() &&
                     data.exposureState.IsValid() &&
@@ -618,6 +682,8 @@ namespace RVX
                     data.lighting.clusterLightIndices.IsValid() &&
                     (!data.lighting.directionalShadowEnabled ||
                      data.directionalShadowView.IsValid()) &&
+                    (!data.lighting.localShadowEnabled ||
+                     data.localShadowAtlasView.IsValid()) &&
                     (!data.lighting.textureIBLEnabled ||
                      (data.irradianceView.IsValid() &&
                       data.prefilteredEnvironmentView.IsValid() &&
@@ -638,6 +704,8 @@ namespace RVX
                     data.gBuffer1View.IsValid() && data.gBuffer2View.IsValid() &&
                     data.gBuffer3View.IsValid() && data.deviceDepthView.IsValid() &&
                     data.hdrSceneColorView.IsValid() &&
+                    data.baseIndirectSpecularView.IsValid() &&
+                    data.specularResponseView.IsValid() &&
                     data.ambientOcclusionView.IsValid() &&
                     data.materialTable.IsValid() &&
                     data.exposureState.IsValid() &&
@@ -649,6 +717,8 @@ namespace RVX
                     data.lighting.clusterLightIndices.IsValid() &&
                     (!data.lighting.directionalShadowEnabled ||
                      data.directionalShadowView.IsValid()) &&
+                    (!data.lighting.localShadowEnabled ||
+                     data.localShadowAtlasView.IsValid()) &&
                     (!data.lighting.textureIBLEnabled ||
                      (data.irradianceView.IsValid() &&
                       data.prefilteredEnvironmentView.IsValid() &&
@@ -667,8 +737,16 @@ namespace RVX
                 RHITexture* gBuffer3 = context.GetTexture(data.gBuffer3);
                 RHITexture* depth = context.GetTexture(data.deviceDepth);
                 RHITexture* hdrSceneColor = context.GetTexture(data.hdrSceneColor);
+                RHITexture* baseIndirectSpecular = context.GetTexture(
+                    data.baseIndirectSpecular);
+                RHITexture* specularResponse = context.GetTexture(
+                    data.specularResponse);
                 RHITexture* ambientOcclusion = context.GetTexture(
                     data.ambientOcclusion.filteredOcclusion);
+                RHITexture* localShadowAtlas =
+                    data.lighting.localShadowEnabled
+                        ? context.GetTexture(data.lighting.localShadowAtlas)
+                        : nullptr;
                 RHIBuffer* materialTable = context.GetBuffer(data.materialTable);
                 RHIBuffer* exposureState = context.GetBuffer(data.exposureState);
                 RHIBuffer* lightConstants =
@@ -683,6 +761,8 @@ namespace RVX
                 if (gBuffer0 == nullptr || gBuffer1 == nullptr ||
                     gBuffer2 == nullptr || gBuffer3 == nullptr ||
                     depth == nullptr || hdrSceneColor == nullptr ||
+                    baseIndirectSpecular == nullptr ||
+                    specularResponse == nullptr ||
                     ambientOcclusion == nullptr ||
                     exposureState == nullptr ||
                     lightConstants == nullptr || pointLights == nullptr ||
@@ -728,11 +808,19 @@ namespace RVX
                     context.GetTextureView(data.deviceDepthView);
                 RHITextureView* hdrSceneColorView =
                     context.GetTextureView(data.hdrSceneColorView);
+                RHITextureView* baseIndirectSpecularView =
+                    context.GetTextureView(data.baseIndirectSpecularView);
+                RHITextureView* specularResponseView =
+                    context.GetTextureView(data.specularResponseView);
                 RHITextureView* ambientOcclusionView =
                     context.GetTextureView(data.ambientOcclusionView);
                 RHITextureView* directionalShadowView =
                     data.lighting.directionalShadowEnabled
                         ? context.GetTextureView(data.directionalShadowView)
+                        : nullptr;
+                RHITextureView* localShadowAtlasView =
+                    data.lighting.localShadowEnabled
+                        ? context.GetTextureView(data.localShadowAtlasView)
                         : nullptr;
                 RHITextureView* irradianceView =
                     data.lighting.textureIBLEnabled
@@ -749,7 +837,22 @@ namespace RVX
                 if (gBuffer0View == nullptr || gBuffer1View == nullptr ||
                     gBuffer2View == nullptr || gBuffer3View == nullptr ||
                     depthView == nullptr || hdrSceneColorView == nullptr ||
+                    baseIndirectSpecularView == nullptr ||
+                    specularResponseView == nullptr ||
                     ambientOcclusionView == nullptr ||
+                    baseIndirectSpecularView->GetTexture() !=
+                        baseIndirectSpecular ||
+                    specularResponseView->GetTexture() != specularResponse ||
+                    baseIndirectSpecularView->GetFormat() !=
+                        RHIFormat::RGBA16_FLOAT ||
+                    specularResponseView->GetFormat() !=
+                        RHIFormat::RGBA16_FLOAT ||
+                    baseIndirectSpecular->GetWidth() !=
+                        hdrSceneColor->GetWidth() ||
+                    baseIndirectSpecular->GetHeight() !=
+                        hdrSceneColor->GetHeight() ||
+                    specularResponse->GetWidth() != hdrSceneColor->GetWidth() ||
+                    specularResponse->GetHeight() != hdrSceneColor->GetHeight() ||
                     ambientOcclusionView->GetTexture() != ambientOcclusion ||
                     ambientOcclusionView->GetFormat() != RHIFormat::R8_UNORM ||
                     ambientOcclusion->GetWidth() != hdrSceneColor->GetWidth() ||
@@ -761,6 +864,25 @@ namespace RVX
                 }
                 if ((data.lighting.directionalShadowEnabled &&
                      directionalShadowView == nullptr) ||
+                    (data.lighting.localShadowEnabled &&
+                     (localShadowAtlas == nullptr ||
+                      localShadowAtlasView == nullptr ||
+                      localShadowAtlasView->GetTexture() != localShadowAtlas ||
+                      localShadowAtlasView->GetFormat() !=
+                          RHIFormat::D32_FLOAT ||
+                      localShadowAtlas->GetDimension() !=
+                          RHITextureDimension::Texture2D ||
+                      localShadowAtlasView->GetSubresourceRange().baseMipLevel != 0 ||
+                      (localShadowAtlasView->GetSubresourceRange().mipLevelCount != 1 &&
+                       localShadowAtlasView->GetSubresourceRange().mipLevelCount !=
+                           RVX_ALL_MIPS) ||
+                      localShadowAtlasView->GetSubresourceRange().baseArrayLayer != 0 ||
+                      (localShadowAtlasView->GetSubresourceRange().arrayLayerCount !=
+                           data.lighting.localShadowPageCapacity &&
+                       localShadowAtlasView->GetSubresourceRange().arrayLayerCount !=
+                           RVX_ALL_LAYERS) ||
+                      localShadowAtlasView->GetSubresourceRange().aspect !=
+                          RHITextureAspect::Depth)) ||
                     (data.lighting.textureIBLEnabled &&
                      (irradianceView == nullptr ||
                       prefilteredEnvironmentView == nullptr ||
@@ -821,6 +943,25 @@ namespace RVX
                 // It must therefore only be selected for views that do not
                 // request that optional path; no fallback can hide a mismatch.
                 snapshotRequest.rayTracedShadow.enabled = false;
+                snapshotRequest.localShadow.enabled =
+                    data.lighting.localShadowEnabled;
+                snapshotRequest.localShadow.depthAtlasView =
+                    localShadowAtlasView;
+                if (data.lighting.localShadowEnabled)
+                {
+                    snapshotRequest.localShadow.localShadowPlanIdentity =
+                        data.lighting.localShadowPlanIdentity;
+                    snapshotRequest.localShadow.atlasPlanIdentity =
+                        data.lighting.localShadowAtlasPlanIdentity;
+                    snapshotRequest.localShadow.atlasGeneration =
+                        data.lighting.localShadowAtlasGeneration;
+                    snapshotRequest.localShadow.pageCount =
+                        data.lighting.localShadowPageCount;
+                    snapshotRequest.localShadow.pageResolution =
+                        data.lighting.localShadowPageResolution;
+                    snapshotRequest.localShadow.pageCapacity =
+                        data.lighting.localShadowPageCapacity;
+                }
                 snapshotRequest.environmentIBL.enabled =
                     data.lighting.textureIBLEnabled;
                 snapshotRequest.environmentIBL.irradianceView = irradianceView;
@@ -914,6 +1055,15 @@ namespace RVX
                 descriptorSetDesc.BindTexture(
                     PipelineCache::DeferredLightingAmbientOcclusionBinding,
                     ambientOcclusionView);
+                descriptorSetDesc.BindTexture(
+                    PipelineCache::DeferredLightingLocalShadowAtlasBinding,
+                    lightingSnapshot.localShadowAtlasView.Get());
+                descriptorSetDesc.BindTexture(
+                    PipelineCache::DeferredLightingBaseIndirectSpecularBinding,
+                    baseIndirectSpecularView);
+                descriptorSetDesc.BindTexture(
+                    PipelineCache::DeferredLightingSpecularResponseBinding,
+                    specularResponseView);
 
                 RHIDescriptorSetRef descriptorSet =
                     data.execution.device->CreateDescriptorSet(descriptorSetDesc);
@@ -942,6 +1092,8 @@ namespace RVX
                         Ref<RefCounted>(lightingSnapshot.directionalShadowView)) ||
                     !context.RetainSubmissionResource(
                         Ref<RefCounted>(lightingSnapshot.directionalShadowSampler)) ||
+                    !context.RetainSubmissionResource(
+                        Ref<RefCounted>(lightingSnapshot.localShadowAtlasView)) ||
                     !context.RetainSubmissionResource(
                         Ref<RefCounted>(lightingSnapshot.lightConstantsBuffer)) ||
                     !context.RetainSubmissionResource(
@@ -1003,6 +1155,19 @@ namespace RVX
                     evidence.frozenBufferMask = 0x3fu;
                     evidence.directionalShadowBound =
                         data.lighting.directionalShadowEnabled;
+                    evidence.localShadowBound =
+                        data.lighting.localShadowEnabled;
+                    if (data.lighting.localShadowEnabled)
+                    {
+                        evidence.localShadowPlanIdentity =
+                            data.lighting.localShadowPlanIdentity;
+                        evidence.localShadowAtlasPlanIdentity =
+                            data.lighting.localShadowAtlasPlanIdentity;
+                        evidence.localShadowAtlasGeneration =
+                            data.lighting.localShadowAtlasGeneration;
+                        evidence.localShadowPageCount =
+                            data.lighting.localShadowPageCount;
+                    }
                     evidence.textureIBLBound =
                         data.lighting.textureIBLEnabled;
                     evidence.exactIBLViews = exactIBLViews;

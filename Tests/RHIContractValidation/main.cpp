@@ -382,6 +382,13 @@ namespace RVX::Tests
             capabilities.supportsDynamicDescriptorOffsets = true;
             capabilities.maxDescriptorSets = 4;
             capabilities.supportsExplicitResourceBarriers = true;
+            capabilities.supportsIndependentColorAttachmentBlend = true;
+            capabilities.formatCapabilities[
+                static_cast<size_t>(RHIFormat::RGBA8_UNORM)] = {true, true};
+            capabilities.formatCapabilities[
+                static_cast<size_t>(RHIFormat::R16_FLOAT)] = {true, true};
+            capabilities.formatCapabilities[
+                static_cast<size_t>(RHIFormat::RGBA16_FLOAT)] = {true, true};
             capabilities.supportsDefaultQueueFenceSignal = true;
             capabilities.queueTopology.logicalQueueDomains = {
                 GPUQueueDomain::Graphics,
@@ -1482,7 +1489,7 @@ namespace RVX::Tests
         EXPECT_TRUE(report.validationPassed) << report.validationMessage;
         EXPECT_TRUE(report.renderGraphBaselineSupported);
         EXPECT_TRUE(report.renderGraphBaselineMissingRequirements.empty());
-        EXPECT_EQ(report.entries.size(), static_cast<size_t>(12));
+        EXPECT_EQ(report.entries.size(), static_cast<size_t>(13));
         EXPECT_STREQ(GetRHICapabilityFeatureName(RHICapabilityFeature::RayTracing), "RayTracing");
         EXPECT_STREQ(GetRHICapabilityStatusName(RHICapabilityStatus::Unsupported), "Unsupported");
         EXPECT_GE(report.supportedCount, 7u);
@@ -1517,6 +1524,59 @@ namespace RVX::Tests
         EXPECT_EQ(legacyCount->status, RHICapabilityStatus::Supported);
         EXPECT_EQ(legacyCount->requiredCapability,
                   "indexedIndirectExecution.supportsCountBuffer");
+
+        const RHICapabilityReportEntry* independentBlend =
+            FindReportEntry(
+                report,
+                RHICapabilityFeature::IndependentColorAttachmentBlend);
+        ASSERT_NE(independentBlend, nullptr);
+        EXPECT_EQ(independentBlend->status,
+                  RHICapabilityStatus::Supported);
+        EXPECT_TRUE(report.supportsIndependentColorAttachmentBlend);
+        ASSERT_EQ(
+            report.formatCapabilities.size(),
+            static_cast<size_t>(RHIFormat::Count) - 1u);
+        const auto rgba16 = std::find_if(
+            report.formatCapabilities.begin(),
+            report.formatCapabilities.end(),
+            [](const RHIFormatCapabilityReportEntry& entry)
+            {
+                return entry.format == RHIFormat::RGBA16_FLOAT;
+            });
+        ASSERT_NE(rgba16, report.formatCapabilities.end());
+        EXPECT_TRUE(rgba16->colorAttachment);
+        EXPECT_TRUE(rgba16->colorAttachmentBlend);
+    }
+
+    TEST(RHIContractValidation,
+         ColorAttachmentCapabilitiesRejectContradictoryClaims)
+    {
+        RHICapabilities capabilities =
+            MakeValidCapabilities(RHIBackendType::DX12);
+
+        capabilities.formatCapabilities[
+            static_cast<size_t>(RHIFormat::R16_FLOAT)] = {false, true};
+        RHICapabilityValidationResult result =
+            ValidateRHICapabilities(capabilities);
+        EXPECT_FALSE(result);
+        EXPECT_NE(result.message.find(
+                      "blend support requires color-attachment support"),
+                  std::string::npos);
+
+        capabilities = MakeValidCapabilities(RHIBackendType::DX12);
+        capabilities.formatCapabilities[
+            static_cast<size_t>(RHIFormat::Unknown)] = {true, false};
+        result = ValidateRHICapabilities(capabilities);
+        EXPECT_FALSE(result);
+        EXPECT_NE(result.message.find("Unknown format"),
+                  std::string::npos);
+
+        capabilities = MakeValidCapabilities(RHIBackendType::DX12);
+        capabilities.maxColorAttachments = 1;
+        result = ValidateRHICapabilities(capabilities);
+        EXPECT_FALSE(result);
+        EXPECT_NE(result.message.find("at least two color attachments"),
+                  std::string::npos);
     }
 
     TEST(RHIContractValidation, CapabilityReportSurfacesEmulationAndValidationFailures)
@@ -1588,7 +1648,7 @@ namespace RVX::Tests
         EXPECT_EQ(report.adapterName, capabilities.adapterName);
         EXPECT_EQ(report.driverVersion, capabilities.driverVersion);
         EXPECT_TRUE(report.validationPassed) << report.validationMessage;
-        EXPECT_EQ(report.entries.size(), static_cast<size_t>(12));
+        EXPECT_EQ(report.entries.size(), static_cast<size_t>(13));
 
         const RHICapabilityReportEntry* asyncCompute =
             FindReportEntry(report, RHICapabilityFeature::AsyncCompute);
@@ -1609,7 +1669,9 @@ namespace RVX::Tests
         const std::string text = device.ExportCapabilityReportText();
 
         EXPECT_NE(text.find("RHI Capability Report"), std::string::npos);
-        EXPECT_NE(text.find("Schema: 6"), std::string::npos);
+        EXPECT_NE(text.find("Schema: 7"), std::string::npos);
+        EXPECT_NE(text.find("IndependentColorAttachmentBlend: Supported"),
+                  std::string::npos);
         EXPECT_NE(text.find("Backend: OpenGL"), std::string::npos);
         EXPECT_NE(text.find("Adapter: OpenGL Test Adapter"), std::string::npos);
         EXPECT_NE(text.find("DriverVersion: TestDriver.1"), std::string::npos);
@@ -1635,7 +1697,12 @@ namespace RVX::Tests
         const FakeRHIDevice device(capabilities);
         const std::string json = device.ExportCapabilityReportJson();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 6"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 7"), std::string::npos);
+        EXPECT_NE(json.find(
+                      "\"supportsIndependentColorAttachmentBlend\": true"),
+                  std::string::npos);
+        EXPECT_NE(json.find("\"formatCapabilities\": ["),
+                  std::string::npos);
         EXPECT_NE(json.find("\"schemaId\": \"RVX.RHI.CapabilityReport\""), std::string::npos);
         EXPECT_NE(json.find("\"id\": \"rhiCapabilityReportJson\""), std::string::npos);
         EXPECT_NE(json.find("\"kind\": \"RHICapabilityReportJson\""), std::string::npos);

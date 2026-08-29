@@ -108,19 +108,68 @@ namespace RVX
         bool m_hasRecordContext = false;
     };
 
-    /**
-     * @brief Consumes the exact AO field, then records Forward opaque and later passes.
-     *
-     * This adapter is the sole ForwardStandard consumer of screen-space AO.
-     * Transparent, sky, particles, water, and other later passes receive no AO
-     * input even though they remain in the same compatibility pass registry.
-     */
+    /** @brief Consumes the exact AO field and publishes the lit opaque HDR surface. */
     class ForwardLightingFeatureAdapter final : public IRenderFeature
     {
     public:
         ForwardLightingFeatureAdapter(RenderPassRegistry* passRegistry,
-                                      OpaquePass* opaquePass,
-                                      VelocityPassBindings velocityPasses = {}) noexcept;
+                                      OpaquePass* opaquePass) noexcept;
+
+        void SetRecordContext(RenderPassRecordContext context);
+        void SetOpaquePass(OpaquePass* opaquePass) noexcept
+        {
+            m_opaquePass = opaquePass;
+        }
+        [[nodiscard]] RenderFeatureDescriptor Describe() const override;
+        void Prepare(const RenderFeatureContext& context) override;
+        [[nodiscard]] RenderFeatureReadiness ResolveReadiness() const override;
+        void AddPasses(RenderFeatureGraphBuilder& builder,
+                       RenderGraphBlackboard& blackboard) override;
+        [[nodiscard]] RenderFeatureExecutionReceipt CollectReceipt()
+            const override;
+
+        [[nodiscard]] LegacyForwardFeaturePassChainStats
+        GetPassChainStatsSnapshot() const
+        {
+            return m_lastPassChainStats;
+        }
+
+        [[nodiscard]] const RenderFeatureReadiness& GetLastReadiness()
+            const noexcept
+        {
+            return m_readiness;
+        }
+
+    private:
+        [[nodiscard]] bool HasMatchingRecordContext(
+            const RenderFeatureContext& context) const noexcept;
+        [[nodiscard]] bool HasValidLightingPlan(
+            const RenderFeatureContext& context) const noexcept;
+        void SetCompositionFailure(std::string diagnostic);
+
+        RenderPassRegistry* m_passRegistry = nullptr;
+        OpaquePass* m_opaquePass = nullptr;
+        RenderPassRecordContext m_recordContext{};
+        RenderFeatureContext m_preparedContext{};
+        LegacyForwardFeaturePassChainStats m_lastPassChainStats{};
+        mutable RenderFeatureExecutionReceipt m_lastReceipt{};
+        RenderFeatureReadiness m_readiness{};
+        bool m_hasRecordContext = false;
+    };
+
+    /**
+     * @brief Records ForwardStandard special surfaces after reflection resolve.
+     *
+     * Sky, transmission, water, particles, and transparent work consume the
+     * typed ReflectionOutputs boundary. They deliberately do not receive the
+     * opaque-only AO field.
+     */
+    class ForwardSpecialFeatureAdapter final : public IRenderFeature
+    {
+    public:
+        ForwardSpecialFeatureAdapter(RenderPassRegistry* passRegistry,
+                                     OpaquePass* opaquePass,
+                                     VelocityPassBindings velocityPasses = {}) noexcept;
 
         void SetRecordContext(RenderPassRecordContext context);
         void SetOpaquePass(OpaquePass* opaquePass) noexcept
@@ -154,6 +203,8 @@ namespace RVX
 
     private:
         [[nodiscard]] bool HasMatchingRecordContext(
+            const RenderFeatureContext& context) const noexcept;
+        [[nodiscard]] bool HasValidLightingPlan(
             const RenderFeatureContext& context) const noexcept;
         void SetCompositionFailure(std::string diagnostic);
 

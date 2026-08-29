@@ -11,6 +11,8 @@
 #include "Features/DeferredRecipeFeatureAdapter.h"
 #include "Features/LegacyForwardFeatureAdapter.h"
 #include "Features/PostProcessPipelineFeatureAdapter.h"
+#include "Features/ReflectionFeatureAdapter.h"
+#include "Features/TranslucencyFeatureAdapter.h"
 #include "Render/Features/RenderFeatureRegistry.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
@@ -176,6 +178,9 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
     const bool fullCompositionReady = m_legacyForwardFeature != nullptr &&
         m_ambientOcclusionFeature != nullptr &&
         m_forwardLightingFeature != nullptr &&
+        m_reflectionFeature != nullptr &&
+        m_forwardSpecialFeature != nullptr &&
+        m_translucencyFeature != nullptr &&
         m_postProcessFeature != nullptr &&
         m_deferredGeometryFeature != nullptr &&
         m_deferredLightingFeature != nullptr &&
@@ -193,6 +198,9 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
         m_legacyForwardFeature != nullptr &&
         m_ambientOcclusionFeature != nullptr &&
         m_forwardLightingFeature != nullptr &&
+        m_reflectionFeature != nullptr &&
+        m_forwardSpecialFeature != nullptr &&
+        m_translucencyFeature != nullptr &&
         m_postProcessFeature != nullptr &&
         m_deferredGeometryFeature == nullptr &&
         m_deferredLightingFeature == nullptr &&
@@ -207,12 +215,18 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
         m_legacyForwardFeature = nullptr;
         m_ambientOcclusionFeature = nullptr;
         m_forwardLightingFeature = nullptr;
+        m_reflectionFeature = nullptr;
+        m_forwardSpecialFeature = nullptr;
+        m_translucencyFeature = nullptr;
         m_postProcessFeature = nullptr;
     }
 
     if (m_renderFeatureRegistry != nullptr || m_legacyForwardFeature != nullptr ||
         m_ambientOcclusionFeature != nullptr ||
         m_forwardLightingFeature != nullptr ||
+        m_reflectionFeature != nullptr ||
+        m_forwardSpecialFeature != nullptr ||
+        m_translucencyFeature != nullptr ||
         m_postProcessFeature != nullptr ||
         m_deferredGeometryFeature != nullptr ||
         m_deferredLightingFeature != nullptr ||
@@ -237,6 +251,7 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
     if (deferredDependenciesReady)
     {
         recipes.push_back(RenderPipelineRecipe::DeferredQuality);
+        recipes.push_back(RenderPipelineRecipe::HybridRayTracing);
     }
     for (const RenderPipelineRecipe recipe : recipes)
     {
@@ -290,10 +305,36 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
 
     auto forwardLighting =
         std::make_unique<ForwardLightingFeatureAdapter>(
-            m_passRegistry.get(), m_opaquePass, velocityPasses);
+            m_passRegistry.get(), m_opaquePass);
     ForwardLightingFeatureAdapter* const forwardLightingFeature =
         forwardLighting.get();
     if (!registerFeature(std::move(forwardLighting), "ForwardLighting"))
+    {
+        return false;
+    }
+
+    auto reflection = std::make_unique<ReflectionFeatureAdapter>(
+        m_pipelineCache.get());
+    ReflectionFeatureAdapter* const reflectionFeature = reflection.get();
+    if (!registerFeature(std::move(reflection), "ReflectionResolve"))
+    {
+        return false;
+    }
+
+    auto forwardSpecial = std::make_unique<ForwardSpecialFeatureAdapter>(
+        m_passRegistry.get(), m_opaquePass, velocityPasses);
+    ForwardSpecialFeatureAdapter* const forwardSpecialFeature =
+        forwardSpecial.get();
+    if (!registerFeature(std::move(forwardSpecial), "ForwardSpecial"))
+    {
+        return false;
+    }
+
+    auto translucency = std::make_unique<TranslucencyFeatureAdapter>(
+        m_passRegistry.get(), m_pipelineCache.get());
+    TranslucencyFeatureAdapter* const translucencyFeature =
+        translucency.get();
+    if (!registerFeature(std::move(translucency), "Translucency"))
     {
         return false;
     }
@@ -346,6 +387,9 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
     m_legacyForwardFeature = legacyForwardFeature;
     m_ambientOcclusionFeature = ambientOcclusionFeature;
     m_forwardLightingFeature = forwardLightingFeature;
+    m_reflectionFeature = reflectionFeature;
+    m_forwardSpecialFeature = forwardSpecialFeature;
+    m_translucencyFeature = translucencyFeature;
     m_postProcessFeature = postProcessFeature;
     m_deferredGeometryFeature = deferredGeometryFeature;
     m_deferredLightingFeature = deferredLightingFeature;

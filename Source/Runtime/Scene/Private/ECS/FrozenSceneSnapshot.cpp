@@ -182,10 +182,39 @@ FrozenSceneSnapshot SceneSnapshotBuilder::Build(ECS::Registry& registry)
             });
         });
 
+    registry.Query<ECS::Read<ReflectionProbe>,
+                   ECS::Read<Visibility>,
+                   ECS::Read<RenderWorldTransform>,
+                   ECS::Read<EntityLifecycleState>>()
+        .Each([&snapshot, &registry](ECS::EntityHandle entity,
+                                     const ReflectionProbe& probe,
+                                     const Visibility& visibility,
+                                     const RenderWorldTransform& transform,
+                                     const EntityLifecycleState& lifecycle)
+        {
+            if (!IsAliveForSnapshot(lifecycle))
+            {
+                return;
+            }
+
+            snapshot.reflectionProbes.push_back({
+                .id = MakeFrozenSceneObjectId(
+                    snapshot.sceneRuntimeId, entity, FrozenSceneObjectType::Probe),
+                .sourceEntity = entity,
+                .source = probe,
+                .visibility = visibility,
+                .worldTransform = transform.matrix,
+                .transformSourceRevision = transform.sourceRevision,
+                .visibilityWriteVersion =
+                    registry.GetFragmentWriteVersion<Visibility>(entity),
+            });
+        });
+
     SortByEntity(snapshot.cameras);
     SortByEntity(snapshot.meshes);
     SortByEntity(snapshot.lights);
     SortByEntity(snapshot.skyboxes);
+    SortByEntity(snapshot.reflectionProbes);
 
     // Camera selection is deterministic: highest priority wins; equal priority
     // resolves to the lowest generation-qualified EntityHandle.

@@ -2,6 +2,8 @@
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightingFramePlan.h"
 #include "Render/Lighting/LightManager.h"
+#include "Render/Lighting/LocalShadowAtlas.h"
+#include "Render/Lighting/LocalShadowFramePlan.h"
 #include "RHI/RHI.h"
 #include "RHI/RHICommandContext.h"
 
@@ -340,6 +342,77 @@ namespace
         return std::move(result.plan);
     }
 
+    LightingFramePlan MakeShadowedLightingPlan(uint64 frameSequence)
+    {
+        LightingFramePlanRequest request;
+        request.frameIdentity = {
+            frameSequence,
+            frameSequence + 10U,
+            1U,
+            1U};
+        request.viewIdentity = {1U, frameSequence + 100U};
+        request.sceneLightStateHash = frameSequence + 1000U;
+        request.lightingConfigurationRevision = 1U;
+        request.qualityRevision = 1U;
+        request.pointLightCapacity = LightManager::MaxPointLights;
+        request.spotLightCapacity = LightManager::MaxSpotLights;
+        request.lightCandidates = {
+            {.lightId = frameSequence + 1U,
+             .type = RenderLightType::Point,
+             .position = {1.0f, 0.0f, -3.0f},
+             .normalizedIntensity = 2.0f,
+             .range = 5.0f,
+             .castsShadows = true},
+            {.lightId = frameSequence + 2U,
+             .type = RenderLightType::Spot,
+             .position = {-1.0f, 0.0f, -3.0f},
+             .direction = {0.0f, -1.0f, 0.0f},
+             .normalizedIntensity = 3.0f,
+             .range = 5.0f,
+             .innerConeRadians = 0.25f,
+             .outerConeRadians = 0.5f,
+             .castsShadows = true}};
+        const LightingFramePlanBuildResult result =
+            LightingFramePlanBuilder{}.Build(request);
+        EXPECT_TRUE(result.Succeeded()) << result.diagnostic;
+        EXPECT_TRUE(result.plan.IsValid());
+        return result.plan;
+    }
+
+    LocalShadowFramePlan MakeLocalShadowPlan(
+        const LightingFramePlan& lightingPlan,
+        uint64 atlasGeneration = 71U)
+    {
+        LocalShadowFramePlanRequest request;
+        request.atlas = {
+            .pageResolution = 256U,
+            .pageCapacity = 8U,
+            .pointLightCapacity = 1U,
+            .spotLightCapacity = 1U,
+            .overflowPolicy = LocalShadowOverflowPolicy::Fail};
+        request.atlasGeneration = atlasGeneration;
+        const LocalShadowFramePlanBuildResult result =
+            LocalShadowFramePlanBuilder{}.Build(lightingPlan, request);
+        EXPECT_TRUE(result.Succeeded()) << result.diagnostic;
+        EXPECT_TRUE(result.plan.IsValid());
+        return result.plan;
+    }
+
+    LocalShadowAtlasPlan MakeLocalShadowAtlasPlan(
+        const LightingFramePlan& lightingPlan,
+        const LocalShadowFramePlan& localShadowPlan)
+    {
+        LocalShadowAtlasPlanRequest request;
+        request.atlasGeneration = localShadowPlan.GetAtlasGeneration();
+        request.nearPlane = 0.1f;
+        const LocalShadowAtlasPlanBuildResult result =
+            LocalShadowAtlasPlanBuilder{}.Build(
+                lightingPlan, localShadowPlan, request);
+        EXPECT_TRUE(result.Succeeded()) << result.diagnostic;
+        EXPECT_TRUE(result.plan.IsValid());
+        return result.plan;
+    }
+
 } // namespace
 
 class ClusteredLightingValidationFixture : public ::testing::Test
@@ -665,6 +738,113 @@ TEST_F(ClusteredLightingValidationFixture,
                 sizeof(constants));
     EXPECT_EQ(constants.numPointLights, 0U);
     EXPECT_EQ(constants.numSpotLights, 0U);
+}
+
+TEST_F(ClusteredLightingValidationFixture,
+       LocalShadowPlanPublishesPageBasesMatricesAndReceiverSettingsAtomically)
+{
+    FakeDevice device;
+    LightManager lights;
+    lights.Initialize(&device);
+    const LightingFramePlan lightingPlan = MakeShadowedLightingPlan(300U);
+    const LocalShadowFramePlan localShadowPlan =
+        MakeLocalShadowPlan(lightingPlan);
+    const LocalShadowAtlasPlan atlasPlan =
+        MakeLocalShadowAtlasPlan(lightingPlan, localShadowPlan);
+
+    ASSERT_TRUE(lights.CollectLights(lightingPlan));
+    ASSERT_TRUE(lights.ApplyLocalShadowPlan(
+        localShadowPlan, atlasPlan,
+        {.depthBias = 0.002f, .normalBias = 0.025f}));
+    EXPECT_EQ(LocalShadowBindingCode::Ready,
+              lights.GetLocalShadowBindingCode());
+
+    const LocalShadowAllocation* const point =
+        localShadowPlan.FindAllocation(301U);
+    const LocalShadowAllocation* const spot =
+        localShadowPlan.FindAllocation(302U);
+    ASSERT_NE(nullptr, point);
+    ASSERT_NE(nullptr, spot);
+    ASSERT_LT(point->lightBufferIndex, lights.GetPointLights().size());
+    ASSERT_LT(spot->lightBufferIndex, lights.GetSpotLights().size());
+    EXPECT_EQ(static_cast<int32>(point->firstPage),
+              lights.GetPointLights()[point->lightBufferIndex].shadowMapIndex);
+    EXPECT_EQ(static_cast<int32>(spot->firstPage),
+              lights.GetSpotLights()[spot->lightBufferIndex].shadowMapIndex);
+
+    ASSERT_TRUE(lights.UpdateGPUBuffers().Succeeded());
+    FakeBuffer* const constantsBuffer = device.FindBuffer("LightConstantsBuffer");
+    ASSERT_NE(nullptr, constantsBuffer);
+    LightConstants constants;
+    std::memcpy(&constants, constantsBuffer->GetStorage().data(),
+                sizeof(constants));
+    EXPECT_EQ(7U, constants.localShadowPageCount);
+    EXPECT_FLOAT_EQ(1.0f / 256.0f, constants.localShadowInvResolution);
+    EXPECT_FLOAT_EQ(0.002f, constants.localShadowDepthBias);
+    EXPECT_FLOAT_EQ(0.025f, constants.localShadowNormalBias);
+    const LocalShadowAtlasPage* const pointPage = atlasPlan.FindPage(
+        point->firstPage);
+    ASSERT_NE(nullptr, pointPage);
+    EXPECT_EQ(pointPage->viewProjection,
+              constants.localShadowViewProjections[point->firstPage]);
+}
+
+TEST_F(ClusteredLightingValidationFixture,
+       ZeroWorkLocalShadowPlanPublishesDisabledLightConstantsABI)
+{
+    FakeDevice device;
+    LightManager lights;
+    lights.Initialize(&device);
+    const LightingFramePlan lightingPlan = MakeLightingPlan(350U);
+    const LocalShadowFramePlan localShadowPlan =
+        MakeLocalShadowPlan(lightingPlan);
+    const LocalShadowAtlasPlan atlasPlan =
+        MakeLocalShadowAtlasPlan(lightingPlan, localShadowPlan);
+
+    ASSERT_TRUE(localShadowPlan.GetAllocations().empty());
+    ASSERT_TRUE(atlasPlan.GetPages().empty());
+    ASSERT_TRUE(lights.CollectLights(lightingPlan));
+    ASSERT_TRUE(lights.ApplyLocalShadowPlan(
+        localShadowPlan, atlasPlan,
+        {.depthBias = 0.002f, .normalBias = 0.025f}));
+    ASSERT_TRUE(lights.UpdateGPUBuffers().Succeeded());
+
+    FakeBuffer* const constantsBuffer =
+        device.FindBuffer("LightConstantsBuffer");
+    ASSERT_NE(nullptr, constantsBuffer);
+    LightConstants constants;
+    std::memcpy(&constants, constantsBuffer->GetStorage().data(),
+                sizeof(constants));
+    EXPECT_EQ(0U, constants.localShadowPageCount);
+    EXPECT_FLOAT_EQ(0.0f, constants.localShadowInvResolution);
+    EXPECT_FLOAT_EQ(0.0f, constants.localShadowDepthBias);
+    EXPECT_FLOAT_EQ(0.0f, constants.localShadowNormalBias);
+}
+
+TEST_F(ClusteredLightingValidationFixture,
+       StaleLocalShadowAtlasInvalidatesTheStagedLightUpload)
+{
+    FakeDevice device;
+    LightManager lights;
+    lights.Initialize(&device);
+    const LightingFramePlan lightingPlan = MakeShadowedLightingPlan(400U);
+    const LocalShadowFramePlan localShadowPlan =
+        MakeLocalShadowPlan(lightingPlan, 81U);
+    const LocalShadowAtlasPlan staleAtlasPlan = MakeLocalShadowAtlasPlan(
+        lightingPlan, localShadowPlan);
+    const LocalShadowFramePlan staleLocalPlan =
+        MakeLocalShadowPlan(lightingPlan, 82U);
+
+    ASSERT_TRUE(lights.CollectLights(lightingPlan));
+    EXPECT_FALSE(lights.ApplyLocalShadowPlan(
+        staleLocalPlan, staleAtlasPlan));
+    EXPECT_EQ(LocalShadowBindingCode::AtlasPlanIdentityMismatch,
+              lights.GetLocalShadowBindingCode());
+    EXPECT_EQ(LightingPlanCollectionCode::InvalidEvidence,
+              lights.GetLightingPlanCollectionCode());
+    const LightingGpuUploadResult upload = lights.UpdateGPUBuffers();
+    EXPECT_EQ(LightingGpuUploadCode::PlanNotStaged, upload.code);
+    EXPECT_FALSE(upload.Succeeded());
 }
 
 TEST_F(ClusteredLightingValidationFixture, BeginFrameAssignLightsAndUploadWritesBuffers)
