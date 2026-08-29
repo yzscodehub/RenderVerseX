@@ -249,20 +249,17 @@ Keep at most the ten most useful recent entries.
   coverage. A fail-closed Architecture checker prevents central pass
   reconstruction and mutable pass-pointer ownership from returning.
 - Verification: checker self-tests passed 8/8 and focused tests passed 76/76;
-  after the line-ending-only cleanup in `43c56f79`, the complete Debug Build
-  Truth passed branch and working diff hygiene, Architecture 63/63, Unit
-  1947/1947, Integration 745/745, and real DX12 Native 61/61 with no backend
-  fallback or software adapter. Shipping passed 5/5 before the mechanical
-  cleanup and will be rebound after the implementation commit.
+  final evidence bound to `819cc46c` passed branch and working diff hygiene,
+  Architecture 63/63, Unit 1947/1947, Integration 745/745, real DX12 Native
+  61/61 with no backend fallback or software adapter, and Shipping 5/5.
 - Evidence: Architecture receipt
-  `.agent-harness/receipts/Architecture.33227f7de8944e649bffba00529469a5.json`,
+  `.agent-harness/receipts/Architecture.cf5b78aa8e3844a7a292b463584323b0.json`,
   Shipping receipt
-  `.agent-harness/receipts/RequiredSuite.1addaa46297a41e884287c83c33b988a.json`,
+  `.agent-harness/receipts/RequiredSuite.5952324bc2bf44ac997a6606527d728f.json`,
   and Build Truth receipt
-  `.agent-harness/receipts/BuildTruth.e5274260b1b5457db981bfa622e8c8ac.json`
-  bind commit `43c56f79` and
+  `.agent-harness/receipts/BuildTruth.39091256f2a842b6b4a0744fe5c7aece.json`
+  bind commit `819cc46c` and
   product digest
-  `a0c4e0119dc233471743c19ac9913c0be96b0c01000b1084c5e44e42eb0392e7`.
-- Follow-up: commit the reviewed GFX22A paths, rerun Architecture, complete
-  Debug Build Truth, and Shipping against the new HEAD, then transition the
-  feature to passing before starting GFX23.
+  `73eea4df3626d39678514805b31772566a0e148e926a9c7c6074c29eed12e08c`.
+- Follow-up: GFX22A is complete. Claim GFX23 separately before implementing
+  froxel volumetric lighting; Linux Vulkan and macOS Metal remain PR-CI gates.

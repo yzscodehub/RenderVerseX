@@ -2,8 +2,8 @@
     "$schema":  "./feature_list.schema.json",
     "schema":  "RVX.AgentFeatureList",
     "schemaVersion":  1,
-    "updatedAt":  "2026-08-29T08:51:45.2521126Z",
-    "activeFeature":  "gfx-22a",
+    "updatedAt":  "2026-08-29T09:06:39.2449807Z",
+    "activeFeature":  null,
     "features":  [
                      {
                          "id":  "gfx-22a",
@@ -196,17 +196,17 @@
                                                   "verificationResponsibility":  "Add the fail-closed ownership checker and self-tests without editing renderer implementation or global ledger files."
                                               }
                                           ],
-                         "status":  "active",
+                         "status":  "passing",
                          "evidence":  [
                                           {
                                               "verificationId":  "ownership-static",
                                               "command":  "\u0026 'C:\\Users\\yinzs\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe' Scripts\\test_renderer_feature_ownership.py; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; \u0026 'C:\\Users\\yinzs\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe' Scripts\\check_renderer_feature_ownership.py --root .",
                                               "result":  "passed",
                                               "exitCode":  0,
-                                              "recordedAt":  "2026-08-29T08:24:30.0000000Z",
+                                              "recordedAt":  "2026-08-29T09:06:39.2449807Z",
                                               "artifact":  null,
-                                              "sourceCommit":  "6d9decb023bbe15ae9775f789ade968c2669316b",
-                                              "sourceDigest":  "71b45075703c6a9eae4d3d9d6a9e4c32b723b5d76a11e42fef277d09091cadc9",
+                                              "sourceCommit":  "819cc46c02a2ccb38367ba45da8496c7571501a3",
+                                              "sourceDigest":  "73eea4df3626d39678514805b31772566a0e148e926a9c7c6074c29eed12e08c",
                                               "notes":  "The checker self-test passed 8/8 and the live fail-closed ownership scan passed."
                                           },
                                           {
@@ -214,10 +214,10 @@
                                               "command":  "cmake --build --preset win_x64_debug --target RenderFeatureValidation RenderPassValidation RendererCompositionLinkClosureValidation",
                                               "result":  "passed",
                                               "exitCode":  0,
-                                              "recordedAt":  "2026-08-29T08:24:30.0000000Z",
+                                              "recordedAt":  "2026-08-29T09:06:39.2449807Z",
                                               "artifact":  null,
-                                              "sourceCommit":  "6d9decb023bbe15ae9775f789ade968c2669316b",
-                                              "sourceDigest":  "71b45075703c6a9eae4d3d9d6a9e4c32b723b5d76a11e42fef277d09091cadc9",
+                                              "sourceCommit":  "819cc46c02a2ccb38367ba45da8496c7571501a3",
+                                              "sourceDigest":  "73eea4df3626d39678514805b31772566a0e148e926a9c7c6074c29eed12e08c",
                                               "notes":  "All three focused renderer validation targets built successfully."
                                           },
                                           {
@@ -225,10 +225,10 @@
                                               "command":  "ctest --test-dir build\\win_x64_debug -C Debug --output-on-failure -R \"^(RenderFeatureValidation|RenderPassValidation|Architecture.RendererTargetClosure)(\\\\.|$)\"",
                                               "result":  "passed",
                                               "exitCode":  0,
-                                              "recordedAt":  "2026-08-29T08:24:30.0000000Z",
+                                              "recordedAt":  "2026-08-29T09:06:39.2449807Z",
                                               "artifact":  null,
-                                              "sourceCommit":  "6d9decb023bbe15ae9775f789ade968c2669316b",
-                                              "sourceDigest":  "71b45075703c6a9eae4d3d9d6a9e4c32b723b5d76a11e42fef277d09091cadc9",
+                                              "sourceCommit":  "819cc46c02a2ccb38367ba45da8496c7571501a3",
+                                              "sourceDigest":  "73eea4df3626d39678514805b31772566a0e148e926a9c7c6074c29eed12e08c",
                                               "notes":  "Focused renderer and target-closure tests passed 76/76."
                                           },
                                           {
@@ -236,12 +236,12 @@
                                               "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\init.ps1 -Mode Verify -Preset win_x64_debug -BuildDir build\\win_x64_debug -Configuration Debug",
                                               "result":  "passed",
                                               "exitCode":  0,
-                                              "recordedAt":  "2026-08-29T08:12:27.1376422Z",
-                                              "artifact":  ".agent-harness/receipts/Architecture.33227f7de8944e649bffba00529469a5.json",
-                                              "artifactSha256":  "b017d4647930965e9fbc6ea3b251c492cc0014468dd22935985508c1186571ae",
-                                              "runId":  "33227f7de8944e649bffba00529469a5",
-                                              "sourceCommit":  "6d9decb023bbe15ae9775f789ade968c2669316b",
-                                              "sourceDigest":  "71b45075703c6a9eae4d3d9d6a9e4c32b723b5d76a11e42fef277d09091cadc9",
+                                              "recordedAt":  "2026-08-29T09:03:03.1695286Z",
+                                              "artifact":  ".agent-harness/receipts/Architecture.cf5b78aa8e3844a7a292b463584323b0.json",
+                                              "artifactSha256":  "90104ad92b2c1e6cd01a8773233557b4122bbfd4a5423436a3e5db6a23c92ce8",
+                                              "runId":  "cf5b78aa8e3844a7a292b463584323b0",
+                                              "sourceCommit":  "819cc46c02a2ccb38367ba45da8496c7571501a3",
+                                              "sourceDigest":  "73eea4df3626d39678514805b31772566a0e148e926a9c7c6074c29eed12e08c",
                                               "notes":  "Architecture required suite passed 63/63 with zero skipped, disabled, or not-run tests."
                                           },
                                           {
@@ -249,12 +249,12 @@
                                               "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_build_truth.ps1 -ConfigurePreset win_x64_debug -BuildPreset win_x64_debug -LaneTestPresets \"win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native\" -BuildDir build\\win_x64_debug -Configuration Debug -BaseRef master -RequiredNativeBackend DX12",
                                               "result":  "passed",
                                               "exitCode":  0,
-                                              "recordedAt":  "2026-08-29T08:51:45.2521126Z",
-                                              "artifact":  ".agent-harness/receipts/BuildTruth.e5274260b1b5457db981bfa622e8c8ac.json",
-                                              "artifactSha256":  "96d6bb7da45f2c25dfeb8394c21bc0eeb6e57f0ad86701c791fd3a63e6e0e5f7",
-                                              "runId":  "e5274260b1b5457db981bfa622e8c8ac",
-                                              "sourceCommit":  "43c56f79adb3eca432a5203e821078b4366196dc",
-                                              "sourceDigest":  "a0c4e0119dc233471743c19ac9913c0be96b0c01000b1084c5e44e42eb0392e7",
+                                              "recordedAt":  "2026-08-29T09:01:59.3150396Z",
+                                              "artifact":  ".agent-harness/receipts/BuildTruth.39091256f2a842b6b4a0744fe5c7aece.json",
+                                              "artifactSha256":  "57095bd01b76f0e297f7d0b84af6c54c9d0b13aad6e1ed5d0d2d9b68328c1473",
+                                              "runId":  "39091256f2a842b6b4a0744fe5c7aece",
+                                              "sourceCommit":  "819cc46c02a2ccb38367ba45da8496c7571501a3",
+                                              "sourceDigest":  "73eea4df3626d39678514805b31772566a0e148e926a9c7c6074c29eed12e08c",
                                               "notes":  "Configure, validation build, branch and working diff hygiene, Architecture 63/63, Unit 1947/1947, Integration 745/745, and real DX12 Native 61/61 all passed with no backend fallback or software adapter."
                                           },
                                           {
@@ -262,12 +262,12 @@
                                               "command":  "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\Scripts\\run_required_suite.ps1 -ConfigurePreset win_x64_shipping_release -BuildPreset win_x64_shipping_release -TestPreset win_x64_shipping_release_shipping -BuildDir build\\win_x64_shipping_release -Configuration Release -BuildTarget RVXValidationSuiteRequiredShipping -RequiredLabel suite.required-shipping -ExpectedTestCount 5 -RequiredEvidence 'Tests/Shipping/ShippingFixtures/Release/shipping-fixture-receipt.json;Tests/Shipping/ShippingFixtures/Release/shipping-smoke.json' -BaseRef master -SkipConfigure",
                                               "result":  "passed",
                                               "exitCode":  0,
-                                              "recordedAt":  "2026-08-29T08:23:29.0310259Z",
-                                              "artifact":  ".agent-harness/receipts/RequiredSuite.1addaa46297a41e884287c83c33b988a.json",
-                                              "artifactSha256":  "0bbc9ab67e388cea65c06cc8ad53006bf03478e8bdf5608dac0bd51ae5d88502",
-                                              "runId":  "1addaa46297a41e884287c83c33b988a",
-                                              "sourceCommit":  "6d9decb023bbe15ae9775f789ade968c2669316b",
-                                              "sourceDigest":  "71b45075703c6a9eae4d3d9d6a9e4c32b723b5d76a11e42fef277d09091cadc9",
+                                              "recordedAt":  "2026-08-29T09:04:08.9930246Z",
+                                              "artifact":  ".agent-harness/receipts/RequiredSuite.5952324bc2bf44ac997a6606527d728f.json",
+                                              "artifactSha256":  "50f8a3fa8e32af2c297530e62f2acfa4df8b9c73fca7a7a1064c01744ea3df2b",
+                                              "runId":  "5952324bc2bf44ac997a6606527d728f",
+                                              "sourceCommit":  "819cc46c02a2ccb38367ba45da8496c7571501a3",
+                                              "sourceDigest":  "73eea4df3626d39678514805b31772566a0e148e926a9c7c6074c29eed12e08c",
                                               "notes":  "Windows Release Shipping target closure, host cook fixture, cooked-only smoke, evidence validation, and dynamic dependency scan passed 5/5."
                                           },
                                           {
@@ -275,16 +275,16 @@
                                               "command":  "git -c safe.directory=E:/WorkSpace/RenderVerseX diff --check",
                                               "result":  "passed",
                                               "exitCode":  0,
-                                              "recordedAt":  "2026-08-29T08:25:51.2746579Z",
+                                              "recordedAt":  "2026-08-29T09:01:59.3150396Z",
                                               "artifact":  null,
-                                              "sourceCommit":  "6d9decb023bbe15ae9775f789ade968c2669316b",
-                                              "sourceDigest":  "71b45075703c6a9eae4d3d9d6a9e4c32b723b5d76a11e42fef277d09091cadc9",
+                                              "sourceCommit":  "819cc46c02a2ccb38367ba45da8496c7571501a3",
+                                              "sourceDigest":  "73eea4df3626d39678514805b31772566a0e148e926a9c7c6074c29eed12e08c",
                                               "notes":  "The current unstaged GFX22A worktree diff has no whitespace errors; protected user-owned paths remain excluded."
                                           }
                                       ],
                          "blocker":  null,
-                         "nextStep":  "Commit the reviewed GFX22A implementation, then rerun Architecture, complete Debug Build Truth, and Shipping against the new HEAD before transitioning the feature to passing.",
-                         "updatedAt":  "2026-08-29T08:51:45.2521126Z"
+                         "nextStep":  "GFX22A is complete. Claim GFX23 as a separate feature before implementing froxel volumetric lighting.",
+                         "updatedAt":  "2026-08-29T09:06:39.2449807Z"
                      }
                  ]
 }
