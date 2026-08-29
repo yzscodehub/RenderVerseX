@@ -263,3 +263,27 @@ Keep at most the ten most useful recent entries.
   `73eea4df3626d39678514805b31772566a0e148e926a9c7c6074c29eed12e08c`.
 - Follow-up: GFX22A is complete. Claim GFX23 separately before implementing
   froxel volumetric lighting; Linux Vulkan and macOS Metal remain PR-CI gates.
+
+### 2026-08-29 - gfx-23 - froxel volumetric lighting
+
+- Outcome: added one bounded, view-relative froxel volume driven by immutable
+  frame/view identity, clustered point/spot lights, shared directional/local
+  shadow evidence, and generation-safe present-time history. Forward,
+  translucency, water, and particles consume the same typed volume; zero
+  density publishes an exact guide-free identity. DX12 gained real Texture3D
+  SRV/UAV coverage, and the cooked/OpenGL shader ABIs fail closed at their new
+  versions.
+- Verification: focused tests passed 87/87; final Build Truth bound to
+  `3ec14f17` passed Architecture 63/63, Unit 1960/1960, Integration 745/745,
+  and real DX12 Native 61/61 without fallback or a software adapter. After the
+  independent ABI-16 host cooker rebuild, Shipping target closure, cook,
+  eight-frame cooked-only smoke, evidence, and dynamic dependency checks passed
+  5/5; diff hygiene passed.
+- Evidence: `.agent-harness/receipts/Architecture.1c65bbce6280414980aaff74aac78cda.json`,
+  `.agent-harness/receipts/BuildTruth.f88d608b7a534a89a7e2c7d0ae536821.json`,
+  and `.agent-harness/receipts/RequiredSuite.940ea3f530fa492782179ee4a656d6cd.json`
+  bind commit `3ec14f17` and product digest
+  `d5fa21a4d8874241dde2137ec18183832c1cac7b139507b5cdeb7e1bfdea04b1`.
+- Follow-up: claim GFX24 separately and add RenderQualityLab plus fail-closed
+  visual/performance qualification contracts. Linux Vulkan and macOS Metal
+  remain remote PR-CI obligations.
