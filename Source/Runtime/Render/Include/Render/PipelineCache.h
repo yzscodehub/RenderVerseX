@@ -316,6 +316,14 @@ namespace RVX
         /** Opaque HDR copy produced after Sky and before translucency. */
         RHITextureViewRef opaqueSceneSnapshotView;
         RHISamplerRef opaqueSceneSnapshotSampler;
+        /**
+         * Exact graph-owned RGBA16F Texture3D with integrated in-scattering
+         * in rgb and transmittance in alpha.  Omission binds the immutable
+         * (0, 0, 0, 1) neutral volume.
+         */
+        RHITextureViewRef froxelVolumetricLightingView;
+        /** Non-zero only for a realized, non-neutral froxel plan. */
+        uint64 froxelVolumetricLightingPlanIdentity = 0;
     };
 
     /**
@@ -351,6 +359,8 @@ namespace RVX
         uint64 ambientOcclusionFieldHash = 0;
         RHITextureViewRef opaqueSceneSnapshotView;
         RHISamplerRef opaqueSceneSnapshotSampler;
+        RHITextureViewRef froxelVolumetricLightingView;
+        uint64 froxelVolumetricLightingPlanIdentity = 0;
         RHIDescriptorSetLayoutRef frameSetLayout;
         RHIDescriptorSetRef frameDescriptorSet;
 
@@ -367,6 +377,7 @@ namespace RVX
                    environmentIBLSampler && exposureStateBuffer &&
                    ambientOcclusionView && ambientOcclusionFieldHash != 0 &&
                    opaqueSceneSnapshotView && opaqueSceneSnapshotSampler &&
+                   froxelVolumetricLightingView &&
                    frameSetLayout && frameDescriptorSet;
         }
 
@@ -879,11 +890,55 @@ namespace RVX
                    m_deferredLightingPipelineLayout;
         }
 
+        /**
+         * @brief Return the four cooked compute programs that realize the
+         * froxel volumetric-lighting primitive.
+         *
+         * The family is created lazily because compatibility backends may not
+         * expose compute.  A non-null program is never a placeholder: every
+         * stage owns a concrete descriptor ABI and records an actual dispatch.
+         */
+        RHIPipeline* GetFroxelVolumetricInjectionPipeline();
+        RHIPipeline* GetFroxelVolumetricIntegrationPipeline();
+        RHIPipeline* GetFroxelVolumetricTemporalPipeline();
+        RHIPipeline* GetFroxelVolumetricCompositePipeline();
+        RHIDescriptorSetLayout* GetFroxelVolumetricSetLayout() const
+        {
+            return m_froxelVolumetricSetLayout.Get();
+        }
+        RHIPipelineLayout* GetFroxelVolumetricLayout() const
+        {
+            return m_froxelVolumetricPipelineLayout.Get();
+        }
+        [[nodiscard]] bool IsFroxelVolumetricPipelineReady() const noexcept
+        {
+            return m_initialized && m_froxelVolumetricSetLayout &&
+                   m_froxelVolumetricPipelineLayout &&
+                   m_froxelVolumetricInjectionPipeline &&
+                   m_froxelVolumetricIntegrationPipeline &&
+                   m_froxelVolumetricTemporalPipeline &&
+                   m_froxelVolumetricCompositePipeline;
+        }
+
         /** Fixed HDR producer binding ABI for pre-exposure state and GTAO visibility. */
         static constexpr uint32 DefaultLitExposureStateBinding = 14u;
         static constexpr uint32 DefaultLitAmbientOcclusionBinding = 15u;
         static constexpr uint32 DefaultLitOpaqueSceneSnapshotBinding = 16u;
         static constexpr uint32 DefaultLitLocalShadowAtlasBinding = 17u;
+        /**
+         * Immutable froxel-scattering/transmittance Texture3D SRV.  The
+         * texture is sampled by transparent, water, and particle raster work
+         * through the existing frame-set linear-clamp sampler at s13.
+         */
+        static constexpr uint32 DefaultLitFroxelVolumetricLightingBinding = 18u;
+        /**
+         * Strong immutable fallback for non-volumetric/identity paths.  The
+         * texel is exactly (0, 0, 0, 1) in RGBA16F and has Texture3D shape.
+         */
+        [[nodiscard]] RHITextureViewRef GetNeutralVolumetricLightingView() const
+        {
+            return m_fallbackFroxelVolumetricLightingView;
+        }
         static constexpr uint32 DeferredLightingExposureStateBinding = 21u;
         static constexpr uint32 DeferredLightingAmbientOcclusionBinding = 22u;
         static constexpr uint32 DeferredLightingLocalShadowAtlasBinding = 23u;
@@ -1697,6 +1752,7 @@ namespace RVX
             RHIBufferRef exposureStateBuffer;
             RHITextureViewRef ambientOcclusionView;
             RHITextureViewRef opaqueSceneSnapshotView;
+            RHITextureViewRef froxelVolumetricLightingView;
             uint64 ambientOcclusionFieldHash = 0;
 
             [[nodiscard]] bool IsComplete() const noexcept
@@ -1710,7 +1766,7 @@ namespace RVX
                        environmentIBLPrefilteredView &&
                        environmentIBLBRDFLUTView && environmentIBLSampler &&
                        exposureStateBuffer && ambientOcclusionView &&
-                       opaqueSceneSnapshotView &&
+                       opaqueSceneSnapshotView && froxelVolumetricLightingView &&
                        ambientOcclusionFieldHash != 0;
             }
         };
@@ -1736,6 +1792,7 @@ namespace RVX
         bool CreateWeightedBlendedOITCompositePipelineLayout();
         bool CreateTAAPipelineLayout();
         bool CreateGTAOPipelineLayout();
+        bool CreateFroxelVolumetricPipelineLayout();
         bool CreateSSRPipelineLayout();
         bool CreateScreenSpaceOutlinePipelineLayout();
         bool CreateScreenSpaceOutlineVerifierPipelineLayout();
@@ -1857,6 +1914,7 @@ namespace RVX
             const char* stageName,
             RHIFormat outputFormat,
             uint64& outPipelineHash);
+        bool EnsureFroxelVolumetricPipelines();
         RHIPipelineRef GetOrCreateSSRHiZBasePipeline();
         RHIPipelineRef GetOrCreateSSRHiZReducePipeline();
         RHIPipelineRef GetOrCreateSSRTracePipeline();
@@ -2005,6 +2063,7 @@ namespace RVX
         bool EnsureFrameClusteredLightFallbackResources();
         bool EnsureFrameExposureFallbackBuffer();
         bool EnsureFrameAmbientOcclusionFallbackResources();
+        bool EnsureFrameFroxelVolumetricLightingFallbackResources();
         bool EnsureObjectInstanceFallbackBuffer();
         bool EnsureObjectSkinningPaletteFallbackBuffers();
         [[nodiscard]] bool ResolveSkinningPaletteBuffers(
@@ -2105,6 +2164,10 @@ namespace RVX
         RHIShaderRef m_gtaoBilateralHorizontalPixelShader;
         RHIShaderRef m_gtaoBilateralVerticalPixelShader;
         RHIShaderRef m_gtaoTemporalPixelShader;
+        RHIShaderRef m_froxelVolumetricInjectionComputeShader;
+        RHIShaderRef m_froxelVolumetricIntegrationComputeShader;
+        RHIShaderRef m_froxelVolumetricTemporalComputeShader;
+        RHIShaderRef m_froxelVolumetricCompositeComputeShader;
         RHIShaderRef m_ssrHiZBasePixelShader;
         RHIShaderRef m_ssrHiZReducePixelShader;
         RHIShaderRef m_ssrTracePixelShader;
@@ -2185,6 +2248,14 @@ namespace RVX
         std::unique_ptr<ShaderProgramMetadata> m_gtaoBilateralHorizontalPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_gtaoBilateralVerticalPsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_gtaoTemporalPsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata>
+            m_froxelVolumetricInjectionCsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata>
+            m_froxelVolumetricIntegrationCsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata>
+            m_froxelVolumetricTemporalCsCompileResult;
+        std::unique_ptr<ShaderProgramMetadata>
+            m_froxelVolumetricCompositeCsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_ssrHiZBasePsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_ssrHiZReducePsCompileResult;
         std::unique_ptr<ShaderProgramMetadata> m_ssrTracePsCompileResult;
@@ -2243,6 +2314,8 @@ namespace RVX
         RHIPipelineLayoutRef m_taaPipelineLayout;
         RHIDescriptorSetLayoutRef m_gtaoSetLayout;
         RHIPipelineLayoutRef m_gtaoPipelineLayout;
+        RHIDescriptorSetLayoutRef m_froxelVolumetricSetLayout;
+        RHIPipelineLayoutRef m_froxelVolumetricPipelineLayout;
         RHIDescriptorSetLayoutRef m_ssrSetLayout;
         RHIPipelineLayoutRef m_ssrPipelineLayout;
         RHIDescriptorSetLayoutRef m_screenSpaceOutlineSetLayout;
@@ -2292,6 +2365,10 @@ namespace RVX
         RHIPipelineRef m_gtaoBilateralHorizontalPipeline;
         RHIPipelineRef m_gtaoBilateralVerticalPipeline;
         RHIPipelineRef m_gtaoTemporalPipeline;
+        RHIPipelineRef m_froxelVolumetricInjectionPipeline;
+        RHIPipelineRef m_froxelVolumetricIntegrationPipeline;
+        RHIPipelineRef m_froxelVolumetricTemporalPipeline;
+        RHIPipelineRef m_froxelVolumetricCompositePipeline;
         RHIPipelineRef m_ssrHiZBasePipeline;
         RHIPipelineRef m_ssrHiZReducePipeline;
         RHIPipelineRef m_ssrTracePipeline;
@@ -2377,6 +2454,8 @@ namespace RVX
         RHIBufferRef m_fallbackExposureStateBuffer;
         RHITextureRef m_fallbackAmbientOcclusionTexture;
         RHITextureViewRef m_fallbackAmbientOcclusionView;
+        RHITextureRef m_fallbackFroxelVolumetricLightingTexture;
+        RHITextureViewRef m_fallbackFroxelVolumetricLightingView;
         RHITextureViewRef m_currentDirectionalShadowView;
         RHITextureViewRef m_currentRayTracedShadowMaskView;
         RHISamplerRef m_currentDirectionalShadowSampler;

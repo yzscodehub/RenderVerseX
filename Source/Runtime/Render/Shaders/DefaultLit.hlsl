@@ -163,6 +163,10 @@ Texture2D OpaqueSceneSnapshotTexture : register(t16, space0);
 // Renderer-owned full-capacity D32 Texture2DArray. It shares the existing
 // point-clamp depth sampler at s2 with directional CSM sampling.
 Texture2DArray<float> LocalShadowAtlasTexture : register(t17, space0);
+// Integrated froxel field: rgb is accumulated in-scattering and alpha is
+// camera-to-slice transmittance. Opaque/geometry records bind the immutable
+// neutral (0,0,0,1) 3D texture; late surfaces bind the exact graph volume.
+Texture3D<float4> FroxelVolumetricLightingTexture : register(t18, space0);
 #define LocalShadowAtlasSampler DirectionalShadowSampler
 #if !defined(RVX_GPU_SCENE_RASTER)
 StructuredBuffer<GPUInstanceData> GPUDrivenInstances : register(t1, space1);
@@ -833,6 +837,35 @@ struct GBufferOutput
     uint materialTableIndex : SV_Target3;
 };
 
+float3 RVXApplyVolumetricSurfaceExtinction(
+    float4 pixelPosition,
+    float3 surfaceRadiance)
+{
+    uint froxelWidth = 0u;
+    uint froxelHeight = 0u;
+    uint froxelDepth = 0u;
+    FroxelVolumetricLightingTexture.GetDimensions(
+        froxelWidth, froxelHeight, froxelDepth);
+    if (froxelWidth == 0u || froxelHeight == 0u || froxelDepth == 0u)
+    {
+        return surfaceRadiance;
+    }
+
+    const float2 viewportExtent = max(ClusterScreenParams.xy, 1.0f.xx);
+    const float2 screenUV = saturate(pixelPosition.xy / viewportExtent);
+    const float canonicalDepth = ReverseZ > 0.5f
+        ? 1.0f - saturate(pixelPosition.z)
+        : saturate(pixelPosition.z);
+    const float4 integrated = FroxelVolumetricLightingTexture.SampleLevel(
+        IBLLinearClampSampler,
+        float3(screenUV, canonicalDepth),
+        0.0f);
+    // The opaque scene below a late surface already contains the volume's
+    // in-scattering. Only attenuate this surface's own radiance here; adding
+    // integrated.rgb a second time would double the participating medium.
+    return surfaceRadiance * saturate(integrated.a);
+}
+
 float2 EncodeGBufferOctNormal(float3 normal)
 {
     normal /= max(abs(normal.x) + abs(normal.y) + abs(normal.z), 1.0e-6f);
@@ -1013,7 +1046,10 @@ float4 ShadeForwardSurface(
             clip(-1.0f);
             return float4(0.0f, 0.0f, 0.0f, 0.0f);
         }
-        return float4((baseColor.rgb + emissive) * preExposure, baseColor.a);
+        const float3 unlit = (baseColor.rgb + emissive) * preExposure;
+        return float4(
+            RVXApplyVolumetricSurfaceExtinction(input.Position, unlit),
+            baseColor.a);
     }
 
     if ((material.ShadingModel != MATERIAL_SHADING_MODEL_STANDARD_LIT &&
@@ -1134,7 +1170,10 @@ float4 ShadeForwardSurface(
         screenAmbientOcclusion);
     float3 finalColor = ambientDiffuse + ambientSpecular + directLight + emissive + ambientFloor;
 
-    return float4(finalColor * preExposure, baseColor.a);
+    return float4(
+        RVXApplyVolumetricSurfaceExtinction(
+            input.Position, finalColor * preExposure),
+        baseColor.a);
 }
 
 float4 PSMain(PSInput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET

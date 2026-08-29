@@ -15,6 +15,7 @@
 #include "Features/PostProcessPipelineFeatureAdapter.h"
 #include "Features/ReflectionFeatureAdapter.h"
 #include "Features/TranslucencyFeatureAdapter.h"
+#include "Features/VolumetricLightingFeatureAdapter.h"
 #include "Render/Passes/DeferredLightingPass.h"
 #include "Render/Passes/OpaquePass.h"
 
@@ -104,6 +105,8 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
         m_defaultRenderComposition
                 ->FindFeature<ReflectionFeatureAdapter>() != nullptr &&
         m_defaultRenderComposition
+                ->FindFeature<VolumetricLightingFeatureAdapter>() != nullptr &&
+        m_defaultRenderComposition
                 ->FindFeature<ForwardSpecialFeatureAdapter>() != nullptr &&
         m_defaultRenderComposition
                 ->FindFeature<TranslucencyFeatureAdapter>() != nullptr &&
@@ -130,6 +133,8 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
                 ->FindFeature<ForwardLightingFeatureAdapter>() != nullptr &&
         m_defaultRenderComposition
                 ->FindFeature<ReflectionFeatureAdapter>() != nullptr &&
+        m_defaultRenderComposition
+                ->FindFeature<VolumetricLightingFeatureAdapter>() != nullptr &&
         m_defaultRenderComposition
                 ->FindFeature<ForwardSpecialFeatureAdapter>() != nullptr &&
         m_defaultRenderComposition
@@ -212,6 +217,10 @@ bool SceneRenderer::EnsureDefaultRenderComposition()
             std::make_unique<ReflectionFeatureAdapter>(
                 &passBundle, m_pipelineCache.get()),
             "ReflectionResolve") ||
+        !registerFeature(
+            std::make_unique<VolumetricLightingFeatureAdapter>(
+                m_pipelineCache.get()),
+            "VolumetricLighting") ||
         !registerFeature(
             std::make_unique<ForwardSpecialFeatureAdapter>(&passBundle),
             "ForwardSpecial") ||

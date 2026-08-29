@@ -61,6 +61,8 @@ namespace RVX
         inline constexpr RenderFeatureId ForwardSpecialChain{10};
         /** Recipe-neutral mesh/particle translucency composition. */
         inline constexpr RenderFeatureId Translucency{11};
+        /** Froxel volumetric integration shared by every translucent surface. */
+        inline constexpr RenderFeatureId VolumetricLighting{12};
     } // namespace BuiltinRenderFeatureIds
 
     /** @brief Legal feature bands. Resource edges determine actual execution order. */
@@ -91,6 +93,7 @@ namespace RVX
         LocalShadowOutputs,
         LightingOutputs,
         ReflectionOutputs,
+        VolumetricLightingOutputs,
         PreTranslucencyOutputs,
         TranslucencyOutputs,
         PostProcessOutputs,

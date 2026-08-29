@@ -147,6 +147,7 @@ namespace RVX
             RGTextureHandle colorHandle{};
             RGTextureHandle depthHandle{};
             RGTextureHandle opaqueSceneSnapshotReadHandle{};
+            RGTextureHandle froxelVolumetricLightingReadHandle{};
             RGTextureHandle reactiveMaskHandle{};
             RGTextureHandle directionalShadowReadHandle{};
             RGTextureHandle rayTracedShadowMaskReadHandle{};
@@ -163,6 +164,7 @@ namespace RVX
             RGTextureViewHandle colorViewHandle{};
             RGTextureViewHandle depthViewHandle{};
             RGTextureViewHandle opaqueSceneSnapshotViewHandle{};
+            RGTextureViewHandle froxelVolumetricLightingViewHandle{};
             RGTextureViewHandle reactiveMaskViewHandle{};
             RGTextureViewHandle directionalShadowViewHandle{};
             RGTextureViewHandle rayTracedShadowMaskViewHandle{};
@@ -339,6 +341,8 @@ namespace RVX
                 context.RetainSubmissionResource(
                     Ref<RefCounted>(bindings.ambientOcclusionView.Get())) &&
                 context.RetainSubmissionResource(
+                    Ref<RefCounted>(bindings.froxelVolumetricLightingView.Get())) &&
+                context.RetainSubmissionResource(
                     Ref<RefCounted>(bindings.frameSetLayout.Get())) &&
                 context.RetainSubmissionResource(
                     Ref<RefCounted>(bindings.frameDescriptorSet.Get()));
@@ -379,6 +383,26 @@ namespace RVX
                 MakeRGAccessDesc(
                     RHIResourceState::ShaderResource,
                     RHIShaderStage::Pixel));
+        }
+
+        [[nodiscard]] bool IsExactFroxelVolumetricTexture(
+            const RHITextureDesc* textureDesc,
+            const VolumetricLightingRecordInput& volumetricLighting) noexcept
+        {
+            const FroxelGridMetadata& grid = volumetricLighting.froxelGrid;
+            return textureDesc != nullptr && !volumetricLighting.identityRoute &&
+                grid.tileSizePixels != 0 && grid.froxelWidth != 0 &&
+                grid.froxelHeight != 0 && grid.depthSliceCount != 0 &&
+                grid.froxelCount == static_cast<uint64>(grid.froxelWidth) *
+                    grid.froxelHeight * grid.depthSliceCount &&
+                textureDesc->dimension == RHITextureDimension::Texture3D &&
+                textureDesc->format == RHIFormat::RGBA16_FLOAT &&
+                textureDesc->width == grid.froxelWidth &&
+                textureDesc->height == grid.froxelHeight &&
+                textureDesc->depth == grid.depthSliceCount &&
+                textureDesc->mipLevels == 1 && textureDesc->arraySize == 1 &&
+                textureDesc->sampleCount == RHISampleCount::Count1 &&
+                HasFlag(textureDesc->usage, RHITextureUsage::ShaderResource);
         }
 
         [[nodiscard]] bool RetainDrawResources(
@@ -596,6 +620,8 @@ namespace RVX
             const ViewData& view = data.execution.view;
             const OpaqueSceneSnapshotRecordInput& opaqueSnapshot =
                 data.execution.opaqueSceneSnapshot;
+            const VolumetricLightingRecordInput& volumetricLighting =
+                data.execution.volumetricLighting;
             if (!data.stagedRecording &&
                 data.frameSnapshot->transparentDrawItems.empty())
             {
@@ -614,6 +640,7 @@ namespace RVX
                     data.frameSnapshot->transparentDrawItems) ||
                 !view.colorTarget.IsValid() ||
                 !opaqueSnapshot.IsCompatibleWith(data.identity) ||
+                !volumetricLighting.IsCompatibleWith(data.identity) ||
                 !view.reactiveMaskTarget.IsValid() ||
                 opaqueSnapshot.IsEmpty())
             {
@@ -645,6 +672,10 @@ namespace RVX
             data.colorFormat = colorDesc->format;
             const RHITextureDesc* const opaqueSnapshotDesc =
                 builder.GetTextureDesc(opaqueSnapshot.texture);
+            const RHITextureDesc* const volumetricLightingDesc =
+                volumetricLighting.identityRoute ? nullptr :
+                builder.GetTextureDesc(
+                    volumetricLighting.integratedScatteringTransmittance);
             const RHITextureDesc* const reactiveMaskDesc =
                 builder.GetTextureDesc(view.reactiveMaskTarget);
             const bool directTargetsValid = directStage &&
@@ -689,7 +720,10 @@ namespace RVX
                         RHITextureUsage::ShaderResource) &&
                 HasFlag(opaqueSnapshotDesc->usage, RHITextureUsage::CopyDst);
             if ((!directTargetsValid && !weightedTargetsValid) ||
-                !opaqueInputsValid)
+                !opaqueInputsValid ||
+                (!volumetricLighting.identityRoute &&
+                 !IsExactFroxelVolumetricTexture(
+                     volumetricLightingDesc, volumetricLighting)))
             {
                 MarkTransparentPreflightFailure(
                     data, RenderPolicyReason::ResourcesUnavailable);
@@ -1197,9 +1231,33 @@ namespace RVX
                 data.opaqueSceneSnapshotViewHandle,
                 MakeRGAccessDesc(RHIResourceState::ShaderResource,
                                  RHIShaderStage::Pixel));
+            if (!volumetricLighting.identityRoute)
+            {
+                data.froxelVolumetricLightingReadHandle = builder.Read(
+                    volumetricLighting.integratedScatteringTransmittance,
+                    MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                                     RHIShaderStage::Pixel));
+                RHITextureViewDesc froxelViewDesc;
+                froxelViewDesc.format = RHIFormat::RGBA16_FLOAT;
+                froxelViewDesc.dimension = RHITextureDimension::Texture3D;
+                froxelViewDesc.type = RHITextureViewType::ShaderResource;
+                froxelViewDesc.debugName =
+                    "TransparentFroxelVolumetricLightingSRV";
+                data.froxelVolumetricLightingViewHandle =
+                    builder.CreateTextureView(
+                        data.froxelVolumetricLightingReadHandle,
+                        froxelViewDesc);
+                data.froxelVolumetricLightingViewHandle = builder.Read(
+                    data.froxelVolumetricLightingViewHandle,
+                    MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                                     RHIShaderStage::Pixel));
+            }
             if (!data.opaqueSceneSnapshotReadHandle.IsValid() ||
                 !data.opaqueSceneSnapshotViewHandle.IsValid() ||
-                !data.reactiveMaskViewHandle.IsValid())
+                !data.reactiveMaskViewHandle.IsValid() ||
+                (!volumetricLighting.identityRoute &&
+                 (!data.froxelVolumetricLightingReadHandle.IsValid() ||
+                  !data.froxelVolumetricLightingViewHandle.IsValid())))
             {
                 MarkTransparentPreflightFailure(
                     data, RenderPolicyReason::ResourcesUnavailable);
@@ -1246,6 +1304,8 @@ namespace RVX
                     data.execution.lightingPlan->GetFrameIdentity(),
                     data.execution.lightingPlan->GetViewIdentity(),
                     data.execution.lightingPlan->GetIdentityHash()) ||
+                !data.execution.volumetricLighting.IsCompatibleWith(
+                    data.identity) ||
                 !data.identity.IsValid() || data.identity.graph == nullptr ||
                 !data.identity.Matches(*data.identity.graph) ||
                 !data.colorHandle.IsValid() ||
@@ -1263,6 +1323,13 @@ namespace RVX
                   data.opaqueSceneSnapshotReadHandle.graphIdentity !=
                       data.identity.graphIdentity ||
                   data.opaqueSceneSnapshotReadHandle.recordingGeneration !=
+                      data.identity.graphRecordingGeneration)) ||
+                (!data.execution.volumetricLighting.identityRoute &&
+                 (!data.froxelVolumetricLightingReadHandle.IsValid() ||
+                  !data.froxelVolumetricLightingViewHandle.IsValid() ||
+                  data.froxelVolumetricLightingReadHandle.graphIdentity !=
+                      data.identity.graphIdentity ||
+                  data.froxelVolumetricLightingReadHandle.recordingGeneration !=
                       data.identity.graphRecordingGeneration)) ||
                 (data.depthAvailable &&
                  (!data.depthHandle.IsValid() ||
@@ -1528,6 +1595,38 @@ namespace RVX
                 RHITextureViewRef(opaqueSceneSnapshotView);
             lightingRequest.opaqueSceneSnapshotSampler =
                 data.pipelineCache->GetEnvironmentIBLSamplerRef();
+            const VolumetricLightingRecordInput& volumetricLighting =
+                data.execution.volumetricLighting;
+            if (!volumetricLighting.identityRoute)
+            {
+                RHITexture* const froxelTexture = context.GetTexture(
+                    data.froxelVolumetricLightingReadHandle);
+                RHITextureView* const froxelView = context.GetTextureView(
+                    data.froxelVolumetricLightingViewHandle);
+                const FroxelGridMetadata& grid =
+                    volumetricLighting.froxelGrid;
+                if (froxelTexture == nullptr || froxelView == nullptr ||
+                    froxelView->GetTexture() != froxelTexture ||
+                    froxelView->GetFormat() != RHIFormat::RGBA16_FLOAT ||
+                    froxelTexture->GetDimension() !=
+                        RHITextureDimension::Texture3D ||
+                    froxelTexture->GetFormat() != RHIFormat::RGBA16_FLOAT ||
+                    froxelTexture->GetWidth() != grid.froxelWidth ||
+                    froxelTexture->GetHeight() != grid.froxelHeight ||
+                    froxelTexture->GetDepth() != grid.depthSliceCount ||
+                    froxelTexture->GetMipLevels() != 1 ||
+                    froxelTexture->GetArraySize() != 1 ||
+                    froxelTexture->GetSampleCount() != RHISampleCount::Count1)
+                {
+                    RVX_CORE_WARN(
+                        "TransparentPass: froxel volumetric graph view does not match the sealed Texture3D contract");
+                    return false;
+                }
+                lightingRequest.froxelVolumetricLightingView =
+                    RHITextureViewRef(froxelView);
+                lightingRequest.froxelVolumetricLightingPlanIdentity =
+                    volumetricLighting.planIdentity;
+            }
             LightingBindingSnapshot lightingBindings;
             const bool lightingBindingsReady = data.stagedRecording
                 ? ResolveStagedLightingBindings(
@@ -2285,7 +2384,9 @@ namespace RVX
                 execution.identity,
                 execution.lightingPlan->GetFrameIdentity(),
                 execution.lightingPlan->GetViewIdentity(),
-                execution.lightingPlan->GetIdentityHash());
+                execution.lightingPlan->GetIdentityHash()) &&
+            execution.volumetricLighting.IsCompatibleWith(
+                execution.identity);
         const bool contextValid = !context.legacyAdapter &&
             context.MatchesTargetGraph(graph) && context.IsFrameIdentityValid() &&
             execution.MatchesTargetGraph(graph) && execution.IsFrameIdentityValid() &&

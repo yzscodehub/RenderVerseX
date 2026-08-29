@@ -8,6 +8,7 @@
 #include "Render/Features/RenderFeatureTypes.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Graph/RenderGraphExecutionReceipt.h"
+#include "Render/Lighting/VolumetricLightingFramePlan.h"
 #include "Render/PostProcess/PostProcessTypes.h"
 
 #include <algorithm>
@@ -463,6 +464,89 @@ namespace RVX
     };
 
     /**
+     * @brief Exact GPU layout for the integrated froxel scattering field.
+     *
+     * The grid itself is renderer policy. This metadata is deliberately kept
+     * separate so a graph handle cannot pretend that a 2D surface or a
+     * differently-sized 3D allocation is the sealed froxel result.
+     */
+    struct FroxelVolumeMetadata
+    {
+        RHITextureDimension dimension = RHITextureDimension::Texture1D;
+        RHIFormat format = RHIFormat::Unknown;
+        RHISampleCount sampleCount = RHISampleCount::Count1;
+        uint32 width = 0;
+        uint32 height = 0;
+        uint32 depth = 0;
+
+        [[nodiscard]] bool IsEmpty() const noexcept
+        {
+            return dimension == RHITextureDimension::Texture1D &&
+                   format == RHIFormat::Unknown &&
+                   sampleCount == RHISampleCount::Count1 && width == 0 &&
+                   height == 0 && depth == 0;
+        }
+
+        [[nodiscard]] bool IsValidFor(
+            const FroxelGridMetadata& grid) const noexcept
+        {
+            return grid.IsValid() &&
+                   dimension == RHITextureDimension::Texture3D &&
+                   format == RHIFormat::RGBA16_FLOAT &&
+                   sampleCount == RHISampleCount::Count1 &&
+                   width == grid.froxelWidth && height == grid.froxelHeight &&
+                   depth == grid.depthSliceCount;
+        }
+
+        friend constexpr bool operator==(const FroxelVolumeMetadata&,
+                                         const FroxelVolumeMetadata&) = default;
+    };
+
+    /**
+     * @brief Immutable froxel lighting result shared by special/translucent work.
+     *
+     * The identity route forwards the exact input HDR surface and has no GPU
+     * froxel resource. A non-identity result only exposes the integrated
+     * scattering/transmittance volume; consumers apply it at their own depth
+     * and must not re-run an unbounded per-material ray march.
+     */
+    struct VolumetricLightingOutputs
+    {
+        static constexpr RenderBlackboardResourceId ResourceId =
+            RenderBlackboardResourceId::VolumetricLightingOutputs;
+        static constexpr uint32 SchemaVersion = 1;
+
+        RenderGraphBlackboardProvenance provenance{};
+        RenderFrameIdentity frameIdentity{};
+        RenderViewIdentity viewIdentity{};
+        RenderViewHistoryIdentity historyIdentity{};
+        RenderHistoryResetReason historyResetReasons =
+            RenderHistoryResetReason::HistoryUnavailable;
+        uint64 lightingPlanIdentity = 0;
+        uint64 volumetricPlanIdentity = 0;
+        uint64 settingsHash = 0;
+        FroxelGridMetadata froxelGrid{};
+        /** The exact HDR surface passed to this feature. */
+        RGTextureHandle sourceSceneColor{};
+        SceneTextures::Metadata sourceSceneColorMetadata{};
+        /** The HDR surface observed by all downstream volumetric consumers. */
+        RGTextureHandle resolvedSceneColor{};
+        SceneTextures::Metadata resolvedSceneColorMetadata{};
+        RGTextureHandle integratedScatteringTransmittance{};
+        FroxelVolumeMetadata integratedScatteringTransmittanceMetadata{};
+        RGTextureHandle worldNormal{};
+        SceneTextures::Metadata worldNormalMetadata{};
+        RGTextureHandle materialIdentity{};
+        SceneTextures::Metadata materialIdentityMetadata{};
+        RGBufferHandle materialParameterTable{};
+        PostProcessMaterialTableMetadata materialParameterTableMetadata{};
+        /** True only for the exact no-density/disabled identity publication. */
+        bool identityRoute = true;
+        /** True only when this graph actually consumed compatible history. */
+        bool temporalHistoryUsed = false;
+    };
+
+    /**
      * @brief Scene-linear surface after Sky/Water but before mesh or particle
      *        translucency consumes it.
      *
@@ -474,7 +558,7 @@ namespace RVX
     {
         static constexpr RenderBlackboardResourceId ResourceId =
             RenderBlackboardResourceId::PreTranslucencyOutputs;
-        static constexpr uint32 SchemaVersion = 1;
+        static constexpr uint32 SchemaVersion = 2;
 
         RenderGraphBlackboardProvenance provenance{};
         RenderFrameIdentity frameIdentity{};
@@ -500,6 +584,16 @@ namespace RVX
             opaqueSceneSnapshotReceipt{};
         RGBufferHandle exposureState{};
         SceneTextures::ExposureStateMetadata exposureStateMetadata{};
+        /** Exact froxel result forwarded by the selected special-surface route. */
+        uint64 volumetricPlanIdentity = 0;
+        FroxelGridMetadata froxelGrid{};
+        RenderViewHistoryIdentity volumetricHistoryIdentity{};
+        RenderHistoryResetReason volumetricHistoryResetReasons =
+            RenderHistoryResetReason::HistoryUnavailable;
+        RGTextureHandle integratedScatteringTransmittance{};
+        FroxelVolumeMetadata integratedScatteringTransmittanceMetadata{};
+        bool volumetricIdentityRoute = true;
+        bool volumetricTemporalHistoryUsed = false;
         PostProcessColorDomain colorDomain =
             PostProcessColorDomain::SceneLinearHDR;
         PostProcessTransfer transfer = PostProcessTransfer::None;
@@ -787,6 +881,7 @@ namespace RVX
             std::optional<LocalShadowOutputs>,
             std::optional<LightingOutputs>,
             std::optional<ReflectionOutputs>,
+            std::optional<VolumetricLightingOutputs>,
             std::optional<PreTranslucencyOutputs>,
             std::optional<TranslucencyOutputs>,
             std::optional<PostProcessOutputs>,
@@ -801,6 +896,7 @@ namespace RVX
                    std::is_same_v<Entry, LocalShadowOutputs> ||
                    std::is_same_v<Entry, LightingOutputs> ||
                    std::is_same_v<Entry, ReflectionOutputs> ||
+                   std::is_same_v<Entry, VolumetricLightingOutputs> ||
                    std::is_same_v<Entry, PreTranslucencyOutputs> ||
                    std::is_same_v<Entry, TranslucencyOutputs> ||
                    std::is_same_v<Entry, PostProcessOutputs> ||
@@ -830,6 +926,8 @@ namespace RVX
                     return LightingOutputs::SchemaVersion;
                 case RenderBlackboardResourceId::ReflectionOutputs:
                     return ReflectionOutputs::SchemaVersion;
+                case RenderBlackboardResourceId::VolumetricLightingOutputs:
+                    return VolumetricLightingOutputs::SchemaVersion;
                 case RenderBlackboardResourceId::PreTranslucencyOutputs:
                     return PreTranslucencyOutputs::SchemaVersion;
                 case RenderBlackboardResourceId::TranslucencyOutputs:
@@ -935,6 +1033,19 @@ namespace RVX
                        HandleMatchesGraph(entry.denoisedReflection, provenance) &&
                        HandleMatchesGraph(entry.confidence, provenance);
             }
+            else if constexpr (std::is_same_v<Entry,
+                                              VolumetricLightingOutputs>)
+            {
+                return HandleMatchesGraph(entry.sourceSceneColor, provenance) &&
+                       HandleMatchesGraph(entry.resolvedSceneColor, provenance) &&
+                       HandleMatchesGraph(
+                           entry.integratedScatteringTransmittance,
+                           provenance) &&
+                       HandleMatchesGraph(entry.worldNormal, provenance) &&
+                       HandleMatchesGraph(entry.materialIdentity, provenance) &&
+                       HandleMatchesGraph(
+                           entry.materialParameterTable, provenance);
+            }
             else if constexpr (std::is_same_v<Entry, PreTranslucencyOutputs>)
             {
                 return HandleMatchesGraph(entry.hdrSceneColor, provenance) &&
@@ -946,7 +1057,10 @@ namespace RVX
                        HandleMatchesGraph(entry.velocity, provenance) &&
                        HandleMatchesGraph(entry.reactiveMask, provenance) &&
                        HandleMatchesGraph(entry.opaqueSceneSnapshot, provenance) &&
-                       HandleMatchesGraph(entry.exposureState, provenance);
+                       HandleMatchesGraph(entry.exposureState, provenance) &&
+                       HandleMatchesGraph(
+                           entry.integratedScatteringTransmittance,
+                           provenance);
             }
             else if constexpr (std::is_same_v<Entry, TranslucencyOutputs>)
             {
@@ -998,6 +1112,151 @@ namespace RVX
                    frameIdentity.frameSequence == provenance.frameSequence;
         }
 
+        [[nodiscard]] static bool TextureHandlesExactlyMatch(
+            const RGTextureHandle& left,
+            const RGTextureHandle& right) noexcept
+        {
+            return left.index == right.index &&
+                   left.hasSubresourceRange == right.hasSubresourceRange &&
+                   left.subresourceRange.baseMipLevel ==
+                       right.subresourceRange.baseMipLevel &&
+                   left.subresourceRange.mipLevelCount ==
+                       right.subresourceRange.mipLevelCount &&
+                   left.subresourceRange.baseArrayLayer ==
+                       right.subresourceRange.baseArrayLayer &&
+                   left.subresourceRange.arrayLayerCount ==
+                       right.subresourceRange.arrayLayerCount &&
+                   left.subresourceRange.aspect ==
+                       right.subresourceRange.aspect &&
+                   left.graphIdentity == right.graphIdentity &&
+                   left.recordingGeneration == right.recordingGeneration;
+        }
+
+        template<typename Outputs>
+        [[nodiscard]] static bool HasValidVolumetricSurfaceGuides(
+            const Outputs& outputs,
+            RenderOutputExtent sceneExtent) noexcept
+        {
+            return outputs.worldNormal.IsValid() &&
+                   outputs.materialIdentity.IsValid() &&
+                   outputs.materialParameterTable.IsValid() &&
+                   MetadataMatches(
+                       outputs.worldNormalMetadata,
+                       SceneTextures::FormatContract{
+                           RHIFormat::RGBA8_UNORM,
+                           RHISampleCount::Count1}) &&
+                   MetadataMatches(outputs.materialIdentityMetadata,
+                                   SceneTextures::GBuffer3Contract) &&
+                   outputs.worldNormalMetadata.extent == sceneExtent &&
+                   outputs.materialIdentityMetadata.extent == sceneExtent &&
+                   outputs.materialParameterTableMetadata.IsValid() &&
+                   outputs.materialParameterTableMetadata.sourceExtent ==
+                       sceneExtent &&
+                   outputs.materialParameterTableMetadata.sourceSampleCount ==
+                       RHISampleCount::Count1;
+        }
+
+        [[nodiscard]] static bool HasValidVolumetricHistory(
+            const RenderFrameIdentity& frameIdentity,
+            const RenderViewIdentity& viewIdentity,
+            const RenderViewHistoryIdentity& historyIdentity,
+            RenderHistoryResetReason historyResetReasons,
+            bool temporalHistoryUsed,
+            RenderOutputExtent sceneExtent) noexcept
+        {
+            if (!historyIdentity.IsValid() ||
+                historyIdentity.previousFrame != frameIdentity ||
+                historyIdentity.view != viewIdentity ||
+                historyIdentity.extent != sceneExtent)
+            {
+                return false;
+            }
+
+            // History can only be sampled when the sealed temporal key did
+            // not request a reset. An identity route is allowed to carry a
+            // compatible key without binding a history texture, but it must
+            // report temporalHistoryUsed=false separately.
+            return !temporalHistoryUsed ||
+                   historyResetReasons == RenderHistoryResetReason::None;
+        }
+
+        [[nodiscard]] static bool HasValidVolumetricLightingOutputs(
+            const VolumetricLightingOutputs& outputs,
+            const RenderGraphBlackboardProvenance& provenance) noexcept
+        {
+            const RenderOutputExtent sceneExtent =
+                outputs.resolvedSceneColorMetadata.extent;
+            const bool validSceneSurface =
+                outputs.sourceSceneColor.IsValid() &&
+                outputs.resolvedSceneColor.IsValid() &&
+                MetadataMatches(outputs.sourceSceneColorMetadata,
+                                SceneTextures::HDRSceneColorContract) &&
+                MetadataMatches(outputs.resolvedSceneColorMetadata,
+                                SceneTextures::HDRSceneColorContract) &&
+                outputs.sourceSceneColorMetadata ==
+                    outputs.resolvedSceneColorMetadata;
+            const bool validCommon =
+                HasMatchingFrameViewProvenance(
+                    outputs.frameIdentity, outputs.viewIdentity, provenance) &&
+                outputs.lightingPlanIdentity != 0 &&
+                outputs.volumetricPlanIdentity != 0 &&
+                outputs.settingsHash != 0 && outputs.froxelGrid.IsValid() &&
+                validSceneSurface &&
+                outputs.froxelGrid.outputExtent == sceneExtent &&
+                HasValidVolumetricSurfaceGuides(outputs, sceneExtent) &&
+                HasValidVolumetricHistory(
+                    outputs.frameIdentity, outputs.viewIdentity,
+                    outputs.historyIdentity, outputs.historyResetReasons,
+                    outputs.temporalHistoryUsed, sceneExtent);
+            if (!validCommon)
+            {
+                return false;
+            }
+
+            if (outputs.identityRoute)
+            {
+                return !outputs.temporalHistoryUsed &&
+                       !outputs.integratedScatteringTransmittance.IsValid() &&
+                       outputs.integratedScatteringTransmittanceMetadata
+                           .IsEmpty() &&
+                       TextureHandlesExactlyMatch(outputs.sourceSceneColor,
+                                                  outputs.resolvedSceneColor);
+            }
+
+            return outputs.integratedScatteringTransmittance.IsValid() &&
+                   outputs.integratedScatteringTransmittanceMetadata.IsValidFor(
+                       outputs.froxelGrid);
+        }
+
+        [[nodiscard]] static bool HasValidPreTranslucencyVolumetricOutputs(
+            const PreTranslucencyOutputs& outputs) noexcept
+        {
+            const RenderOutputExtent sceneExtent =
+                outputs.hdrSceneColorMetadata.extent;
+            if (outputs.volumetricPlanIdentity == 0 ||
+                !outputs.froxelGrid.IsValid() ||
+                outputs.froxelGrid.outputExtent != sceneExtent ||
+                !HasValidVolumetricHistory(
+                    outputs.frameIdentity, outputs.viewIdentity,
+                    outputs.volumetricHistoryIdentity,
+                    outputs.volumetricHistoryResetReasons,
+                    outputs.volumetricTemporalHistoryUsed, sceneExtent))
+            {
+                return false;
+            }
+
+            if (outputs.volumetricIdentityRoute)
+            {
+                return !outputs.volumetricTemporalHistoryUsed &&
+                       !outputs.integratedScatteringTransmittance.IsValid() &&
+                       outputs.integratedScatteringTransmittanceMetadata
+                           .IsEmpty();
+            }
+            return outputs.integratedScatteringTransmittance.IsValid() &&
+                   outputs.integratedScatteringTransmittanceMetadata.IsValidFor(
+                       outputs.froxelGrid);
+        }
+
         [[nodiscard]] static bool HasValidPreTranslucencyOutputs(
             const PreTranslucencyOutputs& outputs,
             const RenderGraphBlackboardProvenance& provenance) noexcept
@@ -1022,6 +1281,7 @@ namespace RVX
                    outputs.transfer == PostProcessTransfer::None &&
                    outputs.exposureState.IsValid() &&
                    outputs.exposureStateMetadata.IsValid() &&
+                   HasValidPreTranslucencyVolumetricOutputs(outputs) &&
                    OptionalMetadataMatches(
                        outputs.deviceDepth, outputs.deviceDepthMetadata,
                        SceneTextures::DeviceDepthContract) &&
@@ -1303,6 +1563,11 @@ namespace RVX
             else if constexpr (std::is_same_v<Entry, ReflectionOutputs>)
             {
                 return HasValidReflectionOutputs(entry, provenance);
+            }
+            else if constexpr (std::is_same_v<Entry,
+                                              VolumetricLightingOutputs>)
+            {
+                return HasValidVolumetricLightingOutputs(entry, provenance);
             }
             else if constexpr (std::is_same_v<Entry, PostProcessOutputs>)
             {

@@ -18,7 +18,6 @@
 #include "Render/PostProcess/TAA.h"
 #include "Render/PostProcess/ToneMapping.h"
 #include "Render/PostProcess/Vignette.h"
-#include "Render/PostProcess/VolumetricLighting.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Renderer/ViewData.h"
 #include "Render/Sky/AtmosphericScattering.h"
@@ -3716,21 +3715,18 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerDoesNotAdoptLoaderOwnedPol
     fs::remove_all(temp);
 }
 
-TEST_F(RenderHonestyValidationFixture, PostProcessStubPassesAreUnsupportedAndDisabled)
+TEST_F(RenderHonestyValidationFixture, RemainingPostProcessStubPassesAreUnsupportedAndDisabled)
 {
     RVX::PostProcessSettings settings;
     settings.enableDOF = true;
     settings.enableMotionBlur = true;
-    settings.enableVolumetricLighting = true;
 
     RVX::DOFPass dof;
     RVX::MotionBlurPass motionBlur;
-    RVX::VolumetricLightingPass volumetricLighting;
 
     RVX::IPostProcessPass* passes[] = {
         &dof,
         &motionBlur,
-        &volumetricLighting,
     };
 
     for (RVX::IPostProcessPass* pass : passes)

@@ -15,6 +15,7 @@
 #include "Features/PostProcessPipelineFeatureAdapter.h"
 #include "Features/TranslucencyFeatureAdapter.h"
 #include "Features/ReflectionFeatureAdapter.h"
+#include "Features/VolumetricLightingFeatureAdapter.h"
 #include "Render/Features/RenderFeatureGraphBuilder.h"
 #include "Render/Features/RenderFeatureRegistry.h"
 #include "Render/Features/RenderGraphBlackboard.h"
@@ -1047,7 +1048,6 @@ namespace
         settings.enableVignette = false;
         settings.enableChromaticAberration = false;
         settings.enableFilmGrain = false;
-        settings.enableVolumetricLighting = false;
         settings.enableSSR = false;
         settings.enableRayTracedReflections = false;
         settings.enableRayTracedReflectionDenoise = true;
@@ -1660,6 +1660,10 @@ void SceneRenderer::Shutdown()
     {
         FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->Shutdown();
     }
+    if (FindCompositionFeature<VolumetricLightingFeatureAdapter>() != nullptr)
+    {
+        FindCompositionFeature<VolumetricLightingFeatureAdapter>()->Shutdown();
+    }
     m_activeLocalShadowPass.reset();
     if (m_defaultRenderComposition != nullptr)
     {
@@ -1783,6 +1787,10 @@ void SceneRenderer::RequestTemporalHistoryReset()
     {
         FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->ResetHistory();
     }
+    if (FindCompositionFeature<VolumetricLightingFeatureAdapter>() != nullptr)
+    {
+        FindCompositionFeature<VolumetricLightingFeatureAdapter>()->ResetHistory();
+    }
     if (m_viewHistoryCoordinator)
     {
         m_viewHistoryCoordinator->RequestReset(
@@ -1840,6 +1848,10 @@ void SceneRenderer::EvaluateAcceptedFrameHistory(
 
 void SceneRenderer::AbandonAcceptedFrameHistory() noexcept
 {
+    if (FindCompositionFeature<VolumetricLightingFeatureAdapter>())
+    {
+        FindCompositionFeature<VolumetricLightingFeatureAdapter>()->AbandonHistoryCandidate();
+    }
     if (FindCompositionFeature<AmbientOcclusionFeatureAdapter>())
     {
         if (m_ambientOcclusionProbeSubmissionAccepted &&
@@ -4047,6 +4059,20 @@ bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
                 "SceneRenderer: ambient-occlusion history did not bind the exact submitted view");
         }
     }
+    if (FindCompositionFeature<VolumetricLightingFeatureAdapter>() != nullptr &&
+        FindCompositionFeature<VolumetricLightingFeatureAdapter>()->RequiresHistoryCommit())
+    {
+        const bool historySubmissionAccepted =
+            m_activeViewHistoryCandidate.has_value() &&
+            FindCompositionFeature<VolumetricLightingFeatureAdapter>()->NotifyHistorySubmission(
+                *m_activeViewHistoryCandidate);
+        if (!historySubmissionAccepted)
+        {
+            RVX_RENDER_ERROR(
+                "SceneRenderer: volumetric-lighting history did not bind the exact submitted view");
+            submissionSemanticsAccepted = false;
+        }
+    }
     if (FindCompositionFeature<AmbientOcclusionFeatureAdapter>() != nullptr &&
         FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->HasPendingQualificationProbe())
     {
@@ -4775,6 +4801,9 @@ void SceneRenderer::MarkAcceptedFramePresented(
     const bool ambientOcclusionRequiresHistoryCommit =
         FindCompositionFeature<AmbientOcclusionFeatureAdapter>() != nullptr &&
         FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->RequiresHistoryCommit();
+    const bool volumetricLightingRequiresHistoryCommit =
+        FindCompositionFeature<VolumetricLightingFeatureAdapter>() != nullptr &&
+        FindCompositionFeature<VolumetricLightingFeatureAdapter>()->RequiresHistoryCommit();
     const bool rayTracedReflectionHistoryRequired =
         m_hybridRayTracingFramePlan.has_value() &&
         m_hybridRayTracingFramePlan->GetReflectionRoute() ==
@@ -4784,6 +4813,7 @@ void SceneRenderer::MarkAcceptedFramePresented(
         m_viewHistoryCoordinator && m_activeViewHistoryCandidate.has_value() &&
         (!(postProcessRequiresHistoryCommit ||
            ambientOcclusionRequiresHistoryCommit ||
+           volumetricLightingRequiresHistoryCommit ||
            rayTracedReflectionHistoryRequired) || receiptMatches) &&
         m_viewHistoryCoordinator->CanCommitPresented(
             *m_activeViewHistoryCandidate);
@@ -4803,6 +4833,12 @@ void SceneRenderer::MarkAcceptedFramePresented(
          m_activeViewHistoryCandidate.has_value() &&
          FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->CanCommitHistoryAfterPresent(
              *m_activeViewHistoryCandidate));
+    const bool volumetricLightingCanCommit =
+        !volumetricLightingRequiresHistoryCommit ||
+        (coordinatorCanCommit && FindCompositionFeature<VolumetricLightingFeatureAdapter>() != nullptr &&
+         m_activeViewHistoryCandidate.has_value() &&
+         FindCompositionFeature<VolumetricLightingFeatureAdapter>()->CanCommitHistoryAfterPresent(
+             *m_activeViewHistoryCandidate));
     const bool rayTracedReflectionCanCommit =
         !rayTracedReflectionHistoryRequired ||
         (coordinatorCanCommit && FindCompositionPass<RayTracedReflectionPass>() != nullptr &&
@@ -4815,10 +4851,13 @@ void SceneRenderer::MarkAcceptedFramePresented(
     bool postProcessHistoryCommitted = !postProcessRequiresHistoryCommit;
     bool ambientOcclusionHistoryCommitted =
         !ambientOcclusionRequiresHistoryCommit;
+    bool volumetricLightingHistoryCommitted =
+        !volumetricLightingRequiresHistoryCommit;
     bool rayTracedReflectionHistoryCommitted =
         !rayTracedReflectionHistoryRequired;
     if (coordinatorCanCommit && postProcessCanCommit &&
-        ambientOcclusionCanCommit && rayTracedReflectionCanCommit)
+        ambientOcclusionCanCommit && volumetricLightingCanCommit &&
+        rayTracedReflectionCanCommit)
     {
         // These commits cannot fail after their side-effect-free exact
         // candidate preflights while this renderer owns the frame lifecycle.
@@ -4839,6 +4878,15 @@ void SceneRenderer::MarkAcceptedFramePresented(
         }
         if (historyCommitted && postProcessHistoryCommitted &&
             ambientOcclusionHistoryCommitted &&
+            volumetricLightingRequiresHistoryCommit)
+        {
+            volumetricLightingHistoryCommitted =
+                FindCompositionFeature<VolumetricLightingFeatureAdapter>()->CommitHistoryAfterPresent(
+                    *m_activeViewHistoryCandidate);
+        }
+        if (historyCommitted && postProcessHistoryCommitted &&
+            ambientOcclusionHistoryCommitted &&
+            volumetricLightingHistoryCommitted &&
             rayTracedReflectionHistoryRequired)
         {
             rayTracedReflectionHistoryCommitted =
@@ -4861,6 +4909,11 @@ void SceneRenderer::MarkAcceptedFramePresented(
     {
         FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->AbandonHistoryCandidate();
     }
+    if (!volumetricLightingHistoryCommitted &&
+        FindCompositionFeature<VolumetricLightingFeatureAdapter>() != nullptr)
+    {
+        FindCompositionFeature<VolumetricLightingFeatureAdapter>()->AbandonHistoryCandidate();
+    }
     if (!rayTracedReflectionHistoryCommitted &&
         FindCompositionPass<RayTracedReflectionPass>() != nullptr &&
         m_activeViewHistoryCandidate.has_value())
@@ -4870,6 +4923,7 @@ void SceneRenderer::MarkAcceptedFramePresented(
     }
     if (!historyCommitted || !postProcessHistoryCommitted ||
         !ambientOcclusionHistoryCommitted ||
+        !volumetricLightingHistoryCommitted ||
         !rayTracedReflectionHistoryCommitted)
     {
         // Preserve correctness if a lifecycle caller violates the accepted /
@@ -4952,6 +5006,7 @@ void SceneRenderer::MarkAcceptedFramePresented(
     const bool presentationQualified =
         receiptMatches && historyCommitted && postProcessHistoryCommitted &&
         ambientOcclusionHistoryCommitted &&
+        volumetricLightingHistoryCommitted &&
         rayTracedReflectionHistoryCommitted &&
         hybridRayTracingPresentationQualified;
     // Apply-only callers do not have a render execution receipt, but still
@@ -11833,6 +11888,7 @@ void SceneRenderer::BuildRenderGraph()
         FindCompositionFeature<AmbientOcclusionFeatureAdapter>() == nullptr ||
         FindCompositionFeature<ForwardLightingFeatureAdapter>() == nullptr ||
         FindCompositionFeature<ReflectionFeatureAdapter>() == nullptr ||
+        FindCompositionFeature<VolumetricLightingFeatureAdapter>() == nullptr ||
         FindCompositionFeature<ForwardSpecialFeatureAdapter>() == nullptr ||
         FindCompositionFeature<TranslucencyFeatureAdapter>() == nullptr ||
         FindCompositionFeature<PostProcessPipelineFeatureAdapter>() == nullptr ||
@@ -11850,6 +11906,7 @@ void SceneRenderer::BuildRenderGraph()
     if (!GetRenderPassRegistry() || !GetRenderFeatureRegistry() ||
         !FindCompositionFeature<LegacyForwardFeatureAdapter>() || !FindCompositionFeature<AmbientOcclusionFeatureAdapter>() ||
         !FindCompositionFeature<ForwardLightingFeatureAdapter>() || !FindCompositionFeature<ReflectionFeatureAdapter>() ||
+        !FindCompositionFeature<VolumetricLightingFeatureAdapter>() ||
         !FindCompositionFeature<ForwardSpecialFeatureAdapter>() || !FindCompositionFeature<TranslucencyFeatureAdapter>() ||
         !FindCompositionFeature<PostProcessPipelineFeatureAdapter>() ||
         (deferredRecipeRequested &&
@@ -11908,6 +11965,33 @@ void SceneRenderer::BuildRenderGraph()
     }
     FindCompositionFeature<ReflectionFeatureAdapter>()->SetRecordContext(
         std::move(reflectionRecordContext));
+    VolumetricLightingFeatureRecordContext volumetricLightingRecordContext;
+    volumetricLightingRecordContext.passRecordContext = passRecordContext;
+    volumetricLightingRecordContext.settings =
+        m_renderScene.GetSettings().volumetricLighting;
+    if (m_activeViewHistoryCandidate.has_value() &&
+        m_activeViewHistoryAvailability.has_value())
+    {
+        volumetricLightingRecordContext.historyCandidate =
+            *m_activeViewHistoryCandidate;
+        volumetricLightingRecordContext.historyResetReasons =
+            effectiveTemporalHistory.resetReasons;
+        volumetricLightingRecordContext.historyAvailable =
+            effectiveTemporalHistory.available;
+        if (effectiveTemporalHistory.available &&
+            m_viewHistoryCoordinator != nullptr)
+        {
+            const std::optional<RenderViewHistoryIdentity>& presentedHistory =
+                m_viewHistoryCoordinator->GetLastPresentedIdentity();
+            if (presentedHistory.has_value())
+            {
+                volumetricLightingRecordContext.historySource =
+                    *presentedHistory;
+            }
+        }
+    }
+    FindCompositionFeature<VolumetricLightingFeatureAdapter>()->SetRecordContext(
+        std::move(volumetricLightingRecordContext));
     FindCompositionFeature<ForwardSpecialFeatureAdapter>()->SetRecordContext(passRecordContext);
     FindCompositionFeature<TranslucencyFeatureAdapter>()->SetRecordContext(passRecordContext);
     AmbientOcclusionFeatureRecordContext ambientOcclusionRecordContext;
@@ -12221,6 +12305,7 @@ void SceneRenderer::BuildRenderGraph()
                 FindCompositionFeature<AmbientOcclusionFeatureAdapter>()->ResolveReadiness(),
                 FindCompositionFeature<DeferredLightingFeatureAdapter>()->ResolveReadiness(),
                 FindCompositionFeature<ReflectionFeatureAdapter>()->ResolveReadiness(),
+                FindCompositionFeature<VolumetricLightingFeatureAdapter>()->ResolveReadiness(),
                 FindCompositionFeature<DeferredForwardSpecialFeatureAdapter>()->ResolveReadiness(),
                 FindCompositionFeature<TranslucencyFeatureAdapter>()->ResolveReadiness(),
                 FindCompositionFeature<PostProcessPipelineFeatureAdapter>()->ResolveReadiness()};
@@ -12235,6 +12320,8 @@ void SceneRenderer::BuildRenderGraph()
                 FindCompositionFeature<ForwardLightingFeatureAdapter>()->ResolveReadiness());
             readinessCandidates.push_back(
                 FindCompositionFeature<ReflectionFeatureAdapter>()->ResolveReadiness());
+            readinessCandidates.push_back(
+                FindCompositionFeature<VolumetricLightingFeatureAdapter>()->ResolveReadiness());
             readinessCandidates.push_back(
                 FindCompositionFeature<ForwardSpecialFeatureAdapter>()->ResolveReadiness());
             readinessCandidates.push_back(

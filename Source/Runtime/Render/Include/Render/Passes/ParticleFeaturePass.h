@@ -182,6 +182,7 @@ namespace RVX
     };
 
     class IShaderProgramProvider;
+    class PipelineCache;
     class ParticleBillboardRenderer;
     class RenderResourceRegistry;
     struct ParticleBillboardDrawPlan;
@@ -206,6 +207,8 @@ namespace RVX
         void SetSnapshot(const ParticleRenderSnapshot* snapshot);
         /** @brief Borrow the SceneRenderer-owned cooked shader provider. */
         void SetShaderProgramProvider(IShaderProgramProvider* shaderProgramProvider);
+        /** Borrow the renderer-owned neutral Texture3D volume fallback. */
+        void SetPipelineCache(PipelineCache* pipelineCache) noexcept;
         /** Borrow the SceneRenderer-owned exact-generation resource registry. */
         void SetResourceRegistry(RenderResourceRegistry* resourceRegistry);
         /** @brief Select the depth comparison convention before resource creation. */
@@ -295,6 +298,7 @@ namespace RVX
         void RebuildStats();
 
         const ParticleRenderSnapshot* m_snapshot = nullptr;
+        PipelineCache* m_pipelineCache = nullptr;
         RenderResourceRegistry* m_resourceRegistry = nullptr;
         std::unique_ptr<ParticleBillboardRenderer> m_renderer;
         ParticleFeaturePassStats m_stats;

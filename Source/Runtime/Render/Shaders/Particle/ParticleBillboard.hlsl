@@ -35,9 +35,22 @@ Texture2D gParticleSprite : register(t2, space0);
 // the fullscreen composite. Keep the declaration untyped because both are
 // sampled through the same narrow descriptor layout.
 Texture2D gAuxiliaryTexture : register(t3, space0);
+Texture3D<float4> gFroxelVolumetricLighting : register(t4, space0);
 // s5 is the renderer's portable frame linear-clamp slot. Logical s4 is not
 // representable by the DX11/OpenGL public binding ABI.
 SamplerState gLinearClamp : register(s5, space0);
+
+float GetParticleVolumetricTransmittance(float4 pixelPosition)
+{
+    const float2 localPixel = pixelPosition.xy -
+        ViewportOriginAndTargetExtent.xy;
+    const float2 uv = saturate(localPixel * InverseExtentAndReverseZ.xy);
+    const float canonicalDepth = InverseExtentAndReverseZ.z > 0.5f
+        ? 1.0f - saturate(pixelPosition.z)
+        : saturate(pixelPosition.z);
+    return saturate(gFroxelVolumetricLighting.SampleLevel(
+        gLinearClamp, float3(uv, canonicalDepth), 0.0f).a);
+}
 
 struct VSOutput
 {
@@ -191,6 +204,7 @@ ParticleColorTargets PSMain(VSOutput input)
     float radialFade = 0.0f;
     ParticleColorTargets output;
     output.Color = EvaluateParticleColor(input, radialFade);
+    output.Color.rgb *= GetParticleVolumetricTransmittance(input.Position);
     output.Reactive = saturate(
         input.SoftDepthDistortionReactive.w * output.Color.a);
     return output;
@@ -210,7 +224,7 @@ RVXWeightedBlendedOITTargets PSWeightedBlendedOIT(VSOutput input)
     const float4 straightColor =
         EvaluateParticleStraightColor(input, radialFade);
     return RVXEncodeWeightedBlendedOIT(
-        straightColor.rgb,
+        straightColor.rgb * GetParticleVolumetricTransmittance(input.Position),
         straightColor.a,
         RVXCanonicalizeWeightedBlendedOITDepth(
             input.Position.z, InverseExtentAndReverseZ.z > 0.5f));

@@ -1,4 +1,5 @@
 #include "Render/Passes/WaterFeaturePass.h"
+#include "Render/PipelineCache.h"
 #include "Render/Renderer/RenderClipConvention.h"
 #include "Render/Water/GerstnerReference.h"
 
@@ -452,6 +453,8 @@ private:
                                  RHIShaderStage::Pixel);
         setLayoutDesc.AddBinding(3, RHIBindingType::Sampler,
                                  RHIShaderStage::Pixel);
+        setLayoutDesc.AddBinding(4, RHIBindingType::SampledTexture,
+                                 RHIShaderStage::Pixel);
         m_descriptorSetLayout = m_device->CreateDescriptorSetLayout(setLayoutDesc);
         if (!m_descriptorSetLayout)
         {
@@ -665,6 +668,8 @@ namespace
         RenderPassExecutionData execution{};
         WaterFeaturePassStats initialStats{};
         WaterSurfaceRecordInput waterSurface{};
+        VolumetricLightingRecordInput volumetricLighting{};
+        PipelineCache* pipelineCache = nullptr;
         RGBufferHandle constantsHandle{};
         RGBufferHandle gridVertexHandle{};
         RGBufferHandle gridIndexHandle{};
@@ -673,20 +678,68 @@ namespace
         RGTextureHandle reactiveMaskHandle{};
         RGTextureHandle opaqueSnapshotHandle{};
         RGTextureHandle depthSnapshotHandle{};
+        RGTextureHandle froxelVolumetricLightingHandle{};
         RGTextureViewHandle colorView{};
         RGTextureViewHandle depthView{};
         RGTextureViewHandle reactiveMaskView{};
         RGTextureViewHandle opaqueSnapshotView{};
         RGTextureViewHandle depthSnapshotView{};
+        RGTextureViewHandle froxelVolumetricLightingView{};
+        RHITextureViewRef neutralFroxelVolumetricLightingView{};
         bool contextValid = false;
         WaterFeaturePass* owner = nullptr;
     };
+
+    [[nodiscard]] bool IsExactFroxelVolumetricTexture(
+        const RHITextureDesc* textureDesc,
+        const VolumetricLightingRecordInput& volumetricLighting) noexcept
+    {
+        const FroxelGridMetadata& grid = volumetricLighting.froxelGrid;
+        return textureDesc != nullptr && !volumetricLighting.identityRoute &&
+            grid.tileSizePixels != 0 && grid.froxelWidth != 0 &&
+            grid.froxelHeight != 0 && grid.depthSliceCount != 0 &&
+            grid.froxelCount == static_cast<uint64>(grid.froxelWidth) *
+                grid.froxelHeight * grid.depthSliceCount &&
+            textureDesc->dimension == RHITextureDimension::Texture3D &&
+            textureDesc->format == RHIFormat::RGBA16_FLOAT &&
+            textureDesc->width == grid.froxelWidth &&
+            textureDesc->height == grid.froxelHeight &&
+            textureDesc->depth == grid.depthSliceCount &&
+            textureDesc->mipLevels == 1 && textureDesc->arraySize == 1 &&
+            textureDesc->sampleCount == RHISampleCount::Count1 &&
+            HasFlag(textureDesc->usage, RHITextureUsage::ShaderResource);
+    }
+
+    [[nodiscard]] bool IsCompatibleFroxelVolumetricLighting(
+        const VolumetricLightingRecordInput& volumetricLighting,
+        const RenderPassRecordIdentity& identity) noexcept
+    {
+        const FroxelGridMetadata& grid = volumetricLighting.froxelGrid;
+        const bool gridValid = grid.tileSizePixels != 0 &&
+            grid.froxelWidth != 0 && grid.froxelHeight != 0 &&
+            grid.depthSliceCount != 0 &&
+            grid.froxelCount == static_cast<uint64>(grid.froxelWidth) *
+                grid.froxelHeight * grid.depthSliceCount;
+        if (volumetricLighting.identity != identity ||
+            volumetricLighting.planIdentity == 0 || !gridValid)
+        {
+            return false;
+        }
+        return volumetricLighting.identityRoute
+            ? !volumetricLighting.integratedScatteringTransmittance.IsValid()
+            : HasCurrentGraphProvenance(
+                  volumetricLighting.integratedScatteringTransmittance,
+                  identity);
+    }
 
     [[nodiscard]] bool PrepareGraphResources(WaterGraphPassData& data,
                                              RenderGraphBuilder& builder)
     {
         if (!data.contextValid || !data.submission.IsReady() ||
             !data.waterSurface.IsCompatibleWith(data.execution.identity) ||
+            !IsCompatibleFroxelVolumetricLighting(
+                data.volumetricLighting, data.execution.identity) ||
+            data.pipelineCache == nullptr ||
             !data.execution.view.colorTarget.IsValid() ||
             !data.execution.view.depthTarget.IsValid() ||
             !data.execution.view.reactiveMaskTarget.IsValid())
@@ -702,6 +755,10 @@ namespace
             data.waterSurface.opaqueSceneSnapshot.texture);
         const RHITextureDesc* const depthSnapshotDesc = builder.GetTextureDesc(
             data.waterSurface.depthSnapshot);
+        const RHITextureDesc* const froxelVolumetricLightingDesc =
+            data.volumetricLighting.identityRoute ? nullptr :
+            builder.GetTextureDesc(
+                data.volumetricLighting.integratedScatteringTransmittance);
         const auto exactExtent = [&view](const RHITextureDesc* desc)
         {
             return desc != nullptr && desc->width == view.viewportWidth &&
@@ -715,7 +772,10 @@ namespace
             depthDesc->format != RHIFormat::D32_FLOAT ||
             reactiveDesc->format != RHIFormat::R8_UNORM ||
             opaqueSnapshotDesc->format != RHIFormat::RGBA16_FLOAT ||
-            depthSnapshotDesc->format != RHIFormat::D32_FLOAT)
+            depthSnapshotDesc->format != RHIFormat::D32_FLOAT ||
+            (!data.volumetricLighting.identityRoute &&
+             !IsExactFroxelVolumetricTexture(
+                 froxelVolumetricLightingDesc, data.volumetricLighting)))
         {
             return false;
         }
@@ -724,7 +784,10 @@ namespace
             !Retain(builder, data.submission.gridIndexBuffer.Get()) ||
             !Retain(builder, data.submission.descriptorSetLayout.Get()) ||
             !Retain(builder, data.submission.linearClampSampler.Get()) ||
-            !Retain(builder, data.submission.pipeline.Get()))
+            !Retain(builder, data.submission.pipeline.Get()) ||
+            (data.volumetricLighting.identityRoute &&
+             !Retain(builder,
+                     data.pipelineCache->GetNeutralVolumetricLightingView().Get())))
         {
             return false;
         }
@@ -760,6 +823,13 @@ namespace
             MakeRGAccessDesc(RHIResourceState::ShaderResource, RHIShaderStage::Pixel));
         data.depthSnapshotHandle = builder.Read(data.waterSurface.depthSnapshot,
             MakeRGAccessDesc(RHIResourceState::ShaderResource, RHIShaderStage::Pixel));
+        if (!data.volumetricLighting.identityRoute)
+        {
+            data.froxelVolumetricLightingHandle = builder.Read(
+                data.volumetricLighting.integratedScatteringTransmittance,
+                MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                                 RHIShaderStage::Pixel));
+        }
         RHITextureViewDesc colorViewDesc;
         colorViewDesc.type = RHITextureViewType::RenderTarget;
         colorViewDesc.format = RHIFormat::RGBA16_FLOAT;
@@ -806,10 +876,33 @@ namespace
                                                             depthSnapshotViewDesc);
         data.depthSnapshotView = builder.Read(data.depthSnapshotView,
             MakeRGAccessDesc(RHIResourceState::ShaderResource, RHIShaderStage::Pixel));
+        if (data.volumetricLighting.identityRoute)
+        {
+            data.neutralFroxelVolumetricLightingView =
+                data.pipelineCache->GetNeutralVolumetricLightingView();
+        }
+        else
+        {
+            RHITextureViewDesc froxelViewDesc;
+            froxelViewDesc.type = RHITextureViewType::ShaderResource;
+            froxelViewDesc.format = RHIFormat::RGBA16_FLOAT;
+            froxelViewDesc.dimension = RHITextureDimension::Texture3D;
+            froxelViewDesc.debugName = "WaterSurface.FroxelVolumetricLightingSRV";
+            data.froxelVolumetricLightingView = builder.CreateTextureView(
+                data.froxelVolumetricLightingHandle, froxelViewDesc);
+            data.froxelVolumetricLightingView = builder.Read(
+                data.froxelVolumetricLightingView,
+                MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                                 RHIShaderStage::Pixel));
+        }
         return data.colorView.IsValid() && data.reactiveMaskView.IsValid() &&
             data.depthView.IsValid() && data.opaqueSnapshotHandle.IsValid() &&
             data.opaqueSnapshotView.IsValid() && data.depthSnapshotHandle.IsValid() &&
-            data.depthSnapshotView.IsValid();
+            data.depthSnapshotView.IsValid() &&
+            (data.volumetricLighting.identityRoute
+                ? static_cast<bool>(data.neutralFroxelVolumetricLightingView)
+                : data.froxelVolumetricLightingHandle.IsValid() &&
+                    data.froxelVolumetricLightingView.IsValid());
     }
 
     [[nodiscard]] RHIDescriptorSetRef CreateDescriptorSet(
@@ -828,9 +921,34 @@ namespace
             data.opaqueSnapshotView);
         RHITextureView* const depthSnapshot = context.GetTextureView(
             data.depthSnapshotView);
-        if (opaqueSnapshot == nullptr || depthSnapshot == nullptr)
+        RHITextureView* froxelVolumetricLighting =
+            data.volumetricLighting.identityRoute
+                ? data.neutralFroxelVolumetricLightingView.Get()
+                : context.GetTextureView(data.froxelVolumetricLightingView);
+        if (opaqueSnapshot == nullptr || depthSnapshot == nullptr ||
+            froxelVolumetricLighting == nullptr)
         {
             return {};
+        }
+        if (!data.volumetricLighting.identityRoute)
+        {
+            RHITexture* const froxelTexture = context.GetTexture(
+                data.froxelVolumetricLightingHandle);
+            const FroxelGridMetadata& grid = data.volumetricLighting.froxelGrid;
+            if (froxelTexture == nullptr ||
+                froxelVolumetricLighting->GetTexture() != froxelTexture ||
+                froxelVolumetricLighting->GetFormat() != RHIFormat::RGBA16_FLOAT ||
+                froxelTexture->GetDimension() != RHITextureDimension::Texture3D ||
+                froxelTexture->GetFormat() != RHIFormat::RGBA16_FLOAT ||
+                froxelTexture->GetWidth() != grid.froxelWidth ||
+                froxelTexture->GetHeight() != grid.froxelHeight ||
+                froxelTexture->GetDepth() != grid.depthSliceCount ||
+                froxelTexture->GetMipLevels() != 1 ||
+                froxelTexture->GetArraySize() != 1 ||
+                froxelTexture->GetSampleCount() != RHISampleCount::Count1)
+            {
+                return {};
+            }
         }
         RHIDescriptorSetDesc descriptorDesc;
         descriptorDesc.debugName = "WaterSurface.DescriptorSet";
@@ -841,7 +959,8 @@ namespace
                         RVX_WATER_CONSTANT_BUFFER_SIZE)
             .BindTexture(1, opaqueSnapshot)
             .BindTexture(2, depthSnapshot)
-            .BindSampler(3, data.submission.linearClampSampler.Get());
+            .BindSampler(3, data.submission.linearClampSampler.Get())
+            .BindTexture(4, froxelVolumetricLighting);
         RHIDescriptorSetRef descriptorSet = data.submission.device->CreateDescriptorSet(
             descriptorDesc);
         if (!descriptorSet || !descriptorSet->IsReadyForBinding(
@@ -881,7 +1000,13 @@ namespace
         if (!data.contextValid || !data.submission.IsReady() ||
             !data.colorView.IsValid() || !data.reactiveMaskView.IsValid() ||
             !data.depthView.IsValid() || !data.opaqueSnapshotView.IsValid() ||
-            !data.depthSnapshotView.IsValid())
+            !data.depthSnapshotView.IsValid() ||
+            !IsCompatibleFroxelVolumetricLighting(
+                data.volumetricLighting, data.execution.identity) ||
+            (data.volumetricLighting.identityRoute
+                ? !data.neutralFroxelVolumetricLightingView
+                : !data.froxelVolumetricLightingHandle.IsValid() ||
+                    !data.froxelVolumetricLightingView.IsValid()))
         {
             fail("Water graph recording prerequisites are unavailable");
             return;
@@ -983,6 +1108,12 @@ void WaterFeaturePass::SetShaderProgramProvider(
     RebuildStats();
 }
 
+void WaterFeaturePass::SetPipelineCache(PipelineCache* pipelineCache) noexcept
+{
+    m_pipelineCache = pipelineCache;
+    RebuildStats();
+}
+
 void WaterFeaturePass::SetReverseZ(bool reverseZ)
 {
     m_renderer->SetReverseZ(reverseZ);
@@ -1055,7 +1186,10 @@ void WaterFeaturePass::AddToGraph(RenderGraph& graph,
     const RenderPassExecutionData execution = MakeRenderPassExecutionData(context);
     const bool contextValid = context.MatchesTargetGraph(graph) &&
         execution.MatchesTargetGraph(graph) && execution.IsFrameIdentityValid() &&
-        context.waterSurface.IsCompatibleWith(context.identity);
+        context.waterSurface.IsCompatibleWith(context.identity) &&
+        IsCompatibleFroxelVolumetricLighting(
+            context.volumetricLighting, context.identity) &&
+        m_pipelineCache != nullptr;
     if (!contextValid || m_snapshot == nullptr)
     {
         ++m_stats.fallbackCount;
@@ -1103,13 +1237,17 @@ void WaterFeaturePass::AddToGraph(RenderGraph& graph,
     graph.AddPass<WaterGraphPassData>(
         GetName(), GetPassType(),
         [submission = std::move(submission), execution, contextValid,
-         recordStats, waterSurface = context.waterSurface, this](
+         recordStats, waterSurface = context.waterSurface,
+         volumetricLighting = context.volumetricLighting,
+         pipelineCache = m_pipelineCache, this](
             RenderGraphBuilder& builder, WaterGraphPassData& data)
         {
             data.submission = submission;
             data.execution = execution;
             data.initialStats = recordStats;
             data.waterSurface = waterSurface;
+            data.volumetricLighting = volumetricLighting;
+            data.pipelineCache = pipelineCache;
             data.contextValid = contextValid;
             data.owner = this;
             if (!PrepareGraphResources(data, builder))

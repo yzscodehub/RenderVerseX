@@ -21,6 +21,16 @@ namespace RVX
                    GetTexturePhysicalLayerCount(texture) > 1;
         }
 
+        uint32 GetTexture3DMipDepth(const RHITexture& texture, uint32 mipLevel)
+        {
+            uint32 mipDepth = texture.GetDepth();
+            for (uint32 currentMip = 0; currentMip < mipLevel && mipDepth > 1; ++currentMip)
+            {
+                mipDepth >>= 1;
+            }
+            return mipDepth;
+        }
+
         const D3D12_CLEAR_VALUE* BuildDX12OptimizedClearValue(
             const RHITextureDesc& desc,
             DXGI_FORMAT format,
@@ -853,6 +863,12 @@ namespace RVX
                         srvDesc.Texture2D.MipLevels = mipCount;
                     }
                     break;
+                case RHITextureDimension::Texture3D:
+                    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+                    srvDesc.Texture3D.MostDetailedMip = desc.subresourceRange.baseMipLevel;
+                    srvDesc.Texture3D.MipLevels = mipCount;
+                    srvDesc.Texture3D.ResourceMinLODClamp = 0.0f;
+                    break;
                 default:
                     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
                     srvDesc.Texture2D.MostDetailedMip = desc.subresourceRange.baseMipLevel;
@@ -983,7 +999,14 @@ namespace RVX
             D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
             uavDesc.Format = dxgiFormat;
 
-            if (texture->GetDimension() == RHITextureDimension::TextureCube || IsTexture2DArrayViewRequired(*texture))
+            if (texture->GetDimension() == RHITextureDimension::Texture3D)
+            {
+                uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+                uavDesc.Texture3D.MipSlice = desc.subresourceRange.baseMipLevel;
+                uavDesc.Texture3D.FirstWSlice = 0;
+                uavDesc.Texture3D.WSize = GetTexture3DMipDepth(*texture, desc.subresourceRange.baseMipLevel);
+            }
+            else if (texture->GetDimension() == RHITextureDimension::TextureCube || IsTexture2DArrayViewRequired(*texture))
             {
                 uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
                 uavDesc.Texture2DArray.MipSlice = desc.subresourceRange.baseMipLevel;

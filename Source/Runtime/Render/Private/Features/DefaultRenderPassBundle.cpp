@@ -262,6 +262,7 @@ std::unique_ptr<DefaultRenderPassBundle> CreateDefaultRenderPassBundle(
     }
     waterFeaturePass->SetShaderProgramProvider(
         dependencies.shaderProgramProvider);
+    waterFeaturePass->SetPipelineCache(dependencies.pipelineCache);
     waterFeaturePass->SetReverseZ(dependencies.reverseZ);
     bundle->AddPass(std::move(waterFeaturePass), dependencies.device);
 
@@ -282,6 +283,7 @@ std::unique_ptr<DefaultRenderPassBundle> CreateDefaultRenderPassBundle(
     }
     particleFeaturePass->SetShaderProgramProvider(
         dependencies.shaderProgramProvider);
+    particleFeaturePass->SetPipelineCache(dependencies.pipelineCache);
     particleFeaturePass->SetResourceRegistry(dependencies.resourceRegistry);
     particleFeaturePass->SetReverseZ(dependencies.reverseZ);
     bundle->AddPass(std::move(particleFeaturePass), dependencies.device);

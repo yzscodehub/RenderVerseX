@@ -1582,8 +1582,8 @@ RenderFeatureDescriptor DeferredForwardSpecialFeatureAdapter::Describe() const
     descriptor.consumedResources = {
         {RenderBlackboardResourceId::SceneTextures,
          SceneTextures::SchemaVersion},
-        {RenderBlackboardResourceId::ReflectionOutputs,
-         ReflectionOutputs::SchemaVersion},
+        {RenderBlackboardResourceId::VolumetricLightingOutputs,
+         VolumetricLightingOutputs::SchemaVersion},
         {RenderBlackboardResourceId::LocalShadowOutputs,
          LocalShadowOutputs::SchemaVersion}};
     descriptor.producedResources = {
@@ -1699,18 +1699,18 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
         return;
     }
     RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
-    const ReflectionOutputs* const reflection =
-        blackboard.Require<ReflectionOutputs>(
+    const VolumetricLightingOutputs* const volumetricLighting =
+        blackboard.Require<VolumetricLightingOutputs>(
             BuiltinRenderFeatureIds::DeferredForwardSpecialChain,
             Describe(), &code);
-    if (reflection == nullptr ||
+    if (volumetricLighting == nullptr ||
         code != RenderGraphBlackboardCode::Success ||
-        !reflection->resolvedSceneColor.IsValid() ||
-        reflection->frameIdentity != m_preparedContext.frameIdentity ||
-        reflection->viewIdentity != m_preparedContext.viewIdentity)
+        !volumetricLighting->resolvedSceneColor.IsValid() ||
+        volumetricLighting->frameIdentity != m_preparedContext.frameIdentity ||
+        volumetricLighting->viewIdentity != m_preparedContext.viewIdentity)
     {
         SetCompositionFailure(
-            "Deferred reflection-resolved HDR output is unavailable");
+            "Deferred volumetric-resolved HDR output is unavailable");
         return;
     }
     code = RenderGraphBlackboardCode::Success;
@@ -1754,11 +1754,11 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
             "Deferred forward-special chain requires the exact LocalShadowOutputs v1");
         return;
     }
-    if (!reflection->IsCompatibleWithLightingPlan(
-            m_recordContext.lightingPlan->GetIdentityHash()))
+    if (volumetricLighting->lightingPlanIdentity !=
+        m_recordContext.lightingPlan->GetIdentityHash())
     {
         SetCompositionFailure(
-            "Deferred ReflectionOutputs LightingFramePlan identity mismatches the record context");
+            "Deferred VolumetricLightingOutputs LightingFramePlan identity mismatches the record context");
         return;
     }
     if (!builder.IsValid() || !m_recordContext.MatchesTargetGraph(builder.GetGraph()))
@@ -1770,7 +1770,14 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
 
     RenderPassRecordContext reflectionResolvedContext = m_recordContext;
     reflectionResolvedContext.view.colorTarget =
-        reflection->resolvedSceneColor;
+        volumetricLighting->resolvedSceneColor;
+    reflectionResolvedContext.volumetricLighting =
+        VolumetricLightingRecordInput{
+            reflectionResolvedContext.identity,
+            volumetricLighting->volumetricPlanIdentity,
+            volumetricLighting->froxelGrid,
+            volumetricLighting->integratedScatteringTransmittance,
+            volumetricLighting->identityRoute};
     bool postLightingContextValid = false;
     const RenderPassRecordContext postLightingContext = MakeOpaqueRecordContext(
         reflectionResolvedContext, postLightingContextValid);
@@ -1908,6 +1915,21 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
     outputs.exposureState = m_recordContext.view.exposureState;
     outputs.exposureStateMetadata = MakeExposureStateMetadata(
         m_recordContext.view);
+    outputs.volumetricPlanIdentity =
+        volumetricLighting->volumetricPlanIdentity;
+    outputs.froxelGrid = volumetricLighting->froxelGrid;
+    outputs.volumetricHistoryIdentity =
+        volumetricLighting->historyIdentity;
+    outputs.volumetricHistoryResetReasons =
+        volumetricLighting->historyResetReasons;
+    outputs.integratedScatteringTransmittance =
+        volumetricLighting->integratedScatteringTransmittance;
+    outputs.integratedScatteringTransmittanceMetadata =
+        volumetricLighting->integratedScatteringTransmittanceMetadata;
+    outputs.volumetricIdentityRoute =
+        volumetricLighting->identityRoute;
+    outputs.volumetricTemporalHistoryUsed =
+        volumetricLighting->temporalHistoryUsed;
     outputs.colorDomain = PostProcessColorDomain::SceneLinearHDR;
     outputs.transfer = PostProcessTransfer::None;
     if (blackboard.Publish(BuiltinRenderFeatureIds::DeferredForwardSpecialChain,
@@ -1916,7 +1938,7 @@ void DeferredForwardSpecialFeatureAdapter::AddPasses(
         RenderGraphBlackboardCode::Success)
     {
         SetCompositionFailure(
-            "DeferredQuality could not publish PreTranslucencyOutputs v1");
+            "DeferredQuality could not publish PreTranslucencyOutputs v2");
     }
 }
 

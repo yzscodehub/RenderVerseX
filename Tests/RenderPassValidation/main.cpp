@@ -75,7 +75,6 @@
 #include "Render/PostProcess/TAA.h"
 #include "Render/PostProcess/ToneMapping.h"
 #include "Render/PostProcess/Vignette.h"
-#include "Render/PostProcess/VolumetricLighting.h"
 #include "Render/RayTracing/RayTracingResourceBindings.h"
 #include "Render/RayTracing/RayTracingScene.h"
 #include "Render/RayTracing/RayTracingSceneManager.h"
@@ -3794,6 +3793,21 @@ namespace
         context.identity.recordEpoch = recordEpoch;
         context.opaqueSceneSnapshot = AddTransparentFixtureSceneTargets(
             graph, context.view, context.identity);
+        const RenderOutputExtent volumetricExtent{
+            std::max(context.view.viewportWidth, 1U),
+            std::max(context.view.viewportHeight, 1U)};
+        const FroxelGridResolution volumetricGrid =
+            ResolveFroxelGridMetadata(
+                volumetricExtent, RenderQualityTier::Medium);
+        context.volumetricLighting.identity = context.identity;
+        context.volumetricLighting.planIdentity =
+            0x564f4c554d455452ULL ^ frameSequence ^ recordEpoch;
+        if (context.volumetricLighting.planIdentity == 0)
+        {
+            context.volumetricLighting.planIdentity = 1;
+        }
+        context.volumetricLighting.froxelGrid = volumetricGrid.metadata;
+        context.volumetricLighting.identityRoute = true;
         context.renderScene = &scene;
         context.transparentDrawItems = &transparentDrawItems;
         context.results = std::make_shared<RenderPassRecordResults>();
@@ -28371,7 +28385,6 @@ TEST(RenderPostProcessStackValidation, RenderVisualQualityPresetAppliesExplicitE
     EXPECT_TRUE(settings.enableVelocityOutput);
     EXPECT_FALSE(settings.enableDOF);
     EXPECT_FALSE(settings.enableMotionBlur);
-    EXPECT_FALSE(settings.enableVolumetricLighting);
 }
 
 TEST(RenderPostProcessStackValidation, SceneRendererFrameDiagnosticsExposePostProcessEffectPlans)
@@ -29198,38 +29211,11 @@ TEST(RenderPostProcessStackValidation, UnsupportedCinematicEffectsReportDiagnost
     EXPECT_STREQ(GetDOFImplementationTierName(dofDiagnostics.implementationTier), "Unsupported");
     EXPECT_NE(dofDiagnostics.reason.find("gather/composite pipeline"), std::string::npos);
 
-    VolumetricLightingPass volumetric;
-    PostProcessSettings volumetricSettings;
-    volumetricSettings.enableVolumetricLighting = true;
-    volumetric.Configure(volumetricSettings);
-
-    const VolumetricLightingDiagnostics& volumetricDiagnostics =
-        volumetric.GetLastDiagnostics();
-    EXPECT_TRUE(volumetricDiagnostics.requested);
-    EXPECT_FALSE(volumetricDiagnostics.supported);
-    EXPECT_FALSE(volumetricDiagnostics.scheduled);
-    EXPECT_FALSE(volumetricDiagnostics.depthAvailable);
-    EXPECT_FALSE(volumetricDiagnostics.shadowMapAvailable);
-    EXPECT_TRUE(volumetricDiagnostics.temporalRequested);
-    EXPECT_TRUE(volumetricDiagnostics.halfResolution);
-    EXPECT_EQ(volumetricDiagnostics.sampleCount, 32u);
-    EXPECT_EQ(volumetricDiagnostics.implementationTier,
-              VolumetricLightingImplementationTier::Unsupported);
-    EXPECT_STREQ(GetVolumetricLightingImplementationTierName(
-                     volumetricDiagnostics.implementationTier),
-                 "Unsupported");
-    EXPECT_NE(volumetricDiagnostics.reason.find("ray march/composite pipeline"),
-              std::string::npos);
-
     const fs::path postProcessDir =
         FindShaderDirectory().parent_path() / "Private" / "PostProcess";
     const std::string dofSource = ReadTextFile(postProcessDir / "DOF.cpp");
-    const std::string volumetricSource =
-        ReadTextFile(postProcessDir / "VolumetricLighting.cpp");
     EXPECT_EQ(dofSource.find("graph.AddPass"), std::string::npos);
     EXPECT_EQ(dofSource.find("TODO"), std::string::npos);
-    EXPECT_EQ(volumetricSource.find("graph.AddPass"), std::string::npos);
-    EXPECT_EQ(volumetricSource.find("TODO"), std::string::npos);
 }
 
 TEST_F(RenderPassValidationFixture, SwapChainManagerReportsUnsupportedWindowHandleCreation)

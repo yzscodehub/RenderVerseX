@@ -77,6 +77,7 @@ namespace RVX
     };
 
     class IShaderProgramProvider;
+    class PipelineCache;
     class WaterSurfaceRenderer;
 
     /**
@@ -95,6 +96,8 @@ namespace RVX
 
         void SetSnapshot(const WaterRenderSnapshot* snapshot);
         void SetShaderProgramProvider(IShaderProgramProvider* shaderProgramProvider);
+        /** Borrow the renderer-owned neutral Texture3D volume fallback. */
+        void SetPipelineCache(PipelineCache* pipelineCache) noexcept;
         void SetReverseZ(bool reverseZ);
         [[nodiscard]] WaterSurfaceRequirements GetRequirements() const noexcept;
         [[nodiscard]] const WaterFeaturePassStats& GetStats() const noexcept
@@ -126,6 +129,7 @@ namespace RVX
         void RebuildStats();
 
         const WaterRenderSnapshot* m_snapshot = nullptr;
+        PipelineCache* m_pipelineCache = nullptr;
         std::unique_ptr<WaterSurfaceRenderer> m_renderer;
         WaterFeaturePassStats m_stats{};
     };

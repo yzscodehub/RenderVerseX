@@ -5375,6 +5375,18 @@ TEST_F(PipelineCacheValidationFixture,
     EXPECT_EQ(fallbackAmbientOcclusion->textureView->GetFormat(),
               RVX::RHIFormat::R8_UNORM);
     EXPECT_NE(snapshot.ambientOcclusionFieldHash, 0u);
+    const RVX::RHIDescriptorBinding* const fallbackVolumetricLighting =
+        FindDescriptorBinding(
+            descriptorSetDesc,
+            RVX::PipelineCache::DefaultLitFroxelVolumetricLightingBinding);
+    ASSERT_NE(fallbackVolumetricLighting, nullptr);
+    ASSERT_NE(fallbackVolumetricLighting->textureView, nullptr);
+    ASSERT_NE(fallbackVolumetricLighting->textureView->GetTexture(), nullptr);
+    EXPECT_EQ(fallbackVolumetricLighting->textureView->GetFormat(),
+              RVX::RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(fallbackVolumetricLighting->textureView->GetTexture()->GetDimension(),
+              RVX::RHITextureDimension::Texture3D);
+    EXPECT_EQ(snapshot.froxelVolumetricLightingPlanIdentity, 0u);
 
     RVX::RHIBuffer* const sourceLightConstants = resources.lightConstants.Get();
     RVX::RHIBuffer* const frozenLightConstants =
@@ -5391,6 +5403,85 @@ TEST_F(PipelineCacheValidationFixture,
     EXPECT_EQ(FindDescriptorBinding(descriptorSetDesc, 3)->buffer, frozenLightConstants);
     EXPECT_EQ(FindDescriptorBinding(descriptorSetDesc, 1)->textureView, directionalShadowView);
     EXPECT_EQ(FindDescriptorBinding(descriptorSetDesc, 10)->textureView, irradianceView);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       LightingBindingSnapshotOwnsExactFroxelVolumeAndRejectsUnqualifiedClaims)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    LightingBindingTestResources resources;
+    ASSERT_TRUE(resources.Create(device, "LightingBindingSnapshotFroxel"));
+
+    RVX::RHITextureDesc froxelDesc;
+    froxelDesc.width = 8;
+    froxelDesc.height = 6;
+    froxelDesc.depth = 4;
+    froxelDesc.format = RVX::RHIFormat::RGBA16_FLOAT;
+    froxelDesc.usage = RVX::RHITextureUsage::ShaderResource;
+    froxelDesc.dimension = RVX::RHITextureDimension::Texture3D;
+    froxelDesc.debugName = "LightingBindingSnapshotFroxelVolume";
+    RVX::RHITextureRef froxelTexture = device.CreateTexture(froxelDesc);
+    ASSERT_NE(froxelTexture, nullptr);
+
+    RVX::RHITextureViewDesc froxelViewDesc;
+    froxelViewDesc.format = RVX::RHIFormat::RGBA16_FLOAT;
+    froxelViewDesc.dimension = RVX::RHITextureDimension::Texture3D;
+    froxelViewDesc.subresourceRange = RVX::RHISubresourceRange::All();
+    froxelViewDesc.type = RVX::RHITextureViewType::ShaderResource;
+    froxelViewDesc.debugName = "LightingBindingSnapshotFroxelVolumeSRV";
+    RVX::RHITextureViewRef froxelView =
+        device.CreateTextureView(froxelTexture.Get(), froxelViewDesc);
+    ASSERT_NE(froxelView, nullptr);
+
+    constexpr RVX::uint64 kLightingPlanIdentity = 0xF10A7u;
+    constexpr RVX::uint64 kFroxelPlanIdentity = 0xF00F123u;
+    RVX::LightingBindingSnapshotRequest request =
+        resources.MakeRequest(cache, kLightingPlanIdentity);
+    request.froxelVolumetricLightingView = froxelView;
+    request.froxelVolumetricLightingPlanIdentity = kFroxelPlanIdentity;
+
+    RVX::LightingBindingSnapshot snapshot;
+    ASSERT_TRUE(cache.CreateLightingBindingSnapshot(
+        MakeLightingBindingSnapshotView(), request, snapshot))
+        << cache.GetLastError();
+    ASSERT_TRUE(snapshot.IsValid());
+    EXPECT_EQ(snapshot.froxelVolumetricLightingView.Get(), froxelView.Get());
+    EXPECT_EQ(snapshot.froxelVolumetricLightingPlanIdentity,
+              kFroxelPlanIdentity);
+
+    const FakeDescriptorSet* const descriptorSet =
+        static_cast<const FakeDescriptorSet*>(snapshot.frameDescriptorSet.Get());
+    ASSERT_NE(descriptorSet, nullptr);
+    const RVX::RHIDescriptorSetDesc descriptorSetDesc{
+        nullptr, descriptorSet->GetBindings(), nullptr};
+    const RVX::RHIDescriptorBinding* const froxelBinding =
+        FindDescriptorBinding(
+            descriptorSetDesc,
+            RVX::PipelineCache::DefaultLitFroxelVolumetricLightingBinding);
+    ASSERT_NE(froxelBinding, nullptr);
+    EXPECT_EQ(froxelBinding->textureView, froxelView.Get());
+
+    request.froxelVolumetricLightingPlanIdentity = 0;
+    EXPECT_FALSE(cache.CreateLightingBindingSnapshot(
+        MakeLightingBindingSnapshotView(), request, snapshot));
+    EXPECT_NE(cache.GetLastError().find("non-zero plan identity"),
+              std::string::npos);
+
+    request.froxelVolumetricLightingView.Reset();
+    request.froxelVolumetricLightingPlanIdentity = kFroxelPlanIdentity;
+    EXPECT_FALSE(cache.CreateLightingBindingSnapshot(
+        MakeLightingBindingSnapshotView(), request, snapshot));
+    EXPECT_NE(cache.GetLastError().find("without its Texture3D view"),
+              std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture,

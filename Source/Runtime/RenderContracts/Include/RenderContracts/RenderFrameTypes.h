@@ -604,6 +604,32 @@ namespace RVX
         float32 cascadeBlendRatio = 0.05f;
     };
 
+    /**
+     * @brief Immutable, backend-neutral participating-media policy for one frame.
+     *
+     * A zero density is an intentional exact-identity request: composition must
+     * not allocate, sample, or composite a volumetric field for that frame.
+     * Every remaining value stays explicit and validated even in that mode, so
+     * enabling the effect on a later frame cannot expose latent invalid state.
+     */
+    struct RenderVolumetricLightingSettings
+    {
+        bool enabled = false;
+        bool enableTemporalReprojection = true;
+        bool enableDirectionalShadowing = true;
+        bool enableLocalShadowing = true;
+        /** Extinction/scattering density in reciprocal meters. */
+        float32 density = 0.0f;
+        /** Henyey-Greenstein anisotropy in the open physical interval (-1, 1). */
+        float32 anisotropy = 0.0f;
+        float32 maxDistanceMeters = 128.0f;
+        float32 heightFogBaseMeters = 0.0f;
+        /** Non-negative exponential height-falloff coefficient in reciprocal meters. */
+        float32 heightFogFalloffPerMeter = 0.0f;
+        /** Temporal-history contribution when reprojection is enabled. */
+        float32 temporalBlend = 0.90f;
+    };
+
     enum class RenderGPUDrivenMode : uint8
     {
         Auto = 0,
@@ -680,6 +706,7 @@ namespace RVX
         RenderInstancingMode instancingMode = RenderInstancingMode::Auto;
         RenderPostProcessSettings postProcess;
         RenderShadowSettings shadows;
+        RenderVolumetricLightingSettings volumetricLighting;
         RenderGPUCullingSettings gpuCulling;
         RenderRayTracingSettings rayTracing;
         RenderTemporalSettings temporal;

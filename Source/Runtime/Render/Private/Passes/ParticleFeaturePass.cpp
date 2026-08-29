@@ -649,6 +649,8 @@ namespace RVX
                                      RHIShaderStage::Pixel);
             setLayoutDesc.AddBinding(3, RHIBindingType::SampledTexture,
                                      RHIShaderStage::Pixel);
+            setLayoutDesc.AddBinding(4, RHIBindingType::SampledTexture,
+                                     RHIShaderStage::Pixel);
             setLayoutDesc.AddBinding(5, RHIBindingType::Sampler,
                                      RHIShaderStage::Pixel);
             m_descriptorSetLayout = m_device->CreateDescriptorSetLayout(setLayoutDesc);
@@ -1049,6 +1051,7 @@ namespace RVX
         ParticleFeaturePassStats initialStats{};
         std::vector<ParticleTextureBinding> textureBindings;
         ParticleVfxRecordInput particleVfx{};
+        PipelineCache* pipelineCache = nullptr;
         RenderPassRecordResults* results = nullptr;
         ParticleFeaturePass* owner = nullptr;
         const ParticleRenderSnapshot* snapshot = nullptr;
@@ -1137,10 +1140,13 @@ namespace RVX
             RGTextureHandle depthHandle{};
             RGTextureHandle reactiveMaskHandle{};
             RGTextureHandle softDepthHandle{};
+            RGTextureHandle froxelVolumetricLightingHandle{};
             RGTextureViewHandle colorView{};
             RGTextureViewHandle depthView{};
             RGTextureViewHandle reactiveMaskView{};
             RGTextureViewHandle softDepthView{};
+            RGTextureViewHandle froxelVolumetricLightingView{};
+            RHITextureViewRef neutralFroxelVolumetricLightingView{};
             RGTextureViewHandle distortionView{};
             RGTextureViewHandle compositeSourceView{};
             RGTextureViewHandle compositeTargetView{};
@@ -1151,6 +1157,7 @@ namespace RVX
             std::vector<ParticleTextureBinding> textureBindings;
             std::vector<uint32> batchIndices;
             ParticleVfxRecordInput particleVfx{};
+            PipelineCache* pipelineCache = nullptr;
             RenderPassRecordResults* results = nullptr;
             bool contextValid = false;
             ParticleFeatureGraphStage stage =
@@ -1161,12 +1168,57 @@ namespace RVX
     namespace
     {
 
+        [[nodiscard]] bool IsExactFroxelVolumetricTexture(
+            const RHITextureDesc* textureDesc,
+            const VolumetricLightingRecordInput& volumetricLighting) noexcept
+        {
+            const FroxelGridMetadata& grid = volumetricLighting.froxelGrid;
+            return textureDesc != nullptr && !volumetricLighting.identityRoute &&
+                grid.tileSizePixels != 0 && grid.froxelWidth != 0 &&
+                grid.froxelHeight != 0 && grid.depthSliceCount != 0 &&
+                grid.froxelCount == static_cast<uint64>(grid.froxelWidth) *
+                    grid.froxelHeight * grid.depthSliceCount &&
+                textureDesc->dimension == RHITextureDimension::Texture3D &&
+                textureDesc->format == RHIFormat::RGBA16_FLOAT &&
+                textureDesc->width == grid.froxelWidth &&
+                textureDesc->height == grid.froxelHeight &&
+                textureDesc->depth == grid.depthSliceCount &&
+                textureDesc->mipLevels == 1 && textureDesc->arraySize == 1 &&
+                textureDesc->sampleCount == RHISampleCount::Count1 &&
+                HasFlag(textureDesc->usage, RHITextureUsage::ShaderResource);
+        }
+
+        [[nodiscard]] bool IsCompatibleFroxelVolumetricLighting(
+            const VolumetricLightingRecordInput& volumetricLighting,
+            const RenderPassRecordIdentity& identity) noexcept
+        {
+            const FroxelGridMetadata& grid = volumetricLighting.froxelGrid;
+            const bool gridValid = grid.tileSizePixels != 0 &&
+                grid.froxelWidth != 0 && grid.froxelHeight != 0 &&
+                grid.depthSliceCount != 0 &&
+                grid.froxelCount == static_cast<uint64>(grid.froxelWidth) *
+                    grid.froxelHeight * grid.depthSliceCount;
+            if (volumetricLighting.identity != identity ||
+                volumetricLighting.planIdentity == 0 || !gridValid)
+            {
+                return false;
+            }
+            return volumetricLighting.identityRoute
+                ? !volumetricLighting.integratedScatteringTransmittance.IsValid()
+                : HasCurrentGraphProvenance(
+                      volumetricLighting.integratedScatteringTransmittance,
+                      identity);
+        }
+
         [[nodiscard]] bool PrepareGraphResources(
             ParticleGraphPassData& data,
             RenderGraphBuilder& builder,
             bool prepareDirectTargets)
         {
             if (!data.contextValid || !data.submission.IsReady() ||
+                data.pipelineCache == nullptr ||
+                !IsCompatibleFroxelVolumetricLighting(
+                    data.execution.volumetricLighting, data.execution.identity) ||
                 !data.execution.view.colorTarget.IsValid() ||
                 !data.execution.view.depthTarget.IsValid() ||
                 !HasCurrentGraphProvenance(data.execution.view.colorTarget,
@@ -1185,6 +1237,18 @@ namespace RVX
             {
                 return false;
             }
+            const VolumetricLightingRecordInput& volumetricLighting =
+                data.execution.volumetricLighting;
+            const RHITextureDesc* const froxelVolumetricLightingDesc =
+                volumetricLighting.identityRoute ? nullptr :
+                builder.GetTextureDesc(
+                    volumetricLighting.integratedScatteringTransmittance);
+            if (!volumetricLighting.identityRoute &&
+                !IsExactFroxelVolumetricTexture(
+                    froxelVolumetricLightingDesc, volumetricLighting))
+            {
+                return false;
+            }
             if (!Retain(builder, data.submission.constantsBuffer.Get()) ||
                 !Retain(builder, data.submission.instanceBuffer.Get()) ||
                 !Retain(builder, data.submission.descriptorSetLayout.Get()) ||
@@ -1193,6 +1257,9 @@ namespace RVX
                 !Retain(builder, data.submission.fallbackTextureView.Get()) ||
                 !Retain(builder, data.submission.distortionPipeline.Get()) ||
                 !Retain(builder, data.submission.compositePipeline.Get()) ||
+                (volumetricLighting.identityRoute &&
+                 !Retain(builder,
+                         data.pipelineCache->GetNeutralVolumetricLightingView().Get())) ||
                 (data.submission.weightedBlendedPipeline &&
                  !Retain(builder,
                          data.submission.weightedBlendedPipeline.Get())))
@@ -1225,6 +1292,39 @@ namespace RVX
             if (!data.constantsHandle.IsValid() || !data.instanceHandle.IsValid())
             {
                 return false;
+            }
+            if (volumetricLighting.identityRoute)
+            {
+                data.neutralFroxelVolumetricLightingView =
+                    data.pipelineCache->GetNeutralVolumetricLightingView();
+                if (!data.neutralFroxelVolumetricLightingView)
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                data.froxelVolumetricLightingHandle = builder.Read(
+                    volumetricLighting.integratedScatteringTransmittance,
+                    MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                                     RHIShaderStage::Pixel));
+                RHITextureViewDesc froxelViewDesc;
+                froxelViewDesc.format = RHIFormat::RGBA16_FLOAT;
+                froxelViewDesc.dimension = RHITextureDimension::Texture3D;
+                froxelViewDesc.type = RHITextureViewType::ShaderResource;
+                froxelViewDesc.debugName =
+                    "ParticleBillboard.FroxelVolumetricLightingSRV";
+                data.froxelVolumetricLightingView = builder.CreateTextureView(
+                    data.froxelVolumetricLightingHandle, froxelViewDesc);
+                data.froxelVolumetricLightingView = builder.Read(
+                    data.froxelVolumetricLightingView,
+                    MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                                     RHIShaderStage::Pixel));
+                if (!data.froxelVolumetricLightingHandle.IsValid() ||
+                    !data.froxelVolumetricLightingView.IsValid())
+                {
+                    return false;
+                }
             }
 
             for (ParticleTextureBinding& binding : data.textureBindings)
@@ -1637,8 +1737,34 @@ namespace RVX
                     MakeRGAccessDesc(RHIResourceState::ShaderResource,
                                      RHIShaderStage::Pixel));
             }
+            if (data.execution.volumetricLighting.identityRoute)
+            {
+                if (!data.neutralFroxelVolumetricLightingView ||
+                    !Retain(builder,
+                            data.neutralFroxelVolumetricLightingView.Get()))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                data.froxelVolumetricLightingView = builder.Read(
+                    data.froxelVolumetricLightingView,
+                    MakeRGAccessDesc(RHIResourceState::ShaderResource,
+                                     RHIShaderStage::Pixel));
+                if (!data.froxelVolumetricLightingHandle.IsValid() ||
+                    !data.froxelVolumetricLightingView.IsValid())
+                {
+                    return false;
+                }
+            }
             return data.constantsHandle.IsValid() &&
                    data.instanceHandle.IsValid() && data.depthView.IsValid() &&
+                   (data.execution.volumetricLighting.identityRoute
+                       ? static_cast<bool>(
+                             data.neutralFroxelVolumetricLightingView)
+                       : data.froxelVolumetricLightingHandle.IsValid() &&
+                           data.froxelVolumetricLightingView.IsValid()) &&
                    (!data.particleVfx.softDepthRequired ||
                     data.softDepthView.IsValid());
         }
@@ -1749,9 +1875,36 @@ namespace RVX
             {
                 depthOrDistortionView = context.GetTextureView(data.softDepthView);
             }
-            if (spriteView == nullptr || depthOrDistortionView == nullptr)
+            RHITextureView* froxelVolumetricLighting =
+                data.execution.volumetricLighting.identityRoute
+                    ? data.neutralFroxelVolumetricLightingView.Get()
+                    : context.GetTextureView(data.froxelVolumetricLightingView);
+            if (spriteView == nullptr || depthOrDistortionView == nullptr ||
+                froxelVolumetricLighting == nullptr)
             {
                 return {};
+            }
+            if (!data.execution.volumetricLighting.identityRoute)
+            {
+                RHITexture* const froxelTexture = context.GetTexture(
+                    data.froxelVolumetricLightingHandle);
+                const FroxelGridMetadata& grid =
+                    data.execution.volumetricLighting.froxelGrid;
+                if (froxelTexture == nullptr ||
+                    froxelVolumetricLighting->GetTexture() != froxelTexture ||
+                    froxelVolumetricLighting->GetFormat() != RHIFormat::RGBA16_FLOAT ||
+                    froxelTexture->GetDimension() !=
+                        RHITextureDimension::Texture3D ||
+                    froxelTexture->GetFormat() != RHIFormat::RGBA16_FLOAT ||
+                    froxelTexture->GetWidth() != grid.froxelWidth ||
+                    froxelTexture->GetHeight() != grid.froxelHeight ||
+                    froxelTexture->GetDepth() != grid.depthSliceCount ||
+                    froxelTexture->GetMipLevels() != 1 ||
+                    froxelTexture->GetArraySize() != 1 ||
+                    froxelTexture->GetSampleCount() != RHISampleCount::Count1)
+                {
+                    return {};
+                }
             }
 
             IRHIDevice* const device = data.submission.device;
@@ -1769,6 +1922,7 @@ namespace RVX
                 .BindBuffer(1, data.submission.instanceBuffer.Get())
                 .BindTexture(2, spriteView)
                 .BindTexture(3, depthOrDistortionView)
+                .BindTexture(4, froxelVolumetricLighting)
                 .BindSampler(5, data.submission.linearClampSampler.Get());
             RHIDescriptorSetRef descriptorSet = device->CreateDescriptorSet(descriptorDesc);
             if (!descriptorSet || !descriptorSet->IsReadyForBinding(
@@ -1840,6 +1994,12 @@ namespace RVX
                 !data.colorHandle.IsValid() || !data.colorView.IsValid() ||
                 !data.reactiveMaskHandle.IsValid() || !data.reactiveMaskView.IsValid() ||
                 !data.depthHandle.IsValid() || !data.depthView.IsValid() ||
+                !IsCompatibleFroxelVolumetricLighting(
+                    data.execution.volumetricLighting, data.execution.identity) ||
+                (data.execution.volumetricLighting.identityRoute
+                    ? !data.neutralFroxelVolumetricLightingView
+                    : !data.froxelVolumetricLightingHandle.IsValid() ||
+                        !data.froxelVolumetricLightingView.IsValid()) ||
                 (data.particleVfx.softDepthRequired &&
                  (!data.softDepthHandle.IsValid() || !data.softDepthView.IsValid())))
             {
@@ -1982,6 +2142,12 @@ namespace RVX
                 !data.accumulationView.IsValid() ||
                 !data.revealageView.IsValid() ||
                 !data.depthHandle.IsValid() || !data.depthView.IsValid() ||
+                !IsCompatibleFroxelVolumetricLighting(
+                    data.execution.volumetricLighting, data.execution.identity) ||
+                (data.execution.volumetricLighting.identityRoute
+                    ? !data.neutralFroxelVolumetricLightingView
+                    : !data.froxelVolumetricLightingHandle.IsValid() ||
+                        !data.froxelVolumetricLightingView.IsValid()) ||
                 (data.particleVfx.softDepthRequired &&
                  (!data.softDepthHandle.IsValid() ||
                   !data.softDepthView.IsValid())))
@@ -2221,12 +2387,18 @@ namespace RVX
         RebuildStats();
     }
 
-    void ParticleFeaturePass::SetShaderProgramProvider(
-        IShaderProgramProvider* shaderProgramProvider)
-    {
-        m_renderer->SetShaderProgramProvider(shaderProgramProvider);
-        RebuildStats();
-    }
+void ParticleFeaturePass::SetShaderProgramProvider(
+    IShaderProgramProvider* shaderProgramProvider)
+{
+    m_renderer->SetShaderProgramProvider(shaderProgramProvider);
+    RebuildStats();
+}
+
+void ParticleFeaturePass::SetPipelineCache(PipelineCache* pipelineCache) noexcept
+{
+    m_pipelineCache = pipelineCache;
+    RebuildStats();
+}
 
     void ParticleFeaturePass::SetResourceRegistry(
         RenderResourceRegistry* resourceRegistry)
@@ -2620,7 +2792,10 @@ namespace RVX
             MakeRenderPassExecutionData(context);
         const bool contextValid = execution.MatchesTargetGraph(
                 *context.identity.graph) &&
-            execution.IsFrameIdentityValid();
+            execution.IsFrameIdentityValid() &&
+            IsCompatibleFroxelVolumetricLighting(
+                execution.volumetricLighting, execution.identity) &&
+            m_pipelineCache != nullptr;
         if (!contextValid || !execution.view.depthTarget.IsValid())
         {
             return fail(
@@ -2797,6 +2972,7 @@ namespace RVX
         prepared->initialStats = m_stats;
         prepared->textureBindings = std::move(textureBindings);
         prepared->particleVfx = particleVfx;
+        prepared->pipelineCache = m_pipelineCache;
         prepared->results = context.results.get();
         prepared->owner = this;
         prepared->snapshot = m_snapshot;
@@ -2926,6 +3102,7 @@ namespace RVX
                 data.textureBindings = prepared->textureBindings;
                 data.batchIndices = prepared->weightedBatchIndices;
                 data.particleVfx = prepared->particleVfx;
+                data.pipelineCache = prepared->pipelineCache;
                 data.results = prepared->results;
                 data.contextValid = prepared->contextValid;
                 data.stage = ParticleFeatureGraphStage::WeightedBlended;
@@ -3088,6 +3265,7 @@ namespace RVX
                         data.initialStats = prepared->initialStats;
                         data.textureBindings = prepared->textureBindings;
                         data.particleVfx = prepared->particleVfx;
+                        data.pipelineCache = prepared->pipelineCache;
                         data.results = prepared->results;
                         data.contextValid = prepared->contextValid;
                         data.owner = prepared->owner;
@@ -3140,6 +3318,7 @@ namespace RVX
                         data.initialStats = prepared->initialStats;
                         data.textureBindings = prepared->textureBindings;
                         data.particleVfx = prepared->particleVfx;
+                        data.pipelineCache = prepared->pipelineCache;
                         data.results = prepared->results;
                         data.contextValid = prepared->contextValid;
                         data.owner = prepared->owner;
@@ -3255,7 +3434,10 @@ namespace RVX
 
         const RenderPassExecutionData execution = MakeRenderPassExecutionData(context);
         const bool contextValid = context.MatchesTargetGraph(graph) &&
-            execution.MatchesTargetGraph(graph) && execution.IsFrameIdentityValid();
+            execution.MatchesTargetGraph(graph) && execution.IsFrameIdentityValid() &&
+            IsCompatibleFroxelVolumetricLighting(
+                execution.volumetricLighting, execution.identity) &&
+            m_pipelineCache != nullptr;
         if (!contextValid || !execution.view.colorTarget.IsValid() ||
             !execution.view.depthTarget.IsValid())
         {
@@ -3458,7 +3640,8 @@ namespace RVX
             GetName(), GetPassType(),
             [submission = std::move(submission), execution, contextValid, recordStats,
              textureBindings = std::move(textureBindings), particleVfx,
-             results = context.results.get(), graphResources, this](
+             pipelineCache = m_pipelineCache, results = context.results.get(),
+             graphResources, this](
                 RenderGraphBuilder& builder, ParticleGraphPassData& data)
             {
                 data.submission = submission;
@@ -3466,6 +3649,7 @@ namespace RVX
                 data.initialStats = recordStats;
                 data.textureBindings = textureBindings;
                 data.particleVfx = particleVfx;
+                data.pipelineCache = pipelineCache;
                 data.results = results;
                 data.contextValid = contextValid;
                 data.owner = this;

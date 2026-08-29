@@ -26,6 +26,7 @@ cbuffer WaterSurfaceConstants : register(b0, space0)
 
 Texture2D gOpaqueSceneSnapshot : register(t1, space0);
 Texture2D gWaterDepthSnapshot : register(t2, space0);
+Texture3D<float4> gFroxelVolumetricLighting : register(t4, space0);
 SamplerState gLinearClamp : register(s3, space0);
 
 struct VSInput
@@ -184,8 +185,19 @@ WaterTargets PSMain(VSOutput input)
         SurfaceSizeAndTransparency.z * 0.15f));
     const float3 composed = lerp(refracted,
         lerp(surfaceColor, FoamColorAndParameters.xyz, foam), waterResponse);
+    const float canonicalDepth = InverseExtentAndReverseZ.z > 0.5f
+        ? 1.0f - saturate(input.Position.z)
+        : saturate(input.Position.z);
+    const float transmittance = saturate(
+        gFroxelVolumetricLighting.SampleLevel(
+            gLinearClamp, float3(saturate(uv), canonicalDepth), 0.0f).a);
+    // The refracted opaque snapshot already contains its own volume
+    // integration. Attenuate only the water surface contribution to avoid a
+    // second extinction/scattering application to the background.
+    const float3 volumetricComposed = refracted +
+        (composed - refracted) * transmittance;
     WaterTargets output;
-    output.Color = float4(composed, 1.0f);
+    output.Color = float4(volumetricComposed, 1.0f);
     output.Reactive = saturate(waterResponse + foam);
     return output;
 }

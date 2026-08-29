@@ -6,6 +6,7 @@
 #include "Render/Lighting/LightingFramePlan.h"
 #include "Render/Lighting/LocalShadowAtlas.h"
 #include "Render/Lighting/LocalShadowFramePlan.h"
+#include "Render/Lighting/VolumetricLightingFramePlan.h"
 #include "Render/Material/MaterialGPUData.h"
 #include "Render/Passes/CameraVelocityPass.h"
 #include "Render/Passes/LocalShadowPass.h"
@@ -26,6 +27,7 @@
 #include "Features/PostProcessPipelineFeatureAdapter.h"
 #include "Features/ReflectionFeatureAdapter.h"
 #include "Features/TranslucencyFeatureAdapter.h"
+#include "Features/VolumetricLightingFeatureAdapter.h"
 #include "../Common/RenderGraphValidationAccess.h"
 
 #include <algorithm>
@@ -59,6 +61,9 @@ namespace
     constexpr RenderFeatureResourceContract ReflectionOutputsContract{
         RenderBlackboardResourceId::ReflectionOutputs,
         ReflectionOutputs::SchemaVersion};
+    constexpr RenderFeatureResourceContract VolumetricLightingOutputsContract{
+        RenderBlackboardResourceId::VolumetricLightingOutputs,
+        VolumetricLightingOutputs::SchemaVersion};
     constexpr RenderFeatureResourceContract PreTranslucencyOutputsContract{
         RenderBlackboardResourceId::PreTranslucencyOutputs,
         PreTranslucencyOutputs::SchemaVersion};
@@ -1111,6 +1116,91 @@ namespace
         return outputs;
     }
 
+    [[nodiscard]] FroxelGridMetadata MakeValidFroxelGrid(
+        RenderOutputExtent extent = RenderOutputExtent{320, 180})
+    {
+        const FroxelGridResolution resolution = ResolveFroxelGridMetadata(
+            extent, RenderQualityTier::Medium);
+        return resolution.metadata;
+    }
+
+    [[nodiscard]] RenderViewHistoryIdentity MakeVolumetricHistoryIdentity(
+        const RenderGraphBlackboardProvenance& provenance,
+        RenderOutputExtent extent = RenderOutputExtent{320, 180})
+    {
+        return {
+            RenderFrameIdentity{provenance.frameSequence, 2, 3, 4},
+            RenderViewIdentity{5, 6, provenance.viewOrdinal, ViewRole::Main},
+            extent,
+            7,
+            2,
+            1,
+            1,
+            3,
+            1};
+    }
+
+    [[nodiscard]] FroxelVolumeMetadata MakeFroxelVolumeMetadata(
+        const FroxelGridMetadata& grid)
+    {
+        return {
+            RHITextureDimension::Texture3D,
+            RHIFormat::RGBA16_FLOAT,
+            RHISampleCount::Count1,
+            grid.froxelWidth,
+            grid.froxelHeight,
+            grid.depthSliceCount};
+    }
+
+    [[nodiscard]] VolumetricLightingOutputs MakeVolumetricLightingOutputs(
+        const RenderGraphBlackboardProvenance& provenance,
+        bool identityRoute = false)
+    {
+        VolumetricLightingOutputs outputs;
+        outputs.provenance = provenance;
+        outputs.frameIdentity = RenderFrameIdentity{
+            provenance.frameSequence, 2, 3, 4};
+        outputs.viewIdentity = RenderViewIdentity{
+            5, 6, provenance.viewOrdinal, ViewRole::Main};
+        outputs.historyIdentity = MakeVolumetricHistoryIdentity(provenance);
+        outputs.historyResetReasons = RenderHistoryResetReason::FirstFrame;
+        outputs.lightingPlanIdentity = 0x4C49474854504C4EULL;
+        outputs.volumetricPlanIdentity = 0x564F4C554D455452ULL;
+        outputs.settingsHash = 0x564F4C5345545449ULL;
+        outputs.froxelGrid = MakeValidFroxelGrid();
+        outputs.sourceSceneColor = MakeTextureHandle(provenance, 1);
+        outputs.sourceSceneColorMetadata = MakeSceneTextureMetadata(
+            SceneTextures::HDRSceneColorContract);
+        outputs.resolvedSceneColor = outputs.sourceSceneColor;
+        outputs.resolvedSceneColorMetadata =
+            outputs.sourceSceneColorMetadata;
+        outputs.worldNormal = MakeTextureHandle(provenance, 3);
+        outputs.worldNormalMetadata = MakeSceneTextureMetadata(
+            SceneTextures::FormatContract{
+                RHIFormat::RGBA8_UNORM, RHISampleCount::Count1});
+        outputs.materialIdentity = MakeTextureHandle(provenance, 4);
+        outputs.materialIdentityMetadata = MakeSceneTextureMetadata(
+            SceneTextures::GBuffer3Contract);
+        outputs.materialParameterTable = MakeBufferHandle(provenance, 5);
+        outputs.materialParameterTableMetadata = {
+            PostProcessMaterialTableMetadata::SchemaVersion,
+            static_cast<uint32>(sizeof(MaterialGPUConstants)),
+            1,
+            0,
+            0x4D41545441424C45ULL,
+            outputs.resolvedSceneColorMetadata.extent,
+            RHISampleCount::Count1};
+        outputs.identityRoute = identityRoute;
+        if (!identityRoute)
+        {
+            outputs.integratedScatteringTransmittance =
+                MakeTextureHandle(provenance, 2);
+            outputs.integratedScatteringTransmittanceMetadata =
+                MakeFroxelVolumeMetadata(outputs.froxelGrid);
+        }
+        return outputs;
+    }
+
     class DataOnlyLightingOutputsFeature final : public IRenderFeature
     {
     public:
@@ -1273,6 +1363,20 @@ namespace
             SceneTextures::ExposureStateStride,
             RenderExposureMode::ManualEV100,
             0xE1205EULL};
+        const VolumetricLightingOutputs volumetric =
+            MakeVolumetricLightingOutputs(provenance, true);
+        outputs.volumetricPlanIdentity = volumetric.volumetricPlanIdentity;
+        outputs.froxelGrid = volumetric.froxelGrid;
+        outputs.volumetricHistoryIdentity = volumetric.historyIdentity;
+        outputs.volumetricHistoryResetReasons =
+            volumetric.historyResetReasons;
+        outputs.integratedScatteringTransmittance =
+            volumetric.integratedScatteringTransmittance;
+        outputs.integratedScatteringTransmittanceMetadata =
+            volumetric.integratedScatteringTransmittanceMetadata;
+        outputs.volumetricIdentityRoute = volumetric.identityRoute;
+        outputs.volumetricTemporalHistoryUsed =
+            volumetric.temporalHistoryUsed;
         outputs.colorDomain = PostProcessColorDomain::SceneLinearHDR;
         outputs.transfer = PostProcessTransfer::None;
         return outputs;
@@ -1614,12 +1718,12 @@ namespace
                   RenderGraphBlackboardCode::Success);
         EXPECT_EQ(graph.GetRecordedPassCount(), 0U);
 
-        ForwardSpecialFeatureAdapter forwardSpecial(nullptr);
+        VolumetricLightingFeatureAdapter volumetricLighting(nullptr);
         RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
         const ReflectionOutputs* const outputs =
             blackboard.Require<ReflectionOutputs>(
-                BuiltinRenderFeatureIds::ForwardSpecialChain,
-                forwardSpecial.Describe(), &code);
+                BuiltinRenderFeatureIds::VolumetricLighting,
+                volumetricLighting.Describe(), &code);
         ASSERT_EQ(code, RenderGraphBlackboardCode::Success);
         ASSERT_NE(outputs, nullptr);
         EXPECT_EQ(ReflectionOutputs::SchemaVersion, 3U);
@@ -1796,11 +1900,11 @@ namespace
         EXPECT_LT(indexOf(composite), indexOf(water));
         EXPECT_LT(indexOf(composite), indexOf(transparent));
 
-        ForwardSpecialFeatureAdapter consumer(nullptr);
+        VolumetricLightingFeatureAdapter consumer(nullptr);
         RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
         const ReflectionOutputs* const outputs =
             blackboard.Require<ReflectionOutputs>(
-                BuiltinRenderFeatureIds::ForwardSpecialChain,
+                BuiltinRenderFeatureIds::VolumetricLighting,
                 consumer.Describe(), &code);
         ASSERT_EQ(code, RenderGraphBlackboardCode::Success);
         ASSERT_NE(outputs, nullptr);
@@ -2381,6 +2485,38 @@ namespace
     }
 
     TEST(RenderFeatureValidation,
+         VolumetricIdentityDefersComputeRequirementUntilGpuWorkIsRequested)
+    {
+        VolumetricLightingFeatureAdapter adapter(nullptr);
+        const RenderFeatureDescriptor descriptor = adapter.Describe();
+        EXPECT_EQ(descriptor.requiredCapabilities,
+                  ToMask(RenderFeatureCapability::Graphics) |
+                      ToMask(RenderFeatureCapability::DescriptorBindings));
+        EXPECT_TRUE(descriptor.allowsDataOnlyCompletion);
+
+        RenderFeatureContext context = MakeValidContext();
+        context.hardwareCapabilities =
+            ToMask(RenderFeatureCapability::Graphics) |
+            ToMask(RenderFeatureCapability::DescriptorBindings);
+
+        // Default settings are disabled, so a compatibility backend without
+        // compute must still be eligible to complete the typed identity edge.
+        adapter.Prepare(context);
+        EXPECT_TRUE(adapter.ResolveReadiness().hardwareSupported);
+        EXPECT_TRUE(adapter.ResolveReadiness().pipelineReady);
+
+        VolumetricLightingFeatureRecordContext enabled;
+        enabled.settings.enabled = true;
+        enabled.settings.density = 0.025f;
+        adapter.SetRecordContext(std::move(enabled));
+        adapter.Prepare(context);
+        EXPECT_FALSE(adapter.ResolveReadiness().hardwareSupported);
+        EXPECT_FALSE(adapter.ResolveReadiness().pipelineReady);
+        EXPECT_EQ(adapter.ResolveReadiness().diagnostic,
+                  "Froxel volumetric lighting requires graphics, compute, and descriptor bindings");
+    }
+
+    TEST(RenderFeatureValidation,
          RasterRecipeAdaptersDeclareAUniqueRecipeNeutralTranslucencyBoundary)
     {
         LegacyForwardFeatureAdapter forwardGeometry(nullptr);
@@ -2388,6 +2524,7 @@ namespace
         DeferredGeometryFeatureAdapter geometry(nullptr, nullptr);
         DeferredLightingFeatureAdapter lighting(nullptr, nullptr);
         ReflectionFeatureAdapter reflection;
+        VolumetricLightingFeatureAdapter volumetricLighting(nullptr);
         ForwardSpecialFeatureAdapter forwardSpecial(nullptr);
         DeferredForwardSpecialFeatureAdapter deferredSpecial(nullptr);
         TranslucencyFeatureAdapter translucency(nullptr);
@@ -2400,6 +2537,8 @@ namespace
         const RenderFeatureDescriptor lightingDescriptor = lighting.Describe();
         const RenderFeatureDescriptor reflectionDescriptor =
             reflection.Describe();
+        const RenderFeatureDescriptor volumetricLightingDescriptor =
+            volumetricLighting.Describe();
         const RenderFeatureDescriptor forwardSpecialDescriptor =
             forwardSpecial.Describe();
         const RenderFeatureDescriptor deferredSpecialDescriptor =
@@ -2413,6 +2552,8 @@ namespace
                   BuiltinRenderFeatureIds::DeferredLighting);
         EXPECT_EQ(reflectionDescriptor.featureId,
                   BuiltinRenderFeatureIds::ReflectionResolve);
+        EXPECT_EQ(volumetricLightingDescriptor.featureId,
+                  BuiltinRenderFeatureIds::VolumetricLighting);
         EXPECT_EQ(forwardSpecialDescriptor.featureId,
                   BuiltinRenderFeatureIds::ForwardSpecialChain);
         EXPECT_EQ(deferredSpecialDescriptor.featureId,
@@ -2420,6 +2561,7 @@ namespace
         EXPECT_EQ(translucencyDescriptor.featureId,
                   BuiltinRenderFeatureIds::Translucency);
         EXPECT_EQ(BuiltinRenderFeatureIds::Translucency.value, 11U);
+        EXPECT_EQ(BuiltinRenderFeatureIds::VolumetricLighting.value, 12U);
         EXPECT_EQ(forwardSpecialDescriptor.phase, RenderFeaturePhase::Sky);
         EXPECT_EQ(deferredSpecialDescriptor.phase, RenderFeaturePhase::Sky);
         EXPECT_EQ(translucencyDescriptor.phase,
@@ -2446,6 +2588,7 @@ namespace
         EXPECT_EQ(geometryDescriptor.optionalRecipes, 0U);
         EXPECT_EQ(lightingDescriptor.optionalRecipes, 0U);
         EXPECT_EQ(reflectionDescriptor.optionalRecipes, 0U);
+        EXPECT_EQ(volumetricLightingDescriptor.optionalRecipes, 0U);
         EXPECT_EQ(forwardSpecialDescriptor.optionalRecipes, 0U);
         EXPECT_EQ(deferredSpecialDescriptor.optionalRecipes, 0U);
         EXPECT_EQ(translucencyDescriptor.optionalRecipes, 0U);
@@ -2488,14 +2631,24 @@ namespace
                               ReflectionOutputsContract) !=
                     reflectionDescriptor.producedResources.end());
         EXPECT_TRUE(std::find(
+                        volumetricLightingDescriptor.consumedResources.begin(),
+                        volumetricLightingDescriptor.consumedResources.end(),
+                        ReflectionOutputsContract) !=
+                    volumetricLightingDescriptor.consumedResources.end());
+        EXPECT_TRUE(std::find(
+                        volumetricLightingDescriptor.producedResources.begin(),
+                        volumetricLightingDescriptor.producedResources.end(),
+                        VolumetricLightingOutputsContract) !=
+                    volumetricLightingDescriptor.producedResources.end());
+        EXPECT_TRUE(std::find(
                         forwardSpecialDescriptor.consumedResources.begin(),
                         forwardSpecialDescriptor.consumedResources.end(),
-                        ReflectionOutputsContract) !=
+                        VolumetricLightingOutputsContract) !=
                     forwardSpecialDescriptor.consumedResources.end());
         EXPECT_TRUE(std::find(
                         deferredSpecialDescriptor.consumedResources.begin(),
                         deferredSpecialDescriptor.consumedResources.end(),
-                        ReflectionOutputsContract) !=
+                        VolumetricLightingOutputsContract) !=
                     deferredSpecialDescriptor.consumedResources.end());
         EXPECT_TRUE(std::find(
                         forwardSpecialDescriptor.consumedResources.begin(),
@@ -2551,7 +2704,7 @@ namespace
         const RenderGraphBlackboardProvenance provenance = MakeProvenance();
         RenderGraphBlackboard missingBlackboard(provenance);
         RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
-        EXPECT_EQ(missingBlackboard.Require<ReflectionOutputs>(
+        EXPECT_EQ(missingBlackboard.Require<VolumetricLightingOutputs>(
                       BuiltinRenderFeatureIds::ForwardSpecialChain,
                       forwardSpecialDescriptor, &code),
                   nullptr);
@@ -2563,12 +2716,17 @@ namespace
                       reflectionDescriptor,
                       MakeReflectionOutputs(provenance, 0x5245464C454354ULL)),
                   RenderGraphBlackboardCode::Success);
-        EXPECT_NE(blackboard.Require<ReflectionOutputs>(
+        ASSERT_EQ(blackboard.Publish(
+                      BuiltinRenderFeatureIds::VolumetricLighting,
+                      volumetricLightingDescriptor,
+                      MakeVolumetricLightingOutputs(provenance)),
+                  RenderGraphBlackboardCode::Success);
+        EXPECT_NE(blackboard.Require<VolumetricLightingOutputs>(
                       BuiltinRenderFeatureIds::ForwardSpecialChain,
                       forwardSpecialDescriptor, &code),
                   nullptr);
         EXPECT_EQ(code, RenderGraphBlackboardCode::Success);
-        EXPECT_NE(blackboard.Require<ReflectionOutputs>(
+        EXPECT_NE(blackboard.Require<VolumetricLightingOutputs>(
                       BuiltinRenderFeatureIds::DeferredForwardSpecialChain,
                       deferredSpecialDescriptor, &code),
                   nullptr);
@@ -2646,6 +2804,147 @@ namespace
                       BuiltinRenderFeatureIds::ForwardSpecialChain,
                       producerDescriptor,
                       std::move(missingReceipt)),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+    }
+
+    TEST(RenderFeatureValidation,
+         VolumetricOutputsRejectStaleVolumesAndPreserveTheExactIdentitySurface)
+    {
+        constexpr RenderFeatureId consumerId{91};
+        const RenderGraphBlackboardProvenance provenance = MakeProvenance();
+        RenderFeatureDescriptor producer = MakeDescriptor(
+            BuiltinRenderFeatureIds::VolumetricLighting.value,
+            "froxel-volumetric", RenderFeaturePhase::Sky);
+        producer.producedResources.push_back(VolumetricLightingOutputsContract);
+        RenderFeatureDescriptor consumer = MakeDescriptor(
+            consumerId.value, "froxel-consumer", RenderFeaturePhase::Sky);
+        consumer.consumedResources.push_back(VolumetricLightingOutputsContract);
+
+        EXPECT_EQ(VolumetricLightingOutputs::SchemaVersion, 1U);
+        EXPECT_EQ(BuiltinRenderFeatureIds::VolumetricLighting.value, 12U);
+
+        RenderGraphBlackboard populated(provenance);
+        const VolumetricLightingOutputs integrated =
+            MakeVolumetricLightingOutputs(provenance);
+        ASSERT_EQ(populated.Publish(
+                      BuiltinRenderFeatureIds::VolumetricLighting,
+                      producer, integrated),
+                  RenderGraphBlackboardCode::Success);
+        RenderGraphBlackboardCode consumeCode =
+            RenderGraphBlackboardCode::Success;
+        EXPECT_NE(populated.Require<VolumetricLightingOutputs>(
+                      consumerId, consumer, &consumeCode),
+                  nullptr);
+        EXPECT_EQ(consumeCode, RenderGraphBlackboardCode::Success);
+        EXPECT_TRUE(populated.WasConsumedBy(
+            VolumetricLightingOutputsContract, consumerId));
+        EXPECT_EQ(populated.Publish(
+                      BuiltinRenderFeatureIds::VolumetricLighting,
+                      producer, integrated),
+                  RenderGraphBlackboardCode::DuplicateProducer);
+
+        RenderGraphBlackboard stale(provenance);
+        VolumetricLightingOutputs staleVolume =
+            MakeVolumetricLightingOutputs(provenance);
+        ++staleVolume.integratedScatteringTransmittance.recordingGeneration;
+        EXPECT_EQ(stale.Publish(BuiltinRenderFeatureIds::VolumetricLighting,
+                                producer, std::move(staleVolume)),
+                  RenderGraphBlackboardCode::StaleGraphResource);
+
+        RenderGraphBlackboard invalidVolume(provenance);
+        VolumetricLightingOutputs invalidDimension =
+            MakeVolumetricLightingOutputs(provenance);
+        invalidDimension.integratedScatteringTransmittanceMetadata.dimension =
+            RHITextureDimension::Texture2D;
+        EXPECT_EQ(invalidVolume.Publish(
+                      BuiltinRenderFeatureIds::VolumetricLighting, producer,
+                      std::move(invalidDimension)),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+
+        RenderGraphBlackboard identity(provenance);
+        const VolumetricLightingOutputs identityOutputs =
+            MakeVolumetricLightingOutputs(provenance, true);
+        ASSERT_EQ(identity.Publish(BuiltinRenderFeatureIds::VolumetricLighting,
+                                   producer, identityOutputs),
+                  RenderGraphBlackboardCode::Success);
+        EXPECT_FALSE(identityOutputs.integratedScatteringTransmittance.IsValid());
+        EXPECT_EQ(identityOutputs.sourceSceneColor.index,
+                  identityOutputs.resolvedSceneColor.index);
+        EXPECT_EQ(identityOutputs.sourceSceneColorMetadata,
+                  identityOutputs.resolvedSceneColorMetadata);
+
+        RenderGraphBlackboard forgedIdentity(provenance);
+        VolumetricLightingOutputs forged =
+            MakeVolumetricLightingOutputs(provenance, true);
+        forged.resolvedSceneColor = MakeTextureHandle(provenance, 77);
+        EXPECT_EQ(forgedIdentity.Publish(
+                      BuiltinRenderFeatureIds::VolumetricLighting, producer,
+                      std::move(forged)),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+
+        RenderFeatureRegistry schemaRegistry;
+        RenderFeatureDescriptor invalidSchema = producer;
+        ++invalidSchema.producedResources.front().schemaVersion;
+        EXPECT_EQ(schemaRegistry.Register(MakeFeature(std::move(invalidSchema))),
+                  RenderFeatureRegistryCode::InvalidResourceContract);
+    }
+
+    TEST(RenderFeatureValidation,
+         PreTranslucencyV2ForwardsOneExactVolumetricRoute)
+    {
+        ForwardSpecialFeatureAdapter producer(nullptr);
+        TranslucencyFeatureAdapter consumer(nullptr);
+        const RenderFeatureDescriptor producerDescriptor = producer.Describe();
+        const RenderFeatureDescriptor consumerDescriptor = consumer.Describe();
+        const RenderGraphBlackboardProvenance provenance = MakeProvenance();
+
+        EXPECT_EQ(PreTranslucencyOutputs::SchemaVersion, 2U);
+
+        RenderGraphBlackboard valid(provenance);
+        ASSERT_EQ(valid.Publish(
+                      BuiltinRenderFeatureIds::ForwardSpecialChain,
+                      producerDescriptor,
+                      MakePreTranslucencyOutputs(provenance)),
+                  RenderGraphBlackboardCode::Success);
+        RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
+        EXPECT_NE(valid.Require<PreTranslucencyOutputs>(
+                      BuiltinRenderFeatureIds::Translucency,
+                      consumerDescriptor, &code),
+                  nullptr);
+        EXPECT_EQ(code, RenderGraphBlackboardCode::Success);
+
+        RenderGraphBlackboard identityWithVolume(provenance);
+        PreTranslucencyOutputs invalidIdentity =
+            MakePreTranslucencyOutputs(provenance);
+        invalidIdentity.integratedScatteringTransmittance =
+            MakeTextureHandle(provenance, 44);
+        invalidIdentity.integratedScatteringTransmittanceMetadata =
+            MakeFroxelVolumeMetadata(invalidIdentity.froxelGrid);
+        EXPECT_EQ(identityWithVolume.Publish(
+                      BuiltinRenderFeatureIds::ForwardSpecialChain,
+                      producerDescriptor, std::move(invalidIdentity)),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+
+        RenderGraphBlackboard stale(provenance);
+        PreTranslucencyOutputs staleOutputs =
+            MakePreTranslucencyOutputs(provenance);
+        staleOutputs.volumetricIdentityRoute = false;
+        staleOutputs.integratedScatteringTransmittance =
+            MakeTextureHandle(provenance, 45);
+        staleOutputs.integratedScatteringTransmittanceMetadata =
+            MakeFroxelVolumeMetadata(staleOutputs.froxelGrid);
+        ++staleOutputs.integratedScatteringTransmittance.graphIdentity;
+        EXPECT_EQ(stale.Publish(BuiltinRenderFeatureIds::ForwardSpecialChain,
+                                producerDescriptor, std::move(staleOutputs)),
+                  RenderGraphBlackboardCode::StaleGraphResource);
+
+        RenderGraphBlackboard wrongGrid(provenance);
+        PreTranslucencyOutputs mismatchedGrid =
+            MakePreTranslucencyOutputs(provenance);
+        mismatchedGrid.froxelGrid.outputExtent.width += 1;
+        EXPECT_EQ(wrongGrid.Publish(
+                      BuiltinRenderFeatureIds::ForwardSpecialChain,
+                      producerDescriptor, std::move(mismatchedGrid)),
                   RenderGraphBlackboardCode::InvalidSemanticContract);
     }
 
@@ -3274,6 +3573,8 @@ namespace
             ForwardLightingFeatureAdapter(nullptr).Describe();
         RenderFeatureDescriptor forwardReflection =
             ReflectionFeatureAdapter{}.Describe();
+        RenderFeatureDescriptor forwardVolumetricLighting =
+            VolumetricLightingFeatureAdapter(nullptr).Describe();
         RenderFeatureDescriptor forwardSpecial =
             ForwardSpecialFeatureAdapter(nullptr).Describe();
         RenderFeatureDescriptor forwardTranslucency =
@@ -3283,6 +3584,9 @@ namespace
                       MakeFeature(std::move(forwardTranslucency))),
                   RenderFeatureRegistryCode::Success);
         ASSERT_EQ(forwardRegistry.Register(MakeFeature(std::move(forwardSpecial))),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(forwardRegistry.Register(
+                      MakeFeature(std::move(forwardVolumetricLighting))),
                   RenderFeatureRegistryCode::Success);
         ASSERT_EQ(forwardRegistry.Register(
                       MakeFeature(std::move(forwardReflection))),
@@ -3302,13 +3606,14 @@ namespace
         ASSERT_EQ(forwardRegistry.Seal(), RenderFeatureRegistryCode::Success);
         const std::vector<RenderFeatureId>& forwardOrder =
             forwardRegistry.GetExecutionOrder();
-        ASSERT_EQ(forwardOrder.size(), 6U);
+        ASSERT_EQ(forwardOrder.size(), 7U);
         EXPECT_EQ(forwardOrder[0], BuiltinRenderFeatureIds::LegacyForwardMainChain);
         EXPECT_EQ(forwardOrder[1], BuiltinRenderFeatureIds::AmbientOcclusion);
         EXPECT_EQ(forwardOrder[2], BuiltinRenderFeatureIds::ForwardLighting);
         EXPECT_EQ(forwardOrder[3], BuiltinRenderFeatureIds::ReflectionResolve);
-        EXPECT_EQ(forwardOrder[4], BuiltinRenderFeatureIds::ForwardSpecialChain);
-        EXPECT_EQ(forwardOrder[5], BuiltinRenderFeatureIds::Translucency);
+        EXPECT_EQ(forwardOrder[4], BuiltinRenderFeatureIds::VolumetricLighting);
+        EXPECT_EQ(forwardOrder[5], BuiltinRenderFeatureIds::ForwardSpecialChain);
+        EXPECT_EQ(forwardOrder[6], BuiltinRenderFeatureIds::Translucency);
         EXPECT_EQ(std::count(forwardOrder.begin(), forwardOrder.end(),
                              BuiltinRenderFeatureIds::Translucency),
                   1);
@@ -3327,6 +3632,8 @@ namespace
             DeferredLightingFeatureAdapter(nullptr, nullptr).Describe();
         RenderFeatureDescriptor deferredReflection =
             ReflectionFeatureAdapter{}.Describe();
+        RenderFeatureDescriptor deferredVolumetricLighting =
+            VolumetricLightingFeatureAdapter(nullptr).Describe();
         RenderFeatureDescriptor deferredSpecial =
             DeferredForwardSpecialFeatureAdapter(nullptr).Describe();
         RenderFeatureDescriptor deferredTranslucency =
@@ -3336,6 +3643,9 @@ namespace
                   RenderFeatureRegistryCode::Success);
         ASSERT_EQ(deferredRegistry.Register(
                       MakeFeature(std::move(deferredSpecial))),
+                  RenderFeatureRegistryCode::Success);
+        ASSERT_EQ(deferredRegistry.Register(
+                      MakeFeature(std::move(deferredVolumetricLighting))),
                   RenderFeatureRegistryCode::Success);
         ASSERT_EQ(deferredRegistry.Register(
                       MakeFeature(std::move(deferredReflection))),
@@ -3355,14 +3665,16 @@ namespace
         ASSERT_EQ(deferredRegistry.Seal(), RenderFeatureRegistryCode::Success);
         const std::vector<RenderFeatureId>& deferredOrder =
             deferredRegistry.GetExecutionOrder();
-        ASSERT_EQ(deferredOrder.size(), 6U);
+        ASSERT_EQ(deferredOrder.size(), 7U);
         EXPECT_EQ(deferredOrder[0], BuiltinRenderFeatureIds::DeferredGeometry);
         EXPECT_EQ(deferredOrder[1], BuiltinRenderFeatureIds::AmbientOcclusion);
         EXPECT_EQ(deferredOrder[2], BuiltinRenderFeatureIds::DeferredLighting);
         EXPECT_EQ(deferredOrder[3], BuiltinRenderFeatureIds::ReflectionResolve);
         EXPECT_EQ(deferredOrder[4],
+                  BuiltinRenderFeatureIds::VolumetricLighting);
+        EXPECT_EQ(deferredOrder[5],
                   BuiltinRenderFeatureIds::DeferredForwardSpecialChain);
-        EXPECT_EQ(deferredOrder[5], BuiltinRenderFeatureIds::Translucency);
+        EXPECT_EQ(deferredOrder[6], BuiltinRenderFeatureIds::Translucency);
         EXPECT_EQ(std::count(deferredOrder.begin(), deferredOrder.end(),
                              BuiltinRenderFeatureIds::Translucency),
                   1);

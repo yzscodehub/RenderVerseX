@@ -212,6 +212,51 @@ namespace RVX
         return result;
     }
 
+    inline constexpr float32 RVX_RENDER_VOLUMETRIC_MIN_DENSITY = 0.0f;
+    inline constexpr float32 RVX_RENDER_VOLUMETRIC_MAX_DENSITY = 10.0f;
+    inline constexpr float32 RVX_RENDER_VOLUMETRIC_MAX_ANISOTROPY = 0.99f;
+    inline constexpr float32 RVX_RENDER_VOLUMETRIC_MIN_DISTANCE_METERS =
+        0.01f;
+    inline constexpr float32 RVX_RENDER_VOLUMETRIC_MAX_DISTANCE_METERS =
+        10000.0f;
+    inline constexpr float32 RVX_RENDER_VOLUMETRIC_MAX_HEIGHT_FALLOFF =
+        64.0f;
+    inline constexpr float32 RVX_RENDER_VOLUMETRIC_MAX_TEMPORAL_BLEND =
+        0.98f;
+
+    /**
+     * @brief Validate the complete frame-owned participating-media policy.
+     *
+     * The density interval intentionally includes zero: it is the sole value
+     * that resolves to an exact identity output.  All other fields remain
+     * constrained in that state to prevent invalid dormant policy from
+     * changing behavior when density becomes non-zero on a later frame.
+     */
+    [[nodiscard]] inline bool IsValidRenderVolumetricLightingSettings(
+        const RenderVolumetricLightingSettings& settings) noexcept
+    {
+        return std::isfinite(settings.density) &&
+               settings.density >= RVX_RENDER_VOLUMETRIC_MIN_DENSITY &&
+               settings.density <= RVX_RENDER_VOLUMETRIC_MAX_DENSITY &&
+               std::isfinite(settings.anisotropy) &&
+               settings.anisotropy >= -RVX_RENDER_VOLUMETRIC_MAX_ANISOTROPY &&
+               settings.anisotropy <= RVX_RENDER_VOLUMETRIC_MAX_ANISOTROPY &&
+               std::isfinite(settings.maxDistanceMeters) &&
+               settings.maxDistanceMeters >=
+                   RVX_RENDER_VOLUMETRIC_MIN_DISTANCE_METERS &&
+               settings.maxDistanceMeters <=
+                   RVX_RENDER_VOLUMETRIC_MAX_DISTANCE_METERS &&
+               std::isfinite(settings.heightFogBaseMeters) &&
+               std::isfinite(settings.heightFogFalloffPerMeter) &&
+               settings.heightFogFalloffPerMeter >= 0.0f &&
+               settings.heightFogFalloffPerMeter <=
+                   RVX_RENDER_VOLUMETRIC_MAX_HEIGHT_FALLOFF &&
+               std::isfinite(settings.temporalBlend) &&
+               settings.temporalBlend >= 0.0f &&
+               settings.temporalBlend <=
+                   RVX_RENDER_VOLUMETRIC_MAX_TEMPORAL_BLEND;
+    }
+
     /** @brief Validate all cross-thread render settings invariants. */
     [[nodiscard]] inline bool IsValidRenderFrameSettings(
         const RenderFrameSettings& settings) noexcept
@@ -243,6 +288,8 @@ namespace RVX
                 settings.postProcess.exposureSettings) ||
             !IsValidRenderAmbientOcclusionSettings(
                 settings.postProcess.ambientOcclusion) ||
+            !IsValidRenderVolumetricLightingSettings(
+                settings.volumetricLighting) ||
             !std::isfinite(settings.postProcess.gamma) ||
             settings.postProcess.gamma <= 0.0f ||
             !std::isfinite(settings.shadows.maxDistance))

@@ -723,7 +723,7 @@ void TranslucencyFeatureAdapter::AddPasses(
         inputs->opaqueSceneSnapshotReceipt == nullptr)
     {
         SetCompositionFailure(
-            "Translucency requires the exact PreTranslucencyOutputs v1");
+            "Translucency requires the exact PreTranslucencyOutputs v2");
         return;
     }
 
@@ -751,6 +751,12 @@ void TranslucencyFeatureAdapter::AddPasses(
         context.identity,
         inputs->opaqueSceneSnapshot,
         inputs->opaqueSceneSnapshotReceipt};
+    context.volumetricLighting = VolumetricLightingRecordInput{
+        context.identity,
+        inputs->volumetricPlanIdentity,
+        inputs->froxelGrid,
+        inputs->integratedScatteringTransmittance,
+        inputs->volumetricIdentityRoute};
 
     m_lastPassChainStats.frameSequence = context.identity.frameSequence;
     m_lastPassChainStats.passStatuses =

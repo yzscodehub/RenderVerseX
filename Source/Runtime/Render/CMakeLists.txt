@@ -216,7 +216,9 @@ target_sources(RVX_RenderLighting PRIVATE
     Private/Passes/ShadowPass.cpp
     Private/Passes/LocalShadowPass.cpp
     Private/Passes/DeferredLightingPass.cpp
+    Private/Lighting/FroxelVolumetricLighting.cpp
     Private/Lighting/GroundTruthAmbientOcclusion.cpp
+    Private/Lighting/VolumetricLightingFramePlan.cpp
 )
 rvx_configure_render_component(RVX_RenderLighting)
 target_link_libraries(RVX_RenderLighting PUBLIC
@@ -253,7 +255,6 @@ target_sources(RVX_RenderPostProcess PRIVATE
     Private/PostProcess/Vignette.cpp
     Private/PostProcess/ChromaticAberration.cpp
     Private/PostProcess/FilmGrain.cpp
-    Private/PostProcess/VolumetricLighting.cpp
 )
 rvx_configure_render_component(RVX_RenderPostProcess)
 target_link_libraries(RVX_RenderPostProcess PUBLIC
@@ -317,6 +318,7 @@ target_sources(RVX_RenderComposition PRIVATE
     Private/Features/LegacyForwardFeatureAdapter.cpp
     Private/Features/ReflectionFeatureAdapter.cpp
     Private/Features/TranslucencyFeatureAdapter.cpp
+    Private/Features/VolumetricLightingFeatureAdapter.cpp
     Private/Features/PostProcessPipelineFeatureAdapter.cpp
     Private/Features/RenderFeatureRegistry.cpp
     Private/Diagnostics/RenderFeatureReport.cpp

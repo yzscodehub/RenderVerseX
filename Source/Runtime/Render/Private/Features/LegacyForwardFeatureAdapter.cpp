@@ -1323,8 +1323,8 @@ RenderFeatureDescriptor ForwardSpecialFeatureAdapter::Describe() const
     descriptor.name = "ForwardSpecialChain";
     descriptor.phase = RenderFeaturePhase::Sky;
     descriptor.consumedResources = {
-        {RenderBlackboardResourceId::ReflectionOutputs,
-         ReflectionOutputs::SchemaVersion},
+        {RenderBlackboardResourceId::VolumetricLightingOutputs,
+         VolumetricLightingOutputs::SchemaVersion},
         {RenderBlackboardResourceId::LocalShadowOutputs,
          LocalShadowOutputs::SchemaVersion}};
     descriptor.producedResources = {
@@ -1414,26 +1414,26 @@ void ForwardSpecialFeatureAdapter::AddPasses(
     }
 
     RenderGraphBlackboardCode code = RenderGraphBlackboardCode::Success;
-    const ReflectionOutputs* const reflection =
-        blackboard.Require<ReflectionOutputs>(
+    const VolumetricLightingOutputs* const volumetricLighting =
+        blackboard.Require<VolumetricLightingOutputs>(
             BuiltinRenderFeatureIds::ForwardSpecialChain,
             Describe(), &code);
     const uint64 expectedLightingPlanIdentity =
         m_recordContext.lightingPlan != nullptr
             ? m_recordContext.lightingPlan->GetIdentityHash()
             : 0;
-    if (reflection == nullptr ||
+    if (volumetricLighting == nullptr ||
         code != RenderGraphBlackboardCode::Success ||
-        reflection->frameIdentity != m_preparedContext.frameIdentity ||
-        reflection->viewIdentity != m_preparedContext.viewIdentity ||
-        !reflection->IsCompatibleWithLightingPlan(
-            expectedLightingPlanIdentity) ||
-        !reflection->resolvedSceneColor.IsValid() ||
-        reflection->resolvedSceneColorMetadata.extent !=
+        volumetricLighting->frameIdentity != m_preparedContext.frameIdentity ||
+        volumetricLighting->viewIdentity != m_preparedContext.viewIdentity ||
+        volumetricLighting->lightingPlanIdentity !=
+            expectedLightingPlanIdentity ||
+        !volumetricLighting->resolvedSceneColor.IsValid() ||
+        volumetricLighting->resolvedSceneColorMetadata.extent !=
             m_preparedContext.outputExtent)
     {
         SetCompositionFailure(
-            "Forward special-surface chain requires the exact ReflectionOutputs v3");
+            "Forward special-surface chain requires the exact VolumetricLightingOutputs v1");
         return;
     }
     code = RenderGraphBlackboardCode::Success;
@@ -1470,7 +1470,14 @@ void ForwardSpecialFeatureAdapter::AddPasses(
     }
 
     RenderPassRecordContext postLightingContext = m_recordContext;
-    postLightingContext.view.colorTarget = reflection->resolvedSceneColor;
+    postLightingContext.view.colorTarget =
+        volumetricLighting->resolvedSceneColor;
+    postLightingContext.volumetricLighting = VolumetricLightingRecordInput{
+        postLightingContext.identity,
+        volumetricLighting->volumetricPlanIdentity,
+        volumetricLighting->froxelGrid,
+        volumetricLighting->integratedScatteringTransmittance,
+        volumetricLighting->identityRoute};
     postLightingContext.directionalShadow =
         postLightingContext.results->directionalShadowOutput;
     if (postLightingContext.directionalShadow.identity !=
@@ -1521,7 +1528,8 @@ void ForwardSpecialFeatureAdapter::AddPasses(
             std::make_shared<OpaqueSceneSnapshotCopyReceipt>();
     bool opaqueSnapshotRegistered = false;
 
-    RGTextureHandle activeSceneColor = reflection->resolvedSceneColor;
+    RGTextureHandle activeSceneColor =
+        volumetricLighting->resolvedSceneColor;
     WaterSurfaceRecordInput waterSurface;
 
     const int32 firstLightingConsumerPriority = opaquePass->GetPriority();
@@ -1633,18 +1641,21 @@ void ForwardSpecialFeatureAdapter::AddPasses(
     outputs.viewIdentity = m_preparedContext.viewIdentity;
     outputs.lightingPlanIdentity = expectedLightingPlanIdentity;
     outputs.hdrSceneColor = activeSceneColor;
-    outputs.hdrSceneColorMetadata = reflection->resolvedSceneColorMetadata;
+    outputs.hdrSceneColorMetadata =
+        volumetricLighting->resolvedSceneColorMetadata;
     outputs.deviceDepth = m_recordContext.view.depthTarget;
     outputs.deviceDepthMetadata = MakeMetadata(
         m_preparedContext.outputExtent,
         SceneTextures::DeviceDepthContract);
-    outputs.worldNormal = reflection->worldNormal;
-    outputs.worldNormalMetadata = reflection->worldNormalMetadata;
-    outputs.materialIdentity = reflection->materialIdentity;
-    outputs.materialIdentityMetadata = reflection->materialIdentityMetadata;
-    outputs.materialParameterTable = reflection->materialParameterTable;
+    outputs.worldNormal = volumetricLighting->worldNormal;
+    outputs.worldNormalMetadata = volumetricLighting->worldNormalMetadata;
+    outputs.materialIdentity = volumetricLighting->materialIdentity;
+    outputs.materialIdentityMetadata =
+        volumetricLighting->materialIdentityMetadata;
+    outputs.materialParameterTable =
+        volumetricLighting->materialParameterTable;
     outputs.materialParameterTableMetadata =
-        reflection->materialParameterTableMetadata;
+        volumetricLighting->materialParameterTableMetadata;
     outputs.velocity = m_recordContext.view.velocityTarget;
     outputs.velocityMetadata = MakeMetadata(
         m_preparedContext.outputExtent, SceneTextures::VelocityContract);
@@ -1658,6 +1669,21 @@ void ForwardSpecialFeatureAdapter::AddPasses(
     outputs.exposureState = m_recordContext.view.exposureState;
     outputs.exposureStateMetadata = MakeExposureStateMetadata(
         m_recordContext.view);
+    outputs.volumetricPlanIdentity =
+        volumetricLighting->volumetricPlanIdentity;
+    outputs.froxelGrid = volumetricLighting->froxelGrid;
+    outputs.volumetricHistoryIdentity =
+        volumetricLighting->historyIdentity;
+    outputs.volumetricHistoryResetReasons =
+        volumetricLighting->historyResetReasons;
+    outputs.integratedScatteringTransmittance =
+        volumetricLighting->integratedScatteringTransmittance;
+    outputs.integratedScatteringTransmittanceMetadata =
+        volumetricLighting->integratedScatteringTransmittanceMetadata;
+    outputs.volumetricIdentityRoute =
+        volumetricLighting->identityRoute;
+    outputs.volumetricTemporalHistoryUsed =
+        volumetricLighting->temporalHistoryUsed;
     outputs.colorDomain = PostProcessColorDomain::SceneLinearHDR;
     outputs.transfer = PostProcessTransfer::None;
     if (blackboard.Publish(BuiltinRenderFeatureIds::ForwardSpecialChain,
@@ -1665,7 +1691,7 @@ void ForwardSpecialFeatureAdapter::AddPasses(
         RenderGraphBlackboardCode::Success)
     {
         SetCompositionFailure(
-            "Forward special-surface chain could not publish PreTranslucencyOutputs v1");
+            "Forward special-surface chain could not publish PreTranslucencyOutputs v2");
     }
 }
 

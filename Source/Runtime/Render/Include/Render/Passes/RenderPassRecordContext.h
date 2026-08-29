@@ -11,6 +11,7 @@
 #include "Render/GPUDriven/GPUDrivenDiagnostics.h"
 #include "Render/Lighting/LightingFramePlan.h"
 #include "Render/Lighting/LocalShadowAtlas.h"
+#include "Render/Lighting/VolumetricLightingFramePlan.h"
 #include "Render/Passes/MeshPassProcessor.h"
 #include "Render/PipelineCache.h"
 #include "Render/Policy/RenderFrameExecutionPlan.h"
@@ -743,6 +744,45 @@ namespace RVX
                    extent.IsValid() && format == RHIFormat::R8_UNORM &&
                    sampleCount == RHISampleCount::Count1 &&
                    settingsHash != 0 && fieldContentHash != 0;
+        }
+    };
+
+    /**
+     * @brief Exact accumulated froxel field shared by every late surface.
+     *
+     * The value is graph-neutral policy plus one graph handle; feature targets
+     * never depend on RenderLighting implementation types.  An identity route
+     * intentionally carries no texture, allowing consumers to bind their
+     * immutable neutral fallback without advertising GPU execution.
+     */
+    struct VolumetricLightingRecordInput
+    {
+        RenderPassRecordIdentity identity{};
+        uint64 planIdentity = 0;
+        FroxelGridMetadata froxelGrid{};
+        RGTextureHandle integratedScatteringTransmittance{};
+        bool identityRoute = true;
+
+        [[nodiscard]] bool IsEmpty() const noexcept
+        {
+            return !identity.IsValid() && planIdentity == 0 &&
+                   !froxelGrid.IsValid() &&
+                   !integratedScatteringTransmittance.IsValid() &&
+                   identityRoute;
+        }
+
+        [[nodiscard]] bool IsCompatibleWith(
+            const RenderPassRecordIdentity& expected) const noexcept
+        {
+            if (identity != expected || planIdentity == 0 ||
+                !froxelGrid.IsValid())
+            {
+                return false;
+            }
+            return identityRoute
+                ? !integratedScatteringTransmittance.IsValid()
+                : HasCurrentGraphProvenance(
+                      integratedScatteringTransmittance, expected);
         }
     };
 
@@ -1674,6 +1714,8 @@ namespace RVX
         RayTracingSceneRecordInput rayTracingScene{};
         /** Screen-space AO selected by the typed lighting dependency edge. */
         AmbientOcclusionRecordInput ambientOcclusion{};
+        /** Shared froxel field selected before water/mesh/particle translucency. */
+        VolumetricLightingRecordInput volumetricLighting{};
         /** Opaque HDR snapshot late-bound after the immutable frame snapshot. */
         OpaqueSceneSnapshotRecordInput opaqueSceneSnapshot{};
         /** Opaque HDR plus copied D32 inputs late-bound for deterministic water. */
@@ -1789,6 +1831,11 @@ namespace RVX
             {
                 return false;
             }
+            if (!volumetricLighting.IsEmpty() &&
+                !volumetricLighting.IsCompatibleWith(identity))
+            {
+                return false;
+            }
             if (!rayTracingScene.IsEmpty() &&
                 !rayTracingScene.IsCompatibleWith(identity))
             {
@@ -1818,6 +1865,7 @@ namespace RVX
         RayTracedShadowRecordOutput rayTracedShadow{};
         RayTracingSceneRecordInput rayTracingScene{};
         AmbientOcclusionRecordInput ambientOcclusion{};
+        VolumetricLightingRecordInput volumetricLighting{};
         OpaqueSceneSnapshotRecordInput opaqueSceneSnapshot{};
         OpaqueMaterialTableExecutionIdentity opaqueMaterialTable{};
 
@@ -1853,6 +1901,11 @@ namespace RVX
             }
             if (!opaqueSceneSnapshot.IsEmpty() &&
                 !opaqueSceneSnapshot.IsCompatibleWith(identity))
+            {
+                return false;
+            }
+            if (!volumetricLighting.IsEmpty() &&
+                !volumetricLighting.IsCompatibleWith(identity))
             {
                 return false;
             }
@@ -2076,6 +2129,7 @@ namespace RVX
         result.rayTracedShadow = context.rayTracedShadow;
         result.rayTracingScene = context.rayTracingScene;
         result.ambientOcclusion = context.ambientOcclusion;
+        result.volumetricLighting = context.volumetricLighting;
         result.opaqueSceneSnapshot = context.opaqueSceneSnapshot;
         result.opaqueMaterialTable = context.opaqueMaterialTable;
         return result;

@@ -49,6 +49,8 @@ namespace
                 return LightingOutputs::SchemaVersion;
             case RenderBlackboardResourceId::ReflectionOutputs:
                 return ReflectionOutputs::SchemaVersion;
+            case RenderBlackboardResourceId::VolumetricLightingOutputs:
+                return VolumetricLightingOutputs::SchemaVersion;
             case RenderBlackboardResourceId::PreTranslucencyOutputs:
                 return PreTranslucencyOutputs::SchemaVersion;
             case RenderBlackboardResourceId::TranslucencyOutputs:

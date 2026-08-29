@@ -156,7 +156,10 @@ namespace
     // descriptor ABI for HDR producers; never reuse a manifest built before it.
     // GTAO extends both the raster frame set and deferred compute set, so its
     // exact R8 visibility ABI must invalidate all previous manifests.
-    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 27;
+    // Froxel volumetrics add four cooked compute programs and the fixed
+    // DefaultLit t18 Texture3D sampling ABI; a manifest without that contract
+    // must never be reused.
+    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 28;
     constexpr uint64 RVX_NEUTRAL_AMBIENT_OCCLUSION_FIELD_HASH =
         0x4E45555452414F31ull; // "NEUTRAO1"
     constexpr uint32 RVX_PIPELINE_PURPOSE_DEFAULT = 0x50445354u; // PDST
@@ -420,7 +423,8 @@ namespace
 
     bool IsRequiredDefaultLitBinding(uint32 set, uint32 binding)
     {
-        if (set == 0 && binding <= PipelineCache::DefaultLitLocalShadowAtlasBinding)
+        if (set == 0 &&
+            binding <= PipelineCache::DefaultLitFroxelVolumetricLightingBinding)
         {
             return true;
         }
@@ -477,6 +481,10 @@ namespace
         frameLayout.AddBinding(PipelineCache::DefaultLitLocalShadowAtlasBinding,
                                RHIBindingType::SampledTexture,
                                RHIShaderStage::Pixel);
+        frameLayout.AddBinding(
+            PipelineCache::DefaultLitFroxelVolumetricLightingBinding,
+            RHIBindingType::SampledTexture,
+            RHIShaderStage::Pixel);
 
         auto& objectLayout = outLayouts[1];
         objectLayout.debugName = "DefaultObjectSetLayout";
@@ -1441,6 +1449,10 @@ void PipelineCache::Shutdown()
     m_gtaoBilateralHorizontalPipeline.Reset();
     m_gtaoBilateralVerticalPipeline.Reset();
     m_gtaoTemporalPipeline.Reset();
+    m_froxelVolumetricInjectionPipeline.Reset();
+    m_froxelVolumetricIntegrationPipeline.Reset();
+    m_froxelVolumetricTemporalPipeline.Reset();
+    m_froxelVolumetricCompositePipeline.Reset();
     m_ssrHiZBasePipeline.Reset();
     m_ssrHiZReducePipeline.Reset();
     m_ssrTracePipeline.Reset();
@@ -1491,6 +1503,8 @@ void PipelineCache::Shutdown()
     m_fallbackExposureStateBuffer.Reset();
     m_fallbackAmbientOcclusionView.Reset();
     m_fallbackAmbientOcclusionTexture.Reset();
+    m_fallbackFroxelVolumetricLightingView.Reset();
+    m_fallbackFroxelVolumetricLightingTexture.Reset();
     m_currentDirectionalShadowView = nullptr;
     m_currentRayTracedShadowMaskView = nullptr;
     m_currentDirectionalShadowSampler = nullptr;
@@ -1520,6 +1534,8 @@ void PipelineCache::Shutdown()
     m_taaSetLayout.Reset();
     m_gtaoPipelineLayout.Reset();
     m_gtaoSetLayout.Reset();
+    m_froxelVolumetricPipelineLayout.Reset();
+    m_froxelVolumetricSetLayout.Reset();
     m_ssrPipelineLayout.Reset();
     m_ssrSetLayout.Reset();
     m_screenSpaceOutlinePipelineLayout.Reset();
@@ -1579,6 +1595,10 @@ void PipelineCache::Shutdown()
     m_gtaoBilateralHorizontalPixelShader.Reset();
     m_gtaoBilateralVerticalPixelShader.Reset();
     m_gtaoTemporalPixelShader.Reset();
+    m_froxelVolumetricInjectionComputeShader.Reset();
+    m_froxelVolumetricIntegrationComputeShader.Reset();
+    m_froxelVolumetricTemporalComputeShader.Reset();
+    m_froxelVolumetricCompositeComputeShader.Reset();
     m_ssrHiZBasePixelShader.Reset();
     m_ssrHiZReducePixelShader.Reset();
     m_ssrTracePixelShader.Reset();
@@ -1654,6 +1674,10 @@ void PipelineCache::Shutdown()
     m_gtaoBilateralHorizontalPsCompileResult.reset();
     m_gtaoBilateralVerticalPsCompileResult.reset();
     m_gtaoTemporalPsCompileResult.reset();
+    m_froxelVolumetricInjectionCsCompileResult.reset();
+    m_froxelVolumetricIntegrationCsCompileResult.reset();
+    m_froxelVolumetricTemporalCsCompileResult.reset();
+    m_froxelVolumetricCompositeCsCompileResult.reset();
     m_ssrHiZBasePsCompileResult.reset();
     m_ssrHiZReducePsCompileResult.reset();
     m_ssrTracePsCompileResult.reset();
@@ -1734,6 +1758,8 @@ bool PipelineCache::CompileShaders()
         m_shaderDir + "/PostProcess/ScreenSpaceOutlineVerifier.hlsl";
     std::string bloomShaderPath = m_shaderDir + "/PostProcess/Bloom.hlsl";
     std::string gtaoShaderPath = m_shaderDir + "/Lighting/GTAO.hlsl";
+    std::string froxelVolumetricShaderPath =
+        m_shaderDir + "/Volumetric/FroxelVolumetricLighting.hlsl";
     std::string ssrShaderPath =
         m_shaderDir + "/Reflection/HiZScreenSpaceReflection.hlsl";
     std::string cameraVelocityShaderPath = m_shaderDir + "/PostProcess/CameraVelocity.hlsl";
@@ -2026,6 +2052,55 @@ bool PipelineCache::CompileShaders()
             !loadExposureShader("CSAdaptExposure", "exposure adaptation compute shader",
                                 m_exposureAdaptationComputeShader,
                                 m_exposureAdaptationCsCompileResult))
+        {
+            return false;
+        }
+
+        RenderShaderLoadDesc froxelCsDesc = exposureCsDesc;
+        froxelCsDesc.path = froxelVolumetricShaderPath;
+        const auto loadFroxelVolumetricShader =
+            [this, &froxelCsDesc](
+                const char* entryPoint,
+                const char* diagnostic,
+                RHIShaderRef& outShader,
+                std::unique_ptr<ShaderProgramMetadata>& outMetadata) -> bool
+        {
+            RenderShaderLoadDesc request = froxelCsDesc;
+            request.entryPoint = entryPoint;
+            RenderShaderLoadResult result =
+                m_shaderProgramLoader->LoadFromFile(m_device, request);
+            if (!result.compileResult.success)
+            {
+                SetLastError(std::string("Failed to compile ") + diagnostic +
+                             ": " + result.compileResult.errorMessage);
+                return false;
+            }
+            if (!result.shader)
+            {
+                SetLastError(std::string("Failed to create ") + diagnostic);
+                return false;
+            }
+            outShader = result.shader;
+            outMetadata = std::make_unique<ShaderProgramMetadata>(
+                std::move(result.compileResult));
+            return true;
+        };
+        if (!loadFroxelVolumetricShader(
+                "CSInjectFroxels", "froxel volumetric injection compute shader",
+                m_froxelVolumetricInjectionComputeShader,
+                m_froxelVolumetricInjectionCsCompileResult) ||
+            !loadFroxelVolumetricShader(
+                "CSIntegrateFroxels", "froxel volumetric integration compute shader",
+                m_froxelVolumetricIntegrationComputeShader,
+                m_froxelVolumetricIntegrationCsCompileResult) ||
+            !loadFroxelVolumetricShader(
+                "CSTemporalResolveFroxels", "froxel volumetric temporal compute shader",
+                m_froxelVolumetricTemporalComputeShader,
+                m_froxelVolumetricTemporalCsCompileResult) ||
+            !loadFroxelVolumetricShader(
+                "CSCompositeFroxels", "froxel volumetric composite compute shader",
+                m_froxelVolumetricCompositeComputeShader,
+                m_froxelVolumetricCompositeCsCompileResult))
         {
             return false;
         }
@@ -3747,6 +3822,80 @@ bool PipelineCache::CreateGTAOPipelineLayout()
     return true;
 }
 
+bool PipelineCache::CreateFroxelVolumetricPipelineLayout()
+{
+    if (!m_device || !m_device->GetCapabilities().supportsComputePipeline)
+    {
+        return false;
+    }
+    if (m_froxelVolumetricSetLayout && m_froxelVolumetricPipelineLayout)
+    {
+        return true;
+    }
+
+    // One closed descriptor ABI is deliberately shared by injection,
+    // integration, temporal resolve, and HDR composite.  Stage-specific
+    // inputs are bound at stable slots; a stage never reinterprets an SRV as
+    // a UAV.  This keeps DX12/Vulkan/Metal reflection and graph lifetime
+    // rules identical for the complete primitive.
+    RHIDescriptorSetLayoutDesc setLayoutDesc;
+    setLayoutDesc.debugName = "FroxelVolumetricLightingSetLayout";
+    setLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer,
+                             RHIShaderStage::Compute);
+    setLayoutDesc.AddBinding(1, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Compute); // device depth
+    setLayoutDesc.AddBinding(2, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Compute); // directional CSM
+    setLayoutDesc.AddBinding(3, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Compute); // local shadow atlas
+    setLayoutDesc.AddBinding(4, RHIBindingType::UniformBuffer,
+                             RHIShaderStage::Compute); // light constants
+    setLayoutDesc.AddBinding(5, RHIBindingType::ShaderResourceBuffer,
+                             RHIShaderStage::Compute); // point lights
+    setLayoutDesc.AddBinding(6, RHIBindingType::ShaderResourceBuffer,
+                             RHIShaderStage::Compute); // spot lights
+    setLayoutDesc.AddBinding(7, RHIBindingType::UniformBuffer,
+                             RHIShaderStage::Compute); // clustered constants
+    setLayoutDesc.AddBinding(8, RHIBindingType::ShaderResourceBuffer,
+                             RHIShaderStage::Compute); // clusters
+    setLayoutDesc.AddBinding(9, RHIBindingType::ShaderResourceBuffer,
+                             RHIShaderStage::Compute); // cluster indices
+    setLayoutDesc.AddBinding(10, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Compute); // current froxel input
+    setLayoutDesc.AddBinding(11, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Compute); // committed history
+    setLayoutDesc.AddBinding(12, RHIBindingType::StorageTexture,
+                             RHIShaderStage::Compute); // froxel output
+    setLayoutDesc.AddBinding(13, RHIBindingType::StorageTexture,
+                             RHIShaderStage::Compute); // HDR output
+    setLayoutDesc.AddBinding(14, RHIBindingType::SampledTexture,
+                             RHIShaderStage::Compute); // HDR input
+    setLayoutDesc.AddBinding(15, RHIBindingType::Sampler,
+                             RHIShaderStage::Compute);
+
+    RHIDescriptorSetLayoutRef setLayout =
+        m_device->CreateDescriptorSetLayout(setLayoutDesc);
+    if (!setLayout)
+    {
+        SetLastError("Failed to create froxel-volumetric descriptor set layout");
+        return false;
+    }
+
+    RHIPipelineLayoutDesc layoutDesc;
+    layoutDesc.debugName = "FroxelVolumetricLightingPipelineLayout";
+    layoutDesc.setLayouts.push_back(setLayout.Get());
+    RHIPipelineLayoutRef pipelineLayout = m_device->CreatePipelineLayout(layoutDesc);
+    if (!pipelineLayout)
+    {
+        SetLastError("Failed to create froxel-volumetric pipeline layout");
+        return false;
+    }
+
+    m_froxelVolumetricSetLayout = std::move(setLayout);
+    m_froxelVolumetricPipelineLayout = std::move(pipelineLayout);
+    return true;
+}
+
 bool PipelineCache::CreateSSRPipelineLayout()
 {
     RHIDescriptorSetLayoutDesc setLayoutDesc;
@@ -4164,6 +4313,9 @@ bool PipelineCache::BuildReflectedDefaultLitLayouts(std::vector<RHIDescriptorSet
                   RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
     ensureBinding(outLayouts[0], PipelineCache::DefaultLitLocalShadowAtlasBinding,
                   RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+    ensureBinding(outLayouts[0],
+                  PipelineCache::DefaultLitFroxelVolumetricLightingBinding,
+                  RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
     ensureBinding(outLayouts[1], 1, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
     ensureBinding(outLayouts[1], 2, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
     ensureBinding(outLayouts[1], 3, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
@@ -4291,6 +4443,10 @@ bool PipelineCache::ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSet
                         RHIBindingType::SampledTexture))
         return false;
     if (!requireBinding(0, PipelineCache::DefaultLitLocalShadowAtlasBinding,
+                        RHIBindingType::SampledTexture))
+        return false;
+    if (!requireBinding(0,
+                        PipelineCache::DefaultLitFroxelVolumetricLightingBinding,
                         RHIBindingType::SampledTexture))
         return false;
     if (!requireBinding(1, 0, RHIBindingType::DynamicUniformBuffer))
@@ -5039,7 +5195,8 @@ bool PipelineCache::CreateLightingBindingSnapshot(
         !EnsureFrameRayTracedShadowFallbackResources() ||
         !EnsureFrameEnvironmentIBLFallbackResources() ||
         !EnsureFrameExposureFallbackBuffer() ||
-        !EnsureFrameAmbientOcclusionFallbackResources())
+        !EnsureFrameAmbientOcclusionFallbackResources() ||
+        !EnsureFrameFroxelVolumetricLightingFallbackResources())
     {
         SetLastError(
             "Lighting binding snapshot could not create stable fallback resources");
@@ -5049,7 +5206,8 @@ bool PipelineCache::CreateLightingBindingSnapshot(
         !m_fallbackDirectionalShadowView || !m_fallbackRayTracedShadowMaskView ||
         !m_fallbackEnvironmentIBLCubemapView ||
         !m_fallbackEnvironmentIBLBRDFLUTView ||
-        !m_fallbackAmbientOcclusionView)
+        !m_fallbackAmbientOcclusionView ||
+        !m_fallbackFroxelVolumetricLightingView)
     {
         SetLastError(
             "Lighting binding snapshot has incomplete fallback bindings");
@@ -5138,6 +5296,50 @@ bool PipelineCache::CreateLightingBindingSnapshot(
     snapshot.opaqueSceneSnapshotSampler = request.opaqueSceneSnapshotSampler
         ? request.opaqueSceneSnapshotSampler
         : m_environmentIBLSampler;
+    if (request.froxelVolumetricLightingView)
+    {
+        RHITexture* const texture =
+            request.froxelVolumetricLightingView->GetTexture();
+        const RHISubresourceRange& range =
+            request.froxelVolumetricLightingView->GetSubresourceRange();
+        if (request.froxelVolumetricLightingPlanIdentity == 0 ||
+            texture == nullptr ||
+            request.froxelVolumetricLightingView->GetFormat() !=
+                RHIFormat::RGBA16_FLOAT ||
+            texture->GetFormat() != RHIFormat::RGBA16_FLOAT ||
+            texture->GetDimension() != RHITextureDimension::Texture3D ||
+            texture->GetWidth() == 0 || texture->GetHeight() == 0 ||
+            texture->GetDepth() == 0 || texture->GetMipLevels() != 1 ||
+            texture->GetArraySize() != 1 ||
+            texture->GetSampleCount() != RHISampleCount::Count1 ||
+            !HasFlag(texture->GetUsage(), RHITextureUsage::ShaderResource) ||
+            range.baseMipLevel != 0 ||
+            (range.mipLevelCount != 1 && range.mipLevelCount != RVX_ALL_MIPS) ||
+            range.baseArrayLayer != 0 ||
+            (range.arrayLayerCount != 1 &&
+             range.arrayLayerCount != RVX_ALL_LAYERS) ||
+            range.aspect != RHITextureAspect::Color)
+        {
+            SetLastError(
+                "Lighting binding snapshot requires an exact RGBA16F Texture3D froxel view and non-zero plan identity");
+            return false;
+        }
+        snapshot.froxelVolumetricLightingView =
+            request.froxelVolumetricLightingView;
+        snapshot.froxelVolumetricLightingPlanIdentity =
+            request.froxelVolumetricLightingPlanIdentity;
+    }
+    else
+    {
+        if (request.froxelVolumetricLightingPlanIdentity != 0)
+        {
+            SetLastError(
+                "Lighting binding snapshot cannot claim a froxel plan without its Texture3D view");
+            return false;
+        }
+        snapshot.froxelVolumetricLightingView =
+            m_fallbackFroxelVolumetricLightingView;
+    }
     snapshot.frameSetLayout = m_setLayouts[0];
 
     // The descriptor set is deliberately created only after every resource
@@ -5156,6 +5358,7 @@ bool PipelineCache::CreateLightingBindingSnapshot(
         !snapshot.exposureStateBuffer || !snapshot.ambientOcclusionView ||
         snapshot.ambientOcclusionFieldHash == 0 ||
         !snapshot.opaqueSceneSnapshotView || !snapshot.opaqueSceneSnapshotSampler ||
+        !snapshot.froxelVolumetricLightingView ||
         !snapshot.frameSetLayout)
     {
         SetLastError("Lighting binding snapshot has incomplete record-owned resources");
@@ -5193,6 +5396,8 @@ bool PipelineCache::CreateLightingBindingSnapshot(
                                   snapshot.opaqueSceneSnapshotView.Get());
     descriptorSetDesc.BindTexture(DefaultLitLocalShadowAtlasBinding,
                                   snapshot.localShadowAtlasView.Get());
+    descriptorSetDesc.BindTexture(DefaultLitFroxelVolumetricLightingBinding,
+                                  snapshot.froxelVolumetricLightingView.Get());
 
     snapshot.frameDescriptorSet = m_device->CreateDescriptorSet(descriptorSetDesc);
     if (!snapshot.frameDescriptorSet ||
@@ -6032,7 +6237,8 @@ bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
             !m_fallbackClusterLightIndexBuffer ||
             !m_fallbackEnvironmentIBLCubemapView ||
             !m_fallbackEnvironmentIBLBRDFLUTView || !m_environmentIBLSampler ||
-            !m_fallbackExposureStateBuffer || !m_fallbackAmbientOcclusionView)
+            !m_fallbackExposureStateBuffer || !m_fallbackAmbientOcclusionView ||
+            !m_fallbackFroxelVolumetricLightingView)
         {
             return false;
         }
@@ -6157,6 +6363,9 @@ bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
         frameSetDesc.BindTexture(
             DefaultLitLocalShadowAtlasBinding,
             m_fallbackDirectionalShadowView.Get());
+        frameSetDesc.BindTexture(
+            DefaultLitFroxelVolumetricLightingBinding,
+            m_fallbackFroxelVolumetricLightingView.Get());
     }
     RHIDescriptorSetRef frameSet = m_device->CreateDescriptorSet(frameSetDesc);
     if (!frameSet || !frameSet->IsReadyForBinding(m_setLayouts[0].Get()))
@@ -7382,6 +7591,92 @@ RHIPipeline* PipelineCache::GetExposureAdaptationPipeline()
 {
     return EnsureExposureComputePipelines()
         ? m_exposureAdaptationPipeline.Get() : nullptr;
+}
+
+bool PipelineCache::EnsureFroxelVolumetricPipelines()
+{
+    if (IsFroxelVolumetricPipelineReady())
+    {
+        return true;
+    }
+    if (!m_initialized || !m_device ||
+        !m_device->GetCapabilities().supportsComputePipeline ||
+        !m_froxelVolumetricInjectionComputeShader ||
+        !m_froxelVolumetricIntegrationComputeShader ||
+        !m_froxelVolumetricTemporalComputeShader ||
+        !m_froxelVolumetricCompositeComputeShader ||
+        !CreateFroxelVolumetricPipelineLayout())
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError(
+                "Froxel volumetric lighting requires cooked compute programs and a native compute pipeline");
+        }
+        return false;
+    }
+
+    const auto create = [this](RHIShader* shader, const char* debugName)
+        -> RHIPipelineRef
+    {
+        RHIComputePipelineDesc descriptor;
+        descriptor.computeShader = shader;
+        descriptor.pipelineLayout = m_froxelVolumetricPipelineLayout.Get();
+        descriptor.debugName = debugName;
+        RHIPipelineRef pipeline = m_device->CreateComputePipeline(descriptor);
+        if (!pipeline)
+        {
+            SetLastError(std::string("Backend failed to create ") + debugName);
+        }
+        return pipeline;
+    };
+
+    RHIPipelineRef injection = create(
+        m_froxelVolumetricInjectionComputeShader.Get(),
+        "FroxelVolumetricInjectionPipeline");
+    RHIPipelineRef integration = create(
+        m_froxelVolumetricIntegrationComputeShader.Get(),
+        "FroxelVolumetricIntegrationPipeline");
+    RHIPipelineRef temporal = create(
+        m_froxelVolumetricTemporalComputeShader.Get(),
+        "FroxelVolumetricTemporalPipeline");
+    RHIPipelineRef composite = create(
+        m_froxelVolumetricCompositeComputeShader.Get(),
+        "FroxelVolumetricCompositePipeline");
+    if (!injection || !integration || !temporal || !composite)
+    {
+        return false;
+    }
+
+    m_froxelVolumetricInjectionPipeline = std::move(injection);
+    m_froxelVolumetricIntegrationPipeline = std::move(integration);
+    m_froxelVolumetricTemporalPipeline = std::move(temporal);
+    m_froxelVolumetricCompositePipeline = std::move(composite);
+    m_stats.pipelineCreateCount += 4;
+    return true;
+}
+
+RHIPipeline* PipelineCache::GetFroxelVolumetricInjectionPipeline()
+{
+    return EnsureFroxelVolumetricPipelines()
+        ? m_froxelVolumetricInjectionPipeline.Get() : nullptr;
+}
+
+RHIPipeline* PipelineCache::GetFroxelVolumetricIntegrationPipeline()
+{
+    return EnsureFroxelVolumetricPipelines()
+        ? m_froxelVolumetricIntegrationPipeline.Get() : nullptr;
+}
+
+RHIPipeline* PipelineCache::GetFroxelVolumetricTemporalPipeline()
+{
+    return EnsureFroxelVolumetricPipelines()
+        ? m_froxelVolumetricTemporalPipeline.Get() : nullptr;
+}
+
+RHIPipeline* PipelineCache::GetFroxelVolumetricCompositePipeline()
+{
+    return EnsureFroxelVolumetricPipelines()
+        ? m_froxelVolumetricCompositePipeline.Get() : nullptr;
 }
 
 RHIPipeline* PipelineCache::GetGPUDrivenGBufferPipelineForVariant(
@@ -8740,6 +9035,109 @@ bool PipelineCache::EnsureFrameAmbientOcclusionFallbackResources()
     return true;
 }
 
+bool PipelineCache::EnsureFrameFroxelVolumetricLightingFallbackResources()
+{
+    if (m_fallbackFroxelVolumetricLightingTexture &&
+        m_fallbackFroxelVolumetricLightingView)
+    {
+        return true;
+    }
+    if (!m_device)
+    {
+        return false;
+    }
+
+    // DefaultLit always exposes the Texture3D binding, including frames that
+    // do not execute froxel lighting.  The one-voxel content is the exact
+    // multiplicative/additive identity: zero in-scattering and unit
+    // transmittance.  Do not rely on a clear value because 3D clear support is
+    // not part of the cross-backend fallback contract.
+    RHITextureDesc textureDesc = RHITextureDesc::Texture2D(
+        1, 1, RHIFormat::RGBA16_FLOAT,
+        RHITextureUsage::ShaderResource | RHITextureUsage::CopyDst);
+    textureDesc.dimension = RHITextureDimension::Texture3D;
+    textureDesc.depth = 1;
+    textureDesc.arraySize = 1;
+    textureDesc.mipLevels = 1;
+    textureDesc.debugName = "FallbackFroxelVolumetricLighting";
+    RHITextureRef texture = m_device->CreateTexture(textureDesc);
+    if (!texture || texture->GetDimension() != RHITextureDimension::Texture3D ||
+        texture->GetFormat() != RHIFormat::RGBA16_FLOAT ||
+        texture->GetWidth() != 1 || texture->GetHeight() != 1 ||
+        texture->GetDepth() != 1 || texture->GetMipLevels() != 1 ||
+        texture->GetArraySize() != 1 ||
+        texture->GetSampleCount() != RHISampleCount::Count1)
+    {
+        return false;
+    }
+
+    RHICommandContextRef uploadContext =
+        m_device->CreateCommandContext(RHICommandQueueType::Graphics);
+    if (!uploadContext)
+    {
+        return !m_device->GetCapabilities().supportsExplicitResourceBarriers;
+    }
+
+    // Every portable upload path accepts the D3D-style 256 byte source row.
+    // IEEE-754 half (0,0,0,1) is written explicitly at the first texel.
+    constexpr uint32 RowPitch = 256;
+    std::array<uint16, RowPitch / sizeof(uint16)> neutralTexel{};
+    neutralTexel[3] = 0x3c00u;
+    RHIStagingBufferDesc stagingDesc;
+    stagingDesc.size = RowPitch;
+    stagingDesc.debugName = "FallbackFroxelVolumetricLightingUpload";
+    RHIStagingBufferRef staging = m_device->CreateStagingBuffer(stagingDesc);
+    if (!staging)
+    {
+        return false;
+    }
+    void* mapped = staging->Map(0, RowPitch);
+    if (!mapped)
+    {
+        return false;
+    }
+    std::memcpy(mapped, neutralTexel.data(), RowPitch);
+    staging->Unmap();
+
+    uploadContext->Begin();
+    uploadContext->TextureBarrier(texture.Get(), RHIResourceState::Undefined,
+                                  RHIResourceState::CopyDest);
+    RHIBufferTextureCopyDesc copyDesc;
+    copyDesc.bufferRowPitch = RowPitch;
+    copyDesc.bufferImageHeight = 1;
+    copyDesc.textureRegion = {0, 0, 1, 1};
+    copyDesc.textureDepthSlice = 0;
+    uploadContext->CopyBufferToTexture(staging->GetBuffer(), texture.Get(),
+                                       copyDesc);
+    uploadContext->TextureBarrier(texture.Get(), RHIResourceState::CopyDest,
+                                  RHIResourceState::ShaderResource);
+    uploadContext->End();
+    m_device->SubmitCommandContext(uploadContext.Get());
+    m_device->WaitIdle();
+    if (m_device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+    {
+        return false;
+    }
+
+    RHITextureViewDesc viewDesc;
+    viewDesc.format = RHIFormat::RGBA16_FLOAT;
+    viewDesc.dimension = RHITextureDimension::Texture3D;
+    viewDesc.subresourceRange = RHISubresourceRange::All();
+    viewDesc.type = RHITextureViewType::ShaderResource;
+    viewDesc.debugName = "FallbackFroxelVolumetricLightingSRV";
+    RHITextureViewRef view = m_device->CreateTextureView(texture.Get(), viewDesc);
+    if (!view || view->GetTexture() != texture.Get() ||
+        view->GetFormat() != RHIFormat::RGBA16_FLOAT ||
+        view->GetSubresourceRange().aspect != RHITextureAspect::Color)
+    {
+        return false;
+    }
+
+    m_fallbackFroxelVolumetricLightingTexture = std::move(texture);
+    m_fallbackFroxelVolumetricLightingView = std::move(view);
+    return true;
+}
+
 bool PipelineCache::UpdateDefaultFrameDescriptorSet()
 {
     if (!m_viewConstantBuffer || m_setLayouts.empty() || !m_setLayouts[0] ||
@@ -8747,7 +9145,8 @@ bool PipelineCache::UpdateDefaultFrameDescriptorSet()
         !EnsureFrameEnvironmentIBLFallbackResources() ||
         !EnsureFrameLightFallbackResources() || !EnsureFrameClusteredLightFallbackResources() ||
         !EnsureFrameExposureFallbackBuffer() ||
-        !EnsureFrameAmbientOcclusionFallbackResources())
+        !EnsureFrameAmbientOcclusionFallbackResources() ||
+        !EnsureFrameFroxelVolumetricLightingFallbackResources())
     {
         return false;
     }
@@ -8815,6 +9214,8 @@ PipelineCache::CreateFrameDescriptorBindingOwners() const
         ? m_currentExposureStateBuffer : m_fallbackExposureStateBuffer;
     owners->ambientOcclusionView = m_fallbackAmbientOcclusionView;
     owners->opaqueSceneSnapshotView = m_fallbackEnvironmentIBLBRDFLUTView;
+    owners->froxelVolumetricLightingView =
+        m_fallbackFroxelVolumetricLightingView;
     owners->ambientOcclusionFieldHash =
         RVX_NEUTRAL_AMBIENT_OCCLUSION_FIELD_HASH;
     return owners->IsComplete() ? owners : Ref<FrameDescriptorBindingOwners>{};
@@ -8826,7 +9227,7 @@ std::vector<RHIDescriptorBinding> PipelineCache::BuildFrameDescriptorBindings(
     RVX_ASSERT(owners.IsComplete());
 
     std::vector<RHIDescriptorBinding> bindings;
-    bindings.reserve(18);
+    bindings.reserve(19);
     bindings.push_back({0, owners.viewConstantBuffer.Get(), 0,
                         AlignConstantBufferSize(sizeof(ViewConstants)), nullptr, nullptr});
     bindings.push_back({1, nullptr, 0, 0, owners.directionalShadowView.Get(), nullptr});
@@ -8852,6 +9253,8 @@ std::vector<RHIDescriptorBinding> PipelineCache::BuildFrameDescriptorBindings(
                         owners.opaqueSceneSnapshotView.Get(), nullptr});
     bindings.push_back({DefaultLitLocalShadowAtlasBinding, nullptr, 0, 0,
                         owners.localShadowAtlasView.Get(), nullptr});
+    bindings.push_back({DefaultLitFroxelVolumetricLightingBinding, nullptr, 0, 0,
+                        owners.froxelVolumetricLightingView.Get(), nullptr});
     return bindings;
 }
 
@@ -8862,7 +9265,8 @@ RHIDescriptorSetRef PipelineCache::CreateFrameDescriptorSet()
         !EnsureFrameEnvironmentIBLFallbackResources() ||
         !EnsureFrameLightFallbackResources() || !EnsureFrameClusteredLightFallbackResources() ||
         !EnsureFrameExposureFallbackBuffer() ||
-        !EnsureFrameAmbientOcclusionFallbackResources())
+        !EnsureFrameAmbientOcclusionFallbackResources() ||
+        !EnsureFrameFroxelVolumetricLightingFallbackResources())
         return {};
 
     m_currentDirectionalShadowView = m_fallbackDirectionalShadowView;

@@ -480,7 +480,6 @@ void ApplyRenderVisualQualityPreset(PostProcessSettings& settings, RenderVisualQ
     settings.enableVelocityOutput = false;
     settings.enableDOF = false;
     settings.enableMotionBlur = false;
-    settings.enableVolumetricLighting = false;
     settings.enableToonOutline = false;
 
     switch (preset)
@@ -514,7 +513,7 @@ void ApplyRenderVisualQualityPreset(PostProcessSettings& settings, RenderVisualQ
             settings.enableVignette = true;
             settings.enableChromaticAberration = true;
             settings.enableFilmGrain = true;
-            // GTAO, SSR, DOF, motion blur, and volumetrics each remain
+            // GTAO, SSR, DOF, and motion blur each remain
             // explicitly opt-in and unavailable until their own verified
             // renderer features land. A quality preset must not request a
             // placeholder that strict planning would reject.

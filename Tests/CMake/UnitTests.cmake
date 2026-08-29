@@ -1030,6 +1030,16 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME FroxelVolumetricLightingValidation
+    LANE unit
+    SOURCES FroxelVolumetricLightingValidation/main.cpp
+    LIBS RVX::Core RVX::RenderLighting
+    INCLUDES ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Include
+    TAGS subsystem.render subsystem.lighting suite.contract
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
     NAME LocalShadowRenderValidation
     LANE unit
     SOURCES LocalShadowRenderValidation/main.cpp
