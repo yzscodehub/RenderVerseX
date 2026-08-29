@@ -374,7 +374,15 @@ TEST(WaterFeaturePassValidation, RendererCompositionAndCookedShaderCatalogAreHon
     EXPECT_NE(waterShader.find("const float roughness = saturate("),
               std::string::npos);
     EXPECT_NE(waterShader.find("reflectionLobe"), std::string::npos);
-    EXPECT_NE(waterShader.find("output.Color = float4(composed, 1.0f)"),
+    EXPECT_NE(waterShader.find(
+                  "Texture3D<float4> gFroxelVolumetricLighting : register(t4, space0)"),
+              std::string::npos);
+    EXPECT_NE(waterShader.find("gFroxelVolumetricLighting.SampleLevel("),
+              std::string::npos);
+    EXPECT_NE(waterShader.find(
+                  "const float3 volumetricComposed = refracted +"),
+              std::string::npos);
+    EXPECT_NE(waterShader.find("output.Color = float4(volumetricComposed, 1.0f)"),
               std::string::npos);
 
     const std::string shaderCatalog = ReadTextFile(

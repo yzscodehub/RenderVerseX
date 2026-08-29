@@ -16,7 +16,10 @@ namespace RVX
     inline constexpr uint32 RVX_SHADER_ARTIFACT_VERSION = 2;
     inline constexpr uint32 RVX_SHADER_ARTIFACT_ENDIAN_MARKER =
         0x01020304u;
-    inline constexpr uint64 RVX_SHADER_COMPILER_ABI_VERSION = 15;
+    // OpenGL cooked artifacts embed the translated GLSL source. The GLSL
+    // binding remap changed for the integrated froxel volume, so older
+    // OpenGL artifacts must be rejected and recooked.
+    inline constexpr uint64 RVX_SHADER_COMPILER_ABI_VERSION = 16;
 
     struct ShaderArtifactSection
     {

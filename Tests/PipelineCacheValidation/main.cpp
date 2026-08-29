@@ -6086,7 +6086,11 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitConsumesMaterialWorkflowAndDoub
     EXPECT_NE(shader.find(
                   "material.Workflow != MATERIAL_WORKFLOW_UNLIT"),
               std::string::npos);
-    EXPECT_NE(shader.find("return float4((baseColor.rgb + emissive) * preExposure, baseColor.a);"),
+    EXPECT_NE(shader.find(
+                  "const float3 unlit = (baseColor.rgb + emissive) * preExposure;"),
+              std::string::npos);
+    EXPECT_NE(shader.find(
+                  "RVXApplyVolumetricSurfaceExtinction(input.Position, unlit)"),
               std::string::npos);
     EXPECT_NE(shader.find(
                   "material.ShadingModel != MATERIAL_SHADING_MODEL_STANDARD_LIT"),
@@ -11996,7 +12000,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestMissingIsColdInitAndSavesMetadata
     EXPECT_TRUE(fs::exists(temp.Path() / RVX::PipelineCache::GetManifestFileName()));
 
     const std::string manifest = ReadTextFile(temp.Path() / RVX::PipelineCache::GetManifestFileName());
-    EXPECT_NE(manifest.find("version=27"), std::string::npos);
+    EXPECT_NE(manifest.find("version=28"), std::string::npos);
     EXPECT_NE(manifest.find(
                   "weightedBlendedOITAccumulationPixelShaderHash="),
               std::string::npos);
@@ -12188,14 +12192,14 @@ TEST_F(PipelineCacheValidationFixture,
 }
 
 TEST_F(PipelineCacheValidationFixture,
-       ManifestV26IsInvalidatedAndRewrittenAsV27)
+       ManifestV27IsInvalidatedAndRewrittenAsV28)
 {
     if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Source/Runtime/Render/Shaders directory not found";
     }
 
-    TempDirectory temp("rvx_pipeline_manifest_v26_stale");
+    TempDirectory temp("rvx_pipeline_manifest_v27_stale");
     const fs::path manifestPath =
         temp.Path() / RVX::PipelineCache::GetManifestFileName();
     {
@@ -12206,7 +12210,7 @@ TEST_F(PipelineCacheValidationFixture,
             << cache.GetLastError();
     }
 
-    ReplaceManifestFieldValue(manifestPath, "version", "26");
+    ReplaceManifestFieldValue(manifestPath, "version", "27");
 
     FakeDevice device;
     PipelineCacheForValidation cache;
@@ -12216,7 +12220,7 @@ TEST_F(PipelineCacheValidationFixture,
     EXPECT_TRUE(cache.GetStats().manifestLoaded);
     EXPECT_FALSE(cache.GetStats().manifestValid);
     EXPECT_TRUE(cache.GetStats().manifestInvalidated);
-    EXPECT_NE(ReadTextFile(manifestPath).find("version=27\n"),
+    EXPECT_NE(ReadTextFile(manifestPath).find("version=28\n"),
               std::string::npos);
 }
 
@@ -14941,7 +14945,13 @@ TEST_F(PipelineCacheValidationFixture,
     EXPECT_NE(std::string::npos,
               defaultLit.find("(baseColor.rgb + emissive) * preExposure"));
     EXPECT_NE(std::string::npos,
-              defaultLit.find("finalColor * preExposure"));
+              defaultLit.find(
+                  "Texture3D<float4> FroxelVolumetricLightingTexture : register(t18, space0)"));
+    EXPECT_NE(std::string::npos,
+              defaultLit.find("RVXApplyVolumetricSurfaceExtinction("));
+    EXPECT_NE(std::string::npos,
+              defaultLit.find(
+                  "input.Position, finalColor * preExposure"));
     EXPECT_EQ(std::string::npos,
               defaultLit.find("? 0u\n        : input.MaterialParameterSlot"));
 }

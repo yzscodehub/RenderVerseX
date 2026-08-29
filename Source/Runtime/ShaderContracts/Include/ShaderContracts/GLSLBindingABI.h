@@ -13,7 +13,11 @@ namespace RVX
         inline constexpr uint32 RVX_GLSL_UNIFORM_BUFFER_BINDING_BASE = 1;
         inline constexpr uint32 RVX_GLSL_DUMMY_SAMPLER_BINDING = 15;
 
-        inline constexpr uint32 RVX_GLSL_REQUIRED_TEXTURE_UNIT_COUNT = 16;
+        // The complete Forward+ surface ABI has nine frame textures
+        // (including the integrated froxel volume) and eight material
+        // textures. Those resources can be live in the same fragment shader,
+        // so unit 16 is deliberately part of the public OpenGL contract.
+        inline constexpr uint32 RVX_GLSL_REQUIRED_TEXTURE_UNIT_COUNT = 17;
         inline constexpr uint32 RVX_GLSL_REQUIRED_STORAGE_BUFFER_BINDING_COUNT = 16;
 
         [[nodiscard]] inline constexpr bool IsValidBinding(uint32 binding)
@@ -77,8 +81,9 @@ namespace RVX
             // Frame textures retain their logical units except the two late
             // Forward+ surface inputs.  The opaque snapshot uses unit 14 and
             // the local-shadow atlas uses the last free unit 0 so the complete
-            // frame + material surface ABI remains valid on the OpenGL 4.5
-            // minimum of sixteen texture units.
+            // frame + material surface ABI remains valid with the integrated
+            // froxel field on devices exposing at least seventeen fragment
+            // texture units.
             if (set == 0 && binding <= 15)
             {
                 return binding;
@@ -91,9 +96,16 @@ namespace RVX
             {
                 return 0;
             }
+            // The froxel volume cannot share a physical texture unit with a
+            // frame or material texture: it is a Texture3D that may be live
+            // with every one of the sixteen existing 2D/cube/array bindings.
+            if (set == 0 && binding == 18)
+            {
+                return 16;
+            }
 
-            // The eight material textures must coexist with DefaultLit frame
-            // textures on the OpenGL 4.5 minimum of sixteen texture units.
+            // The eight material textures retain their packed 0..15 units;
+            // the simultaneously live froxel Texture3D occupies unit 16.
             if (set == 2)
             {
                 switch (binding)
@@ -218,6 +230,15 @@ namespace RVX
             // Local point/spot shadow depth reuses the directional point-clamp
             // sampler while occupying the sole remaining physical unit.
             if (set == 0 && textureBinding == 17 && samplerBinding == 2)
+            {
+                outTextureUnit = FlattenTextureBinding(set, textureBinding);
+                return true;
+            }
+            // The integrated 3D froxel field shares the frame linear-clamp
+            // sampler with IBL and the opaque snapshot, while retaining a
+            // distinct image unit because all of those image types can be
+            // sampled concurrently by Forward+ translucency.
+            if (set == 0 && textureBinding == 18 && samplerBinding == 13)
             {
                 outTextureUnit = FlattenTextureBinding(set, textureBinding);
                 return true;

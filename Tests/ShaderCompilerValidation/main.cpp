@@ -1,6 +1,7 @@
 #include "Core/Log.h"
 #include "ShaderContracts/GLSLBindingABI.h"
 #include "ShaderContracts/MetalBindingABI.h"
+#include "ShaderContracts/ShaderArtifact.h"
 #include "ShaderCompiler/ShaderCacheFormat.h"
 #include "ShaderCompiler/ShaderCacheManager.h"
 #include "ShaderCompiler/ShaderCompiler.h"
@@ -2197,6 +2198,11 @@ TEST_F(ShaderCompilerValidationFixture,
             "layout(binding = 14) uniform sampler2D "
             "OpaqueSceneSnapshotTexture_IBLLinearClampSampler"),
         std::string::npos);
+    EXPECT_NE(
+        result.glslSource.find(
+            "layout(binding = 16) uniform sampler3D "
+            "FroxelVolumetricLightingTexture_IBLLinearClampSampler"),
+        std::string::npos);
 }
 #endif
 
@@ -2442,8 +2448,10 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
     ASSERT_TRUE(result.success) << result.errorMessage;
     EXPECT_FALSE(result.glslSource.empty());
 
-    static_assert(RVX::RVX_SHADER_COMPILER_CACHE_ABI_VERSION >= 16,
+    static_assert(RVX::RVX_SHADER_COMPILER_CACHE_ABI_VERSION >= 17,
                    "OpenGL GLSL binding ABI changes must invalidate cached GLSL");
+    static_assert(RVX::RVX_SHADER_COMPILER_ABI_VERSION >= 16,
+                  "OpenGL cooked GLSL binding remaps must invalidate artifacts");
     EXPECT_EQ(RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::UniformBuffer, 0, 0), 1u);
     EXPECT_EQ(RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::UniformBuffer, 2, 0), 9u);
     constexpr std::array<RVX::uint32, 8> expectedMaterialTextureUnits = {
@@ -2502,6 +2510,15 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
     }
     EXPECT_EQ(result.glslBindings.GetGLBinding(2, 17), 15u);
     EXPECT_EQ(result.glslBindings.ssboBindings["MaterialTable"], 15u);
+
+    EXPECT_EQ(RVX::GLSLBindingABI::FlattenBinding(
+                  RVX::RHIBindingType::SampledTexture, 0, 18),
+              16u);
+
+    RVX::uint32 froxelVolumeUnit = RVX::RVX_INVALID_INDEX;
+    EXPECT_TRUE(RVX::GLSLBindingABI::TryGetTextureSamplerUnit(
+        0, 18, 13, froxelVolumeUnit));
+    EXPECT_EQ(froxelVolumeUnit, 16u);
 
     const auto shadowSamplerBinding =
         RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::Sampler, 0, 2);
@@ -2635,7 +2652,7 @@ TEST_F(ShaderCompilerValidationFixture, OpenGLPermutationUsesGeneratedGLSLSource
 
 TEST(ShaderBindingABIValidation, MaterialSet2UsesCompletePairedOpenGLAndMetalMappings)
 {
-    static_assert(RVX::RVX_SHADER_COMPILER_CACHE_ABI_VERSION >= 16,
+    static_assert(RVX::RVX_SHADER_COMPILER_CACHE_ABI_VERSION >= 17,
                   "Cross-backend resource-index ABI changes must invalidate cached shader source");
 
     constexpr std::array<RVX::uint32, 8> expectedOpenGLTextureUnits = {
@@ -2687,6 +2704,19 @@ TEST(ShaderBindingABIValidation, MaterialSet2UsesCompletePairedOpenGLAndMetalMap
     RVX::uint32 invalidLocalShadowPair = RVX::RVX_INVALID_INDEX;
     EXPECT_FALSE(RVX::GLSLBindingABI::TryGetTextureSamplerUnit(
         0, 17, 13, invalidLocalShadowPair));
+
+    static_assert(
+        RVX::GLSLBindingABI::RVX_GLSL_REQUIRED_TEXTURE_UNIT_COUNT == 17u,
+        "Forward+ froxel volume requires a seventeenth OpenGL texture unit");
+    static_assert(
+        RVX::GLSLBindingABI::FlattenTextureBinding(0, 18) == 16u,
+        "Froxel volume must retain a dedicated OpenGL texture unit");
+    RVX::uint32 froxelVolumeUnit = RVX::RVX_INVALID_INDEX;
+    EXPECT_TRUE(RVX::GLSLBindingABI::TryGetTextureSamplerUnit(
+        0, 18, 13, froxelVolumeUnit));
+    EXPECT_EQ(froxelVolumeUnit, 16u);
+    EXPECT_FALSE(RVX::GLSLBindingABI::TryGetTextureSamplerUnit(
+        0, 18, 2, froxelVolumeUnit));
 
     // GFX19's resolve shader has one read-only exposure SSBO and two
     // integer-load materialized surface textures. The latter must not gain a
