@@ -2873,6 +2873,32 @@ namespace
         EXPECT_EQ(identityOutputs.sourceSceneColorMetadata,
                   identityOutputs.resolvedSceneColorMetadata);
 
+        RenderGraphBlackboard identityWithoutSurfaceGuides(provenance);
+        VolumetricLightingOutputs guideFreeIdentity = identityOutputs;
+        guideFreeIdentity.worldNormal = {};
+        guideFreeIdentity.worldNormalMetadata = {};
+        guideFreeIdentity.materialIdentity = {};
+        guideFreeIdentity.materialIdentityMetadata = {};
+        guideFreeIdentity.materialParameterTable = {};
+        guideFreeIdentity.materialParameterTableMetadata = {};
+        EXPECT_EQ(identityWithoutSurfaceGuides.Publish(
+                      BuiltinRenderFeatureIds::VolumetricLighting,
+                      producer,
+                      std::move(guideFreeIdentity)),
+                  RenderGraphBlackboardCode::Success);
+
+        RenderGraphBlackboard partialSurfaceGuides(provenance);
+        VolumetricLightingOutputs partialGuides = identityOutputs;
+        partialGuides.materialIdentity = {};
+        partialGuides.materialIdentityMetadata = {};
+        partialGuides.materialParameterTable = {};
+        partialGuides.materialParameterTableMetadata = {};
+        EXPECT_EQ(partialSurfaceGuides.Publish(
+                      BuiltinRenderFeatureIds::VolumetricLighting,
+                      producer,
+                      std::move(partialGuides)),
+                  RenderGraphBlackboardCode::InvalidSemanticContract);
+
         RenderGraphBlackboard forgedIdentity(provenance);
         VolumetricLightingOutputs forged =
             MakeVolumetricLightingOutputs(provenance, true);

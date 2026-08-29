@@ -1132,30 +1132,6 @@ namespace RVX
                    left.recordingGeneration == right.recordingGeneration;
         }
 
-        template<typename Outputs>
-        [[nodiscard]] static bool HasValidVolumetricSurfaceGuides(
-            const Outputs& outputs,
-            RenderOutputExtent sceneExtent) noexcept
-        {
-            return outputs.worldNormal.IsValid() &&
-                   outputs.materialIdentity.IsValid() &&
-                   outputs.materialParameterTable.IsValid() &&
-                   MetadataMatches(
-                       outputs.worldNormalMetadata,
-                       SceneTextures::FormatContract{
-                           RHIFormat::RGBA8_UNORM,
-                           RHISampleCount::Count1}) &&
-                   MetadataMatches(outputs.materialIdentityMetadata,
-                                   SceneTextures::GBuffer3Contract) &&
-                   outputs.worldNormalMetadata.extent == sceneExtent &&
-                   outputs.materialIdentityMetadata.extent == sceneExtent &&
-                   outputs.materialParameterTableMetadata.IsValid() &&
-                   outputs.materialParameterTableMetadata.sourceExtent ==
-                       sceneExtent &&
-                   outputs.materialParameterTableMetadata.sourceSampleCount ==
-                       RHISampleCount::Count1;
-        }
-
         [[nodiscard]] static bool HasValidVolumetricHistory(
             const RenderFrameIdentity& frameIdentity,
             const RenderViewIdentity& viewIdentity,
@@ -1203,7 +1179,7 @@ namespace RVX
                 outputs.settingsHash != 0 && outputs.froxelGrid.IsValid() &&
                 validSceneSurface &&
                 outputs.froxelGrid.outputExtent == sceneExtent &&
-                HasValidVolumetricSurfaceGuides(outputs, sceneExtent) &&
+                HasValidOptionalSurfaceGuides(outputs, sceneExtent) &&
                 HasValidVolumetricHistory(
                     outputs.frameIdentity, outputs.viewIdentity,
                     outputs.historyIdentity, outputs.historyResetReasons,

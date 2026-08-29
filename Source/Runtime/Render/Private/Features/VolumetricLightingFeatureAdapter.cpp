@@ -303,7 +303,10 @@ void VolumetricLightingFeatureAdapter::AddPasses(
     if (publishCode != RenderGraphBlackboardCode::Success)
     {
         SetCompositionFailure(
-            "Froxel volumetric lighting could not publish VolumetricLightingOutputs v1");
+            std::string(
+                "Froxel volumetric lighting could not publish "
+                "VolumetricLightingOutputs v1: ") +
+            GetRenderGraphBlackboardCodeName(publishCode));
         return;
     }
 
